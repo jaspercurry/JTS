@@ -293,6 +293,25 @@ def test_precheck_threads_pair_trim_into_leader_crossover(
     assert yaml.safe_load(crossover_yaml)["filters"]["pair_balance_trim"]["parameters"]["gain"] == -4.0
 
 
+def test_precheck_refuses_uncommissioned_box_no_emit(monkeypatch, tmp_path) -> None:
+    topology = _dual_apple_topology()
+    draft = _draft(topology)
+    monkeypatch.setattr(output_topology_mod, "load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr(design_draft_mod, "load_design_draft", lambda **kwargs: draft)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(tmp_path / "baseline.json"))
+    monkeypatch.setattr(alc, "CROSSOVER_CONFIG_PATH", str(tmp_path / "crossover.yml"))
+    monkeypatch.setattr(alc, "CROSSOVER_STATE_PATH", str(tmp_path / "crossover.json"))
+    monkeypatch.setattr(alc, "LEADER_BAKE_CONFIG_PATH", str(tmp_path / "bake.yml"))
+
+    with pytest.raises(alc.ActiveLeaderError) as exc:
+        asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
+    assert exc.value.reason == "baseline_not_ready"
+    assert "driver_safety_profile_not_confirmed" in exc.value.issues
+    assert not Path(alc.LEADER_BAKE_CONFIG_PATH).exists()
+    assert not Path(alc.CROSSOVER_CONFIG_PATH).exists()
+
+
 @pytest.mark.parametrize("role", ["leader", "follower"])
 @pytest.mark.parametrize("unsupported_stage", [None, "blend", "headroom", "dynamic_bass"])
 def test_pair_preserves_applied_tune_without_old_measurements(
