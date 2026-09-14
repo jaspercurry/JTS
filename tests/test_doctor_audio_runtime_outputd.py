@@ -12,7 +12,7 @@ import pytest
 from jasper import audio_runtime_plan
 from jasper.audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH_ID
 from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
-from jasper.control import audio_health, audio_signal_path
+from jasper.control import audio_signal_path
 
 from ._doctor_audio_runtime_fixtures import (
     _fanin_status_payload,
@@ -677,7 +677,7 @@ def test_an_unbonded_box_keeps_expecting_the_central_ring():
             lambda: audio_runtime_fanin.check_fanin_service(),
         ),
         (
-            audio_health.OUTPUTD_STALE_MS,
+            audio_signal_path.OUTPUTD_STALE_MS,
             _outputd_status_payload,
             lambda: audio_runtime_outputd.check_outputd_service(),
         ),

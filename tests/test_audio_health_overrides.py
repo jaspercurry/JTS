@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.control import audio_health, audio_signal_path
+from jasper.control import audio_signal_path
 from jasper.control.audio_health import AudioHealthSampler, compose_audio_health
 from jasper.output_hardware import OutputHardwareState
 from jasper.output_hardware import write_state as write_output_hardware_state
@@ -527,7 +527,7 @@ def test_a_live_path_failure_still_outranks_a_stopped_camilla() -> None:
     """
     health = _compose_camilla(
         _CAMILLA_CLEAN_STOP,
-        outputd=_outputd(progress_age_ms=audio_health.OUTPUTD_STALE_MS + 1),
+        outputd=_outputd(progress_age_ms=audio_signal_path.OUTPUTD_STALE_MS + 1),
     )
 
     assert health["signal_path"]["status"] == "issue"
