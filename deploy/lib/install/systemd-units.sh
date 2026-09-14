@@ -313,40 +313,19 @@ install_voice_unit_files() {
 }
 
 
-install_streambox_web_unit_files() {
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-web-streambox.service" \
-        "${SYSTEMD_DIR}/jasper-web.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-web-streambox.socket" \
-        "${SYSTEMD_DIR}/jasper-web.socket"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-bluetooth-web.service" \
-        "${SYSTEMD_DIR}/jasper-bluetooth-web.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-bluetooth-web.socket" \
-        "${SYSTEMD_DIR}/jasper-bluetooth-web.socket"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-correction-web.service" \
-        "${SYSTEMD_DIR}/jasper-correction-web.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-correction-web.socket" \
-        "${SYSTEMD_DIR}/jasper-correction-web.socket"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-system-web.service" \
-        "${SYSTEMD_DIR}/jasper-system-web.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-system-web.socket" \
-        "${SYSTEMD_DIR}/jasper-system-web.socket"
-    # /assistant/chat/ is an ASSISTANT surface, so it ships wherever the assistant
-    # wizards do. Same unit as the full tier: socket-activated, stdlib +
-    # SQLite in the shared venv, idle-exits after 30 min.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-chat-web.service" \
-        "${SYSTEMD_DIR}/jasper-chat-web.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-chat-web.socket" \
-        "${SYSTEMD_DIR}/jasper-chat-web.socket"
+install_web_unit_files() {
+    local web_unit="$1" unit source_unit extension
+    for unit in "${WIZARD_UNITS[@]}"; do
+        source_unit="${unit}"
+        if [[ "${unit}" == jasper-web ]]; then
+            source_unit="${web_unit}"
+        fi
+        for extension in service socket; do
+            install -m 0644 \
+                "${REPO_DIR}/deploy/${source_unit}.${extension}" \
+                "${SYSTEMD_DIR}/${unit}.${extension}"
+        done
+    done
 }
 
 # Renderer/DSP + assistant wizard ports; the assistant ones are bound
@@ -850,7 +829,7 @@ install_nginx_recovery_dropin() {
         "${SYSTEMD_DIR}/nginx.service.d/jts-recovery.conf"
 }
 
-install_streambox_audio_slices() {
+install_audio_slice_and_dropins() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jts-audio.slice" \
         "${SYSTEMD_DIR}/jts-audio.slice"
@@ -1471,12 +1450,12 @@ mask_distro_background_units() {
 }
 
 _stage_streambox_unit_files() {
-    install_streambox_web_unit_files
+    install_web_unit_files jasper-web-streambox
     install_resilience_identity_unit_files
     install_usbsink_unit_files
     install_grouping_unit_files
     install_renderer_source_unit_files
-    install_streambox_audio_slices
+    install_audio_slice_and_dropins
     install_hid_accessory_unit_files
     install_voice_unit_files
     install_audio_output_recovery_unit_files
@@ -1501,52 +1480,7 @@ _stage_full_unit_files() {
     # a non-root service in the shared `jasper` group cannot replace the proof.
     install -d -m 0755 -o root -g root /var/lib/jasper-enhanced-aec
     install_voice_unit_files
-    # The wizard daemons are SOCKET-ACTIVATED (each .service is paired
-    # with a .socket unit that holds the port and re-spawns the daemon
-    # on demand). systemd binds the listener; the daemon adopts the fd
-    # via LISTEN_FDS and exits after 10 min idle, saving ~60-90 MB Pss
-    # while no one is using a setup page. See jasper/platform/systemd.py.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-web.service" \
-        "${SYSTEMD_DIR}/jasper-web.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-web.socket" \
-        "${SYSTEMD_DIR}/jasper-web.socket"
-    # The /sound/ measurement pages. They pull in heavy deps
-    # (numpy / scipy / pyfar), so this lives in its own process
-    # rather than colocating with jasper-web (Spotify + voice settings).
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-correction-web.service" \
-        "${SYSTEMD_DIR}/jasper-correction-web.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-correction-web.socket" \
-        "${SYSTEMD_DIR}/jasper-correction-web.socket"
-    # /bluetooth/ control panel — generic BT scan/pair/forget for
-    # phones, knobs, headphones. Drives bluez via dbus-next; per-class
-    # post-pair behaviour lives in jasper/bluetooth/handlers/.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-bluetooth-web.service" \
-        "${SYSTEMD_DIR}/jasper-bluetooth-web.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-bluetooth-web.socket" \
-        "${SYSTEMD_DIR}/jasper-bluetooth-web.socket"
-    # /system/ dashboard — RAM/CPU/temp sparklines + restart/diagnostics
-    # actions. Socket-activated like the other wizards.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-system-web.service" \
-        "${SYSTEMD_DIR}/jasper-system-web.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-system-web.socket" \
-        "${SYSTEMD_DIR}/jasper-system-web.socket"
-    # /assistant/chat/ conversation-history dashboard. Read-only; socket-activated
-    # like /system/ so opening the history page does not keep a resident
-    # web process forever.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-chat-web.service" \
-        "${SYSTEMD_DIR}/jasper-chat-web.service"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/jasper-chat-web.socket" \
-        "${SYSTEMD_DIR}/jasper-chat-web.socket"
+    install_web_unit_files jasper-web
     install_hid_accessory_unit_files
     # AEC bridge + boot-time chip init + reconciler. The reconciler is
     # the policy layer that keeps JASPER_MIC_DEVICE, AEC services, and
@@ -1599,33 +1533,7 @@ _stage_full_unit_files() {
 
     install_renderer_source_unit_files
 
-    # sshd OOM-protection drop-in: Debian's openssh-server package
-    # ships ssh.service WITHOUT an OOMScoreAdjust= directive. JTS
-    # gives sshd a moderate negative bias so it remains a good recovery
-    # path, but keeps it killable because SSH-launched diagnostics
-    # inherit this value. Heavy Pi-side diagnostics should run through
-    # scripts/pi-run-diagnostic.sh. Operators on distros whose sshd
-    # unit is named differently (sshd.service on RHEL/Fedora) should
-    # rename. See the file's header comment.
-    install -d -m 0755 "${SYSTEMD_DIR}/ssh.service.d"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/ssh.service.d/oom-protection.conf" \
-        "${SYSTEMD_DIR}/ssh.service.d/oom-protection.conf"
-
-    # nginx recovery drop-in — full-profile parity with the streambox path
-    # (see install_nginx_recovery_dropin for the rationale).
-    install_nginx_recovery_dropin
-
-    # Stage 2 audio-protection slices: MemorySwapMax=0 on jts-audio.slice
-    # (camilla + shairport-sync + librespot + bluealsa-aplay) and
-    # jts-mic.slice (aec-bridge). Pages in these slices can NEVER be
-    # swapped to zram — direct fix for the 2026-05-24 stress test that
-    # caused audible audio glitches because aec-bridge accumulated 42 MB
-    # of VmSwap. Requires cgroup memory controller enabled in
-    # /boot/firmware/cmdline.txt (handled by migrate_cgroup_memory_enabled).
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/jts-audio.slice" \
-        "${SYSTEMD_DIR}/jts-audio.slice"
+    install_audio_slice_and_dropins
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jts-mic.slice" \
         "${SYSTEMD_DIR}/jts-mic.slice"
