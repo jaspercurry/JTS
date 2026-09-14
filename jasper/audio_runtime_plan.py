@@ -117,7 +117,6 @@ DEFAULT_USB_LOW_LATENCY_RESAMPLER_RING_FRAMES = 4096
 AUDIO_ROUTE_PROFILE_KEY = "JASPER_AUDIO_ROUTE_PROFILE"
 ROUTE_CORRECTED_48K = "corrected_48k"
 ROUTE_USB_LOW_LATENCY_48K = "usb_low_latency_48k"
-ROUTE_BITPERFECT_DECLARED = "bitperfect_passthrough_declared"
 USB_LOW_LATENCY_SOURCE_ID = "usbsink"
 ROUTE_CONFIG_HASH_SCHEMA_VERSION = 5
 UAC2_LOW_LATENCY_EXPECTED_ATTRS = {
@@ -171,7 +170,6 @@ _VALID_ROUTE_MODES = {
 _VALID_AUDIO_ROUTE_PROFILES = {
     ROUTE_CORRECTED_48K,
     ROUTE_USB_LOW_LATENCY_48K,
-    ROUTE_BITPERFECT_DECLARED,
 }
 
 
@@ -785,22 +783,6 @@ def resolve_audio_route_profile(
             low_latency_claim=True,
             fanin_usb_direct_required=True,
             fanin_input_resampler_required=True,
-            warnings=warnings,
-        )
-
-    if route_id == ROUTE_BITPERFECT_DECLARED:
-        return AudioRouteProfile(
-            route_id=route_id,
-            source_id=USB_LOW_LATENCY_SOURCE_ID,
-            fixed_sample_rate=0,
-            low_latency_claim=False,
-            fanin_usb_direct_required=False,
-            fanin_input_resampler_required=False,
-            active=False,
-            blocking_reason=(
-                "bit-perfect passthrough is declared but inactive; it must "
-                "prove passive/full-range safety before activation"
-            ),
             warnings=warnings,
         )
 

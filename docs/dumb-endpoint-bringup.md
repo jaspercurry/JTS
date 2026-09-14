@@ -104,11 +104,6 @@ minimal follower profile.
 
 The brainy JTS speaker remains the leader.
 
-The product multi-room path is still in progress. The Zero can be used
-now with [`scripts/multiroom-spike.sh`](../scripts/multiroom-spike.sh)
-to prove Snapcast, Wi-Fi, and DAC behavior before product audio is wired
-end-to-end.
-
 ## Role And Topology Axes
 
 The product shape is one JTS package with small install roles plus a
@@ -844,30 +839,6 @@ speaker-test -D plughw:1,0 -t sine -f 80 -c 2 -l 1
 
 Use a low level on headphones or the amp. Use a short low-level stereo
 test before connecting a power amp.
-
-## Run the multi-room spike
-
-From the laptop checkout, use the throwaway harness in
-[`scripts/multiroom-spike.sh`](../scripts/multiroom-spike.sh). It runs
-transient `jts-spike-*` systemd units and does not modify the product JTS
-audio path.
-
-For a Zero used as a third follower on cheap hardware:
-
-```sh
-bash scripts/multiroom-spike.sh --setup --endpoint jts4.local --apt-install
-bash scripts/multiroom-spike.sh --sweep
-bash scripts/multiroom-spike.sh --teardown
-```
-
-If mDNS is unreliable, use the IP:
-
-```sh
-bash scripts/multiroom-spike.sh --setup --endpoint 192.168.1.162 --apt-install
-```
-
-The spike bypasses CamillaDSP and the JTS volume/safety ceilings. Keep the
-amp or headphone level conservative and tear down the spike when finished.
 
 ## What product support still needs
 

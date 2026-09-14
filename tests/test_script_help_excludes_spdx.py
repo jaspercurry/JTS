@@ -25,18 +25,6 @@ _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 # (script, usage-trigger args, expected return code, deep documentation tokens).
 _CASES = [
     (
-        "multiroom-spike.sh",
-        ["--help"],
-        0,
-        ("HEARING-SAFETY / CONTENTION", "--teardown", "Follower/endpoint have no default"),
-    ),
-    (
-        "multiroom-spike.sh",
-        [],
-        2,
-        ("HEARING-SAFETY / CONTENTION", "--teardown", "Follower/endpoint have no default"),
-    ),
-    (
         "pi-run-diagnostic.sh",
         [],
         2,

@@ -36,7 +36,6 @@ restate either.
 | Diagnose a bridge / AEC issue forensically | [AEC / bridge forensics](#aec--bridge-forensics) |
 | Measure `usb_low_latency_48k`'s real p95/p99 route latency | [Route-latency click/capture harness](#route-latency-clickcapture-harness) |
 | Read the reverse `JTS Mic` emit→ALSA-write latency | [USB microphone export latency](#usb-microphone-export-latency) |
-| Measure inter-speaker sync error for multi-room on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
 | Check the DSP realizes a linearization as the fit says, offline | [Offline emit loop](#offline-emit-loop) |
 | Hold a field incident still in CI as a committed fixture | [Committed incident replay](#committed-incident-replay) |
 | Find what a measurement change actually moved, at value level | [Reading comparator (pre/post value diff)](#reading-comparator-prepost-value-diff) |
@@ -590,24 +589,6 @@ ssh pi@jts.local 'jq "{host_streaming, source_age_ms_p50, source_age_ms_p95, sou
 The scope is `bridge_emit_to_alsa_write` — **not** physical mic→host end-to-end
 latency. XVF/PortAudio capture time, gadget fill, USB transport and the host
 audio stack are separate terms.
-
----
-
-## Multi-room sync spike (P0)
-
-Feasibility harnesses, off the live JTS audio path, that clean up
-after themselves.
-
-| Tool | Methodology | When |
-|---|---|---|
-| [`scripts/multiroom-spike.sh`](../scripts/multiroom-spike.sh) | Laptop-side SSH harness (`--setup`/`--sweep`/`--record-chirp`/`--teardown`). Throwaway `snapserver` + `snapclient`s reading a hand-fed FIFO; sweeps buffer `{150,300,500,800,1200}` ms × codec `{pcm,flac,opus}`, optional `--netem` WiFi stress (`wlan0` only). Results in `multiroom-spike/` | Pick the buffer/codec that holds the p99 < 5 ms L/R bound on WiFi |
-| [`scripts/multiroom-spike-measure.py`](../scripts/multiroom-spike-measure.py) | Pure-stdlib analyzer: `software` (snapserver JSON-RPC latency spread), `acoustic` (single-mic cross-correlation of a click track — the authoritative comb-filtering check), `summarize` (PASS/FAIL + RAM/CPU + recommended cell) | Analyze a spike run |
-
-- **Safety — the P0 spike rows only:** `multiroom-spike.sh` plays through a
-  throwaway `snapclient`, **bypassing** CamillaDSP's `volume_limit: 0.0`
-  ceiling, and can contend with `jasper-outputd` for the DAC. Run it with the
-  JTS audio daemons stopped (or on bring-up hardware) and set a conservative
-  volume before the first sweep.
 
 ---
 

@@ -348,7 +348,6 @@ def test_an_explicit_host_override_resolves_when_nothing_else_names_a_target(
 # argv that reaches the speaker. They defer the refusal instead of taking it
 # at source time, so help stays readable on a checkout with no target set.
 _HELP_BEFORE_TARGET = (
-    ("multiroom-spike.sh", ["--help"], ["--teardown"]),
     ("pi-run-diagnostic.sh", ["--help"], ["--", "true"]),
 )
 
