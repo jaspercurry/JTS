@@ -226,6 +226,26 @@ def test_migrate_wifi_guardian_skips_enterprise(tmp_path):
     assert not (tmp_path / "state" / "wifi_guardian.env").exists()
 
 
+def test_migrate_wifi_guardian_unescapes_colon_in_profile_name(tmp_path):
+    """nmcli terse output escapes a literal ':' in a field as '\\:'. A
+    NAME containing one (e.g. "Kitchen:Office") must still be matched
+    against TYPE and recovered verbatim, not silently no-op or leave
+    the SSID with a stray backslash."""
+    proc = _run_migrate(
+        tmp_path,
+        active=r"Kitchen\:Office:802-11-wireless" + "\n",
+        secrets=(
+            r"802-11-wireless.ssid:Kitchen\:Office" + "\n"
+            "802-11-wireless-security.psk:homepsk\n"
+            "802-11-wireless-security.key-mgmt:wpa-psk\n"
+        ),
+    )
+    assert proc.returncode == 0, proc.stderr
+    fields = _stash_lines(tmp_path)
+    assert fields["JASPER_WIFI_SSID"] == "Kitchen:Office"
+    assert fields["JASPER_WIFI_PSK"] == "homepsk"
+
+
 def test_migrate_wifi_guardian_psk_not_in_stdout(tmp_path):
     """The success log line must not include the PSK — install.sh
     output streams to journalctl during deploy and ends up in the
