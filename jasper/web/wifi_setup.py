@@ -1018,9 +1018,10 @@ def connect_new(
     prev = _current_wifi()
     prev_profile = prev["profileName"] if prev else None
     existed_before = _profile_exists(ssid)
+    stdin_secret = password or None
 
     cmd = _connect_wifi_command(ssid, password, hidden=hidden)
-    proc = _run_nmcli(cmd, timeout=_CONNECT_TIMEOUT, stdin_secret=password or None)
+    proc = _run_nmcli(cmd, timeout=_CONNECT_TIMEOUT, stdin_secret=stdin_secret)
     err = _readable_nmcli_error(proc, password)
 
     # Manual entry has two useful recovery modes:
@@ -1036,7 +1037,7 @@ def connect_new(
     ):
         hidden_cmd = _connect_wifi_command(ssid, password, hidden=True)
         hidden_proc = _run_nmcli(
-            hidden_cmd, timeout=_CONNECT_TIMEOUT, stdin_secret=password or None,
+            hidden_cmd, timeout=_CONNECT_TIMEOUT, stdin_secret=stdin_secret,
         )
         if hidden_proc.returncode == 0:
             proc = hidden_proc
