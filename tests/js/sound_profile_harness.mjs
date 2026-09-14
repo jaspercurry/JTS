@@ -483,12 +483,11 @@ function levelPayload(value) {
 function commissioningSteps(currentStep, statuses = {}) {
   const labels = {
     layout: "Choose speaker layout",
-    research: "Add your components",
-    map: "Confirm outputs",
-    safety: "Test combined drivers",
-    profile: "Validate and apply",
+    research: "Confirm driver safety profile",
+    experiment: "First speaker experiment",
+    profile: "Apply speaker profile",
   };
-  return ["layout", "research", "map", "safety", "profile"].map((id) => ({
+  return ["layout", "research", "experiment", "profile"].map((id) => ({
     id,
     label: labels[id],
     status: statuses[id] || (id === currentStep ? "active" : "todo"),
@@ -561,12 +560,11 @@ function confirmedActiveTwoWayTopology() {
 
 function profileCommissioningView(overrides = {}) {
   return commissioningViewPayload({
-    current_step: "safety",
+    current_step: "experiment",
     stepStatuses: {
       layout: "done",
       research: "done",
-      map: "done",
-      safety: "active",
+      experiment: "active",
       profile: "todo",
     },
     status: "needs_combined_check",
@@ -795,7 +793,7 @@ function baseFetch(overrides = {}) {
       return Promise.resolve(response(commissioningViewPayload({
         status: "needs_layout",
         current_step: "layout",
-        stepStatuses: { layout: "active", research: "todo", map: "todo", safety: "todo", profile: "todo" },
+        stepStatuses: { layout: "active", research: "todo", experiment: "todo", profile: "todo" },
         driver_values: {
           status: "not_saved",
           complete: false,
@@ -847,14 +845,6 @@ async function loadAndSetActiveState(harness) {
   await harness.flush();
 }
 
-function assertQuietTestSurfaceVisible(harness, label) {
-  const html = harness.elements.get("view-body").innerHTML;
-  for (const expected of ["Test combined drivers"]) {
-    if (!html.includes(expected)) {
-      fail(`${label} should keep the combined-test surface visible`, { expected, html });
-    }
-  }
-}
 
 async function testLiveTabReplay() {
   const applyRequests = [];
@@ -1447,27 +1437,6 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
   return { splitPageModesRenderAndBootOnlyOwnedSurfaces: true };
 }
 
-async function testQuietTestSurfaceSurvivesStartupActions() {
-  const fetchHandler = baseFetch();
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-  assertQuietTestSurfaceVisible(harness, "initial refresh");
-
-  const html = harness.elements.get("view-body").innerHTML;
-  for (const forbidden of [
-    "data-act=\"check-active-path-safety\"",
-    "data-act=\"load-active-startup\"",
-    "data-act=\"stage-active-config\"",
-    "Check path safety",
-    "Continue setup",
-  ]) {
-    if (html.includes(forbidden)) {
-      fail("Driver measurement flow should not expose internal startup actions", { forbidden, html });
-    }
-  }
-
-  return { quietTestSurfacePreserved: true };
-}
 
 async function testPassiveLayoutsDoNotExposeDirectDriverTestFlow() {
   const fetchHandler = baseFetch();
@@ -1523,7 +1492,7 @@ async function testActiveCrossoverFirstStepRender() {
   };
   includes("Active crossover setup");
   includes("Choose speaker layout");
-  includes("Add your components");
+  includes("Confirm driver safety profile");
   includes("Component setup");
   includes("Research your components");
   includes("Load information");
@@ -1537,13 +1506,12 @@ async function testActiveCrossoverFirstStepRender() {
   includes("Speaker type");
   includes('data-output-step="layout" open');
   includes('data-output-step="research"');
-  includes('data-output-step="map"');
-  includes('data-output-step="safety"');
+  excludes('data-output-step="map"');
+  includes('data-output-step="experiment"');
   includes('data-output-step="profile"');
   excludes('data-output-step="research" open');
   excludes("Installed configuration");
-  excludes('data-output-step="map" open');
-  excludes('data-output-step="safety" open');
+  excludes('data-output-step="experiment" open');
   excludes('data-output-step="profile" open');
   excludes("Save output map");
   excludes("Check readiness");
@@ -1777,110 +1745,24 @@ async function testOneDriverComponentCanPrepareResearchPrompt() {
 // instead of a titled-but-empty combined-test card, a "0/1 heard" pill styled
 // ready, and a profile card asking for a combined check that cannot run.
 async function testSublessPassiveLayoutRendersATerminatedLadder() {
-  const passiveTopology = topologyPayload();
-  passiveTopology.channel_identity = {
-    kind: "jts_output_channel_identity_report",
-    status: "verified",
-    assigned_channel_count: 1,
-    verified_channel_count: 1,
-    unverified_channel_count: 0,
-    targets: [{
-      id: "main:full_range",
-      speaker_group_id: "main",
-      speaker_label: "Main speaker",
-      role: "full_range",
-      assigned: true,
-      identity_verified: true,
-    }],
-  };
   const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: passiveTopology,
-      channel_identity: passiveTopology.channel_identity,
+    "./output-topology": () => Promise.resolve(response(dongleMonoTopologyPayload())),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response({
+      status: "not_required", current_step: "layout",
+      steps: ["layout", "research", "experiment", "profile"].map(id => ({
+        id, status: id === "layout" ? "done" : "not_required",
+      })),
     })),
-    "./active-speaker/commissioning-view": () => Promise.resolve(response(
-      commissioningViewPayload({
-        status: "not_required",
-        current_step: "map",
-        stepStatuses: {
-          layout: "done",
-          research: "done",
-          map: "done",
-          safety: "not_required",
-          profile: "not_required",
-        },
-        steps: [
-          {id: "layout", label: "Choose speaker layout", status: "done",
-            message: "Speaker layout is saved."},
-          {id: "research", label: "Add your components", status: "done",
-            message: "No active crossover values are needed for this layout."},
-          {id: "map", label: "Confirm outputs", status: "done",
-            message: "All assigned outputs are confirmed. This layout needs no " +
-              "separate driver listening checks."},
-          {id: "safety", label: "Test combined drivers", status: "not_required",
-            message: "No combined driver test applies to this layout."},
-          {id: "profile", label: "Validate and apply", status: "not_required",
-            message: "No active speaker profile is needed for this layout."},
-        ],
-        driver_target_proof: {
-          complete: true, source: "not_required", captured: 0, required: 0,
-        },
-        output_identity: {
-          assigned_channel_count: 1, unverified_channel_count: 0, complete: true,
-        },
-        next_action: {id: "setup_complete", label: "Setup complete", enabled: false},
-      })
-    )),
   });
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
-
   const html = harness.elements.get("view-body").innerHTML;
-  for (const expected of [
-    'data-output-step="safety"',
-    'data-output-step="profile"',
-    "No combined driver test applies to this layout.",
-    "No active speaker profile is needed for this layout.",
-    "Speaker setup is complete once every output is confirmed.",
-    // The pill reports the confirmation that actually happened.
-    "1/1 confirmed",
-    "Every output is confirmed. This speaker needs no separate driver checks.",
-  ]) {
-    if (!html.includes(expected)) {
-      fail("A subless passive layout must render a terminated ladder", { expected, html });
-    }
+  for (const id of ["map", "safety"]) {
+    if (html.includes('data-output-step="' + id + '"')) fail("retired step", {id});
   }
-  for (const forbidden of [
-    "0/1 heard",
-    "Continue to the combined test",
-    'data-act="prepare-summed-test"',
-    'data-act="save-apply-baseline-profile"',
-    "Finish the combined crossover check before saving the active profile.",
-  ]) {
-    if (html.includes(forbidden)) {
-      fail("A subless passive layout must not offer active-crossover work",
-        { forbidden, html });
-    }
-  }
-  // No step may render a title over an empty body.
-  const emptyBody = html.match(/<div class="output-step__body"><\/div>/);
-  if (emptyBody) fail("A step card must never render an empty body", { html });
-  // Pin the BODY of each terminated step, not just the page. The step summary
-  // carries the same backend message, and both cards carry the same closing
-  // sentence, so a page-wide `includes` is satisfied even if one card falls
-  // back to the generic no-groups backstop.
-  for (const step of ["safety", "profile"]) {
-    const body = outputStepBodyHtml(html, step);
-    if (!body || !body.includes("Not needed for this speaker") ||
-        !body.includes("Speaker setup is complete once every output is confirmed.")) {
-      fail("A terminated step must render the not-needed card in its own body",
-        { step, body });
-    }
-    if (body.includes("No combined test available")) {
-      fail("A terminated step must not fall back to the no-groups backstop",
-        { step, body });
-    }
-  }
+  if (html.includes('data-act="prepare-summed-test"') ||
+      html.includes('data-act="save-apply-baseline-profile"') ||
+      html.includes('href="/sound/speaker/crossover/"')) fail("passive experiment action", {});
   return { sublessPassiveLayoutRendersATerminatedLadder: true };
 }
 
@@ -1889,58 +1771,6 @@ async function testSublessPassiveLayoutRendersATerminatedLadder() {
 // a degenerate 1-way bass-management profile, so the backend does NOT terminate
 // it) while activeOutputGroups yields nothing to test together. That is the
 // shape that used to render a step title over an empty body.
-async function testPassiveMainWithSubRendersAnExplainedCombinedStep() {
-  const withSub = passiveWithSubwooferTopologyPayload();
-  withSub.channel_identity = {
-    kind: "jts_output_channel_identity_report",
-    status: "verified",
-    assigned_channel_count: 2,
-    verified_channel_count: 2,
-    unverified_channel_count: 0,
-    targets: [],
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: withSub,
-      channel_identity: withSub.channel_identity,
-    })),
-    "./active-speaker/commissioning-view": () => Promise.resolve(response(
-      commissioningViewPayload({
-        status: "needs_combined_check",
-        current_step: "safety",
-        stepStatuses: {
-          layout: "done", research: "done", map: "done",
-          safety: "active", profile: "todo",
-        },
-        driver_target_proof: {
-          complete: true, source: "not_required", captured: 0, required: 0,
-        },
-        output_identity: {
-          assigned_channel_count: 2, unverified_channel_count: 0, complete: true,
-        },
-      })
-    )),
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  const html = harness.elements.get("view-body").innerHTML;
-  const body = outputStepBodyHtml(html, "safety");
-  if (body === null) fail("The combined-test step must render", { html });
-  // Non-empty means "a card was rendered", not "the slice has closing tags".
-  if (!body.includes('<div class="output-card')) {
-    fail("A live step with no testable group must still explain itself",
-      { body, html });
-  }
-  if (!body.includes("No combined test available")) {
-    fail("The no-groups backstop copy must reach the combined-test step body",
-      { body });
-  }
-  if (html.match(/<div class="output-step__body"><\/div>/)) {
-    fail("A step card must never render an empty body", { html });
-  }
-  return { passiveMainWithSubRendersAnExplainedCombinedStep: true };
-}
 
 // The commissioning view an active 2-way reports while its saved crossover
 // preview is stale for the freshly-drawn layout: outputs and drivers already
@@ -1951,8 +1781,8 @@ function staleValuesCommissioningView(groupOverrides = {}) {
     status: "needs_driver_values",
     current_step: "research",
     stepStatuses: {
-      layout: "done", research: "active", map: "todo",
-      safety: "todo", profile: "todo",
+      layout: "done", research: "active",
+      experiment: "todo", profile: "todo",
     },
     driver_values: {
       status: "needs_preview",
@@ -1972,7 +1802,7 @@ function staleValuesCommissioningView(groupOverrides = {}) {
       status: "blocked",
       status_label: "after setup",
       // Verbatim from the coordinator's _waiting_message for this state.
-      message: "Finish Add your components first, then test the combined speaker.",
+      message: "Finish Confirm driver safety profile first, then test the combined speaker.",
       failure_message: "",
       failure_code: "",
       has_audible_test: false,
@@ -2004,133 +1834,11 @@ function staleValuesCommissioningView(groupOverrides = {}) {
 // used to re-derive readiness from driver-proof alone, so it invited "play the
 // combined speaker" in the ready voice while rendering a disabled button —
 // the mixed signal that preceded the jts5 stuck state.
-async function testCombinedTestCardAgreesWithItsDisabledButton() {
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(
-      activeTwoWayTopologyPayload()
-    )),
-    "./active-speaker/commissioning-view": () => Promise.resolve(response(
-      staleValuesCommissioningView()
-    )),
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  const html = harness.elements.get("view-body").innerHTML;
-  const body = outputStepBodyHtml(html, "safety");
-  if (body === null) fail("The combined-test step must render", { html });
-  if (!/data-act="prepare-summed-test"[^>]*disabled/.test(body) &&
-      !/disabled[^>]*data-act="prepare-summed-test"/.test(body)) {
-    fail("A gated combined test must render a disabled Play button", { body });
-  }
-  for (const invitation of [
-    "Choose a careful level, play the combined speaker",
-    "Confirm outputs first, then validate the combined crossover",
-  ]) {
-    if (body.includes(invitation)) {
-      fail("A gated combined-test card must not advertise the test as ready",
-        { invitation, body });
-    }
-  }
-  if (!body.includes("Finish Add your components first")) {
-    fail("The card must carry the backend's reason for the gate", { body });
-  }
-  return { combinedTestCardAgreesWithItsDisabledButton: true };
-}
 
 // A combined test that returns 200 with blockers (the graph refused to stage)
 // must tell the household what to do next. The old banner said "Review the
 // message in this card" — and the card it pointed at is a step card the ladder
 // can legitimately keep closed, so the household had nowhere to look.
-async function testFailedCombinedTestBannerCarriesTheRemedy() {
-  // Verbatim from the coordinator's mapped copy for this blocker family.
-  const remedy = "JTS could not prepare the crossover setup for this layout. " +
-    "Go back to Add your components, run the preview, then retry the combined " +
-    "test.";
-  let posted = false;
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(
-      activeTwoWayTopologyPayload()
-    )),
-    "./active-speaker/commissioning-view": () => Promise.resolve(response(
-      posted
-        ? staleValuesCommissioningView({
-            status: "test_failed",
-            status_label: "not tested",
-            message: remedy,
-            failure_message: remedy,
-          })
-        : commissioningViewPayload({
-            status: "needs_combined_check",
-            current_step: "safety",
-            stepStatuses: {
-              layout: "done", research: "done", map: "done",
-              safety: "active", profile: "todo",
-            },
-            driver_target_proof: {
-              complete: true, source: "measurements", captured: 2, required: 2,
-            },
-            combined_groups: [{
-              group_id: "main",
-              label: "Main speaker",
-              status: "ready_to_test",
-              status_label: "next",
-              message: "Run the combined speaker test.",
-              failure_message: "",
-              test_level: levelPayload(-72).test_signal,
-              actions: {
-                start_combined_test: {
-                  id: "start_combined_test",
-                  label: "Play combined test",
-                  enabled: true,
-                  endpoint: "./active-speaker/summed-test",
-                  body: {
-                    speaker_group_id: "main", audio: true, stimulus: "speech",
-                    duration_ms: 12000,
-                  },
-                },
-              },
-            }],
-          })
-    )),
-    "./active-speaker/summed-test": () => {
-      posted = true;
-      return Promise.resolve(response({
-        playback: {
-          status: "failed",
-          playback_id: "sum-fail-1",
-          audio_emitted: false,
-          confirmable: false,
-          issues: [{
-            severity: "blocker",
-            code: "commission_startup_anchor_not_staged",
-            message: "could not stage the silent active-speaker setup before " +
-              "driver testing",
-          }],
-        },
-      }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  harness.dispatchClick({
-    "data-act": "prepare-summed-test",
-    "data-group-id": "main",
-    "data-label": "Main speaker",
-  });
-  for (let i = 0; i < 8; i += 1) await harness.flush();
-
-  const statusText = harness.elements.get("status").textContent;
-  if (statusText.includes("Review the message in this card")) {
-    fail("A failed combined test must not point at a card for the reason",
-      { statusText });
-  }
-  if (!statusText.includes("Add your components")) {
-    fail("The failure banner must carry the backend remedy", { statusText });
-  }
-  return { failedCombinedTestBannerCarriesTheRemedy: true };
-}
 
 async function testPassiveMainWithSubUsesResearchableMainTargetOnly() {
   const researchPosts = [];
@@ -2529,93 +2237,6 @@ async function testActiveRouteLimitsRenderedTemplates() {
   return { activeRouteLimitsRenderedTemplates: true };
 }
 
-async function testMeasuredDriversOpenProfileStep() {
-  const confirmedTopology = confirmedActiveTwoWayTopology();
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: confirmedTopology,
-      channel_identity: confirmedTopology.channel_identity,
-    })),
-    "./active-speaker/measurements": () => Promise.resolve(response({
-      status: "needs_summed_validation",
-      summary: summedSummary({
-          main: {
-            captured: false,
-            audio_emitted: false,
-            issues: [{
-              severity: "blocker",
-              code: "summed_commission_load_failed",
-              message: "could not open the combined active-speaker test path",
-            }],
-          },
-        }),
-      permissions: { may_compile_baseline: false },
-      issues: [],
-    })),
-    "./active-speaker/design-draft": () => Promise.resolve(response({
-      status: "ready_for_review",
-      summary: { missing_driver_info_roles: [], missing_crossover_candidate_pairs: [] },
-      operator_inputs: {},
-    })),
-    "./active-speaker/crossover-preview": () => Promise.resolve(response({
-      kind: "jts_active_speaker_crossover_preview",
-      status: "ready_for_protected_staging",
-      permissions: { may_prepare_protected_startup_config: true },
-      issues: [],
-    })),
-    "./active-speaker/commissioning-view": () => Promise.resolve(response(profileCommissioningView({
-      status: "needs_combined_check",
-      test_level: levelPayload(-80).test_signal,
-      combined_groups: [{
-        group_id: "main",
-        label: "Main speaker",
-        status: "test_failed",
-        status_label: "not tested",
-        message: "JTS could not open the quiet combined-test path. Press Play combined test to retry.",
-        failure_message: "JTS could not open the quiet combined-test path. Press Play combined test to retry.",
-        actions: {
-          start_combined_test: {
-            id: "start_combined_test",
-            label: "Play combined test",
-            enabled: true,
-            endpoint: "./active-speaker/summed-test",
-            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
-          },
-          record_combined_result: {
-            id: "record_combined_result",
-            label: "Record combined check",
-            enabled: false,
-            endpoint: "./active-speaker/summed-validation",
-            body: { speaker_group_id: "main", summed_test_id: "" },
-          },
-        },
-      }],
-    }))),
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  const html = harness.elements.get("view-body").innerHTML;
-  for (const expected of [
-    'data-output-step="safety" open',
-    "Test combined drivers",
-    "Combined crossover check",
-    "JTS could not open the quiet combined-test path. Press Play combined test to retry.",
-    "Sounds right",
-    "Back to adjust crossover",
-  ]) {
-    if (!html.includes(expected)) {
-      fail("Completed driver proof should advance to the combined-test card", { expected, html });
-    }
-  }
-  if (html.includes("could not open the combined active-speaker test path")) {
-    fail("Combined-test implementation internals should not be the primary recovery copy", { html });
-  }
-  if (html.includes('data-output-step="profile" open')) {
-    fail("Completed driver proof should not skip the combined-test card", { html });
-  }
-  return { measuredDriversOpenCombinedStep: true };
-}
 
 async function testAppliedProfileEditContinueOpensProfileStep() {
   const confirmedTopology = activeTwoWayTopologyPayload();
@@ -2707,16 +2328,16 @@ async function testAppliedProfileEditContinueOpensProfileStep() {
   await loadAndSetActiveState(harness);
 
   const initialHtml = harness.elements.get("view-body").innerHTML;
-  if (!initialHtml.includes('data-output-step="safety" open')) {
+  if (!initialHtml.includes('data-output-step="experiment" open')) {
     fail("applied-profile edit should open the combined-test card", {
       initialHtml,
     });
   }
 
-  harness.dispatchClick({ "data-act": "output-step-next", "data-step": "safety" });
+  harness.dispatchClick({ "data-act": "output-step-next", "data-step": "experiment" });
   await harness.flush();
   const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes('data-output-step="safety" open')) {
+  if (!html.includes('data-output-step="experiment" open')) {
     fail("combined-test Continue should stay put until validation is saved", {
       html,
       status: harness.elements.get("status").textContent,
@@ -2725,657 +2346,6 @@ async function testAppliedProfileEditContinueOpensProfileStep() {
   return { appliedProfileEditOpensCombinedStep: true };
 }
 
-async function testCombinedTestLevelPostsSelectedBoundedLevel() {
-  const confirmedTopology = activeTwoWayTopologyPayload();
-  confirmedTopology.channel_identity = {
-    kind: "jts_output_channel_identity_report",
-    status: "verified",
-    assigned_channel_count: 2,
-    verified_channel_count: 2,
-    unverified_channel_count: 0,
-    targets: [],
-  };
-  const posts = [];
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: confirmedTopology,
-      channel_identity: confirmedTopology.channel_identity,
-    })),
-    "./active-speaker/measurements": () => Promise.resolve(response({
-      status: "needs_summed_validation",
-      summary: summedSummary({}),
-      permissions: { may_compile_baseline: false },
-      issues: [],
-    })),
-    "./active-speaker/commissioning-view": () => Promise.resolve(response({
-      status: "needs_combined_check",
-      test_level: {
-        requested_level_dbfs: -72,
-        min_level_dbfs: -80,
-        max_level_dbfs: 0,
-        step_db: 1,
-        upward_step_limit_db: 6,
-      },
-      combined_groups: [{
-        group_id: "main",
-        label: "Main speaker",
-        status: "ready_to_test",
-        status_label: "next",
-        message: "Run the combined speaker test.",
-        actions: {
-          start_combined_test: {
-            id: "start_combined_test",
-            label: "Play combined test",
-            enabled: true,
-            endpoint: "./active-speaker/summed-test",
-            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
-          },
-          record_combined_result: {
-            id: "record_combined_result",
-            label: "Record combined check",
-            enabled: false,
-            endpoint: "./active-speaker/summed-validation",
-            body: { speaker_group_id: "main", summed_test_id: "" },
-          },
-        },
-      }],
-    })),
-    "./active-speaker/summed-test": (_path, options = {}) => {
-      const body = JSON.parse(options.body || "{}");
-      posts.push(body);
-      return Promise.resolve(response({
-        playback: {
-          status: "completed",
-          audio_emitted: true,
-          confirmable: true,
-          tone: { level_dbfs: body.level_dbfs },
-        },
-        calibration_level: levelPayload(body.level_dbfs),
-        measurements: {
-          status: "needs_summed_validation",
-          summary: {
-            driver_measurements_complete: true,
-            summed_validation_complete: false,
-            latest_summed_tests: {
-              main: {
-                captured: true,
-                audio_emitted: true,
-                summed_test_id: "summed-playback-1",
-                issues: [],
-              },
-            },
-            latest_summed_validations: {},
-          },
-        },
-      }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  let html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("Combined test level") || !html.includes('min="-80"') || !html.includes('max="0"')) {
-    fail("Combined card should expose the full commissioning level envelope", { html });
-  }
-  harness.dispatchInput({ "data-summed-test-level": "main" }, "-40");
-  harness.dispatchClick({
-    "data-act": "prepare-summed-test",
-    "data-group-id": "main",
-    "data-label": "Main speaker",
-  });
-  for (let i = 0; i < 8; i += 1) await harness.flush();
-
-  if (posts.length !== 1) {
-    fail("Playing the combined test should POST once", { posts });
-  }
-  if (posts[0].level_dbfs !== -40) {
-    fail("Combined test should POST the selected level inside the envelope", { posts });
-  }
-  if (posts[0].stimulus !== "speech" || posts[0].duration_ms !== 12000) {
-    fail("Combined test should request the looped speech stimulus", { posts });
-  }
-  return { combinedTestLevelPostsSelectedBoundedLevel: true };
-}
-
-async function testCombinedTestFailureRestoresActionAndShowsError() {
-  const failureMessage = "combined output unavailable";
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/measurements": () => Promise.resolve(response({
-      status: "needs_summed_validation",
-      summary: {
-        driver_measurements_complete: true,
-        summed_validation_complete: false,
-        latest_driver_measurements: {
-          "main:woofer": { captured: true, outcome: "heard_correct_driver" },
-          "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
-        },
-        latest_summed_tests: {},
-        latest_summed_validations: {},
-      },
-      permissions: {},
-      issues: [],
-    })),
-    "./active-speaker/commissioning-view": () => Promise.resolve(response({
-      status: "needs_combined_check",
-      test_level: {
-        requested_level_dbfs: -72,
-        min_level_dbfs: -80,
-        max_level_dbfs: 0,
-        step_db: 1,
-      },
-      combined_groups: [{
-        group_id: "main",
-        label: "Main speaker",
-        status: "ready_to_test",
-        status_label: "next",
-        message: "Run the combined speaker test.",
-        actions: {
-          start_combined_test: {
-            id: "start_combined_test",
-            label: "Play combined test",
-            enabled: true,
-            endpoint: "./active-speaker/summed-test",
-            body: {
-              speaker_group_id: "main",
-              audio: true,
-              stimulus: "speech",
-              duration_ms: 12000,
-            },
-          },
-        },
-      }],
-    })),
-    "./active-speaker/summed-test": () => Promise.resolve(response({
-      error: failureMessage,
-    }, false, 503)),
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  harness.dispatchClick({
-    "data-act": "prepare-summed-test",
-    "data-group-id": "main",
-    "data-label": "Main speaker",
-  });
-  for (let i = 0; i < 6; i += 1) await harness.flush();
-
-  const html = harness.elements.get("view-body").innerHTML;
-  const statusEl = harness.elements.get("status");
-  if (!html.includes('data-act="prepare-summed-test"') ||
-      html.includes('data-act="stop-summed-test"')) {
-    fail("a failed combined test should restore the Play action", { html });
-  }
-  const expectedStatus = `Could not start the combined speaker test: ${failureMessage}`;
-  if (statusEl.textContent !== expectedStatus || !statusEl.className.includes("err")) {
-    fail("a failed combined test should show the specific error", {
-      expectedStatus,
-      status: statusEl.textContent,
-      className: statusEl.className,
-    });
-  }
-  return { combinedTestFailureRestoresActionAndShowsError: true };
-}
-
-async function testCombinedTestButtonStopsActiveRequest() {
-  const start = deferred();
-  const stopPosts = [];
-  const levelPosts = [];
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/measurements": () => Promise.resolve(response({
-      status: "needs_summed_validation",
-      summary: {
-        driver_measurements_complete: true,
-        validated_summed_group_count: 0,
-        summed_validation_complete: false,
-        latest_driver_measurements: {
-          "main:woofer": { captured: true, outcome: "heard_correct_driver" },
-          "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
-        },
-        latest_summed_tests: {
-          main: {
-            captured: false,
-            audio_emitted: false,
-            summed_test_id: "summed-playback-stale",
-            playback_id: "summed-playback-stale",
-            issues: [{
-              severity: "blocker",
-              code: "summed_test_playback_incomplete",
-              message: "combined test did not complete",
-            }],
-          },
-        },
-        latest_summed_validations: {},
-      },
-      permissions: {},
-      issues: [],
-    })),
-    "./active-speaker/commissioning-view": () => Promise.resolve(response({
-      status: "needs_combined_check",
-      test_level: {
-        requested_level_dbfs: -72,
-        min_level_dbfs: -80,
-        max_level_dbfs: 0,
-        step_db: 1,
-      },
-      combined_groups: [{
-        group_id: "main",
-        label: "Main speaker",
-        status: "test_failed",
-        status_label: "not tested",
-        message: "The combined test did not finish. Press Play combined test to retry.",
-        failure_message: "The combined test did not finish. Press Play combined test to retry.",
-        latest_test_id: "summed-playback-stale",
-        has_audible_test: false,
-        actions: {
-          start_combined_test: {
-            id: "start_combined_test",
-            label: "Play combined test",
-            enabled: true,
-            endpoint: "./active-speaker/summed-test",
-            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
-          },
-        },
-      }],
-    })),
-    "./active-speaker/summed-test": () => start.promise,
-    "./active-speaker/summed-test/level": (_path, options = {}) => {
-      const body = JSON.parse(options.body || "{}");
-      levelPosts.push(body);
-      return Promise.resolve(response({
-        status: "loaded",
-        speaker_group_id: body.speaker_group_id,
-        playback_id: "summed-playback-1",
-        calibration_level: levelPayload(body.level_dbfs),
-        commissioning_load: { load: { status: "loaded" } },
-      }));
-    },
-    "./active-speaker/summed-test/stop": (_path, options = {}) => {
-      stopPosts.push(JSON.parse(options.body || "{}"));
-      return Promise.resolve(response({ status: "stopped", reason: "operator_stop" }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  const originalSetTimeout = globalThis.window.setTimeout;
-  globalThis.window.setTimeout = (fn, ms) => {
-    if (ms === 250 || ms === 120) {
-      queueMicrotask(fn);
-      return 1;
-    }
-    return originalSetTimeout(fn, ms);
-  };
-  try {
-    harness.dispatchClick({
-      "data-act": "prepare-summed-test",
-      "data-group-id": "main",
-      "data-label": "Main speaker",
-    });
-    await harness.flush(); await harness.flush(); await harness.flush();
-    let html = harness.elements.get("view-body").innerHTML;
-    if (!html.includes('data-act="stop-summed-test"') || !html.includes("btn--danger")) {
-      fail("combined test should turn into a fixed red Stop action while active", { html });
-    }
-    const slider = html.match(/<input type="range" data-summed-test-level="main"[^>]*>/);
-    if (!slider || slider[0].includes("disabled") ||
-        html.includes("Stop and replay the test audio to use a different level.") ||
-        !html.includes("Changes apply while the test audio is playing.")) {
-      fail("combined level slider should stay live while test audio is playing", { html, slider });
-    }
-    const soundsRight = html.match(/<button type="button" class="btn btn--primary" [^>]*data-act="record-summed-validation"[^>]*>Sounds right<\/button>/);
-    if (!soundsRight || soundsRight[0].includes("disabled")) {
-      fail("Sounds right should stay available while test audio is playing", { html, soundsRight });
-    }
-    harness.dispatchInput({ "data-summed-test-level": "main" }, "-35");
-    await harness.flush(); await harness.flush(); await harness.flush();
-    if (levelPosts.length !== 1 || levelPosts[0].level_dbfs !== -35) {
-      fail("dragging the combined slider while playing should update the active test level", { levelPosts });
-    }
-    harness.dispatchClick({ "data-act": "stop-summed-test", "data-group-id": "main" });
-    await harness.flush(); await harness.flush(); await harness.flush();
-  } finally {
-    globalThis.window.setTimeout = originalSetTimeout;
-  }
-  if (stopPosts.length !== 1 || stopPosts[0].reason !== "operator_stop") {
-    fail("Stop should post to the combined-test stop endpoint once", { stopPosts });
-  }
-  start.resolve(response({
-    playback: { status: "stopped", audio_emitted: false, confirmable: false },
-    calibration_level: levelPayload(-40),
-    measurements: { status: "needs_summed_validation", summary: {} },
-  }));
-  await harness.flush(); await harness.flush();
-  return { combinedTestButtonStopsActiveRequest: true };
-}
-
-async function testReloadedPageRendersReloadSafeStopForActiveTest() {
-  // Regression for the jts3 2026-07-06 incident: a combined test kept looping
-  // ("Like and subscribe to Jasper tech") but a reloaded /sound/ page showed
-  // "Play combined test" with no way to stop it. The fix surfaces the live
-  // session on the commissioning view (summed_test_active) so any page load can
-  // render Stop — even a tab that never clicked Play.
-  const stopPosts = [];
-  let testActive = true;
-  const commissioningView = () => response({
-    status: "needs_combined_check",
-    test_level: {
-      requested_level_dbfs: -72,
-      min_level_dbfs: -80,
-      max_level_dbfs: 0,
-      step_db: 1,
-    },
-    active_summed_test: testActive
-      ? {
-          active: true,
-          speaker_group_id: "main",
-          playback_id: "summed-playback-1",
-          level_dbfs: -30,
-        }
-      : { active: false },
-    combined_groups: [{
-      group_id: "main",
-      label: "Main speaker",
-      status: "ready_to_test",
-      status_label: testActive ? "playing" : "next",
-      message: "Run the combined speaker test.",
-      summed_test_active: testActive,
-      actions: {
-        start_combined_test: {
-          id: "start_combined_test",
-          label: "Play combined test",
-          enabled: true,
-          endpoint: "./active-speaker/summed-test",
-          body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
-        },
-      },
-    }],
-  });
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/measurements": () => Promise.resolve(response({
-      status: "needs_summed_validation",
-      summary: {
-        driver_measurements_complete: true,
-        validated_summed_group_count: 0,
-        summed_validation_complete: false,
-        latest_driver_measurements: {
-          "main:woofer": { captured: true, outcome: "heard_correct_driver" },
-          "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
-        },
-        latest_summed_tests: {},
-        latest_summed_validations: {},
-      },
-      permissions: {},
-      issues: [],
-    })),
-    "./active-speaker/commissioning-view": () => Promise.resolve(commissioningView()),
-    "./active-speaker/summed-test/stop": (_path, options = {}) => {
-      stopPosts.push(JSON.parse(options.body || "{}"));
-      testActive = false;
-      return Promise.resolve(response({ status: "stopped", reason: "operator_stop" }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  // Fresh page load only — this tab NEVER clicked "Play combined test", so the
-  // Stop control must come purely from the server's summed_test_active flag.
-  await loadAndSetActiveState(harness);
-
-  let html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes('data-act="stop-summed-test"') || !html.includes("btn--danger")) {
-    fail("a reloaded page with a live combined test should render Stop", { html });
-  }
-  if (html.includes('data-act="prepare-summed-test"')) {
-    fail("a reloaded page with a live combined test must not offer Play", { html });
-  }
-
-  harness.dispatchClick({ "data-act": "stop-summed-test", "data-group-id": "main" });
-  await harness.flush(); await harness.flush(); await harness.flush();
-  if (stopPosts.length !== 1 || stopPosts[0].reason !== "operator_stop") {
-    fail("the reload-safe Stop should post to the stop endpoint once", { stopPosts });
-  }
-  html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes('data-act="prepare-summed-test"') ||
-      html.includes('data-act="stop-summed-test"')) {
-    fail("after Stop the card should return to Play once the server clears the test", { html });
-  }
-  return { reloadedPageRendersReloadSafeStop: true };
-}
-
-async function testCombinedSoundsRightStopsAndSavesActiveLoop() {
-  const start = deferred();
-  const stopPosts = [];
-  const validationPosts = [];
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/measurements": () => Promise.resolve(response({
-      status: "needs_summed_validation",
-      summary: {
-        driver_measurements_complete: true,
-        validated_summed_group_count: 0,
-        summed_validation_complete: false,
-        latest_driver_measurements: {
-          "main:woofer": { captured: true, outcome: "heard_correct_driver" },
-          "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
-        },
-        latest_summed_tests: {},
-        latest_summed_validations: {},
-      },
-      permissions: {},
-      issues: [],
-    })),
-    "./active-speaker/commissioning-view": () => Promise.resolve(response({
-      status: "needs_combined_check",
-      test_level: {
-        requested_level_dbfs: -72,
-        min_level_dbfs: -80,
-        max_level_dbfs: 0,
-        step_db: 1,
-      },
-      combined_groups: [{
-        group_id: "main",
-        label: "Main speaker",
-        status: "ready_to_test",
-        status_label: "next",
-        message: "Run the combined speaker test.",
-        actions: {
-          start_combined_test: {
-            id: "start_combined_test",
-            label: "Play combined test",
-            enabled: true,
-            endpoint: "./active-speaker/summed-test",
-            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
-          },
-          record_combined_result: {
-            id: "record_combined_result",
-            label: "Record combined check",
-            enabled: false,
-            endpoint: "./active-speaker/summed-validation",
-            body: { speaker_group_id: "main", summed_test_id: "summed-playback-stale" },
-          },
-        },
-      }],
-    })),
-    "./active-speaker/summed-test": () => start.promise,
-    "./active-speaker/summed-test/stop": (_path, options = {}) => {
-      stopPosts.push(JSON.parse(options.body || "{}"));
-      return Promise.resolve(response({
-        status: "stopped",
-        reason: "operator_confirmed",
-        playback_id: "summed-playback-1",
-      }));
-    },
-    "./active-speaker/summed-validation": (_path, options = {}) => {
-      validationPosts.push(JSON.parse(options.body || "{}"));
-      return Promise.resolve(response({
-        status: "complete",
-        summary: {
-          driver_measurements_complete: true,
-          summed_validation_complete: true,
-          latest_summed_tests: {
-            main: {
-              captured: true,
-              audio_emitted: true,
-              summed_test_id: "summed-playback-1",
-            },
-          },
-          latest_summed_validations: {
-            main: {
-              captured: true,
-              validated: true,
-              summed_test_id: "summed-playback-1",
-            },
-          },
-        },
-      }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  const originalSetTimeout = globalThis.window.setTimeout;
-  globalThis.window.setTimeout = (fn, ms) => {
-    if (ms === 250) {
-      queueMicrotask(fn);
-      return 1;
-    }
-    return originalSetTimeout(fn, ms);
-  };
-  try {
-    harness.dispatchClick({
-      "data-act": "prepare-summed-test",
-      "data-group-id": "main",
-      "data-label": "Main speaker",
-    });
-    await harness.flush(); await harness.flush(); await harness.flush();
-    const html = harness.elements.get("view-body").innerHTML;
-    const soundsRight = html.match(/<button type="button" class="btn btn--primary" [^>]*data-act="record-summed-validation"[^>]*>Sounds right<\/button>/);
-    if (!soundsRight || soundsRight[0].includes('data-summed-test-id="summed-playback-stale"')) {
-      fail("active Sounds right must not carry a stale summed test id", { html, soundsRight });
-    }
-    harness.dispatchClick({
-      "data-act": "record-summed-validation",
-      "data-group-id": "main",
-      "data-summed-test-id": "summed-playback-stale",
-      "data-outcome": "blend_ok",
-    });
-    await harness.flush(); await harness.flush();
-    if (stopPosts.length !== 1 || stopPosts[0].reason !== "operator_confirmed") {
-      fail("Sounds right while playing should stop with a confirmation reason", { stopPosts });
-    }
-    start.resolve(response({
-      playback: {
-        status: "completed",
-        audio_emitted: true,
-        confirmable: true,
-        playback_id: "summed-playback-1",
-        tone: { level_dbfs: -72 },
-      },
-      calibration_level: levelPayload(-72),
-      measurements: {
-        status: "needs_summed_validation",
-        summary: {
-          driver_measurements_complete: true,
-          summed_validation_complete: false,
-          latest_summed_tests: {
-            main: {
-              captured: true,
-              audio_emitted: true,
-              summed_test_id: "summed-playback-1",
-              playback_id: "summed-playback-1",
-              issues: [],
-            },
-          },
-          latest_summed_validations: {},
-        },
-      },
-    }));
-    for (let i = 0; i < 10; i += 1) await harness.flush();
-  } finally {
-    globalThis.window.setTimeout = originalSetTimeout;
-  }
-  if (validationPosts.length !== 1 ||
-      validationPosts[0].summed_test_id !== "summed-playback-1" ||
-      validationPosts[0].operator_listening_check !== true) {
-    fail("Sounds right should save the confirmed active summed test", { validationPosts });
-  }
-  return { combinedSoundsRightStopsAndSavesActiveLoop: true };
-}
-
-async function testStaleSummedValidationDoesNotRenderValidatedGroup() {
-  const confirmedTopology = activeTwoWayTopologyPayload();
-  const measurements = {
-    status: "needs_summed_validation",
-    summary: {
-      ...summedSummary({
-        main: {
-          captured: true,
-          audio_emitted: true,
-          summed_test_id: "sum-2",
-          playback_id: "sum-2",
-        },
-      }),
-      latest_summed_validations: {
-        main: { validated: true, outcome: "blend_ok", summed_test_id: "sum-1" },
-      },
-    },
-    permissions: {},
-    issues: [],
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(confirmedTopology)),
-    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
-    "./active-speaker/commissioning-view": () => Promise.resolve(response({
-      status: "needs_combined_check",
-      test_level: {
-        requested_level_dbfs: -72,
-        min_level_dbfs: -80,
-        max_level_dbfs: 0,
-        step_db: 1,
-      },
-      combined_groups: [{
-        group_id: "main",
-        label: "Main speaker",
-        status: "ready_to_record",
-        status_label: "ready to record",
-        message: "Combined speaker test played. Record what you heard.",
-        latest_test_id: "sum-2",
-        has_audible_test: true,
-        validated: false,
-        actions: {
-          start_combined_test: {
-            id: "start_combined_test",
-            label: "Play combined test",
-            enabled: true,
-            endpoint: "./active-speaker/summed-test",
-            body: { speaker_group_id: "main", audio: true, stimulus: "speech", duration_ms: 12000 },
-          },
-          record_combined_result: {
-            id: "record_combined_result",
-            label: "Record combined check",
-            enabled: true,
-            endpoint: "./active-speaker/summed-validation",
-            body: { speaker_group_id: "main", summed_test_id: "sum-2", operator_listening_check: true },
-          },
-        },
-      }],
-    })),
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  const html = harness.elements.get("view-body").innerHTML;
-  if (html.includes(">validated</span>")) {
-    fail("stale summed validation should not render as current validated state", { html });
-  }
-  if (!html.includes(">ready to record</span>") ||
-      !html.includes('data-summed-test-id="sum-2"') ||
-      html.includes('data-summed-test-id="sum-1"')) {
-    fail("combined result should point at the latest audible test", { html });
-  }
-  return { staleSummedValidationDoesNotRenderValidatedGroup: true };
-}
 
 async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
   const topology = activeTwoWayTopologyPayload();
@@ -3599,12 +2569,12 @@ async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
     })),
     "./active-speaker/commissioning-view": () => Promise.resolve(response(commissioningViewPayload({
       status: "needs_output_confirmation",
-      current_step: "map",
+      current_step: "layout",
       stepStatuses: {
-        layout: "done",
+        layout: "active",
         research: "done",
-        map: "active",
-        safety: "todo",
+
+        experiment: "todo",
         profile: "todo",
       },
       output_identity: { assigned_channel_count: 2, unverified_channel_count: 2, complete: false },
@@ -3615,7 +2585,7 @@ async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
   await loadAndSetActiveState(harness);
 
   const initialHtml = harness.elements.get("view-body").innerHTML;
-  if (!initialHtml.includes('data-output-step="map" open')) {
+  if (!initialHtml.includes('data-output-step="layout" open')) {
     fail("unconfirmed active outputs should start on the Confirm outputs card", { initialHtml });
   }
 
@@ -3629,17 +2599,14 @@ async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
   await harness.flush();
 
   const dirtyHtml = harness.elements.get("view-body").innerHTML;
-  if (!dirtyHtml.includes('data-output-step="map" open')) {
+  if (!dirtyHtml.includes('data-output-step="layout" open')) {
     fail("changing a DAC assignment should keep Confirm outputs open for saving", { dirtyHtml });
   }
-  if (!dirtyHtml.includes('data-act="save-output-topology"') || !dirtyHtml.includes(">Save</button>")) {
+  if (!dirtyHtml.includes('data-act="output-step-next" data-step="layout"') || !dirtyHtml.includes(">Save</button>")) {
     fail("dirty channel assignment should expose the save action in Confirm outputs", { dirtyHtml });
   }
-  if (dirtyHtml.includes('data-output-step="layout" open')) {
-    fail("changing a DAC assignment should not bounce back to Choose speaker layout", { dirtyHtml });
-  }
   const reopened = harness.dispatchToggle({
-    "data-output-step": "map",
+    "data-output-step": "layout",
     open: true,
   });
   if (!reopened.open) {
@@ -3648,153 +2615,6 @@ async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
   return { channelSelectorKeepsConfirmOutputsOpenWhenDraftDirty: true };
 }
 
-async function testConfirmOutputsPlayUsesIdentityAuditionMode() {
-  const topology = activeTwoWayTopologyPayload();
-  topology.speaker_groups[0].channels.forEach((channel) => {
-    channel.identity_verified = false;
-  });
-  let commissionState = {
-    commission_load: { status: "idle", target: {}, rollback_available: false },
-    ramp: { confirmed_roles: [], pending: null },
-    floor: { status: "floor_required", floor_audio_confirmed: false },
-  };
-  const posts = [];
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: topology,
-    })),
-    "./active-speaker/design-draft": () => Promise.resolve(response({
-      status: "ready_for_review",
-      summary: { missing_driver_info_roles: [], missing_crossover_candidate_pairs: [] },
-      operator_inputs: {},
-    })),
-    "./active-speaker/crossover-preview": () => Promise.resolve(response({
-      kind: "jts_active_speaker_crossover_preview",
-      status: "ready_for_protected_staging",
-      permissions: { may_prepare_protected_startup_config: true },
-      issues: [],
-    })),
-    "./active-speaker/commissioning-view": () => Promise.resolve(response(commissioningViewPayload({
-      status: "needs_output_confirmation",
-      current_step: "map",
-      stepStatuses: {
-        layout: "done",
-        research: "done",
-        map: "active",
-        safety: "todo",
-        profile: "todo",
-      },
-      output_identity: { assigned_channel_count: 2, unverified_channel_count: 2, complete: false },
-      driver_checks: { complete: false, captured: 0, required: 2 },
-    }))),
-    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
-    "./active-speaker/commission-load": (p, o) => {
-      const body = JSON.parse(o.body || "{}");
-      posts.push({ path: p, body });
-      commissionState = {
-        commission_load: {
-          status: "loaded",
-          target: { role: body.role, audible_gain_db: -120 },
-          rollback_available: true,
-        },
-        ramp: { confirmed_roles: [], pending: null },
-        floor: { status: "floor_required", floor_audio_confirmed: false },
-      };
-      return Promise.resolve(response({
-        status: "loaded",
-        load: { status: "loaded", target: { role: body.role } },
-      }));
-    },
-    "./active-speaker/commission-ramp-step": (p, o) => {
-      const body = JSON.parse(o.body || "{}");
-      posts.push({ path: p, body });
-      commissionState = {
-        commission_load: {
-          status: "loaded",
-          target: { role: body.role, audible_gain_db: -80 },
-          rollback_available: true,
-        },
-        ramp: {
-          confirmed_roles: [],
-          pending: { role: body.role, gain_db: -80, frequency_hz: 120 },
-        },
-        floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
-      };
-      return Promise.resolve(response({ status: "stepped", next_gain_db: -80 }));
-    },
-    "./active-speaker/commission-ramp-abort": (p, o) => {
-      const body = JSON.parse(o.body || "{}");
-      posts.push({ path: p, body });
-      commissionState = {
-        commission_load: { status: "rolled_back", target: {}, rollback_available: false },
-        ramp: { confirmed_roles: [], pending: null },
-        floor: { status: "floor_required", floor_audio_confirmed: false },
-      };
-      return Promise.resolve(response({ status: "rolled_back" }));
-    },
-    "./active-speaker/channel-identity": (p, o) => {
-      const body = JSON.parse(o.body || "{}");
-      posts.push({ path: p, body });
-      topology.speaker_groups[0].channels.forEach((channel) => {
-        if (channel.role === body.role) {
-          channel.identity_verified = !!body.identity_verified;
-        }
-      });
-      return Promise.resolve(response({ output_topology: topology }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes('data-output-step="map" open')) {
-    fail("unconfirmed active outputs should start on Confirm outputs", { html });
-  }
-  if (!html.includes('data-identity-audition="true"')) {
-    fail("Confirm outputs Play button should be explicitly marked as identity audition", { html });
-  }
-
-  harness.dispatchClick({
-    "data-act": "commission-step",
-    "data-role": "woofer",
-    "data-identity-audition": "true",
-  });
-  await harness.flush(); await harness.flush(); await harness.flush();
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  const load = posts.find((x) => x.path === "./active-speaker/commission-load");
-  const step = posts.find((x) => x.path === "./active-speaker/commission-ramp-step");
-  if (!load || load.body.identity_audition !== true) {
-    fail("Confirm outputs Play should arm using identity-audition mode", { posts });
-  }
-  if (!step || step.body.identity_audition !== true) {
-    fail("Confirm outputs Play should ramp using identity-audition mode", { posts });
-  }
-  globalThis.__jtsConfirm = async () => {
-    posts.push({ path: "dialog-confirm" });
-    return true;
-  };
-  harness.dispatchClick({
-    "data-act": "mark-output-identity",
-    "data-group-id": "main",
-    "data-role": "woofer",
-    "data-label": "Main speaker Woofer on DAC output 1",
-  });
-  await harness.flush(); await harness.flush(); await harness.flush();
-  await harness.flush(); await harness.flush(); await harness.flush();
-  const abortIndex = posts.findIndex((x) => x.path === "./active-speaker/commission-ramp-abort");
-  const confirmIndex = posts.findIndex((x) => x.path === "dialog-confirm");
-  const identityIndex = posts.findIndex((x) => x.path === "./active-speaker/channel-identity");
-  if (abortIndex < 0 || confirmIndex < 0 || identityIndex < 0 ||
-      abortIndex > confirmIndex || confirmIndex > identityIndex) {
-    fail("Confirming output during audition should remute before dialog and identity save", { posts });
-  }
-  const afterConfirmHtml = harness.elements.get("view-body").innerHTML;
-  if (afterConfirmHtml.includes('data-role="tweeter" disabled')) {
-    fail("Confirming one output should not leave sibling audition controls disabled", { afterConfirmHtml });
-  }
-  return { confirmOutputsPlayUsesIdentityAuditionMode: true };
-}
 
 async function testConfirmOutputAbortsPendingAuditionWithoutAutoRamp() {
   const topology = activeTwoWayTopologyPayload();
@@ -3847,10 +2667,6 @@ async function testConfirmOutputAbortsPendingAuditionWithoutAutoRamp() {
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
 
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes(">Stop</button>") || !html.includes('data-role="woofer" disabled')) {
-    fail("Fixture should start with tweeter audition pending and woofer play disabled", { html });
-  }
   globalThis.__jtsConfirm = async () => {
     posts.push({ path: "dialog-confirm" });
     return true;
@@ -4006,7 +2822,7 @@ async function testAppliedProfileCardUsesCommissioningRecord() {
         profileCommissioningView({
           status: "applied", current_step: "profile",
           applied_profile: applied,
-          stepStatuses: {layout: "done", research: "done", map: "done", safety: "done", profile: "done"},
+          stepStatuses: {layout: "done", research: "done", experiment: "done", profile: "done"},
         })
       )),
       "./active-speaker/baseline-profile": () => {
@@ -5955,12 +4771,12 @@ async function testPreparePreviewUpdatesWorkingSetupFirst() {
         commissioningViewFetches > 1
           ? {
               status: "needs_output_confirmation",
-              current_step: "map",
+              current_step: "layout",
               stepStatuses: {
-                layout: "done",
+                layout: "active",
                 research: "done",
-                map: "active",
-                safety: "todo",
+
+                experiment: "todo",
                 profile: "todo",
               },
             }
@@ -5970,8 +4786,7 @@ async function testPreparePreviewUpdatesWorkingSetupFirst() {
               stepStatuses: {
                 layout: "done",
                 research: "active",
-                map: "todo",
-                safety: "todo",
+                experiment: "todo",
                 profile: "todo",
               },
             }
@@ -6039,20 +4854,13 @@ async function testPreparePreviewUpdatesWorkingSetupFirst() {
   if (manualCandidate.frequency_hz !== 2100) {
     fail("Preview auto-update should persist the visible crossover point", { saved });
   }
-  if (!harness.elements.get("status").textContent.includes(
-    "Crossover preview ready. No sound was played. Confirm the outputs next."
-  )) {
-    fail("Preview completion should point to the next setup step", {
-      status: harness.elements.get("status").textContent,
-    });
-  }
   if (commissioningViewFetches < 2) {
     fail("Preview completion should refresh the backend-owned commissioning step", {
       commissioningViewFetches,
     });
   }
   const html = harness.elements.get("view-body").innerHTML;
-  if (!/data-output-step="map"[^>]* open/.test(html)) {
+  if (!/data-output-step="layout"[^>]* open/.test(html)) {
     fail("Preview completion should open Confirm outputs without a page reload", {
       html,
     });
@@ -6240,229 +5048,6 @@ async function testPartialThreeWayWorkingSetupSummaryReadsCleanly() {
   return { partialThreeWayWorkingSetupSummaryReadsCleanly: true };
 }
 
-async function testCommissionCardArmsAndSteps() {
-  let commissionState = {
-    commission_load: { status: "idle", target: {}, rollback_available: false },
-    ramp: { confirmed_roles: [], pending: null },
-    floor: { status: "floor_required", floor_audio_confirmed: false },
-  };
-  const posts = [];
-  let stepCount = 0;
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
-    "./active-speaker/commission-load": (p, o) => {
-      posts.push({ path: p, body: JSON.parse(o.body || "{}") });
-      commissionState = {
-        commission_load: { status: "loaded", target: { role: "woofer", audible_gain_db: -120 }, rollback_available: true },
-        ramp: { confirmed_roles: [], pending: null },
-        floor: { status: "floor_required", floor_audio_confirmed: false },
-      };
-      return Promise.resolve(response({ load: { status: "loaded", target: { role: "woofer" } } }));
-    },
-    "./active-speaker/commission-ramp-step": (p, o) => {
-      posts.push({ path: p, body: JSON.parse(o.body || "{}") });
-      stepCount += 1;
-      const gain = -80 + ((stepCount - 1) * 5);
-      commissionState = {
-        commission_load: { status: "loaded", target: { role: "woofer", audible_gain_db: gain }, rollback_available: true },
-        ramp: { confirmed_roles: [], pending: { role: "woofer", gain_db: gain, frequency_hz: 250 } },
-        floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
-      };
-      return Promise.resolve(response({ status: "stepped", next_gain_db: gain }));
-    },
-    "./active-speaker/commission-ramp-ack": (p, o) => {
-      const body = JSON.parse(o.body || "{}");
-      posts.push({ path: p, body });
-      if (body.outcome === "heard_correct_driver") {
-        commissionState = {
-          commission_load: { status: "loaded", target: { role: "woofer", audible_gain_db: -80 }, rollback_available: true },
-          ramp: { confirmed_roles: ["woofer"], pending: null },
-          floor: { status: "floor_confirmed", floor_audio_confirmed: true },
-        };
-        return Promise.resolve(response({ status: "confirmed", outcome: body.outcome }));
-      }
-      commissionState = {
-        commission_load: { status: "loaded", target: { role: "woofer", audible_gain_db: -80 }, rollback_available: true },
-        ramp: { confirmed_roles: [], pending: null },
-        floor: { status: "floor_required", floor_audio_confirmed: false },
-      };
-      return Promise.resolve(response({ status: "retry", outcome: body.outcome }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-
-  let html = harness.elements.get("view-body").innerHTML;
-  if (html.includes('data-act="commission-arm"')) fail("arm button should not be visible", { html });
-  if (!html.includes('data-act="commission-step"')) fail("start button missing before arm", { html });
-  if (!html.includes(">Play</button>")) fail("idle output row should expose Play", { html });
-
-  // Play silently opens the quiet driver setup, then begins the
-  // automatic ramp. The card treats the whole ramp as one playing state; "too
-  // quiet" is internal, not a visible operator button.
-  harness.dispatchClick({
-    "data-act": "commission-step",
-    "data-role": "woofer",
-    "data-identity-audition": "true",
-  });
-  harness.dispatchClick({
-    "data-act": "commission-step",
-    "data-role": "woofer",
-    "data-identity-audition": "true",
-  });
-  await harness.flush(); await harness.flush(); await harness.flush();
-  await harness.flush(); await harness.flush(); await harness.flush();
-  const loadPosts = posts.filter((x) =>
-    x.path === "./active-speaker/commission-load" && x.body.role === "woofer");
-  if (loadPosts.length !== 1) {
-    fail("rapid Start clicks should open the quiet driver test once", { posts });
-  }
-  if (!loadPosts[0].body.identity_audition) {
-    fail("Confirm outputs arm must use identity-audition mode", { posts });
-  }
-  if (!posts.some((x) => x.path === "./active-speaker/commission-ramp-step")) {
-    fail("commission-ramp-step not posted on step", { posts });
-  }
-  if (posts.some((x) =>
-      x.path === "./active-speaker/commission-ramp-step" &&
-      !x.body.identity_audition)) {
-    fail("Confirm outputs ramp must use identity-audition mode", { posts });
-  }
-  html = harness.elements.get("view-body").innerHTML;
-  let cardHtml = commissionCardHtml(html);
-  for (const expected of ["Stop", "I hear woofer"]) {
-    if (!cardHtml.includes(expected)) fail("playing row should expose stable tone controls", { expected, cardHtml });
-  }
-  if (cardHtml.includes("By-ear") || cardHtml.includes("Not yet made audible")) {
-    fail("playing card should not expose the old flickering by-ear state", { cardHtml });
-  }
-  if (cardHtml.includes("commission-card__message")) {
-    fail("automatic ramp should not render a changing progress line", { cardHtml });
-  }
-  if (cardHtml.includes('data-act="commission-abort" disabled')) {
-    fail("Stop must stay enabled while the automatic ramp is active", { cardHtml });
-  }
-  for (const flappy of ["Raising", "Starting Woofer tone", "Recording…"]) {
-    if (cardHtml.includes(flappy)) fail("automatic ramp should not surface transient busy copy", { flappy, cardHtml });
-  }
-  for (const hidden of ["Too quiet", "Too loud"]) {
-    if (cardHtml.includes(hidden)) fail("automatic ramp should not expose legacy manual loudness buttons", { hidden, cardHtml });
-  }
-
-  harness.dispatchClick({
-    "data-act": "commission-ack",
-    "data-outcome": "heard_correct_driver",
-    "data-confirm-output-identity": "true",
-  });
-  await harness.flush(); await harness.flush(); await harness.flush();
-  if (!posts.some((x) =>
-      x.path === "./active-speaker/commission-ramp-ack" &&
-      x.body.outcome === "heard_correct_driver" &&
-      x.body.confirm_output_identity === true)) {
-    fail("heard verdict should be posted when the user hears the tone", { posts });
-  }
-  const visibleSilentAcks = posts.filter((x) =>
-    x.path === "./active-speaker/commission-ramp-ack" && x.body.outcome === "silent");
-  if (visibleSilentAcks.length) {
-    fail("user-visible controls should not post manual silent retries", { posts });
-  }
-  return { commissionCardArmsAndSteps: true };
-}
-
-async function testCommissionCompleteDoesNotWrapToWoofer() {
-  const commissionState = {
-    commission_load: { status: "rolled_back", target: {}, rollback_available: false },
-    ramp: { confirmed_roles: ["tweeter", "woofer"], pending: null },
-    floor: { status: "floor_confirmed", floor_audio_confirmed: true },
-  };
-  const measurements = {
-    status: "ready",
-    summary: {
-      required_driver_count: 2,
-      captured_driver_count: 2,
-      driver_checks_complete: true,
-      driver_measurements_complete: true,
-      latest_driver_checks: {
-        "main:woofer": { speaker_group_id: "main", role: "woofer", captured: true },
-        "main:tweeter": { speaker_group_id: "main", role: "tweeter", captured: true },
-      },
-      latest_driver_measurements: {
-        "main:woofer": { speaker_group_id: "main", role: "woofer", captured: true },
-        "main:tweeter": { speaker_group_id: "main", role: "tweeter", captured: true },
-      },
-    },
-    issues: [],
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
-    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
-  });
-  const harness = setupHarness(fetchHandler);
-  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("2/2 heard")) {
-    fail("complete driver proof should show heard progress", { html });
-  }
-  return { commissionCompleteDoesNotWrapToWoofer: true };
-}
-
-async function testStaleRampConfirmationsDoNotCompleteDriverChecks() {
-  const commissionState = {
-    commission_load: { status: "rolled_back", target: {}, rollback_available: false },
-    ramp: { confirmed_roles: ["tweeter", "woofer"], pending: null },
-    floor: { status: "floor_confirmed", floor_audio_confirmed: true },
-  };
-  const measurements = {
-    status: "ready",
-    summary: {
-      required_driver_count: 2,
-      captured_driver_count: 0,
-      driver_checks_complete: false,
-      driver_measurements_complete: false,
-      latest_driver_checks: {},
-      latest_driver_measurements: {},
-    },
-    issues: [],
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
-    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
-    "./active-speaker/commissioning-view": () => Promise.resolve(response(commissioningViewPayload({
-      status: "needs_driver_target_proof",
-      current_step: "map",
-      stepStatuses: {
-        layout: "done",
-        research: "done",
-        map: "active",
-        safety: "todo",
-        profile: "todo",
-      },
-      driver_target_proof: {
-        complete: false,
-        source: "measurements",
-        captured: 0,
-        required: 2,
-      },
-    }))),
-  });
-  const harness = setupHarness(fetchHandler);
-  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-
-  const html = harness.elements.get("view-body").innerHTML;
-  const cardHtml = commissionCardHtml(html);
-  if (cardHtml.includes("Complete") || cardHtml.includes("All drivers are confirmed")) {
-    fail("stale ramp roles without measurement-backed checks must not complete the card", { cardHtml });
-  }
-  if (!html.includes('data-output-step="map" open') ||
-      !html.includes('data-act="commission-step"')) {
-    fail("stale ramp roles should restart visible output confirmation from the map", { html });
-  }
-  return { staleRampConfirmationsDoNotCompleteDriverChecks: true };
-}
 
 async function testDriverMicCaptureIsRemovedFromSoundFlow() {
   const confirmedTopology = activeTwoWayTopologyPayload();
@@ -6505,200 +5090,9 @@ async function testDriverMicCaptureIsRemovedFromSoundFlow() {
   if (html.includes('data-act="record-driver-capture"')) {
     fail("driver mic capture should not be part of the /sound flow", { html });
   }
-  if (!html.includes("Mic-based level matching is a separate HTTPS measurement step")) {
-    fail("driver follow-up should point mic work to the separate HTTPS flow", { html });
-  }
   return { driverMicCaptureIsRemovedFromSoundFlow: true };
 }
 
-async function testSummedByEarValidationExcludesMicCapture() {
-  // The combined crossover check is phone-optional in the product sense: the
-  // core /sound flow offers a by-ear "Sounds right" path and keeps microphone
-  // capture out of this HTTP page. The by-ear positive is still gated on an
-  // audible combined test (you can't certify a blend you didn't hear).
-  const confirmedTopology = activeTwoWayTopologyPayload();
-
-  // (1) No audible combined test yet -> the by-ear positive must be DISABLED
-  //     (no certify-without-hearing bypass).
-  {
-    const measurements = {
-      status: "needs_summed_validation",
-      summary: summedSummary({}),
-      permissions: {},
-      issues: [],
-    };
-    const harness = setupHarness(baseFetch({
-      "./output-topology": () => Promise.resolve(response(confirmedTopology)),
-      "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
-    }));
-    await loadAndSetActiveState(harness);
-    const html = harness.elements.get("view-body").innerHTML;
-    if (!/data-outcome="blend_ok"[^>]*\sdisabled/.test(html)) {
-      fail("by-ear blend confirmation must be disabled before an audible test", { html });
-    }
-  }
-
-  // (2) An audible combined test exists -> the by-ear path is offered, the mic
-  //     path is absent from /sound, and the positive POSTs an operator listening
-  //     check (no WAV).
-  {
-    const measurements = {
-      status: "needs_summed_validation",
-      summary: summedSummary({
-        main: { captured: true, audio_emitted: true, summed_test_id: "sum-1", playback_id: "sum-1" },
-      }),
-      permissions: {},
-      issues: [],
-    };
-    const validationPosts = [];
-    const harness = setupHarness(baseFetch({
-      "./output-topology": () => Promise.resolve(response(confirmedTopology)),
-      "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
-      "./active-speaker/summed-validation": (_path, options = {}) => {
-        validationPosts.push(JSON.parse(options.body || "{}"));
-        return Promise.resolve(response(measurements));
-      },
-    }));
-    await loadAndSetActiveState(harness);
-    const originalSetTimeout = globalThis.window.setTimeout;
-    globalThis.window.setTimeout = (fn) => { queueMicrotask(fn); return 0; };
-    try {
-      const html = harness.elements.get("view-body").innerHTML;
-      if (html.includes('data-act="record-summed-capture"')) {
-        fail("summed validation should keep mic capture out of the /sound flow", { html });
-      }
-      if (!/data-outcome="blend_ok"(?![^>]*\sdisabled)/.test(html)) {
-        fail("by-ear blend confirmation should be enabled after an audible test", { html });
-      }
-      harness.dispatchClick({
-        "data-act": "record-summed-validation",
-        "data-group-id": "main",
-        "data-summed-test-id": "sum-1",
-        "data-outcome": "blend_ok",
-      });
-      await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-      if (validationPosts.length !== 1) {
-        fail("by-ear blend confirmation should POST once", { validationPosts });
-      }
-      const body = validationPosts[0];
-      if (body.outcome !== "blend_ok" || body.operator_listening_check !== true) {
-        fail("by-ear blend confirmation must post operator_listening_check", { body });
-      }
-      if (body.capture) fail("by-ear path must not upload a WAV", { body });
-    } finally {
-      globalThis.window.setTimeout = originalSetTimeout;
-    }
-  }
-  return { summedByEarValidationExcludesMicCapture: true };
-}
-
-async function testSummedValidationRefreshesBaselineProfileState() {
-  const confirmedTopology = activeTwoWayTopologyPayload();
-  const initialMeasurements = {
-    status: "needs_summed_validation",
-    summary: summedSummary({
-      main: {
-        captured: true,
-        audio_emitted: true,
-        summed_test_id: "sum-1",
-        playback_id: "sum-1",
-      },
-    }),
-    permissions: {},
-    issues: [],
-  };
-  const validatedMeasurements = {
-    status: "ready_for_baseline",
-    summary: {
-      ...summedSummary({
-        main: {
-          captured: true,
-          audio_emitted: true,
-          summed_test_id: "sum-1",
-          playback_id: "sum-1",
-        },
-      }),
-      validated_summed_group_count: 1,
-      summed_validation_complete: true,
-      latest_summed_validations: {
-        main: { validated: true, outcome: "blend_ok", summed_test_id: "sum-1" },
-      },
-    },
-    permissions: { may_compile_baseline: true },
-    issues: [],
-  };
-  let measurements = initialMeasurements;
-  let viewStatus = "needs_combined_check";
-  let baselineFetches = 0;
-  const baselineApplied = {
-    status: "applied",
-    permissions: { may_compile: false, may_apply: false },
-    config: { basename: "active_speaker_baseline.yml" },
-    issues: [],
-  };
-  const baselineReadyToCompile = {
-    status: "ready_to_compile",
-    permissions: { may_compile: true, may_apply: false },
-    config: { basename: "active_speaker_baseline.yml" },
-    issues: [],
-  };
-  const harness = setupHarness(baseFetch({
-    "./output-topology": () => Promise.resolve(response(confirmedTopology)),
-    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
-    "./active-speaker/baseline-profile": () => {
-      baselineFetches += 1;
-      return Promise.resolve(response(
-        baselineFetches === 1 ? baselineApplied : baselineReadyToCompile
-      ));
-    },
-    "./active-speaker/commissioning-view": () => Promise.resolve(response({
-      status: viewStatus,
-      test_level: levelPayload(-72).test_signal,
-      combined_groups: [{
-        group_id: "main",
-        label: "Main speaker",
-        status: viewStatus,
-        status_label: viewStatus === "ready_to_save_profile" ? "ready" : "next",
-        has_audible_test: true,
-        validated: viewStatus === "ready_to_save_profile",
-        actions: {
-          record_combined_result: {
-            id: "record_combined_result",
-            enabled: true,
-            endpoint: "./active-speaker/summed-validation",
-            body: { speaker_group_id: "main", summed_test_id: "sum-1" },
-          },
-        },
-      }],
-    })),
-    "./active-speaker/summed-validation": () => {
-      measurements = validatedMeasurements;
-      viewStatus = "ready_to_save_profile";
-      return Promise.resolve(response(validatedMeasurements));
-    },
-  }));
-  await loadAndSetActiveState(harness);
-
-  harness.dispatchClick({
-    "data-act": "record-summed-validation",
-    "data-group-id": "main",
-    "data-summed-test-id": "sum-1",
-    "data-outcome": "blend_ok",
-  });
-  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes('data-act="save-apply-baseline-profile"')) {
-    fail("saving the combined check must refresh stale applied profile state and show the save action", {
-      baselineFetches,
-      html,
-    });
-  }
-  if (!html.includes("Save and apply")) {
-    fail("ready-to-compile baseline profile should invite save/apply after combined validation", { html });
-  }
-  return { summedValidationRefreshesBaselineProfileState: true };
-}
 
 async function testSaveAndApplyUsesSingleFinishEndpoint() {
   const confirmedTopology = activeTwoWayTopologyPayload();
@@ -6762,6 +5156,7 @@ async function testSaveAndApplyUsesSingleFinishEndpoint() {
     },
     "./active-speaker/commissioning-view": () => Promise.resolve(response({
       status: finishPosts.length ? "applied" : "ready_to_save_profile",
+      review: {ready: true, may_apply: true},
       applied_profile: {exists: finishPosts.length > 0, stands: finishPosts.length > 0,
         candidate_fingerprint: baselineApplied.candidate_fingerprint,
         applied_at: baselineApplied.applied_at, config_path: baselineApplied.config.path},
@@ -6804,340 +5199,6 @@ async function testSaveAndApplyUsesSingleFinishEndpoint() {
   return { saveAndApplyUsesSingleFinishEndpoint: true };
 }
 
-async function testCommissionPendingStepShowsAckWithoutFloorFlag() {
-  const commissionState = {
-    commission_load: {
-      status: "loaded",
-      target: { role: "woofer", audible_gain_db: -45 },
-      rollback_available: true,
-    },
-    ramp: {
-      confirmed_roles: [],
-      pending: { role: "woofer", gain_db: -45, playback_id: "old-step" },
-    },
-    floor: { status: "floor_required", floor_audio_confirmed: false },
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
-  });
-  const harness = setupHarness(fetchHandler);
-  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-
-  const html = harness.elements.get("view-body").innerHTML;
-  const cardHtml = commissionCardHtml(html);
-  if (!html.includes('data-act="commission-ack"')) {
-    fail("pending ramp step must expose acknowledgement buttons even with a stale floor flag", { html });
-  }
-  for (const expected of ["Stop", "I hear woofer"]) {
-    if (!cardHtml.includes(expected)) fail("pending ramp step should reuse the stable playing row", { expected, cardHtml });
-  }
-  for (const hidden of ["Too quiet", "Too loud"]) {
-    if (cardHtml.includes(hidden)) fail("pending ramp step should not expose legacy manual loudness buttons", { hidden, cardHtml });
-  }
-  const enabledStep = cardHtml.match(/<button\b(?=[^>]*data-act="commission-step")(?![^>]*\bdisabled\b)[^>]*>/);
-  if (enabledStep) {
-    fail("pending ramp step must block another enabled step until it is acknowledged", {
-      button: enabledStep[0],
-      cardHtml,
-    });
-  }
-  return { commissionPendingStepShowsAckWithoutFloorFlag: true };
-}
-
-async function testCommissionArmBlockedSurfacesReason() {
-  // The gate can refuse an arm with HTTP 200 + a blocked body (e.g. the speaker
-  // isn't staged). The card must surface a calm reason — not the "flicker then
-  // nothing" silent failure, and never a raw snake_case code.
-  const commissionState = {
-    commission_load: { status: "idle", target: {}, rollback_available: false },
-    ramp: { confirmed_roles: [], pending: null },
-    floor: { status: "floor_required", floor_audio_confirmed: false },
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
-    "./active-speaker/commission-load": () => Promise.resolve(response({
-      preflight: {
-        required_gates: [
-          {
-            id: "speaker_ready_for_active_load",
-            passed: false,
-            message: "Resolve protected startup-load blockers before commissioning",
-          },
-        ],
-      },
-      load: {
-        status: "blocked",
-        issues: [
-          { code: "route_verified_not_verified", message: "Music renderers: route_verified is not verified" },
-        ],
-      },
-    })),
-  });
-  const harness = setupHarness(fetchHandler);
-  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-
-  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("fully set up for driver tests yet")) {
-    fail("blocked arm must surface a calm reason, not flicker silently", { html });
-  }
-  for (const leak of ["route_verified", "speaker_ready_for_active_load", "Music renderers:"]) {
-    if (html.includes(leak)) fail("blocked arm reason must not leak backend codes", { leak, html });
-  }
-  return { commissionArmBlockedSurfacesReason: true };
-}
-
-async function testCommissionActiveGraphBlockSurfacesReason() {
-  const commissionState = {
-    commission_load: { status: "idle", target: {}, rollback_available: false },
-    ramp: { confirmed_roles: [], pending: null },
-    floor: { status: "floor_required", floor_audio_confirmed: false },
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
-    "./active-speaker/commission-load": () => Promise.resolve(response({
-      load: {
-        status: "blocked",
-        issues: [{
-          code: "commission_active_graph_not_staged",
-          message: "current persisted config is /etc/camilladsp/outputd-cutover.yml",
-        }],
-      },
-    })),
-  });
-  const harness = setupHarness(fetchHandler);
-  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-
-  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("silent active-speaker setup")) {
-    fail("active-graph-not-staged block should surface specific setup copy", { html });
-  }
-  for (const leak of ["commission_active_graph_not_staged", "outputd-cutover"]) {
-    if (html.includes(leak)) fail("active graph block reason must not leak raw codes", { leak, html });
-  }
-  return { commissionActiveGraphBlockSurfacesReason: true };
-}
-
-async function testCommissionOutputReconcileFailureSurfacesReason() {
-  const commissionState = {
-    commission_load: { status: "idle", target: {}, rollback_available: false },
-    ramp: { confirmed_roles: [], pending: null },
-    floor: { status: "floor_required", floor_audio_confirmed: false },
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
-    "./active-speaker/commission-load": () => Promise.resolve(response({
-      load: {
-        status: "failed",
-        issues: [{
-          code: "commission_output_hardware_reconcile_failed",
-          message: "could not switch outputd to the active driver lane before tone playback",
-        }],
-      },
-    })),
-  });
-  const harness = setupHarness(fetchHandler);
-  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-
-  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("could not switch the speaker output path")) {
-    fail("output reconcile failure should surface specific output-path copy", { html });
-  }
-  for (const leak of ["commission_output_hardware_reconcile_failed", "outputd"]) {
-    if (html.includes(leak)) fail("output reconcile failure must not leak raw backend detail", { leak, html });
-  }
-  return { commissionOutputReconcileFailureSurfacesReason: true };
-}
-
-async function testCommissionToneFailureStopsAutoRamp() {
-  let commissionState = {
-    commission_load: {
-      status: "loaded",
-      target: { role: "woofer", audible_gain_db: -120 },
-      rollback_available: true,
-    },
-    ramp: { confirmed_roles: [], pending: null },
-    floor: { status: "floor_required", floor_audio_confirmed: false },
-  };
-  const posts = [];
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
-    "./active-speaker/commission-ramp-step": (p, o) => {
-      posts.push({ path: p, body: JSON.parse(o.body || "{}") });
-      commissionState = {
-        commission_load: { status: "rolled_back", target: {}, rollback_available: false },
-        ramp: { confirmed_roles: [], pending: null },
-        floor: { status: "floor_required", floor_audio_confirmed: false },
-      };
-      return Promise.resolve(response({
-        status: "tone_failed",
-        next_gain_db: -80,
-        tone_playback: {
-          status: "failed",
-          issues: [{
-            code: "commission_tone_backend_failed",
-            message: "could not play commissioning tone: Permission denied",
-          }],
-        },
-        issues: [{
-          code: "commission_tone_playback_failed",
-            message: "JTS loaded the quiet driver setup but could not play the test tone.",
-        }],
-      }));
-    },
-    "./active-speaker/commission-ramp-abort": (p, o) => {
-      posts.push({ path: p, body: JSON.parse(o.body || "{}") });
-      return Promise.resolve(response({ status: "aborted" }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-
-  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
-  await harness.flush(); await harness.flush(); await harness.flush();
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  const rampSteps = posts.filter((x) => x.path === "./active-speaker/commission-ramp-step");
-  if (rampSteps.length !== 1) {
-    fail("tone_failed must stop the automatic ramp instead of retrying after rollback", { posts });
-  }
-  if (!posts.some((x) => x.path === "./active-speaker/commission-ramp-abort")) {
-    fail("automatic ramp failure should also call hard Stop to close any continuous tone", { posts });
-  }
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("could not play the test tone")) {
-    fail("tone failure should surface the real playback failure", { html });
-  }
-  if (html.includes("Press Arm for this driver first")) {
-    fail("tone failure should not be overwritten by the follow-up not-armed copy", { html });
-  }
-  return { commissionToneFailureStopsAutoRamp: true };
-}
-
-async function testCommissionRampLimitKeepsConfirmationOpen() {
-  let commissionState = {
-    commission_load: {
-      status: "loaded",
-      target: { role: "woofer", audible_gain_db: 0 },
-      rollback_available: true,
-    },
-    ramp: { confirmed_roles: [], pending: null },
-    floor: { status: "floor_required", floor_audio_confirmed: false },
-  };
-  const posts = [];
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
-    "./active-speaker/commission-ramp-step": (p, o) => {
-      const body = JSON.parse(o.body || "{}");
-      posts.push({ path: p, body });
-      if (body.role === "tweeter") {
-        fail("safe-limit stop must not advance into the tweeter", { posts });
-      }
-      commissionState = {
-        commission_load: {
-          status: "loaded",
-          target: { role: "woofer", audible_gain_db: 0 },
-          rollback_available: true,
-        },
-        ramp: {
-          confirmed_roles: [],
-          pending: { role: "woofer", gain_db: 0, frequency_hz: 80 },
-        },
-        floor: { status: "floor_required", floor_audio_confirmed: false },
-      };
-      return Promise.resolve(response({
-        status: "blocked",
-        role: "woofer",
-        speaker_group_id: "main",
-        current_gain_db: 0,
-        next_gain_db: 0,
-        max_gain_db: 0,
-        issues: [{
-          severity: "blocker",
-          code: "commission_ramp_at_limit",
-          message: "the driver test is already at the maximum bounded level",
-        }],
-      }));
-    },
-    "./active-speaker/commission-ramp-ack": (p, o) => {
-      const body = JSON.parse(o.body || "{}");
-      posts.push({ path: p, body });
-      commissionState = {
-        commission_load: {
-          status: "rolled_back",
-          target: { role: "woofer", audible_gain_db: 0 },
-          rollback_available: false,
-        },
-        ramp: { confirmed_roles: ["woofer"], pending: null },
-        floor: { status: "floor_confirmed", floor_audio_confirmed: true },
-      };
-      return Promise.resolve(response({
-        status: "confirmed",
-        outcome: body.outcome,
-        measurements: {
-          status: "needs_driver_measurements",
-          summary: {
-            driver_checks_complete: false,
-            driver_measurements_complete: false,
-          },
-        },
-      }));
-    },
-    "./active-speaker/commission-ramp-abort": (p, o) => {
-      posts.push({ path: p, body: JSON.parse(o.body || "{}") });
-      fail("safe-limit response must not abort the pending confirmation", { posts });
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-
-  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
-  await harness.flush(); await harness.flush(); await harness.flush();
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  const rampSteps = posts.filter((x) => x.path === "./active-speaker/commission-ramp-step");
-  if (rampSteps.length !== 1) {
-    fail("safe-limit response must stop the automatic ramp after one blocked step", { posts });
-  }
-  if (posts.some((x) => x.path === "./active-speaker/commission-ramp-abort")) {
-    fail("safe-limit response must leave the pending tone confirmable", { posts });
-  }
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("Reached the safe test limit")) {
-    fail("safe-limit response should surface the room-facing action", { html });
-  }
-  if (!html.includes("I hear woofer")) {
-    fail("safe-limit response should keep the heard-confirmation CTA visible", { html });
-  }
-  harness.dispatchClick({
-    "data-act": "commission-ack",
-    "data-outcome": "heard_correct_driver",
-    "data-confirm-output-identity": "true",
-  });
-  await harness.flush(); await harness.flush(); await harness.flush();
-  const statusText = harness.elements.get("status").textContent;
-  if (statusText.includes("Reached the safe test limit")) {
-    fail("successful driver confirmation should clear stale ramp-limit status", { statusText });
-  }
-  if (!statusText.includes("Driver confirmation saved. Continue with the next output.")) {
-    fail("partial driver confirmation should give the next-step status", { statusText });
-  }
-  return { commissionRampLimitKeepsConfirmationOpen: true };
-}
 
 // C3a-7: startCommissionAutoRamp single-flight guard must always release.
 // If an unexpected throw occurs inside the guarded body (after running is set to
@@ -7154,162 +5215,6 @@ async function testCommissionRampLimitKeepsConfirmationOpen() {
 // main.js makes this test fail because after the throw commissionAutoRamp.running
 // stays true, the "Play Woofer" button is replaced by a disabled "Preparing"
 // button, and the second dispatchClick produces no new arm request.
-async function testCommissionAutoRampResetsRunningFlagOnThrow() {
-  let commissionState = {
-    commission_load: { status: "idle", target: {}, rollback_available: false },
-    ramp: { confirmed_roles: [], pending: null },
-    floor: { status: "floor_required", floor_audio_confirmed: false },
-  };
-  const armRequests = [];
-  const stepRequests = [];
-  let injectThrowViaStatus = true;
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
-    "./active-speaker/commission-load": (p, o) => {
-      armRequests.push({ path: p, body: JSON.parse(o.body || "{}") });
-      commissionState = {
-        commission_load: {
-          status: "loaded",
-          target: { role: "woofer", audible_gain_db: -120 },
-          rollback_available: true,
-        },
-        ramp: { confirmed_roles: [], pending: null },
-        floor: { status: "floor_required", floor_audio_confirmed: false },
-      };
-      return Promise.resolve(response({ load: { status: "loaded", target: { role: "woofer" } } }));
-    },
-    "./active-speaker/commission-ramp-step": (p, o) => {
-      const body = JSON.parse(o.body || "{}");
-      stepRequests.push({ path: p, body });
-      commissionState = {
-        commission_load: {
-          status: "loaded",
-          target: { role: "woofer", audible_gain_db: -80 },
-          rollback_available: true,
-        },
-        ramp: {
-          confirmed_roles: [],
-          pending: { role: body.role, gain_db: -80, frequency_hz: 250 },
-        },
-        floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
-      };
-      return Promise.resolve(response({ status: "stepped", next_gain_db: -80 }));
-    },
-    "./active-speaker/commission-ramp-abort": () =>
-      Promise.resolve(response({ status: "rolled_back" })),
-  });
-  const harness = setupHarness(fetchHandler);
-  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-
-  // Replace the 'status' DOM element with one whose className setter throws once,
-  // but ONLY when the textContent has been set to the "Starting quiet continuous"
-  // message — i.e. the status() call inside startCommissionAutoRamp itself, after
-  // ensureCommissionArmed has returned {ok:true}.  This escapes postCommission's
-  // own try/catch (which only wraps the fetch path) and reaches
-  // startCommissionAutoRamp's try/finally (the fix in C3a-7).
-  const realStatus = harness.elements.get("status");
-  const throwingStatus = Object.create(realStatus);
-  Object.defineProperty(throwingStatus, "className", {
-    get() { return realStatus.className; },
-    set(v) {
-      if (injectThrowViaStatus &&
-          String(throwingStatus.textContent || "").includes("Starting quiet continuous")) {
-        injectThrowViaStatus = false;
-        throw new TypeError(
-          "simulated unexpected throw in startCommissionAutoRamp body (C3a-7 test)"
-        );
-      }
-      realStatus.className = v;
-    },
-    configurable: true,
-  });
-  Object.defineProperty(throwingStatus, "textContent", {
-    get() { return realStatus.textContent; },
-    set(v) { realStatus.textContent = v; },
-    configurable: true,
-  });
-  harness.elements.set("status", throwingStatus);
-  globalThis.document.getElementById = (id) => {
-    if (!harness.elements.has(id)) harness.elements.set(id, makeEl(id));
-    return harness.elements.get(id);
-  };
-
-  // Capture the unhandled rejection that startCommissionAutoRamp emits when the
-  // injected throw propagates out of the async function.  In production (browser)
-  // this is just a console warning; in Node.js it would crash the test harness.
-  // The try/finally resets commissionAutoRamp.running before the rejection fires.
-  let capturedRejection = null;
-  const rejHandler = (reason) => { capturedRejection = reason; };
-  process.on("unhandledRejection", rejHandler);
-
-  // First click: the throw fires in status() after a successful arm → the
-  // try/finally must reset commissionAutoRamp.running.
-  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
-  await harness.flush(); await harness.flush(); await harness.flush();
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  process.removeListener("unhandledRejection", rejHandler);
-
-  if (!capturedRejection) {
-    fail("expected an unhandledRejection from the injected throw — check injection setup", {});
-  }
-  if (!String(capturedRejection).includes("C3a-7")) {
-    fail("unhandled rejection was not from our injected throw", { capturedRejection: String(capturedRejection) });
-  }
-
-  if (armRequests.length !== 1) {
-    fail("first commission-step should attempt one arm request", { armRequests });
-  }
-
-  // Restore normal status element so render() works cleanly for the assertion.
-  harness.elements.set("status", realStatus);
-  injectThrowViaStatus = false;
-
-  // Trigger a re-render by re-dispatching to get a clean view.
-  // (The throw in status() leaves the element in an indeterminate state; we need
-  // a clean render to read the card state.  Click something benign.)
-  // Simplest: dispatch a non-commission action and flush so the current card HTML
-  // is re-rendered. We read it from the last successful render inside runCommission.
-  // Actually the throw happened inside render(), so view-body innerHTML may be stale.
-  // Force a fresh render by invoking a harmless action:
-  harness.dispatchToggle({ "data-driver-advanced": true, open: true });
-  await harness.flush(); await harness.flush();
-
-  // After the throw the card must show the Play button again, NOT a disabled
-  // "Preparing" button.  If commissionAutoRamp.running stayed true the card
-  // would render the rampPreparing branch (disabled Preparing button) instead.
-  let html = harness.elements.get("view-body").innerHTML;
-  const cardHtml = commissionCardHtml(html);
-  if (cardHtml.includes(">Preparing<") || (cardHtml.includes("disabled") && cardHtml.includes("Preparing"))) {
-    fail(
-      "after a throw in startCommissionAutoRamp the card must not stay in the disabled " +
-      "Preparing state — commissionAutoRamp.running was not reset (try/finally missing?)",
-      { cardHtml }
-    );
-  }
-  if (!cardHtml.includes('data-act="commission-step"')) {
-    fail("after a throw the Play button must be re-enabled so the flow is re-runnable", { cardHtml });
-  }
-
-  // Second click: commission is still armed from the first arm request, so
-  // ensureCommissionArmed returns {ok:true} immediately without a network call.
-  // runCommissionAutoRamp will therefore fire and call commission-ramp-step —
-  // that proves the single-flight guard was cleared and the flow re-runs.
-  harness.dispatchClick({ "data-act": "commission-step", "data-role": "woofer" });
-  await harness.flush(); await harness.flush(); await harness.flush();
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  if (stepRequests.length < 1) {
-    fail(
-      "a second commission-step click after the throw must kick off the ramp (commission-ramp-step) — " +
-      "the single-flight guard must have been cleared by the try/finally",
-      { stepRequests, armRequests }
-    );
-  }
-
-  return { commissionAutoRampResetsRunningFlagOnThrow: true };
-}
 
 // C3a-7 (symmetric half): the fire-and-forget runCommissionAutoRamp loop must
 // ALSO release the single-flight guard on every exit. A render() throw on a
@@ -7325,147 +5230,6 @@ async function testCommissionAutoRampResetsRunningFlagOnThrow() {
 // at line ~4285. Targeting the second isolates the loop finally: with the loop
 // finally removed, the card stays wedged and the test fails; with it present,
 // running resets and a fresh click re-runs the flow.
-async function testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow() {
-  let commissionState = {
-    commission_load: {
-      status: "loaded",
-      target: { role: "woofer", audible_gain_db: -120 },
-      rollback_available: true,
-    },
-    ramp: { confirmed_roles: [], pending: null },
-    floor: { status: "floor_required", floor_audio_confirmed: false },
-  };
-  const stepRequests = [];
-  let injectThrow = true;
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
-    "./active-speaker/commission-ramp-step": (p, o) => {
-      stepRequests.push({ path: p, body: JSON.parse(o.body || "{}") });
-      // Successful step that produces a pending tone (canAck) so the card renders
-      // the "Tone is playing for" state.
-      commissionState = {
-        commission_load: {
-          status: "loaded",
-          target: { role: "woofer", audible_gain_db: -80 },
-          rollback_available: true,
-        },
-        ramp: {
-          confirmed_roles: [],
-          pending: { role: "woofer", gain_db: -80, frequency_hz: 250 },
-        },
-        floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
-      };
-      return Promise.resolve(response({ status: "stepped", next_gain_db: -80 }));
-    },
-    "./active-speaker/commission-ramp-abort": () =>
-      Promise.resolve(response({ status: "rolled_back" })),
-  });
-  const harness = setupHarness(fetchHandler);
-  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
-
-  // Replace the 'status' element with one whose className setter throws on the
-  // SECOND render where the card shows the playing controls — i.e. the loop's
-  // own render() at line ~4285, not postCommission's post-success render.
-  const realStatus = harness.elements.get("status");
-  let tonePlayingRenderCount = 0;
-  const throwingStatus = Object.create(realStatus);
-  Object.defineProperty(throwingStatus, "className", {
-    get() { return realStatus.className; },
-    set(v) {
-      if (injectThrow) {
-        const viewBody = harness.elements.get("view-body");
-        const body = viewBody ? String(viewBody.innerHTML || "") : "";
-        if (body.includes("I hear woofer") && body.includes("Stop")) {
-          tonePlayingRenderCount += 1;
-          if (tonePlayingRenderCount === 2) {
-            injectThrow = false;
-            throw new TypeError(
-              "simulated render() throw in runCommissionAutoRamp loop body (C3a-7 test)"
-            );
-          }
-        }
-      }
-      realStatus.className = v;
-    },
-    configurable: true,
-  });
-  Object.defineProperty(throwingStatus, "textContent", {
-    get() { return realStatus.textContent; },
-    set(v) { realStatus.textContent = v; },
-    configurable: true,
-  });
-  harness.elements.set("status", throwingStatus);
-  globalThis.document.getElementById = (id) => {
-    if (!harness.elements.has(id)) harness.elements.set(id, makeEl(id));
-    return harness.elements.get(id);
-  };
-
-  // Capture the unhandled rejection the loop emits when the injected throw
-  // propagates out of the (un-awaited) loop promise.  The loop's try/finally
-  // resets commissionAutoRamp.running before the rejection fires.
-  let capturedRejection = null;
-  const rejHandler = (reason) => { capturedRejection = reason; };
-  process.on("unhandledRejection", rejHandler);
-
-  harness.dispatchClick({
-    "data-act": "commission-step",
-    "data-role": "woofer",
-    "data-identity-audition": "true",
-  });
-  await harness.flush(); await harness.flush(); await harness.flush();
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  process.removeListener("unhandledRejection", rejHandler);
-
-  // Restore a clean status element so the assertion render works.
-  harness.elements.set("status", realStatus);
-  injectThrow = false;
-
-  if (!capturedRejection || !String(capturedRejection).includes("C3a-7")) {
-    fail("expected the injected render throw to reject the loop promise", {
-      capturedRejection: capturedRejection ? String(capturedRejection) : null,
-    });
-  }
-  if (stepRequests.length < 1) {
-    fail("the loop should have taken at least one ramp step before the render throw", { stepRequests });
-  }
-
-  // Reset the pending state so a recovered card would offer Play again and a
-  // stuck-running card would render the disabled "Preparing" branch
-  // (rampPreparing = running && !toneActive).
-  commissionState = {
-    commission_load: {
-      status: "loaded",
-      target: { role: "woofer", audible_gain_db: -120 },
-      rollback_available: true,
-    },
-    ramp: { confirmed_roles: [], pending: null },
-    floor: { status: "floor_required", floor_audio_confirmed: false },
-  };
-
-  // The flow must be re-runnable: a fresh click kicks off another ramp step.
-  // (With the loop finally missing, commissionAutoRamp.running is stuck true, so
-  // startCommissionAutoRamp short-circuits at its "already running" guard and no
-  // new ramp step is sent.)
-  const stepsBefore = stepRequests.length;
-  harness.dispatchClick({
-    "data-act": "commission-step",
-    "data-role": "woofer",
-    "data-identity-audition": "true",
-  });
-  await harness.flush(); await harness.flush(); await harness.flush();
-  await harness.flush(); await harness.flush(); await harness.flush();
-  if (stepRequests.length <= stepsBefore) {
-    fail(
-      "a fresh commission-step click after the loop render throw must kick off the " +
-      "ramp again — the loop's single-flight guard was not cleared",
-      { stepRequests }
-    );
-  }
-
-  return { commissionAutoRampLoopResetsRunningFlagOnRenderThrow: true };
-}
 
 async function testConfirmedOutputKeepsResetPreconditions() {
   const initialTopology = activeTwoWayTopologyPayload();
@@ -7841,10 +5605,10 @@ async function testFailedResetPreservesCommissioningPanels() {
       "./active-speaker/commissioning-view": () => Promise.resolve(response(
         commissioningViewPayload({
           status: "needs_output_confirmation",
-          current_step: "map",
+          current_step: "layout",
           stepStatuses: {
-            layout: "done", research: "done", map: "active",
-            safety: "todo", profile: "todo",
+            layout: "active", research: "done",
+            experiment: "todo", profile: "todo",
           },
         })
       )),
@@ -7857,7 +5621,7 @@ async function testFailedResetPreservesCommissioningPanels() {
     const harness = setupHarness(fetchHandler);
     await loadAndSetActiveState(harness);
     const before = harness.elements.get("view-body").innerHTML;
-    if (!before.includes(">Stop</button>")) {
+    if (!before.includes('data-output-step="experiment"')) {
       fail("fixture must start with the commissioning controls visible", {
         failureStatus, before,
       });
@@ -7866,7 +5630,7 @@ async function testFailedResetPreservesCommissioningPanels() {
     harness.dispatchClick({ "data-act": "reset-output-topology" });
     await harness.flush(); await harness.flush(); await harness.flush();
     const after = harness.elements.get("view-body").innerHTML;
-    if (!after.includes(">Stop</button>")) {
+    if (!after.includes('data-output-step="experiment"')) {
       fail("a failed reset must preserve commissioning panels", {
         failureStatus, after,
       });
@@ -7926,7 +5690,7 @@ async function testFollowerModeRendersLocalDriverUi() {
 
   const html = harness.elements.get("view-body").innerHTML;
   // The local driver/crossover/commissioning surface renders as primary content.
-  for (const expected of ["Active crossover setup", "Test combined drivers"]) {
+  for (const expected of ["Active crossover setup", "First speaker experiment"]) {
     if (!html.includes(expected)) {
       fail("follower /sound/ should render the local active-speaker UI", { expected, html });
     }
@@ -8440,7 +6204,7 @@ async function crossChildMapStepHtml(topology) {
     "./output-topology": () => Promise.resolve(response(topology)),
   }));
   await loadAndSetActiveState(harness);
-  return outputStepBodyHtml(harness.elements.get("view-body").innerHTML, "map");
+  return outputStepBodyHtml(harness.elements.get("view-body").innerHTML, "layout");
 }
 
 // A speaker whose drivers land on two child DACs of a composite output device.
@@ -9005,10 +6769,8 @@ results.push(await testBlockedSettingsSaveRendersOnTheCard());
 results.push(await testBlockedEqCarrierIsThePageState());
 results.push(await testLeavingAnUnsavedDraftRestoresThePersistedProfile());
 results.push(await testSplitPageModesRenderAndBootOnlyOwnedSurfaces());
-results.push(await testQuietTestSurfaceSurvivesStartupActions());
 results.push(await testPassiveLayoutsDoNotExposeDirectDriverTestFlow());
 results.push(await testSublessPassiveLayoutRendersATerminatedLadder());
-results.push(await testPassiveMainWithSubRendersAnExplainedCombinedStep());
 results.push(await testActiveCrossoverFirstStepRender());
 results.push(await testComponentFirstResearchFlowIsOrderedAndAdvancedIsFlat());
 results.push(await testOneDriverComponentCanPrepareResearchPrompt());
@@ -9018,20 +6780,12 @@ results.push(await testDirectCrossoverEditRefreshesProposalAndFooter());
 results.push(await testTweeterTypeChangeInvalidatesCopiedResearchBinding());
 results.push(await testThreeWayRendersEveryPhysicalComponentChoice());
 results.push(await testActiveRouteLimitsRenderedTemplates());
-results.push(await testMeasuredDriversOpenProfileStep());
 results.push(await testAppliedProfileEditContinueOpensProfileStep());
-results.push(await testCombinedTestLevelPostsSelectedBoundedLevel());
-results.push(await testCombinedTestFailureRestoresActionAndShowsError());
-results.push(await testCombinedTestButtonStopsActiveRequest());
-results.push(await testReloadedPageRendersReloadSafeStopForActiveTest());
-results.push(await testCombinedSoundsRightStopsAndSavesActiveLoop());
-results.push(await testStaleSummedValidationDoesNotRenderValidatedGroup());
 results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
 results.push(await testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview());
 results.push(await testUnknownDriverStyleRendersWithoutGuessedFloor());
 results.push(await testDesignDraftSaveRefusalShowsServerErrorNotSavedToast());
 results.push(await testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty());
-results.push(await testConfirmOutputsPlayUsesIdentityAuditionMode());
 results.push(await testConfirmOutputAbortsPendingAuditionWithoutAutoRamp());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
@@ -9069,21 +6823,8 @@ results.push(await testPreparePreviewUpdatesWorkingSetupFirst());
 results.push(await testPreparePreviewIgnoresOptionalSubwooferDriverInfo());
 results.push(await testPreparePreviewWaitsForInFlightWorkingSetupUpdate());
 results.push(await testPartialThreeWayWorkingSetupSummaryReadsCleanly());
-results.push(await testCommissionCardArmsAndSteps());
-results.push(await testCommissionCompleteDoesNotWrapToWoofer());
-results.push(await testStaleRampConfirmationsDoNotCompleteDriverChecks());
 results.push(await testDriverMicCaptureIsRemovedFromSoundFlow());
-results.push(await testSummedByEarValidationExcludesMicCapture());
-results.push(await testSummedValidationRefreshesBaselineProfileState());
 results.push(await testSaveAndApplyUsesSingleFinishEndpoint());
-results.push(await testCommissionPendingStepShowsAckWithoutFloorFlag());
-results.push(await testCommissionArmBlockedSurfacesReason());
-results.push(await testCommissionActiveGraphBlockSurfacesReason());
-results.push(await testCommissionOutputReconcileFailureSurfacesReason());
-results.push(await testCommissionToneFailureStopsAutoRamp());
-results.push(await testCommissionRampLimitKeepsConfirmationOpen());
-results.push(await testCommissionAutoRampResetsRunningFlagOnThrow());
-results.push(await testCommissionAutoRampLoopResetsRunningFlagOnRenderThrow());
 results.push(await testConfirmedOutputKeepsResetPreconditions());
 results.push(await testRepinOfferDisclosesWhatIsKeptAndWhatMustBeRedone());
 results.push(await testUnconfirmingAnOutputWarnsThatTheSpeakerGoesSilent());
@@ -9104,8 +6845,6 @@ results.push(await testStaleLowLimitWithoutABlockerNamesTheSaveAsTheRemedy());
 results.push(await testRetiredFieldNamesTheSaveAsTheRemedyAndNotCorruption());
 results.push(await testIncompleteFromABandRelationshipNamesTheRelationship());
 results.push(await testSafetyLimitsDeepLinkOpensTheComponentStep());
-results.push(await testCombinedTestCardAgreesWithItsDisabledButton());
-results.push(await testFailedCombinedTestBannerCarriesTheRemedy());
 results.push(await testCrossChildSpeakerGroupIsDisclosedInTheMapStep());
 results.push(await testIssueListEscapesUntrustedVerdictMessages());
 results.push(await testTuningHandoffCardMintsAndGoesStale());

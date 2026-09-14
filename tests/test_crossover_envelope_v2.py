@@ -120,15 +120,16 @@ def test_inactive_speaker_gets_not_applicable():
     assert env["alternate_actions"] == []
 
 
-def test_setup_not_ready_blocks_before_any_capture():
+@pytest.mark.parametrize("confirmed,screen", [(False, "speaker_setup"), (True, "awaiting_plan")])
+def test_first_experiment_needs_driver_limits_but_no_applied_profile(confirmed, screen):
     env = build_crossover_envelope_v2({
         "active": True,
         "setup": {"active": True, "status": "blocked"},
+        "driver_safety_profile_evaluation": {"confirmed_and_current": confirmed},
         "crossover_v2": {"phase": "check"},
     })
-    assert env["screen"] == "speaker_setup"
-    assert env["next_action"]["href"] == "/sound/speaker/"
-    assert _step_statuses(env)["speaker_setup"] == "active"
+    assert env["screen"] == screen
+    assert _step_statuses(env)["speaker_setup"] == ("done" if confirmed else "active")
 
 
 @pytest.mark.parametrize("phase", ["check", "measure", "verify", "closing"])

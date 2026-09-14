@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Start an inline plan, place the microphone, read progress and bank a run."""
+"""Run measurements, commission a speaker, inspect packets and apply candidates."""
 from __future__ import annotations
 
 import argparse
@@ -99,7 +99,8 @@ def _cmd_trial(client: WizardClient, args: argparse.Namespace) -> int:
     from jasper.active_speaker.candidate_bank import (  # lazy: trial-only candidate imports
         CandidateBankRefusal, find_banked_candidate,
     )
-    from jasper.active_speaker.measurement_programs import trial_program  # lazy: trial-only
+    from jasper.active_speaker.measurement_programs import run_program, trial_program  # lazy: trial-only
+    from jasper.active_speaker.candidate_parts import DECLARED_CROSSOVER_PROGRAM_ID  # lazy: trial-only
 
     try:
         banked = find_banked_candidate(args.fingerprint)
@@ -107,11 +108,14 @@ def _cmd_trial(client: WizardClient, args: argparse.Namespace) -> int:
         return failed(EXIT_REFUSED, exc.code, exc.detail, code=exc.code)
     sections = sorted(name for name, source in banked.candidate.analysis.get("resolution", {}).items()
                       if source == "document")
+    declared = banked.candidate.program_id == DECLARED_CROSSOVER_PROGRAM_ID
+    if declared:
+        sections = ["driver"]
     if len(sections) != 1:
         return failed(EXIT_REFUSED, "trial_sections_ambiguous", {"sections": sections}, code="trial_sections_ambiguous")
-    selected = trial_program(sections[0], args.mover)
-    args.program, args.poses, args.mover = selected.program_id, selected.layout, selected.mover
-    args.candidates = f"base,{banked.fingerprint}"
+    selected = run_program("speaker") if declared else trial_program(sections[0], args.mover)
+    args.program, args.poses, args.mover = selected.program_id, selected.layout, args.mover or selected.mover
+    args.candidates = None if declared else f"base,{banked.fingerprint}"
     return _cmd_run(client, args)
 
 
@@ -221,7 +225,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--plan", help="v5 plan document; used without plan-building flags")
     run.add_argument("--dry-run", action="store_true", help="read local facts and print preflight; run on the speaker with a loopback --base-url")
     run.set_defaults(func=_cmd_run)
-    trial = sub.add_parser("trial", parents=[run_args], help="test a banked candidate using its authored section's experiment")
+    trial_help = "Test a banked candidate; declared crossovers start the speaker experiment."
+    trial = sub.add_parser("trial", parents=[run_args], help=trial_help, description=trial_help)
     trial.add_argument("fingerprint", help="banked candidate fingerprint")
     trial.add_argument("--mover", choices=("arm", "human"))
     trial.set_defaults(func=_cmd_trial, plan=None, repeats=None, level_db=None, dry_run=False)

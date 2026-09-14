@@ -11,11 +11,11 @@ Register the wired microphone with `jasper-mic-calibration`; set its capture con
 3. Run `jasper-round wait --run <id>`. The run ends with `packet.json`, `index.md`, and a frequency picture when curves are available. Read `index.md` first; the packet holds applied layers, set limits, series statistics, and a fit for each selected Speaker take and role. Add `--verbose` to see the view results. Use `status` to inspect progress without granting placement.
 4. Select evidence by set. `speaker-fit`, `room`, and `repeat` use `jasper-round-views <verb> <round-dir> --set <set-id>`. Use `jasper-round-views sweep <round-dir> --scope round --set <set-id>`. Use `jasper-round-views bass-fit-table <round-dir…> --candidate <candidate.json> --target <target.json> --tolerance-db <db>`. `inventory` lists exact available commands.
 5. Author one prescription document. Run `jasper-crossover-prescriber judge <doc> --round <round-dir> --set <set-id>`, then `compose <doc> --base <fingerprint|saved> --round <round-dir> --set <set-id>`.
-6. Trial the composed fingerprint with the same loop. Then run `jasper-round apply <fingerprint>`. Apply requires a banked complete trial of that graph, intact trial evidence, matching identity, and a proved layer stack. Its verification dimensions are advice, not another gate.
+6. Trial the composed fingerprint with the same loop, then run `jasper-round apply <fingerprint>`. For first commissioning, apply the candidate named by the first experiment.
 
 ## Speaker
 
-`speaker/mark` takes two measurements at the design mark. Driver caps still bind the fader. Use `speaker-fit`, `repeat`, and `sweep`; measure the composed full graph before apply.
+`speaker/mark` takes two measurements at the design mark. On a new speaker, `run --program speaker` or `trial <declared-fp>` banks the measured delay, polarity and trims in the packet and a new candidate. Apply the fingerprint named in `index.md` to finish commissioning. Driver caps still bind the fader. Use `speaker-fit`, `repeat`, and `sweep` for further tuning.
 
 ## Room
 
@@ -157,7 +157,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `jasper-angle-capture serve` | Serve the microphone arm against the daemon's position gate. | mutating (`serve` moves the arm) | `jasper/cli/angle_capture.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber contract\|judge\|compose\|status` | Judge and compose prescription documents; serve contracts and read status. | advisory (judge, contract and status read; compose banks a candidate) | `jasper/cli/crossover_prescriber.py` |
-| `jasper-round run\|trial\|placed\|status\|wait\|apply` | Start an inline plan, place the microphone, read progress and bank a run. | mutating-with-gates (`run`/`trial`/`placed`/`wait`/`apply` write; `status` reads) | `jasper/cli/round.py` |
+| `jasper-round run\|trial\|placed\|status\|wait\|apply` | Run measurements, commission a speaker, inspect packets and apply candidates. | mutating-with-gates (`run`/`trial`/`placed`/`wait`/`apply` write; `status` reads) | `jasper/cli/round.py` |
 | `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|delay-landscape\|delay-confirm\|room\|room-grade\|bass\|bass-compare\|bass-fit-table\|inventory\|speaker-fit` | Read measured round evidence, including repeat --set spread across takes. Answers use stdout; detailed reports use files. | advisory (analysis views save artifacts) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |

@@ -27,27 +27,18 @@ import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { initSeatLevel, isSeatLevelRunning, stopSeatLevel } from "/assets/sound-profile/js/seat-level.js";
 import { applyInstallationToSetting, installationFromSetting } from "/assets/sound-profile/js/installation.js";
 import {
-  DEFAULT_SUB_CROSSOVER_HZ,
-  SUB_CROSSOVER_HZ_HI,
-  SUB_CROSSOVER_HZ_LO,
   activeCommissionGroup,
   activeSpeakerStepState,
   clampSubwooferCrossoverFcHz,
   commissioningStepFooter,
-  commissionPayloadHasIssue,
   commissionPayloadFailure,
   defaultActiveSpeakerStep,
   humanRole,
   levelMatchSummary,
   outputStatusClass,
-  outputStepTitle,
-  sensitivityTrimsFromGap,
-  subwooferCrossoverFcHz,
-  summedGroupFailureHint,
-  SUMMED_TEST_GENERIC_RETRY_HINT
+  outputStepTitle
 } from "/assets/sound-profile/js/active-speaker-ui.js";
 import {
-  magnitudeDb,
   GAINLESS_TYPES
 } from "/assets/sound-profile/js/eq-math.js";
 import {
@@ -128,8 +119,7 @@ import {
   fmtTrim,
   ico,
   manualNumberValue,
-  roleSentenceText,
-  sleepMs
+  roleSentenceText
 } from "/assets/sound-profile/js/format.js";
 import {
   ACTIVE_GAIN_EPSILON_DB,
@@ -146,9 +136,7 @@ import {
   resetOutputTemplateDraft
 } from "/assets/sound-profile/js/state.js";
 import {
-  activeCommissionRoles,
   activeCrossoverPairs,
-  activeOutputGroups,
   baseOutputDraft,
   crossChildGroupVerdicts,
   crossoverSetting,
@@ -161,7 +149,6 @@ import {
   observedOutputHardware,
   outputAssignedToOtherMap,
   outputChannel,
-  outputChannelGuardReady,
   outputClockDomainReport,
   outputGroups,
   outputHardware,
@@ -214,7 +201,6 @@ import {
     loading: false, action: '', session: null,
     calibrationLevel: null, measurements: null,
     baselineProfile: null, error: '', levelDbfs: null,
-    combinedTestLevelDbfs: null,
     commission: null, commissioningView: null,
     commissionBusy: '', commissionError: ''
   };
@@ -222,16 +208,6 @@ import {
   // revision the copied prompt was MINTED against (server-stamped), so a
   // later declaration edit turns the copy stale instead of drifting silently.
   var tuningHandoff = {programId: '', prompt: '', copied: false, selected: false, copiedRevision: null};
-  var summedTestRequest = {token: 0, armTimer: null, current: null};
-  var summedTestLevelUpdate = {timer: null, inFlight: false, pending: null};
-  var commissionAutoRamp = {
-    running: false,
-    token: 0,
-    targetKey: '',
-    stepCount: 0,
-    levelDbfs: null,
-    message: ''
-  };
   var COMMISSION_RAMP_LISTEN_MS = 900;
   var COMMISSION_RAMP_NEXT_PULSE_MS = 80;
   var SUMMED_TEST_STOP_ARM_MS = 250;
@@ -1256,30 +1232,15 @@ import {
     return payload;
   }
   function outputRoleStatusText(group, channel) {
-    if (!channel || channel.physical_output_index == null) return 'No DAC output assigned yet.';
-    if (!channel.identity_verified) {
-      return 'Play this driver quietly, then confirm what you hear.';
-    }
-    var proof = driverMeasurementCaptured(
-      group && group.id || '',
-      channel.role || ''
-    );
-    if (!outputChannelGuardReady(channel)) {
-      return 'Confirmed. JTS will add the tweeter guard before any sound starts.';
-    }
-    if (channel.protection_required) {
-      return channel.protection_status === 'present' ?
-        'Confirmed. Extra protection noted; tests still start very quiet.' :
-        'Confirmed. JTS will start it very quiet.';
-    }
-    return proof ? 'Heard and confirmed.' : 'Confirmed. Play and confirm the driver.';
+    if (channel.physical_output_index == null) return 'Assign a DAC output.';
+    return channel.identity_verified ? 'Wire label confirmed.' : 'Confirm the wire label.';
   }
   function renderOutputTopologySetup() {
     return '<div class="setting-row setting-row--stack output-setup">' +
       '<div class="output-setup__head">' +
         '<div class="setting-row__text">' +
           '<p class="setting-row__title">Active crossover setup</p>' +
-          '<p class="setting-row__hint">Choose layout, set crossover values, confirm outputs, then validate.</p>' +
+          '<p class="setting-row__hint">Declare the speaker, confirm driver limits, measure, then apply.</p>' +
         '</div></div>' +
       renderOutputTopologyBody() +
     '</div>';
@@ -1290,42 +1251,6 @@ import {
       '<button type="button" class="btn btn--ghost" data-act="refresh-output-topology"' +
         (outputTopology.loading ? ' disabled' : '') + '>' + (topology ? 'Refresh hardware' : 'Find hardware') + '</button>' +
     '</div>';
-  }
-  function outputIdentityComplete() {
-    if (outputTopology.dirty) return false;
-    var report = outputIdentityReport();
-    if (!report) return false;
-    return Number(report.assigned_channel_count || 0) > 0 &&
-      Number(report.unverified_channel_count || 0) === 0;
-  }
-  function measurementSummary() {
-    return activeSpeaker.measurements && activeSpeaker.measurements.summary || {};
-  }
-  function commissioningDriverChecksComplete() {
-    var view = activeSpeaker.commissioningView || {};
-    var checks = view.driver_checks && typeof view.driver_checks === 'object' ?
-      view.driver_checks : {};
-    return checks.complete === true;
-  }
-  function driverChecksComplete() {
-    var summary = measurementSummary();
-    return summary.driver_checks_complete === true ||
-      summary.driver_measurements_complete === true ||
-      commissioningDriverChecksComplete();
-  }
-  function driverTargetProofComplete() {
-    var view = activeSpeaker.commissioningView || {};
-    var proof = view.driver_target_proof && typeof view.driver_target_proof === 'object' ?
-      view.driver_target_proof : {};
-    return proof.complete === true ||
-      (outputIdentityComplete() && driverChecksComplete());
-  }
-  function summedValidationComplete() {
-    var view = activeSpeaker.commissioningView || {};
-    var summed = view.summed_validation && typeof view.summed_validation === 'object' ?
-      view.summed_validation : {};
-    return measurementSummary().summed_validation_complete === true ||
-      summed.complete === true;
   }
   function baselineProfileAppliedRecord() {
     var view = activeSpeaker.commissioningView || {};
@@ -1351,12 +1276,8 @@ import {
       dirty: outputTopology.dirty,
       hardwareMatchesSaved: !outputHardwareMismatch(topology),
       driverResearchSatisfied: driverResearchFlowComplete(topology),
-      outputIdentityComplete: outputIdentityComplete(),
-      driverTargetProofComplete: driverTargetProofComplete(),
-      driverChecksComplete: driverChecksComplete(),
-      summedValidationComplete: summedValidationComplete(),
-      baselineProfileApplied: baselineProfileApplied(),
-      baselineProfileNeedsRevalidation: baselineProfileNeedsRevalidation()
+      steps: (activeSpeaker.commissioningView || {}).steps,
+      currentStep: (activeSpeaker.commissioningView || {}).current_step
     };
   }
   function commissioningStepView(step) {
@@ -1373,11 +1294,6 @@ import {
     return state === 'done' || state === 'active' || state === 'todo' ||
       state === 'not_required' ? state : '';
   }
-  // A rung this speaker's shape will never run (a full-range passive speaker
-  // has no combined driver test and no active speaker profile). The backend
-  // coordinator owns the decision; the page only renders it. Without this the
-  // unknown status fell through commissioningStepState to the client-side
-  // guess, which put the step back on 'todo' and re-opened the dead end.
   function commissioningStepNotRequired(step) {
     return commissioningStepState(step) === 'not_required';
   }
@@ -1406,8 +1322,7 @@ import {
   }
   function outputStepCanOpen(step, topology) {
     if (outputStepState(step, topology) !== 'todo') return true;
-    // Dirty output remaps are saved from the map card itself.
-    return step === 'map' && outputTopology.dirty && outputPage.stepOverride === 'map';
+    return step === 'layout' && outputTopology.dirty && outputPage.stepOverride === 'layout';
   }
   function openOutputStep(step) {
     outputPage.stepOverride = step;
@@ -1479,15 +1394,6 @@ import {
     return '<span data-driver-research-footer>' +
       driverResearchStepFooterButtonHtml(topology) +
     '</span>';
-  }
-  function renderOutputMapStepFooter() {
-    var clientFallback = {label: 'Save', primary: true, disabled: false,
-      act: 'save-output-topology'};
-    return renderStepFooterButton(commissioningStepFooter('map',
-      activeSpeaker.commissioningView, {
-        layoutDirty: outputTopology.dirty,
-        clientFallback: clientFallback
-      }));
   }
   function outputTemplateAxesForTopology(topology) {
     var mainGroups = outputGroups(topology).filter(function(group) {
@@ -1918,7 +1824,8 @@ import {
         topology,
         renderOutputSetupTemplates(topology) +
           renderOutputSubwooferCard(topology) +
-          renderOutputHardwareCard(topology, layoutStatusValue),
+          renderOutputHardwareCard(topology, layoutStatusValue) +
+          renderCrossChildNoticeCard(topology) + renderOutputGroupsCard(topology),
         renderOutputHardwareRefresh() +
           renderOutputStepButton('layout',
           outputTopology.dirty ? 'Save' : 'Continue',
@@ -1926,39 +1833,26 @@ import {
       ) +
       renderOutputStepCard(
         'research',
-        'Add your components',
+        'Confirm driver safety profile',
         outputStepHint('research', 'Describe each installed driver, then research a starting crossover.'),
         topology,
         renderDriverResearchCard(topology),
         renderDriverResearchStepFooter(topology)
       ) +
       renderOutputStepCard(
-        'map',
-        'Confirm outputs',
-        outputStepHint('map', 'Assign DAC channels, then play each driver quietly.'),
+        'experiment',
+        'First speaker experiment',
+        outputStepHint('experiment', 'Measure the speaker at the design mark.'),
         topology,
-        renderCrossChildNoticeCard(topology) +
-          renderOutputStageCard(topology) +
-          renderOutputGroupsCard(topology) +
-          renderOutputIdentityCard(),
-        renderOutputMapStepFooter()
-      ) +
-      renderOutputStepCard(
-        'safety',
-        'Test combined drivers',
-        outputStepHint('safety', 'Play the saved crossover with all confirmed drivers.'),
-        topology,
-        commissioningStepNotRequired('safety')
-          ? renderStepNotRequiredCard(
-              'safety',
-              'This speaker has no combined driver test to run.')
-          : renderSummedValidationCard(topology),
+        commissioningStepNotRequired('experiment')
+          ? renderStepNotRequiredCard('experiment', 'No active crossover experiment is needed.')
+          : '<a class="btn btn--primary" href="/sound/speaker/crossover/">Open speaker experiment</a>',
         ''
       ) +
       renderOutputStepCard(
         'profile',
-        'Validate and apply',
-        outputStepHint('profile', 'Save and apply the checked active profile.'),
+        'Apply speaker profile',
+        outputStepHint('profile', 'Apply the candidate from the experiment packet.'),
         topology,
         commissioningStepNotRequired('profile')
           ? renderStepNotRequiredCard(
@@ -2075,7 +1969,7 @@ import {
       '<p class="setting-row__hint">' + escapeHtml(
         'You still confirm ' +
         (labels.length ? labels.join(' and ') : 'the affected outputs') +
-        ' by ear — audio stays off until you do and the speaker re-arms — and ' +
+        ' against the wire labels — audio stays off until you do and the speaker re-arms — and ' +
         're-run the 15-minute drift measurement for the new pair.'
       ) + '</p>' +
       '<button type="button" class="btn btn--primary" data-act="repin-output-topology"' +
@@ -2083,81 +1977,6 @@ import {
         escapeHtml(outputTopology.repinning ? 'Pinning' : 'Keep setup, pin the new DAC') +
       '</button>' +
     '</div>';
-  }
-  function renderOutputStageCard(topology) {
-    var groups = outputGroups(topology);
-    var cabinets = groups.map(function(group) {
-      var channels = (Array.isArray(group.channels) ? group.channels : []).slice();
-      var roleOrder = {tweeter: 0, mid: 1, woofer: 2, full_range: 3, subwoofer: 4};
-      channels.sort(function(a, b) {
-        return (roleOrder[a.role] == null ? 99 : roleOrder[a.role]) -
-          (roleOrder[b.role] == null ? 99 : roleOrder[b.role]);
-      });
-      var channelCards = channels.map(function(channel) {
-        var outputLabel = channel.human_output_label ||
-          (channel.physical_output_index == null ? 'Unassigned' :
-            physicalOutputLabel(topology, channel.physical_output_index));
-        var model = targetModel({
-          target_id: String(group.id || '') + ':' + String(channel.role || ''),
-          role: String(channel.role || '')
-        }, topology);
-        return '<div class="speaker-stack__driver" data-role="' + escapeHtml(channel.role || '') + '">' +
-          '<strong>' + escapeHtml(humanRole(channel.role)) + '</strong>' +
-          '<span>' + escapeHtml(outputLabel) + '</span>' +
-          (model ? '<small>' + escapeHtml(model) + '</small>' : '') +
-        '</div>';
-      }).join('');
-      return '<div class="speaker-stack">' +
-        '<div class="speaker-stack__label">' + escapeHtml(group.label || group.id || 'Speaker') + '</div>' +
-        '<div class="speaker-stack__cabinet">' +
-          (channelCards || '<p class="setting-row__hint">No channels yet.</p>') +
-        '</div>' +
-      '</div>';
-    }).join('');
-    return '<div class="output-card output-card--stage">' +
-      '<div class="output-card__head"><div><p class="output-card__title">Speaker layout</p>' +
-        '<p class="setting-row__hint">Drivers are stacked roughly like the cabinet you are wiring.</p></div></div>' +
-      '<div class="speaker-stack-grid">' +
-        (cabinets || '<p class="setting-row__hint">Choose a speaker layout first.</p>') +
-      '</div>' +
-    '</div>';
-  }
-  function renderOutputRoleToneControls(group, channel) {
-    var activeGroup = activeCommissionGroup(currentOutputTopology());
-    var role = channel && channel.role || '';
-    if (!activeGroup || String(activeGroup.id || '') !== String(group.id || '')) return '';
-    if (activeCommissionRoles(group).indexOf(role) < 0) return '';
-    var targetKey = commissionTargetKey(group.id, role);
-    var pending = commissionPendingStep();
-    var loadedKey = commissionLoadedTargetKey(group.id);
-    var tonePlaying = !!(pending && (pending.role || '') === role &&
-      (!loadedKey || loadedKey === targetKey));
-    var toneStarting = commissionAutoRamp.running &&
-      commissionAutoRamp.targetKey === targetKey && !tonePlaying;
-    var otherToneRunning = commissionAutoRamp.running &&
-      commissionAutoRamp.targetKey !== targetKey;
-    var otherPendingTone = !!(pending && (pending.role || '') !== role);
-    var disabled = outputTopology.dirty ||
-      channel.physical_output_index == null ||
-      otherToneRunning ||
-      otherPendingTone;
-    if (tonePlaying) {
-      return '<button type="button" class="btn btn--danger btn--compact output-role__action" ' +
-        'data-act="commission-abort">' +
-        'Stop</button>' +
-        '<button type="button" class="btn btn--primary btn--compact output-role__action" ' +
-          'data-act="commission-ack" data-outcome="heard_correct_driver" ' +
-          'data-confirm-output-identity="true">' +
-          'I hear ' + escapeHtml(String(humanRole(role)).toLowerCase()) + '</button>';
-    }
-    if (toneStarting) {
-      return '<button type="button" class="btn btn--primary btn--compact output-role__action" disabled>' +
-        'Starting</button>';
-    }
-    return '<button type="button" class="btn btn--ghost btn--compact output-role__action" ' +
-      'data-act="commission-step" data-identity-audition="true" ' +
-      'data-role="' + escapeHtml(role) + '"' +
-      (disabled ? ' disabled' : '') + '>Play</button>';
   }
   function renderCrossChildNoticeCard(topology) {
     var verdicts = crossChildGroupVerdicts(topology);
@@ -2196,7 +2015,7 @@ import {
       '<p class="commission-card__error">' + escapeHtml(activeSpeaker.commissionError) + '</p>' : '';
     return '<div class="output-card output-card--groups">' +
       '<div class="output-card__head"><div><p class="output-card__title">DAC output assignments</p>' +
-        '<p class="setting-row__hint">Assign each driver to one DAC channel. Play starts quiet and ramps.</p></div>' +
+        '<p class="setting-row__hint">Assign each driver to one DAC channel and confirm the wire labels.</p></div>' +
         '<span class="status-pill' + (outputTopology.dirty ? '' : ' status-pill--ready') + '">' +
           escapeHtml(outputTopology.dirty ? 'draft' : 'saved') + '</span></div>' +
       commissionError +
@@ -2255,7 +2074,6 @@ import {
             '</select>' +
           '</label>' +
           '<div class="output-role__actions">' +
-            renderOutputRoleToneControls(group, channel) +
             '<button type="button" class="btn btn--ghost output-role__action" ' +
               'data-act="mark-output-identity" ' +
               'data-group-id="' + escapeHtml(group.id) + '" ' +
@@ -2269,241 +2087,11 @@ import {
       }).join('') + '</div>' +
     '</div>';
   }
-  function renderOutputIdentityCard() {
-    if (outputTopology.dirty) {
-      return '<div class="output-card output-card--identity">' +
-        '<div class="output-card__head"><div><p class="output-card__title">Confirmation progress</p>' +
-        '<p class="setting-row__hint">Save this speaker layout draft before confirming outputs.</p></div>' +
-        '<span class="status-pill">draft</span></div>' +
-        '<p class="setting-row__hint">JTS will re-check the layout after save, then you can confirm each DAC output.</p>' +
-      '</div>';
-    }
-    var report = outputIdentityReport();
-    if (!report) {
-      return '<div class="output-card output-card--identity">' +
-        '<div class="output-card__head"><div><p class="output-card__title">Confirmation progress</p>' +
-        '<p class="setting-row__hint">Load or save the speaker layout to see verification progress.</p></div></div>' +
-      '</div>';
-    }
-    var assigned = Number(report.assigned_channel_count || 0);
-    var verified = Number(report.verified_channel_count || 0);
-    var unverified = Number(report.unverified_channel_count || 0);
-    var proof = activeSpeaker.commissioningView &&
-      activeSpeaker.commissioningView.driver_target_proof || {};
-    var summary = measurementSummary();
-    var proofComplete = proof.complete === true ||
-      (outputIdentityComplete() && driverChecksComplete());
-    var proofCaptured = Number(
-      proof.captured ||
-      summary.captured_driver_check_count ||
-      summary.captured_driver_count ||
-      0
-    );
-    var proofRequired = Number(
-      proof.required ||
-      summary.required_driver_check_count ||
-      summary.required_driver_count ||
-      assigned ||
-      0
-    );
-    // The backend already publishes WHY the driver proof is what it is. When no
-    // driver listening check was ever required, "0/1 heard" (styled ready) read
-    // as a verification result nothing had produced; report the confirmation
-    // that actually happened — output identity — instead.
-    var proofNotRequired = String(proof.source || '') === 'not_required';
-    var proofPill = proofNotRequired ?
-      (verified + '/' + assigned + ' confirmed') :
-      (proofCaptured + '/' + proofRequired + ' heard');
-    var targets = Array.isArray(report.targets) ? report.targets : [];
-    var rows = targets.length ? targets.map(function(target) {
-      var heard = driverMeasurementCaptured(target.speaker_group_id, target.role);
-      return '<li class="output-identity-row">' +
-        '<span>' + escapeHtml(target.speaker_label || target.speaker_group_id || 'Speaker') +
-          ' · ' + escapeHtml(humanRole(target.role)) + '</span>' +
-        '<strong>' + escapeHtml(heard ? 'Heard' : target.identity_verified ? 'Confirmed' :
-          (target.assigned ? 'Needs confirmation' : 'Unassigned')) + '</strong>' +
-      '</li>';
-    }).join('') : '<li class="output-identity-row"><span>No channels configured</span><strong>Draft</strong></li>';
-    return '<div class="output-card output-card--identity">' +
-      '<div class="output-card__head"><div><p class="output-card__title">Confirmation progress</p>' +
-        '<p class="setting-row__hint">Play each quiet ramp, then confirm the driver you hear.</p></div>' +
-        '<span class="status-pill' + (proofComplete ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(proofPill) + '</span></div>' +
-      (outputTopology.dirty ? '<p class="setting-row__hint">Save the draft before changing confirmed outputs.</p>' : '') +
-      '<ul class="output-identity-list">' + rows + '</ul>' +
-      '<p class="setting-row__hint">' + escapeHtml(
-        proofComplete && proofNotRequired ?
-          'Every output is confirmed. This speaker needs no separate driver checks.' :
-        proofComplete ? 'Outputs and drivers are confirmed. Continue to the combined test.' :
-        unverified > 0 ? 'Play and confirm each assigned output above to continue.' :
-          'Each output is assigned; finish hearing each driver to continue.'
-      ) + '</p>' +
-      '<p class="setting-row__hint commission-card__followup">Confirming each driver ' +
-        'by ear proves it is wired and audible through the crossover and limiter. ' +
-        'Mic-based level matching is a separate HTTPS measurement step after this basic setup.</p>' +
-    '</div>';
-  }
-  function playbackHasBlocker(playback) {
-    var issues = Array.isArray(playback && playback.issues) ? playback.issues : [];
-    return issues.some(function(issue) {
-      return issue && issue.severity === 'blocker';
-    });
-  }
-  function playbackConfirmable(playback) {
-    return !!playback &&
-      playback.audio_emitted === true &&
-      playback.playback_id &&
-      playback.confirmable !== false &&
-      !playbackHasBlocker(playback);
-  }
-  function commissionTargetKey(groupId, role) {
-    return [groupId || '', role || ''].join(':');
-  }
-  function commissionLoadedTargetKey(fallbackGroupId) {
-    var commission = activeSpeaker.commission || {};
-    var load = commission.commission_load || {};
-    var target = load.target || {};
-    if (load.status !== 'loaded' || !target.role) return '';
-    return commissionTargetKey(target.speaker_group_id || fallbackGroupId || '', target.role || '');
-  }
-  function commissionAutoRampCurrent(groupId, role, token) {
-    var targetKey = commissionTargetKey(groupId, role);
-    if (!commissionAutoRamp.running || token !== commissionAutoRamp.token ||
-        commissionAutoRamp.targetKey !== targetKey) return false;
-    var loadedKey = commissionLoadedTargetKey(groupId);
-    if (loadedKey && loadedKey !== targetKey) return false;
-    var pending = commissionPendingStep();
-    return !(pending && (pending.role || '') !== role);
-  }
-  function stopCommissionAutoRamp(message) {
-    commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
-      running: false,
-      token: commissionAutoRamp.token + 1,
-      message: message || ''
-    });
-  }
   function commissionPendingStep() {
     var commission = activeSpeaker.commission || {};
     var ramp = commission.ramp || {};
     return ramp.pending || null;
   }
-  function measurementTargetId(groupId, role) {
-    return String(groupId || '') + ':' + String(role || '').trim().toLowerCase();
-  }
-  function latestDriverMeasurement(groupId, role) {
-    var summary = measurementSummary();
-    var latest = summary.latest_driver_checks || summary.latest_driver_measurements || {};
-    return latest[measurementTargetId(groupId, role)] || null;
-  }
-  function driverMeasurementCaptured(groupId, role) {
-    var latest = latestDriverMeasurement(groupId, role);
-    return latest && latest.captured === true;
-  }
-  function latestSummedValidation(groupId) {
-    var latest = measurementSummary().latest_summed_validations || {};
-    return latest[String(groupId || '')] || null;
-  }
-  function latestSummedTest(groupId) {
-    var latest = measurementSummary().latest_summed_tests || {};
-    return latest[String(groupId || '')] || null;
-  }
-  function commissioningGroupView(groupId) {
-    var view = activeSpeaker.commissioningView || {};
-    var groups = Array.isArray(view.combined_groups) ? view.combined_groups : [];
-    var key = String(groupId || '');
-    for (var i = 0; i < groups.length; i += 1) {
-      if (String(groups[i].group_id || '') === key) return groups[i];
-    }
-    return null;
-  }
-  function commissioningGroupAction(groupView, actionId) {
-    var actions = groupView && groupView.actions || {};
-    var action = actions[actionId] || null;
-    return action && typeof action === 'object' ? action : null;
-  }
-  // The banner for a combined test that answered 200 and emitted nothing. The
-  // backend has already resolved WHY for this group (the caller refreshes the
-  // commissioning view first), so carry the remedy here instead of telling the
-  // household to "review the message in this card": the ladder can legitimately
-  // keep that card closed, and then the message pointed nowhere at all.
-  function summedTestFailureBanner(groupId) {
-    return summedGroupFailureHint(commissioningGroupView(groupId)) ||
-      SUMMED_TEST_GENERIC_RETRY_HINT;
-  }
-  function combinedTestLevelConfig() {
-    var viewLevel = activeSpeaker.commissioningView &&
-      activeSpeaker.commissioningView.test_level || {};
-    var signal = activeSpeaker.calibrationLevel &&
-      activeSpeaker.calibrationLevel.test_signal || {};
-    var localValue = activeSpeaker.combinedTestLevelDbfs == null ?
-      NaN : Number(activeSpeaker.combinedTestLevelDbfs);
-    var requested = isFinite(localValue) ? localValue : Number(
-      viewLevel.requested_level_dbfs != null ?
-        viewLevel.requested_level_dbfs : signal.requested_level_dbfs
-    );
-    var min = Number(
-      viewLevel.min_level_dbfs != null ? viewLevel.min_level_dbfs : signal.min_level_dbfs
-    );
-    var max = Number(
-      viewLevel.max_level_dbfs != null ? viewLevel.max_level_dbfs : signal.max_level_dbfs
-    );
-    var step = Number(
-      viewLevel.step_db != null ? viewLevel.step_db : signal.step_db
-    );
-    if (!isFinite(min)) min = -80;
-    if (!isFinite(max)) max = 0;
-    if (!isFinite(step) || step <= 0) step = 1;
-    if (!isFinite(requested)) requested = min;
-    requested = clamp(requested, min, max);
-    return {
-      min: min,
-      max: max,
-      step: step,
-      value: requested
-    };
-  }
-  function combinedTestLevelDbfs() {
-    var cfg = combinedTestLevelConfig();
-    var value = activeSpeaker.combinedTestLevelDbfs == null ?
-      NaN : Number(activeSpeaker.combinedTestLevelDbfs);
-    return clamp(isFinite(value) ? value : cfg.value, cfg.min, cfg.max);
-  }
-  function combinedTestLevelDbfsFrom(value) {
-    var cfg = combinedTestLevelConfig();
-    return clamp(value, cfg.min, cfg.max);
-  }
-  function renderSummedLevelControl(groupId, options) {
-    options = options || {};
-    var cfg = combinedTestLevelConfig();
-    var value = combinedTestLevelDbfs();
-    var disabled = options.disabled === true;
-    var live = options.live === true;
-    var hint = live ?
-      'Changes apply while the test audio is playing.' :
-      (disabled ?
-        'Preparing the test path. Level changes will be available in a moment.' :
-        'Choose a careful level. You can adjust it while the test audio plays (about 12 seconds).');
-    return '<label class="active-speaker-summed-level">' +
-      '<span class="active-speaker-summed-level__head">' +
-        '<span>Combined test level</span>' +
-        '<strong data-summed-level-readout="' + escapeHtml(groupId) + '">' +
-          escapeHtml(fmtDb(value)) +
-        '</strong>' +
-      '</span>' +
-      '<input type="range" data-summed-test-level="' + escapeHtml(groupId) + '"' +
-        ' min="' + escapeHtml(String(cfg.min)) + '"' +
-        ' max="' + escapeHtml(String(cfg.max)) + '"' +
-        ' step="' + escapeHtml(String(cfg.step)) + '"' +
-        ' value="' + escapeHtml(String(value)) + '"' +
-        (disabled ? ' disabled' : '') +
-        ' aria-label="Combined test level">' +
-      '<span class="setting-row__hint">' + escapeHtml(hint) + '</span>' +
-    '</label>';
-  }
-  // The body of a step this speaker's shape will never run. Says why, and says
-  // the setup is finished, instead of leaving a titled card with nothing in it.
-  // The sentence comes from the backend step message; `fallback` only covers a
-  // view that has not loaded yet.
   function renderStepNotRequiredCard(step, fallback) {
     return '<div class="output-card output-card--not-required">' +
       '<div class="output-card__head"><div>' +
@@ -2512,162 +2100,6 @@ import {
         '</p></div>' +
         '<span class="status-pill">not needed</span></div>' +
       '<p class="setting-row__hint">Speaker setup is complete once every output is confirmed.</p>' +
-    '</div>';
-  }
-  // Is the combined test actually on offer? The BACKEND owns the whole
-  // prerequisite chain — the values must be saved AND previewed AND the outputs
-  // confirmed, because the test plays through the staged crossover graph — and
-  // publishes the verdict as each group's start action. Re-deriving readiness
-  // here from the driver proof alone let the card head invite "play the
-  // combined speaker" over a button the backend had disabled. Only fall back to
-  // the local guess when the backend view has not loaded.
-  function combinedTestOnOffer(groups) {
-    var backendAnswered = false;
-    var offered = false;
-    (groups || []).forEach(function(group) {
-      var action = commissioningGroupAction(
-        commissioningGroupView(group.id), 'start_combined_test');
-      if (!action) return;
-      backendAnswered = true;
-      if (action.enabled === true) offered = true;
-    });
-    return backendAnswered ? offered : driverTargetProofComplete();
-  }
-  function renderSummedValidationCard(topology) {
-    var groups = activeOutputGroups(topology);
-    // Reached today, not hypothetically: a passive-mains-WITH-sub layout keeps
-    // the safety step live (it still compiles a degenerate 1-way bass-management
-    // profile) but has no active driver group to test together, so this runs
-    // with zero groups on every render of that shape. The SUBLESS passive
-    // layout never arrives — the backend terminates it (`not_required`) before
-    // this call. Either way, say why instead of rendering a step title over an
-    // empty body: that silent blank is how the passive dead end went unnoticed.
-    if (!groups.length) {
-      return '<div class="output-card output-card--not-required">' +
-        '<div class="output-card__head"><div>' +
-          '<p class="output-card__title">No combined test available</p>' +
-          '<p class="setting-row__hint">This speaker layout has no group of drivers to test together.</p>' +
-        '</div><span class="status-pill">unavailable</span></div>' +
-      '</div>';
-    }
-    var canRecord = combinedTestOnOffer(groups);
-    var revalidation = baselineProfileRevalidation();
-    var revalidating = revalidation.required === true;
-    var revalidationNeedsCombined = revalidating &&
-      (revalidation.next_step || '') === 'combined_check';
-    var rows = groups.map(function(group) {
-      var groupView = commissioningGroupView(group.id);
-      var startAction = commissioningGroupAction(groupView, 'start_combined_test');
-      var recordAction = commissioningGroupAction(groupView, 'record_combined_result');
-      var latest = latestSummedValidation(group.id);
-      var latestTest = latestSummedTest(group.id);
-      var ok = groupView ? groupView.validated === true :
-        (latest && latest.validated === true);
-      var hasAudibleTest = latestTest && latestTest.captured === true &&
-        latestTest.audio_emitted === true && !playbackHasBlocker(latestTest);
-      if (groupView && groupView.has_audible_test === true) hasAudibleTest = true;
-      var statusText = groupView && groupView.status_label ? groupView.status_label :
-        (ok ? 'validated' : (hasAudibleTest ? 'ready' : 'not tested'));
-      var combinedStarting = activeSpeaker.action === 'Starting combined test';
-      var combinedPlaying = activeSpeaker.action === 'Playing combined test';
-      var combinedStopping = activeSpeaker.action === 'Stopping combined test';
-      var combinedSaving = activeSpeaker.action === 'Saving combined check';
-      // Server-authoritative "a combined test is still looping" — lets a freshly
-      // loaded/reloaded page render Stop even though this tab never held the
-      // local 'Playing combined test' action (the un-stoppable-after-reload bug).
-      var serverTestActive = !!(groupView && groupView.summed_test_active === true);
-      var localTestCurrent = summedTestRequest.current || null;
-      var localCombinedPlaying = combinedPlaying &&
-        localTestCurrent && localTestCurrent.groupId === group.id &&
-        localTestCurrent.promise;
-      var combinedControlsLocked = combinedStarting || combinedStopping || combinedSaving;
-      var combinedPlaybackActive = combinedStarting || combinedPlaying || combinedStopping || serverTestActive;
-      var showStop = (combinedPlaying || serverTestActive) && !combinedStopping;
-      var testButton;
-      if (showStop) {
-        testButton = '<button type="button" class="btn btn--danger" ' +
-          'data-act="stop-summed-test" data-group-id="' + escapeHtml(group.id) + '"' +
-          '>Stop</button>';
-      } else if (combinedStarting || combinedStopping) {
-        testButton = '<button type="button" class="btn ' +
-          (combinedStopping ? 'btn--danger' : 'btn--primary') + '" disabled>' +
-          escapeHtml(combinedStopping ? 'Stopping' : 'Preparing combined test') +
-          '</button>';
-      } else {
-        testButton = '<button type="button" class="btn btn--primary" ' +
-          'data-act="prepare-summed-test" data-group-id="' + escapeHtml(group.id) + '"' +
-          ' data-label="' + escapeHtml(group.label || group.id || 'speaker') + '"' +
-          ((startAction ? startAction.enabled !== true : !canRecord) ? ' disabled' : '') +
-          '>' + escapeHtml(startAction && startAction.label || 'Play combined test') +
-          '</button>';
-      }
-      var recordEnabled = !combinedControlsLocked &&
-        (recordAction ? recordAction.enabled === true : hasAudibleTest);
-      // Only the tab that owns the active play request can turn "Sounds right"
-      // into a confirmed stop + fresh validation. A reloaded page may know from
-      // the server that a test is active, but it has no pending play promise to
-      // await, so it offers Stop only.
-      if (serverTestActive && !localCombinedPlaying) recordEnabled = false;
-      if (localCombinedPlaying) recordEnabled = true;
-      var summedTestId =
-        localCombinedPlaying ? '' :
-        recordAction && recordAction.body && recordAction.body.summed_test_id ||
-        latestTest && (latestTest.summed_test_id || latestTest.playback_id) || '';
-      // Positive by-ear path for the core /sound flow. Mic-backed level/delay
-      // work belongs in the separate HTTPS measurement experience.
-      var blendOkButton = '<button type="button" class="btn btn--primary" ' +
-        'data-act="record-summed-validation" data-group-id="' + escapeHtml(group.id) +
-        '" data-summed-test-id="' + escapeHtml(summedTestId) +
-        '" data-outcome="blend_ok"' + (recordEnabled ? '' : ' disabled') +
-        '>Sounds right</button>';
-      var backButton = '<button type="button" class="btn btn--ghost" ' +
-        'data-act="back-to-crossover-config"' +
-        (combinedPlaybackActive || combinedSaving ? ' disabled' : '') + '>Back to adjust crossover</button>';
-      var hint = revalidationNeedsCombined ?
-        (hasAudibleTest ?
-          'Revalidation test played. Save the result if the speaker sounds coherent.' :
-          'Your active speaker setup changed after the current profile was applied. Play the combined check again, then save the result.') :
-        groupView && groupView.message ? groupView.message : (hasAudibleTest ?
-        'After the combined test, save the result if the speaker sounds coherent.' :
-        (canRecord ?
-          'Run the combined speaker test first. It uses the prepared crossover setup at the level you choose.' :
-          'Confirm outputs first, then test the combined speaker.'));
-      // Backend owns the per-failure-code copy (groupView.failure_message); the
-      // helper falls back to ONE generic line only when the view is unavailable.
-      var retryHint = summedGroupFailureHint(groupView, { suppress: hasAudibleTest });
-      return '<div class="active-speaker-validation__group">' +
-        '<div class="row-between">' +
-          '<div><p class="setting-row__title">' + escapeHtml(group.label || group.id || 'Speaker') + '</p>' +
-          '<p class="setting-row__hint">' + escapeHtml(hint) + '</p>' +
-          (retryHint ? '<p class="setting-row__hint">' +
-            escapeHtml(retryHint) + '</p>' : '') +
-          '</div>' +
-          '<span class="status-pill' + (ok ? ' status-pill--ready' : '') + '">' +
-            escapeHtml(statusText) + '</span>' +
-        '</div>' +
-        renderSummedLevelControl(group.id, {
-          disabled: combinedControlsLocked,
-          live: combinedPlaying || serverTestActive
-        }) +
-        '<div class="active-speaker-actions">' + testButton + blendOkButton +
-          backButton + '</div>' +
-      '</div>';
-    }).join('');
-    return '<div class="output-card output-card--summed-validation">' +
-      '<div class="output-card__head"><div><p class="output-card__title">' +
-        escapeHtml(revalidationNeedsCombined ? 'Revalidate crossover blend' : 'Combined crossover check') + '</p>' +
-        '<p class="setting-row__hint">' + escapeHtml(canRecord ?
-          (revalidationNeedsCombined ?
-            'Play the combined speaker again, then save the check if it still sounds right.' :
-            'Choose a careful level, play the combined speaker, then save the check if it sounds right.') :
-          // Which earlier rung is missing varies (unsaved values, unconfirmed
-          // outputs), and each group row below names it from the backend. Do
-          // not blame the outputs here — that copy sent a household whose
-          // outputs WERE confirmed back to a card with nothing left to do.
-          'Finish the steps above, then validate the combined crossover.') + '</p></div>' +
-        '<span class="status-pill' + (summedValidationComplete() ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(summedValidationComplete() ? 'ready' : (revalidationNeedsCombined ? 'recheck' : (canRecord ? 'next' : 'after setup'))) + '</span></div>' +
-      '<div class="active-speaker-validation">' + rows + '</div>' +
     '</div>';
   }
   function baselineProfileApplyBlocked(profile) {
@@ -2716,7 +2148,7 @@ import {
     var permissions = profile.permissions || {};
     var applied = baselineProfileApplied();
     var readyToApply = permissions.may_apply === true;
-    var mayCompile = summedValidationComplete();
+    var mayCompile = ((activeSpeaker.commissioningView || {}).review || {}).may_apply === true;
     var applyBlocked = baselineProfileApplyBlocked(profile);
     var revalidating = baselineProfileNeedsRevalidation();
     var busy = activeSpeaker.action === 'Finishing active profile';
@@ -2740,10 +2172,10 @@ import {
       (revalidating ?
         '<p class="setting-row__hint">' + escapeHtml(mayCompile ?
           'Revalidation is saved. Save and apply a fresh active profile.' :
-          'Your active speaker setup changed after the current profile was applied. Revalidate the combined crossover, then save and apply a fresh profile.') + '</p>' :
+          'The speaker setup changed. Run the speaker experiment to measure the new setup.') + '</p>' :
         '<p class="setting-row__hint">' + escapeHtml(mayCompile ?
           'Save the checked crossover as your active speaker profile. JTS validates and applies it in one step; no sound plays.' :
-          'Finish the combined crossover check before saving the active profile.') + '</p>')));
+          'Apply the candidate named in the speaker experiment packet.') + '</p>')));
     var actionLabel = busy ?
       'Saving and applying' :
       'Save and apply';
@@ -2762,7 +2194,7 @@ import {
           escapeHtml(applied ? 'active' : (appliedRecord || readyToApply ? 'saved' : (applyBlocked ? 'blocked' : (revalidating ? 'recheck' : 'not saved')))) + '</span></div>' +
       body +
       renderLevelMatchSummary(profile) +
-      (issueRows && mayCompile ? '<ul class="active-speaker-issues active-speaker-issues--warning">' + issueRows + '</ul>' : '') +
+      (issueRows ? '<ul class="active-speaker-issues active-speaker-issues--warning">' + issueRows + '</ul>' : '') +
       actions +
     '</div>';
   }
@@ -3342,26 +2774,9 @@ import {
     else if (act === 'save-driver-design') { saveDriverResearchDraft(); }
     else if (act === 'prepare-crossover-preview') { prepareCrossoverPreview(); }
     else if (act === 'mark-output-identity') { updateOutputChannelIdentity(t); }
-    else if (act === 'back-to-output-map') { backToOutputConfiguration(); }
-    else if (act === 'back-to-crossover-config') { backToCrossoverConfiguration(); }
-    else if (act === 'prepare-summed-test') { prepareSummedTest(t); }
-    else if (act === 'stop-summed-test') { stopSummedTest(); }
-    else if (act === 'record-summed-validation') { recordSummedValidation(t); }
     else if (act === 'save-apply-baseline-profile') { saveAndApplyBaselineProfile(); }
     else if (act === 'restore-baseline-profile') { restoreBaselineProfile(); }
     else if (act === 'copy-tuning-handoff') { copyTuningHandoffPrompt(t.getAttribute('data-program')); }
-    else if (act === 'commission-step') {
-      startCommissionAutoRamp(t.getAttribute('data-role') || '', {
-        confirm: false,
-        identityAudition: t.getAttribute('data-identity-audition') === 'true'
-      });
-    }
-    else if (act === 'commission-ack') {
-      commissionAck(t.getAttribute('data-outcome') || '', {
-        confirmOutputIdentity: t.getAttribute('data-confirm-output-identity') === 'true'
-      });
-    }
-    else if (act === 'commission-abort') { commissionAbort(); }
     else if (act === 'toggle-volume-floor-tone') {
       if (volumeFloorTone.active) stopVolumeFloorTone();
       else startVolumeFloorTone();
@@ -3471,18 +2886,6 @@ import {
     }
     var field = ev.target.getAttribute('data-field');
     var range = ev.target.getAttribute('data-range');
-    var summedLevel = ev.target.getAttribute('data-summed-test-level');
-    if (summedLevel) {
-      var nextSummedLevel = combinedTestLevelDbfsFrom(ev.target.value);
-      activeSpeaker.combinedTestLevelDbfs = nextSummedLevel;
-      ev.target.value = nextSummedLevel;
-      var summedReadout = el('view-body').querySelector(
-        '[data-summed-level-readout="' + summedLevel + '"]'
-      );
-      if (summedReadout) summedReadout.textContent = fmtDb(nextSummedLevel);
-      scheduleSummedTestLevelUpdate(summedLevel, nextSummedLevel);
-      return;
-    }
     // Continuous drag (this 'input' stream, one event per tick): update the
     // draft and the instant local/optimistic graph, but do not send a live
     // draft — that would duck audio once per tick (#3309 rejected skipping
@@ -3602,7 +3005,7 @@ import {
       if (!outputStepCanOpen(step, topology)) {
         ev.target.open = false;
         outputPage.stepOverride = defaultOutputStep();
-        status('Finish the current card before opening ' + outputStepTitle(step) + '.', true);
+        status('Finish the current card before opening ' + outputStepTitle(step, commissioningStepView(step)) + '.', true);
         render();
         return;
       }
@@ -3884,209 +3287,6 @@ import {
       return {ok: false, current: current, error: e};
     }
   }
-  async function commissionArm(role, options) {
-    options = options || {};
-    var group = activeCommissionGroup(currentOutputTopology());
-    if (!group || !role) return;
-    var load = activeSpeaker.commission && activeSpeaker.commission.commission_load || {};
-    var target = load.target || {};
-    var targetGroup = target.speaker_group_id || group.id;
-    var force = load.status === 'loaded' &&
-      (targetGroup !== group.id || (target.role || '') !== role);
-    var body = {group: group.id, role: role, force: force};
-    if (options.identityAudition) body.identity_audition = true;
-    return await postCommission('./active-speaker/commission-load',
-      body, 'Getting ' + humanRole(role) + ' ready');
-  }
-  async function ensureCommissionArmed(role, options) {
-    options = options || {};
-    var group = activeCommissionGroup(currentOutputTopology());
-    if (!group || !role) return {ok: false, error: 'Choose a driver first.'};
-    var load = activeSpeaker.commission && activeSpeaker.commission.commission_load || {};
-    var target = load.target || {};
-    var targetGroup = target.speaker_group_id || group.id;
-    if (load.status === 'loaded' &&
-        targetGroup === group.id &&
-        (target.role || '') === role) {
-      return {ok: true, payload: {status: 'loaded', load: load}};
-    }
-    return await commissionArm(role, options);
-  }
-  async function commissionStep(role, options) {
-    options = options || {};
-    var group = activeCommissionGroup(currentOutputTopology());
-    if (!group || !role) return;
-    if (options.confirm !== false) {
-      var ok = await jtsConfirm('Make the ' + humanRole(role) + ' audible? Amps should be ' +
-        'on at LOW gain — JTS will play it very quietly through the crossover.',
-        {danger: true});
-      if (!ok) return;
-    }
-    var busyLabel = Object.prototype.hasOwnProperty.call(options, 'busyLabel') ?
-      options.busyLabel : 'Stepping ' + humanRole(role);
-    var body = {group: group.id, role: role};
-    if (options.autoRetryPending) body.auto_retry_pending = true;
-    if (options.identityAudition) body.identity_audition = true;
-    return await postCommission('./active-speaker/commission-ramp-step',
-      body, busyLabel);
-  }
-  async function commissionAck(outcome, options) {
-    options = options || {};
-    if (!outcome) return;
-    stopCommissionAutoRamp('');
-    var body = {outcome: outcome};
-    if (options.confirmOutputIdentity) body.confirm_output_identity = true;
-    var result = await postCommission('./active-speaker/commission-ramp-ack',
-      body, 'Recording');
-    var confirmed = !!(result && result.payload &&
-      result.payload.status === 'confirmed');
-    if (outcome === 'heard_correct_driver' && confirmed) {
-      if (driverTargetProofComplete()) {
-        outputPage.stepOverride = 'safety';
-        status('Outputs and drivers are confirmed. Continue with the combined speaker test.');
-      } else {
-        status('Driver confirmation saved. Continue with the next output.');
-      }
-      render();
-    }
-    return result;
-  }
-  async function commissionAbort() {
-    stopCommissionAutoRamp('Stopped. No test tone is playing.');
-    await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
-  }
-  async function backToOutputConfiguration() {
-    var pending = commissionPendingStep();
-    if (commissionAutoRamp.running || pending) {
-      stopCommissionAutoRamp('Stopped. Check the channel assignments before testing again.');
-      await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
-    }
-    outputPage.stepOverride = 'map';
-    status('Check the DAC channel assignments, save, then confirm the wiring again.');
-    render();
-  }
-  function backToCrossoverConfiguration() {
-    outputPage.stepOverride = 'research';
-    status('Review the crossover settings, then return to validation.');
-    render();
-  }
-  async function stopAndAbortCommissionAutoRamp(message) {
-    stopCommissionAutoRamp(message);
-    await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
-    patchActiveSpeaker({commissionBusy: '', commissionError: message});
-    status(message, true);
-    render();
-  }
-  async function runCommissionAutoRamp(groupId, role, token) {
-    try {
-      while (commissionAutoRampCurrent(groupId, role, token)) {
-        var result = await commissionStep(role, {
-          confirm: false,
-          busyLabel: '',
-          autoRetryPending: !!commissionPendingStep(),
-          identityAudition: !!commissionAutoRamp.identityAudition
-        });
-        if (!commissionAutoRampCurrent(groupId, role, token)) return;
-        if (!result || !result.ok) {
-          var stopMessage = result && result.error ?
-            result.error : 'Stopped. JTS could not play the driver test.';
-          if (result && result.payload &&
-              commissionPayloadHasIssue(result.payload, 'commission_ramp_at_limit')) {
-            stopCommissionAutoRamp(stopMessage);
-            patchActiveSpeaker({commissionBusy: '', commissionError: stopMessage});
-            status(stopMessage, true);
-            render();
-            return;
-          }
-          await stopAndAbortCommissionAutoRamp(stopMessage);
-          return;
-        }
-        if (!commissionAutoRampCurrent(groupId, role, token)) {
-          await stopAndAbortCommissionAutoRamp('Stopped because the active driver test changed.');
-          return;
-        }
-        var payload = result.payload || {};
-        var level = Number(payload.next_gain_db);
-        commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
-          stepCount: commissionAutoRamp.stepCount + 1,
-          levelDbfs: isFinite(level) ? level : commissionAutoRamp.levelDbfs,
-          message: 'Tone is playing for ' + humanRole(role) + '.'
-        });
-        render();
-        await sleepMs(COMMISSION_RAMP_LISTEN_MS);
-        if (!commissionAutoRampCurrent(groupId, role, token)) return;
-        await sleepMs(COMMISSION_RAMP_NEXT_PULSE_MS);
-      }
-    } finally {
-      // Single-flight release for ALL loop exits — normal completion, the
-      // drift-based commissionAutoRampCurrent()-false returns, and any uncaught
-      // throw (e.g. a render() error on a happy-path step). Token-guarded so we
-      // only clear OUR own run: a newer run (or an explicit stop, which both
-      // bump the token) leaves commissionAutoRamp.token !== token, so we skip.
-      if (commissionAutoRamp.running && commissionAutoRamp.token === token) {
-        stopCommissionAutoRamp('');
-      }
-    }
-  }
-  async function startCommissionAutoRamp(role, options) {
-    options = options || {};
-    var group = activeCommissionGroup(currentOutputTopology());
-    if (!group || !role) return;
-    var targetKey = commissionTargetKey(group.id, role);
-    if (commissionAutoRamp.running) {
-      if (commissionAutoRamp.targetKey === targetKey) {
-        status('The ' + humanRole(role) + ' tone is already starting or playing.');
-      } else {
-        status('Stop the current driver tone before starting another one.', true);
-      }
-      render();
-      return;
-    }
-    if (options.confirm !== false) {
-      var ok = await jtsConfirm('Start the ' + humanRole(role) + ' quiet ramp? Amps should be ' +
-        'on at LOW gain — JTS will play one continuous tone that gets louder over about 30 seconds.',
-        {danger: true});
-      if (!ok) return;
-    }
-    var token = commissionAutoRamp.token + 1;
-    commissionAutoRamp = {
-      running: true,
-      token: token,
-      targetKey: targetKey,
-      stepCount: 0,
-      levelDbfs: null,
-      identityAudition: !!options.identityAudition,
-      message: options.message || 'Getting ' + humanRole(role) + ' ready.'
-    };
-    var rampStarted = false;
-    try {
-      var armed = await ensureCommissionArmed(role, {
-        identityAudition: !!options.identityAudition
-      });
-      if (!armed || !armed.ok) {
-        stopCommissionAutoRamp('');
-        render();
-        return;
-      }
-      if (!commissionAutoRampCurrent(group.id, role, token)) return;
-      commissionAutoRamp = Object.assign({}, commissionAutoRamp, {
-        message: options.message || 'Starting quiet continuous ' + humanRole(role) + ' test.'
-      });
-      status('Starting quiet continuous ' + humanRole(role) + ' test. Press Stop if anything sounds wrong.');
-      render();
-      rampStarted = true;
-      runCommissionAutoRamp(group.id, role, token);
-    } finally {
-      // runCommissionAutoRamp is fire-and-forget (not awaited). Once we've handed
-      // off, its own try/finally releases the single-flight flag for every loop
-      // exit, so we only reset here if the ramp never started — i.e. an
-      // unexpected throw occurred before handoff. Token-guarded so we never clear
-      // a newer run's flag.
-      if (!rampStarted && commissionAutoRamp.running && commissionAutoRamp.token === token) {
-        stopCommissionAutoRamp('');
-      }
-    }
-  }
   function setOutputDraft(next) {
     outputTopology.draft = next;
     if (outputGroups(next).length) resetOutputTemplateDraft();
@@ -4173,7 +3373,7 @@ import {
     }
     applyChannel(targetChannel, selected);
     if (swapPeer) applyChannel(swapPeer, previousSelected);
-    outputPage.stepOverride = 'map';
+    outputPage.stepOverride = 'layout';
     setOutputDraft(next);
     status('Channel assignment updated. Save before confirming the wiring.');
   }
@@ -4787,8 +3987,8 @@ import {
       var payload = await postJSON('./active-speaker/crossover-preview', {});
       ingestCrossoverPreview(payload);
       await refreshCommissioningView();
-      outputPage.stepOverride = 'map';
-      status('Crossover preview ready. No sound was played. Confirm the outputs next.');
+      outputPage.stepOverride = defaultOutputStep();
+      status('Crossover preview ready. Continue with the speaker experiment.');
       render();
       return true;
     } catch (e) {
@@ -4802,18 +4002,11 @@ import {
   async function advanceOutputStep(step) {
     var topology = currentOutputTopology();
     if (step === 'layout') {
-      if (!topology || !outputGroups(topology).length) {
-        outputPage.stepOverride = 'layout';
-        status('Choose a speaker layout before continuing.', true);
-        render();
-        return;
-      }
       if (outputTopology.dirty) {
         await saveOutputTopology({nextStep: 'research'});
-        return;
+      } else {
+        openOutputStep('research');
       }
-      openOutputStep('research');
-      status('Speaker layout is already saved. Continue with driver research or skip ahead.');
       return;
     }
     if (step === 'research') {
@@ -4824,57 +4017,11 @@ import {
           !crossoverPreviewReadyForProtectedStaging(crossoverPreview.payload)) {
         if (!await prepareCrossoverPreview()) return;
       }
-      openOutputStep('map');
-      status('Driver and crossover values are ready. Confirm the outputs.');
+      openOutputStep(defaultOutputStep());
       return;
     }
-    if (step === 'map') {
-      if (outputTopology.dirty) {
-        outputPage.stepOverride = 'map';
-        status('Save the speaker layout before confirming outputs.', true);
-        render();
-        return;
-      }
-      if (!driverTargetProofComplete()) {
-        var report = outputIdentityReport();
-        var assigned = Number(report && report.assigned_channel_count || 0);
-        outputPage.stepOverride = 'map';
-        status(assigned > 0 ?
-          'Play and confirm every assigned driver before continuing.' :
-          'Save a speaker layout with assigned outputs before continuing.', true);
-        render();
-        return;
-      }
-      openOutputStep('safety');
-      status(commissioningStepNotRequired('safety') ?
-        'Every output is confirmed. This speaker needs no crossover checks.' :
-        'Outputs and drivers are confirmed. Continue with the combined speaker test.');
-      return;
-    }
-    if (step === 'safety') {
-      if (summedValidationComplete()) {
-        openOutputStep('profile');
-        status('Combined speaker check is saved. Save and apply the active profile.');
-        return;
-      }
-      outputPage.stepOverride = 'safety';
-      status('Run the combined speaker test and save what you heard before applying.');
-      render();
-      return;
-    }
-    if (step === 'profile') {
-      outputPage.stepOverride = 'profile';
-      status(baselineProfileApplied() ?
-        'The active speaker profile is applied.' :
-        'Finish the combined crossover check, then save and apply the active profile.');
-      render();
-    }
+    openOutputStep(step);
   }
-  // Shared by save/reset/repin below: each POST fails 409 when the server's
-  // topology moved under the draft. The response carries the fresh topology,
-  // so ingest it and let the caller stop instead of clobbering it with a
-  // stale write. Returns false for every other error, which the caller
-  // handles itself (each has a different busy flag to clear).
   function handleTopologyConflict(e, defaultMessage) {
     if (e.status !== 409 || !e.body || !e.body.output_topology) return false;
     ingestOutputTopology(e.body);
@@ -4960,7 +4107,6 @@ import {
           outputTopology.hardwareAdoption.identity
       });
       ingestOutputTopology(payload);
-      stopCommissionAutoRamp('');
       patchActiveSpeaker({
         commission: null,
         commissioningView: null,
@@ -4997,7 +4143,7 @@ import {
       'JTS keeps your speaker layout, driver roles, output assignment and ' +
       'tuning, and pins the DAC attached now. You then confirm ' +
       (labels.length ? labels.join(' and ') : 'the affected outputs') +
-      ' by ear — audio stays off until you do and the speaker re-arms — and ' +
+      ' against the wire labels — audio stays off until you do and the speaker re-arms — and ' +
       're-run the drift measurement for the new pair.',
       // danger: the speaker goes silent immediately and the pair's drift
       // measurement is dropped, so a stray Enter must not land on confirm.
@@ -5014,10 +4160,6 @@ import {
           outputTopology.hardwareAdoption.identity
       });
       ingestOutputTopology(payload);
-      // The commissioning design SURVIVES a re-pin, so nothing about it is
-      // cleared here (unlike the reset above). Only the in-flight ramp is
-      // stopped, because the server parked the graph it was pulsing.
-      stopCommissionAutoRamp('');
       await refreshCommissioningView();
       // Let the backend's own current step win: identity is now unverified for
       // the replaced lanes, so the derived default lands on the right rung.
@@ -5054,8 +4196,7 @@ import {
       // server parks it), so the dialog says so and reads as destructive.
       : 'Mark "' + label + '" as not confirmed? The speaker goes silent until ' +
         'you confirm it again and the speaker re-arms.';
-    if (commissionAutoRamp.running || commissionPendingStep()) {
-      stopCommissionAutoRamp('');
+    if (commissionPendingStep()) {
       var abortResult = await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
       if (!abortResult || !abortResult.ok) return;
     }
@@ -5090,299 +4231,11 @@ import {
     }
     render();
   }
-  function clearSummedTestArmTimer() {
-    if (summedTestRequest.armTimer) {
-      window.clearTimeout(summedTestRequest.armTimer);
-      summedTestRequest.armTimer = null;
-    }
-  }
-  function clearSummedTestLevelTimer() {
-    if (summedTestLevelUpdate.timer) {
-      window.clearTimeout(summedTestLevelUpdate.timer);
-      summedTestLevelUpdate.timer = null;
-    }
-  }
-  function scheduleSummedTestLevelUpdate(groupId, levelDbfs, options) {
-    options = options || {};
-    if (activeSpeaker.action !== 'Playing combined test') return;
-    summedTestLevelUpdate.pending = {
-      groupId: groupId,
-      levelDbfs: combinedTestLevelDbfsFrom(levelDbfs)
-    };
-    clearSummedTestLevelTimer();
-    summedTestLevelUpdate.timer = window.setTimeout(function() {
-      summedTestLevelUpdate.timer = null;
-      flushSummedTestLevelUpdate();
-    }, options.immediate ? 0 : 120);
-  }
-  async function flushSummedTestLevelUpdate() {
-    if (summedTestLevelUpdate.inFlight) return;
-    var pending = summedTestLevelUpdate.pending;
-    summedTestLevelUpdate.pending = null;
-    if (!pending) return;
-    summedTestLevelUpdate.inFlight = true;
-    try {
-      var payload = await postJSON('./active-speaker/summed-test/level', {
-        speaker_group_id: pending.groupId,
-        level_dbfs: pending.levelDbfs
-      });
-      if (payload.status === 'idle') return;
-      if (payload.status !== 'loaded') {
-        throw new Error(payload.reason || 'combined test level was not applied');
-      }
-      patchActiveSpeaker({
-        calibrationLevel: payload.calibration_level || activeSpeaker.calibrationLevel,
-        combinedTestLevelDbfs: pending.levelDbfs
-      });
-    } catch (e) {
-      status('Could not update combined test level: ' + e.message, true);
-    } finally {
-      summedTestLevelUpdate.inFlight = false;
-      if (summedTestLevelUpdate.pending) flushSummedTestLevelUpdate();
-    }
-  }
-  function latestSummedTestIdFromPayload(payload, groupId) {
-    var measurements = payload && payload.measurements || activeSpeaker.measurements || {};
-    var summary = measurements.summary || {};
-    var latest = summary.latest_summed_tests || {};
-    var test = latest[String(groupId || '')] || null;
-    if (!test || test.captured !== true || test.audio_emitted !== true) return '';
-    return test && (test.summed_test_id || test.playback_id) || '';
-  }
-  async function finishPlayingSummedTestForValidation(groupId) {
-    var current = summedTestRequest.current;
-    if (!current || current.groupId !== groupId || !current.promise) return '';
-    await stopSummedTest({reason: 'operator_confirmed', quiet: true});
-    var payload = await current.promise;
-    return latestSummedTestIdFromPayload(payload, groupId);
-  }
-  async function prepareSummedTest(button) {
-    var groupId = button.getAttribute('data-group-id') || '';
-    var label = button.getAttribute('data-label') || groupId || 'speaker';
-    if (!groupId) {
-      status('Choose the speaker group to test.', true);
-      return;
-    }
-    if (!await jtsConfirm(
-      'Play a spoken combined test for "' + label +
-        '" at ' + fmtDb(combinedTestLevelDbfs()) +
-        '? JTS uses the prepared crossover, keeps the test level bounded, and ' +
-        'stops the test when it finishes.',
-      {danger: true}
-    )) {
-      return;
-    }
-    var requestedLevel = combinedTestLevelDbfs();
-    var requestToken = summedTestRequest.token + 1;
-    summedTestRequest.token = requestToken;
-    clearSummedTestArmTimer();
-    clearSummedTestLevelTimer();
-    summedTestLevelUpdate.pending = null;
-    var result = await runActiveSpeakerAction({
-      busyLabel: 'Starting combined test',
-      beginPatch: {combinedTestLevelDbfs: requestedLevel},
-      errorPrefix: 'Could not start the combined speaker test: ',
-      isCurrent: function() {
-        return summedTestRequest.token === requestToken;
-      },
-      onError: function() {
-        clearSummedTestArmTimer();
-        if (summedTestRequest.current &&
-            summedTestRequest.current.token === requestToken) {
-          summedTestRequest.current = null;
-        }
-      }
-    }, async function() {
-      summedTestRequest.armTimer = window.setTimeout(function() {
-        if (summedTestRequest.token !== requestToken ||
-            activeSpeaker.action !== 'Starting combined test') {
-          return;
-        }
-        patchActiveSpeaker({
-          loading: false,
-          action: 'Playing combined test',
-          error: '',
-          combinedTestLevelDbfs: requestedLevel
-        });
-        render();
-      }, SUMMED_TEST_STOP_ARM_MS);
-      var groupView = commissioningGroupView(groupId);
-      var action = commissioningGroupAction(groupView, 'start_combined_test');
-      var body = Object.assign({
-        speaker_group_id: groupId,
-        audio: true,
-        stimulus: 'speech',
-        duration_ms: 12000
-      }, action && action.body || {});
-      body.level_dbfs = requestedLevel;
-      var startPromise = postJSON(action && action.endpoint || './active-speaker/summed-test', body);
-      summedTestRequest.current = {
-        token: requestToken,
-        groupId: groupId,
-        promise: startPromise,
-        payload: null
-      };
-      var payload = await startPromise;
-      if (summedTestRequest.current &&
-          summedTestRequest.current.token === requestToken) {
-        summedTestRequest.current.payload = payload;
-      }
-      if (summedTestRequest.token !== requestToken) return false;
-      clearSummedTestArmTimer();
-      var appliedLevel = NaN;
-      if (payload.calibration_level && payload.calibration_level.test_signal) {
-        appliedLevel = Number(payload.calibration_level.test_signal.requested_level_dbfs);
-      }
-      patchActiveSpeaker({
-        loading: false,
-        action: '',
-        session: payload.session || activeSpeaker.session,
-        calibrationLevel: payload.calibration_level || activeSpeaker.calibrationLevel,
-        measurements: payload.measurements || activeSpeaker.measurements,
-        error: '',
-        combinedTestLevelDbfs: isFinite(appliedLevel) ? appliedLevel : requestedLevel
-      });
-      await refreshCommissioningView();
-      var playback = payload.playback || {};
-      var emitted = playbackConfirmable(playback);
-      if (playback.stop_reason !== 'operator_confirmed') {
-        status(playback.status === 'stopped' ?
-          'Combined speaker test stopped.' : (emitted ?
-          'Combined speaker test played. Record what you heard.' :
-          summedTestFailureBanner(groupId)),
-          playback.status !== 'stopped' && !emitted);
-      }
-      if (summedTestRequest.current &&
-          summedTestRequest.current.token === requestToken) {
-        summedTestRequest.current = null;
-      }
-      return true;
-    });
-    if (!result.ok || result.value === false) return;
-    render();
-  }
-  async function stopSummedTest(options) {
-    options = options || {};
-    var requestToken = summedTestRequest.token;
-    var payload = null;
-    clearSummedTestArmTimer();
-    clearSummedTestLevelTimer();
-    summedTestLevelUpdate.pending = null;
-    var result = await runActiveSpeakerAction({
-      busyLabel: 'Stopping combined test',
-      errorPrefix: 'Could not stop the combined speaker test: ',
-      isCurrent: function() {
-        return summedTestRequest.token === requestToken;
-      }
-    }, async function() {
-      payload = await postJSON('./active-speaker/summed-test/stop',
-        {reason: options.reason || 'operator_stop'},
-        {keepalive: !!options.keepalive});
-      if (summedTestRequest.token !== requestToken) {
-        return {payload: payload, stale: true};
-      }
-      patchActiveSpeaker({
-        loading: false,
-        action: '',
-        error: ''
-      });
-      await refreshCommissioningView();
-      if (!options.quiet) {
-        status(payload.status === 'idle' ?
-          'No combined speaker test is playing.' :
-          'Combined speaker test stopped.');
-      }
-      return {payload: payload, stale: false};
-    });
-    if (!result.ok) {
-      if (result.current) throw result.error;
-      return payload;
-    }
-    if (result.value.stale) return result.value.payload;
-    render();
-    return result.value.payload;
-  }
-  async function recordSummedValidation(button) {
-    var groupId = button.getAttribute('data-group-id') || '';
-    var outcome = button.getAttribute('data-outcome') || '';
-    var summedTestId = button.getAttribute('data-summed-test-id') || '';
-    if (!groupId || !outcome) {
-      status('Choose a speaker group and validation result before saving the combined check.', true);
-      return;
-    }
-    var groupView = commissioningGroupView(groupId);
-    var localActiveTest = summedTestRequest.current &&
-      summedTestRequest.current.groupId === groupId &&
-      summedTestRequest.current.promise &&
-      (activeSpeaker.action === 'Starting combined test' ||
-        activeSpeaker.action === 'Playing combined test');
-    if (localActiveTest) {
-      try {
-        summedTestId = await finishPlayingSummedTestForValidation(groupId);
-      } catch (e) {
-        status('Could not finish the combined speaker test: ' + e.message, true);
-        return;
-      }
-    } else if (groupView && groupView.summed_test_active === true) {
-      status('Stop the combined speaker test before recording the check from this tab.', true);
-      return;
-    }
-    if (!summedTestId) {
-      status('Run the combined speaker test first, then record what you heard.', true);
-      return;
-    }
-    var result = await runActiveSpeakerAction({
-      busyLabel: 'Saving combined check',
-      errorPrefix: 'Could not save combined crossover check: '
-    }, async function() {
-      var groupView = commissioningGroupView(groupId);
-      var action = commissioningGroupAction(groupView, 'record_combined_result');
-      var body = Object.assign({}, action && action.body || {}, {
-        speaker_group_id: groupId,
-        outcome: outcome,
-        summed_test_id: summedTestId || action && action.body && action.body.summed_test_id || '',
-        operator_listening_check: true,
-        polarity: 'normal'
-      });
-      var payload = await postJSON(
-        action && action.endpoint || './active-speaker/summed-validation', body);
-      patchActiveSpeaker({
-        loading: false,
-        action: '',
-        measurements: payload,
-        baselineProfile: activeSpeaker.baselineProfile,
-        error: ''
-      });
-      await refreshCommissioningView();
-      try {
-        patchActiveSpeaker({baselineProfile: await fetchActiveSpeakerBaselineProfile()});
-      } catch (profileError) {
-        patchActiveSpeaker({baselineProfile: activeSpeaker.baselineProfile});
-      }
-      if (summedValidationComplete()) {
-        outputPage.stepOverride = 'profile';
-        status('Combined crossover check saved. Save and apply the active profile when ready.');
-      } else {
-        var latestValidations = payload && payload.summary &&
-          payload.summary.latest_summed_validations || {};
-        var latestValidation = latestValidations[String(groupId || '')] || {};
-        var issues = Array.isArray(latestValidation.issues) ? latestValidation.issues : [];
-        var blocker = issues.find(function(issue) {
-          return issue && issue.severity === 'blocker';
-        });
-        status('Combined crossover check did not count yet: ' +
-          (blocker && blocker.message || 'run the combined test again, then save the result.'),
-          true);
-      }
-    });
-    if (!result.ok) return;
-    render();
-  }
   async function saveAndApplyBaselineProfile() {
     var profile = activeSpeaker.baselineProfile || {};
     var config = profile.config || {};
     var readyToApply = (profile.permissions || {}).may_apply === true;
-    var mayCompile = summedValidationComplete();
+    var mayCompile = ((activeSpeaker.commissioningView || {}).review || {}).may_apply === true;
     var applyBlocked = baselineProfileApplyBlocked(profile);
     var configName = config.basename || 'active speaker baseline';
     if (applyBlocked) {
@@ -5390,7 +4243,7 @@ import {
       return;
     }
     if (!readyToApply && !mayCompile) {
-      status('Confirm outputs and save the combined crossover check before saving the active profile.', true);
+      status('Confirm the driver safety profile and run the speaker experiment before applying.', true);
       return;
     }
     if (!await jtsConfirm(
@@ -5400,8 +4253,8 @@ import {
     )) {
       return;
     }
-    if (!readyToApply && !summedValidationComplete()) {
-      status('Confirm outputs and save the combined crossover check before saving the active profile.', true);
+    if (!readyToApply && !mayCompile) {
+      status('Confirm the driver safety profile and run the speaker experiment before applying.', true);
       return;
     }
     patchActiveSpeaker({
@@ -5482,10 +4335,6 @@ import {
     refreshOutputTopology({silent: true}).then(applySafetyLimitsDeepLink);
   }
   window.addEventListener('pagehide', function() {
-    if (activeSpeaker.action === 'Starting combined test' ||
-        activeSpeaker.action === 'Playing combined test') {
-      stopSummedTest({keepalive: true, quiet: true, reason: 'pagehide'});
-    }
     if (volumeFloorTone.active || volumeFloorTone.inFlight) {
       stopVolumeFloorTone({keepalive: true, quiet: true, reason: 'pagehide'});
     }

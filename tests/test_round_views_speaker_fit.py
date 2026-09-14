@@ -33,6 +33,10 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.cli import crossover_prescriber, round_views
 from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round
 from jasper.active_speaker.round_packet import INDEX_FILENAME
+from jasper.active_speaker.candidate_bank import find_banked_candidate
+from jasper.active_speaker.candidate_parts import baseline_candidate_id, candidate_from_design_draft
+from jasper.active_speaker.commissioning_experiment import commissioning_candidate
+from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
 from tests.run_manifest_fixture import manifest_set, write_manifest
 
 
@@ -346,3 +350,52 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(speaker_round, 
     assert positions == sorted(positions)
     assert crossover_prescriber.main(["status", str(banked.path)]) == 0
     assert packet["packet_fingerprint"] == json.loads(capsys.readouterr().out)["packet_fingerprint"]
+
+
+@pytest.mark.parametrize("trial,delay,polarity", [(False, 157.5, "inverted"), (True, -157.5, "normal"), (False, 0, "normal")])
+def test_first_speaker_experiment_banks_measured_alignment_for_apply(speaker_round, tmp_path, monkeypatch, trial, delay, polarity):
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    analysis = json.loads((directory / "candidate.json").read_text())["analysis"]
+    analysis.update(delay_us=delay, polarity=polarity, trim_db={"woofer": 0, "tweeter": -3},
+                    alignment_confidence=0 if delay == 0 else 0.9)
+    topology = mono_output_topology()
+    draft = standard_design_draft(topology)
+    declared = candidate_from_design_draft(topology, draft)
+    monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: tmp_path / "sessions")
+    monkeypatch.setattr("jasper.active_speaker.candidate_parts.load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr("jasper.active_speaker.candidate_parts.load_applied_baseline_profile_state", lambda: None)
+    monkeypatch.setattr("jasper.active_speaker.design_draft.load_design_draft", lambda **kw: draft)
+    assert baseline_candidate_id() == declared.fingerprint
+    assert find_banked_candidate(declared.fingerprint).candidate == declared
+    (root / "design-draft.json").write_text(json.dumps(draft))
+    (directory / "candidate.json").unlink()
+    row = next(row for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    group = manifest_set([(row.path, record)], set_id="design-mark")
+    group.update(base=not trial)
+    group["capture_basis"].update(candidate_id=declared.fingerprint if trial else None)
+    group["takes"][0].update(analysis=analysis, pose={"kind": "bearing", "deg": 0, "elevation_deg": 0, "distance_m": 1})
+    off_axis = {**group["takes"][0], "take_id": "off-axis", "pose": {"kind": "bearing", "deg": 30},
+                "analysis": {**analysis, "delay_us": 999}}
+    group["takes"].append(off_axis)
+    write_manifest(root, groups=[group])
+    mark_state(inputs.session_dir, "applied")
+    banked = bank_round(inputs.session_dir, campaign_root=tmp_path / "bank", state_path=inputs.state_path,
+                        design_draft_path=root / "design-draft.json", applied_profile_path=tmp_path / "absent.json")
+    packet = json.loads((banked.path / "packet.json").read_text())
+    first = packet["commissioning"]
+    assert first["status"] == "awaiting_apply", first
+    assert {key: first["alignment"][key] for key in ("delay_us", "polarity", "trim_db")} == {
+        "delay_us": delay, "polarity": polarity, "trim_db": analysis["trim_db"],
+    }
+    candidate = find_banked_candidate(first["candidate_fingerprint"], root=tmp_path / "bank").candidate
+    assert candidate.role_attenuations_db == analysis["trim_db"]
+    assert candidate.alignment.delay_us == abs(delay)
+    assert candidate.alignment.delay_role == ("tweeter" if delay >= 0 else "woofer")
+    assert candidate.alignment.polarity == ("invert" if polarity == "inverted" else "keep")
+    assert candidate.source_preset == declared.source_preset
+    assert candidate.analysis["measurement_status"] == "unmeasured"
+    assert not candidate.linearization and not candidate.room_correction
+    assert commissioning_candidate(topology, draft, root=tmp_path / "bank").fingerprint == candidate.fingerprint
+    assert not (tmp_path / "absent.json").exists()
