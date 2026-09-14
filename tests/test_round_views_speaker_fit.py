@@ -407,6 +407,37 @@ def test_empty_manifest_has_no_packet_fits(speaker_round):
     assert _fits(round_inputs(speaker_round[0]), {}) == []
 
 
+@pytest.mark.parametrize("refused", [False, True])
+def test_packet_fits_only_drivers_and_keeps_refusal_codes(speaker_round, tmp_path, refused):
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    row = next(row for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    groups = []
+    for role in ("summed", "woofer", "tweeter"):
+        group = manifest_set([(row.path, record)], set_id=role)
+        group["capture_basis"].update(role=role)
+        curve = next((c for c in record["curves"] if c["role"] == role), record["curves"][0])
+        group["takes"][0].update(role=role, curve={**curve, "role": role})
+        if refused and role == "woofer":
+            group["takes"][0]["phase"] = "entry_baseline"
+        groups.append(group)
+    write_manifest(root, groups=groups)
+    mark_state(inputs.session_dir, "applied")
+    banked = bank_round(inputs.session_dir, campaign_root=tmp_path / "bank", state_path=inputs.state_path,
+                        design_draft_path=root / "design-draft.json")
+    packet = json.loads((banked.path / "packet.json").read_text())
+    assert len(packet["fits"]) == 2
+    fits = {fit["role"]: fit for fit in packet["fits"]}
+    assert set(fits) == {"woofer", "tweeter"}
+    if refused:
+        assert fits["woofer"]["reason_summary"] == {"unavailable": "round_take_unknown"}
+    else:
+        assert isinstance(fits["woofer"]["filters"], list)
+    assert isinstance(fits["tweeter"]["filters"], list)
+    assert {series["role"] for series in packet["series"]} == {"summed", "woofer", "tweeter"}
+    assert {take["role"] for group in packet["sets"] for take in group["takes"]} == {"summed", "woofer", "tweeter"}
+
+
 @pytest.mark.parametrize("pose_count,candidate_count,cloud_planned,verifies", [
     (2, 2, True, True), (3, 3, True, True), (3, 1, True, True), (3, 3, False, False),
 ])

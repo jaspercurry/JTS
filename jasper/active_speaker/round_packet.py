@@ -15,6 +15,7 @@ import numpy as np
 from jasper.audio_measurement.spatial_combine import octave_bands_hz
 from jasper.atomic_io import atomic_write_json
 
+from .applied_identity import applied_identity
 from .baseline_profile import profile_linearization
 from .candidate_bank import CandidateBankRefusal
 from .commissioning_experiment import bank_commissioning_experiment
@@ -117,7 +118,7 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any]) -> list[dict[str, An
     fits = []
     for group in manifest.get("sets", ()):
         for take in group["takes"]:
-            if not take["selected"]:
+            if not take["selected"] or take.get("role") in (None, "summed"):
                 continue
             take_id = take["take_id"]
             key = (group["set_id"], take_id)
@@ -126,14 +127,11 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any]) -> list[dict[str, An
                     computed[key] = speaker_fit(inputs, manifest, group["set_id"], take_id,
                                                 clouds_by_set=clouds)["linearization"]
                 except ROUND_INPUT_ERRORS as exc:
-                    computed[key] = exc
-            proposals = computed[key]
-            if isinstance(proposals, Exception):
-                proposals = {take.get("role"): {"fit": {"reason_summary": {
-                    "unavailable": getattr(proposals, "reason", "speaker_fit_unavailable"),
-                }}}}
-            for role, proposal in proposals.items():
-                if take.get("role") and role != take["role"]:
+                    computed[key] = {take["role"]: {"fit": {"reason_summary": {
+                        "unavailable": getattr(exc, "reason", None) or getattr(exc, "code", None) or "speaker_fit_unavailable",
+                    }}}}
+            for role, proposal in computed[key].items():
+                if role != take["role"]:
                     continue
                 fit = proposal["fit"]
                 fits.append({"set_id": group["set_id"], "take_id": take_id, "pose": take["pose"], "role": role,
@@ -183,7 +181,8 @@ def _index(packet: Mapping[str, Any], target: Path, views: list[dict[str, Any]])
     poses = list(dict.fromkeys(json.dumps(t["pose"], separators=(",", ":")) for group in packet["sets"] for t in group["takes"]))
     lines = [f"# {packet['round_id']} · {packet['program']}",
              f"Measured: poses {'; '.join(poses)}; level: {json.dumps(packet['level'])}",
-             f"Applied: {json.dumps(packet['applied'], separators=(',', ':'))}",
+             f"Applied: candidate {str(packet['applied']['candidate'] or '')[:12]} · record {packet['applied']['record']} · "
+             f"{json.dumps(packet['applied']['layers'], separators=(',', ':'))}",
              f"Result: {packet['result']}; reason: {packet['reason']}",
              "## Decisions"]
     commissioning = packet.get("commissioning") or {}
@@ -272,7 +271,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
               "result": manifest.get("status"), "reason": manifest.get("reason"),
               "program": manifest.get("program"), "level": manifest.get("level"),
               **({"runs": manifest["runs"]} if "runs" in manifest else {}),
-              "applied": {"candidate_fingerprint": profile.get("candidate_fingerprint"), "applied_at": profile.get("applied_at"),
+              "applied": {**(applied_identity(profile) or {}),
                           "layers": {"driver": profile_linearization(profile),
                                      "room": snapshot.get("room_correction", profile.get("room_correction")),
                                      "bass": snapshot.get("bass_extension")}},
