@@ -1243,6 +1243,88 @@ async def test_a_dead_reader_is_reported_and_re_armed(
     }
 
 
+async def test_opening_a_reader_emits_a_structured_event(monkeypatch, caplog):
+    """`_ReaderHealth.opened` must reach the journal (event=knob.opened), not
+    just the in-memory status dict `register` publishes — a log-tailing tool
+    or jasper-doctor has no other way to see a reader come up."""
+    node = "/dev/input/event9"
+    device = _profile(keymap={})
+    opened = asyncio.Event()
+
+    async def fake_read_device(path, entry, post) -> None:
+        opened.set()
+        await asyncio.Event().wait()
+
+    _install_fake_evdev(
+        monkeypatch, input_device=_FakeInputDevice, devices=(node,),
+    )
+    _install_fake_pyudev(monkeypatch)
+    monkeypatch.setattr(bridge_mod, "lookup", lambda _vid, _pid: device)
+    monkeypatch.setattr(bridge_mod, "_read_device", fake_read_device)
+
+    readers = bridge_mod._ReaderHealth()
+    with caplog.at_level(logging.INFO, logger="jasper.accessories.bridge"):
+        bridge = asyncio.create_task(
+            bridge_mod._run_hid_bridge("http://127.0.0.1:8780", readers),
+        )
+        await asyncio.wait_for(opened.wait(), timeout=5.0)
+        await _stop(bridge)
+
+    records = [
+        r for r in caplog.records
+        if getattr(r, "jasper_event", None) == "knob.opened"
+    ]
+    assert len(records) == 1
+    assert records[0].getMessage() == f"event=knob.opened path={node} profile={device.id}"
+
+
+async def test_udev_queue_overflow_drops_and_counts_instead_of_growing(
+    monkeypatch,
+):
+    """A hot-plug storm must not grow the udev queue without bound: once the
+    consumer is busy and the bound is full, `_udev_cb` drops the event and
+    counts it via `_ReaderHealth` rather than blocking pyudev's callback
+    thread or growing the queue further."""
+    device = _profile(keymap={})
+
+    class _NeverWiredUp(_FakeInputDevice):
+        def __init__(self, path):
+            raise OSError("simulated: never wired up")
+
+    observers: List = []
+    _install_fake_evdev(monkeypatch, input_device=_NeverWiredUp)
+    _install_fake_pyudev(monkeypatch, observers)
+    monkeypatch.setattr(bridge_mod, "lookup", lambda _vid, _pid: device)
+    # Long enough that the settle ladder never finishes during the test, so
+    # the consumer stays stuck processing the first "add" for the duration.
+    monkeypatch.setattr(bridge_mod, "UDEV_SETTLE_SEC", 3600.0)
+    monkeypatch.setattr(bridge_mod, "UDEV_QUEUE_MAXSIZE", 1)
+
+    readers = bridge_mod._ReaderHealth()
+    bridge = asyncio.create_task(
+        bridge_mod._run_hid_bridge("http://127.0.0.1:8780", readers),
+    )
+    try:
+        # Consumed immediately (the queue starts empty), which stalls the
+        # consumer in its settle sleep for the rest of the test.
+        await _fire_udev(observers, "add", "/dev/input/event9")
+        # Fills the bound (maxsize=1)...
+        await _fire_udev(observers, "add", "/dev/input/event10")
+        # ...and these three overflow it.
+        for extra in ("event11", "event12", "event13"):
+            await _fire_udev(observers, "add", f"/dev/input/{extra}")
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5.0
+        while readers.udev_queue["dropped"] < 3:
+            assert loop.time() < deadline, "overflow was never counted"
+            await asyncio.sleep(0.001)
+    finally:
+        await _stop(bridge)
+
+    assert readers.udev_queue["dropped"] == 3
+
+
 async def test_an_unplug_drops_the_reader_instead_of_counting_a_restart(
     monkeypatch, caplog,
 ):

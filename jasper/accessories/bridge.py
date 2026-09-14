@@ -91,6 +91,13 @@ READER_REARM_MAX_SEC = 30.0
 # bridge gives up on it and waits for the next hot-plug.
 UDEV_SETTLE_SEC = 0.1
 UDEV_SETTLE_ATTEMPTS = 5
+# The udev-event queue's bound. The consumer can stall up to the full settle
+# ladder above (~3.1 s) draining one stuck "add" before it gets back to
+# `events.get()`, so this is generous headroom past what a hot-plug storm on
+# a handful of known accessories (a flaky hub cycling power) would enqueue in
+# that window — past it, `_udev_cb` drops and counts rather than blocking the
+# pyudev callback thread.
+UDEV_QUEUE_MAXSIZE = 32
 
 
 def _doubled(delay: float, cap: float = float("inf")) -> float:
@@ -695,11 +702,16 @@ class _ReaderHealth:
 
     def __init__(self) -> None:
         self.devices: dict[str, dict[str, Any]] = {}
+        # A mutable container (not a bare int) so `register`'s one-time
+        # `.update()` merge into the supervisor's health dict keeps sharing
+        # this object — the same trick `self.devices` relies on — instead of
+        # freezing a copy of the count at registration time.
+        self.udev_queue: dict[str, int] = {"dropped": 0}
         self._publish: Publish = lambda: None
 
     def register(self, publish: Publish) -> dict[str, Any]:
         self._publish = publish
-        return {"readers": self.devices}
+        return {"readers": self.devices, "udev_queue": self.udev_queue}
 
     def opened(self, path: str, profile: str) -> None:
         entry = self.devices.get(path)
@@ -717,6 +729,17 @@ class _ReaderHealth:
                 last_error=None,
                 restarts=entry["restarts"] + 1,
             )
+        log_event(logger, "knob.opened", path=path, profile=profile)
+        self._publish()
+
+    def udev_event_dropped(self) -> None:
+        """Bump the udev hot-plug queue's overflow counter and republish.
+
+        Called when `_run_hid_bridge`'s bounded `events` queue is full: the
+        add/remove is discarded rather than blocking the udev callback
+        thread that produced it.
+        """
+        self.udev_queue["dropped"] += 1
         self._publish()
 
     def ended(self, path: str, state: str, error: str | None = None) -> None:
@@ -834,12 +857,18 @@ async def _run_hid_bridge(control_url: str, readers: _ReaderHealth) -> None:
         )
 
     loop = asyncio.get_running_loop()
-    events: asyncio.Queue = asyncio.Queue()
+    events: asyncio.Queue = asyncio.Queue(maxsize=UDEV_QUEUE_MAXSIZE)
+
+    def _enqueue(action: str, node: str) -> None:
+        try:
+            events.put_nowait((action, node))
+        except asyncio.QueueFull:
+            readers.udev_event_dropped()
 
     def _udev_cb(action: str, dev: pyudev.Device) -> None:
         node = dev.device_node
         if node and node.startswith("/dev/input/event"):
-            loop.call_soon_threadsafe(events.put_nowait, (action, node))
+            loop.call_soon_threadsafe(_enqueue, action, node)
 
     observer = pyudev.MonitorObserver(monitor, _udev_cb)
     observer.start()
