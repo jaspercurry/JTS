@@ -10,6 +10,9 @@
 //! commands return a JSON error. `jasper-control /state`,
 //! `jasper-doctor`, and an operator can all consume the same surface.
 
+#[path = "snapshot.rs"]
+mod snapshot;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -889,111 +892,8 @@ impl OutputdState {
         push_kv_str(&mut buf, "sched_policy", self.sched_policy());
         buf.push(',');
 
-        buf.push_str(r#""content":{"#);
-        // The resolved bridge mode IS the source — same string as
-        // `content_bridge.mode` below, not a re-derived guess from
-        // `shm_ring_path` (which stayed false for `DacContentRing`, #4807 R-261).
-        push_kv_str(&mut buf, "source", &self.content_bridge_mode);
-        buf.push(',');
-        // The DECLARED wire of the content hop. Nothing negotiates it here: the
-        // ring's own attach validates the declaration against the writer's
-        // header, so this is the value that got the ring open.
-        push_kv_str(&mut buf, "format", self.declared_content_format.as_str());
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "period_frames",
-            self.content_period_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "buffer_frames",
-            self.content_buffer_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "frames_read",
-            self.content_frames_read.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "empty_periods",
-            self.content_empty_period_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "consecutive_empty_periods",
-            self.content_consecutive_empty_periods
-                .load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_bool(&mut buf, "deaf", self.content_deaf.load(Ordering::Relaxed));
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "partial_periods",
-            self.content_partial_period_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "eagain_count",
-            self.content_eagain_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(&mut buf, "xrun_count", content_xrun_count);
-        buf.push(',');
-        push_kv_u64_opt(
-            &mut buf,
-            "last_xrun_age_ms",
-            event_age_ms(uptime_ms, self.last_content_xrun_ms.load(Ordering::Relaxed)),
-        );
-        buf.push(',');
-        push_kv_f64(
-            &mut buf,
-            "xrun_rate_per_hour",
-            rate_per_hour(content_xrun_count, uptime_ms),
-            3,
-        );
-        // Ring B honesty contract (latency/ring-proto-shm): under the shm_ring
-        // content source, outputd reads the post-DSP program from an n-slot SHM
-        // ping-pong ring, NOT an ALSA capture PCM — so `content.buffer_frames`
-        // above is a synthetic period-sized stand-in (neither sink opens a content
-        // PCM at all — ADR-0100 leaves the ring as outputd's one upstream).
-        // This sub-block reports the TRUE Ring B capacity that
-        // outputd requires of the writer — n_slots x slot_frames — so the synthetic
-        // is clearly labeled and jasper-doctor validates the ring geometry instead
-        // of mis-applying the ALSA ">= 2x period" jitter floor (which a bounded
-        // n-slot queue is not). Full runtime health (occupancy, empty reads, writer
-        // liveness) stays in the top-level `shm_ring` block; this is the buffering
-        // capacity contract that sits next to `content.buffer_frames`.
-        if self.shm_ring_path.is_some() {
-            let slots = self.shm_ring_slots.load(Ordering::Relaxed);
-            let slot_frames = self.shm_ring_slot_frames.load(Ordering::Relaxed);
-            buf.push(',');
-            buf.push_str(r#""ring":{"#);
-            push_kv_u64(&mut buf, "slots", slots);
-            buf.push(',');
-            push_kv_u64(&mut buf, "slot_frames", slot_frames);
-            buf.push(',');
-            push_kv_u64(
-                &mut buf,
-                "capacity_frames",
-                slots.saturating_mul(slot_frames),
-            );
-            buf.push('}');
-        }
-        buf.push('}');
-        buf.push(',');
-
-        buf.push_str(r#""content_bridge":{"#);
-        push_kv_str(&mut buf, "mode", &self.content_bridge_mode);
-        buf.push('}');
-        buf.push(',');
+        self.content_json(&mut buf, uptime_ms, content_xrun_count);
+        self.content_bridge_json(&mut buf);
 
         // PROTOTYPE (latency/ring-proto-shm): SHM ping-pong ring reader health.
         // enabled:false with no further fields when unconfigured (default-off,
