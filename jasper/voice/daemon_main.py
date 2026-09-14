@@ -85,6 +85,7 @@ from ..voice.input_policy import (
 )
 from ..voice.input_presence import voice_parked_no_mic
 from ..voice.prompt import _build_system_instruction
+from ..voice.provider_state import read_live_warm_session_enabled
 from ..voice.session import LiveConnection
 from ..volume_coordinator import VolumeCoordinator
 from ..volume_observers import VolumeObserver
@@ -292,6 +293,7 @@ def _make_connection(
     cfg: Config,
     *,
     speech_policy: EffectiveSpeechInputPolicy | None = None,
+    spend_allowed: Callable[[], bool] = lambda: True,
 ) -> LiveConnection:
     """Construct the long-lived voice connection for the active provider.
 
@@ -319,6 +321,7 @@ def _make_connection(
         return OpenAILiveConnection(
             api_key=cfg.openai_api_key, model=cfg.openai_live_model,
             voice=cfg.openai_live_voice, backend_model=cfg.openai_live_backend_model,
+            warm_session=lambda: spend_allowed() and read_live_warm_session_enabled(),
         )
     if cfg.voice_provider == "openai":
         from .openai_session import OpenAIRealtimeConnection
@@ -894,6 +897,7 @@ def _open_live_session(
     pricing: Pricing,
     registry: ToolRegistry,
     integrations: _Integrations,
+    spend_allowed: Callable[[], bool],
 ) -> tuple[LiveConnection, Callable[[], Awaitable[None]]]:
     """Open the one live connection, metered for the spend cap, and its dial.
 
@@ -906,7 +910,7 @@ def _open_live_session(
     location and the linked Google accounts are snapshotted instead:
     changing either needs a jasper-voice restart, which the wizards trigger.
     """
-    connection = _make_connection(cfg, speech_policy=speech_policy)
+    connection = _make_connection(cfg, speech_policy=speech_policy, spend_allowed=spend_allowed)
     record_backend = getattr(connection, "set_background_usage_recorder", None)
     if record_backend is not None:
         record_backend(usage_store.record_background_usage)
@@ -1238,6 +1242,7 @@ async def run() -> None:
             pricing=pricing,
             registry=registry,
             integrations=integrations,
+            spend_allowed=spend_cap.allowed,
         )
 
         legs = await _open_wake_legs(stack, cfg, planned_wake_legs)

@@ -96,6 +96,7 @@ _VOICE_STATUS_DIRECT_KEYS = (
     "usage_tracking_degraded",
     "connection_paused",
     "connection_error",
+    "live_session_warm_until",
     "mic_muted",
     "measurement_active",
     "duck_active",

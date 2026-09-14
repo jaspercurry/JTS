@@ -424,6 +424,8 @@ def _provider_extras_html(
         return ""
     out = []
     for spec in provider.extras:
+        if spec.active_only and provider.id != _active_provider_id(state):
+            continue
         current = _value_for(state, spec.env, spec.default)
         rows = []
         seen = set()

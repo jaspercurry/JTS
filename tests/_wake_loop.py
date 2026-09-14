@@ -70,6 +70,9 @@ def wake_loop_for_tests(
         def last_failure_detail(self) -> str | None:
             return None
 
+        def warm_session_until(self) -> float | None:
+            return None
+
         def wake_cue(self) -> str:
             return "cant_connect"
 

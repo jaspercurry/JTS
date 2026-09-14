@@ -12,16 +12,21 @@ from __future__ import annotations
 
 import textwrap
 
+import pytest
+
+from jasper.voice import catalog
 from jasper.voice.catalog import default_model_id
 from jasper.voice import provider_state as provider_state_mod
 from jasper.env_load import EnvFileState
 from jasper.voice.provider_state import (
+    LIVE_WARM_SESSION_ENV,
     barge_in_env_key,
     read_active_provider_state,
     read_active_model,
     read_active_model_from_env_files,
     read_active_provider,
     read_barge_in_enabled,
+    read_live_warm_session_enabled,
     resolve_active_provider,
     resolve_barge_in_enabled,
 )
@@ -245,3 +250,31 @@ def test_resolve_barge_in_is_pure():
     assert resolve_barge_in_enabled("gemini", {"JASPER_BARGE_IN_GEMINI": " on "}) is True
     assert resolve_barge_in_enabled("gemini", {}) is False
     assert resolve_barge_in_enabled("bogus", {"JASPER_BARGE_IN_BOGUS": "1"}) is False
+
+
+# --- OpenAI Live warm-session toggle (DEFAULT OFF, ADR-0295) ----------
+
+
+def test_live_warm_session_key_comes_from_the_catalog():
+    assert LIVE_WARM_SESSION_ENV == "JASPER_OPENAI_LIVE_WARM_SESSION"
+    assert catalog.extra_env("openai_live", "warm_session") == LIVE_WARM_SESSION_ENV
+    assert catalog.default_extra_value("openai_live", "warm_session") == "off"
+
+
+@pytest.mark.parametrize("body, enabled", [
+    ("", False),
+    ("JASPER_VOICE_PROVIDER=openai_live\n", False),
+    (f"{LIVE_WARM_SESSION_ENV}=on\n", True),
+    (f"{LIVE_WARM_SESSION_ENV}=1\n", True),
+    (f"{LIVE_WARM_SESSION_ENV}=TRUE\n", True),
+    (f"{LIVE_WARM_SESSION_ENV}=off\n", False),
+    (f"{LIVE_WARM_SESSION_ENV}=0\n", False),
+    (f"{LIVE_WARM_SESSION_ENV}=\n", False),
+])
+def test_live_warm_session_is_off_unless_the_file_says_on(tmp_path, body, enabled):
+    assert read_live_warm_session_enabled(_write(tmp_path, body)) is enabled
+
+
+def test_live_warm_session_missing_file_is_off(tmp_path):
+    # Money on the meter: an unreadable file never reads as on.
+    assert read_live_warm_session_enabled(str(tmp_path / "absent.env")) is False

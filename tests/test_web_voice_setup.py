@@ -26,6 +26,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import pytest
+
 from jasper.voice.catalog import PROVIDERS
 from jasper.web import chrome, voice_setup
 
@@ -91,6 +93,16 @@ def test_voice_page_renders_all_provider_cards_and_radios():
         assert p.label in out
         # one active-provider radio per provider
         assert f'name="active" value="{p.id}"' in out
+
+
+@pytest.mark.parametrize("active", ["openai_live", "gemini", "openai", "grok"])
+def test_warm_session_control_belongs_to_active_openai_live_alone(active):
+    out = _render({"JASPER_VOICE_PROVIDER": active})
+    present = 'name="openai_live_warm_session"' in out
+    assert present is (active == "openai_live")
+    if present:
+        assert '<option value="off" selected>' in out
+        assert "about $0.05 per idle minute" in out
 
 
 def test_voice_page_has_save_and_test_and_first_time_key_metadata():

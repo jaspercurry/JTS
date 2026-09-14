@@ -11,6 +11,7 @@ import logging
 import random
 import time
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 from openai.types.live.client_event_param import ClientEventParam
@@ -23,10 +24,16 @@ from jasper.voice.conversation import END_CONVERSATION_TOOL, register_conversati
 from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConnection
 from jasper.voice.session import ConnectionState
 from tests._async_wait import wait_signalled, wait_until
-from tests._log_events import event_fields
+from tests._log_events import event_field_maps, event_fields
 
 
 CLIENT_EVENT = TypeAdapter(ClientEventParam)
+
+
+@pytest.fixture(autouse=True)
+def _warm_toggle_off_by_default(tmp_path, monkeypatch):
+    """Keep the host's saved toggle out of adapter tests."""
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(tmp_path / "absent.env"))
 
 
 class LiveSocket:
@@ -545,20 +552,7 @@ async def test_a_stop_racing_an_in_flight_open_is_not_an_outage(monkeypatch):
 async def test_stop_does_not_wait_out_a_dial_that_is_still_hanging(
     monkeypatch, caplog, close_sec,
 ):
-    """`stop()` returns inside the close bound, whatever the dial does.
-
-    The release ends by taking the turn lock the acquire holds for its
-    whole open budget — longer than the unit's `TimeoutStopSec`, so an
-    unbounded release means SIGKILL on a restart mid-dial. `stop()`
-    spends one cancel on the release, so the bound has to hold wherever
-    that cancel lands: on the lock itself, or — with a transport whose
-    unwind is slow — inside the close the release runs first.
-
-    The cancellation that produces `provider.close_failed phase=release`
-    must not also swallow `provider.turn_ended`: `_log_release()` runs
-    synchronously before the awaited `_on_turn_released`, so the turn
-    still leaves a record even when that await is where the cancel lands.
-    """
+    """Stopping an incomplete dial is bounded and creates no conversation."""
     caplog.set_level(logging.INFO)
     monkeypatch.setattr(openai_live_session, "SESSION_OPEN_BUDGET_SEC", 5.0)
     # The release bound fires inside the slow unwind; the base bound is
@@ -580,8 +574,7 @@ async def test_stop_does_not_wait_out_a_dial_that_is_still_hanging(
     assert conn._state is ConnectionState.CLOSED
     # The socket is still handed to its own unwind on the way out.
     assert socket.exits == 1
-    assert event_fields(caplog, "provider.close_failed")["phase"] == "release"
-    assert event_fields(caplog, "provider.turn_ended")["provider"] == "openai_live"
+    assert conn._active_turn is None
     release.set()
     with pytest.raises(RuntimeError):
         await acquire
@@ -685,3 +678,232 @@ async def test_a_server_that_never_acks_the_close_does_not_hold_the_release(monk
     assert [e["type"] for e in socket.sent].count("session.close") == 1
     assert socket.closed
     assert elapsed < 1.0
+
+
+# --- The warm session (ADR-0295) --------------------------------------
+
+
+class _Meter:
+    """The billable-activity meter, recording the intervals it is told to open."""
+
+    def __init__(self):
+        self.events = []
+
+    def mark_started(self) -> None:
+        self.events.append("open")
+
+    def mark_ended(self, *, seconds=None) -> None:
+        self.events.append(("close", seconds))
+
+
+class _Sessions:
+    def __init__(self):
+        self.sockets = []
+
+    def __call__(self):
+        socket = LiveSocket()
+        self.sockets.append(socket)
+        return socket
+
+
+async def _prepared(conn):
+    await wait_until(lambda: conn._billing_open and conn._active_turn is None)
+
+
+@pytest.mark.parametrize("warm", [False, True])
+async def test_release_always_closes_used_session_and_toggle_controls_preconnect(warm):
+    sessions = _Sessions()
+    conn = OpenAILiveConnection(api_key="test", connect=sessions, warm_session=lambda: warm)
+    conn.set_billable_activity_meter(_Meter())
+    await conn.start(ToolRegistry(), "Be brief.")
+    turn = await conn.acquire_turn()
+    await turn.release()
+    try:
+        assert sessions.sockets[0].closed
+        if warm:
+            await _prepared(conn)
+        assert len(sessions.sockets) == 1 + warm
+        assert (conn.warm_session_until() is not None) is warm
+    finally:
+        await conn.stop()
+
+
+async def test_prepared_session_is_silent_isolated_and_metered_once(caplog):
+    caplog.set_level(logging.INFO)
+    sessions, meter, usage = _Sessions(), _Meter(), []
+    enabled = [True]
+    conn = OpenAILiveConnection(api_key="test", connect=sessions, warm_session=lambda: enabled[0])
+    conn.set_billable_activity_meter(meter)
+    conn.set_background_usage_recorder(lambda **row: usage.append(row))
+    await conn.start(ToolRegistry(), "Be brief.")
+    first = await conn.acquire_turn()
+    completed = backend("old", "response.completed", response={
+        "id": "old-response", "usage": {"input_tokens": 20, "output_tokens": 5},
+    })
+    await sessions.sockets[0].events.put(completed)
+    await wait_until(lambda: len(usage) == 1)
+    await first.release()
+    await _prepared(conn)
+    prepared = sessions.sockets[1]
+    quiet_at = len(prepared.sent)
+    await first.send_audio(AUDIBLE_PCM)
+    await sessions.sockets[0].events.put(output_audio(AUDIBLE_PCM))
+    await sessions.sockets[0].events.put(completed)
+    await asyncio.sleep(0.25)
+    assert len(prepared.sent) == quiet_at
+    assert [e["type"] for e in prepared.sent] == ["session.start"]
+    second = await conn.acquire_turn()
+    try:
+        assert len(sessions.sockets) == 2
+        assert conn.warm_session_until() is None
+        assert second.chunks_received() == 0
+        assert len(usage) == 1
+        await prepared.events.put(output_audio(AUDIBLE_PCM))
+        await wait_until(lambda: second.chunks_received() == 1)
+        assert first.usage().breakdown == {"seconds": 12.5, "finalized": True}
+    finally:
+        enabled[0] = False
+        await second.release()
+        await conn.stop()
+    assert [f["session_reused"] for f in event_field_maps(caplog, "provider.turn_ended")] == ["false", "true"]
+    assert meter.events == ["open", ("close", 12.5), "open", ("close", 12.5)]
+
+
+@pytest.mark.parametrize("ending", ["expiry", "stop", "toggle_off", "server_close", "server_error"])
+async def test_prepared_session_endings_settle_usage_and_allow_a_clean_wake(monkeypatch, ending):
+    monkeypatch.setattr(openai_live_session, "CLOSE_ACK_TIMEOUT_SEC", 0.05)
+    if ending == "expiry":
+        monkeypatch.setattr(openai_live_session, "WARM_SESSION_SEC", 0.1)
+    sessions, meter, cues = _Sessions(), _Meter(), []
+    enabled = [True]
+    conn = OpenAILiveConnection(api_key="test", connect=sessions, warm_session=lambda: enabled[0])
+    conn.set_billable_activity_meter(meter)
+    async def cue(slug):
+        cues.append(slug)
+    conn.set_failure_escalation_cb(cue)
+    await conn.start(ToolRegistry(), "Be brief.")
+    first = await conn.acquire_turn()
+    await first.release()
+    await _prepared(conn)
+    prepared = sessions.sockets[1]
+    if ending == "expiry":
+        await wait_until(lambda: prepared.closed and conn.warm_session_until() is None)
+    elif ending == "stop":
+        await conn.stop()
+    elif ending.startswith("server_"):
+        await prepared.events.put(
+            {"type": "session.closed", "usage": {"seconds": 7.0}}
+            if ending == "server_close" else {"type": "error"}
+        )
+        await wait_until(lambda: prepared.closed and conn.warm_session_until() is None)
+        assert meter.events.count("open") == sum(isinstance(e, tuple) for e in meter.events)
+    enabled[0] = False
+    if ending != "stop":
+        second = await conn.acquire_turn()
+        assert len(sessions.sockets) == 3
+        assert not second.turn_lost()
+        await second.release()
+        await conn.stop()
+    assert prepared.closed
+    assert conn.warm_session_until() is None
+    assert cues == []
+    assert meter.events.count("open") == sum(isinstance(e, tuple) for e in meter.events)
+    assert conn._state is ConnectionState.CLOSED
+
+
+async def test_failed_preconnect_does_not_announce_an_outage_or_retry():
+    sessions, meter, cues = _Sessions(), _Meter(), []
+    calls = 0
+    def connect():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("connection refused")
+        return sessions()
+    conn = OpenAILiveConnection(api_key="test", connect=connect, warm_session=lambda: True)
+    conn.set_billable_activity_meter(meter)
+    async def cue(slug):
+        cues.append(slug)
+    conn.set_failure_escalation_cb(cue)
+    await conn.start(ToolRegistry(), "Be brief.")
+    first = await conn.acquire_turn()
+    await first.release()
+    await wait_until(lambda: conn.warm_session_until() is None)
+    assert calls == 2
+    second = await conn.acquire_turn()
+    assert not second.turn_lost()
+    await conn.stop()
+    assert cues == []
+    assert calls == 3
+
+
+async def test_stop_cancels_an_incomplete_preconnect_and_its_waiting_wake():
+    dialling, release = asyncio.Event(), asyncio.Event()
+    hanging = HangingDial(dialling, release)
+    sockets = iter([LiveSocket(), hanging])
+    meter = _Meter()
+    conn = OpenAILiveConnection(api_key="test", connect=lambda: next(sockets), warm_session=lambda: True)
+    conn.set_billable_activity_meter(meter)
+    await conn.start(ToolRegistry(), "Be brief.")
+    first = await conn.acquire_turn()
+    await first.release()
+    await wait_signalled(dialling, "the preconnect starting", producer=conn._warm_task)
+    wake = asyncio.create_task(conn.acquire_turn())
+    await asyncio.wait_for(conn.stop(), 1.0)
+    with pytest.raises(RuntimeError, match="stopped"):
+        await wake
+    assert hanging.closed
+    assert hanging.exits == 1
+    assert conn.warm_session_until() is None
+    assert conn._state is ConnectionState.CLOSED
+    assert meter.events == ["open", ("close", 12.5)]
+
+
+async def test_waiting_for_preconnect_uses_the_same_acquire_budget(monkeypatch):
+    monkeypatch.setattr(openai_live_session, "SESSION_OPEN_BUDGET_SEC", 0.15)
+    dialling, release = asyncio.Event(), asyncio.Event()
+    sockets = iter([LiveSocket(), HangingDial(dialling, release), HangingDial(dialling, release)])
+    conn = OpenAILiveConnection(api_key="test", connect=lambda: next(sockets), warm_session=lambda: True)
+    await conn.start(ToolRegistry(), "Be brief.")
+    first = await conn.acquire_turn()
+    await first.release()
+    await wait_signalled(dialling, "the preconnect starting", producer=conn._warm_task)
+    started = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError):
+            await conn.acquire_turn()
+        assert time.monotonic() - started < 0.25
+        assert conn._active_turn is None
+    finally:
+        await conn.stop()
+
+
+@pytest.mark.parametrize("before_release", [True, False])
+async def test_preconnect_honors_the_daemons_spend_admission(tmp_path, monkeypatch, before_release):
+    from jasper.voice.daemon_main import _make_connection
+
+    path = tmp_path / "provider.env"
+    path.write_text("JASPER_OPENAI_LIVE_WARM_SESSION=on\n")
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(path))
+    allowed = [True]
+    cfg = SimpleNamespace(voice_provider="openai_live", openai_api_key="test", openai_live_model="gpt-live-1",
+                          openai_live_voice="marin", openai_live_backend_model="gpt-5.4-mini")
+    conn = _make_connection(cfg, speech_policy=object(), spend_allowed=lambda: allowed[0])
+    sessions, meter = _Sessions(), _Meter()
+    conn._connect = sessions
+    conn.set_billable_activity_meter(meter)
+    await conn.start(ToolRegistry(), "Be brief.")
+    try:
+        first = await conn.acquire_turn()
+        if before_release:
+            allowed[0] = False
+        await first.release()
+        if not before_release:
+            await _prepared(conn)
+            allowed[0] = False
+            await wait_until(lambda: sessions.sockets[1].closed)
+        assert len(sessions.sockets) == (1 if before_release else 2)
+        assert conn.warm_session_until() is None
+        assert meter.events.count("open") == sum(isinstance(e, tuple) for e in meter.events)
+    finally:
+        await conn.stop()

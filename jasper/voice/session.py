@@ -382,6 +382,10 @@ class LiveConnection(Protocol):
         daemon calls this once the ``WakeLoop`` exists."""
         ...
 
+    def warm_session_until(self) -> float | None:
+        """Idle session expiry in epoch seconds, or None. See ADR-0295."""
+        ...
+
 
 def log_first_chunk(
     logger: logging.Logger,

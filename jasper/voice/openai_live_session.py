@@ -5,7 +5,8 @@
 """GPT-Live voice streaming with managed Responses delegation.
 
 See https://developers.openai.com/api/docs/guides/live-migration.
-One billable Live session is owned by one wake conversation.
+Each conversation owns a fresh session; an idle one may be prepared ahead
+of the next wake (ADR-0295).
 """
 from __future__ import annotations
 
@@ -15,13 +16,14 @@ import base64
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, Callable
 
 from ..backoff import reconnect_delay
 from ..log_event import log_event
 from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn, ToolCall
 from ._supervisor import failure_detail, is_transient
 from .openai_session import _upsample_16k_to_24k
+from .provider_state import read_live_warm_session_enabled
 from .session import AudioOutChunk, ConnectionState, TurnCapture, TurnUsage
 
 logger = logging.getLogger(__name__)
@@ -64,11 +66,11 @@ CLOSE_ACK_TIMEOUT_SEC = 1.5
 # its own on `acquire_turn`.
 SESSION_OPEN_BUDGET_SEC = 15.0
 
-# Session opens one wake pays for. Live holds no socket between
-# conversations, so the acquire is the only retry it has — there is no
-# supervisor behind it. The second attempt covers the 409 race against the
-# session the previous conversation just closed (`_supervisor.is_transient`).
+# One retry for a cold wake; optional preconnect never retries.
 SESSION_OPEN_ATTEMPTS = 2
+
+# Fixed idle preconnect window, default off. See ADR-0295.
+WARM_SESSION_SEC = 60.0
 
 
 def _parse_call(call: dict) -> ToolCall:
@@ -106,17 +108,16 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._input_caught_up = 0.0
         self._sender = None
         self._transcript_intervals = {"user": [], "assistant": []}
-        self._seconds = 0.0
+        self._final_usage: TurnUsage | None = None
         self._quiet_played = 0
         self._quiet_discarded = 0
-        self._finalized = False
         self._delegation_id = None
         # Delegation the in-flight tool round answers; a correction moves
         # `_delegation_id` on and abandons that round's results.
         self._round_delegation = None
         self._response_ids = {}
         self._calls = {}
-        self._counted_responses = set()
+        self._session_reused = False
         self.backend_pending = False
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
@@ -167,11 +168,7 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._end_input_at_monotonic = time.monotonic()
 
     def usage(self) -> TurnUsage:
-        # Live bills the frontend session per minute, not per token, so
-        # this replaces the base turn's token counts with the metered
-        # seconds. The backend's own tokens are a separate spend row
-        # (`_on_backend_event`), not part of this turn's usage.
-        return TurnUsage(breakdown={"seconds": self._seconds, "finalized": self._finalized})
+        return self._final_usage or self._conn._session_usage()
 
     def capture(self) -> TurnCapture:
         return TurnCapture(
@@ -190,34 +187,33 @@ class OpenAILiveTurn(BaseLiveTurn):
         try:
             await self._conn._close_live_session()
         finally:
+            self._final_usage = self._conn._session_usage()
             self._audio_q.put_nowait(None)
             self._log_release()
             await self._conn._on_turn_released(self)
+            if not self._turn_lost:
+                self._conn._prepare_next_session()
 
     def _release_fields(self) -> dict[str, Any]:
-        """Live bills the frontend session per metered second, not per
-        token, and bridges the quiet between audible deltas."""
         return {
-            "seconds": round(self._seconds, 3),
-            "finalized": self._finalized,
+            **(self.usage().breakdown or {}),
+            "session_reused": self._session_reused,
             "quiet_played": self._quiet_played,
             "quiet_discarded": self._quiet_discarded,
             "input_catchup_ms": round(self._input_caught_up * 1000),
         }
 
     async def on_event(self, event: dict) -> None:
+        if not self._conn._account_event(event):
+            return
         kind = event["type"]
-        if kind in {"session.usage.updated", "session.closed"}:
-            self._seconds = max(self._seconds, float((event.get("usage") or {}).get("seconds", 0)))
-            self._finalized = kind == "session.closed"
-            self._server_turn_complete = self._finalized
+        if kind == "session.closed":
+            self._server_turn_complete = True
+        if self._released or self._turn_lost:
             return
         if kind == "response.event":
             await self._on_backend_event(event)
-            return
-        if self._released or self._turn_lost:
-            return
-        if kind == "session.output_audio.delta":
+        elif kind == "session.output_audio.delta":
             self._on_output_audio(base64.b64decode(event["delta"]))
         elif kind in {"session.input_transcript.delta", "session.output_transcript.delta"}:
             speaker = "user" if kind == "session.input_transcript.delta" else "assistant"
@@ -261,22 +257,6 @@ class OpenAILiveTurn(BaseLiveTurn):
         delegation = envelope.get("delegation_id")
         response = event.get("response") or {}
         response_id = response.get("id") or self._response_ids.get(delegation)
-        if kind == "response.completed":
-            if response_id in self._counted_responses:
-                return
-            self._counted_responses.add(response_id)
-            usage = response.get("usage") or {}
-            if usage and self._conn._usage_recorder is not None:
-                self._conn._usage_recorder(
-                    provider="openai", model=self._conn._backend_model,
-                    input_tokens=usage.get("input_tokens", 0),
-                    output_tokens=usage.get("output_tokens", 0),
-                    usage={
-                        "input_token_details": {"text_tokens": usage.get("input_tokens", 0),
-                            "cached_tokens": (usage.get("input_tokens_details") or {}).get("cached_tokens", 0)},
-                        "output_token_details": {"text_tokens": usage.get("output_tokens", 0)},
-                    },
-                )
         if self._released or self._turn_lost or delegation != self._delegation_id or delegation is None:
             return
         self._note_activity()
@@ -323,18 +303,29 @@ class OpenAILiveConnection(BaseLiveConnection):
     _logger = logger
     _log_tag = "openai live connection:"
 
-    def __init__(self, *, api_key, model="gpt-live-1", voice="marin", backend_model="gpt-5.4-mini", connect=None):
+    def __init__(
+        self, *, api_key, model="gpt-live-1", voice="marin",
+        backend_model="gpt-5.4-mini", connect=None,
+        warm_session: Callable[[], bool] | None = None,
+    ):
         super().__init__(model=model, voice=voice)
         self._api_key = api_key
         self._backend_model = backend_model
         self._connect = connect
-        self._client = None
-        self._session_cm = None
-        self._session = None
+        self._warm_session = warm_session or read_live_warm_session_enabled
+        self._client: Any = None
+        self._session_cm: Any = None
+        self._session: Any = None
+        self._warm_task: asyncio.Task | None = None
+        self._warm_until_epoch: float | None = None
+        self._seconds = 0.0
+        self._finalized = False
+        self._counted_responses: set[str] = set()
+        self._billing_open = False
         self._started = asyncio.Event()
         self._closed = asyncio.Event()
-        self._billable_activity_meter = None
-        self._usage_recorder = None
+        self._billable_activity_meter: Any = None
+        self._usage_recorder: Any = None
 
     def set_billable_activity_meter(self, meter) -> None:
         self._billable_activity_meter = meter
@@ -351,66 +342,125 @@ class OpenAILiveConnection(BaseLiveConnection):
         self._set_state(ConnectionState.CONNECTED)
 
     async def acquire_turn(self) -> OpenAILiveTurn:
-        async with self._turn_lock:
+        async with asyncio.timeout(SESSION_OPEN_BUDGET_SEC), self._turn_lock:
             if self._active_turn is not None:
                 raise RuntimeError("Live conversation already active")
-            self._set_state(ConnectionState.CONNECTING)
+            if self._stopping.is_set():
+                raise RuntimeError("Live connection stopped")
+            reused = bool(
+                self._warm_task is not None and self._warm_session()
+                and self._session is not None and not self._closed.is_set()
+                and self._receive_task is not None and not self._receive_task.done()
+                and self._warm_until_epoch is not None and time.time() < self._warm_until_epoch
+            )
+            await self._cancel_task(self._warm_task)
+            self._warm_task = None
+            self._warm_until_epoch = None
             try:
-                async with asyncio.timeout(SESSION_OPEN_BUDGET_SEC):
-                    turn = await self._open_session_for_turn()
-                if self._billable_activity_meter is not None:
-                    self._billable_activity_meter.mark_started()
+                if not reused:
+                    if self._session_cm is not None:
+                        await self._close_live_session()
+                    self._set_state(ConnectionState.CONNECTING)
+                    await self._open_live_session()
+                turn = OpenAILiveTurn(self, time.monotonic())
+                turn._session_reused = reused
+                self._active_turn = turn
                 self._set_state(ConnectionState.IN_TURN)
                 turn._sender = asyncio.create_task(turn._send_audio_stream())
                 turn._sender.add_done_callback(lambda task: turn._on_connection_lost() if not task.cancelled() and task.exception() else None)
                 return turn
-            except BaseException as exc:  # noqa: BLE001 — release the socket on cancellation and redact SDK failures
-                try:
-                    await self._teardown_session()
-                finally:
-                    self._active_turn = None
+            except BaseException as exc:  # noqa: BLE001 — release on cancellation; redact SDK errors
+                await self._close_live_session()
+                if not self._stopping.is_set():
                     self._set_state(ConnectionState.CONNECTED)
                 if isinstance(exc, Exception):
                     raise RuntimeError(failure_detail(exc, literals=self._secret_literals())) from None
                 raise
 
-    async def _open_session_for_turn(self) -> OpenAILiveTurn:
-        """Open this wake's session, retrying one transient failure.
+    def warm_session_until(self) -> float | None:
+        return self._warm_until_epoch
 
-        A terminal failure — a rejected key, an account out of credit —
-        is raised on the first attempt: `_open_session` has already
-        recorded it and announced its remedy, and retrying cannot help.
-        Each attempt gets its own turn, because tearing a half-open
-        session down marks the turn it was opened for lost.
-        """
-        attempt = 0
-        while True:
-            attempt += 1
+    def _prepare_next_session(self) -> None:
+        if self._stopping.is_set() or not self._warm_session():
+            return
+        self._warm_until_epoch = time.time() + WARM_SESSION_SEC
+        self._warm_task = asyncio.create_task(self._warm_next_session(time.monotonic() + WARM_SESSION_SEC))
+
+    async def _warm_next_session(self, deadline: float) -> None:
+        try:
+            async with self._turn_lock:
+                try:
+                    async with asyncio.timeout(min(SESSION_OPEN_BUDGET_SEC, WARM_SESSION_SEC)):
+                        await self._open_live_session(warm=True)
+                except Exception as exc:  # noqa: BLE001 — optional preconnect never announces an outage
+                    log_event(logger, "provider.warm_failed", provider=self.PROVIDER_NAME,
+                              detail=failure_detail(exc, literals=self._secret_literals()))
+                    await self._close_live_session()
+                    return
+            while not self._closed.is_set() and self._warm_session():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    await asyncio.wait_for(self._closed.wait(), min(1.0, remaining))
+                except TimeoutError:
+                    pass
+            async with self._turn_lock:
+                await self._close_live_session()
+        finally:
+            if self._warm_task is asyncio.current_task():
+                self._warm_task = None
+                self._warm_until_epoch = None
+
+    async def _open_live_session(self, *, warm: bool = False) -> None:
+        for attempt in range(1, SESSION_OPEN_ATTEMPTS + 1):
             self._started.clear()
             self._closed.clear()
-            turn = OpenAILiveTurn(self, time.monotonic())
-            self._active_turn = turn
+            self._seconds, self._finalized = 0.0, False
+            self._counted_responses.clear()
             try:
-                await self._open_session()
+                if warm:
+                    await self._open_session_attempt()
+                else:
+                    await self._open_session()
+                return
             except Exception as exc:  # noqa: BLE001
-                if (
-                    attempt >= SESSION_OPEN_ATTEMPTS
-                    or self._stopping.is_set()
-                    or not is_transient(exc)
-                ):
+                if warm or attempt == SESSION_OPEN_ATTEMPTS or self._stopping.is_set() or not is_transient(exc):
                     raise
                 self._on_reconnect_attempt_failed(exc, attempt, True)
-                await self._teardown_session()
+                await self._close_live_session()
                 await self._sleep(reconnect_delay(attempt, transient=True))
-            else:
-                return turn
+
+    def _session_usage(self) -> TurnUsage:
+        return TurnUsage(breakdown={"seconds": self._seconds, "finalized": self._finalized})
+
+    def _account_event(self, event: dict) -> bool:
+        if event["type"] in {"session.usage.updated", "session.closed"}:
+            self._seconds = max(self._seconds, float((event.get("usage") or {}).get("seconds", 0)))
+            self._finalized = event["type"] == "session.closed"
+        elif event["type"] == "response.event" and event["event"]["type"] == "response.completed":
+            response = event["event"].get("response") or {}
+            response_id = response.get("id")
+            if response_id in self._counted_responses:
+                return False
+            if response_id is not None:
+                self._counted_responses.add(response_id)
+            usage = response.get("usage") or {}
+            if usage and self._usage_recorder is not None:
+                self._usage_recorder(
+                    provider="openai", model=self._backend_model,
+                    input_tokens=usage.get("input_tokens", 0), output_tokens=usage.get("output_tokens", 0),
+                    usage={
+                        "input_token_details": {"text_tokens": usage.get("input_tokens", 0),
+                            "cached_tokens": (usage.get("input_tokens_details") or {}).get("cached_tokens", 0)},
+                        "output_token_details": {"text_tokens": usage.get("output_tokens", 0)},
+                    },
+                )
+        return True
 
     async def _open_session_attempt(self) -> None:
         assert self._registry is not None
         assert self._system_instruction_provider is not None
-        # Held locally: a concurrent `stop()` nulls the shared field while
-        # this awaits, and the attempt still owns the turn it opened for.
-        turn = self._active_turn
         connect = self._connect
         if connect is None:
             from openai import AsyncOpenAI  # lazy — optional provider SDK
@@ -418,7 +468,7 @@ class OpenAILiveConnection(BaseLiveConnection):
             connect = self._connect = self._client.live.connect
         self._session_cm = connect()
         self._session = await self._session_cm.__aenter__()
-        self._receive_task = asyncio.create_task(self._receive(turn))
+        self._receive_task = asyncio.create_task(self._receive())
         await self._send({"type": "session.start", "session": {
             "model": self._model, "instructions": FRONTEND_INSTRUCTIONS, "store": False,
             "audio": {"format": {"type": "audio/pcm", "rate": 24000}, "output": {"voice": self._voice}},
@@ -429,15 +479,18 @@ class OpenAILiveConnection(BaseLiveConnection):
             }},
         }})
         await self._started.wait()
-        if turn.turn_lost() or self._stopping.is_set():
+        if self._closed.is_set() or self._stopping.is_set():
             raise RuntimeError("Live session failed during startup")
+        if self._billable_activity_meter is not None:
+            self._billable_activity_meter.mark_started()
+            self._billing_open = True
 
     async def _send(self, event) -> None:
         if self._session is None:
             raise RuntimeError("Live socket is closed")
         await self._session.send(event)
 
-    async def _receive(self, turn: OpenAILiveTurn) -> None:
+    async def _receive(self) -> None:
         try:
             async for raw in self._session:
                 event = raw if isinstance(raw, dict) else raw.model_dump()
@@ -446,7 +499,11 @@ class OpenAILiveConnection(BaseLiveConnection):
                 elif event["type"] == "error":
                     raise RuntimeError("Live command rejected")
                 else:
-                    await turn.on_event(event)
+                    turn = self._active_turn
+                    if turn is not None:
+                        await turn.on_event(event)
+                    else:
+                        self._account_event(event)
                     if event["type"] == "session.closed":
                         self._closed.set()
                         break
@@ -456,7 +513,9 @@ class OpenAILiveConnection(BaseLiveConnection):
                 detail=failure_detail(exc, literals=self._secret_literals()),
             )
         finally:
-            if not turn._released:
+            self._closed.set()
+            turn = self._active_turn
+            if turn is not None and not turn._released:
                 turn._on_connection_lost()
             self._started.set()
 
@@ -473,10 +532,10 @@ class OpenAILiveConnection(BaseLiveConnection):
                 level=logging.WARNING,
             )
         finally:
-            turn = self._active_turn
-            if self._billable_activity_meter is not None:
+            if self._billing_open:
+                self._billing_open = False
                 self._billable_activity_meter.mark_ended(
-                    seconds=turn._seconds if turn and turn._finalized else None,
+                    seconds=self._seconds if self._finalized else None,
                 )
             await self._teardown_session()
 
@@ -489,17 +548,10 @@ class OpenAILiveConnection(BaseLiveConnection):
             self._session_cm = self._session = None
 
     async def stop(self) -> None:
-        # Set before the release, so an acquire still dialling fails its
-        # open instead of handing back a turn on a closed connection.
         self._stopping.set()
-        # Released first: only the turn's own path sends `session.close` and
-        # settles the billable interval. `super().stop()` then tears down
-        # what is left, idempotently.
         turn = self._active_turn
         if turn is not None:
-            # Bounded: the release ends by taking `_turn_lock`, which an
-            # acquire still dialling holds for up to
-            # SESSION_OPEN_BUDGET_SEC — past the unit's TimeoutStopSec.
+            # Shutdown must stay inside the unit's TimeoutStopSec.
             try:
                 await asyncio.wait_for(turn.release(), SESSION_CLOSE_TIMEOUT_SEC)
             except TimeoutError:
@@ -508,6 +560,10 @@ class OpenAILiveConnection(BaseLiveConnection):
                     phase="release", detail="release timed out",
                     level=logging.WARNING,
                 )
+        await self._cancel_task(self._warm_task)
+        self._warm_task = None
+        self._warm_until_epoch = None
+        await self._close_live_session()
         await super().stop()
         if self._client is not None:
             await self._client.close()

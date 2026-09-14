@@ -56,6 +56,7 @@ def _make_wake_loop(**collaborators):
         "connection",
         types.SimpleNamespace(
             is_paused=lambda: False, last_failure_detail=lambda: None,
+            warm_session_until=lambda: None,
         ),
     )
     wl = wake_loop_for_tests(**collaborators)
