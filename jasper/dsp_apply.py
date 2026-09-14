@@ -49,6 +49,7 @@ from jasper.camilla_config_contract import (
 )
 from jasper.json_fields import sha256_file, utc_now_iso
 from jasper.log_event import log_event
+from jasper.paths import resolve_state_path
 
 logger = logging.getLogger(__name__)
 
@@ -293,14 +294,6 @@ def validate_camilla_config(path: str | Path) -> CamillaConfigValidationResult:
     return validation
 
 
-def _state_path(path: str | Path | None = None) -> Path:
-    return Path(
-        path
-        or os.environ.get("JASPER_DSP_APPLY_STATE_PATH")
-        or DEFAULT_DSP_APPLY_STATE_PATH
-    )
-
-
 def record_dsp_apply_state(
     state: DspApplyState,
     *,
@@ -312,7 +305,9 @@ def record_dsp_apply_state(
     audio apply fail.
     """
 
-    path = _state_path(state_path)
+    path = resolve_state_path(
+        state_path, "JASPER_DSP_APPLY_STATE_PATH", DEFAULT_DSP_APPLY_STATE_PATH
+    )
     try:
         atomic_write_json(path, state.to_dict())
     except (OSError, TypeError) as e:
@@ -329,7 +324,9 @@ def last_dsp_apply_state(
     *,
     state_path: str | Path | None = None,
 ) -> dict[str, Any] | None:
-    path = _state_path(state_path)
+    path = resolve_state_path(
+        state_path, "JASPER_DSP_APPLY_STATE_PATH", DEFAULT_DSP_APPLY_STATE_PATH
+    )
     try:
         blob = json.loads(path.read_text())
     except (OSError, ValueError, json.JSONDecodeError):

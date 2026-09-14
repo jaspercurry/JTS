@@ -8,11 +8,11 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Callable, Literal
 
 from jasper.atomic_io import atomic_write_text
 from jasper.fanin.status import USBSINK_INPUT_LABEL
+from jasper.paths import resolve_state_path
 
 STATE_ENV_KEY = "JASPER_USB_LATENCY_MODE"
 DEFAULT_MODE = "low"
@@ -63,10 +63,6 @@ class LatencyApplyError(RuntimeError):
     """The preference was saved, but the live fan-in did not apply it."""
 
 
-def _state_path(path: str | os.PathLike[str] | None = None) -> Path:
-    return Path(path or DEFAULT_STATE_PATH)
-
-
 def normalize_mode(raw: str | None) -> str:
     mode = (raw or "").strip().lower()
     if mode not in PRESETS:
@@ -85,7 +81,9 @@ def read_requested_mode(
     path: str | os.PathLike[str] | None = None,
 ) -> str:
     try:
-        text = _state_path(path).read_text(encoding="utf-8")
+        text = resolve_state_path(path, None, DEFAULT_STATE_PATH).read_text(
+            encoding="utf-8"
+        )
     except FileNotFoundError:
         return DEFAULT_MODE
     found: str | None = None
@@ -104,7 +102,7 @@ def write_requested_mode(
     path: str | os.PathLike[str] | None = None,
 ) -> str:
     canonical = normalize_mode(mode)
-    dst = _state_path(path)
+    dst = resolve_state_path(path, None, DEFAULT_STATE_PATH)
     atomic_write_text(
         dst,
         "# Written by JTS /system USB latency control.\n"
