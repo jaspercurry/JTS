@@ -3415,12 +3415,8 @@ async def _active_speaker_summed_test_payload(
         calibration_level_payload,
         load_calibration_level_state,
     )
-    from jasper.active_speaker.baseline_profile import (
-        build_baseline_profile_candidate,
-    )
     from jasper.active_speaker.commissioning_coordinator import (
-        build_commissioning_view,
-        read_applied_profile_verdict,
+        load_commissioning_view,
     )
     from jasper.active_speaker.crossover_preview import load_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
@@ -3484,22 +3480,7 @@ async def _active_speaker_summed_test_payload(
         safe_session_id=safe_session.get("session_id"),
         protected_startup_loaded=protected_loaded,
     )
-    baseline_profile = build_baseline_profile_candidate(
-        topology,
-        design_draft=design_draft,
-        crossover_preview=preview,
-        measurements=measurements,
-        write=False,
-    )
-    commissioning_view = build_commissioning_view(
-        topology,
-        design_draft=design_draft,
-        crossover_preview=preview,
-        measurements=measurements,
-        baseline_profile=baseline_profile,
-        calibration_level=calibration_level,
-        applied_profile_verdict=read_applied_profile_verdict(baseline_profile),
-    )
+    commissioning_view = load_commissioning_view(topology)
     driver_target_proof = commissioning_view.get("driver_target_proof")
     driver_target_proof_complete = (
         isinstance(driver_target_proof, dict)
