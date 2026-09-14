@@ -87,10 +87,9 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
 - **Imports:** hoist function-local imports unless a trailing `# lazy` comment
   names the reason: a real cycle, import cost, an optional dependency, or a
   boundary a test pins.
-- **Config:** no new `JASPER_*` knob unless the owner asked for the toggle or
-  hardware genuinely varies. Pattern choice (typed `Config` vs plugin
-  self-parse vs reconciler-owned env) per
-  [docs/extensibility.md](docs/extensibility.md).
+- **Config:** `JASPER_*` is on-device runtime; `JTS_*` is build/deploy/test.
+  No new `JASPER_*` knob unless the owner requested it or hardware varies.
+  Config ownership: [docs/extensibility.md](docs/extensibility.md).
 - **Evidence first:** for any bug, fetch logs
   (`bash scripts/fetch-pi-logs.sh`, `curl -s http://jts.local:8780/state`)
   and name the failing line/transition before proposing a fix. Verify at the

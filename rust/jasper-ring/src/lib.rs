@@ -4,16 +4,6 @@
 
 //! JTS Ring B — SPSC ping-pong SHM frame ring (reader + shared header/seq logic).
 //!
-//! # What this is
-//!
-//! Ring B replaces the outputd *content* snd-aloop hop
-//! (CamillaDSP playback -> outputd content) — a free-running ~1536-frame
-//! (~32 ms) loopback buffer — with a bounded N-slot ping-pong ring in shared
-//! memory. CamillaDSP writes into the ring through a custom ALSA ioplug
-//! (`c/jts-ring-ioplug/`, the WRITER, C); `jasper-outputd` reads one slot per
-//! DAC period (the READER, this crate) with empty->silence semantics. The DAC
-//! blocking write is the pacer; the reader never blocks on the ring.
-//!
 //! This crate owns the READER and the *shared* header/seq/geometry logic. The
 //! golden-layout test ([`layout::tests`]) pins every header offset against the
 //! constants the C header (`c/jts-ring-ioplug/jts_ring_shm.h`) `_Static_assert`s
@@ -143,6 +133,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod layout;
 pub mod writer;
+
+/// Geometry/header faults cannot recover on restart. See #4805 R-116.
+pub fn ring_open_error_is_config_class(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
+    )
+}
 
 pub use layout::{
     layout_json, Geometry, HEADER_BYTES, MAGIC, MAX_N_SLOTS, MAX_RING_CHANNELS, MAX_SLOT_BYTES,

@@ -29,10 +29,9 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
-from ..local_sources.registry import local_source_lifecycles
-from ..music_sources import MUSIC_SOURCE_SPECS, Source
+from ..music_sources import Source
 from ..platform.status_socket import (
-    FANIN_STALE_MS, MUX_CONTROL_SOCKET_PATH, OUTPUTD_STALE_MS,
+    MUX_CONTROL_SOCKET_PATH, OUTPUTD_STALE_MS,
     OUTPUTD_STATUS_SOCKET, STATUS_MAX_BYTES, read_status_socket_or_none,
 )
 from ..service_units import (
@@ -41,9 +40,7 @@ from ..service_units import (
     unit_failed,
     unit_not_running,
 )
-from ..fanin.latency_mode import PRESETS, classify_runtime
-from ..fanin.status import DIRECT_HEALTH_BROKEN
-from ..fanin_coupling import RING_SLOT_FRAMES
+from ..fanin.latency_mode import PRESETS
 from ..source_intent import read_source_intents
 from .airplay_health import (
     CAMILLA_UNIT_FULL,
@@ -52,6 +49,8 @@ from .airplay_health import (
 )
 from ._health_fields import (
     _MONITOR_ERRORS,
+    DIAGNOSTICS_REMEDY,
+    RESTART_REMEDY,
     _as_int,
     _detail,
     _duration_label,
@@ -59,8 +58,35 @@ from ._health_fields import (
     _mapping,
     _nonnegative_counter,
 )
+from ._health_sources import (
+    SOURCE_OFF_DRIFT_DETAIL,
+    SOURCE_UNAVAILABLE_DETAIL,
+    _SOURCE_HEALTH_UNITS,
+    _SOURCE_LABELS,
+    _SOURCE_OFF_DRIFT_UNITS,
+)
 from .audio_incidents import IncidentStore, IssueTracker, SessionRollup, issue_row
 from .audio_route_claim import read_route_claim
+from .audio_signal_path import (
+    ACTIVITY_UNKNOWN_DETAIL,
+    PATH_UNREPORTED_DETAIL,
+    PATH_UNREPORTED_TITLE,
+    _OUTPUT_ABSENT_DETAIL,
+    _OUTPUT_ABSENT_TITLE,
+    _active_source,
+    _activity_truth_unknown,
+    _activity_unavailable_signal,
+    _ring_occupancy_ms,
+    _ring_pressure,
+    _selected_source,
+    _signal_path,
+)
+from .audio_source_cards import (
+    _airplay_timing,
+    _not_applicable_timing,
+    _source_cards,
+    _usb_timing,
+)
 from .transport_eligibility import (
     PARK_DAC_CONTENT_MARKER_BESIDE_BRIDGE,
     PARK_MONO_FULL_RANGE,
@@ -75,14 +101,6 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = 1
 ROUTE_INTERVAL_SEC = 60.0
 LOCAL_STATUS_TIMEOUT_SEC = 1.0
-
-# Household register for every sentence this module writes: what is wrong with
-# the household's sound and what they can do about it, never a daemon name, a
-# unit, a systemd state, or a command (#2472) — that half lives in
-# `jasper-doctor` and `/state.audio_health.technical`. Both remedies below name
-# buttons on the same /system/ page as this card.
-RESTART_REMEDY = "Try Restart audio."
-DIAGNOSTICS_REMEDY = "Run diagnostics if sound doesn't come back."
 
 # The one household-facing sentence for a box whose post-DSP transport is
 # broken: CamillaDSP and outputd are on different loopback lanes, so nothing
@@ -140,49 +158,6 @@ _PARK_REPAIRABLE = "Run diagnostics for the one step that repairs it."
 # and the signal-path headline that carries it into `overall`.
 STOPPED_DSP_HEADLINE = "Sound processing has stopped"
 
-# `_signal_path`'s generic "outputd never started" and "fan-in is not
-# reporting" sentences. Written once because `_state_issues` raises the
-# matching `path.outputd_unavailable` / `path.fanin_unavailable` incidents from
-# the same two facts and neither pair may drift.
-_OUTPUT_ABSENT_TITLE = "The speaker's sound output is not running"
-_OUTPUT_ABSENT_DETAIL = (
-    f"Nothing will play until it comes back. {RESTART_REMEDY} "
-    f"{DIAGNOSTICS_REMEDY}"
-)
-PATH_UNREPORTED_TITLE = "Sound status unavailable"
-PATH_UNREPORTED_DETAIL = (
-    "JTS cannot tell whether sound is reaching the speaker right now, so "
-    f"music may be missing. {RESTART_REMEDY}"
-)
-
-# The closed vocabulary of signal-path shape codes — every `code` any
-# signal-path producer emits (`_signal_path` and the overrides
-# `compose_audio_health` layers on it). A new shape registers itself HERE, which
-# is what makes `test_the_household_shapes_cover_every_signal_path_code` fail
-# until it is added to the household-register sweep as well.
-SIGNAL_PATH_CODES = frozenset({
-    "activity_unknown",
-    "camilla_not_installed",
-    "camilla_stopped",
-    "clean",
-    "input_absent",
-    "input_broken",
-    "input_stalled",
-    "output_absent",
-    "output_backend_inactive",
-    "output_deaf",
-    "output_ring_stalled",
-    "output_stalled",
-    "path_pressured",
-    "path_stalled",
-    "path_unreported",
-    "starting",
-    "transport_parked",
-    "transport_unservable",
-    "tts_queue_full",
-    "undeclared_hardware",
-})
-
 # Signal-path codes that name a CONSEQUENCE rather than a cause, so a
 # cause-naming detector may displace them (:func:`_yields_to_a_named_cause`).
 # `output_deaf` is what a stopped DSP, a live coherence contradiction and a
@@ -208,28 +183,6 @@ RESTART_WATCH_UNITS = {
     FANIN_SERVICE: "path.fanin",
     CAMILLA_UNIT_FULL: "path.camilla",
     OUTPUTD_SERVICE: "path.outputd",
-}
-
-_LABEL_TO_SOURCE = {
-    spec.fanin_label: spec.id.value for spec in MUSIC_SOURCE_SPECS
-}
-_SOURCE_LABELS = {
-    spec.id.value: spec.display_name for spec in MUSIC_SOURCE_SPECS
-}
-_SOURCE_HEALTH_UNITS = {
-    lifecycle.source.value: lifecycle.health_units
-    for lifecycle in local_source_lifecycles()
-}
-_SOURCE_OFF_DRIFT_UNITS = {
-    lifecycle.source.value: lifecycle.park_units
-    for lifecycle in local_source_lifecycles()
-}
-_SOURCE_PRIMARY_UNITS = {
-    lifecycle.source.value: (
-        lifecycle.intent_unit
-        or (lifecycle.runtime_units[0] if lifecycle.runtime_units else None)
-    )
-    for lifecycle in local_source_lifecycles()
 }
 
 
@@ -303,64 +256,6 @@ def _read_output_topology() -> Any:
     except _MONITOR_ERRORS:
         logger.debug("audio health output-topology probe failed", exc_info=True)
         return None
-
-
-def _selected_source(airplay: Mapping[str, Any]) -> str | None:
-    current = _mapping(airplay.get("current"))
-    fanin = _mapping(current.get("fanin"))
-    selected = fanin.get("selected_input")
-    if not isinstance(selected, str):
-        return None
-    normalized = selected.strip().lower()
-    if normalized in _LABEL_TO_SOURCE:
-        normalized = _LABEL_TO_SOURCE[normalized]
-    return normalized if normalized in _SOURCE_LABELS else None
-
-
-def _source_playing(
-    mux_status: Mapping[str, Any] | None,
-    source_id: str | None,
-) -> bool | None:
-    """Project mux's canonical per-source activity without inventing fallback."""
-    if source_id is None or not isinstance(mux_status, Mapping):
-        return None
-    source = _mapping(_mapping(mux_status.get("sources")).get(source_id))
-    playing = source.get("playing")
-    return playing if isinstance(playing, bool) else None
-
-
-def _active_source(
-    airplay: Mapping[str, Any],
-    mux_status: Mapping[str, Any] | None,
-) -> str | None:
-    selected = _selected_source(airplay)
-    return selected if _source_playing(mux_status, selected) is True else None
-
-
-def _activity_truth_unknown(
-    airplay: Mapping[str, Any],
-    mux_status: Mapping[str, Any] | None,
-) -> bool:
-    """Whether mux cannot authoritatively classify the selected lane."""
-    if not isinstance(mux_status, Mapping) or not isinstance(
-        mux_status.get("sources"),
-        Mapping,
-    ):
-        return True
-    selected = _selected_source(airplay)
-    return selected is not None and _source_playing(mux_status, selected) is None
-
-
-ACTIVITY_UNKNOWN_DETAIL = "JTS cannot tell which source is playing right now."
-
-
-def _activity_unavailable_signal() -> dict[str, str]:
-    return {
-        "code": "activity_unknown",
-        "status": "unknown",
-        "headline": "Playback activity unavailable",
-        "detail": ACTIVITY_UNKNOWN_DETAIL,
-    }
 
 
 def _parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -561,444 +456,6 @@ def _undeclared_hardware_signal(
         "status": "issue",
         "headline": UNDECLARED_HARDWARE_HEADLINE,
         "detail": detail,
-    }
-
-
-def _ring_pressure(fanin_output: Mapping[str, Any]) -> float | None:
-    """Fraction of fan-in's ring publishes that had to wait for a free slot.
-
-    `full_waits` ticks once per SLOT publish that waited, so its rate is read
-    against the publish rate (sample_rate / RING_SLOT_FRAMES): jts4 measured
-    162 waits/s against 375 publishes/s in lockstep (issue #4124).
-
-    INFORMATIONAL ONLY. Ring A is a blocking handshake pinned near full by
-    design (ADR-0205), so a saturated ring is the steady state, not a fault:
-    this must never reach a verdict.
-
-    None whenever any term is absent or the publish rate is underivable —
-    absence must read as "not observed", never as "no pressure".
-    """
-    ring = _mapping(fanin_output.get("ring"))
-    waits = _finite_number(ring.get("full_waits_per_sec"))
-    rate = _as_int(fanin_output.get("sample_rate"))
-    if waits is None or rate <= 0:
-        return None
-    return float(waits) * RING_SLOT_FRAMES / rate
-
-
-def _ring_occupancy_ms(fanin_output: Mapping[str, Any]) -> float | None:
-    """Fan-in's queued program depth, in ms.
-
-    ``occupancy`` counts ring SLOTS, each ``RING_SLOT_FRAMES`` frames wide
-    (rust/jasper-ring/src/layout.rs), not frames or ms.
-    """
-    ring = _mapping(fanin_output.get("ring"))
-    slots = _finite_number(ring.get("occupancy"))
-    rate = _as_int(fanin_output.get("sample_rate"))
-    if slots is None or slots < 0 or rate <= 0:
-        return None
-    return float(slots) * RING_SLOT_FRAMES * 1000.0 / rate
-
-
-def _tts_backlog_ratio(*lanes: Any) -> float:
-    """Deepest ``pending/budget`` across every armed TTS lane; 0.0 if none is."""
-    deepest = 0.0
-    for lane_raw in lanes:
-        lane = _mapping(lane_raw)
-        if lane.get("enabled") is not True:
-            continue
-        budget_frames = _as_int(lane.get("budget_frames"))
-        if budget_frames <= 0:
-            continue
-        deepest = max(deepest, _as_int(lane.get("pending_frames")) / budget_frames)
-    return deepest
-
-
-def _signal_path(
-    airplay: Mapping[str, Any],
-    outputd: Mapping[str, Any] | None,
-    active_source: str | None,
-) -> dict[str, Any]:
-    current = _mapping(airplay.get("current"))
-    fanin_raw = current.get("fanin")
-    warmup = bool(airplay.get("warmup_active"))
-    if not isinstance(fanin_raw, Mapping):
-        if warmup:
-            return {
-                "code": "starting",
-                "status": "idle",
-                "headline": "Audio is starting",
-                "detail": "Sound will be ready in a moment.",
-            }
-        return {
-            "code": "path_unreported",
-            "status": "unknown",
-            "headline": PATH_UNREPORTED_TITLE,
-            "detail": PATH_UNREPORTED_DETAIL,
-        }
-    if outputd is None:
-        if warmup:
-            return {
-                "code": "starting",
-                "status": "idle",
-                "headline": "Audio is starting",
-                "detail": "Sound will be ready in a moment.",
-            }
-        return {
-            "code": "output_absent",
-            "status": "issue",
-            "headline": _OUTPUT_ABSENT_TITLE,
-            "detail": _OUTPUT_ABSENT_DETAIL,
-        }
-
-    outputd_map = _mapping(outputd)
-    backend = outputd_map.get("backend")
-    if backend is not None and backend != "alsa":
-        return {
-            "code": "output_backend_inactive",
-            "status": "issue",
-            "headline": "The speaker is not connected to its sound hardware",
-            "detail": (
-                "Sound is being processed but has nowhere to go, so nothing "
-                f"will play. {RESTART_REMEDY} {DIAGNOSTICS_REMEDY}"
-            ),
-        }
-    outputd_watchdog = _mapping(outputd_map.get("watchdog"))
-    outputd_progress_age = _as_int(
-        outputd_watchdog.get("last_progress_age_ms"),
-    )
-    if outputd_watchdog and outputd_progress_age > OUTPUTD_STALE_MS:
-        return {
-            "code": "output_stalled",
-            "status": "issue",
-            "headline": "Sound has stopped reaching the speaker",
-            "detail": (
-                "Sound stopped moving out to the speaker a few seconds ago. "
-                f"{RESTART_REMEDY}"
-            ),
-        }
-
-    fanin = _mapping(fanin_raw)
-    watchdog = _mapping(fanin.get("watchdog"))
-    if _as_int(watchdog.get("last_progress_age_ms")) > FANIN_STALE_MS:
-        return {
-            "code": "path_stalled",
-            "status": "issue",
-            "headline": "Sound has stopped moving through the speaker",
-            "detail": (
-                "Sound from your sources stopped moving through the speaker a "
-                f"few seconds ago. {RESTART_REMEDY}"
-            ),
-        }
-
-    output = _mapping(fanin.get("output"))
-    ring = _mapping(output.get("ring"))
-    if ring.get("stall_active") is True:
-        # ABOVE `output_deaf` for the same reason the fan-in watchdog is: a
-        # ring the reader has stopped draining is what leaves outputd with
-        # nothing to play, and the cause outranks its own symptom.
-        return {
-            "code": "output_ring_stalled",
-            "status": "issue",
-            "headline": "Sound is stuck inside the speaker",
-            "detail": (
-                "Sound from your sources is arriving but cannot move on to "
-                f"the speaker's output. {RESTART_REMEDY}"
-            ),
-        }
-
-    # outputd is writing periods, but what it writes is silence it did not
-    # intend: a deaf chain leaves both watchdogs progressing and every xrun
-    # count flat (#3458). The verdict is outputd's own — it owns the DAC
-    # geometry its threshold is derived from.
-    #
-    # BELOW the fan-in watchdog deliberately: a stalled fan-in starves
-    # CamillaDSP, which empties the ring, so outputd latches deaf at 2 s while
-    # FANIN_STALE_MS only trips at 5 — the cause outranks its own symptom, the
-    # same way `camilla_stopped` outranks this in `compose_audio_health`.
-    #
-    # Not during warmup: outputd primes and starts reading an empty ring before
-    # CamillaDSP is producing (the gate `_stopped_dsp_signal` carries for the
-    # same reason).
-    if not warmup and _mapping(outputd_map.get("content")).get("deaf") is True:
-        return {
-            "code": "output_deaf",
-            "status": "issue",
-            "headline": "The speaker is playing silence",
-            "detail": (
-                "Sound is reaching the speaker's last step, but nothing is "
-                f"arriving for it to play. {RESTART_REMEDY} "
-                f"{DIAGNOSTICS_REMEDY}"
-            ),
-        }
-
-    active = active_source
-    inputs = _mapping(fanin.get("inputs"))
-    active_input = _mapping(inputs.get(active)) if active else {}
-    if active and active_input.get("present") is False:
-        return {
-            "code": "input_absent",
-            "status": "issue",
-            "headline": "This source is not reaching the speaker",
-            "detail": (
-                f"{_SOURCE_LABELS.get(active, 'The source')} is playing, but "
-                "the speaker has no open connection for it. Play it again, or "
-                "try another source."
-            ),
-        }
-    if active_input.get("health") == DIRECT_HEALTH_BROKEN:
-        return {
-            "code": "input_broken",
-            "status": "issue",
-            "headline": "This source is not reaching the speaker",
-            "detail": (
-                f"{_SOURCE_LABELS.get(active or '', 'The source')} stopped "
-                "sending sound to the speaker. Play it again, or try another "
-                "source."
-            ),
-        }
-    frames_per_sec = active_input.get("frames_per_sec")
-    if (
-        active
-        and isinstance(frames_per_sec, (int, float))
-        and not isinstance(frames_per_sec, bool)
-        and frames_per_sec < 1000.0
-    ):
-        return {
-            "code": "input_stalled",
-            "status": "issue",
-            "headline": "No sound is arriving from this source",
-            "detail": (
-                f"{_SOURCE_LABELS.get(active, active)} is selected, but no "
-                "sound is coming from it. Play it again, or try another source."
-            ),
-        }
-    # Losing periods, from either end: the ring dropped a period the reader
-    # never took, or the active lane is xrunning. Both are rates, so neither
-    # latches once the box recovers.
-    ring_drops = _finite_number(ring.get("drops_per_sec"))
-    input_xrun_rate = _finite_number(active_input.get("xruns_per_sec"))
-    if (
-        (ring_drops is not None and ring_drops > 0.0)
-        or (input_xrun_rate is not None and input_xrun_rate > 0.0)
-    ):
-        return {
-            "code": "path_pressured",
-            "status": "warn",
-            "headline": "Sound is only just keeping up",
-            "detail": (
-                "Music is playing, but the speaker is right at the edge of "
-                f"keeping up with it, so it may skip. {RESTART_REMEDY}"
-            ),
-        }
-
-    # Both TTS lanes can be armed at once — fan-in's socket has a non-optional
-    # default, and outputd's arms on a passive bonded member — so the enabled
-    # flag cannot pick between them. Report on whichever is deepest against its
-    # own budget; an idle lane can never mask a backed-up one.
-    if _tts_backlog_ratio(fanin.get("tts"), outputd_map.get("tts")) >= 1.0:
-        return {
-            "code": "tts_queue_full",
-            "status": "warn",
-            "headline": "Voice replies are delayed",
-            "detail": (
-                "JTS has more spoken replies waiting than it can play right "
-                "now, so answers may arrive late. Music is unaffected."
-            ),
-        }
-    return {
-        "code": "clean",
-        "status": "ok",
-        "headline": "Sound path is healthy",
-        "detail": "Everything between your sources and the speaker is responding.",
-    }
-
-
-def _usb_timing(
-    route: Mapping[str, Any],
-    host_clock: Mapping[str, Any] | None,
-    usb_input: Mapping[str, Any] | None = None,
-    *,
-    active: bool,
-) -> dict[str, Any]:
-    claimed = bool(route.get("low_latency_claim"))
-    resampler = _mapping(_mapping(usb_input).get("resampler"))
-    latency_runtime = classify_runtime(resampler, host_clock)
-    raw_mode = latency_runtime.ladder
-    preset_mode = latency_runtime.applied_mode
-    mode = {
-        "l0_locked": "lowest_latency",
-        "l1_warn": "tracking_warn",
-        "l2_fallback": "fallback",
-        "probing": "checking",
-        "disabled": "standard",
-    }.get(str(raw_mode), "unknown")
-    runtime: dict[str, Any] = {
-        "mode": mode,
-        "raw_mode": raw_mode,
-        "phase": latency_runtime.phase,
-    }
-    if preset_mode is not None:
-        runtime.update({
-            "preset": preset_mode,
-            "effective_preset": latency_runtime.effective_mode,
-            "held_target_frames": latency_runtime.held_frames,
-            "floor_frames": latency_runtime.floor_frames,
-        })
-
-    if preset_mode is not None:
-        preset = PRESETS[preset_mode]
-        current_frames = latency_runtime.held_frames or preset.floor_frames
-        current_ms = current_frames * 1000 / 48_000
-        if active and latency_runtime.phase == "fallback":
-            status = "warn"
-            headline = f"Stable fallback · {current_ms:.1f} ms input buffer"
-            detail = (
-                "Playback is protected by more buffering while JTS retries "
-                "USB timing."
-                if latency_runtime.fallback_reason == "actuator_unavailable"
-                else "Playback is protected by more buffering for this USB session."
-            )
-        elif active and latency_runtime.phase == "clock_adjusting":
-            status = "warn"
-            headline = f"{preset.label} latency · clock tracking under strain"
-            detail = "Playback remains locked while USB host timing stabilizes."
-        elif active and latency_runtime.phase == "buffer_adjusting":
-            status = "warn"
-            headline = f"Recovery buffer active · {current_ms:.1f} ms input buffer"
-            detail = "Latency will fall after USB host timing stabilizes."
-        elif active and latency_runtime.phase == "buffer_held":
-            status = "warn"
-            headline = f"Extra buffer in use · {current_ms:.1f} ms input buffer"
-            detail = f"JTS keeps this buffer to prevent audio gaps. {preset.label} remains selected."
-        elif active and latency_runtime.phase == "checking":
-            status = "idle"
-            headline = "Checking USB host timing"
-            detail = "Playback is safe while JTS checks USB timing."
-        else:
-            status = "ok"
-            headline = f"{preset.label} latency · {current_ms:.1f} ms input buffer"
-            detail = (
-                "The larger stable USB buffer is active."
-                if preset_mode == "high"
-                else "The selected USB input buffer is active."
-            )
-        return {
-            "applicable": active,
-            "source_id": Source.USBSINK.value,
-            "kind": "route_latency",
-            "status": status,
-            "headline": headline,
-            "detail": detail,
-            "route_id": route.get("route_id"),
-            "runtime": runtime,
-        }
-
-    if route.get("status") != "available":
-        return {
-            "applicable": active,
-            "source_id": Source.USBSINK.value,
-            "kind": "route_latency",
-            "status": "unknown",
-            "headline": "USB latency state unavailable",
-            "detail": (
-                "JTS cannot check this computer's USB audio delay; playback "
-                "health is checked separately."
-            ),
-            "route_id": route.get("route_id"),
-            "runtime": runtime,
-        }
-    if not claimed:
-        return {
-            "applicable": active,
-            "source_id": Source.USBSINK.value,
-            "kind": "route_latency",
-            "status": "idle",
-            "headline": "Standard buffered route",
-            "detail": "This route runs with standard buffering.",
-            "route_id": route.get("route_id"),
-            "runtime": runtime,
-        }
-    if active and raw_mode == "l2_fallback":
-        status = "warn"
-        headline = "Stable fallback · latency increased"
-        detail = "Playback is protected by resampling while host timing recovers."
-    elif active and raw_mode == "l1_warn":
-        status = "warn"
-        headline = "Low latency active · clock tracking under strain"
-        detail = "The host is following the speaker clock with unusually high demand."
-    elif active and raw_mode == "probing":
-        status = "idle"
-        headline = "Checking USB host timing"
-        detail = "Playback is safe while JTS checks USB timing."
-    elif active and raw_mode not in {"l0_locked", "l1_warn", "l2_fallback"}:
-        status = "warn"
-        headline = "USB low-latency clock mode unavailable"
-        detail = (
-            "Playback continues with standard buffering; JTS is not "
-            "fine-tuning USB timing right now."
-        )
-    else:
-        status = "ok"
-        headline = "Low latency · stable"
-        if active and raw_mode == "l0_locked":
-            detail = "USB is running with the smallest safe delay."
-        else:
-            detail = "The low-latency route is active."
-    return {
-        "applicable": active or claimed,
-        "source_id": Source.USBSINK.value,
-        "kind": "route_latency",
-        "status": status,
-        "headline": headline,
-        "detail": detail,
-        "route_id": route.get("route_id"),
-        "runtime": runtime,
-    }
-
-
-def _airplay_timing(airplay: Mapping[str, Any], *, active: bool) -> dict[str, Any]:
-    if not active:
-        status = "idle"
-        headline = "AirPlay idle"
-        detail = "Sync timing is checked while AirPlay is playing."
-    else:
-        recent = _mapping(airplay.get("summary_5m"))
-        sync_events = (
-            _as_int(recent.get("shairport_packet_drops"))
-            + _as_int(recent.get("shairport_sync_errors"))
-            + _as_int(recent.get("shairport_underruns"))
-        )
-        if sync_events:
-            status = "warn"
-            headline = "AirPlay sync recently recovered"
-            detail = "Wireless timing had a recent correction; playback is still monitored."
-        else:
-            status = "ok"
-            headline = "AirPlay sync timing clean"
-            detail = "No recent sender or synchronization corrections."
-    return {
-        "applicable": active,
-        "source_id": Source.AIRPLAY.value,
-        "kind": "sync",
-        "status": status,
-        "headline": headline,
-        "detail": detail,
-        "route_id": None,
-        "runtime": {"mode": "standard", "raw_mode": None},
-    }
-
-
-def _not_applicable_timing() -> dict[str, Any]:
-    return {
-        "applicable": False,
-        "source_id": None,
-        "kind": "none",
-        "status": "idle",
-        "headline": "No timing contract for this source",
-        "detail": "Timing is shown only where JTS has an honest runtime signal.",
-        "route_id": None,
-        "runtime": {"mode": "standard", "raw_mode": None},
     }
 
 
@@ -1282,120 +739,6 @@ def _camilla_stopped(raw_state: Any) -> tuple[str, str] | None:
         "All sound runs through this speaker's processing, and it is not "
         f"running, so nothing will play until it starts. {RESTART_REMEDY}",
     )
-
-
-# The one household-facing sentence for a source whose renderer has failed.
-# Which unit failed and how belongs to doctor's per-renderer checks.
-SOURCE_UNAVAILABLE_DETAIL = (
-    f"JTS could not start this source. {RESTART_REMEDY} {DIAGNOSTICS_REMEDY}"
-)
-
-# ...and for a source still running after the household turned it Off. Saving
-# the choice again is what re-runs the reconciler that stops it.
-SOURCE_OFF_DRIFT_DETAIL = (
-    "It is still running even though Playback sources has it turned off. Set it "
-    "to Off again in Playback sources to clear this."
-)
-
-
-def _source_service_summary(
-    source_id: str,
-    service_states: Mapping[str, Any] | None,
-    source_intents: Mapping[str, bool] | None = None,
-) -> tuple[str, str, str] | None:
-    """Return ``(state, headline, detail)`` from cached systemd truth."""
-    states = _mapping(service_states)
-    desired = _mapping(source_intents).get(source_id)
-    if desired is False:
-        if any(
-            _mapping(states.get(unit)).get("active_state") == "active"
-            for unit in _SOURCE_OFF_DRIFT_UNITS.get(source_id, ())
-        ):
-            return (
-                "unavailable",
-                f"{_SOURCE_LABELS.get(source_id, source_id)} is running while Off",
-                SOURCE_OFF_DRIFT_DETAIL,
-            )
-        return "off", "Off", "Turned off in Playback sources."
-    if not states:
-        return None
-    for unit in _SOURCE_HEALTH_UNITS.get(source_id, ()):
-        if unit_failed(_mapping(states.get(unit))):
-            return (
-                "unavailable",
-                f"{_SOURCE_LABELS.get(source_id, source_id)} unavailable",
-                SOURCE_UNAVAILABLE_DETAIL,
-            )
-    primary = _SOURCE_PRIMARY_UNITS.get(source_id)
-    primary_state = _mapping(states.get(primary)) if primary else {}
-    if primary_state.get("active_state") == "active":
-        return "ready", "Ready", "Waiting for a stream."
-    if primary_state.get("active_state") == "inactive":
-        return "not_running", "Not running", "Nothing is running for this source."
-    return None
-
-
-def _source_cards(
-    airplay: Mapping[str, Any],
-    signal_path: Mapping[str, Any],
-    route: Mapping[str, Any],
-    active_source: str | None,
-    service_states: Mapping[str, Any] | None = None,
-    source_intents: Mapping[str, bool] | None = None,
-) -> list[dict[str, Any]]:
-    current = _mapping(airplay.get("current"))
-    fanin = _mapping(current.get("fanin"))
-    inputs = _mapping(fanin.get("inputs"))
-    host_clock = _mapping(fanin.get("host_clock")) or None
-    cards: list[dict[str, Any]] = []
-    for spec in MUSIC_SOURCE_SPECS:
-        source_id = spec.id.value
-        active = active_source == source_id
-        status = "ok" if active else "idle"
-        headline = "Playing" if active else "Idle"
-        detail = (
-            "Playing through the speaker."
-            if active else "No active stream."
-        )
-        state = "active" if active else "idle"
-        service_summary = _source_service_summary(
-            source_id,
-            service_states,
-            source_intents,
-        )
-        if service_summary is not None and (
-            not active or service_summary[0] == "unavailable"
-        ):
-            state, headline, detail = service_summary
-            if state == "ready":
-                status = "ok"
-            elif state == "unavailable":
-                status = "issue"
-        timing: dict[str, Any] | None = None
-        if spec.id == Source.AIRPLAY:
-            timing = _airplay_timing(airplay, active=active)
-            if active and timing["status"] in {"warn", "unknown"}:
-                status = "warn"
-        elif spec.id == Source.USBSINK:
-            timing = _usb_timing(
-                route, host_clock, _mapping(inputs.get(source_id)), active=active
-            )
-            if active and timing["status"] in {"warn", "unknown"}:
-                status = "warn"
-        if active and signal_path.get("status") in {"issue", "unknown"}:
-            status = str(signal_path.get("status"))
-            headline = str(signal_path.get("headline"))
-            detail = str(signal_path.get("detail"))
-        cards.append({
-            "id": source_id,
-            "label": spec.display_name,
-            "state": state,
-            "status": status,
-            "headline": headline,
-            "detail": detail,
-            "timing": timing,
-        })
-    return cards
 
 
 def _fresh_dac_delay_ms(dac: Mapping[str, Any]) -> float | None:

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use jasper_host_clock::{
     ctl_card_from_capture, ppm_to_ctl_value, Action, AlsaPitchCtl, ControlStatus, HostClock,
-    HostClockConfig, Ladder, Obs, ObsMode, PitchCtl, TICK_INTERVAL_MS,
+    HostClockConfig, Ladder, Obs, PitchCtl, TICK_INTERVAL_MS,
 };
 
 /// The `event=` log-line namespace prefix for the fan-in ladder.
@@ -76,7 +76,6 @@ pub fn build_config(enabled: bool, probe_ppm: u32) -> HostClockConfig {
         // fill slope is structurally dead (the resampler flattens it). The probe
         // reads the resampler's own correction ppm, and the L0 servo drives it
         // to 0. Correction is the crate's sole mode.
-        obs_mode: ObsMode::Correction,
         log_prefix: LOG_PREFIX,
     }
 }
@@ -638,14 +637,6 @@ mod tests {
             -250.0,
             "a negative correction must decode with the right sign"
         );
-    }
-
-    #[test]
-    fn build_config_selects_correction_obs_mode() {
-        // Combo mode ALWAYS runs the CORRECTION observable — the fill slope is
-        // dead when a lane resampler sits between the gadget ring and the mix.
-        let cfg = build_config(true, 300);
-        assert_eq!(cfg.obs_mode, ObsMode::Correction);
     }
 
     // ---- ctl card derivation ----------------------------------------------

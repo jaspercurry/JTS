@@ -170,10 +170,7 @@ fn main() -> Result<()> {
 /// refusing a ring a live foreign reader still owns — lands in the restart arm
 /// by this same kind split, which is right: the incumbent may exit.
 fn classify_ring_attach_error(lane: &str, path: &str, e: io::Error) -> anyhow::Error {
-    if matches!(
-        e.kind(),
-        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
-    ) {
+    if jasper_ring::ring_open_error_is_config_class(&e) {
         eprintln!("event=outputd.{lane}.config_error path={path} detail={e}");
         anyhow::Error::new(e).context(ConfigClassError)
     } else {

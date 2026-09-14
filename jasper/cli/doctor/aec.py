@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import NamedTuple
 from ... import enhanced_aec
@@ -24,9 +25,9 @@ from ...audio_profile_state import (
     RuntimeAecEnv,
     audio_profile_status,
     infer_audio_input_profile,
+    intent_from_env,
     normalize_aec_mode,
     normalize_audio_input_profile,
-    parse_env_bool,
     probe_xvf_mic,
     runtime_env_from_mapping,
     validation_profile as _audio_validation_profile,
@@ -178,11 +179,6 @@ def _aec_profile_setting() -> str:
     return _aec_mode_env().get("JASPER_AUDIO_INPUT_PROFILE", "")
 
 
-def _wake_leg_setting(key: str, default: bool) -> bool:
-    raw = _aec_mode_env().get(key)
-    return default if raw is None else parse_env_bool(raw, default)
-
-
 def _doctor_env_file() -> dict[str, str]:
     """Parse the reconciler-applied runtime env fresh.
 
@@ -196,11 +192,9 @@ def _doctor_env_file() -> dict[str, str]:
 def _doctor_aec_intent() -> AecIntent:
     """The operator-requested AEC state, from the wizard-owned mode file."""
 
-    return AecIntent(
+    return replace(
+        intent_from_env(_aec_mode_env()),
         mode=_aec_mode_setting(),
-        raw_enabled=_wake_leg_setting("JASPER_WAKE_LEG_RAW", True),
-        dtln_enabled=_wake_leg_setting("JASPER_WAKE_LEG_DTLN", False),
-        chip_aec_enabled=_wake_leg_setting("JASPER_WAKE_LEG_CHIP_AEC", False),
         profile_selection=_aec_profile_setting(),
     )
 

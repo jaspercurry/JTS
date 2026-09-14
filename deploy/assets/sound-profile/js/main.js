@@ -970,8 +970,10 @@ import {
       }
       return candidate;
     }).filter(Boolean);
-    return drivers.length || candidates.length
-      ? Object.assign({}, (driverResearch.designDraft || {}).manual_settings, {drivers: drivers, crossover_candidates: candidates})
+    var spacing = manualNumberValue(driverResearch.settings.driver_spacing_mm);
+    return drivers.length || candidates.length || spacing != null
+      ? Object.assign({}, (driverResearch.designDraft || {}).manual_settings,
+        {drivers: drivers, crossover_candidates: candidates, driver_spacing_mm: spacing})
       : null;
   }
   function applyDriverSafetyToSetting(driver, setting) {
@@ -1162,6 +1164,7 @@ import {
     driverResearch.inputs.target_models = Object.assign({}, inputs.target_models || {});
     driverResearch.settings = {drivers: {}, crossovers: {}};
     var manual = payload.manual_settings || {};
+    driverResearch.settings.driver_spacing_mm = manual.driver_spacing_mm;
     (Array.isArray(manual.drivers) ? manual.drivers : []).forEach(function(driver) {
       if (!driver || !driver.role) return;
       var role = String(driver.role);
@@ -2852,6 +2855,13 @@ import {
       driverResearch.importedPayload = null;
       driverResearch.dirty = true;
       updateDriverResearchImportSummary();
+      refreshDriverResearchDerivedUi();
+      return;
+    }
+    if (ev.target.hasAttribute && ev.target.hasAttribute('data-driver-spacing')) {
+      driverResearch.settings.driver_spacing_mm = ev.target.value;
+      driverResearch.error = '';
+      driverResearch.dirty = true;
       refreshDriverResearchDerivedUi();
       return;
     }

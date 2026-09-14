@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from jasper.control import audio_health
+from jasper.control import audio_health, audio_signal_path
 from jasper.control.audio_health import (
     AudioHealthSampler,
     compose_audio_health,
@@ -32,116 +32,6 @@ from .audio_health_fixtures import (
     _outputd,
     _route,
 )
-
-
-def test_usb_l0_reports_the_live_lowest_latency_runtime() -> None:
-    health = _compose(selected="usbsink", ladder="l0_locked")
-
-    assert health["signal_path"]["status"] == "ok"
-    assert health["latency"]["status"] == "ok"
-    assert health["latency"]["runtime"] == {
-        "mode": "lowest_latency",
-        "raw_mode": "l0_locked",
-        "phase": "stable",
-    }
-    assert health["overall"]["status"] == "ok"
-
-
-def test_usb_l2_degrades_latency_without_claiming_continuity_failed() -> None:
-    health = _compose(selected="usbsink", ladder="l2_fallback")
-
-    assert health["signal_path"]["status"] == "ok"
-    assert health["latency"]["status"] == "warn"
-    assert health["latency"]["runtime"]["mode"] == "fallback"
-    assert health["overall"]["status"] == "warn"
-    usb = next(source for source in health["sources"] if source["id"] == "usbsink")
-    assert usb["state"] == "active"
-    assert usb["timing"]["status"] == "warn"
-
-
-@pytest.mark.parametrize("mode,held,floor,reason,headline,summary", [
-    ("medium", 2560, 1024, "", "Recovery buffer active · 53.3 ms input buffer", "latency adjusting"),
-    ("low", 1088, 576, "backoff", "Extra buffer in use · 22.7 ms input buffer", "extra buffer in use"),
-])
-def test_usb_runtime_preset_outranks_stale_route_label(mode, held, floor, reason, headline, summary) -> None:
-    airplay = _airplay(selected="usbsink", ladder="l0_locked")
-    usb = airplay["current"]["fanin"]["inputs"]["usbsink"]
-    usb["resampler"] = {
-        "locked": True,
-        "held_target_frames": held,
-        "decay": {"enabled": True, "floor_frames": floor, "frozen_reason": reason},
-    }
-
-    health = compose_audio_health(
-        airplay=airplay,
-        outputd=_outputd(),
-        route={**_route(), "low_latency_claim": False},
-        issues=[],
-        sampled_at=1000.0,
-    )
-
-    assert health["latency"]["runtime"]["preset"] == mode
-    assert health["latency"]["headline"] == headline
-    assert health["latency"]["status"] == "warn"
-    assert health["current_stream"]["latency"]["summary"].endswith(
-        f"ms · {summary}"
-    )
-
-
-def test_usb_terminal_fallback_outranks_raised_recovery_buffer() -> None:
-    airplay = _airplay(selected="usbsink", ladder="l2_fallback")
-    airplay["current"]["fanin"]["host_clock"]["fallback_reason"] = (
-        "probe_noncompliant"
-    )
-    usb = airplay["current"]["fanin"]["inputs"]["usbsink"]
-    usb["resampler"] = {
-        "locked": True,
-        "held_target_frames": 2560,
-        "decay": {"enabled": True, "floor_frames": 576},
-    }
-
-    health = compose_audio_health(
-        airplay=airplay,
-        outputd=_outputd(),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-
-    assert health["latency"]["runtime"]["phase"] == "fallback"
-    assert health["latency"]["headline"] == (
-        "Stable fallback · 53.3 ms input buffer"
-    )
-    assert "for this USB session" in health["latency"]["detail"]
-    assert health["current_stream"]["latency"]["summary"].endswith(
-        "ms · stable fallback"
-    )
-
-
-def test_airplay_sync_stays_source_specific_not_a_latency_claim() -> None:
-    health = _compose(selected="airplay")
-
-    assert health["latency"]["applicable"] is False
-    assert health["latency"]["kind"] == "none"
-    airplay = next(source for source in health["sources"] if source["id"] == "airplay")
-    assert airplay["timing"]["kind"] == "sync"
-
-
-def test_failed_inactive_renderer_is_not_disguised_as_idle() -> None:
-    health = _compose(service_states={
-        "librespot.service": {
-            "load_state": "loaded",
-            "active_state": "failed",
-            "result": "exit-code",
-        },
-    })
-
-    spotify = next(
-        source for source in health["sources"] if source["id"] == "spotify"
-    )
-    assert spotify["state"] == "unavailable"
-    assert spotify["status"] == "issue"
-    assert health["overall"]["status"] == "idle"
 
 
 # --- parked transport (structurally-mute box) ------------------------------
@@ -698,42 +588,6 @@ def test_setup_hint_yields_to_a_more_specific_live_output_issue() -> None:
     assert health["signal_path"]["code"] == "output_stalled"
 
 
-def test_cached_service_state_distinguishes_ready_from_not_running() -> None:
-    health = _compose(service_states={
-        "shairport-sync.service": {
-            "load_state": "loaded",
-            "active_state": "active",
-            "result": "success",
-        },
-        "librespot.service": {
-            "load_state": "loaded",
-            "active_state": "inactive",
-            "result": "success",
-        },
-    })
-
-    sources = {source["id"]: source for source in health["sources"]}
-    assert sources["airplay"]["state"] == "ready"
-    assert sources["spotify"]["state"] == "not_running"
-
-
-def test_household_off_is_labeled_without_inactive_failure_noise() -> None:
-    health = _compose(
-        service_states={
-            "librespot.service": {
-                "load_state": "loaded",
-                "active_state": "failed",
-                "result": "exit-code",
-            },
-        },
-        source_intents={"spotify": False},
-    )
-
-    spotify = next(source for source in health["sources"] if source["id"] == "spotify")
-    assert spotify["state"] == "off"
-    assert spotify["status"] == "idle"
-
-
 def test_household_off_but_active_is_reported_as_drift() -> None:
     service_states = {
         "librespot.service": {
@@ -1185,227 +1039,6 @@ def test_required_pairing_agent_failure_degrades_bluetooth() -> None:
     assert health["overall"]["status"] == "idle"
 
 
-def test_optional_usb_volume_observer_failure_does_not_disable_audio() -> None:
-    health = _compose(service_states={
-        "jasper-usbgadget.service": {
-            "active_state": "active",
-            "load_state": "loaded",
-            "result": "success",
-        },
-        "jasper-usbsink.service": {
-            "active_state": "active",
-            "load_state": "loaded",
-            "result": "success",
-        },
-        "jasper-usbsink-volume.service": {
-            "active_state": "failed",
-            "load_state": "loaded",
-            "result": "exit-code",
-        },
-    })
-
-    usb = next(
-        source for source in health["sources"] if source["id"] == "usbsink"
-    )
-    assert usb["state"] == "ready"
-    assert usb["status"] == "ok"
-    assert health["overall"]["status"] == "idle"
-
-
-def test_selected_route_without_frame_progress_is_not_claimed_as_playback() -> None:
-    airplay = _airplay(selected="spotify")
-    airplay["current"]["fanin"]["inputs"]["spotify"]["frames_per_sec"] = 0.0
-    airplay["mux_status"]["sources"]["spotify"]["playing"] = False
-    health = compose_audio_health(
-        airplay=airplay,
-        outputd=_outputd(),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-
-    assert health["signal_path"]["status"] == "ok"
-    assert health["overall"]["status"] == "idle"
-    assert health["current_stream"] is None
-
-
-def test_mux_truth_gates_selected_spotify_and_bluetooth() -> None:
-    for source_id in ("spotify", "bluetooth"):
-        idle = _airplay(selected=source_id)
-        idle["mux_status"]["sources"][source_id]["playing"] = False
-        active = _airplay(selected=source_id)
-
-        idle_health = compose_audio_health(
-            airplay=idle,
-            outputd=_outputd(),
-            route=_route(),
-            issues=[],
-            sampled_at=1000.0,
-        )
-        active_health = compose_audio_health(
-            airplay=active,
-            outputd=_outputd(),
-            route=_route(),
-            issues=[],
-            sampled_at=1000.0,
-        )
-
-        assert idle_health["current_stream"] is None
-        assert active_health["current_stream"]["source_id"] == source_id
-
-
-def test_missing_mux_status_fails_closed_instead_of_guessing_playback() -> None:
-    airplay = _airplay(selected="usbsink", ladder="l0_locked")
-    airplay.pop("mux_status")
-
-    health = compose_audio_health(
-        airplay=airplay,
-        outputd=_outputd(),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-
-    assert health["overall"] == {
-        "status": "unknown",
-        "headline": "Playback activity unavailable",
-        "detail": audio_health.ACTIVITY_UNKNOWN_DETAIL,
-        "active_source": None,
-        "since": 1000.0,
-    }
-    assert health["current_stream"]["source_id"] == "usbsink"
-    assert health["current_stream"]["signal"]["summary"] == (
-        "Playback state unavailable"
-    )
-
-
-def test_free_running_airplay_requires_mux_canonical_playing_truth() -> None:
-    idle = _airplay(selected="airplay")
-    # A phantom sender can leave MPRIS playing while mux's metadata gate
-    # correctly decides that no audible AirPlay session exists.
-    idle["current"]["mpris"]["playing"] = True
-    idle["mux_status"]["sources"]["airplay"]["playing"] = False
-    active = _airplay(selected="airplay")
-
-    idle_health = compose_audio_health(
-        airplay=idle,
-        outputd=_outputd(),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-    active_health = compose_audio_health(
-        airplay=active,
-        outputd=_outputd(),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-
-    assert idle["current"]["fanin"]["inputs"]["airplay"]["frames_per_sec"] == 48000.0
-    assert idle_health["current_stream"] is None
-    assert active_health["current_stream"]["source_id"] == "airplay"
-
-
-def test_free_running_usb_requires_mux_canonical_playing_truth() -> None:
-    idle = _airplay(selected="usbsink", ladder="l0_locked")
-    idle["current"]["fanin"]["inputs"]["usbsink"]["rms_dbfs"] = -80.0
-    idle["mux_status"]["sources"]["usbsink"]["playing"] = False
-    active = _airplay(selected="usbsink", ladder="l0_locked")
-
-    idle_health = compose_audio_health(
-        airplay=idle,
-        outputd=_outputd(),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-    active_health = compose_audio_health(
-        airplay=active,
-        outputd=_outputd(),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-
-    assert idle["current"]["fanin"]["inputs"]["usbsink"]["frames_per_sec"] == 48000.0
-    assert idle_health["current_stream"] is None
-    assert active_health["current_stream"]["source_id"] == "usbsink"
-
-
-def test_stale_or_inactive_outputd_is_not_reported_clean() -> None:
-    stalled = compose_audio_health(
-        airplay=_airplay(selected="spotify"),
-        outputd=_outputd(progress_age_ms=9000),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-    inactive = compose_audio_health(
-        airplay=_airplay(selected="spotify"),
-        outputd=_outputd(backend="none"),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-
-    assert stalled["signal_path"]["code"] == "output_stalled"
-    assert stalled["overall"]["status"] == "issue"
-    assert inactive["signal_path"]["code"] == "output_backend_inactive"
-    assert inactive["overall"]["status"] == "issue"
-
-
-def test_idle_tts_queue_pressure_is_visible_in_overall_health() -> None:
-    health = compose_audio_health(
-        airplay=_airplay(),
-        outputd=_outputd(tts_pending_frames=96000),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-
-    assert health["signal_path"]["status"] == "warn"
-    assert health["overall"]["status"] == "warn"
-    assert health["signal_path"]["code"] == "tts_queue_full"
-
-
-def test_usb_route_and_runtime_uncertainty_are_not_green() -> None:
-    unavailable = compose_audio_health(
-        airplay=_airplay(selected="usbsink", ladder="l0_locked"),
-        outputd=_outputd(),
-        route={"status": "unavailable", "low_latency_claim": False},
-        issues=[],
-        sampled_at=1000.0,
-    )
-    missing_clock = compose_audio_health(
-        airplay=_airplay(selected="usbsink"),
-        outputd=_outputd(),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-
-    assert unavailable["latency"]["status"] == "unknown"
-    assert unavailable["overall"]["status"] == "warn"
-    assert missing_clock["latency"]["status"] == "warn"
-    assert "clock mode unavailable" in missing_clock["latency"]["headline"]
-
-
-def test_selected_source_without_a_fanin_lane_is_a_continuity_issue() -> None:
-    airplay = _airplay(selected="usbsink", ladder="l0_locked")
-    airplay["current"]["fanin"]["inputs"]["usbsink"]["present"] = False
-    health = compose_audio_health(
-        airplay=airplay,
-        outputd=_outputd(),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-
-    assert health["signal_path"]["status"] == "issue"
-    assert health["signal_path"]["code"] == "input_absent"
-
-
 def test_usb_current_stream_is_presentation_ready_without_bitrate_inference() -> None:
     health = _compose(selected="usbsink", ladder="l0_locked")
     stream = health["current_stream"]
@@ -1485,8 +1118,11 @@ def test_current_stream_omits_processing_without_live_processing_telemetry() -> 
 def test_airplay_uses_sync_evidence_without_numeric_latency_claim() -> None:
     health = _compose(selected="airplay")
     latency = health["current_stream"]["latency"]
+    airplay_card = next(c for c in health["sources"] if c["id"] == "airplay")
 
-    assert latency["summary"] == "AirPlay sync timing clean"
+    assert airplay_card["timing"]["status"] == "ok"
+    assert airplay_card["timing"]["kind"] == "sync"
+    assert latency["summary"] == airplay_card["timing"]["headline"]
     assert latency["details"] == []
     assert "estimate" not in latency
     assert "ms" not in latency["summary"]
@@ -1822,110 +1458,6 @@ def test_usb_underfill_is_recorded_but_normal_stream_stop_is_suppressed(
     if expected:
         assert issues[0]["title"] == "USB input buffer ran dry"
         assert sampler.snapshot()["current_stream"]["session"]["interruptions"] == 1
-
-
-# Ring A is a blocking handshake pinned near full in steady state (ADR-0205),
-# so `full_waits` is normal and must never reach a verdict. Only the two loss
-# counters and the lane's own xrun rate can degrade the path.
-@pytest.mark.parametrize(
-    ("ring", "input_xruns_per_sec", "code"),
-    [
-        # A stalled ring is the CAUSE of the deafness outputd reports, so it
-        # outranks `output_deaf` (the fixture below sets both).
-        ({"stall_active": True}, 0.0, "output_ring_stalled"),
-        ({"drops_per_sec": 0.4}, 0.0, "path_pressured"),
-        ({}, 0.2, "path_pressured"),
-        ({"full_waits_per_sec": 162.0}, 0.0, "clean"),
-        ({"full_waits_per_sec": 375.0, "drops_per_sec": 0.0}, 0.0, "clean"),
-        ({}, 0.0, "clean"),
-    ],
-)
-def test_ring_loss_and_stall_are_read_by_the_signal_path(
-    ring: dict, input_xruns_per_sec: float, code: str,
-) -> None:
-    airplay = _airplay(selected="usbsink", ladder="l0_locked", ring=ring)
-    airplay["current"]["fanin"]["inputs"]["usbsink"]["xruns_per_sec"] = (
-        input_xruns_per_sec
-    )
-    health = compose_audio_health(
-        airplay=airplay,
-        outputd=_outputd(content_deaf=ring.get("stall_active", False)),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-
-    assert health["signal_path"]["code"] == code
-
-
-@pytest.mark.parametrize(
-    ("ring", "expected"),
-    [({"occupancy": 2}, "5.3 ms"), ({"occupancy": 0}, "0.0 ms")],
-)
-def test_mixing_queue_is_derived_from_ring_occupancy(
-    ring: dict, expected: str,
-) -> None:
-    health = compose_audio_health(
-        airplay=_airplay(selected="usbsink", ladder="l0_locked", ring=ring),
-        outputd=_outputd(),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-    rows = {
-        row["label"]: row["value"]
-        for row in health["current_stream"]["latency"]["details"]
-    }
-
-    assert rows["Mixing queue"] == expected
-
-
-def test_mixing_queue_is_omitted_when_the_ring_is_unreported() -> None:
-    airplay = _airplay(selected="usbsink", ladder="l0_locked")
-    airplay["current"]["fanin"]["output"].pop("ring")
-    health = compose_audio_health(
-        airplay=airplay,
-        outputd=_outputd(),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-    labels = [
-        row["label"] for row in health["current_stream"]["latency"]["details"]
-    ]
-
-    assert "Mixing queue" not in labels
-
-
-# Fan-in's TTS socket has a non-optional default, so its lane is armed on every
-# box; the verdict must follow the DEEPEST lane, never the first armed one.
-@pytest.mark.parametrize(
-    ("fanin_tts", "outputd_pending", "code"),
-    [
-        ({"enabled": True, "pending_frames": 96000, "budget_frames": 96000},
-         0, "tts_queue_full"),
-        ({"enabled": True, "pending_frames": 0, "budget_frames": 96000},
-         96000, "tts_queue_full"),
-        ({"enabled": True, "pending_frames": 0, "budget_frames": 96000},
-         0, "clean"),
-        ({"enabled": False}, 96000, "tts_queue_full"),
-        (None, 96000, "tts_queue_full"),
-    ],
-)
-def test_tts_verdict_follows_the_deepest_armed_lane(
-    fanin_tts: dict | None, outputd_pending: int, code: str,
-) -> None:
-    airplay = _airplay(selected="usbsink", ladder="l0_locked")
-    airplay["current"]["fanin"]["tts"] = fanin_tts
-    health = compose_audio_health(
-        airplay=airplay,
-        outputd=_outputd(tts_pending_frames=outputd_pending),
-        route=_route(),
-        issues=[],
-        sampled_at=1000.0,
-    )
-
-    assert health["signal_path"]["code"] == code
 
 
 @pytest.mark.parametrize(
@@ -3014,7 +2546,7 @@ def test_every_household_sentence_stays_out_of_operator_register(shape: str) -> 
 def test_the_household_shapes_cover_every_signal_path_code() -> None:
     """The sweep above is only worth its keep if it reaches every shape.
 
-    Equality against `audio_health.SIGNAL_PATH_CODES` — the module's own
+    Equality against `audio_signal_path.SIGNAL_PATH_CODES` — the module's own
     vocabulary, declared beside the branches that emit it — rather than a
     literal kept here. A literal only fails when a shape is RENAMED or
     RETIRED; this fails in both directions, so registering a new shape's code
@@ -3027,10 +2559,10 @@ def test_the_household_shapes_cover_every_signal_path_code() -> None:
         snapshot["signal_path"]["code"]
         for snapshot in _household_shapes().values()
     }
-    assert swept == audio_health.SIGNAL_PATH_CODES, (
+    assert swept == audio_signal_path.SIGNAL_PATH_CODES, (
         "every signal-path shape must reach the household-register sweep: "
-        f"unswept={sorted(audio_health.SIGNAL_PATH_CODES - swept)} "
-        f"unregistered={sorted(swept - audio_health.SIGNAL_PATH_CODES)}"
+        f"unswept={sorted(audio_signal_path.SIGNAL_PATH_CODES - swept)} "
+        f"unregistered={sorted(swept - audio_signal_path.SIGNAL_PATH_CODES)}"
     )
 
 

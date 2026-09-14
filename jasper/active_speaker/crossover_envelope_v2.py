@@ -932,14 +932,12 @@ def decimate_curve_for_chart(freqs: Any, mags: Any) -> dict[str, Any] | None:
     can silently outrun the other's density regardless of which side of any
     boundary their own persisted length lands on.
 
-    **One deliberate behaviour delta from the inlined version this replaced.**
-    A zero-length pair used to yield ``{"freqs_hz": [], "magnitude_db": []}``;
-    it now yields ``None``. Reachable only from malformed durable state — a
-    pipeline marked ``available: True`` whose stored curve is empty — and the
-    new answer is the honest direction: an empty curve renders as "we looked
-    and there is nothing there", which is the fabricated-clean-reading shape
-    this module forbids, whereas ``None`` says "no curve", which is what an
-    empty stored curve actually means.
+    ``None`` is reachable only from malformed durable state — a pipeline
+    marked ``available: True`` whose stored curve is empty — and it is the
+    honest direction: an empty curve renders as "we looked and there is
+    nothing there", which is the fabricated-clean-reading shape this module
+    forbids, whereas ``None`` says "no curve", which is what an empty stored
+    curve actually means.
     """
     if not isinstance(freqs, list) or not isinstance(mags, list):
         return None
