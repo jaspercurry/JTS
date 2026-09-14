@@ -263,7 +263,8 @@ impl TtsMetrics {
     /// waits. Kept separate because the mixer cannot infer their cause.
     pub(crate) fn mark_boundary_gap(&self, frames: u64) {
         self.boundary_gap_runs.fetch_add(1, Ordering::Relaxed);
-        self.boundary_gap_frames.fetch_add(frames, Ordering::Relaxed);
+        self.boundary_gap_frames
+            .fetch_add(frames, Ordering::Relaxed);
     }
 
     pub fn boundary_gap_runs(&self) -> u64 {
