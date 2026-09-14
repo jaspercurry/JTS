@@ -261,3 +261,11 @@ def test_force_stop_reports_written_sentence_not_raw_stderr(
     assert status["reason"] == "force_stopped"
     assert "force-stopped" in status["detail"]
     assert "simulated hang" not in status["detail"]
+
+
+def test_cli_path_falls_back_beside_the_interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(seat_level.shutil, "which", lambda name: None)
+    resolved = Path(seat_level._cli_path("jasper-seat-level"))
+    assert resolved.is_absolute()
+    assert resolved.parent == Path(seat_level.sys.executable).parent
+    assert resolved.name == "jasper-seat-level"
