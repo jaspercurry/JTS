@@ -43,6 +43,10 @@ from jasper.atomic_io import (
     atomic_write_json,
     atomic_write_text,
 )
+from jasper.camilla_config_contract import (
+    VolumeLimitViolation,
+    check_volume_limit,
+)
 from jasper.json_fields import sha256_file, utc_now_iso
 from jasper.log_event import log_event
 
@@ -108,6 +112,9 @@ class CamillaConfigValidationResult:
     stdout_tail: str = ""
     stderr_tail: str = ""
     error: str | None = None
+    # Stable machine name for a JTS-side refusal (VolumeLimitViolation.code);
+    # None when CamillaDSP itself, not this gate, rejected the config.
+    code: str | None = None
 
     @property
     def ok_to_apply(self) -> bool:
@@ -178,33 +185,20 @@ def _camilladsp_binary() -> str | None:
     return shutil.which("camilladsp")
 
 
-def _volume_limit_safety_error(cfg_path: Path) -> str | None:
-    """Return an error string when the config's ``devices.volume_limit``
-    violates the JTS 0 dB safety ceiling, else None.
+def _volume_limit_safety_error(cfg_path: Path) -> VolumeLimitViolation | None:
+    """Return the hearing-ceiling refusal for a config file, else None.
 
-    CamillaDSP's own ``--check`` accepts a positive limit (it's legal
-    Camilla config) and *defaults the main fader's maximum to +50 dB
-    when the key is omitted* — both are loud-output hazards on a JTS
-    speaker, so the apply gate rejects them here. Fail-open on an
-    unreadable file: the load step will fail loudly on its own, and a
-    read race must not invent a safety verdict.
+    Fail-open on an unreadable file: the load step will fail loudly on its
+    own, and a read race must not invent a safety verdict.
     """
-    from jasper.camilla_config_contract import parse_camilla_devices_config
-
     try:
         text = cfg_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
-    limit = parse_camilla_devices_config(text).get("volume_limit")
-    if limit is None:
-        return (
-            "config omits devices.volume_limit; CamillaDSP would default "
-            "the main fader ceiling above 0 dB"
-        )
-    if limit > 0:
-        return (
-            f"devices.volume_limit={limit:.1f} dB exceeds the 0 dB JTS safety ceiling"
-        )
+    try:
+        check_volume_limit(text)
+    except VolumeLimitViolation as e:
+        return e
     return None
 
 
@@ -221,19 +215,21 @@ def validate_camilla_config(path: str | Path) -> CamillaConfigValidationResult:
 
     cfg_path = Path(path)
     limit_error = _volume_limit_safety_error(cfg_path)
-    if limit_error:
+    if limit_error is not None:
         log_event(
             logger,
             "dsp.validate",
             result="volume_limit_rejected",
             path=cfg_path,
-            err=limit_error,
+            code=limit_error.code,
+            err=str(limit_error),
             level=logging.ERROR,
         )
         return CamillaConfigValidationResult(
             status=ValidationStatus.INVALID_CONFIG,
             path=str(cfg_path),
-            error=limit_error,
+            error=str(limit_error),
+            code=limit_error.code,
         )
     binary = _camilladsp_binary()
     if not binary:

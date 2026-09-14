@@ -26,6 +26,7 @@ from jasper.camilla import (
     crossover_controller,
     primary_controller,
 )
+from jasper.camilla_config_contract import VolumeLimitViolation
 from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
@@ -34,7 +35,13 @@ from jasper.dsp_apply import (
 )
 
 from ._async_wait import wait_signalled
-from ._log_events import event_fields, event_records
+from ._log_events import event_field_maps, event_fields, event_records
+
+
+# Every controller graph door demands a declared 0 dB ceiling (NN-1,
+# ADR-0313), so a test graph has to carry one to reach the fake client.
+CEILING_GRAPH = "---\ndevices:\n  volume_limit: 0.0\nfilters: {}\n"
+LOUD_GRAPH = "---\ndevices:\n  volume_limit: 6.0\nfilters: {}\n"
 
 
 class _FakeVolume:
@@ -230,9 +237,9 @@ async def test_set_active_config_raw_uploads_without_file_path_reload(tmp_path):
     fake = _FakeClient()
     cam = _controller(fake, tmp_path)
 
-    assert await cam.set_active_config_raw("---\nfilters: {}\n")
+    assert await cam.set_active_config_raw(CEILING_GRAPH)
 
-    assert fake.active_raw_values == ["---\nfilters: {}\n"]
+    assert fake.active_raw_values == [CEILING_GRAPH]
     assert fake.queries == []
 
 
@@ -349,6 +356,93 @@ async def test_patch_config_uses_camilla_query_escape_hatch(tmp_path):
     assert fake.queries == [("PatchConfig", patch)]
 
 
+async def test_every_graph_door_refuses_a_config_above_the_hearing_ceiling(
+    tmp_path: Path, caplog,
+) -> None:
+    """NN-1 holds at the controller, not only inside ``apply_dsp_config``'s
+    file transaction: each door asks the one rule before it mutates anything,
+    and the refusal is a ValueError so no ``except CamillaUnavailable`` site
+    swallows it. See ADR-0313."""
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+    loud = tmp_path / "loud.yml"
+    loud.write_text(LOUD_GRAPH, encoding="utf-8")
+    caplog.set_level(logging.ERROR, logger=camilla_module.__name__)
+
+    for door in (
+        lambda: cam.set_active_config_raw(LOUD_GRAPH),
+        lambda: cam.set_config_file_path(str(loud)),
+        lambda: cam.patch_config({"devices": {"volume_limit": 6.0}}),
+    ):
+        with pytest.raises(VolumeLimitViolation):
+            await door()
+
+    assert fake.ops == []
+    assert [
+        (fields["source"], fields["code"])
+        for fields in event_field_maps(caplog, "camilla.graph_refused")
+    ] == [
+        ("camilla.set_active_config_raw", "volume_limit_positive"),
+        ("camilla.set_config_file_path", "volume_limit_positive"),
+        ("camilla.patch_config", "patch_touches_devices"),
+    ]
+
+
+async def test_a_best_effort_graph_door_refuses_without_raising(
+    tmp_path: Path,
+) -> None:
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+    loud = tmp_path / "loud.yml"
+    loud.write_text(LOUD_GRAPH, encoding="utf-8")
+
+    assert await cam.set_active_config_raw(LOUD_GRAPH, best_effort=True) is False
+    assert await cam.set_config_file_path(str(loud), best_effort=True) is False
+    assert await cam.patch_config({"devices": {}}, best_effort=True) is False
+
+    assert fake.ops == []
+
+
+async def test_every_graph_door_admits_a_declared_ceiling(tmp_path: Path) -> None:
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+    compliant = tmp_path / "ceiling.yml"
+    compliant.write_text(CEILING_GRAPH, encoding="utf-8")
+    patch = {"filters": {"gain": {"type": "Gain"}}}
+
+    assert await cam.set_active_config_raw(CEILING_GRAPH)
+    assert await cam.set_config_file_path(str(compliant))
+    assert await cam.patch_config(patch)
+
+    assert fake.active_raw_values == [CEILING_GRAPH]
+    assert fake.file_paths == [str(compliant)]
+    assert fake.queries == [("PatchConfig", patch)]
+
+
+@pytest.mark.parametrize(
+    ("raw", "err"),
+    [(None, "FileNotFoundError"), (b"devices:\n  device: \xff\xfe\n", "UnicodeDecodeError")],
+)
+async def test_an_unreadable_config_path_is_disclosed_not_refused(
+    tmp_path: Path, caplog, raw: bytes | None, err: str,
+) -> None:
+    """A read race must not invent a safety verdict: CamillaDSP's own load
+    fails loudly on a file it cannot read."""
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+    caplog.set_level(logging.WARNING, logger=camilla_module.__name__)
+    path = tmp_path / "graph.yml"
+    if raw is not None:
+        path.write_bytes(raw)
+
+    assert await cam.set_config_file_path(str(path))
+
+    assert fake.file_paths == [str(path)]
+    fields = event_fields(caplog, "camilla.graph_admission_unreadable")
+    assert fields["err"] == err
+    assert fields["source"] == "camilla.set_config_file_path"
+
+
 async def test_all_graph_mutations_enter_the_lowest_admission_context(
     tmp_path: Path,
     monkeypatch,
@@ -365,18 +459,16 @@ async def test_all_graph_mutations_enter_the_lowest_admission_context(
     monkeypatch.setattr("jasper.dsp_apply.camilla_graph_mutation", admit)
 
     assert await cam.set_config_file_path(str(tmp_path / "candidate.yml"))
-    assert await cam.set_active_config_raw("---\nfilters: {}\n")
+    assert await cam.set_active_config_raw(CEILING_GRAPH)
     assert await cam.patch_config({"filters": {"gain": {"type": "Gain"}}})
-    assert await cam.reload()
 
     assert sources == [
         "camilla.set_config_file_path",
         "camilla.set_active_config_raw",
         "camilla.patch_config",
-        "camilla.reload",
     ]
     assert fake.file_paths == [str(tmp_path / "candidate.yml")]
-    assert fake.reload_count == 2
+    assert fake.reload_count == 1
 
 
 async def test_every_pipeline_replacement_is_bracketed_by_a_duck(
@@ -399,12 +491,8 @@ async def test_every_pipeline_replacement_is_bracketed_by_a_duck(
     assert fake.ops == [f"vol={duck:g}", "set_file_path", "reload", "vol=0"]
 
     fake.ops.clear()
-    assert await cam.set_active_config_raw("---\nfilters: {}\n")
+    assert await cam.set_active_config_raw(CEILING_GRAPH)
     assert fake.ops == [f"vol={duck:g}", "set_active_raw", "vol=0"]
-
-    fake.ops.clear()
-    assert await cam.reload()
-    assert fake.ops == [f"vol={duck:g}", "reload", "vol=0"]
 
 
 async def test_patch_config_is_serialized_but_never_ducked(tmp_path: Path) -> None:
@@ -425,7 +513,7 @@ async def test_graph_swap_never_touches_main_mute(tmp_path: Path) -> None:
     fake = _FakeClient()
     cam = _controller(fake, tmp_path)
 
-    assert await cam.reload()
+    assert await cam.set_active_config_raw(CEILING_GRAPH)
 
     assert fake.volume.mutes == []
 
@@ -441,10 +529,10 @@ async def test_graph_swap_holds_the_duck_for_the_camilla_volume_ramp(
     duck = -camilla_module.GRAPH_SWAP_DUCK_DB
 
     started = time.monotonic()
-    assert await cam.reload()
+    assert await cam.set_active_config_raw(CEILING_GRAPH)
 
     assert time.monotonic() - started >= 0.2
-    assert fake.ops == [f"vol={duck:g}", "reload", "vol=0"]
+    assert fake.ops == [f"vol={duck:g}", "set_active_raw", "vol=0"]
 
 
 async def test_dsp_apply_ducks_both_the_load_and_its_rollback(
@@ -456,9 +544,9 @@ async def test_dsp_apply_ducks_both_the_load_and_its_rollback(
     cam = _controller(fake, tmp_path)
     duck = -camilla_module.GRAPH_SWAP_DUCK_DB
     candidate = tmp_path / "candidate.yml"
-    candidate.write_text("devices: {}\n", encoding="utf-8")
+    candidate.write_text(CEILING_GRAPH, encoding="utf-8")
     prior = tmp_path / "prior.yml"
-    prior.write_text("devices: {}\n", encoding="utf-8")
+    prior.write_text(CEILING_GRAPH, encoding="utf-8")
 
     async def confirm_never_matches() -> str:
         return str(prior)
@@ -536,8 +624,7 @@ async def test_every_ducking_swap_releases_to_the_canonical_target(
 
     for mutate in (
         lambda cam: cam.set_config_file_path(str(tmp_path / "c.yml")),
-        lambda cam: cam.set_active_config_raw("---\nfilters: {}\n"),
-        lambda cam: cam.reload(),
+        lambda cam: cam.set_active_config_raw(CEILING_GRAPH),
     ):
         fake = _FakeClient()
         fake.volume.values.append(-12.5)
@@ -561,9 +648,9 @@ async def test_swap_below_the_duck_clamp_boundary_skips_the_duck(
     fake.ops.clear()
     cam = _controller(fake, tmp_path)
 
-    assert await cam.reload()
+    assert await cam.set_active_config_raw(CEILING_GRAPH)
 
-    assert fake.ops == ["reload"]
+    assert fake.ops == ["set_active_raw"]
 
 
 
@@ -1207,7 +1294,7 @@ async def test_failed_duck_release_logs_a_named_event(
     fake.volume.set_main_volume = fail_on_release  # type: ignore[method-assign]
 
     with caplog.at_level(logging.WARNING, logger="jasper.camilla"):
-        assert await cam.reload()
+        assert await cam.set_active_config_raw(CEILING_GRAPH)
 
     assert "event=camilla.graph_swap_duck_restore_failed" in caplog.text
     assert "target_db=0.0" in caplog.text

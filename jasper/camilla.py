@@ -13,10 +13,16 @@ import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
 from .atomic_io import flock_held
-from .camilla_config_contract import DEFAULT_CAMILLA_PORT, DEFAULT_VOLUME_LIMIT_DB
+from .camilla_config_contract import (
+    DEFAULT_CAMILLA_PORT,
+    DEFAULT_VOLUME_LIMIT_DB,
+    VolumeLimitViolation,
+    check_volume_limit,
+)
 from .log_event import log_event
 
 if TYPE_CHECKING:
@@ -858,6 +864,38 @@ class CamillaController:
                 level=logging.WARNING,
             )
 
+    def _refuse_graph(
+        self,
+        violation: VolumeLimitViolation,
+        *,
+        source: str,
+        best_effort: bool,
+    ) -> bool:
+        """Never install this graph; ``False`` for a best-effort caller.
+
+        Raising elsewhere is deliberate: a graph that breaks the ceiling is a
+        caller/emitter programming error, not a daemon-availability condition,
+        so the ``except CamillaUnavailable`` sites must not swallow it.
+        """
+        log_event(
+            logger,
+            "camilla.graph_refused",
+            level=logging.ERROR,
+            source=source,
+            code=violation.code,
+        )
+        if best_effort:
+            return False
+        raise violation
+
+    def _admit_graph(self, text: str, *, source: str, best_effort: bool) -> bool:
+        """Whether this graph text may reach CamillaDSP (ADR-0313)."""
+        try:
+            check_volume_limit(text)
+        except VolumeLimitViolation as e:
+            return self._refuse_graph(e, source=source, best_effort=best_effort)
+        return True
+
     async def set_config_file_path(
         self, path: str, *, best_effort: bool = False, duck: bool = True,
     ) -> bool:
@@ -866,13 +904,33 @@ class CamillaController:
         ``duck=False`` requires the same live-edit proof as
         :meth:`set_active_config_raw`, including when the filename changes.
         """
+        source = "camilla.set_config_file_path"
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            # Camilla's own load fails loudly on an unreadable file, and a read
+            # race must not invent a verdict — same policy as the validator.
+            log_event(
+                logger,
+                "camilla.graph_admission_unreadable",
+                level=logging.WARNING,
+                source=source,
+                path=path,
+                err=type(e).__name__,
+            )
+        else:
+            if not self._admit_graph(
+                text, source=source, best_effort=best_effort,
+            ):
+                return False
+
         def write_and_reload(c):
             c.config.set_file_path(path)
             c.general.reload()
             return True
 
         try:
-            async with self._graph_mutation("camilla.set_config_file_path", duck=duck):
+            async with self._graph_mutation(source, duck=duck):
                 return bool(await self._call(write_and_reload))
         except CamillaUnavailable as e:
             if best_effort:
@@ -908,10 +966,12 @@ class CamillaController:
                 return False
             raise ValueError("config must be a non-empty YAML string")
 
+        source = "camilla.set_active_config_raw"
+        if not self._admit_graph(config, source=source, best_effort=best_effort):
+            return False
+
         try:
-            async with self._graph_mutation(
-                "camilla.set_active_config_raw", duck=duck,
-            ):
+            async with self._graph_mutation(source, duck=duck):
                 await self._call(lambda c: c.config.set_active_raw(config))
                 return True
         except CamillaUnavailable as e:
@@ -1023,28 +1083,26 @@ class CamillaController:
                 return False
             raise ValueError("patch must be a non-empty mapping")
 
+        source = "camilla.patch_config"
+        if "devices" in patch:
+            # `devices` is where the hearing ceiling lives (ADR-0313); a patch
+            # may only write parameters of filters that are already running.
+            return self._refuse_graph(
+                VolumeLimitViolation(
+                    "config patch must not write devices",
+                    code="patch_touches_devices",
+                ),
+                source=source,
+                best_effort=best_effort,
+            )
+
         try:
-            async with self._graph_mutation("camilla.patch_config", duck=False):
+            async with self._graph_mutation(source, duck=False):
                 await self._call(lambda c: c.query("PatchConfig", arg=patch))
                 return True
         except CamillaUnavailable as e:
             if best_effort:
                 logger.warning("camilla unavailable; patch_config skipped: %s", e)
-                return False
-            raise
-
-    async def reload(self, *, best_effort: bool = False) -> bool:
-        """Reload the currently-set config file path. Used by the
-        room-correction wizard's 'Reset to flat' action when the path
-        is already pointed at the branch's flat base config — saves a
-        redundant set_file_path call."""
-        try:
-            async with self._graph_mutation("camilla.reload"):
-                await self._call(lambda c: c.general.reload())
-                return True
-        except CamillaUnavailable as e:
-            if best_effort:
-                logger.warning("camilla unavailable; reload skipped: %s", e)
                 return False
             raise
 

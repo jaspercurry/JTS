@@ -130,6 +130,49 @@ def ensure_volume_limit_db(value: float) -> float:
     return out
 
 
+class VolumeLimitViolation(ValueError):
+    """A CamillaDSP graph write that breaks the JTS hearing ceiling.
+
+    ``code`` is the stable machine name for the refusal:
+    ``volume_limit_missing``, ``volume_limit_positive``, or
+    ``patch_touches_devices`` (a partial-config patch may write running-filter
+    parameters, never the ``devices`` block the ceiling lives in).
+    """
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def check_volume_limit(text: str) -> None:
+    """Raise :class:`VolumeLimitViolation` unless a CamillaDSP graph text
+    carries ``devices.volume_limit`` at or below the 0 dB ceiling.
+
+    The one rule behind AGENTS.md non-negotiable 1, asked by every writer
+    that installs a graph. A missing key is as unsafe as a positive one:
+    CamillaDSP defaults the main fader's maximum to +50 dB when it is
+    omitted, and its own ``--check`` accepts both. Ambiguous configs fail
+    closed through :func:`parse_camilla_devices_config`, which omits the
+    limit when duplicate keys make it unreadable. See ADR-0313.
+    """
+
+    limit = parse_camilla_devices_config(text).get("volume_limit")
+    if limit is None:
+        raise VolumeLimitViolation(
+            "config omits devices.volume_limit; CamillaDSP would default "
+            "the main fader ceiling above 0 dB",
+            code="volume_limit_missing",
+        )
+    try:
+        ensure_volume_limit_db(limit)
+    except ValueError as e:
+        raise VolumeLimitViolation(
+            f"devices.volume_limit={limit:.1f} dB exceeds the 0 dB JTS "
+            "safety ceiling",
+            code="volume_limit_positive",
+        ) from e
+
+
 @dataclass(frozen=True)
 class PeqFilter:
     """Import-cheap representation of a CamillaDSP peaking EQ."""
