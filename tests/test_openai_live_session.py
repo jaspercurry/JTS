@@ -901,7 +901,7 @@ async def test_preconnect_honors_the_daemons_spend_admission(tmp_path, monkeypat
         if not before_release:
             await _prepared(conn)
             allowed[0] = False
-            await wait_until(lambda: sessions.sockets[1].closed)
+            await wait_until(lambda: sessions.sockets[1].closed, timeout=3.0)
         assert len(sessions.sockets) == (1 if before_release else 2)
         assert conn.warm_session_until() is None
         assert meter.events.count("open") == sum(isinstance(e, tuple) for e in meter.events)
