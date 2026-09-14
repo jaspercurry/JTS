@@ -640,9 +640,10 @@ def test_usb_mic_recompose_surfaces_broker_refusal(monkeypatch):
 def test_aec_commission_starts_oneshot_when_idle(
     monkeypatch, server_with_coordinator,
 ):
-    """POST /aec/commission on an idle box resets then no-block-starts the
-    root measurement oneshot through the restart broker and answers 202 with
-    the full /aec status body."""
+    """POST /aec/commission on an idle box no-block-starts the root
+    measurement oneshot through the restart broker and answers 202 with the
+    full /aec status body. No reset-failed leg: the unit is START_ONLY in the
+    broker, which would deny reset-failed against it anyway."""
     base, _ = server_with_coordinator
 
     calls = _record_broker(monkeypatch)
@@ -662,7 +663,7 @@ def test_aec_commission_starts_oneshot_when_idle(
         "commission": {"running": True},
     }
     unit = aec_endpoints._AEC_COMMISSION_SERVICE
-    assert calls == [("reset-failed", [unit]), ("start", [unit])]
+    assert calls == [("start", [unit])]
 
 
 def test_aec_commission_409_while_a_run_is_active(

@@ -96,6 +96,28 @@ _SYSTEMCTL_BLOCKING_TIMEOUT_SEC = 60.0
 # target unit's own TimeoutStartSec.
 _SOURCE_RECONCILE_START_TIMEOUT_SEC = SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS + 5.0
 _MAX_SOURCE_RECONCILE_STARTS = 2  # drain prior pass, then run fresh role pass
+# restart_broker.reset_then_manage spends TWO broker round trips per blocking
+# action (a reset-failed leg, then the verb leg) and the client waits
+# `timeout + restart_broker._CLIENT_SOCKET_MARGIN_SEC` on EACH leg rather than
+# the bare systemctl timeout a direct subprocess call used to cost. Mirrors
+# jasper.fanin.coupling_reconcile._daemon_op_ceiling_sec (broker-dead retries
+# excluded, as there: that doubling only fires on an independently loud
+# BrokerUnavailable, and sizing the ceiling for it would hide every real wedge
+# for that much longer).
+_RESET_FAILED_TIMEOUT_SEC = 5.0  # restart_broker._RESET_TIMEOUT_SEC
+_BROKER_SOCKET_MARGIN_SEC = 5.0  # restart_broker._CLIENT_SOCKET_MARGIN_SEC
+
+
+def _broker_op_ceiling_sec(timeout: float) -> float:
+    """Worst legal wall time for one reset-then-verb broker call at ``timeout``."""
+    return (
+        _RESET_FAILED_TIMEOUT_SEC
+        + _BROKER_SOCKET_MARGIN_SEC
+        + timeout
+        + _BROKER_SOCKET_MARGIN_SEC
+    )
+
+
 # Conservative *sequential* ceilings, not typical latency: a steady-state pass
 # normally performs no blocking work.
 _MAX_PLAN_UNIT_INTENTS = 2  # snapserver + snapclient; sources have one owner
@@ -104,10 +126,15 @@ _MAX_POST_PLAN_BLOCKING_ACTIONS = 6
 # _plan_changes_units probes each plan intent's unit (one ActiveState read) BEFORE
 # _apply runs it.
 _UNIT_CHANGE_PROBE_CALLS = _MAX_PLAN_UNIT_INTENTS
+# The plan-intent and post-plan slots are costed at the broker ceiling even
+# though _apply's own start/stop calls never reach the broker: the model is a
+# generic "N blocking actions" tally, not a per-call enumeration, so every
+# slot in it is priced at the worst any one of them can legally cost.
 _BASE_RECONCILE_BUDGET_SEC = (
-    _MAX_PLAN_UNIT_INTENTS * _SYSTEMCTL_BLOCKING_TIMEOUT_SEC
+    _MAX_PLAN_UNIT_INTENTS * _broker_op_ceiling_sec(_SYSTEMCTL_BLOCKING_TIMEOUT_SEC)
     + _SNAPCAST_PROVISION_BUDGET_SEC
-    + _MAX_POST_PLAN_BLOCKING_ACTIONS * _SYSTEMCTL_BLOCKING_TIMEOUT_SEC
+    + _MAX_POST_PLAN_BLOCKING_ACTIONS
+    * _broker_op_ceiling_sec(_SYSTEMCTL_BLOCKING_TIMEOUT_SEC)
     + _UNIT_CHANGE_PROBE_CALLS * _SYSTEMCTL_CONTROL_TIMEOUT_SEC
 )
 _OWNER_CONTROL_CALLS_PER_HANDOFF = 2  # reset-failed + ActiveState probe
@@ -1311,7 +1338,14 @@ def _restart_unit(
     """
     try:
         from jasper.control import restart_broker  # lazy: mirrors jasper.fanin.coupling_reconcile — a broken control package must degrade to a reported failure, not kill the reconcile
-    except ImportError:  # pragma: no cover - control pkg always present in prod
+    except ImportError as e:  # pragma: no cover - control pkg always present in prod
+        log_event(
+            logger,
+            "multiroom.reconcile.unit_restart_failed",
+            unit=unit,
+            error=f"restart_broker unavailable: {e}",
+            level=logging.ERROR,
+        )
         return False
     verb = "try-restart" if active_only else "restart"
     resp = restart_broker.reset_then_manage(

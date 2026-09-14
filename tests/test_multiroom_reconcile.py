@@ -2909,14 +2909,15 @@ def test_restart_unit_routes_through_broker(
     monkeypatch, unit, no_block, active_only, expected_verb,
 ):
     """Each call site asks the broker to reset-failed the target FIRST, then
-    run the verb/no_block combination it selected — reconcile.py no longer
-    builds a systemctl argv of its own."""
+    run the verb/no_block/timeout combination it selected — reconcile.py no
+    longer builds a systemctl argv of its own. Pinning ``timeout`` too means
+    swapping the blocking/control constants fails this test."""
     from jasper.control import restart_broker as rb
 
-    calls: list[tuple[str, str, bool]] = []
+    calls: list[tuple[str, str, bool, float]] = []
 
-    def fake_manage_units(*units, verb="restart", no_block=True, **_kw):
-        calls.append((units[0], verb, no_block))
+    def fake_manage_units(*units, verb="restart", no_block=True, timeout=5.0, **_kw):
+        calls.append((units[0], verb, no_block, timeout))
         return {"ok": True}
 
     monkeypatch.setattr(rb, "manage_units", fake_manage_units)
@@ -2926,9 +2927,14 @@ def test_restart_unit_routes_through_broker(
         )
         is True
     )
+    expected_timeout = (
+        reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC
+        if no_block
+        else reconcile_mod._SYSTEMCTL_BLOCKING_TIMEOUT_SEC
+    )
     assert calls == [
-        (unit, "reset-failed", False),
-        (unit, expected_verb, no_block),
+        (unit, "reset-failed", False, rb._RESET_TIMEOUT_SEC),
+        (unit, expected_verb, no_block, expected_timeout),
     ]
 
 
