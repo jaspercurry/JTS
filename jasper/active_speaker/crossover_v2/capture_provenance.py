@@ -9,7 +9,7 @@ from typing import Any, Mapping
 
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
 from jasper.audio_measurement.evidence_identity import json_fingerprint
-from jasper.audio_measurement.program import ExcitationProgram
+from jasper.audio_measurement.program import ExcitationProgram, KIND_SWEEP, KIND_SUMMED_SWEEP
 
 
 def analysis_provenance(
@@ -18,6 +18,7 @@ def analysis_provenance(
     summed = getattr(analysis, "summed_response", None)
     responses = (summed,) if summed is not None else getattr(analysis, "driver_responses", ())
     gates = {(response.gating or {}).get("applied") for response in responses}
+    stimuli = [segment for segment in program.segments if segment.kind in {KIND_SWEEP, KIND_SUMMED_SWEEP}]
     return {
         "capture_calibration": {
             "applied": curve is not None,
@@ -25,7 +26,7 @@ def analysis_provenance(
             "curve_fingerprint": json_fingerprint(curve.to_dict()) if curve is not None else None,
         },
         "gating_applied": next(iter(gates)) if len(gates) == 1 else None,
-        "stimulus_dbfs": max((float(segment.gain_db) for segment in program.stimulus_segments()), default=None),
+        "stimulus_dbfs": max((float(segment.gain_db) for segment in stimuli or program.stimulus_segments()), default=None),
         "mark_distance_m": float(geometry.mic_distance_m) if geometry is not None else None,
     }
 

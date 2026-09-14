@@ -947,7 +947,7 @@ def test_executor_banks_capture_provenance(tmp_path, monkeypatch, analysis_error
     assert isinstance(calibration["curve_fingerprint"], str) and len(calibration["curve_fingerprint"]) == 64
     assert type(record["gating_applied"]) is bool
     assert type(record["stimulus_dbfs"]) is float
-    assert record["stimulus_dbfs"] < 0
+    assert record["stimulus_dbfs"] == -30.0
 
 
 async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypatch):

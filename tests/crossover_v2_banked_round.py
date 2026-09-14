@@ -557,7 +557,7 @@ def bank_cloud_echo_band(
 
 
 def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, analysis_error=None):
-    program = program or build_verify_program(2500, sweep_s=1.5)
+    program = program or build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14))
     raw_record = raw_record or {}
     calibration_root = root / "calibration"
     calibration = store_calibration(text="20 -1\n1000 1\n20000 0\n", provider="minidsp",
