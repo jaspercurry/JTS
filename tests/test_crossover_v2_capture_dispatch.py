@@ -245,11 +245,11 @@ def test_session_level_drift_has_margin(same_pose, delta, accepted):
         assert (verdict.fault, verdict.next, verdict.charge) == ("level_drift_at_session_gain", "retake_same", "none")
 
 
-@pytest.mark.parametrize("objective, next_action, delay_capable, targets", [
-    ("summed_fit_committed", "accept", True, {}),
-    ("summed_fit_inconclusive", "retake_louder", False, {"woofer": -20}),
+@pytest.mark.parametrize("objective, fit_verdict, next_action, delay_capable, targets", [
+    ("summed_fit_committed", "committed", "accept", True, {}),
+    ("applied_alignment_held_after_low_snr", "inconclusive", "retake_louder", False, {"woofer": -20}),
 ])
-def test_summed_fit_keeps_delay_capability_without_an_snr_gain_retry(objective, next_action, delay_capable, targets):
+def test_summed_fit_keeps_delay_capability_without_an_snr_gain_retry(objective, fit_verdict, next_action, delay_capable, targets):
     from jasper.audio_measurement.program_analysis.model import CrossoverCandidate
 
     band = snr_policy.band_snr_verdicts(
@@ -260,7 +260,7 @@ def test_summed_fit_keeps_delay_capability_without_an_snr_gain_retry(objective, 
     response = replace(_driver_response("woofer", 8.0), snr={"alignment": band})
     result = cd.assess(_analysis(
         driver_responses=(response,),
-        candidate=CrossoverCandidate({}, "inverted", 191, 1, .7, alignment_objective=objective),
+        candidate=CrossoverCandidate({}, "inverted", 191, 1, .7, alignment_objective=objective, summed_fit_verdict=fit_verdict),
     ), phase="measure", gain_db=GAINS, gain_ceiling_db={"woofer": -20})
     assert result.next == next_action
     assert result.capabilities["delay_estimate"] is delay_capable

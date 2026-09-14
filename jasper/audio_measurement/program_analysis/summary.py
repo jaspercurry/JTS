@@ -136,6 +136,7 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
         out["alignment_objective"] = getattr(candidate, "alignment_objective", "")
         for field in ("summed_fit_rms_db", "summed_fit_margin", "delay_interval_us"):
             out[field] = getattr(candidate, field, None)
+        out["summed_fit_verdict"] = getattr(candidate, "summed_fit_verdict", "unavailable")
         seed_polarity_sign = getattr(candidate, "seed_polarity_sign", None)
         out["seed_polarity"] = (
             None if seed_polarity_sign is None

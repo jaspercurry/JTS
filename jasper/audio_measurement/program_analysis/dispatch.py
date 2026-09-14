@@ -47,7 +47,8 @@ from .locate import _global_offset, _locate_segments
 from .model import (
     ALIGNMENT_COMMITTED_FLAT_SUM,
     ALIGNMENT_COMMITTED_SUMMED_FIT,
-    ALIGNMENT_SUMMED_FIT_INCONCLUSIVE,
+    SUMMED_FIT_MIN_MARGIN,
+    SummedFitVerdict,
     ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED,
     ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND,
     ALIGNMENT_DECLARED_POLARITY_OBJECTIVES,
@@ -613,8 +614,11 @@ def _build_candidate(
             seed_delay_us=seed_delay_us, seed_polarity_sign=alignment.polarity_sign,
             delay_bounds_us=alignment_delay_bounds_us,
         )
-    inconclusive = summed_selection is not None and summed_selection.objective == ALIGNMENT_SUMMED_FIT_INCONCLUSIVE
-    selection = summed_selection if summed_selection is not None and not inconclusive else (
+    fit_rms_db = None if summed_selection is None else summed_selection.summed_fit_rms_db
+    fit_margin = None if summed_selection is None else summed_selection.summed_fit_margin
+    fit_verdict: SummedFitVerdict = ("unavailable" if fit_margin is None else
+                                   "committed" if fit_margin >= SUMMED_FIT_MIN_MARGIN else "inconclusive")
+    selection = summed_selection if fit_verdict == "committed" else (
         _select_alignment_pair(
             freqs, W, T,
             fc_hz=fc_hz, lo_hz=lo_clamped, hi_hz=hi,
@@ -623,19 +627,14 @@ def _build_candidate(
             seed_delay_us=seed_delay_us,
             seed_polarity_sign=alignment.polarity_sign,
             delay_bounds_us=alignment_delay_bounds_us,
-            branch_snr_insufficient=branch_snr_insufficient or inconclusive,
+            branch_snr_insufficient=branch_snr_insufficient,
             applied_alignment=applied_alignment,
             explicit_delay_us=explicit_alignment_delay_us,
             explicit_polarity_sign=explicit_alignment_polarity_sign,
         )
-        if alignment.status == ALIGNMENT_OK or inconclusive
+        if alignment.status == ALIGNMENT_OK
         else None
     )
-    if inconclusive and selection is not None and summed_selection is not None:
-        selection = replace(selection, objective=ALIGNMENT_SUMMED_FIT_INCONCLUSIVE,
-                            summed_fit_rms_db=summed_selection.summed_fit_rms_db,
-                            summed_fit_margin=summed_selection.summed_fit_margin,
-                            delay_interval_us=summed_selection.delay_interval_us)
     if selection is None:
         polarity_sign = alignment.polarity_sign
         delay_us = seed_delay_us
@@ -669,6 +668,7 @@ def _build_candidate(
             ),
             woofer_role=woofer_role, tweeter_role=tweeter_role,
             objective=selection.objective,
+            summed_fit_verdict=fit_verdict, summed_fit_rms_db=fit_rms_db, summed_fit_margin=fit_margin,
             fc_hz=round(float(fc_hz), 3),
             band_hz=(round(float(lo_clamped), 1), round(float(hi), 1)),
             polarity=polarity_label(selection.polarity_sign),
@@ -853,8 +853,7 @@ def _build_candidate(
         confidence=(1.0 - 1.0 / max(selection.summed_fit_margin, 1.0)
                     if selection is not None and selection.objective == ALIGNMENT_COMMITTED_SUMMED_FIT and selection.summed_fit_margin is not None
                     else alignment.confidence),
-        summed_fit_rms_db=None if selection is None else selection.summed_fit_rms_db,
-        summed_fit_margin=None if selection is None else selection.summed_fit_margin,
+        summed_fit_rms_db=fit_rms_db, summed_fit_margin=fit_margin, summed_fit_verdict=fit_verdict,
         delay_interval_us=None if selection is None else selection.delay_interval_us,
         alignment_seed_ripple_db=seed_ripple_db,
         flatness_improvement_db=flatness_improvement_db,

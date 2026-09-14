@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 import numpy as np
 
@@ -152,8 +152,8 @@ ALIGNMENT_FLAT_MINIMUM_EPSILON_DB = 0.25
 #: What the candidate's (polarity, delay) pair IS, never why an alternative was rejected.
 ALIGNMENT_COMMITTED_FLAT_SUM = "flat_sum_committed"
 ALIGNMENT_COMMITTED_SUMMED_FIT = "summed_fit_committed"
-ALIGNMENT_SUMMED_FIT_INCONCLUSIVE = "summed_fit_inconclusive"
 SUMMED_FIT_MIN_MARGIN = 1.5
+SummedFitVerdict = Literal["committed", "inconclusive", "unavailable"]
 ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR = "declared_committed_after_low_snr"
 #: The declared polarity at the delay the applied graph already carries.
 ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR = "applied_alignment_held_after_low_snr"
@@ -171,7 +171,6 @@ ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR = (
 ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND = "seed_committed_no_scoring_band"
 ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED = "seed_committed_alignment_refused"
 ALIGNMENT_COMMITMENTS = frozenset({
-    ALIGNMENT_SUMMED_FIT_INCONCLUSIVE,
     ALIGNMENT_COMMITTED_FLAT_SUM,
     ALIGNMENT_COMMITTED_SUMMED_FIT,
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
@@ -186,7 +185,6 @@ ALIGNMENT_COMMITMENTS = frozenset({
 #: neither polarity nor anchor may be spoken for
 #: (tests/test_crossover_envelope_v2.py pins this against the household copy).
 ALIGNMENT_DECLARED_POLARITY_OBJECTIVES = frozenset({
-    ALIGNMENT_SUMMED_FIT_INCONCLUSIVE,
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
@@ -732,8 +730,9 @@ class CrossoverCandidate:
     ``seed_polarity_sign`` retains correlation's answer. ``left_anchor_lobe``
     records a commitment more than half a period at Fc from the physical anchor.
     Summed-fit RMS is in dB; its margin is the other polarity's minimum RMS
-    divided by the winner's. ``delay_interval_us`` spans points within 0.05 dB
-    of the minimum in the winning polarity.
+    divided by the winner's. ``summed_fit_verdict`` records whether that fit
+    committed. Only a committed fit carries ``delay_interval_us``: the winning
+    polarity's interval within 0.05 dB of its minimum.
 
     ``anchor_delay_us`` is the bare anchor; ``snap_delta_us`` is
     ``committed - anchor``; ``snap_found`` records whether a local
@@ -787,6 +786,7 @@ class CrossoverCandidate:
     ripple_polish_rejected_delta_db: float | None = None
     summed_fit_rms_db: float | None = None
     summed_fit_margin: float | None = None
+    summed_fit_verdict: SummedFitVerdict = "unavailable"
     delay_interval_us: tuple[float, float] | None = None
 
 

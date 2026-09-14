@@ -191,6 +191,7 @@ def analysis_json(
         "alignment_objective": cand.alignment_objective if cand else None,
         "summed_fit_rms_db": cand.summed_fit_rms_db if cand else None,
         "summed_fit_margin": cand.summed_fit_margin if cand else None,
+        "summed_fit_verdict": cand.summed_fit_verdict if cand else "unavailable",
         "delay_interval_us": cand.delay_interval_us if cand else None,
         "seed_polarity": (
             None if cand is None or cand.seed_polarity_sign is None

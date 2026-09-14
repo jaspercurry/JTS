@@ -36,6 +36,7 @@ import numpy as np
 import pytest
 from scipy.signal import fftconvolve, resample_poly
 
+from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.audio_measurement import analysis as analysis_mod
 from jasper.audio_measurement import (
     deconv,
@@ -8113,17 +8114,18 @@ def test_absolute_target_carries_the_candidates_configured_polarity():
     assert analyze({"woofer": 1, "tweeter": -1})["max_db"] > 5.0
 
 
-@pytest.mark.parametrize("delay_us, sign, pose, reference_kind, objective", [
-    (191.0, -1, (0, 0), "measured", "summed_fit_committed"),
-    (-173.0, 1, (0, 0), "measured", "summed_fit_committed"),
-    (191.0, -1, (-20, 0), "measured", "applied_alignment_held_after_low_snr"),
-    (191.0, -1, (20, 0), "measured", "applied_alignment_held_after_low_snr"),
-    (191.0, -1, (0, 20), "measured", "applied_alignment_held_after_low_snr"),
-    (191.0, -1, (None, None), "measured", "applied_alignment_held_after_low_snr"),
-    (191.0, -1, (0, 0), "missing_gain", "applied_alignment_held_after_low_snr"),
-    (191.0, -1, (0, 0), "flat", "summed_fit_inconclusive"),
+@pytest.mark.parametrize("delay_us, sign, pose, reference_kind, low_snr, objective, verdict", [
+    (191.0, -1, (0, 0), "measured", True, "summed_fit_committed", "committed"),
+    (-173.0, 1, (0, 0), "measured", True, "summed_fit_committed", "committed"),
+    (191.0, -1, (-20, 0), "measured", True, "applied_alignment_held_after_low_snr", "unavailable"),
+    (191.0, -1, (20, 0), "measured", True, "applied_alignment_held_after_low_snr", "unavailable"),
+    (191.0, -1, (0, 20), "measured", True, "applied_alignment_held_after_low_snr", "unavailable"),
+    (191.0, -1, (None, None), "measured", True, "applied_alignment_held_after_low_snr", "unavailable"),
+    (191.0, -1, (0, 0), "missing_gain", True, "applied_alignment_held_after_low_snr", "unavailable"),
+    (191.0, -1, (0, 0), "flat", True, "applied_alignment_held_after_low_snr", "inconclusive"),
+    (191.0, -1, (0, 0), "flat", False, "flat_sum_committed", "inconclusive"),
 ])
-def test_measured_sum_commits_alignment_when_ripple_basins_are_degenerate(monkeypatch, delay_us, sign, pose, reference_kind, objective):
+def test_measured_sum_commits_alignment_when_ripple_basins_are_degenerate(monkeypatch, caplog, delay_us, sign, pose, reference_kind, low_snr, objective, verdict):
     from jasper.audio_measurement.program_analysis import dispatch
     from jasper.audio_measurement.program_analysis.model import AppliedAlignment, SummedAlignmentReference
     from jasper.active_speaker.crossover_v2.summed_alignment import reference_from_graph
@@ -8131,7 +8133,7 @@ def test_measured_sum_commits_alignment_when_ripple_basins_are_degenerate(monkey
     freqs = np.linspace(0, SR / 2, 4097)
     W = np.ones(freqs.size, dtype=complex)
     T = 0.45 * np.exp((0 if reference_kind == "flat" else 0.02j) * (freqs / FC_HZ) ** 2)
-    branches = iter((W, T))
+    branches = iter((W, T) * 2)
     monkeypatch.setattr(dispatch, "_aligned_branch_tf", lambda *a, **k: (freqs, next(branches), {}))
     summed = predicted_branch_sum(W, T, 0, 0, sign, freqs_hz=freqs, residual_delay_us=delay_us)
     reference = SummedAlignmentReference(
@@ -8150,33 +8152,46 @@ def test_measured_sum_commits_alignment_when_ripple_basins_are_degenerate(monkey
     impulse = np.zeros(4096)
     impulse[200] = 1
     capture = _synthesize(program, woofer_ir=impulse, tweeter_ir=impulse, noise=0)
-    result = analyze_program_capture(program, capture, SR, geometry=MeasurementGeometry(position_deg=pose[0], vertical_deg=pose[1]), priors=MeasurementPriors(
-        crossover_fc_hz=FC_HZ, alignment_delay_bounds_us=(0, 500), applied_alignment=AppliedAlignment(193),
+    priors = MeasurementPriors(
+        crossover_fc_hz=2500, alignment_delay_bounds_us=(0, 500), applied_alignment=AppliedAlignment(193),
         summed_alignment=reference,
-        ambient_report={"bands": [{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -45}]},
-    ))
+        ambient_report={"bands": [{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -45 if low_snr else -100}]},
+    )
+    geometry = MeasurementGeometry(position_deg=pose[0], vertical_deg=pose[1])
+    caplog.set_level(logging.INFO, logger="jasper.audio_measurement.program_analysis")
+    result = analyze_program_capture(program, capture, SR, geometry=geometry, priors=priors)
     candidate = result.candidate
     assert candidate.alignment_objective == objective
-    if objective != "summed_fit_committed":
-        assert candidate.delay_us == 193
-        assert candidate.polarity == "normal"
-        if objective == "summed_fit_inconclusive":
+    assert candidate.summed_fit_verdict == verdict
+    assert any(driver_alignment_snr_verdict(r) == "insufficient" for r in result.driver_responses) is low_snr
+    event = event_fields(caplog, "program_analysis.alignment_selection")
+    assert event["summed_fit_verdict"] == verdict
+    for summary in (analysis_diagnostic_summary(result), analysis_json(result)):
+        for field in ("summed_fit_rms_db", "summed_fit_margin", "summed_fit_verdict", "delay_interval_us"):
+            assert summary[field] == getattr(candidate, field)
+    if verdict != "committed":
+        assert candidate.delay_interval_us is None
+        assert event["grid_points"] == ("1" if low_snr else "82")
+        if verdict == "inconclusive":
             assert candidate.summed_fit_margin < 1.5
             assert candidate.summed_fit_rms_db is not None
-            assert candidate.delay_interval_us is not None
+            assert float(event["summed_fit_margin"]) == candidate.summed_fit_margin
+            assert float(event["summed_fit_rms_db"]) == candidate.summed_fit_rms_db
         else:
             assert candidate.summed_fit_margin is None
+        caplog.clear()
+        base = analyze_program_capture(program, capture, SR, geometry=geometry, priors=dataclasses.replace(priors, summed_alignment=None))
+        assert dataclasses.replace(candidate, summed_fit_rms_db=None, summed_fit_margin=None, summed_fit_verdict="unavailable") == base.candidate
+        assert result.alignment == base.alignment
+        np.testing.assert_array_equal(result.predicted_sum, base.predicted_sum)
+        assert event_fields(caplog, "program_analysis.alignment_selection")["grid_points"] == event["grid_points"]
         return
     assert candidate.delay_us == pytest.approx(delay_us, abs=1)
     assert candidate.polarity == ("inverted" if sign < 0 else "normal")
     assert candidate.delay_interval_us[0] <= delay_us <= candidate.delay_interval_us[1]
     assert candidate.summed_fit_margin >= 2
-    summary = analysis_diagnostic_summary(result)
-    for field in ("summed_fit_rms_db", "summed_fit_margin", "delay_interval_us"):
-        assert summary[field] == getattr(candidate, field)
     assert result.alignment.confidence == candidate.confidence
     assert result.alignment.confidence_source == "summed_fit_committed"
-    assert any(driver_alignment_snr_verdict(r) == "insufficient" for r in result.driver_responses)
     minima = [min(_ripple_db(freqs, predicted_branch_sum(
         W, T, 0, 0, polarity, freqs_hz=freqs, residual_delay_us=delay,
     ), 1200, 5000) for delay in np.arange(-500, 501, 10)) for polarity in (1, -1)]
