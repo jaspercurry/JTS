@@ -255,10 +255,6 @@ class VolumeObserver:
         return max(0, min(127, v))
 
 
-# ----------------------------------------------------------------------
-# DBus helpers — protocol parsing stays local; subprocess lifecycle is shared.
-# ----------------------------------------------------------------------
-
 async def _busctl_get_property_value(
     bus_name: str,
     object_path: str,

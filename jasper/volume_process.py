@@ -4,16 +4,12 @@
 
 """Per-process registration of the canonical main_volume target and fader owner.
 
-Every process that performs a CamillaDSP graph swap (a wizard, a CLI door,
-jasper-control, jasper-multiroom-reconcile, jasper-fanin-coupling-reconcile)
-needs both, and `install_env_canonical_target_provider` is the one call each
-of them makes to get both — see its docstring. `jasper-voice` is the
+Every process that performs a CamillaDSP graph swap needs both;
+`install_env_canonical_target_provider` is the one call that gives a process
+both, and its docstring names the callers' pin. `jasper-voice` is the
 exception: it already owns a long-lived `VolumeCoordinator` and registers
 that coordinator's own reader and owner instead of building throwaway ones
 here.
-
-Which processes call this is pinned by
-``tests/test_canonical_target_registration.py``.
 """
 from __future__ import annotations
 
@@ -23,8 +19,8 @@ from .volume_persistence import VolumePersistence, configured_path as volume_sta
 
 async def env_canonical_target_db() -> float:
     """Read current household intent through the active source coordinator."""
-    # lazy: import cost — every wizard, CLI and daemon that imports this module
-    # to read the projection would otherwise load the whole actuator graph.
+    # lazy: import cost — the callers are one-shot CLIs, wizards and daemon
+    # mains that must not load the actuator graph at import time.
     from jasper import librespot_state
     from jasper.camilla import primary_controller
     from jasper.renderer import RendererClient
