@@ -12,6 +12,7 @@ import pytest
 
 from jasper.active_speaker.bass_comparison import compare_bass_takes, selected_take
 from jasper.active_speaker.crossover_v2 import room_views
+from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.room_prescription import read_room_median
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
@@ -20,6 +21,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.crossover_v2.round_inputs import default_out, round_artifact_dir, round_inputs
 from jasper.active_speaker.crossover_v2.window_view import window_view
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
+from jasper.audio_measurement.bundles import sha256_file
 from jasper.cli._report import render_report
 from jasper.cli.round_views import build_parser, main
 from jasper.cli.round_views._common import RoundSetRefused, resolve_set
@@ -164,6 +166,39 @@ def test_take_sweep_uses_the_same_record_and_artifact_bytes(tmp_path, capsys, ta
     else:
         answer, _ = artifact_answer(capsys)
         assert Path(answer["out"]).read_bytes() == (render_report(expected) + "\n").encode()
+
+
+@pytest.mark.parametrize("scope", ["round", "take"])
+def test_sweep_reads_manifest_curves_when_position_sidecars_have_none(tmp_path, capsys, scope):
+    impulse = np.zeros(1800)
+    impulse[100] = 1.0
+    root = bank_capture_round(tmp_path, [impulse] * 3)
+    session = round_inputs(root).session_dir
+    directory, _ = round_artifact_dir(session)
+    positions = directory / "positions"
+    positions.mkdir()
+    rows, curves = [], {}
+    for path in sorted(session.glob("summed/*.json")):
+        record = json.loads(path.read_text())
+        record.update(kind=POSITION_EVIDENCE_KIND, take_id=record.pop("position_id"),
+                      wav_sha256=sha256_file(session / record["wav_path"]))
+        curves[record["take_id"]], = record.pop("curves")
+        destination = positions / path.name
+        destination.write_text(json.dumps(record))
+        path.unlink()
+        rows.append((str(destination.relative_to(session / "evidence/v1/artifacts")), record))
+    group = manifest_set(rows)
+    for take in group["takes"]:
+        take.update(role="summed", curve=curves[take["take_id"]])
+    write_manifest(root, groups=[group])
+    flags = ["--take", group["takes"][0]["take_id"]] if scope == "take" else []
+    assert main(["sweep", str(root), "--scope", scope, "--set", group["set_id"], *flags]) == 0
+    answer, report = artifact_answer(capsys)
+    assert answer["scope"] == scope
+    if scope == "round":
+        assert {pose["capture_id"] for pose in report["poses"]} == set(curves)
+    else:
+        assert answer["capture_id"] == group["takes"][0]["take_id"]
 
 
 @pytest.mark.parametrize("override", [False, True])

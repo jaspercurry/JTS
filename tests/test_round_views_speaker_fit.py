@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import shlex
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from jasper.active_speaker.linearization_fit import (
 )
 from jasper.active_speaker.profile import CrossoverRegion
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.gating import FLOOR_SEARCH_BOUND, f_trusted_floor_hz
 from jasper.audio_measurement.program import RoleBand, build_measure_program
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK, ALIGNMENT_COMMITTED_FLAT_SUM, ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
@@ -440,7 +442,7 @@ def test_packet_fits_only_drivers_and_keeps_refusal_codes(speaker_round, tmp_pat
 
 
 @pytest.mark.parametrize("pose_count,candidate_count,cloud_planned,verifies", [
-    (2, 2, True, True), (3, 3, True, True), (3, 1, True, True), (3, 3, False, False),
+    (1, 1, True, True), (2, 2, True, True), (3, 3, True, True), (3, 1, True, True), (3, 3, False, False),
 ])
 def test_banked_speaker_packet_fits_every_selected_pose_and_role(
     speaker_round, tmp_path, monkeypatch, capsys, pose_count, candidate_count, cloud_planned, verifies,
@@ -466,6 +468,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
             path.write_text(json.dumps(take))
             rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), take))
         for role, curve in curves.items():
+            curve.update(gate_window_ms=7.0, validity_floor_hz=142.9, floor_source=FLOOR_SEARCH_BOUND)
             count = pose_count if base else candidate_count
             group = manifest_set(rows, set_id=f"{base}-{role}", selected={r["take_id"] for _, r in rows[:count]})
             group.update(base=base)
@@ -493,7 +496,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
         assert fit["cloud"]["design_poses"] == count
         assert fit["composed_boost_cap_db"] == (3.0 if bounded else None)
     assert len(packet["series"]) == len(expected)
-    assert all(s["stats"]["rms_100_10k_db"] is not None for s in packet["series"])
+    assert all(s["stats"]["rms_100_10k_db"]["value"] is not None for s in packet["series"])
     assert packet["result"] == "complete" and set(packet["limits"]) == {g["set_id"] for g in groups}
     assert Path(packet["artifacts"]["frequency_png"]).read_bytes().startswith(b"\x89PNG")
     index = (banked.path / INDEX_FILENAME).read_text().splitlines()
@@ -502,6 +505,25 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
              "Limits:", "Stats:", "Low-end means:", "Fits:", "## Artifacts", "## Tools", "Fingerprint:")
     positions = [next(i for i, line in enumerate(index) if line.startswith(head)) for head in heads]
     assert positions == sorted(positions)
+    tools = [shlex.split(line[3:-1]) for line in index if line.startswith("- `")]
+    for group in packet["sets"]:
+        count = pose_count if group["base"] else candidate_count
+        command = ["jasper-round-views", "sweep", str(banked.path), "--scope", "round", "--set", group["set_id"]]
+        assert (command in tools) == (count >= 2)
+        for take in group["takes"]:
+            assert {key: take[key] for key in ("gate_window_ms", "validity_floor_hz", "trusted_floor_hz", "floor_source")} == {
+                "gate_window_ms": 7.0, "validity_floor_hz": 142.9,
+                "trusted_floor_hz": f_trusted_floor_hz(.007), "floor_source": FLOOR_SEARCH_BOUND,
+            }
+    for series in packet["series"]:
+        stats = series["stats"]
+        if series["role"] == "woofer":
+            assert stats["band_means_db"]["250"]["below_trusted_floor"] is True
+            assert stats["band_means_db"]["500"]["below_trusted_floor"] is True
+        assert stats["band_means_db"]["1000"]["below_trusted_floor"] is False
+        assert stats["rms_100_10k_db"]["below_trusted_floor"] is True
+        assert stats["tilt_db_per_decade"]["below_trusted_floor"] is True
+        assert all(row["below_trusted_floor"] == (row["value"] is not None) for row in stats["low_end_means_db"].values())
     assert crossover_prescriber.main(["status", str(banked.path)]) == 0
     assert packet["packet_fingerprint"] == json.loads(capsys.readouterr().out)["packet_fingerprint"]
 

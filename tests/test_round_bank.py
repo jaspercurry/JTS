@@ -475,8 +475,8 @@ def test_room_packet_keeps_views_limits_and_series_stats(tmp_path):
     assert len(packet["series"]) == 7
     for series in packet["series"]:
         assert series["set_id"] in packet["limits"] and series["pose"]["kind"] == "seat"
-        assert series["stats"]["rms_100_10k_db"] < 0.5
-        assert abs(series["stats"]["tilt_db_per_decade"]) < 0.5
+        assert series["stats"]["rms_100_10k_db"]["value"] < 0.5
+        assert abs(series["stats"]["tilt_db_per_decade"]["value"]) < 0.5
         assert series["stats"]["band_means_db"] and series["stats"]["low_end_means_db"]
     limits, = packet["limits"].values()
     assert limits["bounds"]["freqs_hz"] and limits["bounds"]["taper_knee_hz"] is not None
@@ -519,10 +519,10 @@ def test_packet_stats_use_the_saved_series_reference(tmp_path, level, slope):
     banked = bank_round(session, campaign_root=tmp_path / "bank", state_path=state, view_runner=views, **paths)
     packet = json.loads((banked.path / "packet.json").read_text())
     stats = packet["series"][0]["stats"]
-    assert stats["rms_100_10k_db"] == pytest.approx((level ** 2 + 2 * slope ** 2 / 3) ** 0.5)
-    assert stats["tilt_db_per_decade"] == pytest.approx(slope)
-    assert stats["low_end_means_db"]["80_120"] == pytest.approx(level - slope)
-    assert stats["low_end_means_db"]["20_30"] is None
+    assert stats["rms_100_10k_db"]["value"] == pytest.approx((level ** 2 + 2 * slope ** 2 / 3) ** 0.5)
+    assert stats["tilt_db_per_decade"]["value"] == pytest.approx(slope)
+    assert stats["low_end_means_db"]["80_120"]["value"] == pytest.approx(level - slope)
+    assert stats["low_end_means_db"]["20_30"]["value"] is None
     assert packet["applied"] == {
         "candidate": "a123456789bc" + "0" * 52, "record": "123456789abc", "config_path": "/config.yml",
         "applied_at": applied["applied_at"],
