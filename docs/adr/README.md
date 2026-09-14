@@ -77,6 +77,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0206](0206-the-airplay-sender-slider-is-an-inbound-control-surface.md) | The AirPlay sender slider is an inbound control surface — shairport's volume hook drives the master fader | accepted |
 | [0211](0211-a-live-eq-edit-ducks-only-when-camilladsp-rebuilds.md) | A live EQ edit ducks only when CamillaDSP rebuilds | accepted |
 | [0213](0213-the-reconciler-asks-the-dsp-writer-lock-before-it-corrects-the-fader.md) | The reconciler asks the DSP writer lock before it corrects the fader | accepted |
+| [0313](0313-the-camilla-controller-refuses-a-graph-that-breaks-the-hearing-ceiling.md) | The CamillaController refuses a graph that breaks the hearing ceiling | accepted |
 
 ## Local sources & renderers
 

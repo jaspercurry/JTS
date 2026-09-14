@@ -24,9 +24,10 @@ of RAM; respect its budget (bounded loops, no heavy analysis on-device — use
 
 ## Non-negotiables (closed list — nothing else is "safety")
 
-1. **Hearing:** `devices.volume_limit` stays `0.0` in every CamillaDSP config
-   and `CamillaController.set_volume_db` clamps positive writes. The
-   commissioning SPL stop stays. Never weaken either.
+1. **Hearing:** `devices.volume_limit` stays `0.0` in every CamillaDSP config,
+   every `CamillaController` graph door refuses a config whose limit is
+   missing or positive, and `CamillaController.set_volume_db` clamps positive
+   writes. The commissioning SPL stop stays. Never weaken either.
 2. **Hardware damage:** never call `SAVE_CONFIGURATION` on the XVF3800
    (brick hazard); respect declared driver caps in DSP/measurement paths.
 3. **Secrets:** keys/PSKs/tokens live only in their compartment files

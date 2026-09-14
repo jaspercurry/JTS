@@ -12,6 +12,8 @@ from jasper.camilla_config_contract import (
     DEFAULT_PIPE_SINK_FORMAT,
     DEFAULT_TARGET_LEVEL,
     PeqFilter,
+    VolumeLimitViolation,
+    check_volume_limit,
     parse_camilla_devices_config,
     resolve_enable_rate_adjust,
     total_positive_boost_db,
@@ -318,3 +320,32 @@ def test_the_certified_ring_pairing_agrees_with_the_sink_rule():
         RING_ACTIVE_PLAYBACK_DEVICE
     )
 
+
+@pytest.mark.parametrize(
+    ("text", "code"),
+    [
+        ("---\nfilters: {}\n", "volume_limit_missing"),
+        ("---\ndevices:\n  samplerate: 48000\n", "volume_limit_missing"),
+        (
+            "---\ndevices:\n  volume_limit: 0.0\n  volume_limit: 9.0\n",
+            "volume_limit_missing",
+        ),
+        ("---\ndevices:\n  playback:\n    volume_limit: 0.0\n", "volume_limit_missing"),
+        ("---\ndevices:\n  volume_limit: 3.0\n", "volume_limit_positive"),
+        ("---\ndevices:\n  volume_limit: 0.0\n", None),
+        ("---\ndevices:\n  volume_limit: -12.5\n", None),
+    ],
+)
+def test_check_volume_limit_demands_a_declared_ceiling(
+    text: str, code: str | None,
+) -> None:
+    """NN-1: CamillaDSP defaults the main fader's maximum to +50 dB when
+    ``devices.volume_limit`` is absent, so an absent or unreadable key is as
+    unsafe as a positive one. See ADR-0313."""
+
+    if code is None:
+        assert check_volume_limit(text) is None
+        return
+    with pytest.raises(VolumeLimitViolation) as excinfo:
+        check_volume_limit(text)
+    assert excinfo.value.code == code
