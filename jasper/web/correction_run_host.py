@@ -11,6 +11,7 @@ from typing import Any
 
 from jasper.active_speaker.angle_capture import LevelPolicy
 from jasper.active_speaker.crossover_v2.door import isolation_hold
+from jasper.active_speaker.crossover_v2.capture_provenance import enrich_capture_record
 from jasper.active_speaker.crossover_v2.session import TuningSession
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
 from jasper.active_speaker.plan_run import RunDoor
@@ -18,7 +19,7 @@ from jasper.audio_measurement.household_mic import resolved_household_sensitivit
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY, PHASE_CLOUD_VERIFY
-from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict, PhaseVerdict
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, TakeVerdict, PhaseVerdict
 from jasper.active_speaker.seat_level_reference import check_target_capture_dbfs as anchored_check_target
 from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS, ExcitationProgram
 from jasper.audio_measurement.branch_program import build_branch_program
@@ -27,26 +28,40 @@ from jasper.audio_measurement.branch_program import build_branch_program
 def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence: Any,
                        verify_only: bool = False, provenance: Any = None,
                        check_target_capture_dbfs: float | None = None) -> tuple[Any, Any]:
-    answers: dict[str, Any] = {}
+    answers: dict[str, tuple[Any, Any]] = {}
     index = attempt = 0
     phase = ""
     answer: Any = None
 
     def enrich(capture: Any, record: Any) -> dict[str, Any]:
-        answers[record["take_id"]] = capture
         captured = provenance.take() if provenance is not None else None
-        return {"phase": record.get("program_phase"),
-                **({"provenance": captured.to_dict()} if captured is not None else {})}
+        record = manifest.capture_record(record)
+        program = getattr(capture, "program", None) or record.get("program")
+        fields: dict[str, Any] = {}
+        result: Any = KeyError("program")
+        if program is not None:
+            try:
+                phase = conductor._phase_of_index(record.get("capture_index", record["index"]))
+                result = analyze_capture({**record, "program": program}, capture)
+                fields = evidence.get("capture_provenance", {}).get(phase, {})
+            except Exception as exc:  # noqa: BLE001 - bank raw evidence before the executor propagates failure
+                result = exc
+        if isinstance(result, Exception):
+            fields = {"analysis_error": {"code": REASON_INTERNAL_ERROR, "error_type": type(result).__name__}}
+        answers[record["take_id"]] = capture, result
+        return enrich_capture_record({
+            **record, **fields, "mark_distance_m": record.get("mark_distance_m"),
+            "phase": record.get("program_phase"),
+            **({"provenance": captured.to_dict()} if captured is not None else {}),
+        }, layout=conductor._preset.channel_map.layout)
 
     def after_bank(record: Any, record_id: str) -> None:
         answers[record_id] = answers.pop(record["take_id"])
 
     records.enrich, records.after_bank = enrich, after_bank
 
-    def analyze(record: Any, record_id: str) -> Any:
-        nonlocal index, attempt, phase, answer
-        answer = answers.pop(record_id)
-        index, attempt = record.get("capture_index", record["index"]), record["attempt"]
+    def analyze_capture(record: Any, capture: Any) -> Any:
+        index = record.get("capture_index", record["index"])
         phase = conductor._phase_of_index(index)
         priors = (conductor._check_priors() if phase == PHASE_CHECK else
                   conductor._measure_priors() if phase == PHASE_MEASURE else
@@ -54,12 +69,21 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         if phase == PHASE_CHECK and check_target_capture_dbfs is not None:
             priors = replace(priors, target_capture_dbfs=check_target_capture_dbfs)
         analysis = conductor._seams.analyze(
-            ExcitationProgram.from_dict(record["program"]), answer, priors,
+            ExcitationProgram.from_dict(record["program"]), capture, priors,
             conductor._capture_geometry(phase, index), phase=phase,
         )
         calibration = evidence.get("calibration", {}).get(phase, {})
         manifest.calibration = {"id": calibration.get("calibration_id"),
                                 "curve_fingerprint": calibration.get("curve_fingerprint")}
+        return analysis
+
+    def analyze(record: Any, record_id: str) -> Any:
+        nonlocal index, attempt, phase, answer
+        answer, analysis = answers.pop(record_id)
+        index, attempt = record.get("capture_index", record["index"]), record["attempt"]
+        phase = conductor._phase_of_index(index)
+        if isinstance(analysis, Exception):
+            raise analysis
         return analysis
 
     def assessor(analysis: Any, **kwargs: Any) -> TakeVerdict:

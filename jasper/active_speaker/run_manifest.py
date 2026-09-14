@@ -117,7 +117,7 @@ class RunManifest:
         self._ordinal += 1
         return f"{self.run_id}_take_{self._ordinal:04d}"
 
-    async def bank(self, record: Mapping[str, Any]) -> str:
+    def capture_record(self, record: Mapping[str, Any]) -> dict[str, Any]:
         pose = self._context["pose"]
         planned = {
             "pose_kind": pose["kind"], "mark_distance_m": pose.get("distance_m"),
@@ -129,7 +129,10 @@ class RunManifest:
             )
         context: dict[str, Any] = {key: self._context[key] for key in ("index", "attempt", "repeat", "capture_index")
                                    if key in self._context}
-        payload: dict[str, Any] = {**planned, **record, **context}
+        return {**planned, **record, **context}
+
+    async def bank(self, record: Mapping[str, Any]) -> str:
+        payload = self.capture_record(record)
         record_id = await self.records.bank(payload)
         self.pending_records.append((payload, record_id))
         return record_id

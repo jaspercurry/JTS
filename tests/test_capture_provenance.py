@@ -213,7 +213,6 @@ def test_every_field_comes_from_its_live_owner() -> None:
             phase=PHASE_CHECK,
             artifact=artifact,
             volume_plan=_FakePlan(measurement_volume_db=-20.0),
-            speaker_candidate_id="speaker-candidate-fp",
         )
     )
 
@@ -226,7 +225,6 @@ def test_every_field_comes_from_its_live_owner() -> None:
     assert block["graph"]["kind"] == GRAPH_KIND_PROGRAM_ROUTING
     assert block["graph"]["config_path"] == ANCHOR_PATH
     assert block["graph"]["fingerprint"]
-    assert block["graph"]["speaker_candidate_id"] == "speaker-candidate-fp"
     assert json_fingerprint(block["graph"]["config"]) == block["graph"]["fingerprint"]
     assert block["graph"]["config"]["pipeline"] == [{"type": "Mixer", "name": "program_routing"}]
     assert cam.reads.count("active_raw") == 1

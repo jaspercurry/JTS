@@ -824,7 +824,7 @@ def _lossy_page_report():
     """A page report the host's own count disagrees with — a real defect."""
     return {
         "frames": DECLARED_FRAMES, "encoded_frames": DECLARED_FRAMES,
-        "block_gaps": 0, "block_gap_frames": 0, "zero_run_count": 0,
+        "capture_gaps": 0, "capture_gap_frames": 0, "zero_run_count": 0,
     }
 
 
@@ -3415,7 +3415,6 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
     assert seen["geometry"] is geometry
     assert seen["geometry"].driver_spacing_m == pytest.approx(0.15)
     assert seen["rate"] == 48000
-    # The evidence annotation records the applied calibration.
     assert meta["calibration"]["verify"] == {
         "applied": True, "calibration_id": "cal-123",
         "curve_fingerprint": json_fingerprint(curve_sentinel.to_dict()),
@@ -3423,7 +3422,9 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
     assert evidence.take()["capture_calibration"] == meta["calibration"]["verify"]
     uncalibrated = v2evidence.bind_production_analyze(evidence=evidence)
     uncalibrated(program, result, MeasurementPriors(crossover_fc_hz=FC_HZ), geometry, phase="verify")
-    assert evidence.take()["capture_calibration"] == {"applied": False, "calibration_id": None}
+    assert evidence.take()["capture_calibration"] == {
+        "applied": False, "calibration_id": None, "curve_fingerprint": None,
+    }
 
 
 def test_production_analyze_threads_the_pages_frame_report(monkeypatch):
@@ -3450,8 +3451,8 @@ def test_production_analyze_threads_the_pages_frame_report(monkeypatch):
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
 
-    report = {"frames": 4, "encoded_frames": 4, "block_gaps": 0,
-              "block_gap_frames": 0}
+    report = {"frames": 4, "encoded_frames": 4, "capture_gaps": 0,
+              "capture_gap_frames": 0}
     analyze = v2evidence.bind_production_analyze(
         resolve_calibration=lambda setup, device: None, meta={},
     )
@@ -3508,7 +3509,7 @@ def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatc
         )
     # NOT silent: analysis ran uncalibrated, annotated as a stored fact + WARN.
     assert seen["calibration"] is None
-    assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None}
+    assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None, "curve_fingerprint": None}
     # W6.13 round-5 diagnostic: the WARN names what the phone-reported setup
     # actually held at resolve time — here nothing at all.
     fields = event_fields(caplog, "correction.crossover_v2_uncalibrated_capture")
@@ -3905,7 +3906,7 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
 
     assert out == "analysis"
     assert seen["calibration"] is None  # never mis-applied
-    assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None}
+    assert meta["calibration"]["verify"] == {"applied": False, "calibration_id": None, "curve_fingerprint": None}
     assert event_records(caplog, "correction.crossover_v2_uncalibrated_capture")
     assert event_records(caplog, "correction.calibration_device_identity_mismatch")
 

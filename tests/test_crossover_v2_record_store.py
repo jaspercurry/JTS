@@ -127,11 +127,11 @@ _EVIDENCE_BLOCKS = {
         "phase": "measure", "epsilon_ppm": 1.5, "frames_received": 48000,
     },
     "capture_integrity": {
-        "frames": 48000, "encoded_frames": 48000, "block_gaps": 0,
+        "frames": 48000, "encoded_frames": 48000, "capture_gaps": 0,
     },
     "frame_ledger": {
         "received_frames": 48000, "declared_frames": 48000,
-        "encoded_frames": 48000, "render_gaps": 0, "render_gap_frames": 0,
+        "encoded_frames": 48000, "capture_gaps": 0, "capture_gap_frames": 0,
         "lost_at": [],
     },
 }

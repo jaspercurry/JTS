@@ -42,6 +42,7 @@ from jasper.active_speaker import frequency_plot
 from jasper.active_speaker.crossover_envelope_v2 import chart_cloud_status, prediction_status
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker import measurement_archive
+from tests.crossover_v2_banked_round import bank_executor_take
 from jasper.cli._refusal import EXIT_UNREADABLE
 from jasper.cli.round_views import build_parser, main as round_views_main, run_bookkeeping
 from jasper.web import correction_measurements
@@ -795,9 +796,9 @@ def summed_capture_bundle(tmp_path, request):
     signal += np.random.default_rng(8).normal(0, 1e-8, signal.size)
     raw = np.column_stack([signal, np.zeros(signal.size)])
 
-    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, render_gap_frames=0, **fields):
+    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, capture_gap_frames=0, **fields):
         anchor = 800 + program.segment("sweep_verify").start_sample
-        samples = np.delete(raw, np.s_[anchor - render_gap_frames:anchor], axis=0)
+        samples = np.delete(raw, np.s_[anchor - capture_gap_frames:anchor], axis=0)
         recording = WiredRecording(
             ((samples * (2 ** 31 - 1)).astype("<i4").tobytes(),), len(samples),
             0, 0, False, program.sample_rate_hz, 2,
@@ -992,13 +993,13 @@ def test_bass_view_selects_accepted_takes_and_keeps_levels_when_harmonics_fail(
     bundle, _, _, bank = summed_capture_bundle
     records = []
     for take_id, gap in (("baseline", 0), ("broken", 2316), ("other-set", 0)):
-        path = asyncio.run(bank(take_id, render_gap_frames=gap,
+        path = asyncio.run(bank(take_id, capture_gap_frames=gap,
                                wav_hash="0" * 64 if take_id == "other-set" else None))
         records.append((path, json.loads((bundle / EVIDENCE_ROOT / "artifacts" / path).read_text())))
     accepted = ("baseline", "broken") if selected_broken else ("baseline",)
     selected = manifest_set(records[:2], set_id="bass", selected=accepted)
     if not selected_broken:
-        selected["takes"][1]["quality"] = {"status": "refused", "fault": "capture_render_gap"}
+        selected["takes"][1]["quality"] = {"status": "refused", "fault": "capture_overrun"}
     write_manifest(bundle, program="bass", groups=[selected, manifest_set(records[2:], set_id="other")])
     answer = run_bookkeeping("bass", bundle, set_id="bass")
     assert answer["status"] == "written"
@@ -1185,6 +1186,20 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
         return manifests
 
     return SimpleNamespace(takes=takes, write=write, argv=argv, out=out, descriptor=descriptor, roots=roots)
+
+
+def test_bass_table_accepts_executor_capture_basis(bass_run, capsys, tmp_path, monkeypatch):
+    for index, take in enumerate(bass_run.takes):
+        original = take["record"]
+        take["record"] = bank_executor_take(tmp_path / f"executor-{index}", monkeypatch,
+            raw_record={key: value for key, value in original.items() if key not in {"stimulus_dbfs", "program_id"}})
+        take["record"].update(run_id=original["run_id"], loudness_volume_db=original["loudness_volume_db"])
+    bass_run.write()
+    assert round_views_main(bass_run.argv) == 0
+    capsys.readouterr()
+    table, = json.loads(bass_run.out.read_text())["tables"]
+    assert {context["basis_status"] for context in table["capture_context"]} == {"compatible"}
+    assert all(context["unknown_fields"] == [] for context in table["capture_context"])
 
 
 @pytest.mark.parametrize('fault,reason', [

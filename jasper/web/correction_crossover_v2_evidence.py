@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from jasper.active_speaker.crossover_v2 import durable_state as v2durable
+from jasper.active_speaker.crossover_v2.capture_provenance import analysis_provenance, enrich_capture_record
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.web import correction_crossover_v2_volume as v2volume
 
@@ -19,7 +20,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence, TypeVar
 
-from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE, PHASE_CLOUD_MEASURE
 from jasper.active_speaker.capture_provenance import CaptureProvenanceRecorder, record_capture_provenance
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
@@ -343,33 +343,6 @@ def bind_production_analyze(
                 setup_mode=setup_mode,
                 setup_calibration_id=setup_calibration_id,
             )
-        capture_calibration = {
-            "applied": curve is not None,
-            "calibration_id": getattr(record, "calibration_id", None),
-        }
-        if curve is not None:
-            capture_calibration["curve_fingerprint"] = json_fingerprint(curve.to_dict())
-        if meta is not None:
-            meta.setdefault("calibration", {})[phase] = capture_calibration
-        # Layer-1a linearization gate input (#1668 PR-C): resolve the
-        # measurement mic's correction-envelope trust tier from the SAME
-        # resolved calibration record this binding already computed above —
-        # no second resolve, no new failure mode. `record` is `None` (no
-        # calibration resolved) or lacks a `model` attribute (a bare
-        # CalibrationCurve test double) exactly as often as `curve` above,
-        # and `mic_tier_for_model(None)` already resolves to the
-        # conservative "phone" tier for that case — never a guess at
-        # "reference". Threaded onto every phase's priors (not just
-        # MEASURE); only `ProgramAnalysis` from a MEASURE analysis actually
-        # surfaces it (see program_analysis.ProgramAnalysis.mic_tier).
-        #
-        # `mic_calibrated` rides the SAME replace call, from the SAME `curve`
-        # this function already resolved above — the household-facing sibling
-        # of the `meta["calibration"]` annotation a few lines up, which
-        # nothing reads back for a screen (audit gauntlet 5a). Threaded onto
-        # every phase's priors for the same reason `mic_tier` is; only a
-        # MEASURE analysis has a consumer today
-        # (CrossoverV2Session._measure_verdict).
         priors = dataclasses.replace(
             priors,
             mic_tier=mic_tier_for_model(getattr(record, "model", None)),
@@ -389,6 +362,10 @@ def bind_production_analyze(
             # the only place the comparison can be made.
             capture_report=getattr(result, "capture_integrity", None),
         )
+        fields = analysis_provenance(program, analysis, record, curve, geometry)
+        if meta is not None:
+            meta.setdefault("calibration", {})[phase] = fields["capture_calibration"]
+            meta.setdefault("capture_provenance", {})[phase] = fields
         # THIS capture's stimulus, consumed ONCE: a second analyze with no
         # play between gets ``None``, never the last capture's context. The
         # banking seam is its one consumer, reached through ``carry``.
@@ -412,7 +389,7 @@ def bind_production_analyze(
             # than stranded for the next accepted take to drain.
             evidence.record({
                 **_capture_evidence_blocks(result, analysis),
-                "capture_calibration": capture_calibration,
+                **fields,
             })
         return analysis
 
@@ -591,6 +568,7 @@ class _TakeRetention:
     refs: dict[str, Any]
     provenance: CaptureProvenanceRecorder | None = None
     evidence: CaptureEvidenceCarry | None = None
+    layout: str | None = None
     pending: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def __call__(self, result: Any, metadata: Mapping[str, Any]) -> str:
@@ -606,8 +584,8 @@ class _TakeRetention:
             record["stimulus_wav_sha256"] = carried.stimulus_wav_sha256
         blocks = self.evidence.take() if self.evidence else None
         if blocks:
-            record.update(blocks)
-        return record
+            record = {**blocks, **record}
+        return enrich_capture_record({**_record, **record}, layout=self.layout)
 
     def after_bank(self, record: Mapping[str, Any], record_id: str) -> None:
         from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
@@ -627,8 +605,9 @@ def bind_position_retention(
     store: Any, refs: dict[str, Any], *,
     provenance: CaptureProvenanceRecorder | None = None,
     evidence: CaptureEvidenceCarry | None = None,
+    layout: str | None = None,
 ) -> _TakeRetention:
-    return _TakeRetention(store, refs, provenance, evidence)
+    return _TakeRetention(store, refs, provenance, evidence, layout)
 
 
 def v2_session_identity(store: Any, capture_session_id: str) -> Any:

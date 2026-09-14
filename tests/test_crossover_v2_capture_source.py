@@ -132,13 +132,13 @@ def test_the_integrity_counter_keys_are_the_ledgers_real_read_set():
     ledger = reconcile_capture_frames(report, received_frames=4)
     assert ledger.declared_frames == 1
     assert ledger.encoded_frames == 2
-    assert ledger.render_gaps == 3
-    assert ledger.render_gap_frames == 4
+    assert ledger.capture_gaps == 3
+    assert ledger.capture_gap_frames == 4
 
     unrelated = reconcile_capture_frames(
         {"blocks": 9, "silent_blocks": 1}, received_frames=4
     )
     assert unrelated.declared_frames is None
     assert unrelated.encoded_frames is None
-    assert unrelated.render_gaps is None
-    assert unrelated.render_gap_frames is None
+    assert unrelated.capture_gaps is None
+    assert unrelated.capture_gap_frames is None
