@@ -9,14 +9,17 @@ from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, replace
 from itertools import groupby
 from types import SimpleNamespace
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
+
+from jasper.audio_measurement.program import RoleBand
 
 from .angle_capture import AngleCaptureRequest, LateralWalkRefused, resolve_request
 from .crossover_v2.capture_plan import position_screen_keys
 from .crossover_v2.door import IsolationHold
+from .crossover_v2.journey import PHASE_LATERAL
 from .crossover_v2.position_gate import PositionGate
 from .measurement_programs import PURPOSE_BASS
-from .plan_run import Analyze, RunDoor, RunSignals, _Control, _grant, run_plan
+from .plan_run import Analyze, PlanCapture, RunDoor, RunSignals, _Control, _grant, prepare_plan_captures, run_plan
 from .preflight import PreflightFacts, PreflightIssue, PreflightReport, preflight
 from .run_manifest import RunManifest
 
@@ -43,11 +46,15 @@ class BassLevelLadder:
     def issues(self) -> tuple[PreflightIssue, ...]:
         return self.levels[0].issues if self.blocking else ()
 
+    @property
+    def spl_ceiling_db_spl(self) -> float | None:
+        return self.levels[0].spl_ceiling_db_spl
+
     def to_dict(self) -> dict[str, Any]:
         return {
-            "levels": [{"offset_db": offset, "level_db": report.plan.level.volume_db,
+            "levels": [{"offset_db": report.plan.level.offset_db, "level_db": report.plan.level.volume_db,
                         "admissible": not report.blocking, **report.to_dict()}
-                       for offset, report in zip(LEVEL_OFFSETS_DB, self.levels)],
+                       for report in self.levels],
             "admissible_levels_db": [report.plan.level.volume_db for report in self.admissible],
         }
 
@@ -64,12 +71,33 @@ def bass_level_ladder(plan: AngleCaptureRequest, facts: PreflightFacts) -> BassL
     )))
 
 
+def preflight_levels(plan: AngleCaptureRequest, facts: PreflightFacts,
+                     levels: str | None = None) -> PreflightReport | BassLevelLadder:
+    if levels is None:
+        return preflight(plan, facts)
+    if not isinstance(levels, str) or plan.level.level_db is not None or any(stop.purpose != PURPOSE_BASS for stop in plan.stops):
+        raise ValueError("levels require a bass plan without level-db")
+    if levels == "auto":
+        return bass_level_ladder(plan, facts)
+    values = tuple(float(value) for value in levels.split(","))
+    if len(set(values)) != len(values):
+        raise ValueError("levels must be distinct")
+    return BassLevelLadder(tuple(preflight(replace(plan, level=replace(plan.level, level_db=value)), facts)
+                                 for value in values))
+
+
+def prepare_bass_captures(plan: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> tuple[PlanCapture, ...]:
+    return tuple(capture for capture in prepare_plan_captures(plan, roles_bands=roles_bands)
+                 if capture.spec.program_phase == PHASE_LATERAL)
+
+
 @dataclass(frozen=True)
 class BassLevelRun:
     manifest: RunManifest
     door: RunDoor
     analyze: Analyze
     assessor: Callable[..., Any] | None = None
+    captures: tuple[PlanCapture, ...] | None = None
 
 
 async def run_bass_levels(
@@ -101,13 +129,18 @@ async def run_bass_levels(
                     return tuple(results)
                 for level_index, report in enumerate(admitted):
                     request = replace(report.plan, stops=stops)
+                    gate.publish({"status": "running", "pose": pose_index,
+                                  "level": {"session": request.level.resolved.session() if request.level.resolved else None,
+                                            "run": {"level_db": request.level.volume_db}},
+                                  "level_index": level_index + 1, "levels": len(admitted)})
                     bound = prepare(request)
                     bound.door.hold = nullcontext(held)
                     if level_index == 0:
                         bound.manifest.mic_moves = 1
                     result = await run_plan(
                         request, manifest=bound.manifest, door=bound.door,
-                        analyze=bound.analyze, assessor=bound.assessor, aborts=aborts, signals=signals,
+                        analyze=bound.analyze, assessor=bound.assessor, captures=bound.captures,
+                        aborts=aborts, signals=signals,
                     )
                     results.append(result)
                     if result.status != "complete" or signals.complete.is_set() or signals.stop.is_set():

@@ -7,6 +7,10 @@ from __future__ import annotations
 
 import io
 import json
+import asyncio
+from copy import deepcopy
+from pathlib import Path
+from types import SimpleNamespace
 import subprocess
 import sys
 import urllib.error
@@ -24,6 +28,8 @@ from jasper.cli._refusal import STATUS_BY_CODE
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile, _room_candidate
 from tests.test_preflight import ready_facts
+from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
+from tests.test_crossover_v2_frequency_view import bass_fit_pairs as bass_fit_pairs  # noqa: F401
 
 _FINGERPRINT = "a" * 64
 _OTHER = "b" * 64
@@ -503,23 +509,21 @@ def test_remote_dry_run_refuses_before_reading_local_facts(monkeypatch, capsys, 
     assert not opener.requests
 
 
-def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsys):
-    opener = _opener()
-    code, body = _run(["run", "--program", "bass", "--layout", "bass_axis", "--level-db", "-25", "--dry-run"],
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsys, dry_run):
+    opener = _opener(session='{"session_id": "run-1"}')
+    code, body = _run(["run", "--program", "bass", "--layout", "bass_axis", "--level-db", "-25", *(["--dry-run"] if dry_run else [])],
                       opener, monkeypatch, capsys)
+    body = body if dry_run else body["schedule"]
     assert code == 0 and body["mic_moves"] == 1
     capture, = body["schedule"]
     assert capture["regime"] == "summed"
     assert body["level"]["level_db"] == -25
-    assert not opener.requests
+    assert not opener.requests if dry_run else "levels" not in json.loads(opener.posts()[0].data)
 
 
 @pytest.mark.parametrize("noise_dbfs,levels", [(-60, [-18, -23]), (-100, [-18, -23, -28, -33]), (-20, [])])
 def test_bass_dry_run_lists_admissible_session_offsets(monkeypatch, capsys, noise_dbfs, levels):
-    from dataclasses import replace
-    from jasper.cli import _run_request
-    from tests.test_preflight import ready_facts
-
     def facts(plan):
         ready = ready_facts(plan)
         return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record,
@@ -535,3 +539,123 @@ def test_bass_dry_run_lists_admissible_session_offsets(monkeypatch, capsys, nois
     assert [row["offset_db"] for row in body["levels"]] == [0, -5, -10, -15]
     assert [row["level_db"] for row in body["levels"]] == [-18, -23, -28, -33]
     assert not opener.requests
+
+
+@pytest.mark.parametrize("verb,flags,noise,levels", [
+    ("run", ["--levels", "auto"], -60, [-18, -23]),
+    ("run", ["--levels", "auto"], -100, [-18, -23, -28, -33]),
+    ("run", ["--levels=-18,-28"], -100, [-18, -28]),
+    ("trial", [], -60, [-18, -23]),
+])
+def test_bass_run_wait_executes_levels_under_one_hold_and_joins_packet(
+    monkeypatch, capsys, tmp_path, box, bass_fit_pairs, tuning_profile, isolated_candidate_bank,
+    verb, flags, noise, levels,
+):
+    from jasper.active_speaker import bundles, round_bank, plan_run
+    from jasper.active_speaker.bass_levels import preflight_levels, prepare_bass_captures
+    from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
+    from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
+    from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, default_out
+    from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
+    from jasper.active_speaker.run_manifest import RunManifest
+    from jasper.audio_measurement.calibration import MicSensitivity
+    from jasper.cli import round_views
+    from jasper.web import correction_run_host as host, correction_crossover_v2_wired as wired
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.engine_twin import FakeSeams
+    from tests.crossover_v2_fixtures import _conductor, FakeSeams as FlowSeams
+    from tests.test_plan_run import AnsweredGate, _analysis
+    from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
+
+    candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION,
+                        analysis={"resolution": {"bass": "document"}, "measurement_status": "unmeasured"})
+    publish_authored_candidate(candidate)
+    def facts(plan):
+        ready = ready_facts(plan, candidates={candidate.fingerprint: candidate})
+        return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record,
+            "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": noise}]}}))
+    monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
+    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_id", lambda: "baseline-fp")
+    info = bundles.open_bundle(mono_output_topology(), calibration_id="", sessions_dir=tmp_path / "sessions")
+    bundle = Path(info["bundle_dir"])
+    store = CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"])
+    manifest = RunManifest("run-1", BankedRecordStore(store, "run-1"))
+    fakes, gate = FakeSeams(), AnsweredGate()
+    entry_volume, entry_loudness = box.volume_db, asyncio.run(box.get_loudness_volume_db())
+    fakes.graph.entry_scope_fingerprint = "entry"
+    monkeypatch.setattr(host, "resolved_household_sensitivity", lambda _: MicSensitivity(-12, 18, "1234"))
+    monkeypatch.setattr(host, "bind_plan_analysis", lambda *a, **kw: (_analysis, lambda *a, **kw: TakeVerdict(True)))
+    hold = host.isolation_hold
+    monkeypatch.setattr(host, "isolation_hold", lambda **kw: hold(**{**kw, "plan": None, "volume_state_path": tmp_path / "volume.json"}))
+    for name in ("persist_conductor_state", "_persist_execution_result", "_persist_terminal_failure"):
+        monkeypatch.setattr(wired.v2state, name, lambda *a, **kw: None)
+
+    def engine(**kw):
+        async def capture_record(record):
+            return await kw["records"].inner.bank({**record, "program_id": "sweep", "stimulus_dbfs": -20,
+                "loudness_volume_db": record["level_db"], "phase": "lateral"})
+        return replace(fakes, graph=kw["session_graph"], volume=kw["volume_claim"],
+                       records=SimpleNamespace(bank=capture_record)).seams()
+
+    opener = _run_opener({"status": "complete", "run": {"status": "complete"}})
+    open_request = opener.open
+    def open_and_execute(request, timeout=None):
+        if request.full_url.endswith(wc.SESSION_PATH) and request.data:
+            raw = json.loads(request.data)
+            plan = AngleCaptureRequest.from_mapping(raw["plan"])
+            ladder = preflight_levels(plan, facts(plan), raw.get("levels"))
+            conductor = _conductor(FlowSeams())
+            door, analyze, assessor, execute = host.bind_run_door(
+                host=SimpleNamespace(_wired_stimulus_capture=lambda *a, **kw: None, bind_v2_engine_seams=engine),
+                device=SimpleNamespace(model_key="minidsp_umik2"), evidence_store=store, manifest=manifest,
+                production=SimpleNamespace(graph=fakes.graph, compose=None),
+                conductor=conductor, refs={}, trims={},
+                ceiling_s=30, ceiling_db_spl=85, camilla_factory=lambda: box, verify_only=False,
+                level=plan.level, ladder=ladder,
+            )
+            runner = wired.build_v2_wired_run_and_consume(
+                conductor, door=door, signals=plan_run.RunSignals(), position_gate=gate,
+                ceiling_s=30, manifest=manifest, request=plan, analyze=analyze, assessor=assessor,
+                captures=prepare_bass_captures(plan, roles_bands=conductor._roles), execute=execute,
+            )
+            asyncio.run(runner(SimpleNamespace(session_id=manifest.run_id)))
+            bundles.mark_state(bundle, "closed")
+            opener.pages[wc.SESSION_PATH] = '{"session_id": "run-1"}'
+        return open_request(request, timeout)
+    opener.open = open_and_execute
+
+    def view(view, target, *, set_id=None, **kw):
+        if view != "bass":
+            return {"view": view, "status": "unavailable"}
+        inputs = round_inputs(target)
+        document = json.loads((inputs.session_dir / EVIDENCE_ROOT / "artifacts/crossover_v2/run-1/run_manifest.json").read_text())
+        group = next(group for group in document["sets"] if group["set_id"] == set_id)
+        takes = []
+        for entry in group["takes"]:
+            take = deepcopy(bass_fit_pairs[0][0])
+            take["record_path"] = entry["artifacts"]["record_id"]
+            take["record"] = json.loads((inputs.session_dir / EVIDENCE_ROOT / "artifacts" / take["record_path"]).read_text())
+            take.update(freqs_hz=[20, 30, 40, 50, 60, 80, 100, 200], fundamental_qualified=[True] * 8,
+                        fundamental_db=[take["record"]["level_db"] - (6 if group["base"] else 1)] * 8)
+            take["frequency_curve"]["magnitude_db"] = [take["record"]["level_db"]] * 3
+            takes.append(take)
+        path = default_out(inputs, target, "bass_view.json", set_id)
+        path.write_text(json.dumps({"schema": "jts_bass_view/1", "takes": takes}))
+        return {"view": view, "status": "written", "out": str(path)}
+    monkeypatch.setattr(round_views, "run_bookkeeping", view)
+    bank = round_bank.bank_round
+    monkeypatch.setattr(round_bank, "bank_round", lambda path, **kw: bank(path, campaign_root=tmp_path / "campaigns", **kw))
+    monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
+    argv = ["trial", candidate.fingerprint] if verb == "trial" else ["run", "--program", "bass", "--layout", "bass_axis"]
+    code, body = _run([*argv, *flags, "--wait"], opener, monkeypatch, capsys)
+    assert code == 0, body
+    assert [call["level_db"] for call in fakes.play.calls] == [level for level in levels for _ in range(2 if verb == "trial" else 1)]
+    assert len(gate.grants) == fakes.graph.restores == 1
+    assert (box.volume_db, asyncio.run(box.get_loudness_volume_db())) == (entry_volume, entry_loudness)
+    packet = json.loads(Path(body["packet"]).read_text())
+    assert packet["status"] == "complete" and len(packet["runs"]) == len(levels)
+    assert packet["bass_table"].get("schema") == "jts_bass_run_table/1", packet["bass_table"]
+    table, = packet["bass_table"]["tables"]
+    assert table["target"] == {"freqs_hz": [20, 60], "magnitude_db": [0, 0]}
+    assert sorted(row["level_key"]["level_db"] for row in table["levels"]) == sorted(levels)
+    assert {row["outcome"] for row in table["levels"]} == {"target_met" if verb == "trial" else "target_not_met"}

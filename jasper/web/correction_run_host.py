@@ -10,6 +10,9 @@ from dataclasses import replace
 from typing import Any
 
 from jasper.active_speaker.angle_capture import LevelPolicy
+from jasper.active_speaker.bass_levels import BassLevelLadder, BassLevelRun, prepare_bass_captures, run_bass_levels
+from jasper.active_speaker.round_packet import RoundPacket
+from jasper.active_speaker.run_manifest import RunManifest
 from jasper.active_speaker.crossover_v2.door import isolation_hold
 from jasper.active_speaker.crossover_v2.capture_provenance import enrich_capture_record
 from jasper.active_speaker.crossover_v2.session import TuningSession
@@ -27,11 +30,16 @@ from jasper.audio_measurement.branch_program import build_branch_program
 
 def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence: Any,
                        verify_only: bool = False, provenance: Any = None,
-                       check_target_capture_dbfs: float | None = None) -> tuple[Any, Any]:
+                       check_target_capture_dbfs: float | None = None,
+                       capture_indexes: tuple[int, ...] = ()) -> tuple[Any, Any]:
     answers: dict[str, tuple[Any, Any]] = {}
     index = attempt = 0
     phase = ""
     answer: Any = None
+
+    def index_of(record: Any) -> int:
+        index = record.get("capture_index", record["index"])
+        return capture_indexes[index - 1] if capture_indexes else index
 
     def enrich(capture: Any, record: Any) -> dict[str, Any]:
         captured = provenance.take() if provenance is not None else None
@@ -41,7 +49,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         result: Any = KeyError("program")
         if program is not None:
             try:
-                phase = conductor._phase_of_index(record.get("capture_index", record["index"]))
+                phase = conductor._phase_of_index(index_of(record))
                 result = analyze_capture({**record, "program": program}, capture)
                 fields = evidence.get("capture_provenance", {}).get(phase, {})
             except Exception as exc:  # noqa: BLE001 - bank raw evidence before the executor propagates failure
@@ -61,7 +69,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
     records.enrich, records.after_bank = enrich, after_bank
 
     def analyze_capture(record: Any, capture: Any) -> Any:
-        index = record.get("capture_index", record["index"])
+        index = index_of(record)
         phase = conductor._phase_of_index(index)
         priors = (conductor._check_priors() if phase == PHASE_CHECK else
                   conductor._measure_priors() if phase == PHASE_MEASURE else
@@ -80,7 +88,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
     def analyze(record: Any, record_id: str) -> Any:
         nonlocal index, attempt, phase, answer
         answer, analysis = answers.pop(record_id)
-        index, attempt = record.get("capture_index", record["index"]), record["attempt"]
+        index, attempt = index_of(record), record["attempt"]
         phase = conductor._phase_of_index(index)
         if isinstance(analysis, Exception):
             raise analysis
@@ -145,14 +153,17 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                   manifest: Any, production: Any, conductor: Any, refs: Any,
                   trims: Any, ceiling_s: float, ceiling_db_spl: float | None,
                   camilla_factory: Any, verify_only: bool, provenance: Any = None,
-                  level: LevelPolicy = LevelPolicy()) -> tuple[RunDoor, Any, Any]:
+                  level: LevelPolicy = LevelPolicy(), ladder: BassLevelLadder | None = None,
+                  capture_indexes: tuple[int, ...] = ()) -> tuple[RunDoor, Any, Any, Any]:
+    if ladder is not None:
+        ceiling_s *= len(ladder.admissible)
     sensitivity = resolved_household_sensitivity(device)
     check_target = (anchored_check_target(sensitivity, level.resolved.anchor_db_spl + level.offset_db)
                     if level.resolved is not None and sensitivity is not None else None)
     records = CapturedRecordStore(manifest, None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest,
                                           evidence=refs, verify_only=verify_only, provenance=provenance,
-                                          check_target_capture_dbfs=check_target)
+                                          check_target_capture_dbfs=check_target, capture_indexes=capture_indexes)
 
     def build(door: Any, allocate_take_id: Any) -> TuningSession:
         capture = host._wired_stimulus_capture(
@@ -168,8 +179,46 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
             ), door.measurement_volume_db, allocate_take_id, level_match_trims_db=trims,
         )
 
-    return RunDoor(
+    door = RunDoor(
         isolation_hold(graph=production.graph, camilla_factory=camilla_factory,
                        action="measuring", plan=v2volume.session_volume_plan(), wall_clock_ceiling_s=ceiling_s),
         build, sensitivity, device, ceiling_db_spl,
-    ), analyze, assessor
+    )
+    if ladder is None:
+        return door, analyze, assessor, None
+
+    async def execute(request: Any, *, gate: Any, signals: Any, captures: Any, **_kwargs: Any) -> Any:
+        packet = RoundPacket(manifest, ladder.to_dict())
+        bound: BassLevelRun | None = None
+
+        def prepare(plan: Any) -> BassLevelRun:
+            nonlocal bound
+            child = RunManifest(f"{manifest.run_id}-level-{len(packet.runs) + 1}", packet,
+                                incumbent=manifest.incumbent)
+            selected = prepare_bass_captures(plan, roles_bands=conductor._roles)
+            child_door, child_analyze, child_assessor, _ = bind_run_door(
+                host=host, device=device, evidence_store=evidence_store, manifest=child,
+                production=production, conductor=conductor, refs=refs, trims=trims,
+                ceiling_s=ceiling_s, ceiling_db_spl=ceiling_db_spl, camilla_factory=camilla_factory,
+                verify_only=False, provenance=provenance, level=plan.level,
+                capture_indexes=tuple(captures.index(capture) + 1 for capture in selected),
+            )
+            bound = BassLevelRun(child, child_door, child_analyze, child_assessor, selected)
+            return bound
+
+        try:
+            results = await run_bass_levels(ladder, hold=door.hold, prepare=prepare, gate=gate, signals=signals, aborts={})
+            if signals.stop.is_set() or signals.complete.is_set():
+                manifest.reason = signals.stop_reason if signals.stop.is_set() else "complete_requested"
+            return results[-1] if results and not manifest.reason else manifest
+        except BaseException as exc:  # noqa: BLE001 - preserve the partial packet before host failure publication
+            manifest.reason = getattr(exc, "code", None) or REASON_INTERNAL_ERROR
+            raise
+        finally:
+            door.opened = bound.door.opened if bound else None
+            await packet.finish()
+            summary = packet.to_dict()
+            gate.publish({key: summary[key] for key in ("status", "reason", "level", "runs", "honoured")} |
+                         {"manifest": manifest.path})
+
+    return door, analyze, assessor, execute

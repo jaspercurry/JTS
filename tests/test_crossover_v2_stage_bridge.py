@@ -1514,12 +1514,12 @@ def _session_from_real_open(monkeypatch, fakes) -> Any:
     real_bind = v2host.bind_run_door
     monkeypatch.setattr(v2host, "bind_v2_engine_seams", lambda **kwargs: fakes.seams())
     def bind(**kwargs):
-        binding, analyze, assessor = real_bind(**kwargs)
+        binding, analyze, assessor, execute = real_bind(**kwargs)
         level = kwargs["conductor"]._excitation.session_volume_db
         monitor = WiredSplMonitor(binding.sensitivity, binding.ceiling_db_spl, 0)
         door = OpenMeasurementDoor(fakes.graph, fakes.volume, None, level, level, "graph", monitor)
         captured["tuning"] = binding.build_session(door, kwargs["manifest"].allocate_take_id)
-        return binding, analyze, assessor
+        return binding, analyze, assessor, execute
     monkeypatch.setattr(v2host, "bind_run_door", bind)
     captured["conductor"], _state = _stage_1(monkeypatch)
     return captured

@@ -373,7 +373,7 @@ def run_program(purpose: str, poses: str | None = None) -> MeasurementProgram:
     selected = program(purpose)
     if poses is None:
         return selected
-    for row in (selected, *_PROGRAMS.values()):
+    for row in sorted(_PROGRAMS.values(), key=lambda row: row.program_id != purpose):
         if poses in (row.layout, f"{row.program_id}_{row.size}", f"{row.program_id}/{row.size}"):
             return replace(row, program_id=purpose, purpose=purpose, regime=selected.regime)
     return replace(selected, size="custom", layout="", poses=tuple(

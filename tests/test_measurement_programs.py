@@ -50,6 +50,13 @@ def test_summed_bookkeeping_includes_one_frequency_image(purpose):
     assert ("frequency", False, False) in mp.bookkeeping_views(purpose)
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_run_layout_prefers_its_program_regardless_of_registry_order(monkeypatch, reverse):
+    monkeypatch.setattr(mp, "_PROGRAMS", dict(sorted(mp._PROGRAMS.items(), reverse=reverse)))
+    assert mp.run_program("room", "room_quick") == mp.program("room", "arm")
+    assert mp.run_program("bass", "room_quick") == mp.program("bass", "quick")
+
+
 def test_express_geometry() -> None:
     """The quick tier: on-axis plus one horizontal pair and one vertical pair."""
 

@@ -6178,13 +6178,13 @@ def _inline_context() -> V2ConductorContext:
     )
 
 
-def _inline_prepared(monkeypatch, tmp_path):
+def _inline_prepared(monkeypatch, tmp_path, body=None):
     _ready_inline(monkeypatch)
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: _inline_context())
     v2volume.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     _, _, _, store = _retention_bundle(tmp_path, "inline")
     monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda _: (store, store.session_id))
-    return v2host.prepare_v2_session(_inline_body(), status={}, run_async=_bg_run_async, camilla_factory=None), store
+    return v2host.prepare_v2_session(body or _inline_body(), status={}, run_async=_bg_run_async, camilla_factory=None), store
 
 
 @pytest.mark.parametrize("prior_capture", [None, {"status": "complete", "kind": "crossover_v2:session"}])
@@ -6214,13 +6214,16 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch
     assert v2state.load_v2_state() == before
 
 
-def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, tmp_path):
+@pytest.mark.parametrize("bass", [False, True])
+def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, tmp_path, bass):
     from jasper.web import correction_crossover_v2_wired as wired
     from tests.test_correction_crossover_v2_wired import _device
     from tests.test_preflight import ready_facts
-    from jasper.active_speaker.angle_capture import AngleCaptureRequest
+    from jasper.active_speaker.angle_capture import AngleCaptureRequest, request_for_program
+    from jasper.active_speaker.measurement_programs import program
 
-    prepared, store = _inline_prepared(monkeypatch, tmp_path)
+    body = {"plan": request_for_program(program("bass")).to_dict(), "levels": "auto"} if bass else _inline_body()
+    prepared, store = _inline_prepared(monkeypatch, tmp_path, body)
     _own_the_fader(monkeypatch, _FakeVolCam(-30))
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
     v2volume.set_volume_plan_for_tests(SessionVolumePlan())
@@ -6238,6 +6241,10 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, t
     assert bound["request"].to_dict() == store.reopen_json_artifact(
         store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
     assert bound["conductor"]._candidate is None
+    if bass:
+        assert prepared.join_spec.capture_plan.capture_target == len(bound["request"].stops)
+        assert [capture.stop.place for capture in bound["captures"]] == [stop.place for stop in bound["request"].stops]
+        assert {capture.spec.program_phase for capture in bound["captures"]} == {"lateral"}
 
 
 def test_pending_plan_keeps_the_active_captures_status_and_signals(monkeypatch):
