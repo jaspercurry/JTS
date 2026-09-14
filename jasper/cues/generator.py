@@ -23,6 +23,12 @@ provider that drives the live conversation — no Gemini round-trips
 when the user is on OpenAI Realtime, and vice versa. It's called from
 `jasper.voice.daemon_main._build_cues_manager`, which builds the whole
 `AudioCueManager` and is called from `run()` at daemon startup.
+
+`ChimeTTSGenerator` is the fourth backend: provider-free, used by
+`jasper.cues.factory.build_env_cue_manager` when no provider backend
+can be built at all (no `JASPER_VOICE_PROVIDER` chosen yet) so a
+genuinely fresh box still has audible park cues (AGENTS.md
+non-negotiable 6, issue #4814).
 """
 from __future__ import annotations
 
@@ -35,6 +41,7 @@ import wave
 from dataclasses import dataclass
 from typing import Callable, Collection, Protocol
 
+from ..voice.earcons import LISTENING_CHIRP_RECIPE, render_recipe
 from .registry import CueDef
 
 logger = logging.getLogger(__name__)
@@ -131,8 +138,9 @@ def cue_path(
 
 def backend_model(backend: object | None) -> str:
     """The cache-key model identifier for a TTS backend — its actual
-    synthesis model where exposed (all three shipped generators have a
-    `.model` property), else the legacy `TTS_MODEL` constant.
+    synthesis model where exposed (every shipped generator, including
+    `ChimeTTSGenerator`, has a `.model` property), else the legacy
+    `TTS_MODEL` constant.
 
     The fallback keeps two cases stable: a playback-only manager
     (backend=None — regen disabled, plays whatever WAVs exist) and
@@ -441,6 +449,44 @@ class _RetryableTTSError(Exception):
     """Marker class for "the call returned but with no audio" — the
     retry loop catches this and tries again. Other exception types
     (HTTP 4xx, network unreachable) propagate up immediately."""
+
+
+# --- Provider-free fallback backend ---
+
+# Cache-key model token for chime-baked cues, distinct from every real
+# provider's TTS_MODEL constant above. cue_hash() folds this in, so a
+# chime-baked WAV and a provider-baked WAV for the same cue never share
+# a filename: configuring a provider later computes a different hash,
+# misses the cache, and write_cue re-bakes real speech over the chime.
+CHIME_MODEL = "chime-v1"
+CHIME_VOICE_LABEL = "chime"
+
+
+class ChimeTTSGenerator:
+    """Provider-free fallback: a short deterministic chime, not speech.
+
+    Used only when no provider backend can be built at all —
+    `jasper.cues.factory.build_env_cue_manager` reaches for this when
+    `JASPER_VOICE_PROVIDER` is unset (or its key is missing), which is
+    otherwise the one way a genuinely fresh box has no audio at all for
+    its park cues (AGENTS.md non-negotiable 6, issue #4814). Once a
+    provider is configured, its own model name wins the cache key
+    (`backend_model`) and `write_cue` re-bakes real speech over the
+    chime on the next regenerate.
+
+    The chime itself is `jasper.voice.earcons`'s already-designed
+    "listening chirp" (an ascending-fifth chime with a shimmer tail),
+    not a reimplementation: one sine+envelope synthesizer for this
+    concern, not a third one.
+    """
+
+    @property
+    def model(self) -> str:
+        return CHIME_MODEL
+
+    def synthesise(self, text: str) -> TTSResult:
+        del text  # a chime carries no words
+        return TTSResult(pcm_24k=render_recipe(LISTENING_CHIRP_RECIPE))
 
 
 # --- Public write entry point ---

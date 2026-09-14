@@ -379,7 +379,8 @@ def test_system_audio_quality_applies_and_try_restarts_renderers(
     from jasper.local_sources import local_source_audio_refresh_units
 
     assert calls == [
-        ("try-restart", [unit]) for unit in local_source_audio_refresh_units()
+        ("try-restart", [unit], 5.0, True)
+        for unit in local_source_audio_refresh_units()
     ]
     assert body["accepted_units"] == list(local_source_audio_refresh_units())
 
@@ -588,7 +589,7 @@ def test_system_action_reboot_audits_and_asks_the_broker(
     assert status == 202
     assert body["action"] == verb
     assert body["status"] == "accepted"
-    assert broker_calls == [(verb, [])]
+    assert broker_calls == [(verb, [], 5.0, True)]
     assert event_fields(caplog, "system.action")["action"] == verb
 
 
@@ -1615,8 +1616,9 @@ def test_system_restart_audio_uses_local_source_registry(
     assert body["status"] == "accepted"
     # One try-restart call per unit: a batch reports one verdict for the whole
     # set, so a box missing one renderer would fail the rest with it.
-    assert calls == [("restart", ["jasper-camilla.service"])] + [
-        ("try-restart", [unit]) for unit in local_source_audio_refresh_units()
+    assert calls == [("restart", ["jasper-camilla.service"], 5.0, True)] + [
+        ("try-restart", [unit], 5.0, True)
+        for unit in local_source_audio_refresh_units()
     ]
     assert body["accepted_units"] == [
         "jasper-camilla.service", *local_source_audio_refresh_units(),
@@ -1709,7 +1711,7 @@ def test_system_restart_audio_keeps_parked_renderers_parked(
     base, _fake = server_with_coordinator
     status, _body = _post(f"{base}/system/restart/audio", {})
     assert status == 202
-    flat = [unit for _verb, units in calls for unit in units]
+    flat = [unit for _verb, units, _timeout, _no_block in calls for unit in units]
     assert "jasper-camilla.service" in flat
     assert "librespot.service" not in flat
     assert "shairport-sync.service" not in flat

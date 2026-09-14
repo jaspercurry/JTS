@@ -560,6 +560,20 @@ def test_required_step_order_holds_on_both_profiles(profile):
     assert steps[-2:] == ["build_manifest", "doctor"], steps
 
 
+def test_audio_cues_is_baked_before_the_unit_install_can_restart_jasper_voice():
+    """`jasper-aec-reconcile` (inside `install_systemd_units`) can restart an
+    unconfigured jasper-voice; its no-provider park needs a cue WAV already
+    on disk, or the park fires into silence with no retry (issue #4814).
+    `audio_cues` must land after `jasper` (which puts jasper-cues on PATH)
+    and before `systemd_units`. Full-profile only — a separate assertion
+    from `_REQUIRED_ORDER`, since `audio_cues` doesn't run on streambox and
+    `_REQUIRED_ORDER` is checked on both profiles."""
+    steps = _executed("full")[0]
+    assert (
+        steps.index("jasper") < steps.index("audio_cues") < steps.index("systemd_units")
+    ), steps
+
+
 @pytest.mark.parametrize("profile", ["full", "streambox"])
 def test_a_failing_step_aborts_the_install_and_is_recorded(profile):
     """`set -e` stops the loop at the failing row, and the EXIT trap names

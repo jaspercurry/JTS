@@ -37,10 +37,14 @@ from .registry import find as find_cue
 from ..logging_setup import configure_logging
 
 
-def _warn(message: str) -> None:
+def _warn(message: str, *, err: str = "") -> None:
     """The CLI's own `warn` sink for the cue factory: operator prose on
     stderr, where `jasper-cues` output has always gone. The factory's default
-    emits a structured event instead, for the daemon that has no console."""
+    emits a structured event instead, for the daemon that has no console.
+    `err` (the caught exception's type name) is accepted for interface
+    parity with that structured sink but not printed — prose here already
+    reads naturally without it."""
+    del err
     print(f"warning: {message}", file=sys.stderr)
 
 

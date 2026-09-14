@@ -9,6 +9,7 @@ fire announcements.
 """
 from .registry import CUES, CueDef
 from .generator import (
+    ChimeTTSGenerator,
     GeminiTTSGenerator,
     GrokTTSGenerator,
     OpenAITTSGenerator,
@@ -24,6 +25,7 @@ __all__ = [
     "CUES",
     "CueDef",
     "AudioCueManager",
+    "ChimeTTSGenerator",
     "GeminiTTSGenerator",
     "GrokTTSGenerator",
     "OpenAITTSGenerator",

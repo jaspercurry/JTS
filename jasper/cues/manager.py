@@ -38,6 +38,7 @@ from ..assistant_loudness import AssistantLoudnessProfile, measure_pcm_24k_mono
 from ..json_fields import age_seconds
 from ..log_event import log_event
 from .generator import (
+    CHIME_MODEL,
     backend_model,
     cue_hash,
     cue_path,
@@ -300,7 +301,16 @@ class AudioCueManager:
         generate on the same pass. Gemini TTS failures are often
         text-specific rather than a categorical outage, so aborting the
         whole batch on the first bad cue would needlessly leave later,
-        healthy cues uncached (and thus silent at play time)."""
+        healthy cues uncached (and thus silent at play time).
+
+        A chime-backed manager (`build_env_cue_manager`'s fallback when no
+        provider is configured) only ever fills a hole: it writes a slug
+        that has NO cached WAV at any hash, never overwrites one that does,
+        and never prunes — `force` has no effect on this. Otherwise a
+        transient config hiccup that briefly loses the active provider's
+        key (e.g. secrets unreadable without sudo) would wipe every real
+        spoken cue and replace it with a chime (issue #4814 adversarial
+        follow-up)."""
         if self._backend is None:
             raise RuntimeError(
                 "AudioCueManager has no TTS backend — can't regenerate. "
@@ -314,10 +324,18 @@ class AudioCueManager:
         else:
             cues = CUES
 
+        is_chime = self._model == CHIME_MODEL
         written: list[str] = []
         failed: list[str] = []
         for cue in cues:
-            if not force and self.is_cached(cue):
+            if is_chime:
+                if self.find_any_cached(cue) is not None:
+                    logger.debug(
+                        "cue %s already has a WAV; chime backend fills "
+                        "holes only, skipping", cue.slug,
+                    )
+                    continue
+            elif not force and self.is_cached(cue):
                 logger.debug("cue %s already cached, skipping", cue.slug)
                 continue
             try:
@@ -325,10 +343,11 @@ class AudioCueManager:
                     cue, self._hostname, self._voice,
                     self._sounds_dir, self._backend,
                 )
-                prune_stale(
-                    self._sounds_dir, cue,
-                    cue_hash(cue, self._hostname, self._voice, self._model),
-                )
+                if not is_chime:
+                    prune_stale(
+                        self._sounds_dir, cue,
+                        cue_hash(cue, self._hostname, self._voice, self._model),
+                    )
             except Exception as e:  # noqa: BLE001
                 failed.append(cue.slug)
                 log_event(

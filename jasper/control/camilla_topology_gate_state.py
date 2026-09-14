@@ -18,22 +18,16 @@ supervisor. The shared read half, and its fail-soft posture, live in
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from ..json_fields import parse_utc_iso
+from ..paths import resolve_state_path
 from . import park_record
 
 #: Must equal ``GATE_STATE``'s default in
 #: ``deploy/bin/jasper-camilla-topology-gate``. Pinned against that script by
 #: ``tests/test_camilla_topology_gate_script.py``.
 DEFAULT_STATE_PATH = "/run/jasper-camilla-topology-gate.state"
-
-
-def _state_path() -> str:
-    return os.environ.get(
-        "JASPER_CAMILLA_TOPOLOGY_GATE_STATE", DEFAULT_STATE_PATH
-    )
 
 
 def snapshot(path: str | None = None) -> dict[str, Any]:
@@ -48,7 +42,9 @@ def snapshot(path: str | None = None) -> dict[str, Any]:
 
     ``refused`` is the single boolean a consumer branches on. Never raises.
     """
-    target = path if path is not None else _state_path()
+    target = str(resolve_state_path(
+        path, "JASPER_CAMILLA_TOPOLOGY_GATE_STATE", DEFAULT_STATE_PATH
+    ))
     terminal, fields = park_record.read(target)
     if terminal is not None:
         terminal.pop("parked", None)

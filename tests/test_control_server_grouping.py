@@ -366,7 +366,7 @@ def test_grouping_trailing_scheduler_arms_durable_service(monkeypatch, tmp_path)
         timer_factory=FakeTimer,
     )
 
-    assert broker_calls == [("restart", [_TRAILING_UNIT])]
+    assert broker_calls == [("restart", [_TRAILING_UNIT], 5.0, True)]
     assert len(timers) == 1
     assert timers[0].delay == pytest.approx(53.0)
     assert delay_file.read_text() == "53\n"
@@ -424,7 +424,7 @@ def test_grouping_trailing_scheduler_falls_back_to_process_timer(
         timer_factory=FakeTimer,
     )
 
-    assert broker_calls == [("restart", [_TRAILING_UNIT])]
+    assert broker_calls == [("restart", [_TRAILING_UNIT], 5.0, True)]
     # A restart the broker reports as failed may still have landed in PID 1.
     assert popens == [["systemctl", "stop", "--no-block", _TRAILING_UNIT]]
     assert len(timers) == 1

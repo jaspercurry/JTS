@@ -9,8 +9,9 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
-from numbers import Real
 from typing import Any
+
+from jasper.json_fields import finite_float
 
 
 # CamillaDSP v4.1.3 Loudness parameter range; not a driver capability estimate.
@@ -47,11 +48,9 @@ _OPTIONAL_FIELDS = {
 
 
 def _finite(value: float, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a real number")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{name} must be finite")
+    number = finite_float(value)
+    if number is None:
+        raise ValueError(f"{name} must be a finite real number")
     return number
 
 

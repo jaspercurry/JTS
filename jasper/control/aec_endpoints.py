@@ -88,76 +88,67 @@ def _run_unit_systemctl(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _reset_oneshot_unit(unit: str, *, event: str) -> None:
-    """Fail-soft and best-effort: a reset-failed failure must never block
-    the start/restart it precedes.  Both callers' units are bare oneshots
-    with no RemainAfterExit, so systemd normally GCs them between runs, and
-    reset-failed against an already-unloaded unit routinely exits nonzero
-    (#3237)."""
-    try:
-        result = _run_unit_systemctl("reset-failed", unit)
-    except (OSError, subprocess.SubprocessError) as exc:
-        log_event(
-            logger,
-            event,
-            unit=unit,
-            error=str(exc),
-            level=logging.WARNING,
-        )
-        return
-    if result.returncode != 0:
-        log_event(
-            logger,
-            event,
-            unit=unit,
-            returncode=result.returncode,
-            detail=(result.stderr or result.stdout).strip().replace(
-                "\n", " | ",
-            ),
-            level=logging.WARNING,
-        )
+# These kicks (and jasper.control.handlers.aec's AEC-bridge restart) answer a
+# POST jasper-web proxies with a `proxy_post` timeout
+# (wake_setup._AEC_BROKER_KICK_PROXY_TIMEOUT_SEC, 15 s) sized to clear two
+# broker legs at this bound plus the broker's client socket margin
+# (restart_broker._CLIENT_SOCKET_MARGIN_SEC, 5 s each) -- 2 * (2 + 5) = 14 s.
+# A `--no-block` systemctl call itself returns in ms regardless of this
+# bound; keep it small so raising the proxy timeout does not have to chase a
+# larger one here.
+_ONESHOT_KICK_TIMEOUT_SEC = 2.0
 
 
-def _run_oneshot_start(
+def _reset_then_schedule(
     unit: str,
     verb: str,
     *,
+    reason: str,
     event_prefix: str,
+    reset: bool = True,
     extra_fields: dict[str, Any] | None = None,
 ) -> bool:
-    """Reset then no-block start/restart one maintenance oneshot, observably.
+    """No-block start/restart one maintenance oneshot through the broker,
+    observably.
 
-    ``event_prefix`` is ``<owner>.<action>``: the failure/scheduled events are
-    ``<event_prefix>_failed`` / ``<event_prefix>_scheduled`` and the
-    best-effort reset logs ``<owner>.reset_failed_skipped``. ``extra_fields``
-    ride on the scheduled event only. The reset clears systemd's
-    failure/start-rate state so each explicit user action gets a fresh,
-    bounded retry budget.
+    ``reset`` (default True) resets systemd's failure/start-rate state via
+    :func:`restart_broker.reset_then_manage` first, discarding a reset
+    failure (a bare oneshot with no RemainAfterExit is normally GC'd between
+    runs, and reset-failed against an already-unloaded unit routinely exits
+    nonzero — #3237), so each explicit user action gets a fresh, bounded
+    retry budget. Pass False for a unit the broker's allowlist denies
+    reset-failed anyway — a START_ONLY oneshot has no crash budget to
+    protect (mirrors jasper.fanin.coupling_reconcile's identical gate on
+    :data:`restart_broker.START_ONLY_UNITS`). Either way the call applies
+    the broker's unit/verb allowlist. ``event_prefix`` is ``<owner>.<action>``:
+    the failure/scheduled events are ``<event_prefix>_failed`` /
+    ``<event_prefix>_scheduled``. ``extra_fields`` ride on the scheduled
+    event only.
     """
-    owner = event_prefix.rsplit(".", 1)[0]
-    _reset_oneshot_unit(unit, event=f"{owner}.reset_failed_skipped")
-    try:
-        result = _run_unit_systemctl(verb, "--no-block", unit)
-    except (OSError, subprocess.SubprocessError) as exc:
-        log_event(
-            logger,
-            f"{event_prefix}_failed",
-            unit=unit,
-            phase="enqueue",
-            error=str(exc),
-            level=logging.ERROR,
+    if reset:
+        resp = restart_broker.reset_then_manage(
+            unit,
+            verb=verb,
+            reason=reason,
+            no_block=True,
+            timeout=_ONESHOT_KICK_TIMEOUT_SEC,
+            reset_timeout=_ONESHOT_KICK_TIMEOUT_SEC,
         )
-        return False
-    if result.returncode != 0:
+    else:
+        resp = restart_broker.manage_units(
+            unit,
+            verb=verb,
+            reason=reason,
+            no_block=True,
+            timeout=_ONESHOT_KICK_TIMEOUT_SEC,
+        )
+    if not resp.get("ok"):
         log_event(
             logger,
             f"{event_prefix}_failed",
             unit=unit,
             phase="enqueue",
-            returncode=result.returncode,
-            detail=(result.stderr or result.stdout).strip().replace(
-                "\n", " | ",
-            ),
+            error=str(resp.get("error") or f"rc={resp.get('rc')}"),
             level=logging.ERROR,
         )
         return False
@@ -179,9 +170,10 @@ def _schedule_usb_gadget_recompose() -> bool:
     exiting after this request.
     """
 
-    return _run_oneshot_start(
+    return _reset_then_schedule(
         _USB_MIC_APPLY_UNIT,
         "restart",
+        reason="usb_mic_recompose",
         event_prefix="usb_mic.recompose",
         extra_fields={"grace_ms": 350, "max_attempts": 4},
     )
@@ -196,11 +188,16 @@ def _start_aec_commission() -> bool:
 
     ``--no-block``: the run takes minutes and the browser only needs the job
     accepted — the /aec poll's ``commission.running`` probe tracks the rest.
+    No reset-failed leg: ``jasper-aec-commission.service`` is a START_ONLY
+    broker unit (no crash budget of its own to protect), and the broker
+    denies ``reset-failed`` against it anyway.
     """
-    return _run_oneshot_start(
+    return _reset_then_schedule(
         _AEC_COMMISSION_SERVICE,
         "start",
+        reason="aec_commission_start",
         event_prefix="aec_commission.start",
+        reset=False,
     )
 
 

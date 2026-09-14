@@ -17,10 +17,10 @@ behind its fail-soft posture, live in :mod:`jasper.control.park_record`.
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from ..json_fields import parse_utc_iso
+from ..paths import resolve_state_path
 from . import park_record
 
 #: Must equal ``PARK_STATE``'s default in
@@ -28,12 +28,6 @@ from . import park_record
 #: ``tests/test_camilla_recover_script.py`` — a literal duplicated across a
 #: shell writer and a Python reader is exactly the pair that drifts.
 DEFAULT_STATE_PATH = "/run/jasper-camilla-recover.state"
-
-
-def _state_path() -> str:
-    return os.environ.get(
-        "JASPER_CAMILLA_RECOVER_PARK_STATE", DEFAULT_STATE_PATH
-    )
 
 
 def snapshot(path: str | None = None) -> dict[str, Any]:
@@ -59,7 +53,9 @@ def snapshot(path: str | None = None) -> dict[str, Any]:
 
     Never raises.
     """
-    target = path if path is not None else _state_path()
+    target = str(resolve_state_path(
+        path, "JASPER_CAMILLA_RECOVER_PARK_STATE", DEFAULT_STATE_PATH
+    ))
     last_park = _last_park(target)
     terminal, fields = park_record.read(target)
     if terminal is not None:
