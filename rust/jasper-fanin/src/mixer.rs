@@ -501,37 +501,6 @@ struct RingOutput {
     stall_log: SyncSender<FaninLogEvent>,
 }
 
-/// Whether a `RingWriter::create_or_attach` failure is CONFIG-class — the
-/// question that decides between an exit-78 PARK and the ordinary
-/// `Restart=on-failure` ladder.
-///
-/// Only two `io::ErrorKind`s qualify, and `jasper_ring` sets both DELIBERATELY
-/// for exactly this purpose:
-///   - [`io::ErrorKind::InvalidInput`] — `Geometry::validate_self` rejecting the
-///     geometry fan-in built from its own env (an unsupported sample format, an
-///     out-of-range `n_slots`, an over-large slot), plus a ring path containing
-///     a NUL.
-///   - [`io::ErrorKind::InvalidData`] — the attach-time field-by-field header
-///     mismatch, the header/file-size cross-check, and an unreclaimable
-///     magic-less file. A stale ring from a prior geometry lands here.
-///
-/// Everything else is TRANSIENT and must keep the restart ladder: `WouldBlock`
-/// (another process still holds the `.open.lock`), `PermissionDenied` (tmpfs
-/// mode/group not yet applied by systemd-tmpfiles), `StorageFull` /
-/// `OutOfMemory`, `AlreadyExists`, `IsADirectory`, and any raw OS error. Parking
-/// on those would take the speaker's audio down over faults that clear
-/// themselves.
-///
-/// Deliberately matched on the CLOSED accept-set rather than an open
-/// "everything but X" list: a kind this daemon has not reasoned about defaults
-/// to the recoverable path.
-fn ring_open_error_is_config_class(error: &std::io::Error) -> bool {
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData
-    )
-}
-
 /// Turn a `RingWriter::create_or_attach` failure into the error `Mixer::new`
 /// returns, logging the matching journal event.
 ///
@@ -546,7 +515,7 @@ fn ring_open_error_is_config_class(error: &std::io::Error) -> bool {
 /// right now". Logging an EACCES as `config_error` sends an operator to audit a
 /// geometry that was never wrong.
 pub(crate) fn ring_open_error(path: &str, error: std::io::Error) -> anyhow::Error {
-    if ring_open_error_is_config_class(&error) {
+    if jasper_ring::ring_open_error_is_config_class(&error) {
         warn!(
             "event=fanin.ring.config_error path={} detail={}",
             path, error,
@@ -1254,7 +1223,7 @@ impl Mixer {
         // already-created ring is a config-class fault (main() exits 78,
         // `RestartPreventExitStatus=78` parks the unit); everything else this
         // open can fail with is TRANSIENT and keeps the restart ladder — see
-        // `ring_open_error_is_config_class`.
+        // `jasper_ring::ring_open_error_is_config_class`.
         let geometry = Geometry {
             rate: config.sample_rate,
             channels: CHANNELS,
