@@ -28,6 +28,7 @@ from jasper.chip_aec import shipped as shipped_alignment
 from jasper import output_hardware
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_hardware import dac as dac_registry
+from jasper.config import env_bool
 from jasper.audio_profile_state import (
     AEC_MODE_FILE_ENV,
     DEFAULT_AEC_MODE_PATH,
@@ -200,10 +201,6 @@ class ReferenceSnapshot:
 
     counters: tuple[int, ...]
     writes: tuple[ReferenceWrite, ...]
-
-
-def _truthy(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def native_reference_pcm(card: str) -> str:
@@ -1124,12 +1121,12 @@ def publish_alignment_record(
 
 def main() -> int:
     configure_logging()
-    corpus = _truthy(CORPUS_CHIP_AEC_ENABLED_ENV)
+    corpus = env_bool(CORPUS_CHIP_AEC_ENABLED_ENV)
     mode = (
         "corpus"
         if corpus
         else "chip_aec"
-        if _truthy(CHIP_AEC_ENABLED_ENV)
+        if env_bool(CHIP_AEC_ENABLED_ENV)
         else "lab_bypass"
     )
     dev = None

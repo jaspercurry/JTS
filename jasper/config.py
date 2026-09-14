@@ -109,7 +109,13 @@ def _env_int(name: str, default: int) -> int:
         raise VoiceConfigError(f"{name} must be a number") from e
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
+def env_bool(name: str, default: bool = False) -> bool:
+    """Read a named env var against the codebase's shared truthy vocabulary.
+
+    The single implementation for name-keyed env-bool parsing; ``aec.bridge_config``
+    and ``cli.aec_init`` import this rather than each hand-rolling their own
+    (see issue #4720).
+    """
     value = _env_optional_bool(name)
     return default if value is None else value
 
@@ -117,7 +123,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 def _env_optional_bool(name: str) -> bool | None:
     """Tri-state boolean: None when the writer published no answer.
 
-    Unlike ``_env_bool`` there is no default to fall back to, because the
+    Unlike ``env_bool`` there is no default to fall back to, because the
     absence of an answer is itself load-bearing information: "I did not
     determine this" must stay distinguishable from "I determined False".
     Unset, empty, and any unrecognised token (the reconciler writes the
@@ -612,7 +618,7 @@ class Config:
             mic_device_chip_aec_210=_env("JASPER_MIC_DEVICE_CHIP_AEC_210", ""),
             aec_udp_port=_env_int("JASPER_AEC_UDP_PORT", DEFAULT_AEC_ON_PORT),
             aec_udp_host=_env("JASPER_AEC_UDP_HOST", DEFAULT_AEC_UDP_HOST),
-            aec_chip_aec_enabled=_env_bool(
+            aec_chip_aec_enabled=env_bool(
                 CHIP_AEC_ENABLED_ENV, False,
             ),
             # The XVF3800 supports 16 kHz mono natively, so 16000/1 is the
@@ -655,7 +661,7 @@ class Config:
             # live-response measurement still learns profiles after real
             # replies; automatic seed calls should only run when an
             # operator or the /assistant/voice/ "Save and Test" flow intentionally asks.
-            assistant_loudness_auto_seed=_env_bool(
+            assistant_loudness_auto_seed=env_bool(
                 "JASPER_ASSISTANT_LOUDNESS_AUTO_SEED",
                 False,
             ),
@@ -841,7 +847,7 @@ class Config:
             ha_agent_id=_env(_ha_env.ENV_AGENT_ID, "").strip(),
             # Default to verifying. Wizard writes "0" only when the
             # household explicitly opts into self-signed-cert mode.
-            ha_verify_ssl=_env_bool(_ha_env.ENV_VERIFY_SSL, True),
+            ha_verify_ssl=env_bool(_ha_env.ENV_VERIFY_SSL, True),
             # Persistent speaker-volume file. Read at boot to restore
             # CamillaDSP main_volume, written on every change.
             volume_state_path=_volume_persistence.configured_path(),
@@ -886,7 +892,7 @@ class Config:
             # / "1" / "yes" / "enabled" resolves to off (fail-safe;
             # peering is off by default, and a typo in the env file
             # should never accidentally enable it).
-            peering_enabled=_env_bool("JASPER_PEERING", False),
+            peering_enabled=env_bool("JASPER_PEERING", False),
             # The UDS where jasper-control's peering daemon listens.
             # Matches PEERING_UDS_PATH in jasper.peering.config —
             # duplicated here so voice_daemon doesn't have to import

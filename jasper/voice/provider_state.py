@@ -45,8 +45,8 @@ from .catalog import (
 )
 
 # Values that count as "on" for a boolean selector in the SSOT file.
-# Mirrors jasper.config._env_bool so the wizard / operator-edited file
-# and the typed Config agree on what "enabled" means.
+# Mirrors jasper.config.env_bool's truthy set so the wizard / operator-edited
+# file and the typed Config agree on what "enabled" means.
 _TRUTHY = frozenset({"1", "true", "yes", "on", "enabled"})
 
 # The wizard-owned single source of truth for active-provider state. The

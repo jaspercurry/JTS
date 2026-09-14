@@ -81,7 +81,7 @@ def json_mode_enabled(env: dict[str, str] | None = None) -> bool:
     test — or an operator flipping the env for one daemon — gets the
     live value without import-order surprises. Mirrors the lazy read
     in ``jasper.flight_recorder``. Accepts the literal truthy set the
-    rest of the codebase uses (``Config._env_bool``).
+    rest of the codebase uses (``jasper.config.env_bool``).
     """
     source = os.environ if env is None else env
     raw = source.get("JASPER_LOG_JSON")

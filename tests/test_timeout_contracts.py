@@ -76,11 +76,11 @@ ALLOWLIST: dict[str, str] = {
         "terminate()+wait(timeout=2); the constructor call itself takes no "
         "timeout= keyword."
     ),
-    "jasper/cli/aec_init.py:900": (
+    "jasper/cli/aec_init.py:897": (
         "interactive commissioning tool; `amixer sset` against a live chip "
         "has no bound today. Operator present at the terminal."
     ),
-    "jasper/cli/aec_init.py:905": (
+    "jasper/cli/aec_init.py:902": (
         "interactive commissioning tool; `amixer sget` readback has no "
         "bound today. Operator present at the terminal."
     ),
