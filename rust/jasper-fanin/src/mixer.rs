@@ -201,14 +201,14 @@ const fn direct_narrow_scratch_samples() -> usize {
 /// safety net that keeps the mixer thread's `try_send` non-blocking.
 pub(crate) const EVENT_CHANNEL_CAPACITY: usize = 256;
 
-/// Bounded capacity of [`RingOutput::stall_log`], shared by every
-/// [`FaninLogEvent`] source. `RingStallEvent` is edge-triggered —
-/// `Detected`/`Unrecovered`/`Cleared` fire at most once per stall episode,
-/// re-armed no faster than `RING_STALL_REARM_MIN_GAP_NS`; `AssistantLoudness`
-/// fires at most once per TTS segment and `TtsFlush` at most once per drained
-/// batch of FLUSH_SYNC requests — none is a per-period working set, so this
-/// stays a drop-and-count safety net.
-const RING_STALL_LOG_CHANNEL_CAPACITY: usize = 16;
+/// Bounded capacity of the `fanin-ring-log` channel ([`RingOutput::stall_log`]
+/// and `TtsMixer`'s clone of the same sender), shared by three producers:
+/// ring-stall edges, `AssistantLoudness` (one per TTS/cue segment — the
+/// per-segment rate is this channel's working set, not the edge-triggered
+/// stall line), and `TtsFlush`. Sized so a multi-segment response burst
+/// cannot fill the channel before a concurrent ring-stall line finds a slot.
+/// Overflow past this is drop-and-count, never a block (ADR-0254).
+const FANIN_LOG_CHANNEL_CAPACITY: usize = 64;
 
 /// Forward one event to an off-thread writer with `try_send`, calling
 /// `note_dropped` instead of blocking the SCHED_FIFO work loop on the writer's
@@ -1306,7 +1306,7 @@ impl Mixer {
         // shares this SAME channel/thread for its own log events (issue
         // #4787) — one clone of the sender, not a second writer thread.
         let (stall_log_tx, stall_log_rx) =
-            std::sync::mpsc::sync_channel::<FaninLogEvent>(RING_STALL_LOG_CHANNEL_CAPACITY);
+            std::sync::mpsc::sync_channel::<FaninLogEvent>(FANIN_LOG_CHANNEL_CAPACITY);
         let ring_stall_log_writer = std::thread::Builder::new()
             .name("fanin-ring-log".into())
             .stack_size(HELPER_STACK_BYTES)
@@ -3031,7 +3031,7 @@ mod tests {
         // needs to observe delivery swaps this sender for its own (see
         // `ring_stall_cleared_event_ships_over_the_off_thread_channel`).
         let (stall_log, _stall_log_rx) =
-            std::sync::mpsc::sync_channel::<FaninLogEvent>(RING_STALL_LOG_CHANNEL_CAPACITY);
+            std::sync::mpsc::sync_channel::<FaninLogEvent>(FANIN_LOG_CHANNEL_CAPACITY);
         let ring = RingOutput {
             writer,
             counters,
