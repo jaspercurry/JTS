@@ -6,12 +6,12 @@
 from __future__ import annotations
 
 import json
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
 from .bundles import sessions_dir
-from .candidate_bank import CandidateBankRefusal, bank_directory_stamps, find_banked_candidate
+from .candidate_bank import CandidateBankRefusal, find_banked_candidate, status_bank_lookup
+from .commissioning_evidence_store import EVIDENCE_ROOT
 from .crossover_v2.round_inputs import iter_round_sessions, round_artifact_dir
 from .run_manifest import RUN_MANIFEST_FILENAME
 
@@ -19,32 +19,35 @@ from .run_manifest import RUN_MANIFEST_FILENAME
 def _manifest_path(state: Mapping[str, Any]) -> Path | None:
     candidate = state.get("candidate")
     evidence = state.get("evidence")
-    return _cached_manifest_path(
-        str(candidate.get("fingerprint") or "") if isinstance(candidate, Mapping) else "",
-        str(evidence.get("bundle_session_id") or "") if isinstance(evidence, Mapping) else "",
-        str(state.get("session_id") or ""), bank_directory_stamps(sessions_dir()),
+    fingerprint = str(candidate.get("fingerprint") or "") if isinstance(candidate, Mapping) else ""
+    bundle_id = str(evidence.get("bundle_session_id") or "") if isinstance(evidence, Mapping) else ""
+    session_id = str(state.get("session_id") or "")
+    root = sessions_dir()
+    path = status_bank_lookup(
+        ("manifest", fingerprint, bundle_id, session_id),
+        lambda: _banked_manifest_path(fingerprint, root, bundle_id, session_id), root=root,
     )
+    if path is not None:
+        return path
+    if all(value and Path(value).name == value for value in (bundle_id, session_id)):
+        return root / bundle_id / EVIDENCE_ROOT / "artifacts/crossover_v2" / session_id / RUN_MANIFEST_FILENAME
+    return None
 
 
-@lru_cache(maxsize=1)
-def _cached_manifest_path(
-    fingerprint: str, bundle_id: str, session_id: str,
-    stamps: tuple[tuple[Path, int | None], ...],
-) -> Path | None:
+def _banked_manifest_path(fingerprint: str, root: Path, bundle_id: str, session_id: str) -> Path | None:
     # A recovery VERIFY has its own one-pose manifest. The candidate's original
     # run still owns the promise after that re-arm (#2098).
     if fingerprint:
         try:
-            banked = find_banked_candidate(fingerprint, root=stamps[0][0])
+            banked = find_banked_candidate(fingerprint, root=root)
             return banked.path.with_name(RUN_MANIFEST_FILENAME)
         except CandidateBankRefusal:
             pass
-    if not bundle_id or Path(bundle_id).name != bundle_id:
+    live = root / bundle_id
+    if not bundle_id or Path(bundle_id).name != bundle_id or live.is_dir():
         return None
-    live = stamps[0][0] / bundle_id
-    bundles = (live,) if live.is_dir() else iter_round_sessions(live)
-    for bundle in bundles:
-        if bundle.name == bundle_id:
+    for bundle in iter_round_sessions(live):
+        if bundle.name == live.name:
             directory, _ = round_artifact_dir(bundle)
             if directory is not None and directory.name == session_id:
                 return directory / RUN_MANIFEST_FILENAME

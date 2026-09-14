@@ -3183,13 +3183,16 @@ def test_a_session_whose_plan_asked_beyond_the_mark_is_incomplete_at_the_mark(
     assert grade.get("reason") == (None if complete else REASON_APPLIED_GRADE_MARK_ONLY)
 
 
-def test_coverage_cache_tracks_bank_moves_and_reads_fresh_manifests(tmp_path, monkeypatch):
+@pytest.mark.parametrize("initial_manifest", [False, True])
+def test_coverage_tracks_live_manifest_arrival_and_bank_moves(tmp_path, monkeypatch, initial_manifest):
     import shutil
     from jasper.active_speaker.grade_coverage import asked_beyond_mark
     from tests.run_manifest_fixture import write_asked_poses
 
     state = _applied_state()
     root = write_asked_poses(tmp_path, state, [{"deg": 0}])
+    if not initial_manifest:
+        shutil.rmtree(root / "asked-run" / "evidence")
     monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: root)
     assert asked_beyond_mark(state) is False
     write_asked_poses(tmp_path, state, [{"deg": 20}])
@@ -6059,6 +6062,18 @@ def test_status_reports_previous_applied_record_without_a_bank_walk(
     assert code == 200
     assert payload["crossover_v2"]["previous_candidate_fingerprint"] == prior_fingerprint
     assert v2host._previous_candidate_known() is True
+
+
+def test_apply_refuses_an_offered_previous_candidate_after_pruning(monkeypatch, tmp_path):
+    from jasper.active_speaker.candidate_bank import find_banked_candidate
+
+    prior_fingerprint = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+    offered = v2status.crossover_v2_status_block()["previous_candidate_fingerprint"]
+    assert offered == prior_fingerprint
+    find_banked_candidate(offered).path.unlink()
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as exc:
+        _apply({"expected_candidate_fingerprint": offered}, _bg_run_async, _FakeApplyCam)
+    assert exc.value.code == "not_found"
 
 
 def test_the_ceiling_defers_under_a_live_claim_and_offers_no_recovery(monkeypatch):

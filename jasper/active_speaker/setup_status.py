@@ -21,7 +21,7 @@ from jasper.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
 from ._common import BASELINE_TOPOLOGY_CHANGED
-from .candidate_bank import bank_directory_stamps
+from .candidate_bank import status_bank_lookup
 from .capture_geometry import comparison_set_valid
 from .crossover_preview import load_crossover_preview
 from .crossover_contract import (
@@ -334,20 +334,13 @@ def _layer_a_differences(
     ][:_LAYER_A_DIFFERENCE_LIMIT]
 
 
-_applied_candidate_cache: tuple[tuple[Any, ...], Any] | None = None
-
-
 def _status_applied_candidate(topology: Any, applied_profile: Mapping[str, Any]) -> Any:
     from .candidate_parts import candidate_from_applied_profile  # lazy: baseline readers import setup status
 
-    global _applied_candidate_cache
-    key = (topology, json.dumps(applied_profile, sort_keys=True), bank_directory_stamps())
-    cached = _applied_candidate_cache
-    if cached is not None and cached[0] == key:
-        return cached[1]
-    candidate = candidate_from_applied_profile(topology, applied_profile)
-    _applied_candidate_cache = (key, candidate)
-    return candidate
+    return status_bank_lookup(
+        ("applied", topology, json.dumps(applied_profile, sort_keys=True)),
+        lambda: candidate_from_applied_profile(topology, applied_profile),
+    )
 
 
 def _applied_layer_a_binding(

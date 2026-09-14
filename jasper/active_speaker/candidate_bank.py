@@ -22,7 +22,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator, TypeVar, cast
 
 from jasper.log_event import log_event
 
@@ -113,7 +113,7 @@ def _candidate_roots(root: Path) -> tuple[Path, ...]:
     return (root, root.parent / paired) if paired else (root,)
 
 
-def bank_directory_stamps(root: Path | None = None) -> tuple[tuple[Path, int | None], ...]:
+def _bank_directory_stamps(root: Path | None = None) -> tuple[tuple[Path, int | None], ...]:
     stamps = []
     for directory in _candidate_roots(_bank_root(root)):
         try:
@@ -122,6 +122,25 @@ def bank_directory_stamps(root: Path | None = None) -> tuple[tuple[Path, int | N
             stamp = None
         stamps.append((directory, stamp))
     return tuple(stamps)
+
+
+_StatusResult = TypeVar("_StatusResult")
+_status_bank_cache: list[tuple[tuple[Any, ...], Any]] = []
+
+
+def status_bank_lookup(
+    key: tuple[Any, ...], resolve: Callable[[], _StatusResult], *, root: Path | None = None,
+) -> _StatusResult:
+    """Cache successful status resolutions; action callers must resolve fresh."""
+    key = (*key, _bank_directory_stamps(root))
+    for cached_key, cached_result in _status_bank_cache:
+        if cached_key == key:
+            return cast(_StatusResult, cached_result)
+    result = resolve()
+    if result is not None:
+        # Setup and grade each need one retained bank resolution.
+        _status_bank_cache[:] = [*_status_bank_cache[-1:], (key, result)]
+    return result
 
 
 def banked_candidates(*, root: Path | None = None) -> list[BankedCandidate]:
