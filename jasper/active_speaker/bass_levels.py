@@ -1,0 +1,117 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+# SPDX-License-Identifier: Apache-2.0
+
+"""Plan and execute the bass level ladder, finishing each pose before moving."""
+
+from __future__ import annotations
+
+from contextlib import AbstractAsyncContextManager, nullcontext
+from dataclasses import dataclass, replace
+from itertools import groupby
+from types import SimpleNamespace
+from typing import Any, Callable, Mapping
+
+from .angle_capture import AngleCaptureRequest, LateralWalkRefused, resolve_request
+from .crossover_v2.capture_plan import position_screen_keys
+from .crossover_v2.door import IsolationHold
+from .crossover_v2.position_gate import PositionGate
+from .measurement_programs import PURPOSE_BASS
+from .plan_run import Analyze, RunDoor, RunSignals, _Control, _grant, run_plan
+from .preflight import PreflightFacts, PreflightIssue, PreflightReport, preflight
+from .run_manifest import RunManifest
+
+LEVEL_OFFSETS_DB = (0.0, -5.0, -10.0, -15.0)
+
+
+@dataclass(frozen=True)
+class BassLevelLadder:
+    levels: tuple[PreflightReport, ...]
+
+    @property
+    def plan(self) -> AngleCaptureRequest:
+        return self.levels[0].plan
+
+    @property
+    def admissible(self) -> tuple[PreflightReport, ...]:
+        return tuple(report for report in self.levels if not report.blocking)
+
+    @property
+    def blocking(self) -> bool:
+        return not self.admissible
+
+    @property
+    def issues(self) -> tuple[PreflightIssue, ...]:
+        return self.levels[0].issues if self.blocking else ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "levels": [{"offset_db": offset, "level_db": report.plan.level.volume_db,
+                        "admissible": not report.blocking, **report.to_dict()}
+                       for offset, report in zip(LEVEL_OFFSETS_DB, self.levels)],
+            "admissible_levels_db": [report.plan.level.volume_db for report in self.admissible],
+        }
+
+
+def bass_level_ladder(plan: AngleCaptureRequest, facts: PreflightFacts) -> BassLevelLadder:
+    if any(stop.purpose != PURPOSE_BASS for stop in plan.stops):
+        raise ValueError("the bass level ladder requires bass captures")
+    anchor_report = preflight(replace(plan, level=replace(plan.level, level_db=None)), facts)
+    anchor = anchor_report.plan.level.resolved
+    return BassLevelLadder((anchor_report, *(
+        preflight(replace(plan, level=replace(plan.level,
+                  level_db=anchor.reference_volume_db + offset if anchor else None)), facts)
+        for offset in LEVEL_OFFSETS_DB[1:]
+    )))
+
+
+@dataclass(frozen=True)
+class BassLevelRun:
+    manifest: RunManifest
+    door: RunDoor
+    analyze: Analyze
+    assessor: Callable[..., Any] | None = None
+
+
+async def run_bass_levels(
+    ladder: BassLevelLadder, *, hold: AbstractAsyncContextManager[IsolationHold],
+    prepare: Callable[[AngleCaptureRequest], BassLevelRun], gate: PositionGate,
+    aborts: Mapping[type[BaseException], str], signals: RunSignals | None = None,
+) -> tuple[RunManifest, ...]:
+    """The host supplies each round's record/session bindings under one mic hold.
+
+    One placement starts all levels at that pose. A take needing human recovery
+    ends the sequence with its partial manifest; it cannot start a new placement.
+    """
+    admitted = ladder.admissible
+    if not admitted:
+        issue = next(issue for issue in ladder.levels[0].issues if issue.blocking)
+        raise LateralWalkRefused(issue.code, issue.detail)
+    signals = signals or RunSignals()
+    results: list[RunManifest] = []
+    try:
+        async with hold as held:
+            for pose_index, (_, group) in enumerate(groupby(ladder.plan.stops, key=lambda stop: stop.place), 1):
+                stops = tuple(group)
+                prompt = resolve_request(replace(ladder.plan, stops=stops))[0].prompt
+                entry = SimpleNamespace(screen={"title": prompt.headline, "body": prompt.detail,
+                                               **position_screen_keys(prompt)})
+                try:
+                    await _grant(gate, pose_index, pose_index, entry, signals)
+                except _Control:
+                    return tuple(results)
+                for level_index, report in enumerate(admitted):
+                    request = replace(report.plan, stops=stops)
+                    bound = prepare(request)
+                    bound.door.hold = nullcontext(held)
+                    if level_index == 0:
+                        bound.manifest.mic_moves = 1
+                    result = await run_plan(
+                        request, manifest=bound.manifest, door=bound.door,
+                        analyze=bound.analyze, assessor=bound.assessor, aborts=aborts, signals=signals,
+                    )
+                    results.append(result)
+                    if result.status != "complete" or signals.complete.is_set() or signals.stop.is_set():
+                        return tuple(results)
+        return tuple(results)
+    finally:
+        gate.abandon_hold()

@@ -1193,6 +1193,21 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
     return SimpleNamespace(takes=takes, write=write, argv=argv, out=out, descriptor=descriptor, roots=roots)
 
 
+@pytest.mark.parametrize("round_count", [1, 3])
+def test_bass_sequence_join_uses_declared_target_in_last_packet(bass_run, round_count):
+    from jasper.cli.round_views._bass_inputs import join_bass_rounds
+
+    manifests = bass_run.write()
+    destination = join_bass_rounds(bass_run.roots[:round_count], candidates=[Path("candidate.json")])
+    assert destination == manifests[round_count - 1].parent / "bass_table.json"
+    table = json.loads(destination.read_text())
+    assert table["run_ids"] == ["run--10", "run--30", "run--20"][:round_count]
+    fitted, = table["tables"]
+    assert len(fitted["levels"]) == round_count
+    assert fitted["target"] == {"freqs_hz": [20, 60], "magnitude_db": [0, 0]}
+    assert fitted["tolerance_db"] == 3
+
+
 @pytest.mark.parametrize('round_count', [1, 2])
 @pytest.mark.parametrize('missing_set', [None, '4dc59eaec1e3', '8b2a90f77f31'])
 @pytest.mark.parametrize('ignored_phase,ignored_purpose', [
