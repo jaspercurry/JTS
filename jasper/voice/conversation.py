@@ -111,8 +111,8 @@ def _resolved(
     log_event(
         logger, "voice.turn_deadline", reason=reason,
         last_speech_age_ms=int((now - last_speech) * 1000),
-        accepted_age_ms=int((now - accepted_at) * 1000),
-        drain_age_ms=int((now - drain_at) * 1000),
+        accepted_age_ms=None if not accepted_at else int((now - accepted_at) * 1000),
+        drain_age_ms=None if not drain_at else int((now - drain_at) * 1000),
         overdue_ms=None if deadline is None else int((now - deadline) * 1000),
         chunks_pending=pending,
         backend_pending=backend_pending,

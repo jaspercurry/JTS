@@ -20,6 +20,7 @@ from typing import Any
 
 from .frequency_view import FrequencyRun, FrequencySeries
 from .measurement_document import frequency_run_from_documents
+from .crossover_v2.round_inputs import capture_identity
 
 
 @dataclass(frozen=True)
@@ -153,7 +154,7 @@ def load_measurement(run: ArchivedMeasurement) -> FrequencyRun:
         return direct
     if not direct.series:
         return replace(retained, started_at=run.started_at, state=run.state)
-    identities = {(curve.details.get("candidate_id"), curve.details.get("graph_fingerprint"))
+    identities = {capture_identity(curve.details, set_id=curve.details.get("set_id") or curve.id)
                   for curve in direct.series if curve.details.get("role") == "summed"}
     if len(identities) > 1:
         return direct

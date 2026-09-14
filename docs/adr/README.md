@@ -85,7 +85,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 |---|---|---|
 | [0107](0107-usb-gadget-audio-has-one-capture-pipeline.md) | USB gadget audio has one capture pipeline, and no hidden fallback | amended by 0281 |
 | [0108](0108-a-latency-claim-is-earned-by-a-measured-artifact.md) | A low-latency route claim is earned by a measured artifact, never by configuration | amended by 0185 |
-| [0109](0109-the-combo-host-clock-servo-observes-resampler-correction.md) | The combo host-clock servo observes resampler correction, not gadget fill | amended by 0250 |
+| [0109](0109-the-combo-host-clock-servo-observes-resampler-correction.md) | The combo host-clock servo observes resampler correction, not gadget fill | amended by 0250, 0314 |
 | [0118](0118-the-airplay-latency-offset-is-derived-never-hand-set.md) | The AirPlay backend latency offset is derived from the live chain, never hand-set | accepted |
 | [0119](0119-dlna-is-the-phone-casting-surface.md) | DLNA/UPnP is the phone-casting surface; Google Cast is closed | accepted |
 | [0147](0147-one-source-coordinator-with-three-appliers-no-lifecycle-daemon.md) | The local-source lifecycle is one coordinator with three appliers — no resident daemon, no plugin API | accepted |
@@ -98,6 +98,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0205](0205-the-airplay-offset-ledger-is-four-terms-not-three.md) | The AirPlay offset ledger is four terms, not three | amended by 0266 |
 | [0221](0221-source-start-gates-are-marker-files-published-by-the-coordinator.md) | Source start gates are marker files published by the coordinator | accepted |
 | [0250](0250-the-host-clock-dll-block-is-deleted-not-ticked.md) | The host-clock `dll` block is deleted, not ticked | accepted |
+| [0314](0314-the-host-clock-has-one-correction-observable.md) | The host clock has one correction observable | accepted |
 | [0254](0254-runtime-buffers-are-bounded-and-drop-and-count.md) | Runtime buffers are bounded and drop-and-count | amended by 0266 |
 | [0266](0266-fan-in-publishes-only-evidence-that-has-a-reader.md) | Fan-in publishes only evidence that has a reader | accepted |
 | [0275](0275-usb-buffer-motion-is-separate-from-clock-correction.md) | USB buffer motion is separate from clock correction | amended by 0276 |

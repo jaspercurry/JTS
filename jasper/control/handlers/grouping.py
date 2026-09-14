@@ -42,13 +42,13 @@ _GROUPING_RECONCILE_KICK_MIN_INTERVAL_SECONDS = 60.0
 
 
 def _launch_grouping_reconciler_kick(reason: str) -> None:
+    subprocess.Popen(
+        [grouping_supervisor.RECONCILE_KICK_HELPER],
+    )
     log_event(
         logger,
         "grouping.reconciler_kick",
         reason=reason,
-    )
-    subprocess.Popen(
-        [grouping_supervisor.RECONCILE_KICK_HELPER],
     )
 
 
@@ -74,11 +74,6 @@ def _write_grouping_reconciler_trailing_delay(delay_s: float) -> None:
             math.ceil(_GROUPING_RECONCILE_KICK_MIN_INTERVAL_SECONDS),
         ),
     )
-    # 0o660: matches this daemon's UMask=0007 default for its other /run and
-    # /var/lib/jasper state (deploy/systemd/jasper-control.service) — group
-    # jasper stays able to read/replace it even though only this process
-    # writes it today. The root-run trailing-kick oneshot that reads it
-    # ignores the mode entirely.
     atomic_write_text(
         _GROUPING_RECONCILE_TRAILING_DELAY_FILE,
         f"{delay_seconds}\n",

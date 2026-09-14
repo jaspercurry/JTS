@@ -12,23 +12,15 @@ from dataclasses import dataclass
 from typing import Any, Mapping, TYPE_CHECKING
 
 import numpy as np
+from scipy.optimize import brentq, minimize_scalar
 
-from jasper.audio_measurement import deconv, gate_disclosure, gating, snr_policy
-from jasper.audio_measurement.alignment import (
-    _bandlimit,
-    _gcc_local_peak_snap,
-    gcc_phat,
-    parabolic_peak,
-    GCC_UPSAMPLE,
-)
+from jasper.audio_measurement import analysis, deconv, gate_disclosure, gating, snr_policy
 from jasper.audio_measurement.comparison_bands import (
     branch_snr_band_hz,
-    overlap_band_hz,
     OVERLAP_OCTAVE_RATIO,
 )
 from jasper.audio_measurement.program import (
     DEFAULT_VERIFY_TAIL_S,
-    ExcitationProgram,
     ProgramSegment,
     segment_stimulus,
 )
@@ -40,25 +32,22 @@ from .model import (
     ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
     ALIGNMENT_COMMITTED_FLAT_SUM,
+    ALIGNMENT_COMMITTED_SUMMED_FIT,
     ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
-    ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_FLAT_MINIMUM_EPSILON_DB,
     ALIGNMENT_FLATNESS_MAX_STEPS,
     ALIGNMENT_FLATNESS_SPAN_PERIODS,
     ALIGNMENT_FLATNESS_STEP_US,
-    ALIGNMENT_OK,
-    AlignmentEstimate,
     AppliedAlignment,
     DECONV_PRE_GUARD_S,
     DRIVER_SNR_ALIGNMENT_KEY,
     DriverResponse,
     _FLAT_SUM_POLARITY_OBJECTIVES,
-    GCC_SNAP_RADIUS_PERIODS,
     IR_POST_MS,
     IR_PRE_MS,
     logger,
-    MeasurementGeometry,
-    MeasurementPriors,
+    SummedAlignmentReference,
+    VERIFY_TRACKING_SMOOTHING_FRACTION,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB,
     RIPPLE_TRIM_MAX_DB,
@@ -187,6 +176,7 @@ def _driver_snr_block(
     capture_segment: np.ndarray | None,
     sample_rate: int,
     radiated_band_hz: tuple[float, float] | None,
+    alignment_band_hz: tuple[float, float] | None = None,
 ) -> dict[str, Any] | None:
     """The per-driver magnitude SNR verdict, read in ONE domain.
 
@@ -252,7 +242,7 @@ def _driver_snr_block(
         capture_bands=capture_bands,
         noise_bands=noise_bands,
         noise_floor_dbfs_scalar=None,
-        relevant_hz=relevant_hz,
+        relevant_hz=alignment_band_hz or relevant_hz,
         model=DRIVER,
         band_method=band_method,
     )
@@ -272,6 +262,7 @@ def _driver_response(
     capture_segment: np.ndarray | None = None,
     gate_exempt_reason: str | None = None,
     preserve_timing: bool = False,
+    alignment_band_hz: tuple[float, float] | None = None,
 ) -> DriverResponse:
     """One role's gated, calibrated response plus the gate's own disclosure.
 
@@ -329,7 +320,7 @@ def _driver_response(
     mag_db = 20.0 * np.log10(np.maximum(np.abs(H), 1e-12))
 
     snr_block = _driver_snr_block(
-        ambient_report=ambient_report,
+        ambient_report=ambient_report, alignment_band_hz=alignment_band_hz,
         fc_hz=fc_hz,
         freqs=freqs,
         mag_db=mag_db,
@@ -374,134 +365,6 @@ def _aligned_branch_tf(
     gated_ir, fragment = gating.gate_impulse_response(ir, sample_rate)
     freqs, H = _complex_tf(gated_ir, sample_rate, n_fft=n_fft, calibration=calibration)
     return freqs, H, fragment
-
-
-def _estimate_alignment(
-    capture: np.ndarray,
-    program: ExcitationProgram,
-    sample_rate: int,
-    global_offset: int,
-    epsilon: float,
-    fc_hz: float,
-    geometry: MeasurementGeometry,
-    priors: MeasurementPriors,
-    *,
-    woofer_full_ir: np.ndarray,
-    tweeter_full_ir: np.ndarray,
-    pre_samples: int,
-) -> AlignmentEstimate:
-    seg_w = program.segment("sweep_w")
-    seg_t = program.segment("sweep_t")
-    lo, hi = overlap_band_hz(
-        fc_hz, tweeter_sweep_lo_hz=seg_t.f1_hz, woofer_sweep_hi_hz=seg_w.f2_hz,
-    )
-
-    max_lag = priors.align_search_ms * 1e-3 * sample_rate
-    # Both IRs share the pre-guard + global offset time base, so each direct
-    # peak sits at pre_samples +/- the relative delay. Slice the same
-    # [pre-H, pre+H] region from both, band-limit to the overlap, GCC-PHAT.
-    half = int(round(0.010 * sample_rate)) + int(math.ceil(max_lag)) + 1
-    a = max(0, pre_samples - half)
-    b_w = min(woofer_full_ir.size, pre_samples + half)
-    b_t = min(tweeter_full_ir.size, pre_samples + half)
-    b = min(b_w, b_t)
-    ir_w = _bandlimit(np.asarray(woofer_full_ir[a:b], dtype=np.float64), sample_rate, lo, hi)
-    ir_t = _bandlimit(np.asarray(tweeter_full_ir[a:b], dtype=np.float64), sample_rate, lo, hi)
-    length = min(ir_w.size, ir_t.size)
-    ir_w, ir_t = ir_w[:length], ir_t[:length]
-
-    lag_samples, polarity_sign, confidence, at_edge = gcc_phat(
-        ir_t, ir_w, sample_rate=sample_rate, band_hz=(lo, hi),
-        upsample=GCC_UPSAMPLE, max_lag_samples=max_lag,
-    )
-    # epsilon-correct: the tweeter's schedule offset is stretched by epsilon.
-    delta_start = seg_t.start_sample - seg_w.start_sample
-    tau_samples = lag_samples - epsilon * delta_start
-    # delay_us = (D_woofer - D_tweeter) = -tau (tau = D_tweeter - D_woofer).
-    raw_delay_us = -tau_samples / sample_rate * 1e6
-    parallax_us = geometry.parallax_us()
-    delay_us = raw_delay_us - parallax_us
-
-    polarity = polarity_label(polarity_sign)
-
-    status = ALIGNMENT_OK
-    if at_edge:
-        # A peak clamped at the search bound likely exceeds the geometry
-        # prior; fail explicitly rather than return a wrong value.
-        status = ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW
-        confidence = 0.0
-        log_event(
-            logger,
-            "program_analysis.alignment_edge",
-            level=logging.WARNING,
-            phase=program.phase,
-            program_id=program.program_id,
-            lag_samples=round(lag_samples, 3),
-            search_window_ms=priors.align_search_ms,
-        )
-
-    # Fine stage (methodology §10). The aligner OWNS the physical peak-gap
-    # anchor (full-IR peak gap, drift+parallax-corrected); the peak is never
-    # recomputed downstream so the snap center and the reported anchor cannot
-    # desync. The snap moves the anchor to the nearest local maximum of the
-    # same correlation within +/-(period/6) at Fc; ``None`` leaves
-    # ``_build_candidate`` on the bare anchor. Snaps applied delay only — GCC
-    # polarity/confidence is untouched.
-    snapped_delay_us: float | None = None
-    anchor_delay_us: float | None = None
-    if status == ALIGNMENT_OK:
-        anchor_lag_samples = (
-            _rectified_peak_sample(tweeter_full_ir)
-            - _rectified_peak_sample(woofer_full_ir)
-        )
-        # Peak gap - inter-sweep drift, plus parallax, negated into the signed frame.
-        inter_sweep_drift_us = epsilon * delta_start / sample_rate * 1e6
-        drift_corrected_peak_gap_us = (
-            anchor_lag_samples / sample_rate * 1e6 - inter_sweep_drift_us
-        )
-        anchor_delay_us = -(drift_corrected_peak_gap_us + parallax_us)
-        if fc_hz > 0.0:
-            radius_samples = sample_rate / fc_hz * GCC_SNAP_RADIUS_PERIODS
-            # Recomputes the correlation rather than threading the seed's
-            # array: one extra small FFT per MEASURE, no big-array coupling.
-            snapped_lag = _gcc_local_peak_snap(
-                ir_t, ir_w, sample_rate=sample_rate, band_hz=(lo, hi),
-                upsample=GCC_UPSAMPLE, anchor_lag_samples=anchor_lag_samples,
-                radius_samples=radius_samples,
-            )
-            if snapped_lag is not None:
-                snapped_tau = snapped_lag - epsilon * delta_start
-                snapped_delay_us = -snapped_tau / sample_rate * 1e6 - parallax_us
-
-    # The flat-sum cross-check belongs to `_select_alignment_pair`; this
-    # estimate is the correlation SEED, and `polarity_agrees_with_sum`
-    # stays None until the selection answers it.
-    return AlignmentEstimate(
-        delay_us=delay_us,
-        raw_delay_us=raw_delay_us,
-        parallax_us=parallax_us,
-        polarity=polarity,
-        polarity_sign=polarity_sign,
-        confidence=confidence,
-        status=status,
-        anchor_delay_us=anchor_delay_us,
-        snapped_delay_us=snapped_delay_us,
-    )
-
-
-def _rectified_peak_sample(ir: np.ndarray) -> float:
-    """Sub-sample position of an IR's rectified peak, the parabolic estimator.
-
-    ``np.abs`` then a 3-point parabola over the argmax bin — a rectified peak,
-    not a Hilbert envelope. A bare ``argmax`` quantises the inter-driver
-    anchor to one sample — 20.8 us at 48 kHz, +/-15 deg at a 2 kHz Fc — which
-    is large enough to flip ``delay_role`` between sessions on the same
-    hardware (#1869; measured +/-2 samples of argmax jitter between
-    bit-identical sweep repeats). The same parabolic estimator three siblings
-    in this package already use, refining within the same bin.
-    """
-    magnitude = np.abs(np.asarray(ir, dtype=np.float64))
-    return parabolic_peak(magnitude, int(np.argmax(magnitude)))
 
 
 def predicted_branch_sum(
@@ -634,6 +497,9 @@ class AlignmentPairSelection:
     #: ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION); read via
     #: :attr:`polarity_agrees_with_sum` instead.
     polarity_pinned: bool = False
+    summed_fit_rms_db: float | None = None
+    summed_fit_margin: float | None = None
+    delay_interval_us: tuple[float, float] | None = None
 
     @property
     def polarity_agrees_with_sum(self) -> bool | None:
@@ -653,6 +519,116 @@ class AlignmentPairSelection:
     def flatness_improvement_db(self) -> float:
         """``seed_ripple - committed_ripple``: what the objective bought."""
         return self.seed_ripple_db - self.ripple_db
+
+
+def _alignment_delay_grid(fc_hz, anchor_delay_us, seed_delay_us, delay_bounds_us):
+    span_us = ALIGNMENT_FLATNESS_SPAN_PERIODS * 1e6 / fc_hz
+    n_steps = max(1, min(int(round(span_us / ALIGNMENT_FLATNESS_STEP_US)),
+                         ALIGNMENT_FLATNESS_MAX_STEPS))
+    step_us = span_us / n_steps
+    grid = [anchor_delay_us + i * step_us for i in range(-n_steps, n_steps + 1)]
+    if delay_bounds_us is not None:
+        lo_us, hi_us = sorted(abs(float(b)) for b in delay_bounds_us)
+        grid = [d for d in grid if lo_us <= abs(d) <= hi_us]
+    return [*grid, seed_delay_us], step_us if grid else 0.0
+
+
+def _summed_fit_comparator(freqs, W, T, reference, anchor_delay_us):
+    # A 1/N-octave box has half-width 1/(2N) octaves. Retain its edge samples.
+    radius = 2 ** (0.5 / VERIFY_TRACKING_SMOOTHING_FRACTION)
+    lo, hi = reference.band_hz
+    axis = reference.freqs_hz
+    mask = (axis >= lo / radius) & (axis <= hi * radius)
+    axis = axis[mask]
+    measured = analysis.smooth_fractional_octave(axis, reference.magnitude_db[mask], VERIFY_TRACKING_SMOOTHING_FRACTION)
+    start = max(0, np.searchsorted(freqs, axis[0]) - 1)
+    stop = np.searchsorted(freqs, axis[-1], side="right") + 1
+    freqs, W, T = freqs[start:stop], W[start:stop], T[start:stop]
+
+    def score(sign, delay):
+        predicted = predicted_branch_sum(
+            W, T, 0.0, 0.0, sign, freqs_hz=freqs,
+            residual_delay_us=summed_model_residual_delay_us(anchor_delay_us, delay),
+        )
+        db = 20 * np.log10(np.maximum(np.abs(predicted), 1e-12))
+        smoothed = analysis.smooth_fractional_octave(
+            axis, np.interp(axis, freqs, db), VERIFY_TRACKING_SMOOTHING_FRACTION,
+        )
+        rms, _ = analysis.tracking_error_db(axis, measured, smoothed, reference.band_hz)
+        return float(rms)
+
+    return score
+
+
+def _select_summed_alignment_pair(
+    freqs: np.ndarray, W: np.ndarray, T: np.ndarray, *,
+    reference: SummedAlignmentReference, woofer_role: str, tweeter_role: str,
+    fc_hz: float, anchor_delay_us: float, seed_delay_us: float,
+    seed_polarity_sign: int, delay_bounds_us: tuple[float, float] | None,
+) -> AlignmentPairSelection:
+    W = W * reference.response_by_role[woofer_role](freqs)
+    T = T * reference.response_by_role[tweeter_role](freqs)
+    score = _summed_fit_comparator(freqs, W, T, reference, anchor_delay_us)
+    grid, step = _alignment_delay_grid(fc_hz, anchor_delay_us, seed_delay_us, delay_bounds_us)
+    grid = sorted(set(grid))
+    lower, upper = (0.0, math.inf) if delay_bounds_us is None else sorted(abs(float(b)) for b in delay_bounds_us)
+    scans, limits = {}, {}
+    for sign in (1, -1):
+        coarse = [(delay, score(sign, delay)) for delay in grid]
+        center, _ = min(coarse, key=lambda item: item[1])
+        radius = 1e6 / fc_hz
+        extended = sorted(set([*grid, *np.arange(center - radius, center + radius + step / 2, step)])) if step else grid
+        bracket_grid = [d for d in extended if abs(d - center) <= radius and lower <= abs(d) <= upper]
+        values = {d: error for d, error in coarse}
+        for d in bracket_grid:
+            if d not in values:
+                values[d] = score(sign, d)
+        coarse = list(values.items())
+        limits[sign] = (min(values), max(values))
+        # Refine each local minimum: coarse quantization can rank adjacent lobes incorrectly.
+        for i, d in enumerate(bracket_grid):
+            lo, hi = bracket_grid[max(0, i - 1)], bracket_grid[min(len(bracket_grid) - 1, i + 1)]
+            if (lo == hi or values[d] > min(values[lo], values[hi])
+                    or values[d] == values[lo] == values[hi] or (lower > 0 and lo < 0 < hi)):
+                continue
+            optimum = minimize_scalar(lambda d: score(sign, d), bounds=(lo, hi), method="bounded", options={"xatol": .1}).x
+            coarse.extend((d, score(sign, d)) for d in (math.floor(optimum), math.ceil(optimum)) if lo <= d <= hi)
+        scans[sign] = coarse
+    minima = {sign: min(scan, key=lambda item: item[1]) for sign, scan in scans.items()}
+    sign = min(minima, key=lambda sign: minima[sign][1])
+    delay, rms = minima[sign]
+    margin = minima[-sign][1] / max(rms, np.finfo(float).eps)
+    interval = []
+    for direction in (-1, 1):
+        edge = delay
+        limit = max(limits[sign][0], lower if delay >= 0 else -upper) if direction < 0 else min(limits[sign][1], upper if delay >= 0 else -lower)
+        # Report the contiguous basin within 0.05 dB RMS, at 1 us resolution.
+        for _ in range(len(grid)):
+            next_edge = max(limit, edge - step) if direction < 0 else min(limit, edge + step)
+            if score(sign, next_edge) > rms + .05:
+                edge = brentq(lambda d: score(sign, d) - rms - .05, *sorted((edge, next_edge)))
+                break
+            edge = next_edge
+            if edge == limit:
+                break
+        interval.append(min(delay, float(math.ceil(edge))) if direction < 0 else max(delay, float(math.floor(edge))))
+
+    def ripple(sign, delay):
+        return _ripple_db(freqs, predicted_branch_sum(
+            W, T, 0.0, 0.0, sign, freqs_hz=freqs,
+            residual_delay_us=summed_model_residual_delay_us(anchor_delay_us, delay),
+        ), *reference.band_hz)
+
+    return AlignmentPairSelection(
+        polarity_sign=sign, delay_us=delay, ripple_db=ripple(sign, delay),
+        seed_polarity_sign=seed_polarity_sign, seed_delay_us=seed_delay_us,
+        seed_ripple_db=ripple(seed_polarity_sign, seed_delay_us),
+        objective=ALIGNMENT_COMMITTED_SUMMED_FIT,
+        grid_points=len(scans[sign]), grid_step_us=step,
+        left_anchor_lobe=abs(delay - anchor_delay_us) > half_period_us(fc_hz),
+        summed_fit_rms_db=rms, summed_fit_margin=margin,
+        delay_interval_us=(interval[0], interval[1]),
+    )
 
 
 def _select_alignment_pair(
@@ -809,19 +785,9 @@ def _select_alignment_pair(
     if explicit_delay_us is not None:
         delays = [float(explicit_delay_us)]
     elif anchor_delay_us is not None and fc_hz > 0.0:
-        span_us = ALIGNMENT_FLATNESS_SPAN_PERIODS * 1e6 / fc_hz
-        n_steps = int(round(span_us / ALIGNMENT_FLATNESS_STEP_US))
-        n_steps = max(1, min(n_steps, ALIGNMENT_FLATNESS_MAX_STEPS))
-        step_us = span_us / n_steps
-        grid = [anchor_delay_us + i * step_us for i in range(-n_steps, n_steps + 1)]
-        if delay_bounds_us is not None:
-            lo_us, hi_us = (abs(float(b)) for b in delay_bounds_us)
-            lo_us, hi_us = min(lo_us, hi_us), max(lo_us, hi_us)
-            grid = [d for d in grid if lo_us <= abs(d) <= hi_us]
-        # An empty grid (bound admits no point) reports like no-anchor: (1, 0.0).
-        if grid:
-            grid_step_us = step_us
-        delays = [*grid, seed_delay_us]
+        delays, grid_step_us = _alignment_delay_grid(
+            fc_hz, anchor_delay_us, seed_delay_us, delay_bounds_us,
+        )
 
     # The polarity axis, pinned the same way: the seed sign is not added
     # back, for the same reason the seed delay is not.

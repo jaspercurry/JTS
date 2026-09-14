@@ -417,6 +417,21 @@ PY
 # Remove once the /wifi/ wizard is the only way WiFi gets provisioned (no
 # Imager/raspi-config pre-set WiFi left to adopt).
 migrate_wifi_guardian() {
+    # Nested (not top-level): tests/test_install_wifi_guardian_migration.py
+    # extracts this function body with `sed '/^migrate_wifi_guardian()/,/^}/'`,
+    # which stops at the first column-0 '}' — a top-level helper defined
+    # before it would be left out of the extracted snippet.
+    #
+    # `nmcli -t` escapes a literal ':' in a value as '\:'; reverse that so a
+    # NAME/SSID containing one (e.g. "Cafe:Work") is matched rather than
+    # truncated. A literal '\' is left as-is, matching
+    # deploy/bin/jasper-wifi-guardian's nm_unescape — the canonical
+    # full-fidelity parser is jasper.web.wifi_setup._parse_terse if ever
+    # needed.
+    _migrate_wifi_unescape_nmcli() {
+        printf '%s' "${1//\\:/:}"
+    }
+
     local stash="${STATE_DIR}/wifi_guardian.env"
 
     # Stash already exists — wizard or a previous migrate seeded it.
@@ -427,19 +442,24 @@ migrate_wifi_guardian() {
     # host. Don't bother seeding.
     command -v nmcli >/dev/null 2>&1 || return 0
 
-    # Find the active wifi profile NAME. `nmcli` field "TYPE" reports
-    # `802-11-wireless` for wifi connections.
+    # Find the active wifi profile NAME. TYPE comes first in `-f TYPE,NAME`
+    # so the first ':' is an unambiguous field boundary even when NAME
+    # contains one (TYPE never does) — same query
+    # deploy/bin/jasper-wifi-guardian's ACTIVE_NAME uses.
     local active
-    active=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
-             | awk -F: '$2 ~ /wifi|wireless/ { print $1; exit }')
+    active=$(nmcli -t -f TYPE,NAME connection show --active 2>/dev/null \
+             | awk -F: '$1 ~ /wifi|wireless/ { sub(/^[^:]*:/, ""); print; exit }')
+    active="$(_migrate_wifi_unescape_nmcli "${active}")"
     [[ -z "${active}" ]] && return 0
 
     # Pull SSID + PSK + key-mgmt for the active profile. `-s` is
     # "show secrets" — requires root, which install.sh always has.
-    # We parse with awk to keep the PSK off any intermediate
-    # variable trace (this whole helper runs without `set -x`).
+    # We parse with a `read` loop, not awk, to keep the PSK off any
+    # intermediate process's argv (this whole helper runs without
+    # `set -x`).
     local ssid="" psk="" key_mgmt=""
     while IFS=: read -r key value; do
+        value="$(_migrate_wifi_unescape_nmcli "${value}")"
         case "${key}" in
             "802-11-wireless.ssid")              ssid="${value}" ;;
             "802-11-wireless-security.psk")      psk="${value}" ;;

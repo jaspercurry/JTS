@@ -19,7 +19,7 @@ from jasper.audio_measurement.program_analysis import (
 )
 from jasper.audio_measurement.program_analysis.check import alignment_snr_gain_adjustment
 from jasper.audio_measurement.program_analysis.model import (
-    DRIVER_SNR_ALIGNMENT_KEY, MeasurementPriors, ProgramAnalysis,
+    ALIGNMENT_COMMITTED_SUMMED_FIT, DRIVER_SNR_ALIGNMENT_KEY, MeasurementPriors, ProgramAnalysis,
 )
 from jasper.audio_measurement.program_analysis.summary import driver_alignment_snr_verdict, driver_snr_verdict
 from .sweep_spec import REQUIRED_SAMPLE_RATE_HZ
@@ -115,6 +115,7 @@ def _assess_recording(
         "delay_estimate": alignment is not None and alignment.status == ALIGNMENT_OK,
         "level_solve": analysis.gain_plan is not None and analysis.gain_plan.snr_floor_ok,
     }
+    summed_fit = analysis.candidate is not None and analysis.candidate.alignment_objective == ALIGNMENT_COMMITTED_SUMMED_FIT
     for response in responses:
         for decision, snr_verdict in (("magnitude", driver_snr_verdict(response)),
                                       (DRIVER_SNR_ALIGNMENT_KEY, driver_alignment_snr_verdict(response))):
@@ -130,7 +131,7 @@ def _assess_recording(
                 if value is not None:
                     evidence[f"{prefix}.{key}"] = value
             evidence[f"{prefix}.verdict"] = snr_verdict or "unknown"
-            if snr_verdict == "insufficient":
+            if snr_verdict == "insufficient" and not (decision == "alignment" and summed_fit):
                 capabilities["delay_estimate" if decision == "alignment" else "magnitude"] = False
     if alignment is not None:
         evidence.update(alignment_status=alignment.status, delay_us=float(alignment.delay_us))
@@ -218,7 +219,7 @@ def _assess_recording(
             evidence["pilot_transfer_step_db"] = float(step)
             if step > VERIFY_PILOT_TRANSFER_STEP_CEILING_DB:
                 return refuse(reasons.REASON_VERIFY_LEVEL_SHIFT, ok=True)
-    if adjusted:
+    if adjusted and not summed_fit:
         return replace(verdict, next="retake_louder", next_gain_db=program_peak(adjusted), charge="speaker",
                        evidence={**evidence, **{f"next_gain_db.{role}": gain for role, gain in adjusted.items()}})
     return verdict

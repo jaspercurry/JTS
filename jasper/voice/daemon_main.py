@@ -765,7 +765,6 @@ async def _open_integrations(
 
 
 def _build_volume_coordinator(
-    stack: contextlib.AsyncExitStack,
     cfg: Config,
     *,
     camilla: CamillaController,
@@ -776,6 +775,8 @@ def _build_volume_coordinator(
     One router for both, so the coordinator's outbound Web API volume and the
     transport / spotify packs share one OAuth refresh cycle per account.
     """
+    # No release registered: the coordinator owns no async resource, so
+    # there is nothing for the stack to close at shutdown.
     persistence = VolumePersistence(cfg.volume_state_path)
     spotify_router = _build_router(cfg)
     coordinator = VolumeCoordinator(
@@ -786,7 +787,6 @@ def _build_volume_coordinator(
         spotify_device_name=cfg.spotify_device_name,
         volume_context_publisher=volume_context_publisher_for_runtime(os.environ),
     )
-    _arelease(stack, "volume_coordinator", coordinator.aclose)
     return coordinator, spotify_router
 
 
@@ -1169,7 +1169,7 @@ async def run() -> None:
         )
         integrations = await _open_integrations(stack, cfg)
         volume_coordinator, spotify_router = _build_volume_coordinator(
-            stack, cfg, camilla=camilla, renderer=renderer,
+            cfg, camilla=camilla, renderer=renderer,
         )
         # Every duck holder in this process releases against the coordinator's
         # canonical target so their interleavings cannot strand the fader at a

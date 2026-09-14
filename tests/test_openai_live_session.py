@@ -23,7 +23,7 @@ from jasper.voice.conversation import END_CONVERSATION_TOOL, register_conversati
 from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConnection
 from jasper.voice.session import ConnectionState
 from tests._async_wait import wait_signalled, wait_until
-from tests._log_events import event_fields
+from tests._log_events import event_field_maps, event_fields
 
 
 CLIENT_EVENT = TypeAdapter(ClientEventParam)
@@ -613,6 +613,30 @@ async def test_quiet_deltas_play_only_while_the_answer_is_running(
     assert int(fields["chunks_received"]) == 1
     assert int(fields["quiet_played"]) == played
     assert int(fields["quiet_discarded"]) == discarded
+
+
+@pytest.mark.parametrize("deltas, deficits", [
+    ([(0.125, True)], [120]),
+    ([(6.0, True)], []),
+    ([(0.125, False)], [120]),
+    ([(6.0, False), (6.125, True)], []),
+])
+async def test_output_deficit_measures_only_pcm_within_an_answer(
+    monkeypatch, caplog, deltas, deficits,
+):
+    clock = FrozenClock()
+    monkeypatch.setattr(openai_live_session, "time", clock)
+    caplog.set_level(logging.INFO)
+    async with live_turn() as turn:
+        await turn.on_event(output_audio(AUDIBLE_PCM))
+        first_at = clock.now
+        for offset, audible in deltas:
+            clock.now = first_at + offset
+            await turn.on_event(output_audio(AUDIBLE_PCM if audible else QUIET_PCM))
+    assert [
+        int(fields["deficit_ms"])
+        for fields in event_field_maps(caplog, "provider.output_deficit")
+    ] == deficits
 
 
 async def test_an_audible_delta_after_a_long_gap_rearms_silence_bridging(monkeypatch):

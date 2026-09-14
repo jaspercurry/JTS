@@ -36,7 +36,6 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
@@ -62,10 +61,15 @@ from . import volume_diagnostics
 from .bluealsa_probe import active_transport_path
 from .voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from .volume_owner import VolumeClaimRefused, VolumeOwner, install_volume_owner
+from .volume_scales import (
+    listening_level_to_bt_volume,
+    listening_level_to_spotify_percent,
+    native_to_listening_level,
+)
+from .volume_state import SourceHandoff, VolumeState, _OutboundStamp
 from .volume_persistence import (
     VolumePersistence,
     configured_path as volume_state_path,
-    db_to_percent,
     percent_to_db,
     regress_listening_level_if_stale,
 )
@@ -73,7 +77,6 @@ from .volume_persistence import (
 if TYPE_CHECKING:
     from .camilla import CamillaController
     from .renderer import RendererClient
-    from .volume_persistence import VolumeRecord
 
 logger = logging.getLogger(__name__)
 _bluez_alsa_active_transport_path = partial(active_transport_path, logger)
@@ -82,40 +85,6 @@ _bluez_alsa_active_transport_path = partial(active_transport_path, logger)
 # to patch time.monotonic process-wide (which would corrupt asyncio clocks) —
 # the same seam jasper/voice/measurement_hold.py keeps.
 _measurement_monotonic = time.monotonic
-
-
-# AirPlay's native map lives in shairport's volume hook,
-# deploy/bin/jasper-airplay-volume (ADR-0206), not here.
-
-# AirPlay's volume range is -30..0 dB, with -144 reserved as "muted". The
-# hook owns the dB→percent map, maps the mute sentinel onto 0% (this
-# module's content mute), and reaches the coordinator in percent. Tests pin
-# the hook's endpoints against these bounds.
-AIRPLAY_DB_MIN = -30.0
-AIRPLAY_DB_MAX = 0.0
-
-
-def listening_level_to_spotify_percent(level: int) -> int:
-    return max(0, min(100, int(level)))
-
-
-def spotify_percent_to_listening_level(pct: int) -> int:
-    return max(0, min(100, int(pct)))
-
-
-# Bluetooth's MediaTransport1.Volume is uint16 0..127 (AVRCP 1.6
-# absolute-volume scale).
-BT_VOLUME_MAX = 127
-
-
-def listening_level_to_bt_volume(level: int) -> int:
-    p = max(0, min(100, int(level)))
-    return round(p * BT_VOLUME_MAX / 100.0)
-
-
-def bt_volume_to_listening_level(vol: int) -> int:
-    v = max(0, min(BT_VOLUME_MAX, int(vol)))
-    return round(v * 100.0 / BT_VOLUME_MAX)
 
 
 # Window during which an observed source-side change is treated as
@@ -155,93 +124,6 @@ CamillaLockProbe = Callable[[], Awaitable[Optional[bool]]]
 RECONCILE_DRIFT_DB = 1.0
 RECONCILE_DUCK_SKIP_DB = 10.0
 MUTE_DB_EPSILON = 1e-6
-
-
-@dataclass
-class _OutboundStamp:
-    """Per-source last-outbound timestamp + the value we wrote."""
-    at_mono: float
-    level: int
-
-
-@dataclass(frozen=True)
-class VolumeState:
-    """One canonical interpretation of persisted speaker-volume intent.
-
-    ``listening_level`` is the level to restore after a temporary mute.
-    ``pre_mute_level`` being present is the temporary mute latch.  Every
-    external surface should render ``effective_percent`` rather than
-    interpreting those two persisted fields independently. ``mute_token`` is
-    internal transition identity: it prevents a push renderer's stale
-    pre-mute reading from being mistaken for a later user edit.
-    """
-
-    listening_level: int
-    pre_mute_level: int | None = None
-    mute_token: str | None = None
-
-    @classmethod
-    def from_record(
-        cls,
-        record: "VolumeRecord | None",
-        *,
-        default_level: int = 50,
-    ) -> "VolumeState":
-        """Project persistence through the one public volume-state contract."""
-        if record is None:
-            return cls(max(0, min(100, int(default_level))))
-        level = (
-            int(record.listening_level)
-            if record.listening_level is not None
-            else db_to_percent(record.main_volume_db)
-        )
-        return cls(
-            listening_level=max(0, min(100, level)),
-            pre_mute_level=record.pre_mute_level,
-            mute_token=record.mute_token,
-        )
-
-    @property
-    def effective_percent(self) -> int:
-        return 0 if self.pre_mute_level is not None else self.listening_level
-
-    @property
-    def muted(self) -> bool:
-        # Explicit 0% and temporary mute both assert the same final-output
-        # silence contract. Only temporary mute has a restore target.
-        return self.effective_percent == 0
-
-    @property
-    def restore_percent(self) -> int | None:
-        return self.pre_mute_level
-
-
-@dataclass(frozen=True)
-class SourceHandoff:
-    """Preparation result for a mux-owned source transition.
-
-    ``level`` is the effective level captured during preparation, not the
-    separately remembered post-unmute level.
-    """
-    prev_source: Source
-    current_source: Source
-    reason: str
-    level: int
-    prev_mode: VolumeMode
-    current_mode: VolumeMode
-    guard_db: float | None = None
-    camilla_before_db: float | None = None
-    push_ok: bool | None = None
-    camilla_guarded: bool = False
-    settled_ms: int = 0
-    result: str = "ok"
-    detail: str = ""
-    started_at_mono: float = 0.0
-    prepared_at_mono: float = 0.0
-
-    @property
-    def ok(self) -> bool:
-        return self.result in {"ok", "degraded_safe", "noop"}
 
 
 class VolumeCoordinator:
@@ -787,28 +669,8 @@ class VolumeCoordinator:
         observation was accepted for the active source and False when
         it was intentionally declined.
         """
-        if source == Source.AIRPLAY:
-            # shairport's volume hook (deploy/bin/jasper-airplay-volume,
-            # ADR-0206) has already mapped AirPlay's dB scale onto this one
-            # and dropped its mute sentinel, so AirPlay arrives in
-            # listening-level units like USBSINK's. AirPlay is
-            # camilla-master, so the carrier sync below moves the ramped
-            # master fader; the sender's own slider is still never written
-            # (ADR-0176).
-            level = max(0, min(100, int(native_value)))
-        elif source == Source.SPOTIFY:
-            level = spotify_percent_to_listening_level(int(native_value))
-        elif source == Source.BLUETOOTH:
-            level = bt_volume_to_listening_level(int(native_value))
-        elif source == Source.USBSINK:
-            # USB gadget volume_bridge POSTs percent directly. It has already
-            # inverted macOS's observed square-root transfer from the gadget
-            # mixer's 0-based step index (see volume_bridge._raw_to_pct). Map
-            # identity to listening_level — the coordinator doesn't need to
-            # know about ALSA mixer units, step indices, or the gadget's dB
-            # range.
-            level = max(0, min(100, int(native_value)))
-        else:
+        level = native_to_listening_level(source, native_value)
+        if level is None:
             logger.debug("observe_source_volume: unknown source %s", source)
             return False
         active = await self._active_source()
@@ -1064,10 +926,10 @@ class VolumeCoordinator:
             persist=True,
         )
         if guarded:
-            self._record_push_guard(
+            volume_diagnostics.record_push_guard(
                 source,
-                level,
-                guard_db,
+                level=level,
+                guard_db=guard_db,
                 reason=reason,
                 context=context,
                 previous_db=previous_db,
@@ -1186,7 +1048,6 @@ class VolumeCoordinator:
         until its volume carrier is safe for the canonical state's
         effective level.
         """
-        started = time.monotonic()
         self._refresh_from_disk()
         level = self._effective_level()
         prev_mode = volume_mode(prev_source)
@@ -1218,8 +1079,6 @@ class VolumeCoordinator:
                 settled_ms=settled_ms,
                 result=result,
                 detail=detail,
-                started_at_mono=started,
-                prepared_at_mono=time.monotonic(),
             )
 
         if prev_source == current_source:
@@ -1335,10 +1194,10 @@ class VolumeCoordinator:
                 result="failed",
                 detail="push_failed_camilla_guard_catchdown_failed",
             )
-        self._record_push_guard(
+        volume_diagnostics.record_push_guard(
             current_source,
-            level,
-            guard_db,
+            level=level,
+            guard_db=guard_db,
             reason=volume_diagnostics.GUARD_SOURCE_HANDOFF_PUSH_FAILED,
             context="source_handoff_push_degraded",
             previous_db=camilla_before,
@@ -1385,10 +1244,10 @@ class VolumeCoordinator:
                         )
                         if guarded:
                             reason = volume_diagnostics.GUARD_SOURCE_HANDOFF_PUSH_FAILED
-                            self._record_push_guard(
+                            volume_diagnostics.record_push_guard(
                                 handoff.current_source,
-                                latest_level,
-                                guard_db,
+                                level=latest_level,
+                                guard_db=guard_db,
                                 reason=reason,
                                 context="source_handoff_push_finalize_degraded",
                                 previous_db=previous_db,
@@ -2340,6 +2199,37 @@ class VolumeCoordinator:
             self._persistence.save_now(db)
         return bool(ok)
 
+    def _log_push_guard_clear_failed(
+        self,
+        source: Source,
+        level: int,
+        *,
+        previous_db: float | None,
+        previous_mute: bool | None,
+        context: str,
+        reason: str | None = None,
+    ) -> None:
+        fields: dict[str, Any] = {
+            "source": source.value,
+            "level": level,
+            "previous_db": (
+                "unknown" if previous_db is None else f"{previous_db:.1f}"
+            ),
+            "previous_mute": (
+                "unknown" if previous_mute is None else str(previous_mute).lower()
+            ),
+            "context": context,
+        }
+        if reason is not None:
+            fields["reason"] = reason
+        log_event(
+            logger,
+            "volume.push_guard_clear_failed",
+            level=logging.WARNING,
+            # `level` field collides with log_event's level= param → fields=.
+            fields=fields,
+        )
+
     async def _clear_confirmed_push_guard(
         self, source: Source, level: int, *, context: str,
     ) -> bool:
@@ -2380,27 +2270,13 @@ class VolumeCoordinator:
                 context=context,
                 ok=False,
             )
-            log_event(
-                logger,
-                "volume.push_guard_clear_failed",
-                level=logging.WARNING,
-                # `level` field collides with log_event's level= param → fields=.
-                fields={
-                    "source": source.value,
-                    "level": level,
-                    "previous_db": (
-                        "unknown"
-                        if effective_previous_db is None
-                        else f"{effective_previous_db:.1f}"
-                    ),
-                    "previous_mute": (
-                        "unknown"
-                        if current_mute is None
-                        else str(current_mute).lower()
-                    ),
-                    "context": context,
-                    "reason": "duck_active",
-                },
+            self._log_push_guard_clear_failed(
+                source,
+                level,
+                previous_db=effective_previous_db,
+                previous_mute=current_mute,
+                context=context,
+                reason="duck_active",
             )
             return False
         cleared = await self._set_camilla_db(
@@ -2444,26 +2320,12 @@ class VolumeCoordinator:
                 context=context,
                 ok=False,
             )
-            log_event(
-                logger,
-                "volume.push_guard_clear_failed",
-                level=logging.WARNING,
-                # `level` field collides with log_event's level= param → fields=.
-                fields={
-                    "source": source.value,
-                    "level": level,
-                    "previous_db": (
-                        "unknown"
-                        if effective_previous_db is None
-                        else f"{effective_previous_db:.1f}"
-                    ),
-                    "previous_mute": (
-                        "unknown"
-                        if current_mute is None
-                        else str(current_mute).lower()
-                    ),
-                    "context": context,
-                },
+            self._log_push_guard_clear_failed(
+                source,
+                level,
+                previous_db=effective_previous_db,
+                previous_mute=current_mute,
+                context=context,
             )
         return bool(cleared)
 
@@ -2567,29 +2429,8 @@ class VolumeCoordinator:
         record = self._persistence.load()
         return record.main_volume_db if record is not None else None
 
-    def _record_push_guard(
-        self,
-        source: Source,
-        level: int,
-        guard_db: float,
-        *,
-        reason: str,
-        context: str,
-        previous_db: float | None,
-    ) -> None:
-        volume_diagnostics.record_push_guard(
-            source,
-            level=level,
-            guard_db=guard_db,
-            reason=reason,
-            context=context,
-            previous_db=previous_db,
-        )
-
-    def _stamp_outbound(self, source: Source, level: int) -> None:
-        self._last_outbound[source] = _OutboundStamp(
-            at_mono=time.monotonic(), level=level,
-        )
+    def _stamp_outbound(self, source: Source) -> None:
+        self._last_outbound[source] = _OutboundStamp(at_mono=time.monotonic())
 
     def _is_own_echo(self, source: Source, observed_level: int) -> bool:
         stamp = self._last_outbound.get(source)
@@ -2690,7 +2531,7 @@ class VolumeCoordinator:
                     ),
                     timeout=DEVICES_TIMEOUT_SEC,
                 )
-                self._stamp_outbound(Source.SPOTIFY, level)
+                self._stamp_outbound(Source.SPOTIFY)
                 volume_diagnostics.record_source_push(
                     Source.SPOTIFY,
                     level=level,
@@ -2756,7 +2597,7 @@ class VolumeCoordinator:
             bus="--system",
         )
         if ok:
-            self._stamp_outbound(Source.BLUETOOTH, level)
+            self._stamp_outbound(Source.BLUETOOTH)
             volume_diagnostics.record_source_push(
                 Source.BLUETOOTH,
                 level=level,
@@ -2879,13 +2720,6 @@ class VolumeCoordinator:
         )
         return bool(ok)
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    async def aclose(self) -> None:
-        """Retained lifecycle hook; this coordinator owns no async resources."""
-
 
 # ----------------------------------------------------------------------
 # DBus helpers — protocol/property policy stays here while the shared busctl
@@ -2940,11 +2774,8 @@ async def env_canonical_target_db() -> float:
             librespot_state_path=librespot_state.configured_path(),
         ),
     )
-    try:
-        coord.load_persisted_level()
-        return await coord.get_camilla_target_db()
-    finally:
-        await coord.aclose()
+    coord.load_persisted_level()
+    return await coord.get_camilla_target_db()
 
 
 def install_env_canonical_target_provider() -> None:

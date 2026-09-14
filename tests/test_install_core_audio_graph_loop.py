@@ -993,6 +993,7 @@ def test_both_profiles_close_the_install_window_between_staging_and_runtime(
         first("fn install_local_audio_graph_unit_files")
         < first(f"fn {stage}")
         < first("systemctl daemon-reload")
+        < first("fn validate_installed_systemd_units")
         < cleared
         < mutations[0]
         <= first("systemctl restart jasper-control.service")
@@ -1101,6 +1102,68 @@ def test_a_failed_stage_rolls_the_whole_profile_generation_back(
     ], issued
 
 
+@pytest.mark.parametrize("verify_rc", [0, 1, 124])
+def test_installed_unit_verification_commits_or_restores_the_generation(tmp_path, verify_rc):
+    systemd_dir = tmp_path / "systemd"
+    systemd_dir.mkdir()
+    names = {
+        "jasper-camilla-crossover.service", "jasper-source-intent-reconcile.service",
+        "jasper-fanin-coupling-auto.service", "jasper-web.socket", "jts-mic.slice",
+        "jasper-custom.timer", "jasper-custom.path", "jasper-custom.target",
+        "nginx.service",
+    }
+    for name in names:
+        (systemd_dir / name).write_text("old generation\n")
+    (systemd_dir / "masked.service").symlink_to("/dev/null")
+    (systemd_dir / "unrelated.service").write_text("unrelated\n")
+    (systemd_dir / "ignored.conf").write_text("unrelated\n")
+    staged = tmp_path / "staged"
+    staged.write_text("new generation\n")
+    dropin = systemd_dir / "nginx.service.d"
+    dropin.mkdir()
+    binary_dir = tmp_path / "bin"
+    binary_dir.mkdir()
+    analyzer = binary_dir / "systemd-analyze"
+    analyzer.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$@" > "{tmp_path}/verify.args"\n'
+        f'echo verify >> "{tmp_path}/calls.log"\n'
+        f"exit {verify_rc}\n"
+    )
+    analyzer.chmod(0o755)
+    script = f"""{_shim_preamble(tmp_path)}
+{_transaction_recorder(tmp_path)}
+udevadm() {{ :; }}
+JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS=("0644 unused $SYSTEMD_DIR/jasper-camilla-crossover.service")
+stage() {{
+    local unit
+    for unit in {" ".join(sorted(names - {"nginx.service"}))}; do
+        install -m 0644 "{staged}" "$SYSTEMD_DIR/$unit"
+    done
+    install -m 0644 "{staged}" "$SYSTEMD_DIR/nginx.service.d/jts-recovery.conf"
+}}
+_with_unit_install_transaction stage
+"""
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=20,
+        env={**os.environ, "PATH": f"{binary_dir}:{os.environ['PATH']}"},
+    )
+    assert result.returncode == verify_rc, result.stderr
+    assert (systemd_dir / "jasper-web.socket").read_text() == (
+        "old generation\n" if verify_rc else "new generation\n"
+    )
+    args = (tmp_path / "verify.args").read_text().splitlines()
+    assert args[0] == "verify"
+    assert set(args[1:]) == names
+    assert len(args[1:]) == len(names)
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    assert calls == ["systemctl daemon-reload", "verify", (
+        "systemctl daemon-reload" if verify_rc else "fn clear_install_in_progress"
+    )]
+    assert not (tmp_path / "txn").exists()
+    _assert_no_rm_escaped(tmp_path)
+
+
 def _destination_harness(tmp_path: Path, function: str) -> str:
     """Record every destination one install step promotes, with the copy itself
     suppressed — nothing here may write to the host's /etc or /usr/local. The
@@ -1121,7 +1184,7 @@ install() {{
 }}
 systemctl() {{ return 0; }}
 install_usb_network_files() {{ return 0; }}
-validate_streambox_systemd_units() {{ return 0; }}
+validate_streambox_web_socket() {{ return 0; }}
 reload_audio_recovery_udev_rules_for_install() {{ return 0; }}
 {function}
 """

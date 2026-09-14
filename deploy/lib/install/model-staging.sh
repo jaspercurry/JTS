@@ -20,7 +20,7 @@ print(pathlib.Path(spec.origin).resolve().parent / "resources" / "models")'
     )"
     install -d -m 0755 -o root -g root "${openwakeword_models_dir}"
     OPENWAKEWORD_MODELS_DIR="${openwakeword_models_dir}" \
-        "${INSTALL_DIR}/.venv/bin/python" -m jasper.model_downloads \
+        "${INSTALL_DIR}/.venv/bin/python" -m jasper.cli.model_downloads \
             stage --registry openwakeword --required
 }
 
@@ -32,7 +32,7 @@ stage_wake_models() {
     # read by the other jasper-group daemons. 0770 group `jasper` is the mode
     # heal_shared_state_modes asserts here; the two must not disagree.
     install -d -m 0770 -o root -g jasper /var/lib/jasper/wake-events
-    if ! "${INSTALL_DIR}/.venv/bin/python" -m jasper.model_downloads \
+    if ! "${INSTALL_DIR}/.venv/bin/python" -m jasper.cli.model_downloads \
             stage --registry wake --optional \
             --optional-timeout 30 --optional-retries 2; then
         echo "  warning: one or more wake-word model downloads failed"
@@ -44,7 +44,7 @@ stage_wake_models() {
 stage_dtln_models() {
     ensure_state_dir
     install -d -m 0755 -o root -g root /var/lib/jasper/dtln
-    if ! "${INSTALL_DIR}/.venv/bin/python" -m jasper.model_downloads \
+    if ! "${INSTALL_DIR}/.venv/bin/python" -m jasper.cli.model_downloads \
             stage --registry dtln --optional \
             --optional-timeout 30 --optional-retries 2; then
         echo "  warning: one or more DTLN model downloads failed"
@@ -60,5 +60,5 @@ stage_dtln_models() {
 }
 
 seed_default_wake_model_env() {
-    "${INSTALL_DIR}/.venv/bin/python" -m jasper.model_downloads seed-wake-default || true
+    "${INSTALL_DIR}/.venv/bin/python" -m jasper.cli.model_downloads seed-wake-default || true
 }

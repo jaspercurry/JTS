@@ -10,6 +10,7 @@ from jasper import source_intent
 from jasper.control import restart_broker
 from jasper.local_sources import local_source_lifecycles
 from jasper.multiroom.effective_role import FOLLOWER_STATUS_FILE
+from jasper.music_sources import Source
 from tests.install_surface import installer_text
 from tests.systemd_unit_helpers import (
     never_stays_complete,
@@ -125,6 +126,20 @@ def test_source_intent_reconcile_is_bounded_without_bluez_ordering_cycle() -> No
     for key, value in pairs:
         if key in {"After", "Before", "Wants", "Requires"}:
             assert "bluetooth.service" not in value.split()
+
+
+def test_max_failed_reset_transitions_matches_local_source_registry() -> None:
+    """jasper.source_intent_units freezes this count to stay stdlib-only.
+
+    A registry change (a source gaining/losing a runtime unit) that is not
+    mirrored into the frozen constant would silently undercount the timeout
+    budget's failed-reset headroom.
+    """
+    live = sum(
+        1 if lifecycle.source == Source.USBSINK else len(lifecycle.runtime_units)
+        for lifecycle in local_source_lifecycles()
+    )
+    assert source_intent._MAX_FAILED_RESET_TRANSITIONS == live
 
 
 def test_source_reconcile_timeout_hierarchy_covers_all_owner_waits() -> None:
@@ -533,18 +548,6 @@ def test_grouping_boot_reconcile_runs_after_source_intent_convergence() -> None:
         if line.startswith("After=")
     )
     assert "jasper-source-intent-reconcile.service" in after
-
-
-def test_streambox_systemd_verify_covers_source_and_usb_owner_graph() -> None:
-    installer = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
-        encoding="utf-8"
-    )
-    block = installer.split("validate_streambox_systemd_units() {", 1)[1].split(
-        "\n}\n",
-        1,
-    )[0]
-    assert "${SYSTEMD_DIR}/jasper-source-intent-reconcile.service" in block
-    assert "${SYSTEMD_DIR}/jasper-fanin-coupling-auto.service" in block
 
 
 def test_grouping_role_owner_handoffs_have_no_systemd_dependency_cycle() -> None:

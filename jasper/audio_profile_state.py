@@ -142,6 +142,29 @@ def parse_env_bool(raw: str, default: bool = False) -> bool:
     return default
 
 
+def intent_from_env(values: Mapping[str, str]) -> AecIntent:
+    """Read every `WAKE_LEG_DEFAULTS` boolean from an aec_mode.env mapping.
+
+    The one reader for that table (the loop `_read_aec_state` already used).
+    `mode` and `profile_selection` aren't part of the leg vocabulary; a
+    caller that needs them sets those on the result with
+    `dataclasses.replace`.
+    """
+
+    legs = {
+        name: default if values.get(key) is None
+        else parse_env_bool(values[key], default)
+        for name, key, default in WAKE_LEG_DEFAULTS
+    }
+    return AecIntent(
+        raw_enabled=legs["leg_raw"],
+        dtln_enabled=legs["leg_dtln"],
+        chip_aec_enabled=legs["leg_chip_aec"],
+        chip_aec_150_enabled=legs["leg_chip_aec_150"],
+        chip_aec_210_enabled=legs["leg_chip_aec_210"],
+    )
+
+
 def normalize_aec_mode(raw: str) -> str:
     """Normalize the JASPER_AEC_MODE master toggle to the two applied values.
 

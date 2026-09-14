@@ -16,12 +16,13 @@ from jasper.active_speaker.run_manifest import RunManifest
 from jasper.active_speaker.crossover_v2.door import isolation_hold
 from jasper.active_speaker.crossover_v2.capture_provenance import enrich_capture_record
 from jasper.active_speaker.crossover_v2.session import TuningSession
+from jasper.active_speaker.crossover_v2.summed_alignment import banked_entry_baseline
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
 from jasper.active_speaker.plan_run import RunDoor
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
-from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY, PHASE_CLOUD_VERIFY
+from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY, PHASE_CLOUD_VERIFY, PHASE_ENTRY_BASELINE
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, TakeVerdict, PhaseVerdict
 from jasper.active_speaker.seat_level_reference import check_target_capture_dbfs as anchored_check_target
 from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS, ExcitationProgram
@@ -65,6 +66,9 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
 
     def after_bank(record: Any, record_id: str) -> None:
         answers[record_id] = answers.pop(record["take_id"])
+        _, analysis = answers[record_id]
+        if record.get("phase") == PHASE_ENTRY_BASELINE and not isinstance(analysis, Exception):
+            conductor._measure_entry_baseline = banked_entry_baseline(record, analysis)
 
     records.enrich, records.after_bank = enrich, after_bank
 
