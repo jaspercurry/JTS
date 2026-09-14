@@ -168,6 +168,7 @@ class TimerScheduler:
         self._store = store if store is not None else TimerStore(db_path)
         self._timers: dict[str, Timer] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._prerender_tasks: set[asyncio.Task] = set()
         self._started = False
 
     def set_on_fire(
@@ -277,7 +278,14 @@ class TimerScheduler:
                     timer.id, e,
                 )
 
-        asyncio.create_task(_wrapped(), name=f"timer-prerender-{timer.id}")
+        # A reference must be kept until the task completes -- an
+        # unreferenced asyncio.Task is GC-eligible mid-flight, which
+        # can silently drop the pre-render.
+        task = asyncio.create_task(
+            _wrapped(), name=f"timer-prerender-{timer.id}",
+        )
+        self._prerender_tasks.add(task)
+        task.add_done_callback(self._prerender_tasks.discard)
 
     def list_active(self) -> list[Timer]:
         """Active timers, sorted by remaining time (soonest first)."""

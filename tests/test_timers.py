@@ -632,6 +632,32 @@ async def test_scheduler_pre_render_fires_on_add():
             os.unlink(path)
 
 
+async def test_scheduler_retains_pre_render_task_until_done():
+    """The pre-render task stays referenced in a live set while in
+    flight — an unreferenced task is GC-eligible mid-flight — and is
+    discarded once it completes."""
+    path = _tmp_db_path()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def pre_render(t: Timer) -> None:
+        started.set()
+        await release.wait()
+
+    try:
+        sched = TimerScheduler(pre_render=pre_render, db_path=path)
+        sched.add(60, label="laundry")
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        assert len(sched._prerender_tasks) == 1
+        release.set()
+        await asyncio.sleep(0.02)
+        assert sched._prerender_tasks == set()
+        await sched.stop()
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
 async def test_scheduler_pre_render_fires_on_restored_timers():
     """When the daemon restarts and start() restores persisted
     timers, each restored timer also gets a pre-render — handles the
