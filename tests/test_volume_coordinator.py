@@ -26,6 +26,7 @@ from tests._log_events import event_field_maps, event_records
 from jasper import bluealsa_probe
 from jasper import spotify_router as spotify_router_mod
 from jasper import volume_coordinator as vc_mod
+from jasper import volume_push_sources as vps_mod
 from jasper.accounts import Account
 from jasper.camilla import CamillaUnavailable
 from jasper.spotify_router import AccountClient, Router
@@ -2851,11 +2852,11 @@ async def test_usbsink_is_camilla_master(tmp_path):
 
 # ---------- bluealsa transport-path probe goes through shared backoff -------
 #
-# _bluez_alsa_active_transport_path runs in jasper-control on every BT
-# volume set from the remote/web. It must reuse jasper.bluealsa_probe so a
-# D-Bus permission denial backs off process-wide instead of hammering the
-# system bus once per volume set. These tests fail if the helper reverts
-# to its own raw `bluealsa-cli list-pcms` subprocess.
+# volume_push_sources._bluez_alsa_active_transport_path runs in
+# jasper-control on every BT volume set from the remote/web. It must reuse
+# jasper.bluealsa_probe so a D-Bus permission denial backs off process-wide
+# instead of hammering the system bus once per volume set. These tests fail
+# if the helper reverts to its own raw `bluealsa-cli list-pcms` subprocess.
 
 
 def _fake_pcm_list(monkeypatch, stdout: bytes, returncode: int = 0) -> dict[str, int]:
@@ -2893,7 +2894,7 @@ async def test_bluez_transport_path_parses_the_pcm_list(
 ):
     _fake_pcm_list(monkeypatch, stdout)
 
-    assert await vc_mod._bluez_alsa_active_transport_path() == expected
+    assert await vps_mod._bluez_alsa_active_transport_path() == expected
 
 
 @pytest.mark.parametrize(
@@ -2908,13 +2909,13 @@ async def test_bluez_transport_path_honours_the_shared_probe_backoff(
     spawning. Pins the 'shared module', not a per-caller, contract."""
     calls = _fake_pcm_list(monkeypatch, b"", returncode=1)
     if tripped_by_another_consumer:
-        bluealsa_probe.note_probe_failure("rc=1", vc_mod.logger)
+        bluealsa_probe.note_probe_failure("rc=1", vps_mod.logger)
         expected_spawns = 0
     else:
-        assert await vc_mod._bluez_alsa_active_transport_path() is None
+        assert await vps_mod._bluez_alsa_active_transport_path() is None
         expected_spawns = 1
 
-    assert await vc_mod._bluez_alsa_active_transport_path() is None
+    assert await vps_mod._bluez_alsa_active_transport_path() is None
     assert calls["n"] == expected_spawns
 
 
