@@ -28,7 +28,6 @@ from ._refusal import (
 
 PROG = "jasper-round"
 DEFAULT_TIMEOUT_S = 900.0
-DEFAULT_POLL_S = 5.0
 AUTHORITY_TIER = "mutating-with-gates (`run`/`placed`/`wait`/`apply` write; `status` reads)"
 LOST_ANSWER_ADVICE = "the apply may have taken effect; read the live candidate before trying again"
 
@@ -122,7 +121,7 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
 
     from .round_views import run_bookkeeping  # lazy: wait-only view dispatch
 
-    result = wait_for_round(client, run_id=args.run, timeout_s=args.timeout, poll_s=DEFAULT_POLL_S)
+    result = wait_for_round(client, run_id=args.run, timeout_s=args.timeout)
     if result["status"] != "terminal":
         return failed(EXIT_REFUSED if result["status"] == "failed" else EXIT_UNREADABLE,
                       str(result["reason"]), result)
