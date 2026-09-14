@@ -108,10 +108,12 @@ INTER_CLIP_PAUSE_SEC = 2.0
 # enrollment CLI to bind.
 VOICE_UNIT = "jasper-voice"
 
-# Must exceed systemd's DefaultTimeoutStartSec (90 s): jasper-voice is Type=notify and
-# sets no TimeoutStartSec, so a legitimately slow start blocks that long. This bound
-# only catches a wedged manager; it must never report a slow start as a failure.
-_SYSTEMCTL_TIMEOUT_SEC = 120.0
+# A blocking `systemctl start jasper-voice` can legitimately take the identity
+# oneshot's TimeoutStartSec (30 s; it is re-queued on every voice start) plus
+# jasper-voice's own DefaultTimeoutStartSec (90 s, Type=notify, no override).
+# This bound only catches a wedged manager; it must never report a slow start
+# as a failure, so it sits above that 120 s sum.
+_SYSTEMCTL_TIMEOUT_SEC = 150.0
 
 # Same privacy promise as the wake-corpus recorder: this CLI records the
 # bridge's UDP mic legs directly while jasper-voice is stopped, so it
