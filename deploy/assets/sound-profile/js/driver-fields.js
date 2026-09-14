@@ -335,7 +335,15 @@ function renderComponentSettings(topology) {
       renderDriverPadSettings(targetId, setting) +
       (role === 'tweeter' ? '' : renderInstallation(targetId, setting)) +
     '</section>';
-  }).join('') + '</div>';
+  }).join('') + '</div>' +
+    (targets.some(function(target) { return target.role === 'woofer'; }) &&
+     targets.some(function(target) { return target.role === 'tweeter'; }) ?
+      '<label class="driver-research__field">' +
+        '<span>Tweeter to woofer acoustic-centre spacing (mm, optional)</span>' +
+        '<input type="number" inputmode="decimal" step="any" data-driver-spacing value="' +
+          escapeHtml(driverResearch.settings.driver_spacing_mm == null ? '' : String(driverResearch.settings.driver_spacing_mm)) + '">' +
+        '<span class="setting-row__hint">This sets the parallax correction.</span>' +
+      '</label>' : '');
 }
 // The guided bullets (ticket 1.6). `&#10;` is a literal newline inside the
 // quoted attribute, which a textarea placeholder renders as a list -- so the

@@ -3,13 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Configuration for the outputd daemon.
-//!
-//! Defaults keep `jasper-outputd --once` safe in a developer shell: fake
-//! backend, no sockets. The systemd unit opts into the real ALSA backend and
-//! runtime sockets with explicit `JASPER_OUTPUTD_*` lines.
 
 use anyhow::{Context, Result};
 use jasper_env::{env_f32, env_parse, env_str};
+use jasper_tts_protocol::loudness::AssistantLoudnessConfig;
 
 use crate::dac_content::ChannelPick;
 use crate::types::{SampleFormat, SAMPLE_RATE};
@@ -238,6 +235,7 @@ pub struct Config {
     /// Program duck applied to CONTENT while voice requests it
     /// (PROGRAM_DUCK_ON). Negative dB; mirrors fanin's knob + fallback.
     pub tts_program_duck_db: f32,
+    pub assistant_loudness: AssistantLoudnessConfig,
     /// Set by the reconciler on a 2-channel active-crossover sink — the one
     /// active case the bare `content_channels == 2` check cannot tell apart
     /// from a full-range stereo L/R sink. The real invariant for outputd's
@@ -787,6 +785,7 @@ impl Config {
             tts_socket_path,
             tts_max_pending_frames,
             tts_program_duck_db,
+            assistant_loudness: AssistantLoudnessConfig::from_env()?,
             active_lane,
             ring_active_endpoint,
         };
@@ -899,7 +898,11 @@ mod tests {
         // sourced jasper.env flakes the default-asserting tests. Mirrors
         // fanin's twin harness, which lists it for the same reason.
         let snapshot: Vec<(String, String)> = std::env::vars()
-            .filter(|(k, _)| k.starts_with("JASPER_OUTPUTD_") || k == "JASPER_DUCK_DB")
+            .filter(|(k, _)| {
+                k.starts_with("JASPER_OUTPUTD_")
+                    || k.starts_with("JASPER_FANIN_")
+                    || k == "JASPER_DUCK_DB"
+            })
             .collect();
         for (k, _) in &snapshot {
             std::env::remove_var(k);

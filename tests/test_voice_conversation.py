@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from unittest.mock import AsyncMock
 
@@ -12,6 +13,7 @@ import pytest
 from jasper.tools import ToolRegistry, dispatch_tool
 from jasper.voice.conversation import (
     WATCHDOG_POLL_SEC,
+    _resolved,
     continuous_watchdog,
     register_conversation_tools,
 )
@@ -21,6 +23,7 @@ from jasper.voice.turn_playback import PlaybackReport, play_responses
 from jasper.voice.session import AudioOutChunk
 from tests._async_wait import wait_until
 from tests._live_turn_fake import FakeLiveTurn
+from tests._log_events import event_fields
 from tests._playout import FakeTts
 from tests._wake_loop import wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
@@ -34,6 +37,22 @@ def answered_loop(tts=None):
     loop._turns.user_speech_seen = True
     loop._turns.playback_report.accepted_audio = True
     return loop
+
+
+@pytest.mark.parametrize("accepted_at, drain_at, accepted_age, drain_age", [
+    (0.0, 0.0, "null", "null"),
+    (19.0, 21.0, "1000", "-1000"),
+])
+def test_deadline_event_distinguishes_missing_and_future_playout(
+    caplog, accepted_at, drain_at, accepted_age, drain_age,
+):
+    caplog.set_level(logging.INFO)
+    assert _resolved(
+        "followup_timeout", 20.0, 18.0, accepted_at, drain_at, 0, False, 20.0,
+    ) == "followup_timeout"
+    fields = event_fields(caplog, "voice.turn_deadline")
+    assert fields["accepted_age_ms"] == accepted_age
+    assert fields["drain_age_ms"] == drain_age
 
 
 async def test_endpointed_answer_closes_the_turn_once_playout_drains():

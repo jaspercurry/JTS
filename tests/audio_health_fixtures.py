@@ -5,15 +5,37 @@
 """Shared audio-health payload builders and a fake AirPlay sampler.
 
 Used across test_audio_health.py, test_audio_incidents.py,
-test_airplay_health.py and test_control_server_system.py so each keeps
-one copy of the composer's input shapes instead of re-deriving them.
+test_airplay_health.py, test_control_server_system.py,
+test_audio_health_route_claim.py and test_audio_health_overrides.py so each
+keeps one copy of the composer's input shapes instead of re-deriving them.
 """
 
 from __future__ import annotations
 
 from jasper.control.audio_health import compose_audio_health
 from jasper.music_sources import MUSIC_SOURCE_SPECS
+from jasper.output_hardware import OutputHardwareState
+from jasper.output_topology import (
+    OUTPUT_TOPOLOGY_KIND,
+    OutputTopology,
+    OutputTopologySnapshot,
+)
 
+# #2285 P2 (A6) retired the snd-aloop ACTIVE lane's outputd capture PAIRING
+# along with the endpoint, so this shape no longer reports a capture MISMATCH —
+# there is no registered capture to mismatch against. The unpaired-device arm of
+# `transport_coherence_report` reports it instead. Same box, same verdict
+# (parked), different sentence.
+# The retired snd-aloop ACTIVE lane. A graph still naming it is a post-DSP
+# route with no reader, whatever sentence the report wraps it in.
+_RETIRED_ACTIVE_LANE = "outputd_active_content_playback"
+
+# One representative coherence error, for tests that only need the health
+# model to SEE an error rather than to produce a particular one.
+_ROUTE_DISCONNECTED = (
+    "post-DSP route has no registered outputd capture for "
+    f"Camilla playback={_RETIRED_ACTIVE_LANE!r}"
+)
 
 # A healthy Ring A sample: 2 slots deep, nothing waiting, no stall.
 _RING = {
@@ -210,4 +232,111 @@ class _FakeAirPlay:
 
     def snapshot(self) -> dict:
         return self._snapshots[max(0, self._index)]
+
+
+def _output_hardware(
+    *,
+    status: str = "ready",
+    profile_id: str = "dual_apple_usb_c_dac_4ch",
+    profile_label: str = "Dual Apple USB-C DAC 4-channel pair",
+    physical_output_count: int = 4,
+    apple_dac_count: int = 2,
+    issues: tuple[dict, ...] = (),
+) -> OutputHardwareState:
+    return OutputHardwareState(
+        profile_id=profile_id,
+        profile_label=profile_label,
+        status=status,
+        physical_output_count=physical_output_count,
+        apple_dac_count=apple_dac_count,
+        issues=issues,
+    )
+
+
+def _declared_topology(
+    *,
+    device_id: str = "unknown",
+    device_label: str = "Unknown output device",
+    physical_output_count: int = 0,
+) -> OutputTopologySnapshot:
+    """A REAL, SAVED topology snapshot declaring the given hardware --
+    #2812 B1's "outer conjunct" input. The default (``device_id="unknown"``)
+    is a saved topology.json that names an unrecognized profile -- a
+    genuine mismatch -- NOT a simulation of "nothing was ever saved". Those
+    are different facts (#2812 B2): a real missing file resolves through
+    ``new_topology_draft``, which auto-seeds ``hardware`` FROM the observed
+    record whenever it has outputs, so it does NOT read as
+    ``device_id="unknown"`` once the record is ready. Tests that need the
+    genuinely-missing case must drive the real loader against an absent
+    path, not synthesize a revision here. This helper's ``revision`` is
+    always a real (non-``"missing"``) value for exactly that reason.
+    """
+    topology = OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "living_room",
+        "name": "Living room",
+        "hardware": {
+            "device_id": device_id,
+            "device_label": device_label,
+            "physical_output_count": physical_output_count,
+        },
+        "speaker_groups": [],
+        "routing": {},
+    })
+    return OutputTopologySnapshot(topology, "sha256:test-declared-topology")
+
+
+_CAMILLA_CLEAN_STOP = {
+    "load_state": "loaded",
+    "active_state": "inactive",
+    "sub_state": "dead",
+    "result": "success",
+}
+
+
+def _compose_camilla(
+    camilla_state: dict | None,
+    *,
+    selected: str | None = None,
+    warmup: bool = False,
+    outputd: dict | None = None,
+) -> dict:
+    """Compose health with only CamillaDSP's systemd state varying.
+
+    Fan-in and outputd are held HEALTHY on purpose, because that is what the
+    box actually reports when CamillaDSP dies — not a convenient fixture.
+    Both daemons are built to keep looping when the stage between them goes
+    away (fan-in's loopback coupling is timer-paced, outputd zero-fills an
+    absent content lane), and both `last_progress_age_ms` counters time the
+    work loop rather than audio moving.
+    """
+    return compose_audio_health(
+        airplay=_airplay(selected=selected, warmup=warmup),
+        outputd=outputd if outputd is not None else _outputd(),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        service_states=(
+            None if camilla_state is None
+            else {"jasper-camilla.service": camilla_state}
+        ),
+    )
+
+
+def _live_parks() -> tuple[dict, ...]:
+    """One `transport_park` verdict per park class (#3120).
+
+    Driven from that module's own `_PARK_CASES` table rather than a second
+    copy of it, so a fifth class added there is swept here without an edit —
+    and each class's operator detail and remedy get their own chance to leak
+    onto the household card.
+    """
+    from jasper.control import transport_eligibility as transport_park_reader
+    from tests.test_transport_eligibility import _PARK_CASES
+
+    return tuple(
+        transport_park_reader.snapshot(case.values[0], case.values[1])
+        for case in _PARK_CASES
+    )
 

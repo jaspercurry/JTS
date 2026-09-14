@@ -6252,6 +6252,45 @@ async function testTuningHandoffCardMintsAndGoesStale() {
 }
 
 
+async function testDriverSpacingUsesTheExistingDraftSaveAndReload() {
+  const posts = [];
+  let draft = {status: 'ready_for_review', revision: 1, summary: {},
+    manual_settings: {drivers: [{role: 'woofer', target_id: 'main:woofer', model: 'Test woofer'}]}};
+  const fetchHandler = baseFetch({
+    './output-topology': () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    './active-speaker/design-draft': (_path, options = {}) => {
+      if (options.method === 'POST') {
+        const body = JSON.parse(options.body);
+        posts.push(body);
+        draft = {...draft, ...body, revision: draft.revision + 1};
+      }
+      return Promise.resolve(response(draft));
+    },
+  });
+  let harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+  for (const value of ['', '200', '']) {
+    const inputs = harness.elements.get('view-body').innerHTML.match(/<input[^>]*data-driver-spacing[^>]*>/g) || [];
+    if (inputs.length !== 1 || /\srequired(?:\s|>)/.test(inputs[0])) {
+      fail('Driver spacing must have one optional input', {inputs});
+    }
+    harness.dispatchInput({'data-driver-spacing': ''}, value);
+    harness.dispatchClick({'data-act': 'save-driver-design'});
+    for (let i = 0; i < 5; i++) await harness.flush();
+    if (posts.at(-1)?.manual_settings?.driver_spacing_mm !== (value ? Number(value) : null)) {
+      fail('Driver spacing must save or clear in manual settings', {posts});
+    }
+    harness = setupHarness(fetchHandler);
+    await loadAndSetActiveState(harness);
+    const input = harness.elements.get('view-body').innerHTML.match(/<input[^>]*data-driver-spacing[^>]*>/)?.[0];
+    if (!input?.includes('value="' + value + '"')) {
+      fail('Driver spacing must reload from the saved draft', {input, value});
+    }
+  }
+  return {driverSpacingUsesTheExistingDraftSaveAndReload: true};
+}
+
+
 async function testInstallationUsesTheExistingDraftSaveAndReload() {
   const posts = [];
   const installation = {fields: {
@@ -6742,6 +6781,7 @@ results.push(await testSafetyLimitsDeepLinkOpensTheComponentStep());
 results.push(await testCrossChildSpeakerGroupIsDisclosedInTheMapStep());
 results.push(await testIssueListEscapesUntrustedVerdictMessages());
 results.push(await testTuningHandoffCardMintsAndGoesStale());
+results.push(await testDriverSpacingUsesTheExistingDraftSaveAndReload());
 results.push(await testInstallationUsesTheExistingDraftSaveAndReload());
 
 console.log(JSON.stringify(Object.assign({ results }, liveTabResult)));

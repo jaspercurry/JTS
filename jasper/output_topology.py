@@ -1870,7 +1870,7 @@ def declared_hardware_mismatch(
     construction and this reports no mismatch. Callers that need "was anything
     ever actually persisted?" must ask ``load_output_topology_snapshot``
     (``snapshot.revision == "missing"``); see
-    ``jasper.control.audio_health._undeclared_hardware_signal``.
+    ``jasper.control.audio_signal_path._undeclared_hardware_signal``.
     """
     clock_blockers = [
         issue

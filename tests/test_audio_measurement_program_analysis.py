@@ -36,6 +36,7 @@ import numpy as np
 import pytest
 from scipy.signal import fftconvolve, resample_poly
 
+from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.audio_measurement import analysis as analysis_mod
 from jasper.audio_measurement import (
     deconv,
@@ -75,6 +76,7 @@ from jasper.audio_measurement.comparison_bands import (
     crossover_region_band_hz,
     overlap_band_hz,
 )
+from jasper.audio_measurement.program_analysis import alignment_pairs
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
@@ -2069,46 +2071,173 @@ def test_delay_sign_convention_tweeter_earlier_is_positive():
     assert res.alignment.delay_us == pytest.approx((d_w - d_t) / SR * 1e6, abs=5.0)
 
 
-def test_snap_recovers_physical_delay_through_drift_and_noise():
-    """Delay-selection physics gate (methodology §10, 2026-07-22): with the
-    plausibility bound supplied, the anchor-primary + gated-local-peak-snap
-    selector recovers the physical inter-driver delay from a capture carrying a
-    known clock drift. The successor to the retired ``_flatness_delay_us``
-    170/170 drift-removal gate: the inter-sweep clock term is removed from the
-    raw argmax gap, the physical remainder is kept, and the SELECTED applied
-    delay tracks truth.
-    """
+def _alignment_capture(sweep_count, eps, *, noise=0.0):
     prog = build_measure_program(
         {"woofer": -11.0, "tweeter": -13.0}, _roles(),
         sweep_durations={"woofer": 0.8, "tweeter": 0.6},
     )
-    tau_true = 25  # tweeter arrives 25 samples LATER than the woofer
-    eps = 80e-6
+    sweeps = [seg for seg in prog.segments if seg.kind == KIND_SWEEP]
+    omitted = {seg.segment_id for seg in sweeps[sweep_count:]}
+    prog = _finalize(prog.phase, prog.channels, [
+        seg for seg in prog.segments if seg.segment_id not in omitted
+    ], prog.total_samples)
+    tau_true = 25
     cap = _synthesize(
         prog,
         woofer_ir=_band_impulse(200, 150.0, 6000.0, 1.0),
         tweeter_ir=_band_impulse(200 + tau_true, 300.0, 20000.0, 0.7),
-        epsilon=eps,
+        epsilon=eps, noise=noise,
     )
-    res = analyze_program_capture(
-        prog, cap, SR,
-        priors=MeasurementPriors(
-            crossover_fc_hz=FC_HZ, alignment_delay_bounds_us=(0.0, 1000.0),
-        ),
-        geometry=MeasurementGeometry(),  # d=0 ⇒ no parallax
+    offset, *_ = _global_offset(prog, cap, SR)
+    irs = {seg.segment_id: _deconvolve_window(
+        cap, seg, offset + seg.start_sample, SR, epsilon=eps,
+    ) for seg in sweeps[:sweep_count]}
+    return prog, cap, offset, irs, -tau_true / SR * 1e6
+
+
+def test_single_pair_anchor_corrects_clock_drift_with_noise():
+    eps = 80e-6
+    prog, cap, offset, irs, expected_delay_us = _alignment_capture(2, eps, noise=1e-4)
+    geometry = MeasurementGeometry(driver_spacing_m=0.15)
+    result = alignment_pairs.estimate_adjacent_alignment(
+        cap, prog, SR, offset, eps, FC_HZ, geometry, MeasurementPriors(), irs,
+        woofer_role="woofer",
     )
-    expected_delay_us = -tau_true / SR * 1e6
-    # The SELECTED (snapped) applied delay recovers truth within the sub-sample
-    # snap precision — the drift term ε·(tweeter_start − woofer_start) was
-    # removed from the raw gap, and the physical remainder retained.
-    assert res.alignment.status == ALIGNMENT_OK
-    assert res.candidate.snap_found is True
-    assert res.candidate.delay_us == res.alignment.delay_us
-    assert res.alignment.delay_us == pytest.approx(expected_delay_us, abs=5.0)
-    # The integer anchor is close; the GCC seed is retained separately. On a
-    # single clean correlation peak, anchor, seed, and snap all coincide.
-    assert res.candidate.anchor_delay_us == pytest.approx(expected_delay_us, abs=11.0)
-    assert res.alignment.seed_delay_us == pytest.approx(expected_delay_us, abs=5.0)
+    seg_w, seg_t = prog.segment("sweep_w"), prog.segment("sweep_t")
+    measured_gap = (alignment_pairs._rectified_peak_sample(irs[seg_t.segment_id][0])
+                    - alignment_pairs._rectified_peak_sample(irs[seg_w.segment_id][0]))
+    drift = eps * (seg_t.start_sample - seg_w.start_sample)
+    expected_anchor_us = -(measured_gap - drift) / SR * 1e6 - geometry.parallax_us()
+    assert result.anchor_delay_us == pytest.approx(expected_anchor_us, abs=1e-9)
+    assert result.snapped_delay_us == pytest.approx(expected_delay_us - geometry.parallax_us(), abs=2.0)
+    assert result.alignment_pair_count == 1
+    assert result.alignment_drift_residual_us is None
+
+
+@pytest.mark.parametrize("sweep_count,eps", [(2, 80e-6), (3, 80e-6), (4, -80e-6)])
+def test_adjacent_alignment_cancels_clock_drift(sweep_count, eps):
+    """Wrong schedule epsilon; the known sweep stretch still keeps deconvolution sharp."""
+    prog, cap, offset, irs, expected_delay_us = _alignment_capture(sweep_count, eps)
+    result = alignment_pairs.estimate_adjacent_alignment(
+        cap, prog, SR, offset, 0.0, FC_HZ, MeasurementGeometry(), MeasurementPriors(), irs,
+        woofer_role="woofer",
+    )
+    sweeps = [seg for seg in prog.segments if seg.kind == KIND_SWEEP]
+    first_drift_us = eps * (sweeps[1].start_sample - sweeps[0].start_sample) / SR * 1e6
+    assert result.status == ALIGNMENT_OK
+    if sweep_count == 2:
+        assert result.snapped_delay_us - expected_delay_us == pytest.approx(-first_drift_us, abs=2.0)
+        assert abs(result.snapped_delay_us - expected_delay_us) > 100.0
+    else:
+        assert result.snapped_delay_us == pytest.approx(expected_delay_us, abs=2.0)
+        assert result.delay_us == pytest.approx(expected_delay_us, abs=2.0)
+        expected_residual = -eps * (sweeps[2].start_sample - sweeps[0].start_sample) / SR * 1e6
+        assert result.alignment_drift_residual_us == pytest.approx(expected_residual, abs=3.0)
+    analysis = program_analysis.ProgramAnalysis(prog.phase, prog.program_id, (), alignment=result)
+    for fields in (analysis_diagnostic_summary(analysis), analysis_json(analysis)):
+        assert fields["alignment_pair_count"] == sweep_count - 1
+        assert fields["alignment_pair_spread_us"] == pytest.approx(result.alignment_pair_spread_us, abs=.0005)
+        if sweep_count == 2:
+            assert fields["alignment_drift_residual_us"] is None
+        else:
+            assert fields["alignment_drift_residual_us"] == pytest.approx(result.alignment_drift_residual_us, abs=.0005)
+        assert "inter_sweep_drift_us" not in fields
+    assert result.alignment_pair_spread_us == pytest.approx(
+        0.0 if sweep_count == 2 else abs(expected_residual), abs=3.0,
+    )
+
+
+def _combine_test_pairs(monkeypatch, pairs):
+    prog = build_measure_program({"woofer": -11.0, "tweeter": -13.0}, _roles())
+    irs = {seg.segment_id: (np.zeros(32), 0) for seg in prog.segments if seg.kind == KIND_SWEEP}
+    estimates = iter(pairs)
+    monkeypatch.setattr(alignment_pairs, "_estimate_alignment", lambda *a, **kw: next(estimates))
+    return alignment_pairs.estimate_adjacent_alignment(
+        np.zeros(32), prog, SR, 0, 0.0, FC_HZ, MeasurementGeometry(), MeasurementPriors(), irs,
+        woofer_role="woofer",
+    )
+
+
+def _test_pair_estimates():
+    return [AlignmentEstimate(
+        delay_us=-130.0, raw_delay_us=-100.0, parallax_us=30.0,
+        polarity="inverted", polarity_sign=-1, confidence=.9 - .05 * i,
+        anchor_delay_us=140.0, snapped_delay_us=194.0,
+    ) for i in range(5)]
+
+
+@pytest.mark.parametrize("refused", [(0,), (1,), (2,), (3,), (4,), (1, 3), (0, 1, 2, 3, 4)])
+def test_adjacent_alignment_excludes_refused_pairs(monkeypatch, refused):
+    pairs = _test_pair_estimates()
+    for i in refused:
+        pairs[i] = dataclasses.replace(
+            pairs[i], status=ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW, confidence=0.0,
+            delay_us=9999.0, raw_delay_us=10029.0, anchor_delay_us=None, snapped_delay_us=None,
+        )
+    result = _combine_test_pairs(monkeypatch, pairs)
+    if refused in ((1, 3), (0, 1, 2, 3, 4)):
+        first = pairs[0]
+        assert result == dataclasses.replace(
+            first, alignment_pair_count=int(first.status == ALIGNMENT_OK),
+            alignment_pair_spread_us=0.0 if first.status == ALIGNMENT_OK else None,
+        )
+    else:
+        assert result == dataclasses.replace(
+            next(pair for pair in pairs if pair.status == ALIGNMENT_OK),
+            confidence=min(pair.confidence for pair in pairs if pair.status == ALIGNMENT_OK),
+            alignment_pair_count=4, alignment_pair_spread_us=0.0, alignment_drift_residual_us=0.0,
+        )
+
+
+@pytest.mark.parametrize("outlier", [0, 2, 4])
+def test_adjacent_alignment_median_resists_a_comb_hop(monkeypatch, outlier):
+    pairs = _test_pair_estimates()
+    shifted = pairs[outlier]
+    pairs[outlier] = dataclasses.replace(shifted, **{
+        field: getattr(shifted, field) + 400.0
+        for field in ("delay_us", "raw_delay_us", "anchor_delay_us", "snapped_delay_us")
+    })
+    result = _combine_test_pairs(monkeypatch, pairs)
+    for field in ("delay_us", "raw_delay_us", "anchor_delay_us", "snapped_delay_us"):
+        assert getattr(result, field) == pytest.approx(getattr(shifted, field), abs=2.0)
+    assert result.alignment_pair_count == 5
+    assert result.alignment_pair_spread_us == pytest.approx(400.0)
+    assert result.alignment_drift_residual_us == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("missing", [(0,), (1,), (0, 2, 4), (1, 3), (0, 1, 2, 3, 4)])
+def test_adjacent_alignment_uses_available_snaps(monkeypatch, missing):
+    pairs = _test_pair_estimates()
+    for i in missing:
+        pairs[i] = dataclasses.replace(pairs[i], snapped_delay_us=None)
+    result = _combine_test_pairs(monkeypatch, pairs)
+    assert result.snapped_delay_us == (None if len(missing) == 5 else 194.0)
+    assert result.anchor_delay_us == 140.0
+    assert result.alignment_pair_count == (5 if len(missing) == 5 else 5 - len(missing))
+    assert result.alignment_pair_spread_us == 0.0
+    assert result.alignment_drift_residual_us == (0.0 if len(missing) == 1 else None)
+
+
+@pytest.mark.parametrize("missing", [("sweep_w",), ("sweep_t",), ("sweep_w", "sweep_t")])
+def test_measure_deconvolves_primaries_even_when_not_located(monkeypatch, missing):
+    prog, cap, _, irs, _ = _alignment_capture(6, 0.0)
+    locate = program_analysis.dispatch._locate_segments
+    deconvolve = program_analysis.dispatch._deconvolve_window
+    calls = []
+
+    def located(*args):
+        return [loc for loc in locate(*args) if loc.segment_id not in missing]
+
+    def recorded(capture, segment, *args, **kwargs):
+        calls.append(segment.segment_id)
+        return deconvolve(capture, segment, *args, **kwargs)
+
+    monkeypatch.setattr(program_analysis.dispatch, "_locate_segments", located)
+    monkeypatch.setattr(program_analysis.dispatch, "_deconvolve_window", recorded)
+    result = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ))
+    assert sorted(calls) == sorted(irs)
+    assert result.alignment.status == ALIGNMENT_OK
+    assert result.alignment.alignment_pair_count == 5
 
 
 def _fractional_band_impulse(
@@ -2141,8 +2270,8 @@ def test_alignment_anchor_resolves_below_one_sample(frac):
     assert argmax_gap.is_integer(), "premise: the bare argmax gap IS quantised"
 
     refined = (
-        program_analysis.response._rectified_peak_sample(tweeter_ir)
-        - program_analysis.response._rectified_peak_sample(woofer_ir)
+        alignment_pairs._rectified_peak_sample(tweeter_ir)
+        - alignment_pairs._rectified_peak_sample(woofer_ir)
     )
     # 0.05 samples is 1.04 us at 48 kHz — a twentieth of the argmax quantum.
     assert refined == pytest.approx(true_gap, abs=0.05)
@@ -3496,39 +3625,10 @@ def test_branch_snr_band_hz_never_admits_a_row_outside_the_radiated_band():
 
 
 def test_measure_snr_verdict_ignores_a_row_the_tweeter_sweep_never_entered():
-    """#2613: a deliberately empty row must not veto a clean capture.
+    """An empty tweeter row stays reported but cannot decide alignment.
 
-    THE incident, end to end, on **jts3's own commissioned geometry** — the
-    same Fc and declared driver bands as the 2026-08-15/16 rounds
-    (``tests/fixtures/crossover_v2_alignment_incident_20260816/``): LR4 at
-    :data:`_JTS3_FC_HZ`, an Epique E150HE-44 woofer declared ``[45, 4000]``
-    and a DE250-8 tweeter declared ``[1600, 20000]``.
-
-    That geometry is what makes the failure structural. The nominal window is
-    ``[824.35, 3297.4]``, and the ``transition`` row (350-1000 Hz) OVERLAPS it
-    — 1000 > 824.35 — so the row was enfranchised. The tweeter sweep starts at
-    1600 Hz, so that row holds nothing but room noise, and its SNR is the ratio
-    of the room to itself: **no room, no night, and no drive level can move
-    it**. The box recorded −1.2 dB there (−0.4 dB on five of six captures in
-    the 2026-08-10 dump), the ALIGNMENT verdict read ``insufficient``, and
-    #2607's declared-design fail-safe fired on 14 of 14 rounds.
-
-    The **woofer is the control, and it is a geometric one**: its sweep
-    (150-4000 Hz after the MEASURE clamp) spans the whole nominal window, so no
-    row inside that window is empty for it, its window is unchanged by the fix,
-    and it verdicted ``ok`` at 44.0 dB on those same 14 rounds. Tweeter fails
-    and woofer passes on the same captures because of where the sweeps end —
-    which is exactly the asymmetry a broadband-SNR explanation could not
-    produce.
-
-    Each assertion below is a separate claim, and each FAILS on the pre-fix
-    code: the window is clamped, the veto comes from an occupied row, the
-    verdict passes, and the flat-sum selector therefore gets to run at all
-    (pre-fix it committed the declared design without scoring the pair, so the
-    cross-check reports "not asked").
-
-    The empty row's evidence is still REPORTED, just not admitted: the
-    per-band table is diagnostics, ``relevant_hz`` is the franchise.
+    The woofer's magnitude window is the geometric control: its sweep spans
+    the whole nominal window. Alignment uses the pair's occupied overlap.
     """
     _prog, res = _band_limited_two_way(
         fc_hz=_JTS3_FC_HZ,
@@ -3559,13 +3659,11 @@ def test_measure_snr_verdict_ignores_a_row_the_tweeter_sweep_never_entered():
     assert res.candidate.alignment_objective == ALIGNMENT_COMMITTED_FLAT_SUM
     assert res.alignment.polarity_agrees_with_sum is not None
 
-    # The geometric control. This woofer's sweep spans the whole nominal
-    # window, so the clamp is a no-op for it and its verdict is identical
-    # either side of the fix — which is why the box saw the tweeter fail and
-    # the woofer pass on the SAME 14 captures.
     woofer = next(r for r in res.driver_responses if r.role == "woofer")
-    w_window, _w_worst, _w_rows = _alignment_rows(woofer)
+    # The magnitude class keeps the woofer's full nominal window as a geometric control.
+    w_window = woofer.snr["relevant_hz"]
     assert w_window == [_JTS3_FC_HZ / 2.0, _JTS3_FC_HZ * 2.0]
+    assert _alignment_rows(woofer)[0] == [1600.0, _JTS3_FC_HZ * 2.0]
     assert driver_alignment_snr_verdict(woofer) == "ok"
 
 
@@ -3587,7 +3685,7 @@ def test_measure_snr_verdict_ignores_a_row_above_the_woofer_sweep():
     woofer = next(r for r in res.driver_responses if r.role == "woofer")
     window, worst, rows = _alignment_rows(woofer)
 
-    assert window == [1250.0, 4000.0]
+    assert window == [1500.0, 4000.0]
     assert rows["treble"][1] == "insufficient"
     assert worst["band_id"] == "mid"
     assert driver_alignment_snr_verdict(woofer) == "ok"
@@ -3887,7 +3985,7 @@ def test_snap_production_path_preserves_parallax_contract(
         woofer_ir=woofer_ir,
         tweeter_ir=tweeter_ir,
         epsilon=30e-6,
-        noise=0.0,
+        noise=1e-4,
     )
     geometry = MeasurementGeometry(driver_spacing_m=0.15, mic_distance_m=1.0)
     result = analyze_program_capture(
@@ -3905,42 +4003,10 @@ def test_snap_production_path_preserves_parallax_contract(
     expected_delay_us = expected_raw_us - geometry.parallax_us()
     assert result.drift.epsilon_ppm == pytest.approx(30.0, abs=2.0)
     assert result.alignment.seed_delay_us == pytest.approx(expected_delay_us, abs=5.0)
-    measured_global_offset, _first, _stimuli, _amb = _global_offset(prog, cap, SR)
-    seg_w = prog.segment("sweep_w")
-    seg_t = prog.segment("sweep_t")
-    epsilon = result.drift.epsilon_ppm / 1e6
-    woofer_full_ir, _pre_w = _deconvolve_window(
-        cap,
-        seg_w,
-        measured_global_offset + seg_w.start_sample,
-        SR,
-        epsilon=epsilon,
-    )
-    tweeter_full_ir, _pre_t = _deconvolve_window(
-        cap,
-        seg_t,
-        measured_global_offset + seg_t.start_sample,
-        SR,
-        epsilon=epsilon,
-    )
-    measured_peak_gap_us = (
-        program_analysis.response._rectified_peak_sample(tweeter_full_ir)
-        - program_analysis.response._rectified_peak_sample(woofer_full_ir)
-    ) / SR * 1e6
-    inter_sweep_drift_us = (
-        epsilon * (seg_t.start_sample - seg_w.start_sample) / SR * 1e6
-    )
-    physical_peak_gap_us = measured_peak_gap_us - inter_sweep_drift_us
-    physical_seed_us = -(physical_peak_gap_us + geometry.parallax_us())
-    # Anchor-primary + gated snap (methodology §10, 2026-07-22): the selected
-    # delay is the physical peak-gap anchor snapped within ±(period/6) at Fc —
-    # same sign side as the anchor, never a periodic-comb-lobe jump.
+    physical_seed_us = result.alignment.anchor_delay_us
     snap_radius_us = 1e6 / FC_HZ * GCC_SNAP_RADIUS_PERIODS
-    # S1 single-source pin: the candidate's anchor is EXACTLY the aligner-owned
-    # anchor (derived, never a parallel argmax), and both equal the manual
-    # physical peak-gap computation.
-    assert result.candidate.anchor_delay_us == result.alignment.anchor_delay_us
-    assert result.candidate.anchor_delay_us == pytest.approx(physical_seed_us, abs=1e-9)
+    assert result.candidate.anchor_delay_us == physical_seed_us
+    assert physical_seed_us == pytest.approx(expected_delay_us, abs=5.0)
     assert abs(result.alignment.delay_us - physical_seed_us) <= snap_radius_us + 1e-6
     assert math.copysign(1.0, result.alignment.delay_us) == math.copysign(
         1.0,
@@ -8142,3 +8208,121 @@ def test_absolute_target_carries_the_candidates_configured_polarity():
 
     assert analyze({"woofer": 1, "tweeter": 1})["max_db"] < 0.5
     assert analyze({"woofer": 1, "tweeter": -1})["max_db"] > 5.0
+
+
+@pytest.mark.parametrize("delay_us, sign, pose, reference_kind, low_snr, objective, verdict", [
+    (191.0, -1, (0, 0), "measured", True, "summed_fit_committed", "committed"),
+    (-173.0, 1, (0, 0), "measured", True, "summed_fit_committed", "committed"),
+    (191.0, -1, (-20, 0), "measured", True, "applied_alignment_held_after_low_snr", "unavailable"),
+    (191.0, -1, (20, 0), "measured", True, "applied_alignment_held_after_low_snr", "unavailable"),
+    (191.0, -1, (0, 20), "measured", True, "applied_alignment_held_after_low_snr", "unavailable"),
+    (191.0, -1, (None, None), "measured", True, "applied_alignment_held_after_low_snr", "unavailable"),
+    (191.0, -1, (0, 0), "missing_gain", True, "applied_alignment_held_after_low_snr", "unavailable"),
+    (191.0, -1, (0, 0), "flat", True, "applied_alignment_held_after_low_snr", "inconclusive"),
+    (191.0, -1, (0, 0), "flat", False, "flat_sum_committed", "inconclusive"),
+])
+def test_measured_sum_commits_alignment_when_ripple_basins_are_degenerate(monkeypatch, caplog, delay_us, sign, pose, reference_kind, low_snr, objective, verdict):
+    from jasper.audio_measurement.program_analysis import dispatch
+    from jasper.audio_measurement.program_analysis.model import AppliedAlignment, SummedAlignmentReference
+    from jasper.active_speaker.crossover_v2.summed_alignment import reference_from_graph
+
+    freqs = np.linspace(0, SR / 2, 4097)
+    W = np.ones(freqs.size, dtype=complex)
+    T = 0.45 * np.exp((0 if reference_kind == "flat" else 0.02j) * (freqs / FC_HZ) ** 2)
+    branches = iter((W, T) * 2)
+    monkeypatch.setattr(dispatch, "_aligned_branch_tf", lambda *a, **k: (freqs, next(branches), {}))
+    summed = predicted_branch_sum(W, T, 0, 0, sign, freqs_hz=freqs, residual_delay_us=delay_us)
+    reference = SummedAlignmentReference(
+        freqs, 20 * np.log10(abs(summed)),
+        {role: np.ones_like for role in ("woofer", "tweeter")}, (1200, 5000),
+    )
+    if reference_kind == "flat":
+        reference.magnitude_db[:] = 0
+    elif reference_kind == "missing_gain":
+        reference = reference_from_graph(freqs, np.zeros(freqs.size), {"filters": {}, "pipeline": []},
+            output_channels={"tweeter": 1}, configured_response_by_role={"tweeter": np.ones_like},
+            configured_polarity_by_role={"tweeter": 1}, band_hz=(1200, 5000))
+        assert reference is None
+    program = build_measure_program({"woofer": -30, "tweeter": -30}, _roles(),
+                                    sweep_durations={"woofer": .3, "tweeter": .3})
+    impulse = np.zeros(4096)
+    impulse[200] = 1
+    capture = _synthesize(program, woofer_ir=impulse, tweeter_ir=impulse, noise=0)
+    priors = MeasurementPriors(
+        crossover_fc_hz=2500, alignment_delay_bounds_us=(0, 500), applied_alignment=AppliedAlignment(193),
+        summed_alignment=reference,
+        ambient_report={"bands": [{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -45 if low_snr else -100}]},
+    )
+    geometry = MeasurementGeometry(position_deg=pose[0], vertical_deg=pose[1])
+    caplog.set_level(logging.INFO, logger="jasper.audio_measurement.program_analysis")
+    result = analyze_program_capture(program, capture, SR, geometry=geometry, priors=priors)
+    candidate = result.candidate
+    assert candidate.alignment_objective == objective
+    assert candidate.summed_fit_verdict == verdict
+    assert any(driver_alignment_snr_verdict(r) == "insufficient" for r in result.driver_responses) is low_snr
+    event = event_fields(caplog, "program_analysis.alignment_selection")
+    assert event["summed_fit_verdict"] == verdict
+    for summary in (analysis_diagnostic_summary(result), analysis_json(result)):
+        for field in ("summed_fit_rms_db", "summed_fit_margin", "summed_fit_verdict", "delay_interval_us"):
+            assert summary[field] == getattr(candidate, field)
+    if verdict != "committed":
+        assert candidate.delay_interval_us is None
+        assert event["grid_points"] == ("1" if low_snr else "82")
+        if verdict == "inconclusive":
+            assert candidate.summed_fit_margin < 1.5
+            assert candidate.summed_fit_rms_db is not None
+            assert float(event["summed_fit_margin"]) == candidate.summed_fit_margin
+            assert float(event["summed_fit_rms_db"]) == candidate.summed_fit_rms_db
+        else:
+            assert candidate.summed_fit_margin is None
+        caplog.clear()
+        base = analyze_program_capture(program, capture, SR, geometry=geometry, priors=dataclasses.replace(priors, summed_alignment=None))
+        assert dataclasses.replace(candidate, summed_fit_rms_db=None, summed_fit_margin=None, summed_fit_verdict="unavailable") == base.candidate
+        assert result.alignment == base.alignment
+        np.testing.assert_array_equal(result.predicted_sum, base.predicted_sum)
+        assert event_fields(caplog, "program_analysis.alignment_selection")["grid_points"] == event["grid_points"]
+        return
+    assert candidate.delay_us == pytest.approx(delay_us, abs=1)
+    assert candidate.polarity == ("inverted" if sign < 0 else "normal")
+    assert candidate.delay_interval_us[0] <= delay_us <= candidate.delay_interval_us[1]
+    assert candidate.summed_fit_margin >= 2
+    assert result.alignment.confidence == candidate.confidence
+    assert result.alignment.confidence_source == "summed_fit_committed"
+    minima = [min(_ripple_db(freqs, predicted_branch_sum(
+        W, T, 0, 0, polarity, freqs_hz=freqs, residual_delay_us=delay,
+    ), 1200, 5000) for delay in np.arange(-500, 501, 10)) for polarity in (1, -1)]
+    assert abs(minima[0] - minima[1]) < .1
+
+
+def test_alignment_snr_uses_the_shared_sweep_band(monkeypatch):
+    from jasper.audio_measurement.program_analysis.response import _driver_snr_block
+
+    bands = [{"band_id": name, "band_hz": bounds, "level_dbfs": level}
+             for name, bounds, level in (("mid", [1000, 4000], -40), ("high", [4000, 12000], -70))]
+    monkeypatch.setattr(snr_policy, "band_levels_dbfs", lambda *a, **k: bands)
+    block = _driver_snr_block(
+        ambient_report={"bands": [{**b, "level_dbfs": -80} for b in bands]},
+        fc_hz=2500, freqs=np.array([1600, 3000, 5000]), mag_db=np.zeros(3),
+        capture_segment=np.ones(100), sample_rate=SR, radiated_band_hz=(1600, 20000),
+        alignment_band_hz=(1600, 4000),
+    )
+    assert block[DRIVER_SNR_ALIGNMENT_KEY]["verdict"] == "ok"
+    assert block["verdict"] == "insufficient"
+
+
+@pytest.mark.parametrize("bins", [4097, 262145])
+def test_summed_fit_sliced_comparator_matches_full_axis(bins):
+    from jasper.audio_measurement import analysis
+    from jasper.audio_measurement.program_analysis.model import SummedAlignmentReference
+    from jasper.audio_measurement.program_analysis.response import _summed_fit_comparator
+
+    freqs = np.linspace(0, SR / 2, bins)
+    W = np.ones(bins, dtype=complex)
+    T = .45 * np.exp(.02j * (freqs / FC_HZ) ** 2)
+    measured = 20 * np.log10(abs(predicted_branch_sum(W, T, 0, 0, -1, freqs_hz=freqs, residual_delay_us=191)))
+    reference = SummedAlignmentReference(freqs, measured, {}, (1200, 5000))
+    score = _summed_fit_comparator(freqs, W, T, reference, 0)
+    predicted = 20 * np.log10(abs(predicted_branch_sum(W, T, 0, 0, 1, freqs_hz=freqs, residual_delay_us=125)))
+    full_rms, _ = analysis.tracking_error_db(freqs, analysis.smooth_fractional_octave(freqs, measured, 6),
+                                            analysis.smooth_fractional_octave(freqs, predicted, 6), reference.band_hz)
+    assert score(1, 125) == pytest.approx(full_rms, rel=0, abs=1e-9)

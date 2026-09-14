@@ -97,36 +97,6 @@ def _stub_xvf_runtime(
     )
 
 
-# ---------- _parse_env_bool ------------------------------------------------
-
-
-def test_parse_env_bool_truthy_variants():
-    """Operators editing aec_mode.env by hand might write yes/on/true
-    instead of 1; mirror the bash reconciler's normalize_bool."""
-    for raw in ("1", "on", "true", "yes", "y", "enabled", "ON", "True"):
-        assert aec_endpoints._parse_env_bool(raw, default=False), f"{raw!r} should parse True"
-
-
-def test_parse_env_bool_falsy_variants():
-    for raw in ("0", "off", "false", "no", "n", "disabled", "", "  "):
-        assert not aec_endpoints._parse_env_bool(raw, default=True), f"{raw!r} should parse False"
-
-
-def test_parse_env_bool_unknown_falls_through_to_default():
-    """Garbage values fall through to the caller's default — silent
-    drop matches the bash reconciler. The doctor's check_wake_legs
-    surfaces the configured state so unknown values become visible
-    via UI even if the parse silently defaults."""
-    assert aec_endpoints._parse_env_bool("garbage", default=True)
-    assert not aec_endpoints._parse_env_bool("garbage", default=False)
-
-
-def test_parse_env_bool_strips_quotes_and_whitespace():
-    assert aec_endpoints._parse_env_bool("'1'", default=False)
-    assert aec_endpoints._parse_env_bool('"yes"', default=False)
-    assert not aec_endpoints._parse_env_bool(" 0 ", default=True)
-
-
 # ---------- _read_aec_state ------------------------------------------------
 
 
@@ -963,11 +933,10 @@ def _aec_endpoints_chip_aec_status(monkeypatch, aec_mode_file) -> dict:
 
 
 def _doctor_chip_aec_status(monkeypatch, aec_mode_file) -> dict:
-    monkeypatch.setattr(aec, "_aec_mode_setting", lambda: "auto")
     monkeypatch.setattr(
         aec,
-        "_wake_leg_setting",
-        lambda key, default: {"JASPER_WAKE_LEG_CHIP_AEC": True}.get(key, default),
+        "_aec_mode_env",
+        lambda: {"JASPER_AEC_MODE": "auto", "JASPER_WAKE_LEG_CHIP_AEC": "1"},
     )
     return aec._audio_profile_status_for_doctor(
         bridge_active=True,

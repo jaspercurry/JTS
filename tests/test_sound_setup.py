@@ -25,6 +25,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from jasper.active_speaker.commissioning_coordinator import build_commissioning_view
+from jasper.active_speaker.design_draft import declared_driver_spacing_m, load_design_draft
+from jasper.active_speaker.tuning_handoff import build_tuning_handoff
+from jasper.audio_measurement.program_analysis.model import MeasurementGeometry
 from jasper.active_speaker.playback_route import OUTPUTD_ACTIVE_LANE_SOURCE
 from jasper.active_speaker.runtime_contract import FLAT_PROGRAM_GRAPH_UNCONFIGURED
 from jasper.audio_hardware.dac import all_profiles as dac_all_profiles
@@ -81,6 +85,7 @@ from .active_speaker_fixtures import (
     PASSIVE_ONLY_DAC_ID,
     PASSIVE_ONLY_DAC_LABEL,
     register_passive_only_dac,
+    mono_output_topology,
 )
 from ._hat_eeprom import write_hat_eeprom
 from ._log_events import event_records, parse_event
@@ -3585,6 +3590,26 @@ def test_active_speaker_design_draft_route_persists_saved_topology_research(
     }
 
 
+@pytest.mark.parametrize("spacing", [{}, {"driver_spacing_mm": None}, {"driver_spacing_mm": 200}])
+def test_driver_spacing_draft_save_reaches_geometry_and_handoff(monkeypatch, tmp_path, spacing):
+    paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    topology = mono_output_topology(card_id=None)
+    monkeypatch.setattr(sound_active_speaker, "ensure_missing_software_guards", lambda: (topology, False))
+    saved = sound_setup._active_speaker_design_draft_save_payload({
+        "expected_revision": 0,
+        "manual_settings": {"drivers": [{"role": "woofer", "model": "Test woofer"}], **spacing},
+    })
+    loaded = load_design_draft(topology=topology, path=paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"])
+    expected = spacing.get("driver_spacing_mm")
+    assert saved["manual_settings"]["driver_spacing_mm"] == expected
+    assert loaded["manual_settings"]["driver_spacing_mm"] == expected
+    geometry = MeasurementGeometry(driver_spacing_m=declared_driver_spacing_m(loaded) or 0.0, mic_distance_m=1.0)
+    assert geometry.parallax_us() == pytest.approx(57.7 if expected else 0.0, abs=0.05)
+    view = build_commissioning_view(topology, design_draft=loaded)
+    assert view["driver_spacing_mm"] == expected
+    assert build_tuning_handoff(commissioning_view=view, design_draft=loaded)["driver_spacing_mm"] == expected
+
+
 def test_design_draft_save_payload_requires_strict_revision_contract() -> None:
     with pytest.raises(ValueError, match="requires expected_revision"):
         sound_setup._active_speaker_design_draft_save_payload({})
@@ -6565,7 +6590,7 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
         "status": "started",
         "volume_floor_db": -24.0,
         "percent": 1,
-        "db": -24.0,
+        "db": round(percent_to_db(1, floor_db=-24.0), 3),
     }
     assert len(FakeVolumeFloorToneRunner.instances) == 1
     assert FakeVolumeFloorToneRunner.instances[0].started is True
@@ -6573,7 +6598,7 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
         "volume", pytest.approx(percent_to_db(1, floor_db=-24.0)), True,
     )
     assert fake.events[1] == ("mute", False, False)
-    assert fake.db == pytest.approx(-24.0)
+    assert fake.db == pytest.approx(percent_to_db(1, floor_db=-24.0))
     assert fake.muted is False
     assert not settings_path.exists()
 
@@ -6590,7 +6615,7 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
         ("volume", pytest.approx(percent_to_db(1, floor_db=-36.0)), True),
         ("mute", False, False),
     ]
-    assert fake.db == pytest.approx(-36.0)
+    assert fake.db == pytest.approx(percent_to_db(1, floor_db=-36.0))
     assert fake.muted is False
 
     stop_payload = await session.stop(

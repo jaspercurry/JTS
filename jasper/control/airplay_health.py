@@ -89,7 +89,7 @@ MAINTENANCE_SUPPRESS_UNTIL_PATH = "/run/jasper-airplay-health-suppress-until"
 MIN_AIRPLAY_INPUT_BUFFER_FRAMES = 4096
 
 # AirPlay drop attribution (network vs internal:receiver — see
-# jasper.control.audio_health._input_attribution, which owns the verdict
+# jasper.control.audio_attribution._input_attribution, which owns the verdict
 # thresholds). The session baseline is the median rx_bytes_per_sec of the
 # last LINK_BASELINE_SAMPLES ticks where AirPlay was selected and the ring
 # lane was actually receiving frames.

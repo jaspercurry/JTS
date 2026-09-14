@@ -81,14 +81,22 @@ pub struct OutputCore {
 
 impl OutputCore {
     pub fn new(period_frames: u32) -> Self {
-        Self::with_dac(period_frames, FakeDacSink::new())
+        Self::with_dac(
+            period_frames,
+            FakeDacSink::new(),
+            AssistantLoudnessConfig::default(),
+        )
     }
 
-    pub fn new_for_daemon(period_frames: u32) -> Self {
-        Self::with_dac(period_frames, FakeDacSink::discarding())
+    pub fn new_for_daemon(period_frames: u32, loudness_config: AssistantLoudnessConfig) -> Self {
+        Self::with_dac(period_frames, FakeDacSink::discarding(), loudness_config)
     }
 
-    fn with_dac(period_frames: u32, dac: FakeDacSink) -> Self {
+    fn with_dac(
+        period_frames: u32,
+        dac: FakeDacSink,
+        loudness_config: AssistantLoudnessConfig,
+    ) -> Self {
         // PANIC-AUDITED: period_frames is the daemon's own period-size config, not external input
         assert!(period_frames > 0, "period frames must be > 0");
         let format = AudioFormat::default();
@@ -101,15 +109,7 @@ impl OutputCore {
             dac,
             next_reference_sequence: 0,
             ledger: PlayoutLedger::new(SAMPLE_RATE),
-            // outputd is structurally post-DSP: its assistant mix is downstream
-            // of CamillaDSP, so the loudness engine treats VolumeContext's
-            // downstream_db as 0.0 (see MixStage). Applying fan-in's pre-DSP
-            // downstream compensation here would double-compensate by the full
-            // Camilla gain.
-            loudness: AssistantLoudness::new_with_stage(
-                AssistantLoudnessConfig::default(),
-                MixStage::PostDsp,
-            ),
+            loudness: AssistantLoudness::new_with_stage(loudness_config, MixStage::PostDsp),
             active_assistant_decision: None,
             assistant_reference_tx: None,
             drained_playbacks: Vec::new(),
@@ -636,28 +636,22 @@ mod tests {
 
     #[test]
     fn outputd_uses_loudness_decided_assistant_gain_before_mixing() {
-        let mut core = OutputCore::new(2);
-        authorize_unmuted_assistant(&mut core);
-        let segment = core.enqueue_assistant_segment(
-            Some("item-1".to_string()),
-            SegmentKind::Assistant,
-            tts(10_000, 2),
-        );
-
-        core.step();
-
-        // With no observed content and no profile, the decision falls back
-        // to the quiet-room envelope: baseline_lufs=target_lufs=-41.0,
-        // fallback source_lufs=-24.0, so requested_gain=-17.0. The ordinary
-        // music-relative +1.5 LU offset does not apply without music. This
-        // helper scales with the same decided segment gain the runtime TTS
-        // bridge uses.
-        //
-        // The decision itself is width-independent — it is f32 dB arithmetic
-        // over the volume context and the observed content. So the ledger
-        // gain is exact.
-        assert_eq!(core.ledger().segment(segment).gain, -17.0);
-        assert_period_matches_s16_level(&core.dac().periods[0], 1413, 1);
+        for (ceiling, gain, sample) in [(-3.0, -17.0, 1413), (-30.0, -24.0, 631)] {
+            let config = AssistantLoudnessConfig {
+                max_peak_dbfs: ceiling,
+                ..AssistantLoudnessConfig::default()
+            };
+            let mut core = OutputCore::new_for_daemon(2, config);
+            authorize_unmuted_assistant(&mut core);
+            let segment = core.enqueue_assistant_segment(
+                Some("item-1".to_string()),
+                SegmentKind::Assistant,
+                tts(10_000, 2),
+            );
+            core.step();
+            assert_eq!(core.ledger().segment(segment).gain, gain);
+            assert_period_matches_s16_level(core.output_period(), sample, 1);
+        }
     }
 
     #[test]
@@ -864,7 +858,7 @@ mod tests {
 
     #[test]
     fn daemon_core_does_not_retain_fake_dac_history() {
-        let mut core = OutputCore::new_for_daemon(2);
+        let mut core = OutputCore::new_for_daemon(2, AssistantLoudnessConfig::default());
 
         core.step();
         core.step();

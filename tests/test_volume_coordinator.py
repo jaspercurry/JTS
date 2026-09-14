@@ -29,12 +29,11 @@ from jasper import volume_coordinator as vc_mod
 from jasper.accounts import Account
 from jasper.camilla import CamillaUnavailable
 from jasper.spotify_router import AccountClient, Router
+from jasper.music_sources import Source
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
-from jasper.volume_coordinator import (
+from jasper.volume_coordinator import ECHO_WINDOW_SEC, VolumeCoordinator
+from jasper.volume_scales import (
     BT_VOLUME_MAX,
-    ECHO_WINDOW_SEC,
-    Source,
-    VolumeCoordinator,
     bt_volume_to_listening_level,
     listening_level_to_bt_volume,
     listening_level_to_spotify_percent,
@@ -83,6 +82,19 @@ def test_bt_round_trip(level):
 def test_clamping_below_zero_and_above_100():
     assert listening_level_to_bt_volume(-10) == 0
     assert listening_level_to_bt_volume(150) == BT_VOLUME_MAX
+
+
+@pytest.mark.parametrize("level", range(1, 101))
+def test_main_mute_predicates_agree_for_every_audible_level(level):
+    # R-006: a level and its own dB must not disagree on mute, or the
+    # coordinator re-mutes an audible level forever.
+    assert VolumeCoordinator._main_mute_for_level(level) == (
+        VolumeCoordinator._main_mute_for_db(percent_to_db(level))
+    )
+
+
+def test_level_one_is_strictly_above_the_mute_floor():
+    assert percent_to_db(1) > percent_to_db(0)
 
 
 # ---------- doubles and builders -------------------------------------------
@@ -202,12 +214,12 @@ class _RecordingCoordinator(VolumeCoordinator):
 
     async def _set_spotify(self, level: int) -> bool:
         self.spotify_writes.append(level)
-        self._stamp_outbound(Source.SPOTIFY, level)
+        self._stamp_outbound(Source.SPOTIFY)
         return True
 
     async def _set_bluetooth(self, level: int) -> bool:
         self.bt_writes.append(level)
-        self._stamp_outbound(Source.BLUETOOTH, level)
+        self._stamp_outbound(Source.BLUETOOTH)
         return True
 
     async def _set_camilla(self, level: int) -> bool:
@@ -229,7 +241,7 @@ class _BlockingMuteCoordinator(_RecordingCoordinator):
         if level == 0:
             self.mute_push_started.set()
             await self.release_mute_push.wait()
-        self._stamp_outbound(Source.SPOTIFY, level)
+        self._stamp_outbound(Source.SPOTIFY)
         return True
 
 
@@ -312,12 +324,6 @@ def _event_fields(caplog, event: str) -> dict[str, str]:
     return dict(
         token.split("=", 1) for token in matches[0].split() if "=" in token
     )
-
-
-async def test_aclose_is_safe_without_owned_observer_tasks(tmp_path):
-    coord, _, _ = _coord(tmp_path, active={})
-
-    await coord.aclose()
 
 
 # ---------- outbound dispatch ----------------------------------------------
@@ -584,7 +590,7 @@ async def test_set_spotify_pins_diagnostic_by_scenario(
     assert push_result["ok"] is expect_ok
     assert push_result["reason"] == expect_reason
     if case == "ok":
-        assert coord._last_outbound[Source.SPOTIFY].level == 55
+        assert Source.SPOTIFY in coord._last_outbound
         assert volume_calls == [listening_level_to_spotify_percent(55)]
     else:
         assert Source.SPOTIFY not in coord._last_outbound

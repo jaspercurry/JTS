@@ -25,7 +25,7 @@ import re
 import socket
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -35,12 +35,11 @@ from .audio_profile_state import (
     AEC_MODE_ENV,
     AEC_MODE_FILE_ENV,
     DEFAULT_AEC_MODE_PATH,
-    AecIntent,
     MicProbe,
     RuntimeAecEnv,
     build_audio_profile_status,
+    intent_from_env,
     normalize_aec_mode,
-    parse_env_bool,
     probe_xvf_mic as _probe_xvf_mic,
     runtime_env_from_mapping,
 )
@@ -459,24 +458,6 @@ def read_mode_env(path: Path | None = None) -> dict[str, str]:
 
 def read_system_env(path: Path | None = None) -> dict[str, str]:
     return parse_env_file(str(path) if path else env_file_path())
-
-
-def _intent_from_env(env: Mapping[str, str]) -> AecIntent:
-    return AecIntent(
-        mode=normalize_aec_mode(env.get(AEC_MODE_ENV, "")),
-        raw_enabled=parse_env_bool(env.get("JASPER_WAKE_LEG_RAW", "1"), True),
-        dtln_enabled=parse_env_bool(env.get("JASPER_WAKE_LEG_DTLN", "0"), False),
-        chip_aec_enabled=parse_env_bool(
-            env.get("JASPER_WAKE_LEG_CHIP_AEC", "0"), False,
-        ),
-        chip_aec_150_enabled=parse_env_bool(
-            env.get("JASPER_WAKE_LEG_CHIP_AEC_150", "0"), False,
-        ),
-        chip_aec_210_enabled=parse_env_bool(
-            env.get("JASPER_WAKE_LEG_CHIP_AEC_210", "0"), False,
-        ),
-        profile_selection=env.get("JASPER_AUDIO_INPUT_PROFILE", ""),
-    )
 
 
 def _mic_details(mic: MicProbe) -> dict[str, JsonValue]:
@@ -1514,7 +1495,11 @@ def build_chip_aec_readiness_artifact(
     if voice_wake_legs is None:
         voice_wake_legs = read_voice_wake_legs()
 
-    intent = _intent_from_env(mode_env)
+    intent = replace(
+        intent_from_env(mode_env),
+        mode=normalize_aec_mode(mode_env.get(AEC_MODE_ENV, "")),
+        profile_selection=mode_env.get("JASPER_AUDIO_INPUT_PROFILE", ""),
+    )
     runtime = runtime_env_from_mapping(system_env, process_env=os.environ)
     chip_available = mic_probe.chip_aec_supported
     dac = _dac_details(system_env, outputd_status)
