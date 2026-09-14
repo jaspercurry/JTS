@@ -5,8 +5,9 @@
 """Shared audio-health payload builders and a fake AirPlay sampler.
 
 Used across test_audio_health.py, test_audio_incidents.py,
-test_airplay_health.py and test_control_server_system.py so each keeps
-one copy of the composer's input shapes instead of re-deriving them.
+test_airplay_health.py, test_control_server_system.py and
+test_audio_health_route_claim.py so each keeps one copy of the composer's
+input shapes instead of re-deriving them.
 """
 
 from __future__ import annotations
@@ -14,6 +15,14 @@ from __future__ import annotations
 from jasper.control.audio_health import compose_audio_health
 from jasper.music_sources import MUSIC_SOURCE_SPECS
 
+# #2285 P2 (A6) retired the snd-aloop ACTIVE lane's outputd capture PAIRING
+# along with the endpoint, so this shape no longer reports a capture MISMATCH —
+# there is no registered capture to mismatch against. The unpaired-device arm of
+# `transport_coherence_report` reports it instead. Same box, same verdict
+# (parked), different sentence.
+# The retired snd-aloop ACTIVE lane. A graph still naming it is a post-DSP
+# route with no reader, whatever sentence the report wraps it in.
+_RETIRED_ACTIVE_LANE = "outputd_active_content_playback"
 
 # A healthy Ring A sample: 2 slots deep, nothing waiting, no stall.
 _RING = {
