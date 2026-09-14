@@ -36,7 +36,6 @@ from ..audio_profile_state import (
     infer_audio_input_profile,
     intent_from_env,
     normalize_audio_input_profile,
-    parse_env_bool as _parse_audio_profile_bool,
     probe_xvf_mic,
     profile_env_updates,
     resolve_audio_input_intent,
@@ -228,11 +227,6 @@ _TOGGLE_TO_ENV_KEY = {
     for name, key, _ in WAKE_LEG_DEFAULTS
     if name != "leg_chip_aec"
 }
-
-
-def _parse_env_bool(raw: str, default: bool) -> bool:
-    """Same normalization the bash reconciler does — accept yes/no/etc."""
-    return _parse_audio_profile_bool(raw, default)
 
 
 def _read_aec_state() -> dict:
