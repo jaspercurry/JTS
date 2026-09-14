@@ -71,8 +71,7 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
 def bookkeeping_views(purpose: str) -> tuple[tuple[str, bool, bool], ...]:
     """View name, per-set scope, and whether it grades against the base."""
     return {
-        PURPOSE_SPEAKER: (("inventory", True, False), ("classify-features", False, False),
-                         ("distortion", False, False), ("directivity", False, False), ("per-seat", False, False)),
+        PURPOSE_SPEAKER: (("inventory", True, False),),
         PURPOSE_ROOM: (("room", True, False), ("room-grade", True, True), ("frequency", False, False)),
         PURPOSE_BASS: (("bass", True, False), ("frequency", False, False)),
     }.get(purpose, ())

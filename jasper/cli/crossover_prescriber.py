@@ -12,8 +12,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed, read_json_source, read_source_bytes
-from .round_views._common import RoundSetRefused, add_set_argument, context_artifacts, resolve_set
+from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed, read_source_bytes
+from .round_views._common import RoundSetRefused, add_set_argument, context_artifacts
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
@@ -30,7 +30,7 @@ from jasper.active_speaker.crossover_v2.prescription_document import (
     PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document, read_prescription_document,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    banked_round_of, recent_round_sessions, round_artifact_dir, round_inputs, contract_sources, RoundInputs,
+    banked_round_of, recent_round_sessions, round_inputs, prescription_sources, RoundInputs,
 )
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.active_speaker.seat_level_reference import seat_level_reference_volume_db
@@ -44,27 +44,9 @@ AUTHORITY_TIER = "advisory (judge, contract and status read; compose banks a can
 REASON_UNREADABLE = "evidence_unreadable"
 REASON_UNWRITABLE = "output_unwritable"
 
-def _contract_sources(inputs: RoundInputs | None, set_id: str | None = None) -> dict[str, Any]:
-    if inputs is None:
-        return {}
-    selected = resolve_set(inputs, set_id).set_id if set_id is not None else None
-    sources = contract_sources(inputs, set_id=selected)
-    artifact_dir, _ = round_artifact_dir(inputs.session_dir)
-    for name, path in (("draft", inputs.design_draft_path),
-                       ("receipt", artifact_dir / "round_receipt.json" if artifact_dir else None)):
-        try:
-            raw = read_json_source(str(path)) if path is not None else None
-        except ValueError:
-            raw = None
-        sources[name] = raw if isinstance(raw, dict) else {}
-    sources["applied_profile"] = (load_applied_baseline_profile_state(inputs.applied_profile_path)
-                                  if inputs.applied_profile_path else None)
-    return sources
-
-
 def _document_evidence(args: argparse.Namespace, document: Mapping[str, Any]) -> PrescriptionEvidence:
     inputs = round_inputs(Path(args.round)) if args.round else None
-    sources = _contract_sources(inputs, args.set)
+    sources = prescription_sources(inputs, set_id=args.set)
     sections = document["sections"]
     packet: dict[str, Any] = {}
     if inputs is not None and (sections.get("driver") or sections.get("blend")):
@@ -169,7 +151,7 @@ def _load_packet(args: argparse.Namespace, *, inputs: RoundInputs | None = None)
 
 def _cmd_contract(args: argparse.Namespace) -> int:
     try:
-        sources = _contract_sources(round_inputs(Path(args.round)) if args.round else None, args.set)
+        sources = prescription_sources(round_inputs(Path(args.round)) if args.round else None, set_id=args.set)
         contracts = prescription_contracts(**sources)
         document = contracts if args.section == "all" else contracts[args.section]
         payload = contract_json(document)

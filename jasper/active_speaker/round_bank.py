@@ -415,6 +415,9 @@ def bank_round(
         manifest, views = _bookkeeping(
             target, target / "bundle" / session_dir.name, view_runner,
         )
+        from .round_packet import write_round_packet  # lazy: packet imports this banker
+
+        write_round_packet(target, manifest, views)
         sha = _detect_build_sha()
         provenance: dict[str, Any] = {
             "banked_at_utc": datetime.now(timezone.utc).strftime(

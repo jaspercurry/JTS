@@ -20,8 +20,8 @@ def _jsonable(value: Any) -> Any:
         return str(value)
 
 
-def render_report(payload: Any) -> str:
-    return json.dumps(payload, indent=2, sort_keys=True, default=_jsonable, allow_nan=False)
+def render_report(payload: Any, *, sort_keys: bool = True) -> str:
+    return json.dumps(payload, indent=2, sort_keys=sort_keys, default=_jsonable, allow_nan=False)
 
 
 def report_answer(view: str, out: Path | None, **fields: Any) -> dict[str, Any]:

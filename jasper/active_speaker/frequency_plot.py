@@ -33,7 +33,8 @@ def prepare_plot_curve(
     freqs = freqs[order]
     values = np.asarray(display["deviation_db"], dtype=float)[order]
     valid = np.isfinite(values)
-    values[valid] = smooth_fractional_octave(freqs[valid], values[valid], fraction=6)
+    if curve.get("smoothing_fractional_octave") != 6:
+        values[valid] = smooth_fractional_octave(freqs[valid], values[valid], fraction=6)
     ref_mask = valid & (freqs >= ref_band_hz[0]) & (freqs <= ref_band_hz[1])
     reference = None if normalize else finite_float(curve.get("reference_db"))
     mode = "run_reference" if reference is not None else "normalized"
@@ -74,11 +75,14 @@ def render_frequency_view(
         raise ValueError("no selected frequency curves")
     if band_hz is not None and not 0 < band_hz[0] < band_hz[1]:
         raise ValueError("plot band must have positive increasing edges")
-    poses: dict[str, list] = {}
+    poses: dict[tuple[str, str], list] = {}
     for run, curve in rows:
         position = curve.get("position") or {}
         pose = position.get("id") or str(position.get("deg", "unspecified"))
-        poses.setdefault(pose, []).append((run, curve, prepare_plot_curve(curve, run.get("metadata"), ref_band_hz=ref_band_hz, normalize=normalize)))
+        plot = curve.get("plot", {})
+        if normalize or plot.get("ref_band_hz") != list(ref_band_hz):
+            plot = prepare_plot_curve(curve, run.get("metadata"), ref_band_hz=ref_band_hz, normalize=normalize)
+        poses.setdefault((pose, curve.get("role", "")), []).append((run, curve, plot))
     impulses = [run for run in view["runs"] if run.get("metadata", {}).get("impulse")]
     nplots = len(poses) * (2 if low_end else 1)
     fig = Figure(figsize=(16 if low_end else 12, 3 * len(poses) + len(rows) * .4 + len(impulses) * 2.5), layout="constrained")
@@ -98,6 +102,8 @@ def render_frequency_view(
         position = curves[0][1].get("position") or {}
         offset, degrees = position.get("seat_offset_m"), position.get("deg")
         title = f"Seat {offset} m (right, forward, up)" if offset is not None else f"Pose {degrees}°" if degrees is not None else "Unspecified pose"
+        if role := curves[0][1].get("role"):
+            title += f" · {role}"
         if position.get("vertical_deg"):
             title += f" · elevation {position['vertical_deg']}°"
         panels = [(axes[pose_index * (2 if low_end else 1)], band_hz or (20, 20000))]

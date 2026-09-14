@@ -66,11 +66,11 @@ def read_json_source(path: str) -> Any:
         raise ValueError(f"{path}: {exc}") from exc
 
 
-def answered(document: Mapping[str, Any], line: str = "") -> int:
+def answered(document: Mapping[str, Any], line: str = "", *, sort_keys: bool = True) -> int:
     """A verb's answer on stdout and, when given, its one human line on
     stderr (ADR-0237). A success document never carries ``status``."""
 
-    print(render_report(dict(document)))
+    print(render_report(dict(document), sort_keys=sort_keys))
     if line:
         print(line, file=sys.stderr)
     return EXIT_OK

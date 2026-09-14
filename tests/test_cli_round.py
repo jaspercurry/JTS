@@ -10,13 +10,20 @@ import json
 import subprocess
 import sys
 import urllib.error
+from functools import partial
+from pathlib import Path
 
 import pytest
 
-from jasper.active_speaker import wizard_client as wc
+from jasper.active_speaker import round_bank, round_packet, wizard_client as wc
+from jasper.active_speaker.bundles import mark_state
+from jasper.active_speaker.crossover_v2.evidence_packet import CrossoverEvidencePacketError
+from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs
 from jasper.active_speaker.movers import MOVERS
 from jasper.cli import round as cli
 from jasper.cli._refusal import STATUS_BY_CODE
+from tests.crossover_v2_banked_round import bank_measure_round
+from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile, _room_candidate
 
 _FINGERPRINT = "a" * 64
@@ -331,8 +338,8 @@ def test_named_run_never_reads_or_releases_a_different_run(verb, monkeypatch, ca
 
 @pytest.mark.parametrize("verb", ["wait", "run"])
 @pytest.mark.parametrize("timeout", ["--timeout", "--timeout-s"])
-def test_wait_banks_and_returns_manifest_and_views(preflight_ready, monkeypatch, capsys, tmp_path, verb, timeout):
-    from jasper.active_speaker import round_bank
+@pytest.mark.parametrize("verbose", [False, True])
+def test_wait_banks_and_returns_packet(preflight_ready, monkeypatch, capsys, tmp_path, verb, timeout, verbose):
     from jasper.cli.round_views import run_bookkeeping
 
     views = [{"view": "frequency", "status": "written", "out": "frequency_view.json", "image": "frequency.png"}]
@@ -343,12 +350,60 @@ def test_wait_banks_and_returns_manifest_and_views(preflight_ready, monkeypatch,
     opener = _run_opener({"status": "complete", "run": {"status": "complete", "manifest": "run_manifest.json"}})
     opener.pages[wc.SESSION_PATH] = json.dumps({"capture": {"session_id": "run-1"}})
     argv = ["wait", "--run", "run-1"] if verb == "wait" else ["run", "--program", "room", "--poses", "seat_express", "--wait"]
-    code, body = _run([*argv, timeout, "0"], opener, monkeypatch, capsys)
+    (tmp_path / "frequency.png").touch()
+    code, body = _run([*argv, timeout, "0", *(["--verbose"] if verbose else [])], opener, monkeypatch, capsys)
     assert code == 0 and calls == [(tmp_path, {
         "view_runner": run_bookkeeping,
     })]
-    assert body["manifest"] == "run_manifest.json" and body["views"] == views
-    assert body["round_dir"] == str(tmp_path)
+    assert list(body)[:5] == ["result", "reason", "round_dir", "packet", "picture"]
+    assert body == {"result": "complete", "reason": None, "round_dir": str(tmp_path),
+                    "packet": str(tmp_path / "packet.json"), "picture": str(tmp_path / "frequency.png"),
+                    **({"views": views} if verbose else {})}
+
+
+@pytest.mark.parametrize("stage", ["prescription_sources", "prescription_contracts"])
+@pytest.mark.parametrize("error,reason", [
+    (RoundSetRefused("round_set_unknown"), "round_set_unknown"),
+    (CrossoverEvidencePacketError("missing evidence"), "evidence_unreadable"),
+    (OSError("unreadable evidence"), "evidence_unreadable"),
+    (ValueError("invalid contract"), "evidence_unreadable"),
+])
+def test_wait_banks_when_one_set_has_no_limits(tmp_path, monkeypatch, capsys, stage, error, reason):
+    source = bank_measure_round(tmp_path / "live")
+    inputs = round_inputs(source)
+    mark_state(inputs.session_dir, "applied")
+    write_manifest(source, program="room", groups=[
+        {"set_id": set_id, "base": True, "capture_basis": {}, "takes": []}
+        for set_id in ("unavailable", "available")
+    ])
+    contracts = round_packet.prescription_contracts
+
+    def sources(inputs, *, set_id=None):
+        if stage == "prescription_sources" and set_id == "unavailable":
+            raise error
+        return {"candidate": {"set_id": set_id}}
+
+    def contract(**sources):
+        if stage == "prescription_contracts" and sources["candidate"]["set_id"] == "unavailable":
+            raise error
+        return contracts(**sources)
+
+    monkeypatch.setattr(round_packet, "prescription_sources", sources)
+    monkeypatch.setattr(round_packet, "prescription_contracts", contract)
+    monkeypatch.setattr(round_bank, "bank_round", partial(
+        round_bank.bank_round, campaign_root=tmp_path / "bank", state_path=inputs.state_path,
+        **{name: tmp_path / name for name in ("design_draft_path", "applied_profile_path", "repeat_floor_path",
+                                            "declared_geometry_path", "statefile_path")},
+    ))
+    monkeypatch.setattr(cli, "_round_session_dir", lambda run: str(inputs.session_dir))
+    code, body = _run(["wait", "--run", "run-1", "--timeout", "0"],
+                      _run_opener({"status": "complete", "run": {"status": "complete"}}), monkeypatch, capsys)
+    assert code == 0 and body["result"] == "complete"
+    packet = json.loads(Path(body["packet"]).read_text())
+    assert packet["result"] == "complete"
+    assert packet["limits"]["unavailable"] == {"status": "unavailable", "reason": reason}
+    assert "schema" in packet["limits"]["available"]
+    assert (Path(body["round_dir"]) / "provenance.json").is_file()
 
 
 @pytest.mark.parametrize("argv", [["run", "--tier", "express"], ["run", "--stage", "measure"], ["open"], ["bank"]])
