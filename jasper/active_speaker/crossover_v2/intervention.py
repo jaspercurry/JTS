@@ -817,7 +817,7 @@ class BranchFits:
 def fit_branches(
     drivers: Sequence[DriverEvidence], *,
     mic_tiers: Mapping[str, str],
-    vocabulary: FitVocabulary,
+    vocabulary: FitVocabulary | Mapping[str, FitVocabulary],
     sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
     source_preset: Mapping[str, Any] | None = None,
     cloud: CloudFitTerms | None = None,
@@ -853,7 +853,9 @@ def fit_branches(
     blind = measurement_hole_bands_hz(list(core.values()))
     fits = {
         driver.role: fit_driver_linearization(
-            driver.response, envelopes[driver.role], vocabulary=vocabulary.with_budget(driver.fit_budget),
+            driver.response, envelopes[driver.role],
+            vocabulary=(vocabulary if isinstance(vocabulary, FitVocabulary) else vocabulary[driver.role])
+            .with_budget(driver.fit_budget),
             radiating_band_hz=radiating[driver.role], blind_bands_hz=blind,
             target=branch_target(sections.get(driver.role, ()), envelopes[driver.role].freqs_hz),
         )

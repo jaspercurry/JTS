@@ -163,6 +163,73 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
     assert before == {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
+@pytest.mark.parametrize("poses,exclusion,verifies,floor", [
+    (2, False, True, None),
+    (3, False, True, None),
+    (3, True, True, None),
+    (3, False, False, None),
+    (3, False, True, 100.0),
+    (3, False, True, 8000.0),
+])
+def test_design_cloud_bounds_each_roles_fit(speaker_round, capsys, poses, exclusion, verifies, floor):
+    root, record, program, _, region, _ = speaker_round
+    inputs = round_inputs(root)
+    state = json.loads(inputs.state_path.read_text())
+    state["session_phases"] = ["check", "cloud_measure", "measure"] + (["verify"] if verifies else [])
+    inputs.state_path.write_text(json.dumps(state))
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    candidate = json.loads((directory / "candidate.json").read_text())
+    if exclusion:
+        candidate["exclusion_evidence"] = {"n_positions": 3, "excluded_bands_hz": [], "band_spread": []}
+        (directory / "candidate.json").write_text(json.dumps(candidate))
+    response = response_from_banked_curve(record["curves"][1])[0]
+    db = -7 * np.exp(-0.5 * (np.log2(response.freqs_hz / 6000) / 0.25) ** 2)
+    response = replace(response, magnitude_db=db, complex_tf=10 ** (db / 20) + 0j, repeat_responses=())
+    analysis = ProgramAnalysis(phase="measure", program_id=program.program_id, locations=(),
+                              driver_responses=(replace(response, repeat_responses=(response, response)),))
+    record["curves"][1] = analysis_curve_records(analysis, program)[0]
+    rows = []
+    for index, (deg, kind, phase) in enumerate([
+        (0, "bearing", "measure"), (-20, "bearing", "measure"), (20, "bearing", "measure"),
+        (0, "bearing", "measure"), (40, "seat", "measure"), (60, "bearing", "verify"),
+        (80, "bearing", "measure"),
+    ]):
+        take = {**record, "take_id": f"design-{index}", "position_deg": deg, "pose_kind": kind, "phase": phase}
+        path = directory / "positions" / f"{take['take_id']}.json"
+        path.write_text(json.dumps(take))
+        rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), take))
+    groups = []
+    for role, count in (("woofer", 2), ("tweeter", poses)):
+        group = manifest_set(rows, set_id=role, selected={r["take_id"] for _, r in rows[:count] + rows[3:6]})
+        group["capture_basis"]["role"] = role
+        for take in group["takes"]:
+            take.update(role=role, analysis=candidate["analysis"])
+        groups.append(group)
+    write_manifest(root, groups=groups)
+    flags = [] if floor is None else ["--boost-floor-hz", str(floor)]
+    assert round_views.main(["speaker-fit", str(root), "--set", "tweeter", "--take", "design-0", *flags]) == 0
+    result = json.loads(capsys.readouterr().out)
+    for role, count in (("woofer", 2), ("tweeter", poses)):
+        proposal = result["linearization"][role]
+        allowed = verifies and (exclusion or count >= 3)
+        assert proposal["vocabulary"] == ("bounded_boost" if allowed else "cut_only")
+        assert proposal["cloud"] == {"design_poses": count}
+        fit = proposal["fit"]
+        design_boost = allowed and not exclusion
+        expected_floor = max(region["fc_hz"], floor or 0) if design_boost else floor
+        cap = 3.0 if design_boost else FitVocabulary().per_filter_boost_cap_db
+        assert fit["budget"]["boost_floor_hz"] == expected_floor
+        assert proposal["per_filter_boost_cap_db"] == cap
+        boosts = [f for f in fit["filters"] if f["gain"] > 0]
+        assert all(f["gain"] <= cap and f["freq"] >= (expected_floor or 0) for f in boosts)
+        if role == "tweeter" and allowed and floor != 8000:
+            assert boosts
+        if not allowed:
+            assert not boosts
+    assert result["vocabulary"] == result["linearization"]["tweeter"]["vocabulary"]
+    assert result["cloud"] == {"design_poses": poses}
+
+
 @pytest.mark.parametrize("run_program", ["speaker", "speaker/full"])
 def test_speaker_fit_reads_the_run_purpose_behind_a_sized_program(speaker_round, capsys, run_program):
     root, record, program, *_ = speaker_round
@@ -307,10 +374,14 @@ def test_speaker_fit_reads_declared_budgets_and_only_overrides_stdout(speaker_ro
     assert before == {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
-def test_banked_speaker_packet_fits_every_selected_pose_and_role(speaker_round, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("pose_count", [2, 3])
+def test_banked_speaker_packet_fits_every_selected_pose_and_role(speaker_round, tmp_path, monkeypatch, capsys, pose_count):
 
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
+    state = json.loads(inputs.state_path.read_text())
+    state["session_phases"].insert(1, "cloud_measure")
+    inputs.state_path.write_text(json.dumps(state))
     directory, _ = round_artifact_dir(inputs.session_dir)
     candidate = json.loads((directory / "candidate.json").read_text())
     curves = {curve["role"]: curve for curve in record.pop("curves")}
@@ -323,7 +394,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(speaker_round, 
             path.write_text(json.dumps(take))
             rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), take))
         for role, curve in curves.items():
-            group = manifest_set(rows, set_id=f"{base}-{role}", selected={r["take_id"] for _, r in rows[:2]})
+            group = manifest_set(rows, set_id=f"{base}-{role}", selected={r["take_id"] for _, r in rows[:pose_count]})
             group.update(base=base)
             group["capture_basis"].update(role=role, candidate_id="base" if base else "candidate")
             for take in group["takes"]:
@@ -338,11 +409,13 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(speaker_round, 
     packet = json.loads((banked.path / "packet.json").read_text())
     expected = {(g["set_id"], t["take_id"], t["pose"]["deg"], t["role"])
                 for g in manifest["sets"] for t in g["takes"] if t["selected"]}
-    assert len(packet["fits"]) == len(expected) == 8
+    assert len(packet["fits"]) == len(expected) == 4 * pose_count
     assert {(f["set_id"], f["take_id"], f["pose"]["deg"], f["role"]) for f in packet["fits"]} == expected
     assert all(f["mic_tier"] == "reference" and isinstance(f["filters"], list)
                and f["residual_rms_db"] is not None and f["budget"] for f in packet["fits"])
-    assert len(packet["series"]) == 8
+    assert all(f["vocabulary"] == ("bounded_boost" if pose_count == 3 else "cut_only")
+               and f["cloud"] == {"design_poses": pose_count} for f in packet["fits"])
+    assert len(packet["series"]) == 4 * pose_count
     assert all(s["stats"]["rms_100_10k_db"] is not None for s in packet["series"])
     assert packet["result"] == "complete" and set(packet["limits"]) == {g["set_id"] for g in groups}
     assert Path(packet["artifacts"]["frequency_png"]).read_bytes().startswith(b"\x89PNG")

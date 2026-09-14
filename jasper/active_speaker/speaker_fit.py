@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
 
+from jasper.active_speaker.branch_chain import sections_by_role
 from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
 from jasper.active_speaker.crossover_v2.intervention import DriverEvidence, boost_allowed, fit_branches
 from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_MEASURE, STAGE_MEASURE_CAPABILITIES, open_stage
@@ -21,7 +23,8 @@ from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
 from jasper.active_speaker.linearization_envelope import EnvelopeCurve
 from jasper.active_speaker.linearization_budget import fit_budgets_by_role, normalise_fit_budget
 from jasper.active_speaker.linearization_fit import FitVocabulary
-from jasper.active_speaker.measurement_programs import PURPOSE_SPEAKER, run_purpose
+from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_SPEAKER, run_purpose
+from jasper.active_speaker.profile import CrossoverRegion
 from jasper.audio_measurement.bundles import relative_artifact_path
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
 from jasper.audio_measurement.program import ExcitationProgram
@@ -70,24 +73,56 @@ def _round_candidate(directory: Path, manifest: Mapping[str, Any]) -> dict[str, 
     return find_banked_candidate(base).candidate.to_dict()
 
 
-def _production_vocabulary(inputs: RoundInputs, candidate: dict[str, Any]) -> str:
-    if inputs.state_path is None:
-        raise RoundViewsError("production vocabulary requires the capture's journey state")
-    state = json.loads(inputs.state_path.read_text())
-    plan = open_stage(
-        STAGE_MEASURE_CAPABILITIES, index_phase_map=dict(enumerate(state["session_phases"])),
-    ).plan
-    allowed = boost_allowed(
-        post_apply_verifies=plan.post_apply_verifies,
-        cloud_phase_planned=PHASE_CLOUD_MEASURE in plan.phases,
-        cloud_present=bool(candidate.get("exclusion_evidence")),
+def design_pose_counts(manifest: Mapping[str, Any]) -> dict[str, int]:
+    bearings: dict[str, set[float]] = {}
+    for group in manifest["sets"]:
+        for take in group["takes"]:
+            pose = take["pose"]
+            role = take.get("role") or group["capture_basis"].get("role")
+            if role and take["selected"] and take.get("phase") == "measure" and (
+                pose.get("kind") == POSE_KIND_BEARING and pose.get("deg") is not None
+            ):
+                bearings.setdefault(role, set()).add(pose["deg"])
+    return {role: len(poses) for role, poses in bearings.items()}
+
+
+def _production_vocabulary(
+    inputs: RoundInputs, candidate: dict[str, Any], design_poses: Mapping[str, int],
+    budgets: Mapping[str, Mapping[str, Any]], override: str | None,
+) -> dict[str, FitVocabulary]:
+    plan = None
+    if override is None:
+        if inputs.state_path is None:
+            raise RoundViewsError("production vocabulary requires the capture's journey state")
+        state = json.loads(inputs.state_path.read_text())
+        plan = open_stage(
+            STAGE_MEASURE_CAPABILITIES, index_phase_map=dict(enumerate(state["session_phases"])),
+        ).plan
+    sections = sections_by_role(
+        CrossoverRegion.from_mapping(region)
+        for region in candidate["source_preset"].get("crossover_regions") or ()
     )
-    return "bounded_boost" if allowed else "cut_only"
+    vocabularies = {}
+    for role, budget in budgets.items():
+        design_cloud = design_poses.get(role, 0) >= 3 and not candidate.get("exclusion_evidence")
+        allowed = override == "bounded_boost" if plan is None else boost_allowed(
+            post_apply_verifies=plan.post_apply_verifies,
+            cloud_phase_planned=PHASE_CLOUD_MEASURE in plan.phases,
+            cloud_present=design_cloud or bool(candidate.get("exclusion_evidence")),
+        )
+        vocabulary = FitVocabulary(allow_boost=allowed).with_budget(budget)
+        if design_cloud and allowed:
+            fc = min((section.fc_hz for section in sections.get(role, ())), default=0.0)
+            vocabulary = replace(vocabulary, per_filter_boost_cap_db=3.0,
+                                 boost_floor_hz=max(fc, vocabulary.boost_floor_hz or 0.0) or None)
+        vocabularies[role] = vocabulary
+    return vocabularies
 
 
 def speaker_fit(
     inputs: RoundInputs, manifest: Mapping[str, Any], set_id: str, take_id: str | None = None,
     *, vocabulary: str | None = None, budget: Mapping[str, Any] | None = None,
+    design_poses: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     selected = resolve_set(inputs, set_id, manifest=manifest)
     take_id = selected.take_id(take_id)
@@ -104,7 +139,6 @@ def speaker_fit(
     assert directory is not None
     try:
         candidate = _round_candidate(directory, manifest)
-        vocabulary = vocabulary or _production_vocabulary(inputs, candidate)
     except (OSError, ValueError, TypeError, LookupError) as exc:
         raise SpeakerFitUnreadable(str(exc)) from exc
     analysis = take.get("analysis") or candidate["analysis"]
@@ -130,6 +164,12 @@ def speaker_fit(
     bands = _primary_sweep_bands(program)
     if not 1 <= len(bands) <= 2:
         raise RoundViewsError("speaker-fit requires one or two measured driver roles")
+    design_poses = design_pose_counts(manifest) if design_poses is None else design_poses
+    try:
+        vocabularies = _production_vocabulary(inputs, candidate, design_poses,
+                                             {role: {**budgets.get(role, {}), **overrides} for role in bands}, vocabulary)
+    except (OSError, ValueError, TypeError, LookupError) as exc:
+        raise SpeakerFitUnreadable(str(exc)) from exc
     curves = {curve["role"]: curve for curve in record.get("curves") or []} or {
         row["role"]: row["curve"] for group in manifest["sets"] for row in group["takes"]
         if row["take_id"] == take_id and row.get("role") and row.get("curve")}
@@ -138,19 +178,23 @@ def speaker_fit(
         response = response_from_banked_curve(curves[role])
         if response is None:
             raise RoundViewsError(f"fit inputs are not banked for {role}")
-        drivers.append(DriverEvidence(role, response[0], band, classes.get(role, "unknown"),
-                                      {**budgets.get(role, {}), **overrides}))
+        drivers.append(DriverEvidence(role, response[0], band, classes.get(role, "unknown")))
     branches = fit_branches(
         drivers, source_preset=candidate["source_preset"], mic_tiers={driver.role: tier for driver in drivers},
-        vocabulary=FitVocabulary(allow_boost=vocabulary == "bounded_boost"),
+        vocabulary=vocabularies,
     )
+    linearization = {driver.role: {
+        "vocabulary": "bounded_boost" if vocabularies[driver.role].allow_boost else "cut_only",
+        "cloud": {"design_poses": design_poses.get(driver.role, 0)},
+        "per_filter_boost_cap_db": vocabularies[driver.role].per_filter_boost_cap_db,
+        "excited_band_hz": list(driver.excited_band_hz),
+        "envelope": _envelope_answer(branches.envelopes[driver.role]),
+        "fit": branches.fits[driver.role].to_dict(),
+    } for driver in drivers}
+    selected_fit = linearization.get(selected.capture_basis.get("role") or drivers[0].role, linearization[drivers[0].role])
     return dict(
-        set_id=selected.set_id, take_id=take_id, vocabulary=vocabulary,
-        linearization={driver.role: {
-            "excited_band_hz": list(driver.excited_band_hz),
-            "envelope": _envelope_answer(branches.envelopes[driver.role]),
-            "fit": branches.fits[driver.role].to_dict(),
-        } for driver in drivers},
+        set_id=selected.set_id, take_id=take_id,
+        vocabulary=selected_fit["vocabulary"], cloud=selected_fit["cloud"], linearization=linearization,
         alignment={
             "committed": {"delay_us": analysis.get("delay_us"), "polarity": analysis.get("polarity"),
                           "ripple_db": analysis.get("predicted_ripple_db")},
