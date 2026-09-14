@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The single home for atomic text-file writes in JTS.
+"""The single home for atomic text/bytes-file writes in JTS.
 
 The codebase persists small bits of runtime state to disk all over
 (``mic_mute.env``, the volume-state file, the multiroom reconciler's
@@ -78,6 +78,7 @@ __all__ = [
     "SHARED_LOCK_MODE",
     "advisory_file_lock",
     "advisory_file_lock_async",
+    "atomic_write_bytes",
     "atomic_write_json",
     "atomic_write_text",
     "env_key_action",
@@ -378,9 +379,9 @@ async def advisory_file_lock_async(
             acquire.add_done_callback(_release_when_settled)
 
 
-def atomic_write_text(
+def atomic_write_bytes(
     path: str | os.PathLike,
-    text: str,
+    data: bytes,
     *,
     mode: int = 0o644,
     group_from_parent: bool = True,
@@ -388,7 +389,7 @@ def atomic_write_text(
     preserve_target_owner: bool = False,
     durable: bool = False,
 ) -> None:
-    """Atomically write ``text`` to ``path`` as UTF-8, then ``chmod`` to ``mode``.
+    """Atomically write ``data`` to ``path``, then ``chmod`` to ``mode``.
 
     Writes to a tempfile in the same directory as ``path`` and ``os.replace``s
     it into place, so a concurrent reader sees either the old file or the
@@ -423,6 +424,12 @@ def atomic_write_text(
     callers use this stronger contract; ordinary runtime state keeps the
     cheaper default.
 
+    Whole-value only: ``data`` is written in one shot from memory, so a caller
+    streaming an unbounded or large payload (a long-form audio capture, a
+    tens-of-megabytes download on a 415 MB Pi) must NOT buffer it through this
+    function — that trades a documented constant-memory design for a bigger
+    resident footprint. Such callers keep their own streamed tempfile+rename.
+
     Raises ``OSError`` on any I/O failure; the tempfile is unlinked
     (best-effort) before the error propagates. Does NOT swallow errors — a
     caller wanting fail-soft semantics wraps this itself.
@@ -447,8 +454,8 @@ def atomic_write_text(
     basename = os.path.basename(fspath)
     fd, tmp = tempfile.mkstemp(prefix="." + basename + ".", suffix=".tmp", dir=parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
             if parent_gid is not None:
                 _publish_parent_group(f.fileno(), parent_gid, path=fspath)
         if target_stat is not None:
@@ -495,6 +502,32 @@ def atomic_write_text(
                 error=cleanup_exc,
             )
         raise
+
+
+def atomic_write_text(
+    path: str | os.PathLike,
+    text: str,
+    *,
+    mode: int = 0o644,
+    group_from_parent: bool = True,
+    preserve_target_stat: bool = False,
+    preserve_target_owner: bool = False,
+    durable: bool = False,
+) -> None:
+    """UTF-8 encode ``text`` and publish it via :func:`atomic_write_bytes`.
+
+    See that function for the full atomicity/ownership/durability contract;
+    this wrapper only adds the encoding step.
+    """
+    atomic_write_bytes(
+        path,
+        text.encode("utf-8"),
+        mode=mode,
+        group_from_parent=group_from_parent,
+        preserve_target_stat=preserve_target_stat,
+        preserve_target_owner=preserve_target_owner,
+        durable=durable,
+    )
 
 
 # Group-readable so the non-root jasper-control reader can read sound

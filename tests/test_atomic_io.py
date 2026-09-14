@@ -2,9 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.atomic_io.atomic_write_text — the canonical atomic
-text-write helper that ~39 hand-rolled tempfile+chmod+os.replace sites are
-being consolidated onto.
+"""Tests for jasper.atomic_io.atomic_write_bytes/atomic_write_text — the
+canonical atomic write helpers that hand-rolled tempfile+chmod+os.replace
+sites are being consolidated onto. ``atomic_write_text`` is a thin UTF-8
+wrapper over ``atomic_write_bytes``, so the shared contract is pinned once,
+against whichever helper best fits each behavior.
 
 Pins the contract callers depend on: a clean write+read round-trip, the
 requested mode landing on the published file, parent-dir creation, atomic
@@ -30,6 +32,7 @@ from jasper import atomic_io as atomic_io_module
 from jasper.atomic_io import (
     advisory_file_lock,
     advisory_file_lock_async,
+    atomic_write_bytes,
     atomic_write_json,
     atomic_write_text,
     fsync_directory,
@@ -43,6 +46,18 @@ def test_write_read_round_trip(tmp_path):
     path = tmp_path / "state.txt"
     atomic_write_text(path, "hello world")
     assert path.read_text(encoding="utf-8") == "hello world"
+
+
+def test_atomic_write_bytes_publishes_exact_bytes_and_leaves_no_temp_file(
+    tmp_path,
+):
+    path = tmp_path / "clip.bin"
+    payload = bytes(range(256)) * 4
+
+    atomic_write_bytes(path, payload)
+
+    assert path.read_bytes() == payload
+    assert not any(tmp_path.glob("*.tmp"))
 
 
 def test_mode_is_applied(tmp_path):

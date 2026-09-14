@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import io
 import logging
 import os
 import subprocess
@@ -66,6 +67,7 @@ from pathlib import Path
 
 import numpy as np
 
+from jasper.atomic_io import atomic_write_bytes
 from jasper.log_event import log_event
 from jasper.mic_mute_persistence import (
     DEFAULT_PATH as MIC_MUTE_STATE_PATH,
@@ -168,14 +170,14 @@ def clip_basename(session_id: str, seq: int, leg: str) -> str:
 
 
 def write_wav(path: Path, pcm: bytes) -> None:
-    """Write a 16 kHz mono int16 WAV. Atomic via tempfile + rename."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with wave.open(str(tmp), "wb") as w:
+    """Write a 16 kHz mono int16 WAV. Published atomically via atomic_io."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
         w.setnchannels(CHANNELS)
         w.setsampwidth(SAMPLE_WIDTH_BYTES)
         w.setframerate(SAMPLE_RATE_HZ)
         w.writeframes(pcm)
-    os.replace(tmp, path)
+    atomic_write_bytes(path, buf.getvalue())
 
 
 class MicMutedError(RuntimeError):
