@@ -33,6 +33,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
     candidate_room_peqs,
 )
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
+from jasper.audio_measurement.room_limits import ROOM_PEQ_Q_MIN, ROOM_PEQ_Q_MAX
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.room_views import (
     room_ceiling,
@@ -219,12 +220,12 @@ def test_an_unreadable_median_is_not_evidence(break_document):
             {},
             id="side_total_boost_over_cap",
         ),
-        pytest.param(
+        *(pytest.param(
             FILTER_Q_OUT_OF_RANGE,
-            {"filters": [{"freq": DIP_HZ, "q": 0.5, "gain": -3.0}]},
+            {"filters": [{"freq": DIP_HZ, "q": q, "gain": -3.0}]},
             {},
-            id="q_below_the_room_range",
-        ),
+            id=f"q_outside_the_room_range_{q}",
+        ) for q in (-1.0, 0.0, 0.5, ROOM_PEQ_Q_MAX + 1.0)),
         pytest.param(
             FILTER_CUT_TOO_DEEP,
             {"filters": [{"freq": WIDE_SPREAD_HZ, "q": 3.0, "gain": -8.0}]},
@@ -278,6 +279,9 @@ def test_the_room_door_refuses_by_slug(reason, document, median_knobs):
     with pytest.raises(RoomPrescriptionRefused) as excinfo:
         _read(_document(**document), _room_median(**median_knobs))
     assert excinfo.value.reason == reason
+    if reason == FILTER_Q_OUT_OF_RANGE:
+        assert excinfo.value.evidence == {"q": document["filters"][0]["q"],
+                                         "q_range": [ROOM_PEQ_Q_MIN, ROOM_PEQ_Q_MAX]}
 
 
 @pytest.mark.parametrize("sides", [("mono",), ("left", "right")])
@@ -322,7 +326,8 @@ def test_room_judge_requires_a_set_on_a_two_set_round(tmp_path, capsys, preview)
     ([], None), (ACCEPTED_FILTERS, None), ([{"freq": 277.0, "q": 1.0, "gain": -6.0}], None),
     ([{"freq": NULL_HZ, "q": 1.0, "gain": 3.0}], None),
     ([{"freq": WIDE_SPREAD_HZ, "q": 3.0, "gain": -10.0}], None),
-    ([{"freq": MODE_HZ, "q": 0.0, "gain": -1.0}], FILTER_Q_OUT_OF_RANGE),
+    ([{"freq": MODE_HZ, "q": 0.0, "gain": -1.0}], None),
+    ([{"freq": MODE_HZ, "q": "1.0", "gain": -1.0}], "filter_malformed"),
     ([{"freq": MODE_HZ, "q": 1.0, "gain": 20000.0}], "filter_malformed"),
 ])
 def test_room_preview_reports_margins_and_residual_without_banking(tmp_path, capsys, filters, code):
