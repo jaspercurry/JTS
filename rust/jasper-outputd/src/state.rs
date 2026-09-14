@@ -1935,9 +1935,11 @@ mod tests {
     fn snapshot_json_scripted_bytes_are_stable() {
         // Raw bytes, including field order and numeric formatting. See #4806 R-063.
         let mut hash = 0xcbf29ce484222325u64;
+        let mut expected = include_str!("../../../tests/fixtures/outputd-snapshots.jsonl").lines();
         let mut capture = |state: &OutputdState| {
             let json = state.snapshot_json_at(120_000);
             let _ = parse_snapshot_json(&json);
+            assert_eq!(expected.next(), Some(json.as_str()));
             for byte in json.bytes() {
                 hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
             }
@@ -2067,6 +2069,7 @@ mod tests {
             }
             capture(&state);
         }
+        assert!(expected.next().is_none());
         assert_eq!(hash, 13_254_872_796_562_678_660);
     }
 
