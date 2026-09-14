@@ -112,6 +112,9 @@ class CamillaConfigValidationResult:
     stdout_tail: str = ""
     stderr_tail: str = ""
     error: str | None = None
+    # Stable machine name for a JTS-side refusal (VolumeLimitViolation.code);
+    # None when CamillaDSP itself, not this gate, rejected the config.
+    code: str | None = None
 
     @property
     def ok_to_apply(self) -> bool:
@@ -182,7 +185,7 @@ def _camilladsp_binary() -> str | None:
     return shutil.which("camilladsp")
 
 
-def _volume_limit_safety_error(cfg_path: Path) -> str | None:
+def _volume_limit_safety_error(cfg_path: Path) -> VolumeLimitViolation | None:
     """Return the hearing-ceiling refusal for a config file, else None.
 
     Fail-open on an unreadable file: the load step will fail loudly on its
@@ -195,7 +198,7 @@ def _volume_limit_safety_error(cfg_path: Path) -> str | None:
     try:
         check_volume_limit(text)
     except VolumeLimitViolation as e:
-        return str(e)
+        return e
     return None
 
 
@@ -212,19 +215,21 @@ def validate_camilla_config(path: str | Path) -> CamillaConfigValidationResult:
 
     cfg_path = Path(path)
     limit_error = _volume_limit_safety_error(cfg_path)
-    if limit_error:
+    if limit_error is not None:
         log_event(
             logger,
             "dsp.validate",
             result="volume_limit_rejected",
             path=cfg_path,
-            err=limit_error,
+            code=limit_error.code,
+            err=str(limit_error),
             level=logging.ERROR,
         )
         return CamillaConfigValidationResult(
             status=ValidationStatus.INVALID_CONFIG,
             path=str(cfg_path),
-            error=limit_error,
+            error=str(limit_error),
+            code=limit_error.code,
         )
     binary = _camilladsp_binary()
     if not binary:

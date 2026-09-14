@@ -529,6 +529,7 @@ def test_validate_rejects_positive_volume_limit(tmp_path: Path, monkeypatch):
     result = validate_camilla_config(cfg)
 
     assert result.status == ValidationStatus.INVALID_CONFIG
+    assert result.code == "volume_limit_positive"
     assert not result.ok_to_apply
 
 
@@ -543,6 +544,7 @@ def test_validate_rejects_missing_volume_limit(tmp_path: Path, monkeypatch):
     result = validate_camilla_config(cfg)
 
     assert result.status == ValidationStatus.INVALID_CONFIG
+    assert result.code == "volume_limit_missing"
     assert not result.ok_to_apply
 
 
