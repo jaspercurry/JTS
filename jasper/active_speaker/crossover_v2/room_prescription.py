@@ -499,12 +499,9 @@ def _parse_filter(side: str, position: int, entry: Any) -> dict[str, Any]:
     freq = _number(entry.get("freq"), reason=FILTER_MALFORMED, field=f"{where} freq")
     if freq <= 0.0:
         _refuse(FILTER_MALFORMED, f"{where} freq must be positive")
-    q = _number(entry.get("q"), reason=FILTER_MALFORMED, field=f"{where} q")
-    if q <= 0.0:
-        _refuse(FILTER_Q_OUT_OF_RANGE, f"{where} q must be positive", q=q)
     return {
         "freq": freq,
-        "q": q,
+        "q": _number(entry.get("q"), reason=FILTER_MALFORMED, field=f"{where} q"),
         "gain": _number(
             entry.get("gain"), reason=FILTER_MALFORMED, field=f"{where} gain"
         ),
