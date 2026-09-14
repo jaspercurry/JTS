@@ -6,10 +6,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Callable
 
+from ..log_event import log_event
 from ..tools import ToolRegistry, tool
+
+logger = logging.getLogger(__name__)
 
 
 END_OF_UTTERANCE_SILENCE_SEC = 0.8
@@ -78,10 +82,39 @@ async def continuous_watchdog(
             pending_count, progressed_at = pending, now
         if pending:
             if now - progressed_at >= stall_seconds:
-                return "playout_stalled"
+                return _resolved(
+                    "playout_stalled", now, last_speech, accepted_at,
+                    tts.expected_drain_at(), pending, turn.backend_pending, None,
+                )
             continue
-        deadline = followup_seconds + max(
-            last_speech, accepted_at, tts.expected_drain_at(),
-        )
+        drain_at = tts.expected_drain_at()
+        deadline = followup_seconds + max(last_speech, accepted_at, drain_at)
         if now >= deadline:
-            return "followup_timeout"
+            return _resolved(
+                "followup_timeout", now, last_speech, accepted_at,
+                drain_at, pending, turn.backend_pending, deadline,
+            )
+
+
+def _resolved(
+    reason, now, last_speech, accepted_at, drain_at, pending, backend_pending, deadline,
+):
+    """Report which branch ended the turn, and the anchors that chose it.
+
+    A turn that ends before the user's answer is spoken looks identical in
+    `turn.timeline` to one that ended normally — both are `outcome=complete`,
+    because a plain `followup_timeout` IS the normal close. Only the anchors
+    distinguish them, so they are recorded where the decision is made. Ages are
+    relative to the deciding instant; a negative age means the anchor is in the
+    future (audio still scheduled to play). See #5091.
+    """
+    log_event(
+        logger, "voice.turn_deadline", reason=reason,
+        last_speech_age_ms=int((now - last_speech) * 1000),
+        accepted_age_ms=int((now - accepted_at) * 1000),
+        drain_age_ms=int((now - drain_at) * 1000),
+        overdue_ms=None if deadline is None else int((now - deadline) * 1000),
+        chunks_pending=pending,
+        backend_pending=backend_pending,
+    )
+    return reason

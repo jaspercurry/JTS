@@ -230,7 +230,7 @@ class OpenAILiveTurn(BaseLiveTurn):
             self._delegation_id = delegation["id"]
             self._response_ids.clear()
             self._calls.clear()
-            self.backend_pending = True
+            self._set_backend_pending(True, "delegation_started")
             self._note_activity()
 
     def _on_output_audio(self, pcm: bytes) -> None:
@@ -298,10 +298,25 @@ class OpenAILiveTurn(BaseLiveTurn):
                 self._round_delegation = delegation
                 self._start_tool_calls([_parse_call(c) for c in calls])
             else:
-                self.backend_pending = False
+                self._set_backend_pending(False, "response_completed")
         elif kind in {"response.failed", "response.incomplete"}:
-            self.backend_pending = False
+            self._set_backend_pending(False, kind.replace("response.", "response_"))
             self._on_connection_lost()
+
+    def _set_backend_pending(self, pending: bool, reason: str) -> None:
+        """Move the backend-obligation flag, recording why.
+
+        This flag is what buys a slow answer the 30-second allowance instead
+        of the follow-up window, so a turn that ends before the user's answer
+        is spoken turns on exactly when and why it cleared. See #5091.
+        """
+        if self.backend_pending == pending:
+            return
+        self.backend_pending = pending
+        log_event(
+            logger, "provider.backend_pending", provider=self._conn.PROVIDER_NAME,
+            pending=pending, reason=reason,
+        )
 
     def _tools_may_run(self) -> bool:
         return not self._released and self._round_delegation == self._delegation_id
