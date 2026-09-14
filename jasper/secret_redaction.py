@@ -28,6 +28,12 @@ SECRET_ENV_NAME_RE = (
 # optional so a body clipped mid-value still redacts, and `\n` is excluded
 # so an unterminated quote cannot swallow the following lines.
 _QUOTED = r"'[^'\n]*'?|\"[^\"\n]*\"?"
+# Where a bare (unquoted) secret value ends: whitespace, a quote, or the
+# delimiter that closes a mapping, list, call or query string around it.
+# `.` stays inside the run: tokens carry dots (a JWT is three dot-joined
+# parts), so a period after `<redacted>` is re-eaten on a second pass
+# rather than a token tail surviving the first.
+_BARE = r"[^'\"\s,;}\])&]"
 
 # An env-file or `NAME: value` line: the value runs to end of line, which
 # is the only way a space-bearing WPA passphrase comes out whole.
@@ -56,18 +62,22 @@ _BEARER_RE = re.compile(r"(?i)\b(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}")
 # The rest of an `Authorization` value, as ordered branches: a quoted value;
 # `Digest`, whose credential is comma-separated parameters running to end of
 # line; a named scheme carrying one value, quoted or bare; a scheme nobody
-# named whose value clears `_SECRET_WORD_RE`'s 8-character WPA floor, below
-# which a diagnostic sentence ("authorization: user is not authorized to
-# …") would lose its prose; a bare value. The lookahead spares a value
-# `_BEARER_RE` already took, which would otherwise redact a second time.
+# named whose value clears `_SECRET_WORD_RE`'s 8-character WPA floor; a
+# bare value. Bare runs stop at `_BARE`'s delimiters so a second pass over
+# already-redacted text (the doctor redacts a detail it was handed) leaves
+# the closing quote, brace or `&` in place. The lookahead spares a value
+# `_BEARER_RE` already took, which would otherwise redact a second time —
+# but only a placeholder ending its token, mirroring `_SECRET_WORD_RE`: a
+# secret glued directly onto `<redacted>` (e.g. from a literal replaced
+# first) must still redact, not hide behind a bare prefix match.
 _AUTHORIZATION_RE = re.compile(
     r"(?i)(?<![A-Za-z0-9])(authorization['\"]?[ \t]*[=:][ \t]*)"
-    r"(?!(?:[A-Za-z]+[ \t]+)?<redacted>)"
+    rf"(?!(?:[A-Za-z]+[ \t]+)?<redacted>(?!{_BARE}))"
     rf"(?:{_QUOTED}"
     r"|digest[ \t]+.*"
-    rf"|(?:basic|bearer|token|negotiate|ntlm)[ \t]+(?:{_QUOTED}|[^\s'\"]+)"
-    r"|[A-Za-z]+[ \t]+[^\s'\"]{8,}"
-    r"|[^\s'\"]+)",
+    rf"|(?:basic|bearer|token|negotiate|ntlm)[ \t]+(?:{_QUOTED}|{_BARE}+)"
+    rf"|[A-Za-z]+[ \t]+{_BARE}{{8,}}"
+    rf"|{_BARE}+)",
 )
 
 # URL user-info: a failed fetch echoes the whole remote back, credentials
@@ -93,7 +103,7 @@ _KEY_VALUE_RE = re.compile(
     r"((?:api[_-]?key|bustime[_-]?key|token|secret|password|passphrase"
     rf"|x-jts-household|psk{_NOT_NM_PROPERTY})"
     r"['\"]?[ \t]*[=:][ \t]*)"
-    rf"(?:{_QUOTED}|[^'\"\s,;}}\])&]+)",
+    rf"(?:{_QUOTED}|{_BARE}+)",
 )
 
 # A keyword introducing a value, in the two shapes that are not `NAME=`.
