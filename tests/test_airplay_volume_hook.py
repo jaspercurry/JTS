@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.volume_coordinator import AIRPLAY_DB_MAX, AIRPLAY_DB_MIN
+from jasper.volume_scales import AIRPLAY_DB_MAX, AIRPLAY_DB_MIN
 from tests.shairport_template_helpers import (
     SHAIRPORT_TEMPLATE,
     template_string_value,

@@ -29,12 +29,11 @@ from jasper import volume_coordinator as vc_mod
 from jasper.accounts import Account
 from jasper.camilla import CamillaUnavailable
 from jasper.spotify_router import AccountClient, Router
+from jasper.music_sources import Source
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
-from jasper.volume_coordinator import (
+from jasper.volume_coordinator import ECHO_WINDOW_SEC, VolumeCoordinator
+from jasper.volume_scales import (
     BT_VOLUME_MAX,
-    ECHO_WINDOW_SEC,
-    Source,
-    VolumeCoordinator,
     bt_volume_to_listening_level,
     listening_level_to_bt_volume,
     listening_level_to_spotify_percent,
