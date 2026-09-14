@@ -388,7 +388,7 @@ class WakeLoop:
                 self._input_admit_after if self._acquiring else 0.0
             ),
             reset_input=lambda: self._reset_turn_input(),
-            prepare_loudness=lambda: self._prepare_assistant_loudness_context(),
+            listening_chirp=lambda: self._play_listening_chirp(going_on=True),
             barge_in_reference=lambda: self._barge_in_reference_available,
             spawn=lambda coro, *, name: self._create_fire_and_forget_task(
                 coro, name=name,
@@ -847,9 +847,6 @@ class WakeLoop:
             on_attempt=self._turn_timeline.observer("cue_attempt") if going_on else None,
             on_first_write=self._turn_timeline.observer("cue_accepted") if going_on else None,
         )
-
-    async def _prepare_assistant_loudness_context(self) -> None:
-        await self._assistant_output.prepare_loudness()
 
     def _invalidate_input(self, reason: str) -> None:
         if self._turns.turn is not None:
@@ -1708,22 +1705,11 @@ class WakeLoop:
         try:
             if acquiring_at_begin:
                 self._check_input_admission(self._acquire_input_epoch)
-            if listening_feedback:
-                # Prime the TTS IPC owner's loudness context before the chirp
-                # as well as before assistant TTS. The chirp is fire-and-forget,
-                # so waiting for the inner turn prepare would race it back onto
-                # the no-context fallback.
-                await self._turns.begin_output_episode()
-                await self._prepare_assistant_loudness_context()
-                # Overlap turn acquisition; output cleanup joins the chirp.
-                self._assistant_output.start_turn_feedback(
-                    self._turns.output_episode,
-                    self._play_listening_chirp(going_on=True),
-                )
             await self._turns.begin_inner(
                 pre_roll=pre_roll,
                 text_context=text_context,
                 anchor_at=anchor_at,
+                listening_feedback=listening_feedback,
             )
             completed = True
         finally:

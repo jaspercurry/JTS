@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from enum import Enum
 from typing import NoReturn
@@ -111,7 +111,7 @@ class TurnLifecycle:
         turn_input: Callable[..., TurnInput],
         acquire_anchor: Callable[[], float],
         reset_input: Callable[[], None],
-        prepare_loudness: Callable[[], Awaitable[None]],
+        listening_chirp: Callable[[], Coroutine[object, object, None]],
         barge_in_reference: Callable[[], bool],
         spawn: Callable[..., "asyncio.Task"],
         arm_refractory: Callable[[], None],
@@ -133,7 +133,7 @@ class TurnLifecycle:
         self._turn_input = turn_input
         self._acquire_anchor = acquire_anchor
         self._reset_input = reset_input
-        self._prepare_loudness = prepare_loudness
+        self._listening_chirp = listening_chirp
         self._barge_in_reference = barge_in_reference
         self._spawn = spawn
         self._arm_refractory = arm_refractory
@@ -205,6 +205,7 @@ class TurnLifecycle:
         pre_roll: bool = True,
         text_context: str | None = None,
         anchor_at: float = 0.0,
+        listening_feedback: bool = False,
     ) -> None:
         turn_input = self._turn_input(pre_roll=pre_roll)
         input_epoch = turn_input.epoch
@@ -240,48 +241,47 @@ class TurnLifecycle:
         self.silero_aec_armed_at_ms = None
         self._resolve_barge_in_for_turn()
         t_after_state = time.monotonic()
-        await self._content_activity.refresh_now()
-        await self._prepare_loudness()
-        await self._output.tts.pause_content_meter()
         self._content_activity.pause()
-        self._output.volume_coordinator.note_voice_session(
-            True,
-            camilla_volume_locked=getattr(
-                self._output.ducker, "locks_camilla_volume", True,
-            ),
-        )
-        t_after_loudness_prepare = time.monotonic()
-        await self._output.ducker.duck()
-        t_after_duck = time.monotonic()
         self.session_id = self._usage_store.open_session(
             provider=self._output.cfg.voice_provider,
         )
         t_after_usage_open = time.monotonic()
-        if (release := self.take_pending_release()) is not None:
-            await asyncio.gather(release, return_exceptions=True)
-        t_after_pending_release = time.monotonic()
-        self.turn = await self._connection.acquire_turn()
-        t_after_acquire = time.monotonic()
+        acquiring = asyncio.create_task(self._acquire_turn(input_epoch), name="voice-turn-acquire")
+        try:
+            await self._output.prepare_turn(
+                self.output_episode,
+                feedback=self._listening_chirp if listening_feedback else None,
+            )
+            t_after_output_prepare = time.monotonic()
+            pending_release_ms, connect_ms = await asyncio.shield(acquiring)
+        finally:
+            if not acquiring.done():
+                await await_output_cleanup_owned(
+                    cancel_tracked_tasks({acquiring}), task_name="turn-acquire-cancel",
+                )
+            elif not acquiring.cancelled():
+                acquiring.exception()
         self._check_admission(input_epoch)
+        assert self.turn is not None
 
         if text_context:
             await self.turn.send_text_context(text_context)
             if self.turn.turn_lost():
                 raise RuntimeError("live turn lost while sending text context")
 
+        # Output preparation overlaps pending release/connect; timings are not additive.
         logger.info(
             "turn acquire done in %.0fms "
-            "(sched_lag=%.0f state=%.0f loudness_prepare=%.0f duck=%.0f "
-            "usage_open=%.0f pending_release=%.0f connect=%.0f) "
+            "(sched_lag=%.0f state=%.0f usage_open=%.0f "
+            "output_prepare=%.0f pending_release=%.0f connect=%.0f) "
             "(wake→activity_start)",
             (time.monotonic() - t_wake) * 1000,
             (t_begin - t_wake) * 1000,
             (t_after_state - t_begin) * 1000,
-            (t_after_loudness_prepare - t_after_state) * 1000,
-            (t_after_duck - t_after_loudness_prepare) * 1000,
-            (t_after_usage_open - t_after_duck) * 1000,
-            (t_after_pending_release - t_after_usage_open) * 1000,
-            (t_after_acquire - t_after_pending_release) * 1000,
+            (t_after_usage_open - t_after_state) * 1000,
+            (t_after_output_prepare - t_after_usage_open) * 1000,
+            pending_release_ms,
+            connect_ms,
         )
         # Drain the recent-mic ring into the turn so the user's first phoneme,
         # which preceded the wake firing, reaches the model. The frame that
@@ -322,6 +322,18 @@ class TurnLifecycle:
         self.bg_tasks = {playback, idle}
         self.state = State.SESSION
         self.arm_background_end()
+
+    async def _acquire_turn(self, input_epoch: float) -> tuple[float, float]:
+        started = time.monotonic()
+        if (release := self.pending_release) is not None:
+            # A failed new start must leave the previous release owned and running.
+            await asyncio.shield(asyncio.gather(release, return_exceptions=True))
+            self.pending_release = None
+        ready = time.monotonic()
+        self._check_admission(input_epoch)
+        # Adopt before yielding so failed output preparation can release it.
+        self.turn = await self._connection.acquire_turn()
+        return (ready - started) * 1000, (time.monotonic() - ready) * 1000
 
     async def begin_output_episode(self) -> None:
         """Take the turn's output episode, or abandon the turn to a measurement.

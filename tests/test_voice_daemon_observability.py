@@ -531,7 +531,7 @@ async def test_turn_clock_opens_before_chirp_preparation_failure():
     async def fail_prepare():
         observed.append(wl.session_status()["turn_event_id"])
         raise OSError()
-    wl._prepare_assistant_loudness_context = fail_prepare
+    wl._assistant_output.prepare_loudness = fail_prepare
     with pytest.raises(OSError):
         await wl._begin_turn(listening_feedback=True)
     assert observed[0] is not None and observed[0] != old_event

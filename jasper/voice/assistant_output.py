@@ -711,6 +711,21 @@ class AssistantOutput:
             **prepare_kwargs,
         )
 
+    async def prepare_turn(
+        self,
+        episode: AssistantOutputEpisode | None,
+        *,
+        feedback: Callable[[], Coroutine[object, object, None]] | None = None,
+    ) -> None:
+        await self.prepare_loudness()
+        await self.tts.pause_content_meter()
+        self.volume_coordinator.note_voice_session(
+            True, camilla_volume_locked=getattr(self.ducker, "locks_camilla_volume", True),
+        )
+        if feedback is not None:
+            self.start_turn_feedback(episode, feedback())
+        await self.ducker.duck()
+
     def start_turn_feedback(
         self, episode: AssistantOutputEpisode | None, operation: Coroutine[object, object, None],
     ) -> None:

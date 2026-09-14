@@ -48,7 +48,7 @@ async def _park():
 
 def _acquire_loop(monkeypatch):
     wl = wake_loop_for_tests()
-    wl._prepare_assistant_loudness_context = AsyncMock()
+    wl._assistant_output.prepare_loudness = AsyncMock()
     wl._content_activity.refresh_now = AsyncMock()
     wl._turns.arm_background_end = lambda: None
     monkeypatch.setattr("jasper.voice.turn_lifecycle.play_responses", lambda *a, **k: _park())
@@ -203,7 +203,7 @@ async def test_no_speech_abort_then_fresh_command(monkeypatch):
         assert wl._turns.input_ended
         assert turns[0].send_audio.await_count == 0
         assert turns[1].end_input.await_count == 1
-        assert wl._prepare_assistant_loudness_context.await_count == 2
+        assert wl._assistant_output.prepare_loudness.await_count == 2
     finally:
         await _stop_playback(wl)
 
@@ -250,7 +250,7 @@ async def test_input_pause_during_acquire_never_uploads_frozen_prefix(
         return turn
 
     if wait_at == "prepare":
-        wl._prepare_assistant_loudness_context = hold
+        wl._assistant_output.prepare_loudness = hold
     elif wait_at == "prefix":
         turn.send_audio.side_effect = hold
     wl._connection.acquire_turn = acquire
@@ -269,7 +269,7 @@ async def test_input_pause_during_acquire_never_uploads_frozen_prefix(
         assert (await task, turn.send_audio.await_count) == (
             "MUTED" if gate == "mute" else "MEASURING", int(wait_at == "prefix"),
         )
-        assert turn.release.await_count == int(wait_at != "prepare")
+        assert turn.release.await_count == 1
         assert not wl._acquiring
         assert wl._turns.state is State.WAKE
     finally:
