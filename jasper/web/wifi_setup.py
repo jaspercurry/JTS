@@ -41,11 +41,12 @@ Lockout safety:
     the currently-connected SSID gets an extra-loud warning.
 
 Security:
-  - PSKs never ride argv: new-network connects run `nmcli --ask device
-    wifi connect ...` and the PSK is written to the child's stdin, so
-    it never appears in /proc/<pid>/cmdline (root included). NM still
-    persists the resulting profile itself under /etc/NetworkManager/
-    system-connections/ at mode 0600 — we never touch those files.
+  - The wizard's new-network connects never put PSKs on argv: they run
+    `nmcli --ask device wifi connect ...` and write the PSK to the
+    child's stdin, so it never appears in /proc/<pid>/cmdline (root
+    included). NM still persists the resulting profile itself under
+    /etc/NetworkManager/system-connections/ at mode 0600 — we never
+    touch those files.
   - HTTP, not HTTPS — matches the rest of the JTS wizard surface. The
     PSK is the most sensitive thing we transmit; the deployment posture
     is LAN-only.
@@ -159,7 +160,7 @@ def _run_nmcli(
     (the default) is always safe to log verbatim; `log_argv=False`
     just quiets frequent state-probe calls."""
     if log_argv:
-        logger.info("nmcli: %s", " ".join(cmd))
+        logger.info("nmcli: %s", shlex.join(cmd))
     try:
         return subprocess.run(
             cmd,
@@ -1332,6 +1333,15 @@ def _post_connect(handler: _Handler, body: dict[str, Any]) -> None:
     password = body.get("password")
     hidden = bool(body.get("hidden"))
     if ssid:
+        # A newline would silently truncate at nmcli's stdin (`--ask` reads
+        # one line); argv rejected it outright, so this must too rather
+        # than let a truncated PSK connect fail confusingly.
+        if isinstance(password, str) and ("\r" in password or "\n" in password):
+            handler._send_json(
+                {"ok": False, "message": "password must not contain newlines"},
+                status=400,
+            )
+            return
         ok, msg = connect_new(ssid, password or None, hidden=hidden)
     elif name:
         ok, msg = connect_saved(name)
