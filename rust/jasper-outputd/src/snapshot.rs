@@ -260,4 +260,104 @@ impl OutputdState {
         buf.push('}');
         buf.push(',');
     }
+
+    pub(super) fn tts_json(&self, buf: &mut String) {
+        // Bonded-member TTS lane — daemon truth for /state +
+        // doctor. enabled:false when the lane is off (solo: fanin owns
+        // TTS) — zero noise, mirroring dac_content.
+        buf.push_str(r#""tts":{"#);
+        match self.tts.get() {
+            Some((socket, m)) => {
+                push_kv_bool(buf, "enabled", true);
+                buf.push(',');
+                push_kv_str(buf, "socket", socket);
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "pending_frames",
+                    m.pending_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(buf, "budget_frames", m.max_pending_frames);
+                buf.push(',');
+                push_kv_u64(buf, "requests", m.requests.load(Ordering::Relaxed));
+                buf.push(',');
+                let counters = &m.counters;
+                push_kv_u64(buf, "dropped_audio_frames", counters.dropped_audio_frames());
+                buf.push(',');
+                push_kv_u64(buf, "dropped_commands", counters.dropped_commands());
+                buf.push(',');
+                push_kv_u64(buf, "connections_rejected", counters.connections_rejected());
+                buf.push(',');
+                push_kv_u64(buf, "tts_clients", counters.tts_clients());
+                buf.push(',');
+                push_kv_u64(buf, "frame_timeouts", counters.frame_timeouts());
+                buf.push(',');
+                push_kv_u64(buf, "protocol_errors", counters.protocol_errors());
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "flush_requests",
+                    m.flush_requests.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "flushed_frames",
+                    m.flushed_frames.load(Ordering::Relaxed),
+                );
+                buf.push(',');
+                // The same assistant_loudness object fan-in exposes, rendered
+                // through the shared writer so the two /state shapes cannot
+                // drift (pinned by ASSISTANT_LOUDNESS_STATUS_KEYS on both).
+                buf.push_str(r#""assistant_loudness":"#);
+                jasper_tts_protocol::loudness::render_assistant_loudness(
+                    buf,
+                    &m.loudness_snapshot(),
+                );
+            }
+            None => {
+                push_kv_bool(buf, "enabled", false);
+            }
+        }
+        buf.push('}');
+        buf.push(',');
+    }
+
+    pub(super) fn mix_json(&self, buf: &mut String) {
+        buf.push_str(r#""mix":{"#);
+        push_kv_u64(
+            buf,
+            "reference_sequence",
+            self.reference_sequence.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "last_period_clipped_samples",
+            self.last_period_clipped_samples.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "clipped_samples",
+            self.total_clipped_samples.load(Ordering::Relaxed),
+        );
+        buf.push('}');
+        buf.push(',');
+    }
+
+    pub(super) fn watchdog_json(&self, buf: &mut String, uptime_ms: u64) {
+        buf.push_str(r#""watchdog":{"#);
+        let last_progress_ms = self.last_progress_ms.load(Ordering::Relaxed);
+        let age_ms = uptime_ms.saturating_sub(last_progress_ms);
+        push_kv_u64(
+            buf,
+            "pings_sent",
+            self.watchdog_pings_sent.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(buf, "last_progress_age_ms", age_ms);
+        buf.push('}');
+    }
 }
