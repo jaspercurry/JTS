@@ -25,7 +25,7 @@ def scripted_trace() -> list:
 async def _run() -> list:
     tmp = tempfile.mkdtemp(prefix="vctrace-")
     os.environ["JASPER_VOLUME_DIAGNOSTICS_PATH"] = os.path.join(tmp, "volume_policy.json")
-    os.environ["JASPER_SETTINGS_PATH"] = os.path.join(tmp, "settings.json")
+    os.environ["JASPER_SOUND_SETTINGS_PATH"] = os.path.join(tmp, "settings.json")
     from tests.test_volume_coordinator import (
         _FakeCamilla, _RecordingCoordinator, _build,
     )
