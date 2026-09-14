@@ -31,6 +31,7 @@ from jasper.camilla_config_contract import SHELF_Q as _HIGHSHELF_Q
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
 from .branch_chain import chain_response
+from .crossover_v2._prescription_common import BlendPrescriptionRefused
 from .branch_target import (
     SIGNIFICANT_GAIN_DB,
     STOPBAND_GAIN_MARGIN_OCTAVES,
@@ -212,8 +213,7 @@ class FitVocabulary:
     """
 
     allow_boost: bool = False
-    #: Per-filter boost ceiling. TOTAL boost is uncapped by design (owner
-    #: ruling); this bounds one biquad's realization.
+    #: One biquad's boost ceiling, dB.
     per_filter_boost_cap_db: float = PER_FILTER_BOOST_CAP_DB
     #: Bands no LIFT filter may be AIMED at (#1967) — enforced per filter on
     #: the emitted response, never as a whole-cascade veto. Cuts untouched.
@@ -225,6 +225,7 @@ class FitVocabulary:
     boost_floor_hz: float | None = None
     max_gain_db: float = PER_FILTER_CUT_CAP_DB
     max_giveback_db: float = MAX_NORMALIZATION_SPEND_DB
+    composed_boost_cap_db: float | None = None
 
     def __post_init__(self) -> None:
         normalise_fit_budget(self.budget_dict())
@@ -488,6 +489,8 @@ class LinearizationFit:
     def to_dict(self) -> dict[str, Any]:
         return {
             "role": self.role,
+            **({"composed_boost_cap_db": self.vocabulary.composed_boost_cap_db}
+               if self.vocabulary.composed_boost_cap_db is not None else {}),
             "budget": self.vocabulary.budget_dict(),
             "budget_binding": list(self.budget_binding),
             "filters": [f.to_dict() for f in self.filters],
@@ -1533,6 +1536,7 @@ def _lift_stage(
     vocabulary: FitVocabulary,
     *,
     measured_db: np.ndarray,
+    boost_evidence_db: Sequence[np.ndarray] = (),
     lift_mask: np.ndarray | None = None,
     contribution: np.ndarray | None = None,
     gain_permitted: np.ndarray | None = None,
@@ -1661,12 +1665,12 @@ def _lift_stage(
     # #2599's measured-target bound, per filter, placed AFTER both
     # whole-cascade gates above so a refused cascade cannot return as an
     # accepted subset.
-    measured_headroom_db = target_curve_db - np.asarray(
-        measured_db, dtype=np.float64,
-    )
-    boosts, evidence_drops = _boost_evidence_verdicts(
-        boosts, grid_hz, measured_headroom_db, band_mask,
-    )
+    evidence_drops = []
+    for observed_db in (measured_db, *boost_evidence_db):
+        boosts, drops = _boost_evidence_verdicts(
+            boosts, grid_hz, target_curve_db - np.asarray(observed_db, dtype=np.float64), band_mask,
+        )
+        evidence_drops.extend(drops)
     if evidence_drops:
         if not boosts:
             return _Lift(
@@ -1713,8 +1717,23 @@ def _lift_stage(
         realized_db = 20.0 * np.log10(np.maximum(
             np.abs(complex_correction_response(tuple(boosts), grid_hz)), 1e-12,
         ))
-    # Gain surviving INSIDE an excluded band is now skirt tail, disclosed
-    # rather than refused.
+    if vocabulary.composed_boost_cap_db is not None:
+        from .crossover_v2.driver_prescription import _check_composed, COMPOSED_BOOST_EXCEEDED  # lazy: prescription imports this fit module
+
+        while boosts:
+            try:
+                _check_composed(tuple({"role": envelope.role, **f.to_dict()} for f in boosts),
+                                {envelope.role: (f_low, f_high)}, max_boost_db=vocabulary.composed_boost_cap_db)
+                break
+            except BlendPrescriptionRefused as exc:
+                if exc.reason != COMPOSED_BOOST_EXCEEDED:
+                    raise
+                boosts.pop()
+                if binding is not None:
+                    binding.add("composed_boost_cap_db")
+        realized_db = 20.0 * np.log10(np.maximum(
+            np.abs(complex_correction_response(tuple(boosts), grid_hz)), 1e-12,
+        ))
     return _Lift(
         tuple([*reduced, *boosts]), requested_db, from_reduced_cuts_db,
         float(np.max(realized_db)), "",
@@ -1770,6 +1789,7 @@ def fit_driver_linearization(
     radiating_band_hz: tuple[float, float] | None = None,
     blind_bands_hz: Sequence[tuple[float, float]] = (),
     target: BranchTarget | None = None,
+    boost_evidence: Sequence[DriverResponse] = (),
 ) -> LinearizationFit:
     """Fit one driver's linearization from its measured response and
     correction envelope.
@@ -1955,6 +1975,8 @@ def fit_driver_linearization(
         # The MEASUREMENT, not the working curve — #2599's bound exists
         # because the two disagree once cuts are placed.
         measured_db=smoothed_db,
+        boost_evidence_db=[_ladder_smooth(grid_hz, np.interp(grid_hz, row.freqs_hz, row.magnitude_db))
+                           for row in boost_evidence],
         lift_mask=lift_mask, binding=binding,
         contribution=None if centred_target is None else centred_target.contribution,
         gain_permitted=(
