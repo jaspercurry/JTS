@@ -231,6 +231,7 @@ class OpenAILiveTurn(BaseLiveTurn):
             self._response_ids.clear()
             self._calls.clear()
             self.backend_pending = True
+            self.backend_completed_at = 0.0
             self._note_activity()
 
     def _on_output_audio(self, pcm: bytes) -> None:
@@ -299,6 +300,7 @@ class OpenAILiveTurn(BaseLiveTurn):
                 self._start_tool_calls([_parse_call(c) for c in calls])
             else:
                 self.backend_pending = False
+                self.backend_completed_at = time.monotonic()
         elif kind in {"response.failed", "response.incomplete"}:
             self.backend_pending = False
             self._on_connection_lost()

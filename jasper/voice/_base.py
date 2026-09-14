@@ -123,6 +123,7 @@ class BaseLiveTurn:
     owns_interruption = False
     continuous_input = False
     backend_pending = False
+    backend_completed_at = 0.0
     # The modality buckets this provider splits its counts into, keyed
     # as `usage.Pricing.estimate_cost` prices them. Empty reports the
     # scalars alone, which the store then prices as all-audio. Declare

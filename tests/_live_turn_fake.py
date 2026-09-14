@@ -30,6 +30,7 @@ class FakeLiveTurn:
     owns_interruption = False
     continuous_input = False
     backend_pending = False
+    backend_completed_at = 0.0
 
     def __init__(
         self,

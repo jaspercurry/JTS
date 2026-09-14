@@ -43,11 +43,11 @@ def register_conversation_tools(registry: ToolRegistry, request_end: Callable[[]
 
 async def continuous_watchdog(
     turn, tts, *, followup_seconds, stall_seconds, user_activity, last_accepted_at,
-    spend_allowed=lambda: True,
+    spend_allowed=lambda: True, write_started_at=lambda: 0.0,
 ):
     started_at = time.monotonic()
     next_spend_check = started_at
-    pending_count, progressed_at = 0, started_at
+    pending_state, progressed_at = (0, 0.0), started_at
     while True:
         await asyncio.sleep(WATCHDOG_POLL_SEC)
         if turn.turn_lost():
@@ -73,9 +73,14 @@ async def continuous_watchdog(
             if now - last_speech >= ACKNOWLEDGED_BACKEND_SEC:
                 return "response_stalled"
             continue
+        writing_since = write_started_at()
+        if writing_since:
+            if now - writing_since >= stall_seconds:
+                return "playout_stalled"
+            continue
         pending = turn.audio_chunks_pending()
-        if pending != pending_count:
-            pending_count, progressed_at = pending, now
+        if (pending, accepted_at) != pending_state:
+            pending_state, progressed_at = (pending, accepted_at), now
         if pending:
             if now - progressed_at >= stall_seconds:
                 return "playout_stalled"
@@ -83,5 +88,13 @@ async def continuous_watchdog(
         deadline = followup_seconds + max(
             last_speech, accepted_at, tts.expected_drain_at(),
         )
+        if turn.backend_completed_at >= speech_started:
+            # Live can speak before or after backend completion, with no
+            # final-audio identity. Give the handoff time without treating
+            # completion as proof of speech, or renewing on generic activity.
+            deadline = max(deadline, min(
+                turn.backend_completed_at + UNANSWERED_SPEECH_SEC,
+                last_speech + ACKNOWLEDGED_BACKEND_SEC,
+            ))
         if now >= deadline:
             return "followup_timeout"

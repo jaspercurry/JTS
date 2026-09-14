@@ -193,10 +193,11 @@ class LiveTurn(ProviderTurn, Protocol):
     # agree with the provider's `catalog.ProviderCatalogEntry` field of
     # the same name.
     continuous_input: bool
-    # True while this turn waits on work it delegated to a backend model,
-    # which produces no audio of its own: the conversation watchdog then
-    # judges the wait on activity rather than on audio.
+    # Acknowledged backend work gets a bounded wait beyond the idle window.
     backend_pending: bool
+    # Monotonic time of the current delegation's final backend completion;
+    # this is not a frontend speech-completion event. Zero before completion.
+    backend_completed_at: float
 
     def discard_input(self) -> None:
         """Synchronously revoke microphone audio accepted for this turn but
