@@ -412,14 +412,22 @@ class OpenAILiveConnection(BaseLiveConnection):
         # this awaits, and the attempt still owns the turn it opened for.
         turn = self._active_turn
         connect = self._connect
+        # Phase boundaries for the wake→speech latency question (#5091). The
+        # SDK client is built once per connection object, so the first open
+        # after a daemon restart pays import and construction that a later one
+        # does not; `client_was_ready` separates those two populations.
+        opened_at = time.monotonic()
+        client_was_ready = connect is not None
         if connect is None:
             from openai import AsyncOpenAI  # lazy — optional provider SDK
             self._client = AsyncOpenAI(api_key=self._api_key)
             connect = self._connect = self._client.live.connect
+        client_ready_at = time.monotonic()
         self._session_cm = connect()
         self._session = await self._session_cm.__aenter__()
+        socket_open_at = time.monotonic()
         self._receive_task = asyncio.create_task(self._receive(turn))
-        await self._send({"type": "session.start", "session": {
+        start_event = {"type": "session.start", "session": {
             "model": self._model, "instructions": FRONTEND_INSTRUCTIONS, "store": False,
             "audio": {"format": {"type": "audio/pcm", "rate": 24000}, "output": {"voice": self._voice}},
             "delegation": {"type": "responses", "responses": {
@@ -427,8 +435,26 @@ class OpenAILiveConnection(BaseLiveConnection):
                 "tools": [dict(t, strict=False) for t in self._registry.openai_tools(provider="openai_live")] + [{"type": "web_search"}],
                 "tool_choice": "auto", "parallel_tool_calls": False,
             }},
-        }})
+        }}
+        configured_at = time.monotonic()
+        # Size only. The payload carries the system instruction and the tool
+        # schemas, so its CONTENT must never reach the journal.
+        config_bytes = len(json.dumps(start_event))
+        await self._send(start_event)
+        sent_at = time.monotonic()
         await self._started.wait()
+        started_at = time.monotonic()
+        log_event(
+            logger, "provider.session_open_phases", provider=self.PROVIDER_NAME,
+            client_was_ready=client_was_ready,
+            client_init_ms=int((client_ready_at - opened_at) * 1000),
+            socket_open_ms=int((socket_open_at - client_ready_at) * 1000),
+            config_build_ms=int((configured_at - socket_open_at) * 1000),
+            config_bytes=config_bytes,
+            start_send_ms=int((sent_at - configured_at) * 1000),
+            started_ack_ms=int((started_at - sent_at) * 1000),
+            total_ms=int((started_at - opened_at) * 1000),
+        )
         if turn.turn_lost() or self._stopping.is_set():
             raise RuntimeError("Live session failed during startup")
 
