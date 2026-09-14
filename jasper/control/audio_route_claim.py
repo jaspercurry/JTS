@@ -71,7 +71,7 @@ def _transport_state(
 def _parked_graph_transport() -> dict[str, Any] | None:
     """Transport state for the intentional PARKED graph, or None when absent.
 
-    Feeds :func:`~jasper.control.audio_health._parked_signal` through the same
+    Feeds :func:`~jasper.control.audio_signal_path._parked_signal` through the same
     ``coherence_errors`` channel the transport detector uses, so the parked
     wording keeps one writer. The capability gap is resolved as
     :func:`_transport_state` resolves it, so a no-active-lane DAC still gets

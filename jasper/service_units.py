@@ -115,10 +115,6 @@ SYSTEMCTL_TIMEOUT_SEC = 10.0
 def unit_failed(record: Mapping[str, Any] | None) -> bool:
     """Whether a ``read_unit_states`` record says the unit is not doing its job.
 
-    The union of the copies already in the tree, which is
-    ``control.audio_health._service_failed``'s — the wider one, and the correct
-    one:
-
     * ``active_state == "failed"`` — systemd's own verdict.
     * ``load_state`` ``error``/``not-found`` — a unit systemd cannot load is not
       running either, and it reads ``inactive`` rather than ``failed``.
