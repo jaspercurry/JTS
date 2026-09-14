@@ -223,27 +223,31 @@ def test_live_output_failure_keeps_priority_over_the_parked_reason() -> None:
 # unexplained failure once the reconciler has positively identified ready
 # hardware the household never declared.
 
-def test_setup_hint_fires_for_absent_or_non_alsa_output() -> None:
+@pytest.mark.parametrize(
+    "outputd",
+    [None, _outputd(backend="fake")],
+    ids=["outputd_absent", "non_alsa_backend"],
+)
+def test_setup_hint_fires_for_absent_or_non_alsa_output(outputd: dict | None) -> None:
     """Both halves of "outputd is not delivering" get the same hint: never
     started at all (``outputd is None``), and the dual-Apple
     ``action=park_until_active_graph`` path that keeps its socket alive on a
     ``fake`` backend without ever opening ALSA.
     """
-    for outputd in (None, _outputd(backend="fake")):
-        health = compose_audio_health(
-            airplay=_airplay(),
-            outputd=outputd,
-            route=_route(),
-            issues=[],
-            sampled_at=1000.0,
-            output_hardware=_output_hardware(),
-            output_topology_snapshot=_declared_topology(),
-        )
+    health = compose_audio_health(
+        airplay=_airplay(),
+        outputd=outputd,
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+        output_hardware=_output_hardware(),
+        output_topology_snapshot=_declared_topology(),
+    )
 
-        assert (
-            health["overall"]["headline"]
-            == audio_signal_path.UNDECLARED_HARDWARE_HEADLINE
-        )
+    assert (
+        health["overall"]["headline"]
+        == audio_signal_path.UNDECLARED_HARDWARE_HEADLINE
+    )
     detail = health["overall"]["detail"]
     assert "Dual Apple USB-C DAC 4-channel pair" in detail
     assert "/sound/speaker/" in detail
@@ -517,6 +521,10 @@ def test_camilla_state_shapes_the_signal_path(
     if expected_status == "issue":
         assert health["overall"]["status"] == "issue"
         assert health["overall"]["headline"] == health["signal_path"]["headline"]
+    else:
+        # No source selected in any of these fixtures, so a clean path reads
+        # idle ("Audio is ready"), never a stale "ok" from a prior tick.
+        assert health["overall"]["status"] == "idle"
 
     # A never-installed unit keeps its own remedy: no restart installs a
     # unit that is not there, so it must not share the stopped unit's detail.
