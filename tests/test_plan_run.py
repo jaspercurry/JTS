@@ -225,20 +225,25 @@ def test_unplayable_plan_records_each_missing_stop(plan):
     assert fakes.play.calls == []
 
 
-@pytest.mark.parametrize(("next_action", "gain"), [("accept", None), ("retake_louder", -15), ("retake_quieter", -24)])
-def test_retry_recomposes_at_requested_gain_and_keeps_both_takes(monkeypatch, next_action, gain):
-    refusal = {"fault": REASON_CLIPPED, "next": next_action, "charge": "speaker"} if gain is not None else {}
-    verdicts = iter([*([TakeVerdict(False, **refusal, next_gain_db=gain)] if refusal else []), TakeVerdict(True)])
+@pytest.mark.parametrize(("ok", "next_action", "gain"), [
+    (True, "accept", None), (False, "retake_louder", -15),
+    (False, "retake_quieter", -24), (True, "fix_and_retake", None),
+])
+def test_retry_recomposes_at_requested_gain_and_keeps_both_takes(monkeypatch, ok, next_action, gain):
+    refusal = {"fault": REASON_CLIPPED, "next": next_action, "charge": "speaker"} if next_action != "accept" else {}
+    verdicts = iter([*([TakeVerdict(ok, **refusal, next_gain_db=gain)] if refusal else []), TakeVerdict(True)])
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
     gate = AnsweredGate()
     result, fakes = asyncio.run(_run_gated(_walk([0]), gate=gate))
     assert fakes.play.rungs == ([None, gain] if refusal else [None])
     assert len(fakes.banked) == (2 if refusal else 1)
-    assert gate.grants == [(1, 1)]
+    assert gate.grants == ([(1, 1), (1, 2)] if next_action == "fix_and_retake" else [(1, 1)])
     rows = _takes(result.records.snapshots[-1])
+    assert len({(t["index"], t["stimulus_ordinal"]) for t in rows}) == 1
     assert [t["attempt"] for t in rows] == ([1, 2] if refusal else [1])
     assert [t["selected"] for t in rows] == ([False, True] if refusal else [True])
     assert [{key: t[key] for key in ("fault", "next", "charge") if key in t} for t in rows] == ([refusal, {}] if refusal else [{}])
+    assert result.to_dict()["honoured"]["takes_refused"] == (0 if ok else 1)
     assert result.status == "complete"
 
 

@@ -198,7 +198,7 @@ class RunManifest:
                                "evidence": verdict.evidence, "capabilities": verdict.capabilities,
                                "usable_band_hz": band},
                    **({"fault": verdict.fault, "next": verdict.next, "charge": verdict.charge}
-                      if status != TAKE_MEASURED else {}),
+                      if verdict.next != "accept" or not complete else {}),
                    "next_gain_db": verdict.next_gain_db,
                    "artifacts": {"record_id": record_id, "wav_sha256": record.get("wav_sha256"),
                                  "wav_path": record.get("wav_path")},
