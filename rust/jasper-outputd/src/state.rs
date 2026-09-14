@@ -868,11 +868,14 @@ impl OutputdState {
     }
 
     pub fn snapshot_json(&self) -> String {
+        self.snapshot_json_at(self.uptime_ms())
+    }
+
+    fn snapshot_json_at(&self, uptime_ms: u64) -> String {
         // Sized for the payload this actually builds: the chip-reference
         // sample ring alone is ~100 B an entry (~25.6 KiB at full capacity) on
         // a chip-AEC box, and 1 KiB meant a dozen reallocations per read.
         let mut buf = String::with_capacity(32 * 1024);
-        let uptime_ms = self.uptime_ms();
         let sample_rate = self.sample_rate.load(Ordering::Relaxed);
         let content_xrun_count = self.content_xrun_count.load(Ordering::Relaxed);
         let dac_xrun_count = self.dac_xrun_count.load(Ordering::Relaxed);
@@ -1926,6 +1929,145 @@ mod tests {
     fn parse_snapshot_json(snapshot: &str) -> serde_json::Value {
         serde_json::from_str(snapshot)
             .unwrap_or_else(|error| panic!("complete STATUS snapshot must be valid JSON: {error}"))
+    }
+
+    #[test]
+    fn snapshot_json_scripted_bytes_are_stable() {
+        // Raw bytes, including field order and numeric formatting. See #4806 R-063.
+        let mut hash = 0xcbf29ce484222325u64;
+        let mut capture = |state: &OutputdState| {
+            let json = state.snapshot_json_at(120_000);
+            let _ = parse_snapshot_json(&json);
+            for byte in json.bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+            }
+        };
+        for cfg in [
+            test_config(),
+            Config {
+                shm_ring: Some("/dev/shm/jts-ring/content.ring".to_string()),
+                ..test_config()
+            },
+            Config {
+                content_bridge_mode: ContentBridgeMode::DacContentRing,
+                dac_content_ring: Some("/dev/shm/jts-ring/dac-content.ring".to_string()),
+                dac_content_channel: crate::dac_content::ChannelPick::Right,
+                dac_content_trim_db: -3.5,
+                ..test_config()
+            },
+            Config {
+                shm_ring: Some("/dev/shm/jts-ring/active-content.ring".to_string()),
+                chip_ref_pcm: Some("hw:CARD=Array,DEV=0".to_string()),
+                reference_udp_target: Some("127.0.0.1:18200".to_string()),
+                chip_ref_observe: true,
+                ..dual_test_config()
+            },
+        ] {
+            let state = OutputdState::new(&cfg);
+            capture(&state);
+            state.latch_sched_policy("fifo".to_string());
+            state.set_dac_format(SampleFormat::S24_3Le);
+            state.mark_period(
+                IoCounters {
+                    content_frames_read: 8192,
+                    dac_frames_written: 12288,
+                    content_empty_period_count: 3,
+                    content_partial_period_count: 5,
+                    content_eagain_count: 7,
+                    content_xrun_count: 11,
+                    dac_xrun_count: 13,
+                },
+                41,
+                17,
+            );
+            state.mark_content_fill(19, true);
+            state.mark_watchdog_ping();
+            state.mark_dac_delay(257);
+            state.mark_shm_ring_wire(SampleFormat::S32Le, 4);
+            state.mark_shm_ring(RingMetrics {
+                attached: true,
+                occupancy: 1,
+                frames_read: 8192,
+                startup_empty_reads: 3,
+                empty_reads: 5,
+                epoch_resets: 7,
+                reader_resyncs: 11,
+                writer_pid: 4242,
+                writer_heartbeat_age_ms: u64::MAX,
+                writer_alive: false,
+                n_slots: 2,
+                slot_frames: 1024,
+                ..RingMetrics::default()
+            });
+            state.mark_dac_content(DacContentMetrics {
+                serving_fifo: true,
+                fifo_periods: 23,
+            });
+            state.mark_dual_apple_status(&CompositeStatus {
+                dac_a_pcm: "hw:CARD=A,DEV=0".to_string(),
+                dac_b_pcm: "hw:CARD=B,DEV=0".to_string(),
+                linked: true,
+                delay_delta_frames: Some(-7),
+                delay_delta_baseline_frames: Some(-5),
+                delay_delta_error_frames: Some(-2),
+                max_delay_delta_frames: 2,
+                dac_a_xruns: 31,
+                dac_b_xruns: 17,
+                group_recoveries: 43,
+                delay_baseline_relatches: 29,
+                reprime_alignment_failures: 11,
+            });
+            let metrics = TtsMetrics::new(96_000);
+            metrics.pending_frames.store(123, Ordering::Relaxed);
+            metrics.flushed_frames.store(7, Ordering::Relaxed);
+            state.set_tts("/run/jasper-outputd/tts.sock".to_string(), metrics);
+            state.mark_reference_udp_active(true);
+            state.mark_reference_udp_dropped();
+            state.mark_chip_ref_queue_admitted(320);
+            state.mark_chip_ref_enqueued(41);
+            state.mark_chip_ref_dropped_full();
+            state.mark_chip_ref_dropped_disconnected();
+            state.mark_chip_ref_write(ChipRefWrite {
+                frames_written: 640,
+                delay_frames: Some(83),
+                reference_sequence: Some(37),
+                underruns: 3,
+                xruns: 5,
+                recoveries: 7,
+                write_failed: false,
+            });
+            for timestamp in [
+                &state.last_content_xrun_ms,
+                &state.last_dac_xrun_ms,
+                &state.last_progress_ms,
+                &state.dac_snd_pcm_delay_sample_ms,
+                &state.chip_ref_snd_pcm_delay_sample_ms,
+                &state.chip_ref_last_write_ms,
+            ] {
+                timestamp.store(119_000, Ordering::Relaxed);
+            }
+            {
+                let mut ring = state.chip_ref_writes.lock().unwrap();
+                for entry in &mut ring.entries {
+                    entry.uptime_ms = 119_000;
+                }
+            }
+            capture(&state);
+            state.mark_chip_ref_open_error();
+            state.mark_chip_ref_retry();
+            capture(&state);
+            state.mark_chip_ref_terminal_failure();
+            capture(&state);
+            state.mark_chip_ref_writer_active(true);
+            {
+                let mut estimator = state.sro_estimator.lock().unwrap();
+                for step in 1..=40u64 {
+                    estimator.update(step * 48_000, 257, step * 16_000, 83, 16_000);
+                }
+            }
+            capture(&state);
+        }
+        assert_eq!(hash, 13_254_872_796_562_678_660);
     }
 
     #[test]
