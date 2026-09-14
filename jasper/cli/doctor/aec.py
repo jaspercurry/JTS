@@ -1068,12 +1068,12 @@ def _assess_aec_bridge_output(
     correctly silent (there is no program audio to reference) so the
     ref-silent + mic-loud pattern proves nothing about the reference
     chain. The gate observes only the snd-aloop renderer lanes — USB
-    Audio Input and any ring-armed renderer lane (U3/P6) reach the DAC
-    without opening one — so False means "no snd-aloop renderer lane is
-    open", NOT "the speaker is silent". Pass False when a check upstream
-    has verified the loopback playback side is closed; the FAIL branch
-    will then return OK with an explanatory message instead. Default
-    None leaves the loopback side unknown, so the FAIL stands.
+    Audio Input reaches the DAC without opening one (ADR-0107), so False
+    means "no snd-aloop renderer lane is open", NOT "the speaker is
+    silent". Pass False when a check upstream has verified the loopback
+    playback side is closed; the FAIL branch will then return OK with an
+    explanatory message instead. Default None leaves the loopback side
+    unknown, so the FAIL stands.
     """
     silent_ref_count = 0
     healthy_ref_windows = 0
@@ -1129,12 +1129,11 @@ def _assess_aec_bridge_output(
                 f"closed (no snd-aloop renderer lane open) — mic-loud "
                 f"bursts are most likely room voice or ambient noise. This "
                 f"gate sees only the snd-aloop renderer lanes. If the "
-                f"speaker WAS playing — USB Audio Input and any ring-armed "
-                f"renderer lane are invisible here — the silent ref is "
-                f"unexplained; check outputd's reference publisher. The "
-                f"reference itself is outputd's speaker monitor, so program "
-                f"audio on ANY transport exercises the ref path; only this "
-                f"gate is snd-aloop-scoped.",
+                f"speaker WAS playing — USB Audio Input is invisible here "
+                f"— the silent ref is unexplained; check outputd's "
+                f"reference publisher. The reference itself is outputd's "
+                f"speaker monitor, so program audio on ANY transport "
+                f"exercises the ref path; only this gate is snd-aloop-scoped.",
                 reason=REASON_BRIDGE_OUTPUT_REF_SILENT_NO_MUSIC,
             )
         remediation_text, remediation_reason = _aec_reference_failure_remediation(
