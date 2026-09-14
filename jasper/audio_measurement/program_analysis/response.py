@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, TYPE_CHECKING
 
 import numpy as np
+from scipy.optimize import brentq, minimize_scalar
 
 from jasper.audio_measurement import analysis, deconv, gate_disclosure, gating, snr_policy
 from jasper.audio_measurement.alignment import (
@@ -41,6 +42,8 @@ from .model import (
     ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
     ALIGNMENT_COMMITTED_FLAT_SUM,
     ALIGNMENT_COMMITTED_SUMMED_FIT,
+    ALIGNMENT_SUMMED_FIT_INCONCLUSIVE,
+    SUMMED_FIT_MIN_MARGIN,
     ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_FLAT_MINIMUM_EPSILON_DB,
@@ -675,17 +678,17 @@ def _alignment_delay_grid(fc_hz, anchor_delay_us, seed_delay_us, delay_bounds_us
     return [*grid, seed_delay_us], step_us if grid else 0.0
 
 
-def _select_summed_alignment_pair(
-    freqs: np.ndarray, W: np.ndarray, T: np.ndarray, *,
-    reference: SummedAlignmentReference, woofer_role: str, tweeter_role: str,
-    fc_hz: float, anchor_delay_us: float, seed_delay_us: float,
-    seed_polarity_sign: int, delay_bounds_us: tuple[float, float] | None,
-) -> AlignmentPairSelection:
-    W = W * reference.response_by_role[woofer_role](freqs)
-    T = T * reference.response_by_role[tweeter_role](freqs)
-    measured = analysis.smooth_fractional_octave(
-        reference.freqs_hz, reference.magnitude_db, VERIFY_TRACKING_SMOOTHING_FRACTION,
-    )
+def _summed_fit_comparator(freqs, W, T, reference, anchor_delay_us):
+    # A 1/N-octave box has half-width 1/(2N) octaves. Retain its edge samples.
+    radius = 2 ** (0.5 / VERIFY_TRACKING_SMOOTHING_FRACTION)
+    lo, hi = reference.band_hz
+    axis = reference.freqs_hz
+    mask = (axis >= lo / radius) & (axis <= hi * radius)
+    axis = axis[mask]
+    measured = analysis.smooth_fractional_octave(axis, reference.magnitude_db[mask], VERIFY_TRACKING_SMOOTHING_FRACTION)
+    start = max(0, np.searchsorted(freqs, axis[0]) - 1)
+    stop = np.searchsorted(freqs, axis[-1], side="right") + 1
+    freqs, W, T = freqs[start:stop], W[start:stop], T[start:stop]
 
     def score(sign, delay):
         predicted = predicted_branch_sum(
@@ -694,33 +697,66 @@ def _select_summed_alignment_pair(
         )
         db = 20 * np.log10(np.maximum(np.abs(predicted), 1e-12))
         smoothed = analysis.smooth_fractional_octave(
-            reference.freqs_hz, np.interp(reference.freqs_hz, freqs, db),
-            VERIFY_TRACKING_SMOOTHING_FRACTION,
+            axis, np.interp(axis, freqs, db), VERIFY_TRACKING_SMOOTHING_FRACTION,
         )
-        rms, _ = analysis.tracking_error_db(
-            reference.freqs_hz, measured, smoothed, reference.band_hz,
-        )
+        rms, _ = analysis.tracking_error_db(axis, measured, smoothed, reference.band_hz)
         return float(rms)
 
-    grid, step = _alignment_delay_grid(
-        fc_hz, anchor_delay_us, seed_delay_us, delay_bounds_us,
-    )
-    scans = {}
+    return score
+
+
+def _select_summed_alignment_pair(
+    freqs: np.ndarray, W: np.ndarray, T: np.ndarray, *,
+    reference: SummedAlignmentReference, woofer_role: str, tweeter_role: str,
+    fc_hz: float, anchor_delay_us: float, seed_delay_us: float,
+    seed_polarity_sign: int, delay_bounds_us: tuple[float, float] | None,
+) -> AlignmentPairSelection:
+    W = W * reference.response_by_role[woofer_role](freqs)
+    T = T * reference.response_by_role[tweeter_role](freqs)
+    score = _summed_fit_comparator(freqs, W, T, reference, anchor_delay_us)
+    grid, step = _alignment_delay_grid(fc_hz, anchor_delay_us, seed_delay_us, delay_bounds_us)
+    grid = sorted(set(grid))
+    lower, upper = (0.0, math.inf) if delay_bounds_us is None else sorted(abs(float(b)) for b in delay_bounds_us)
+    scans, limits = {}, {}
     for sign in (1, -1):
         coarse = [(delay, score(sign, delay)) for delay in grid]
         center, _ = min(coarse, key=lambda item: item[1])
-        # Within one period at Fc, sampled at 1 us; declared delay bounds still apply.
         radius = 1e6 / fc_hz
-        fine = np.arange(math.ceil(center - radius), math.floor(center + radius) + 1)
-        if delay_bounds_us is not None:
-            lower, upper = sorted(abs(float(b)) for b in delay_bounds_us)
-            fine = fine[(np.abs(fine) >= lower) & (np.abs(fine) <= upper)]
-        scans[sign] = coarse + [(float(delay), score(sign, delay)) for delay in fine]
+        extended = sorted(set([*grid, *np.arange(center - radius, center + radius + step / 2, step)])) if step else grid
+        bracket_grid = [d for d in extended if abs(d - center) <= radius and lower <= abs(d) <= upper]
+        values = {d: error for d, error in coarse}
+        for d in bracket_grid:
+            if d not in values:
+                values[d] = score(sign, d)
+        coarse = list(values.items())
+        limits[sign] = (min(values), max(values))
+        # Refine each local minimum: coarse quantization can rank adjacent lobes incorrectly.
+        for i, d in enumerate(bracket_grid):
+            lo, hi = bracket_grid[max(0, i - 1)], bracket_grid[min(len(bracket_grid) - 1, i + 1)]
+            if (lo == hi or values[d] > min(values[lo], values[hi])
+                    or values[d] == values[lo] == values[hi] or (lower > 0 and lo < 0 < hi)):
+                continue
+            optimum = minimize_scalar(lambda d: score(sign, d), bounds=(lo, hi), method="bounded", options={"xatol": .1}).x
+            coarse.extend((d, score(sign, d)) for d in (math.floor(optimum), math.ceil(optimum)) if lo <= d <= hi)
+        scans[sign] = coarse
     minima = {sign: min(scan, key=lambda item: item[1]) for sign, scan in scans.items()}
     sign = min(minima, key=lambda sign: minima[sign][1])
     delay, rms = minima[sign]
     margin = minima[-sign][1] / max(rms, np.finfo(float).eps)
-    interval = [d for d, error in scans[sign] if error <= rms + 0.05]
+    interval = []
+    for direction in (-1, 1):
+        edge = delay
+        limit = max(limits[sign][0], lower if delay >= 0 else -upper) if direction < 0 else min(limits[sign][1], upper if delay >= 0 else -lower)
+        # Report the contiguous basin within 0.05 dB RMS, at 1 us resolution.
+        for _ in range(len(grid)):
+            next_edge = max(limit, edge - step) if direction < 0 else min(limit, edge + step)
+            if score(sign, next_edge) > rms + .05:
+                edge = brentq(lambda d: score(sign, d) - rms - .05, *sorted((edge, next_edge)))
+                break
+            edge = next_edge
+            if edge == limit:
+                break
+        interval.append(min(delay, float(math.ceil(edge))) if direction < 0 else max(delay, float(math.floor(edge))))
 
     def ripple(sign, delay):
         return _ripple_db(freqs, predicted_branch_sum(
@@ -732,10 +768,11 @@ def _select_summed_alignment_pair(
         polarity_sign=sign, delay_us=delay, ripple_db=ripple(sign, delay),
         seed_polarity_sign=seed_polarity_sign, seed_delay_us=seed_delay_us,
         seed_ripple_db=ripple(seed_polarity_sign, seed_delay_us),
-        objective=ALIGNMENT_COMMITTED_SUMMED_FIT, grid_points=len(scans[sign]),
-        grid_step_us=step, left_anchor_lobe=abs(delay - anchor_delay_us) > half_period_us(fc_hz),
+        objective=ALIGNMENT_COMMITTED_SUMMED_FIT if margin >= SUMMED_FIT_MIN_MARGIN else ALIGNMENT_SUMMED_FIT_INCONCLUSIVE,
+        grid_points=len(scans[sign]), grid_step_us=step,
+        left_anchor_lobe=abs(delay - anchor_delay_us) > half_period_us(fc_hz),
         summed_fit_rms_db=rms, summed_fit_margin=margin,
-        delay_interval_us=(min(interval), max(interval)),
+        delay_interval_us=(interval[0], interval[1]),
     )
 
 

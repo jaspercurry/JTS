@@ -528,8 +528,14 @@ class C:
     assert shadowed_methods(legitimate) == {}
 
 
-@pytest.mark.parametrize("position_deg, available", [(0, True), (-20, False), (20, False)])
-def test_session_summed_alignment_uses_raw_capture_and_played_chain(monkeypatch, tmp_path, position_deg, available):
+@pytest.mark.parametrize("position_deg, shape, reason", [
+    (0, "valid", None), (-20, "valid", None), (20, "valid", None),
+    (0, "missing_gain", "missing_alignment_filter"), (0, "renamed_delay", "missing_alignment_filter"),
+    (0, "mixer_polarity", "mixer_polarity"), (0, "full_range", "missing_crossover_region"),
+    (0, "no_filters", "unsupported_graph"), (0, "Volume", "unsupported_graph"),
+    (0, "Loudness", "unsupported_graph"),
+])
+def test_session_summed_alignment_uses_raw_capture_and_played_chain(monkeypatch, tmp_path, position_deg, shape, reason):
     from dataclasses import replace
     from types import SimpleNamespace
 
@@ -550,6 +556,27 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(monkeypatch,
         pipeline.append({"type": "Filter", "channels": [output.index],
                          "names": ["common", driver_delay_name(role), driver_baseline_gain_name(role)]})
     graph = {"filters": filters, "pipeline": pipeline}
+    preset = PRESET
+    if shape == "missing_gain":
+        del filters[driver_baseline_gain_name("tweeter")]
+    elif shape == "renamed_delay":
+        name = driver_delay_name("tweeter")
+        filters["renamed"] = filters.pop(name)
+        pipeline[-1]["names"] = ["renamed" if n == name else n for n in pipeline[-1]["names"]]
+    elif shape == "no_filters":
+        del graph["filters"]
+    elif shape in ("Volume", "Loudness"):
+        filters["unsupported"] = {"type": shape, "parameters": {}}
+        pipeline[-1]["names"].append("unsupported")
+    elif shape == "full_range":
+        preset = replace(PRESET, crossover_regions=())
+    elif shape == "mixer_polarity":
+        graph["mixers"] = {"split": {"channels": {"in": 2, "out": 2}, "mapping": [
+            {"dest": 1, "sources": [{"channel": 0, "gain": 0, "inverted": True}]},
+        ]}}
+        pipeline.insert(0, {"type": "Mixer", "name": "split"})
+    events = []
+    monkeypatch.setattr(summed_alignment, "log_event", lambda logger, event, **fields: events.append(fields))
     row = Measurement("sum.json", "session", "summed", "entry_baseline", position_deg, 0, "candidate", None)
     monkeypatch.setattr(summed_alignment, "measurement_documents", lambda _: [(row, {"take_id": "sum"})])
     monkeypatch.setattr(summed_alignment, "reopen_measurement_capture", lambda *a: (
@@ -561,9 +588,10 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(monkeypatch,
     raw = SimpleNamespace(freqs_hz=hz, magnitude_db=np.zeros(hz.size), validity_floor_hz=1000)
     monkeypatch.setattr(summed_alignment, "analyze_program_capture", lambda *a, **k: SimpleNamespace(summed_response=raw))
     conductor = _wired_conductor(measure_entry_baseline=baseline)
-    conductor._seams = replace(conductor._seams, summed_alignment_reference=lambda b, p: summed_alignment.session_reference(tmp_path, b, p))
+    conductor._seams = replace(conductor._seams, summed_alignment_reference=lambda b, p: summed_alignment.session_reference(tmp_path, b, preset))
     reference = conductor._measure_priors().summed_alignment
-    assert (reference is not None) is available
+    assert (reference is not None) is (position_deg == 0 and shape == "valid")
+    assert events == ([] if reason is None else [{"code": "summed_reference_unreadable", "reason": reason}])
     if reference is not None:
         assert reference.freqs_hz is raw.freqs_hz
         assert reference.magnitude_db is raw.magnitude_db
@@ -571,4 +599,40 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(monkeypatch,
         for role, transfer in reference.response_by_role.items():
             assert transfer(hz) * configured[role](hz) == pytest.approx(np.full(hz.size, 10 ** (-9 / 20)))
         assert reference.band_hz == (1200, 5000)
-        assert filters[driver_baseline_gain_name("tweeter")]["parameters"]["inverted"] is True
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_two_measure_attempts_share_reference_until_baseline_changes(available):
+    from dataclasses import replace
+    from unittest.mock import Mock
+
+    from jasper.active_speaker import crossover_v2_flow as flow
+    from tests.crossover_v2_fixtures import FakeSeams, _capture, _conductor, _run_phase
+
+    fakes = FakeSeams()
+    conductor = _conductor(fakes)
+    reference = object() if available else None
+    seam = Mock(return_value=reference)
+    conductor._seams = replace(conductor._seams, summed_alignment_reference=seam)
+    _run_phase(conductor, 1, 1)
+    conductor.consume_capture(2, 1, _capture())
+    conductor.consume_capture(2, 2, _capture())
+    assert seam.call_count == 1
+    assert conductor._measure_priors().summed_alignment is reference
+    conductor._measure_entry_baseline = replace(conductor._measure_entry_baseline, artifact_ref="changed")
+    assert conductor._measure_priors().summed_alignment is reference
+    assert seam.call_count == 2
+    assert fakes.analyzed[-1][0] == flow.PHASE_MEASURE
+
+
+@pytest.mark.parametrize("position, vertical", [(0, 0), (-20, 0), (20, 0), (0, 20)])
+def test_measure_attempt_geometry_carries_its_pose(position, vertical):
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+    from tests.crossover_v2_fixtures import FakeSeams, _capture, _conductor, _run_phase
+
+    fakes = FakeSeams()
+    conductor = _conductor(fakes, measure_specs_by_index={2: MeasureSpec(kind="baseline", positions=(position,), vertical_deg=vertical)})
+    _run_phase(conductor, 1, 1)
+    conductor.consume_capture(2, 1, _capture())
+    geometry = fakes.analyzed[-1][4]
+    assert (geometry.position_deg, geometry.vertical_deg) == (position, vertical)

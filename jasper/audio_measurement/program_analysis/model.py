@@ -152,6 +152,8 @@ ALIGNMENT_FLAT_MINIMUM_EPSILON_DB = 0.25
 #: What the candidate's (polarity, delay) pair IS, never why an alternative was rejected.
 ALIGNMENT_COMMITTED_FLAT_SUM = "flat_sum_committed"
 ALIGNMENT_COMMITTED_SUMMED_FIT = "summed_fit_committed"
+ALIGNMENT_SUMMED_FIT_INCONCLUSIVE = "summed_fit_inconclusive"
+SUMMED_FIT_MIN_MARGIN = 1.5
 ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR = "declared_committed_after_low_snr"
 #: The declared polarity at the delay the applied graph already carries.
 ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR = "applied_alignment_held_after_low_snr"
@@ -169,6 +171,7 @@ ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR = (
 ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND = "seed_committed_no_scoring_band"
 ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED = "seed_committed_alignment_refused"
 ALIGNMENT_COMMITMENTS = frozenset({
+    ALIGNMENT_SUMMED_FIT_INCONCLUSIVE,
     ALIGNMENT_COMMITTED_FLAT_SUM,
     ALIGNMENT_COMMITTED_SUMMED_FIT,
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
@@ -183,6 +186,7 @@ ALIGNMENT_COMMITMENTS = frozenset({
 #: neither polarity nor anchor may be spoken for
 #: (tests/test_crossover_envelope_v2.py pins this against the household copy).
 ALIGNMENT_DECLARED_POLARITY_OBJECTIVES = frozenset({
+    ALIGNMENT_SUMMED_FIT_INCONCLUSIVE,
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
@@ -419,6 +423,8 @@ class MeasurementGeometry:
     #: :mod:`~jasper.audio_measurement.gating`'s exemption words
     #: (``SEAT_EXEMPT``) analyzes it ungated and says so in its gating block.
     gate_exempt_reason: str | None = None
+    position_deg: float | None = None
+    vertical_deg: float | None = None
 
     def parallax_us(self) -> float:
         """The deterministic mic-parallax term, in µs.
@@ -460,6 +466,8 @@ class SummedAlignmentReference:
     magnitude_db: np.ndarray
     response_by_role: Mapping[str, Callable[[np.ndarray], np.ndarray]]
     band_hz: tuple[float, float]
+    position_deg: float = 0.0
+    vertical_deg: float = 0.0
 
 
 @dataclass(frozen=True)

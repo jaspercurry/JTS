@@ -3496,39 +3496,10 @@ def test_branch_snr_band_hz_never_admits_a_row_outside_the_radiated_band():
 
 
 def test_measure_snr_verdict_ignores_a_row_the_tweeter_sweep_never_entered():
-    """#2613: a deliberately empty row must not veto a clean capture.
+    """An empty tweeter row stays reported but cannot decide alignment.
 
-    THE incident, end to end, on **jts3's own commissioned geometry** — the
-    same Fc and declared driver bands as the 2026-08-15/16 rounds
-    (``tests/fixtures/crossover_v2_alignment_incident_20260816/``): LR4 at
-    :data:`_JTS3_FC_HZ`, an Epique E150HE-44 woofer declared ``[45, 4000]``
-    and a DE250-8 tweeter declared ``[1600, 20000]``.
-
-    That geometry is what makes the failure structural. The nominal window is
-    ``[824.35, 3297.4]``, and the ``transition`` row (350-1000 Hz) OVERLAPS it
-    — 1000 > 824.35 — so the row was enfranchised. The tweeter sweep starts at
-    1600 Hz, so that row holds nothing but room noise, and its SNR is the ratio
-    of the room to itself: **no room, no night, and no drive level can move
-    it**. The box recorded −1.2 dB there (−0.4 dB on five of six captures in
-    the 2026-08-10 dump), the ALIGNMENT verdict read ``insufficient``, and
-    #2607's declared-design fail-safe fired on 14 of 14 rounds.
-
-    The **woofer is the control, and it is a geometric one**: its sweep
-    (150-4000 Hz after the MEASURE clamp) spans the whole nominal window, so no
-    row inside that window is empty for it, its window is unchanged by the fix,
-    and it verdicted ``ok`` at 44.0 dB on those same 14 rounds. Tweeter fails
-    and woofer passes on the same captures because of where the sweeps end —
-    which is exactly the asymmetry a broadband-SNR explanation could not
-    produce.
-
-    Each assertion below is a separate claim, and each FAILS on the pre-fix
-    code: the window is clamped, the veto comes from an occupied row, the
-    verdict passes, and the flat-sum selector therefore gets to run at all
-    (pre-fix it committed the declared design without scoring the pair, so the
-    cross-check reports "not asked").
-
-    The empty row's evidence is still REPORTED, just not admitted: the
-    per-band table is diagnostics, ``relevant_hz`` is the franchise.
+    The woofer's magnitude window is the geometric control: its sweep spans
+    the whole nominal window. Alignment uses the pair's occupied overlap.
     """
     _prog, res = _band_limited_two_way(
         fc_hz=_JTS3_FC_HZ,
@@ -3560,8 +3531,10 @@ def test_measure_snr_verdict_ignores_a_row_the_tweeter_sweep_never_entered():
     assert res.alignment.polarity_agrees_with_sum is not None
 
     woofer = next(r for r in res.driver_responses if r.role == "woofer")
-    w_window, _w_worst, _w_rows = _alignment_rows(woofer)
-    assert w_window == window
+    # The magnitude class keeps the woofer's full nominal window as a geometric control.
+    w_window = woofer.snr["relevant_hz"]
+    assert w_window == [_JTS3_FC_HZ / 2.0, _JTS3_FC_HZ * 2.0]
+    assert _alignment_rows(woofer)[0] == [1600.0, _JTS3_FC_HZ * 2.0]
     assert driver_alignment_snr_verdict(woofer) == "ok"
 
 
@@ -8140,14 +8113,24 @@ def test_absolute_target_carries_the_candidates_configured_polarity():
     assert analyze({"woofer": 1, "tweeter": -1})["max_db"] > 5.0
 
 
-@pytest.mark.parametrize("delay_us, sign", [(191.0, -1), (-173.0, 1)])
-def test_measured_sum_commits_alignment_when_ripple_basins_are_degenerate(monkeypatch, delay_us, sign):
+@pytest.mark.parametrize("delay_us, sign, pose, reference_kind, objective", [
+    (191.0, -1, (0, 0), "measured", "summed_fit_committed"),
+    (-173.0, 1, (0, 0), "measured", "summed_fit_committed"),
+    (191.0, -1, (-20, 0), "measured", "applied_alignment_held_after_low_snr"),
+    (191.0, -1, (20, 0), "measured", "applied_alignment_held_after_low_snr"),
+    (191.0, -1, (0, 20), "measured", "applied_alignment_held_after_low_snr"),
+    (191.0, -1, (None, None), "measured", "applied_alignment_held_after_low_snr"),
+    (191.0, -1, (0, 0), "missing_gain", "applied_alignment_held_after_low_snr"),
+    (191.0, -1, (0, 0), "flat", "summed_fit_inconclusive"),
+])
+def test_measured_sum_commits_alignment_when_ripple_basins_are_degenerate(monkeypatch, delay_us, sign, pose, reference_kind, objective):
     from jasper.audio_measurement.program_analysis import dispatch
-    from jasper.audio_measurement.program_analysis.model import SummedAlignmentReference
+    from jasper.audio_measurement.program_analysis.model import AppliedAlignment, SummedAlignmentReference
+    from jasper.active_speaker.crossover_v2.summed_alignment import reference_from_graph
 
     freqs = np.linspace(0, SR / 2, 4097)
     W = np.ones(freqs.size, dtype=complex)
-    T = 0.45 * np.exp(0.02j * (freqs / FC_HZ) ** 2)
+    T = 0.45 * np.exp((0 if reference_kind == "flat" else 0.02j) * (freqs / FC_HZ) ** 2)
     branches = iter((W, T))
     monkeypatch.setattr(dispatch, "_aligned_branch_tf", lambda *a, **k: (freqs, next(branches), {}))
     summed = predicted_branch_sum(W, T, 0, 0, sign, freqs_hz=freqs, residual_delay_us=delay_us)
@@ -8155,18 +8138,35 @@ def test_measured_sum_commits_alignment_when_ripple_basins_are_degenerate(monkey
         freqs, 20 * np.log10(abs(summed)),
         {role: np.ones_like for role in ("woofer", "tweeter")}, (1200, 5000),
     )
+    if reference_kind == "flat":
+        reference.magnitude_db[:] = 0
+    elif reference_kind == "missing_gain":
+        reference = reference_from_graph(freqs, np.zeros(freqs.size), {"filters": {}, "pipeline": []},
+            output_channels={"tweeter": 1}, configured_response_by_role={"tweeter": np.ones_like},
+            configured_polarity_by_role={"tweeter": 1}, band_hz=(1200, 5000))
+        assert reference is None
     program = build_measure_program({"woofer": -30, "tweeter": -30}, _roles(),
                                     sweep_durations={"woofer": .3, "tweeter": .3})
     impulse = np.zeros(4096)
     impulse[200] = 1
     capture = _synthesize(program, woofer_ir=impulse, tweeter_ir=impulse, noise=0)
-    result = analyze_program_capture(program, capture, SR, priors=MeasurementPriors(
-        crossover_fc_hz=FC_HZ, alignment_delay_bounds_us=(0, 500),
+    result = analyze_program_capture(program, capture, SR, geometry=MeasurementGeometry(position_deg=pose[0], vertical_deg=pose[1]), priors=MeasurementPriors(
+        crossover_fc_hz=FC_HZ, alignment_delay_bounds_us=(0, 500), applied_alignment=AppliedAlignment(193),
         summed_alignment=reference,
         ambient_report={"bands": [{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -45}]},
     ))
     candidate = result.candidate
-    assert candidate.alignment_objective == "summed_fit_committed"
+    assert candidate.alignment_objective == objective
+    if objective != "summed_fit_committed":
+        assert candidate.delay_us == 193
+        assert candidate.polarity == "normal"
+        if objective == "summed_fit_inconclusive":
+            assert candidate.summed_fit_margin < 1.5
+            assert candidate.summed_fit_rms_db is not None
+            assert candidate.delay_interval_us is not None
+        else:
+            assert candidate.summed_fit_margin is None
+        return
     assert candidate.delay_us == pytest.approx(delay_us, abs=1)
     assert candidate.polarity == ("inverted" if sign < 0 else "normal")
     assert candidate.delay_interval_us[0] <= delay_us <= candidate.delay_interval_us[1]
@@ -8197,3 +8197,21 @@ def test_alignment_snr_uses_the_shared_sweep_band(monkeypatch):
     )
     assert block[DRIVER_SNR_ALIGNMENT_KEY]["verdict"] == "ok"
     assert block["verdict"] == "insufficient"
+
+
+@pytest.mark.parametrize("bins", [4097, 262145])
+def test_summed_fit_sliced_comparator_matches_full_axis(bins):
+    from jasper.audio_measurement import analysis
+    from jasper.audio_measurement.program_analysis.model import SummedAlignmentReference
+    from jasper.audio_measurement.program_analysis.response import _summed_fit_comparator
+
+    freqs = np.linspace(0, SR / 2, bins)
+    W = np.ones(bins, dtype=complex)
+    T = .45 * np.exp(.02j * (freqs / FC_HZ) ** 2)
+    measured = 20 * np.log10(abs(predicted_branch_sum(W, T, 0, 0, -1, freqs_hz=freqs, residual_delay_us=191)))
+    reference = SummedAlignmentReference(freqs, measured, {}, (1200, 5000))
+    score = _summed_fit_comparator(freqs, W, T, reference, 0)
+    predicted = 20 * np.log10(abs(predicted_branch_sum(W, T, 0, 0, 1, freqs_hz=freqs, residual_delay_us=125)))
+    full_rms, _ = analysis.tracking_error_db(freqs, analysis.smooth_fractional_octave(freqs, measured, 6),
+                                            analysis.smooth_fractional_octave(freqs, predicted, 6), reference.band_hz)
+    assert score(1, 125) == pytest.approx(full_rms, rel=0, abs=1e-9)
