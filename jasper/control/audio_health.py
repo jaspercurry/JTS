@@ -49,10 +49,6 @@ from .audio_signal_path import (
     _transport_park_signal,
     _undeclared_hardware_signal,
 )
-# Re-export only: this module has no internal use of PARKED_DETAIL, but
-# tests/test_transport_eligibility.py still imports it from here. #4718's
-# split tracker moves that import to audio_signal_path directly.
-from .audio_signal_path import PARKED_DETAIL as PARKED_DETAIL
 from .audio_source_cards import (
     _not_applicable_timing,
     _source_cards,
@@ -138,6 +134,40 @@ def _incident_context(
     return context
 
 
+def _health_prelude(
+    ap: Mapping[str, Any],
+    outputd: Mapping[str, Any] | None,
+    mux: Mapping[str, Any] | None,
+    route_state: Mapping[str, Any],
+) -> tuple[str | None, bool, dict[str, Any], dict[str, Any]]:
+    """The read-and-classify steps :func:`compose_audio_health` and the
+    sampler's ``_tick`` both need before their two paths diverge: this
+    composer layers three more cause-naming overrides onto the returned
+    ``signal_path``, while the sampler passes this bare version straight to
+    :func:`~jasper.control.audio_state_issues._state_issues` alongside those
+    same overrides as separate arguments.
+
+    ``mux`` and ``route_state`` are the already-resolved observations --
+    each caller keeps its own fallback for producing them.
+    """
+    active_source = _active_source(ap, mux)
+    activity_unknown = _activity_truth_unknown(ap, mux)
+    signal_path = _signal_path(ap, outputd, active_source)
+    if activity_unknown and signal_path.get("status") not in {"issue", "unknown"}:
+        signal_path = _activity_unavailable_signal()
+    fanin = _mapping(_mapping(ap.get("current")).get("fanin"))
+    if active_source == Source.USBSINK.value:
+        latency = _usb_timing(
+            route_state,
+            _mapping(fanin.get("host_clock")) or None,
+            _mapping(_mapping(fanin.get("inputs")).get(Source.USBSINK.value)),
+            active=True,
+        )
+    else:
+        latency = _not_applicable_timing()
+    return active_source, activity_unknown, signal_path, latency
+
+
 def compose_audio_health(
     *,
     airplay: Mapping[str, Any] | None,
@@ -174,11 +204,9 @@ def compose_audio_health(
     ap = _mapping(airplay)
     route_state = _mapping(route)
     mux = mux_status if mux_status is not None else _mapping(ap.get("mux_status"))
-    active_source = _active_source(ap, mux)
-    activity_unknown = _activity_truth_unknown(ap, mux)
-    signal_path = _signal_path(ap, outputd, active_source)
-    if activity_unknown and signal_path.get("status") not in {"issue", "unknown"}:
-        signal_path = _activity_unavailable_signal()
+    active_source, activity_unknown, signal_path, latency = _health_prelude(
+        ap, outputd, mux, route_state,
+    )
     stopped_dsp = _stopped_dsp_signal(ap, service_states)
     if stopped_dsp is not None and _yields_to_a_named_cause(signal_path):
         # Ahead of both parked states: a daemon that is not running is
@@ -213,17 +241,6 @@ def compose_audio_health(
         signal_path = undeclared_hardware
     current = _mapping(ap.get("current"))
     fanin = _mapping(current.get("fanin"))
-    inputs = _mapping(fanin.get("inputs"))
-    host_clock = _mapping(fanin.get("host_clock")) or None
-    if active_source == Source.USBSINK.value:
-        latency = _usb_timing(
-            route_state,
-            host_clock,
-            _mapping(inputs.get(Source.USBSINK.value)),
-            active=True,
-        )
-    else:
-        latency = _not_applicable_timing()
     source_cards = _source_cards(
         ap,
         signal_path,
