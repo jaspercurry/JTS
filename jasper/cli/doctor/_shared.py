@@ -459,7 +459,7 @@ def _nested_dict(payload: Any, *keys: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-# jasper-control's signal-path vocabulary (audio_health.SIGNAL_PATH_CODES) split
+# jasper-control's signal-path vocabulary (audio_signal_path.SIGNAL_PATH_CODES) split
 # three ways; the partition is pinned in tests/test_doctor_resilience.py.
 _SIGNAL_PATH_PLAYING_CODES = frozenset({
     "clean",
