@@ -11,12 +11,29 @@ module instead of through each other. Not
 :mod:`jasper.json_fields` — that one raises on a bad field and coerces to
 ``float``; these return ``None`` and keep an ``int`` an ``int``, which is what
 a dashboard field that may simply be absent needs.
+
+Also the shared home for ``_MONITOR_ERRORS``, the fail-soft exception tuple
+every observability probe across the audio-health split degrades on, for the
+same downward-only reason: two leaves (e.g. the composer and the route-claim
+reader) must share the constant without importing each other.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+
+# Expected failures at optional/cached observability boundaries. Programming
+# errors outside this set should not be hidden; a dead sampler is surfaced as
+# stale by snapshot() instead of silently retrying a broken implementation.
+_MONITOR_ERRORS = (
+    AttributeError,
+    KeyError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
 
 def _finite_number(value: Any) -> int | float | None:
