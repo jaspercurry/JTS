@@ -63,7 +63,10 @@ pub struct FlushSummary {
     flushed_frames: u64,
     segments: usize,
     max_audio_played_ms: u64,
-    events_json: String,
+    /// Rendered to JSON lazily, in [`Self::to_json_line`] — the mixer thread
+    /// that builds a `FlushSummary` must not pay `render_events_json`'s
+    /// per-event `format!` itself (issue #4809 R-023).
+    events: Vec<PlayoutEvent>,
 }
 
 #[derive(Debug, Clone)]
@@ -1088,7 +1091,7 @@ impl TtsMixer {
         self.assistant_reference_disqualified_serial = None;
         self.metrics.mark_flush(requests, flushed);
         self.metrics.mark_pending(0);
-        let summary = FlushSummary::from_parts(requests, pending, flushed, &events);
+        let summary = FlushSummary::from_parts(requests, pending, flushed, events);
         info!(
             "event=fanin.tts_flush requests={} pending_frames={} flushed_frames={} segments={} max_audio_played_ms={}",
             requests, pending, flushed, summary.segments, summary.max_audio_played_ms
@@ -1289,7 +1292,7 @@ impl FlushSummary {
         requests: usize,
         pending_frames: u64,
         flushed_frames: u64,
-        events: &[PlayoutEvent],
+        events: Vec<PlayoutEvent>,
     ) -> Self {
         let segments = events.len();
         let max_audio_played_ms = events.iter().map(|e| e.audio_played_ms).max().unwrap_or(0);
@@ -1299,7 +1302,7 @@ impl FlushSummary {
             flushed_frames,
             segments,
             max_audio_played_ms,
-            events_json: render_events_json(events),
+            events,
         }
     }
 
@@ -1311,7 +1314,7 @@ impl FlushSummary {
             self.segments,
             self.flushed_frames,
             self.max_audio_played_ms,
-            self.events_json,
+            render_events_json(&self.events),
         )
     }
 }

@@ -855,7 +855,10 @@ impl StateServer {
         // demotions), `drop_no_reader` a dead/absent reader (normal reload
         // transient). `stall_active` / `last_stall_ms` surface a live/recent stall
         // episode. `clockless_paces` is the mixer's own — see
-        // `mixer::RingCounters`.
+        // `mixer::RingCounters`. `stall_log_dropped` counts a stall event that
+        // never reached `fanin-ring-log` (issue #4787/#4809 R-023): the mixer
+        // thread never blocks or formats to log one, so a lost line shows up
+        // only here.
         //
         // There are no `mirror_frames` / `mirror_drops` here: U4/P7-4 removed the
         // lossy aloop side-tap they counted, and a pair of counters pinned at 0
@@ -914,6 +917,12 @@ impl StateServer {
             buf,
             "clockless_paces",
             ring.clockless_paces.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "stall_log_dropped",
+            ring.stall_log_dropped.load(Ordering::Relaxed),
         );
         buf.push('}');
         buf.push('}');
@@ -1212,6 +1221,7 @@ mod tests {
                 stall_active: Arc::new(AtomicBool::new(true)),
                 last_stall_ms: Arc::new(AtomicU64::new(1500)),
                 clockless_paces: Arc::new(AtomicU64::new(7)),
+                stall_log_dropped: Arc::new(AtomicU64::new(2)),
             },
             selected_input_index: Arc::new(AtomicI32::new(-2)),
             heartbeat: Arc::new(Heartbeat::new()),
@@ -1534,6 +1544,7 @@ mod tests {
         assert_eq!(ring["stall_active"], true, "stall_active: {ring}");
         assert_eq!(ring["last_stall_ms"], 1500, "last_stall_ms: {ring}");
         assert_eq!(ring["clockless_paces"], 7, "clockless_paces: {ring}");
+        assert_eq!(ring["stall_log_dropped"], 2, "stall_log_dropped: {ring}");
         // OBSERVED, so /state answers what the ring carries without inferring
         // it from config.
         assert_eq!(ring["channels"], 2, "channels: {ring}");
