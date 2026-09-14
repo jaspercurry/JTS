@@ -83,7 +83,6 @@ from .sound_active_speaker import (
     _active_speaker_commission_ramp_abort_payload,
     _active_speaker_commission_ramp_ack_payload,
     _active_speaker_commission_ramp_step_payload,
-    _active_speaker_commission_rollback_payload,
     _active_speaker_commission_state_payload,
     _active_speaker_commissioning_view_payload,
     _active_speaker_crossover_preview_save_payload,
@@ -93,7 +92,6 @@ from .sound_active_speaker import (
     _active_speaker_driver_research_request_payload,
     _active_speaker_finish_commissioning_payload,
     _active_speaker_load_startup_config_payload,
-    _active_speaker_rollback_startup_config_payload,
     _active_speaker_stage_config_payload,
     _active_speaker_stop_payload,
     _active_speaker_stop_summed_test_tone,
@@ -781,6 +779,11 @@ def _make_handler(
                         )
                     )
                     return
+                if path == "/active-speaker/baseline-profile/restore":
+                    from .correction_crossover_v2_apply import handle_v2_apply  # lazy: applying imports NumPy
+
+                    self._send_json(handle_v2_apply({"previous": True}, asyncio.run, camilla_factory))
+                    return
                 if path == "/active-speaker/baseline-profile/save-and-apply":
                     self._send_json(
                         asyncio.run(
@@ -811,29 +814,11 @@ def _make_handler(
                         )
                     )
                     return
-                if path == "/active-speaker/rollback-startup-config":
-                    self._send_json(
-                        asyncio.run(
-                            _active_speaker_rollback_startup_config_payload(
-                                camilla_factory=camilla_factory,
-                            )
-                        )
-                    )
-                    return
                 if path == "/active-speaker/commission-load":
                     self._send_json(
                         asyncio.run(
                             _active_speaker_commission_load_payload(
                                 raw, camilla_factory=camilla_factory
-                            )
-                        )
-                    )
-                    return
-                if path == "/active-speaker/commission-rollback":
-                    self._send_json(
-                        asyncio.run(
-                            _active_speaker_commission_rollback_payload(
-                                camilla_factory=camilla_factory
                             )
                         )
                     )
@@ -1228,9 +1213,7 @@ def _make_handler(
         "/active-speaker/stage-config": Handler._dispatch_post_route,
         "/active-speaker/check-path-safety": Handler._dispatch_post_route,
         "/active-speaker/load-startup-config": Handler._dispatch_post_route,
-        "/active-speaker/rollback-startup-config": Handler._dispatch_post_route,
         "/active-speaker/commission-load": Handler._dispatch_post_route,
-        "/active-speaker/commission-rollback": Handler._dispatch_post_route,
         "/active-speaker/commission-ramp-step": Handler._dispatch_post_route,
         "/active-speaker/commission-ramp-ack": Handler._dispatch_post_route,
         "/active-speaker/commission-ramp-abort": Handler._dispatch_post_route,
@@ -1241,6 +1224,7 @@ def _make_handler(
         "/active-speaker/summed-validation": Handler._dispatch_post_route,
         "/active-speaker/baseline-profile": Handler._dispatch_post_route,
         "/active-speaker/baseline-profile/apply": Handler._dispatch_post_route,
+        "/active-speaker/baseline-profile/restore": Handler._dispatch_post_route,
         "/active-speaker/baseline-profile/save-and-apply": Handler._dispatch_post_route,
         "/output-topology": Handler._dispatch_post_route,
         "/output-topology/reset": Handler._dispatch_post_route,

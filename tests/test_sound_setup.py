@@ -5272,7 +5272,7 @@ def _stub_baseline_apply(monkeypatch, *, applied_profile: bool = True):
     apply_calls: list[dict] = []
     mux_commands: list[str] = []
 
-    async def fake_apply_commissioning_profile(**kwargs):
+    async def fake_apply_candidate(**kwargs):
         apply_calls.append(kwargs)
         callback = kwargs.get("on_candidate_verified")
         if callback is not None:
@@ -5304,8 +5304,8 @@ def _stub_baseline_apply(monkeypatch, *, applied_profile: bool = True):
         }
 
     monkeypatch.setattr(
-        "jasper.active_speaker.baseline_profile.apply_commissioning_profile",
-        fake_apply_commissioning_profile,
+        "jasper.web.correction_crossover_v2_apply.apply_candidate",
+        fake_apply_candidate,
     )
     monkeypatch.setattr(
         sound_active_speaker, "_commission_tone_mux_command", fake_mux_command

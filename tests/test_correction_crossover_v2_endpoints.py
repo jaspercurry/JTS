@@ -4536,6 +4536,7 @@ def _seed_baseline_apply_environment(monkeypatch, tmp_path):
     produced by ``ensure_crossover_preview_ready()``, the real
     session-start seam, so this fixture proves the same machinery a browser
     session would drive."""
+    monkeypatch.setattr(v2state, "_state_path_override", tmp_path / "v2_state.json")
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda status: object())
     from jasper.active_speaker import compile_preset_from_crossover_preview
     from jasper.output_topology import save_output_topology
@@ -6561,7 +6562,10 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
     assert fields["code"] == code
     assert cam.path is None
     assert (tmp_path / "design_draft.json").read_bytes() == before
-    assert not (tmp_path / "baseline_profile.json").exists()
+    if fault == "load":
+        assert json.loads((tmp_path / "baseline_profile.json").read_text())["status"] == "apply_failed"
+    else:
+        assert not (tmp_path / "baseline_profile.json").exists()
 
 
 @pytest.mark.parametrize("measured", [True, False])

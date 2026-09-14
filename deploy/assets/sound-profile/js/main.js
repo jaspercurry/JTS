@@ -1337,20 +1337,6 @@ import {
     var record = baselineProfileAppliedRecord();
     return record !== null && record.stands === true;
   }
-  function appliedProfileCorrections(record) {
-    // What the basic door would not re-emit, named for the household.
-    if (!record) return '';
-    var parts = [];
-    var linearization = record.linearization;
-    if (linearization && typeof linearization === 'object' &&
-      Object.keys(linearization).length) {
-      parts.push('its per-driver linearization');
-    }
-    if (Array.isArray(record.blend_correction) && record.blend_correction.length) {
-      parts.push('its blend correction');
-    }
-    return parts.join(' and ');
-  }
   function baselineProfileRevalidation() {
     var profile = activeSpeaker.baselineProfile || {};
     return profile.revalidation && typeof profile.revalidation === 'object' ?
@@ -2761,24 +2747,14 @@ import {
     var actionLabel = busy ?
       'Saving and applying' :
       'Save and apply';
-    // See ADR-0312: saved-profile identity is separate from the composer's review.
-    var replaces = appliedProfileCorrections(profile);
-    var actions = applyBlocked ? '' : (applied ?
-      (replaces ?
-        '<div class="active-speaker-actions active-speaker-profile-actions">' +
-          '<button type="button" class="btn" data-act="save-apply-baseline-profile"' +
-            (busy ? ' disabled' : '') + '>' +
-            escapeHtml(busy ? actionLabel : 'Replace with basic profile') + '</button>' +
-          '<p class="setting-row__hint">The basic profile compiles the saved ' +
-            'crossover with driver trims only. Applying it replaces the ' +
-            'measured profile: ' + escapeHtml(replaces) + ' are not re-emitted.</p>' +
-        '</div>' : '') :
+    var actions = applyBlocked || applied ? '' :
       '<div class="active-speaker-actions active-speaker-profile-actions">' +
-        '<button type="button" class="btn btn--primary' +
-          '" data-act="save-apply-baseline-profile"' +
-          ((busy || !canFinish) ? ' disabled' : '') + '>' +
-          escapeHtml(actionLabel) + '</button>' +
-      '</div>');
+        '<button type="button" class="btn btn--primary" data-act="save-apply-baseline-profile"' +
+          ((busy || !canFinish) ? ' disabled' : '') + '>' + escapeHtml(actionLabel) + '</button></div>';
+    if (profile.previous_candidate_fingerprint) {
+      actions += '<button type="button" class="btn" data-act="restore-baseline-profile"' +
+        (activeSpeaker.commissionBusy ? ' disabled' : '') + '>Restore previous tune</button>';
+    }
     return '<div class="output-card output-card--baseline-profile">' +
       '<div class="output-card__head"><div><p class="output-card__title">Active speaker profile</p>' +
         '<p class="setting-row__hint">Your active speaker profile, built from the checked crossover and confirmed outputs.</p></div>' +
@@ -3372,6 +3348,7 @@ import {
     else if (act === 'stop-summed-test') { stopSummedTest(); }
     else if (act === 'record-summed-validation') { recordSummedValidation(t); }
     else if (act === 'save-apply-baseline-profile') { saveAndApplyBaselineProfile(); }
+    else if (act === 'restore-baseline-profile') { restoreBaselineProfile(); }
     else if (act === 'copy-tuning-handoff') { copyTuningHandoffPrompt(t.getAttribute('data-program')); }
     else if (act === 'commission-step') {
       startCommissionAutoRamp(t.getAttribute('data-role') || '', {
@@ -5457,6 +5434,13 @@ import {
       status('Could not save and apply active profile: ' + e.message, true);
     }
     render();
+  }
+  async function restoreBaselineProfile() {
+    var result = await postCommission('./active-speaker/baseline-profile/restore', {}, 'Restoring previous tune');
+    if (result.ok) await runActiveSpeakerAction({}, async function() {
+      patchActiveSpeaker({baselineProfile: await fetchActiveSpeakerBaselineProfile()});
+      render();
+    });
   }
   async function fetchActiveSpeakerMeasurements() {
     return await getJSON('./active-speaker/measurements');

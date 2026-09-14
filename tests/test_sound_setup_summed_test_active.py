@@ -484,7 +484,7 @@ async def test_summed_start_refused_until_teardown_finishes(monkeypatch):
     )
     monkeypatch.setattr(
         sound_active_speaker,
-        "_active_speaker_rollback_summed_commissioning_config",
+        "rollback_driver_commissioning_config",
         _fake_rollback,
     )
     monkeypatch.setattr(sound_active_speaker.subprocess, "Popen", _fake_popen)
