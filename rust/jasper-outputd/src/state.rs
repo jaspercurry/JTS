@@ -887,18 +887,10 @@ impl OutputdState {
         buf.push(',');
 
         buf.push_str(r#""content":{"#);
-        // The one upstream, and the key that says so — the ring is attached or
-        // this daemon has already parked (ADR-0100). `alsa` names the window
-        // before the ring attaches, not a second route.
-        push_kv_str(
-            &mut buf,
-            "source",
-            if self.shm_ring_path.is_some() {
-                "shm_ring"
-            } else {
-                "alsa"
-            },
-        );
+        // The resolved bridge mode IS the source — same string as
+        // `content_bridge.mode` below, not a re-derived guess from
+        // `shm_ring_path` (which stayed false for `DacContentRing`, #4807 R-261).
+        push_kv_str(&mut buf, "source", &self.content_bridge_mode);
         buf.push(',');
         // The DECLARED wire of the content hop. Nothing negotiates it here: the
         // ring's own attach validates the declaration against the writer's
@@ -1999,7 +1991,7 @@ mod tests {
             // its pcm, mirroring `dac`. The block's prefix is the contract
             // consumers read, so a new field belongs IN this needle, not around
             // it.
-            r#""content":{"source":"alsa","format":"S16_LE""#,
+            r#""content":{"source":"shm_ring","format":"S16_LE""#,
             r#""content_bridge":{"mode":"shm_ring""#,
             r#""dac":{"pcm":"outputd_dac","format":"S16_LE""#,
             r#""sample_rate":48000"#,
@@ -2321,7 +2313,7 @@ mod tests {
         let j = state.snapshot_json();
         let _ = parse_snapshot_json(&j);
         assert!(
-            j.contains(r#""content":{"source":"alsa","format":"S32_LE""#),
+            j.contains(r#""content":{"source":"shm_ring","format":"S32_LE""#),
             "declared S32_LE content lane missing from {j}"
         );
         assert!(
@@ -2547,7 +2539,11 @@ mod tests {
             r#""channel":"right""#,
             r#""serving_fifo":true"#,
             // The content source, named — and the central hop reported OFF, so
-            // the two blocks cannot both read as this box's upstream.
+            // the two blocks cannot both read as this box's upstream. `source`
+            // must match `content_bridge.mode`, not the pre-fix `shm_ring_path`
+            // guess, which stayed false on this bridge and reported "alsa"
+            // (#4807 R-261).
+            r#""content":{"source":"dac_content_ring""#,
             r#""content_bridge":{"mode":"dac_content_ring"}"#,
             r#""shm_ring":{"enabled":false}"#,
         ] {
@@ -2558,7 +2554,8 @@ mod tests {
     #[test]
     fn snapshot_json_shm_ring_disabled_is_quiet_and_enabled_is_full() {
         // Default-off proof: no shm_ring config -> just enabled:false, zero
-        // noise, and the content source stays "alsa".
+        // noise, and the content source names the resolved mode regardless of
+        // live attach.
         let state = OutputdState::new(&test_config());
         let j = state.snapshot_json();
         let _ = parse_snapshot_json(&j);
@@ -2566,7 +2563,7 @@ mod tests {
             j.contains(r#""shm_ring":{"enabled":false}"#),
             "missing quiet disabled shm_ring block in {j}"
         );
-        assert!(j.contains(r#""content":{"source":"alsa""#), "{j}");
+        assert!(j.contains(r#""content":{"source":"shm_ring""#), "{j}");
 
         // Enabled (flag armed): full daemon-truth block, content source flips.
         let cfg = Config {

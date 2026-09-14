@@ -631,14 +631,14 @@ def test_a_marker_armed_member_expects_the_source_outputd_publishes():
 
     Its bridge key is absent, which alone reads as the central ring and derives
     `content.source == "shm_ring"`. But outputd resolved the dac-content return
-    ring, left `shm_ring` unattached, and therefore publishes `alsa` — so the
-    expectation has to be derived with the marker in hand, or every healthy
-    bonded speaker fails this check.
+    ring and therefore publishes `dac_content_ring` — so the expectation has to
+    be derived with the marker in hand, or every healthy bonded speaker fails
+    this check.
     """
     from jasper.cli.doctor._shared import CheckResult
 
     assert not isinstance(
-        _transport_health(_LANE_ARMED, content_source="alsa"), CheckResult
+        _transport_health(_LANE_ARMED, content_source="dac_content_ring"), CheckResult
     )
 
 
@@ -994,7 +994,9 @@ def _case_marker_armed_member_ok(monkeypatch, tmp_path):
     _patch_status_reader(
         monkeypatch,
         _outputd_status_payload(
-            content_source="alsa", content_buffer_frames=1024, period_frames=1024
+            content_source="dac_content_ring",
+            content_buffer_frames=1024,
+            period_frames=1024,
         ),
     )
     from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
