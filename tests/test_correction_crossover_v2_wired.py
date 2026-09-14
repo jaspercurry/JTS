@@ -21,6 +21,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from jasper.active_speaker.angle_capture import LevelPolicy, ResolvedLevel
+from jasper.active_speaker.arm_walk import CAPTURE_CANCEL_PATH, LoopbackSession
+from jasper.active_speaker.plan_run import RunSignals
 from tests.test_active_speaker_measurement_door import box as box
 from tests.test_cli_measure import HOUSEHOLD_DB
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
@@ -44,9 +46,11 @@ from jasper.audio_measurement.wired_capture import (
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_wired as v2wired
 from jasper.web import correction_run_host
+from jasper.web import correction_capture, correction_setup
 from jasper.active_speaker.crossover_v2 import wired_stimulus as core_capture
 
 from tests.test_wired_capture import UMIK2_USB_ID, _Sensitivity, _make_card
+from tests.test_plan_run import AnsweredGate
 from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
 from tests.crossover_v2_banked_round import bank_executor_take
@@ -223,18 +227,14 @@ def test_the_run_builder_hands_the_provider_its_extras(monkeypatch):
         return "wired-run"
 
     monkeypatch.setattr(v2wired, "build_v2_wired_run_and_consume", _wired_builder)
-    complete = threading.Event()
-    retake = threading.Event()
+    signals = RunSignals()
 
     assert v2host._build_wired_run(
         "conductor",
-        stop_event=threading.Event(), stop_lock=threading.Lock(),
-        position_gate=None, evidence_refs={},
-        ceiling_s=42.0, complete_event=complete, retake_event=retake,
+        signals=signals, position_gate=None, evidence_refs={}, ceiling_s=42.0,
     ) == "wired-run"
     assert built["ceiling_s"] == 42.0
-    assert built["complete_event"] is complete
-    assert built["retake_event"] is retake
+    assert built["signals"] is signals
 
 
 # --------------------------------------------------------------------------- #
@@ -661,8 +661,7 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
         for stop in request.stops) if phase else None
     runner = v2wired.build_v2_wired_run_and_consume(
         conductor, door=door,
-        stop_event=control.stop, stop_lock=threading.Lock(), ceiling_s=30,
-        complete_event=control.complete, retake_event=control.retake,
+        signals=control, ceiling_s=30,
         manifest=manifest, request=request, captures=captures,
         analyze=_analysis, assessor=None,
         position_gate=gate,
@@ -714,6 +713,44 @@ def test_plan_host_controls_drain_the_session(monkeypatch, tmp_path, box, signal
     assert fakes.graph.restores == 1
     assert box.volume_db == HOUSEHOLD_DB
     assert manifest.finalized
+
+
+@pytest.mark.parametrize("caller,code,template", [
+    ("arm", "arm_host_stuck", "hard_stop"), ("human", "user_stopped", "session_restart"),
+])
+def test_capture_cancel_reason_reaches_the_executor_manifest(monkeypatch, tmp_path, box, caller, code, template):
+    def dispatch(path, *, data=None, headers=None):
+        if data is not None:
+            handler = SimpleNamespace(path=path.removeprefix("/sound/speaker"), rfile=io.BytesIO(data),
+                                      headers={"Content-Length": str(len(data))}, _send_json=Mock())
+            correction_setup._dispatch_crossover(handler)
+            assert handler._send_json.call_args.args[0]["capture"]["status"] == "stopping"
+        return 200, "{}"
+
+    client = LoopbackSession(host_header="jts3.local")
+    monkeypatch.setattr(client, "open", dispatch)
+
+    class CancellingGate(AnsweredGate):
+        def gate(self, index, attempt, entry):
+            if caller == "arm":
+                client.cancel("arm_host_stuck")
+            else:
+                dispatch(CAPTURE_CANCEL_PATH, data=b"{}")
+            super().gate(index, attempt, entry)
+
+    runner, session, _, manifest, signals, _ = _plan_host(monkeypatch, tmp_path, box, gate=CancellingGate())
+    monkeypatch.setattr(correction_capture, "_capture_slot", {
+        "status": "awaiting_capture", "kind": "crossover_v2:session", "session_id": session.session_id,
+    })
+    monkeypatch.setattr(correction_capture, "_capture_stop_request", signals.request_stop)
+    failures = []
+    monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda conductor, code: failures.append(code))
+    with pytest.raises(CaptureStopped):
+        asyncio.run(runner(session))
+    assert manifest.records.snapshots[-1]["reason"] == code
+    assert failures == [code]
+    assert refusal_copy.REASON_REGISTRY[code].template == template
+    assert all(stop["reason"] == code for stop in manifest.not_measured)
 
 
 async def test_plan_host_waits_for_the_gate_before_admission_and_capture(monkeypatch, tmp_path, box):
@@ -921,8 +958,7 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     signals = plan_run.RunSignals()
     run = v2wired.build_v2_wired_run_and_consume(
         conductor, door=door,
-        stop_event=signals.stop, stop_lock=threading.Lock(), ceiling_s=30,
-        complete_event=signals.complete, retake_event=signals.retake,
+        signals=signals, ceiling_s=30,
         manifest=manifest, request=request, captures=(PlanCapture(request.stops[0], spec),),
         analyze=analyze, assessor=assessor,
     )
@@ -932,10 +968,15 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
 
 
 @pytest.mark.parametrize("analysis_error", [None, ValueError(), AttributeError(), TypeError()])
-def test_executor_banks_capture_provenance(tmp_path, monkeypatch, analysis_error):
-    record = bank_executor_take(tmp_path, monkeypatch, analysis_error=analysis_error)
+@pytest.mark.parametrize("pose,distance", [
+    ({}, 1.0), ({"distance_m": 1.25}, 1.25),
+    ({"kind": "seat", "seat_offset_m": (0.2, 0.0, 0.1)}, None),
+])
+def test_executor_banks_capture_provenance(tmp_path, monkeypatch, analysis_error, pose, distance):
+    record = bank_executor_take(tmp_path, monkeypatch, analysis_error=analysis_error, pose=pose)
     assert record["side"] == "mono"
-    assert record["mark_distance_m"] == 1.25
+    assert record["mark_distance_m"] == distance
+    assert record["pose_kind"] == pose.get("kind", "bearing")
     assert record["provenance"]["graph"]["speaker_candidate_id"] == "speaker-candidate"
     assert record["provenance"]["stimulus"]["wav_sha256"] == "a" * 64
     wav_path, = (tmp_path / "sessions").glob(f"*/{record['wav_path']}")

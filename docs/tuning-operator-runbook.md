@@ -6,7 +6,7 @@ Register the wired microphone with `jasper-mic-calibration`; set its capture con
 
 ## The loop
 
-1. Run `jasper-round run --program <speaker|room|bass>`. No `--candidates` makes a measurement run; supplied fingerprints make a trial. Use `--dry-run` first when you need the resolved schedule and refusals without sound.
+1. Run `jasper-round run --program <speaker|room|bass>` for a measurement, or `jasper-round trial <fp>` to compare a candidate with base at the poses for its authored section. Each pose measures both before the mic moves. A document with several authored sections must be split. Use `run --dry-run` to inspect a custom plan without sound.
 2. Join at each pose. With `--mover human`, open the returned page, follow its pose prompt, and use its in-place, Retake, or Done action. With `--mover arm`, run `jasper-angle-capture serve`. With `--mover confirmed`, call `jasper-round placed --run <id>` only after the person confirms placement.
 3. Run `jasper-round wait --run <id>`. The run ends with `packet.json`, `index.md`, and a frequency picture when curves are available. Read `index.md` first; the packet holds applied layers, set limits, series statistics, and a fit for each selected Speaker take and role. Add `--verbose` to see the view results. Use `status` to inspect progress without granting placement.
 4. Select evidence by set. `speaker-fit`, `room`, and `repeat` use `jasper-round-views <verb> <round-dir> --set <set-id>`. Use `jasper-round-views sweep <round-dir> --scope round --set <set-id>`. Use `jasper-round-views bass-fit-table <round-dir…> --candidate <candidate.json> --target <target.json> --tolerance-db <db>`. `inventory` lists exact available commands.
@@ -19,9 +19,11 @@ Register the wired microphone with `jasper-mic-calibration`; set its capture con
 
 ## Room
 
-`room/cloud` uses the default 11-pose `seat/cloud`, summed and ungated through the accepted Speaker layer with Room and bass off. The commissioning stop still applies. The room layer stops at the applied speaker's trusted floor, clamped to room bounds. Use `room` for the document and trial at the same poses.
+Room defaults to `room/seat`: the three `seat_express` poses with the human mover, summed and ungated through the accepted Speaker layer with Room and bass off. Follow the page prompts; use Retake or Done there. `room/arm` keeps the three `room_quick` bearings for smoke tests. A room candidate trial uses the seat set; `trial <fp> --mover arm` selects the smoke set. The commissioning stop still applies. The room layer stops at the applied speaker's trusted floor, clamped to room bounds. Use `room` for the document and trial at the same poses.
 
 ## Bass
+
+`jasper-round run --program bass --layout bass_axis --dry-run` lists the session level and offsets −5, −10, and −15 dB without sound. Each level uses the banked ambient bands to check SNR over the bass target band. An explicit `--level-db L --dry-run` checks only that level.
 
 `bass/axis` measures one on-axis bearing with the arm. Run `jasper-round run --program bass --layout bass_axis --candidates base,<fp> --level-db L --wait` once per level, then `jasper-round-views bass-fit-table <round…> --candidate <fp> --target <target.json> --tolerance-db <db>`. The base is the applied tune, including its bass block. The table joins measured pairs by level and includes the base’s boost. Keep the applied tune fixed across these rounds.
 
@@ -37,6 +39,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `anchor_ambiguous` | JTS couldn't line that recording up with the test tones it played. Try that measurement again. | Try that measurement again. | `fix_and_retry` |
 | `anchor_too_quiet` | JTS heard the speaker, but the test tones were too quiet to line up. Check the volume and the microphone, then try again. | Check the volume and the microphone, then try again. | `fix_and_retry` |
 | `apply_failed` | JTS could not apply the measured crossover automatically. Try again. | Try again. | `fix_and_retry` |
+| `arm_host_stuck` | The arm host stopped the measurement because the executor made no progress. Check the run status and arm trail before starting another measurement. |  | `hard_stop` |
 | `baseline_graph_safety_proof_failed` | Review the protected speaker graph. | Review the protected speaker graph. | `hard_stop` |
 | `bass_fit_candidate_unreadable` | The measured bass candidate descriptor is unavailable. | Supply the candidate artifact named by the run | `hard_stop` |
 | `bass_fit_capture_context_changed` | The paired bass captures used different conditions. | Measure both graphs at the same pose and settings | `hard_stop` |
@@ -111,6 +114,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `seat_anchor_unusable` | Run jasper-seat-level with the current microphone, then measure. | Run jasper-seat-level with the current microphone, then measure | `hard_stop` |
 | `seat_level_watchdog_expired` | Leveling timed out. Check the audio connection and try again. |  | `fix_and_retry` |
 | `session_ceiling_expired` | The whole measurement ran out of time while it was still waiting for the microphone to reach a position. Start over from this page once the microphone can be moved through the walk more quickly. |  | `session_restart` |
+| `set_required` | Name --set with one of the listed set ids. |  | `hard_stop` |
 | `snr_floor` | The room is too loud right now, or the microphone is too far away. Quiet the room or move the microphone closer, then try again. | Quiet the room or move the microphone closer, then try again. | `fix_and_retry` |
 | `speaker_shape_unsupported` | JTS can measure a single full-range speaker or a two-way active crossover, and this speaker is neither. There is nothing to retry — check the drivers declared in speaker setup. | Open speaker setup | `hard_stop` |
 | `spl_ceiling_exceeded` | The measurement stopped because the microphone heard the speaker louder than the commissioning stop. Lower the level and measure again. |  | `hard_stop` |
@@ -153,7 +157,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `jasper-angle-capture serve` | Serve the microphone arm against the daemon's position gate. | mutating (`serve` moves the arm) | `jasper/cli/angle_capture.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
 | `jasper-crossover-prescriber contract\|judge\|compose\|status` | Judge and compose prescription documents; serve contracts and read status. | advisory (judge, contract and status read; compose banks a candidate) | `jasper/cli/crossover_prescriber.py` |
-| `jasper-round run\|placed\|status\|wait\|apply` | Start an inline plan, place the microphone, read progress and bank a run. | mutating-with-gates (`run`/`placed`/`wait`/`apply` write; `status` reads) | `jasper/cli/round.py` |
+| `jasper-round run\|trial\|placed\|status\|wait\|apply` | Start an inline plan, place the microphone, read progress and bank a run. | mutating-with-gates (`run`/`trial`/`placed`/`wait`/`apply` write; `status` reads) | `jasper/cli/round.py` |
 | `jasper-round-views entry\|frozen\|repeat\|repeat-floor\|candidates\|agreement\|co-metrics\|directivity\|per-seat\|cloud-binding\|forward-model\|sweep\|frequency\|distortion\|dsp-replay\|dsp-levels\|classify-features\|findings\|close-reference\|delay-landscape\|delay-confirm\|room\|room-grade\|bass\|bass-compare\|bass-fit-table\|inventory\|speaker-fit` | Read measured round evidence, including repeat --set spread across takes. Answers use stdout; detailed reports use files. | advisory (analysis views save artifacts) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |
 | `jasper-audition start\|stop\|status` | Play this speaker at a reduced DSP layer, then put it back | mutating (runtime only; durable graph untouched -- ADR-0193) | `jasper/cli/audition.py` |

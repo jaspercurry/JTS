@@ -961,13 +961,15 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
     bundle, calibration_root, program, bank = summed_capture_bundle
     asyncio.run(bank('baseline'))
     asyncio.run(bank('repeat'))
-    write_manifest(bundle, program='bass')
+    manifest = write_manifest(bundle, program='bass')
     before = {p: p.read_bytes() for p in bundle.rglob('*') if p.is_file()}
     out = tmp_path / 'bass.json'
     assert round_views_main([
         'bass', str(bundle), '--calibration-root', str(calibration_root), '--out', str(out),
     ]) == 0
     view = json.loads(out.read_text())
+    assert view['set_id'] == manifest['sets'][0]['set_id']
+    assert view['candidate_id'] == 'baseline-fp'
     first, repeat = view['takes']
     assert first['distortion'] == repeat['distortion'] == {'available': True}
     assert first['program_id'] == first['record']['program_id'] == program.program_id
@@ -1004,7 +1006,10 @@ def test_bass_view_selects_accepted_takes_and_keeps_levels_when_harmonics_fail(
     answer = run_bookkeeping("bass", bundle, set_id="bass")
     assert answer["status"] == "written"
     assert answer["takes"] == len(accepted)
-    takes = json.loads(Path(answer["out"]).read_text())["takes"]
+    view = json.loads(Path(answer["out"]).read_text())
+    assert view["set_id"] == "bass"
+    assert view["candidate_id"] == "baseline-fp"
+    takes = view["takes"]
     assert tuple(take["record"]["take_id"] for take in takes) == accepted
     assert takes[0]["distortion"] == {"available": True}
     if selected_broken:
@@ -1144,7 +1149,7 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
     for volume, gain in zip(volumes, (10, 6, 3)):
         for index, take in enumerate(copy.deepcopy(bass_fit_pairs[0])):
             take['record'].update(level_db=volume, loudness_volume_db=volume,
-                                  take_id=f'take-{len(takes)}', run_id=f'run-{volume}')
+                                  take_id=f'take-{len(takes)}', run_id=f'run-{volume}', phase='lateral')
             take['record_path'] = f'capture-{len(takes)}.json'
             take['fundamental_db'] = [volume - 6 + index * gain] * len(take['freqs_hz'])
             take['fundamental_qualified'] = [True] * len(take['freqs_hz'])
@@ -1188,18 +1193,94 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
     return SimpleNamespace(takes=takes, write=write, argv=argv, out=out, descriptor=descriptor, roots=roots)
 
 
-def test_bass_table_accepts_executor_capture_basis(bass_run, capsys, tmp_path, monkeypatch):
+@pytest.mark.parametrize("round_count", [1, 3])
+def test_bass_sequence_join_uses_declared_target_in_last_packet(bass_run, round_count):
+    from jasper.cli.round_views._bass_inputs import join_bass_rounds
+
+    manifests = bass_run.write()
+    destination = join_bass_rounds(bass_run.roots[:round_count], candidates=[Path("candidate.json")])
+    assert destination == manifests[round_count - 1].parent / "bass_table.json"
+    table = json.loads(destination.read_text())
+    assert table["run_ids"] == ["run--10", "run--30", "run--20"][:round_count]
+    fitted, = table["tables"]
+    assert len(fitted["levels"]) == round_count
+    assert fitted["target"] == {"freqs_hz": [20, 60], "magnitude_db": [0, 0]}
+    assert fitted["tolerance_db"] == 3
+
+
+@pytest.mark.parametrize('round_count', [1, 2])
+@pytest.mark.parametrize('missing_set', [None, '4dc59eaec1e3', '8b2a90f77f31'])
+@pytest.mark.parametrize('ignored_phase,ignored_purpose', [
+    (PHASE_ENTRY_BASELINE, 'bass'), ('lateral', 'room'), ('measure', 'bass'),
+])
+def test_bass_table_joins_only_sets_with_lateral_bass_takes(
+    bass_run, capsys, round_count, missing_set, ignored_phase, ignored_purpose,
+):
+    manifests = bass_run.write()
+    for index, path in enumerate(manifests[:round_count]):
+        manifest = json.loads(path.read_text())
+        root = bass_run.roots[index]
+        for row in manifest['sets']:
+            old = root / f"bass_view-{row['set_id']}.json"
+            row['set_id'] = '4dc59eaec1e3' if row['capture_basis']['candidate_id'] == 'baseline-fp' else '8b2a90f77f31'
+            old.rename(root / f"bass_view-{row['set_id']}.json")
+            for take in row['takes']:
+                take['purpose'] = 'bass'
+        verify = copy.deepcopy(manifest['sets'][-1])
+        verify['set_id'] = 'd0b471e20e39'
+        verify['capture_basis'].update(program_id='verify', stimulus_dbfs=-30)
+        verify['takes'][0].update(take_id='entry', phase=ignored_phase, purpose=ignored_purpose)
+        manifest['sets'].insert(0, verify)
+        path.write_text(json.dumps(manifest))
+    if missing_set:
+        missing = bass_run.roots[0] / f'bass_view-{missing_set}.json'
+        missing.unlink()
+    argv = ['bass-fit-table', *map(str, bass_run.roots[:round_count]),
+            *bass_run.argv[bass_run.argv.index('--candidate'):]]
+    code = round_views_main(argv)
+    answer = json.loads(capsys.readouterr().out)
+    if missing_set:
+        assert code == EXIT_UNREADABLE
+        assert answer['status'] == 'unreadable'
+        assert answer['reason'] == 'round_views_unreadable_round'
+        assert answer['detail']['path'] == str(missing)
+        assert not bass_run.out.exists()
+        return
+    assert code == 0
+    run = json.loads(bass_run.out.read_text())
+    assert run['run_ids'] == ['run--10', 'run--30'][:round_count]
+    table, = run['tables']
+    assert table['candidate_id'] == 'boost'
+    assert len(table['levels']) == round_count
+    assert {level['level_key']['level_db'] for level in table['levels']} == set((-10, -30)[:round_count])
+    assert [level['fit']['take_pair_count'] for level in table['levels']] == [1] * round_count
+    assert {(source['before'], source['after']) for level in table['levels'] for source in level['sources']} == {
+        (f'capture-{index}.json', f'capture-{index + 1}.json') for index in range(0, 2 * round_count, 2)
+    }
+
+
+@pytest.mark.parametrize("pose,distance,basis", [
+    ({}, 1.0, "compatible"),
+    ({"kind": "seat", "seat_offset_m": (0.2, 0.0, 0.1)}, None, "compatible"),
+    ({}, None, "unknown"),
+])
+def test_bass_table_accepts_executor_capture_basis(bass_run, capsys, tmp_path, monkeypatch, pose, distance, basis):
     for index, take in enumerate(bass_run.takes):
         original = take["record"]
         take["record"] = bank_executor_take(tmp_path / f"executor-{index}", monkeypatch,
-            raw_record={key: value for key, value in original.items() if key not in {"stimulus_dbfs", "program_id"}})
+            pose=pose, raw_record={key: value for key, value in original.items()
+                if key not in {"stimulus_dbfs", "program_id", "mark_distance_m", "pose_kind", "seat_offset_m"}})
+        if basis == "unknown":
+            take["record"]["mark_distance_m"] = None
+        assert take["record"]["mark_distance_m"] == distance
         take["record"].update(run_id=original["run_id"], loudness_volume_db=original["loudness_volume_db"])
     bass_run.write()
     assert round_views_main(bass_run.argv) == 0
     capsys.readouterr()
     table, = json.loads(bass_run.out.read_text())["tables"]
-    assert {context["basis_status"] for context in table["capture_context"]} == {"compatible"}
-    assert all(context["unknown_fields"] == [] for context in table["capture_context"])
+    assert {context["basis_status"] for context in table["capture_context"]} == {basis}
+    assert all(context["unknown_fields"] == (["mark_distance_m"] if basis == "unknown" else [])
+               for context in table["capture_context"])
 
 
 @pytest.mark.parametrize('fault,reason', [

@@ -18,7 +18,6 @@ from jasper.active_speaker.crossover_v2.position_gate import PositionGate
 import dataclasses
 import logging
 import secrets
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 from jasper.active_speaker import preflight, preflight_live
@@ -35,7 +34,7 @@ from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.web.correction_run_host import bind_run_door, compose_plan_program
 from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
 from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
-from jasper.active_speaker.plan_run import PlanCapture, prepare_plan_captures
+from jasper.active_speaker.plan_run import RunSignals, PlanCapture, prepare_plan_captures
 from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_trials import tuning_trial_matches_candidate
@@ -168,7 +167,7 @@ class V2PreparedSession:
     label: str
     open: Callable[[], Any]
     run_and_consume: Callable[[Any], Any]
-    request_stop: Callable[[], None]
+    request_stop: Callable[[str], None]
     position_gate: PositionGate | None = None
     request_complete: Callable[[], None] | None = None
     request_retake: Callable[[], None] | None = None
@@ -568,36 +567,10 @@ def _wired_stimulus_capture(
     )
 
 
-def _build_wired_run(
-    conductor: Any,
-    *,
-    stop_event: threading.Event,
-    stop_lock: Any,
-    position_gate: "PositionGate | None",
-    evidence_refs: dict[str, Any],
-    ceiling_s: float,
-    complete_event: threading.Event,
-    retake_event: threading.Event,
-    **host: Any,
-) -> Callable[[Any], Any]:
-    """The provider runner, driving the conductor hooks.
+def _build_wired_run(conductor: Any, **host: Any) -> Callable[[Any], Any]:
+    from jasper.web import correction_crossover_v2_wired as wired  # lazy: wired host seam
 
-    It takes the device, the session ceiling (its confirm-wait bound), the
-    local completion and retake signals, and the engine measure leg.
-    """
-    from jasper.web import correction_crossover_v2_wired as wired
-
-    return wired.build_v2_wired_run_and_consume(
-        conductor,
-        stop_event=stop_event,
-        stop_lock=stop_lock,
-        ceiling_s=ceiling_s,
-        complete_event=complete_event,
-        retake_event=retake_event,
-        position_gate=position_gate,
-        evidence_refs=evidence_refs,
-        **host,
-    )
+    return wired.build_v2_wired_run_and_consume(conductor, **host)
 
 
 # The request field that selects which post-apply instrument a verify-only
@@ -795,10 +768,7 @@ def prepare_v2_session(
         )
 
     acknowledgement_binding = secrets.token_urlsafe(24)
-    stop_event = threading.Event()
-    stop_lock = threading.Lock()
-    complete_event = threading.Event()
-    retake_event = threading.Event()
+    signals = RunSignals()
     position_gate = PositionGate(mover=request.mover) if not verify_only else PositionGate() if plan_shape and plan_shape.positions_gated else None
     capture_session_id = "wired-" + secrets.token_hex(8)
     spec = None if verify_only else build_inline_session_spec(
@@ -978,13 +948,10 @@ def prepare_v2_session(
         source_run = _build_wired_run(
             conductor,
             door=tuning,
-            stop_event=stop_event,
-            stop_lock=stop_lock,
+            signals=signals,
             position_gate=position_gate,
             evidence_refs=refs,
             ceiling_s=ceiling_s,
-            complete_event=complete_event,
-            retake_event=retake_event,
             manifest=manifest, analyze=analyze, assessor=assessor,
             request=run_request, captures=run_captures,
         )
@@ -1017,20 +984,16 @@ def prepare_v2_session(
                 if closed is None and completed:
                     raise OSError("the measurement bundle could not be closed")
 
-    def _request_stop() -> None:
-        with stop_lock:
-            stop_event.set()
-
     return V2PreparedSession(
         label=V2_CAPTURE_KIND_VERIFY if verify_only else V2_CAPTURE_KIND_SESSION,
         join_spec=spec,
         session_id=capture_session_id,
         open=_open,
         run_and_consume=_run,
-        request_stop=_request_stop,
+        request_stop=signals.request_stop,
         position_gate=position_gate,
-        request_complete=complete_event.set,
+        request_complete=signals.complete.set,
         request_retake=(
-            retake_event.set if position_gate is not None else None
+            signals.retake.set if position_gate is not None else None
         ),
     )

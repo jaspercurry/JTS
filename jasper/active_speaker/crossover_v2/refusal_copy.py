@@ -196,6 +196,7 @@ REASON_APPLY_FAILED = "apply_failed"
 # transport death — see the catch-all's exception classification in
 # jasper.web.correction_crossover_v2.
 REASON_USER_STOPPED = "user_stopped"
+REASON_ARM_HOST_STUCK = "arm_host_stuck"
 # The position gate's three refusals, reachable by EITHER gated shape
 # (``TIER_REMOTE`` and a hand-walked round on the WIRED capture source), so the
 # copy names neither mover. All three TEMPLATE_SESSION_RESTART: no retry can
@@ -502,6 +503,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     "round_manifest_missing": ReasonSpec("round_manifest_missing", TEMPLATE_HARD_STOP, 0, "", "Bank the run manifest with this round."),
     "round_manifest_unfinalized": ReasonSpec("round_manifest_unfinalized", TEMPLATE_HARD_STOP, 0, "", "Wait for the run to finish."),
     "round_set_unknown": ReasonSpec("round_set_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a set listed in the run manifest."),
+    "set_required": ReasonSpec("set_required", TEMPLATE_HARD_STOP, 0, "", "Name --set with one of the listed set ids."),
     "round_take_unknown": ReasonSpec("round_take_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a retained take from this set."),
     "round_take_selection_required": ReasonSpec("round_take_selection_required", TEMPLATE_HARD_STOP, 0, "", "Select a retained take from this set with the take selector."),
     "wired_mic_missing": ReasonSpec(
@@ -1056,6 +1058,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_USER_STOPPED, TEMPLATE_SESSION_RESTART, 0, "",
         "You stopped the measurement. Start over from this page when you're "
         "ready.",
+    ),
+    REASON_ARM_HOST_STUCK: ReasonSpec(
+        REASON_ARM_HOST_STUCK, TEMPLATE_HARD_STOP, 0, "",
+        "The arm host stopped the measurement because the executor made no progress. "
+        "Check the run status and arm trail before starting another measurement.",
     ),
     REASON_POSITION_HOLD_EXPIRED: ReasonSpec(
         REASON_POSITION_HOLD_EXPIRED, TEMPLATE_SESSION_RESTART, 0, "",

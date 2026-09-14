@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 from jasper.audio_measurement.program_analysis.check import _ambient_rows_in_band, _snr_floor_ok
 from jasper.audio_measurement.quality_model import DRIVER
+from jasper.bass_extension.measurement import target_band_hz
 from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.json_fields import finite_float
 
@@ -24,6 +25,7 @@ from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs,
     compile_candidate_config, prove_candidate_config,
 )
+from .measurement_programs import PURPOSE_BASS
 from .seat_level_reference import (
     AnchorFacts, LevelUnresolved, SeatLevelTargetError, check_target_capture_dbfs, resolve_anchor_level, validate_commissioning_spl,
 )
@@ -167,11 +169,12 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
                                           evidence={"level_db": level.volume_db, "predicted_db_spl": predicted,
                                                     "ceiling_db_spl": stop}))
                 ambient = facts.anchor.record.get("ambient_report")
-                band = facts.summed_pilot_band_hz
+                band = (target_band_hz() if any(pose.purpose == PURPOSE_BASS for pose in plan.stops)
+                        else facts.summed_pilot_band_hz)
                 if band is not None and isinstance(ambient, Mapping) and any(pose.plays_summed for pose in plan.stops):
                     rows = _ambient_rows_in_band(band, ambient.get("bands") or ())
                     pilot_dbfs = check_target_capture_dbfs(facts.anchor.sensitivity, predicted)
-                    # Remove when summed programs no longer require the leading pilot pair.
+                    # Remove when measured programs no longer require pilot SNR admission.
                     if rows and not _snr_floor_ok(ambient, pilot_dbfs, [band]):
                         lo, hi, noise_dbfs = max(rows, key=lambda row: row[2])
                         code = REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT

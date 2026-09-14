@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping
 
 from .capture_status import SESSION_ENDED_STATUSES
 from .movers import MOVER_CONFIRMED
+from .poll_backoff import next_poll_s
 
 #: Page that mints the CSRF cookie + meta token pair, and this client's default. A
 #: caller POSTing to a DIFFERENT wizard daemon passes that daemon's own page as
@@ -236,11 +237,13 @@ def wait_for_round(
     *,
     run_id: str,
     timeout_s: float,
-    poll_s: float,
+    poll_s: float = 5.0,
     now: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     deadline = now() + timeout_s
+    previous: dict[str, Any] | None = None
+    interval_s = poll_s
     while True:
         http, result = client.run_status(run_id)
         if http != 200:
@@ -250,4 +253,6 @@ def wait_for_round(
             return {**result, "status": "terminal"}
         if now() >= deadline:
             return {**result, "status": "timed_out", "reason": REASON_WAIT_TIMEOUT}
-        sleep(min(poll_s, max(0, deadline - now())))
+        interval_s = next_poll_s(interval_s, changed=result != previous, initial_s=poll_s)
+        previous = result
+        sleep(min(interval_s, max(0, deadline - now())))

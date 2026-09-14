@@ -234,6 +234,21 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
     }
 
 
+def room_analysis_bounds(median: room.RoomMedian, persistence: Mapping[str, Any]) -> dict[str, Any]:
+    features = persistence.get("features")
+    return {
+        "cut_floor_db": rl.cut_floor_db(median.spread_db, median.freqs_hz, median.ceiling_hz).tolist(),
+        "boost_cap_db": rl.boost_cap_db(median.freqs_hz, median.ceiling_hz).tolist(),
+        "admit_boost": ([{
+            "feature": dict(feature),
+            **rl.admit_boost(freq, freqs_hz=median.freqs_hz, median_db=median.median_db,
+                             deviations_db=median.deviations_db, n_positions=median.n_positions).to_dict(),
+        } for feature in features
+            if isinstance(feature, Mapping) and (freq := finite_float(feature.get("centre_hz"))) is not None]
+            if isinstance(features, list) else None),
+    }
+
+
 def _room(raw: Mapping[str, Any], persistence: Mapping[str, Any],
           ceiling: Mapping[str, Any], preset: ActiveSpeakerPreset | None) -> dict[str, Any]:
     format_ = room.room_prescription_response_format()
@@ -268,18 +283,10 @@ def _room(raw: Mapping[str, Any], persistence: Mapping[str, Any],
         band_hz=list(median.band_hz), ceiling_hz=median.ceiling_hz,
         ceiling_source=median.ceiling_source, ceiling_provenance=dict(ceiling),
         freqs_hz=median.freqs_hz.tolist(),
-        cut_floor_db=rl.cut_floor_db(median.spread_db, median.freqs_hz, median.ceiling_hz).tolist(),
-        boost_cap_db=rl.boost_cap_db(median.freqs_hz, median.ceiling_hz).tolist(),
         taper_knee_hz=rl.taper_knee_hz(median.ceiling_hz),
         spatial_support=rl.spatial_support(median.n_positions),
         level_reference_db=median.level_reference_db,
-        admit_boost=([{
-            "feature": dict(feature),
-            **rl.admit_boost(freq, freqs_hz=median.freqs_hz, median_db=median.median_db,
-                             deviations_db=median.deviations_db, n_positions=median.n_positions).to_dict(),
-        } for feature in features
-            if isinstance(feature, Mapping) and (freq := finite_float(feature.get("centre_hz"))) is not None]
-            if isinstance(features, list) else None),
+        **room_analysis_bounds(median, persistence),
     )
     return result
 

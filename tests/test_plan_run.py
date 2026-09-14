@@ -705,6 +705,44 @@ async def test_run_requires_the_chosen_level_in_an_open_session(level):
         assert result.status == "complete"
 
 
+@pytest.mark.parametrize("partial", [False, True])
+async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, partial):
+    from jasper.active_speaker.bass_levels import BassLevelRun, bass_level_ladder, run_bass_levels
+    from tests.test_correction_crossover_v2_wired import _run_door
+    from tests.test_preflight import ready_facts
+
+    request = _walk([0, 20], candidates=("base",))
+    request = replace(request, stops=tuple(replace(stop, purpose="bass") for stop in request.stops))
+    facts = ready_facts(request)
+    facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record,
+        "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": -60}]}}))
+    ladder = bass_level_ladder(request, facts)
+    fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
+    entry_volume, entry_loudness = box.volume_db, await box.get_loudness_volume_db()
+
+    def prepare(plan):
+        assert fakes.graph.restores == 0
+        manifest = RunManifest(f"run-{len(manifests)}", _Store(fakes.records))
+        manifests.append(manifest)
+        door = _run_door(tmp_path, box, fakes, manifest)
+        verdict = (TakeVerdict(False, fault=REASON_CLIPPED, next="fix_and_retake")
+                   if partial and len(manifests) == 2 else TakeVerdict(True))
+        return BassLevelRun(manifest, door, _analysis, lambda *_args, **_kwargs: verdict)
+
+    hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
+    results = await run_bass_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS)
+    expected = [(0, -18), (0, -23)] + ([] if partial else [(20, -18), (20, -23)])
+    assert [(call["position_deg"], call["level_db"]) for call in fakes.play.calls] == expected
+    assert len(gate.grants) == (1 if partial else 2)
+    assert sum(result.mic_moves for result in results) == len(gate.grants)
+    assert all(result.finalized for result in results)
+    assert results[-1].status == ("partial" if partial else "complete")
+    assert len({result.run_id for result in results}) == len(expected)
+    assert fakes.graph.restores == 1
+    assert box.volume_db == entry_volume
+    assert await box.get_loudness_volume_db() == entry_loudness
+
+
 async def test_run_door_preemption_defers_volume_restore_and_restores_graph(tmp_path, box):
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 

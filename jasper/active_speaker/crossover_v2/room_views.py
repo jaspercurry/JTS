@@ -26,11 +26,10 @@ from jasper.audio_measurement.room_boundary import (
 from jasper.audio_measurement.measurement_geometry import (
     WALL_FIELD_BY_KEY, boundary_prior, load_declared_geometry,
 )
-from jasper.audio_measurement.room_limits import (
-    admit_boost, boost_cap_db, cloud_trusted_floor_hz, cut_floor_db, spatial_support,
-)
+from jasper.audio_measurement.room_limits import cloud_trusted_floor_hz, spatial_support
 
 from .evidence_packet import applied_profile_source
+from .prescription_contract import room_analysis_bounds
 from .room_prescription import ROOM_MEDIAN_FIELD, read_room_median
 from .room_selection import SeatTake
 from .round_views import RoundViewsError, local_features
@@ -323,11 +322,7 @@ def room_document(
     median = {**room_median(takes, ceiling), "set_id": set_id, "evidence": dict(evidence)}
     value = read_room_median(median)
     persistence = room_persistence(takes, ceiling)
-    for feature in persistence["features"]:
-        feature["admission"] = admit_boost(
-            feature["centre_hz"], freqs_hz=value.freqs_hz, median_db=value.median_db,
-            deviations_db=value.deviations_db, n_positions=value.n_positions,
-        ).to_dict()
+    limits = room_analysis_bounds(value, persistence)
     geometry = load_declared_geometry(geometry_path) if geometry_path is not None else None
     walls = {key: distance for key, field in WALL_FIELD_BY_KEY.items()
              if geometry is not None and (distance := getattr(geometry, field)) is not None}
@@ -337,10 +332,8 @@ def room_document(
         "median": median,
         ROOM_MEDIAN_FIELD: room_median_sha256(median),
         "persistence": persistence,
-        "limits": {
-            "cut_floor_db": cut_floor_db(value.spread_db, value.freqs_hz, value.ceiling_hz).tolist(),
-            "boost_cap_db": boost_cap_db(value.freqs_hz, value.ceiling_hz).tolist(),
-        },
+        "admit_boost": limits.pop("admit_boost"),
+        "limits": limits,
         "incumbent": incumbent,
         "incumbent_reason": incumbent_reason,
         "boundary": {"advisory": True, **boundary_prior(value.freqs_hz, walls=walls)} if walls else None,

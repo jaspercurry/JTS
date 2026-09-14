@@ -28,8 +28,7 @@ from ._refusal import (
 
 PROG = "jasper-round"
 DEFAULT_TIMEOUT_S = 900.0
-DEFAULT_POLL_S = 5.0
-AUTHORITY_TIER = "mutating-with-gates (`run`/`placed`/`wait`/`apply` write; `status` reads)"
+AUTHORITY_TIER = "mutating-with-gates (`run`/`trial`/`placed`/`wait`/`apply` write; `status` reads)"
 LOST_ANSWER_ADVICE = "the apply may have taken effect; read the live candidate before trying again"
 
 
@@ -89,11 +88,31 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
     if args.wait:
         args.run = run_id
         return _cmd_wait(client, args)
-    return _answer("run", "Run ready; place the microphone to start.",
+    return _answer(args.command, "Run ready; place the microphone to start.",
                    run_id=run_id, link=speaker_url(CROSSOVER_PAGE_PATH),
                    status_url=speaker_url(STATUS_PATH),
                    shape="trial" if report.plan.candidates else "measure",
                    first_prompt=capture.get("first_prompt"), schedule=report.to_dict())
+
+
+def _cmd_trial(client: WizardClient, args: argparse.Namespace) -> int:
+    from jasper.active_speaker.candidate_bank import (  # lazy: trial-only candidate imports
+        CandidateBankRefusal, find_banked_candidate,
+    )
+    from jasper.active_speaker.measurement_programs import trial_program  # lazy: trial-only
+
+    try:
+        banked = find_banked_candidate(args.fingerprint)
+    except CandidateBankRefusal as exc:
+        return failed(EXIT_REFUSED, exc.code, exc.detail, code=exc.code)
+    sections = sorted(name for name, source in banked.candidate.analysis.get("resolution", {}).items()
+                      if source == "document")
+    if len(sections) != 1:
+        return failed(EXIT_REFUSED, "trial_sections_ambiguous", {"sections": sections}, code="trial_sections_ambiguous")
+    selected = trial_program(sections[0], args.mover)
+    args.program, args.poses, args.mover = selected.program_id, selected.layout, selected.mover
+    args.candidates = f"base,{banked.fingerprint}"
+    return _cmd_run(client, args)
 
 
 def _cmd_placed(client: WizardClient, args: argparse.Namespace) -> int:
@@ -122,7 +141,7 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
     from .round_views import run_bookkeeping  # lazy: wait-only view dispatch
     from jasper.active_speaker.round_packet import wait_answer  # lazy: packet summary
 
-    result = wait_for_round(client, run_id=args.run, timeout_s=args.timeout, poll_s=DEFAULT_POLL_S)
+    result = wait_for_round(client, run_id=args.run, timeout_s=args.timeout)
     if result["status"] != "terminal":
         return failed(EXIT_REFUSED if result["status"] == "failed" else EXIT_UNREADABLE,
                       str(result["reason"]), result)
@@ -187,8 +206,10 @@ def build_parser() -> argparse.ArgumentParser:
     timeout_args = argparse.ArgumentParser(add_help=False)
     timeout_args.add_argument("--verbose", action="store_true", help="include the banked view results")
     timeout_args.add_argument("--timeout", "--timeout-s", type=_timeout, default=DEFAULT_TIMEOUT_S, help="wait limit in seconds")
-    run = sub.add_parser("run", parents=[timeout_args], help="resolve and post a plan; optionally wait and bank its packet")
-    _connection_args(run)
+    run_args = argparse.ArgumentParser(add_help=False, parents=[timeout_args])
+    _connection_args(run_args)
+    run_args.add_argument("--wait", action="store_true", help="wait for completion and bank the round with its packet")
+    run = sub.add_parser("run", parents=[run_args], help="resolve and post a plan; optionally wait and bank its packet")
     run.add_argument("--program", choices=("speaker", "room", "bass"))
     poses = run.add_mutually_exclusive_group()
     poses.add_argument("--poses", help="named pose set or comma-separated bearings in degrees")
@@ -199,8 +220,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--mover", choices=MOVERS)
     run.add_argument("--plan", help="v5 plan document; used without plan-building flags")
     run.add_argument("--dry-run", action="store_true", help="read local facts and print preflight; run on the speaker with a loopback --base-url")
-    run.add_argument("--wait", action="store_true", help="wait for completion and bank the round with its packet")
     run.set_defaults(func=_cmd_run)
+    trial = sub.add_parser("trial", parents=[run_args], help="test a banked candidate using its authored section's experiment")
+    trial.add_argument("fingerprint", help="banked candidate fingerprint")
+    trial.add_argument("--mover", choices=("arm", "human"))
+    trial.set_defaults(func=_cmd_trial, plan=None, repeats=None, level_db=None, dry_run=False)
     for verb, function in (("placed", _cmd_placed), ("status", _cmd_status), ("wait", _cmd_wait)):
         command = sub.add_parser(verb, parents=[timeout_args] if verb == "wait" else [], help=function.__name__.removeprefix("_cmd_"))
         _connection_args(command)

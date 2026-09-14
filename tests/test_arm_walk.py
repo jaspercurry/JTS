@@ -36,12 +36,26 @@ import pytest
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import arm_walk as aw
 from jasper.active_speaker import wizard_client as wc
+from jasper.active_speaker.poll_backoff import next_poll_s
 from jasper.cli import _refusal as refusal
 from jasper.cli import angle_capture as cli
 from tests._log_events import event_fields, event_records
 
 ROOT = Path(__file__).resolve().parents[1]
 TURNTABLE_SCRIPT = ROOT / "experiments" / "usb-turntable" / "jts_turntable.py"
+
+
+@pytest.mark.parametrize("initial_s,expected", [
+    (3.0, [3, 6, 12, 15, 15, 3, 6]),
+    (5.0, [5, 10, 15, 15, 15, 5, 10]),
+    (20.0, [20, 20, 20, 20, 20, 20, 20]),
+])
+def test_poll_backoff_sequence(initial_s, expected):
+    interval_s, actual = initial_s, []
+    for changed in (True, False, False, False, False, True, False):
+        interval_s = next_poll_s(interval_s, changed=changed, initial_s=initial_s)
+        actual.append(interval_s)
+    assert actual == expected
 
 
 def _load_turntable():
@@ -133,7 +147,7 @@ class FakeSession:
             self._queue.pop(0)
         return self._release
 
-    def cancel(self) -> tuple[int, str]:
+    def cancel(self, reason="user_stopped") -> tuple[int, str]:
         self.cancels += 1
         return self._cancel
 
@@ -196,7 +210,7 @@ class LiveThen:
     def release(self, index: int, attempt: int) -> tuple[int, str]:  # pragma: no cover
         raise AssertionError("nothing is ever pending in this double")
 
-    def cancel(self) -> tuple[int, str]:
+    def cancel(self, reason="user_stopped") -> tuple[int, str]:
         # A terminal session must never reach this (#2912 gap 4 follow-up):
         # counted, not asserted-never-called, so a test can pin the zero.
         self.cancels += 1
@@ -207,13 +221,42 @@ def _walk(mover, session, *, clock=None, trail=None, **cfg):
     clock = clock or FakeWalkClock()
     config = aw.WalkConfig(**{
         "settle_s": 30.0, "poll_s": 3.0, "idle_ceiling_s": 60.0,
-        "stuck_alarm_s": 300.0, "unreadable_ceiling_s": 60.0, **cfg,
+        "unreadable_ceiling_s": 60.0, **cfg,
     })
     return aw.ArmWalk(
         mover, session, config,
         trail=trail,
         clock=clock.now, sleep=clock.sleep,
     )
+
+
+@pytest.mark.parametrize("caller,expected", [
+    ("arm", [3, 6, 12, 15, 15, 3, 6]),
+    ("wait", [5, 10, 15, 15, 15, 5, 10]),
+])
+def test_pollers_reset_on_capture_progress(monkeypatch, caller, expected):
+    captures = [{
+        "kind": "crossover_v2:measure", "session_id": "run-1",
+        "status": "running", "run": {"take": take},
+    } for take in (1, 1, 1, 1, 1, 2, 2)]
+    captures.append({**captures[-1], "status": "complete"})
+    snapshots = iter([captures[0], *captures] if caller == "arm" else captures)
+    client = aw.LoopbackSession(host_header="jts3.local")
+    monkeypatch.setattr(client, "open", lambda path: (200, json.dumps({"capture": next(snapshots)})))
+    clock, sleeps = FakeWalkClock(), []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock.sleep(seconds)
+
+    if caller == "arm":
+        walk = aw.ArmWalk(FakeMover(), client, aw.WalkConfig(), clock=clock.now, sleep=sleep)
+        assert walk.run() == aw.EXIT_OK
+        assert sleeps.pop() == aw.PARK_SETTLE_S
+    else:
+        result = wc.wait_for_round(client, run_id="run-1", timeout_s=900, now=clock.now, sleep=sleep)
+        assert result["status"] == "terminal"
+    assert sleeps == expected
 
 # --------------------------------------------------------------------------- #
 # the bounds SSOT
@@ -375,7 +418,7 @@ def test_the_park_cancels_the_boxs_capture_session():
 def test_a_failed_cancel_still_lets_the_park_complete():
     """Best-effort: a cancel failure is reported, never blocks the park."""
     class ExplodingCancel(FakeSession):
-        def cancel(self) -> tuple[int, str]:
+        def cancel(self, reason="user_stopped") -> tuple[int, str]:
             raise OSError("wizard unreachable")
 
     mover = FakeMover(offset=0.0)
@@ -914,6 +957,35 @@ def test_a_stuck_capture_is_named_rather_than_waited_out():
     assert trail.error("stuck")["released"] == 0
 
 
+@pytest.mark.parametrize("field", ["attempt", "pose", "status"])
+def test_executor_progress_resets_the_stuck_clock_without_mic_moves(field):
+    clock, trail, mover = FakeWalkClock(), _RecordingTrail(), FakeMover()
+    started = clock.now()
+    last_retake_seen = []
+
+    class Retakes(FakeSession):
+        def poll(self):
+            step = min(int((clock.now() - started) // 49), 35)
+            if step == 35 and not last_retake_seen:
+                last_retake_seen.append(clock.now())
+            capture = {"status": "awaiting_capture", "run": {"attempt": 1, "pose": 1}}
+            if field == "status":
+                capture[field] = "awaiting_capture" if step % 2 else "committing"
+            else:
+                capture["run"][field] = step + 1
+            return aw.poll_from_status({"capture": capture})
+
+    session = Retakes([])
+    walk = _walk(mover, session, clock=clock, trail=trail, poll_s=7,
+                 idle_ceiling_s=aw.DEFAULT_IDLE_CEILING_S)
+    assert walk.run() == aw.EXIT_STUCK
+    idle_s = clock.now() - last_retake_seen[0] - aw.PARK_SETTLE_S
+    assert 300 < idle_s <= 315
+    assert trail.error("stuck")["quiet_s"] == idle_s
+    assert trail.one("capture_cancel")["reason"] == "arm_host_stuck"
+    assert session.released == [] and mover.moves == [0]
+
+
 def test_an_unreadable_status_is_never_diagnosed_as_a_stuck_capture():
     """The mis-attribution S4 names: a wrong --hostname blamed on #2506.
 
@@ -1049,7 +1121,7 @@ def test_the_previous_rounds_outcome_never_ends_a_fresh_walk(residue):
             self.released.append(index)
             return 200, '{"ok": true}'
 
-        def cancel(self) -> tuple[int, str]:
+        def cancel(self, reason="user_stopped") -> tuple[int, str]:
             return 200, '{"ok": true}'
 
     session = ResidueThenLive()
@@ -1293,17 +1365,23 @@ def test_a_status_read_that_is_not_json_is_unreadable_not_finished():
 
 def test_the_trail_file_reconstructs_the_walk(tmp_path):
     path = tmp_path / "walk.jsonl"
-    trail = aw.Trail(path)
-    session = FakeSession([_pending(1, 7), _QUIET])
-    assert _walk(FakeMover(), session, trail=trail,
-                 idle_ceiling_s=10.0).run() == aw.EXIT_OK
-    trail.close()
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
-    events = [row["event"] for row in rows]
-    assert events[0] == "up" and events[-1] == "parked"
-    released = next(row for row in rows if row["event"] == "released")
-    assert released["index"] == 1 and released["degrees"] == 7
-    assert all("t" in row for row in rows)
+    previous = ""
+    for session_id in ("run-a", "run-b"):
+        trail = aw.Trail(path)
+        live = aw.poll_from_status({"capture": {
+            "status": "awaiting_capture", "session_id": session_id,
+            "position_pending": {"index": 1, "degrees": 7, "mover": ac.MOVER_ARM},
+        }})
+        assert _walk(FakeMover(), FakeSession([live, _COMPLETE]), trail=trail).run() == aw.EXIT_OK
+        trail.close()
+        text = path.read_text()
+        assert text.startswith(previous)
+        rows = [json.loads(line) for line in text[len(previous):].splitlines()]
+        assert rows[0]["event"] == "joined" and rows[-1]["event"] == "parked"
+        released = next(row for row in rows if row["event"] == "released")
+        assert released["index"] == 1 and released["degrees"] == 7
+        assert all(row["session_id"] == session_id and "t" in row for row in rows)
+        previous = text
 
 
 def test_the_trail_levels_separate_progress_from_trouble():

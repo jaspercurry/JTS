@@ -47,7 +47,7 @@ from .camilla_yaml import (
     _branch_context,
     linearization_headroom_db,
 )
-from .candidate_bank import CandidateBankRefusal, find_banked_candidate, publish_authored_candidate
+from .candidate_bank import BankedCandidate, CandidateBankRefusal, find_banked_candidate, publish_authored_candidate
 from .measurement_emit import MeasurementGraphProfile
 from .crossover_contract import (
     measured_level_match_applied,
@@ -292,6 +292,7 @@ def _commissioning_refusal(profile: dict[str, Any], exc: Exception) -> None:
 def compile_commissioning_profile(
     *, topology: OutputTopology | None = None,
     design_draft: Mapping[str, Any] | None = None, write: bool = False,
+    find_candidate: Callable[[str], BankedCandidate] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Review the applied candidate, or bootstrap from the declared crossover."""
     from .candidate_parts import candidate_from_applied_profile, candidate_from_design_draft  # lazy: candidate parts consumes baseline readers
@@ -309,7 +310,7 @@ def compile_commissioning_profile(
         draft = design_draft if design_draft is not None else load_design_draft(topology=topology)
         declaration = load_tuning_declaration(topology, design_draft=draft)
         applied = load_applied_baseline_profile_state()
-        candidate = (candidate_from_applied_profile(topology, applied) if applied is not None
+        candidate = (candidate_from_applied_profile(topology, applied, find_candidate=find_candidate) if applied is not None
                      else candidate_from_design_draft(topology, draft))
         preference_filters, trim_db = saved_sound_layers()
         text = compile_tuning_graph(declaration, candidate=candidate,
@@ -318,7 +319,7 @@ def compile_commissioning_profile(
         target = baseline_candidate_config_path(text)
         profile.update(prepare_applied_baseline_profile(
             candidate, declaration=declaration, design_draft=draft, measurements=load_measurement_state(topology),
-            config_path=target, config_sha256=sha,
+            config_path=target, config_sha256=sha, find_candidate=find_candidate,
         ))
         profile["issues"] = list(candidate.analysis.get("issues") or [])
         profile["candidate_fingerprint"] = baseline_candidate_fingerprint(profile)
@@ -1624,15 +1625,16 @@ def prepare_applied_baseline_profile(
     config_sha256: str | None = None,
     applied_at: str | None = None,
     provenance: Mapping[str, Any] | None = None,
+    find_candidate: Callable[[str], BankedCandidate] | None = None,
 ) -> dict[str, Any]:
     """Resolve the complete applied record before changing the DSP graph."""
     from .linearization_fit import linearization_filters_by_role  # lazy: applied graph recording imports NumPy
     try:
-        find_banked_candidate(candidate.fingerprint)
+        banked = (find_candidate or find_banked_candidate)(candidate.fingerprint)
     except CandidateBankRefusal as exc:
         if exc.code != "not_found":
             raise
-        publish_authored_candidate(candidate)
+        banked = publish_authored_candidate(candidate)
     protection = _protection_projection(design_draft.get("driver_safety_profile"))
     source = _source_payload(
         declaration.topology, design_draft, load_crossover_preview(current_design_draft=design_draft), measurements,
@@ -1658,6 +1660,7 @@ def prepare_applied_baseline_profile(
     applied = {
         **(provenance or {}),
         "artifact_schema_version": SCHEMA_VERSION, "kind": BASELINE_PROFILE_KIND,
+        "candidate_artifact_path": str(banked.path),
         "source": source,
         "config": {**((provenance or {}).get("config") or {}), "path": str(config_path or ""),
                    "basename": Path(config_path).name if config_path else "", "sha256": config_sha256, "exists": bool(config_path),

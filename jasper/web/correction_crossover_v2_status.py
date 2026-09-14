@@ -8,7 +8,7 @@ The derivations live in
 :mod:`jasper.active_speaker.crossover_envelope_v2`'s status-projection
 section, which may not import this layer. This module supplies the answers
 only the web host holds — the loaded state, the volume plan, the review
-decision, the banked candidate — and shapes what comes back into
+decision, the applied record — and shapes what comes back into
 ``status["crossover_v2"]``.
 
 """
@@ -36,18 +36,13 @@ def previous_candidate_fingerprint(state: Mapping[str, Any] | None) -> str | Non
 
 
 def _offerable_previous_candidate(state: Mapping[str, Any] | None) -> str | None:
-    """The displaced candidate, when its banked artifact still resolves."""
-    from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
-
+    """The displaced applied record; the apply door resolves its banked artifact."""
     fingerprint = previous_candidate_fingerprint(state)
     applied = (state or {}).get("previous_applied_profile") or {}
     if (fingerprint and applied.get("status") == "applied"
             and (applied.get("source") or {}).get("measured_candidate_fingerprint") == fingerprint
             and (applied.get("config") or {}).get("sha256")):
-        try:
-            return find_banked_candidate(fingerprint).fingerprint
-        except CandidateBankRefusal:
-            pass
+        return fingerprint
     return None
 
 
