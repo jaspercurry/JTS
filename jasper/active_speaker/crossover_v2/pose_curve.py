@@ -47,11 +47,12 @@ class LateralPoseCurve:
     freqs_hz: np.ndarray
     complex_tf: np.ndarray
     band_hz: tuple[float, float]
-    #: The gate's trusted floor for THIS occurrence, Hz. ``None`` is "no floor
+    #: The gate's validity floor for THIS occurrence, Hz. ``None`` is "no floor
     #: was resolved", never 0 Hz.
     validity_floor_hz: float | None = None
     repeat_curves: tuple["LateralPoseCurve", ...] = ()
     gate_window_ms: float | None = None
+    floor_source: str | None = None
 
 
 def lateral_evidence_grid_hz() -> np.ndarray:
@@ -85,6 +86,7 @@ def lateral_pose_curve(
         band_hz=(float(band_hz[0]), float(band_hz[1])),
         validity_floor_hz=response.validity_floor_hz,
         gate_window_ms=(response.gating or {}).get("window_ms"),
+        floor_source=(response.gating or {}).get("floor_source"),
         repeat_curves=tuple(
             lateral_pose_curve(occurrence, band_hz)
             for occurrence in response.repeat_responses
@@ -134,6 +136,7 @@ def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
         # banked before this carries neither key.
         "validity_floor_hz": curve.validity_floor_hz,
         "gate_window_ms": curve.gate_window_ms,
+        "floor_source": curve.floor_source,
         "smoothing_fractional_octave": 0,
         "repeat_curves": [
             pose_curve_record(repeat) for repeat in curve.repeat_curves

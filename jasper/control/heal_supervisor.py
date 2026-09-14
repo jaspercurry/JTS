@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,6 +37,7 @@ from jasper.service_units import (
 from ..measurement_window import DEFAULT_VOICE_SOCKET_PATH
 from ..platform.uds import voice_socket_command
 from . import camilla_topology_gate_state
+from ._health_fields import _mapping
 from .supervisor_runtime import (
     run_supervisor_loop,
     snapshot_or_disabled,
@@ -88,10 +90,6 @@ class Verdict:
     reason: str
     action: str
     fact: str
-
-
-def _mapping(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
 
 
 def _seconds(value: Any) -> float | None:
@@ -319,7 +317,7 @@ class HealSupervisor:
 
     # ---- overridable IO ----
 
-    def audio_health(self) -> dict[str, Any]:
+    def audio_health(self) -> Mapping[str, Any]:
         """The resident sampler's current snapshot; `{}` when it has none."""
         return _mapping(None if self._sampler is None else self._sampler.snapshot())
 

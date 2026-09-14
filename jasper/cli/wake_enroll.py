@@ -108,6 +108,13 @@ INTER_CLIP_PAUSE_SEC = 2.0
 # enrollment CLI to bind.
 VOICE_UNIT = "jasper-voice"
 
+# A blocking `systemctl start jasper-voice` can legitimately take the identity
+# oneshot's TimeoutStartSec (30 s; it is re-queued on every voice start) plus
+# jasper-voice's own DefaultTimeoutStartSec (90 s, Type=notify, no override).
+# This bound only catches a wedged manager; it must never report a slow start
+# as a failure, so it sits above that 120 s sum.
+_SYSTEMCTL_TIMEOUT_SEC = 150.0
+
 # Same privacy promise as the wake-corpus recorder: this CLI records the
 # bridge's UDP mic legs directly while jasper-voice is stopped, so it
 # must enforce the persisted household mute flag itself.
@@ -242,10 +249,11 @@ def require_root() -> None:
 
 
 def systemctl(action: str, unit: str = VOICE_UNIT) -> None:
-    """Run `systemctl <action> <unit>`. Raises on non-zero exit."""
+    """Run `systemctl <action> <unit>`. Raises on non-zero exit or if
+    the call doesn't complete within _SYSTEMCTL_TIMEOUT_SEC."""
     cmd = ["systemctl", action, unit]
     logger.info("running: %s", " ".join(cmd))
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, timeout=_SYSTEMCTL_TIMEOUT_SEC)
 
 
 # ---------------------------------------------------------------------------
@@ -647,7 +655,10 @@ def main(argv: list[str] | None = None) -> int:
                 # responding to wake until the operator notices.
                 try:
                     systemctl("start")
-                except subprocess.CalledProcessError as e:
+                except (
+                    subprocess.CalledProcessError,
+                    subprocess.TimeoutExpired,
+                ) as e:
                     # Don't mask the original error; log + continue. The
                     # operator can `sudo systemctl start jasper-voice`
                     # manually if this fails.

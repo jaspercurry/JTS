@@ -136,9 +136,9 @@ def transport_topology_for_coupling(
                 "sample_rate": DEFAULT_SAMPLE_RATE,
             },
             camilla={"capture_resampler": None},
-            # outputd publishes `content.source` as `shm_ring` only while the
-            # CENTRAL ring is attached (`rust/jasper-outputd/src/state.rs`).
-            outputd_content_source="alsa",
+            # `content.source` mirrors outputd's own resolved bridge mode
+            # (`rust/jasper-outputd/src/state.rs`), not a re-derived guess.
+            outputd_content_source="dac_content_ring",
         )
     if on_ring:
         # Ring B (CamillaDSP -> outputd, jts_ring_playback), or the ACTIVE ring
@@ -178,10 +178,12 @@ def transport_topology_for_coupling(
     return TransportTopology(
         name=TRANSPORT_OFF_RING,
         fanin_to_camilla=fanin_to_camilla,
-        # No CamillaDSP -> outputd pair to report: outputd's content comes from
-        # whatever its own bridge names. `alsa` below is outputd's own STATUS
-        # token for "no ring attached" (state.rs), which the doctor compares
-        # this shape against.
+        # No CamillaDSP -> outputd pair to report: this bridge declaration is
+        # one `rust/jasper-outputd/src/config.rs` parks outputd on rather than
+        # starts (EX_CONFIG), so no live daemon ever reports a `content.source`
+        # here. `alsa` is just a sentinel outside outputd's real vocabulary
+        # (`shm_ring`/`dac_content_ring`), so the doctor's comparison against
+        # this shape can never spuriously pass.
         camilla_to_outputd={"transport": None},
         camilla={"capture_resampler": None},
         outputd_content_source="alsa",

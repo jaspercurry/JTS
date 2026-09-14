@@ -25,6 +25,8 @@ from jasper.audio_measurement.sweep import read_wav_mono
 
 from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_SEAT
 from ..commissioning_evidence_store import EVIDENCE_ROOT
+from ..run_manifest import RUN_MANIFEST_FILENAME
+from .position_cycle import curves_for_take
 from .record_index import measurement_documents, played_graph_fingerprint
 from .round_inputs import (
     NO_ROUND_ARTIFACTS_REASON, RoundViewsError, round_artifact_dir, round_inputs,
@@ -154,7 +156,9 @@ def _declared_program_sha(doc: Mapping[str, Any], root: Path) -> str | None:
     return None
 
 
-def radiated_band_of(doc: Mapping[str, Any]) -> tuple[float, float] | None:
+def radiated_band_of(
+    doc: Mapping[str, Any], manifest: Mapping[str, Any] | None = None,
+) -> tuple[float, float] | None:
     """The band this capture's DUT actually radiates, from its own curves.
 
     Public because :mod:`.feature_classifier` asks the same question of the
@@ -162,12 +166,9 @@ def radiated_band_of(doc: Mapping[str, Any]) -> tuple[float, float] | None:
     span: the un-intersected band priced a tweeter from 357 Hz where it has no
     output and over-reported by 3x (E5, #1969).
     """
-    curves = doc.get("curves")
-    if not isinstance(curves, Sequence):
-        return None
     los: list[float] = []
     his: list[float] = []
-    for curve in curves:
+    for curve in curves_for_take(doc, manifest):
         band = curve.get("band_hz") if isinstance(curve, Mapping) else None
         if isinstance(band, Sequence) and len(band) == 2:
             los.append(float(band[0]))
@@ -253,6 +254,7 @@ def _discover_captures(
     roles: tuple[str, ...],
 ) -> tuple[PoseCapture, ...]:
     round_dir, documents = _capture_documents(Path(round_dir))
+    manifest: Mapping[str, Any] | None = None
     if not documents:
         raise RoundCapturesRefused(
             REFUSE_NO_CAPTURES,
@@ -300,7 +302,11 @@ def _discover_captures(
             )
         if select is not None and not select(doc):
             continue
-        band = radiated_band_of(doc)
+        if not doc.get("curves") and manifest is None:
+            artifact_dir, _ = round_artifact_dir(round_dir)
+            manifest_path = artifact_dir / RUN_MANIFEST_FILENAME if artifact_dir else None
+            manifest = _capture_document(manifest_path) if manifest_path and manifest_path.is_file() else {}
+        band = radiated_band_of(doc, manifest)
         if band is None:
             raise RoundCapturesRefused(
                 REFUSE_RADIATED_BAND_MISSING,
