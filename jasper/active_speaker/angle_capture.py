@@ -808,7 +808,7 @@ def walk_price(
         "mic_moves": sum(1 for _place, _stops in groupby(s.place for s in request.stops)),
         "captures": captures,
         "ceiling_min": math.ceil(
-            wall_clock_ceiling_s(stage1_base_entries(plan_shape) + captures) / 60
+            wall_clock_ceiling_s(stage1_base_entries(plan_shape) + request.repeats - 1 + captures) / 60
         ),
         "stimulus_s": (
             None if request.template.sweep_s is None

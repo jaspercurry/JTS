@@ -26,6 +26,11 @@ TAKE_MEASURED = "measured"
 TAKE_INCOMPLETE = "incomplete"
 
 
+def view_sets(manifest: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    return [row for row in manifest.get("sets", ()) if isinstance(row, Mapping)
+            and isinstance(row.get("set_id"), str) and row.get("capture_basis", {}).get("graph_scope") != "timing"]
+
+
 def capture_alignment_levels(
     evidence: Mapping[str, Any], previous: Mapping[str, Any],
 ) -> dict[str, Any]:

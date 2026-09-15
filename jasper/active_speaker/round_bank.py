@@ -277,7 +277,7 @@ def _bookkeeping(
     target: Path, bundle: Path, view_runner: Callable[..., dict[str, Any]] | None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
     from .measurement_programs import bookkeeping_views, run_purpose  # lazy: bank-only program registry
-    from .run_manifest import RUN_MANIFEST_FILENAME  # lazy: measurement types
+    from .run_manifest import RUN_MANIFEST_FILENAME, view_sets  # lazy: measurement types
     from .crossover_v2.round_inputs import round_artifact_dir  # lazy: reader imports this banker
 
     artifacts, _ = round_artifact_dir(bundle)
@@ -287,17 +287,15 @@ def _bookkeeping(
     document = json.loads(manifest.read_text())
     purpose = run_purpose(document.get("program"))
     views = bookkeeping_views(purpose)
-    sets = [row for row in document.get("sets", ())
-            if isinstance(row, Mapping) and isinstance(row.get("set_id"), str)]
-    view_sets = [row for row in sets if row.get("capture_basis", {}).get("graph_scope") != "timing"]
-    multiple_bases = sum(bool(row.get("base")) for row in view_sets) > 1
+    sets = view_sets(document)
+    multiple_bases = sum(bool(row.get("base")) for row in sets) > 1
 
     def unavailable(view: str, reason: str) -> dict[str, Any]:
         return {"view": view, "status": "unavailable", "reason": reason}
 
     results = []
     for view, per_set, grades_against_base in views:
-        targets = ([row if len(sets) > 1 else None for row in view_sets] if per_set and sets else [None])
+        targets = sets if per_set and len(sets) > 1 else [None]
         for row in targets:
             set_id = row["set_id"] if row else None
             incumbent_id = None
@@ -314,6 +312,8 @@ def _bookkeeping(
             result = view_runner(
                 view, target, set_id=set_id, incumbent=incumbent_id if multiple_bases else None,
             ) if view_runner else unavailable(view, "view_runner_unavailable")
+            if per_set and len(sets) == 1:
+                set_id = sets[0]["set_id"]
             if set_id is not None:
                 result = {**result, "set_id": set_id}
             if incumbent_id is not None:

@@ -649,7 +649,9 @@ def test_measure_attempt_geometry_carries_its_pose(position, vertical):
 
 @pytest.mark.parametrize("scope, pose", [("timing", (0, 0)), ("timing", (20, 0)),
     ("timing", (0, 20)), ("candidate", (0, 0)), ("applied", (0, 0))])
-def test_timing_baseline_banks_only_the_design_axis_and_played_fingerprint(scope, pose):
+def test_timing_baseline_banks_only_the_design_axis_and_played_fingerprint(monkeypatch, scope, pose):
+    events = []
+    monkeypatch.setattr(summed_alignment, "log_event", lambda logger, event, **fields: events.append((event, fields)))
     hz = np.geomspace(1200, 5000, 100)
     record = {"position_deg": pose[0], "vertical_deg": pose[1], "graph_scope": scope,
               "take_id": "sum", "graph_fingerprint": "submitted",
@@ -657,6 +659,8 @@ def test_timing_baseline_banks_only_the_design_axis_and_played_fingerprint(scope
     baseline = banked_entry_baseline(record, SimpleNamespace(program_id="sum",
         summed_response=SimpleNamespace(freqs_hz=hz, magnitude_db=np.zeros_like(hz))))
     assert (baseline is not None) == (scope == "timing" and pose == (0, 0))
+    assert events == ([] if scope == "timing" else [("active_speaker.summed_reference_unreadable",
+        {"code": "summed_reference_unreadable", "reason": "entry_baseline_scope"})])
     if baseline is not None:
         assert baseline.graph_fingerprint == "played"
         assert baseline.artifact_ref == "sum"

@@ -32,8 +32,10 @@ from .round_evidence import EntryBaseline, measured_response_from_analysis
 
 
 def banked_entry_baseline(record: Mapping[str, Any], analysis: Any) -> EntryBaseline | None:
-    if (record.get("position_deg") != 0 or record.get("vertical_deg", 0) != 0
-            or record.get("graph_scope") != "timing"):
+    if record.get("graph_scope") != "timing":
+        _unreadable("entry_baseline_scope")
+        return None
+    if record.get("position_deg") != 0 or record.get("vertical_deg", 0) != 0:
         return None
     measured = measured_response_from_analysis(analysis, reference_mark=REFERENCE_MARK_DESIGN_AXIS)
     return EntryBaseline.from_measurement(
@@ -103,16 +105,14 @@ def session_reference(bundle_dir: Path, baseline: Any, preset: Any) -> SummedAli
     if anchor is None or (anchor[0].position_deg, anchor[0].vertical_deg, anchor[0].graph_scope) != (0, 0, "timing"):
         return None
     anchor_row, anchor_doc = anchor
-    selected: dict[Any, tuple[Measurement, Mapping[str, Any]]] = {}
+    selected: dict[str, Measurement] = {}
     for row, doc in documents:
         if (row.position_deg != 0 or row.vertical_deg != 0 or row.graph_scope != "timing"
                 or (row.session_id, row.phase) != (anchor_row.session_id, anchor_row.phase)
                 or capture_basis(doc) != capture_basis(anchor_doc)):
             continue
-        index = doc.get("capture_index", doc.get("index", doc["take_id"]))
-        if index not in selected or doc.get("attempt", 0) > selected[index][1].get("attempt", 0):
-            selected[index] = row, doc
-    references = tuple(reference for row, _ in selected.values()
+        selected[doc["take_id"]] = row
+    references = tuple(reference for row in selected.values()
                        if (reference := _capture_reference(bundle_dir, row, preset)) is not None)
     return replace(references[0], repeat_responses=references[1:]) if references else None
 

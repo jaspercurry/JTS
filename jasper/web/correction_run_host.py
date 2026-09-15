@@ -68,7 +68,8 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
     def after_bank(record: Any, record_id: str) -> None:
         answers[record_id] = answers.pop(record["take_id"])
         _, analysis = answers[record_id]
-        if record.get("phase") == PHASE_ENTRY_BASELINE and not isinstance(analysis, Exception):
+        if (record.get("phase") == PHASE_ENTRY_BASELINE and not isinstance(analysis, Exception)
+                and conductor._measure_entry_baseline is None):
             conductor._measure_entry_baseline = banked_entry_baseline(record, analysis)
 
     records.enrich, records.after_bank = enrich, after_bank

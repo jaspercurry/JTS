@@ -655,27 +655,31 @@ async def test_run_door_requires_a_resolved_ceiling_and_watch(tmp_path, box, cei
     assert not graph.installs
 
 
-@pytest.mark.parametrize(("regime", "candidate", "phases"), [
-    ("per_driver", "base", ("check", "entry_baseline", "measure")),
-    ("summed", "base", ("entry_baseline", "lateral")),
-    ("summed", "candidate-a", ("lateral",)),
+@pytest.mark.parametrize(("regime", "candidate", "purpose", "phases", "scope"), [
+    ("per_driver", "base", "speaker", ("check", "entry_baseline", "measure"), "timing"),
+    ("summed", "base", "speaker", ("entry_baseline", "lateral"), "timing"),
+    ("summed", "candidate-a", "speaker", ("lateral",), None),
+    ("summed", "base", "room", ("entry_baseline", "lateral"), "candidate"),
+    ("summed", "base", "bass", ("entry_baseline", "lateral"), "candidate"),
 ])
 @pytest.mark.parametrize("repeats", [1, 3])
-def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, phases, repeats):
+def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, purpose, phases, scope, repeats):
     request = ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(20, regime, candidate_id=candidate),),
+        stops=(ac.AngleStop(20, regime, candidate_id=candidate, purpose=purpose),),
         candidates=(candidate,), repeats=repeats,
     )
     captures = plan_run.prepare_plan_captures(request)
+    entry_repeats = repeats if scope == "timing" else 1
+    phase_repeats = {"check": 1, "entry_baseline": entry_repeats, "measure": repeats, "lateral": repeats}
     assert tuple(capture.spec.program_phase for capture in captures) == tuple(
-        phase for phase in phases for _ in range(1 if phase == "check" else repeats))
+        phase for phase in phases for _ in range(phase_repeats[phase]))
     assert [capture.repeat for capture in captures[-repeats:]] == list(range(1, repeats + 1))
     assert [capture.stop.angle_deg for capture in captures[-repeats:]] == [20] * repeats
     assert all(capture.stop.angle_deg == 0 for capture in captures[:-repeats])
-    timing = [capture for capture in captures if capture.spec.program_phase == "entry_baseline"]
-    assert [capture.repeat for capture in timing] == (list(range(1, repeats + 1)) if candidate == "base" else [])
+    baseline = [capture for capture in captures if capture.spec.program_phase == "entry_baseline"]
+    assert [capture.repeat for capture in baseline] == (list(range(1, entry_repeats + 1)) if candidate == "base" else [])
     assert all((capture.spec.graph_scope, capture.stop.regime, capture.spec.positions, capture.spec.vertical_deg)
-               == ("timing", "summed", (0,), 0) for capture in timing)
+               == (scope, "summed", (0,), 0) for capture in baseline)
     assert all(capture.spec.graph_scope == ("drivers" if regime == "per_driver" else "candidate")
                for capture in captures[-repeats:])
 

@@ -21,7 +21,7 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
     candidate_room_peqs, candidate_on_declaration,
-    compile_candidate_config,
+    compile_candidate_config, driver_corrections, effective_preset,
     prove_candidate_config,
 )
 from jasper.active_speaker.profile import (
@@ -120,8 +120,16 @@ def require_candidate_speaker_identity(candidate: MeasuredCrossoverCandidate, pr
         raise MeasurementGraphRefused("measurement_candidate_speaker_mismatch", candidate.fingerprint)
 
 
-def timing_candidate(candidate: MeasuredCrossoverCandidate) -> MeasuredCrossoverCandidate:
-    return replace(candidate, linearization={}, room_correction={}, blend_correction=(), bass_extension={})
+def timing_candidate(candidate: MeasuredCrossoverCandidate, *, output_trim_db: float = 0.0) -> MeasuredCrossoverCandidate:
+    from .linearization_fit import linearization_filters_by_role  # lazy: NumPy cost belongs to graph compilation
+
+    headroom = camilla_yaml.program_headroom_db(
+        linearization_filters_by_role(candidate.linearization),
+        branch_context=camilla_yaml._branch_context(effective_preset(candidate), driver_corrections(candidate)),
+        room_peqs=candidate_room_peqs(candidate), output_trim_db=output_trim_db,
+    )
+    return replace(candidate, linearization={}, room_correction={}, blend_correction=(), bass_extension={},
+                   role_attenuations_db={role: gain - headroom for role, gain in candidate.role_attenuations_db.items()})
 
 
 def compile_tuning_graph(
@@ -142,7 +150,7 @@ def compile_tuning_graph(
     require_candidate_speaker_identity(candidate, profile.preset)
     candidate = candidate_on_declaration(candidate, profile.preset)
     if scope == "timing":
-        candidate = timing_candidate(candidate)
+        candidate = timing_candidate(candidate, output_trim_db=output_trim_db)
         preference_filters, output_trim_db = (), 0.0
     # The shared reducer skips malformed records; refuse before it loses identity.
     if set(candidate.linearization) - set(required_driver_roles(candidate.source_preset.way_count)) or any(

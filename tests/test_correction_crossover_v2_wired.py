@@ -905,8 +905,31 @@ async def test_executor_retains_summed_reference_before_measure(monkeypatch, cap
         assert events == []
     else:
         build_reference.assert_not_called()
-        assert events == [{"code": "summed_reference_unreadable", "reason": "no_entry_baseline"}]
+        reasons = (["entry_baseline_scope"] if banked and scope != "timing" else []) + ["no_entry_baseline"]
+        assert events == [{"code": "summed_reference_unreadable", "reason": reason} for reason in reasons]
         assert analysis.candidate.alignment_objective == "saved_timing"
+
+
+@pytest.mark.parametrize("responses", [(False, True, False), (True, True, False), (False, False, False)])
+def test_executor_anchors_the_first_readable_summed_repeat(responses):
+    conductor = _conductor(FlowSeams(), index_phase_map={1: "entry_baseline"}, measure_entry_baseline=None)
+    records = SimpleNamespace(enrich=None, after_bank=None)
+    correction_run_host.bind_plan_analysis(conductor, records,
+        manifest=SimpleNamespace(calibration={}, capture_record=dict), evidence={})
+    hz = np.linspace(1200, 5000, 100)
+    anchor = None
+    for index, readable in enumerate(responses):
+        analysis = SimpleNamespace(program_id="sum", summed_response=(
+            SimpleNamespace(freqs_hz=hz, magnitude_db=np.zeros_like(hz)) if readable else None))
+        conductor._seams = replace(conductor._seams, analyze=lambda *a, **kw: analysis)
+        record = {"take_id": f"sum-{index}", "index": 1, "program_phase": "entry_baseline", "graph_scope": "timing",
+                  "position_deg": 0, "vertical_deg": 0, "graph_fingerprint": "played",
+                  "program": conductor.program_for_phase("entry_baseline").to_dict()}
+        enriched = records.enrich(None, record)
+        records.after_bank(enriched, record["take_id"] + ".json")
+        anchor = anchor or (record["take_id"] if readable else None)
+        baseline = conductor._measure_entry_baseline
+        assert (baseline.artifact_ref if baseline else None) == anchor
 
 
 @pytest.mark.parametrize("phase", ["check", "measure", "verify"])
