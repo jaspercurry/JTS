@@ -14,9 +14,9 @@ from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankR
 from jasper.active_speaker.candidate_parts import compose_candidate
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
-from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 
 from . import alignment_prescription as alignment
+from . import bass_prescription as bass
 from . import blend_prescription as blend
 from . import driver_prescription as driver
 from . import room_prescription as room
@@ -24,6 +24,7 @@ from . import topology_prescription as topology
 from .evidence_packet import packet_feature_classifications, packet_incumbent_linearization, packet_positional_evidence
 from .prescription_contract import contract_digests, contract_json, prescription_contracts
 from .refusal_copy import refusal_copy_for
+from .round_inputs import prescription_sources
 
 DOCUMENT_KIND = "jts_prescription"
 SECTION_KINDS = {
@@ -51,7 +52,7 @@ class PrescriptionDocumentRefused(ValueError):
 
 @dataclass(frozen=True)
 class PrescriptionEvidence:
-    sources: Mapping[str, Any] = field(default_factory=dict)
+    sources: Mapping[str, Any] = field(default_factory=lambda: prescription_sources(None))
     packet: Mapping[str, Any] = field(default_factory=dict)
     room_median_sha256: str = ""
     round_id: str = ""
@@ -130,7 +131,8 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
         assert room_pin is not None
         return room.room_prescription_to_candidate_fields(room_pin)["room_correction"], {**room_pin.to_dict(), "measured_basis": room_pin.measured_basis}
     if name == "bass":
-        return validate_dynamic_bass_descriptor(raw), dict(raw)
+        bass_pin = bass.read_bass_prescription(raw, evidence=evidence.sources["bass_evidence"])
+        return bass_pin.descriptor, bass_pin.to_dict()
     raise PrescriptionDocumentRefused("prescription_kind_unknown", name, "unknown section kind")
 
 
@@ -193,7 +195,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
                 topology.TopologyPrescriptionRefused) as exc:
             raise PrescriptionDocumentRefused(exc.reason, name, exc.detail, evidence=getattr(exc, "evidence", {})) from exc
         except (ValueError, TypeError, KeyError) as exc:
-            raise PrescriptionDocumentRefused("bass_extension_invalid" if name == "bass" else "prescription_malformed", name, str(exc)) from exc
+            raise PrescriptionDocumentRefused("prescription_malformed", name, str(exc)) from exc
     try:
         return compose_candidate(
             base, sections=selected, rationale=document["rationale"],

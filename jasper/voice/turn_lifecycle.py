@@ -30,11 +30,12 @@ from typing import NoReturn
 from jasper.log_event import log_event
 
 from ..usage import SpendCap, UsageStore
-from ._tasks import await_cleanup_owned, cancel_tracked_tasks
+from ._tasks import (
+    await_cleanup_owned, cancel_tracked_tasks, capture_cleanup_error, run_cleanup_phases,
+)
 from .assistant_output import (
     INTERNAL_ERROR_CUE_SLUG,
     AssistantOutput,
-    capture_cleanup_error,
 )
 from .content_activity import ContentActivityTracker
 from .conversation import continuous_watchdog
@@ -469,59 +470,25 @@ class TurnLifecycle:
             self.ending = False
 
     async def _release_failed_turn(self) -> None:
-        first_base_error: BaseException | None = None
-
-        def record_failure(phase: str, error: BaseException) -> None:
-            nonlocal first_base_error
-            if isinstance(error, Exception):
-                log_event(
-                    logger,
-                    "turn.begin_cleanup_phase_failed",
-                    phase=phase,
-                    exc_type=type(error).__name__,
-                    err=str(error),
-                    level=logging.WARNING,
-                )
-            elif first_base_error is None:
-                # Cancellation and other BaseExceptions must not skip later
-                # cleanup: re-raise the first only after every phase has run.
-                first_base_error = error
-
-        async def run_phase(
-            phase: str,
-            operation: Callable[[], object],
-        ) -> None:
-            error = await capture_cleanup_error(operation)
-            if error is not None:
-                record_failure(phase, error)
-
         turn = self.turn
         session_id = self.session_id
         episode = self.output_episode
         # First, so `total_ms` is the failure moment rather than the failure
         # plus the cleanup awaits below.
-        await run_phase(
-            "turn_timeline",
-            lambda: self._timeline.emit("aborted"),
-        )
-        await run_phase(
-            "peering_end", lambda: self._peering.session_ended("acquire_error"),
-        )
-        await run_phase("background_stop", lambda: cancel_tracked_tasks(self.bg_tasks))
+        phases: list[tuple[str, Callable[[], object]]] = [
+            ("turn_timeline", lambda: self._timeline.emit("aborted")),
+            ("peering_end", lambda: self._peering.session_ended("acquire_error")),
+            ("background_stop", lambda: cancel_tracked_tasks(self.bg_tasks)),
+        ]
         if turn is not None:
-            await run_phase("turn_release", turn.release)
-        await run_phase(
-            "output_cleanup",
-            lambda: self._output.finish_turn_episode(episode),
-        )
+            phases.append(("turn_release", turn.release))
+        phases.append(("output_cleanup", lambda: self._output.finish_turn_episode(episode)))
         if session_id is not None:
-            await run_phase(
-                "usage_session_close",
-                lambda: self._usage_store.close_session(session_id, 0, 0),
-            )
-
-        await run_phase("local_state_reset", self._reset)
-
+            phases.append(("usage_session_close", lambda: self._usage_store.close_session(session_id, 0, 0)))
+        phases.append(("local_state_reset", self._reset))
+        first_base_error = await run_cleanup_phases(
+            phases, event="turn.begin_cleanup_phase_failed",
+        )
         if first_base_error is not None:
             raise first_base_error
 
@@ -829,16 +796,9 @@ class TurnLifecycle:
         ]
         if self.input_ended or self.user_speech_seen or self.manual_endpoint_this_turn:
             phases.append(("end_input", lambda: asyncio.wait_for(turn.end_input(), timeout=2.0)))
-        cleanup_base_error: BaseException | None = None
-        for phase, operation in phases:
-            error = await capture_cleanup_error(operation)
-            if isinstance(error, Exception):
-                log_event(
-                    logger, "turn.cleanup_phase_failed", phase=phase,
-                    exc_type=type(error).__name__, err=str(error), level=logging.WARNING,
-                )
-            elif cleanup_base_error is None:
-                cleanup_base_error = error
+        cleanup_base_error = await run_cleanup_phases(
+            phases, event="turn.cleanup_phase_failed",
+        )
         session_id = self.session_id
         assert session_id is not None
         self.pending_release = self._spawn(

@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -15,17 +15,19 @@ from jasper.audio_measurement.interference_nulls import (
     branch_gap_null_depth_ceiling_db,
     feature_position_variance,
 )
-from jasper.audio_measurement.spatial_combine import octave_bands_hz
 from jasper.json_fields import finite_float
 
+from .crossover_v2.commanded import profile_crossover_regions
 from .crossover_v2.intervention import CloudFitTerms
 from .crossover_v2.position_cycle import parse_curve_magnitude
 from .crossover_v2.round_inputs import RoundInputs, capture_identity, latest_measure_takes
 from .repeat_floor import load_repeat_floor, stopping_thresholds
+from .profile import CrossoverRegion
+from .speaker_fit import fit_feature_curves
 
 
 def _null_ceilings(
-    manifest: Mapping[str, Any], regions: list[Mapping[str, Any]]
+    manifest: Mapping[str, Any], regions: Sequence[CrossoverRegion]
 ) -> list[dict[str, Any]]:
     poses: dict[tuple[Any, ...], dict[str, Mapping[str, Any]]] = {}
     latest = latest_measure_takes(
@@ -38,15 +40,16 @@ def _null_ceilings(
     for key, (_group, take) in latest.items():
         poses.setdefault(key[:-1], {})[take["role"]] = take
     rows = []
-    for roles in poses.values():
+    for (_candidate, capture_graph, *_), roles in poses.items():
         for region in regions:
-            pair = [region["lower_driver"], region["upper_driver"]]
+            pair = [region.lower_driver, region.upper_driver]
             if any(role not in roles for role in pair):
                 continue
             takes = [roles[role] for role in pair]
             parsed = [parse_curve_magnitude(take.get("curve") or {}) for take in takes]
             row: dict[str, Any] = {
                 "pose": takes[0]["pose"],
+                "capture_graph": capture_graph,
                 "take_ids": [take["take_id"] for take in takes],
                 "louder_role": None,
                 "band_hz": None,
@@ -58,7 +61,7 @@ def _null_ceilings(
                 lower, upper = parsed
                 assert lower is not None and upper is not None
                 lo, hi = overlap_band_hz(
-                    region["fc_hz"],
+                    region.fc_hz,
                     tweeter_sweep_lo_hz=upper[2][0],
                     woofer_sweep_hi_hz=lower[2][1],
                 )
@@ -114,19 +117,18 @@ def round_verdicts(
                     else "repeat_floor_unavailable" if spread is None else None)
     if unit != "db":
         spread = None
-    regions = ((sources.get("candidate") or {}).get("source_preset") or {}).get(
-        "crossover_regions"
-    ) or []
+    regions = profile_crossover_regions(sources.get("applied_profile"))
     for fit in packet["fits"]:
         cloud = clouds.get(fit["set_id"], CloudFitTerms())
-        curves = [(response.freqs_hz, response.magnitude_db) for response in cloud.boost_responses]
+        curves = fit_feature_curves(cloud)
         residual = fit.get("residual_rms_db")
-        spread_by_center = {band["center_hz"]: band for band in (fit.get("cloud") or {}).get("band_spread", ())}
         fit["crossover_band_spread"] = {
-            f"{center:g} Hz": spread_by_center.get(center)
-            for region in regions if fit["role"] in (region["lower_driver"], region["upper_driver"])
-            for center, lo, hi in octave_bands_hz(0, float("inf")) if lo <= region["fc_hz"] < hi
-        }
+            f"{band['center_hz']:g} Hz": band
+            for region in regions if fit["role"] in (region.lower_driver, region.upper_driver)
+            for band in (fit.get("cloud") or {}).get("band_spread", ())
+            if band["f_lo"] <= region.fc_hz < band["f_hi"]
+        } if regions else None
+        fit["crossover_band_spread_reason"] = None if regions else "no_applied_crossover"
         fit["verdict"] = {"repeat_spread_db": spread,
                           "residual_within_repeat_spread": residual <= spread if residual is not None and spread is not None else None,
                           "reason": floor_reason or ("fit_residual_unavailable" if residual is None else None)}

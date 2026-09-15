@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getJSON, postJSON } from '/assets/shared/js/http.js';
-import { jtsConfirm } from '/assets/shared/js/dialog.js';
 import { renderCloud, redrawCloudChart } from './cloud.js';
 import { positionDiagram, positionCaption } from './position-diagram.js';
 import { UNIT_IMPERIAL, UNIT_METRIC, currentUnits, formatDistances, setUnits } from './units.js';
@@ -11,7 +10,6 @@ import { UNIT_IMPERIAL, UNIT_METRIC, currentUnits, formatDistances, setUnits } f
 const els = {
   verdict: document.getElementById('crossover-verdict'),
   applied: document.getElementById('crossover-applied'),
-  startOver: document.getElementById('crossover-start-over'),
   steps: document.getElementById('crossover-steps'),
   nudges: document.getElementById('crossover-nudges'),
   cloud: document.getElementById('crossover-cloud'),
@@ -391,7 +389,7 @@ function renderActionRow(env) {
   // would come out byte-identical to what is already on screen; busy is
   // included in the key because it changes each button's baked-in
   // `disabled` without otherwise touching primary/alternates (see
-  // stopCapture/runAction/startOver's finally blocks, which rely on THIS
+  // stopCapture/runAction's finally blocks, which rely on THIS
   // function re-rendering once busy flips back to false).
   const key = actionRowKey(primary, shownAlternates);
   if (key === lastActionRowKey) return;
@@ -441,60 +439,6 @@ async function stopCapture() {
   } finally {
     busy = false;
     stopInFlight = false;
-    renderActionRow(envelope);
-  }
-}
-
-function startOverConfirmMessage() {
-  // Grouping-aware: a bonded speaker's group crossover is rebuilt from the
-  // measurement evidence this clears, so it fails back to a plain solo
-  // crossover on the next group re-form until re-measured (the driver setup
-  // is kept either way). Solo speakers keep exactly what is playing now.
-  if (envelope && envelope.grouping_member) {
-    return 'This speaker is grouped. Starting the crossover calibration over ' +
-      'clears your measurement progress, so this speaker will fall back to a ' +
-      'plain solo crossover the next time the group re-forms, until you ' +
-      'measure it again. Your driver setup is kept.';
-  }
-  return 'Start the crossover calibration over? This clears your measurement ' +
-    'progress. Your driver setup and the crossover that’s playing now stay ' +
-    'exactly as they are — you’ll just measure the crossover again.';
-}
-
-async function startOver() {
-  if (busy) return;
-  const ok = await jtsConfirm(startOverConfirmMessage(), {danger: true});
-  if (!ok) return;
-  busy = true;
-  renderEpoch += 1;
-  els.startOver.disabled = true;
-  setStatus('Starting over…');
-  try {
-    const response = await postJSON('/sound/speaker/crossover/reset', {});
-    render(response);
-    const reset = response && response.reset;
-    if (reset && reset.status && reset.status !== 'cleared') {
-      // Partial unlink (an errors entry): do not paint it green.
-      setStatus(
-        'Some measurement files could not be cleared. Check the speaker ' +
-          'and try Start over again.',
-        'bad',
-      );
-    } else {
-      setStatus('Measurement progress cleared. Ready to start again.', 'ok');
-    }
-  } catch (error) {
-    setStatus(error && error.message ? error.message : String(error), 'bad');
-  } finally {
-    busy = false;
-    els.startOver.disabled = false;
-    // render(response) above (success path) builds the action row's buttons
-    // WHILE busy was still true, baking `disabled: busy` into every one of
-    // them — including buttons unrelated to Start-over, like "Start
-    // measurement". Nothing re-rendered after busy flipped back to false, so
-    // those buttons stayed disabled until a manual reload. Match the sibling
-    // pattern (stopCapture/runAction's finally) exactly: always re-render the
-    // action row against the now-correct busy=false.
     renderActionRow(envelope);
   }
 }
@@ -602,9 +546,8 @@ function refresh() {
 
 if (typeof document !== 'undefined') {
   els.captureStop.addEventListener('click', stopCapture);
-  els.startOver.addEventListener('click', startOver);
   // Page-local units preference (#3629, #1941 Q2): a static toggle, wired
-  // once here like Start Over / Stop above -- unlike the walk's own action
+  // once here like Stop above -- unlike the walk's own action
   // button, it is never rebuilt by a render pass.
   setUnitsButtons(currentUnits());
   els.walkUnitsImperial.addEventListener('click', () => {

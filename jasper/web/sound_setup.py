@@ -79,28 +79,14 @@ from .sound_active_speaker import (
     _active_speaker_baseline_profile_payload,
     _active_speaker_calibration_level_payload,
     _active_speaker_channel_identity_save_payload,
-    _active_speaker_channel_protection_save_payload,
-    _active_speaker_check_path_safety_payload,
-    _active_speaker_commission_load_payload,
     _active_speaker_commission_ramp_abort_payload,
-    _active_speaker_commission_ramp_ack_payload,
-    _active_speaker_commission_ramp_step_payload,
     _active_speaker_commission_state_payload,
     _active_speaker_commissioning_view_payload,
     _active_speaker_crossover_preview_save_payload,
     _active_speaker_design_draft_payload,
     _active_speaker_design_draft_save_payload,
-    _active_speaker_driver_measurement_payload,
     _active_speaker_driver_research_request_payload,
     _active_speaker_finish_commissioning_payload,
-    _active_speaker_load_startup_config_payload,
-    _active_speaker_stage_config_payload,
-    _active_speaker_stop_payload,
-    _active_speaker_stop_summed_test_tone,
-    _active_speaker_summed_test_level_payload,
-    _active_speaker_summed_test_payload,
-    _active_speaker_summed_validation_active_conflict,
-    _active_speaker_summed_validation_payload,
     _output_topology_payload,
     _repin_output_topology_payload,
     _reset_output_topology_payload,
@@ -187,33 +173,6 @@ _CROSSOVER_CHILD_LINK = f"""<section class="info-card">
 
 def _crossover_child_link(page_mode: str) -> str:
     return _CROSSOVER_CHILD_LINK if page_mode == "speaker" else ""
-
-
-#: Household surface for jasper-seat-level (#2761): an operator SPL target
-#: and a big stop control, backed by jasper.web.sound_seat_level. Solo
-#: speakers only -- a bonded follower's delegation page never renders this
-#: markup, so seat-level.js's initSeatLevel() finds no #seat-level-card and
-#: no-ops (main.js's own boot gates the call on `not followerMode` too).
-_SEAT_LEVEL_CARD = """<section class="info-card" id="seat-level-card">
-    <h2 class="eyebrow">Seat-level leveling</h2>
-    <p class="form-hint">Ramp the volume until a calibrated mic at your
-    listening seat reads your target level, then bank it as the crossover
-    session's measurement reference.</p>
-    <div class="field">
-      <label for="seat-level-target">Target level (dB SPL)</label>
-      <input id="seat-level-target" type="number" step="0.5" inputmode="decimal"
-             autocomplete="off">
-    </div>
-    <div class="form-actions">
-      <button type="button" class="btn btn--primary" id="seat-level-start">Start leveling</button>
-      <button type="button" class="btn btn--danger" id="seat-level-stop" hidden>Stop</button>
-    </div>
-    <p class="form-hint" id="seat-level-status" role="status" aria-live="polite"></p>
-  </section>"""
-
-
-def _seat_level_card(page_mode: str) -> str:
-    return _SEAT_LEVEL_CARD if page_mode == "speaker" else ""
 
 
 def _sound_page_island(*, page_mode: str, follower: bool) -> str:
@@ -350,7 +309,6 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
   <div id="view-body"></div>
   <div class="status-line" id="status" role="status" aria-live="polite"></div>
   {_crossover_child_link(page_mode)}
-  {_seat_level_card(page_mode)}
 </main>
 """
     )
@@ -621,9 +579,6 @@ def _make_handler(
                         payload["error"] = str(error or "hardware apply failed")
                     self._send_json(payload, status=200 if result.get("ok") else 502)
                     return
-                if path == "/active-speaker/stop":
-                    self._send_json(_active_speaker_stop_payload())
-                    return
                 if path == "/active-speaker/calibration-level":
                     self._send_json(_active_speaker_calibration_level_payload(raw))
                     return
@@ -638,21 +593,6 @@ def _make_handler(
                             event="sound.active_speaker_channel_identity",
                             error=type(e).__name__,
                         )
-                    return
-                if path == "/active-speaker/channel-protection":
-                    try:
-                        self._send_json(
-                            _active_speaker_channel_protection_save_payload(raw)
-                        )
-                    except OSError as e:
-                        send_route_failure(
-                            self._send_json, e, logger=logger,
-                            event="sound.active_speaker_channel_protection",
-                            error=type(e).__name__,
-                        )
-                    return
-                if path == "/active-speaker/stage-config":
-                    self._send_json(_active_speaker_stage_config_payload(raw))
                     return
                 if path == "/active-speaker/design-draft":
                     from jasper.active_speaker.design_draft import (
@@ -686,86 +626,6 @@ def _make_handler(
                         send_route_failure(
                             self._send_json, e, logger=logger,
                             event="sound.active_speaker_crossover_preview_save",
-                            error=type(e).__name__,
-                        )
-                    return
-                if path == "/active-speaker/driver-measurement":
-                    try:
-                        self._send_json(_active_speaker_driver_measurement_payload(raw))
-                    except OSError as e:
-                        send_route_failure(
-                            self._send_json, e, logger=logger,
-                            event="sound.active_speaker_driver_measurement",
-                            error=type(e).__name__,
-                        )
-                    return
-                if path == "/active-speaker/summed-test":
-                    try:
-                        self._send_json(
-                            asyncio.run(
-                                _active_speaker_summed_test_payload(
-                                    raw,
-                                    camilla_factory=camilla_factory,
-                                )
-                            )
-                        )
-                    except OSError as e:
-                        send_route_failure(
-                            self._send_json, e, logger=logger,
-                            event="sound.active_speaker_summed_test",
-                            error=type(e).__name__,
-                        )
-                    return
-                if path == "/active-speaker/summed-test/level":
-                    try:
-                        self._send_json(
-                            asyncio.run(
-                                _active_speaker_summed_test_level_payload(
-                                    raw,
-                                    camilla_factory=camilla_factory,
-                                )
-                            )
-                        )
-                    except OSError as e:
-                        send_route_failure(
-                            self._send_json, e, logger=logger,
-                            event="sound.active_speaker_summed_test_level",
-                            error=type(e).__name__,
-                        )
-                    return
-                if path == "/active-speaker/summed-test/stop":
-                    reason = str(raw.get("reason") or "operator_stop")
-                    self._send_json(
-                        _active_speaker_stop_summed_test_tone(reason=reason)
-                    )
-                    return
-                if path == "/active-speaker/summed-validation":
-                    try:
-                        conflict = _active_speaker_summed_validation_active_conflict(
-                            raw
-                        )
-                        if conflict is not None:
-                            log_event(
-                                logger,
-                                "sound.active_speaker_summed_validation",
-                                status="blocked",
-                                reason="active_summed_test_running",
-                                group_id=str(conflict.get("speaker_group_id")),
-                                active_playback_id=str((
-                                        conflict.get("active_summed_test", {})
-                                        if isinstance(
-                                            conflict.get("active_summed_test"), dict
-                                        )
-                                        else {}
-                                ).get("playback_id")),
-                            )
-                            self._send_json(conflict, status=HTTPStatus.CONFLICT)
-                            return
-                        self._send_json(_active_speaker_summed_validation_payload(raw))
-                    except OSError as e:
-                        send_route_failure(
-                            self._send_json, e, logger=logger,
-                            event="sound.active_speaker_summed_validation",
                             error=type(e).__name__,
                         )
                     return
@@ -811,51 +671,6 @@ def _make_handler(
                                     raw.get("expected_candidate_fingerprint") or ""
                                 ),
                                 camilla_factory=camilla_factory,
-                            )
-                        )
-                    )
-                    return
-                if path == "/active-speaker/check-path-safety":
-                    self._send_json(
-                        asyncio.run(
-                            _active_speaker_check_path_safety_payload(
-                                camilla_factory=camilla_factory,
-                            )
-                        )
-                    )
-                    return
-                if path == "/active-speaker/load-startup-config":
-                    self._send_json(
-                        asyncio.run(
-                            _active_speaker_load_startup_config_payload(
-                                camilla_factory=camilla_factory,
-                            )
-                        )
-                    )
-                    return
-                if path == "/active-speaker/commission-load":
-                    self._send_json(
-                        asyncio.run(
-                            _active_speaker_commission_load_payload(
-                                raw, camilla_factory=camilla_factory
-                            )
-                        )
-                    )
-                    return
-                if path == "/active-speaker/commission-ramp-step":
-                    self._send_json(
-                        asyncio.run(
-                            _active_speaker_commission_ramp_step_payload(
-                                raw, camilla_factory=camilla_factory
-                            )
-                        )
-                    )
-                    return
-                if path == "/active-speaker/commission-ramp-ack":
-                    self._send_json(
-                        asyncio.run(
-                            _active_speaker_commission_ramp_ack_payload(
-                                raw, camilla_factory=camilla_factory
                             )
                         )
                     )
@@ -1223,24 +1038,11 @@ def _make_handler(
         "/active-speaker/design-draft": Handler._dispatch_post_route,
         "/active-speaker/driver-research-request": Handler._dispatch_post_route,
         "/active-speaker/crossover-preview": Handler._dispatch_post_route,
-        "/active-speaker/stop": Handler._dispatch_post_route,
         "/active-speaker/calibration-level": Handler._dispatch_post_route,
         "/active-speaker/channel-identity": Handler._dispatch_post_route,
-        "/active-speaker/channel-protection": Handler._dispatch_post_route,
         "/active-speaker/seat-level/start": Handler._dispatch_post_route,
         "/active-speaker/seat-level/stop": Handler._dispatch_post_route,
-        "/active-speaker/stage-config": Handler._dispatch_post_route,
-        "/active-speaker/check-path-safety": Handler._dispatch_post_route,
-        "/active-speaker/load-startup-config": Handler._dispatch_post_route,
-        "/active-speaker/commission-load": Handler._dispatch_post_route,
-        "/active-speaker/commission-ramp-step": Handler._dispatch_post_route,
-        "/active-speaker/commission-ramp-ack": Handler._dispatch_post_route,
         "/active-speaker/commission-ramp-abort": Handler._dispatch_post_route,
-        "/active-speaker/driver-measurement": Handler._dispatch_post_route,
-        "/active-speaker/summed-test": Handler._dispatch_post_route,
-        "/active-speaker/summed-test/level": Handler._dispatch_post_route,
-        "/active-speaker/summed-test/stop": Handler._dispatch_post_route,
-        "/active-speaker/summed-validation": Handler._dispatch_post_route,
         "/active-speaker/baseline-profile": Handler._dispatch_post_route,
         "/active-speaker/baseline-profile/apply": Handler._dispatch_post_route,
         "/active-speaker/baseline-profile/restore": Handler._dispatch_post_route,

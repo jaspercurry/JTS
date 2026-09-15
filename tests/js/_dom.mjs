@@ -29,7 +29,6 @@ import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
 export const CROSSOVER_IDS = [
   "crossover-verdict",
   "crossover-applied",
-  "crossover-start-over",
   "crossover-steps",
   "crossover-nudges",
   "crossover-review",

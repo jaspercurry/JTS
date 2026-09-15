@@ -235,8 +235,15 @@ def test_room_analysis_refusals_are_unreadable(tmp_path, capsys, analyzed_room_d
     assert not (root / "room.json").exists()
 
 
-@pytest.mark.parametrize("geometry", [None, {}, {"front_wall_m": 0.85}])
-def test_room_document_sections_and_owners(room_round, capsys, geometry):
+@pytest.mark.parametrize("geometry,walls,boundary_reason", [
+    (None, {}, "geometry_undeclared"),
+    ({}, {}, "walls_undeclared"),
+    ({"front_wall_m": 0.85}, {"front": 0.85}, ""),
+    ({"cabinet_back_wall_m": 0.2}, {}, "front_baffle_geometry_undeclared"),
+    ({"cabinet_back_wall_m": 0.2, "side_wall_m": 1.4}, {"side": 1.4}, "front_baffle_geometry_undeclared"),
+    ({"cabinet_back_wall_m": 0.2, "cabinet_depth_m": 0.3, "toe_in_degrees": 0}, {"front": 0.5}, ""),
+])
+def test_room_document_sections_and_owners(room_round, capsys, geometry, walls, boundary_reason):
     root = room_round
     if geometry is not None:
         DeclaredGeometry(speaker_height_m=0.84, mic_height_m=0.84, distance_m=1.0,
@@ -267,11 +274,15 @@ def test_room_document_sections_and_owners(room_round, capsys, geometry):
     assert document["incumbent"]["room_median_sha256"] == _ROOM_CORRECTION["basis"]["room_median_sha256"]
     assert document["incumbent_reason"] == result["incumbent_reason"] == ""
     assert document["ceiling"]["hz"] == median["ceiling_hz"]
-    if geometry:
-        assert document["boundary"] == {"advisory": True, **boundary_prior(value.freqs_hz, walls={"front": 0.85})}
+    if walls:
+        expected = {"advisory": True, **boundary_prior(value.freqs_hz, walls=walls)}
+        if "cabinet_back_wall_m" in geometry:
+            expected["geometry"] = {"speaker_height_m": 0.84, "mic_height_m": 0.84, "distance_m": 1.0, **geometry}
+            expected["front_reference"] = "front_panel_centre" if "front" in walls else None
+        assert document["boundary"] == expected
     else:
         assert document["boundary"] is None
-        assert document["boundary_reason"] == ("geometry_undeclared" if geometry is None else "walls_undeclared")
+    assert document["boundary_reason"] == boundary_reason
     assert not {"freqs_hz", "median_db", "positions"} & result.keys()
     assert isinstance(result["features"], int)
     inventory = _run(capsys, ["inventory", str(root), "--set", selected.set_id])

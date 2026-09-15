@@ -39,7 +39,7 @@ from .voice.conversation import (
     END_OF_UTTERANCE_SILENCE_SEC, NO_SPEECH_ABORT_SEC,
 )
 from .voice._base import SESSION_CLOSE_TIMEOUT_SEC
-from .voice._tasks import cancel_tracked_tasks, track_task
+from .voice._tasks import cancel_tracked_tasks, capture_cleanup_error, track_task
 from .voice.input_policy import contract_from_config
 from .voice.measurement_hold import MeasurementHold
 from .voice.peering_client import PeeringClient
@@ -67,7 +67,6 @@ from .voice.assistant_output import (
     INTERNAL_ERROR_CUE_SLUG,
     AssistantOutput,
     FanInDucker,
-    capture_cleanup_error,
 )
 from .voice.output_gate import AssistantOutputGate
 from .volume_coordinator import VolumeCoordinator
@@ -942,6 +941,29 @@ class WakeLoop:
     def bind_tool_dispatch(self) -> Callable[[str, str], Awaitable[None]]:
         return self._wake_telemetry.bind_tool_dispatch()
 
+    def _connection_failure_cue_slug(self) -> str:
+        """Unexpected acquire errors are usually local rather than connectivity failures."""
+        return (
+            self._connection.wake_cue()
+            if self._connection.is_paused() or self._connection.last_failure_detail()
+            else INTERNAL_ERROR_CUE_SLUG
+        )
+
+    async def _cleanup_failed_begin_logged(self) -> None:
+        """_release_failed_turn re-raises a stored BaseException after every phase runs;
+        catch cleanup errors so they cannot skip the refusal cue and leave a press unanswered."""
+        try:
+            if self._turns.output_episode is not None:
+                await self._turns.cleanup_after_failed_begin()
+        except Exception as cleanup_error:  # noqa: BLE001
+            log_event(
+                logger,
+                "turn.begin_cleanup_failed",
+                level=logging.ERROR,
+                exc_type=type(cleanup_error).__name__,
+                err=str(cleanup_error),
+            )
+
     async def _arbitrate_acquire_drain(
         self,
         *,
@@ -952,20 +974,8 @@ class WakeLoop:
         can_serve: bool,
         wake_event: dict | None = None,
     ) -> None:
-        """Background coroutine spawned on wake.
-
-        Late-cancel gates abort cleanly: both stop mic frames in the main
-        loop, so the session would open with no audio, and the user just did
-        something that said "stop listening". Peer arbitration (a no-op when
-        peering is off) then asks jasper-control over UDS whether this Pi
-        takes the turn; losers back off silently. Gate cues for a reached
-        spend cap or a paused connection are played by the arbitration winner
-        only, so N peers do not fire N cues.
-
-        On error the failure cue is honest about cause: a connection cue only
-        when the live connection is genuinely paused, otherwise
-        `internal_error`, since an unexpected throw here is almost always
-        local rather than connectivity.
+        """Gate cues for a reached spend cap or a paused connection are played
+        by the arbitration winner only, so N peers do not fire N cues.
         """
         try:
             # mute_mic / MeasurementHold.pause_response can fire after
@@ -1050,20 +1060,8 @@ class WakeLoop:
                 exc_type=type(e).__name__,
             )
             await self._wake_telemetry.outcome("session_failed", str(e)[:200])
-            # A connection cue here is a false alarm unless the connection
-            # actually dropped mid-acquire; see the internal_error CueDef.
-            try:
-                if self._turns.output_episode is not None:
-                    await self._turns.cleanup_after_failed_begin()
-            except Exception as cleanup_error:  # noqa: BLE001
-                logger.warning(
-                    "turn acquire cleanup failed before failure cue: %s",
-                    cleanup_error,
-                )
-            if self._connection.is_paused() or self._connection.last_failure_detail():
-                await self._play_cue(self._connection.wake_cue())
-            else:
-                await self._play_cue(INTERNAL_ERROR_CUE_SLUG)
+            await self._cleanup_failed_begin_logged()
+            await self._play_cue(self._connection_failure_cue_slug())
             self._acquire_buffer.clear()
         finally:
             # Flip the flag last: the main loop reads it per mic frame to
@@ -1241,7 +1239,7 @@ class WakeLoop:
             return
         assert self._turns.turn is not None
         if self._turns.turn.continuous_input and not self._turns.manual_endpoint_this_turn:
-            await self._handle_continuous_frame(frame, captured_at=captured_at)
+            await self._handle_continuous_frame(frame)
             return
         if self._turns.input_ended:
             if self._turns.barge_in_active:
@@ -1279,7 +1277,7 @@ class WakeLoop:
                 return
         await self._send_session_audio(frame)
 
-    async def _handle_continuous_frame(self, frame, *, captured_at=None) -> None:
+    async def _handle_continuous_frame(self, frame) -> None:
         now = time.monotonic()
         speaking = (self._turns.turn.audio_chunks_pending() > 0
                     or self._tts.expected_drain_at() > now)
@@ -1491,30 +1489,8 @@ class WakeLoop:
             return error.result
         except Exception as e:  # noqa: BLE001
             logger.exception("manual session start failed: %s", e)
-            try:
-                if self._turns.output_episode is not None:
-                    await self._turns.cleanup_after_failed_begin()
-            except Exception as cleanup_error:  # noqa: BLE001
-                # `_release_failed_turn` re-raises a stored BaseException
-                # after every phase runs; without this try/except that
-                # escape skips both refusal-cue branches below and the
-                # button press goes unanswered.
-                log_event(
-                    logger,
-                    "turn.begin_cleanup_failed",
-                    level=logging.ERROR,
-                    exc_type=type(cleanup_error).__name__,
-                    err=str(cleanup_error),
-                )
-            # A turn that died because the connection went down between
-            # the paused gate above and here (the idle context reset
-            # reopens inside `_begin_turn`) must still answer the press
-            # — same condition and cue as the wake path's acquire
-            # failure. See `_arbitrate_acquire_drain`.
-            if self._connection.is_paused() or self._connection.last_failure_detail():
-                self._spawn_manual_refusal_cue(self._connection.wake_cue())
-            else:
-                self._spawn_manual_refusal_cue(INTERNAL_ERROR_CUE_SLUG)
+            await self._cleanup_failed_begin_logged()
+            self._spawn_manual_refusal_cue(self._connection_failure_cue_slug())
             return "ERROR"
         finally:
             self._acquiring = False

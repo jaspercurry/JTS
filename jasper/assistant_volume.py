@@ -79,7 +79,7 @@ def _send_volume_context(
         sock.sendall(payload)
 
 
-def _resolved_route_consumes_volume_context(
+def resolved_route_consumes_volume_context(
     resolved: Mapping[str, str],
 ) -> bool:
     """Whether the resolved TTS route interprets a published VolumeContext.
@@ -121,7 +121,7 @@ def volume_context_publisher_for_runtime(
             process_env,
             grouping_env_path=grouping_env_path,
         )
-        if not _resolved_route_consumes_volume_context(current):
+        if not resolved_route_consumes_volume_context(current):
             return False
         await asyncio.to_thread(
             _send_volume_context,

@@ -38,6 +38,9 @@ from jasper.aec.bridge_telemetry import (
 # transport.
 REF_RATE = 48000
 REF_CHANNELS = 2
+AEC_REF_GAIN_DB_DEFAULT = "0"
+AEC_REF_HPF_HZ_DEFAULT = "125"
+AEC_MIC_GAIN_DB_DEFAULT = "0"
 
 # Clipping counters for the ref pre-clip stage (after JASPER_AEC_REF_GAIN_DB),
 # module-level for cheap cross-thread access: a race between increment and
@@ -103,8 +106,8 @@ class ReferenceFrameConverter:
     @classmethod
     def from_env(cls) -> ReferenceFrameConverter:
         return cls(
-            ref_gain_db=float(os.environ.get("JASPER_AEC_REF_GAIN_DB", "0")),
-            ref_hpf_hz=float(os.environ.get("JASPER_AEC_REF_HPF_HZ", "125")),
+            ref_gain_db=float(os.environ.get("JASPER_AEC_REF_GAIN_DB", AEC_REF_GAIN_DB_DEFAULT)),
+            ref_hpf_hz=float(os.environ.get("JASPER_AEC_REF_HPF_HZ", AEC_REF_HPF_HZ_DEFAULT)),
         )
 
     def feed(self, interleaved: np.ndarray) -> ReferenceFrameBatch:

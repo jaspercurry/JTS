@@ -444,13 +444,6 @@ async def _ensure_commission_startup_anchor(
     # hardware the box no longer has. Reusing it would anchor a commissioning
     # rollback to a graph for the wrong speaker.
     #
-    # SHARED WITH /sound/, deliberately: this is the same two-term gate
-    # `sound_setup._active_speaker_ensure_commission_startup_anchor` has run
-    # since the jts5 2026-08-06 regression, and `staged_topology_mismatch` is a
-    # mapped household code. This surface short-circuited on the path term
-    # alone, so the two surfaces disagreed about what "already loaded" meant and
-    # only one of them could ever emit that code (#2285).
-    #
     # A mismatch is NOT a refusal — it falls through to the re-stage below,
     # which rebuilds the pair against the topology the box actually has. The log
     # line is what makes the re-stage attributable rather than silent.
@@ -859,31 +852,6 @@ def commission_status_payload() -> dict[str, Any]:
         "ramp": load_ramp_state(),
         "safe_playback": load_safe_playback_state(),
     }
-
-
-# THE PER-DRIVER TEST TRIO LIVED HERE and is deleted (#2285 / #2628). It was a
-# SECOND, unrouted implementation of a shipped feature: nothing reached
-# ``start_driver_test`` but an uncalled wrapper in
-# ``jasper.web.correction_crossover_backend`` and one test, and its two siblings
-# had no caller at all. The live per-driver test is /sound/'s commission-ramp
-# trio -- ``/active-speaker/commission-ramp-step``/``-ack``/``-abort`` ->
-# ``_active_speaker_commission_ramp_*_payload`` -> ``jasper.active_speaker
-# .commission_ramp`` -- which superseded this layer and kept its own routes.
-# Wiring these up instead would have given one household feature two
-# orchestrations, which is the drift this campaign exists to remove.
-#
-# WHAT SURVIVED AND WHAT WENT WITH THEM, re-derived rather than asserted after
-# the first version of this comment named a live caller that did not exist.
-# ``abort_ramp``, ``load_ramp_state`` and ``commission_load_config`` are
-# untouched -- /sound/'s ramp routes are their live callers. ``stop_commission_tone``
-# and ``play_commission_tone`` were NOT: their only callers were the wrappers
-# above, so the same commit that removed those orphaned these, and they are
-# deleted here with the module-local session state they owned
-# (``_stop_commission_tone_locked`` and its ``_COMMISSION_TONE_SESSION`` /
-# ``_COMMISSION_TONE_LOCK`` pair). /sound/ keeps its own same-named locals --
-# see the note at ``jasper/web/sound_active_speaker.py``'s commission-tone import
-# block, which is why the shared-owner contract in
-# tests/test_commission_tone_single_owner.py deliberately excludes them.
 
 
 def _crossover_frequency_for_group(

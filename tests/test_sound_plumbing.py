@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 #
 # SPDX-License-Identifier: Apache-2.0
-
 from __future__ import annotations
 
 import re
@@ -57,21 +56,3 @@ def test_sound_setup_import_keeps_numpy_out_of_cold_start():
     )
 
     assert result.returncode == 0
-
-
-def test_both_profiles_keep_stale_active_speaker_stop_ingress_direct():
-    stale_paths = (
-        "/sound/active-speaker/stop",
-        "/sound/active-speaker/commission-ramp-abort",
-        "/sound/active-speaker/summed-test/stop",
-    )
-    handler_source = (ROOT / "jasper" / "web" / "sound_setup.py").read_text()
-    for path in stale_paths:
-        assert f'"{path.removeprefix("/sound")}"' in handler_source
-
-    for filename in ("nginx-jasper.conf", "nginx-jasper-streambox.conf"):
-        nginx = (ROOT / "deploy" / filename).read_text()
-        compat = _location_block(nginx, "location /sound/")
-
-        assert "proxy_pass http://127.0.0.1:8784/;" in compat
-        assert "return 302" not in compat

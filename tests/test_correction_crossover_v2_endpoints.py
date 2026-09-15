@@ -5820,7 +5820,6 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     ):
         monkeypatch.setenv(env_name, str(tmp_path / f"{env_name.lower()}.json"))
     monkeypatch.setattr(reset_flow, "handle_status", lambda *, capture=None: ({}, 200))
-    monkeypatch.setattr(reset_flow, "_active_group_member", lambda: False)
     monkeypatch.setattr(
         "jasper.web.correction_crossover_flow._build_envelope_logged",
         lambda status: {"screen": "start", "active": True, "steps": [], "nudges": []},
@@ -6224,7 +6223,9 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, t
     from jasper.active_speaker.angle_capture import AngleCaptureRequest, request_for_program
     from jasper.active_speaker.measurement_programs import program
 
-    body = {"plan": request_for_program(program("bass")).to_dict(), "levels": "auto"} if bass else _inline_body()
+    selected = program("bass")
+    body = {"plan": request_for_program(selected, mover=selected.mover or "human").to_dict(),
+            "levels": "auto"} if bass else _inline_body()
     prepared, store = _inline_prepared(monkeypatch, tmp_path, body)
     _own_the_fader(monkeypatch, _FakeVolCam(-30))
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan

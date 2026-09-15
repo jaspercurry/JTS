@@ -22,13 +22,7 @@ from ._supervisor import (
     request_planned_reopen,
     request_unplanned_reopen,
 )
-from .session import (
-    AudioOutChunk,
-    ConnectionState,
-    LiveTurn,
-    TurnCapture,
-    log_first_chunk,
-)
+from .session import AudioOutChunk, ConnectionState, LiveTurn, TurnCapture
 
 logger = logging.getLogger(__name__)
 
@@ -250,18 +244,7 @@ class GeminiLiveTurn(BaseLiveTurn):
         # Audio frames live on response.data (raw 24 kHz int16 PCM).
         data = getattr(response, "data", None)
         if data and not self._cancel_requested and not self._server_turn_complete:
-            now = asyncio.get_event_loop().time()
-            self._last_activity_at = now
-            self._last_chunk_at = now
-            self._chunks_received += 1
-            if not self._first_chunk_logged:
-                self._first_chunk_logged = True
-                log_first_chunk(
-                    logger,
-                    "gemini",
-                    turn_start_monotonic=self._started_at_monotonic,
-                    end_input_monotonic=self._end_input_at_monotonic,
-                )
+            self._note_audio_chunk(_time.monotonic())
             self._enqueue_audio(AudioOutChunk(pcm=data))
 
         tool_call = getattr(response, "tool_call", None)
@@ -418,13 +401,7 @@ class GeminiLiveConnection(BaseLiveConnection):
     # ------------------------------------------------------------------
 
     async def acquire_turn(self) -> LiveTurn:
-        if self._state is ConnectionState.FAILED:
-            raise RuntimeError(f"{self._log_tag} in FAILED state; daemon paused")
-        if self._state is ConnectionState.CLOSED:
-            raise RuntimeError(f"{self._log_tag} closed")
-
-        await await_connected(self)
-        await self._maybe_reset_context()
+        await self._await_acquirable()
 
         async with self._turn_lock:
             if self._active_turn is not None:
@@ -455,13 +432,6 @@ class GeminiLiveConnection(BaseLiveConnection):
     # ------------------------------------------------------------------
     # Internal — turn-side helpers
     # ------------------------------------------------------------------
-
-    def _owns_turn(self, turn: GeminiLiveTurn) -> bool:
-        return (
-            self._active_turn is turn and not turn._released and not turn._turn_lost
-            and self._session is not None and turn._session is self._session
-            and self._connected_event.is_set()
-        )
 
     async def _send_realtime_input(self, turn: GeminiLiveTurn, **kwargs) -> bool:
         async with self._send_lock:

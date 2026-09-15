@@ -41,7 +41,6 @@ Session lifecycle
 from __future__ import annotations
 
 import asyncio
-import audioop
 import base64
 import contextlib
 import json
@@ -55,28 +54,21 @@ from jasper.log_event import log_event
 if TYPE_CHECKING:
     import wave
 
-from ._base import BaseLiveConnection, BaseLiveTurn, ToolCall
+from ._base import (
+    OPENAI_AUDIO_RATE_HZ,
+    BaseLiveConnection,
+    BaseLiveTurn,
+    ToolCall,
+    upsample_16k_to_24k,
+)
 from ._supervisor import (
-    await_connected, failure_detail, request_planned_reopen, request_unplanned_reopen,
+    failure_detail, openai_error_is_terminal, request_planned_reopen, request_unplanned_reopen,
 )
 from .input_policy import NOISE_REDUCTION_FAR, NOISE_REDUCTION_NEAR
-from .session import (
-    AudioOutChunk,
-    ConnectionState,
-    LiveTurn,
-    TurnCapture,
-    log_first_chunk,
-)
+from .session import AudioOutChunk, ConnectionState, LiveTurn, TurnCapture
 
 logger = logging.getLogger(__name__)
 
-
-# Wire-format constants. The OpenAI Realtime ``audio/pcm`` discriminator
-# accepts only 24 kHz (verified against ``RealtimeAudioFormats.AudioPCM``
-# in openai-python's typed API). The XVF3800 captures at 16 kHz mono;
-# we polyphase-upsample 16 → 24 inside the turn before base64-encoding.
-OPENAI_AUDIO_RATE_HZ = 24000
-DAEMON_MIC_RATE_HZ = 16000
 
 # Bound a provider that opens the socket but never accepts session.update.
 SESSION_SETUP_TIMEOUT_SEC = 15.0
@@ -139,32 +131,6 @@ def _normalize_noise_reduction(value: str | None) -> str:
     return wire
 
 
-# ---------- Audio helpers ---------------------------------------------------
-
-
-def _upsample_16k_to_24k(
-    pcm_16k: bytes, state: tuple | None,
-) -> tuple[bytes, tuple]:
-    """Polyphase upsample 16 kHz mono int16 → 24 kHz mono int16.
-
-    Uses ``audioop.ratecv``. State must persist across calls within a
-    turn so the resampler doesn't introduce phase discontinuities at
-    frame boundaries — pass the returned state back in on the next
-    call. Reset state to ``None`` at turn start.
-
-    ``audioop`` was REMOVED from Python 3.13's stdlib (PEP 594), and
-    PiOS Trixie ships 3.13. The ``audioop-lts`` backport on PyPI is a
-    drop-in replacement that registers under the ``audioop`` import
-    name — pyproject.toml depends on it conditionally for 3.13+, so
-    this import resolves transparently on every supported Python
-    version. If/when ``audioop-lts`` stops being maintained, swap to
-    ``scipy.signal.resample_poly`` or a hand-rolled 3:2 polyphase
-    filter."""
-    return audioop.ratecv(
-        pcm_16k, 2, 1, DAEMON_MIC_RATE_HZ, OPENAI_AUDIO_RATE_HZ, state,
-    )
-
-
 # ---------- Per-turn adapter ------------------------------------------------
 
 
@@ -192,7 +158,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         # Whether `commit()` + `response.create()` has been sent; makes
         # `end_input` idempotent.
         self._committed = False
-        self._session = getattr(conn, "_conn", None)
+        self._session = getattr(conn, "_session", None)
         self._response_id: str | None = None
         self._response_item_ids: set[str] = set()
         self._input_item_id: str | None = None
@@ -367,23 +333,13 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             return
         if not data:
             return
-        now = asyncio.get_event_loop().time()
-        self._last_activity_at = now
-        self._last_chunk_at = now
-        self._chunks_received += 1
         chunk_bytes = len(data)
         self._chunk_bytes_total += chunk_bytes
         if chunk_bytes > self._chunk_bytes_max:
             self._chunk_bytes_max = chunk_bytes
-        if not self._first_chunk_logged:
-            self._first_chunk_logged = True
+        if not self._first_chunk_bytes:
             self._first_chunk_bytes = chunk_bytes
-            log_first_chunk(
-                logger,
-                getattr(self._conn, "PROVIDER_NAME", "openai"),
-                turn_start_monotonic=self._started_at_monotonic,
-                end_input_monotonic=self._end_input_at_monotonic,
-            )
+        self._note_audio_chunk(_time.monotonic())
         if item_id:
             # 24 kHz mono pcm16 = 48 bytes/ms. Accumulate per item so a later
             # truncate can clamp to this item's received duration.
@@ -545,8 +501,8 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         self._client = None
 
         # SDK connection + context manager (cleared during reconnect).
-        self._conn = None
-        self._conn_cm = None
+        self._session = None
+        self._session_cm = None
         self._send_lock = asyncio.Lock()
 
         # Manual VAD allows one outstanding commit and response.create.
@@ -601,13 +557,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         self._billable_activity_interval_open = False
 
     async def acquire_turn(self) -> LiveTurn:
-        if self._state is ConnectionState.FAILED:
-            raise RuntimeError(f"{self._log_tag} in FAILED state; daemon paused")
-        if self._state is ConnectionState.CLOSED:
-            raise RuntimeError(f"{self._log_tag} closed")
-
-        await await_connected(self)
-        await self._maybe_reset_context()
+        await self._await_acquirable()
 
         async with self._turn_lock:
             if self._active_turn is not None:
@@ -627,13 +577,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
     # Internal — turn-side helpers
     # ------------------------------------------------------------------
 
-    def _owns_turn(self, turn: OpenAIRealtimeTurn) -> bool:
-        return (
-            self._active_turn is turn and not turn._released and not turn._turn_lost
-            and self._conn is not None and turn._session is self._conn
-            and self._connected_event.is_set()
-        )
-
     async def _send_event(self, event: dict, *, turn: OpenAIRealtimeTurn | None = None) -> bool:
         async with self._send_lock:
             if turn is not None:
@@ -650,16 +593,16 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                 elif event.get("item", {}).get("type") == "function_call_output":
                     if turn._cancel_requested:
                         return False
-            if self._conn is None:
+            if self._session is None:
                 raise RuntimeError(f"{self._log_tag} no active session")
-            await self._conn.send(event)
+            await self._session.send(event)
             return True
 
     async def _send_audio_chunk(
         self, turn: OpenAIRealtimeTurn, pcm_16khz: bytes,
     ) -> bool:
         # Polyphase 16 → 24 kHz upsample. State persists per-turn.
-        pcm_24khz, turn._resample_state = _upsample_16k_to_24k(
+        pcm_24khz, turn._resample_state = upsample_16k_to_24k(
             pcm_16khz, turn._resample_state,
         )
         if not pcm_24khz:
@@ -708,14 +651,14 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         if self._active_turn is not turn:
             return
         async with self._send_lock:
-            session = self._conn
+            session = self._session
             if session is not None and turn._session is session:
                 try:
                     if turn._response_id or self._pending_response is turn:
                         await session.send({"type": "response.cancel"})
                     await session.send({"type": "input_audio_buffer.clear"})
                 except Exception as e:  # noqa: BLE001
-                    if self._conn is session:
+                    if self._session is session:
                         self._connected_event.clear()
                         request_unplanned_reopen(self)
                     logger.warning("%s release failed (%s)", self._log_tag, type(e).__name__)
@@ -726,7 +669,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                         turn._committed and (not turn._server_turn_complete or turn._tool_round_pending)
                         or self._pending_commit is turn or self._pending_response is turn
                     )
-                    if self._conn is session and unresolved:
+                    if self._session is session and unresolved:
                         request_planned_reopen(self)
         if self._active_turn is turn:
             self._mark_billable_activity_ended()
@@ -864,16 +807,13 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             with contextlib.suppress(Exception):
                 await cm.__aexit__(None, None, None)
             raise
-        self._conn_cm = cm
-        self._conn = conn
+        self._session_cm = cm
+        self._session = conn
         connect_ms = (_time.monotonic() - t0) * 1000
         logger.info(
             f"{self._log_tag} connect ok in %.0fms (model=%s)",
             connect_ms, self._model,
         )
-        # Send session.update immediately so subsequent turns inherit
-        # the right voice/tool/VAD config. Doing this AFTER assigning
-        # ``self._conn`` so ``_send_event`` can reach the connection.
         try:
             await self._send_event({
                 "type": "session.update",
@@ -887,13 +827,11 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                         break
                     if etype == "error":
                         error = _event_field(event, "error")
-                        invalid = (
-                            _event_field(error, "type") == "invalid_request_error"
-                            and _event_field(error, "code") != "rate_limit_exceeded"
-                        )
-                        error_cls = ValueError if invalid else RuntimeError
+                        code, error_type, message = (_event_field(error, key) for key in ("code", "type", "message"))
+                        self._log_server_error(code=code, error_type=error_type, message=message)
+                        error_cls = ValueError if openai_error_is_terminal(code=code, error_type=error_type) else RuntimeError
                         raise error_cls(failure_detail(
-                            error_cls(error), literals=self._secret_literals(),
+                            error_cls(message or f"{error_type or '?'} {code or '?'}"), literals=self._secret_literals(),
                         ))
                 else:
                     raise ConnectionError("session closed before setup acknowledgement")
@@ -907,18 +845,18 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             )
             await self._close_with_timeout(conn)
             await self._close_cm_with_timeout(cm)
-            self._conn = None
-            self._conn_cm = None
+            self._session = None
+            self._session_cm = None
             raise
         self._deferred_reconnect.clear()
         await self._mark_connected(asyncio.create_task(self._receive_loop(events, conn)))
 
     async def _teardown_session(self) -> None:
         t0 = _time.monotonic()
-        conn, cm = self._conn, self._conn_cm
+        conn, cm = self._session, self._session_cm
         if self._active_turn is not None:
             self._active_turn._cancel_tools()
-        self._conn = self._conn_cm = None
+        self._session = self._session_cm = None
         self._connected_event.clear()
         self._pending_commit = self._pending_response = None
         # Cancel the proactive watchdog first — its only job is to fire on
@@ -962,24 +900,11 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         return delay
 
     async def _receive_loop(self, events, conn) -> None:
-        """Iterate the SDK connection's event stream and route events.
-
-        Accepts both Pydantic-typed events (have ``.type`` attribute and
-        ``.model_dump()``) and dict events (test seam) — anything that
-        looks dict-like via ``getattr`` access works.
-
-        A clean iteration exit (no exception) means the remote closed
-        the WebSocket with a normal close code — typically 1001 "going
-        away" when OpenAI Realtime hits its 60-minute hard cap. The
-        ``websockets`` library treats 1000/1001 as the end of the
-        stream and ends ``async for`` without raising, so the only
-        signal we get for the cap is the iterator running out. Both
-        the exception path AND the clean-exit path must wake the
-        supervisor, otherwise the daemon sits on a dead session and
-        every subsequent wake silently fails in ``send_audio``."""
+        """The websockets library treats close codes 1000/1001 as end-of-stream and ends async for without raising.
+        Both the exception path and the clean-exit path must wake the supervisor, or later wakes silently fail in send_audio on a dead session."""
         try:
             async for event in events:
-                if self._conn is not conn:
+                if self._session is not conn:
                     return
                 etype = _event_type(event)
                 if etype is None:
@@ -988,10 +913,10 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
-            if self._conn is conn:
+            if self._session is conn:
                 self._on_receive_loop_error(e)
             return
-        if self._conn is conn and not self._stopping.is_set():
+        if self._session is conn and not self._stopping.is_set():
             logger.warning(
                 f"{self._log_tag} receive iteration ended cleanly "
                 "(server closed, likely the 60-minute hard cap); reconnecting",
@@ -1003,10 +928,9 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         if turn is not None and self._owns_turn(turn) and _is_progress_event(etype):
             turn._note_activity()
         if etype == "error":
-            detail = failure_detail(
-                RuntimeError(str(_event_field(event, "error"))), literals=self._secret_literals(),
-            )
-            logger.warning("%s server error: %s", self._log_tag, detail)
+            error = _event_field(event, "error")
+            code, error_type, message = (_event_field(error, key) for key in ("code", "type", "message"))
+            self._log_server_error(code=code, error_type=error_type, message=message)
             return
         if etype in ("session.created", "session.updated"):
             return

@@ -65,37 +65,3 @@ def resolved_tts_socket_feeds_post_dsp_outputd(
     if stage is None:
         return False
     return str(stage).strip().lower() == TTS_MIX_STAGE_POST_DSP
-
-
-def tts_socket_feeds_pre_dsp_fanin(
-    env: Mapping[str, str],
-    *,
-    grouping_env_path: str | None = VOICE_GROUPING_ENV_FILE,
-) -> bool:
-    """Whether voice's resolved TTS socket feeds the pre-DSP fan-in.
-
-    A reconciled passive multiroom member explicitly says ``post_dsp``. Unknown
-    stage values fail closed: publishing pre-DSP compensation to an uncertain
-    mix stage can create a large level error.
-    """
-    return resolved_tts_socket_feeds_pre_dsp_fanin(
-        resolve_tts_routing_snapshot(env, grouping_env_path=grouping_env_path),
-    )
-
-
-def tts_socket_feeds_post_dsp_outputd(
-    env: Mapping[str, str],
-    *,
-    grouping_env_path: str | None = VOICE_GROUPING_ENV_FILE,
-) -> bool:
-    """Whether voice's resolved TTS socket feeds the post-DSP outputd mixer.
-
-    True only for a reconciled passive multiroom member that explicitly says
-    ``post_dsp``. Since outputd consumes ``VOLUME_CONTEXT`` (#1547), voice and
-    the coordinator publish the same absolute wire message on this path — the
-    post-DSP consumer owns the structural fact that its downstream attenuation
-    is zero.
-    """
-    return resolved_tts_socket_feeds_post_dsp_outputd(
-        resolve_tts_routing_snapshot(env, grouping_env_path=grouping_env_path),
-    )

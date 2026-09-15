@@ -21,7 +21,7 @@ from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, t
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, round_artifact_dir
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
-from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve
+from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve, ladder_smooth
 from jasper.active_speaker.linearization_budget import fit_budgets_by_role, normalise_fit_budget
 from jasper.active_speaker.linearization_fit import FitVocabulary
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_SPEAKER, REGIME_SUMMED, run_purpose
@@ -119,6 +119,15 @@ def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str,
                 pass
         clouds.update((group["set_id"], cloud) for group in members)
     return clouds
+
+
+def fit_feature_curves(cloud: CloudFitTerms) -> list[tuple[np.ndarray, np.ndarray]]:
+    curves = []
+    for response in cloud.boost_responses:
+        grid = DEFAULT_ENVELOPE_GRID_HZ
+        grid = grid[(grid >= max(response.freqs_hz[0], response.validity_floor_hz or 0.0)) & (grid <= response.freqs_hz[-1])]
+        curves.append((grid, ladder_smooth(grid, np.interp(grid, response.freqs_hz, response.magnitude_db))))
+    return curves
 
 
 def _production_vocabulary(

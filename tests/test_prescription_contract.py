@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import alignment_prescription as alignment
+from jasper.active_speaker.crossover_v2 import bass_prescription as bass
 from jasper.active_speaker.crossover_v2 import blend_prescription as blend
 from jasper.active_speaker.crossover_v2 import driver_prescription as driver
 from jasper.active_speaker.crossover_v2 import room_prescription as room
@@ -31,6 +32,7 @@ from jasper.active_speaker.crossover_v2.prescription_contract import (
 )
 from jasper.active_speaker.crossover_v2.round_inputs import contract_sources, default_out, round_inputs
 from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
 from jasper.audio_measurement import room_limits as limits
 from jasper.bass_extension import dynamic
 from jasper.cli import crossover_prescriber as cli
@@ -42,6 +44,18 @@ from tests.test_crossover_v2_driver_prescription import _draft, applied_profile
 from tests.test_crossover_v2_room_prescription import _room_median
 from tests.test_crossover_v2_harmonic_evidence import _artifact, _bundle as harmonic_bundle
 from tests.run_manifest_fixture import write_manifest
+
+
+@pytest.fixture
+def bass_packet():
+    return {"round_id": "round-1", "packet_fingerprint": "p" * 64,
+            "bass": [{"set_id": "set-1", "takes": [{"bands": [
+                {"band_hz": list(band), "estimated_snr_db": 30, "fundamental_qualified": True}
+                for band in BASS_BANDS_HZ]}]}],
+            "bass_table": {"tables": [{"candidate_id": "candidate-1", "levels": [
+                {"level_key": {"level_db": level}, "outcome": outcome}
+                for level, outcome in zip((-30, -25, -20, -15), (
+                    "insufficient_evidence", "target_not_met", "measurement_required", "target_met"))]}]}}
 
 
 @pytest.fixture
@@ -92,7 +106,7 @@ def _contracts(bank: Path, session: Path):
     ("speaker", "alignment", alignment.ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS),
     ("speaker", "topology", topology.TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS),
     ("room", None, room.ROOM_PRESCRIPTION_REFUSAL_REASONS),
-    ("bass", None, frozenset()),
+    ("bass", None, bass.BASS_PRESCRIPTION_REFUSAL_REASONS),
 ])
 def test_each_door_serves_an_authoring_schema_and_the_judges_codes(round_bank, section, door, codes):
     contracts = _contracts(*round_bank)
@@ -223,11 +237,27 @@ def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(cap
     assert set(contracts) == set(SECTIONS)
     assert contracts["room"]["evidence_status"] == room.ROOM_MEDIAN_UNAVAILABLE
     assert contracts["room"]["bounds"]["cut_floor_db"] is None
-    bass = contracts["bass"]
-    assert set(bass["schema"]["properties"]) == dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS
-    assert bass["schema"]["properties"]["low_boost_db"]["maximum"] == dynamic.NATIVE_LOUDNESS_BOOST_MAX_DB
-    assert bass["refusal_type"] == "ValueError"
-    assert bass["shared_headroom"]["adr"] == "ADR-0257"
+    contract = contracts["bass"]
+    assert set(contract["schema"]["properties"]) == dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS | {"round_id"}
+    assert bass.BASS_PRESCRIPTION_REFUSAL_REASONS == {
+        "bass_band_unqualified", "bass_round_mismatch", "bass_evidence_unavailable", "bass_descriptor_malformed",
+    } | {f"bass_{name}_invalid" for name in dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS}
+    assert contract["schema"]["properties"]["low_boost_db"]["maximum"] == dynamic.NATIVE_LOUDNESS_BOOST_MAX_DB
+    assert contract["evidence_status"] == bass.BASS_EVIDENCE_UNAVAILABLE
+    assert contract["shared_headroom"]["adr"] == "ADR-0257"
+
+
+def test_bass_contract_reads_saved_packet_and_discloses_every_level(round_bank, bass_packet, capsys):
+    bank, _ = round_bank
+    bass_packet["round_id"] = bank.name
+    (bank / "packet.json").write_text(json.dumps(bass_packet))
+    assert cli.main(["contract", "--round", str(bank), "--section", "bass"]) == 0
+    contract = json.loads(capsys.readouterr().out)
+    assert contract["evidence_status"] == "evaluated"
+    assert contract["evidence_status_detail"]["target_met_at_every_level"] is False
+    assert set(contract["refusal_codes"]) == bass.BASS_PRESCRIPTION_REFUSAL_REASONS
+    assert [row["outcome"] for row in contract["evidence_status_detail"]["levels"]] == [
+        row["outcome"] for row in bass_packet["bass_table"]["tables"][0]["levels"]]
 
 
 def test_evidence_declarations_are_served_as_templates_and_cannot_be_mutated():

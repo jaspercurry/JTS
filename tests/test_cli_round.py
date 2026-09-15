@@ -38,6 +38,7 @@ from tests.crossover_v2_banked_round import bank_measure_round
 from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile, _room_candidate
 from tests.test_preflight import ready_facts
+from tests.test_arm_walk import FakeWalkClock
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
 from tests.test_crossover_v2_frequency_view import bass_fit_pairs as bass_fit_pairs  # noqa: F401
 
@@ -283,6 +284,9 @@ def test_trial_uses_authored_section_and_keeps_candidates_at_each_pose(
     opener = _opener(session='{"session_id": "trial-1"}')
     argv = ["trial", fingerprint, *(["--mover", mover] if mover else [])]
     code, body = _run(argv, opener, monkeypatch, capsys)
+    if mover == "human" and default_mover == "arm":
+        assert code == 1 and body["reason"] == "walk_mover_mismatch"
+        return
     assert code == 0 and body["verb"] == "trial" and body["shape"] == "trial"
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
     expected = run_program(program, "room_quick" if section == "room" and mover == "arm" else layout)
@@ -333,14 +337,12 @@ def test_room_default_uses_the_human_seat_set(preflight_ready, monkeypatch, caps
 
 
 @pytest.mark.parametrize("candidates,shape", [(None, "measure"), ("base", "trial")])
-@pytest.mark.parametrize("source", ["flags", "file", "confirmed"])
+@pytest.mark.parametrize("source", ["flags", "file"])
 def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, monkeypatch, capsys, tmp_path, candidates, shape, source):
     opener = _opener(session=json.dumps({"capture": {"session_id": "run-1", "first_prompt": {"title": "Place mic"}}}))
     argv = ["run", "--program", "room", "--poses", "seat_express", "--level-db", "-25"]
     if candidates:
         argv += ["--candidates", candidates]
-    if source == "confirmed":
-        argv += ["--mover", "confirmed"]
     if source == "file":
         from jasper.cli._run_request import resolve_run
         request = resolve_run(cli.build_parser().parse_args(argv)).plan
@@ -466,6 +468,41 @@ def test_named_run_never_reads_or_releases_a_different_run(verb, monkeypatch, ca
     assert not opener.posts()
 
 
+@pytest.mark.parametrize("captures,status,reason,result,polls,elapsed", [
+    ([None, {"status": "complete", "run": {"status": "complete"}},
+      {"session_id": "run-1", "status": "complete", "run": {"status": "complete"}}],
+     "terminal", None, "complete", 3, 15),
+    ([{"session_id": "run-2", "status": "running"}],
+     "failed", "run_not_current", None, 1, 0),
+    ([{}], "timed_out", "wait_timeout", None, 4, 20),
+])
+def test_wait_uses_live_capture_identity(captures, status, reason, result, polls, elapsed):
+    envelopes = [json.dumps({
+        "crossover_v2": {"session_id": "old", "phase": "review"},
+        **({"capture": {"kind": "crossover_v2:session", **capture}} if capture is not None else {}),
+    }) for capture in captures]
+    opener = _FakeOpener({wc.STATUS_PATH: envelopes[-1]}, envelopes)
+    client = wc.WizardClient(host_header="jts3.local", opener=opener)
+    clock = FakeWalkClock(max_sleeps=4)
+    start = clock.now()
+    initial_http, initial = client.run_status("run-1")
+    if status == "failed":
+        assert initial_http == 409
+        assert initial == {"run_id": "run-1", "code": reason, "current_run_id": "run-2"}
+    else:
+        assert initial_http == 200
+        assert initial == {"run_id": "run-1", "status": "starting", "result": None,
+                           "pending": None, "current": None, "code": None, "faults": []}
+    opener.envelopes, opener.requests = list(envelopes), []
+    answer = wc.wait_for_round(client, run_id="run-1", timeout_s=20,
+                               now=clock.now, sleep=clock.sleep)
+    assert answer["run_id"] == "run-1"
+    assert (answer["status"], answer.get("reason"), answer.get("result")) == (status, reason, result)
+    assert len(opener.requests) == polls
+    assert clock.now() - start == elapsed
+    assert not opener.posts()
+
+
 @pytest.mark.parametrize("verb", ["wait", "run", "trial"])
 @pytest.mark.parametrize("timeout", ["--timeout", "--timeout-s"])
 @pytest.mark.parametrize("verbose", [False, True])
@@ -554,7 +591,7 @@ def test_wait_does_not_bank_before_capture_cleanup(state, monkeypatch, capsys):
     assert len(opener.requests) == 1
 
 
-@pytest.mark.parametrize("argv,reason", [(["--repeats", "0"], "walk_level_policy_invalid"), (["--program", "room", "--mover", "arm"], "walk_over_mover_envelope")])
+@pytest.mark.parametrize("argv,reason", [(["--repeats", "0"], "walk_level_policy_invalid"), (["--program", "room", "--mover", "arm"], "walk_mover_mismatch")])
 def test_run_shape_refusal_is_json(argv, reason, monkeypatch, capsys):
     code, body = _run(["run", *argv], _opener(), monkeypatch, capsys)
     assert code == 1
@@ -626,7 +663,7 @@ def test_remote_dry_run_refuses_before_reading_local_facts(monkeypatch, capsys, 
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsys, dry_run):
     opener = _opener(session='{"session_id": "run-1"}')
-    code, body = _run(["run", "--program", "bass", "--layout", "bass_axis", "--level-db", "-25", *(["--dry-run"] if dry_run else [])],
+    code, body = _run(["run", "--program", "bass", "--level-db", "-25", *(["--dry-run"] if dry_run else [])],
                       opener, monkeypatch, capsys)
     body = body if dry_run else body["schedule"]
     assert code == 0 and body["mic_moves"] == 1
@@ -645,7 +682,7 @@ def test_bass_dry_run_lists_admissible_session_offsets(monkeypatch, capsys, nois
 
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
     opener = _opener()
-    code, body = _run(["run", "--program", "bass", "--layout", "bass_axis", "--dry-run"],
+    code, body = _run(["run", "--program", "bass", "--dry-run"],
                       opener, monkeypatch, capsys)
     assert code == (0 if levels else 1)
     assert body["dry_run"] is True
@@ -653,6 +690,29 @@ def test_bass_dry_run_lists_admissible_session_offsets(monkeypatch, capsys, nois
     assert [row["offset_db"] for row in body["levels"]] == [0, -5, -10, -15]
     assert [row["level_db"] for row in body["levels"]] == [-18, -23, -28, -33]
     assert not opener.requests
+
+
+def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, capsys):
+    seen = []
+
+    def facts(plan):
+        seen.append(plan.mover)
+        return ready_facts(plan)
+
+    monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
+    code, body = _run(
+        ["run", "--program", "bass", "--mover", "human", "--dry-run"],
+        _opener(), monkeypatch, capsys,
+    )
+    assert code == 1 and body["reason"] == "walk_mover_mismatch"
+
+    for mover in ("arm", "human"):
+        code, _ = _run(
+            ["run", "--program", "speaker", "--mover", mover, "--dry-run"],
+            _opener(), monkeypatch, capsys,
+        )
+        assert code == 0
+    assert seen == ["arm", "human"]
 
 
 @pytest.mark.parametrize("verb,flags,noise,levels", [

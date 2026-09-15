@@ -33,7 +33,6 @@ from jasper.log_event import log_event
 from ..config import Config
 from ..mic_capture import MicCapture
 from ..wake_condition_context import AMBIENT_FLOOR_DBFS, classify_condition
-from ..wake_conditions import DEFAULT_CONDITION
 from ..wake_events import CAPTURE_POST_SEC, CAPTURE_PRE_SEC
 from ..wake_fusion import WakeFuser
 from ..wake_legs import LegSpec, wake_input_legs
@@ -97,10 +96,9 @@ def _ring_noise_floor_dbfs(ring, *, percentile: float = 25.0) -> float | None:
 
     A low percentile of the ring's per-frame RMS: the wake utterance is a
     minority of the ~6 s window, so the quieter frames approximate the room
-    background. Computed once at fire time (never per frame), it splits
-    "quiet" from "ambient" for the condition estimator. Returns None for an
-    empty/absent ring or any error — telemetry must never break the wake
-    fire path, and the caller treats None as "can't tell" (-> quiet).
+    background. Returns None for an empty/absent ring or any error — telemetry
+    must never break the wake fire path, and the caller treats None as
+    "can't tell" (-> quiet).
     """
     if not ring:
         return None
@@ -301,7 +299,8 @@ class WakeLegs:
         # veto land here rather than in the parallel leg loops.
         # `condition` is the acoustic condition the fuser keys on.
         self.fuser: WakeFuser = WakeFuser()
-        self.condition: str = DEFAULT_CONDITION
+        self.condition_ctx = classify_condition(None, None)
+        self.condition: str = self.condition_ctx.condition
         # Loop-clock timestamp of the last condition recompute; 0.0 forces
         # a refresh on the first WAKE frame.
         self.condition_refreshed_at: float = 0.0
@@ -356,10 +355,11 @@ class WakeLegs:
         self.condition_refreshed_at = now_loop
         try:
             noise_floor_dbfs = _ring_noise_floor_dbfs(self.capture_ring_on)
-            self.condition = classify_condition(
+            self.condition_ctx = classify_condition(
                 music_dbfs=self._music_dbfs(),
                 noise_floor_dbfs=noise_floor_dbfs,
-            ).condition
+            )
+            self.condition = self.condition_ctx.condition
             self.idle_rms_dbfs = noise_floor_dbfs
             if noise_floor_dbfs is not None and noise_floor_dbfs > AMBIENT_FLOOR_DBFS:
                 self.input_last_above_floor_at = time.time()
@@ -481,10 +481,6 @@ class WakeLegs:
 
         wake_event = None
         if capture_event:
-            condition_ctx = classify_condition(
-                music_dbfs=self._music_dbfs(),
-                noise_floor_dbfs=_ring_noise_floor_dbfs(self.capture_ring_on),
-            )
             wake_event = dict(
                 leg=leg,
                 score=score,
@@ -505,7 +501,7 @@ class WakeLegs:
                 },
                 firing_threshold=firing_threshold,
                 fired_legs=fired_legs,
-                condition=condition_ctx,
+                condition=self.condition_ctx,
                 mic_muted=self._mic_muted(),
             )
         return WakeFire(

@@ -46,11 +46,22 @@ _OPTIONAL_FIELDS = {
     "delta_highpass_hz",
 }
 
+DYNAMIC_BASS_REFUSAL_REASONS = frozenset({"bass_descriptor_malformed"} | {
+    f"bass_{name}_invalid" for name in _REQUIRED_FIELDS | _OPTIONAL_FIELDS
+})
+
+
+class DynamicBassDescriptorError(ValueError):
+    def __init__(self, field: str, detail: str) -> None:
+        super().__init__(detail)
+        self.field = field
+        self.reason = "bass_descriptor_malformed" if field == "dynamic_bass" else f"bass_{field}_invalid"
+
 
 def _finite(value: float, name: str) -> float:
     number = finite_float(value)
     if number is None:
-        raise ValueError(f"{name} must be a finite real number")
+        raise DynamicBassDescriptorError(name, f"{name} must be a finite real number")
     return number
 
 
@@ -75,23 +86,23 @@ class DynamicBassDescriptor:
         for name, number in values.items():
             object.__setattr__(self, name, number)
         if not LOW_BOOST_DB_MIN < values["low_boost_db"] <= NATIVE_LOUDNESS_BOOST_MAX_DB:
-            raise ValueError(f"low_boost_db must be in (0, {NATIVE_LOUDNESS_BOOST_MAX_DB}]")
+            raise DynamicBassDescriptorError("low_boost_db", f"low_boost_db must be in (0, {NATIVE_LOUDNESS_BOOST_MAX_DB}]")
         if not REFERENCE_LEVEL_DB_MIN <= values["reference_level_db"] <= REFERENCE_LEVEL_DB_MAX:
-            raise ValueError("reference_level_db is outside the Main-fader domain")
+            raise DynamicBassDescriptorError("reference_level_db", "reference_level_db is outside the Main-fader domain")
         if not DETECTOR_CORNER_HZ_MIN <= values["detector_lowpass_hz"] <= DETECTOR_CORNER_HZ_MAX:
-            raise ValueError("detector_lowpass_hz is outside the measured bass domain")
+            raise DynamicBassDescriptorError("detector_lowpass_hz", "detector_lowpass_hz is outside the measured bass domain")
         if not COMPRESSOR_THRESHOLD_DBFS_MIN <= values["compressor_threshold_dbfs"] <= COMPRESSOR_THRESHOLD_DBFS_MAX:
-            raise ValueError("compressor_threshold_dbfs must be in [-60, 0]")
+            raise DynamicBassDescriptorError("compressor_threshold_dbfs", "compressor_threshold_dbfs must be in [-60, 0]")
         if not COMPRESSOR_FACTOR_MIN < values["compressor_factor"] <= COMPRESSOR_FACTOR_MAX:
-            raise ValueError("compressor_factor must be in (1, 20]")
+            raise DynamicBassDescriptorError("compressor_factor", "compressor_factor must be in (1, 20]")
         if not COMPRESSOR_ATTACK_S_MIN <= values["compressor_attack_s"] <= COMPRESSOR_ATTACK_S_MAX:
-            raise ValueError("compressor_attack_s must be in [0.001, 0.1]")
+            raise DynamicBassDescriptorError("compressor_attack_s", "compressor_attack_s must be in [0.001, 0.1]")
         if not COMPRESSOR_RELEASE_S_MIN <= values["compressor_release_s"] <= COMPRESSOR_RELEASE_S_MAX:
-            raise ValueError("compressor_release_s must be in [0.01, 2]")
+            raise DynamicBassDescriptorError("compressor_release_s", "compressor_release_s must be in [0.01, 2]")
         if self.delta_highpass_hz is not None:
             corner = _finite(self.delta_highpass_hz, "delta_highpass_hz")
             if not DELTA_HIGHPASS_HZ_MIN <= corner < values["detector_lowpass_hz"]:
-                raise ValueError(
+                raise DynamicBassDescriptorError("delta_highpass_hz",
                     "delta_highpass_hz must be in the measured band below detector_lowpass_hz"
                 )
             object.__setattr__(self, "delta_highpass_hz", corner)
@@ -101,10 +112,10 @@ def validate_dynamic_bass_descriptor(value: Any) -> dict[str, Any]:
     """Return the normalized strict candidate payload or raise ``ValueError``."""
 
     if not isinstance(value, Mapping):
-        raise ValueError("dynamic_bass must be an object")
+        raise DynamicBassDescriptorError("dynamic_bass", "dynamic_bass must be an object")
     keys = set(value)
     if not _REQUIRED_FIELDS <= keys or not keys <= _REQUIRED_FIELDS | _OPTIONAL_FIELDS:
-        raise ValueError("dynamic_bass has unknown or missing fields")
+        raise DynamicBassDescriptorError("dynamic_bass", "dynamic_bass has unknown or missing fields")
     descriptor = DynamicBassDescriptor(**dict(value))
     return {name: getattr(descriptor, name) for name in sorted(_REQUIRED_FIELDS | _OPTIONAL_FIELDS)}
 

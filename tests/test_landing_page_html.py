@@ -1218,11 +1218,10 @@ def test_the_old_sound_setup_page_redirects_but_its_subtree_still_proxies(
     """`/sound/setup/` was printed and bookmarked, so the PAGE 301s instead of
     being cut outright (ADR-0253 §3).
 
-    Its subtree does not: a tab opened before the move POSTs
-    `./active-speaker/summed-test/stop` and `./volume-floor/stop` at its own
-    origin on pagehide, and a 301 turns a keepalive POST into a GET that never
-    stops the tone. So the prefix stays proxied, with the page header the
-    speaker page is served under.
+    Its subtree does not: a tab opened before the move can POST
+    `./volume-floor/stop` at its own origin on pagehide, and a 301 turns a
+    keepalive POST into a GET that never stops the tone. So the prefix stays
+    proxied, with the page header the speaker page is served under.
     """
     blocks = {
         (mod, path): body

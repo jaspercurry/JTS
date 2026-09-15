@@ -27,7 +27,7 @@ from openai.types.realtime import ResponseDoneEvent
 
 from jasper.tools import ToolRegistry, tool
 from jasper.voice import _base
-from jasper.voice._base import BaseLiveConnection
+from jasper.voice._base import BaseLiveConnection, upsample_16k_to_24k
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
     NEEDS_ATTENTION_CUE_SLUG,
@@ -37,7 +37,6 @@ from jasper.voice._supervisor import (
 from jasper.voice.openai_session import (
     ConnectionState,
     OpenAIRealtimeConnection,
-    _upsample_16k_to_24k,
 )
 from jasper.voice.grok_session import GROK_WEBSOCKET_BASE_URL, GrokRealtimeConnection
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
@@ -221,7 +220,7 @@ def test_upsample_16k_to_24k_produces_correct_length():
     Checks the math, not just that the call succeeds."""
     # 80 ms * 16000 Hz = 1280 samples * 2 bytes = 2560 bytes.
     pcm_16k = b"\x00\x00" * 1280
-    out, state = _upsample_16k_to_24k(pcm_16k, None)
+    out, state = upsample_16k_to_24k(pcm_16k, None)
     assert len(out) > 0
     # 80 ms * 24000 Hz = 1920 samples * 2 bytes = 3840 bytes ± 1 sample
     # of edge effect. ratecv may emit slightly fewer on the very first
@@ -234,8 +233,8 @@ def test_upsample_state_continuity_across_chunks():
     frame causes audible discontinuities at frame boundaries. Two
     successive 40 ms chunks with state should yield ~80 ms total."""
     pcm = b"\x00\x00" * 640  # 40 ms @ 16 kHz
-    out1, s1 = _upsample_16k_to_24k(pcm, None)
-    out2, _ = _upsample_16k_to_24k(pcm, s1)
+    out1, s1 = upsample_16k_to_24k(pcm, None)
+    out2, _ = upsample_16k_to_24k(pcm, s1)
     assert len(out1) + len(out2) >= 3700
 
 
@@ -356,15 +355,17 @@ async def test_session_update_sent_on_connect_with_manual_vad():
         await conn.stop()
 
 
-async def test_session_update_failure_redacts_the_connections_own_key(caplog):
-    """The retry-triggering warning logged when session.update fails must
-    not leak a prefix-less key even when the rejection echoes it back
-    verbatim — the connection hands its own key to `failure_detail` as a
-    literal (ADR-0243), same as every other failure on this connection."""
-
+@pytest.mark.parametrize("server_frame", [False, True])
+async def test_session_update_failure_redacts_the_connections_own_key(caplog, server_frame):
     class _FailSessionUpdateConn(_FakeConn):
         async def send(self, event: dict) -> None:
             if event.get("type") == "session.update":
+                if server_frame:
+                    self.feed({"type": "error", "error": {
+                        "code": "server_error", "type": "server_error",
+                        "message": 'rejected: {"key":"plainvalue123"}',
+                    }})
+                    return
                 raise RuntimeError('rejected: {"key":"plainvalue123"}')
             await super().send(event)
 
@@ -381,8 +382,13 @@ async def test_session_update_failure_redacts_the_connections_own_key(caplog):
             await conn._open_session_attempt()
 
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1, [r.getMessage() for r in warnings]
-    assert "plainvalue123" not in warnings[0].args[1]
+    assert len(warnings) == (2 if server_frame else 1)
+    assert all("plainvalue123" not in record.getMessage() for record in warnings)
+    if server_frame:
+        fields = event_fields(caplog, "provider.server_error")
+        assert fields["provider"] == "openai"
+        assert fields["code"] == fields["error_type"] == "server_error"
+        assert "plainvalue123" not in fields["message"]
 
 
 @pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
@@ -430,29 +436,63 @@ async def test_setup_acknowledgement_controls_readiness(conn_cls, outcome, monke
         await conn.stop()
 
 
-@pytest.mark.parametrize("error_type, code, transient", [
-    ("invalid_request_error", "invalid_parameter", False),
-    ("server_error", "server_error", True),
-    ("rate_limit_error", "rate_limit_exceeded", True),
-    ("invalid_request_error", "rate_limit_exceeded", True),
+@pytest.mark.parametrize("error_type, code, transient, message", [
+    ("invalid_request_error", "invalid_parameter", False, "setup rejected plainvalue123"),
+    ("server_error", "server_error", True, "setup rejected plainvalue123"),
+    ("rate_limit_error", "rate_limit_exceeded", True, "setup rejected plainvalue123"),
+    ("invalid_request_error", "rate_limit_exceeded", True, "setup rejected plainvalue123"),
+    ("invalid_request_error", "invalid_parameter", False, None),
 ])
-async def test_typed_setup_error_preserves_retry_and_cue(error_type, code, transient, caplog):
+@pytest.mark.parametrize("phase", ["setup", "steady"])
+async def test_typed_setup_error_preserves_retry_and_cue(error_type, code, transient, message, phase, caplog):
     from openai.types.realtime import RealtimeErrorEvent
-    from jasper.voice._supervisor import is_transient
+    from jasper.voice._supervisor import is_transient, openai_error_is_terminal
+
+    assert openai_error_is_terminal(code=code, error_type=error_type) is not transient
+    error = {
+        "type": "error", "event_id": "setup_error",
+        "error": {"type": error_type, "code": code, "message": message},
+    }
+    if message is not None:
+        error = RealtimeErrorEvent.model_validate(error)
 
     class RejectedSetup(_FakeConn):
         async def send(self, event):
-            self._inbox.put_nowait(RealtimeErrorEvent.model_validate({
-                "type": "error", "event_id": "setup_error",
-                "error": {"type": error_type, "code": code, "message": "setup rejected plainvalue123"},
-            }))
+            if phase == "setup":
+                self._inbox.put_nowait(error)
+            else:
+                await super().send(event)
 
     conn = OpenAIRealtimeConnection(
         api_key="plainvalue123", connect_factory=lambda **_: _FakeAsyncCM(RejectedSetup()),
         backoff_schedule=(0.0,),
     )
-    with pytest.raises((ValueError, RuntimeError)) as failure:
+    if phase == "steady":
         await conn._open_session()
+        turn = await conn.acquire_turn()
+        await conn._dispatch_event("error", error)
+        assert not turn.turn_lost()
+        assert conn._state is ConnectionState.IN_TURN
+    else:
+        with pytest.raises((ValueError, RuntimeError)) as failure:
+            await conn._open_session()
+    fields = event_fields(caplog, "provider.server_error")
+    assert fields["provider"] == conn.PROVIDER_NAME
+    assert fields["code"] == code
+    assert fields["error_type"] == error_type
+    assert "plainvalue123" not in fields["message"]
+    assert event_records(caplog, "provider.server_error")[0].levelno == logging.WARNING
+    if phase == "steady":
+        assert conn.last_failure_detail() is None
+        await turn.release()
+        await conn.stop()
+        return
+    if message is None:
+        assert code in conn.last_failure_detail()
+        assert error_type in conn.last_failure_detail()
+        assert fields["message"] == ""
+    else:
+        assert conn.last_failure_detail() == fields["message"]
     assert is_transient(failure.value) is transient
     assert conn.wake_cue() == (CANT_CONNECT_CUE_SLUG if transient else NEEDS_ATTENTION_CUE_SLUG)
     assert conn.is_paused()
@@ -1677,7 +1717,7 @@ async def test_idle_context_reset_reopens_through_the_supervisor(conn_cls):
         )
         assert len(factory.conns) >= 2
         # No orphan: the live session is the only one left open.
-        assert [c for c in factory.conns if not c.closed] == [conn._conn]
+        assert [c for c in factory.conns if not c.closed] == [conn._session]
         turn3 = await conn.acquire_turn()
         await turn3.release()
     finally:
@@ -3032,7 +3072,7 @@ async def test_aborted_input_is_cleared_before_the_fresh_command():
         await fresh.send_audio(command)
         await fresh.end_input()
         assert factory.conns == [wire]
-        assert committed == [_upsample_16k_to_24k(command, None)[0]]
+        assert committed == [upsample_16k_to_24k(command, None)[0]]
     finally:
         await conn.stop()
 

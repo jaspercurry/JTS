@@ -23,21 +23,20 @@
 // creeping back (same shared-by-promotion rule as escape.js / dialog.js).
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
+import { wireCopyButtons } from "/assets/shared/js/copy.js";
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
-import { initSeatLevel, isSeatLevelRunning, stopSeatLevel } from "/assets/sound-profile/js/seat-level.js";
+import { initSeatLevel, isSeatLevelRunning, renderSeatLevelCard, stopSeatLevel } from "/assets/sound-profile/js/seat-level.js";
 import { applyInstallationToSetting, installationFromSetting } from "/assets/sound-profile/js/installation.js";
 import {
-  activeCommissionGroup,
   activeSpeakerStepState,
   clampSubwooferCrossoverFcHz,
-  commissioningStepFooter,
+  nextActionAct,
   commissioningTimingLabel,
   commissionPayloadFailure,
   defaultActiveSpeakerStep,
   humanRole,
   levelMatchSummary,
-  outputStatusClass,
-  outputStepTitle
+  outputStatusClass
 } from "/assets/sound-profile/js/active-speaker-ui.js";
 import {
   GAINLESS_TYPES
@@ -208,7 +207,7 @@ import {
   // The handoff card's copy state. `copiedRevision` is the declaration
   // revision the copied prompt was MINTED against (server-stamped), so a
   // later declaration edit turns the copy stale instead of drifting silently.
-  var tuningHandoff = {programId: '', prompt: '', copied: false, selected: false, copiedRevision: null};
+  var tuningHandoff = {prompt: '', copied: false, selected: false, copiedRevision: null};
   var COMMISSION_RAMP_LISTEN_MS = 900;
   var COMMISSION_RAMP_NEXT_PULSE_MS = 80;
   var SUMMED_TEST_STOP_ARM_MS = 250;
@@ -511,14 +510,15 @@ import {
   function renderFollower() {
     el('view-body').innerHTML =
       '<div class="saved-stack"><section class="active-speaker-setup">' +
-      renderI2sHatSetting() + renderOutputTopologySetup() +
+      renderNextActionCard() + renderI2sHatSetting() + renderOutputTopologySetup() +
       '</section></div>';
   }
 
   function renderSpeaker() {
     el('view-body').innerHTML =
       '<div class="saved-stack"><section class="active-speaker-setup">' +
-      renderOutputTopologySetup() + '</section></div>';
+      renderNextActionCard() + renderOutputTopologySetup() + '</section></div>';
+    initSeatLevel();
   }
 
   function renderOutput() {
@@ -871,7 +871,7 @@ import {
     var proposal = el('view-body').querySelector('[data-driver-proposal]');
     if (proposal) proposal.innerHTML = renderCrossoverPreviewCardBody(topology);
     var footer = el('view-body').querySelector('[data-driver-research-footer]');
-    if (footer) footer.innerHTML = driverResearchStepFooterButtonHtml(topology);
+    if (footer) footer.innerHTML = driverResearchStepFooterButtonHtml();
     var echo = el('view-body').querySelector('[data-driver-echo]');
     if (echo) echo.innerHTML = renderDriverEchoBack(topology);
   }
@@ -1314,6 +1314,8 @@ import {
     return activeSpeakerStepState(step, outputStepContext(topology));
   }
   function defaultOutputStep() {
+    var action = (activeSpeaker.commissioningView || {}).next_action;
+    if (action && action.id) return nextActionAct(action).step;
     if (!outputTopology.dirty && !outputHardwareMismatch(currentOutputTopology()) &&
         !driverResearch.dirty) {
       var backendStep = commissioningCurrentStep();
@@ -1321,12 +1323,8 @@ import {
     }
     return defaultActiveSpeakerStep(outputStepContext(currentOutputTopology()));
   }
-  function outputStepIsOpen(step, topology) {
+  function outputStepIsOpen(step) {
     return (outputPage.stepOverride || defaultOutputStep()) === step;
-  }
-  function outputStepCanOpen(step, topology) {
-    if (outputStepState(step, topology) !== 'todo') return true;
-    return step === 'layout' && outputTopology.dirty && outputPage.stepOverride === 'layout';
   }
   function openOutputStep(step) {
     outputPage.stepOverride = step;
@@ -1338,7 +1336,7 @@ import {
   }
   function renderOutputStepCard(step, title, hint, topology, bodyHtml, footerHtml) {
     var state = outputStepState(step, topology);
-    var open = outputStepIsOpen(step, topology);
+    var open = outputStepIsOpen(step);
     var done = state === 'done';
     return '<details class="output-step output-step--' + escapeHtml(state) + '"' +
       ' data-output-step="' + escapeHtml(step) + '"' +
@@ -1354,49 +1352,33 @@ import {
       '</div>' +
     '</details>';
   }
-  function renderOutputStepButton(step, label, primary, disabled) {
-    return '<button type="button" class="btn ' + escapeHtml(primary ? 'btn--primary' : 'btn--ghost') +
-      '" data-act="output-step-next" data-step="' + escapeHtml(step) + '"' +
-      (disabled ? ' disabled' : '') + '>' +
-      escapeHtml(label) + '</button>';
+  function renderNextActionButton(action) {
+    var behavior = nextActionAct(action);
+    var busy = outputTopology.saving || driverResearch.saving ||
+      crossoverPreview.preparing || activeSpeaker.commissionBusy;
+    return '<button type="button" class="btn btn--primary" data-next-action="' + escapeHtml(action.id) +
+      '" data-act="' + escapeHtml(behavior.act) + '" data-program="' + escapeHtml(behavior.program || '') + '"' +
+      (behavior.command ? ' data-copy="tuning-run-command"' : '') +
+      (action.enabled === false || busy ? ' disabled' : '') + '>' + escapeHtml(action.label) + '</button>' +
+      (action.reason ? '<p class="form-hint">' + escapeHtml(action.reason) + '</p>' : '');
   }
-  // Render a {label, primary, disabled, act, step} footer descriptor from
-  // commissioningStepFooter. An 'output-step-next' act carries the step; a
-  // bare act (save-driver-design / prepare-crossover-preview) is a direct
-  // click; an empty act is a disabled waiting affordance.
-  function renderStepFooterButton(desc) {
-    desc = desc || {};
-    if (desc.act === 'output-step-next') {
-      return renderOutputStepButton(desc.step || '', desc.label, desc.primary, desc.disabled);
-    }
-    return '<button type="button" class="btn ' +
-      escapeHtml(desc.primary !== false ? 'btn--primary' : 'btn--ghost') + '"' +
-      (desc.act ? ' data-act="' + escapeHtml(desc.act) + '"' : '') +
-      (desc.disabled ? ' disabled' : '') + '>' +
-      escapeHtml(desc.label || '') + '</button>';
+  function renderNextActionCard() {
+    var action = (activeSpeaker.commissioningView || {}).next_action;
+    if (!action || !action.id) return '';
+    if (action.id === 'copy_prompt') return renderTuningHandoffCard(action);
+    var command = nextActionAct(action).command;
+    return '<section class="info-card" data-next-action-card>' + renderNextActionButton(action) +
+      (command ? '<label class="field">Run in the console<textarea id="tuning-run-command" readonly rows="2">' +
+        escapeHtml(command) + '</textarea></label>' : '') + '</section>';
   }
-  function driverResearchStepFooterButtonHtml(topology) {
-    // Clean-draft readiness comes from the backend commissioning view-model;
-    // the client fallback covers only the unsaved-edit cases it cannot see.
-    // A pending layout save blocks first; a draft save-in-flight is "Saving";
-    // an unsaved draft offers "Save values" (same act as the backend path).
-    var clientFallback = outputTopology.dirty ?
-      {label: 'Save layout first', primary: true, disabled: true} :
-      (driverResearch.saving ?
-        {label: 'Saving', primary: true, disabled: true} :
-        {label: 'Save values', primary: true, act: 'save-driver-design'});
-    return renderStepFooterButton(commissioningStepFooter('research',
-      activeSpeaker.commissioningView, {
-        layoutDirty: outputTopology.dirty,
-        draftDirty: driverResearch.dirty,
-        saving: driverResearch.saving,
-        previewInputsReady: driverResearchPreviewInputsReady(topology),
-        clientFallback: clientFallback
-      }));
+  function driverResearchStepFooterButtonHtml() {
+    return '<button type="button" class="btn btn--ghost" data-act="save-driver-design"' +
+      (outputTopology.dirty || driverResearch.saving ? ' disabled' : '') + '>' +
+      (driverResearch.saving ? 'Saving' : 'Save values') + '</button>';
   }
-  function renderDriverResearchStepFooter(topology) {
+  function renderDriverResearchStepFooter() {
     return '<span data-driver-research-footer>' +
-      driverResearchStepFooterButtonHtml(topology) +
+      driverResearchStepFooterButtonHtml() +
     '</span>';
   }
   function outputTemplateAxesForTopology(topology) {
@@ -1651,7 +1633,7 @@ import {
             '<div><p class="setting-row__title">2. Paste the response</p>' +
               '<p class="setting-row__hint">JTS loads the proposed values into the working setup for your review. Nothing is applied to the speaker.</p></div>' +
             '<div class="driver-research__actions">' +
-              '<button type="button" class="btn btn--primary" data-act="parse-driver-research">Load information</button>' +
+              '<button type="button" class="btn btn--ghost" data-act="parse-driver-research">Load information</button>' +
             '</div>' +
           '</div>' +
           '<textarea id="driver-research-import" class="driver-research__textarea driver-research__textarea--compact" data-driver-import ' +
@@ -1831,9 +1813,8 @@ import {
           renderOutputHardwareCard(topology, layoutStatusValue) +
           renderCrossChildNoticeCard(topology) + renderOutputGroupsCard(topology),
         renderOutputHardwareRefresh() +
-          renderOutputStepButton('layout',
-          outputTopology.dirty ? 'Save' : 'Continue',
-          true)
+          '<button type="button" class="btn btn--ghost" data-act="save-output-topology"' +
+            (!outputTopology.dirty || outputTopology.saving ? ' disabled' : '') + '>Save</button>'
       ) +
       renderOutputStepCard(
         'research',
@@ -1841,16 +1822,17 @@ import {
         outputStepHint('research', 'Describe each installed driver, then research a starting crossover.'),
         topology,
         renderDriverResearchCard(topology),
-        renderDriverResearchStepFooter(topology)
+        renderDriverResearchStepFooter()
       ) +
       renderOutputStepCard(
         'experiment',
         'First speaker experiment',
         outputStepHint('experiment', 'Measure the speaker at the design mark.'),
         topology,
-        commissioningStepNotRequired('experiment')
+        (commissioningStepNotRequired('experiment')
           ? renderStepNotRequiredCard('experiment', 'No active crossover experiment is needed.')
-          : '<a class="btn btn--primary" href="/sound/speaker/crossover/">Open speaker experiment</a>',
+          : '<a class="btn btn--ghost" href="/sound/speaker/crossover/">Open speaker experiment</a>') +
+          (followerMode ? '' : renderSeatLevelCard()),
         ''
       ) +
       renderOutputStepCard(
@@ -1865,7 +1847,7 @@ import {
           : renderBaselineProfileCard(),
         ''
       ) +
-      renderTuningHandoffCard() +
+      (((activeSpeaker.commissioningView || {}).next_action || {}).id === 'copy_prompt' ? '' : renderTuningHandoffCard()) +
       renderOutputTopologyResetAction() +
     '</div>';
   }
@@ -2187,7 +2169,7 @@ import {
       'Save and apply';
     var actions = applyBlocked || applied ? '' :
       '<div class="active-speaker-actions active-speaker-profile-actions">' +
-        '<button type="button" class="btn btn--primary" data-act="save-apply-baseline-profile"' +
+        '<button type="button" class="btn btn--ghost" data-act="save-apply-baseline-profile"' +
           ((busy || !canFinish) ? ' disabled' : '') + '>' + escapeHtml(actionLabel) + '</button></div>';
     if (profile.previous_candidate_fingerprint) {
       actions += '<button type="button" class="btn" data-act="restore-baseline-profile"' +
@@ -2214,28 +2196,33 @@ import {
     var live = typeof draft.revision === 'number' ? draft.revision : 0;
     return live > tuningHandoff.copiedRevision;
   }
-  function renderTuningHandoffCard() {
-    if (!baselineProfileApplied()) return '';
+  function renderTuningHandoffCard(action) {
+    if (!action && !baselineProfileApplied()) return '';
     var stale = tuningHandoffStale();
     var copyState = promptCopyState(tuningHandoff, stale);
-    var programs = (activeSpeaker.baselineProfile || {}).tuning_programs || tuningHandoff.programs || [];
-    return '<div class="output-card">' +
+    var programs = (activeSpeaker.baselineProfile || {}).tuning_programs || [];
+    var programId = (((activeSpeaker.commissioningView || {}).next_action || {}).program || 'speaker');
+    return '<section class="info-card"' + (action ? ' data-next-action-card' : '') + '>' +
       '<p class="output-card__title">Tune with an AI operator</p>' +
       '<p class="setting-row__hint">Copy a prompt into an AI session with access to this speaker.</p>' +
-      programs.map(function(program) {
-        var label = tuningHandoff.programId === program.id ? copyState.label : 'Copy prompt';
+      (action ? renderNextActionButton(action) : '<button type="button" class="btn btn--ghost" ' +
+        'data-act="copy-tuning-handoff" data-program="' + escapeHtml(programId) + '">Copy the ' +
+        escapeHtml(programId) + ' prompt</button>') +
+      '<details class="disclosure" data-other-prompts><summary>Other programs</summary><div class="disclosure__body">' +
+      programs.filter(function(program) { return program.id !== programId; }).map(function(program) {
         return '<div class="output-card__head"><div>' +
           '<p class="output-card__title">' + escapeHtml(program.title) + '</p>' +
           '<p class="setting-row__hint">' + escapeHtml(program.description) + '</p></div>' +
           '<button type="button" class="btn btn--ghost" data-act="copy-tuning-handoff" data-program="' +
-            escapeHtml(program.id) + '">' + escapeHtml(label) + '</button></div>';
+            escapeHtml(program.id) + '">Copy the ' + escapeHtml(program.id) + ' prompt</button></div>';
       }).join('') +
+      '</div></details>' +
       (stale ? '<p class="setting-row__hint" data-tuning-handoff-stale>' +
         'Your declarations changed. Copy a fresh prompt before the next session.</p>' : '') +
       '<textarea id="tuning-handoff-prompt" class="' + copyState.promptClass + '" readonly ' +
         (copyState.selected ? 'rows="6" ' : '') +
         'aria-label="AI operator prompt">' + escapeHtml(tuningHandoff.prompt || '') + '</textarea>' +
-    '</div>';
+    '</section>';
   }
   function rangeRow(label, value, min, max, opts) {
     opts = opts || {};
@@ -2772,7 +2759,10 @@ import {
       );
     }
     else if (act === 'toggle-output-subwoofer') { toggleOutputSubwoofer(t.getAttribute('data-mode') || 'add'); }
-    else if (act === 'output-step-next') { advanceOutputStep(t.getAttribute('data-step') || ''); }
+    else if (act === 'open-output-layout') {
+      openOutputStep('layout');
+      el('view-body').querySelector('[data-output-step="layout"]').scrollIntoView({block: 'start'});
+    }
     else if (act === 'save-output-topology') { saveOutputTopology(); }
     else if (act === 'reset-output-topology') { resetOutputTopology(); }
     else if (act === 'repin-output-topology') { repinOutputTopology(); }
@@ -3015,14 +3005,6 @@ import {
     if (ev.target && ev.target.classList && ev.target.classList.contains('output-step') &&
         ev.target.open) {
       var step = ev.target.getAttribute('data-output-step') || outputPage.stepOverride;
-      var topology = currentOutputTopology();
-      if (!outputStepCanOpen(step, topology)) {
-        ev.target.open = false;
-        outputPage.stepOverride = defaultOutputStep();
-        status('Finish the current card before opening ' + outputStepTitle(step, commissioningStepView(step)) + '.', true);
-        render();
-        return;
-      }
       outputPage.stepOverride = step;
       el('view-body').querySelectorAll('.output-step[open]').forEach(function(stepEl) {
         if (stepEl !== ev.target) stepEl.open = false;
@@ -3231,7 +3213,12 @@ import {
   }
   async function refreshCommissioningView() {
     try {
-      patchActiveSpeaker({commissioningView: await getJSON('./active-speaker/commissioning-view')});
+      var view = await getJSON('./active-speaker/commissioning-view');
+      var previous = (activeSpeaker.commissioningView || {}).next_action || {};
+      if (view.next_action && (view.next_action.id !== previous.id || view.next_action.program !== previous.program)) {
+        outputPage.stepOverride = '';
+      }
+      patchActiveSpeaker({commissioningView: view});
     } catch (viewError) {
       patchActiveSpeaker({commissioningView: activeSpeaker.commissioningView || null});
     }
@@ -3823,7 +3810,6 @@ import {
         throw new Error('this speaker has no applied profile to hand over yet');
       }
       if (!payload.prompt) throw new Error('the selected tuning program is unavailable');
-      tuningHandoff.programId = programId;
       tuningHandoff.prompt = String(payload.prompt);
       tuningHandoff.copiedRevision = (payload.binding || {}).design_draft_revision;
       field.value = tuningHandoff.prompt;
@@ -3943,6 +3929,7 @@ import {
       }
       crossoverPreview.payload = null;
       crossoverPreview.error = '';
+      await refreshCommissioningView();
       if (options.nextStep) outputPage.stepOverride = options.nextStep;
       if (!options.forPreview) {
         status(importWarning
@@ -4011,29 +3998,6 @@ import {
       render();
       return false;
     }
-  }
-  async function advanceOutputStep(step) {
-    var topology = currentOutputTopology();
-    if (step === 'layout') {
-      if (outputTopology.dirty) {
-        await saveOutputTopology({nextStep: 'research'});
-      } else {
-        openOutputStep('research');
-      }
-      return;
-    }
-    if (step === 'research') {
-      if (driverResearch.dirty || !driverResearchStepSatisfied()) {
-        if (!await saveDriverResearchDraft({forPreview: true})) return;
-      }
-      if (activeCommissionGroup(topology) &&
-          !crossoverPreviewReadyForProtectedStaging(crossoverPreview.payload)) {
-        if (!await prepareCrossoverPreview()) return;
-      }
-      openOutputStep(defaultOutputStep());
-      return;
-    }
-    openOutputStep(step);
   }
   function handleTopologyConflict(e, defaultMessage) {
     if (e.status !== 409 || !e.body || !e.body.output_topology) return false;
@@ -4373,5 +4337,5 @@ import {
   });
   if (followerMode || pageMode === 'speaker') loadLocalHardware();
   else loadState();
-  if (pageMode === 'speaker' && !followerMode) initSeatLevel();
+  wireCopyButtons(el('view-body'));
 })();

@@ -20,7 +20,7 @@ from pydantic import TypeAdapter
 
 from jasper.tools import ToolRegistry, tool
 from jasper.voice import _base, openai_live_session
-from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG, OUT_OF_CREDIT_CUE_SLUG
+from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG, NEEDS_ATTENTION_CUE_SLUG, OUT_OF_CREDIT_CUE_SLUG, is_transient
 from jasper.voice.conversation import END_CONVERSATION_TOOL, register_conversation_tools
 from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConnection
 from jasper.voice.session import ConnectionState
@@ -811,6 +811,19 @@ async def test_quiet_deltas_play_only_while_the_answer_is_running(
     assert int(fields["quiet_discarded"]) == discarded
 
 
+async def test_the_first_audible_delta_reports_provider_latency(caplog):
+    """Live joins the other adapters on `turn.first_chunk`, and fires it on
+    the first AUDIBLE delta: idle PCM is not the model starting to speak."""
+    caplog.set_level(logging.INFO)
+    async with live_turn() as turn:
+        await turn.on_event(output_audio(QUIET_PCM))
+        assert event_records(caplog, "turn.first_chunk") == []
+        await turn.on_event(output_audio(AUDIBLE_PCM))
+        fields = event_fields(caplog, "turn.first_chunk")
+    assert fields["provider"] == "openai_live"
+    assert int(fields["since_turn_start_ms"]) >= 0
+
+
 async def test_an_audible_delta_after_a_long_gap_rearms_silence_bridging(monkeypatch):
     clock = FrozenClock()
     monkeypatch.setattr(openai_live_session, "time", clock)
@@ -1036,6 +1049,44 @@ async def test_a_server_that_never_acks_the_close_does_not_hold_the_release(monk
     assert [e["type"] for e in socket.sent].count("session.close") == 1
     assert socket.closed
     assert elapsed < 1.0
+
+
+@pytest.mark.parametrize("code, transient", [("unknown_parameter", False), ("rate_limit_exceeded", True)])
+async def test_startup_rejection_preserves_retry_and_cue(code, transient, caplog):
+    caplog.set_level(logging.DEBUG)
+    sockets = []
+
+    class RejectedStart(LiveSocket):
+        async def send(self, event):
+            self.sent.append(event)
+            await self.events.put({"type": "error", "error": {
+                "code": code, "type": "invalid_request_error",
+                "message": "rejected private-test-credential",
+            }})
+
+    def connect():
+        socket = RejectedStart()
+        sockets.append(socket)
+        return socket
+
+    async def sleep(_):
+        pass
+
+    conn = OpenAILiveConnection(api_key="private-test-credential", connect=connect)
+    conn._sleep = sleep
+    await conn.start(ToolRegistry(), "Be brief.")
+    try:
+        with pytest.raises((ValueError, RuntimeError)) as failure:
+            await conn.acquire_turn()
+        assert is_transient(failure.value) is transient
+        assert conn.wake_cue() == (CANT_CONNECT_CUE_SLUG if transient else NEEDS_ATTENTION_CUE_SLUG)
+        assert len(sockets) == (openai_live_session.SESSION_OPEN_ATTEMPTS if transient else 1)
+        assert all(socket.closed for socket in sockets)
+        assert "private-test-credential" not in str(failure.value)
+        assert "private-test-credential" not in conn.last_failure_detail()
+        assert "private-test-credential" not in caplog.text
+    finally:
+        await conn.stop()
 
 
 async def test_a_rejected_command_reports_the_server_error_code_and_type(monkeypatch, caplog):

@@ -24,7 +24,7 @@ from jasper.audio_measurement.room_boundary import (
     room_ceiling_hz,
 )
 from jasper.audio_measurement.measurement_geometry import (
-    WALL_FIELD_BY_KEY, boundary_prior, load_declared_geometry,
+    boundary_prior, load_declared_geometry,
 )
 from jasper.audio_measurement.room_limits import cloud_trusted_floor_hz, spatial_support
 
@@ -324,8 +324,11 @@ def room_document(
     persistence = room_persistence(takes, ceiling)
     limits = room_analysis_bounds(value, persistence)
     geometry = load_declared_geometry(geometry_path) if geometry_path is not None else None
-    walls = {key: distance for key, field in WALL_FIELD_BY_KEY.items()
-             if geometry is not None and (distance := getattr(geometry, field)) is not None}
+    walls, boundary_reason = geometry.boundary_walls() if geometry else ({}, "geometry_undeclared")
+    boundary = {"advisory": True, **boundary_prior(value.freqs_hz, walls=walls)} if walls else None
+    if boundary is not None and geometry is not None and geometry.cabinet_back_wall_m is not None:
+        boundary["geometry"] = geometry.to_dict()
+        boundary["front_reference"] = "front_panel_centre" if "front" in walls else None
     incumbent, incumbent_reason = incumbent_room(profile, manifest, set_id=set_id)
     return {
         "ceiling": {"hz": ceiling.ceiling_hz, "provenance": ceiling.to_dict()},
@@ -336,6 +339,6 @@ def room_document(
         "limits": limits,
         "incumbent": incumbent,
         "incumbent_reason": incumbent_reason,
-        "boundary": {"advisory": True, **boundary_prior(value.freqs_hz, walls=walls)} if walls else None,
-        "boundary_reason": "" if walls else ("walls_undeclared" if geometry else "geometry_undeclared"),
+        "boundary": boundary,
+        "boundary_reason": boundary_reason,
     }

@@ -132,9 +132,11 @@ class WizardClient:
         capture = block.get("capture") or {}
         if http != 200:
             return http, {"code": REASON_ANSWER_LOST}
-        live_id = capture.get("session_id") or block.get("session_id")
-        if live_id != run_id:
+        live_id = capture.get("session_id")
+        if live_id and live_id != run_id:
             return 409, {"code": "run_not_current", "run_id": run_id, "current_run_id": live_id}
+        if not live_id:
+            capture = {"status": "starting"}
         progress = capture.get("run") or {}
         return http, {"run_id": run_id, **progress,
                       "status": capture.get("status"),
