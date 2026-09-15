@@ -182,8 +182,11 @@ class MeasureSpec:
     level_matched: bool = False
     graph_scope: str = GRAPH_SCOPE_DRIVERS
     program_phase: str = ""
+    stimulus: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
+        if self.stimulus is not None and self.graph_scope != "candidate":
+            raise ValueError("a planned stimulus requires the candidate graph")
         if self.graph_scope not in GRAPH_SCOPES:
             raise ValueError(f"graph_scope must be one of {GRAPH_SCOPES}")
         if self.graph_scope in CANDIDATE_SCOPES and not self.candidate_id.strip():
@@ -438,7 +441,7 @@ def stubbed_capabilities(spec: MeasureSpec) -> tuple[CapabilityStub, ...]:
     "play, bank, and say what the banked evidence is still owed".
     """
     codes: list[str] = []
-    if spec.regime == REGIME_NEAR_FIELD:
+    if spec.regime == REGIME_NEAR_FIELD and spec.graph_scope == GRAPH_SCOPE_DRIVERS:
         codes.append(NEAR_FIELD_SPLICE_NOT_IMPLEMENTED)
     if spec.level_ladder_dbfs:
         codes.append(DISTORTION_VS_LEVEL_NOT_IMPLEMENTED)

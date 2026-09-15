@@ -207,7 +207,7 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, pea
     for attempt in (1, 2):
         manifest.begin({"index": 1, "candidate_id": "candidate", "pose": {"kind": "bearing", "deg": 20, "elevation_deg": 0}},
                        attempt=attempt, pose_index=0)
-        program = compose_plan_program(conductor, spec, rung)
+        program = compose_plan_program(conductor, spec, rung, context=SimpleNamespace())
         gain = program.segment("sweep_w").gain_db
         assert gain == pytest.approx(-30 + (raise_db if attempt == 2 else 0))
         assert all(seg.effective_peak_dbfs <= conductor._excitation.caps_dbfs[seg.role]

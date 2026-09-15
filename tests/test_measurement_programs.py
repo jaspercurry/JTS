@@ -92,6 +92,7 @@ def test_available_programs_is_the_sorted_registry() -> None:
         ("baseline", "full"),
         ("bass", "axis"),
         ("bass", "cloud"),
+        ("bass", "nearfield"),
         ("bass", "quick"),
         ("branches", "express"),
         ("close", "spot"),
@@ -298,5 +299,27 @@ def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     else:
         config["programs"][0].update({"purpose": "room", "regime": "per_driver"})  # type: ignore[index]
 
+    with pytest.raises(ValueError):
+        mp.load_programs(_write_config(tmp_path, config))
+
+
+@pytest.mark.parametrize("layout,ceiling", [("bass_axis", 1100), ("bass_nearfield", 1200), ("room_quick", 1100)])
+def test_run_uses_the_matching_purposes_stimulus(tmp_path, monkeypatch, layout, ceiling):
+    config = _bundled_config()
+    config["stimuli"]["near"] = {"ceiling_hz": 1200}
+    next(row for row in config["programs"] if row["id"] == "bass" and row["size"] == "nearfield")["stimulus"] = "near"
+    monkeypatch.setattr(mp, "_PROGRAMS", mp.load_programs(_write_config(tmp_path, config)))
+    assert mp.run_program("bass", layout).stimulus == {"ceiling_hz": ceiling}
+
+
+@pytest.mark.parametrize("stimuli,reference", [
+    ([], "bass"), ({"bass": []}, "bass"), ({"bass": {"band_hz": [20, 1100]}}, "bass"),
+    ({"bass": {"ceiling_hz": 1100}}, "missing"), ({"bass": {"ceiling_hz": True}}, "bass"),
+    ({"bass": {"ceiling_hz": 0}}, "bass"), ({"bass": {"ceiling_hz": float("inf")}}, "bass"),
+])
+def test_invalid_registry_stimulus_is_a_value_error(tmp_path, stimuli, reference):
+    config = _bundled_config()
+    config["stimuli"] = stimuli
+    next(row for row in config["programs"] if row["id"] == "bass")["stimulus"] = reference
     with pytest.raises(ValueError):
         mp.load_programs(_write_config(tmp_path, config))

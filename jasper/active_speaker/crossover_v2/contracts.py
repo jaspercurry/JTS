@@ -1299,7 +1299,6 @@ BANKED_TAKE_GLOB = "crossover_v2/*/positions/*.json"
 #: Spelled here because `record_store` writes it and `record_index` reads it.
 MEASURE_KIND_KEY = "measure_kind"
 
-#: The two capture regimes. Owner: `driver_acoustics.CAPTURE_GEOMETRIES`.
 REGIME_NEAR_FIELD = "near_field"
 REGIME_REFERENCE_AXIS = "reference_axis"
 MEASURE_REGIMES = (REGIME_NEAR_FIELD, REGIME_REFERENCE_AXIS)

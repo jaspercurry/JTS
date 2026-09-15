@@ -940,7 +940,7 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
     gain = None
     ceilings = conductor._measure_gain_ceiling_db
     for attempt in range(1, 4 if clipped_take else 2):
-        program = compose_plan_program(conductor, spec, gain)
+        program = compose_plan_program(conductor, spec, gain, context=SimpleNamespace())
         peak = max(seg.gain_db for seg in program.segments if seg.kind in STIMULUS_KINDS)
         if gain is not None:
             assert peak == pytest.approx(gain)
@@ -1017,7 +1017,7 @@ def test_driver_retry_program_preserves_the_solved_role_levels(target):
     from tests.crossover_v2_fixtures import FakeSeams, _conductor
 
     conductor = _conductor(FakeSeams(), gain_plan_db={"woofer": -50.0, "tweeter": -57.0})
-    program = compose_plan_program(conductor, MeasureSpec(kind="baseline", graph_scope="drivers"), target)
+    program = compose_plan_program(conductor, MeasureSpec(kind="baseline", graph_scope="drivers"), target, context=SimpleNamespace())
     delta = 0 if target is None else target + 50.0
     assert program.segment("sweep_w").gain_db == pytest.approx(-50.0 + delta)
     assert program.segment("sweep_t").gain_db == pytest.approx(-57.0 + delta)
@@ -1031,10 +1031,10 @@ def test_summed_takes_keep_the_session_backoff_with_a_check_gain_plan(gain_plan)
 
     conductor = _conductor(FakeSeams(), gain_plan_db=gain_plan)
     spec = MeasureSpec(kind="baseline", graph_scope="candidate", candidate_id="fp-a", program_phase="verify")
-    program = compose_plan_program(conductor, spec, None)
+    program = compose_plan_program(conductor, spec, None, context=SimpleNamespace())
     expected = conductor._excitation.verify_program().segment("sweep_verify").gain_db
     assert program.segment("sweep_verify").gain_db == pytest.approx(expected)
-    windowed = compose_plan_program(conductor, spec, -60.0)
+    windowed = compose_plan_program(conductor, spec, -60.0, context=SimpleNamespace())
     assert windowed.segment("sweep_verify").gain_db == pytest.approx(-60.0)
 
 
@@ -1057,7 +1057,7 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     manifest = RunManifest("two-rungs", _Store(fakes.records))
     def answer():
         rung = fakes.play.calls[-1]["stimulus_dbfs"]
-        program = compose_plan_program(conductor, spec, rung)
+        program = compose_plan_program(conductor, spec, rung, context=SimpleNamespace())
         return WiredCaptureAnswer(wav=b"", program=program.to_dict(), device={"rung_dbfs": rung})
     records = core_capture.CapturedRecordStore(manifest, SimpleNamespace(take_answer=answer))
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
@@ -1125,7 +1125,7 @@ async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypa
     manifest.begin({"index": 1, "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={}, verify_only=True)
-    program = compose_plan_program(conductor, MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="baseline-room", program_phase="verify"), None)
+    program = compose_plan_program(conductor, MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="baseline-room", program_phase="verify"), None, context=SimpleNamespace())
     record = {"take_id": "drifting", "index": 1, "attempt": 1, "program": program.to_dict()}
     records.enrich(None, record)
     records.after_bank(record, "take")

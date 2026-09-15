@@ -15,21 +15,28 @@ from .snr_policy import band_levels_dbfs
 from .sweep import SweepMeta
 
 
+def sweep_band_sample_ranges(
+    sweep: SweepMeta, sample_rate: int, bands: Sequence[tuple[float, float]],
+) -> list[tuple[float, float, int, int]]:
+    ranges = []
+    for lo, hi in bands:
+        if not 0 < lo < hi or not all(math.isfinite(v) for v in (lo, hi)):
+            raise ValueError("sweep_band_invalid")
+        if lo < sweep.f1 or hi > sweep.f2:
+            continue
+        start, stop = (round(sweep.duration_s * sample_rate * math.log(f / sweep.f1)
+                            / math.log(sweep.f2 / sweep.f1)) for f in (lo, hi))
+        ranges.append((lo, hi, start, stop))
+    return ranges
+
+
 def sweep_band_levels(
     capture: np.ndarray, quiet: np.ndarray, sample_rate: int, sweep: SweepMeta,
     anchor: int, bands: Sequence[tuple[float, float]],
 ) -> list[dict[str, Any]]:
     """Raw power units on both sides; short dwell and changing noise limit precision."""
     rows = []
-    for lo, hi in bands:
-        if not 0 < lo < hi or not all(math.isfinite(v) for v in (lo, hi)):
-            raise ValueError("sweep_band_invalid")
-        if lo < sweep.f1 or hi > sweep.f2:
-            continue
-        start, stop = (
-            round(sweep.duration_s * sample_rate * math.log(f / sweep.f1) / math.log(sweep.f2 / sweep.f1))
-            for f in (lo, hi)
-        )
+    for lo, hi, start, stop in sweep_band_sample_ranges(sweep, sample_rate, bands):
         size = stop - start
         if size < 8 or anchor + start < 0 or anchor + stop > capture.size:
             continue

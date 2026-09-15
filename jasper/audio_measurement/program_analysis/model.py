@@ -16,6 +16,7 @@ import numpy as np
 from jasper.audio_measurement.frame_ledger import FrameLedger, LOST_AT_CAPTURE_OVERRUN
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.quality_model import DRIVER
+from jasper.audio_measurement.repeated_sweep import REPEAT_LEVEL_TOLERANCE_DB as REPEAT_LEVEL_TOLERANCE_DB
 
 
 # ``__package__``, not ``__name__``: every submodule logs under the one
@@ -59,12 +60,6 @@ class ConfiguredPathConditioningError(ValueError):
 GLITCH_RESIDUAL_SAMPLES = 1.5
 MAX_DRIFT_PPM = 500.0
 
-# Max captured-level gap, dB, between MEASURE's two bit-identical woofer
-# sweeps (design §5.2); read as band-relative in-band RMS, not full-band
-# peak — two hardware mics read identical sweeps 0.64 dB apart by peak but
-# 0.06-0.24 dB apart by in-band RMS.
-REPEAT_LEVEL_TOLERANCE_DB = 0.3
-
 # Floor on `SegmentLocation.confidence` below which a located sweep is not
 # evidence (~0.03 fits a confident-looking multi-thousand-sample step from
 # noise). Duplicated from crossover_v2.capture_dispatch's own floor and
@@ -89,8 +84,7 @@ SWEEP_SCHEDULE_RESIDUAL_CEILING_MS = 5.0
 DISCONTINUITY_UNRESOLVED = "unresolved"
 
 # --- VERIFY capture integrity ---
-# Three states: VERIFY plays ONE mono summed sweep, so some checks are
-# structurally inapplicable and report `not_evaluated`, never a pass.
+# Checks without enough captured evidence report `not_evaluated`, never a pass.
 INTEGRITY_PASS = "pass"
 INTEGRITY_FAIL = "fail"
 INTEGRITY_NOT_EVALUATED = "not_evaluated"
@@ -103,7 +97,7 @@ INTEGRITY_CHECK_FRAME_LEDGER = "frame_ledger"
 INTEGRITY_CHECK_SWEEP_HEARD = "summed_sweep_heard"
 INTEGRITY_CHECK_SWEEP_SCHEDULE = "summed_sweep_schedule"
 INTEGRITY_CHECK_CLIPPED_RUN = "clipped_run"
-# The MEASURE-side checks it CANNOT (MEASURE counterpart: DriftEstimate.glitch_inputs).
+# Repeat checks share the MEASURE bounds (DriftEstimate.glitch_inputs).
 INTEGRITY_CHECK_REPEAT_EPSILON = "repeat_epsilon"
 INTEGRITY_CHECK_REPEAT_LEVEL = "repeat_level_agreement"
 INTEGRITY_CHECK_WITHIN_ROLE_DESYNC = "within_role_desync"
@@ -112,7 +106,7 @@ INTEGRITY_CHECK_DISCONTINUITY_STEP = "discontinuity_step"
 # Why each unevaluated check could not run, stored on the check itself.
 _INTEGRITY_NO_REPEAT_PAIR = "verify plays one summed sweep: no repeat pair"
 _INTEGRITY_STEP_NEEDS_MORE_SWEEPS = (
-    "a step fit needs more located sweeps than a verify program has"
+    "a step fit needs more located sweeps for two residual degrees of freedom"
 )
 _INTEGRITY_NO_SUMMED_SWEEP = "no summed sweep located in this capture"
 _INTEGRITY_NO_STIMULUS = "no stimulus segment located in this capture"
@@ -602,6 +596,7 @@ class DriftEstimate:
     glitch_inputs: tuple[str, ...] = ()
     discontinuity_samples: float | str = 0.0
     discontinuity_after_segment: str = ""
+    discontinuity_resolvable: bool = False
 
 
 @dataclass(frozen=True)

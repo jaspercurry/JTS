@@ -22,6 +22,7 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementGeometry, ProgramAnalysis, analysis_diagnostic_summary, analyze_program_capture,
 )
 from jasper.audio_measurement.wired_capture import decode_wav_to_mono
+from jasper.audio_measurement.repeated_sweep import average_summed_capture
 from jasper.json_fields import finite_float
 
 from .crossover_v2.record_index import (
@@ -88,7 +89,9 @@ def analyzed_measurements(
             geometry=MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT),
             capture_report=record.get("capture_integrity"),
         )
-        yield AnalyzedMeasurement(record, path, program, samples, rate, calibration, analysis)
+        offset = analysis.locations[0].scheduled_start - program.segments[0].start_sample
+        yield AnalyzedMeasurement(record, path, program, average_summed_capture(program, samples, offset,
+                                   {loc.segment_id: loc.located_start for loc in analysis.locations}), rate, calibration, analysis)
 
 
 def analyze_measurement_bundle(

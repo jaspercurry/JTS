@@ -760,6 +760,7 @@ def prepare_v2_session(
     spec = None if verify_only else build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
         roles_bands=context.roles_bands, fc_hz=context.fc_hz,
+        safety_profile=context.safety_profile, role_targets=context.role_targets,
         acknowledgement_binding=acknowledgement_binding,
         retries_per_pose=request.retries_per_pose,
         default_setup_calibration=v2evidence.default_setup_calibration_for_v2(),
@@ -811,7 +812,7 @@ def prepare_v2_session(
             program_for_phase=lambda phase: conductor.program_for_phase(phase),
             program_for_spec=lambda spec, gain: (
                 conductor.program_for_phase(spec.program_phase) if verify_only and gain is None
-                else compose_plan_program(conductor, spec, gain)),
+                else compose_plan_program(conductor, spec, gain, context=context)),
         )
         if verify_only:
             opening = open_stage(

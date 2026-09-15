@@ -40,6 +40,7 @@ from .volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .crossover_v2.capture_plan import V2PlanShape, room_sweep_band_hz, stage1_base_entries
 from .crossover_v2.contracts import (
+    REGIME_NEAR_FIELD as MEASURE_REGIME_NEAR_FIELD,
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
     POLARITY_NORMAL,
@@ -53,6 +54,7 @@ from .measurement_programs import (
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
     REGIME_BRANCHES,
+    REGIME_NEAR_FIELD,
     REGIMES,
     validated_capture_purpose,
     pose_place,
@@ -187,6 +189,7 @@ _REGIME_PROGRAM_PHASE = {
     REGIME_PER_DRIVER: PHASE_MEASURE,
     REGIME_SUMMED: PHASE_CLOUD_VERIFY,
     REGIME_BRANCHES: PHASE_CLOUD_VERIFY,
+    REGIME_NEAR_FIELD: PHASE_CLOUD_VERIFY,
 }
 
 
@@ -245,6 +248,7 @@ class AngleStop:
     purpose: str | None = None
     headline: str = ""
     detail: str = ""
+    stimulus: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         # Normalized back onto the field, so an ``np.int64`` a caller passed
@@ -265,7 +269,7 @@ class AngleStop:
     @property
     def plays_summed(self) -> bool:
         """Whether this stop plays a summed graph (the scope a summed sweep rides)."""
-        return self.regime in (REGIME_SUMMED, REGIME_BRANCHES)
+        return self.regime in (REGIME_SUMMED, REGIME_BRANCHES, REGIME_NEAR_FIELD)
 
     @property
     def place(self) -> tuple[object, ...]:
@@ -684,13 +688,16 @@ def stop_specs(
             request.template,
             kind=MEASURE_KIND_CANDIDATE if stop.candidate_id else MEASURE_KIND_VERIFY,
             positions=(stop.angle_deg,),
-            sweep_band_hz=request.template.sweep_band_hz or (
+            sweep_band_hz=() if stop.stimulus else request.template.sweep_band_hz or (
                 room_sweep_band_hz(roles_bands, (prompt,)) if roles_bands else None
             ) or (),
+            sweep_s=None if stop.stimulus else request.template.sweep_s,
             vertical_deg=stop.elevation_deg,
             pose_prompts=(prompt.text,),
             candidate_id=stop.candidate_id or baseline_id,
             graph_scope="candidate_branches" if stop.regime == REGIME_BRANCHES else "candidate",
+            stimulus=stop.stimulus,
+            regime=MEASURE_REGIME_NEAR_FIELD if stop.regime == REGIME_NEAR_FIELD else request.template.regime,
         ))
     return tuple(spec for spec in placed for _ in range(request.repeats))
 
@@ -760,13 +767,14 @@ def request_for_program(
         stops=tuple(
             AngleStop(
                 pose.azimuth_deg,
-                REGIME_SUMMED if candidates and program.regime != REGIME_BRANCHES else program.regime,
+                REGIME_SUMMED if candidates and program.regime == REGIME_PER_DRIVER else program.regime,
                 pose.elevation_deg,
                 candidate,
                 kind=pose.kind,
                 distance_m=pose.distance_m,
                 seat_offset_m=pose.seat_offset_m,
                 purpose=program.purpose, headline=pose.headline, detail=pose.detail,
+                stimulus=program.stimulus,
             )
             for pose in program.poses
             for _ in range(pose.repeats)
@@ -1059,7 +1067,7 @@ def session_lateral_walk(
     })
     if off_regime and not (
         supported_summed_candidates
-        and (all(stop.regime == REGIME_SUMMED for stop in request.stops)
+        and (all(stop.regime in (REGIME_SUMMED, REGIME_NEAR_FIELD) for stop in request.stops)
              or (len(request.stops) == 1 and request.stops[0].regime == REGIME_BRANCHES
                  and bool(request.stops[0].candidate_id)))
     ):
