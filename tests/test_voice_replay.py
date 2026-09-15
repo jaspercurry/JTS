@@ -139,7 +139,7 @@ async def test_input_endpoint_adapter_and_output_replay(provider, scenario):
         vad._vad = model
         wl = wake_loop_for_tests(tts=sink, vad=vad, connection=provider[1])
         wl._turns.begin_output_episode = AsyncMock()
-        wl._prepare_assistant_loudness_context = AsyncMock()
+        wl._assistant_output.prepare_loudness = AsyncMock()
         wl._content_activity.refresh_now = AsyncMock()
         wl._turns.arm_background_end = lambda: None
         if scenario == "manual":

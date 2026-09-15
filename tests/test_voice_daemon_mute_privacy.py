@@ -318,7 +318,7 @@ async def test_fanin_prepare_carries_absolute_volume_context() -> None:
 
     wl = wake_loop_for_tests(tts=tts, volume_coordinator=_Volume())
 
-    await wl._prepare_assistant_loudness_context()
+    await wl._assistant_output.prepare_loudness()
 
     assert tts.prepares[0]["canonical_volume_db"] == -25.0
     assert tts.prepares[0]["downstream_volume_db"] == -25.0
@@ -346,7 +346,7 @@ async def test_post_dsp_prepare_attaches_volume_context(monkeypatch) -> None:
     monkeypatch.setenv("JASPER_TTS_MIX_STAGE", "post_dsp")
     wl = wake_loop_for_tests(tts=tts, volume_coordinator=_Volume())
 
-    await wl._prepare_assistant_loudness_context()
+    await wl._assistant_output.prepare_loudness()
 
     assert tts.prepares[0]["canonical_volume_db"] == -30.0
     assert tts.prepares[0]["downstream_volume_db"] == -30.0
@@ -372,7 +372,7 @@ async def test_legacy_socket_only_prepare_omits_volume_context(monkeypatch) -> N
     )
     wl = wake_loop_for_tests(tts=tts, volume_coordinator=_Volume())
 
-    await wl._prepare_assistant_loudness_context()
+    await wl._assistant_output.prepare_loudness()
 
     assert "canonical_volume_db" not in tts.prepares[0]
 

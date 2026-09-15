@@ -9,8 +9,10 @@ import base64
 import json
 import logging
 import random
+import threading
 import time
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 from openai.types.live.client_event_param import ClientEventParam
@@ -22,8 +24,10 @@ from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG, OUT_OF_CREDIT_CUE_SL
 from jasper.voice.conversation import END_CONVERSATION_TOOL, register_conversation_tools
 from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConnection
 from jasper.voice.session import ConnectionState
+from jasper.voice.turn_playback import PlaybackReport, play_responses
 from tests._async_wait import wait_signalled, wait_until
-from tests._log_events import event_fields
+from tests._log_events import event_fields, event_records
+from tests._playout import FakeTts
 
 
 CLIENT_EVENT = TypeAdapter(ClientEventParam)
@@ -102,6 +106,162 @@ async def delegate(turn, delegation, response_id, name, args):
     await turn.on_event(backend(delegation, "response.completed", response={
         "id": response_id, "output": [], "usage": {"input_tokens": 20, "output_tokens": 5},
     }))
+
+
+@pytest.mark.parametrize("failure_stage", [None, "construct", "bind"])
+async def test_sdk_prepares_before_wake_without_dialling_and_retries_preparation_failure(
+    monkeypatch, caplog, failure_stage,
+):
+    key = "private-test-credential"
+    steps = []
+    failed = False
+
+    def step(stage):
+        nonlocal failed
+        steps.append(stage)
+        if stage == failure_stage and not failed:
+            failed = True
+            raise ValueError(f"SDK preparation failed for {key}")
+
+    class Client:
+        def __init__(self, *, api_key):
+            assert api_key == key
+            step("construct")
+
+        @property
+        def live(self):
+            step("bind")
+            return self
+
+        def connect(self):
+            step("dial")
+            return LiveSocket()
+
+        async def close(self):
+            step("close")
+
+    monkeypatch.setattr("openai.AsyncOpenAI", Client)
+    conn = OpenAILiveConnection(api_key=key)
+    cues = []
+
+    async def cue_cb(slug):
+        cues.append(slug)
+
+    conn.set_failure_escalation_cb(cue_cb)
+    try:
+        await conn.start(ToolRegistry(), "Be brief.")
+        assert steps == (["construct"] if failure_stage == "construct" else ["construct", "bind"])
+        assert not conn.is_paused()
+        if failure_stage:
+            assert conn._state is ConnectionState.FAILED
+            assert conn.last_failure_detail() and key not in conn.last_failure_detail()
+            assert key not in caplog.text
+            assert conn.wake_cue() == CANT_CONNECT_CUE_SLUG
+        await asyncio.sleep(0)
+        assert cues == []
+        turn = await conn.acquire_turn()
+        assert steps == {
+            None: ["construct", "bind", "dial"],
+            "construct": ["construct", "construct", "bind", "dial"],
+            "bind": ["construct", "bind", "bind", "dial"],
+        }[failure_stage]
+        assert not turn.turn_lost()
+        assert conn.last_failure_detail() is None
+        await turn.release()
+    finally:
+        await conn.stop()
+        await conn.stop()
+    assert steps.count("close") == 1
+
+
+@pytest.mark.parametrize("interruption", [None, "start", "wake", "stop", "stop_cancel"])
+async def test_sdk_preparation_keeps_loop_responsive_and_one_owner(monkeypatch, interruption):
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    constructing = asyncio.Event()
+    finish_construct = threading.Event()
+    steps = []
+
+    class Client:
+        def __init__(self, **_kwargs):
+            assert threading.get_ident() != loop_thread
+            steps.append("construct")
+            loop.call_soon_threadsafe(constructing.set)
+            assert finish_construct.wait(timeout=2.0)
+
+        @property
+        def live(self):
+            assert threading.get_ident() != loop_thread
+            steps.append("bind")
+            return self
+
+        def connect(self):
+            steps.append("dial")
+            return LiveSocket()
+
+        async def close(self):
+            steps.append("close")
+
+    monkeypatch.setattr("openai.AsyncOpenAI", Client)
+    conn = OpenAILiveConnection(api_key="test")
+    starting = asyncio.create_task(conn.start(ToolRegistry(), "Be brief."))
+    tasks = [starting]
+    try:
+        await wait_signalled(constructing, "SDK worker", producer=starting)
+        assert conn._state is ConnectionState.CONNECTING
+        assert steps == ["construct"]
+        acquiring = asyncio.create_task(conn.acquire_turn())
+        tasks.append(acquiring)
+        await wait_until(lambda: conn._active_turn is not None)
+        assert not starting.done()
+        assert not acquiring.done()
+        if interruption == "start":
+            starting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await starting
+        elif interruption == "wake":
+            acquiring.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await acquiring
+            acquiring = asyncio.create_task(conn.acquire_turn())
+            tasks.append(acquiring)
+            await wait_until(lambda: conn._active_turn is not None)
+        elif interruption in {"stop", "stop_cancel"}:
+            stopping = asyncio.create_task(conn.stop())
+            tasks.append(stopping)
+            await wait_until(conn._stopping.is_set)
+            if interruption == "stop_cancel":
+                for _ in range(2):
+                    stopping.cancel()
+                    await asyncio.sleep(0)
+            assert not stopping.done()
+        assert steps == ["construct"]
+        finish_construct.set()
+        if interruption in {"stop", "stop_cancel"}:
+            with pytest.raises(RuntimeError):
+                await acquiring
+            if interruption == "stop_cancel":
+                with pytest.raises(asyncio.CancelledError):
+                    await stopping
+            else:
+                await stopping
+            assert conn._state is ConnectionState.CLOSED
+            assert steps == ["construct", "bind", "close"]
+        else:
+            turn = await acquiring
+            assert not turn.turn_lost()
+            assert conn._state is ConnectionState.IN_TURN
+            await turn.release()
+        if not starting.cancelled():
+            await starting
+    finally:
+        finish_construct.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await conn.stop()
+        await conn.stop()
+    assert steps.count("construct") == 1
+    assert steps.count("bind") == 1
+    assert steps.count("close") == 1
 
 
 async def test_live_opens_on_wake_dispatches_local_tools_and_finalizes_usage():
@@ -309,12 +469,48 @@ async def test_speech_buffered_during_the_dial_catches_up_and_live_input_stays_p
         await turn.release()
         await conn.stop()
 
-    # A quantum each would cost the 15 stale frames 1.2 s; only the
-    # newest is the live edge and owes one.
+    # A quantum each would cost the 15 stale frames 1.2 s.
     assert caught_up < 0.4
     # 0.25 s of synthesized quiet at 1x is ~3 appends, never a free run.
     assert 1 <= after_catch_up <= 6
     assert int(event_fields(caplog, "provider.turn_ended")["input_catchup_ms"]) == 1200
+
+
+async def test_new_capture_reaches_the_wire_in_order_without_waiting_for_a_pacing_sleep(monkeypatch):
+    pacing = asyncio.Event()
+    first_sent, all_sent = asyncio.Event(), asyncio.Event()
+    samples = []
+
+    async def hold_pacing(_):
+        await pacing.wait()
+
+    monkeypatch.setattr(openai_live_session, "asyncio", SimpleNamespace(**(vars(asyncio) | {"sleep": hold_pacing})))
+
+    class ObservedSocket(LiveSocket):
+        async def send(self, event):
+            await super().send(event)
+            if event["type"] == "session.input_audio.append":
+                sample = int.from_bytes(base64.b64decode(event["audio"])[-2:], "little", signed=True)
+                if sample:
+                    samples.append(sample)
+                    first_sent.set()
+                    if len(samples) == 3:
+                        all_sent.set()
+
+    conn = OpenAILiveConnection(api_key="test", connect=ObservedSocket)
+    await conn.start(ToolRegistry(), "Be brief.")
+    turn = await conn.acquire_turn()
+    try:
+        await turn.send_audio((1000).to_bytes(2, "little") * 1280)
+        await wait_signalled(first_sent, "first captured frame", producer=turn._sender)
+        for sample in (2000, 3000):
+            await turn.send_audio(sample.to_bytes(2, "little") * 1280)
+        await wait_signalled(all_sent, "new captured frames", producer=turn._sender)
+        assert samples == [1000, 2000, 3000]
+    finally:
+        pacing.set()
+        await turn.release()
+        await conn.stop()
 
 
 async def test_a_mid_burst_discard_does_not_crash_the_sender():
@@ -628,6 +824,161 @@ async def test_an_audible_delta_after_a_long_gap_rearms_silence_bridging(monkeyp
         await turn.on_event(output_audio(QUIET_PCM))
         assert turn.audio_chunks_pending() == 3
         assert turn.chunks_received() == 2
+
+
+@pytest.mark.parametrize("finish", ["filled", "short", "continuation", "late_clause", "interrupt", "cancel", "release", "lost"])
+async def test_playout_reserve_is_bounded_and_rearms_only_after_interrupt(monkeypatch, finish):
+    clock = FrozenClock()
+    monkeypatch.setattr(openai_live_session, "time", clock)
+    if finish in {"cancel", "release", "lost"}:
+        monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 1.0)
+    pcm = AUDIBLE_PCM * 20  # 100 ms: two deltas cross the 150 ms reserve.
+    async with live_turn() as turn:
+        audio = turn.audio_out_chunks()
+        pending = asyncio.create_task(anext(audio))
+        release = None
+        closing = asyncio.Event()
+        try:
+            await turn.on_event(output_audio(pcm))
+            await asyncio.sleep(0.01)
+            assert not pending.done()
+            assert turn.audio_chunks_pending() == 1
+            if finish in {"cancel", "release", "lost"}:
+                if finish == "cancel":
+                    pending.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await pending
+                else:
+                    if finish == "release":
+                        async def close():
+                            await closing.wait()
+
+                        monkeypatch.setattr(turn._conn, "_close_live_session", close)
+                        release = asyncio.create_task(turn.release())
+                    else:
+                        turn._on_connection_lost()
+                    if finish == "lost":
+                        assert (await asyncio.wait_for(pending, 0.2)).pcm == pcm
+                        with pytest.raises(StopAsyncIteration):
+                            await anext(audio)
+                        assert turn.audio_dropped_bytes() == 0
+                    else:
+                        with pytest.raises(StopAsyncIteration):
+                            await asyncio.wait_for(pending, 0.2)
+                    if finish == "release":
+                        assert not release.done()
+                        closing.set()
+                        await release
+                assert turn._queued_bytes == 0
+                return
+            if finish == "short":
+                assert (await asyncio.wait_for(pending, 0.4)).pcm == pcm
+                return
+            await turn.on_event(output_audio(pcm))
+            assert (await asyncio.wait_for(pending, 0.2)).pcm == pcm
+            assert (await anext(audio)).pcm == pcm
+            assert turn.audio_chunks_pending() == 0
+            if finish in {"continuation", "late_clause", "interrupt"}:
+                clock.now += 0.1 if finish == "continuation" else SILENCE_BRIDGE_SEC + 0.1
+                if finish == "interrupt":
+                    turn.drop_pending_audio()
+                else:
+                    # A short trailing clause must arrive without a second fill wait.
+                    monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 10.0)
+                pending = asyncio.create_task(anext(audio))
+                await asyncio.sleep(0)
+                await turn.on_event(output_audio(pcm))
+                if finish == "interrupt":
+                    await asyncio.sleep(0.01)
+                    assert not pending.done()
+                    await turn.on_event(output_audio(pcm))
+                assert (await asyncio.wait_for(pending, 0.2)).pcm == pcm
+        finally:
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+            await audio.aclose()
+            closing.set()
+            if release is not None:
+                await release
+
+
+@pytest.mark.parametrize("gap_sec, quiet, expected", [
+    (0.1, False, 0), (0.2, False, 1), (0.2, True, 1),
+    (SILENCE_BRIDGE_SEC, False, 1), (6.0, False, 0), (6.0, True, 0),
+])
+async def test_output_deficit_excludes_idle_between_answers(monkeypatch, caplog, gap_sec, quiet, expected):
+    clock = FrozenClock()
+    monkeypatch.setattr(openai_live_session, "time", clock)
+    caplog.set_level(logging.INFO)
+    async with live_turn() as turn:
+        await turn.on_event(output_audio(AUDIBLE_PCM * 20))
+        clock.now += gap_sec
+        await turn.on_event(output_audio(QUIET_PCM if quiet else AUDIBLE_PCM))
+        assert len(event_records(caplog, "provider.output_deficit")) == expected
+        if expected:
+            fields = event_fields(caplog, "provider.output_deficit")
+            assert fields["provider"] == "openai_live"
+            assert int(fields["deficit_ms"]) == pytest.approx((gap_sec - 0.1) * 1000, abs=1.1)
+
+
+async def test_live_barge_in_reports_and_discards_queued_audio(monkeypatch, caplog):
+    monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 0.0)
+    caplog.set_level(logging.INFO)
+    async with live_turn() as turn:
+        for _ in range(5):
+            await turn.on_event(output_audio(AUDIBLE_PCM))
+
+        async def accepted():
+            turn.request_local_interrupt()
+            await asyncio.Event().wait()
+
+        tts = FakeTts()
+        report = PlaybackReport()
+        await asyncio.wait_for(play_responses(turn, tts, report=report, on_first_write=accepted), 1.0)
+        assert report.stop_reason == "barge_in"
+        assert len(tts.writes) == tts.flush_calls == 1
+        assert int(event_fields(caplog, "barge.dropped_pending_audio")["chunks"]) == 4
+        assert turn.audio_chunks_pending() == turn.audio_dropped_bytes() == 0
+
+
+@pytest.mark.parametrize("count", [0, 5])
+async def test_connection_loss_drains_received_audio_without_waiting_for_a_reserve(monkeypatch, count):
+    monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 10.0)
+    async with live_turn() as turn:
+        for _ in range(count):
+            await turn.on_event(output_audio(AUDIBLE_PCM))
+        turn._on_connection_lost()
+
+        async def drain():
+            return [chunk.pcm async for chunk in turn.audio_out_chunks()]
+
+        assert await asyncio.wait_for(drain(), 0.2) == [AUDIBLE_PCM] * count
+        assert turn.audio_dropped_bytes() == turn.audio_chunks_pending() == 0
+
+
+@pytest.mark.parametrize("finish", ["close", "lost", "interrupt"])
+async def test_playback_cleanup_preserves_overflow_for_final_accounting(monkeypatch, finish):
+    pcm = b"\x00\x40" * 2
+    monkeypatch.setattr(_base, "AUDIO_OUT_QUEUE_MAX_BYTES", 2 * len(pcm))
+    async with live_turn() as turn:
+        audio = turn.audio_out_chunks()
+        try:
+            await turn.on_event(output_audio(pcm))
+            await turn.on_event(output_audio(pcm))
+            await turn.on_event(output_audio(pcm))
+            assert turn.audio_dropped_bytes() == len(pcm)
+            assert (await anext(audio)).pcm == pcm
+            if finish == "lost":
+                turn._on_connection_lost()
+            await audio.aclose()
+            assert turn.audio_dropped_bytes() == 2 * len(pcm)
+            if finish == "interrupt":
+                turn.drop_pending_audio()
+            expected = 0 if finish == "interrupt" else 2 * len(pcm)
+            await turn.release()
+            assert turn.audio_dropped_bytes() == expected
+        finally:
+            await audio.aclose()
 
 
 async def test_a_dismissal_survives_a_delegation_that_cancels_its_round():

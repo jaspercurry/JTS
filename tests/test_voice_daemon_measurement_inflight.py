@@ -39,6 +39,7 @@ import socket
 import tempfile
 import threading
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -64,6 +65,7 @@ from jasper.voice_daemon import WakeLoop
 from ._async_wait import wait_signalled
 from ._cue_spy import SpyCues
 from ._log_events import event_fields, event_records
+from ._live_turn_fake import FakeLiveTurn
 from ._playout import FakeOutputdStream, FakeTts
 from ._wake_loop import wake_loop_for_tests
 
@@ -1164,6 +1166,8 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
         content_activity=content,
         usage_store=usage,
     )
+    turn = FakeLiveTurn()
+    monkeypatch.setattr(wl._connection, "acquire_turn", AsyncMock(return_value=turn))
     cleanup_calls = 0
     real_cleanup = wl._turns.cleanup_after_failed_begin
 
@@ -1221,12 +1225,13 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
         assert len(tts.prepares) == 1
         assert tts.meter_pauses == 1
         assert tts.meter_resumes == 1
-        assert content.refresh_calls == 1
+        assert content.refresh_calls == 0
         assert content.pause_calls == 1
         assert content.resume_calls == 1
         assert volume.session_calls == [True, False]
-        assert usage.open_calls == 0
-        assert usage.close_calls == 0
+        assert usage.open_calls == 1
+        assert usage.close_calls == 1
+        assert turn.release_calls == 1
         assert wl._turns.turn is None
         assert wl._turns.session_id is None
         assert wl._turns.bg_tasks == set()
@@ -1242,30 +1247,43 @@ async def test_cancelled_begin_turn_owns_full_cleanup_through_fanin_off(
 async def test_begin_turn_preserves_base_exception_after_owned_cleanup(
     monkeypatch,
 ) -> None:
-    """The begin wrapper cleans and re-raises failures beyond Exception."""
+    """Failed preparation releases its resources without cancelling old teardown."""
 
     class _BeginAbort(BaseException):
         pass
 
-    class _FailingContentActivity:
+    class _ContentActivity:
         music_dbfs = None
 
         def __init__(self) -> None:
             self.resume_calls = 0
 
-        async def refresh_now(self) -> None:
-            raise failure
-
         def pause(self) -> None:
-            raise AssertionError("pause is after the injected failure")
+            pass
 
         def resume(self) -> None:
             self.resume_calls += 1
 
     failure = _BeginAbort("begin aborted")
-    content = _FailingContentActivity()
+    content = _ContentActivity()
     gate = _EndCountingGate()
     wl = wake_loop_for_tests(output_gate=gate, content_activity=content)
+    release_started, finish_release = asyncio.Event(), asyncio.Event()
+
+    async def prior_release() -> None:
+        release_started.set()
+        await finish_release.wait()
+
+    async def fail_prepare() -> None:
+        await release_started.wait()
+        await asyncio.sleep(0)
+        raise failure
+
+    releasing = asyncio.create_task(prior_release())
+    wl._turns.pending_release = releasing
+    acquire = AsyncMock()
+    monkeypatch.setattr(wl._connection, "acquire_turn", acquire)
+    monkeypatch.setattr(wl._assistant_output, "prepare_loudness", fail_prepare)
     cleanup_calls = 0
     real_cleanup = wl._turns.cleanup_after_failed_begin
 
@@ -1276,28 +1294,90 @@ async def test_begin_turn_preserves_base_exception_after_owned_cleanup(
 
     monkeypatch.setattr(wl._turns, "cleanup_after_failed_begin", counted_cleanup)
 
-    with pytest.raises(_BeginAbort) as caught:
-        await wl._begin_turn(pre_roll=False)
+    try:
+        with pytest.raises(_BeginAbort) as caught:
+            await wl._begin_turn(pre_roll=False)
 
-    assert caught.value is failure
-    assert cleanup_calls == 1
-    assert content.resume_calls == 1
-    assert gate.end_calls == 1
-    assert not gate.is_active
-    assert wl._turns.state is State.WAKE
-    assert wl._turns.output_episode is None
+        assert caught.value is failure
+        assert cleanup_calls == 1
+        assert content.resume_calls == 1
+        assert gate.end_calls == 1
+        assert not gate.is_active
+        assert wl._turns.state is State.WAKE
+        assert wl._turns.output_episode is None
+        assert wl._turns.pending_release is releasing
+        assert not releasing.done()
+        acquire.assert_not_awaited()
+    finally:
+        finish_release.set()
+        assert wl._turns.take_pending_release() is releasing
+        await releasing
+
+
+async def test_repeated_begin_cancellation_waits_for_provider_teardown(monkeypatch) -> None:
+    connecting, cleanup_started, finish_cleanup = (
+        asyncio.Event(), asyncio.Event(), asyncio.Event(),
+    )
+    gate = _EndCountingGate()
+    tts = FakeTts()
+    wl = wake_loop_for_tests(output_gate=gate, tts=tts)
+    cleanup_finished = False
+
+    async def acquire_turn():
+        nonlocal cleanup_finished
+        connecting.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            await finish_cleanup.wait()
+            cleanup_finished = True
+
+    monkeypatch.setattr(wl._connection, "acquire_turn", acquire_turn)
+    beginning = asyncio.create_task(wl._begin_turn(pre_roll=False))
+    try:
+        await wait_signalled(connecting, "provider connection", producer=beginning)
+        beginning.cancel("initial cancellation")
+        await wait_signalled(cleanup_started, "provider cleanup", producer=beginning)
+        beginning.cancel("repeated cancellation")
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not beginning.done()
+        assert gate.active_kind == "turn"
+        assert tts.meter_resumes == 0
+
+        finish_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await beginning
+        assert beginning.cancelled()
+        assert cleanup_finished
+        assert gate.end_calls == 1
+        assert not gate.is_active
+        assert tts.meter_resumes == 1
+        assert wl._turns.turn is None
+        assert wl._turns.session_id is None
+        assert wl._turns.bg_tasks == set()
+        assert wl._turns.state is State.WAKE
+    finally:
+        finish_cleanup.set()
+        beginning.cancel()
+        await asyncio.gather(beginning, return_exceptions=True)
 
 
 @pytest.mark.parametrize("path", ["wake", "manual"])
+@pytest.mark.parametrize("acquired", [False, True])
 async def test_cancelled_listening_feedback_prepare_owns_cleanup(
     monkeypatch,
     path: str,
+    acquired: bool,
 ) -> None:
     """Wake and manual prefixes retain their episode through repeated cancel."""
 
     prepare_started = asyncio.Event()
     restore_started = asyncio.Event()
     release_restore = asyncio.Event()
+    acquire_started = asyncio.Event()
+    acquire_finished = asyncio.Event()
 
     class _HeldRestoreDucker:
         is_ducked = False
@@ -1306,7 +1386,7 @@ async def test_cancelled_listening_feedback_prepare_owns_cleanup(
             self.restore_calls = 0
 
         async def duck(self) -> None:
-            raise AssertionError("turn inner must not start")
+            raise AssertionError("duck must wait for loudness preparation")
 
         async def restore(self) -> None:
             self.restore_calls += 1
@@ -1314,8 +1394,14 @@ async def test_cancelled_listening_feedback_prepare_owns_cleanup(
             await release_restore.wait()
 
     class _ContentActivity:
+        music_dbfs = None
+
         def __init__(self) -> None:
+            self.pause_calls = 0
             self.resume_calls = 0
+
+        def pause(self) -> None:
+            self.pause_calls += 1
 
         def resume(self) -> None:
             self.resume_calls += 1
@@ -1343,7 +1429,19 @@ async def test_cancelled_listening_feedback_prepare_owns_cleanup(
         output_gate=gate,
         content_activity=content,
     )
-    monkeypatch.setattr(wl, "_prepare_assistant_loudness_context", held_prepare)
+    monkeypatch.setattr(wl._assistant_output, "prepare_loudness", held_prepare)
+    turn = FakeLiveTurn()
+
+    async def acquire_turn():
+        acquire_started.set()
+        try:
+            if not acquired:
+                await asyncio.Event().wait()
+            return turn
+        finally:
+            acquire_finished.set()
+
+    monkeypatch.setattr(wl._connection, "acquire_turn", acquire_turn)
     cleanup_calls = 0
     real_cleanup = wl._turns.cleanup_after_failed_begin
 
@@ -1378,6 +1476,7 @@ async def test_cancelled_listening_feedback_prepare_owns_cleanup(
         f"{path} listening-feedback loudness preparation",
         producer=beginning,
     )
+    await wait_signalled(acquire_started, "parallel provider acquisition", producer=beginning)
     assert gate.active_kind == "turn"
 
     beginning.cancel("original prefix cancellation")
@@ -1404,6 +1503,9 @@ async def test_cancelled_listening_feedback_prepare_owns_cleanup(
     assert ducker.restore_calls == 1
     assert tts.meter_resumes == 1
     assert content.resume_calls == 1
+    assert content.pause_calls == 1
+    assert acquire_finished.is_set()
+    assert turn.release_calls == int(acquired)
     assert volume.session_calls == [False]
     assert gate.end_calls == 1
     assert not gate.is_active
@@ -1415,49 +1517,89 @@ async def test_cancelled_listening_feedback_prepare_owns_cleanup(
     assert wl._acquiring is False
 
 
-@pytest.mark.parametrize(
-    ("listening_feedback", "expected_events"),
-    [
-        (True, ["prepare", "chirp", "inner"]),
-        (False, ["inner"]),
-    ],
-)
-async def test_begin_turn_centralizes_feedback_prefix_without_reordering(
+@pytest.mark.parametrize("listening_feedback", [False, True])
+@pytest.mark.parametrize("first", ["output", "connection", "prepare_error"])
+async def test_begin_turn_overlaps_one_output_preparation_with_connection(
     monkeypatch,
     listening_feedback: bool,
-    expected_events: list[str],
+    first: str,
 ) -> None:
-    """Wake/manual keep their prefix order; a begin with no listening
-    feedback adds none."""
-
-    events: list[str] = []
+    prepare_started, prepared = asyncio.Event(), asyncio.Event()
+    connect_started, connected = asyncio.Event(), asyncio.Event()
+    release_prepare, release_connect = asyncio.Event(), asyncio.Event()
+    chirped = asyncio.Event()
     gate = _EndCountingGate()
-    wl = wake_loop_for_tests(output_gate=gate)
+    tts = FakeTts()
+    turn = FakeLiveTurn()
+    wl = wake_loop_for_tests(output_gate=gate, tts=tts)
+    real_prepare = tts.prepare_assistant_context
 
-    async def prepare() -> None:
+    async def prepare(**kwargs) -> None:
         assert gate.active_kind == "turn"
-        events.append("prepare")
+        prepare_started.set()
+        await release_prepare.wait()
+        if first == "prepare_error":
+            raise RuntimeError("output context unavailable")
+        await real_prepare(**kwargs)
+        prepared.set()
 
-    async def inner(**_kwargs) -> None:
-        events.append("inner")
+    async def connect():
+        connect_started.set()
+        await release_connect.wait()
+        connected.set()
+        return turn
 
-    def schedule(episode, coro):
-        assert gate.is_current(episode)
-        coro.close()
-        events.append("chirp")
-        return None
+    async def chirp(*, going_on: bool) -> None:
+        assert going_on
+        assert len(tts.prepares) == 1
+        assert gate.active_kind == "turn"
+        chirped.set()
 
-    monkeypatch.setattr(wl, "_prepare_assistant_loudness_context", prepare)
-    monkeypatch.setattr(wl._turns, "begin_inner", inner)
-    monkeypatch.setattr(wl._assistant_output, "start_turn_feedback", schedule)
+    async def audio_out_chunks():
+        await asyncio.Event().wait()
+        yield  # pragma: no cover
 
-    await wl._begin_turn(listening_feedback=listening_feedback)
-
-    assert events == expected_events
-    assert gate.is_active is listening_feedback
-    if wl._turns.output_episode is not None:
-        await gate.end_turn(wl._turns.output_episode)
-        wl._turns.output_episode = None
+    monkeypatch.setattr(tts, "prepare_assistant_context", prepare)
+    monkeypatch.setattr(wl._connection, "acquire_turn", connect)
+    monkeypatch.setattr(wl, "_play_listening_chirp", chirp)
+    monkeypatch.setattr(turn, "audio_out_chunks", audio_out_chunks)
+    beginning = asyncio.create_task(wl._begin_turn(
+        pre_roll=False, listening_feedback=listening_feedback,
+    ))
+    try:
+        await wait_signalled(prepare_started, "speaker preparation", producer=beginning)
+        await wait_signalled(connect_started, "parallel provider connection", producer=beginning)
+        assert not chirped.is_set()
+        if first == "output":
+            release_prepare.set()
+            await wait_signalled(prepared, "prepared context", producer=beginning)
+            if listening_feedback:
+                await wait_signalled(chirped, "feedback while connecting", producer=beginning)
+        else:
+            release_connect.set()
+            await wait_signalled(connected, "connected provider", producer=beginning)
+            assert not chirped.is_set()
+        assert not beginning.done()
+        release_prepare.set()
+        release_connect.set()
+        if first == "prepare_error":
+            with pytest.raises(RuntimeError):
+                await beginning
+            assert turn.release_calls == 1
+            assert gate.end_calls == 1
+            assert not gate.is_active
+            assert wl._turns.turn is None
+            assert wl._turns.session_id is None
+        else:
+            await beginning
+            assert wl._turns.state is State.SESSION
+            assert len(tts.prepares) == 1
+            assert tts.meter_pauses == 1
+            assert chirped.is_set() is listening_feedback
+    finally:
+        beginning.cancel()
+        await asyncio.gather(beginning, return_exceptions=True)
+        await wl._turns.cleanup_after_failed_begin()
 
 
 @pytest.mark.parametrize(
@@ -2235,8 +2377,6 @@ async def test_old_coordinator_resumes_new_daemon_after_drain_timeout() -> None:
 
 
 async def test_failed_begin_drains_opening_feedback_without_completion_chirp():
-    from unittest.mock import AsyncMock
-
     wl = wake_loop_for_tests()
     accepted, finish_write, draining, finish_drain = (asyncio.Event() for _ in range(4))
     writes = []
@@ -2257,7 +2397,7 @@ async def test_failed_begin_drains_opening_feedback_without_completion_chirp():
     wl._tts.write_segment = write
     wl._tts.wait_drained = drain
     wl._ducker.restore = AsyncMock()
-    wl._turns.begin_inner = fail
+    wl._connection.acquire_turn = fail
     beginning = asyncio.create_task(wl._begin_turn(listening_feedback=True))
     try:
         await wait_signalled(accepted, "opening feedback", producer=beginning)

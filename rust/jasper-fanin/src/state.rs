@@ -967,6 +967,24 @@ impl StateServer {
                 buf.push(',');
                 push_kv_u64(buf, "flushed_frames", metrics.flushed_frames());
                 buf.push(',');
+                push_kv_u64(buf, "starved_runs", metrics.starved_runs());
+                buf.push(',');
+                push_kv_u64(buf, "starved_frames", metrics.starved_frames());
+                buf.push(',');
+                push_kv_u64(
+                    buf,
+                    "starved_max_run_frames",
+                    metrics.starved_max_run_frames(),
+                );
+                buf.push(',');
+                push_kv_u64(buf, "starved_long_runs", metrics.starved_long_runs());
+                buf.push(',');
+                push_kv_u64(buf, "starved_long_frames", metrics.starved_long_frames());
+                buf.push(',');
+                push_kv_u64(buf, "boundary_gap_runs", metrics.boundary_gap_runs());
+                buf.push(',');
+                push_kv_u64(buf, "boundary_gap_frames", metrics.boundary_gap_frames());
+                buf.push(',');
                 // Mirrors the ring's `stall_log_dropped` for the TTS mixer
                 // thread's own `fanin-ring-log` events (issue #4787).
                 push_kv_u64(buf, "log_dropped", metrics.log_dropped());
@@ -1560,6 +1578,9 @@ mod tests {
         assert!(j.contains(r#""tts_clients":0"#));
         assert!(j.contains(r#""frame_timeouts":0"#));
         assert!(j.contains(r#""stale_commands_dropped":0"#));
+        let state: serde_json::Value = serde_json::from_str(&j).unwrap();
+        assert_eq!(state["tts"]["boundary_gap_runs"], 0);
+        assert_eq!(state["tts"]["boundary_gap_frames"], 0);
         assert!(j.contains(r#""log_dropped":0"#));
         assert!(j.contains(r#""program_duck_active":false"#));
         assert!(j.contains(r#""assistant_loudness":{"content_short_lufs":null"#));

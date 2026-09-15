@@ -24,7 +24,7 @@ use anyhow::Result;
 use log::{info, warn};
 
 use crate::mixer::{send_drop_counted, FaninLogEvent, CHANNELS};
-use crate::playout::{PlayoutEvent, PlayoutLedger};
+use crate::playout::{frames_to_ms, PlayoutEvent, PlayoutLedger};
 use jasper_tts_protocol::loudness::{
     apply_gain, gain_db_to_linear, linear_to_db, sanitize_tts_gain_db, AssistantGainDecision,
     AssistantLoudness, AssistantLoudnessConfig, AssistantProfile, HeldLoudnessReference,
@@ -47,6 +47,14 @@ const TTS_SAMPLE_RATE: u32 = 48_000;
 // a shorter TTL could un-duck program audio during a legitimate quiet turn.
 // If operations raise `JASPER_IDLE_TIMEOUT_SEC` above 30 s, retune this too.
 const PROGRAM_DUCK_IDLE_RELEASE_TTL: Duration = Duration::from_secs(30);
+/// Shortest starved run that earns a log line. Every dropout is counted in
+/// STATUS regardless; this only keeps a chronically underfed lane from writing
+/// a line per 5 ms period on a memory-constrained box.
+const STARVED_LOG_MIN_MS: u64 = 10;
+/// Separates short and long gaps; neither bucket identifies their cause.
+/// Hardware observations put short gaps at 16–138 ms and longer gaps from
+/// 502 ms. Keep both durations observable when assessing this threshold.
+const STARVED_DROPOUT_MAX_MS: u64 = 250;
 const LIVE_VOLUME_RAMP_FRAMES: u32 = TTS_SAMPLE_RATE / 10;
 const PACKED_DB_NONE: i64 = i64::MIN;
 
@@ -80,6 +88,13 @@ pub struct TtsMetrics {
     program_duck_active: Arc<AtomicBool>,
     flush_requests: Arc<AtomicU64>,
     flushed_frames: Arc<AtomicU64>,
+    starved_runs: Arc<AtomicU64>,
+    starved_frames: Arc<AtomicU64>,
+    starved_max_run_frames: Arc<AtomicU64>,
+    starved_long_runs: Arc<AtomicU64>,
+    starved_long_frames: Arc<AtomicU64>,
+    boundary_gap_runs: Arc<AtomicU64>,
+    boundary_gap_frames: Arc<AtomicU64>,
     log_dropped: Arc<AtomicU64>,
     content_short_lufs_x10: Arc<AtomicI64>,
     content_anchor_lufs_x10: Arc<AtomicI64>,
@@ -122,6 +137,13 @@ impl Default for TtsMetrics {
             program_duck_active: Arc::new(AtomicBool::new(false)),
             flush_requests: Arc::new(AtomicU64::new(0)),
             flushed_frames: Arc::new(AtomicU64::new(0)),
+            starved_runs: Arc::new(AtomicU64::new(0)),
+            starved_frames: Arc::new(AtomicU64::new(0)),
+            starved_max_run_frames: Arc::new(AtomicU64::new(0)),
+            starved_long_runs: Arc::new(AtomicU64::new(0)),
+            starved_long_frames: Arc::new(AtomicU64::new(0)),
+            boundary_gap_runs: Arc::new(AtomicU64::new(0)),
+            boundary_gap_frames: Arc::new(AtomicU64::new(0)),
             log_dropped: Arc::new(AtomicU64::new(0)),
             content_short_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
             content_anchor_lufs_x10: Arc::new(AtomicI64::new(PACKED_DB_NONE)),
@@ -199,6 +221,58 @@ impl TtsMetrics {
 
     pub fn flushed_frames(&self) -> u64 {
         self.flushed_frames.load(Ordering::Relaxed)
+    }
+
+    /// Distinct missing-PCM runs within one segment, including sub-period
+    /// tails, at most [`STARVED_DROPOUT_MAX_MS`]. Interpret with frames/max.
+    pub(crate) fn mark_starved_run(&self, frames: u64) {
+        self.starved_runs.fetch_add(1, Ordering::Relaxed);
+        self.starved_frames.fetch_add(frames, Ordering::Relaxed);
+        self.starved_max_run_frames
+            .fetch_max(frames, Ordering::Relaxed);
+    }
+
+    /// A longer within-segment gap; duration alone does not identify its cause.
+    pub(crate) fn mark_starved_long_run(&self, frames: u64) {
+        self.starved_long_runs.fetch_add(1, Ordering::Relaxed);
+        self.starved_long_frames
+            .fetch_add(frames, Ordering::Relaxed);
+    }
+
+    pub fn starved_runs(&self) -> u64 {
+        self.starved_runs.load(Ordering::Relaxed)
+    }
+
+    pub fn starved_frames(&self) -> u64 {
+        self.starved_frames.load(Ordering::Relaxed)
+    }
+
+    pub fn starved_max_run_frames(&self) -> u64 {
+        self.starved_max_run_frames.load(Ordering::Relaxed)
+    }
+
+    pub fn starved_long_runs(&self) -> u64 {
+        self.starved_long_runs.load(Ordering::Relaxed)
+    }
+
+    pub fn starved_long_frames(&self) -> u64 {
+        self.starved_long_frames.load(Ordering::Relaxed)
+    }
+
+    /// Missing PCM between different segments, including ordinary utterance
+    /// waits. Kept separate because the mixer cannot infer their cause.
+    pub(crate) fn mark_boundary_gap(&self, frames: u64) {
+        self.boundary_gap_runs.fetch_add(1, Ordering::Relaxed);
+        self.boundary_gap_frames
+            .fetch_add(frames, Ordering::Relaxed);
+    }
+
+    pub fn boundary_gap_runs(&self) -> u64 {
+        self.boundary_gap_runs.load(Ordering::Relaxed)
+    }
+
+    pub fn boundary_gap_frames(&self) -> u64 {
+        self.boundary_gap_frames.load(Ordering::Relaxed)
     }
 
     /// A [`FaninLogEvent`] this daemon could not hand to `fanin-ring-log`
@@ -529,6 +603,13 @@ pub struct TtsMixer {
     /// speaks one width for a daemon's whole lifetime, so this is one line per
     /// lifetime, not per connection — the client reconnecting does not re-arm it.
     last_payload_width: Option<TtsWireWidth>,
+    /// Missing samples since PCM last played, including partial-period tails.
+    /// Resumption determines same-segment starvation versus a boundary gap.
+    starved_run_samples: u64,
+    /// Playback ownership: accepted segment commands can run ahead of PCM.
+    starved_run_segment: u64,
+    /// Silence before any PCM first plays is not a gap between PCM chunks.
+    played_segment: Option<u64>,
 }
 
 impl TtsMixer {
@@ -565,6 +646,9 @@ impl TtsMixer {
             loudness,
             ledger: PlayoutLedger::new(TTS_SAMPLE_RATE),
             last_payload_width: None,
+            starved_run_samples: 0,
+            starved_run_segment: 0,
+            played_segment: None,
         }
     }
 
@@ -655,6 +739,7 @@ impl TtsMixer {
     /// [`QueuedAudioBlock::gained_contribution`].
     pub fn mix_period(&mut self, sum: &mut [i64]) {
         let queued_samples_before = self.pending_samples;
+        let resumed_segment = self.queue.front().map(|block| block.segment_serial);
         // The volume context is drained at the period boundary
         // (`prepare_period`) and nothing in this loop moves it, so it is read
         // once per period rather than once per frame.
@@ -665,6 +750,7 @@ impl TtsMixer {
         // `pop_front`, not per frame. `gain_ramp.next_frame()` below stays per
         // frame: that is the glide.
         let mut head_target_gain_db: Option<f32> = None;
+        let mut played_segment: Option<u64> = None;
         for frame_sum in sum.chunks_exact_mut(CHANNELS as usize) {
             let Some(front) = self.queue.front() else {
                 break;
@@ -674,6 +760,7 @@ impl TtsMixer {
                 None => *head_target_gain_db.insert(self.target_gain_db(front)),
             };
             let segment_serial = front.segment_serial;
+            played_segment = Some(segment_serial);
             let assistant_reference_eligible = front.assistant_reference_eligible;
             let starts_assistant_playback = assistant_reference_eligible
                 && !muted
@@ -772,6 +859,54 @@ impl TtsMixer {
         self.ledger
             .advance_played(popped_samples / (CHANNELS as u64));
         self.metrics.mark_pending(self.pending_frames());
+        if played_segment.is_some() {
+            self.played_segment = played_segment;
+        }
+        self.observe_starvation(
+            sum.len() as u64,
+            popped_samples,
+            queued_samples_before,
+            resumed_segment,
+        );
+    }
+
+    /// A resumed PCM prefix ends a silence run even in a partly filled period.
+    /// Its owner can differ from the current command segment: END/START may
+    /// already be accepted while the older segment's PCM remains queued.
+    fn observe_starvation(
+        &mut self,
+        requested_samples: u64,
+        popped_samples: u64,
+        queued_samples_before: u64,
+        resumed_segment: Option<u64>,
+    ) {
+        let short_samples = requested_samples.saturating_sub(popped_samples);
+        if self.starved_run_samples > 0 && popped_samples > 0 {
+            let frames = self.starved_run_samples / (CHANNELS as u64);
+            self.starved_run_samples = 0;
+            if resumed_segment != Some(self.starved_run_segment) {
+                self.metrics.mark_boundary_gap(frames);
+            } else {
+                let ms = frames_to_ms(frames, TTS_SAMPLE_RATE);
+                if ms > STARVED_DROPOUT_MAX_MS {
+                    self.metrics.mark_starved_long_run(frames);
+                } else {
+                    self.metrics.mark_starved_run(frames);
+                    if ms >= STARVED_LOG_MIN_MS {
+                        self.send_log_event(FaninLogEvent::TtsStarved {
+                            frames,
+                            ms,
+                            segment: self.starved_run_segment,
+                            queued_frames_at_resume: queued_samples_before / (CHANNELS as u64),
+                        });
+                    }
+                }
+            }
+        }
+        if let Some(serial) = self.played_segment.filter(|_| short_samples > 0) {
+            self.starved_run_segment = serial;
+            self.starved_run_samples = self.starved_run_samples.saturating_add(short_samples);
+        }
     }
 
     fn apply_volume_context(&mut self, context: VolumeContext) {
@@ -1154,6 +1289,8 @@ impl TtsMixer {
         let frames = self.pending_frames();
         self.queue.clear();
         self.pending_samples = 0;
+        self.starved_run_samples = 0;
+        self.played_segment = None;
         self.gain_ramp = GainRamp::default();
         frames
     }
@@ -3229,6 +3366,263 @@ mod tests {
                 .all(|line| !line.contains("event=fanin.tts_wire_width_mismatch")),
             "a coherent box must not warn",
         );
+        drop(flush_tx);
+    }
+
+    fn starvation_mixer() -> (
+        SyncSender<QueuedTtsCommand>,
+        SyncSender<QueuedFlush>,
+        TtsMixer,
+        TtsMetrics,
+    ) {
+        let (tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
+        let probe = metrics.clone();
+        let mixer = TtsMixer::new(TtsInput {
+            rx,
+            flush_rx,
+            metrics,
+            max_pending_frames: 48_000,
+            program_duck_db: -24.0,
+            cue_duck_db: -6.0,
+            assistant_loudness: AssistantLoudnessConfig::default(),
+            assistant_reference: None,
+            assistant_reference_tx: None,
+            log_tx: None,
+        });
+        (tx, flush_tx, mixer, probe)
+    }
+
+    fn send_assistant_segment_start(tx: &SyncSender<QueuedTtsCommand>) {
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::SegmentStart {
+                kind: SegmentKind::Assistant,
+                provider_item_id: None,
+                profile: None,
+            },
+        })
+        .unwrap();
+    }
+
+    fn send_audio_frames(tx: &SyncSender<QueuedTtsCommand>, frames: usize) {
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::Audio(vec![1_000; frames * CHANNELS as usize]),
+        })
+        .unwrap();
+    }
+
+    fn mix_one_period(mixer: &mut TtsMixer, frames: usize) {
+        let mut sum = vec![0i64; frames * CHANNELS as usize];
+        mixer.prepare_period();
+        mixer.mix_period(&mut sum);
+    }
+
+    #[test]
+    fn starved_run_is_recorded_when_audio_resumes_inside_the_segment() {
+        for close_mode in [0, 1, 2] {
+            let (tx, _flush_tx, mut mixer, probe) = starvation_mixer();
+            send_assistant_segment_start(&tx);
+            send_audio_frames(&tx, 2);
+            mix_one_period(&mut mixer, 2);
+            mix_one_period(&mut mixer, 2);
+            mix_one_period(&mut mixer, 2);
+            assert_eq!(probe.starved_runs(), 0);
+
+            send_audio_frames(&tx, 2);
+            if close_mode > 0 {
+                tx.send(QueuedTtsCommand {
+                    epoch: 0,
+                    command: TtsCommand::SegmentEnd,
+                })
+                .unwrap();
+            }
+            if close_mode == 2 {
+                send_assistant_segment_start(&tx);
+                send_audio_frames(&tx, 2);
+            }
+            mix_one_period(&mut mixer, if close_mode == 2 { 4 } else { 2 });
+            assert_eq!(probe.starved_runs(), 1, "close_mode={close_mode}");
+            assert_eq!(probe.starved_frames(), 4);
+            assert_eq!(probe.starved_max_run_frames(), 4);
+        }
+    }
+
+    #[test]
+    fn partial_period_gaps_count_once_and_log_without_waiting_for_the_writer() {
+        for log_capacity in [0, 1] {
+            let (tx, _flush_tx, mut mixer, probe) = starvation_mixer();
+            send_assistant_segment_start(&tx);
+            send_audio_frames(&tx, 120);
+            mix_one_period(&mut mixer, 240);
+            let (log_tx, log_rx) = mpsc::sync_channel(log_capacity);
+            mixer.log_tx = Some(log_tx);
+            mix_one_period(&mut mixer, 240);
+            mix_one_period(&mut mixer, 240);
+            assert_eq!(probe.starved_runs(), 0);
+
+            send_audio_frames(&tx, 120);
+            mix_one_period(&mut mixer, 240);
+            assert_eq!(probe.starved_runs(), 1);
+            assert_eq!(probe.starved_frames(), 600);
+            if log_capacity == 0 {
+                assert_eq!(probe.log_dropped(), 1);
+            } else {
+                assert_eq!(
+                    log_rx.try_recv().unwrap(),
+                    FaninLogEvent::TtsStarved {
+                        frames: 600,
+                        ms: frames_to_ms(600, TTS_SAMPLE_RATE),
+                        segment: 1,
+                        queued_frames_at_resume: 120,
+                    },
+                );
+                assert_eq!(probe.log_dropped(), 0);
+            }
+
+            mix_one_period(&mut mixer, 240);
+            assert_eq!(probe.starved_runs(), 1);
+            send_audio_frames(&tx, 240);
+            mix_one_period(&mut mixer, 240);
+            assert_eq!(probe.starved_runs(), 2);
+            assert_eq!(probe.starved_frames(), 960);
+            assert_eq!(probe.starved_max_run_frames(), 600);
+        }
+    }
+
+    #[test]
+    fn micro_gaps_and_a_long_dropout_keep_distinct_counts_and_durations() {
+        for (gap_frames, runs) in [(1, 200), (4_800, 1)] {
+            let (tx, _flush_tx, mut mixer, probe) = starvation_mixer();
+            send_assistant_segment_start(&tx);
+            for _ in 0..runs {
+                send_audio_frames(&tx, 239);
+                mix_one_period(&mut mixer, 239 + gap_frames);
+            }
+            send_audio_frames(&tx, 240);
+            mix_one_period(&mut mixer, 240);
+            assert_eq!(probe.starved_runs(), runs);
+            assert_eq!(probe.starved_frames(), gap_frames as u64 * runs);
+            assert_eq!(probe.starved_max_run_frames(), gap_frames as u64);
+            assert_eq!(probe.starved_long_runs(), 0);
+            assert_eq!(probe.boundary_gap_runs(), 0);
+        }
+    }
+
+    #[test]
+    fn run_ended_by_segment_end_is_the_tail_not_a_dropout() {
+        let (tx, flush_tx, mut mixer, probe) = starvation_mixer();
+        send_assistant_segment_start(&tx);
+        send_audio_frames(&tx, 2);
+        mix_one_period(&mut mixer, 2);
+
+        mix_one_period(&mut mixer, 2);
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::SegmentEnd,
+        })
+        .unwrap();
+        mix_one_period(&mut mixer, 2);
+
+        assert_eq!(probe.starved_runs(), 0);
+        assert_eq!(probe.starved_frames(), 0);
+        assert_eq!(probe.boundary_gap_runs(), 0);
+        drop(flush_tx);
+    }
+
+    #[test]
+    fn long_starvation_is_counted_separately() {
+        let (tx, flush_tx, mut mixer, probe) = starvation_mixer();
+        send_assistant_segment_start(&tx);
+        send_audio_frames(&tx, 2);
+        mix_one_period(&mut mixer, 2);
+
+        let dropout_max_frames = (STARVED_DROPOUT_MAX_MS * TTS_SAMPLE_RATE as u64) / 1_000;
+        let mut starved_frames = 0;
+        while starved_frames <= dropout_max_frames {
+            mix_one_period(&mut mixer, 480);
+            starved_frames += 480;
+        }
+
+        send_audio_frames(&tx, 480);
+        mix_one_period(&mut mixer, 480);
+        assert_eq!(probe.starved_runs(), 0);
+        assert_eq!(probe.starved_frames(), 0);
+        assert_eq!(probe.starved_long_runs(), 1, "but still counted");
+        assert!(probe.starved_long_frames() > 0, "with its duration kept");
+        drop(flush_tx);
+    }
+
+    #[test]
+    fn waiting_for_a_segments_opening_chunk_is_not_a_dropout() {
+        let (tx, flush_tx, mut mixer, probe) = starvation_mixer();
+        // SEGMENT_START opens the segment gain before any audio exists, so
+        // this silence is the wait for the utterance to begin.
+        send_assistant_segment_start(&tx);
+        mix_one_period(&mut mixer, 2);
+        mix_one_period(&mut mixer, 2);
+
+        send_audio_frames(&tx, 2);
+        mix_one_period(&mut mixer, 2);
+        assert_eq!(probe.starved_runs(), 0);
+        assert_eq!(probe.starved_frames(), 0);
+        assert_eq!(probe.starved_long_runs(), 0);
+        drop(flush_tx);
+    }
+
+    #[test]
+    fn boundary_gaps_preserve_duration_without_becoming_same_segment_dropouts() {
+        for boundary_period in [0, 4, 8] {
+            let (tx, _flush_tx, mut mixer, probe) = starvation_mixer();
+            send_assistant_segment_start(&tx);
+            send_audio_frames(&tx, 480);
+            mix_one_period(&mut mixer, 480);
+            for period in 0..=8 {
+                if period == boundary_period {
+                    tx.send(QueuedTtsCommand {
+                        epoch: 0,
+                        command: TtsCommand::SegmentEnd,
+                    })
+                    .unwrap();
+                    send_assistant_segment_start(&tx);
+                }
+                assert_eq!(probe.boundary_gap_runs(), 0);
+                if period == 8 {
+                    send_audio_frames(&tx, 480);
+                }
+                mix_one_period(&mut mixer, 480);
+            }
+            assert_eq!(probe.starved_runs(), 0);
+            assert_eq!(probe.starved_frames(), 0);
+            assert_eq!(probe.starved_long_runs(), 0);
+            assert_eq!(probe.boundary_gap_runs(), 1);
+            assert_eq!(probe.boundary_gap_frames(), 3_840);
+        }
+    }
+
+    #[test]
+    fn a_flush_discards_the_open_run_rather_than_charging_it() {
+        let (tx, flush_tx, mut mixer, probe) = starvation_mixer();
+        send_assistant_segment_start(&tx);
+        send_audio_frames(&tx, 2);
+        mix_one_period(&mut mixer, 2);
+        mix_one_period(&mut mixer, 2);
+
+        // A barge-in flush clears the queue and the segment with it.
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::FlushSync,
+        })
+        .unwrap();
+        mix_one_period(&mut mixer, 2);
+
+        // A later utterance must not inherit the pre-flush run.
+        send_assistant_segment_start(&tx);
+        send_audio_frames(&tx, 2);
+        mix_one_period(&mut mixer, 2);
+        assert_eq!(probe.starved_runs(), 0);
+        assert_eq!(probe.starved_frames(), 0);
+        assert_eq!(probe.boundary_gap_runs(), 0);
         drop(flush_tx);
     }
 }

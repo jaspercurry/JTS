@@ -202,11 +202,8 @@ const fn direct_narrow_scratch_samples() -> usize {
 pub(crate) const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Bounded capacity of the `fanin-ring-log` channel ([`RingOutput::stall_log`]
-/// and `TtsMixer`'s clone of the same sender), shared by three producers:
-/// ring-stall edges, `AssistantLoudness` (one per TTS/cue segment — the
-/// per-segment rate is this channel's working set, not the edge-triggered
-/// stall line), and `TtsFlush`. Sized so a multi-segment response burst
-/// cannot fill the channel before a concurrent ring-stall line finds a slot.
+/// and `TtsMixer`'s clone of the same sender). Sized for segment, flush and
+/// starvation events alongside ring-stall edges during response bursts.
 /// Overflow past this is drop-and-count, never a block (ADR-0254).
 const FANIN_LOG_CHANNEL_CAPACITY: usize = 64;
 
@@ -956,10 +953,8 @@ fn format_ring_stall_event(event: &RingStallEvent) -> String {
 }
 
 /// Everything this daemon's SCHED_FIFO mixer thread hands to `fanin-ring-log`
-/// instead of formatting or writing itself (issue #4787): a ring-stall edge,
-/// an assistant-loudness gain decision, or a TTS flush summary. `RingOutput`
-/// and `TtsMixer` each hold a clone of the one sender, so one writer thread
-/// drains all three.
+/// instead of formatting or writing itself (issue #4787). `RingOutput` and
+/// `TtsMixer` share one sender and one writer thread.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum FaninLogEvent {
     RingStall(RingStallEvent),
@@ -977,6 +972,12 @@ pub(crate) enum FaninLogEvent {
         flushed_frames: u64,
         segments: usize,
         max_audio_played_ms: u64,
+    },
+    TtsStarved {
+        frames: u64,
+        ms: u64,
+        segment: u64,
+        queued_frames_at_resume: u64,
     },
 }
 
@@ -1009,6 +1010,17 @@ fn run_ring_stall_log_writer(receiver: Receiver<FaninLogEvent>) {
                 info!(
                     "event=fanin.tts_flush requests={} pending_frames={} flushed_frames={} segments={} max_audio_played_ms={}",
                     requests, pending_frames, flushed_frames, segments, max_audio_played_ms,
+                );
+            }
+            FaninLogEvent::TtsStarved {
+                frames,
+                ms,
+                segment,
+                queued_frames_at_resume,
+            } => {
+                warn!(
+                    "event=fanin.tts_starved frames={} ms={} segment={} queued_frames_at_resume={}",
+                    frames, ms, segment, queued_frames_at_resume,
                 );
             }
         }

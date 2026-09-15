@@ -2,18 +2,43 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fire-and-forget task bookkeeping shared by jasper-voice's owners.
-
-Both the daemon's startup tasks and `WakeLoop`'s per-turn background work
-use the same pair.
-"""
+"""Task ownership and cancellation-safe cleanup for jasper-voice."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Coroutine
 
 logger = logging.getLogger("jasper.voice_daemon")
+
+
+async def await_cleanup_owned(
+    operation: Coroutine,
+    *,
+    task_name: str,
+) -> None:
+    """Defer repeated caller cancellation until one cleanup completes."""
+    cleanup = asyncio.create_task(operation, name=task_name)
+    deferred_cancel = False
+    current = asyncio.current_task()
+    while not cleanup.done():
+        try:
+            await asyncio.wait({cleanup})
+        except asyncio.CancelledError:
+            if current is None or current.cancelling() == 0:
+                break
+            deferred_cancel = True
+            current.uncancel()
+    if cleanup.cancelled():
+        raise asyncio.CancelledError
+    error = cleanup.exception()
+    if error is not None:
+        if deferred_cancel:
+            raise asyncio.CancelledError from None
+        raise error
+    if deferred_cancel:
+        raise asyncio.CancelledError
 
 
 def track_task(

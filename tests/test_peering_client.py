@@ -32,6 +32,7 @@ import pytest_asyncio
 
 from jasper.peering.config import ARBITRATE_RPC_TIMEOUT_SEC
 from jasper.voice.peering_client import DEFAULT_RPC_TIMEOUT_SEC, PeeringClient
+from tests._async_wait import wait_signalled
 from tests._peering_uds import peering_uds_server
 
 _SOCKET = "/tmp/jasper-peering-test.sock"
@@ -103,22 +104,50 @@ async def test_session_started_noop(enabled, has_turn):
     mock.assert_not_called()
 
 
-@pytest.mark.parametrize("method, call_args, epoch, expected_cmd", [
-    pytest.param("session_started", (True,), "ep-abc",
-                 "SESSION_STARTED ep-abc", id="session_started"),
-    pytest.param("session_ended", ("user_silence",), "ep-xyz",
-                 "SESSION_ENDED ep-xyz user_silence", id="session_ended"),
-])
-async def test_session_notice_sends_command(
-    method, call_args, epoch, expected_cmd,
-):
+@pytest.mark.parametrize("outcome", ["ok", "start_error", "cancel_end"])
+async def test_session_notices_do_not_delay_speech_and_keep_epoch_order(outcome):
     client = PeeringClient(enabled=True, socket_path=_SOCKET)
-    client._epoch = epoch
-    mock = AsyncMock(return_value={"result": "ok"})
-    with patch("jasper.peering.uds.send_request", new=mock):
-        await getattr(client, method)(*call_args)
-    sent_args, _ = mock.call_args
-    assert sent_args[1] == expected_cmd
+    client._epoch = "ep-first"
+    start_entered = asyncio.Event()
+    start_finished = asyncio.Event()
+    release_start = asyncio.Event()
+    notices = []
+
+    async def send_request(_path, cmd, *, timeout):
+        if cmd.startswith("ARBITRATE "):
+            return {"result": "WIN", "epoch": "ep-next"}
+        notices.append(cmd)
+        if cmd.startswith("SESSION_STARTED "):
+            start_entered.set()
+            try:
+                await release_start.wait()
+                if outcome == "start_error":
+                    raise OSError("broken pipe")
+            finally:
+                start_finished.set()
+        return {"result": "ok"}
+
+    with patch("jasper.peering.uds.send_request", new=send_request):
+        await asyncio.wait_for(client.session_started(True), timeout=0.2)
+        await wait_signalled(start_entered, "peer START RPC")
+        end_notice = asyncio.create_task(client.session_ended("user_silence"))
+        await asyncio.sleep(0)
+        assert notices == ["SESSION_STARTED ep-first"]
+        assert not end_notice.done()
+
+        await client.arbitrate(score=0.8, snr_db=None, rms_dbfs=None, can_serve=True)
+        if outcome == "cancel_end":
+            end_notice.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await end_notice
+        else:
+            release_start.set()
+            await end_notice
+            assert notices == [
+                "SESSION_STARTED ep-first", "SESSION_ENDED ep-first user_silence",
+            ]
+        assert start_finished.is_set()
+        assert client._epoch == "ep-next"
 
 
 async def test_session_ended_swallows_errors():

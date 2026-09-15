@@ -44,6 +44,7 @@ from ..tts_routing import (
     tts_socket_feeds_pre_dsp_fanin,
 )
 from ..volume_coordinator import VolumeCoordinator
+from ._tasks import await_cleanup_owned
 from .earcons import (
     _generate_listening_chirp,
     _generate_mute_click,
@@ -144,35 +145,6 @@ class FanInDucker:
                 log_event(logger, "voice.duck", on="false")
         finally:
             self._ducked = False
-
-
-async def await_output_cleanup_owned(
-    operation: Coroutine,
-    *,
-    task_name: str,
-) -> None:
-    """Defer repeated caller cancellation until one cleanup completes."""
-
-    cleanup = asyncio.create_task(operation, name=task_name)
-    deferred_cancel = False
-    current = asyncio.current_task()
-    while not cleanup.done():
-        try:
-            await asyncio.wait({cleanup})
-        except asyncio.CancelledError:
-            if current is None or current.cancelling() == 0:
-                break
-            deferred_cancel = True
-            current.uncancel()
-    if cleanup.cancelled():
-        raise asyncio.CancelledError
-    error = cleanup.exception()
-    if error is not None:
-        if deferred_cancel:
-            raise asyncio.CancelledError from None
-        raise error
-    if deferred_cancel:
-        raise asyncio.CancelledError
 
 
 class AssistantOutput:
@@ -544,7 +516,7 @@ class AssistantOutput:
             if drain_base_error is not None:
                 raise drain_base_error
 
-        await await_output_cleanup_owned(
+        await await_cleanup_owned(
             _drain_restore_and_release(),
             task_name=f"output-cleanup-{episode.kind}-{episode.id}",
         )
@@ -568,7 +540,7 @@ class AssistantOutput:
             finally:
                 await self._output_gate.end(episode)
 
-        await await_output_cleanup_owned(
+        await await_cleanup_owned(
             _drain_and_release(),
             task_name=f"output-drain-{episode.kind}-{episode.id}",
         )
@@ -710,6 +682,21 @@ class AssistantOutput:
         await self.tts.prepare_assistant_context(
             **prepare_kwargs,
         )
+
+    async def prepare_turn(
+        self,
+        episode: AssistantOutputEpisode | None,
+        *,
+        feedback: Callable[[], Coroutine[object, object, None]] | None = None,
+    ) -> None:
+        await self.prepare_loudness()
+        await self.tts.pause_content_meter()
+        self.volume_coordinator.note_voice_session(
+            True, camilla_volume_locked=getattr(self.ducker, "locks_camilla_volume", True),
+        )
+        if feedback is not None:
+            self.start_turn_feedback(episode, feedback())
+        await self.ducker.duck()
 
     def start_turn_feedback(
         self, episode: AssistantOutputEpisode | None, operation: Coroutine[object, object, None],

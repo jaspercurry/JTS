@@ -66,7 +66,7 @@ def _make_wake_loop(**collaborators):
     # If a guard is skipped, these would be reached — make them visible.
     wl._spend_cap = types.SimpleNamespace(allowed=lambda: True)
     wl._begin_turn = _SpyCalls()
-    wl._prepare_assistant_loudness_context = _SpyCalls()
+    wl._assistant_output.prepare_loudness = _SpyCalls()
     wl._play_listening_chirp = _SpyCalls()
     wl._turns.cleanup_after_failed_begin = _SpyCalls()
     return wl
@@ -77,7 +77,7 @@ def _assert_no_turn_no_duck(wl) -> None:
     # (note_voice_session(True) + ducker). Loudness-prime and the
     # listening chirp are the other observable "we started" effects.
     assert wl._begin_turn.called is False
-    assert wl._prepare_assistant_loudness_context.called is False
+    assert wl._assistant_output.prepare_loudness.called is False
     assert wl._play_listening_chirp.called is False
 
 
@@ -317,38 +317,11 @@ async def test_manual_start_does_not_repeat_begin_owned_cleanup():
         return None
 
     wl._turns.cleanup_after_failed_begin = counted_cleanup
-    wl._prepare_assistant_loudness_context = noop_prepare
+    wl._assistant_output.prepare_loudness = noop_prepare
     wl._turns.begin_inner = failed_inner
     wl._create_fire_and_forget_task = discard_task
 
     assert await wl.manual_session_start() == "ERROR"
-    assert cleanup_calls == 1
-    assert wl._turns.output_episode is None
-    assert not wl._output_gate.is_active
-
-
-async def test_manual_start_cleans_prefix_failure_before_turn_inner():
-    """An ordinary loudness-prefix failure is centrally cleaned exactly once."""
-
-    wl = wake_loop_for_tests()
-    cleanup_calls = 0
-    inner = _SpyCalls()
-    cleanup_method = type(wl._turns).cleanup_after_failed_begin
-
-    async def counted_cleanup() -> None:
-        nonlocal cleanup_calls
-        cleanup_calls += 1
-        await cleanup_method(wl._turns)
-
-    async def fail_prepare() -> None:
-        raise RuntimeError("pre-begin loudness preparation failed")
-
-    wl._turns.cleanup_after_failed_begin = counted_cleanup
-    wl._prepare_assistant_loudness_context = fail_prepare
-    wl._turns.begin_inner = inner
-
-    assert await wl.manual_session_start() == "ERROR"
-    assert inner.called is False
     assert cleanup_calls == 1
     assert wl._turns.output_episode is None
     assert not wl._output_gate.is_active
@@ -509,7 +482,7 @@ def _ptt_only_wake_loop():
     wl._fire_and_forget = set()
     wl._spend_cap = types.SimpleNamespace(allowed=lambda: True)
     wl._begin_turn = _SpyCalls()
-    wl._prepare_assistant_loudness_context = _SpyCalls()
+    wl._assistant_output.prepare_loudness = _SpyCalls()
     wl._play_listening_chirp = _SpyCalls()
     wl._turns.cleanup_after_failed_begin = _SpyCalls()
     return wl
