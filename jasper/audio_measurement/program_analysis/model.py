@@ -675,6 +675,11 @@ class DriverResponse:
     repeat_responses: tuple["DriverResponse", ...] = ()
     repeat_index: int | None = None
 
+    @property
+    def fit_floor_hz(self) -> float | None:
+        trusted: float | None = self.gating.get("f_trusted_hz")
+        return self.validity_floor_hz if trusted is None else trusted
+
 
 @dataclass(frozen=True)
 class AlignmentEstimate:
@@ -769,6 +774,8 @@ class CrossoverCandidate:
     predicted_ripple_db: float
     confidence: float
     alignment_seed_ripple_db: float | None = None
+    alignment_seed_delay_us: float | None = None
+    snr_waived_roles: tuple[str, ...] = ()
     flatness_improvement_db: float | None = None
     anchor_delay_us: float | None = None
     snap_delta_us: float | None = None

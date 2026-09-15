@@ -10,7 +10,7 @@ from dataclasses import replace
 from typing import Any
 
 from jasper.active_speaker.angle_capture import LevelPolicy
-from jasper.active_speaker.bass_levels import BassLevelLadder, BassLevelRun, prepare_bass_captures, run_bass_levels
+from jasper.active_speaker.run_levels import LevelLadder, LevelRun, prepare_level_captures, run_levels
 from jasper.active_speaker.round_packet import RoundPacket
 from jasper.active_speaker.run_manifest import RunManifest
 from jasper.active_speaker.crossover_v2.door import isolation_hold
@@ -114,6 +114,11 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                            capabilities=verdict.capabilities, next=verdict.next or (
                                "accept" if verdict.accepted else "fix_and_retake"),
                            next_gain_db=verdict.next_gain_db, charge=verdict.charge)
+        if kwargs.get("phase") == PHASE_MEASURE:
+            kwargs.update(gain_ceiling_db=conductor._measure_gain_ceiling_db, caps_dbfs=conductor._excitation.caps_dbfs,
+                          session_volume_db=conductor._excitation.session_volume_db,
+                          spl_stop_db_spl=conductor._preset.safety.max_commissioning_level_db_spl,
+                          spl=(getattr(answer, "capture_integrity", None) or {}).get("spl"))
         assessed = assess(analysis, prior_verdict=prior, **kwargs)
         if verdict is None and phase == PHASE_MEASURE and assessed.next in {"retake_louder", "retake_quieter"}:
             conductor._rearm_measure_after_transient(assessed)
@@ -157,7 +162,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                   manifest: Any, production: Any, conductor: Any, refs: Any,
                   trims: Any, ceiling_s: float, ceiling_db_spl: float | None,
                   camilla_factory: Any, verify_only: bool, provenance: Any = None,
-                  level: LevelPolicy = LevelPolicy(), ladder: BassLevelLadder | None = None,
+                  level: LevelPolicy = LevelPolicy(), ladder: LevelLadder | None = None,
                   capture_indexes: tuple[int, ...] = ()) -> tuple[RunDoor, Any, Any, Any]:
     if ladder is not None:
         ceiling_s *= len(ladder.admissible)
@@ -188,18 +193,18 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                        action="measuring", plan=v2volume.session_volume_plan(), wall_clock_ceiling_s=ceiling_s),
         build, sensitivity, device, ceiling_db_spl,
     )
-    if ladder is None:
+    if ladder is None or ladder.plan.levels is None:
         return door, analyze, assessor, None
 
     async def execute(request: Any, *, gate: Any, signals: Any, captures: Any, **_kwargs: Any) -> Any:
         packet = RoundPacket(manifest, ladder.to_dict())
-        bound: BassLevelRun | None = None
+        bound: LevelRun | None = None
 
-        def prepare(plan: Any) -> BassLevelRun:
+        def prepare(plan: Any) -> LevelRun:
             nonlocal bound
             child = RunManifest(f"{manifest.run_id}-level-{len(packet.runs) + 1}", packet,
                                 incumbent=manifest.incumbent)
-            selected = prepare_bass_captures(plan, roles_bands=conductor._roles)
+            selected = prepare_level_captures(plan, roles_bands=conductor._roles)
             child_door, child_analyze, child_assessor, _ = bind_run_door(
                 host=host, device=device, evidence_store=evidence_store, manifest=child,
                 production=production, conductor=conductor, refs=refs, trims=trims,
@@ -207,11 +212,11 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                 verify_only=False, provenance=provenance, level=plan.level,
                 capture_indexes=tuple(captures.index(capture) + 1 for capture in selected),
             )
-            bound = BassLevelRun(child, child_door, child_analyze, child_assessor, selected)
+            bound = LevelRun(child, child_door, child_analyze, child_assessor, selected)
             return bound
 
         try:
-            results = await run_bass_levels(ladder, hold=door.hold, prepare=prepare, gate=gate, signals=signals, aborts={})
+            results = await run_levels(ladder, hold=door.hold, prepare=prepare, gate=gate, signals=signals, aborts={})
             if signals.stop.is_set() or signals.complete.is_set():
                 manifest.reason = signals.stop_reason if signals.stop.is_set() else "complete_requested"
             return results[-1] if results and not manifest.reason else manifest

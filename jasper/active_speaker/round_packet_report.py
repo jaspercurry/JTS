@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import textwrap
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -129,9 +130,23 @@ def packet_index(
         parallax = json.dumps(pair["parallax_us"])
         if pair["driver_spacing_source"] == "unknown":
             parallax += " (driver spacing undeclared)"
-        lines.append(f"timing: {'/'.join(pair['roles'])} · {pair['take_id']} · {pair['objective']}; "
-                     f"delay {pair['committed']['delay_us']} us; polarity {pair['committed']['polarity']}; margin {pair['summed_fit_margin']}; "
-                     f"interval {json.dumps(pair['delay_interval_us'])} us; parallax {parallax}")
+        lines += [f"timing: {'/'.join(pair['roles'])} · {pair['take_id']} · {_pose_token(pair['pose'])}",
+                  f"  {pair['objective']}; delay {pair['committed']['delay_us']} us; polarity {pair['committed']['polarity']}; margin {pair['summed_fit_margin']}",
+                  f"  interval {json.dumps(pair['delay_interval_us'])} us; parallax {parallax}"]
+        lines.append(f"  refinement_delta_us {pair['refinement_delta_us']}; epsilon_ppm {pair['epsilon_ppm']}; flatness_improvement_db {pair['flatness_improvement_db']}")
+        for role, snr in pair["snr"].items():
+            level = pair.get("levels", {}).get(role, {})
+            snr_fields = [f"  {role} SNR {snr['verdict']}"]
+            if (gain := level.get("alignment_level_db")) is not None:
+                snr_fields.append(f"level {gain:.1f} dBFS")
+            shortfall = level.get("alignment_snr_shortfall_db") or {}
+            if shortfall.get("before") is not None and shortfall.get("after") is not None:
+                snr_fields.append(f"shortfall {shortfall['before']:.1f} → {shortfall['after']:.1f} dB")
+            if level.get("alignment_level_capped_by"):
+                snr_fields.append(f"capped {level['alignment_level_capped_by']}, residual {level['alignment_snr_residual_shortfall_db']:.1f} dB")
+            lines.append(", ".join(snr_fields))
+    if packet.get("alignment_verdict"):
+        lines.append(textwrap.fill("alignment_verdict: " + json.dumps(packet["alignment_verdict"]), width=160))
     lines += list(dict.fromkeys(f"retakes: {take['take_id']} {fault}"
                                for group in packet["sets"] for take in group["takes"]
                                if not take["selected"] and (fault := take["fault"])))

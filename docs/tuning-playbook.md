@@ -56,6 +56,16 @@ Repeat spread and pose spread answer different questions. No fit filter should
 rest on its `budget.max_gain_db` rail. Measure the composed graph, then stop
 when it answers the question.
 
+Read `alignment_verdict` beside the timing rows. A delay and its inverted
+spelling one half-period later have the same phase at Fc; at 2500 Hz they
+are 200 µs of group delay apart. `folded_delay_us` puts each pose in the
+normal frame; `spread_us` reports their range. Trust the measured-sum take
+in `decided_by` to choose the lobe, and author `basis_delay_us` from that
+take's committed delay. `snr_waived` names takes committed with insufficient
+alignment SNR. `flatness_improvement_db` compares ripple on the same metric;
+`refinement_delta_us` is committed minus scored seed, while `epsilon_ppm`
+is clock drift. `gcc_delay_us` is the bare correlation estimate.
+
 Read each pair's `objective`: `summed_fit_committed` identifies a committed
 summed fit. Inspect `committed.delay_us`, `committed.polarity`,
 `summed_fit_margin`, `delay_interval_us` and `summed_fit_verdict`.
@@ -248,6 +258,7 @@ room = jasper.audio_measurement.room_limits
 alignment = jasper.audio_measurement.program_analysis.model
 timing = jasper.audio_measurement.program_analysis.response
 quality = jasper.audio_measurement.quality_model
+safety = jasper.active_speaker.profile
 gating = jasper.audio_measurement.gating
 bass = jasper.bass_extension.measurement
 
@@ -255,6 +266,8 @@ Speaker
 | Name | Value | Unit | Constant or function field |
 |---|---|---|---|
 | driver.passband | {} | Hz | contract.speaker.driver.bounds.passbands_hz |
+| driver.chain_scope | "for every role you name, prescribe the WHOLE per-driver correction that branch should carry, not a delta. A role you do not name is not changed. An empty filters list clears every role's chain; named trim pins still apply and other trims stay at the base" | rule | contract.speaker.driver.bounds.chain_scope |
+| driver.trim_pin_scope | "{<role>: <dB, between -60.0 and 0>} -- pin that driver's LEVEL instead of letting this round re-solve it. Only for a role whose chain you replace or clear; filters: [] clears every role's chain and admits trim pins. Use it when the chain you are prescribing was shaped against a level this round will not re-derive: the trim is re-solved every round from a level-match datum, so a chain carried over from another round otherwise rides a level it was not shaped against. A trim you name is CARRIED, never re-solved, and it is never a measurement of this round" | rule | contract.speaker.driver.bounds.trim_pin_scope |
 | driver.cut_Q | [0.0001,1000000.0] | Q | contract.speaker.driver.bounds.q_range_cut |
 | driver.boost_Q_max | 8.0 | Q | contract.speaker.driver.bounds.q_max_boost |
 | driver.filter_boost_max | 12.0 | dB | contract.speaker.driver.bounds.max_filter_boost_db |
@@ -278,6 +291,7 @@ Speaker
 | alignment.lobe_applies_to | "abs(delay_us - basis_delay_us)" | us | contract.speaker.alignment.bounds.lobe_applies_to |
 | alignment.margin_min | 1.5 | ratio | alignment.SUMMED_FIT_MIN_MARGIN |
 | alignment.SNR_floor | 35.0 | dB | quality.DRIVER.alignment_snr_ok_db |
+| alignment.SPL_raise_margin | 3.0 | dB | safety.SPL_RAISE_MARGIN_DB |
 | gate.trusted_floor_multiplier | 2.5 | cycles | gating.TRUSTED_FLOOR_MULTIPLIER |
 
 Room

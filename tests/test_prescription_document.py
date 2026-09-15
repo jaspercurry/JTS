@@ -104,6 +104,25 @@ def bass_document(packet):
     return {**BASS_EXTENSION, "round_id": packet["round_id"]}
 
 
+@pytest.mark.parametrize("pin", [{}, {"tweeter": -9.52}])
+def test_empty_driver_chain_clears_all_roles_and_keeps_trim_context(base, bank, evidence, pin):
+    base = publish_authored_candidate(replace(base.candidate, linearization={
+        role: {"filters": [{"biquad_type": "Peaking", "freq": freq, "q": 1, "gain": -1}
+                           for freq in freqs]}
+        for role, freqs in (("woofer", (500, 700)), ("tweeter", (3000, 4000, 5000)))
+    }), root=bank)
+    evidence = replace(evidence, packet={**evidence.packet, "incumbent": {"linearization": {
+        "from_applied_profile": {role: entry["filters"] for role, entry in base.candidate.linearization.items()},
+    }}})
+    raw = driver_document([], dict(evidence.packet), pinned_trim_db=pin)
+    child = judge_prescription_document(document(base.fingerprint, {"driver": raw}), base=base, evidence=evidence)
+    assert child.analysis["resolution"]["driver"] == "document"
+    assert child.analysis["evidence"]["prescriptions"]["driver"]["displaced_filters"] == 5
+    assert child.linearization == {}
+    assert child.role_attenuations_db == {**base.candidate.role_attenuations_db, **pin}
+    assert child.role_attenuations_db["woofer"] == 0.0
+
+
 @pytest.fixture
 def bass_round(round_bank, bass_packet):
     directory, _ = round_bank

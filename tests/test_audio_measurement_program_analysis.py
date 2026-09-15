@@ -77,6 +77,8 @@ from jasper.audio_measurement.comparison_bands import (
     overlap_band_hz,
 )
 from jasper.audio_measurement.program_analysis import alignment_pairs
+from jasper.audio_measurement.program_analysis.model import SummedAlignmentReference
+from jasper.audio_measurement.program_analysis.response import _select_summed_alignment_pair
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
@@ -2368,46 +2370,38 @@ def test_gcc_local_peak_snap_falls_back_when_no_local_max_in_radius():
     assert snapped is None
 
 
-def test_build_candidate_falls_back_to_anchor_when_snap_absent():
-    """When the aligner found no local peak in the snap radius
-    (``snapped_delay_us is None``), the SEED is the bare anchor and
-    ``snap_found`` records that — the physical plausibility rail then still
-    gates the committed delay downstream (Fix 3).
-
-    ``snap_found`` and ``snap_delta_us`` are asserted as the INDEPENDENT facts
-    they are (#2607 review nit): the first is the seed's provenance, the second
-    is ``committed − anchor``, and since #2598 an absent snap no longer implies
-    a zero delta — the objective is free to commit away from the anchor. They
-    coincide here because this fixture's flattest pair IS the anchor, which the
-    test says out loud rather than treating one as evidence of the other.
-    """
+@pytest.mark.parametrize("snapped", [None, -30.0])
+def test_build_candidate_banks_the_seed_it_scored(snapped):
     woofer_ir = np.zeros(8192)
     tweeter_ir = np.zeros(8192)
     woofer_ir[1000] = 1.0
     tweeter_ir[1011] = 1.0
     physical_gap_us = 3 / SR * 1e6
-    # The aligner owns the anchor; supply it as the aligner would (argmax gap 11
-    # − drift 8 = 3 samples, no parallax) with no local snap peak found.
+    # Argmax gap 11 samples minus drift 8 samples, no parallax.
     alignment = AlignmentEstimate(
         delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
         polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
         confidence=0.9, status=ALIGNMENT_OK,
-        anchor_delay_us=-physical_gap_us, snapped_delay_us=None,
+        anchor_delay_us=-physical_gap_us, snapped_delay_us=snapped,
     )
     candidate, _predicted = _build_candidate(
         woofer_ir, tweeter_ir, SR, 16_384, 2000.0, "woofer", "tweeter",
         alignment, None, alignment_delay_bounds_us=(0.0, 1000.0),
     )
-    # The seed's provenance: the aligner offered no local snap peak.
-    assert candidate.snap_found is False
+    assert candidate.snap_found is (snapped is not None)
     assert candidate.anchor_delay_us == pytest.approx(-physical_gap_us, abs=1e-9)
-    # The commitment, and its residual — a separate fact, equal to zero here
-    # only because the objective agreed with the anchor.
-    assert candidate.delay_us == pytest.approx(-physical_gap_us, abs=1e-9)
+    if snapped is None:
+        assert candidate.delay_us == pytest.approx(-physical_gap_us, abs=1e-9)
     assert candidate.snap_delta_us == pytest.approx(
         candidate.delay_us - candidate.anchor_delay_us, abs=1e-9,
     )
-    assert candidate.snap_delta_us == pytest.approx(0.0, abs=1e-9)
+
+    seed = -physical_gap_us if snapped is None else snapped
+    evidence = analysis_json(program_analysis.ProgramAnalysis(phase="measure", program_id="seed", locations=(), candidate=candidate,
+        alignment=dataclasses.replace(alignment, delay_us=candidate.delay_us, seed_delay_us=alignment.delay_us)))
+    assert evidence["alignment_seed_delay_us"] == seed
+    assert evidence["gcc_delay_us"] == -650.0
+    assert evidence["refinement_delta_us"] == pytest.approx(candidate.delay_us - seed, abs=.001)
 
 
 def test_build_candidate_anchor_overrides_wrong_periodic_gcc_lobe():
@@ -2781,7 +2775,7 @@ def test_the_selection_log_never_emits_a_bare_nan(caplog):
         _build_candidate(
             woofer_ir, tweeter_ir, SR, n_fft, 2000.0, "woofer", "tweeter",
             alignment, None, alignment_delay_bounds_us=(0.0, 1000.0),
-            branch_snr_insufficient=True,
+            branch_snr_insufficient=("tweeter",),
         )
     records = event_records(caplog, "program_analysis.alignment_selection")
     assert len(records) == 1
@@ -4137,11 +4131,11 @@ def test_snap_production_path_preserves_parallax_contract(
     diagnostic = analysis_diagnostic_summary(result)
     assert diagnostic["alignment_confidence_source"] == "gcc_phat_seed"
     assert diagnostic["alignment_seed_delay_us"] == pytest.approx(
-        result.alignment.seed_delay_us,
+        result.candidate.alignment_seed_delay_us,
         abs=0.001,
     )
     assert diagnostic["alignment_refinement_delta_us"] == pytest.approx(
-        result.alignment.delay_us - result.alignment.seed_delay_us,
+        result.alignment.delay_us - result.candidate.alignment_seed_delay_us,
         abs=0.001,
     )
     assert diagnostic["flatness_improvement_db"] == pytest.approx(
@@ -8220,6 +8214,9 @@ def test_absolute_target_carries_the_candidates_configured_polarity():
     (191.0, -1, (0, 0), "missing_gain", True, "applied_alignment_held_after_low_snr", "unavailable"),
     (191.0, -1, (0, 0), "flat", True, "applied_alignment_held_after_low_snr", "inconclusive"),
     (191.0, -1, (0, 0), "flat", False, "flat_sum_committed", "inconclusive"),
+    (191.0, -1, (-20, 0), "measured", False, "flat_sum_committed", "unavailable"),
+    (191.0, -1, (20, 0), "measured", False, "flat_sum_committed", "unavailable"),
+    (191.0, -1, (0, 20), "measured", False, "flat_sum_committed", "unavailable"),
 ])
 def test_measured_sum_commits_alignment_when_ripple_basins_are_degenerate(monkeypatch, caplog, delay_us, sign, pose, reference_kind, low_snr, objective, verdict):
     from jasper.audio_measurement.program_analysis import dispatch
@@ -8229,7 +8226,7 @@ def test_measured_sum_commits_alignment_when_ripple_basins_are_degenerate(monkey
     freqs = np.linspace(0, SR / 2, 4097)
     W = np.ones(freqs.size, dtype=complex)
     T = 0.45 * np.exp((0 if reference_kind == "flat" else 0.02j) * (freqs / FC_HZ) ** 2)
-    branches = iter((W, T) * 2)
+    branches = iter((W, T) * 4)
     monkeypatch.setattr(dispatch, "_aligned_branch_tf", lambda *a, **k: (freqs, next(branches), {}))
     summed = predicted_branch_sum(W, T, 0, 0, sign, freqs_hz=freqs, residual_delay_us=delay_us)
     reference = SummedAlignmentReference(
@@ -8254,11 +8251,27 @@ def test_measured_sum_commits_alignment_when_ripple_basins_are_degenerate(monkey
         ambient_report={"bands": [{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -45 if low_snr else -100}]},
     )
     geometry = MeasurementGeometry(position_deg=pose[0], vertical_deg=pose[1])
+    if pose != (0, 0) and not low_snr:
+        probe = analyze_program_capture(program, capture, SR, geometry=geometry, priors=priors)
+        snr = min(r.snr[DRIVER_SNR_ALIGNMENT_KEY]["worst_relevant"]["estimated_snr_db"] for r in probe.driver_responses)
+        priors = dataclasses.replace(priors, ambient_report={"bands": [
+            {"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -100 + snr - 29}]})
+        before = analyze_program_capture(program, capture, SR, geometry=geometry, priors=priors)
+        assert before.candidate.alignment_objective == "applied_alignment_held_after_low_snr"
+        assert min(r.snr[DRIVER_SNR_ALIGNMENT_KEY]["worst_relevant"]["estimated_snr_db"] for r in before.driver_responses) == pytest.approx(29)
+        program = build_measure_program({"woofer": -18, "tweeter": -18}, _roles(),
+                                        sweep_durations={"woofer": .3, "tweeter": .3})
+        capture = _synthesize(program, woofer_ir=impulse, tweeter_ir=impulse, noise=0)
+        caplog.clear()
     caplog.set_level(logging.INFO, logger="jasper.audio_measurement.program_analysis")
     result = analyze_program_capture(program, capture, SR, geometry=geometry, priors=priors)
     candidate = result.candidate
     assert candidate.alignment_objective == objective
     assert candidate.summed_fit_verdict == verdict
+    waived = tuple(sorted(r.role for r in result.driver_responses
+                          if driver_alignment_snr_verdict(r) == "insufficient")) if verdict == "committed" else ()
+    assert candidate.snr_waived_roles == waived
+    assert analysis_json(result)["snr_waived_roles"] == list(waived)
     assert any(driver_alignment_snr_verdict(r) == "insufficient" for r in result.driver_responses) is low_snr
     event = event_fields(caplog, "program_analysis.alignment_selection")
     assert event["summed_fit_verdict"] == verdict
@@ -8326,3 +8339,19 @@ def test_summed_fit_sliced_comparator_matches_full_axis(bins):
     full_rms, _ = analysis.tracking_error_db(freqs, analysis.smooth_fractional_octave(freqs, measured, 6),
                                             analysis.smooth_fractional_octave(freqs, predicted, 6), reference.band_hz)
     assert score(1, 125) == pytest.approx(full_rms, rel=0, abs=1e-9)
+
+
+@pytest.mark.parametrize("roles", [(), ("tweeter",)])
+def test_summed_alignment_discloses_waived_snr_roles(roles):
+    freqs = np.linspace(0, SR / 2, 4097)
+    W = np.ones(freqs.size, dtype=complex)
+    T = .45 * np.exp(.02j * (freqs / FC_HZ) ** 2)
+    measured = predicted_branch_sum(W, T, 0, 0, -1, freqs_hz=freqs, residual_delay_us=191)
+    selection = _select_summed_alignment_pair(freqs, W, T,
+        reference=SummedAlignmentReference(freqs, 20 * np.log10(abs(measured)),
+            {role: np.ones_like for role in ("woofer", "tweeter")}, (1200, 5000)),
+        woofer_role="woofer", tweeter_role="tweeter", fc_hz=2500, anchor_delay_us=0,
+        seed_delay_us=200, seed_polarity_sign=-1, delay_bounds_us=(0, 500), branch_snr_insufficient=roles)
+    assert selection.snr_waived_roles == roles
+    assert selection.objective == "summed_fit_committed"
+    assert selection.delay_us == pytest.approx(191, abs=1)

@@ -50,6 +50,7 @@ import time as _time
 from typing import TYPE_CHECKING, Any
 
 from jasper.log_event import log_event
+from jasper.secret_redaction import redact_secrets
 
 if TYPE_CHECKING:
     import wave
@@ -62,7 +63,7 @@ from ._base import (
     upsample_16k_to_24k,
 )
 from ._supervisor import (
-    failure_detail, openai_error_is_terminal, request_planned_reopen, request_unplanned_reopen,
+    openai_error_is_terminal, request_planned_reopen, request_unplanned_reopen,
 )
 from .input_policy import NOISE_REDUCTION_FAR, NOISE_REDUCTION_NEAR
 from .session import AudioOutChunk, ConnectionState, LiveTurn, TurnCapture
@@ -184,9 +185,11 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             if await self._conn._send_audio_chunk(self, pcm_16khz_int16):
                 self._bytes_sent += len(pcm_16khz_int16)
         except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "openai turn: send_audio failed (%s: %s); turn lost",
-                type(e).__name__, e,
+            log_event(
+                self._conn._logger, "provider.send_failed", provider=self._conn.PROVIDER_NAME,
+                what="audio", outcome="turn_lost",
+                exc_type=type(e).__name__, detail=self._conn._redacted(e),
+                level=logging.WARNING,
             )
             self._turn_lost = True
             await self._audio_q.put(None)
@@ -203,9 +206,11 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
                 },
             }, turn=self)
         except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "openai turn: send_text_context failed (%s: %s); turn lost",
-                type(e).__name__, e,
+            log_event(
+                self._conn._logger, "provider.send_failed", provider=self._conn.PROVIDER_NAME,
+                what="text_context", outcome="turn_lost",
+                exc_type=type(e).__name__, detail=self._conn._redacted(e),
+                level=logging.WARNING,
             )
             self._turn_lost = True
             await self._audio_q.put(None)
@@ -222,9 +227,11 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         try:
             await self._conn._commit_and_create_response(self)
         except Exception as e:  # noqa: BLE001
-            logger.debug(
-                "openai turn: end_input ignored (%s: %s)",
-                type(e).__name__, e,
+            log_event(
+                self._conn._logger, "provider.end_input_failed", provider=self._conn.PROVIDER_NAME,
+                outcome="turn_lost",
+                exc_type=type(e).__name__, detail=self._conn._redacted(e),
+                level=logging.DEBUG,
             )
             self._turn_lost = True
             await self._audio_q.put(None)
@@ -241,12 +248,17 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         if self._debug_wav is not None:
             try:
                 self._debug_wav.close()
-                logger.info(
-                    "debug: closed OpenAI send-audio WAV: %s",
-                    self._debug_wav_path,
+                log_event(
+                    self._conn._logger, "provider.debug_audio_record", provider=self._conn.PROVIDER_NAME,
+                    action="closed", path=self._debug_wav_path, level=logging.INFO,
                 )
             except Exception as e:  # noqa: BLE001
-                logger.warning("debug record close failed: %s", e)
+                log_event(
+                    self._conn._logger, "provider.debug_audio_record", provider=self._conn.PROVIDER_NAME,
+                    action="close_failed", path=self._debug_wav_path,
+                    exc_type=type(e).__name__, detail=self._conn._redacted(e),
+                    level=logging.WARNING,
+                )
             self._debug_wav = None
         self._log_release()
         await self._conn._on_turn_released(self)
@@ -300,12 +312,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         item_id = provider_item_id
         audio_end_ms = min(audio_played_ms, int(received_ms))
         log_event(
-            logger, "barge.truncate",
-            # getattr-guarded so the log can't itself raise (e.g. a turn
-            # built with a stub connection, or a torn-down `_conn`); the
-            # send below is what actually needs a live connection, and it
-            # is wrapped. Grok overrides PROVIDER_NAME to "grok".
-            provider=getattr(self._conn, "PROVIDER_NAME", "openai"),
+            logger, "barge.truncate", provider=self._conn.PROVIDER_NAME,
             item_id=item_id, audio_end_ms=audio_end_ms,
         )
         try:
@@ -319,7 +326,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             log_event(
                 logger, "barge.truncate_failed",
                 item_id=item_id, error=type(e).__name__,
-                detail=failure_detail(e, literals=self._conn._secret_literals()),
+                detail=self._conn._redacted(e),
                 level=logging.WARNING,
             )
 
@@ -329,7 +336,11 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         try:
             data = base64.b64decode(b64_audio)
         except Exception as e:  # noqa: BLE001
-            logger.warning("openai turn: bad base64 audio delta (%s)", e)
+            log_event(
+                self._conn._logger, "provider.audio_decode_failed", provider=self._conn.PROVIDER_NAME,
+                exc_type=type(e).__name__, detail=self._conn._redacted(e),
+                level=logging.WARNING,
+            )
             return
         if not data:
             return
@@ -389,10 +400,11 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
                 },
             }, turn=self)
         except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "tool %s: could not send function_call_output (%s: %s); "
-                "next turn may be confused",
-                call.name, type(e).__name__, e,
+            log_event(
+                self._conn._logger, "provider.tool_result_send_failed", provider=self._conn.PROVIDER_NAME,
+                tool=redact_secrets(call.name, literals=self._conn._secret_literals()),
+                exc_type=type(e).__name__, detail=self._conn._redacted(e),
+                level=logging.WARNING,
             )
             self._on_connection_lost()
             return False
@@ -494,7 +506,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         self._proactive_buffer_sec = proactive_buffer_sec
         self._connect_factory = connect_factory
         self._base_url = base_url
-        self._log_tag = f"{self.PROVIDER_NAME} connection:"
         # Lazy SDK client — only built when ``connect_factory`` is None.
         # We do this lazily so test setups can construct the connection
         # object without the openai package installed.
@@ -570,7 +581,9 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             async with self._state_lock:
                 if self._state is ConnectionState.CONNECTED:
                     self._set_state(ConnectionState.IN_TURN)
-            logger.info("openai turn: started")
+            log_event(
+                self._logger, "provider.turn_started", provider=self.PROVIDER_NAME, level=logging.INFO,
+            )
             return turn
 
     # ------------------------------------------------------------------
@@ -625,11 +638,18 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                     w.setframerate(OPENAI_AUDIO_RATE_HZ)
                     turn._debug_wav = w
                     turn._debug_wav_path = path
-                    logger.info("debug: recording OpenAI send audio → %s", path)
+                    log_event(
+                        self._logger, "provider.debug_audio_record", provider=self.PROVIDER_NAME,
+                        action="started", path=path, level=logging.INFO,
+                    )
                 assert turn._debug_wav is not None
                 turn._debug_wav.writeframes(pcm_24khz)
             except Exception as e:  # noqa: BLE001
-                logger.warning("debug record failed (will skip rest of turn): %s", e)
+                log_event(
+                    self._logger, "provider.debug_audio_record", provider=self.PROVIDER_NAME,
+                    action="failed", path=turn._debug_wav_path,
+                    exc_type=type(e).__name__, detail=self._redacted(e), level=logging.WARNING,
+                )
                 turn._debug_wav = None
         b64 = base64.b64encode(pcm_24khz).decode("ascii")
         return await self._send_event({
@@ -645,7 +665,10 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         try:
             await self._send_event({"type": "response.cancel"}, turn=turn)
         except Exception as e:  # noqa: BLE001
-            logger.debug("%s cancel ignored (%s)", self._log_tag, type(e).__name__)
+            log_event(
+                self._logger, "provider.cancel_ignored", provider=self.PROVIDER_NAME,
+                exc_type=type(e).__name__, detail=self._redacted(e), level=logging.DEBUG,
+            )
 
     async def _on_turn_released(self, turn: OpenAIRealtimeTurn) -> None:
         if self._active_turn is not turn:
@@ -661,7 +684,10 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                     if self._session is session:
                         self._connected_event.clear()
                         request_unplanned_reopen(self)
-                    logger.warning("%s release failed (%s)", self._log_tag, type(e).__name__)
+                    log_event(
+                        self._logger, "provider.release_failed", provider=self.PROVIDER_NAME,
+                        exc_type=type(e).__name__, detail=self._redacted(e), level=logging.WARNING,
+                    )
                 # An abandoned response can still add tool calls to history.
                 # A fresh session removes them without publishing stale results.
                 else:
@@ -810,9 +836,9 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         self._session_cm = cm
         self._session = conn
         connect_ms = (_time.monotonic() - t0) * 1000
-        logger.info(
-            f"{self._log_tag} connect ok in %.0fms (model=%s)",
-            connect_ms, self._model,
+        log_event(
+            self._logger, "provider.connected", provider=self.PROVIDER_NAME,
+            ms=round(connect_ms), model=self._model, level=logging.INFO,
         )
         try:
             await self._send_event({
@@ -830,18 +856,17 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                         code, error_type, message = (_event_field(error, key) for key in ("code", "type", "message"))
                         self._log_server_error(code=code, error_type=error_type, message=message)
                         error_cls = ValueError if openai_error_is_terminal(code=code, error_type=error_type) else RuntimeError
-                        raise error_cls(failure_detail(
-                            error_cls(message or f"{error_type or '?'} {code or '?'}"), literals=self._secret_literals(),
+                        raise error_cls(self._redacted(
+                            error_cls(message or f"{error_type or '?'} {code or '?'}"),
                         ))
                 else:
                     raise ConnectionError("session closed before setup acknowledgement")
         except BaseException as e:  # noqa: BLE001
             if isinstance(e, TimeoutError):
                 e.args = ("session setup acknowledgement timed out",)
-            logger.warning(
-                f"{self._log_tag} session.update failed (%s: %s); "
-                "closing and re-raising for supervisor retry",
-                type(e).__name__, failure_detail(e, literals=self._secret_literals()),
+            log_event(
+                self._logger, "provider.setup_failed", provider=self.PROVIDER_NAME,
+                exc_type=type(e).__name__, detail=self._redacted(e), level=logging.WARNING,
             )
             await self._close_with_timeout(conn)
             await self._close_cm_with_timeout(cm)
@@ -891,10 +916,10 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             # zero/negative delay would fire immediately on every
             # reconnect, which is a worse failure than just not doing
             # the proactive reconnect at all.
-            logger.warning(
-                f"{self._log_tag} proactive watchdog disabled — "
-                "session_max_sec=%.0f ≤ proactive_buffer_sec=%.0f",
-                self._session_max_sec, self._proactive_buffer_sec,
+            log_event(
+                self._logger, "provider.watchdog_disabled", provider=self.PROVIDER_NAME,
+                session_max_sec=round(self._session_max_sec), proactive_buffer_sec=round(self._proactive_buffer_sec),
+                level=logging.WARNING,
             )
             return 0.0
         return delay
@@ -917,9 +942,9 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                 self._on_receive_loop_error(e)
             return
         if self._session is conn and not self._stopping.is_set():
-            logger.warning(
-                f"{self._log_tag} receive iteration ended cleanly "
-                "(server closed, likely the 60-minute hard cap); reconnecting",
+            log_event(
+                self._logger, "provider.session_closed", provider=self.PROVIDER_NAME,
+                reason="clean_close", level=logging.WARNING,
             )
             request_unplanned_reopen(self)
 
@@ -1014,7 +1039,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         turn._response_id = None
         usage = _normalise_usage(_event_field(response, "usage"))
         turn._record_usage(usage)
-        function_calls = _extract_function_calls(response)
+        function_calls = self._extract_function_calls(response)
         turn._tool_round_pending = bool(function_calls)
         log_event(
             logger, "provider.response_done", provider=self.PROVIDER_NAME,
@@ -1033,6 +1058,34 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             await turn._on_response_done()
             return
         turn._start_tool_calls(function_calls)
+
+    def _extract_function_calls(self, response) -> list[ToolCall]:
+        """Parse the ``function_call`` items out of a Realtime response's
+        ``output[]``. Empty list if the response had no tool calls.
+
+        Items are dicts in tests and ``RealtimeConversationItemFunctionCall``
+        models in production; ``_event_field`` reads both. Realtime sends
+        arguments as a JSON string — anything that is not an object becomes
+        empty args, which `dispatch_tool` answers from the tool's signature."""
+        calls = []
+        for item in _event_field(response, "output") or ():
+            if _event_field(item, "type") != "function_call":
+                continue
+            name = _event_field(item, "name") or ""
+            try:
+                args = json.loads(_event_field(item, "arguments") or "{}")
+                if not isinstance(args, dict):
+                    args = {}
+            except json.JSONDecodeError:
+                args = {}
+                log_event(
+                    self._logger, "provider.tool_arguments_invalid", provider=self.PROVIDER_NAME,
+                    tool=redact_secrets(name, literals=self._secret_literals()), level=logging.WARNING,
+                )
+            calls.append(
+                ToolCall(id=_event_field(item, "call_id") or "", name=name, args=args)
+            )
+        return calls
 
 
 # ---------- Module-level event helpers --------------------------------------
@@ -1072,34 +1125,6 @@ def _normalise_usage(usage_obj) -> dict | None:
         "input_tokens": getattr(usage_obj, "input_tokens", None),
         "output_tokens": getattr(usage_obj, "output_tokens", None),
     }
-
-
-def _extract_function_calls(response) -> list[ToolCall]:
-    """Parse the ``function_call`` items out of a Realtime response's
-    ``output[]``. Empty list if the response had no tool calls.
-
-    Items are dicts in tests and ``RealtimeConversationItemFunctionCall``
-    models in production; ``_event_field`` reads both. Realtime sends
-    arguments as a JSON string — anything that is not an object becomes
-    empty args, which `dispatch_tool` answers from the tool's signature."""
-    calls = []
-    for item in _event_field(response, "output") or ():
-        if _event_field(item, "type") != "function_call":
-            continue
-        name = _event_field(item, "name") or ""
-        try:
-            args = json.loads(_event_field(item, "arguments") or "{}")
-            if not isinstance(args, dict):
-                args = {}
-        except json.JSONDecodeError:
-            args = {}
-            logger.warning(
-                "openai tool %s: bad JSON arguments; treating as empty", name,
-            )
-        calls.append(
-            ToolCall(id=_event_field(item, "call_id") or "", name=name, args=args)
-        )
-    return calls
 
 
 def _merge_transcript_completion(current: str, text: str) -> str:

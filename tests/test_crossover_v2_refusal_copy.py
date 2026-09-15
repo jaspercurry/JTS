@@ -292,6 +292,7 @@ def test_nothing_but_the_flow_declares_the_names_the_flow_owns():
 @pytest.mark.parametrize("code", sorted(WALK_REFUSAL_REASONS | {
     "measurement_candidate_required", "measurement_candidate_invalid",
     "measurement_scope_invalid", "measurement_filters_invalid", "measurement_branch_channels",
+    "retries_spent",
 }))
 def test_graph_and_walk_refusals_have_household_copy_and_retry_policy(code):
     spec = refusal_copy.REASON_REGISTRY[code]

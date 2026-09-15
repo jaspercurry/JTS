@@ -26,6 +26,7 @@ from tests._gemini_fakes import Response as _Resp
 from tests._gemini_fakes import ResumptionUpdate as _ResumptionUpdate
 from tests._gemini_fakes import ServerContent as _ServerContent
 from tests._gemini_fakes import Transcription as _Transcription
+from tests._log_events import event_fields, event_records
 
 try:
     from google.genai import types
@@ -224,6 +225,35 @@ async def _complete_turn(turn, session):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("operation,event,level", [
+    ("send_audio", "provider.send_failed", logging.WARNING),
+    ("end_input", "provider.end_input_failed", logging.DEBUG),
+    ("cancel_response", "barge.cancel_failed", logging.WARNING),
+])
+async def test_turn_failure_events_redact_key(caplog, monkeypatch, operation, event, level):
+    caplog.set_level(logging.DEBUG, logger="jasper.voice.gemini_session")
+    conn, _ = _make_conn()
+    conn._api_key = "plain-secret-value"
+    turn = GeminiLiveTurn(conn, started_at=0)
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError(f"rejected {conn._api_key}")
+
+    monkeypatch.setattr(conn, "_send_realtime_input", fail)
+    if operation == "cancel_response":
+        turn._activity_end_sent = True
+    args = {"send_audio": (b"pcm",), "end_input": (), "cancel_response": ("user",)}
+    await getattr(turn, operation)(*args[operation])
+    fields = event_fields(caplog, event)
+    assert fields["provider"] == "gemini"
+    assert fields["detail"]
+    assert conn._api_key not in caplog.text
+    (record,) = event_records(caplog, event)
+    assert record.levelno == level
+    assert record.exc_info is None
+    assert turn.turn_lost()
+
+
 async def test_connection_lifecycle_info_logs_are_concise(caplog):
     """Connect/teardown keep one timing summary without object-id probes."""
     caplog.set_level(logging.INFO, logger="jasper.voice.gemini_session")
@@ -248,21 +278,19 @@ async def test_connection_lifecycle_info_logs_are_concise(caplog):
         if record.name == "jasper.voice.gemini_session"
         and record.levelno == logging.INFO
     ]
-    connect_summaries = [
-        message
-        for message in messages
-        if message.startswith("live connection: connect ok in ")
-    ]
-    teardown_summaries = [
-        message
-        for message in messages
-        if message.startswith("live connection: session torn down in ")
-    ]
-
-    assert len(connect_summaries) == 1
-    assert connect_summaries[0].endswith("ms (resumption=<new>)")
-    assert len(teardown_summaries) == 1
-    assert teardown_summaries[0].endswith("ms")
+    connected = event_fields(caplog, "provider.connected")
+    assert connected["provider"] == "gemini"
+    assert int(connected["ms"]) >= 0
+    assert connected["resumption"] == "false"
+    (record,) = event_records(caplog, "provider.connected")
+    assert record.name == "jasper.voice.gemini_session"
+    assert record.levelno == logging.INFO
+    teardown = event_fields(caplog, "provider.teardown")
+    assert teardown["provider"] == "gemini"
+    assert int(teardown["ms"]) >= 0
+    (record,) = event_records(caplog, "provider.teardown")
+    assert record.name == "jasper.voice.gemini_session"
+    assert record.levelno == logging.INFO
     assert not any("id=" in message or "instrumentation" in message for message in messages)
 
 
@@ -793,14 +821,7 @@ async def test_send_audio_routes_through_active_turn():
 
 
 def _make_websockets_409() -> Exception:
-    """Build an exception that mirrors the real SDK 409 shape.
-
-    google-genai 1.13.x raises ``websockets.legacy.exceptions.
-    InvalidStatusCode`` on a 409 from Google's edge, which carries
-    the code on ``e.status_code`` directly (NOT on ``e.response.
-    status_code`` like httpx errors). The fake here replicates that
-    shape so ``_is_409_conflict`` is exercised on the realistic
-    attribute path."""
+    """websockets handshake errors carry status_code directly."""
     class _WSInvalidStatusCode(Exception):
         status_code = 409
 
@@ -810,26 +831,13 @@ def _make_websockets_409() -> Exception:
     return _WSInvalidStatusCode()
 
 
-async def test_reconnect_409_drops_resumption_handle_and_retries_fresh():
-    """The single most damaging pre-fix bug: a stale resumption handle
-    (server-invalidated by ABORTED close, expiry, or being redeemed
-    elsewhere) caused every reconnect attempt to 409 against the same
-    handle until the backoff budget was exhausted and the connection
-    went FAILED. The fix drops the handle on the first 409, so the
-    next attempt connects fresh.
-
-    Drives this by: open succeeds, a handle gets cached, the WS
-    drops, the supervisor's first reconnect attempt 409s, the
-    second attempt is allowed to succeed (no queued exception).
-    Asserts: handle was cleared on the connection AND the second
-    config carries no resumption handle."""
-    # Two backoff steps so we have one "first attempt" and one "retry".
+async def test_reconnect_409_drops_resumption_handle_and_retries_fresh(caplog):
+    """A 409 rejection drops the stale handle before the next attempt."""
     conn, factory = _make_conn(backoff_schedule=(0.0, 0.0))
     registry = ToolRegistry()
     await conn.start(registry, "system")
     try:
         sess = factory.sessions[0]
-        # Cache a resumption handle.
         sess.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle="hndl-stale")))
         await _wait_until(lambda: conn._resumption_handle == "hndl-stale")
 
@@ -847,11 +855,11 @@ async def test_reconnect_409_drops_resumption_handle_and_retries_fresh():
         # 409-on-first-attempt forces a handle drop.
         await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
         await _wait_until(lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0)
-        # Handle was cleared.
         assert conn._resumption_handle is None
         # Successful reconnect's config carries NO handle (reconnected
         # fresh, not with the stale handle).
         assert factory.configs[1].session_resumption.handle is None
+        assert event_fields(caplog, "provider.reconnect_conflict")["status"] == "409"
     finally:
         await conn.stop()
 
@@ -913,16 +921,7 @@ def _make_ws_close_1008_session_expired() -> Exception:
 
 
 async def test_reconnect_1008_session_expired_drops_resumption_handle():
-    """The bug that wedged the speaker overnight: WS close 1008 with
-    reason "BidiGenerateContent session expired" is the server's way of
-    saying "your cached resumption handle is stale" — but pre-fix the
-    handle drop was gated on `_is_409_conflict`, so 1008 closes were
-    treated as transient and every reconnect attempt sent the same
-    stale handle and got the same rejection.
-
-    Drives this with a 1008-shaped exception on the first reconnect;
-    the second attempt must succeed AND must connect with no
-    resumption handle (proves the drop happened)."""
+    """A 1008 rejection drops the stale handle before the next attempt."""
     conn, factory = _make_conn(backoff_schedule=(0.0, 0.0))
     registry = ToolRegistry()
     await conn.start(registry, "system")
@@ -1375,7 +1374,6 @@ async def test_first_chunk_event_reports_latency_since_end_input(
     anchored on `activity_end`, not on turn open, so it reads as the
     provider's latency and not as the user's utterance plus ~1 s of local
     endpointing."""
-    from tests._log_events import event_fields
 
     caplog.set_level(logging.INFO, logger="jasper.voice.gemini_session")
     conn, factory = _make_conn()

@@ -20,7 +20,7 @@ from typing import Any, AsyncIterator
 from ..backoff import reconnect_delay
 from ..log_event import log_event
 from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn, ToolCall, upsample_16k_to_24k
-from ._supervisor import failure_detail, is_transient, openai_error_is_terminal
+from ._supervisor import is_transient, openai_error_is_terminal
 from ._tasks import await_cleanup_owned
 from .session import AudioOutChunk, ConnectionState, TurnCapture, TurnUsage
 
@@ -126,6 +126,7 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._playout_available = asyncio.Event()
         self._reserve_playout = True
         self._finalized = False
+        self._startup_terminal = False
         self._delegation_id = None
         # Delegation the in-flight tool round answers; a correction moves
         # `_delegation_id` on and abandons that round's results.
@@ -425,7 +426,6 @@ class OpenAILiveTurn(BaseLiveTurn):
 class OpenAILiveConnection(BaseLiveConnection):
     PROVIDER_NAME = "openai_live"
     _logger = logger
-    _log_tag = "openai live connection:"
 
     def __init__(self, *, api_key, model="gpt-live-1", voice="marin", backend_model="gpt-5.4-mini", connect=None):
         super().__init__(model=model, voice=voice)
@@ -437,7 +437,6 @@ class OpenAILiveConnection(BaseLiveConnection):
         self._session_cm = None
         self._session = None
         self._started = asyncio.Event()
-        self._startup_terminal = False
         self._closed = asyncio.Event()
         self._billable_activity_meter = None
         self._usage_recorder = None
@@ -462,7 +461,7 @@ class OpenAILiveConnection(BaseLiveConnection):
                 return
             log_event(
                 logger, "provider.client_prepare_failed", provider=self.PROVIDER_NAME,
-                detail=failure_detail(exc, literals=self._secret_literals()), level=logging.WARNING,
+                detail=self._redacted(exc), level=logging.WARNING,
             )
             ready = ConnectionState.FAILED
         else:
@@ -480,7 +479,7 @@ class OpenAILiveConnection(BaseLiveConnection):
         task = self._client_prepare_task
         if detail is None and task is not None and task.done() and not task.cancelled():
             if (error := task.exception()) is not None:
-                return failure_detail(error, literals=self._secret_literals())
+                return self._redacted(error)
         return detail
 
     async def _prepare_client(self) -> None:
@@ -535,7 +534,7 @@ class OpenAILiveConnection(BaseLiveConnection):
                         )
                 if isinstance(exc, Exception):
                     error_cls = ValueError if isinstance(exc, ValueError) else RuntimeError
-                    raise error_cls(failure_detail(exc, literals=self._secret_literals())) from None
+                    raise error_cls(self._redacted(exc)) from None
                 raise
 
     async def _open_session_for_turn(self) -> OpenAILiveTurn:
@@ -577,7 +576,6 @@ class OpenAILiveConnection(BaseLiveConnection):
         self._session_cm = self._connect()
         self._session = await self._session_cm.__aenter__()
         socket_open_at = time.monotonic()
-        self._startup_terminal = False
         self._receive_task = asyncio.create_task(self._receive(turn))
         start_event = {"type": "session.start", "session": {
             "model": self._model, "instructions": FRONTEND_INSTRUCTIONS, "store": False,
@@ -604,7 +602,7 @@ class OpenAILiveConnection(BaseLiveConnection):
             total_ms=int((started_at - opened_at) * 1000),
         )
         if turn.turn_lost() or self._stopping.is_set():
-            error_cls = ValueError if self._startup_terminal else RuntimeError
+            error_cls = ValueError if turn._startup_terminal else RuntimeError
             raise error_cls("Live session failed during startup")
 
     async def _send(self, event) -> None:
@@ -622,8 +620,8 @@ class OpenAILiveConnection(BaseLiveConnection):
                     error = event.get("error") or {}
                     code, error_type, message = error.get("code"), error.get("type"), error.get("message") or ""
                     self._log_server_error(code=code, error_type=error_type, message=message)
-                    self._startup_terminal = openai_error_is_terminal(code=code, error_type=error_type)
-                    error_cls = ValueError if self._startup_terminal else RuntimeError
+                    turn._startup_terminal = openai_error_is_terminal(code=code, error_type=error_type)
+                    error_cls = ValueError if turn._startup_terminal else RuntimeError
                     raise error_cls(f"Live command rejected: {code or '?'} {error_type or '?'}")
                 else:
                     await turn.on_event(event)
@@ -633,7 +631,7 @@ class OpenAILiveConnection(BaseLiveConnection):
         except Exception as exc:  # noqa: BLE001
             log_event(
                 logger, "provider.session_lost", provider=self.PROVIDER_NAME,
-                detail=failure_detail(exc, literals=self._secret_literals()),
+                detail=self._redacted(exc),
             )
         finally:
             if not turn._released:
@@ -649,7 +647,7 @@ class OpenAILiveConnection(BaseLiveConnection):
             log_event(
                 logger, "provider.close_failed", provider=self.PROVIDER_NAME,
                 phase="finalize",
-                detail=failure_detail(exc, literals=self._secret_literals()),
+                detail=self._redacted(exc),
                 level=logging.WARNING,
             )
         finally:

@@ -38,6 +38,7 @@ BOUND_OWNERS = {
     "alignment": "jasper.audio_measurement.program_analysis.model",
     "timing": "jasper.audio_measurement.program_analysis.response",
     "quality": "jasper.audio_measurement.quality_model",
+    "safety": "jasper.active_speaker.profile",
     "gating": "jasper.audio_measurement.gating",
     "bass": "jasper.bass_extension.measurement",
 }
@@ -45,6 +46,8 @@ BOUND_OWNERS = {
 BOUND_SOURCES = {
     "Speaker": (
         ("driver.passband", "Hz", "contract.speaker.driver.bounds.passbands_hz"),
+        ("driver.chain_scope", "rule", "contract.speaker.driver.bounds.chain_scope"),
+        ("driver.trim_pin_scope", "rule", "contract.speaker.driver.bounds.trim_pin_scope"),
         ("driver.cut_Q", "Q", "contract.speaker.driver.bounds.q_range_cut"),
         ("driver.boost_Q_max", "Q", "contract.speaker.driver.bounds.q_max_boost"),
         ("driver.filter_boost_max", "dB", "contract.speaker.driver.bounds.max_filter_boost_db"),
@@ -68,6 +71,7 @@ BOUND_SOURCES = {
         ("alignment.lobe_applies_to", "us", "contract.speaker.alignment.bounds.lobe_applies_to"),
         ("alignment.margin_min", "ratio", "alignment.SUMMED_FIT_MIN_MARGIN"),
         ("alignment.SNR_floor", "dB", "quality.DRIVER.alignment_snr_ok_db"),
+        ("alignment.SPL_raise_margin", "dB", "safety.SPL_RAISE_MARGIN_DB"),
         ("gate.trusted_floor_multiplier", "cycles", "gating.TRUSTED_FLOOR_MULTIPLIER"),
     ),
     "Room": (

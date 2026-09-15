@@ -151,7 +151,8 @@ def build_v2_wired_run_and_consume(
             if result.reason and result.reason != "complete_requested":
                 if result.reason == signals.stop_reason or result.cancelled:
                     raise CaptureStopped("capture stopped")
-                raise CrossoverV2Refused(result.detail, code=result.reason if result.reason in REASON_REGISTRY else "internal_error")
+                code = result.reason if result.reason in REASON_REGISTRY else "internal_error"
+                raise CrossoverV2Refused(result.detail if code == result.reason else f"{result.reason}: {result.detail}", code=code)
         except BaseException as exc:  # noqa: BLE001 - persist every terminal arm
             code = publish_failure(exc)
             v2state._persist_terminal_failure(conductor, code)

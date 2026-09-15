@@ -19,14 +19,16 @@ from jasper.audio_measurement.program_analysis import (
 )
 from jasper.audio_measurement.program_analysis.check import alignment_snr_gain_adjustment
 from jasper.audio_measurement.program_analysis.model import (
-    ALIGNMENT_COMMITTED_SUMMED_FIT, DRIVER_SNR_ALIGNMENT_KEY, MeasurementPriors, ProgramAnalysis,
+    ALIGNMENT_COMMITTED_SUMMED_FIT, DRIVER_SNR_ALIGNMENT_KEY, GAIN_MAX_DIGITAL_PEAK_DBFS, MeasurementPriors, ProgramAnalysis,
 )
 from jasper.audio_measurement.program_analysis.summary import driver_alignment_snr_verdict, driver_snr_verdict
+from jasper.active_speaker.profile import SPL_RAISE_MARGIN_DB
 from .sweep_spec import REQUIRED_SAMPLE_RATE_HZ
 from jasper.json_fields import finite_float
 
 from . import refusal_copy as reasons
 from .refusal_copy import TakeCharge, TakeNext, TakeVerdict as TakeVerdict
+from .programs import back_off_gain
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.program import ExcitationProgram
@@ -37,6 +39,13 @@ ACROSS_POSE_DRIFT_DB = 6.0
 CLIP_RETRY_BACKOFF_DB = 3.0
 # dB, recorder transfer stability; see ADR-0182.
 VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
+
+
+def capped_gain_ceilings(
+    caps_dbfs: Mapping[str, float], session_volume_db: float, ceilings: Mapping[str, float],
+) -> dict[str, float]:
+    return {role: back_off_gain(ceiling, session_volume_db, cap)
+            for role, ceiling in ceilings.items() if (cap := caps_dbfs.get(role)) is not None}
 
 
 def level_drift_verdict(
@@ -72,6 +81,10 @@ def _assess_recording(
     program: ExcitationProgram | None = None,
     gain_db: Mapping[str, float] | None = None,
     gain_ceiling_db: Mapping[str, float] | None = None,
+    caps_dbfs: Mapping[str, float] | None = None,
+    session_volume_db: float = 0.0,
+    spl_stop_db_spl: float | None = None,
+    spl: Mapping[str, Any] | None = None,
     pilot_transfer_prior: Mapping[str, float] | None = None,
     measure_gate_window_ms: float | None = None,
 ) -> TakeVerdict:
@@ -83,6 +96,8 @@ def _assess_recording(
         if seg.kind in STIMULUS_KINDS
     } if program is not None else {}
     ceilings = gain_ceiling_db or {}
+    if caps_dbfs is not None:
+        ceilings = capped_gain_ceilings(caps_dbfs, session_volume_db, ceilings)
     anchor, drift, alignment = analysis.anchor, analysis.drift, analysis.alignment
     sample_rate = program.sample_rate_hz if program else REQUIRED_SAMPLE_RATE_HZ
     schedule_residual_ms, _ = _sweep_schedule_diag_fields(analysis, sample_rate)
@@ -157,9 +172,9 @@ def _assess_recording(
                                                for role, gain in targets.items()}},
                        capabilities=capabilities if ok else {key: False for key in capabilities})
 
-    adjusted = alignment_snr_gain_adjustment(analysis.driver_responses, gains, ceilings)
-
     def quiet(code: str, *, charge: TakeCharge = "operator") -> TakeVerdict:
+        adjusted, levels = alignment_snr_gain_adjustment(analysis.driver_responses, gains, ceilings)
+        evidence.update(levels)
         return refuse(code, next="retake_louder" if adjusted else "fix_and_retake",
                       charge="speaker" if adjusted else charge, targets=adjusted)
 
@@ -219,6 +234,23 @@ def _assess_recording(
             evidence["pilot_transfer_step_db"] = float(step)
             if step > VERIFY_PILOT_TRANSFER_STEP_CEILING_DB:
                 return refuse(reasons.REASON_VERIFY_LEVEL_SHIFT, ok=True)
+    spl = spl or {}
+    peak_spl = finite_float(spl.get("max_window_db_spl"))
+    stop = finite_float(spl.get("ceiling_db_spl"))
+    headroom = (max(0.0, min(stop, spl_stop_db_spl) - peak_spl - SPL_RAISE_MARGIN_DB)
+                if peak_spl is not None and stop is not None and spl_stop_db_spl is not None else None)
+    alignment_only = phase == "measure" and capabilities["magnitude"] and not summed_fit
+    alignment_ceiling_db = (capped_gain_ceilings(caps_dbfs, session_volume_db,
+                            dict.fromkeys(caps_dbfs, GAIN_MAX_DIGITAL_PEAK_DBFS))
+                            if alignment_only and headroom is not None and caps_dbfs is not None else None)
+    adjusted, levels = alignment_snr_gain_adjustment(
+        analysis.driver_responses, gains, ceilings,
+        alignment_ceiling_db=alignment_ceiling_db,
+        alignment_limit_reason=("spl_unobserved" if headroom is None else "ceiling_unavailable")
+                               if alignment_only and alignment_ceiling_db is None else None,
+        max_raise_db=headroom or 0.0,
+    )
+    evidence.update(levels)
     if adjusted and not summed_fit:
         return replace(verdict, next="retake_louder", next_gain_db=program_peak(adjusted), charge="speaker",
                        evidence={**evidence, **{f"next_gain_db.{role}": gain for role, gain in adjusted.items()}})

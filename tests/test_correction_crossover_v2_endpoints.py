@@ -67,6 +67,7 @@ from jasper.active_speaker import crossover_envelope_v2 as v2projection
 import jasper.capture_protocol as capture_protocol
 from jasper.capture_protocol import MAX_TTL_S
 from jasper.web import correction_crossover_v2 as v2host
+from jasper.web import correction_capture, correction_crossover_backend, correction_runtime, correction_setup
 from jasper.web import correction_crossover_v2_apply as v2apply
 from jasper.active_speaker.crossover_v2.conductor_context import ensure_crossover_preview_ready
 from jasper.web import correction_crossover_v2_status as v2status
@@ -6150,6 +6151,23 @@ def _inline_body():
     return {"plan": summed_at([0, 20]).to_dict()}
 
 
+def test_session_duplicate_levels_returns_shared_bad_request(monkeypatch):
+    body = _inline_body()
+    body["plan"]["levels"] = [-10, -10]
+    monkeypatch.setattr(correction_runtime, "read_json_body", lambda _: body)
+    monkeypatch.setattr(correction_capture, "_crossover_blocking_phase", lambda: None)
+    monkeypatch.setattr(correction_crossover_backend, "status_payload", lambda: {})
+    replies = []
+    handler = SimpleNamespace(path="/crossover/v2/session", idle_hold=contextlib.nullcontext,
+                              _send_json=lambda payload, status=200: replies.append((int(status), payload)))
+    correction_setup._dispatch_crossover(handler)
+    status, reply = replies.pop()
+    assert status == 400 and reply["ok"] is False
+    assert set(reply) == {"ok", "code", "next_action", "error"}
+    assert reply["code"] == "walk_level_policy_invalid"
+    assert isinstance(reply["next_action"], dict) and isinstance(reply["error"], str)
+
+
 def _ready_inline(monkeypatch):
     from jasper.active_speaker import preflight_live
     from tests.test_preflight import ready_facts
@@ -6215,8 +6233,12 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch
     assert v2state.load_v2_state() == before
 
 
-@pytest.mark.parametrize("bass", [False, True])
-def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, tmp_path, bass):
+@pytest.mark.parametrize("levels,phases", [
+    (None, ("entry_baseline", "lateral", "lateral")),
+    ((-18, -23), ("lateral",)),
+    ((-10, -18), ("entry_baseline", "lateral")),
+])
+def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, tmp_path, levels, phases):
     from jasper.web import correction_crossover_v2_wired as wired
     from tests.test_correction_crossover_v2_wired import _device
     from tests.test_preflight import ready_facts
@@ -6224,8 +6246,7 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, t
     from jasper.active_speaker.measurement_programs import program
 
     selected = program("bass")
-    body = {"plan": request_for_program(selected, mover=selected.mover or "human").to_dict(),
-            "levels": "auto"} if bass else _inline_body()
+    body = {"plan": request_for_program(selected, mover=selected.mover or "human", levels=levels).to_dict()} if levels else _inline_body()
     prepared, store = _inline_prepared(monkeypatch, tmp_path, body)
     _own_the_fader(monkeypatch, _FakeVolCam(-30))
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
@@ -6241,13 +6262,12 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, t
     opened = prepared.open()
     assert opened.pi_session.session_id == prepared.session_id
     assert not bound["door"].is_open
-    assert bound["request"].to_dict() == store.reopen_json_artifact(
-        store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
+    assert bound["request"] == AngleCaptureRequest.from_mapping(store.reopen_json_artifact(
+        store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json")))
     assert bound["conductor"]._candidate is None
-    if bass:
-        assert prepared.join_spec.capture_plan.capture_target == len(bound["request"].stops)
-        assert [capture.stop.place for capture in bound["captures"]] == [stop.place for stop in bound["request"].stops]
-        assert {capture.spec.program_phase for capture in bound["captures"]} == {"lateral"}
+    assert prepared.join_spec.capture_plan.capture_target == len(bound["captures"])
+    assert tuple(capture.spec.program_phase for capture in bound["captures"]) == phases
+    assert (bound["execute"] is not None) == (bound["request"].levels is not None)
 
 
 def test_pending_plan_keeps_the_active_captures_status_and_signals(monkeypatch):

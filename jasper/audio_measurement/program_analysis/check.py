@@ -764,29 +764,47 @@ def alignment_snr_gain_adjustment(
     responses: Sequence[DriverResponse],
     gain_db: Mapping[str, float],
     ceiling_db: Mapping[str, float],
-) -> dict[str, float]:
-    """Raise only measured weak branches, within the caller's admitted ceilings.
-
-    The measured shortfall replaces CHECK's peak-based prediction; the same
-    solve margin applies. An absent verdict or ceiling is not gain headroom.
-    """
+    *, alignment_ceiling_db: Mapping[str, float] | None = None,
+    alignment_limit_reason: str | None = None,
+    max_raise_db: float = 0.0,
+) -> tuple[dict[str, float], dict[str, float | bool | str]]:
+    """Price a measured shortfall within the caller's digital and SPL ceilings."""
     adjusted = {}
+    evidence: dict[str, float | bool | str] = {}
     for response in responses:
         block = (response.snr or {}).get(DRIVER_SNR_ALIGNMENT_KEY) or {}
         worst = block.get("worst_relevant") or {}
         band: Mapping[str, Any] = next((row for row in block.get("bands", ())
                                       if row.get("band_id") == worst.get("band_id")), {})
-        shortfall = finite_float(band.get("shortfall_db"))
+        shortfall = 0.0 if worst.get("verdict") == "ok" else finite_float(band.get("shortfall_db"))
         current = finite_float(gain_db.get(response.role))
         ceiling = finite_float(ceiling_db.get(response.role))
+        prefix = f"alignment.{response.role}."
+        if current is not None:
+            evidence[prefix + "alignment_level_db"] = current
+        if shortfall is not None:
+            evidence[prefix + "alignment_snr_shortfall_db"] = shortfall
         if (worst.get("verdict") != ALIGNMENT_SNR_REFUSAL_VERDICT
-                or shortfall is None or current is None or ceiling is None):
+                or shortfall is None or current is None or shortfall <= 0):
             continue
-        if shortfall > 0 and ceiling > current:
-            adjusted[response.role] = min(
-                ceiling, current + shortfall + MEASURE_SNR_SOLVE_MARGIN_DB,
-            )
-    return adjusted
+        requested = current + shortfall + MEASURE_SNR_SOLVE_MARGIN_DB
+        if alignment_limit_reason:
+            evidence[prefix + "alignment_level_capped_by"] = alignment_limit_reason
+            evidence[prefix + "alignment_snr_residual_shortfall_db"] = shortfall
+        if alignment_ceiling_db is not None:
+            driver = finite_float(alignment_ceiling_db.get(response.role))
+            if driver is None:
+                evidence[prefix + "alignment_level_capped_by"] = "ceiling_unavailable"
+                evidence[prefix + "alignment_snr_residual_shortfall_db"] = shortfall
+                continue
+            spl = current + max(0.0, max_raise_db)
+            ceiling = min(driver, spl)
+            if ceiling < requested:
+                evidence[prefix + "alignment_level_capped_by"] = "driver_cap" if driver <= spl else "spl_stop"
+                evidence[prefix + "alignment_snr_residual_shortfall_db"] = max(0.0, shortfall - max(0.0, ceiling - current))
+        if ceiling is not None and ceiling > current:
+            adjusted[response.role] = min(ceiling, requested)
+    return adjusted, evidence
 
 
 def _snr_floor_ok(

@@ -2170,9 +2170,8 @@ class CrossoverV2Session:
             analysis, phase=PHASE_MEASURE,
             priors=MeasurementPriors(alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset)),
             program=self._measure_program,
-            gain_ceiling_db={role: _programs.back_off_gain(
-                ceiling, self._excitation.session_volume_db, self._excitation.caps_dbfs.get(role, 0.0),
-            ) for role, ceiling in self._measure_gain_ceiling_db.items()},
+            gain_ceiling_db=_dispatch.capped_gain_ceilings(
+                self._excitation.caps_dbfs, self._excitation.session_volume_db, self._measure_gain_ceiling_db),
         )
         self._last_measure_guard = str(take.evidence.get("guard", ""))
         verdict = PhaseVerdict.from_take(take)

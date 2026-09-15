@@ -14,10 +14,10 @@ from google.genai import types
 from google.genai.live import AsyncSession
 
 from ..log_event import log_event
+from ..secret_redaction import redact_secrets
 from ._base import BaseLiveConnection, BaseLiveTurn, ToolCall
 from ._supervisor import (
     await_connected,
-    failure_detail,
     http_status,
     request_planned_reopen,
     request_unplanned_reopen,
@@ -106,35 +106,6 @@ def _goaway_time_left_seconds(time_left) -> float | None:
         return None
 
 
-def _is_409_conflict(exc: Exception) -> tuple[bool, int | None]:
-    """Decide whether an exception from ``client.aio.live.connect`` /
-    ``__aenter__`` represents an HTTP 409 Conflict from Google's edge.
-
-    Returns ``(is_409, detected_status_code)``. The status is returned
-    so callers can log it accurately — the existing log line was
-    showing ``status=None`` for every real 409 because it only checked
-    httpx-style ``e.response.status_code``, while the SDK actually
-    raises ``websockets.legacy.exceptions.InvalidStatusCode`` with the
-    code on ``e.status_code`` directly.
-
-    Detection order, most to least specific:
-      1. ``e.status_code`` — websockets ``InvalidStatusCode`` (the real
-         path on google-genai 1.13.x).
-      2. ``e.response.status_code`` — httpx-style errors (some SDK
-         versions wrap edge errors this way).
-      3. Substring scan of ``str(exc)`` for ``"409"`` or ``"Conflict"`` —
-         forward-compat fallback if a future websockets / SDK release
-         restructures the exception. Carries no detected status.
-    """
-    status = http_status(exc)
-    if status == 409:
-        return True, status
-    msg = str(exc)
-    if "409" in msg or "Conflict" in msg:
-        return True, status
-    return False, status
-
-
 class GeminiLiveTurn(BaseLiveTurn):
     """A single turn against an open `GeminiLiveConnection`."""
 
@@ -160,9 +131,11 @@ class GeminiLiveTurn(BaseLiveTurn):
         except Exception as e:  # noqa: BLE001
             # The connection's reconnect supervisor will pick up the WS
             # drop. Mark the turn as lost so the daemon stops trying.
-            logger.warning(
-                "live turn: send_audio failed (%s: %s); turn lost",
-                type(e).__name__, e,
+            log_event(
+                self._conn._logger, "provider.send_failed", provider=self._conn.PROVIDER_NAME,
+                exc_type=type(e).__name__,
+                detail=self._conn._redacted(e),
+                outcome="turn_lost", level=logging.WARNING,
             )
             self._turn_lost = True
             await self._audio_q.put(None)
@@ -181,9 +154,11 @@ class GeminiLiveTurn(BaseLiveTurn):
         try:
             await self._conn._send_realtime_input(self, activity_end=types.ActivityEnd())
         except Exception as e:  # noqa: BLE001
-            logger.debug(
-                "live turn: end_input ignored (%s: %s)",
-                type(e).__name__, failure_detail(e, literals=self._conn._secret_literals()),
+            log_event(
+                self._conn._logger, "provider.end_input_failed", provider=self._conn.PROVIDER_NAME,
+                exc_type=type(e).__name__,
+                detail=self._conn._redacted(e),
+                outcome="turn_lost", level=logging.DEBUG,
             )
             self._turn_lost = True
             await self._audio_q.put(None)
@@ -220,10 +195,15 @@ class GeminiLiveTurn(BaseLiveTurn):
             try:
                 await self._conn._send_realtime_input(self, activity_start=types.ActivityStart())
             except Exception as e:  # noqa: BLE001
-                logger.warning("Gemini cancel failed (%s)", type(e).__name__)
+                log_event(
+                    self._conn._logger, "barge.cancel_failed", provider=self._conn.PROVIDER_NAME,
+                    exc_type=type(e).__name__,
+                    detail=self._conn._redacted(e),
+                    level=logging.WARNING,
+                )
                 self._on_connection_lost()
         log_event(
-            logger, "barge.cancel", reason=reason,
+            self._conn._logger, "barge.cancel", reason=reason,
             provider=self._conn.PROVIDER_NAME,
         )
 
@@ -275,7 +255,10 @@ class GeminiLiveTurn(BaseLiveTurn):
                 self._cancel_tools()
                 self.drop_pending_audio()
                 self._interrupt_event.set()
-                logger.info("model interrupted by user")
+                log_event(
+                    self._conn._logger, "turn.interrupted", provider=self._conn.PROVIDER_NAME,
+                    reason="user", level=logging.INFO,
+                )
 
         # Retained context is billed anew each turn; snapshots replace, not add:
         # https://ai.google.dev/gemini-api/docs/live-api/best-practices#pricing-and-billing
@@ -327,9 +310,6 @@ class GeminiLiveConnection(BaseLiveConnection):
 
     PROVIDER_NAME = "gemini"
     _logger = logger
-    # Prefix this module's own log lines already carry verbatim; the
-    # shared supervisor reads it from here.
-    _log_tag = "live connection:"
     # The watchdog below is a rotation this connection schedules, not a
     # failure: its first reconnect attempt skips the backoff wait.
     _watchdog_is_planned = True
@@ -426,7 +406,9 @@ class GeminiLiveConnection(BaseLiveConnection):
             async with self._state_lock:
                 if self._state is ConnectionState.CONNECTED:
                     self._set_state(ConnectionState.IN_TURN)
-            logger.info("live turn: started (activity_start sent)")
+            log_event(
+                self._logger, "turn.started", provider=self.PROVIDER_NAME, level=logging.INFO,
+            )
             return turn
 
     # ------------------------------------------------------------------
@@ -582,10 +564,10 @@ class GeminiLiveConnection(BaseLiveConnection):
         self._session_cm = cm
         self._session = session
         connect_ms = (_time.monotonic() - t0) * 1000
-        handle_short = (self._resumption_handle or "")[:8] or "<new>"
-        logger.info(
-            f"{self._log_tag} connect ok in %.0fms (resumption=%s)",
-            connect_ms, handle_short,
+        log_event(
+            self._logger, "provider.connected", provider=self.PROVIDER_NAME,
+            ms=round(connect_ms), resumption=self._resumption_handle is not None,
+            level=logging.INFO,
         )
         await self._mark_connected(asyncio.create_task(self._receive_loop()))
 
@@ -630,17 +612,14 @@ class GeminiLiveConnection(BaseLiveConnection):
         self, exc: Exception, attempt: int, transient: bool,
     ) -> None:
         super()._on_reconnect_attempt_failed(exc, attempt, transient)
-        is_409, status = _is_409_conflict(exc)
-        handle_short = (
-            (self._resumption_handle or "")[:8]
-            if self._resumption_handle
-            else "<none>"
-        )
-        if is_409:
-            logger.warning(
-                f"{self._log_tag} reconnect 409 Conflict on attempt "
-                "%d (status=%s, exc=%s, handle=%s)",
-                attempt, status, type(exc).__name__, handle_short,
+        status = http_status(exc)
+        if status == 409:
+            log_event(
+                self._logger, "provider.reconnect_conflict", provider=self.PROVIDER_NAME,
+                attempt=attempt, status=status,
+                exc_type=type(exc).__name__,
+                detail=self._redacted(exc),
+                level=logging.WARNING,
             )
         # Drop the cached handle on the first failure of ANY kind, not
         # just a 409: a server-invalidated handle also surfaces as
@@ -648,11 +627,9 @@ class GeminiLiveConnection(BaseLiveConnection):
         # Keeping a stale one costs the whole session; dropping a good
         # one costs a turn of context. See ADR-0166.
         if self._resumption_handle is not None:
-            logger.warning(
-                f"{self._log_tag} reconnect dropping cached "
-                "resumption handle (handle=%s) after first "
-                "failure; next attempt will connect fresh",
-                handle_short,
+            log_event(
+                self._logger, "provider.resumption_dropped", provider=self.PROVIDER_NAME,
+                status=status, level=logging.WARNING,
             )
             self._resumption_handle = None
 
@@ -684,9 +661,9 @@ class GeminiLiveConnection(BaseLiveConnection):
         # without splicing two sessions' message streams together.
         session = self._session
         if session is None:
-            logger.warning(
-                f"{self._log_tag} receive_loop started with self._session=None; "
-                "exiting (likely a stale cancelled task post-teardown)"
+            log_event(
+                self._logger, "provider.session_closed", provider=self.PROVIDER_NAME,
+                reason="no_session", level=logging.WARNING,
             )
             return
         try:
@@ -697,8 +674,9 @@ class GeminiLiveConnection(BaseLiveConnection):
                 if response is None:
                     # Underlying connection closed cleanly — let the
                     # supervisor drive a reconnect.
-                    logger.warning(
-                        f"{self._log_tag} _receive returned None (clean close), reconnecting"
+                    log_event(
+                        self._logger, "provider.session_closed", provider=self.PROVIDER_NAME,
+                        reason="clean_close", level=logging.WARNING,
                     )
                     request_unplanned_reopen(self)
                     return
@@ -724,23 +702,20 @@ class GeminiLiveConnection(BaseLiveConnection):
                     # takes — otherwise tearing down now marks the
                     # in-flight turn lost and cuts off the user mid-reply.
                     # Fire the deferred reconnect from `_on_turn_released`.
-                    if (
+                    deferred = (
                         self._active_turn is not None
                         and secs is not None
                         and secs >= GOAWAY_DEFER_MIN_TIME_LEFT_SEC
-                    ):
-                        logger.warning(
-                            f"{self._log_tag} GoAway received mid-turn, "
-                            "time_left=%s (%.0fs) ≥ %.0fs — deferring reconnect "
-                            "until turn release",
-                            time_left, secs, GOAWAY_DEFER_MIN_TIME_LEFT_SEC,
-                        )
+                    )
+                    log_event(
+                        self._logger, "session.goaway", provider=self.PROVIDER_NAME,
+                        outcome="deferred" if deferred else "now", time_left_s=secs,
+                        time_left_raw=redact_secrets(str(time_left), literals=self._secret_literals()),
+                        level=logging.WARNING,
+                    )
+                    if deferred:
                         self._deferred_reconnect.request()
                         continue
-                    logger.warning(
-                        f"{self._log_tag} GoAway received, time_left=%s, will reconnect",
-                        time_left,
-                    )
                     request_unplanned_reopen(self)
                     continue
                 transcription = getattr(getattr(response, "server_content", None), "input_transcription", None)

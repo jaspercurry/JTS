@@ -61,7 +61,6 @@ def _make_wake_loop(**collaborators):
     wl = wake_loop_for_tests(**collaborators)
     wl._turns.state = State.WAKE
     wl._mic_muted = False
-    wl._measurement_active = asyncio.Event()
     wl._fire_and_forget = set()
     # If a guard is skipped, these would be reached — make them visible.
     wl._spend_cap = types.SimpleNamespace(allowed=lambda: True)
@@ -209,7 +208,7 @@ async def test_manual_start_failure_cues_the_cause(
     async def _begin_turn_that_fails(**_kwargs) -> None:
         nonlocal paused
         paused = connection_drops
-        raise RuntimeError("live connection: not connected after backoff window")
+        raise RuntimeError("gemini connection: not connected after backoff window")
 
     wl = _make_wake_loop(
         cues=_SpyCues(),
@@ -478,7 +477,6 @@ def _ptt_only_wake_loop():
     )
     wl._turns.state = State.WAKE
     wl._mic_muted = False
-    wl._measurement_active = asyncio.Event()
     wl._fire_and_forget = set()
     wl._spend_cap = types.SimpleNamespace(allowed=lambda: True)
     wl._begin_turn = _SpyCalls()

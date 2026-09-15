@@ -173,6 +173,7 @@ class MeasurementProgram:
     regime: str = REGIME_PER_DRIVER
     mover: str | None = None
     layout: str = ""
+    levels: str | None = None
 
     def __post_init__(self) -> None:
         if not self.poses:
@@ -272,7 +273,7 @@ def _load_programs(
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise ValueError(f"program {index} must be an object")
-        unknown = set(row) - {"id", "size", "layout", "purpose", "regime"}
+        unknown = set(row) - {"id", "size", "layout", "purpose", "regime", "levels"}
         if unknown:
             raise ValueError(f"program {index} has unknown fields: {sorted(unknown)}")
         try:
@@ -293,7 +294,7 @@ def _load_programs(
             purpose=row.get("purpose", PURPOSE_SPEAKER),
             regime=row.get("regime", REGIME_PER_DRIVER),
             mover=movers.get(layout),
-            layout=layout,
+            layout=layout, levels=row.get("levels"),
         )
 
     defaults_raw = raw.get("default_sizes")
@@ -375,7 +376,7 @@ def run_program(purpose: str, poses: str | None = None) -> MeasurementProgram:
         return selected
     for row in sorted(_PROGRAMS.values(), key=lambda row: row.program_id != purpose):
         if poses in (row.layout, f"{row.program_id}_{row.size}", f"{row.program_id}/{row.size}"):
-            return replace(row, program_id=purpose, purpose=purpose, regime=selected.regime)
+            return replace(row, program_id=purpose, purpose=purpose, regime=selected.regime, levels=selected.levels)
     return replace(selected, size="custom", layout="", poses=tuple(
         ProgramPose(int(value.strip()), 0) for value in poses.split(",")
     ))

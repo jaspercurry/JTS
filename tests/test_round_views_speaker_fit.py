@@ -5,6 +5,7 @@ import json
 import shlex
 from dataclasses import asdict, replace
 from pathlib import Path
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -15,7 +16,7 @@ from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
 from jasper.active_speaker.branch_target import branch_target
-from jasper.active_speaker.crossover_v2.intervention import compose_sigma_db, decide_trim
+from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, compose_sigma_db, decide_trim
 from jasper.active_speaker.crossover_v2.driver_prescription import _check_composed
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
@@ -40,7 +41,7 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.cli import crossover_prescriber, round_views
 from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round
 from jasper.active_speaker.round_packet import INDEX_FILENAME, _fits, write_round_packet
-from jasper.active_speaker.speaker_fit import design_clouds, speaker_fit
+from jasper.active_speaker.speaker_fit import design_clouds, fit_feature_curves, speaker_fit
 from jasper.active_speaker.candidate_bank import find_banked_candidate
 from jasper.active_speaker.candidate_parts import baseline_candidate_id, candidate_from_design_draft
 from jasper.active_speaker.commissioning_experiment import commissioning_candidate
@@ -74,10 +75,10 @@ def speaker_round(tmp_path):
     analysis = ProgramAnalysis(
         phase="measure", program_id=program.program_id, locations=(), driver_responses=tuple(responses),
         alignment=AlignmentEstimate(delay_us=157.5, raw_delay_us=162, parallax_us=4.5,
-                                    polarity="inverted", polarity_sign=-1, confidence=0.9, seed_delay_us=120),
+                                    polarity="inverted", polarity_sign=-1, confidence=0.9, seed_delay_us=-205, polarity_agrees_with_sum=False),
         candidate=CrossoverCandidate(trim_db={"woofer": 0, "tweeter": -3}, polarity="inverted",
                                      delay_us=157.5, predicted_ripple_db=1.25, confidence=0.9,
-                                     seed_polarity_sign=1, alignment_seed_ripple_db=3.5,
+                                     seed_polarity_sign=1, alignment_seed_ripple_db=3.5, alignment_seed_delay_us=120,
                                      alignment_objective="flat_sum_committed", flatness_improvement_db=2.25,
                                      anchor_delay_us=150, snap_delta_us=7.5),
     )
@@ -155,9 +156,11 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
         assert result["linearization"][role]["excited_band_hz"] == list(bands[role])
         assert result["linearization"][role]["envelope"]["sigma_source"] == "paired_repeats"
     alignment = result["alignment"]
-    assert alignment["drift_us"] == alignment["committed"]["delay_us"] - alignment["seed"]["delay_us"]
-    assert alignment["committed"] == {"delay_us": 157.5, "polarity": "inverted", "ripple_db": 1.25}
-    assert alignment["seed"] == {"delay_us": 120, "polarity": "normal", "ripple_db": 3.5}
+    assert alignment["refinement_delta_us"] == alignment["committed"]["delay_us"] - alignment["seed"]["delay_us"]
+    assert alignment["committed"] == {"delay_us": 157.5, "polarity": "inverted"}
+    assert alignment["seed"] == {"delay_us": 120, "polarity": "normal"}
+    assert alignment["polarity_agrees_with_sum"] is False
+    assert alignment["gcc_delay_us"] == -205
     assert result["trim"] == json.loads(json.dumps({**asdict(trim), "outcome": trim.outcome, "committed_side": trim.committed_side}))
     pending = [result]
     while pending:
@@ -264,6 +267,56 @@ def test_design_cloud_bounds_each_roles_fit(speaker_round, capsys, changes, expe
         assert fit["lift_suppressed_reason"] == "boost_above_measured_target"
     if changes.get("missing_curve"):
         assert not proposal["cloud"]["band_spread"]
+
+
+@pytest.mark.parametrize("trusted_floor_hz", [357.0, None])
+def test_speaker_fit_respects_banked_trusted_floor(speaker_round, capsys, trusted_floor_hz):
+    root, record, program, _, _, _ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    grid = np.geomspace(60, 4000, 1024)
+    db = (-6 * np.exp(-0.5 * (np.log2(grid / 300) / 0.12) ** 2)
+          + 6 * np.exp(-0.5 * (np.log2(grid / 900) / 0.18) ** 2))
+    response = DriverResponse(
+        role="woofer", freqs_hz=grid, magnitude_db=db, complex_tf=10 ** (db / 20) + 0j,
+        gating={"f_trusted_hz": trusted_floor_hz}, snr=None, validity_floor_hz=143,
+    )
+    analysis = ProgramAnalysis(phase="measure", program_id=program.program_id, locations=(),
+                              driver_responses=(replace(response, repeat_responses=(response, response)),))
+    curves = analysis_curve_records(analysis, program) + [record["curves"][1]]
+    if trusted_floor_hz is None:
+        curves[0].pop("trusted_floor_hz")
+    restored = response_from_banked_curve(curves[0])[0]
+    assert all(r.gating == ({} if trusted_floor_hz is None else {"f_trusted_hz": trusted_floor_hz})
+               for r in (restored, *restored.repeat_responses))
+    assert restored.fit_floor_hz == (trusted_floor_hz or 143)
+    assert replace(restored, validity_floor_hz=None).fit_floor_hz == trusted_floor_hz
+    sparse = replace(restored, freqs_hz=np.array([100., 150., 151.]), magnitude_db=np.zeros(3),
+                     complex_tf=np.ones(3, dtype=complex))
+    assert len(fit_feature_curves(CloudFitTerms(boost_responses=(sparse, restored)))) == 1
+    rows = []
+    for deg in (-20, 0, 20):
+        take = {**record, "curves": curves, "take_id": f"floor-{deg}", "position_deg": deg}
+        path = directory / "positions" / f"{take['take_id']}.json"
+        path.write_text(json.dumps(take))
+        rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), take))
+    group = manifest_set(rows, set_id="speaker-set")
+    group["capture_basis"]["role"] = "woofer"
+    candidate = json.loads((directory / "candidate.json").read_text())
+    for take in group["takes"]:
+        take["analysis"] = candidate["analysis"]
+    write_manifest(root, groups=[group])
+    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set", "--take", "floor-0"]) == 0
+    proposal = json.loads(capsys.readouterr().out)["linearization"]["woofer"]
+    fit = proposal["fit"]
+    assert all(f["freq"] >= (trusted_floor_hz or 150) for f in fit["filters"])
+    assert fit["reason_summary"]["250"] == ("envelope_out_of_band" if trusted_floor_hz else "envelope_fitted")
+    assert any(800 < f["freq"] < 1000 and f["gain"] < -1 for f in fit["filters"])
+    assert fit["fit_band_hz"][0] >= (trusted_floor_hz or 150)
+    assert (250 in [b["center_hz"] for b in proposal["cloud"]["band_spread"]]) == (trusted_floor_hz is None)
+    if trusted_floor_hz:
+        assert fit["residual_rms_db"] < 1
+        assert fit["residual_max_db"] < 3
 
 
 @pytest.mark.parametrize("run_program", ["speaker", "speaker/full"])
@@ -445,7 +498,7 @@ def test_design_cloud_joins_retakes_without_borrowing_graphs(speaker_round, othe
     clouds = design_clouds(inputs, manifest)
     assert {key: cloud.n_positions for key, cloud in clouds.items()} == (
         {"first": 2, "retaken": 1, "older": 1, "other": 1} if anonymous else {"first": 3, "retaken": 3, "older": 3, "other": 1})
-    assert len(round_alignment(manifest, prescription_sources(inputs))) == 2
+    assert len(round_alignment(manifest, prescription_sources(inputs))[0]) == (5 if anonymous else 4)
     assert len(clouds["retaken"].boost_responses) == (0 if anonymous else 3)
     for selected, expected in (("first", 2 if anonymous else 3), ("other", 1)):
         take = group["takes"][1] if selected == "first" else other["takes"][0]
@@ -457,6 +510,54 @@ def test_design_cloud_joins_retakes_without_borrowing_graphs(speaker_round, othe
         assert result["vocabulary"] == ("bounded_boost" if expected == 3 else "cut_only")
 
 
+@pytest.mark.parametrize("off_axis,agree", [((210.591, 234.312, "inverted"), False), ((10.591, 34.312, "normal"), True)])
+def test_round_timing_folds_lobes_and_names_the_measured_sum(speaker_round, off_axis, agree):
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    group = manifest_set([(path, record)], set_id="timing")
+    take = group["takes"][0]
+    group["takes"] = [{**take, "take_id": f"take-{deg}", "pose": {"kind": "bearing", "deg": deg, "elevation_deg": 0},
+        "analysis": {"delay_us": delay, "polarity": polarity, "trim_db": {"woofer": 0, "tweeter": -3},
+                     "alignment_objective": "summed_fit_committed" if deg == 0 else "flat_sum_committed",
+                     "snr_waived_roles": ["tweeter"] if deg == 0 else []},
+        "quality": {"evidence": {"snr.tweeter.alignment.verdict": "insufficient"}}}
+        for deg, delay, polarity in ((0, 13, "normal"), (-20, off_axis[0], off_axis[2]), (20, off_axis[1], off_axis[2]))]
+    rows, verdict = round_alignment({"sets": [group]}, {}, fc_hz=2500)
+    assert len(rows) == 3
+    assert verdict == {
+        "folded_delay_us": {"0": 13.0, "-20": 10.591, "20": 34.312},
+        "spread_us": 23.721, "lobe_us": 200.0, "lobes_agree": agree,
+        "decided_by": {"pose": 0, "objective": "summed_fit_committed", "take_id": "take-0"},
+        "snr_waived": ["take-0"],
+    }
+
+
+def test_packet_timing_keeps_known_corner_when_one_contract_is_unavailable(speaker_round, monkeypatch):
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    groups = []
+    for set_id, deg, delay, polarity in (("on-axis", 0, 13, "normal"), ("unavailable", -20, 210.591, "inverted"),
+                                       ("off-axis", 20, 234.312, "inverted")):
+        group = manifest_set([(path, record)], set_id=set_id)
+        group["takes"][0].update(take_id=set_id, pose={"kind": "bearing", "deg": deg, "elevation_deg": 0},
+                                 analysis={"delay_us": delay, "polarity": polarity, "trim_db": {"woofer": 0, "tweeter": -3}})
+        groups.append(group)
+    write_manifest(root, groups=groups)
+    contract = {"speaker": {"alignment": {"bounds": {"fc_hz": 2500}}}}
+    monkeypatch.setattr("jasper.active_speaker.round_packet.prescription_contracts",
+                        Mock(side_effect=[contract, ValueError(), contract]))
+    packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
+    assert packet["limits"]["unavailable"]["status"] == "unavailable"
+    verdict = packet["alignment_verdict"]
+    assert verdict["lobe_us"] == 200.0
+    assert verdict["folded_delay_us"] == {"0": 13.0, "-20": 10.591, "20": 34.312}
+    assert verdict["spread_us"] == 23.721
+    assert verdict["lobes_agree"] is False
+
+
 @pytest.mark.parametrize("held,declared,fault", [(False, False, "capture_clipped"), (True, True, "capture_clipped"), (True, False, None)])
 def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared, fault):
     root, record, program, *_ = speaker_round
@@ -466,14 +567,14 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
         polarity="normal" if held else "inverted", predicted_ripple_db=0.348, confidence=0 if held else 0.9,
         alignment_objective=ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR if held else "summed_fit_committed",
         summed_fit_rms_db=0.348, summed_fit_margin=1.1 if held else 2.12,
-        summed_fit_verdict="ambiguous" if held else "committed", delay_interval_us=(181, 201), seed_polarity_sign=1)
+        summed_fit_verdict="ambiguous" if held else "committed", delay_interval_us=(181, 201), seed_polarity_sign=1, alignment_seed_delay_us=120)
     analysis = analysis_json(ProgramAnalysis(phase="measure", program_id=program.program_id, locations=(),
         candidate=candidate, alignment=AlignmentEstimate(delay_us=candidate.delay_us, raw_delay_us=candidate.delay_us,
             parallax_us=4.5 if declared else 0, polarity=candidate.polarity, polarity_sign=1 if held else -1,
             confidence=candidate.confidence, seed_delay_us=120)))
     expected = {"objective": candidate.alignment_objective,
-                "committed": {"delay_us": candidate.delay_us, "polarity": candidate.polarity, "ripple_db": 0.348},
-                "seed": {"delay_us": 120, "polarity": "normal", "ripple_db": None},
+                "committed": {"delay_us": candidate.delay_us, "polarity": candidate.polarity},
+                "seed": {"delay_us": 120, "polarity": "normal"},
                 "confidence": candidate.confidence, "summed_fit_rms_db": 0.348, "summed_fit_margin": candidate.summed_fit_margin,
                 "delay_interval_us": [181, 201], "summed_fit_verdict": candidate.summed_fit_verdict,
                 "parallax_us": 4.5 if declared else 0, "driver_spacing_source": "declared" if declared else "unknown",
@@ -502,8 +603,10 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
     group["capture_basis"].update(role="woofer")
     take = group["takes"][0]
     evidence = {f"snr.{role}.alignment.{key}": value for role, row in expected["snr"].items() for key, value in row.items()}
+    levels = {"tweeter": {"alignment_level_db": -26, "alignment_snr_shortfall_db": {"before": 12.5, "after": 8.5},
+                          "alignment_level_capped_by": "driver_cap", "alignment_snr_residual_shortfall_db": 8.5}}
     take.update(analysis=analysis, role="woofer", pose={"kind": "bearing", "deg": 0, "elevation_deg": 0},
-                quality={"evidence": evidence}, timing={"ended_s": 2})
+                quality={"evidence": evidence}, timing={"ended_s": 2}, alignment=levels)
     refused = {**take, "take_id": "refused", "selected": False}
     if fault:
         refused.update({"quality": {"fault": fault}} if held else {"fault": fault})
@@ -512,7 +615,9 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
     manifest = write_manifest(root, groups=[group, {**group, "set_id": "duplicate", "capture_basis": {
         **group["capture_basis"], "role": "tweeter"}}])
     packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
-    pair, = packet["alignment"]
+    pair, off_axis = packet["alignment"]
+    assert off_axis["pose"]["deg"] == 20
+    assert off_axis["committed"]["delay_us"] == 900
     fit = speaker_fit(round_inputs(root), manifest, "timing", take["take_id"])
     for answer in (pair, json.loads(json.dumps(fit["alignment"]))):
         assert {key: answer[key] for key in expected} == expected
@@ -520,9 +625,13 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
         assert answer["applied"]["record"] == "a" * 12
         assert answer["applied"]["corrections"] == corrections
         assert answer["applied"]["corrections_provenance"] == provenance
+        assert answer["levels"] == levels
+    assert all(t["alignment"] == levels for group in packet["sets"] for t in group["takes"])
     assert pair["take_id"] == take["take_id"]
     lines = (root / INDEX_FILENAME).read_text().splitlines()
-    assert len([line for line in lines if line.startswith("timing:")]) == 1
+    assert len([line for line in lines if line.startswith("timing:")]) == 2
+    start = next(i for i, line in enumerate(lines) if line.startswith("timing:"))
+    assert max(map(len, lines[start:lines.index("## Decisions")])) <= 160
     assert {t["fault"] for g in packet["sets"] for t in g["takes"] if not t["selected"]} == {fault}
     assert [line for line in lines if line.startswith("retakes:")] == ([f"retakes: refused {fault}"] if fault else [])
 
@@ -718,9 +827,9 @@ def test_first_speaker_experiment_banks_measured_alignment_for_apply(
     assert first["status"] == ("alignment_unmeasured" if reason else "awaiting_apply"), first
     assert first["reason"] == reason
     assert first["alignment"]["take_id"] == group["takes"][0]["take_id"]
-    pair, = packet["alignment"]
+    pair = next(row for row in packet["alignment"] if row["take_id"] == group["takes"][0]["take_id"])
     assert {key: first["alignment"][key] for key in pair} == pair
-    assert pair["committed"] == {"delay_us": delay, "polarity": polarity, "ripple_db": analysis["predicted_ripple_db"]}
+    assert pair["committed"] == {"delay_us": delay, "polarity": polarity}
     assert pair["trim_db"] == analysis["trim_db"]
     candidate = find_banked_candidate(first["candidate_fingerprint"], root=tmp_path / "bank").candidate
     assert candidate.role_attenuations_db == analysis["trim_db"]

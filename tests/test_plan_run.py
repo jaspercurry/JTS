@@ -14,7 +14,8 @@ from unittest.mock import Mock
 import pytest
 
 from jasper.active_speaker import angle_capture as ac, plan_run
-from jasper.active_speaker.bass_levels import BassLevelRun, bass_level_ladder, run_bass_levels
+from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
+from jasper.active_speaker.measurement_programs import run_program
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
@@ -31,6 +32,7 @@ from tests.crossover_v2_fixtures import _loc
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, SeamFailure, open_session
 from tests.test_preflight import ready_facts
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
+from tests.test_crossover_v2_tuning_scope import _room_candidate, tuning_profile as tuning_profile
 
 _ABORTS = {SeamFailure: "seam_failed"}
 
@@ -716,10 +718,10 @@ async def test_run_requires_the_chosen_level_in_an_open_session(level):
 
 async def test_bass_levels_refuse_when_no_level_is_admissible():
     request = ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED, purpose="bass"),))
-    ladder = bass_level_ladder(request, ready_facts(request, commissioning_stop_db_spl=None))
+    ladder = level_ladder(request, ready_facts(request, commissioning_stop_db_spl=None))
     hold, prepare = Mock(), Mock()
     with pytest.raises(ac.LateralWalkRefused) as refused:
-        await run_bass_levels(ladder, hold=hold, prepare=prepare, gate=AnsweredGate(), aborts=_ABORTS)
+        await run_levels(ladder, hold=hold, prepare=prepare, gate=AnsweredGate(), aborts=_ABORTS)
     assert refused.value.reason == "walk_commissioning_stop_unset"
     assert not hold.mock_calls and not prepare.mock_calls
 
@@ -733,7 +735,7 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
     facts = ready_facts(request)
     facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record,
         "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": -60}]}}))
-    ladder = bass_level_ladder(request, facts)
+    ladder = level_ladder(request, facts)
     fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
     entry_volume, entry_loudness = box.volume_db, await box.get_loudness_volume_db()
 
@@ -744,10 +746,10 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
         door = _run_door(tmp_path, box, fakes, manifest)
         verdict = (TakeVerdict(False, fault=REASON_CLIPPED, next="fix_and_retake")
                    if partial and len(manifests) == 2 else TakeVerdict(True))
-        return BassLevelRun(manifest, door, _analysis, lambda *_args, **_kwargs: verdict)
+        return LevelRun(manifest, door, _analysis, lambda *_args, **_kwargs: verdict)
 
     hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
-    results = await run_bass_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS)
+    results = await run_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS)
     expected = [(0, -18), (0, -23)] + ([] if partial else [(20, -18), (20, -23)])
     assert [(call["position_deg"], call["level_db"]) for call in fakes.play.calls] == expected
     assert len(gate.grants) == (1 if partial else 2)
@@ -758,6 +760,34 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
     assert fakes.graph.restores == 1
     assert box.volume_db == entry_volume
     assert await box.get_loudness_volume_db() == entry_loudness
+
+
+async def test_room_plan_levels_keep_pose_order(tmp_path, box, tuning_profile):
+    from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
+
+    candidate = _room_candidate(tuning_profile)
+    program = run_program("room")
+    levels = (-10.0, -20.0)
+    request = ac.request_for_program(program, candidates=("base", candidate.fingerprint), levels=levels)
+    report = preflight_levels(request, ready_facts(request, candidates={candidate.fingerprint: candidate}, commissioning_stop_db_spl=95))
+    assert not report.blocking
+    fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
+
+    def prepare(plan):
+        manifest = RunManifest(f"run-{len(manifests)}", _Store(fakes.records))
+        manifests.append(manifest)
+        return LevelRun(manifest, _run_door(tmp_path, box, fakes, manifest), _analysis,
+                        lambda *_args, **_kwargs: TakeVerdict(True), prepare_level_captures(plan))
+
+    assert sum(len(row.schedule) for row in report.levels) == 3 * 2 * len(levels)
+    hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
+    results = await run_levels(report, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS)
+    expected = [(pose.seat_offset_m, level, cid) for pose in program.poses
+                for level in levels for cid in ("banked-base", candidate.fingerprint)]
+    assert [(row["seat_offset_m"], row["level_db"], row["candidate_id"]) for row in fakes.records.banked] == expected
+    assert len(fakes.play.calls) == len(expected)
+    assert len(gate.grants) == 3 and fakes.graph.restores == 1
+    assert all(result.status == "complete" for result in results)
 
 
 async def test_run_door_preemption_defers_volume_restore_and_restores_graph(tmp_path, box):
