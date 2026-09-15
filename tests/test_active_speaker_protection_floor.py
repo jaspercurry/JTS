@@ -11,8 +11,8 @@ all three:
 * the derived defense-in-depth high-pass was ``2.0 x fc``, so it followed the
   error DOWN (LR4 @ 2000 Hz on a 5000 Hz-floor tweeter emitted a 4000 Hz
   "protective" high-pass — below the floor, structurally);
-* ``POST /active-speaker/check-path-safety`` returned ``status=pass``,
-  ``blocker_count=0``, ``ok_to_load_active_config=true`` for that config;
+* the path-safety report returned ``status=pass``, ``blocker_count=0``,
+  ``ok_to_load_active_config=true`` for that config;
 * the crossover preview reported zero blockers at confirm time.
 
 The pins below are deliberately split so no one of the three can mask another:
@@ -45,7 +45,6 @@ re-issued 5000 Hz draft that did arm.
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import json
 import logging
@@ -242,46 +241,6 @@ def _strip_floor_facts(tmp_path: Path) -> dict[str, Any]:
     return staged
 
 
-def _endpoint_report(
-    tmp_path: Path,
-    topology: OutputTopology,
-    monkeypatch,
-) -> dict[str, Any]:
-    """Drive the real ``check-path-safety`` coroutine over persisted state."""
-
-    from jasper.output_topology import save_output_topology
-    from jasper.web.sound_active_speaker import _active_speaker_check_path_safety_payload
-
-    topology_path = tmp_path / "output_topology.json"
-    save_output_topology(topology, topology_path)
-    rollback = tmp_path / "rollback.yml"
-    rollback.write_text(
-        (tmp_path / "active_staged.yml").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        str(tmp_path / "active_staged.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE",
-        str(tmp_path / "path_safety.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE",
-        str(tmp_path / "startup_load.json"),
-    )
-
-    class _Camilla:
-        async def get_config_file_path(self, *, best_effort: bool = False) -> str:
-            return str(rollback)
-
-    return asyncio.run(
-        _active_speaker_check_path_safety_payload(camilla_factory=_Camilla)
-    )
-
-
 # --- (a) the clamp: a below-floor candidate is raised TO the floor -----------
 
 
@@ -383,72 +342,6 @@ def test_path_safety_refuses_a_below_floor_staged_candidate(tmp_path: Path) -> N
     assert startup_reload["checks"]["tweeter_protection_floor_honoured"] is False
 
 
-def test_check_path_safety_endpoint_payload_refuses_a_below_floor_candidate(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """The refusal reaches the HTTP surface, not just the evidence builder.
-
-    ``POST /active-speaker/check-path-safety`` dispatches to
-    ``_active_speaker_check_path_safety_payload``; this drives that coroutine
-    over persisted state so the claim "check-path-safety refuses" is pinned at
-    the response object the household's browser actually receives.
-    """
-
-    from jasper.output_topology import save_output_topology
-    from jasper.web.sound_active_speaker import _active_speaker_check_path_safety_payload
-
-    topology = mono_output_topology()
-    topology_path = tmp_path / "output_topology.json"
-    save_output_topology(topology, topology_path)
-    rollback = tmp_path / "rollback.yml"
-
-    staged = _stage(tmp_path, topology, _preview(
-        topology, fc_hz=2000, tweeter_floor_hz=5000,
-    ))
-    rollback.write_text(
-        (tmp_path / "active_staged.yml").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    assert staged["status"] == "staged"
-
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        str(tmp_path / "active_staged.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE",
-        str(tmp_path / "path_safety.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE",
-        str(tmp_path / "startup_load.json"),
-    )
-
-    class _Camilla:
-        async def get_config_file_path(self, *, best_effort: bool = False) -> str:
-            return str(rollback)
-
-    payload = asyncio.run(
-        _active_speaker_check_path_safety_payload(camilla_factory=_Camilla)
-    )
-    report = payload["report"]
-
-    assert report["status"] == "blocked"
-    assert report["ok_to_load_active_config"] is False
-    assert report["blocker_count"] >= 1
-    blockers = _floor_blockers(report)
-    assert len(blockers) == 1
-    assert "5000 Hz" in blockers[0]["message"]
-    # The named blocker is also persisted on the evidence the gate binds to.
-    assert any(
-        issue["code"] == "tweeter_crossover_below_declared_protection_floor"
-        for issue in payload["evidence"]["observed_issues"]
-    )
-    assert payload["startup_load"]["preflight"]["status"] != "ready"
-
-
 def test_path_safety_passes_an_at_floor_staged_candidate(tmp_path: Path) -> None:
     topology = mono_output_topology()
     staged = _stage(tmp_path, topology, _preview(
@@ -489,47 +382,6 @@ def test_staging_always_writes_both_floor_facts_so_absence_discriminates(
     assert declared["config"]["tweeter_protection_floor_hz"] == 5000.0
     assert undeclared["config"]["tweeter_protection_floor_hz"] is None
     assert undeclared["config"]["tweeter_crossover_highpass_hz"] == 2000.0
-
-
-def test_pre_pr_staged_metadata_is_refused_through_the_real_endpoint(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """The review lenses' exact repro: nothing forces a re-stage.
-
-    Both lenses staged the below-floor design, deleted only the two keys this
-    change added (a byte-faithful pre-PR artifact — the staged YAML still
-    carries the 2000 Hz crossover), and got ``status=pass`` /
-    ``ok_to_load_active_config=true`` / ``load_gate=ready`` back out of the real
-    handler. Nothing re-stages on their behalf: SCHEMA_VERSION is unbumped, the
-    loader applies no freshness test, the evidence binding hashes the YAML, no
-    deploy step clears the file, and neither load route stages.
-    """
-
-    topology = mono_output_topology()
-    _stage(tmp_path, topology, _preview(topology, fc_hz=2000, tweeter_floor_hz=5000))
-    legacy = _strip_floor_facts(tmp_path)
-
-    # The staged graph is untouched and still carries the below-floor design.
-    assert "freq: 2000.0000" in (tmp_path / "active_staged.yml").read_text(
-        encoding="utf-8"
-    )
-    assert legacy["status"] == "staged"
-
-    payload = _endpoint_report(tmp_path, topology, monkeypatch)
-    report = payload["report"]
-
-    assert report["status"] == "blocked"
-    assert report["ok_to_load_active_config"] is False
-    assert report["load_gate"] == "requirements_blocked"
-    blockers = _floor_blockers(report)
-    assert len(blockers) == 1
-    assert "stage the protected startup config again" in blockers[0]["message"]
-    assert any(
-        issue["code"] == "staged_tweeter_protection_floor_unverifiable"
-        for issue in payload["evidence"]["observed_issues"]
-    )
-    assert payload["startup_load"]["preflight"]["load_allowed"] is False
 
 
 def test_pre_pr_staged_metadata_is_refused_even_for_an_honest_candidate(

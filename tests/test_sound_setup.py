@@ -471,30 +471,6 @@ def test_active_speaker_ui_level_match_helpers():
     assert out["ok"] is True
 
 
-def test_commission_load_refuses_while_a_measurement_runs(monkeypatch):
-    """commission-load serializes against balance / sync: when one is active it
-    refuses with a distinct reason (not a camilla touch) so the UI shows the
-    correct message instead of "another driver is being tested"."""
-    from jasper.web import active_speaker_flow
-
-    monkeypatch.setattr(
-        active_speaker_flow, "blocking_measurement_phase", lambda: "sync:measuring"
-    )
-
-    def _camilla_must_not_be_called():
-        raise AssertionError("camilla_factory must not run when the load is refused")
-
-    payload = asyncio.run(
-        sound_setup._active_speaker_commission_load_payload(
-            {"group": "main", "role": "woofer"},
-            camilla_factory=_camilla_must_not_be_called,
-        )
-    )
-    assert payload["status"] == "refused"
-    assert payload["reason"] == "measurement_in_progress"
-    assert payload["blocking_phase"] == "sync:measuring"
-
-
 @contextmanager
 def sound_server(tmp_path: Path):
     """Serve the real ``/sound/`` handler on loopback; yield its base URL."""
@@ -655,13 +631,6 @@ def test_commission_ramp_abort_http_contains_secondary_failures(
             "sound.active_speaker_tuning_handoff",
             {},
         ),
-        (
-            "POST",
-            "/active-speaker/channel-protection",
-            "_active_speaker_channel_protection_save_payload",
-            "sound.active_speaker_channel_protection",
-            {"error": "OSError"},
-        ),
     ],
 )
 def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
@@ -703,32 +672,6 @@ def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
     assert record.exc_info is not None
     assert record.exc_info[1] is error
     assert record.exc_info[2] is not None
-
-
-def test_sound_post_does_not_secondary_send_after_response_write_failure(
-    tmp_path,
-    monkeypatch,
-    caplog,
-):
-    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
-    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"ok": True})
-    response_sink = _BrokenPipeBytesIO()
-    caplog.set_level(logging.ERROR, logger=sound_setup.logger.name)
-
-    with pytest.raises(BrokenPipeError, match="synthetic client disconnect"):
-        _drive_raw_sound_post(
-            tmp_path,
-            path="/active-speaker/stop",
-            content_length=0,
-            body=b"",
-            response_sink=response_sink,
-        )
-
-    assert response_sink.write_calls == 1
-    assert not any(
-        record.getMessage().startswith("event=sound.post_dispatch_failed")
-        for record in caplog.records
-    )
 
 
 @pytest.mark.parametrize(
@@ -775,43 +718,32 @@ def test_sound_post_unknown_route_precedes_csrf_and_body_read(tmp_path, monkeypa
     assert read_calls == []
 
 
-def test_stale_sound_stop_and_abort_routes_still_dispatch(tmp_path, monkeypatch):
-    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_payload",
-        lambda: {"route": "stop"},
+def test_dead_active_speaker_post_routes_are_unregistered(tmp_path):
+    handler = sound_setup._make_handler(
+        profile_path=tmp_path / "sound_profile.json",
+        library_path=tmp_path / "sound_profiles.json",
+        config_dir=tmp_path / "configs",
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_stop_summed_test_tone",
-        lambda *, reason: {"route": "summed-stop", "reason": reason},
-    )
-
-    async def abort(*, camilla_factory):
-        return {"route": "commission-abort"}
-
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_commission_ramp_abort_payload",
-        abort,
-    )
-
-    expected = {
-        "/active-speaker/stop": "stop",
-        "/active-speaker/commission-ramp-abort": "commission-abort",
-        "/active-speaker/summed-test/stop": "summed-stop",
+    dispatch = handler.do_POST
+    routes = dispatch.__closure__[
+        dispatch.__code__.co_freevars.index("_POST_ROUTES")
+    ].cell_contents
+    dead = {
+        "/active-speaker/stop",
+        "/active-speaker/channel-protection",
+        "/active-speaker/stage-config",
+        "/active-speaker/check-path-safety",
+        "/active-speaker/load-startup-config",
+        "/active-speaker/commission-load",
+        "/active-speaker/commission-ramp-step",
+        "/active-speaker/commission-ramp-ack",
+        "/active-speaker/driver-measurement",
+        "/active-speaker/summed-test",
+        "/active-speaker/summed-test/level",
+        "/active-speaker/summed-test/stop",
+        "/active-speaker/summed-validation",
     }
-    for path, route in expected.items():
-        response, read_calls = _drive_raw_sound_post(
-            tmp_path,
-            path=path,
-            content_length=2,
-            body=b"{}",
-        )
-        assert b" 200 " in response.split(b"\r\n", 1)[0]
-        assert json.loads(response.split(b"\r\n\r\n", 1)[1])["route"] == route
-        assert read_calls == [2]
+    assert dead.isdisjoint(routes)
 
 
 def test_seat_level_start_route_dispatches_and_is_csrf_protected(tmp_path, monkeypatch):
@@ -1249,24 +1181,9 @@ def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: 
         # An active-speaker mutation reaches its handler (200/502), never the
         # follower 409 nor a 404 — the gate is content-DSP only.
         active_status = _follower_post_status(
-            base, "/active-speaker/stage-config", session,
+            base, "/active-speaker/commission-ramp-abort", session,
         )
         assert active_status not in (404, 409), active_status
-
-
-def test_summed_test_level_http_route_is_registered(monkeypatch, tmp_path: Path):
-    """The live combined-test slider route must pass the route-before-CSRF gate."""
-
-    monkeypatch.setattr(sound_active_speaker, "_SUMMED_TEST_TONE_SESSION", None)
-    with sound_server(tmp_path) as base:
-        resp = json_post_with_csrf(
-            base,
-            "/active-speaker/summed-test/level",
-            {"speaker_group_id": "main", "level_dbfs": -35},
-        )
-        payload = json.loads(resp.read().decode("utf-8"))
-        assert payload["status"] == "idle"
-        assert payload["reason"] == "no_active_summed_test"
 
 
 def test_index_html_embeds_csrf_meta_for_json_posts():
@@ -2178,7 +2095,7 @@ def test_active_speaker_stop_and_level_payloads_are_no_audio(
         "level_dbfs": -55,
     })
     status = sound_setup._active_speaker_safe_playback_payload()
-    stopped = sound_setup._active_speaker_stop_payload()
+    stopped = sound_active_speaker._active_speaker_stop_payload()
     stopped_level = sound_setup._active_speaker_calibration_level_payload()
 
     assert armed["status"] == "armed"
@@ -2230,7 +2147,7 @@ def test_active_speaker_stop_payload_survives_level_reset_failure(
     arm_safe_playback_session(sound_setup._active_speaker_environment_payload())
     monkeypatch.setattr(level_mod, "update_calibration_level_state", fail_reset)
 
-    stopped = sound_setup._active_speaker_stop_payload()
+    stopped = sound_active_speaker._active_speaker_stop_payload()
 
     assert stopped["status"] == "stopped"
     assert stopped["playback"]["status"] == "stopped"
@@ -2261,7 +2178,7 @@ def test_active_speaker_stop_route_stops_audible_commission_tone(
         or {"status": "stopped", "reason": reason},
     )
 
-    stopped = sound_setup._active_speaker_stop_payload()
+    stopped = sound_active_speaker._active_speaker_stop_payload()
 
     assert tone_stops == ["operator_stop"]
     assert stopped["commission_tone"] == {
@@ -2273,7 +2190,7 @@ def test_active_speaker_stop_route_stops_audible_commission_tone(
     # instead of relying on the "operator_stop" default, and the tone still
     # stops exactly once.
     tone_stops.clear()
-    stopped_for_save = sound_setup._active_speaker_stop_payload(
+    stopped_for_save = sound_active_speaker._active_speaker_stop_payload(
         reason="output_topology_save"
     )
 
@@ -3208,194 +3125,6 @@ def test_active_speaker_crossover_preview_refreshes_current_output_topology(
     )
     assert tweeter_filter["channel"]["identity_verified"] is True
     assert tweeter_filter["channel"]["protection_status"] == "software_guard_requested"
-
-
-def test_active_speaker_summed_test_records_current_artifact(
-    monkeypatch,
-    tmp_path: Path,
-):
-    from jasper.active_speaker.measurement import record_driver_measurement
-    from jasper.active_speaker.safe_playback import arm_safe_playback_session
-    from jasper.output_topology import load_output_topology
-
-    _set_active_speaker_state_paths(
-        monkeypatch,
-        tmp_path,
-        "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
-        "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
-        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
-    )
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(protection_status="present")
-    )
-    _confirm_channel_identity("mono", "woofer", "tweeter")
-    _save_active_speaker_design_and_preview()
-    arm_safe_playback_session({
-        "status": "pass",
-        "load_gate": "ready",
-        "ok_to_load_active_config": True,
-        "camilla_config": {"classification": "active_startup_candidate"},
-        "safe_playback": {"playback_allowed": False},
-        "issues": [],
-    })
-    topology = load_output_topology()
-    for role, output_index in (("woofer", 0), ("tweeter", 1)):
-        playback_id = f"playback-{role}"
-        target = {
-            "speaker_group_id": "mono",
-            "role": role,
-            "driver_role": role,
-            "output_index": output_index,
-        }
-        record_driver_measurement(
-            topology,
-            {
-                "speaker_group_id": "mono",
-                "role": role,
-                "outcome": "heard_correct_driver",
-                "observed_mic_dbfs": -42,
-                "playback_id": playback_id,
-            },
-            safe_session={
-                "status": "armed",
-                "quiet_start": {
-                    "status": "floor_confirmed",
-                    "floor_audio_confirmed": True,
-                    "last_operator_result": {
-                        "accepted": True,
-                        "outcome": "heard_correct_driver",
-                        "playback_id": playback_id,
-                        "target": target,
-                    },
-                },
-            },
-        )
-
-    payload = asyncio.run(sound_setup._active_speaker_summed_test_payload(
-        {
-            "speaker_group_id": "mono",
-            "audio": False,
-        },
-        camilla_factory=lambda: None,
-    ))
-    latest = payload["measurements"]["summary"]["latest_summed_tests"]["mono"]
-
-    assert payload["playback"]["status"] == "completed"
-    assert payload["playback"]["audio_emitted"] is False
-    assert payload["playback"]["artifact"]["target_output_indices"] == [0, 1]
-    assert latest["captured"] is True
-    assert latest["audio_emitted"] is False
-    assert latest["target_output_indices"] == [0, 1]
-
-
-def test_active_speaker_protection_and_stage_config_payloads_are_no_load(
-    monkeypatch,
-    tmp_path: Path,
-):
-    _set_active_speaker_state_paths(
-        monkeypatch,
-        tmp_path,
-        "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH",
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-    )
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE", "hw:DAC8,0")
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(protection_status="required_missing")
-    )
-    _confirm_channel_identity("mono", "woofer", "tweeter")
-    saved = sound_setup._output_topology_payload()
-
-    preview_ready = _save_active_speaker_design_and_preview()
-    staged = sound_setup._active_speaker_stage_config_payload({})
-    loaded = sound_setup._active_speaker_staged_config_payload()
-
-    assert saved["output_topology"]["status"] == "verified"
-    assert (
-        saved["output_topology"]["speaker_groups"][0]["channels"][1][
-            "protection_status"
-        ]
-        == "software_guard_requested"
-    )
-    assert preview_ready["status"] == "ready_for_protected_staging"
-    assert staged["status"] == "staged"
-    assert staged["preset"]["source"]["mode"] == "crossover_preview"
-    assert staged["config"]["basename"] == "active_staged.yml"
-    assert staged["config"]["playback_device"] == "hw:DAC8,0"
-    assert staged["config"]["tweeter_protective_highpass_hz"] == 5000
-    assert staged["load"]["load_allowed"] is False
-    assert Path(staged["config"]["path"]).exists()
-    assert loaded["status"] == "staged"
-
-
-def test_active_speaker_path_safety_payload_writes_no_audio_evidence(
-    monkeypatch,
-    tmp_path: Path,
-):
-    _set_active_speaker_state_paths(
-        monkeypatch,
-        tmp_path,
-        "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH",
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-        "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE",
-    )
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE", "hw:DAC8,0")
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(
-            protection_status="software_guard_requested",
-        )
-    )
-    _confirm_channel_identity("mono", "woofer", "tweeter")
-    preview = _save_active_speaker_design_and_preview()
-    staged = sound_setup._active_speaker_stage_config_payload({})
-    fake = FakeCamilla(staged["config"]["path"])
-
-    assert preview["status"] == "ready_for_protected_staging"
-    assert staged["status"] == "staged"
-    assert staged["preset"]["source"]["mode"] == "crossover_preview"
-    payload = asyncio.run(
-        sound_setup._active_speaker_check_path_safety_payload(
-            camilla_factory=lambda: fake,
-        )
-    )
-
-    evidence_path = Path(payload["evidence_path"])
-    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-    assert payload["report"]["ok_to_load_active_config"] is True
-    assert payload["startup_load"]["preflight"]["path_safety"]["load_gate"] == "ready"
-    assert evidence["evidence_mode"] == "startup_load_preflight"
-    assert fake.set_calls == []
-
-
-def test_active_speaker_stage_config_rejects_non_string_playback_device() -> None:
-    with pytest.raises(ValueError, match="playback_device must be a string"):
-        sound_setup._active_speaker_stage_config_payload({
-            "playback_device": {"device": "hw:DAC8,0"},
-        })
-
-
-def test_active_speaker_stage_config_route_requires_current_preview(
-    monkeypatch,
-    tmp_path: Path,
-):
-    _set_active_speaker_state_paths(
-        monkeypatch,
-        tmp_path,
-        "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH",
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
-    )
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE", "hw:DAC8,0")
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(protection_status="present")
-    )
-
-    payload = sound_setup._active_speaker_stage_config_payload({})
-
-    assert payload["status"] == "blocked"
-    assert payload["config"]["exists"] is False
-    assert payload["preset"]["source"]["mode"] == "crossover_preview"
-    assert "crossover_preview_not_ready" in {
-        issue["code"] for issue in payload["issues"]
-    }
 
 
 def _record_dac8x() -> None:
@@ -4439,199 +4168,6 @@ def test_sound_channel_identity_route_marks_saved_topology_only(
     assert payload["channel_identity"]["verified_channel_count"] == 0
     assert payload["output_topology"]["status"] == "valid"
     assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is False
-
-
-_PENDING_WOOFER_STEP = {
-    "role": "woofer",
-    "playback_id": "pb-woofer",
-    "gain_db": -80.0,
-}
-
-
-def _stub_confirmed_ramp_ack(monkeypatch) -> None:
-    """A pending woofer step whose operator ack comes back confirmed."""
-
-    async def fake_ack(*, outcome, load_config):
-        assert outcome == "heard_correct_driver"
-        assert load_config is not None
-        return {
-            "status": "confirmed",
-            "acknowledged_step": dict(_PENDING_WOOFER_STEP),
-            "issues": [],
-        }
-
-    monkeypatch.setattr(
-        "jasper.active_speaker.commission_ramp.load_ramp_state",
-        lambda: {
-            "speaker_group_id": "main",
-            "pending": dict(_PENDING_WOOFER_STEP),
-        },
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.commission_ramp.record_ramp_operator_ack", fake_ack
-    )
-    monkeypatch.setattr(
-        sound_active_speaker,
-        "_active_speaker_stop_commission_tone",
-        lambda *, reason: {"status": "stopped", "reason": reason},
-    )
-    monkeypatch.setattr(
-        sound_active_speaker, "commission_seams", lambda _cam: (object(), None, None)
-    )
-
-
-async def _ack_confirming_output_identity():
-    return await sound_setup._active_speaker_commission_ramp_ack_payload(
-        {"outcome": "heard_correct_driver", "confirm_output_identity": True},
-        camilla_factory=lambda: object(),
-    )
-
-
-async def test_commission_ack_can_promote_output_identity_before_driver_proof(
-    monkeypatch,
-    tmp_path: Path,
-):
-    path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    sound_setup._save_output_topology_payload(_bench_active_topology_payload())
-    _stub_confirmed_ramp_ack(monkeypatch)
-    recorded: dict[str, object] = {}
-
-    def fake_record_driver_measurement(topology, raw, **_kwargs):
-        recorded["raw"] = dict(raw)
-        recorded["woofer_identity"] = (
-            topology.speaker_groups[0].channels[0].identity_verified
-        )
-        return {
-            "status": "needs_summed_validation",
-            "summary": {
-                "driver_checks_complete": False,
-                "captured_driver_check_count": 1,
-            },
-        }
-
-    monkeypatch.setattr(
-        "jasper.active_speaker.measurement.record_driver_measurement",
-        fake_record_driver_measurement,
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.calibration_level.load_calibration_level_state",
-        lambda: {},
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.safe_playback.load_safe_playback_state", lambda: {}
-    )
-
-    payload = await _ack_confirming_output_identity()
-    saved = json.loads(path.read_text(encoding="utf-8"))
-
-    assert payload["status"] == "confirmed"
-    assert payload["channel_identity"]["verified_channel_count"] == 1
-    assert payload["output_topology"]["speaker_groups"][0]["channels"][0][
-        "identity_verified"
-    ] is True
-    assert payload["topology_revision"].startswith("sha256:")
-    assert payload["hardware_adoption"]["identity"].startswith("sha256:")
-    assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is True
-    # The recorder saw the promoted lane, so the promotion precedes the proof.
-    assert recorded["woofer_identity"] is True
-    assert recorded["raw"]["role"] == "woofer"
-    assert recorded["raw"]["playback_id"] == "pb-woofer"
-
-
-async def test_commission_ack_fails_when_output_identity_cannot_save(
-    monkeypatch,
-    tmp_path: Path,
-):
-    from jasper.output_topology import OutputTopologyMutation
-
-    path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    sound_setup._save_output_topology_payload(_bench_active_topology_payload())
-    _stub_confirmed_ramp_ack(monkeypatch)
-
-    def fail_save(_mutation, _topology):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(OutputTopologyMutation, "save", fail_save)
-    monkeypatch.setattr(
-        "jasper.active_speaker.measurement.record_driver_measurement",
-        lambda *_args, **_kwargs: pytest.fail(
-            "driver evidence must not be recorded when identity save fails"
-        ),
-    )
-
-    payload = await _ack_confirming_output_identity()
-    saved = json.loads(path.read_text(encoding="utf-8"))
-
-    assert payload["status"] == "failed"
-    assert payload["reason"] == "driver_target_identity_save_failed"
-    assert "measurements" not in payload
-    assert "driver_target_identity_save_failed" in {
-        issue["code"] for issue in payload["issues"]
-    }
-    assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is False
-
-
-def test_sound_channel_protection_route_accepts_software_guard_request(
-    monkeypatch,
-    tmp_path: Path,
-):
-    path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(
-            protection_status="required_missing", card_id=None
-        )
-    )
-
-    payload = sound_setup._active_speaker_channel_protection_save_payload({
-        "speaker_group_id": "mono",
-        "role": "tweeter",
-        "protection_status": "software_guard_requested",
-    })
-    saved = json.loads(path.read_text(encoding="utf-8"))
-    tweeter = saved["speaker_groups"][0]["channels"][1]
-
-    assert payload["output_topology"]["status"] == "valid"
-    assert payload["topology_revision"].startswith("sha256:")
-    assert payload["hardware_adoption"]["identity"].startswith("sha256:")
-    assert tweeter["protection_status"] == "software_guard_requested"
-    assert "tweeter_software_guard_requested" in {
-        issue["code"] for issue in payload["output_topology"]["evaluation"]["warnings"]
-    }
-
-
-def test_sound_channel_protection_present_false_gets_the_same_guard_upgrade(
-    monkeypatch,
-    tmp_path: Path,
-):
-    """#2162: writing ``protection_present: false`` through the
-    channel-protection route must not bypass the software-guard upgrade the
-    topology-save path applies (`_save_output_topology_payload`) -- a
-    channel stuck at ``required_missing`` is a ``tweeter_protection_unverified``
-    blocker ``safe_graph_for_current_topology`` refuses, and deploys fail."""
-    path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(protection_status="present")
-    )
-
-    payload = sound_setup._active_speaker_channel_protection_save_payload({
-        "speaker_group_id": "mono",
-        "role": "tweeter",
-        "protection_present": False,
-    })
-    saved = json.loads(path.read_text(encoding="utf-8"))
-    tweeter = saved["speaker_groups"][0]["channels"][1]
-
-    # Upgraded, not stuck at the raw write -- the same outcome
-    # `_save_output_topology_payload` produces for the identical request.
-    assert tweeter["protection_status"] == "software_guard_requested"
-    blockers = {
-        issue["code"] for issue in payload["output_topology"]["evaluation"]["blockers"]
-    }
-    assert "tweeter_protection_unverified" not in blockers
 
 
 @pytest.mark.parametrize(
@@ -7372,78 +6908,6 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
     # Fail closed: active config never swapped, no prepare_failed state.
     assert fake.loaded_path is None
     assert last_dsp_apply_state() is None
-
-
-def test_summed_validation_route_conflicts_while_combined_test_active(
-    tmp_path,
-    monkeypatch,
-):
-    import io
-    import time
-
-    class _LiveProc:
-        def poll(self):
-            return None
-
-    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_summed_validation_payload",
-        lambda raw: pytest.fail("active validation conflict must not write evidence"),
-    )
-    now = time.monotonic()
-    monkeypatch.setattr(
-        sound_active_speaker,
-        "_SUMMED_TEST_TONE_SESSION",
-        {
-            "playback_id": "active-summed-playback",
-            "process": _LiveProc(),
-            "speaker_group_id": "main",
-            "level_dbfs": -8.0,
-            "started_monotonic": now,
-            "progress_monotonic": now,
-            "stop_reason": None,
-        },
-    )
-
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    Handler = sound_setup._make_handler(
-        profile_path=tmp_path / "sound_profile.json",
-        library_path=tmp_path / "sound_profiles.json",
-        config_dir=config_dir,
-        camilla_factory=lambda: None,
-    )
-    body = json.dumps({
-        "speaker_group_id": "main",
-        "outcome": "blend_ok",
-        "summed_test_id": "stale-summed-playback",
-    }).encode()
-    raw = (
-        b"POST /active-speaker/summed-validation HTTP/1.1\r\nHost: jts.local\r\n"
-        + f"Content-Length: {len(body)}\r\n".encode()
-        + b"\r\n"
-        + body
-    )
-    rfile = io.BytesIO(raw)
-    wfile = io.BytesIO()
-    handler = Handler.__new__(Handler)
-    handler.rfile = rfile
-    handler.wfile = wfile
-    handler.client_address = ("127.0.0.1", 0)
-    handler.server = None
-    handler.raw_requestline = rfile.readline()
-    handler.parse_request()
-    handler.protocol_version = "HTTP/1.1"
-    handler.do_POST()
-    resp = wfile.getvalue()
-
-    status_line = resp.split(b"\r\n", 1)[0]
-    assert b"409" in status_line, status_line
-    payload = json.loads(resp.split(b"\r\n\r\n", 1)[1].decode())
-    assert payload["status"] == "active_summed_test_running"
-    assert payload["reason"] == "active_summed_test_running"
-    assert payload["active_summed_test"]["playback_id"] == "active-summed-playback"
 
 
 async def test_apply_profile_rechecks_carrier_under_lock_against_concurrent_swap(

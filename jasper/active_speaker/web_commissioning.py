@@ -861,31 +861,6 @@ def commission_status_payload() -> dict[str, Any]:
     }
 
 
-# THE PER-DRIVER TEST TRIO LIVED HERE and is deleted (#2285 / #2628). It was a
-# SECOND, unrouted implementation of a shipped feature: nothing reached
-# ``start_driver_test`` but an uncalled wrapper in
-# ``jasper.web.correction_crossover_backend`` and one test, and its two siblings
-# had no caller at all. The live per-driver test is /sound/'s commission-ramp
-# trio -- ``/active-speaker/commission-ramp-step``/``-ack``/``-abort`` ->
-# ``_active_speaker_commission_ramp_*_payload`` -> ``jasper.active_speaker
-# .commission_ramp`` -- which superseded this layer and kept its own routes.
-# Wiring these up instead would have given one household feature two
-# orchestrations, which is the drift this campaign exists to remove.
-#
-# WHAT SURVIVED AND WHAT WENT WITH THEM, re-derived rather than asserted after
-# the first version of this comment named a live caller that did not exist.
-# ``abort_ramp``, ``load_ramp_state`` and ``commission_load_config`` are
-# untouched -- /sound/'s ramp routes are their live callers. ``stop_commission_tone``
-# and ``play_commission_tone`` were NOT: their only callers were the wrappers
-# above, so the same commit that removed those orphaned these, and they are
-# deleted here with the module-local session state they owned
-# (``_stop_commission_tone_locked`` and its ``_COMMISSION_TONE_SESSION`` /
-# ``_COMMISSION_TONE_LOCK`` pair). /sound/ keeps its own same-named locals --
-# see the note at ``jasper/web/sound_active_speaker.py``'s commission-tone import
-# block, which is why the shared-owner contract in
-# tests/test_commission_tone_single_owner.py deliberately excludes them.
-
-
 def _crossover_frequency_for_group(
     preview: dict[str, Any],
     speaker_group_id: str,

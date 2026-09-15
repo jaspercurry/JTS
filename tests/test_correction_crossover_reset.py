@@ -100,7 +100,6 @@ def test_handle_reset_returns_fresh_envelope_with_honest_reset_summary(
         },
     )
     monkeypatch.setattr(flow, "handle_status", lambda *, capture=None: ({}, 200))
-    monkeypatch.setattr(flow, "_active_group_member", lambda: False)
     monkeypatch.setattr(
         "jasper.web.correction_crossover_flow._build_envelope_logged",
         lambda status: {
@@ -115,7 +114,6 @@ def test_handle_reset_returns_fresh_envelope_with_honest_reset_summary(
 
     assert status == 200
     assert payload["screen"] == "start"
-    assert payload["grouping_member"] is False
     # The honest outcome is surfaced verbatim, including the partial status
     # and the errored file — the page branches on status != "cleared".
     assert payload["reset"] == {
@@ -133,7 +131,6 @@ def _reset_scaffold(monkeypatch):
         "error_ids": [], "kept_ids": [],
     })
     monkeypatch.setattr(flow, "handle_status", lambda *, capture=None: ({}, 200))
-    monkeypatch.setattr(flow, "_active_group_member", lambda: False)
     monkeypatch.setattr(
         "jasper.web.correction_crossover_flow._build_envelope_logged",
         lambda status: {"screen": "start", "active": True, "steps": [], "nudges": []},
@@ -211,50 +208,6 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
         assert block is not None and block["phase"] == "check"
     finally:
         v2state.set_state_path_for_tests(None)
-
-
-def test_handle_envelope_carries_grouping_member_flag(monkeypatch) -> None:
-    """The polled envelope carries the grouping-member flag the grouping-aware
-    Start-over confirm copy reads (adversarial-review S1b)."""
-    monkeypatch.setattr(flow, "handle_status", lambda *, capture=None: ({}, 200))
-    monkeypatch.setattr(flow, "_active_group_member", lambda: True)
-    monkeypatch.setattr(
-        "jasper.web.correction_crossover_flow._build_envelope_logged",
-        lambda status: {"screen": "start", "active": True, "steps": [], "nudges": []},
-    )
-
-    payload, status = flow.handle_envelope()
-
-    assert status == 200
-    assert payload["grouping_member"] is True
-
-
-def test_active_group_member_reads_grouping_config(monkeypatch) -> None:
-    """_active_group_member is a thin read of the declared grouping config:
-    True for an active leader OR bonded follower, False for solo. load_config
-    is total (never raises), so the only failure the helper guards is an
-    ImportError of the multiroom module, which fails open to the solo copy."""
-    import jasper.multiroom.config as grouping_config
-
-    monkeypatch.setattr(grouping_config, "load_config", lambda: object())
-    monkeypatch.setattr(grouping_config, "is_bonded_follower", lambda cfg: False)
-
-    monkeypatch.setattr(grouping_config, "is_active_leader", lambda cfg: True)
-    assert flow._active_group_member() is True
-
-    monkeypatch.setattr(grouping_config, "is_active_leader", lambda cfg: False)
-    assert flow._active_group_member() is False
-
-    monkeypatch.setattr(grouping_config, "is_bonded_follower", lambda cfg: True)
-    assert flow._active_group_member() is True
-
-    # Fail-open to the solo copy if the multiroom module can't be imported
-    # (the `from jasper.multiroom.config import ...` line is the only raiser).
-    monkeypatch.setattr(grouping_config, "is_bonded_follower", lambda cfg: False)
-    monkeypatch.delattr(grouping_config, "is_active_leader")
-    assert flow._active_group_member() is False
-
-
 
 
 @pytest.mark.parametrize("terminal", ["complete", "stopped", "failed"])
