@@ -52,10 +52,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from jasper.audio_measurement.peq import bell_half_width_oct
 from jasper.audio_measurement.spatial_combine import (
     ECHO_CONFIDENCE_FLOOR,
     GEOMETRY_CLUSTER_TOLERANCE,
@@ -1171,6 +1172,43 @@ def _sorted_refusals(refusals: Sequence[RefusedCandidate]) -> tuple[RefusedCandi
 # --------------------------------------------------------------------------- #
 # Position variance, without the ladder
 # --------------------------------------------------------------------------- #
+
+
+# See docs/research/2026-07-29-attribution/07-reanalysis-position-variance.md §3, §6.
+FEATURE_MIN_DEPTH_DB = 2.0
+FEATURE_MIN_DEEP_POSITIONS = 6
+FEATURE_SOURCE_FIXED_CV_PERCENT = 3.0
+FEATURE_POSITION_VARIANT_CV_PERCENT = 8.0
+
+
+def feature_position_variance(
+    curves: Sequence[tuple[np.ndarray, np.ndarray]], *, freq_hz: float, q: float,
+    gain_db: float, positions_total: int,
+) -> dict[str, Any]:
+    bw = bell_half_width_oct(q)
+    lo, hi = freq_hz * 2 ** -bw, freq_hz * 2 ** bw
+    flank_lo, flank_hi = freq_hz * 2 ** -(bw + FLANK_SEARCH_MAX_OCT), freq_hz * 2 ** (bw + FLANK_SEARCH_MAX_OCT)
+    frequencies = []
+    for freqs, magnitude in curves:
+        signed = magnitude if gain_db > 0 else -magnitude
+        valid = np.flatnonzero((freqs >= flank_lo) & (freqs <= flank_hi) & np.isfinite(signed))
+        candidates, _ = _measure_candidates(freqs, signed, signed, valid, 0.0)
+        deepest = max((c for c in candidates if lo <= c.f_hz <= hi),
+                      key=lambda c: c.depth_db, default=None)
+        if deepest is not None and deepest.depth_db >= FEATURE_MIN_DEPTH_DB:
+            frequencies.append(deepest.f_hz)
+    count = len(frequencies)
+    cv = float(np.std(frequencies, ddof=1) / np.mean(frequencies) * 100) if count >= 2 else None
+    if count < FEATURE_MIN_DEEP_POSITIONS:
+        classification = "insufficient_positions"
+    elif cv is not None and cv < FEATURE_SOURCE_FIXED_CV_PERCENT:
+        classification = "source_fixed"
+    elif cv is not None and cv > FEATURE_POSITION_VARIANT_CV_PERCENT:
+        classification = "position_variant"
+    else:
+        classification = "unsure"
+    return {"cv_percent": cv, "positions_deep": count, "positions_total": positions_total,
+            "classification": classification, "frequencies_hz": frequencies}
 
 
 @dataclass(frozen=True)

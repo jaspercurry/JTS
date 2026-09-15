@@ -8,7 +8,7 @@ from typing import Any, Mapping, Sequence
 from .applied_identity import applied_identity
 from .baseline_profile import profile_corrections_provenance, profile_driver_corrections
 from .crossover_v2.conductor_context import driver_spacing_source
-from .crossover_v2.round_inputs import SetTakes, capture_identity, take_order
+from .crossover_v2.round_inputs import SetTakes, capture_identity, latest_measure_takes, take_order
 
 
 def alignment_evidence(
@@ -46,18 +46,12 @@ def alignment_evidence(
 def round_alignment(
     manifest: Mapping[str, Any], sources: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    pairs: dict[tuple[Any, ...], tuple[Mapping[str, Any], Mapping[str, Any]]] = {}
-    for group in manifest.get("sets", ()):
-        basis = group["capture_basis"]
-        for take in SetTakes.from_row(group).on_axis:
-            analysis = take.get("analysis") or {}
-            if take.get("phase") != "measure" or not analysis.get("trim_db"):
-                continue
-            key = (*capture_identity(basis, set_id=group["set_id"]),
-                   tuple(sorted(analysis.get("trim_db") or {})))
-            previous = pairs.get(key)
-            if previous is None or take_order(take) >= take_order(previous[1]):
-                pairs[key] = group, take
+    pairs = latest_measure_takes(
+        ((group, take) for group in manifest.get("sets", ()) for take in SetTakes.from_row(group).on_axis),
+        key=lambda group, take: (*capture_identity(group["capture_basis"], set_id=group["set_id"]),
+                                tuple(sorted((take.get("analysis") or {})["trim_db"])))
+        if (take.get("analysis") or {}).get("trim_db") else None,
+    )
     return [{"candidate_id": group["capture_basis"].get("candidate_id"),
              "graph_fingerprint": group["capture_basis"].get("graph_fingerprint"),
              "side": group["capture_basis"].get("side"), "take_id": take["take_id"],

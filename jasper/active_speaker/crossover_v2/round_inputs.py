@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping, NamedTuple
+from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple
 
 from jasper.json_fields import finite_float
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING
@@ -54,7 +54,7 @@ __all__ = [
     'STATEFILE_FILENAME', 'banked_round_of', 'iter_round_sessions',
     'matching_state_path', 'recent_round_sessions', 'state_matches_capture',
     'round_inputs', 'contract_sources', 'prescription_sources', 'default_out',
-    'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set',
+    'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set', 'latest_measure_takes',
 ]
 
 STATE_FILENAME = "state.json"
@@ -305,6 +305,23 @@ def capture_identity(capture_basis: Mapping[str, Any], *, set_id: str) -> tuple[
 
 def take_order(take: Mapping[str, Any]) -> tuple[float, int]:
     return (take.get("timing") or {}).get("ended_s", 0), take.get("attempt", 0)
+
+
+def latest_measure_takes(
+    rows: Iterable[tuple[Mapping[str, Any], Mapping[str, Any]]], *,
+    key: Callable[[Mapping[str, Any], Mapping[str, Any]], tuple[Any, ...] | None],
+) -> dict[tuple[Any, ...], tuple[Mapping[str, Any], Mapping[str, Any]]]:
+    latest: dict[tuple[Any, ...], tuple[Mapping[str, Any], Mapping[str, Any]]] = {}
+    for group, take in rows:
+        if not take["selected"] or take.get("phase") != "measure":
+            continue
+        identity = key(group, take)
+        if identity is None:
+            continue
+        previous = latest.get(identity)
+        if previous is None or take_order(take) >= take_order(previous[1]):
+            latest[identity] = group, take
+    return latest
 
 
 class SetTakes(NamedTuple):

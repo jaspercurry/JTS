@@ -17,6 +17,7 @@ from .baseline_profile import profile_linearization
 from .candidate_bank import CandidateBankRefusal
 from .commissioning_experiment import bank_commissioning_experiment
 from .crossover_v2.evidence_packet import build_crossover_evidence_packet
+from .crossover_v2.intervention import CloudFitTerms
 from .crossover_v2.prescription_contract import prescription_contracts
 from .crossover_v2.round_inputs import RoundInputs, round_inputs, prescription_sources, ROUND_INPUT_ERRORS
 from .frequency_plot import prepare_plot_curve, render_frequency_view
@@ -24,6 +25,7 @@ from .frequency_view import build_frequency_view, manifest_frequency_run, FREQUE
 from .speaker_fit import design_clouds, speaker_fit
 from .measurement_programs import PURPOSE_SPEAKER, run_purpose
 from .round_bank import BankedRound
+from .round_verdicts import round_verdicts
 from .round_packet_report import (
     INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, gate_fields, packet_index, series_stats,
 )
@@ -89,10 +91,9 @@ def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Cal
     return destination
 
 
-def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str, Any],
+          clouds: Mapping[str, CloudFitTerms]) -> list[dict[str, Any]]:
     computed: dict[str, Any] = {}
-    sources = prescription_sources(inputs) if sources is None else sources
-    clouds = design_clouds(inputs, manifest)
     fits = []
     for group in manifest.get("sets", ()):
         for take in group["takes"]:
@@ -184,6 +185,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     except ROUND_INPUT_ERRORS as exc:
         fingerprint = None
         errors.append({"artifact": "packet_fingerprint", "reason": getattr(exc, "reason", "evidence_unavailable")})
+    clouds = design_clouds(inputs, manifest) if purpose == PURPOSE_SPEAKER else {}
     packet = {"schema": "jts_round_packet/2", "round_id": target.name, "run_id": manifest.get("run_id"),
               "result": manifest.get("status"), "reason": manifest.get("reason"),
               "program": manifest.get("program"), "level": manifest.get("level"),
@@ -196,7 +198,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                         "takes": [{**{key: t.get(key) for key in ("take_id", "pose", "role", "selected")},
                                    "fault": t.get("fault") or (t.get("quality") or {}).get("fault"), **gate_fields(t)} for t in g["takes"]]}
                        for g in manifest.get("sets", ())], "series": series,
-              "fits": _fits(inputs, manifest, sources) if purpose == PURPOSE_SPEAKER else [],
+              "fits": _fits(inputs, manifest, sources, clouds) if purpose == PURPOSE_SPEAKER else [],
               "alignment": round_alignment(manifest, sources) if purpose == PURPOSE_SPEAKER else [],
               "packet_fingerprint": fingerprint, "limits": limits, "artifacts": artifacts, "unavailable": errors}
     if purpose == PURPOSE_SPEAKER:
@@ -204,6 +206,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
             packet["commissioning"] = bank_commissioning_experiment(target, manifest, sources, packet["alignment"])
         except ROUND_INPUT_ERRORS + (CandidateBankRefusal,) as exc:
             packet["commissioning"] = {"status": "unavailable", "reason": getattr(exc, "code", "commissioning_candidate_unavailable")}
+        packet["verdicts"] = round_verdicts(packet, inputs, manifest=manifest, clouds=clouds, sources=sources)
     atomic_write_json(target / PACKET_FILENAME, packet)
     (target / INDEX_FILENAME).write_text(packet_index(packet, target, views, manifest))
     return packet
