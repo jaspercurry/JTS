@@ -623,7 +623,19 @@ class OpenAILiveConnection(BaseLiveConnection):
                 if event["type"] == "session.started":
                     self._started.set()
                 elif event["type"] == "error":
-                    raise RuntimeError("Live command rejected")
+                    error = event.get("error") or {}
+                    code, error_type, message = error.get("code"), error.get("type"), error.get("message") or ""
+                    log_event(
+                        logger, "provider.server_error", provider=self.PROVIDER_NAME,
+                        code=code, error_type=error_type,
+                        message=failure_detail(
+                            RuntimeError(message), literals=self._secret_literals(),
+                        ) if message else "",
+                        level=logging.WARNING,
+                    )
+                    raise RuntimeError(
+                        f"Live command rejected: {code or '?'} {error_type or '?'}",
+                    )
                 else:
                     await turn.on_event(event)
                     if event["type"] == "session.closed":

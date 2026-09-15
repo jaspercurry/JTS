@@ -1036,3 +1036,35 @@ async def test_a_server_that_never_acks_the_close_does_not_hold_the_release(monk
     assert [e["type"] for e in socket.sent].count("session.close") == 1
     assert socket.closed
     assert elapsed < 1.0
+
+
+async def test_a_rejected_command_reports_the_server_error_code_and_type(monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setattr(openai_live_session, "CLOSE_ACK_TIMEOUT_SEC", 0.05)
+    key = "private-test-credential"
+    socket = LiveSocket()
+    conn = OpenAILiveConnection(api_key=key, connect=lambda: socket)
+    await conn.start(ToolRegistry(), "Be brief.")
+    turn = await conn.acquire_turn()
+    try:
+        await socket.events.put({
+            "type": "error",
+            "event_id": "evt_1",
+            "error": {
+                "code": "unknown_parameter",
+                "type": "invalid_request_error",
+                "message": f"Unknown parameter: session.nope (sent with {key})",
+            },
+        })
+        await wait_until(turn.turn_lost)
+    finally:
+        await turn.release()
+        await conn.stop()
+
+    fields = event_fields(caplog, "provider.server_error")
+    assert fields["code"] == "unknown_parameter"
+    assert fields["error_type"] == "invalid_request_error"
+    detail = event_fields(caplog, "provider.session_lost")["detail"]
+    assert "unknown_parameter" in detail and "invalid_request_error" in detail
+    for record in caplog.records:
+        assert key not in record.getMessage()
