@@ -203,6 +203,17 @@ _ROOM = {"speaker_height_m": 0.9, "mic_height_m": 1.0, "distance_m": 1.05}
             {"front_wall_m": 0.85, "side_wall_m": 1.4}, "", id="with_walls",
         ),
         pytest.param({"side_wall_m": 0.0}, "side_wall_m", id="wall_zero_is_not_absent"),
+        pytest.param({"cabinet_back_wall_m": 0.2032}, "", id="back_gap_only"),
+        pytest.param({"cabinet_back_wall_m": 0.2, "cabinet_depth_m": 0.3, "toe_in_degrees": 0}, "", id="cabinet"),
+        pytest.param({"cabinet_back_wall_m": 0.2, "front_wall_m": 0.5}, "front_wall_m", id="ambiguous_reference"),
+        pytest.param({"cabinet_back_wall_m": True}, "cabinet_back_wall_m", id="bool_gap"),
+        pytest.param({"cabinet_back_wall_m": -0.001}, "cabinet_back_wall_m", id="negative_gap"),
+        pytest.param({"cabinet_back_wall_m": float("nan")}, "cabinet_back_wall_m", id="nan_gap"),
+        pytest.param({"cabinet_back_wall_m": float("inf")}, "cabinet_back_wall_m", id="infinite_gap"),
+        pytest.param({"cabinet_depth_m": 0}, "cabinet_depth_m", id="zero_depth"),
+        pytest.param({"cabinet_depth_m": float("inf")}, "cabinet_depth_m", id="infinite_depth"),
+        pytest.param({"toe_in_degrees": float("nan")}, "toe_in_degrees", id="nan_angle"),
+        pytest.param({"toe_in_degrees": 91}, "toe_in_degrees", id="facing_wall"),
     ],
 )
 def test_the_dict_round_trip_is_exact_and_refuses_what_is_not_a_length(
@@ -223,6 +234,31 @@ def test_the_dict_round_trip_is_exact_and_refuses_what_is_not_a_length(
         return
 
     assert DeclaredGeometry.from_dict(room).to_dict() == room
+
+
+@pytest.mark.parametrize("placement,walls,reason", [
+    ({"front_wall_m": 0.85}, {"front": 0.85}, ""),
+    ({"cabinet_back_wall_m": 0, "cabinet_depth_m": 0.3, "toe_in_degrees": 0}, {"front": 0.3}, ""),
+    ({"cabinet_back_wall_m": 0.0254, "cabinet_depth_m": 0.3, "toe_in_degrees": 0}, {"front": 0.3254}, ""),
+    ({"cabinet_back_wall_m": 0.2}, {}, "front_baffle_geometry_undeclared"),
+    ({"cabinet_back_wall_m": 0.2, "cabinet_depth_m": 0.3}, {}, "front_baffle_geometry_undeclared"),
+    ({"cabinet_back_wall_m": 0.2, "toe_in_degrees": 0}, {}, "front_baffle_geometry_undeclared"),
+    ({"cabinet_back_wall_m": 0.2, "side_wall_m": 1.4}, {"side": 1.4}, "front_baffle_geometry_undeclared"),
+    ({"cabinet_back_wall_m": 0.2, "cabinet_depth_m": 0.3, "toe_in_degrees": 0}, {"front": 0.5}, ""),
+    ({"cabinet_back_wall_m": 0.2, "cabinet_depth_m": 0.3, "toe_in_degrees": 60}, {"front": 0.35}, ""),
+    ({"cabinet_back_wall_m": 0.2, "cabinet_depth_m": 0.3, "toe_in_degrees": -60}, {"front": 0.35}, ""),
+    ({"cabinet_back_wall_m": 10, "cabinet_depth_m": 0.3, "toe_in_degrees": 0}, {"front": 10.3}, ""),
+])
+def test_boundary_distances_keep_their_reference_and_disclose_missing_geometry(placement, walls, reason):
+    geometry = DeclaredGeometry(**_ROOM, **placement)
+    before = geometry.to_dict()
+    actual, actual_reason = geometry.boundary_walls()
+    assert actual == pytest.approx(walls)
+    assert actual_reason == reason
+    prior = boundary_prior([100], walls=actual)
+    for wall, distance in walls.items():
+        assert prior["walls"][wall]["f_null_hz"] == pytest.approx(DEFAULT_SOUND_SPEED_M_S / (4 * distance))
+    assert geometry.to_dict() == before
 
 
 def test_save_load_round_trip_including_provenance(tmp_path):

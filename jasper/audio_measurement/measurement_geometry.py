@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -35,9 +35,7 @@ MAX_CEILING_M = 6.0
 MIN_WALL_M = 0.05
 MAX_WALL_M = 10.0
 
-#: Each boundary :func:`boundary_prior` models, and the declared field its
-#: distance is read from, so the two vocabularies cannot drift apart.
-WALL_FIELD_BY_KEY = {"front": "front_wall_m", "side": "side_wall_m"}
+_LEGACY_WALL_FIELDS = {"front": "front_wall_m", "side": "side_wall_m"}
 
 #: How far below the direct sound one wall's quarter-wave null may be reported.
 #: A rigid wall's null is unbounded; a real wall absorbs and diffuses, so the
@@ -55,25 +53,20 @@ class GeometryFieldError(ValueError):
         self.field = field
 
 
-def _metres(name: str, value: object) -> float:
-    """One declared length as a number of metres, refused BY NAME otherwise.
-
-    ``bool`` is excluded deliberately: it is an ``int``, so a JSON ``true``
-    would otherwise read as a metre.
-    """
+def _number(name: str, value: object) -> float:
+    """JSON booleans are not geometry measurements."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise GeometryFieldError(
-            name, f"{name} must be a number of metres (got {value!r})"
+            name, f"{name} must be a number (got {value!r})"
         )
     return float(value)
 
 
-def _require_range(name: str, value: object, lo: float, hi: float) -> None:
-    # NaN and the infinities fail every comparison, so the range check refuses them.
-    metres = _metres(name, value)
-    if not (lo <= metres <= hi):
+def _require_range(name: str, value: object, lo: float, hi: float, unit: str = "m") -> None:
+    number = _number(name, value)
+    if not math.isfinite(number) or not (lo <= number <= hi):
         raise GeometryFieldError(
-            name, f"{name} must be within [{lo:g}, {hi:g}] m (got {metres:g})"
+            name, f"{name} must be within [{lo:g}, {hi:g}] {unit} (got {number:g})"
         )
 
 
@@ -83,9 +76,12 @@ class DeclaredGeometry:
 
     Every optional field is ``None`` when nothing was declared, never ``0``: the
     ceiling-bounce family is then absent from :meth:`first_bounce_s`'s minimum,
-    and an undeclared wall is absent from :func:`boundary_prior`. ``front_wall_m``
-    is the speaker baffle to the wall behind the speaker, ``side_wall_m`` the
-    speaker to the nearest side wall.
+    and an undeclared wall is absent from :func:`boundary_prior`.
+    ``cabinet_back_wall_m`` is perpendicular from rear-panel centre to the wall
+    behind it. Depth joins rear/front panel centres; toe-in is relative to the
+    wall normal (zero faces straight away). Legacy ``front_wall_m`` retains its
+    baffle-to-wall meaning; ``side_wall_m`` retains speaker-to-nearest-side-wall.
+    See ADR-0317.
     """
 
     speaker_height_m: float
@@ -94,15 +90,28 @@ class DeclaredGeometry:
     ceiling_height_m: float | None = None
     front_wall_m: float | None = None
     side_wall_m: float | None = None
+    cabinet_back_wall_m: float | None = None
+    cabinet_depth_m: float | None = None
+    toe_in_degrees: float | None = None
 
     def __post_init__(self) -> None:
         _require_range("speaker_height_m", self.speaker_height_m, MIN_HEIGHT_M, MAX_HEIGHT_M)
         _require_range("mic_height_m", self.mic_height_m, MIN_HEIGHT_M, MAX_HEIGHT_M)
         _require_range("distance_m", self.distance_m, MIN_DISTANCE_M, MAX_DISTANCE_M)
-        for name in WALL_FIELD_BY_KEY.values():
+        for name in _LEGACY_WALL_FIELDS.values():
             wall_m = getattr(self, name)
             if wall_m is not None:
                 _require_range(name, wall_m, MIN_WALL_M, MAX_WALL_M)
+        if self.cabinet_back_wall_m is not None:
+            _require_range("cabinet_back_wall_m", self.cabinet_back_wall_m, 0.0, MAX_WALL_M)
+        if self.cabinet_back_wall_m is not None and self.front_wall_m is not None:
+            raise GeometryFieldError("front_wall_m", "declare cabinet-back gap or legacy baffle distance, not both")
+        if self.cabinet_depth_m is not None:
+            _require_range("cabinet_depth_m", self.cabinet_depth_m, 0.0, math.inf)
+            if self.cabinet_depth_m == 0.0:
+                raise GeometryFieldError("cabinet_depth_m", "cabinet depth must be positive")
+        if self.toe_in_degrees is not None:
+            _require_range("toe_in_degrees", self.toe_in_degrees, -90.0, 90.0, "degrees")
         if self.ceiling_height_m is None:
             return
         _require_range("ceiling_height_m", self.ceiling_height_m, MIN_HEIGHT_M, MAX_CEILING_M)
@@ -154,6 +163,22 @@ class DeclaredGeometry:
         """This rig's entanglement floor, from :meth:`first_bounce_s`."""
         return f_entanglement_floor_hz(self.first_bounce_s(distance_m))
 
+    def boundary_walls(self) -> tuple[dict[str, float], str]:
+        """Baffle-reference distances for the advisory prior, never DSP delay.
+
+        The derived front distance is to the front-panel centre, not an assumed
+        acoustic centre for every driver. A directivity fit needs source geometry.
+        """
+        walls = {key: distance for key, name in _LEGACY_WALL_FIELDS.items()
+                 if (distance := getattr(self, name)) is not None}
+        if self.cabinet_back_wall_m is not None:
+            if self.cabinet_depth_m is None or self.toe_in_degrees is None:
+                return walls, "front_baffle_geometry_undeclared"
+            walls["front"] = self.cabinet_back_wall_m + self.cabinet_depth_m * math.cos(
+                math.radians(self.toe_in_degrees)
+            )
+        return walls, "" if walls else "walls_undeclared"
+
     def to_dict(self) -> dict[str, float]:
         """The banked shape. An undeclared field is ABSENT, never null."""
         return {
@@ -165,14 +190,13 @@ class DeclaredGeometry:
     @classmethod
     def from_dict(cls, doc: Mapping[str, Any]) -> "DeclaredGeometry":
         """:meth:`to_dict`'s inverse, through the constructor's own refusals."""
-        fields: dict[str, Any] = {
+        values: dict[str, Any] = {
             name: doc.get(name)
             for name in ("speaker_height_m", "mic_height_m", "distance_m")
         }
-        for name in ("ceiling_height_m", *WALL_FIELD_BY_KEY.values()):
-            if doc.get(name) is not None:
-                fields[name] = doc[name]
-        return cls(**fields)
+        values.update({field.name: doc[field.name] for field in fields(cls)
+                       if doc.get(field.name) is not None})
+        return cls(**values)
 
     def save(self, path: str | Path = DEFAULT_PATH) -> None:
         atomic_write_json(
@@ -211,7 +235,7 @@ def boundary_prior(
     declared: dict[str, dict[str, float]] = {}
     curves: list[list[float]] = []
     for key, distance in walls.items():
-        _require_range(WALL_FIELD_BY_KEY[key], distance, MIN_WALL_M, MAX_WALL_M)
+        _require_range(_LEGACY_WALL_FIELDS[key], distance, MIN_WALL_M, math.inf)
         metres = float(distance)
         declared[key] = {
             "distance_m": metres,
