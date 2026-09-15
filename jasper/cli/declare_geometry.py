@@ -20,13 +20,12 @@ from typing import Callable, Sequence
 from jasper.audio_measurement.measurement_geometry import (
     DEFAULT_PATH,
     METERS_PER_INCH,
-    WALL_FIELD_BY_KEY,
     DeclaredGeometry,
     load_declared_geometry,
 )
 
 from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_WRITE_FAILED
-from ._unit_pair import add_unit_pair, unit_pair_meters
+from ._unit_pair import MILLIMETRES, add_unit_pair, unit_pair_meters
 
 #: Its own, because nothing else has one: `show` with no declaration yet is
 #: not an unreadable input, it is the ordinary pre-declaration state.
@@ -50,11 +49,12 @@ def _both_units(meters: float) -> str:
     return f"{meters:.4f} m ({meters / METERS_PER_INCH:.2f} in)"
 
 
-#: The optional lengths, in the order both verbs print them: printed label and
-#: the field it is read from. The walls come from the model's own table.
 _OPTIONAL = (
     ("ceiling height", "ceiling_height_m"),
-    *((f"{key} wall", field) for key, field in WALL_FIELD_BY_KEY.items()),
+    ("cabinet back to wall", "cabinet_back_wall_m"),
+    ("cabinet depth", "cabinet_depth_m"),
+    ("side wall", "side_wall_m"),
+    ("legacy front baffle to wall", "front_wall_m"),
 )
 
 
@@ -71,9 +71,15 @@ def _print_optional(
     rows = []
     for label, field in _OPTIONAL:
         metres = getattr(geometry, field)
+        if field == "front_wall_m" and metres is None:
+            continue
         value = units(metres) if metres is not None else absent
         if value is not None:
             rows.append((f"{label}:", value))
+    angle = geometry.toe_in_degrees
+    value = f"{angle:g} degrees" if angle is not None else absent
+    if value is not None:
+        rows.append(("toe-in from wall normal:", value))
     _print_rows(rows)
 
 
@@ -90,6 +96,11 @@ def _print_derived(geometry: DeclaredGeometry) -> None:
         (f"first bounce ({at}):", f"{geometry.first_bounce_s() * 1000:.3f} ms"),
         (f"entanglement floor ({at}):", f"{geometry.entanglement_floor_hz():.1f} Hz"),
     ))
+    if geometry.cabinet_back_wall_m is not None:
+        front = geometry.boundary_walls()[0].get("front")
+        print("  derived front-panel centre to wall: " + (
+            _both_units(front) if front is not None else "unknown (declare cabinet depth and toe-in)"
+        ))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -110,8 +121,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_unit_pair(set_parser, "mic-height", required=True, label="microphone height")
     add_unit_pair(set_parser, "distance", required=True, label="speaker-to-mic distance")
     add_unit_pair(set_parser, "ceiling-height", required=False, label="ceiling height (optional)")
-    add_unit_pair(set_parser, "front-wall", required=False,
-                  label="speaker baffle to the wall behind it (optional)")
+    add_unit_pair(set_parser, "cabinet-back-wall", required=False, metric=MILLIMETRES,
+                  label="perpendicular rear-panel centre to the wall behind the speaker (optional)")
+    add_unit_pair(set_parser, "cabinet-depth", required=False, metric=MILLIMETRES,
+                  label="rear-to-front panel centre distance (optional)")
+    set_parser.add_argument("--toe-in-degrees", type=float, default=None,
+                            help="angle from wall normal; 0 faces straight away (optional)")
     add_unit_pair(set_parser, "side-wall", required=False,
                   label="speaker to the nearest side wall (optional)")
     set_parser.add_argument(
@@ -136,7 +151,9 @@ def _cmd_set(args: argparse.Namespace) -> int:
             mic_height_m=_required_meters(args, "mic-height"),
             distance_m=_required_meters(args, "distance"),
             ceiling_height_m=unit_pair_meters(args, "ceiling-height"),
-            front_wall_m=unit_pair_meters(args, "front-wall"),
+            cabinet_back_wall_m=unit_pair_meters(args, "cabinet-back-wall", metric=MILLIMETRES),
+            cabinet_depth_m=unit_pair_meters(args, "cabinet-depth", metric=MILLIMETRES),
+            toe_in_degrees=args.toe_in_degrees,
             side_wall_m=unit_pair_meters(args, "side-wall"),
         )
     except ValueError as exc:
