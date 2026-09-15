@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
-from typing import Any
+from typing import Any, Literal
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED
 from jasper.output_topology import OutputTopology, load_output_topology_strict
 
 from .branch_chain import branch_headroom_db, sections_by_role
@@ -39,6 +40,7 @@ from .profile import ActiveSpeakerPreset, required_driver_roles
 
 COMPOSITION_KIND = "jts_candidate_composition"
 DECLARED_CROSSOVER_PROGRAM_ID = "jts_declared_crossover"
+AlignmentSource = Literal["document", "cleared", "saved", "measured", "base"]
 
 
 def _source(parent: BankedCandidate) -> dict[str, str]:
@@ -153,6 +155,30 @@ def baseline_candidate_id() -> str:
         raise MeasurementGraphRefused("measurement_baseline_unavailable", str(exc)) from exc
 
 
+def resolve_alignment(
+    base: MeasuredCrossoverCandidate, selected: Mapping[str, Any], *, roles: Sequence[str],
+    saved: Mapping[str, Any] | None, commissioning: Mapping[str, Any],
+) -> tuple[MeasuredCrossoverAlignment, AlignmentSource]:
+    """Resolve timing once for the trial graph and apply record. See ADR-0319."""
+    read = commissioning.get("alignment") or {}
+    measured = read.get("timing_verdict") == TIMING_MEASURED and commissioning.get("status") in (None, "awaiting_apply")
+    if "alignment" in selected:
+        pin = selected["alignment"]
+        if not pin:
+            return MeasuredCrossoverAlignment(), "cleared"
+        if not isinstance(pin, MeasuredCrossoverAlignment):
+            fields = alignment_to_candidate_fields(pin, roles=roles)
+            return MeasuredCrossoverAlignment(*fields[:2], fields[2] or base.alignment.polarity or "keep"), "document"
+        if not measured:
+            return pin, "document"
+    source: AlignmentSource = "saved" if saved is not None else "measured"
+    pair = saved if saved is not None else read.get("committed") or {}
+    if saved is not None or measured:
+        fields = alignment_to_candidate_fields({**pair, "alignment_status": "ok"}, roles=roles)
+        return MeasuredCrossoverAlignment(*fields), source
+    return base.alignment, "base"
+
+
 def compose_candidate(
     base: BankedCandidate,
     *,
@@ -161,6 +187,7 @@ def compose_candidate(
     room_measured_basis: Mapping[str, Any] | None = None,
     sections: Mapping[str, Any] | None = None,
     evidence: Mapping[str, Any] | None = None,
+    base_profile: Mapping[str, Any] | None = None,
 ) -> MeasuredCrossoverCandidate:
     """Replace selected parts without inheriting their measurement claims."""
     selected = dict(sections or {})
@@ -183,19 +210,17 @@ def compose_candidate(
         role: _linearization_entry(entry["filters"], role=role, sections=sections_by_driver, trim_db=trims[role])
         for role, entry in linearization.items()
     }
-    resolved_alignment = base.candidate.alignment
-    if "alignment" in selected:
-        pin = selected["alignment"]
-        if pin and not isinstance(pin, MeasuredCrossoverAlignment):
-            fields = alignment_to_candidate_fields(pin, roles=required_driver_roles(preset.way_count))
-            pin = MeasuredCrossoverAlignment(*fields[:2], fields[2] or resolved_alignment.polarity or "keep")
-        resolved_alignment = pin or MeasuredCrossoverAlignment()
+    resolved_alignment, alignment_source = resolve_alignment(
+        base.candidate, selected, roles=required_driver_roles(preset.way_count),
+        saved=(base_profile or {}).get("timing"), commissioning=(evidence or {}).get("commissioning") or {},
+    )
     room = dict(selected.get("room", base.candidate.room_correction) or {})
     bass = dict(selected.get("bass", base.candidate.bass_extension) or {})
     resolution = {
         name: "base" if name not in selected else "document" if selected[name] else "cleared"
-        for name in ("driver", "blend", "alignment", "topology", "room", "bass")
+        for name in ("driver", "blend", "topology", "room", "bass")
     }
+    resolution["alignment"] = alignment_source
     analysis: dict[str, Any] = {
         "kind": COMPOSITION_KIND,
         "measurement_status": "unmeasured",

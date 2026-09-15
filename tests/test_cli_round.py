@@ -20,12 +20,17 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+import yaml
 
 from jasper.active_speaker import round_bank, round_packet, wizard_client as wc
 from jasper.active_speaker.angle_capture import AngleCaptureRequest
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_bank import publish_authored_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_design_draft
+from jasper.active_speaker import baseline_profile
+from jasper.active_speaker.crossover_v2.prescription_document import judge_prescription_document
+from jasper.active_speaker.design_draft import load_design_draft
+from jasper.web import correction_crossover_v2_apply as v2apply
 from jasper.active_speaker.crossover_v2.evidence_packet import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs
 from jasper.active_speaker.measurement_programs import run_program
@@ -39,6 +44,8 @@ from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile, _room_candidate
 from tests.test_preflight import ready_facts
 from tests.test_arm_walk import FakeWalkClock
+from tests.test_correction_crossover_v2_endpoints import _FakeApplyCam, _seed_baseline_apply_environment
+from tests.test_prescription_document import document, timing_evidence
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
 from tests.test_crossover_v2_frequency_view import bass_fit_pairs as bass_fit_pairs  # noqa: F401
 
@@ -232,6 +239,46 @@ def test_reset_composes_and_applies_the_selected_timing_scope(keep_timing, monke
     assert [json.loads(request.data) for request in opener.posts()] == [
         {"expected_candidate_fingerprint": _FINGERPRINT},
     ]
+
+
+@pytest.mark.parametrize("source", ["saved", "measured"])
+def test_apply_document_timing_reaches_record_and_loaded_graph(monkeypatch, tmp_path, capsys, source):
+    topology, _ = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    base = publish_authored_candidate(candidate_from_design_draft(topology, load_design_draft(topology=topology)))
+    saved = {"delay_us": 22, "polarity": "inverted", "provenance": "measured", "measured": {
+        "round_id": "old", "take_id": "old-take", "graph_fingerprint": "old-graph", "at": "2026-09-14T12:00:00Z",
+        "margin_db": .8, "residual_rms_db": .3, "repeat_spread_db": .2, "repeat_spread_us": 3, "repeat_count": 4,
+    }} if source == "saved" else None
+    if saved:
+        (tmp_path / "baseline_profile.json").write_text(json.dumps({"status": "applied", "timing": saved,
+            "artifact_schema_version": baseline_profile.SCHEMA_VERSION, "kind": baseline_profile.BASELINE_PROFILE_KIND}))
+    evidence = timing_evidence(base, saved=saved)
+    child = judge_prescription_document(document(base.fingerprint), base=base, evidence=evidence)
+    publish_authored_candidate(child)
+    cam = _FakeApplyCam()
+    monkeypatch.setattr(baseline_profile, "_utc_now", lambda: "2026-09-15T12:00:00Z")
+    opener = _opener()
+    original_open = opener.open
+
+    def open_and_apply(request, timeout=None):
+        if request.full_url.endswith(wc.APPLY_PATH):
+            payload = json.loads(request.data)
+            result = asyncio.run(v2apply.apply_candidate(payload["expected_candidate_fingerprint"], camilla_factory=lambda: cam))
+            opener.pages[wc.APPLY_PATH] = json.dumps(result)
+        return original_open(request, timeout)
+
+    opener.open = open_and_apply
+    code, receipt = _run(["apply", child.fingerprint], opener, monkeypatch, capsys)
+    assert code == 0 and receipt["candidate_fingerprint"] == child.fingerprint
+    applied = baseline_profile.load_applied_baseline_profile_state()
+    timing = applied["timing"]
+    assert timing == (saved or {"delay_us": -37.5, "polarity": "inverted", "provenance": "measured", "measured": {
+        "round_id": "r1", "take_id": "t2", "graph_fingerprint": "graph", "at": applied["applied_at"],
+        "margin_db": .6, "residual_rms_db": .2, "repeat_spread_db": .1, "repeat_spread_us": 2, "repeat_count": 3}})
+    filters = yaml.safe_load(Path(cam.path).read_text())["filters"]
+    assert 1000 * (filters["as_tweeter_delay"]["parameters"]["delay"] - filters["as_woofer_delay"]["parameters"]["delay"]) == pytest.approx(timing["delay_us"])
+    assert filters["as_tweeter_baseline_gain"]["parameters"]["inverted"] is True
+    assert filters["as_woofer_baseline_gain"]["parameters"]["inverted"] is False
 
 
 @pytest.mark.parametrize("payload,reason", [

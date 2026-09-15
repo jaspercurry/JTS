@@ -95,6 +95,8 @@ prints the schema. A refusal names the crossed bound; correct that field.
 
 Timing is geometry. Measure it once with confidence, save its provenance, and keep it until the user resets it. Leave `alignment` out of a document unless the user asked for a new measurement or an explicit value. Reset only for a moved or replaced driver, a changed enclosure, or a crossover change large enough to need a fresh read.
 
+A document without an `alignment` section takes the saved timing, or the round's confident design-axis read on a fresh box. Without either, it keeps the base alignment. The composition records `saved`, `measured`, or `base`; an explicit value records `document`, and `alignment: {}` records `cleared` and removes saved timing on apply.
+
 Read `alignment_verdict.saved` and its `verification` line: `residual_rms_db` against `repeat_noise_db`. Act only on `next_action`; verification never changes the saved value. Pose rows disclose `margin_db`, `residual_rms_db`, `repeat_spread_db`, `repeat_spread_us`, and `repeat_count` (paired driver takes used). A missing spread means the read cannot establish confidence. See [ADR-0319](adr/0319-timing-measured-once-with-confidence.md).
 
 `flatness_improvement_db` compares ripple on the same metric; `refinement_delta_us` is committed minus scored seed, `epsilon_ppm` is clock drift, and `gcc_delay_us` is the bare correlation estimate. Read `parallax_us` with `driver_spacing_source`; a geometric estimate is not a measured delay.
