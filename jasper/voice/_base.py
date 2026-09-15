@@ -534,6 +534,7 @@ class BaseLiveConnection:
     """
 
     PROVIDER_NAME: str = ""
+    _session: Any
     # Prefix for this provider's human-readable log lines, e.g. "openai
     # connection:".
     _log_tag: str = ""
@@ -764,6 +765,22 @@ class BaseLiveConnection:
 
     def _on_context_reset(self) -> None:
         """Drop any provider state that must not survive a context reset."""
+
+    async def _await_acquirable(self) -> None:
+        if self._state is ConnectionState.FAILED:
+            raise RuntimeError(f"{self._log_tag} in FAILED state; daemon paused")
+        if self._state is ConnectionState.CLOSED:
+            raise RuntimeError(f"{self._log_tag} closed")
+
+        await await_connected(self)
+        await self._maybe_reset_context()
+
+    def _owns_turn(self, turn: Any) -> bool:
+        return (
+            self._active_turn is turn and not turn._released and not turn._turn_lost
+            and self._session is not None and turn._session is self._session
+            and self._connected_event.is_set()
+        )
 
     async def _on_turn_released(self, turn: Any) -> None:
         locked = await self._take_turn_lock()

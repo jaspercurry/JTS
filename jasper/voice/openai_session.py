@@ -62,7 +62,7 @@ from ._base import (
     upsample_16k_to_24k,
 )
 from ._supervisor import (
-    await_connected, failure_detail, request_planned_reopen, request_unplanned_reopen,
+    failure_detail, request_planned_reopen, request_unplanned_reopen,
 )
 from .input_policy import NOISE_REDUCTION_FAR, NOISE_REDUCTION_NEAR
 from .session import AudioOutChunk, ConnectionState, LiveTurn, TurnCapture
@@ -158,7 +158,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         # Whether `commit()` + `response.create()` has been sent; makes
         # `end_input` idempotent.
         self._committed = False
-        self._session = getattr(conn, "_conn", None)
+        self._session = getattr(conn, "_session", None)
         self._response_id: str | None = None
         self._response_item_ids: set[str] = set()
         self._input_item_id: str | None = None
@@ -501,8 +501,8 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         self._client = None
 
         # SDK connection + context manager (cleared during reconnect).
-        self._conn = None
-        self._conn_cm = None
+        self._session = None
+        self._session_cm = None
         self._send_lock = asyncio.Lock()
 
         # Manual VAD allows one outstanding commit and response.create.
@@ -557,13 +557,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         self._billable_activity_interval_open = False
 
     async def acquire_turn(self) -> LiveTurn:
-        if self._state is ConnectionState.FAILED:
-            raise RuntimeError(f"{self._log_tag} in FAILED state; daemon paused")
-        if self._state is ConnectionState.CLOSED:
-            raise RuntimeError(f"{self._log_tag} closed")
-
-        await await_connected(self)
-        await self._maybe_reset_context()
+        await self._await_acquirable()
 
         async with self._turn_lock:
             if self._active_turn is not None:
@@ -583,13 +577,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
     # Internal — turn-side helpers
     # ------------------------------------------------------------------
 
-    def _owns_turn(self, turn: OpenAIRealtimeTurn) -> bool:
-        return (
-            self._active_turn is turn and not turn._released and not turn._turn_lost
-            and self._conn is not None and turn._session is self._conn
-            and self._connected_event.is_set()
-        )
-
     async def _send_event(self, event: dict, *, turn: OpenAIRealtimeTurn | None = None) -> bool:
         async with self._send_lock:
             if turn is not None:
@@ -606,9 +593,9 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                 elif event.get("item", {}).get("type") == "function_call_output":
                     if turn._cancel_requested:
                         return False
-            if self._conn is None:
+            if self._session is None:
                 raise RuntimeError(f"{self._log_tag} no active session")
-            await self._conn.send(event)
+            await self._session.send(event)
             return True
 
     async def _send_audio_chunk(
@@ -664,14 +651,14 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         if self._active_turn is not turn:
             return
         async with self._send_lock:
-            session = self._conn
+            session = self._session
             if session is not None and turn._session is session:
                 try:
                     if turn._response_id or self._pending_response is turn:
                         await session.send({"type": "response.cancel"})
                     await session.send({"type": "input_audio_buffer.clear"})
                 except Exception as e:  # noqa: BLE001
-                    if self._conn is session:
+                    if self._session is session:
                         self._connected_event.clear()
                         request_unplanned_reopen(self)
                     logger.warning("%s release failed (%s)", self._log_tag, type(e).__name__)
@@ -682,7 +669,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                         turn._committed and (not turn._server_turn_complete or turn._tool_round_pending)
                         or self._pending_commit is turn or self._pending_response is turn
                     )
-                    if self._conn is session and unresolved:
+                    if self._session is session and unresolved:
                         request_planned_reopen(self)
         if self._active_turn is turn:
             self._mark_billable_activity_ended()
@@ -820,8 +807,8 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             with contextlib.suppress(Exception):
                 await cm.__aexit__(None, None, None)
             raise
-        self._conn_cm = cm
-        self._conn = conn
+        self._session_cm = cm
+        self._session = conn
         connect_ms = (_time.monotonic() - t0) * 1000
         logger.info(
             f"{self._log_tag} connect ok in %.0fms (model=%s)",
@@ -829,7 +816,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         )
         # Send session.update immediately so subsequent turns inherit
         # the right voice/tool/VAD config. Doing this AFTER assigning
-        # ``self._conn`` so ``_send_event`` can reach the connection.
+        # ``self._session`` so ``_send_event`` can reach the connection.
         try:
             await self._send_event({
                 "type": "session.update",
@@ -863,18 +850,18 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             )
             await self._close_with_timeout(conn)
             await self._close_cm_with_timeout(cm)
-            self._conn = None
-            self._conn_cm = None
+            self._session = None
+            self._session_cm = None
             raise
         self._deferred_reconnect.clear()
         await self._mark_connected(asyncio.create_task(self._receive_loop(events, conn)))
 
     async def _teardown_session(self) -> None:
         t0 = _time.monotonic()
-        conn, cm = self._conn, self._conn_cm
+        conn, cm = self._session, self._session_cm
         if self._active_turn is not None:
             self._active_turn._cancel_tools()
-        self._conn = self._conn_cm = None
+        self._session = self._session_cm = None
         self._connected_event.clear()
         self._pending_commit = self._pending_response = None
         # Cancel the proactive watchdog first — its only job is to fire on
@@ -935,7 +922,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         every subsequent wake silently fails in ``send_audio``."""
         try:
             async for event in events:
-                if self._conn is not conn:
+                if self._session is not conn:
                     return
                 etype = _event_type(event)
                 if etype is None:
@@ -944,10 +931,10 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
-            if self._conn is conn:
+            if self._session is conn:
                 self._on_receive_loop_error(e)
             return
-        if self._conn is conn and not self._stopping.is_set():
+        if self._session is conn and not self._stopping.is_set():
             logger.warning(
                 f"{self._log_tag} receive iteration ended cleanly "
                 "(server closed, likely the 60-minute hard cap); reconnecting",
