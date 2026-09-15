@@ -95,13 +95,16 @@ def build_native_dynamic_bass_graph(
         },
     }
     delta_filters: list[str] = []
-    if descriptor.delta_highpass_hz is not None:
-        name = f"{PREFIX}_delta_highpass"
+    for kind, corner in (("Highpass", descriptor.delta_highpass_hz),
+                         ("Lowpass", descriptor.delta_lowpass_hz)):
+        if corner is None:
+            continue
+        name = f"{PREFIX}_delta_{kind.lower()}"
         filters[name] = {
             "type": "BiquadCombo",
             "parameters": {
-                "type": "ButterworthHighpass",
-                "freq": descriptor.delta_highpass_hz,
+                "type": f"Butterworth{kind}",
+                "freq": corner,
                 "order": 2,
             },
         }

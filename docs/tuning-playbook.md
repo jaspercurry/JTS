@@ -340,6 +340,9 @@ Bass
 | compressor_release | {"type":"number","minimum":0.01,"maximum":2.0,"default":0.25} | s | contract.bass.schema.properties.compressor_release_s |
 | delta_highpass | {"type":["number","null"],"minimum":10.0,"default":null} | Hz | contract.bass.schema.properties.delta_highpass_hz |
 | delta_highpass_exclusive_upper | "detector_lowpass_hz" | field | contract.bass.bounds.delta_highpass_hz_exclusive_upper_field |
+| delta_lowpass | {"type":["number","null"],"exclusiveMinimum":10.0,"maximum":200.0,"default":null} | Hz | contract.bass.schema.properties.delta_lowpass_hz |
+| delta_lowpass_exclusive_lower | "delta_highpass_hz" | field | contract.bass.bounds.delta_lowpass_hz_exclusive_lower_field |
+| delta_lowpass_exclusive_lower_fallback | 10.0 | Hz | contract.bass.bounds.delta_lowpass_hz_exclusive_lower_fallback |
 | shared_headroom_layers | ["driver_linearization","room","bass_extension"] | layers | contract.bass.shared_headroom.layers |
 | target_band | [20.0,60.0] | Hz | bass.TARGET.freqs_hz |
 | target_magnitude | [0.0,0.0] | dB | bass.TARGET.magnitude_db |

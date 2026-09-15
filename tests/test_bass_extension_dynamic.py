@@ -8,6 +8,7 @@ from jasper.sound.profile import _filter_response_complex
 
 from jasper.bass_extension.dynamic import (
     DynamicBassDescriptor,
+    DynamicBassDescriptorError,
     loudness_boost_db,
     dynamic_bass_gain_reserve_db,
     validate_dynamic_bass_descriptor,
@@ -40,32 +41,76 @@ def test_native_loudness_law_withdraws_over_twenty_db(boost_db: float) -> None:
     assert loudness_boost_db(0.0, descriptor) == 0.0
 
 
-@pytest.mark.parametrize("boost_db", [0.1, 1.0, 3.0, 6.0, 12.0, 15.0, 20.0])
-def test_gain_reserve_covers_native_shelf_delta_phase(boost_db: float) -> None:
-    descriptor = _descriptor(low_boost_db=boost_db)
-    frequencies = np.geomspace(0.01, 23000.0, 4096)
+def _proof_shelf_and_delta(descriptor, frequencies):
     shelf = np.asarray(_filter_response_complex(
-        FilterSpec("native_low", "Lowshelf", 70.0, boost_db), frequencies,
+        FilterSpec("proof_low", "Lowshelf", 70.0, descriptor.low_boost_db), frequencies,
     ))
-    gain_envelope = 1.0 + np.abs(shelf - 1.0)
+    delta = shelf - 1.0
+    graph = build_native_dynamic_bass_graph(channels=2, owner_channels=(0,), descriptor=descriptor)
+    for name, definition in graph.filters.items():
+        if name.startswith("bass_ext_dynamic_delta_"):
+            params = definition["parameters"]
+            delta *= _filter_response_complex(FilterSpec(
+                name, params["type"].removeprefix("Butterworth"), params["freq"], 0.0, 2.0 ** -0.5,
+            ), frequencies)
+    return shelf, delta
+
+
+@pytest.mark.parametrize("boost_db", [0.1, 1.0, 3.0, 6.0, 12.0, 15.0, 18.0, 20.0])
+@pytest.mark.parametrize("highpass, lowpass", [(None, None), (63.0, None), (None, 100.0), (63.0, 100.0)])
+def test_gain_reserve_covers_native_shelf_delta_phase(boost_db, highpass, lowpass) -> None:
+    descriptor = _descriptor(low_boost_db=boost_db, delta_highpass_hz=highpass, delta_lowpass_hz=lowpass)
+    frequencies = np.geomspace(0.01, 23000.0, 4096)
+    _, delta = _proof_shelf_and_delta(descriptor, frequencies)
+    gain_envelope = 1.0 + np.abs(delta)
 
     assert np.max(gain_envelope) <= 10.0 ** (dynamic_bass_gain_reserve_db(descriptor) / 20.0)
 
 
+def test_band_limited_composite_discloses_phase_ripple() -> None:
+    """For the slope-12 proof shelf and D=(H-1)HP63 LP100,
+    |1+D|²=1+|D|²+2|D|cos(arg D) gives dips up to 7.720 dB overall and 2.482 dB in the 63–100 Hz band.
+    """
+    descriptor = _descriptor(low_boost_db=18.0, delta_highpass_hz=63.0, delta_lowpass_hz=100.0)
+    frequencies = np.unique(np.r_[np.geomspace(0.01, 23000.0, 4096), np.linspace(20.0, 200.0, 18001)])
+    shelf, delta = _proof_shelf_and_delta(descriptor, frequencies)
+    composite_db = 20.0 * np.log10(np.abs(1.0 + delta))
+    phase_power = 1.0 + np.abs(delta) ** 2 + 2.0 * np.abs(delta) * np.cos(np.angle(delta))
+    ripple_allowance_db = 7.720
+    boost_band = (frequencies >= 63.0) & (frequencies <= 100.0)
+
+    assert np.max(-10.0 * np.log10(phase_power)) == pytest.approx(7.719724, abs=1e-6)
+    assert frequencies[np.argmin(composite_db)] == pytest.approx(119.18)
+    assert np.min(composite_db[boost_band]) == pytest.approx(-2.481865, abs=1e-6)
+    assert np.all(composite_db >= -ripple_allowance_db)
+    assert np.all(composite_db <= 20.0 * np.log10(np.abs(shelf)))
+
+
 @pytest.mark.parametrize(
-    ("change", "message"),
+    ("change", "field"),
     [
         ({"low_boost_db": 20.01}, "low_boost_db"),
         ({"detector_lowpass_hz": 201.0}, "detector_lowpass_hz"),
         ({"compressor_threshold_dbfs": 0.1}, "compressor_threshold_dbfs"),
         ({"delta_highpass_hz": 90.0}, "delta_highpass_hz"),
-        ({"low_boost_db": "6"}, "real number"),
-        ({"compressor_factor": True}, "real number"),
+        ({"delta_lowpass_hz": 10.0}, "delta_lowpass_hz"),
+        ({"delta_lowpass_hz": 9.0}, "delta_lowpass_hz"),
+        ({"delta_highpass_hz": 63.0, "delta_lowpass_hz": 62.0}, "delta_lowpass_hz"),
+        ({"delta_highpass_hz": 63.0, "delta_lowpass_hz": 63.0}, "delta_lowpass_hz"),
+        ({"delta_lowpass_hz": 200.01}, "delta_lowpass_hz"),
+        ({"delta_lowpass_hz": float("nan")}, "delta_lowpass_hz"),
+        ({"delta_lowpass_hz": float("inf")}, "delta_lowpass_hz"),
+        ({"delta_lowpass_hz": True}, "delta_lowpass_hz"),
+        ({"delta_lowpass_hz": "100"}, "delta_lowpass_hz"),
+        ({"low_boost_db": "6"}, "low_boost_db"),
+        ({"compressor_factor": True}, "compressor_factor"),
     ],
 )
-def test_descriptor_refuses_values_outside_runtime_bounds(change, message) -> None:
-    with pytest.raises(ValueError, match=message):
+def test_descriptor_refuses_values_outside_runtime_bounds(change, field) -> None:
+    with pytest.raises(DynamicBassDescriptorError) as refused:
         _descriptor(**change)
+    assert refused.value.field == field
+    assert refused.value.reason == f"bass_{field}_invalid"
 
 
 def test_candidate_descriptor_parser_is_strict() -> None:
@@ -82,6 +127,7 @@ def test_candidate_descriptor_parser_is_strict() -> None:
         "compressor_attack_s": 0.01,
         "compressor_release_s": 0.25,
         "delta_highpass_hz": None,
+        "delta_lowpass_hz": None,
     }
     with pytest.raises(ValueError, match="unknown or missing"):
         validate_dynamic_bass_descriptor({**raw, "duplicate_limit": 1})
@@ -125,19 +171,24 @@ def test_each_side_has_an_independent_post_volume_detector() -> None:
     assert left["makeup_gain"] == right["makeup_gain"] == 0.0
 
 
-def test_optional_highpass_touches_only_the_extra_delta() -> None:
+@pytest.mark.parametrize("highpass, lowpass", [(63.0, None), (None, 100.0), (63.0, 100.0)])
+def test_optional_filters_touch_only_the_extra_delta(highpass, lowpass) -> None:
     graph = build_native_dynamic_bass_graph(
         channels=4,
         owner_channels=(0, 2),
-        descriptor=_descriptor(delta_highpass_hz=25.0),
+        descriptor=_descriptor(delta_highpass_hz=highpass, delta_lowpass_hz=lowpass),
     )
-
-    step = next(
-        item
-        for item in graph.pipeline
-        if item.get("names") == ["bass_ext_dynamic_delta_highpass"]
-    )
-    assert step["channels"] == [4, 5]
+    names = []
+    for kind, corner in (("Highpass", highpass), ("Lowpass", lowpass)):
+        if corner is not None:
+            name = f"bass_ext_dynamic_delta_{kind.lower()}"
+            names.append(name)
+            assert graph.filters[name] == {
+                "type": "BiquadCombo",
+                "parameters": {"type": f"Butterworth{kind}", "freq": corner, "order": 2},
+            }
+    assert graph.pipeline[5] == {"type": "Filter", "channels": [4, 5], "names": names}
+    assert len(graph.pipeline) == 10
     assert graph.mixers["bass_ext_dynamic_reduce"]["channels"]["out"] == 4
 
 
@@ -166,13 +217,20 @@ def _base_graph() -> dict:
     }
 
 
-def test_decorator_is_exactly_reversible_for_static_graph_proof() -> None:
+@pytest.mark.parametrize("highpass, lowpass", [(None, None), (63.0, None), (None, 100.0), (63.0, 100.0)])
+def test_decorator_is_exactly_reversible_for_static_graph_proof(highpass, lowpass) -> None:
     base = _base_graph()
+    descriptor = _descriptor(delta_highpass_hz=highpass, delta_lowpass_hz=lowpass)
 
-    decorated = apply_dynamic_bass_graph(base, _descriptor(), (0, 2))
+    decorated = apply_dynamic_bass_graph(base, descriptor, (0, 2))
 
     assert base == _base_graph()
-    assert validated_base_graph(decorated, _descriptor(), (0, 2)) == base
+    assert decorated["devices"] == base["devices"]
+    assert decorated["pipeline"][-3:-1] == [
+        {"type": "Mixer", "name": "bass_ext_dynamic_reduce"},
+        {"type": "Filter", "channels": [0, 2], "names": ["woofer_limiter"]},
+    ]
+    assert validated_base_graph(decorated, descriptor, (0, 2)) == base
 
 
 def test_projection_refuses_a_changed_native_definition() -> None:

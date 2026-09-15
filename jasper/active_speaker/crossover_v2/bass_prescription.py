@@ -74,12 +74,12 @@ def read_bass_prescription(raw: Any, *, evidence: Mapping[str, Any]) -> BassPres
     if raw.get("round_id") != round_id:
         _refuse(BASS_ROUND_MISMATCH, "The bass prescription must name this round.", round_id=round_id)
     lower = max(BASS_BANDS_HZ[0][0], descriptor["delta_highpass_hz"] or BASS_BANDS_HZ[0][0])
-    upper = descriptor["detector_lowpass_hz"]
+    upper = descriptor["delta_lowpass_hz"] or descriptor["detector_lowpass_hz"]
     bands = [(lo, hi) for lo, hi in BASS_BANDS_HZ if lo < upper and hi > lower]
     qualified = {tuple(band["band_hz"]) for view in evidence.get("bass", [])
                  for take in view.get("takes", []) for band in take.get("bands", [])
                  if band.get("fundamental_qualified") is True}
-    # At the allowed 20 Hz detector minimum, the first measured band supplies the endpoint.
+    # At or below the measured 20 Hz floor, the first band supplies endpoint evidence.
     for band in bands or [BASS_BANDS_HZ[0]]:
         if band not in qualified:
             _refuse(BASS_BAND_UNQUALIFIED, f"No qualified fundamental in {band[0]:g}-{band[1]:g} Hz.",

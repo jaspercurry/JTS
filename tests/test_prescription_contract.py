@@ -270,7 +270,7 @@ def test_evidence_declarations_are_served_as_templates_and_cannot_be_mutated():
 
 
 @pytest.mark.parametrize("name", sorted(dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS))
-def test_bass_schema_edges_match_the_unchanged_validator(name):
+def test_bass_schema_edges_match_the_validator(name):
     contract = prescription_contracts()["bass"]
     prop = contract["schema"]["properties"][name]
     baseline = asdict(_descriptor())
@@ -282,13 +282,27 @@ def test_bass_schema_edges_match_the_unchanged_validator(name):
         accepted = math.nextafter(edge, math.inf) if bound == "exclusiveMinimum" else edge
         assert dynamic.validate_dynamic_bass_descriptor({**baseline, name: accepted})[name] == accepted
         refused = edge if bound == "exclusiveMinimum" else math.nextafter(edge, direction)
-        with pytest.raises(ValueError):
+        with pytest.raises(dynamic.DynamicBassDescriptorError) as refused_error:
             dynamic.validate_dynamic_bass_descriptor({**baseline, name: refused})
+        assert refused_error.value.reason == f"bass_{name}_invalid"
     if name == "delta_highpass_hz":
         upper = baseline[contract["bounds"]["delta_highpass_hz_exclusive_upper_field"]]
         with pytest.raises(ValueError):
             dynamic.validate_dynamic_bass_descriptor({**baseline, name: upper})
         assert dynamic.validate_dynamic_bass_descriptor({**baseline, name: math.nextafter(upper, -math.inf)})[name] < upper
+    if name == "delta_lowpass_hz":
+        lower_field = contract["bounds"]["delta_lowpass_hz_exclusive_lower_field"]
+        fallback = contract["bounds"]["delta_lowpass_hz_exclusive_lower_fallback"]
+        assert fallback == prop["exclusiveMinimum"]
+        for highpass in (None, fallback, 63.0):
+            baseline[lower_field] = highpass
+            lower = highpass or fallback
+            accepted = math.nextafter(lower, math.inf)
+            assert dynamic.validate_dynamic_bass_descriptor({**baseline, name: accepted})[name] == accepted
+            for refused in (lower, math.nextafter(lower, -math.inf)):
+                with pytest.raises(dynamic.DynamicBassDescriptorError) as refused_error:
+                    dynamic.validate_dynamic_bass_descriptor({**baseline, name: refused})
+                assert refused_error.value.reason == "bass_delta_lowpass_hz_invalid"
 
 
 def test_live_contract_reads_the_view_writers_path(tmp_path, monkeypatch, capsys):

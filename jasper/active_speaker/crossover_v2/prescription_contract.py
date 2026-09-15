@@ -332,6 +332,8 @@ def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "compressor_attack_s": _number(bass.COMPRESSOR_ATTACK_S_MIN, bass.COMPRESSOR_ATTACK_S_MAX),
         "compressor_release_s": _number(bass.COMPRESSOR_RELEASE_S_MIN, bass.COMPRESSOR_RELEASE_S_MAX),
         "delta_highpass_hz": {"type": ["number", "null"], "minimum": bass.DELTA_HIGHPASS_HZ_MIN},
+        "delta_lowpass_hz": {"type": ["number", "null"], "exclusiveMinimum": bass.DELTA_HIGHPASS_HZ_MIN,
+                             "maximum": bass.DETECTOR_CORNER_HZ_MAX},
     }
     for field in fields(bass.DynamicBassDescriptor):
         if field.default is not MISSING:
@@ -340,7 +342,11 @@ def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
                        for name, description in format_["required_top_level"].items()})
     return {
         "schema": _object(properties, sorted(bass._REQUIRED_FIELDS | format_["required_top_level"].keys())),
-        "bounds": {"delta_highpass_hz_exclusive_upper_field": "detector_lowpass_hz"},
+        "bounds": {
+            "delta_highpass_hz_exclusive_upper_field": "detector_lowpass_hz",
+            "delta_lowpass_hz_exclusive_lower_field": "delta_highpass_hz",
+            "delta_lowpass_hz_exclusive_lower_fallback": bass.DELTA_HIGHPASS_HZ_MIN,
+        },
         "refusal_codes": format_["refusal_reasons"],
         **bass_prescription.bass_evidence_status(evidence),
         "shared_headroom": {

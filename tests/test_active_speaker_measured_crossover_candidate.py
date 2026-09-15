@@ -675,6 +675,7 @@ def test_bass_extension_is_fingerprinted_and_reopened():
         "compressor_attack_s": 0.01,
         "compressor_release_s": 0.25,
         "delta_highpass_hz": None,
+        "delta_lowpass_hz": None,
     }
     tampered = candidate.to_dict()
     tampered["bass_extension"] = {**reopened.bass_extension, "low_boost_db": 2.0}

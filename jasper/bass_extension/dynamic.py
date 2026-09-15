@@ -44,6 +44,7 @@ _OPTIONAL_FIELDS = {
     "compressor_attack_s",
     "compressor_release_s",
     "delta_highpass_hz",
+    "delta_lowpass_hz",
 }
 
 DYNAMIC_BASS_REFUSAL_REASONS = frozenset({"bass_descriptor_malformed"} | {
@@ -77,11 +78,13 @@ class DynamicBassDescriptor:
     compressor_attack_s: float = 0.01
     compressor_release_s: float = 0.25
     delta_highpass_hz: float | None = None
+    delta_lowpass_hz: float | None = None
 
     def __post_init__(self) -> None:
         values = {
             name: _finite(getattr(self, name), name)
-            for name in (field.name for field in fields(self) if field.name != "delta_highpass_hz")
+            for name in (field.name for field in fields(self)
+                         if field.name not in {"delta_highpass_hz", "delta_lowpass_hz"})
         }
         for name, number in values.items():
             object.__setattr__(self, name, number)
@@ -106,6 +109,13 @@ class DynamicBassDescriptor:
                     "delta_highpass_hz must be in the measured band below detector_lowpass_hz"
                 )
             object.__setattr__(self, "delta_highpass_hz", corner)
+        if self.delta_lowpass_hz is not None:
+            corner = _finite(self.delta_lowpass_hz, "delta_lowpass_hz")
+            if not (self.delta_highpass_hz or DELTA_HIGHPASS_HZ_MIN) < corner <= DETECTOR_CORNER_HZ_MAX:
+                raise DynamicBassDescriptorError("delta_lowpass_hz",
+                    "delta_lowpass_hz must exceed the delta high-pass floor within the measured bass domain"
+                )
+            object.__setattr__(self, "delta_lowpass_hz", corner)
 
 
 def validate_dynamic_bass_descriptor(value: Any) -> dict[str, Any]:
@@ -131,7 +141,7 @@ def loudness_boost_db(canonical_volume_db: float, descriptor: DynamicBassDescrip
 def dynamic_bass_gain_reserve_db(descriptor: DynamicBassDescriptor) -> float:
     """Bound the static filter/delta gain; the final limiter owns sample peaks."""
     # Native slope-12 shelf: |H-1| <= sqrt((2+sqrt(5))/4) * (10**(B/20)-1).
-    # A Butterworth delta high-pass and gain-only compression cannot enlarge its L2 norm.
+    # Butterworth delta high/low-passes and gain-only compression cannot enlarge its L2 norm.
     delta_ratio = math.sqrt((2.0 + math.sqrt(5.0)) / 4.0)
     delta_gain = 10.0 ** (descriptor.low_boost_db / 20.0) - 1.0
     return 20.0 * math.log10(1.0 + delta_ratio * delta_gain)
