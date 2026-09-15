@@ -6,7 +6,8 @@ from __future__ import annotations
 
 
 DISMISSAL_PHRASES = (
-    "stop", "cancel", "never mind", "okay thanks", "goodbye", "okay", "that's all", "thanks", "we're done",
+    "stop", "cancel", "never mind", "okay thanks", "goodbye", "okay", "that's all", "thanks",
+    "thank you", "okay thank you", "we're done",
 )
 DISMISSAL_PHRASES_TEXT = f"{', '.join(DISMISSAL_PHRASES[:-1])}, or {DISMISSAL_PHRASES[-1]}"
 
