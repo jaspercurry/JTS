@@ -38,6 +38,7 @@ from tests.crossover_v2_banked_round import bank_measure_round
 from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile, _room_candidate
 from tests.test_preflight import ready_facts
+from tests.test_arm_walk import FakeWalkClock
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
 from tests.test_crossover_v2_frequency_view import bass_fit_pairs as bass_fit_pairs  # noqa: F401
 
@@ -464,6 +465,41 @@ def test_named_run_never_reads_or_releases_a_different_run(verb, monkeypatch, ca
     code, body = _run([verb, "--run", "old"], opener, monkeypatch, capsys)
     assert code == 1
     assert body["reason"] == "run_not_current"
+    assert not opener.posts()
+
+
+@pytest.mark.parametrize("captures,status,reason,result,polls,elapsed", [
+    ([None, {"status": "complete", "run": {"status": "complete"}},
+      {"session_id": "run-1", "status": "complete", "run": {"status": "complete"}}],
+     "terminal", None, "complete", 3, 15),
+    ([{"session_id": "run-2", "status": "running"}],
+     "failed", "run_not_current", None, 1, 0),
+    ([{}], "timed_out", "wait_timeout", None, 4, 20),
+])
+def test_wait_uses_live_capture_identity(captures, status, reason, result, polls, elapsed):
+    envelopes = [json.dumps({
+        "crossover_v2": {"session_id": "old", "phase": "review"},
+        **({"capture": {"kind": "crossover_v2:session", **capture}} if capture is not None else {}),
+    }) for capture in captures]
+    opener = _FakeOpener({wc.STATUS_PATH: envelopes[-1]}, envelopes)
+    client = wc.WizardClient(host_header="jts3.local", opener=opener)
+    clock = FakeWalkClock(max_sleeps=4)
+    start = clock.now()
+    initial_http, initial = client.run_status("run-1")
+    if status == "failed":
+        assert initial_http == 409
+        assert initial == {"run_id": "run-1", "code": reason, "current_run_id": "run-2"}
+    else:
+        assert initial_http == 200
+        assert initial == {"run_id": "run-1", "status": "starting", "result": None,
+                           "pending": None, "current": None, "code": None, "faults": []}
+    opener.envelopes, opener.requests = list(envelopes), []
+    answer = wc.wait_for_round(client, run_id="run-1", timeout_s=20,
+                               now=clock.now, sleep=clock.sleep)
+    assert answer["run_id"] == "run-1"
+    assert (answer["status"], answer.get("reason"), answer.get("result")) == (status, reason, result)
+    assert len(opener.requests) == polls
+    assert clock.now() - start == elapsed
     assert not opener.posts()
 
 
