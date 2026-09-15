@@ -98,7 +98,10 @@ def fit_bass_shape(
         if match["context"]["incompatible_fields"] or across["incompatible_fields"]:
             raise CrossoverV2Refused({"pair": match["context"], "across": across}, code="bass_fit_capture_context_changed")
         reference, curves = aligned_bass_pair(before, after, grid, reference_band_hz)
-        curves = smooth_bass_pair(grid, curves)
+        shared = np.isfinite(curves).all(axis=0)
+        for values in curves:
+            values[~shared] = np.nan
+            values[shared] = smooth_fractional_octave(grid[shared], values[shared], fraction=3)
         pose = doc_pose_key(before["record"])
         if before["record"].get("position_deg") is None and before["record"].get("seat_offset_m") is None:
             raise CrossoverV2Refused(code="bass_fit_pose_missing")

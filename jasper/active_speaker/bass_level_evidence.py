@@ -28,12 +28,15 @@ def _median_curves(curves):
     return result
 
 
+def _band(take, lo, hi):
+    return next((band for band in take.get("bands", ()) if band["band_hz"] == [lo, hi]), {})
+
+
 def _response(grid, curve, takes, reference_from_hz):
     valid = np.isfinite(curve)
     floor = next((lo for lo, hi in BASS_BANDS_HZ
                   if np.any(valid & (grid >= lo) & (grid < hi)) and all(
-                      next((band["fundamental_qualified"] for band in take.get("bands", ())
-                            if band["band_hz"] == [lo, hi]), True) for take in takes)), None)
+                      _band(take, lo, hi).get("fundamental_qualified") for take in takes)), None)
     corners, bounded = {}, {}
     indices = np.flatnonzero(valid & (grid < reference_from_hz))
     contiguous = indices[np.r_[0, np.flatnonzero(np.diff(indices) > 1) + 1][-1]:] if indices.size else indices
@@ -146,9 +149,8 @@ def bass_level_evidence(
     compression = [{"band_hz": [lo, hi], "value_db": prescribed_boost_db - measured
                     if (measured := mean_delta(lo, hi)) is not None and prescribed_boost_db is not None else None}
                    for lo, hi in boost_bands]
-    snr = [finite_float(band.get("estimated_snr_db")) for pair in pairs for take in pair
-           for lo, hi in BASS_BANDS_HZ if boost_band and lo < boost_band[1] and hi > boost_band[0]
-           for band in [next((b for b in take.get("bands", ()) if b["band_hz"] == [lo, hi]), {})]]
+    snr = [finite_float(_band(take, lo, hi).get("estimated_snr_db")) for pair in pairs for take in pair
+           for lo, hi in BASS_BANDS_HZ if boost_band and lo < boost_band[1] and hi > boost_band[0]]
     spreads = []
     for repeats in curves.values():
         if len(repeats) > 1:

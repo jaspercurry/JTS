@@ -10,12 +10,8 @@ from typing import Any, Mapping
 
 def bass_table_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     fields = ("level_key", "base_db_spl_at_mark", "candidate_db_spl_at_mark", "prescribed_boost_db",
-              "base_response", "candidate_response", "headroom_verdict", "headroom_rises", "outcome")
-    return [{"candidate_id": table["candidate_id"], **{key: row.get(key) for key in fields},
-             "realized_boost_db": [{"band_hz": band["band_hz"],
-                                    "value_db": row["prescribed_boost_db"] - band["value_db"]
-                                    if band["value_db"] is not None else None}
-                                   for band in row.get("compression_db", ())]}
+              "base_response", "candidate_response", "headroom_verdict", "headroom_rises", "outcome", "realized_boost_db")
+    return [{"candidate_id": table["candidate_id"], **{key: row.get(key) for key in fields}}
             for table in payload.get("tables", ()) for row in table["levels"]]
 
 

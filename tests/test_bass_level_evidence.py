@@ -3,19 +3,23 @@
 
 import copy
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 import pytest
 
+from jasper.active_speaker.bass_fit import fit_bass_shape
 from jasper.active_speaker.bass_table import fit_bass_table
 from jasper.active_speaker.bass_table_report import bass_table_rows
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
 from jasper.active_speaker.round_packet import finish_bass_packet
 from jasper.active_speaker.round_packet_report import INDEX_FILENAME, bass_table_markdown
+from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 from jasper.cli.round_views import main as round_views_main
+from jasper.cli.round_views._bass_inputs import fit_run
 from tests.test_crossover_v2_frequency_view import bass_fit_pairs as bass_fit_pairs, bass_run as bass_run
 
 
@@ -138,6 +142,11 @@ def test_confidence_uses_repeats_within_pose(pair):
     other_pose, = table([pair, repeated])["levels"]
     assert other_pose["repeat_spread_db"] is None
     assert other_pose["headroom_verdict"] == "harmonics_rose"
+    for take in pair:
+        del take["bands"]
+    missing, = table([pair])["levels"]
+    assert missing["snr_margin_db"] is None
+    assert missing["base_response"]["qualified_from_hz"] is missing["candidate_response"]["qualified_from_hz"] is None
 
 
 def test_realized_boost_uses_the_same_pose_medians_as_the_fit(pair):
@@ -148,6 +157,24 @@ def test_realized_boost_uses_the_same_pose_medians_as_the_fit(pair):
     row, = table(pairs)["levels"]
     assert [band["value_db"] for band in row["realized_boost_db"]] == pytest.approx([10] * len(BASS_BANDS_HZ))
     assert row["fit"]["choices"][-1]["realized_boost_db"] == pytest.approx([10] * len(row["fit"]["freqs_hz"]))
+
+
+def test_fit_preserves_single_pass_smoothing_across_a_missing_bin(pair):
+    grid = np.geomspace(50, 200, 121)
+    shared = np.ones(grid.size, dtype=bool)
+    shared[61] = False
+    base = -6 + 5 * np.log2(grid / 100)
+    candidate = base + 6 + 4 * np.tanh(20 * np.log2(grid / 100))
+    for take, curve in zip(pair, (base, candidate)):
+        take.update(freqs_hz=grid.tolist(), fundamental_db=curve.tolist(), fundamental_qualified=shared.tolist())
+    baseline, treated = [smooth_fractional_octave(grid[shared], curve[shared], fraction=3) for curve in (base, candidate)]
+    delta = treated - baseline
+    scale = float(np.clip(np.sum(delta * -baseline) / np.sum(delta ** 2), 0, 1))
+    expected_errors = [float(np.max(np.abs(baseline + fraction * delta))) for fraction in sorted({0., scale, 1.})]
+    fit = fit_bass_shape([pair], candidate_id="boost", descriptor=DESCRIPTOR,
+                         target={"freqs_hz": [50, 200], "magnitude_db": [0, 0]})
+    assert fit["selected_scale"] == pytest.approx(scale)
+    assert [choice["max_abs_error_db"] for choice in fit["choices"]] == pytest.approx(expected_errors)
 
 
 @pytest.mark.parametrize("calibrated", [False, True])
@@ -182,15 +209,22 @@ def test_all_outcomes_keep_one_row_shape(pair, gain, coverage, outcome):
     json.dumps(row, allow_nan=False)
 
 
-def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path):
-    bass_run.write()
+@pytest.mark.parametrize("baseline_only", [False, True])
+def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path, monkeypatch, baseline_only):
+    bass_run.write(takes=bass_run.takes[::2] if baseline_only else bass_run.takes)
+    if baseline_only:
+        monkeypatch.setattr("jasper.cli.round_views._bass_inputs.fit_run",
+                            lambda args: fit_run(SimpleNamespace(**{**vars(args), "candidate": []})))
     assert round_views_main(bass_run.argv) == 0
     output = capsys.readouterr()
     payload = json.loads(bass_run.out.read_text())
     rows = bass_table_rows(payload)
     assert json.loads(output.out)["levels"] == rows
     assert len(rows) == 3
-    assert rows[0]["realized_boost_db"][3]["value_db"] == pytest.approx(6)
+    levels = payload["tables"][0]["levels"]
+    assert [row["realized_boost_db"] for row in rows] == [level["realized_boost_db"] for level in levels]
+    assert rows[0]["realized_boost_db"][3]["value_db"] == pytest.approx(0 if baseline_only else 6)
+    assert (levels[0]["fit"]["source_descriptor"] is None) is baseline_only
     packet = {"round_id": "bass", "program": "bass", "result": "complete", "reason": None, "level": None,
               "applied": {"candidate": None, "record": None, "layers": {}},
               "artifacts": {"frequency_view": None, "bass_views": []}, "limits": {},
