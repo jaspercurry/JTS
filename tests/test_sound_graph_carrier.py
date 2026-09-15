@@ -522,7 +522,7 @@ def test_generic_jts_pipe_sound_config_resolves_to_program_bake(tmp_path, monkey
     # be `sound_current.yml` with the generic sound source marker, but still be a
     # DAC-less Snapcast pipe sink. Content proves pipe-safety; do not route it to
     # the DAC-bound flat-graph guard.
-    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.multiroom.reconcile_plan import SNAPFIFO
     from jasper.sound.profile import SoundProfile
 
     _persist_topology(
@@ -560,7 +560,7 @@ def test_sound_current_pipe_under_non_protected_topology_stays_sound_or_correcti
     # must stay on the ordinary sound carrier, never get re-stamped as
     # an active program bake. Delete the topology clause and this resolves to
     # `active_leader_program_bake` instead — the mutation tripwire.
-    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.multiroom.reconcile_plan import SNAPFIFO
     from jasper.sound.profile import SoundProfile
 
     _persist_topology(_full_range_stereo(), tmp_path, monkeypatch)
@@ -586,7 +586,7 @@ def test_grouping_leader_pipe_config_does_not_resolve_to_program_bake(
     # Passive multiroom leaders also write generic JTS stereo YAML to SnapFIFO.
     # The stale-marker recovery is only for `sound_current.yml`; grouping files
     # must not be reclassified or re-stamped as active program-bake configs.
-    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.multiroom.reconcile_plan import SNAPFIFO
     from jasper.sound.profile import SoundProfile
 
     _persist_topology(
@@ -1166,7 +1166,7 @@ def test_pipe_sink_reemit_is_never_width_matched(tmp_path, monkeypatch):
     out of the group's stream for every follower. The mute must be withheld even
     though the saved topology is mono.
     """
-    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.multiroom.reconcile_plan import SNAPFIFO
     from jasper.sound.profile import SoundProfile
 
     _persist_topology(_full_range_mono_topology(), tmp_path, monkeypatch)

@@ -411,7 +411,7 @@ def test_the_grouping_ring_wire_is_the_snapcast_streams_wire():
     source, so the pin follows the value actually shipped to snapserver.
     """
     from jasper.multiroom.config import GroupingConfig
-    from jasper.multiroom.reconcile import snapserver_argv
+    from jasper.multiroom.reconcile_plan import snapserver_argv
 
     cfg = GroupingConfig(
         enabled=True,

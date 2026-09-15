@@ -882,7 +882,7 @@ def check_fanin_coupling() -> CheckResult:
         RING_PLAYBACK_DEVICE,
         ring_active_endpoint_armed,
     )
-    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.multiroom.reconcile_plan import SNAPFIFO
 
     label = "fan-in coupling"
     active_path = evidence.camilla_config_path()

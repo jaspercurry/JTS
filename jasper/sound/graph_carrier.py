@@ -505,7 +505,7 @@ def _loaded_config_is_program_bake_pipe(current_path: str | Path) -> bool:
         devices_playback_is_pipe,
         read_camilla_devices_config,
     )
-    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.multiroom.reconcile_plan import SNAPFIFO
 
     devices = read_camilla_devices_config(current_path) or {}
     return devices_playback_is_pipe(devices, SNAPFIFO)

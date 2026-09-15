@@ -343,7 +343,7 @@ def derive_grouping_runtime(
     ``unit_states`` maps a unit name to its ``systemctl is-active`` word
     (``active`` / ``inactive`` / ``failed`` / ``activating`` /
     ``unknown``). "What should be running" is taken from
-    :func:`jasper.multiroom.reconcile.plan`, so this never re-derives the
+    :func:`jasper.multiroom.reconcile_plan.plan`, so this never re-derives the
     leader/follower→units mapping — there is one definition of it.
 
     ``leader_tap_path`` is the LEADER's live music-producer feed path ("" =
@@ -419,7 +419,8 @@ def _derive_runtime_health(
     if cfg.error is not None:
         return {"health": "invalid", "detail": cfg.error, "units": {}}
 
-    from .reconcile import desired_snapfifo_path, plan
+    from .reconcile import desired_snapfifo_path
+    from .reconcile_plan import plan
 
     expected = {it.unit: it.desired for it in plan(cfg).intents}
     units: dict[str, dict[str, str]] = {}
@@ -660,7 +661,7 @@ def read_grouping_state(
         stream_clients: Any = None
         local_outputd_status: Any = None
         if cfg.error is None:
-            from .reconcile import plan
+            from .reconcile_plan import plan
 
             reader = unit_state_reader or read_unit_active_states
             states = reader([it.unit for it in plan(cfg).intents])

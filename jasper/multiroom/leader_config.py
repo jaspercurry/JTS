@@ -88,7 +88,7 @@ def _is_pipe_config(path: str) -> bool:
     Unreadable resolves to False — the write guard then skips stashing
     (defensive) and the read guard's separate ``exists()`` check already
     rejects missing files."""
-    from .reconcile import SNAPFIFO
+    from .reconcile_plan import SNAPFIFO
 
     return devices_playback_is_pipe(read_camilla_devices_config(path) or {}, SNAPFIFO)
 
@@ -376,7 +376,7 @@ def active_leader_pipe_path() -> str:
     # correction and grouping modules import it outright.
     from jasper.active_speaker.environment import read_camilla_statefile_config_path
 
-    from .reconcile import SNAPFIFO
+    from .reconcile_plan import SNAPFIFO
 
     devices = read_camilla_devices_config(read_camilla_statefile_config_path()) or {}
     return SNAPFIFO if devices_playback_is_pipe(devices, SNAPFIFO) else ""

@@ -57,18 +57,20 @@ from jasper.multiroom.reconcile import (
     LANE_REFUSED_ACTIVE_ENDPOINT,
     LANE_REFUSED_FLAT_OUTPUT_DENIED,
     LANE_REFUSED_PERIOD,
-    SNAPCLIENT_UNIT,
-    SNAPFIFO,
-    SNAPSERVER_UNIT,
-    ReconcilePlan,
     RoleDecision,
-    UnitIntent,
-    _assemble_args,
     _write_args_file,
     airplay_grouping_env,
     decide_role,
     desired_snapfifo_path,
     main,
+)
+from jasper.multiroom.reconcile_plan import (
+    SNAPCLIENT_UNIT,
+    SNAPFIFO,
+    SNAPSERVER_UNIT,
+    ReconcilePlan,
+    UnitIntent,
+    _assemble_args,
     plan,
     snapclient_argv,
     snapserver_argv,
@@ -462,7 +464,8 @@ def test_outputd_grouping_env_active_endpoint_clears_dac_content():
 
 def test_topology_changes_revoke_dac_bypass_without_deleting_bond_intent():
     """Reset and active-layout save both close a bonded passive DAC bypass."""
-    from jasper.multiroom.reconcile import _assemble_args, outputd_grouping_env
+    from jasper.multiroom.reconcile import outputd_grouping_env
+    from jasper.multiroom.reconcile_plan import _assemble_args
 
     bonded = _follower()
     period = DAC_CONTENT_RING_PERIOD_FRAMES
@@ -1437,7 +1440,8 @@ def _apply_with_fake_systemctl(monkeypatch, intents, *, enabled=(), absent=()):
     """Run _apply with subprocess.run faked. Returns (rc, calls) where
     calls is the list of argv lists systemctl saw."""
     import subprocess as sp
-    from jasper.multiroom.reconcile import ReconcilePlan, _apply
+    from jasper.multiroom.reconcile import _apply
+    from jasper.multiroom.reconcile_plan import ReconcilePlan
 
     calls: list[list[str]] = []
 
@@ -1471,7 +1475,7 @@ def test_apply_absent_unit_is_a_clean_noop(monkeypatch):
     """A streambox box never installs some full-speaker units — stop
     intents against absent units must not flip the exit code (absent
     units are no-ops)."""
-    from jasper.multiroom.reconcile import UnitIntent
+    from jasper.multiroom.reconcile_plan import UnitIntent
 
     rc, calls = _apply_with_fake_systemctl(
         monkeypatch,
@@ -1488,7 +1492,8 @@ def test_apply_absent_unit_is_a_clean_noop(monkeypatch):
 def test_apply_real_failure_still_flips_rc(monkeypatch):
     """Absent-unit tolerance must not swallow REAL failures."""
     import subprocess as sp
-    from jasper.multiroom.reconcile import ReconcilePlan, UnitIntent, _apply
+    from jasper.multiroom.reconcile import _apply
+    from jasper.multiroom.reconcile_plan import ReconcilePlan, UnitIntent
 
     def fake_run(argv, **kw):
         raise sp.CalledProcessError(1, argv, stderr="Job failed. See logs.")
@@ -1503,7 +1508,8 @@ def test_apply_real_failure_still_flips_rc(monkeypatch):
 def test_apply_timeout_is_bounded_and_does_not_skip_later_intents(monkeypatch):
     """A wedged local unit job fails this intent without hanging direct CLI."""
     import subprocess as sp
-    from jasper.multiroom.reconcile import ReconcilePlan, UnitIntent, _apply
+    from jasper.multiroom.reconcile import _apply
+    from jasper.multiroom.reconcile_plan import ReconcilePlan, UnitIntent
 
     calls: list[tuple[list[str], float]] = []
 
@@ -3100,7 +3106,8 @@ def test_every_dac_profile_arms_the_return_ring_exactly_when_its_period_fits(
     """
 
     from jasper.audio_runtime_plan import resolve_outputd_period_setting
-    from jasper.multiroom.reconcile import _assemble_args, outputd_grouping_env
+    from jasper.multiroom.reconcile import outputd_grouping_env
+    from jasper.multiroom.reconcile_plan import _assemble_args
 
     period = int(
         resolve_outputd_period_setting(

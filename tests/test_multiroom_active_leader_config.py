@@ -172,7 +172,7 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
         GROUPING_RING_FORMAT,
         GROUPING_RING_PCM,
     )
-    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.multiroom.reconcile_plan import SNAPFIFO
 
     topology = _dual_apple_topology()
     draft = _draft(topology)
@@ -227,7 +227,7 @@ def test_leader_bake_captures_ring_a_and_keeps_the_snapfifo_sink(
     """The bake captures Ring A at the box's resolved wire format — and its sink
     is STILL the snapfifo `File`, never Ring B."""
     from jasper.fanin_coupling import RING_CAPTURE_DEVICE, resolve_ring_wire
-    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.multiroom.reconcile_plan import SNAPFIFO
 
     topology = _dual_apple_topology()
     draft = _draft(topology)
