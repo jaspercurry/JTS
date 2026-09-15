@@ -11,8 +11,8 @@ from jasper.active_speaker.angle_capture import (
     AngleCaptureRequest, LevelPolicy, LateralWalkRefused, WALK_LEVEL_POLICY_INVALID, request_for_program,
 )
 from jasper.active_speaker.measurement_programs import run_program
-from jasper.active_speaker.bass_levels import BassLevelLadder, preflight_levels
-from jasper.active_speaker.preflight import PreflightReport, preflight
+from jasper.active_speaker.run_levels import LevelLadder, preflight_levels
+from jasper.active_speaker.preflight import PreflightReport
 from jasper.active_speaker.preflight_live import read_preflight_facts
 from jasper.active_speaker.seat_level_reference import seat_level_reference_state_path
 from jasper.active_speaker.state_paths import baseline_profile_state_path
@@ -21,7 +21,7 @@ from jasper.output_topology import topology_path
 from ._refusal import read_json_source
 
 
-def resolve_run(args: argparse.Namespace) -> PreflightReport | BassLevelLadder:
+def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
     # Shared loaders suppress read faults; keep this CLI check until they expose them.
     for path in (topology_path(), baseline_profile_state_path(), household_mic_path(), seat_level_reference_state_path()):
         try:
@@ -38,7 +38,7 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | BassLevelLadder:
         if not isinstance(document, dict):
             raise ValueError("plan must be an object")
         request = AngleCaptureRequest.from_mapping(document)
-        return preflight(request, read_preflight_facts(request))
+        return preflight_levels(request, read_preflight_facts(request))
     program = run_program(args.program or "speaker", args.poses)
     if args.repeats is not None:
         try:
@@ -53,5 +53,5 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | BassLevelLadder:
         mover=args.mover or program.mover or "human",
     )
     facts = read_preflight_facts(request)
-    levels = args.levels if args.levels is not None else ("auto" if args.program == "bass" and args.level_db is None else None)
+    levels = args.levels if args.levels is not None else (program.levels if args.level_db is None else None)
     return preflight_levels(request, facts, levels)

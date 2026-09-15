@@ -25,7 +25,7 @@ from jasper.active_speaker import preflight, preflight_live
 from typing import Any, Callable, Mapping
 
 from jasper.active_speaker.angle_capture import BASE_CANDIDATE, AngleCaptureRequest, AngleStop, LateralWalkRefused, REGIME_SUMMED
-from jasper.active_speaker.bass_levels import BassLevelLadder, preflight_levels, prepare_bass_captures
+from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.linearization_budget import fit_budgets_by_role
 from jasper.active_speaker.crossover_v2.capture_plan import (
@@ -668,13 +668,13 @@ def prepare_v2_session(
             )
         context = resolve_conductor_context(status)
         facts = preflight_live.read_preflight_facts(request, context=context)
-        report = preflight_levels(request, facts, raw.get("levels"))
+        report = preflight_levels(request, facts)
         issue = next((issue for issue in report.issues if issue.blocking), None)
         if issue is not None:
             raise CrossoverV2Refused(issue.evidence or issue.detail, code=issue.code, next_action=issue.next_action)
         request = report.plan
         assert request.level.resolved is not None
-        captures = (prepare_bass_captures if isinstance(report, BassLevelLadder) else prepare_plan_captures)(
+        captures = (prepare_level_captures if request.levels else prepare_plan_captures)(
             request, roles_bands=context.roles_bands,
         )
         try:
@@ -915,7 +915,7 @@ def prepare_v2_session(
             trims=engine_level_trims, ceiling_s=ceiling_s, camilla_factory=camilla_factory,
             ceiling_db_spl=(commissioning_spl_ceiling_db(context.topology, preset=context.preset)
                             if verify_only else report.spl_ceiling_db_spl), verify_only=verify_only,
-            level=report.plan.level, ladder=report if isinstance(report, BassLevelLadder) else None,
+            level=report.plan.level, ladder=report if isinstance(report, LevelLadder) else None,
         )
         run_request = None if verify_only else request
         run_captures = None if verify_only else captures

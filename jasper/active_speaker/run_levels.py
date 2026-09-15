@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""Plan and execute the bass level ladder, finishing each pose before moving."""
+"""Plan and execute levels, finishing each pose before moving."""
 
 from __future__ import annotations
 
@@ -9,16 +9,15 @@ from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, replace
 from itertools import groupby
 from types import SimpleNamespace
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence, cast
 
 from jasper.audio_measurement.program import RoleBand
 
 from .angle_capture import AngleCaptureRequest, LateralWalkRefused, resolve_request
 from .crossover_v2.capture_plan import position_screen_keys
 from .crossover_v2.door import IsolationHold
-from .crossover_v2.journey import PHASE_LATERAL
+from .crossover_v2.journey import PHASE_ENTRY_BASELINE
 from .crossover_v2.position_gate import PositionGate
-from .measurement_programs import PURPOSE_BASS
 from .plan_run import Analyze, PlanCapture, RunDoor, RunSignals, _Control, _grant, prepare_plan_captures, run_plan
 from .preflight import PreflightFacts, PreflightIssue, PreflightReport, preflight
 from .run_manifest import RunManifest
@@ -27,12 +26,16 @@ LEVEL_OFFSETS_DB = (0.0, -5.0, -10.0, -15.0)
 
 
 @dataclass(frozen=True)
-class BassLevelLadder:
+class LevelLadder:
     levels: tuple[PreflightReport, ...]
 
     @property
     def plan(self) -> AngleCaptureRequest:
-        return self.levels[0].plan
+        admitted = self.admissible
+        if not admitted:
+            return self.levels[0].plan
+        return replace(admitted[0].plan, level=replace(admitted[0].plan.level, level_db=None),
+                       levels=tuple(cast(float, report.plan.level.volume_db) for report in admitted))
 
     @property
     def admissible(self) -> tuple[PreflightReport, ...]:
@@ -52,19 +55,19 @@ class BassLevelLadder:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "levels": [{"offset_db": report.plan.level.offset_db, "level_db": report.plan.level.volume_db,
+            "levels": [{"offset_db": report.plan.level.offset_db if report.plan.level.resolved else None,
+                        "level_db": report.plan.level.volume_db,
                         "admissible": not report.blocking, **report.to_dict()}
                        for report in self.levels],
             "admissible_levels_db": [report.plan.level.volume_db for report in self.admissible],
         }
 
 
-def bass_level_ladder(plan: AngleCaptureRequest, facts: PreflightFacts) -> BassLevelLadder:
-    if any(stop.purpose != PURPOSE_BASS for stop in plan.stops):
-        raise ValueError("the bass level ladder requires bass captures")
+def level_ladder(plan: AngleCaptureRequest, facts: PreflightFacts) -> LevelLadder:
+    plan = replace(plan, levels=None)
     anchor_report = preflight(replace(plan, level=replace(plan.level, level_db=None)), facts)
     anchor = anchor_report.plan.level.resolved
-    return BassLevelLadder((anchor_report, *(
+    return LevelLadder((anchor_report, *(
         preflight(replace(plan, level=replace(plan.level,
                   level_db=anchor.reference_volume_db + offset if anchor else None)), facts)
         for offset in LEVEL_OFFSETS_DB[1:]
@@ -72,27 +75,26 @@ def bass_level_ladder(plan: AngleCaptureRequest, facts: PreflightFacts) -> BassL
 
 
 def preflight_levels(plan: AngleCaptureRequest, facts: PreflightFacts,
-                     levels: str | None = None) -> PreflightReport | BassLevelLadder:
-    if levels is None:
+                     levels: str | None = None) -> PreflightReport | LevelLadder:
+    if levels is not None:
+        if not isinstance(levels, str) or plan.level.level_db is not None:
+            raise ValueError("levels require a plan without level-db")
+        if levels == "auto":
+            return level_ladder(plan, facts)
+        plan = replace(plan, levels=tuple(float(value) for value in levels.split(",")))
+    if plan.levels is None:
         return preflight(plan, facts)
-    if not isinstance(levels, str) or plan.level.level_db is not None or any(stop.purpose != PURPOSE_BASS for stop in plan.stops):
-        raise ValueError("levels require a bass plan without level-db")
-    if levels == "auto":
-        return bass_level_ladder(plan, facts)
-    values = tuple(float(value) for value in levels.split(","))
-    if len(set(values)) != len(values):
-        raise ValueError("levels must be distinct")
-    return BassLevelLadder(tuple(preflight(replace(plan, level=replace(plan.level, level_db=value)), facts)
-                                 for value in values))
+    return LevelLadder(tuple(preflight(replace(plan, levels=None, level=replace(plan.level, level_db=value)), facts)
+                             for value in plan.levels))
 
 
-def prepare_bass_captures(plan: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> tuple[PlanCapture, ...]:
+def prepare_level_captures(plan: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> tuple[PlanCapture, ...]:
     return tuple(capture for capture in prepare_plan_captures(plan, roles_bands=roles_bands)
-                 if capture.spec.program_phase == PHASE_LATERAL)
+                 if capture.spec.program_phase != PHASE_ENTRY_BASELINE)
 
 
 @dataclass(frozen=True)
-class BassLevelRun:
+class LevelRun:
     manifest: RunManifest
     door: RunDoor
     analyze: Analyze
@@ -100,9 +102,9 @@ class BassLevelRun:
     captures: tuple[PlanCapture, ...] | None = None
 
 
-async def run_bass_levels(
-    ladder: BassLevelLadder, *, hold: AbstractAsyncContextManager[IsolationHold],
-    prepare: Callable[[AngleCaptureRequest], BassLevelRun], gate: PositionGate,
+async def run_levels(
+    ladder: LevelLadder, *, hold: AbstractAsyncContextManager[IsolationHold],
+    prepare: Callable[[AngleCaptureRequest], LevelRun], gate: PositionGate,
     aborts: Mapping[type[BaseException], str], signals: RunSignals | None = None,
 ) -> tuple[RunManifest, ...]:
     """The host supplies each round's record/session bindings under one mic hold.

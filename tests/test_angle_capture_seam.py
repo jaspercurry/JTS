@@ -1467,6 +1467,22 @@ def test_request_round_trip_and_capture_schedule(repeats, candidates):
     assert ac.walk_price(request)["mic_moves"] == 3
 
 
+@pytest.mark.parametrize("levels", [None, (-10.0,), (-10.0, -20.0)])
+def test_request_levels_round_trip_and_single_level_bytes(levels):
+    program = mp.program("room")
+    scalar = ac.request_for_program(program, candidates=("base", "room-fp"), level=ac.LevelPolicy(level_db=-10.0))
+    request = ac.request_for_program(program, candidates=scalar.candidates, levels=levels,
+                                     level=ac.LevelPolicy(level_db=-10.0 if levels is None else None))
+    document = json.dumps(request.to_dict()).encode()
+    assert ac.AngleCaptureRequest.from_mapping(json.loads(document)) == request
+    assert request.stops == scalar.stops
+    if levels is None or len(levels) == 1:
+        assert document == json.dumps(scalar.to_dict()).encode()
+        assert "levels" not in request.to_dict()
+    else:
+        assert json.loads(document)["levels"] == list(levels)
+
+
 @pytest.mark.parametrize("fields", [
     *[{"mode": mode} for mode in ("acquire_at_anchor", "series", "loud")],
     *[{"level_db": value} for value in (math.nan, math.inf, -math.inf, True, "-20", 1, -60, -1000)],
@@ -1486,6 +1502,7 @@ def test_invalid_level_policy_refuses_at_construction(fields):
     ({"candidates": ("missing",)}, ac.WALK_CANDIDATE_NOT_MEASURABLE),
     *[({"repeats": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (0, -1, True, 1.5)],
     *[({"retries_per_pose": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (-1, True, 1.5)],
+    *[({"levels": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in ((), (-10, -10), (1,), (float("nan"),), (None,), "-10")],
 ])
 def test_invalid_walk_fields_refuse_by_name(fields, reason):
     with pytest.raises(ac.LateralWalkRefused) as refused:
