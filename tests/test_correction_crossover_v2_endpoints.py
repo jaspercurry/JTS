@@ -6223,7 +6223,9 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, t
     from jasper.active_speaker.angle_capture import AngleCaptureRequest, request_for_program
     from jasper.active_speaker.measurement_programs import program
 
-    body = {"plan": request_for_program(program("bass")).to_dict(), "levels": "auto"} if bass else _inline_body()
+    selected = program("bass")
+    body = {"plan": request_for_program(selected, mover=selected.mover or "human").to_dict(),
+            "levels": "auto"} if bass else _inline_body()
     prepared, store = _inline_prepared(monkeypatch, tmp_path, body)
     _own_the_fader(monkeypatch, _FakeVolCam(-30))
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan

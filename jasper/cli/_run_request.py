@@ -48,11 +48,9 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | BassLevelLadder:
     candidates = tuple(value.strip() for value in args.candidates.split(",")) if args.candidates is not None else ()
     if any(not value for value in candidates):
         raise ValueError("candidates must name a fingerprint or base")
-    if args.mover:
-        program = replace(program, mover="arm" if args.mover == "arm" else "human")
     request = request_for_program(
         program, candidates=candidates, level=LevelPolicy(level_db=args.level_db),
-        mover=program.mover or "human",
+        mover=args.mover or program.mover or "human",
     )
     facts = read_preflight_facts(request)
     levels = args.levels if args.levels is not None else ("auto" if args.program == "bass" and args.level_db is None else None)

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
+from jasper.bass_extension.measurement import TARGET, TOLERANCE_DB
 from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE, failed
 
 from ._common import ARTIFACT_BY_VIEW, REASON_UNREADABLE, RoundSetRefused, _ROUND_TOOL_ERRORS, _write, add_set_argument, answer, default_out, read_run_manifest, resolve_set, round_inputs
@@ -37,8 +38,10 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         else:
             parser.add_argument("round_dir", type=Path, nargs="+")
             parser.add_argument("--candidate", type=Path, action="append", required=True, help="candidate artifact or banked fingerprint; repeat for each candidate")
-            parser.add_argument("--target", type=Path, required=True, help="target curve JSON: freqs_hz, magnitude_db")
-            parser.add_argument("--tolerance-db", type=float, required=True)
+            parser.add_argument("--target", type=Path, default=TARGET,
+                                help="target curve JSON: freqs_hz, magnitude_db (default: %(default)s)")
+            parser.add_argument("--tolerance-db", type=float, default=TOLERANCE_DB,
+                                help="fit tolerance in dB (default: %(default)s)")
             parser.add_argument("--reference-band-hz", type=float, nargs=2)
 
 
