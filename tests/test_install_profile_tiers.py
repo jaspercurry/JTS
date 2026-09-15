@@ -921,7 +921,8 @@ def test_follower_role_plan_hands_sources_to_canonical_owner():
         DEFAULT_CODEC,
         GroupingConfig,
     )
-    from jasper.multiroom.reconcile import SOURCE_INTENT_RECONCILE_UNIT, plan
+    from jasper.multiroom.reconcile import SOURCE_INTENT_RECONCILE_UNIT
+    from jasper.multiroom.reconcile_plan import plan
 
     cfg = GroupingConfig(
         enabled=True, role="follower", channel="left",

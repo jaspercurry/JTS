@@ -160,7 +160,7 @@ class GroupingConfig:
     # A follower's leader address. May be a literal IPv4 OR (preferred, and
     # what the bond wizard now mints) a stable mDNS host like "jts3.local" —
     # both are accepted because snapclient resolves either, and the .local
-    # handle survives the leader's DHCP IP churn (reconcile.snapclient_argv).
+    # handle survives the leader's DHCP IP churn (reconcile_plan.snapclient_argv).
     leader_addr: str
     buffer_ms: int
     codec: str           # one of ALLOWED_CODECS
@@ -563,7 +563,7 @@ def is_active_member(cfg: GroupingConfig) -> bool:
 
     A bond's snapcast units only run when the config is enabled and has no
     `error` (the reconciler refuses to start a broken bond; see
-    :func:`jasper.multiroom.reconcile.plan`). So "active member" = a speaker
+    :func:`jasper.multiroom.reconcile_plan.plan`). So "active member" = a speaker
     whose local audio is actually part of a synced stream. PURE.
 
     Distinct from :func:`is_enabled`, which is True even for a fail-LOUD

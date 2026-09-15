@@ -50,7 +50,7 @@ from jasper.multiroom import leader_config
 def _pipe_wired_config(tmp_path: Path) -> Path:
     """A REAL emitted leader config whose playback sink is the snapserver pipe."""
 
-    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.multiroom.reconcile_plan import SNAPFIFO
     from jasper.sound.camilla_yaml import emit_sound_config
     from jasper.sound.profile import SoundProfile
 
@@ -78,7 +78,7 @@ def test_every_folded_reader_resolves_one_statefile_fixture_identically(
     — which is the point: before the fold these four could disagree.
     """
 
-    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.multiroom.reconcile_plan import SNAPFIFO
 
     config = _pipe_wired_config(tmp_path)
     statefile = tmp_path / "outputd-statefile.yml"
@@ -230,7 +230,7 @@ def test_leader_pipe_path_delegates_to_the_canonical_reader(
     exception.
     """
 
-    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.multiroom.reconcile_plan import SNAPFIFO
 
     config = _pipe_wired_config(tmp_path)
     monkeypatch.setattr(

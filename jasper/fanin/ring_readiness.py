@@ -909,7 +909,7 @@ def graph_at_active_ring_endpoint(
     if graph.devices.get("playback_type") == "File":
         from jasper.active_speaker.environment import read_camilla_statefile_config_path  # lazy: cycle through playback_route
         from jasper.multiroom.active_leader_config import crossover_statefile_path  # lazy: cycle through runtime_contract
-        from jasper.multiroom.reconcile import SNAPFIFO  # lazy: cycle through coupling_reconcile
+        from jasper.multiroom.reconcile_plan import SNAPFIFO  # lazy: cycle through coupling_reconcile
 
         if (
             graph.devices.get("capture_device") != RING_CAPTURE_DEVICE

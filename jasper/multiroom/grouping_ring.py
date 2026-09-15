@@ -60,7 +60,7 @@ GROUPING_RING_CONF_D = "/etc/alsa/conf.d/62-jts-ring-grouping.conf"
 #: The wire, spelled in the conf.d block rather than inherited from the ioplug's
 #: compiled defaults: snapclient decodes to the snapserver-pinned
 #: ``sampleformat=48000:16:2``
-#: (:func:`jasper.multiroom.reconcile.snapserver_argv`), so this ring carries
+#: (:func:`jasper.multiroom.reconcile_plan.snapserver_argv`), so this ring carries
 #: 16-bit stereo. ``tests/test_grouping_ring_platform.py`` pins both ends of that
 #: binding — a widening of either side that left the other alone would be a
 #: negotiation failure at open, not a quiet conversion, because this block is

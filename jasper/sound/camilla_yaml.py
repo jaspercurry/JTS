@@ -391,7 +391,7 @@ def emit_sound_config(
     (``jasper.camilla_config_contract``), a DIFFERENT axis from
     ``playback_format`` — snapserver's pipe source is a fixed-format wire
     contract (``sampleformat=48000:16:2``,
-    ``jasper.multiroom.reconcile.snapserver_argv``), so the ALSA loopback
+    ``jasper.multiroom.reconcile_plan.snapserver_argv``), so the ALSA loopback
     lane's format can widen independently of the pipe. Three fail-loud
     guards: ``playback_format`` (default ``None`` — the loopback lane's
     ``DEFAULT_PLAYBACK_FORMAT``) is meaningless on a pipe sink, so passing

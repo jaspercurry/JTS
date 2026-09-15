@@ -1749,7 +1749,7 @@ def test_bonded_leader_pipe_config_on_a_mono_box_stays_exempt() -> None:
     graph is exempt on the File sink long before the fold is considered — the
     same "no DAC attached" key the program bake rests on.
     """
-    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.multiroom.reconcile_plan import SNAPFIFO
     from jasper.sound.camilla_yaml import emit_sound_config
 
     text = emit_sound_config(

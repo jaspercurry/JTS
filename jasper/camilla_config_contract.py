@@ -46,7 +46,7 @@ DEFAULT_CAPTURE_FORMAT = "S32_LE"
 # to THIS format, independently of
 # :data:`~jasper.fanin_coupling.DEFAULT_PLAYBACK_FORMAT`: snapserver's pipe
 # source is a fixed-format wire contract —
-# jasper.multiroom.reconcile.snapserver_argv hardcodes `sampleformat=
+# jasper.multiroom.reconcile_plan.snapserver_argv hardcodes `sampleformat=
 # 48000:16:2` — so a future DEFAULT_PLAYBACK_FORMAT widening (the
 # wide-output-path program) must not also widen the bytes snapserver reads
 # off the FIFO. Pipe/File sinks are a different axis from the ALSA loopback

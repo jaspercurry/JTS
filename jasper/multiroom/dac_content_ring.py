@@ -14,7 +14,7 @@ the bond it is. This module owns what that transport IS — its ALSA PCM name, i
 ring file, the conf.d block that declares it, and the wire both ends have to
 agree on.
 
-**Its writer is** ``jasper.multiroom.reconcile._assemble_args`` (the member's
+**Its writer is** ``jasper.multiroom.reconcile_plan._assemble_args`` (the member's
 snapclient ``--soundcard``) **and its arm is**
 ``jasper.multiroom.reconcile.outputd_grouping_env`` (the bare
 :data:`DAC_CONTENT_LANE_ENV` marker). Why the marker is served, why the legacy
@@ -69,7 +69,7 @@ DAC_CONTENT_LANE_ENV = "JASPER_OUTPUTD_DAC_CONTENT_LANE"
 #: The wire, spelled in the conf.d block rather than inherited from the ioplug's
 #: compiled defaults. Both ends already pin it independently: snapclient decodes
 #: to the snapserver-pinned ``sampleformat=48000:16:2``
-#: (:func:`jasper.multiroom.reconcile.snapserver_argv`), and outputd's
+#: (:func:`jasper.multiroom.reconcile_plan.snapserver_argv`), and outputd's
 #: dac-content lane is "S16 by contract" — its ``period_bytes`` is
 #: ``period_frames * 2 channels * 2 bytes`` (``rust/jasper-outputd/src/
 #: dac_content.rs``). This block is opened directly with no ``plug`` PCM in

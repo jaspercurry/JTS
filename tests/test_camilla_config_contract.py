@@ -37,7 +37,7 @@ def test_pipe_sink_format_stays_narrow_while_the_alsa_lane_is_wide():
     PR-1 split them while both still read ``S16_LE``; PR-6 widened the ALSA lane
     and this is where that split stopped being latent. The pipe sink MUST stay
     narrow: snapserver's pipe source is a fixed wire contract
-    (`sampleformat=48000:16:2`, jasper.multiroom.reconcile.snapserver_argv), so
+    (`sampleformat=48000:16:2`, jasper.multiroom.reconcile_plan.snapserver_argv), so
     a shared name here would have silently corrupted every bonded leader's
     multiroom wire the moment the lane widened."""
     assert DEFAULT_PIPE_SINK_FORMAT == "S16_LE"
@@ -49,7 +49,7 @@ def test_pipe_sink_format_matches_snapserver_wire_contract():
     """NIT2 (PR-1 gate review): pin the promise between the two owners of the
     snapserver pipe wire format — DEFAULT_PIPE_SINK_FORMAT (this module) and
     the ``sampleformat=`` literal baked into
-    jasper.multiroom.reconcile.snapserver_argv. They can't share code (one is
+    jasper.multiroom.reconcile_plan.snapserver_argv. They can't share code (one is
     a Python constant the CamillaDSP emitters read, the other is a literal
     inside a DIFFERENT daemon's argv builder), so this test pins them
     together the same way tests/test_wifi_profile_hardening_contract.py pins
@@ -62,7 +62,7 @@ def test_pipe_sink_format_matches_snapserver_wire_contract():
     "iff": the argv carries ``48000:16:2`` iff the constant is ``S16_LE``.
     """
     from jasper.multiroom.config import DEFAULT_BUFFER_MS, DEFAULT_CODEC, GroupingConfig
-    from jasper.multiroom.reconcile import snapserver_argv
+    from jasper.multiroom.reconcile_plan import snapserver_argv
 
     cfg = GroupingConfig(
         enabled=True,
