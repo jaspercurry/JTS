@@ -18,7 +18,6 @@ from ..secret_redaction import redact_secrets
 from ._base import BaseLiveConnection, BaseLiveTurn, ToolCall
 from ._supervisor import (
     await_connected,
-    failure_detail,
     http_status,
     request_planned_reopen,
     request_unplanned_reopen,
@@ -135,7 +134,7 @@ class GeminiLiveTurn(BaseLiveTurn):
             log_event(
                 self._conn._logger, "provider.send_failed", provider=self._conn.PROVIDER_NAME,
                 exc_type=type(e).__name__,
-                detail=failure_detail(e, literals=self._conn._secret_literals()),
+                detail=self._conn._redacted(e),
                 outcome="turn_lost", level=logging.WARNING,
             )
             self._turn_lost = True
@@ -158,7 +157,7 @@ class GeminiLiveTurn(BaseLiveTurn):
             log_event(
                 self._conn._logger, "provider.end_input_failed", provider=self._conn.PROVIDER_NAME,
                 exc_type=type(e).__name__,
-                detail=failure_detail(e, literals=self._conn._secret_literals()),
+                detail=self._conn._redacted(e),
                 outcome="turn_lost", level=logging.DEBUG,
             )
             self._turn_lost = True
@@ -199,7 +198,7 @@ class GeminiLiveTurn(BaseLiveTurn):
                 log_event(
                     self._conn._logger, "barge.cancel_failed", provider=self._conn.PROVIDER_NAME,
                     exc_type=type(e).__name__,
-                    detail=failure_detail(e, literals=self._conn._secret_literals()),
+                    detail=self._conn._redacted(e),
                     level=logging.WARNING,
                 )
                 self._on_connection_lost()
@@ -619,7 +618,7 @@ class GeminiLiveConnection(BaseLiveConnection):
                 self._logger, "provider.reconnect_conflict", provider=self.PROVIDER_NAME,
                 attempt=attempt, status=status,
                 exc_type=type(exc).__name__,
-                detail=failure_detail(exc, literals=self._secret_literals()),
+                detail=self._redacted(exc),
                 level=logging.WARNING,
             )
         # Drop the cached handle on the first failure of ANY kind, not
