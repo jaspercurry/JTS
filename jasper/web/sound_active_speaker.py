@@ -1343,10 +1343,7 @@ def _summed_test_session_active(
 
     Live means: a session exists, no stop has been requested, and either the
     ``aplay`` child is alive *or* the loop refreshed its heartbeat within
-    ``SUMMED_TEST_SESSION_STALE_SECONDS``. Start serialization uses
-    ``_summed_test_session_occupies_resources`` instead, because a
-    stopped-but-tearing-down session is no longer UI-active while it still owns
-    the fan-in lane and transient Camilla graph.
+    ``SUMMED_TEST_SESSION_STALE_SECONDS``.
     """
 
     if not session or session.get("stop_reason"):

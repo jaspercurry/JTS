@@ -444,13 +444,6 @@ async def _ensure_commission_startup_anchor(
     # hardware the box no longer has. Reusing it would anchor a commissioning
     # rollback to a graph for the wrong speaker.
     #
-    # SHARED WITH /sound/, deliberately: this is the same two-term gate
-    # `sound_setup._active_speaker_ensure_commission_startup_anchor` has run
-    # since the jts5 2026-08-06 regression, and `staged_topology_mismatch` is a
-    # mapped household code. This surface short-circuited on the path term
-    # alone, so the two surfaces disagreed about what "already loaded" meant and
-    # only one of them could ever emit that code (#2285).
-    #
     # A mismatch is NOT a refusal — it falls through to the re-stage below,
     # which rebuilds the pair against the topology the box actually has. The log
     # line is what makes the re-stage attributable rather than silent.
