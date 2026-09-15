@@ -586,8 +586,11 @@ async def test_a_mid_burst_discard_does_not_crash_the_sender():
     assert turn._sender.cancelled()
 
 
-async def test_jitter_around_the_mic_cadence_never_splices_a_synthesized_frame():
+async def test_jitter_around_the_mic_cadence_never_splices_a_synthesized_frame(monkeypatch):
     """Ordinary capture jitter must not insert silence inside speech."""
+    clock = FrozenClock()
+    monkeypatch.setattr(openai_live_session, "time", clock)
+    monkeypatch.setattr(asyncio.get_running_loop(), "time", clock.monotonic)
     rng = random.Random(20260911)
     frame_count = 25
     socket = LiveSocket()
@@ -595,16 +598,13 @@ async def test_jitter_around_the_mic_cadence_never_splices_a_synthesized_frame()
     await conn.start(ToolRegistry(), "Be brief.")
     turn = await conn.acquire_turn()
 
-    async def produce():
-        start = time.monotonic()
-        for i in range(1, frame_count + 1):
-            target = start + i * 0.080 + rng.uniform(-0.008, 0.008)
-            await asyncio.sleep(max(0.0, target - time.monotonic()))
-            await turn.send_audio(b"\xff\x7f" * 1280)
-
     try:
-        await produce()
-        await asyncio.sleep(0.1)
+        start = clock.now
+        for i in range(1, frame_count + 1):
+            clock.now = start + i * 0.080 + rng.uniform(-0.008, 0.008)
+            await asyncio.sleep(0)
+            await turn.send_audio(b"\xff\x7f" * 1280)
+            await asyncio.sleep(0)
     finally:
         await turn.release()
         await conn.stop()
