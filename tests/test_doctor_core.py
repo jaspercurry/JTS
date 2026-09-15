@@ -260,6 +260,7 @@ def test_streambox_doctor_skips_voice_brain_but_keeps_local_audio_checks():
     for name in (
         "check_google_tokens", "check_google_routes",
         "check_home_assistant", "check_citibike",
+        "check_subway", "check_bus", "check_weather",
     ):
         assert _harness._doctor_skip_detail(by_name[name], "streambox"), name
     assert not _harness._doctor_skip_detail(

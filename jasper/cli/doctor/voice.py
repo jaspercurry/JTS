@@ -9,7 +9,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from ...bus import parse_bus_stops
 from ...config import Config
+from ...transit import enabled_pack_ids
+from ...transit._mta_stations import stations_by_id
 from ...voice.catalog import (
     PROVIDER_IDS_MANIFEST_FILE,
     provider_by_id,
@@ -95,6 +98,15 @@ REASON_CITIBIKE_GBFS_UNREACHABLE = "citibike_gbfs_unreachable"
 REASON_CITIBIKE_STATIONS_RETIRED = "citibike_stations_retired"
 REASON_CITIBIKE_CONNECTED = "citibike_connected"
 REASON_CITIBIKE_CONNECTED_EBIKE_ONLY = "citibike_connected_ebike_only"
+
+REASON_SUBWAY_NOT_CONFIGURED = "subway_not_configured"
+REASON_SUBWAY_STATION_UNKNOWN = "subway_station_unknown"
+REASON_SUBWAY_CONFIGURED = "subway_configured"
+REASON_BUS_NOT_CONFIGURED = "bus_not_configured"
+REASON_BUS_KEY_MISSING = "bus_key_missing"
+REASON_BUS_CONFIGURED = "bus_configured"
+REASON_WEATHER_NO_DEFAULT = "weather_no_default"
+REASON_WEATHER_CONFIGURED = "weather_configured"
 
 # check_provider_importable, check_tool_packs and check_pricing share
 # resilience.check_voice_unit_running's ADR-0217 gate (check_provider_key
@@ -627,10 +639,59 @@ def check_pricing() -> CheckResult:
             "voice model pricing", "warn", str(e), reason=REASON_PRICING_UNREADABLE,
         )
 
-# Optional cloud-integration rows (Google, Home Assistant, Citi Bike): none
-# of the four below ever fails the doctor, only warns or discloses operator
-# intent as ok — an integration is not the speaker (ADR-0217 sibling rule).
-# Gated statically on streambox — see ``_registry.STREAMBOX_OMITTED_DOCTOR_CHECKS``.
+# See ADR-0217 and _registry.STREAMBOX_OMITTED_DOCTOR_CHECKS.
+
+
+@doctor_check(label="Subway", needs_cfg=True)
+def check_subway(cfg: Config) -> CheckResult:
+    station_id = os.environ.get("JASPER_SUBWAY_STATION_ID", "")
+    if "nyc" not in enabled_pack_ids(os.environ) or not station_id:
+        return CheckResult(
+            "Subway", "ok", "not configured", reason=REASON_SUBWAY_NOT_CONFIGURED,
+        )
+    station = stations_by_id().get(station_id)
+    if station is None:
+        return CheckResult(
+            "Subway", "warn",
+            f"saved station is unknown; choose one at http://{cfg.hostname}/assistant/transit/",
+            reason=REASON_SUBWAY_STATION_UNKNOWN,
+        )
+    return CheckResult(
+        "Subway", "ok", f"configured for {station.name}; live arrivals not probed",
+        reason=REASON_SUBWAY_CONFIGURED,
+    )
+
+
+@doctor_check(label="Bus", needs_cfg=True)
+def check_bus(cfg: Config) -> CheckResult:
+    stops = parse_bus_stops(os.environ.get("JASPER_BUS_STOPS", ""))
+    if "nyc" not in enabled_pack_ids(os.environ) or not stops:
+        return CheckResult(
+            "Bus", "ok", "not configured", reason=REASON_BUS_NOT_CONFIGURED,
+        )
+    if not os.environ.get("JASPER_MTA_BUSTIME_KEY", "").strip():
+        return CheckResult(
+            "Bus", "warn",
+            f"saved stops have no BusTime key; finish http://{cfg.hostname}/assistant/transit/",
+            reason=REASON_BUS_KEY_MISSING,
+        )
+    return CheckResult(
+        "Bus", "ok", f"configured for {len(stops)} stops; live arrivals not probed",
+        reason=REASON_BUS_CONFIGURED,
+    )
+
+
+@doctor_check(label="Weather", needs_cfg=True)
+def check_weather(cfg: Config) -> CheckResult:
+    if cfg.weather_default_lat is None and not cfg.weather_default_location.strip():
+        return CheckResult(
+            "Weather", "ok", "no saved default; weather requests need a location",
+            reason=REASON_WEATHER_NO_DEFAULT,
+        )
+    return CheckResult(
+        "Weather", "ok", "default location configured; live forecast not probed",
+        reason=REASON_WEATHER_CONFIGURED,
+    )
 
 
 @doctor_check(label="Google OAuth", needs_cfg=True)
