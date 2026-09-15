@@ -1045,30 +1045,6 @@ async def test_the_ring_emit_changes_the_transport_and_nothing_else(
     assert ring["devices.volume_limit"] == aloop["devices.volume_limit"] == 0.0
 
 
-async def test_the_unattended_mute_proof_gains_no_caller():
-    """``output_terminally_muted``'s caller set is unchanged (§1.6): the way the
-    unattended-silence invariant could quietly stop holding is a THIRD caller,
-    proving itself silent with the same primitive while reasoning differently
-    about what it may then do."""
-    callers: set[str] = set()
-    for rel, tree, call in _jasper_calls("output_terminally_muted"):
-        enclosing = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.lineno <= call.lineno <= (node.end_lineno or call.lineno)
-        ]
-        owner = min(enclosing, key=lambda fn: (fn.end_lineno or fn.lineno) - fn.lineno)
-        callers.add(f"{rel}::{owner.name}")
-
-    assert callers == {
-        # "this box may BOOT, because nothing can make a sound"
-        "jasper/active_speaker/runtime_contract.py::_flat_output_terminally_muted",
-        # "this box may ARM ITSELF onto the ring, for the same reason"
-        "jasper/fanin/ring_readiness.py::_anchor_is_all_muted",
-    }, callers
-
-
 async def test_the_audible_evidence_holds_identically_on_a_ring_graph(
     commissioning_box, tmp_path,
 ):

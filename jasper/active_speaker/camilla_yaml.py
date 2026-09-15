@@ -706,6 +706,27 @@ def _emit_split_mixer(
     )
 
 
+def _mute_unfitted_rear_outputs(text: str, preset: ActiveSpeakerPreset) -> str:
+    # Remove when the typed branch-transfer section owns rear protection and
+    # routing/polarity qualification (issue #5161). Model seeds are not a tune.
+    rear = [output.index for output in preset.channel_map.outputs if output.output_variant == "rear"]
+    if not rear:
+        return text
+    head, pipeline = text.split("\npipeline:\n", 1)
+    parts = re.split(r"\n(?=[A-Za-z_][A-Za-z_0-9]*:)", pipeline, maxsplit=1)
+    first_line = parts[0].splitlines()[0]
+    indent = " " * (len(first_line) - len(first_line.lstrip(" ")))
+    tail = []
+    for index in rear:
+        name = f"as_out{index}_rear_pending_mute"
+        head = head.replace("\nfilters:\n", "\nfilters:\n" + "\n".join(
+            emit_gain_filter(name, STARTUP_MUTE_GAIN_DB, mute=True)
+        ) + "\n", 1)
+        tail.extend((f"{indent}- type: Filter", f"{indent}  channels: [{index}]", f"{indent}  names: [{name}]"))
+    parts[0] = parts[0].rstrip() + "\n" + "\n".join(tail) + "\n"
+    return head + "\npipeline:\n" + "\n".join(parts)
+
+
 def _crossover_filter_name(
     role: str,
     region: CrossoverRegion,
@@ -2071,6 +2092,7 @@ pipeline:
     # L0 emit gate (fail-closed): a startup graph still wires the crossover /
     # protective high-pass on the tweeter channel even though it starts muted, so
     # re-prove that protection before the config can leave the emitter.
+    yaml = _mute_unfitted_rear_outputs(yaml, preset)
     _assert_tweeter_outputs_protected(yaml, preset)
 
     if out_path is not None:
@@ -2632,6 +2654,7 @@ pipeline:
     # L0 emit gate (fail-closed): every tweeter output keeps its crossover /
     # protective high-pass even while the commission mask mutes it, so a graph
     # that could later be unmuted onto a bare compression driver is refused.
+    yaml = _mute_unfitted_rear_outputs(yaml, preset)
     _assert_tweeter_outputs_protected(yaml, preset)
 
     if out_path is not None:
@@ -3194,8 +3217,7 @@ def emit_active_speaker_program_config(
     # _assert_ring_playback_width).
     _assert_ring_playback_width(playback_device, output_count)
     program_channels = 1 + max(role_channels.values())
-    # Every output is audible: a program never mutes a driver (the WAV silences
-    # it by channel). Program headroom is the commissioning headroom (0 dB), so
+    # Program headroom is the commissioning headroom (0 dB), so
     # the effective-peak ledger the session-volume plan and admission share is
     # main_volume + program peak with no hidden graph attenuation.
     audible = frozenset(range(output_count))
@@ -3302,6 +3324,7 @@ pipeline:
 """
 
     # L0 emit gate (fail-closed): the shared per-output tweeter-protection re-proof.
+    yaml = _mute_unfitted_rear_outputs(yaml, preset)
     _assert_tweeter_outputs_protected(yaml, preset)
     # Build-and-prove the program graph's return contract against graph_safety.
     _assert_program_graph_proven(
@@ -3521,7 +3544,7 @@ pipeline:
     # program graph does.
     _assert_pipeline_references_closed(yaml, preset)
 
-    yaml = _with_dynamic_bass(yaml, preset, bass_extension)
+    yaml = _mute_unfitted_rear_outputs(_with_dynamic_bass(yaml, preset, bass_extension), preset)
 
     if out_path is not None:
         out_path = Path(out_path)
@@ -3715,7 +3738,7 @@ pipeline:
     # protective high-pass.
     _assert_tweeter_outputs_protected(yaml, preset)
 
-    yaml = _with_dynamic_bass(yaml, preset, bass_extension)
+    yaml = _mute_unfitted_rear_outputs(_with_dynamic_bass(yaml, preset, bass_extension), preset)
 
     if out_path is not None:
         out_path = Path(out_path)

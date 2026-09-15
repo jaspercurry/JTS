@@ -56,6 +56,9 @@ from .output_hardware import (
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
+OUTPUT_VARIANT_SCHEMA_VERSION = 2
+SUPPORTED_OUTPUT_VARIANTS = {"primary", "rear"}
+
 OUTPUT_TOPOLOGY_KIND = "jts_output_topology"
 CHANNEL_IDENTITY_REPORT_KIND = "jts_output_channel_identity_report"
 CLOCK_DOMAIN_REPORT_KIND = "jts_output_clock_domain_report"
@@ -142,6 +145,10 @@ _bool = _JSON_FIELDS.boolean
 _enum = _JSON_FIELDS.enum
 _float = _JSON_FIELDS.number
 _optional_float = _JSON_FIELDS.optional_number
+
+
+def physical_target_id(group_id: str, role: str, output_variant: str = "primary") -> str:
+    return f"{group_id}:{role}" + (f":{output_variant}" if output_variant != "primary" else "")
 
 
 def _safe_id_fragment(value: str) -> str:
@@ -478,6 +485,7 @@ class SpeakerChannel:
     identity_verified_authorized: bool = field(
         default=False, compare=False, repr=False
     )
+    output_variant: str = "primary"
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "SpeakerChannel":
@@ -501,6 +509,7 @@ class SpeakerChannel:
         )
         return cls(
             role=role,
+            output_variant=_enum(raw.get("output_variant", "primary"), "output_variant", SUPPORTED_OUTPUT_VARIANTS),
             driver_style=_optional_id(raw.get("driver_style")),
             physical_output_index=_optional_int(
                 raw.get("physical_output_index"),
@@ -525,6 +534,9 @@ class SpeakerChannel:
             return self
         return replace(self, human_output_label=label)
 
+    def target_id(self, group_id: str) -> str:
+        return physical_target_id(group_id, self.role, self.output_variant)
+
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
             "role": self.role,
@@ -536,6 +548,8 @@ class SpeakerChannel:
         }
         if self.driver_style:
             out["driver_style"] = self.driver_style
+        if self.output_variant != "primary":
+            out["output_variant"] = self.output_variant
         if self.human_output_label:
             out["human_output_label"] = self.human_output_label
         if self.crossover_fc_hz is not None:
@@ -652,7 +666,7 @@ class OutputTopology:
     @classmethod
     def from_mapping(cls, raw: Any) -> "OutputTopology":
         raw = _require_mapping(raw, "output_topology")
-        if raw.get("artifact_schema_version") != SCHEMA_VERSION:
+        if raw.get("artifact_schema_version") not in {SCHEMA_VERSION, OUTPUT_VARIANT_SCHEMA_VERSION}:
             raise OutputTopologyError("unsupported output topology schema version")
         if raw.get("kind") != OUTPUT_TOPOLOGY_KIND:
             raise OutputTopologyError("unsupported output topology kind")
@@ -673,7 +687,16 @@ class OutputTopology:
             ),
         )
         topology._validate_references()
+        if raw["artifact_schema_version"] < topology.schema_version:
+            raise OutputTopologyError("rear output variants require schema version 2")
         return topology
+
+    @property
+    def schema_version(self) -> int:
+        return OUTPUT_VARIANT_SCHEMA_VERSION if any(
+            channel.output_variant != "primary"
+            for group in self.speaker_groups for channel in group.channels
+        ) else SCHEMA_VERSION
 
     def _validate_references(self) -> None:
         group_ids: set[str] = set()
@@ -716,7 +739,7 @@ class OutputTopology:
     def to_dict(self, *, include_evaluation: bool = False) -> dict[str, Any]:
         evaluation = self.evaluation()
         out: dict[str, Any] = {
-            "artifact_schema_version": SCHEMA_VERSION,
+            "artifact_schema_version": self.schema_version,
             "kind": OUTPUT_TOPOLOGY_KIND,
             "topology_id": self.topology_id,
             "name": self.name,
@@ -919,9 +942,14 @@ def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
 
     for group in topology.speaker_groups:
         required_roles = set(REQUIRED_ROLES_BY_MODE[group.mode])
-        actual_roles = [channel.role for channel in group.channels]
+        actual_roles = [channel.role for channel in group.channels if channel.output_variant == "primary"]
         actual_role_set = set(actual_roles)
-        if actual_role_set != required_roles or len(actual_roles) != len(actual_role_set):
+        slots = [(channel.role, channel.output_variant) for channel in group.channels]
+        if (actual_role_set != required_roles or len(slots) != len(set(slots)) or any(
+            channel.output_variant not in SUPPORTED_OUTPUT_VARIANTS
+            or (channel.output_variant == "rear" and (channel.role != "woofer" or "woofer" not in required_roles))
+            for channel in group.channels
+        )):
             blockers.append(
                 _issue(
                     "blocker",
@@ -946,6 +974,8 @@ def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
                 )
             )
         for channel in group.channels:
+            if channel.output_variant == "rear" and not channel.startup_muted:
+                blockers.append(_issue("blocker", "rear_must_start_muted", f"{group.label} rear woofer must start muted"))
             fc = channel.crossover_fc_hz
             if fc is not None and not (
                 SUB_CROSSOVER_HZ_LO <= fc <= SUB_CROSSOVER_HZ_HI
@@ -1190,7 +1220,8 @@ def channel_identity_report(topology: OutputTopology) -> dict[str, Any]:
                 if channel.protection_status != "software_guard_requested":
                     protection_blocker = "tweeter_protection_unverified"
             targets.append({
-                "id": f"{group.id}:{channel.role}",
+                "id": channel.target_id(group.id),
+                **({"output_variant": channel.output_variant} if channel.output_variant != "primary" else {}),
                 "speaker_group_id": group.id,
                 "speaker_label": group.label,
                 "speaker_kind": group.kind,
@@ -1237,7 +1268,7 @@ def channel_identity_report(topology: OutputTopology) -> dict[str, Any]:
         next_step = "Channel identity is verified; path safety still gates playback."
 
     return {
-        "artifact_schema_version": SCHEMA_VERSION,
+        "artifact_schema_version": topology.schema_version,
         "kind": CHANNEL_IDENTITY_REPORT_KIND,
         "status": status,
         "topology_status": evaluation["status"],
@@ -1598,6 +1629,7 @@ def _update_speaker_channel(
     *,
     group_id: str,
     role: str,
+    output_variant: str = "primary",
     ambiguity_subject: str,
     update: Callable[[SpeakerChannel], SpeakerChannel],
 ) -> OutputTopology:
@@ -1607,7 +1639,7 @@ def _update_speaker_channel(
         channel
         for group in topology.speaker_groups
         for channel in group.channels
-        if group.id == group_id and channel.role == role
+        if group.id == group_id and channel.role == role and channel.output_variant == output_variant
     ]
     if not matches:
         raise OutputTopologyError("speaker channel not found")
@@ -1620,7 +1652,7 @@ def _update_speaker_channel(
         replace(
             group,
             channels=tuple(
-                update(channel) if channel.role == role else channel
+                update(channel) if channel.role == role and channel.output_variant == output_variant else channel
                 for channel in group.channels
             ),
         )
@@ -1637,6 +1669,7 @@ def set_channel_identity_verified(
     speaker_group_id: str,
     role: str,
     identity_verified: bool,
+    output_variant: str = "primary",
 ) -> OutputTopology:
     """Return a copy with one channel's physical identity evidence updated.
 
@@ -1660,6 +1693,7 @@ def set_channel_identity_verified(
         topology,
         group_id=group_id,
         role=role_id,
+        output_variant=_enum(output_variant, "output_variant", SUPPORTED_OUTPUT_VARIANTS),
         ambiguity_subject="identity",
         update=update,
     )
@@ -2218,6 +2252,7 @@ def _with_server_owned_identity(
         (
             group.id,
             channel.role,
+            channel.output_variant,
             channel.physical_output_index,
             recorded.hardware.device_id,
         )
@@ -2234,6 +2269,7 @@ def _with_server_owned_identity(
         key = (
             group_id,
             channel.role,
+            channel.output_variant,
             channel.physical_output_index,
             topology.hardware.device_id,
         )

@@ -290,4 +290,5 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0310](0310-leveling-converges-on-two-in-band-readings.md) | Leveling converges on two consecutive in-band readings | accepted |
 | [0311](0311-a-run-plays-at-one-session-level.md) | One run, one level | accepted |
 | [0312](0312-the-ladder-has-no-rebuild-to-compare.md) | The ladder has no rebuild to compare | accepted |
+| [0316](0316-rear-woofer-outputs-have-a-physical-variant-identity.md) | Rear woofer outputs have a physical variant identity | accepted |
 | [0317](0317-wall-placement-starts-at-the-cabinet-back.md) | Wall placement starts at the cabinet back | accepted |

@@ -194,13 +194,14 @@ def topology_target_signature(topology: OutputTopology) -> list[dict[str, Any]]:
             targets.append({
                 "speaker_group_id": group.id,
                 "role": channel.role,
+                **({"output_variant": channel.output_variant} if channel.output_variant != "primary" else {}),
                 "physical_output_index": channel.physical_output_index,
                 "identity_verified": bool(channel.identity_verified),
                 "startup_muted": bool(channel.startup_muted),
                 "protection_required": bool(channel.protection_required),
                 "protection_status": channel.protection_status,
             })
-    return sorted(targets, key=lambda item: (item["speaker_group_id"], item["role"]))
+    return sorted(targets, key=lambda item: (item["speaker_group_id"], item["role"], item.get("output_variant", "primary")))
 
 
 def target_assignment_signature(
@@ -227,6 +228,7 @@ def staged_target_signature(staged_config: dict[str, Any]) -> list[dict[str, Any
         out.append({
             "speaker_group_id": raw.get("speaker_group_id"),
             "role": raw.get("role"),
+            **({"output_variant": raw["output_variant"]} if raw.get("output_variant", "primary") != "primary" else {}),
             "physical_output_index": raw.get("physical_output_index"),
             "identity_verified": bool(raw.get("identity_verified")),
             "startup_muted": bool(raw.get("startup_muted")),
@@ -235,7 +237,7 @@ def staged_target_signature(staged_config: dict[str, Any]) -> list[dict[str, Any
         })
     return sorted(
         out,
-        key=lambda item: (str(item["speaker_group_id"]), str(item["role"])),
+        key=lambda item: (str(item["speaker_group_id"]), str(item["role"]), str(item.get("output_variant", "primary"))),
     )
 
 

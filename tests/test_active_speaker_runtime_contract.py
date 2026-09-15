@@ -304,6 +304,7 @@ def _staged_metadata(topology: OutputTopology, path: Path) -> dict:
             targets.append({
                 "speaker_group_id": group.id,
                 "role": channel.role,
+                **({"output_variant": channel.output_variant} if channel.output_variant != "primary" else {}),
                 "physical_output_index": channel.physical_output_index,
                 "identity_verified": channel.identity_verified,
                 "startup_muted": channel.startup_muted,
