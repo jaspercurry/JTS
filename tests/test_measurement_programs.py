@@ -13,6 +13,7 @@ import pytest
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker import measurement_programs as mp
+from jasper.audio_measurement.gating import SEAT_EXEMPT
 
 
 @pytest.mark.parametrize(
@@ -227,7 +228,7 @@ def test_room_and_bass_plans_share_poses_and_summed_regime(program, size, purpos
     ]
     assert {row.purpose for row in (cloud, quick)} == {purpose}
     assert {row.regime for row in (cloud, quick)} == {mp.REGIME_SUMMED}
-    assert mp.gate_exemption(cloud.purpose) == mp.SEAT_EXEMPT
+    assert mp.gate_exemption(cloud.purpose) == SEAT_EXEMPT
 
 
 @pytest.mark.parametrize(

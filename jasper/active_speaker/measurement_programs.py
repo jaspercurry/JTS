@@ -15,8 +15,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
-from jasper.audio_measurement.gating import SEAT_EXEMPT
-
 POSE_KIND_BEARING = "bearing"
 POSE_KIND_SEAT = "seat"
 POSE_KIND_CLOSE = "close"
@@ -84,6 +82,8 @@ def run_purpose(run_program: str | None) -> str:
 
 
 def gate_exemption(purpose: str | None) -> str | None:
+    from jasper.audio_measurement.gating import SEAT_EXEMPT  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
+
     return SEAT_EXEMPT if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_BASS) else None
 
 

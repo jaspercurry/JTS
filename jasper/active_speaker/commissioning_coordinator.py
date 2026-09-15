@@ -23,9 +23,10 @@ COMMISSIONING_STEP_PAGE_TITLES = {
     "experiment": "First speaker experiment",
     "profile": "Apply speaker profile",
 }
+_MEASURE_LABELS = {PURPOSE_SPEAKER: "Measure the baseline", PURPOSE_ROOM: "Measure the room", PURPOSE_BASS: "Measure bass"}
 
 
-def next_program_action(
+def _next_program_action(
     profile: Mapping[str, Any] | None,
     identity: Mapping[str, Any],
     recent_rounds: Mapping[str, Mapping[str, Any]],
@@ -33,26 +34,22 @@ def next_program_action(
     passive: bool = False,
 ) -> dict[str, Any]:
     """Choose from the latest banked round per program for this applied identity."""
-    from .baseline_profile import profile_linearization  # lazy: baseline imports measurement
-    from .run_manifest import incumbent_fingerprints  # lazy: measurement types import cost
+    from .baseline_profile import applied_layers  # lazy: baseline imports measurement
 
+    programs = (PURPOSE_ROOM, PURPOSE_BASS) if passive else (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS)
     baseline = {"id": "run_program", "enabled": True,
-                "program": PURPOSE_ROOM if passive else PURPOSE_SPEAKER,
-                "label": "Measure the room" if passive else "Measure the baseline"}
+                "program": programs[0], "label": _MEASURE_LABELS[programs[0]]}
+    # Plan #5073 §2 rule (a): no round for this identity means measure the baseline first.
     if not recent_rounds:
         return baseline
-    layers = {**incumbent_fingerprints(profile), PURPOSE_SPEAKER: profile_linearization(profile)}
+    layers = applied_layers(profile)
+    program = next((program for program in programs if not layers[program]), programs[0])
+    round_ = recent_rounds.get(program) or {}
     applied_at = parse_utc_iso(str(identity.get("applied_at") or "")) or 0
-    for program in (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS):
-        if (passive and program == PURPOSE_SPEAKER) or layers[program]:
-            continue
-        round_ = recent_rounds.get(program) or {}
-        if (finite_float(round_.get("started_at")) or 0) > applied_at:
-            return {"id": "copy_prompt", "label": f"Copy the {program} prompt", "enabled": True,
-                    "program": program, "round_dir": round_["round_dir"]}
-        return {"id": "run_program", "label": "Measure bass" if program == PURPOSE_BASS else f"Measure the {program}",
-                "enabled": True, "program": program}
-    return baseline
+    if not layers[program] and (finite_float(round_.get("started_at")) or 0) > applied_at:
+        return {"id": "copy_prompt", "label": f"Copy the {program} prompt", "enabled": True,
+                "program": program, "round_dir": round_["round_dir"]}
+    return {**baseline, "program": program, "label": _MEASURE_LABELS[program]}
 
 
 def build_commissioning_view(
@@ -112,12 +109,9 @@ def build_commissioning_view(
                       "status": status, "message": messages[step_id]})
     current = next((step["id"] for step in steps if step["status"] == "active"),
                    "layout" if passive else "profile")
-    if profile_applied:
-        status = "applied"
-        action = next_program_action(applied_profile, applied, recent_rounds or {}, passive=passive)
-    elif has_layout and passive:
-        status = VIEW_STATUS_NOT_REQUIRED
-        action = next_program_action(applied_profile, applied, recent_rounds or {}, passive=True)
+    if profile_applied or (has_layout and passive):
+        status = "applied" if profile_applied else VIEW_STATUS_NOT_REQUIRED
+        action = _next_program_action(applied_profile, applied, recent_rounds or {}, passive=passive)
     elif not has_layout:
         status = "needs_layout"
         action = {"id": "declare_speaker", "label": "Declare the speaker", "enabled": True,
@@ -222,8 +216,7 @@ def load_commissioning_view(
         baseline_profile=baseline,
         calibration_level=calibration_level,
         applied_profile=applied,
-        recent_rounds=latest_banked_rounds(applied_identity(applied) or {})
-        if applied is not None or topology_is_subless_passive_mains(topology) else {},
+        recent_rounds=latest_banked_rounds(applied_identity(applied) or {}),
         first_experiment=experiment,
         applied_profile_verdict=read_applied_profile_verdict(applied),
     )

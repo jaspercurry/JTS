@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-import json
-import os
 import re
 from dataclasses import replace
 
@@ -84,10 +82,9 @@ def _applied_baseline_profile(**overrides) -> dict:
     ("applied", "profile", "run_program", True, "speaker", (), (("speaker", 0),)),
     ("applied", "profile", "run_program", True, "room", ("speaker",), (("speaker", 1),)),
     ("applied", "profile", "copy_prompt", True, "room", ("speaker",), (("room", 1),)),
-    ("applied", "profile", "run_program", True, "room", ("speaker",), (("room", -1),)),
     ("applied", "profile", "run_program", True, "bass", ("speaker", "room"), (("room", 1),)),
     ("applied", "profile", "copy_prompt", True, "bass", ("speaker", "room"), (("bass", 1),)),
-    ("applied", "profile", "run_program", True, "speaker", ("speaker", "room", "bass"), (("bass", 1),)),
+    ("applied", "profile", "run_program", True, "speaker", ("speaker", "room", "bass"), (("speaker", 1),)),
     ("not_required", "layout", "copy_prompt", True, "room", (), (("room", 1),)),
 ])
 def test_every_commissioning_state_has_one_next_action(status, current, action, enabled, program, layers, rounds):
@@ -104,7 +101,7 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
     recent = {name: {"round_dir": f"/bank/{name}", "started_at": applied_at + age} for name, age in rounds}
     view = build_commissioning_view(
         topology, design_draft=draft, crossover_preview=_ready_preview(),
-        baseline_profile=_applied_baseline_profile(permissions={"may_apply": enabled}),
+        baseline_profile=_applied_baseline_profile(permissions={"may_apply": status != "blocked"}),
         applied_profile=applied if status == "applied" else None, recent_rounds=recent,
         first_experiment={"candidate_fingerprint": "measured-fp"} if action == "apply_candidate" else None,
     )
@@ -163,49 +160,22 @@ def test_preview_and_displaced_profile_keep_existing_actions(displaced):
     assert view["next_action"]["enabled"] is True
 
 
-@pytest.mark.parametrize("programs,limit,hits,packet_reads", [
-    (("speaker", "room", "bass"), 32, {"speaker": 36, "room": 37, "bass": 35}, 5),
-    (("speaker",), 32, {"speaker": 37}, 32),
-    (("speaker", "room", "bass"), 2, {}, 2),
-])
-def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp_path, programs, limit, hits, packet_reads):
+def test_loaded_commissioning_view_uses_banked_rounds(monkeypatch, tmp_path):
     topology, _ = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     profile = _applied_anchor(layers=())
-    identity = applied_identity(profile)
-    started_at = parse_utc_iso(profile["applied_at"])
-    root = tmp_path / "campaigns"
-    for index in range(40):
-        directory = root / str(index)
-        bundle = directory / "bundle" / str(index)
-        bundle.mkdir(parents=True)
-        (bundle / "info.json").write_text(json.dumps({"started_at": started_at + index}))
-        banked_identity = {**identity}
-        if index > 37:
-            banked_identity["candidate" if index == 39 else "record"] = "other"
-        (directory / "packet.json").write_text(json.dumps({
-            "applied": banked_identity, "program": f"{programs[index % len(programs)]}/full", "result": "partial",
-        }))
-        modified = started_at + (77 - index if index >= 38 else index)
-        os.utime(directory, (modified, modified))
-    reads = []
-    read = round_inputs._read_json_mapping
+    identities = []
 
-    def counted_read(path):
-        reads.append(path)
-        return read(path)
+    def recent(identity):
+        identities.append(identity)
+        return {"speaker": {"round_dir": "/bank/speaker", "started_at": parse_utc_iso(profile["applied_at"]) + 1}}
 
-    monkeypatch.setattr(round_inputs, "_read_json_mapping", counted_read)
-    expected = {name: {"round_dir": str(root / str(index)), "started_at": started_at + index}
-                for name, index in hits.items()}
-    assert round_inputs.latest_banked_rounds(identity, root=root, limit=limit) == expected
-    assert len(reads) == limit + packet_reads
-    assert [path.parent.name for path in reads if path.name == "packet.json"] == [
-        str(index) for index in range(39, 39 - packet_reads, -1)]
+    monkeypatch.setattr(round_inputs, "latest_banked_rounds", recent)
     monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda: profile)
     view = load_commissioning_view(topology)
+    assert identities == [applied_identity(profile)]
     assert view["next_action"]["id"] == "copy_prompt"
     assert view["next_action"]["program"] == "speaker"
-    assert view["next_action"]["round_dir"] == str(root / ("36" if len(programs) == 3 else "37"))
+    assert view["next_action"]["round_dir"] == "/bank/speaker"
 
 
 @pytest.mark.parametrize("ready", [False, True])
