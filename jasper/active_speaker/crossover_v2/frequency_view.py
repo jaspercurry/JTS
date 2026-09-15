@@ -65,7 +65,7 @@ def _whole_degrees(value: Any) -> int | None:
     return value
 
 
-def _position_label(row: Mapping[str, Any]) -> str:
+def position_label(row: Mapping[str, Any]) -> str:
     degrees = _whole_degrees(row.get("position_deg"))
     # Absent on a row banked before the field existed, and 0 on every seat
     # taken at mark height — neither draws a raise on the legend.
@@ -166,7 +166,7 @@ def frequency_run(packet: Mapping[str, Any]) -> FrequencyRun:
         position_id = str(row.get("position_id") or f"position_{index + 1}")
         member = _curve(
             series_id=position_id,
-            label=_position_label(row),
+            label=position_label(row),
             kind="position",
             freqs_hz=position_freqs,
             magnitude_db=row.get("magnitude_db"),

@@ -47,7 +47,8 @@ def test_set_converts_inches_to_exact_meters(tmp_path):
     )
 
 
-def test_set_then_show_round_trips_the_declared_geometry(tmp_path):
+@pytest.mark.parametrize("gap_in", [0, 1, 8])
+def test_set_then_show_round_trips_the_declared_geometry(tmp_path, gap_in):
     path = tmp_path / "geometry.json"
     code = declare_geometry.main(
         _set_argv(
@@ -57,7 +58,7 @@ def test_set_then_show_round_trips_the_declared_geometry(tmp_path):
                 "--mic-height-m": 0.5,
                 "--distance-m": 1.2,
                 "--ceiling-height-m": 2.4,
-                "--cabinet-back-wall-in": 8,
+                "--cabinet-back-wall-in": gap_in,
                 "--cabinet-depth-mm": 300,
                 "--toe-in-degrees": 0,
                 "--side-wall-m": 1.4,
@@ -72,7 +73,7 @@ def test_set_then_show_round_trips_the_declared_geometry(tmp_path):
     loaded = DeclaredGeometry.load(path)
     assert loaded == DeclaredGeometry(
         speaker_height_m=0.84, mic_height_m=0.5, distance_m=1.2, ceiling_height_m=2.4,
-        cabinet_back_wall_m=0.2032, cabinet_depth_m=0.3, toe_in_degrees=0, side_wall_m=1.4,
+        cabinet_back_wall_m=gap_in * 0.0254, cabinet_depth_m=0.3, toe_in_degrees=0, side_wall_m=1.4,
     )
     assert "front_wall_m" not in json.loads(path.read_text())
 

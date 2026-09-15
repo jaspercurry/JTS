@@ -27,7 +27,7 @@ from openai.types.realtime import ResponseDoneEvent
 
 from jasper.tools import ToolRegistry, tool
 from jasper.voice import _base
-from jasper.voice._base import BaseLiveConnection
+from jasper.voice._base import BaseLiveConnection, upsample_16k_to_24k
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
     NEEDS_ATTENTION_CUE_SLUG,
@@ -37,7 +37,6 @@ from jasper.voice._supervisor import (
 from jasper.voice.openai_session import (
     ConnectionState,
     OpenAIRealtimeConnection,
-    _upsample_16k_to_24k,
 )
 from jasper.voice.grok_session import GROK_WEBSOCKET_BASE_URL, GrokRealtimeConnection
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
@@ -221,7 +220,7 @@ def test_upsample_16k_to_24k_produces_correct_length():
     Checks the math, not just that the call succeeds."""
     # 80 ms * 16000 Hz = 1280 samples * 2 bytes = 2560 bytes.
     pcm_16k = b"\x00\x00" * 1280
-    out, state = _upsample_16k_to_24k(pcm_16k, None)
+    out, state = upsample_16k_to_24k(pcm_16k, None)
     assert len(out) > 0
     # 80 ms * 24000 Hz = 1920 samples * 2 bytes = 3840 bytes ± 1 sample
     # of edge effect. ratecv may emit slightly fewer on the very first
@@ -234,8 +233,8 @@ def test_upsample_state_continuity_across_chunks():
     frame causes audible discontinuities at frame boundaries. Two
     successive 40 ms chunks with state should yield ~80 ms total."""
     pcm = b"\x00\x00" * 640  # 40 ms @ 16 kHz
-    out1, s1 = _upsample_16k_to_24k(pcm, None)
-    out2, _ = _upsample_16k_to_24k(pcm, s1)
+    out1, s1 = upsample_16k_to_24k(pcm, None)
+    out2, _ = upsample_16k_to_24k(pcm, s1)
     assert len(out1) + len(out2) >= 3700
 
 
@@ -3032,7 +3031,7 @@ async def test_aborted_input_is_cleared_before_the_fresh_command():
         await fresh.send_audio(command)
         await fresh.end_input()
         assert factory.conns == [wire]
-        assert committed == [_upsample_16k_to_24k(command, None)[0]]
+        assert committed == [upsample_16k_to_24k(command, None)[0]]
     finally:
         await conn.stop()
 

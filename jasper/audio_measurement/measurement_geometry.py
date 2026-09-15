@@ -98,10 +98,12 @@ class DeclaredGeometry:
         _require_range("speaker_height_m", self.speaker_height_m, MIN_HEIGHT_M, MAX_HEIGHT_M)
         _require_range("mic_height_m", self.mic_height_m, MIN_HEIGHT_M, MAX_HEIGHT_M)
         _require_range("distance_m", self.distance_m, MIN_DISTANCE_M, MAX_DISTANCE_M)
-        for name in (*_LEGACY_WALL_FIELDS.values(), "cabinet_back_wall_m"):
+        for name in _LEGACY_WALL_FIELDS.values():
             wall_m = getattr(self, name)
             if wall_m is not None:
                 _require_range(name, wall_m, MIN_WALL_M, MAX_WALL_M)
+        if self.cabinet_back_wall_m is not None:
+            _require_range("cabinet_back_wall_m", self.cabinet_back_wall_m, 0.0, MAX_WALL_M)
         if self.cabinet_back_wall_m is not None and self.front_wall_m is not None:
             raise GeometryFieldError("front_wall_m", "declare cabinet-back gap or legacy baffle distance, not both")
         if self.cabinet_depth_m is not None:

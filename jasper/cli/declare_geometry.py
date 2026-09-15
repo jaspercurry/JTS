@@ -84,13 +84,7 @@ def _print_optional(
 
 
 def _print_derived(geometry: DeclaredGeometry) -> None:
-    """The two derived lines, labelled with the distance they were derived at.
-
-    Both depend on the speaker-to-mic distance as well as the two heights, and
-    a capture is evaluated at its OWN distance rather than at this one
-    (``DeclaredGeometry.first_bounce_s``). Printing them bare invites a reader
-    to expect these digits on every row.
-    """
+    """Label reflection estimates with their rig distance; captures use their own."""
     at = f"at declared distance {geometry.distance_m:.4f} m; captures use their own"
     _print_rows((
         (f"first bounce ({at}):", f"{geometry.first_bounce_s() * 1000:.3f} ms"),
@@ -111,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
             "and optional ceiling, so entanglement_floor_hz has a provenance-"
             "labeled, non-measured source on rigs where the measured "
             "reflection finder structurally never fires (issue #3502); and "
-            "optional front/side wall distances for jasper-round-views room."
+            "optional cabinet-back and side-wall distances for jasper-round-views room."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
