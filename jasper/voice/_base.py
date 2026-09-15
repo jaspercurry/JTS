@@ -297,7 +297,7 @@ class BaseLiveTurn:
                 provider=self._conn.PROVIDER_NAME,
                 tool=redact_secrets(name, literals=self._conn._secret_literals()),
                 exc_type=type(e).__name__,
-                detail=failure_detail(e, literals=self._conn._secret_literals()),
+                detail=self._conn._redacted(e),
                 level=logging.WARNING,
             )
             return json.dumps({"error": f"tool result not serializable: {type(e).__name__}"})
@@ -685,9 +685,13 @@ class BaseLiveConnection:
         log_event(
             self._logger, "provider.server_error", provider=self.PROVIDER_NAME,
             code=code, error_type=error_type,
-            message=failure_detail(RuntimeError(message), literals=self._secret_literals()) if message else "",
+            message=self._redacted(RuntimeError(message)) if message else "",
             level=logging.WARNING,
         )
+
+    def _redacted(self, exc: BaseException) -> str:
+        """Redacted under this connection's own literals."""
+        return failure_detail(exc, literals=self._secret_literals())
 
     def _secret_literals(self) -> tuple[str, ...]:
         """Secret values this connection holds, for redaction fallback.
@@ -931,7 +935,7 @@ class BaseLiveConnection:
                 if close_reason is not None else None
             ),
             exc_type=type(exc).__name__,
-            detail=failure_detail(exc, literals=self._secret_literals()),
+            detail=self._redacted(exc),
             level=logging.WARNING,
         )
         request_unplanned_reopen(self)
@@ -967,7 +971,7 @@ class BaseLiveConnection:
                 "provider.close_failed",
                 provider=self.PROVIDER_NAME,
                 phase="session",
-                detail=failure_detail(e, literals=self._secret_literals()),
+                detail=self._redacted(e),
                 level=logging.DEBUG,
             )
 
@@ -985,7 +989,7 @@ class BaseLiveConnection:
                 "provider.close_failed",
                 provider=self.PROVIDER_NAME,
                 phase="transport",
-                detail=failure_detail(e, literals=self._secret_literals()),
+                detail=self._redacted(e),
                 level=logging.WARNING,
             )
 
@@ -1020,6 +1024,6 @@ class BaseLiveConnection:
             attempt=attempt,
             transient=transient,
             exc_type=type(exc).__name__,
-            detail=failure_detail(exc, literals=self._secret_literals()),
+            detail=self._redacted(exc),
             level=logging.WARNING,
         )
