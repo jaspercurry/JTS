@@ -197,6 +197,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
         errors.append({"artifact": "packet_fingerprint", "reason": getattr(exc, "reason", "evidence_unavailable")})
     clouds = design_clouds(inputs, manifest) if purpose == PURPOSE_SPEAKER else {}
     corners = {contract.get("alignment", {}).get("bounds", {}).get("fc_hz") for contract in limits.values()}
+    corners.discard(None)
     alignments, alignment_verdict = round_alignment(
         manifest, sources, fc_hz=next(iter(corners)) if len(corners) == 1 else None,
     ) if purpose == PURPOSE_SPEAKER else ([], None)

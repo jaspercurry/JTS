@@ -5,6 +5,7 @@ import json
 import shlex
 from dataclasses import asdict, replace
 from pathlib import Path
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -468,7 +469,8 @@ def test_round_timing_folds_lobes_and_names_the_measured_sum(speaker_round, off_
     take = group["takes"][0]
     group["takes"] = [{**take, "take_id": f"take-{deg}", "pose": {"kind": "bearing", "deg": deg, "elevation_deg": 0},
         "analysis": {"delay_us": delay, "polarity": polarity, "trim_db": {"woofer": 0, "tweeter": -3},
-                     "alignment_objective": "summed_fit_committed" if deg == 0 else "flat_sum_committed"},
+                     "alignment_objective": "summed_fit_committed" if deg == 0 else "flat_sum_committed",
+                     "snr_waived_roles": ["tweeter"] if deg == 0 else []},
         "quality": {"evidence": {"snr.tweeter.alignment.verdict": "insufficient"}}}
         for deg, delay, polarity in ((0, 13, "normal"), (-20, off_axis[0], off_axis[2]), (20, off_axis[1], off_axis[2]))]
     rows, verdict = round_alignment({"sets": [group]}, {}, fc_hz=2500)
@@ -479,6 +481,31 @@ def test_round_timing_folds_lobes_and_names_the_measured_sum(speaker_round, off_
         "decided_by": {"pose": 0, "objective": "summed_fit_committed", "take_id": "take-0"},
         "snr_waived": ["take-0"],
     }
+
+
+def test_packet_timing_keeps_known_corner_when_one_contract_is_unavailable(speaker_round, monkeypatch):
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    groups = []
+    for set_id, deg, delay, polarity in (("on-axis", 0, 13, "normal"), ("unavailable", -20, 210.591, "inverted"),
+                                       ("off-axis", 20, 234.312, "inverted")):
+        group = manifest_set([(path, record)], set_id=set_id)
+        group["takes"][0].update(take_id=set_id, pose={"kind": "bearing", "deg": deg, "elevation_deg": 0},
+                                 analysis={"delay_us": delay, "polarity": polarity, "trim_db": {"woofer": 0, "tweeter": -3}})
+        groups.append(group)
+    write_manifest(root, groups=groups)
+    contract = {"speaker": {"alignment": {"bounds": {"fc_hz": 2500}}}}
+    monkeypatch.setattr("jasper.active_speaker.round_packet.prescription_contracts",
+                        Mock(side_effect=[contract, ValueError(), contract]))
+    packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
+    assert packet["limits"]["unavailable"]["status"] == "unavailable"
+    verdict = packet["alignment_verdict"]
+    assert verdict["lobe_us"] == 200.0
+    assert verdict["folded_delay_us"] == {"0": 13.0, "-20": 10.591, "20": 34.312}
+    assert verdict["spread_us"] == 23.721
+    assert verdict["lobes_agree"] is False
 
 
 @pytest.mark.parametrize("held,declared,fault", [(False, False, "capture_clipped"), (True, True, "capture_clipped"), (True, False, None)])

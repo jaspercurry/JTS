@@ -89,9 +89,8 @@ def round_alignment(
                         and max(delays) - min(delays) <= lobe) if delays and lobe is not None else None,
         "decided_by": {"pose": decided["pose"].get("deg"), "objective": decided["objective"],
                        "take_id": decided["take_id"]} if decided else None,
-        "snr_waived": [row["take_id"] for row in committed if row["snr_waived_roles"]
-                       or (row["objective"] == ALIGNMENT_COMMITTED_SUMMED_FIT
-                           and any(snr["verdict"] == "insufficient" for snr in row["snr"].values()))],
+        "snr_waived": [row["take_id"] for row in committed
+                       if row["objective"] == ALIGNMENT_COMMITTED_SUMMED_FIT and row["snr_waived_roles"]],
     }
 
 

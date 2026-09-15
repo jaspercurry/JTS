@@ -398,13 +398,14 @@ def _log_measure_diag(
     tweeter_repeat_epsilon_ppm = (
         drift.per_role_epsilon_ppm.get(tweeter_role) if drift and tweeter_role else None
     )
+    evidence = analysis_json(analysis)
     log_event(
         logger, "correction.crossover_v2_measure_diag",
         session_id=session_id, accepted=verdict.accepted, code=verdict.code or "",
         evidence=verdict.evidence,
         alignment_confidence=round(float(align.confidence), 4) if align else None,
         alignment_confidence_source=(align.confidence_source if align else None),
-        alignment_seed_delay_us=(evidence := analysis_json(analysis))["alignment_seed_delay_us"],
+        alignment_seed_delay_us=evidence["alignment_seed_delay_us"],
         gcc_delay_us=evidence["gcc_delay_us"],
         alignment_refinement_delta_us=evidence["refinement_delta_us"],
         gate_window_ms=gate_window_ms,
