@@ -649,6 +649,13 @@ def test_commission_ramp_abort_http_contains_secondary_failures(
             {},
         ),
         (
+            "GET",
+            "/active-speaker/tuning-handoff",
+            "_active_speaker_tuning_handoff_payload",
+            "sound.active_speaker_tuning_handoff",
+            {},
+        ),
+        (
             "POST",
             "/active-speaker/channel-protection",
             "_active_speaker_channel_protection_save_payload",

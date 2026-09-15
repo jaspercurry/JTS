@@ -27,11 +27,15 @@ READING_ORDER: tuple[tuple[str, str, str], ...] = (
     ),
 )
 
+#: Where deploy/lib/install/python-runtime.sh's install_jasper() copies the
+#: operator docs. Existence is checked rather than assumed.
 _INSTALLED_DOCS_DIR = Path("/opt/jasper/docs")
+#: The checkout's docs, anchored to this package rather than the current directory.
 _REPO_DOCS_DIR = Path(__file__).resolve().parents[2] / "docs"
 
 
 def doc_path(name: str) -> str:
+    """Resolve an installed or checkout path; otherwise return an identifier."""
     for candidate in (_INSTALLED_DOCS_DIR / name, _REPO_DOCS_DIR / name):
         if candidate.exists():
             return str(candidate)
@@ -39,6 +43,7 @@ def doc_path(name: str) -> str:
 
 
 def reading_order() -> list[dict[str, Any]]:
+    """Entry contract, then optional references, with each document's size."""
     order: list[dict[str, Any]] = []
     for label, name, gives in READING_ORDER:
         path = doc_path(name)

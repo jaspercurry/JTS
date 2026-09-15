@@ -548,6 +548,10 @@ def _make_handler(
                             query.get("program", ["speaker"])[0]))
                     except ValueError as e:
                         self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+                    except Exception as e:  # noqa: BLE001
+                        send_route_failure(
+                            self._send_json, e, logger=logger, event=event,
+                        )
                     return
                 try:
                     self._send_json(_json_route_payload(builder))
