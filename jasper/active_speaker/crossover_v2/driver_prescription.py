@@ -1000,7 +1000,7 @@ def _check_displaced(
     displaced = 0
     worst_boost = 0.0
     worst_role: str | None = None
-    for role in sorted({str(entry["role"]) for entry in filters}):
+    for role in sorted({str(entry["role"]) for entry in filters} or passbands.keys()):
         previous = [dict(entry) for entry in incumbent.get(role) or ()]
         displaced += len(previous)
         if not previous:
@@ -1091,19 +1091,7 @@ def _pre_registration(raw: Mapping[str, Any]) -> tuple[float | None, float | Non
 def _parse_pinned_trim(
     raw: Any, filters: Sequence[Mapping[str, Any]]
 ) -> tuple[tuple[str, float], ...]:
-    """The named trims, judged ONCE — shape, range and scope in one place.
-
-    **Scope: only a role this same document already names.** A pin on a role the
-    filters say nothing about is a bare level command, which is exactly what
-    ``role_attenuations_db`` stays prohibited for. The pin travels with the chain
-    it protects or it does not travel.
-
-    **Range: non-positive, floored at :data:`MAX_ATTENUATION_DB`.** Consumed
-    from the solver's own constant so this door and
-    ``MeasuredCrossoverCandidate.__post_init__`` cannot admit different depths.
-    Refused HERE as well as there so a prescriber gets an actionable answer at
-    the door instead of losing the round to a refusal raised mid-build.
-    """
+    """Pins protect the level context of a replaced or cleared chain."""
     if raw is None:
         return ()
     if not isinstance(raw, Mapping):
@@ -1126,12 +1114,11 @@ def _parse_pinned_trim(
                 f"pinned_trim_db names role {role!r} more than once",
                 role=role,
             )
-        if role not in named:
+        if filters and role not in named:
             _refuse(
                 TRIM_PIN_MALFORMED,
                 f"pinned_trim_db names role {role!r}, which this document "
-                "prescribes no filters for: a trim is pinned to protect the "
-                "chain beside it, never on its own",
+                "neither replaces nor clears the chain for",
                 role=role,
                 document_names=sorted(named),
             )
@@ -1354,14 +1341,8 @@ def driver_prescription_to_candidate_fields(
     ``MeasuredCrossoverCandidate.fingerprint`` is ``field(init=False)``, so a
     value stamped on afterwards is refused as ``candidate_tampered``.
 
-    MERGE BY ROLE: a document's named roles replace THOSE roles' filters,
-    unnamed roles keep their fitted ones. Replacing wholesale would
-    un-linearize a driver the document never mentioned; composing would double
-    corrections and could exceed the eight-filter branch ceiling from two
-    authors neither of whom sees the total. ``fitted`` is therefore REQUIRED
-    and undefaulted — forgetting it costs a driver its linearization,
-    invisibly, until somebody measures. Pass the candidate's own
-    ``{role: LinearizationFit.to_dict()}``, or ``None`` when no fit ran.
+    Named roles replace those roles' filters; unnamed roles keep their fitted
+    ones. An explicitly empty filter list clears every role's chain.
 
     The per-role value carries ``filters`` and ``prescribed_by`` and nothing
     that would claim to be a FIT: a prescription has no fit band, residual or
@@ -1383,6 +1364,8 @@ def driver_prescription_to_candidate_fields(
     if prescription is None:
         return {}
     field = driver_prescription_route(prescription)
+    if not prescription.filters:
+        return {field: {}}
     merged: dict[str, Any] = {
         str(role): value
         for role, value in (fitted or {}).items()
@@ -1475,7 +1458,8 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "{<role>: <dB, between "
                 f"{MAX_ATTENUATION_DB} and 0>}} — pin that driver's LEVEL "
                 "instead of letting this round re-solve it. Only for a role "
-                "you also prescribe filters for. Use it when the chain you are "
+                "whose chain you replace or clear; filters: [] clears every "
+                "role's chain and admits trim pins. Use it when the chain you are "
                 "prescribing was shaped against a level this round will not "
                 "re-derive: the trim is re-solved every round from a "
                 "level-match datum, so a chain carried over from another round "
@@ -1506,7 +1490,8 @@ def driver_prescription_response_format() -> dict[str, Any]:
         "filters_are_a_total": (
             "for every role you name, prescribe the WHOLE per-driver "
             "correction that branch should carry, not a delta. A role you do "
-            "not name is not changed"
+            "not name is not changed. An empty filters list clears every role's "
+            "chain; named trim pins still apply and other trims stay at the base"
         ),
         "bounds": {
             "max_filters_per_role": DRIVER_MAX_FILTERS_PER_ROLE,

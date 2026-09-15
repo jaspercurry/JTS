@@ -174,7 +174,7 @@ def compose_candidate(
         driver = selected["driver"] or {}
         if driver:
             trims.update(driver["role_attenuations_db"])
-            linearization.update(driver["linearization"])
+            linearization = {**linearization, **driver["linearization"]} if driver["linearization"] else {}
         else:
             trims = {role: 0.0 for role in trims}
             linearization = {}

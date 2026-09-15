@@ -2978,15 +2978,8 @@ def test_an_admitted_boost_is_still_charged_and_re_proved_at_the_graph(tmp_path)
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
 
 
-def test_a_one_role_document_leaves_the_other_roles_fitted_filters_alone(packet):
-    """MERGE BY ROLE — the ruling, pinned at the layer that implements it.
-
-    The response format promises "a role you do not name is not changed", and
-    the blend precedent's wholesale replace would have broken that promise
-    silently: a prescriber correcting the tweeter would un-linearize the woofer
-    without either of them saying so. The named role's filters are the
-    document's; every other role's are the fit's, byte for byte.
-    """
+@pytest.mark.parametrize("empty", [False, True])
+def test_driver_document_replaces_named_roles_or_clears_all_fitted_chains(packet, empty):
     fitted = {
         "woofer": {
             "filters": [{"biquad_type": "Peaking", "freq": 95.0, "q": 3.0,
@@ -3001,18 +2994,18 @@ def test_a_one_role_document_leaves_the_other_roles_fitted_filters_alone(packet)
             "residual_rms_db": 1.1,
         },
     }
-    prescription = _gate(packet, _document([_cut()], packet))
+    prescription = _gate(packet, _document([] if empty else [_cut()], packet))
 
     merged = driver_prescription_to_candidate_fields(prescription, fitted=fitted)[
         LINEARIZATION_CANDIDATE_FIELD
     ]
 
-    # The unnamed role is the fit's own record, untouched — residuals and all.
+    if empty:
+        assert merged == {}
+        return
     assert merged["woofer"] == fitted["woofer"]
-    # The named role is the document's, and carries no fit-quality claim.
     assert set(merged["tweeter"]) == {"filters", "prescribed_by"}
     assert merged["tweeter"]["filters"][0]["freq"] == TWEETER_FEATURE_HZ
-    # Both roles still reduce for the emitter.
     assert set(linearization_filters_by_role(merged)) == {"woofer", "tweeter"}
     assert linearization_filters_by_role(merged)["woofer"][0]["freq"] == 95.0
 
