@@ -436,8 +436,9 @@ def test_the_diagnostic_reader_refuses_an_unanswerable_exact_read(
         assert excinfo.value.reason == REFUSE_CLOSE_REFERENCE_NO_CAPTURE
 
 
+@pytest.mark.parametrize("branches", [("woofer", "tweeter"), ("left:woofer", "left:woofer:rear")])
 def test_an_analyzed_raw_branch_record_reconstructs_after_measured_clock_drift(
-    tmp_path: Path,
+    tmp_path: Path, branches,
 ) -> None:
     """The 5% bound includes phase after measured drift correction; the
     separate 0.2 dB bound keeps that tolerance from hiding a level error."""
@@ -446,7 +447,7 @@ def test_an_analyzed_raw_branch_record_reconstructs_after_measured_clock_drift(
         1600, measurement_band_hz=(150, 20_000), gain_db=-20,
         sweep_s=0.6, courtesy_prelude=False,
     )
-    program = build_branch_program(base, {"woofer": 0, "tweeter": 1})
+    program = build_branch_program(base, dict(zip(branches, (0, 1))))
     capture = _synthesize(
         program,
         woofer_ir=_band_impulse(200, 150, 20_000, 1.0),
@@ -469,7 +470,8 @@ def test_an_analyzed_raw_branch_record_reconstructs_after_measured_clock_drift(
     })
     sidecar.write_text(json.dumps(document))
 
-    basis = read_diagnostic(root, "raw", 7.0)
+    basis = read_diagnostic(root, "raw", 7.0, branch_roles=branches)
+    assert basis.branches == branches
 
     assert analysis.drift.epsilon_ppm == pytest.approx(80.0, abs=2.0)
     predicted = predict_transfer(basis, {})
@@ -483,6 +485,26 @@ def test_an_analyzed_raw_branch_record_reconstructs_after_measured_clock_drift(
         / np.maximum(np.abs(basis.transfers["summed"]), 1e-12)
     ))
     assert np.percentile(magnitude_error_db[crossover], 95) < 0.2
+
+
+def test_cli_reconstructs_selected_physical_branches(diagnostic_round, capsys):
+    path = diagnostic_round / "bundle/b0/summed/summed_old.json"
+    document = json.loads(path.read_text())
+    identities = {"woofer": "left:woofer", "tweeter": "left:woofer:rear", "summed": "summed"}
+    for response in document["branch_diagnostic"]["responses"]:
+        response["role"] = identities[response["role"]]
+    path.write_text(json.dumps(document))
+    command = ["forward-model", str(diagnostic_round), "--set", "old", "--window-ms", "7"]
+    assert cli_main(command) == EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["reason"] == round_captures.REFUSE_CAPTURE_UNREADABLE
+    assert cli_main([*command, "--branches", "left:woofer", "left:woofer:rear"]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["branches"] == ["left:woofer", "left:woofer:rear"]
+    assert summary["comparison_kind"] == "same_take_reconstruction"
+    assert summary["reconstruction"]["raw_rms_db"] < 1e-8
+    assert summary["reconstruction"]["phase"]["rms_deg"] < 1e-8
+    assert cli_main([*command, "--branches", "left:woofer", "left:woofer"]) == EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["detail"]["field"] == "branch_roles"
 
 
 @pytest.mark.parametrize("override", [False, True])

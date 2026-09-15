@@ -19,18 +19,22 @@ def is_branch_program(program: ExcitationProgram) -> bool:
 
 
 def build_branch_program(summed: ExcitationProgram, role_channels: Mapping[str, int]) -> ExcitationProgram:
-    if set(role_channels) != {"woofer", "tweeter"} or set(role_channels.values()) != {0, 1}:
-        raise ValueError("branch diagnostic requires woofer and tweeter on separate stereo channels")
+    if len(role_channels) != 2 or any(not isinstance(role, str) or not role or role == "summed" for role in role_channels) or any(
+        type(channel) is not int for channel in role_channels.values()
+    ) or set(role_channels.values()) != {0, 1}:
+        raise ValueError("branch diagnostic requires two distinct branch identities on separate stereo input channels")
+    # Retain existing program identities, including reversed legacy input routing.
+    first, second = ("woofer", "tweeter") if set(role_channels) == {"woofer", "tweeter"} else sorted(role_channels, key=role_channels.__getitem__)
     sweep = summed.segment("sweep_verify")
     tail = summed.segment("tail")
-    segments = [replace(seg, role="woofer", channel=role_channels["woofer"],
-                        segment_id=seg.segment_id.replace("summed", "woofer"))
+    segments = [replace(seg, role=first, channel=role_channels[first],
+                        segment_id=seg.segment_id.replace("summed", first))
                 if seg.channel is not None else seg
                 for seg in summed.segments if seg.start_sample < sweep.start_sample]
     cursor = sweep.start_sample
     # The two exact repeats let the existing drift reader fit the recording clock.
-    for name, role in (("sweep_w", "woofer"), ("sweep_t", "tweeter"),
-                       ("sweep_w_rep", "woofer"), ("sweep_t_rep", "tweeter"),
+    for name, role in (("sweep_w", first), ("sweep_t", second),
+                       ("sweep_w_rep", first), ("sweep_t_rep", second),
                        ("sweep_verify", "summed")):
         if role == "summed":
             segments.extend(replace(sweep, segment_id=name if channel == 0 else "sum_companion",

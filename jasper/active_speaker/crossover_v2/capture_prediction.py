@@ -15,7 +15,6 @@ import numpy as np
 
 from jasper.audio_measurement.alignment import fractional_shift
 from jasper.audio_measurement.gating import f_trusted_floor_hz, f_valid_floor_hz
-from jasper.audio_measurement.program_analysis import predicted_branch_sum
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate, load_candidate_artifact
 from jasper.active_speaker.commissioning_admission import parse_running_graph
@@ -26,7 +25,7 @@ from .gate_sweep import N_FFT, PHASE_GATE_LEAD_MS, REFERENCE_RUNG_MS, gated_segm
 from .graph_prediction import GraphPredictionError, RelativeGraphResponse, relative_branch_response
 from .round_captures import PoseCapture, capture_fingerprint, capture_row, select_capture_roles
 
-ROLES = ("woofer", "tweeter", "summed")
+DEFAULT_BRANCHES = ("woofer", "tweeter")
 
 
 @dataclass(frozen=True)
@@ -36,6 +35,10 @@ class DiagnosticBasis:
     transfers: Mapping[str, np.ndarray]
     band_hz: tuple[float, float]
     window: Mapping[str, Any]
+
+    @property
+    def branches(self) -> tuple[str, ...]:
+        return tuple(role for role in self.transfers if role != "summed")
 
     @property
     def document(self) -> Mapping[str, Any]:
@@ -48,10 +51,13 @@ class DiagnosticBasis:
                 "capture_fingerprint": capture_fingerprint(capture)}
 
 
-def read_diagnostic(round_dir: Path, capture_id: str, window_ms: float) -> DiagnosticBasis:
+def read_diagnostic(round_dir: Path, capture_id: str, window_ms: float,
+                    *, branch_roles: tuple[str, str] = DEFAULT_BRANCHES) -> DiagnosticBasis:
     if not np.isfinite(window_ms) or window_ms <= 0:
         raise ForwardModelError("window_ms must be positive and finite", detail={"field": "window_ms", "capture_id": capture_id})
-    captures = select_capture_roles(round_dir, capture_id=capture_id, roles=ROLES)
+    if len(branch_roles) != 2 or any(not isinstance(role, str) or not role or role == "summed" for role in branch_roles) or len(set(branch_roles)) != 2:
+        raise ForwardModelError("select two distinct recorded branch identities", detail={"field": "branch_roles"})
+    captures = select_capture_roles(round_dir, capture_id=capture_id, roles=(*branch_roles, "summed"))
     summed = captures["summed"]
     rate = summed.sample_rate
     pre = max(float(c.preprocessing["pre_guard_samples"]) for c in captures.values())
@@ -72,7 +78,7 @@ def read_diagnostic(round_dir: Path, capture_id: str, window_ms: float) -> Diagn
             np.pad(capture.ir, (margin, length - capture.ir.size + margin)), shifts[role],
         )
     # The basis branches choose the window; the measured sum never fits its own reference.
-    anchor = min(int(np.argmax(abs(aligned[role]))) for role in ROLES[:2])
+    anchor = min(int(np.argmax(abs(aligned[role]))) for role in branch_roles)
     span = round(window_ms * rate / 1000)
     lead = round(PHASE_GATE_LEAD_MS * rate / 1000)
     end = anchor + span + 1
@@ -80,7 +86,7 @@ def read_diagnostic(round_dir: Path, capture_id: str, window_ms: float) -> Diagn
         end > margin + c.ir.size + shifts[role] for role, c in captures.items()
     ):
         raise ForwardModelError("the common window exceeds the retained impulse or FFT span", detail={"field": "window_ms", "capture_id": capture_id, "window_ms": window_ms})
-    if any(int(np.argmax(abs(aligned[role]))) >= end for role in ROLES[:2]):
+    if any(int(np.argmax(abs(aligned[role]))) >= end for role in branch_roles):
         raise ForwardModelError("the common window does not contain both direct arrivals", detail={"field": "window_ms", "capture_id": capture_id, "window_ms": window_ms})
     freqs = np.fft.rfftfreq(N_FFT, 1 / rate)
     band = (
@@ -107,11 +113,7 @@ def read_diagnostic(round_dir: Path, capture_id: str, window_ms: float) -> Diagn
 
 
 def predict_transfer(basis: DiagnosticBasis, changes: Mapping[str, np.ndarray]) -> np.ndarray:
-    return predicted_branch_sum(
-        basis.transfers["woofer"] * changes.get("woofer", 1),
-        basis.transfers["tweeter"] * changes.get("tweeter", 1),
-        0, 0, 1, freqs_hz=basis.freqs_hz, residual_delay_us=0,
-    )
+    return np.sum([basis.transfers[role] * changes.get(role, 1) for role in basis.branches], axis=0)
 
 
 def prediction_record(basis: DiagnosticBasis, transfer: np.ndarray) -> PredictedSum:
@@ -146,7 +148,7 @@ def compare_transfer(basis: DiagnosticBasis, transfer: np.ndarray, measured: Dia
     delta["phase"] = {"status": "unavailable", "reason": "separate recordings have no shared absolute time origin"}
     if same_take and np.array_equal(basis.freqs_hz, measured.freqs_hz):
         # Deep cancellations and weak bins cannot support a confident phase error.
-        reference = abs(basis.transfers["woofer"]) + abs(basis.transfers["tweeter"])
+        reference = np.sum([abs(basis.transfers[role]) for role in basis.branches], axis=0)
         reliable = (np.minimum(abs(transfer), abs(actual)) > np.max(reference) * 1e-3)
         reliable &= np.minimum(abs(transfer), abs(actual)) > reference * .01
         phase = np.degrees(np.angle(transfer * actual.conjugate()))
@@ -208,12 +210,13 @@ def capture_prediction(
     candidate_root: Path | None = None, measured_round: Path | None = None,
     measured_capture_id: str | None = None,
     expected_prediction_fingerprint: str | None = None,
+    branch_roles: tuple[str, str] = DEFAULT_BRANCHES,
 ) -> dict[str, Any]:
     if measured_round is not None and measured_capture_id is None:
         raise ForwardModelError("comparison requires an exact capture", detail={"required": "measured_capture_id"})
     if expected_prediction_fingerprint is not None and measured_capture_id is None:
         raise ForwardModelError("an expected prediction fingerprint requires a measured capture", detail={"required": "measured_capture_id"})
-    basis = read_diagnostic(round_dir, capture_id, REFERENCE_RUNG_MS if window_ms is None else window_ms)
+    basis = read_diagnostic(round_dir, capture_id, REFERENCE_RUNG_MS if window_ms is None else window_ms, branch_roles=branch_roles)
     reconstruction_tf = predict_transfer(basis, {})
     reconstruction = compare_transfer(basis, reconstruction_tf, basis)
     candidate = None
@@ -238,8 +241,9 @@ def capture_prediction(
             raise ForwardModelError("this forecast requires the same speaker base and no room correction")
         outputs = candidate.source_preset.channel_map.outputs
         channels = {output.driver_role: output.index for output in outputs}
-        if len(outputs) != 2 or set(channels) != set(ROLES[:2]):
-            raise ForwardModelError("the diagnostic predicts one woofer and one tweeter")
+        if len(outputs) != 2 or set(channels) != set(basis.branches):
+            raise ForwardModelError("candidate prediction needs an unambiguous output binding for each recorded branch",
+                                    detail={"field": "branch_output_binding", "branches": list(basis.branches)})
         _recorded_graph(basis)
         source_graph, target_graph = [parse_running_graph(compile_candidate_config(c, playback_device="prediction")) for c in (source_candidate, candidate)]
         stereo = {role: {0: 1.0, 1: 1.0} for role in channels}
@@ -258,7 +262,7 @@ def capture_prediction(
     comparison = None
     context = None
     if measured_capture_id is not None:
-        measured = read_diagnostic(measured_round or round_dir, measured_capture_id, basis.window["window_ms"])
+        measured = read_diagnostic(measured_round or round_dir, measured_capture_id, basis.window["window_ms"], branch_roles=branch_roles)
         expected_candidate = candidate.fingerprint if candidate is not None else basis.source["candidate_id"]
         if not expected_candidate or measured.source["candidate_id"] != expected_candidate:
             raise ForwardModelError("comparison take does not name the predicted candidate", reason="forward_model_candidate_mismatch", detail={
@@ -300,6 +304,7 @@ def capture_prediction(
         "basis": basis.source, "candidate_id": candidate.fingerprint if candidate is not None else basis.source["candidate_id"],
         "measured": measured.source if measured is not None else None,
         "window": dict(basis.window),
+        "branches": list(basis.branches),
         "reconstruction": _metric_summary(reconstruction),
         "predicted_minus_measured": _metric_summary(comparison),
         "acceptance": acceptance_block(
