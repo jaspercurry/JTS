@@ -159,19 +159,17 @@ Read each `packet["bass"]` entry's `set_id` and `takes`. Each take has
 harmonic coverage is not low distortion. Read `diagnostics` before comparing
 curves. Requested gain alone does not establish actual DSP drive.
 
-When present, `bass_table.tables[].levels[]` records `level_key`, `outcome`,
-`selected_is_measured`, `within_tolerance_on_qualified_bins` and `fit`.
-Read each table's `target`, `tolerance_db` and `reference_band_hz`. The current
-target is flat over 20 to 60 Hz within 3 dB, relative to the fit reference,
-from `TARGET` and `TOLERANCE_DB` in `jasper/bass_extension/measurement.py`.
-This is the experiment's target, not a claim about human hearing. Check
-`fit.unqualified_hz` rather than treating missing bins as success.
+The table, `bass_table.tables[].levels[]`, shows each level's bass reach.
+`base_response` and `candidate_response` give −3, −6 and −10 dB corners,
+slope and `qualified_from_hz`. Bounded corners end at qualified coverage.
+Base and candidate SPL use each take's calibrated loudest half-second.
 
-A shape proposal needs support at every measured level. A predicted middle
-setting is still unmeasured. For each level, account for remaining headroom,
-the level available before a limit is reached. The table explicitly does
-not establish hardware headroom; report it as unknown unless separate
-evidence supplies it. The packet has no hardware headroom field.
+`prescribed_boost_db` minus `realized_boost_db` is the drive evidence.
+`compression_db` includes compressor and driver action in the boost band.
+H2/H3 show `harmonics_flat`, `harmonics_rose` with band and delta, or `unknown`.
+Compare with repeat spread, or a 1 dB evidence floor with one repeat.
+This is not a hearing threshold.
+Read `snr_margin_db` and `repeat_spread_db`; `position_spread_db` is reserved.
 
 Driver, room and bass boosts spend one shared headroom budget
 (`0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md`).
@@ -179,10 +177,12 @@ The owner's jts3 observation in plan #5073 attributes the 40 to 50 Hz hole
 at that mark to the room. It is a placement observation, not a driver target
 or a universal frequency exclusion. Test changed placement on its evidence.
 
-Good means the target band met at every level with positive, established
-headroom. Otherwise report `insufficient_evidence` with the missing level or
-headroom evidence named. Preserve the table's actual outcome codes alongside
-that conclusion. Do not change an unknown into a pass.
+Grade reach, boost and harmonics per level.
+Flat 20 to 60 Hz within 3 dB remains the experiment's declared target,
+owned by `TARGET` and `TOLERANCE_DB` in `jasper/bass_extension/measurement.py`.
+Preserve `outcome` codes and missing bins in `fit`. This target is one field.
+Middle settings remain unmeasured. Harmonics give no gate or hardware limit.
+Unknown does not mean pass.
 
 ## Five rules that hold everywhere
 

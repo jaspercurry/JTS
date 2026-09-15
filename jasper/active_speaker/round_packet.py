@@ -88,7 +88,9 @@ def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Cal
         table = {"status": "unavailable", "code": getattr(exc, "code", "bass_fit_inputs_missing"),
                  "error_type": type(exc).__name__}
     packet = json.loads(destination.read_text())
-    atomic_write_json(destination, {**packet, "bass_table": table})
+    packet["bass_table"] = table
+    atomic_write_json(destination, packet)
+    (round_dir / INDEX_FILENAME).write_text(packet_index(packet, round_dir, packet["artifacts"]["bass_views"], manifest))
     return destination
 
 

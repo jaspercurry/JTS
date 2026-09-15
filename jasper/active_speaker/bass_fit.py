@@ -20,11 +20,47 @@ from .crossover_v2.refusal_copy import CrossoverV2Refused
 from .measurement_bass import BASS_BANDS_HZ
 
 REFERENCE_BAND_HZ = (300.0, 1000.0)
+BASS_GRID_POINTS = 121
 
 
 class BassFitCoverageUnavailable(CrossoverV2Refused):
     def __init__(self) -> None:
         super().__init__(code="bass_fit_common_coverage_unavailable")
+
+
+def aligned_bass_pair(
+    before: Mapping[str, Any], after: Mapping[str, Any], grid: np.ndarray,
+    reference_band_hz: tuple[float, float],
+) -> tuple[float, list[np.ndarray]]:
+    curve = before["frequency_curve"]
+    rf, ry = np.asarray(curve["freqs_hz"]), np.asarray(curve["magnitude_db"], dtype=float)
+    anchor = (rf >= reference_band_hz[0]) & (rf <= reference_band_hz[1]) & np.isfinite(ry)
+    if (not before["sweep_band_hz"][0] <= reference_band_hz[0] < reference_band_hz[1] <= before["sweep_band_hz"][1]
+            or not anchor.any()):
+        raise CrossoverV2Refused(code="bass_fit_reference_band_unavailable")
+    reference = float(np.median(ry[anchor]))
+    probe = {"freqs_hz": grid, "fundamental_db": np.zeros(grid.size), "fundamental_qualified": np.ones(grid.size)}
+    curves = []
+    for take in (before, after):
+        f, _, y = common_bass_bins(probe, take, "fundamental_db", "fundamental_qualified")
+        values = np.full(grid.shape, np.nan)
+        values[np.searchsorted(grid, f)] = y - reference
+        curves.append(values)
+    return reference, curves
+
+
+def smooth_bass_curve(grid: np.ndarray, values: np.ndarray) -> np.ndarray:
+    indices = np.flatnonzero(np.isfinite(values))
+    # A qualification gap cannot contribute power to either neighbouring region.
+    for section in np.split(indices, np.flatnonzero(np.diff(indices) > 1) + 1):
+        if section.size:
+            values[section] = smooth_fractional_octave(grid[section], values[section], fraction=3)
+    return values
+
+
+def smooth_bass_pair(grid: np.ndarray, curves: Sequence[np.ndarray]) -> list[np.ndarray]:
+    shared = np.isfinite(curves).all(axis=0)
+    return [smooth_bass_curve(grid, np.where(shared, curve, np.nan)) for curve in curves]
 
 
 def fit_bass_shape(
@@ -40,7 +76,7 @@ def fit_bass_shape(
         raise CrossoverV2Refused(code="bass_target_invalid")
     if not pairs or not 0 < reference_band_hz[0] < reference_band_hz[1]:
         raise CrossoverV2Refused(code="bass_fit_inputs_missing")
-    grid = np.geomspace(tf[0], tf[-1], 121)
+    grid = np.geomspace(tf[0], tf[-1], BASS_GRID_POINTS)
     desired = np.interp(np.log(grid), np.log(tf), ty)
     grouped: dict[Any, list[tuple[np.ndarray, np.ndarray]]] = defaultdict(list)
     sources = []
@@ -61,21 +97,7 @@ def fit_bass_shape(
                                        required=tuple(key for key in first if key != "pose_key"))
         if match["context"]["incompatible_fields"] or across["incompatible_fields"]:
             raise CrossoverV2Refused({"pair": match["context"], "across": across}, code="bass_fit_capture_context_changed")
-        curve = before["frequency_curve"]
-        rf, ry = np.asarray(curve["freqs_hz"]), np.asarray(curve["magnitude_db"])
-        anchor = (rf >= reference_band_hz[0]) & (rf <= reference_band_hz[1]) & np.isfinite(ry)
-        if (not before["sweep_band_hz"][0] <= reference_band_hz[0] < reference_band_hz[1] <= before["sweep_band_hz"][1]
-                or not anchor.any()):
-            raise CrossoverV2Refused(code="bass_fit_reference_band_unavailable")
-        reference = float(np.median(ry[anchor]))
-        # Use the full qualification masks when resampling so holes stay holes.
-        curves = []
-        for take in (before, after):
-            probe = {"freqs_hz": grid, "fundamental_db": np.zeros(grid.size), "fundamental_qualified": np.ones(grid.size)}
-            f, _, y = common_bass_bins(probe, take, "fundamental_db", "fundamental_qualified")
-            values = np.full(grid.shape, np.nan)
-            values[np.searchsorted(grid, f)] = y - reference
-            curves.append(values)
+        reference, curves = aligned_bass_pair(before, after, grid, reference_band_hz)
         shared = np.isfinite(curves).all(axis=0)
         for values in curves:
             values[~shared] = np.nan
