@@ -857,7 +857,7 @@ def _playback_is_program_bake_pipe(text: str) -> bool:
     read-heavy module must not pull eagerly (the leader_config sibling uses the
     same lazy-import idiom)."""
     from jasper.multiroom.leader_config import playback_is_pipe
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.reconcile import SNAPFIFO
 
     return playback_is_pipe(text, SNAPFIFO)
 

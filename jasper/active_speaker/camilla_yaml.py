@@ -3782,7 +3782,7 @@ def emit_active_speaker_program_bake_config(
 
     # Lazy: the snapserver pipe target lives in the grouping reconciler, whose
     # module-load chain this read-heavy emitter must not pull eagerly.
-    from jasper.multiroom.reconcile_plan import SNAPFIFO
+    from jasper.multiroom.reconcile import SNAPFIFO
 
     program_yaml = emit_sound_config(
         profile,
