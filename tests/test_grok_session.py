@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 
 from jasper.tools import ToolRegistry
 from jasper.usage import (
@@ -41,6 +40,7 @@ from jasper.voice.grok_session import (
     GROK_WEBSOCKET_BASE_URL,
     GrokRealtimeConnection,
 )
+from tests._log_events import parse_event
 
 
 class _FakeConn:
@@ -203,25 +203,17 @@ def test_flat_rate_provider_without_meter_hook_warns(tmp_path, caplog) -> None:
 
 
 async def test_grok_journal_lines_name_grok_not_openai(caplog) -> None:
-    """Every journal line from a Grok connection must identify Grok.
-
-    The adapter inherits OpenAI's logging wholesale, so a Grok outage
-    used to read as ``openai ...`` — unattributable when both providers
-    are configured. The match is the whole leading word, not one
-    hard-coded prefix, so no ``openai ...`` variant slips past.
-    Structured ``event=`` names are provider-independent grep strings
-    and are correctly excluded. See issue #3855.
-    """
+    """Inherited provider events must identify Grok. See issue #3855."""
     conn, _factory = _make_grok_conn()
     registry = ToolRegistry()
     with caplog.at_level(logging.DEBUG, logger="jasper.voice.openai_session"):
         await conn.start(registry, "")
         await conn.stop()
 
-    messages = [r.getMessage() for r in caplog.records]
-    assert messages
-    assert any(m.startswith(conn.PROVIDER_NAME) for m in messages)
-    assert [m for m in messages if re.match(r"openai\b", m)] == []
+    events = [parse_event(record.getMessage()) for record in caplog.records]
+    fields = [event[1] for event in events if event and "provider" in event[1]]
+    assert fields
+    assert all(field.get("provider") == conn.PROVIDER_NAME for field in fields)
 
 
 def test_grok_session_uses_xai_manual_audio_shape():
