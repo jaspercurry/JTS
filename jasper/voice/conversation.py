@@ -83,9 +83,13 @@ async def continuous_watchdog(
                 )
             continue
         if not lost and accepted_at < speech_started:
-            if nudged_speech_started != speech_started and now - last_speech >= NUDGE_SILENCE_SEC:
-                nudged_speech_started = speech_started
-                await turn.nudge_backend(silence_ms=int((now - last_speech) * 1000))
+            if (
+                nudged_speech_started != speech_started
+                and turn.last_chunk_at() < speech_started
+                and now - last_speech >= NUDGE_SILENCE_SEC
+            ):
+                if await turn.nudge_backend(silence_ms=int((now - last_speech) * 1000)):
+                    nudged_speech_started = speech_started
             if now - last_speech >= UNANSWERED_SPEECH_SEC:
                 if turn.last_user_transcript_at() >= speech_started and not turn.backend_pending:
                     return "unanswered_utterance"

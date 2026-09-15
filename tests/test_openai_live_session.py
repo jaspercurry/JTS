@@ -30,7 +30,7 @@ from tests._log_events import event_field_maps, event_fields, event_records
 from tests._playout import FakeTts
 
 
-CLIENT_EVENT: TypeAdapter[ClientEventParam] = TypeAdapter(ClientEventParam)
+CLIENT_EVENT = TypeAdapter(ClientEventParam)
 
 
 class LiveSocket:
@@ -97,8 +97,8 @@ def backend(delegation, kind, **fields):
     return {"type": "response.event", "delegation_id": delegation, "event": {"type": kind, **fields}}
 
 
-@pytest.mark.parametrize("state", ["fresh", "completed", "pending", "lost"])
-async def test_backend_nudge_only_sends_when_no_delegation_is_in_flight(caplog, state):
+@pytest.mark.parametrize("state", ["fresh", "completed", "pending", "lost", "send_failed"])
+async def test_backend_nudge_only_sends_when_no_delegation_is_in_flight(monkeypatch, caplog, state):
     caplog.set_level(logging.INFO)
     async with live_turn() as turn:
         if state in {"completed", "pending"}:
@@ -110,7 +110,15 @@ async def test_backend_nudge_only_sends_when_no_delegation_is_in_flight(caplog, 
         socket = turn._conn._session
         socket.sent.clear()
         allowed = state in {"fresh", "completed"}
-        assert await turn.nudge_backend(silence_ms=2000) is allowed
+
+        async def fail_send(event):
+            raise ConnectionError
+
+        with monkeypatch.context() as patch:
+            if state == "send_failed":
+                patch.setattr(turn._conn, "_send", fail_send)
+            assert await turn.nudge_backend(silence_ms=2000) is allowed
+        assert turn.turn_lost() is (state in {"lost", "send_failed"})
         assert socket.sent == ([{"type": "response.create"}] if allowed else [])
         assert event_field_maps(caplog, "provider.backend_nudged") == (
             [{"provider": "openai_live", "silence_ms": "2000"}] if allowed else []

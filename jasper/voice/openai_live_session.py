@@ -147,7 +147,11 @@ class OpenAILiveTurn(BaseLiveTurn):
     async def nudge_backend(self, *, silence_ms: int) -> bool:
         if self.backend_pending or self.turn_lost():
             return False
-        await self._conn._send({"type": "response.create"})
+        try:
+            await self._conn._send({"type": "response.create"})
+        except Exception:  # noqa: BLE001
+            self._on_connection_lost()
+            return False
         log_event(
             logger, "provider.backend_nudged", provider=self._conn.PROVIDER_NAME,
             silence_ms=silence_ms,

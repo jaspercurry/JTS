@@ -154,9 +154,7 @@ async def test_unanswered_speech_gets_one_nudge_per_utterance(monkeypatch, secon
 
     async def tick(seconds):
         nonlocal now, speech_started
-        assert len(turn.nudge_backend_calls) == int(now >= 102) + int(second_utterance and now >= 106)
         now += seconds
-        assert now <= 112
         if second_utterance and now == 104:
             speech_started = now
 
@@ -168,9 +166,14 @@ async def test_unanswered_speech_gets_one_nudge_per_utterance(monkeypatch, secon
     )
     assert reason == "response_stalled"
     assert now == (112 if second_utterance else 108)
-    assert turn.nudge_backend_calls == [2000] * (2 if second_utterance else 1)
+    expected = (
+        [2000] * (2 if second_utterance else 1) if nudge_result else
+        (list(range(2000, 4000, 250)) if second_utterance else []) + list(range(2000, 8001, 250))
+    )
+    assert turn.nudge_backend_calls == expected
 
 
+@pytest.mark.parametrize("last_chunk_at", [0.0, 100.0, 101.0])
 @pytest.mark.parametrize("transcript_at, pending, lost, expected", [
     (100.0, False, False, "unanswered_utterance"),
     (0.0, False, False, "response_stalled"),
@@ -179,13 +182,14 @@ async def test_unanswered_speech_gets_one_nudge_per_utterance(monkeypatch, secon
     (100.0, False, True, "connection_lost"),
 ])
 async def test_unanswered_verdict_requires_this_utterance_transcribed_and_backend_idle(
-    monkeypatch, transcript_at, pending, lost, expected,
+    monkeypatch, transcript_at, pending, lost, expected, last_chunk_at,
 ):
     now = 107.75
     turn = FakeLiveTurn()
     turn.user_transcript_at = transcript_at
     turn.backend_pending = pending
     turn.turn_lost = lambda: lost
+    turn.last_chunk_at = lambda: last_chunk_at
 
     async def tick(seconds):
         nonlocal now
@@ -198,6 +202,7 @@ async def test_unanswered_verdict_requires_this_utterance_transcribed_and_backen
         turn, FakeTts(), followup_seconds=5, stall_seconds=120,
         user_activity=lambda: (100, 100), last_accepted_at=lambda: 0,
     ) == expected
+    assert turn.nudge_backend_calls == ([] if lost or last_chunk_at >= 100 else [8000])
 
 
 @pytest.mark.parametrize("input_ended", [False, True])
