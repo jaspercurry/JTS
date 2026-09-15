@@ -135,3 +135,4 @@ This ADR deletes nothing.
   applied-candidate reader, the cloud combiner and the apply transaction);
   keeping `calibration_agent/` as an optional adviser (R4 forbids a second
   provider platform).
+- Doctrine §1a now carries the bass layer bullet between speaker and room.
