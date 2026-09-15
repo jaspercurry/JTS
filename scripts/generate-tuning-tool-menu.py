@@ -46,6 +46,8 @@ BOUND_OWNERS = {
 BOUND_SOURCES = {
     "Speaker": (
         ("driver.passband", "Hz", "contract.speaker.driver.bounds.passbands_hz"),
+        ("driver.chain_scope", "rule", "contract.speaker.driver.bounds.chain_scope"),
+        ("driver.trim_pin_scope", "rule", "contract.speaker.driver.bounds.trim_pin_scope"),
         ("driver.cut_Q", "Q", "contract.speaker.driver.bounds.q_range_cut"),
         ("driver.boost_Q_max", "Q", "contract.speaker.driver.bounds.q_max_boost"),
         ("driver.filter_boost_max", "dB", "contract.speaker.driver.bounds.max_filter_boost_db"),

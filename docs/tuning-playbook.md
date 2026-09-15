@@ -256,6 +256,8 @@ Speaker
 | Name | Value | Unit | Constant or function field |
 |---|---|---|---|
 | driver.passband | {} | Hz | contract.speaker.driver.bounds.passbands_hz |
+| driver.chain_scope | "for every role you name, prescribe the WHOLE per-driver correction that branch should carry, not a delta. A role you do not name is not changed. An empty filters list clears every role's chain; named trim pins still apply and other trims stay at the base" | rule | contract.speaker.driver.bounds.chain_scope |
+| driver.trim_pin_scope | "{<role>: <dB, between -60.0 and 0>} -- pin that driver's LEVEL instead of letting this round re-solve it. Only for a role whose chain you replace or clear; filters: [] clears every role's chain and admits trim pins. Use it when the chain you are prescribing was shaped against a level this round will not re-derive: the trim is re-solved every round from a level-match datum, so a chain carried over from another round otherwise rides a level it was not shaped against. A trim you name is CARRIED, never re-solved, and it is never a measurement of this round" | rule | contract.speaker.driver.bounds.trim_pin_scope |
 | driver.cut_Q | [0.0001,1000000.0] | Q | contract.speaker.driver.bounds.q_range_cut |
 | driver.boost_Q_max | 8.0 | Q | contract.speaker.driver.bounds.q_max_boost |
 | driver.filter_boost_max | 12.0 | dB | contract.speaker.driver.bounds.max_filter_boost_db |

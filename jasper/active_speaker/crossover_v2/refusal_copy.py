@@ -986,6 +986,10 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "Something went wrong on the speaker during that measurement. "
         "Try again.",
     ),
+    "retries_spent": ReasonSpec(
+        "retries_spent", TEMPLATE_SESSION_RESTART, 0, "",
+        "The retakes for this position are used up. Start another run to measure it again.",
+    ),
     REASON_VERIFY_OUT_OF_TOLERANCE: _retriable_reason(
         REASON_VERIFY_OUT_OF_TOLERANCE, TEMPLATE_VERIFY_FAIL, 2,
         RetryableReasonCopy(
