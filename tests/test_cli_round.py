@@ -555,8 +555,12 @@ def test_wait_does_not_bank_before_capture_cleanup(state, monkeypatch, capsys):
     assert len(opener.requests) == 1
 
 
-@pytest.mark.parametrize("argv,reason", [(["--repeats", "0"], "walk_level_policy_invalid"), (["--program", "room", "--mover", "arm"], "walk_mover_mismatch")])
-def test_run_shape_refusal_is_json(argv, reason, monkeypatch, capsys):
+@pytest.mark.parametrize("argv,reason", [
+    (["--repeats", "0"], "walk_level_policy_invalid"),
+    (["--program", "room", "--mover", "arm"], "walk_mover_mismatch"),
+    (["--program", "room", "--dry-run", "--levels=-10,-10"], "walk_level_policy_invalid"),
+])
+def test_run_shape_refusal_is_json(preflight_ready, argv, reason, monkeypatch, capsys):
     code, body = _run(["run", *argv], _opener(), monkeypatch, capsys)
     assert code == 1
     assert body["reason"] == reason
