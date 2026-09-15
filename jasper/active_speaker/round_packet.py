@@ -196,6 +196,10 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
         fingerprint = None
         errors.append({"artifact": "packet_fingerprint", "reason": getattr(exc, "reason", "evidence_unavailable")})
     clouds = design_clouds(inputs, manifest) if purpose == PURPOSE_SPEAKER else {}
+    corners = {contract.get("alignment", {}).get("bounds", {}).get("fc_hz") for contract in limits.values()}
+    alignments, alignment_verdict = round_alignment(
+        manifest, sources, fc_hz=next(iter(corners)) if len(corners) == 1 else None,
+    ) if purpose == PURPOSE_SPEAKER else ([], None)
     packet = {"schema": "jts_round_packet/2", "round_id": target.name, "run_id": manifest.get("run_id"),
               "result": manifest.get("status"), "reason": manifest.get("reason"),
               "program": manifest.get("program"), "level": manifest.get("level"),
@@ -210,7 +214,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                        for g in manifest.get("sets", ())], "series": series,
               "fits": _fits(inputs, manifest, sources, clouds) if purpose == PURPOSE_SPEAKER else [],
               **analysis,
-              "alignment": round_alignment(manifest, sources) if purpose == PURPOSE_SPEAKER else [],
+              "alignment": alignments, "alignment_verdict": alignment_verdict,
               "packet_fingerprint": fingerprint, "limits": limits, "artifacts": artifacts, "unavailable": errors}
     if purpose == PURPOSE_SPEAKER:
         try:

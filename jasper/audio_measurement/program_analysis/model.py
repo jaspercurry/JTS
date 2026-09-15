@@ -769,6 +769,8 @@ class CrossoverCandidate:
     predicted_ripple_db: float
     confidence: float
     alignment_seed_ripple_db: float | None = None
+    alignment_seed_delay_us: float | None = None
+    snr_waived_roles: tuple[str, ...] = ()
     flatness_improvement_db: float | None = None
     anchor_delay_us: float | None = None
     snap_delta_us: float | None = None

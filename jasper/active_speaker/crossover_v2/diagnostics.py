@@ -404,11 +404,9 @@ def _log_measure_diag(
         evidence=verdict.evidence,
         alignment_confidence=round(float(align.confidence), 4) if align else None,
         alignment_confidence_source=(align.confidence_source if align else None),
-        alignment_seed_delay_us=(
-            round(float(align.seed_delay_us), 3)
-            if align and align.seed_delay_us is not None else None
-        ),
-        alignment_refinement_delta_us=analysis_json(analysis)["drift_us"],
+        alignment_seed_delay_us=(evidence := analysis_json(analysis))["alignment_seed_delay_us"],
+        gcc_delay_us=evidence["gcc_delay_us"],
+        alignment_refinement_delta_us=evidence["refinement_delta_us"],
         gate_window_ms=gate_window_ms,
         gate_floor_source=gate_floor_source,
         validity_floor_hz=_measure_validity_floor_hz(analysis),
