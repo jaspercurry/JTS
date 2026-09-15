@@ -311,8 +311,6 @@ class GeminiLiveConnection(BaseLiveConnection):
 
     PROVIDER_NAME = "gemini"
     _logger = logger
-    # The shared supervisor reads it from here.
-    _log_tag = "live connection:"
     # The watchdog below is a rotation this connection schedules, not a
     # failure: its first reconnect attempt skips the backoff wait.
     _watchdog_is_planned = True

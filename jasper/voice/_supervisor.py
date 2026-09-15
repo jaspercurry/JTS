@@ -409,9 +409,8 @@ class SupervisedConnection(Protocol):
     them here is what lets the loop below be type-checked."""
 
     PROVIDER_NAME: str
-    # Prefix for this provider's human-readable log lines, e.g.
-    # "openai connection:".
-    _log_tag: str
+    @property
+    def _log_tag(self) -> str: ...
 
     _state: ConnectionState
     _state_lock: asyncio.Lock
