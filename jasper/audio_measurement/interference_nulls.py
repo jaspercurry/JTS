@@ -52,10 +52,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from jasper.audio_measurement.peq import _bell_response_db
 from jasper.audio_measurement.spatial_combine import (
     ECHO_CONFIDENCE_FLOOR,
     GEOMETRY_CLUSTER_TOLERANCE,
@@ -541,6 +542,8 @@ def _locate_minima(diag: np.ndarray, band_idx: np.ndarray, min_sep_oct: float,
     if y.size < 3:
         return []
     interior = np.flatnonzero((y[1:-1] <= y[:-2]) & (y[1:-1] < y[2:])) + 1
+    if min_sep_oct <= 0.0:
+        return [int(p) for p in interior]
     kept: list[int] = []
     for p in sorted(interior, key=lambda q: (float(y[q]), int(q))):
         f = freqs[band_idx[p]]
@@ -1171,6 +1174,44 @@ def _sorted_refusals(refusals: Sequence[RefusedCandidate]) -> tuple[RefusedCandi
 # --------------------------------------------------------------------------- #
 # Position variance, without the ladder
 # --------------------------------------------------------------------------- #
+
+
+# See docs/research/2026-07-29-attribution/07-reanalysis-position-variance.md §3, §6.
+FEATURE_MIN_DEPTH_DB = 2.0
+FEATURE_PRESENCE_FRACTION = 0.60
+FEATURE_MIN_DEEP_POSITIONS = 6
+FEATURE_SOURCE_FIXED_CV_PERCENT = 3.0
+FEATURE_POSITION_VARIANT_CV_PERCENT = 8.0
+
+
+def feature_position_variance(
+    curves: Sequence[tuple[np.ndarray, np.ndarray]], *, freq_hz: float, q: float,
+    gain_db: float, positions_total: int,
+) -> dict[str, Any]:
+    frequencies = []
+    for freqs, magnitude in curves:
+        signed = magnitude if gain_db > 0 else -magnitude
+        valid = np.flatnonzero((freqs > 0) & np.isfinite(freqs) & np.isfinite(signed))
+        candidates, _ = _measure_candidates(freqs, signed, signed, valid, 0.0)
+        half_width = _bell_response_db(freqs, freq_hz, q, 1.0) >= 0.5
+        deepest = max((c for c in candidates if half_width[c.index]),
+                      key=lambda c: c.depth_db, default=None)
+        if deepest is not None and deepest.depth_db >= FEATURE_MIN_DEPTH_DB:
+            frequencies.append(deepest.f_hz)
+    count = len(frequencies)
+    cv = float(np.std(frequencies, ddof=1) / np.mean(frequencies) * 100) if count >= 2 else None
+    if count < FEATURE_MIN_DEEP_POSITIONS:
+        classification = "insufficient_positions"
+    elif count / positions_total < FEATURE_PRESENCE_FRACTION:
+        classification = "insufficient_evidence"
+    elif cv is not None and cv < FEATURE_SOURCE_FIXED_CV_PERCENT:
+        classification = "source_fixed"
+    elif cv is not None and cv > FEATURE_POSITION_VARIANT_CV_PERCENT:
+        classification = "position_variant"
+    else:
+        classification = "unsure"
+    return {"cv_percent": cv, "positions_deep": count, "positions_total": positions_total,
+            "classification": classification, "frequencies_hz": frequencies}
 
 
 @dataclass(frozen=True)

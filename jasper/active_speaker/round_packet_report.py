@@ -136,9 +136,6 @@ def packet_index(
         lines.insert(4, f"alignment_unmeasured: {commissioning['reason']}")
     lines += [f"{name}: " + "; ".join(f"sets {', '.join(ids)}: {summary}" for summary, ids in values.items())
               for name, values in decisions.items()]
-    lines += ["Limits: packet.json limits is keyed by set; it includes per-bin bounds and admitted features.",
-              "Stats: dB from each series reference; tilt over 100–10000 Hz; band means use octave centers in Hz.",
-              "Low-end means: power means in Hz ranges; null means no usable bins."]
     takes = {(group["set_id"], take["take_id"], take["role"]): take for group in packet["sets"] for take in group["takes"]}
     by_role: dict[str, list[Mapping[str, Any]]] = {}
     for (_set_id, _take_id, role), take in takes.items():
@@ -152,13 +149,28 @@ def packet_index(
     for series in packet["series"]:
         take = takes.get((series["set_id"], series["take_id"], series["role"]), {})
         stats = []
-        for name, rows in series["stats"].items():
+        for name in ("tilt_db_per_decade", "rms_100_10k_db", "band_means_db", "low_end_means_db"):
+            rows = series["stats"][name]
             for label, row in ([(name, rows)] if "value" in rows else [(f"{name}[{key}]", value) for key, value in rows.items()]):
                 mark = f" (below trusted floor {take.get('trusted_floor_hz')} Hz)" if row["below_trusted_floor"] else ""
                 stats.append(f"{label}={json.dumps(row['value'])}{mark}")
-        lines.append(f"{series['set_id']} / {series['take_id']} / {series['role']}: " + "; ".join(stats))
-    lines += [f"Fits: {len(packet['fits'])}",
-              "## Artifacts", f"{json.dumps(packet['artifacts'], separators=(',', ':'))}; packet: {PACKET_FILENAME}",
+        lines.append(f"series {series['role']}: set {series['set_id']}; take {series['take_id']}; "
+                     f"pose {json.dumps(series['pose'])}; " + "; ".join(stats))
+    for verdict in packet.get("verdicts", {}).get("fits", ()):
+        fit = packet["fits"][verdict["fit_index"]]
+        cloud = fit.get("cloud") or {}
+        spread = {f"{center:g} Hz": next((band for band in cloud.get("band_spread", ())
+                                        if band["center_hz"] == center), None)
+                  for center in verdict["crossover_band_centers_hz"]}
+        fields = {key: fit[key] for key in ("residual_rms_db", "residual_max_db", "reason_summary")}
+        fields.update(cross_pose_spread=spread, design_poses=cloud.get("design_poses"),
+                      **{key: verdict[key] for key in ("repeat_spread_db", "residual_within_repeat_spread", "reason")})
+        fields["features"] = [{"freq_hz": fit["filters"][feature["filter_index"]]["freq"], **feature}
+                              for feature in verdict["features"]]
+        lines.append(f"fit {fit['role']}: set {fit['set_id']}; take {fit['take_id']}; pose {json.dumps(fit['pose'])}; "
+                     + "; ".join(f"{key}={json.dumps(value)}" for key, value in fields.items()))
+    lines += ["null ceiling: " + json.dumps(row) for row in packet.get("verdicts", {}).get("poses", ())]
+    lines += ["## Artifacts", f"{json.dumps(packet['artifacts'], separators=(',', ':'))}; packet: {PACKET_FILENAME}",
               "## Tools", "\n".join(f"- `{cmd}`" for cmd in dict.fromkeys(commands)),
               f"Fingerprint: {packet['packet_fingerprint']}"]
     return "\n\n".join(lines) + "\n"

@@ -483,8 +483,8 @@ def test_room_packet_keeps_views_limits_and_series_stats(tmp_path):
     assert len(limits["bounds"]["cut_floor_db"]) == len(limits["bounds"]["freqs_hz"])
     index = (banked.path / INDEX_FILENAME).read_text().splitlines()
     assert f"Fingerprint: {packet['packet_fingerprint']}" in index
-    heads = ("Measured:", "Applied:", "Result:", "## Decisions", "decision:", "Limits:", "Stats:",
-             "Low-end means:", "Fits:", "## Artifacts", "## Tools", "Fingerprint:")
+    heads = ("Measured:", "Applied:", "Result:", "## Decisions", "decision:", "gate ", "series ",
+             "## Artifacts", "## Tools", "Fingerprint:")
     positions = [next(i for i, line in enumerate(index) if line.startswith(head)) for head in heads]
     assert positions == sorted(positions)
 
