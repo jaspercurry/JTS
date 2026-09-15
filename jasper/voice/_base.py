@@ -11,8 +11,8 @@ pre-emptive reconnect watchdog, one receive-loop exit. A subclass adds
 only wire logic — how its provider frames audio, tools and turn
 boundaries.
 
-Lines logged from here go to the subclass's own `_logger` and carry its
-`_log_tag`, so a journal line still names the provider that produced it.
+Lines logged from here go to the subclass's own `_logger` and carry a
+`provider` field, so a journal line still names the provider that produced it.
 """
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, ClassVar
 
 from jasper.backoff import ReconnectNudge
 from jasper.log_event import log_event
+from jasper.secret_redaction import redact_secrets
 
 from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (
@@ -260,9 +261,12 @@ class BaseLiveTurn:
         if not self._tools_may_run():
             return
         if await self._finish_tool_round():
-            self._conn._logger.info(
-                "%s tool round answered: %d call(s) in %.0fms", self._conn._log_tag,
-                len(calls), (_time.monotonic() - started) * 1000,
+            log_event(
+                self._conn._logger,
+                "provider.tool_round",
+                provider=self._conn.PROVIDER_NAME,
+                calls=len(calls),
+                ms=round((_time.monotonic() - started) * 1000),
             )
 
     def _tools_may_run(self) -> bool:
@@ -287,10 +291,14 @@ class BaseLiveTurn:
         try:
             return json.dumps(payload)
         except (TypeError, ValueError) as e:
-            logger.warning(
-                "tool %s: result not JSON-serializable (%s: %s); "
-                "sending error output instead of reconnecting",
-                name, type(e).__name__, e,
+            log_event(
+                self._conn._logger,
+                "provider.tool_result_unserializable",
+                provider=self._conn.PROVIDER_NAME,
+                tool=redact_secrets(name, literals=self._conn._secret_literals()),
+                exc_type=type(e).__name__,
+                detail=failure_detail(e, literals=self._conn._secret_literals()),
+                level=logging.WARNING,
             )
             return json.dumps({"error": f"tool result not serializable: {type(e).__name__}"})
 
@@ -423,8 +431,9 @@ class BaseLiveTurn:
             self._audio_dropped_bytes += size
             if first_drop:
                 log_event(
-                    logger,
+                    self._conn._logger,
                     "turn.audio_overflow",
+                    provider=self._conn.PROVIDER_NAME,
                     queued_bytes=self._queued_bytes,
                     dropped_bytes=self._audio_dropped_bytes,
                     level=logging.WARNING,
@@ -717,8 +726,13 @@ class BaseLiveConnection:
             return
         self._state = new_state
         if (old, new_state) not in self._noisy_transitions:
-            self._logger.info(
-                "%s state %s → %s", self._log_tag, old.value, new_state.value,
+            log_event(
+                self._logger,
+                "provider.state",
+                provider=self.PROVIDER_NAME,
+                previous=old.value,
+                state=new_state.value,
+                level=logging.INFO,
             )
 
     async def _do_initial_connect(self) -> None:
@@ -806,9 +820,11 @@ class BaseLiveConnection:
             # a rotation, or a pre-cap watchdog that came due while the user
             # was talking.
             if self._deferred_reconnect.fire_if_pending(self._reconnect_event.set):
-                self._logger.info(
-                    "%s turn just ended, firing the deferred reconnect "
-                    "(planned=%s)", self._log_tag, self._planned_rotate,
+                log_event(
+                    self._logger,
+                    "provider.reconnect_deferred_fired",
+                    provider=self.PROVIDER_NAME,
+                    planned=self._planned_rotate,
                 )
         finally:
             if locked:
@@ -904,16 +920,19 @@ class BaseLiveConnection:
         is what spends that flag.
         """
         close_code, close_reason = close_code_and_reason(exc)
-        if close_code is not None:
-            self._logger.warning(
-                "%s disconnected (code=%s reason=%r), reconnecting",
-                self._log_tag, close_code, close_reason,
-            )
-        else:
-            self._logger.warning(
-                "%s receive loop error (%s: %s), reconnecting",
-                self._log_tag, type(exc).__name__, exc,
-            )
+        log_event(
+            self._logger,
+            "provider.disconnected",
+            provider=self.PROVIDER_NAME,
+            close_code=close_code,
+            close_reason=(
+                redact_secrets(close_reason, literals=self._secret_literals())
+                if close_reason is not None else None
+            ),
+            exc_type=type(exc).__name__,
+            detail=failure_detail(exc, literals=self._secret_literals()),
+            level=logging.WARNING,
+        )
         request_unplanned_reopen(self)
 
     async def _mark_connected(self, receive_task: asyncio.Task) -> None:
@@ -942,7 +961,14 @@ class BaseLiveConnection:
         try:
             await asyncio.wait_for(obj.close(), timeout=SESSION_CLOSE_TIMEOUT_SEC)
         except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-            self._logger.debug("%s close error (ignored): %s", self._log_tag, e)
+            log_event(
+                self._logger,
+                "provider.close_failed",
+                provider=self.PROVIDER_NAME,
+                phase="session",
+                detail=failure_detail(e, literals=self._secret_literals()),
+                level=logging.DEBUG,
+            )
 
     async def _close_cm_with_timeout(self, cm: Any) -> None:
         """Unwind the SDK's connect context manager, bounded."""
@@ -963,8 +989,11 @@ class BaseLiveConnection:
             )
 
     def _log_teardown(self, elapsed_sec: float) -> None:
-        self._logger.info(
-            "%s session torn down in %.0fms", self._log_tag, elapsed_sec * 1000,
+        log_event(
+            self._logger,
+            "provider.teardown",
+            provider=self.PROVIDER_NAME,
+            ms=round(elapsed_sec * 1000),
         )
 
     # ------------------------------------------------------------------
@@ -983,8 +1012,13 @@ class BaseLiveConnection:
         self, exc: Exception, attempt: int, transient: bool,
     ) -> None:
         """See `_supervisor.SupervisedConnection`."""
-        self._logger.warning(
-            "%s reconnect attempt %d failed (%s: %s, transient=%s)",
-            self._log_tag, attempt, type(exc).__name__,
-            self._outage.detail, transient,
+        log_event(
+            self._logger,
+            "provider.reconnect_attempt_failed",
+            provider=self.PROVIDER_NAME,
+            attempt=attempt,
+            transient=transient,
+            exc_type=type(exc).__name__,
+            detail=failure_detail(exc, literals=self._secret_literals()),
+            level=logging.WARNING,
         )

@@ -26,6 +26,7 @@ from tests._gemini_fakes import Response as _Resp
 from tests._gemini_fakes import ResumptionUpdate as _ResumptionUpdate
 from tests._gemini_fakes import ServerContent as _ServerContent
 from tests._gemini_fakes import Transcription as _Transcription
+from tests._log_events import event_fields, event_records
 
 try:
     from google.genai import types
@@ -253,16 +254,14 @@ async def test_connection_lifecycle_info_logs_are_concise(caplog):
         for message in messages
         if message.startswith("live connection: connect ok in ")
     ]
-    teardown_summaries = [
-        message
-        for message in messages
-        if message.startswith("live connection: session torn down in ")
-    ]
-
     assert len(connect_summaries) == 1
     assert connect_summaries[0].endswith("ms (resumption=<new>)")
-    assert len(teardown_summaries) == 1
-    assert teardown_summaries[0].endswith("ms")
+    teardown = event_fields(caplog, "provider.teardown")
+    assert teardown["provider"] == "gemini"
+    assert int(teardown["ms"]) >= 0
+    (record,) = event_records(caplog, "provider.teardown")
+    assert record.name == "jasper.voice.gemini_session"
+    assert record.levelno == logging.INFO
     assert not any("id=" in message or "instrumentation" in message for message in messages)
 
 
@@ -1375,7 +1374,6 @@ async def test_first_chunk_event_reports_latency_since_end_input(
     anchored on `activity_end`, not on turn open, so it reads as the
     provider's latency and not as the user's utterance plus ~1 s of local
     endpointing."""
-    from tests._log_events import event_fields
 
     caplog.set_level(logging.INFO, logger="jasper.voice.gemini_session")
     conn, factory = _make_conn()
