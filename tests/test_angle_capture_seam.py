@@ -1486,6 +1486,7 @@ def test_invalid_level_policy_refuses_at_construction(fields):
     ({"candidates": ("missing",)}, ac.WALK_CANDIDATE_NOT_MEASURABLE),
     *[({"repeats": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (0, -1, True, 1.5)],
     *[({"retries_per_pose": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (-1, True, 1.5)],
+    *[({"levels": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in ((), (-10, -10), (1,), (float("nan"),), (None,), "-10")],
 ])
 def test_invalid_walk_fields_refuse_by_name(fields, reason):
     with pytest.raises(ac.LateralWalkRefused) as refused:

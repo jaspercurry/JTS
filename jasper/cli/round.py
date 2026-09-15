@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run a plan or bass level sequence, place the microphone, bank its packet, commission a speaker and apply candidates."""
+"""Run a plan across poses, graphs and levels, bank its packet, commission a speaker and apply candidates."""
 from __future__ import annotations
 
 import argparse
 import math
-from dataclasses import replace
+import sys
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlsplit
@@ -66,7 +66,6 @@ def _wizard_failure(exit_code: int, reason: str, detail: dict, payload: Any) -> 
 
 
 def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
-    from jasper.active_speaker.bass_levels import BassLevelLadder  # lazy: run-only measurement imports
     from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError  # lazy: run-only
     from ._run_request import resolve_run  # lazy: run-only measurement imports
 
@@ -84,10 +83,7 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
         return EXIT_REFUSED if report.blocking else EXIT_OK
     if report.blocking:
         return failed(EXIT_REFUSED, report.issues[0].code, report.to_dict())
-    request = (replace(report.plan, level=replace(report.plan.level, level_db=None))
-               if isinstance(report, BassLevelLadder) else report.plan)
-    http, payload = client.open_session(request.to_dict(), **(
-        {"levels": args.levels or "auto"} if isinstance(report, BassLevelLadder) else {}))
+    http, payload = client.open_session(report.plan.to_dict())
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
                                "run_refused", {"http": http}, payload)
@@ -236,9 +232,9 @@ def build_parser() -> argparse.ArgumentParser:
     _connection_args(run_args)
     run_args.add_argument("--wait", action="store_true", help="wait for completion and bank the round with its packet")
     levels = run_args.add_mutually_exclusive_group()
-    levels.add_argument("--levels", help="bass levels: auto uses admissible session offsets; or comma-separated absolute dB levels")
+    levels.add_argument("--levels", help="auto uses admissible session offsets; or comma-separated absolute dB levels")
     levels.add_argument("--level-db", type=float, help="one absolute run fader level in dB; bass otherwise uses auto levels")
-    run = sub.add_parser("run", parents=[run_args], help="run a plan, with auto or explicit bass levels; optionally wait and bank its packet")
+    run = sub.add_parser("run", parents=[run_args], help="run a plan, with auto or explicit levels; optionally wait and bank its packet")
     run.add_argument("--program", choices=("speaker", "room", "bass"))
     poses = run.add_mutually_exclusive_group()
     poses.add_argument("--poses", help="named pose set or comma-separated bearings in degrees")
@@ -269,6 +265,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    for index in range(len(argv) - 1, 0, -1):
+        if argv[index - 1] == "--levels" and argv[index].startswith("-") and "," in argv[index]:
+            argv[index - 1:index + 1] = [f"--levels={argv[index]}"]
     args = build_parser().parse_args(argv)
     if args.command == "run" and args.dry_run and not _is_loopback_name(urlsplit(args.base_url).hostname or ""):
         from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY  # lazy: refused run copy

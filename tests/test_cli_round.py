@@ -337,9 +337,11 @@ def test_room_default_uses_the_human_seat_set(preflight_ready, monkeypatch, caps
 
 @pytest.mark.parametrize("candidates,shape", [(None, "measure"), ("base", "trial")])
 @pytest.mark.parametrize("source", ["flags", "file"])
-def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, monkeypatch, capsys, tmp_path, candidates, shape, source):
+@pytest.mark.parametrize("levels", [None, "-10,-20"])
+def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, monkeypatch, capsys, tmp_path, candidates, shape, source, levels):
+    monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan: ready_facts(plan, commissioning_stop_db_spl=95))
     opener = _opener(session=json.dumps({"capture": {"session_id": "run-1", "first_prompt": {"title": "Place mic"}}}))
-    argv = ["run", "--program", "room", "--poses", "seat_express", "--level-db", "-25"]
+    argv = ["run", "--program", "room", "--poses", "seat_express", *([f"--levels={levels}"] if levels else ["--level-db", "-25"])]
     if candidates:
         argv += ["--candidates", candidates]
     if source == "file":
@@ -353,7 +355,8 @@ def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, mon
     plan = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
     assert plan["candidates"] == ([] if candidates is None else [candidates])
     assert (plan["artifact_schema_version"], body["run_id"]) == (5, "run-1")
-    assert plan["level"]["level_db"] == -25
+    assert plan["level"]["level_db"] == (None if levels else -25)
+    assert plan.get("levels") == ([-10, -20] if levels else None)
     assert body["link"].endswith(wc.CSRF_PAGE_PATH)
     assert body["shape"] == shape
     assert not any(r.full_url.endswith(wc.STATUS_PATH) for r in opener.requests)
@@ -637,8 +640,11 @@ def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsy
     assert not opener.requests if dry_run else "levels" not in json.loads(opener.posts()[0].data)
 
 
-@pytest.mark.parametrize("noise_dbfs,levels", [(-60, [-18, -23]), (-100, [-18, -23, -28, -33]), (-20, [])])
-def test_bass_dry_run_lists_admissible_session_offsets(monkeypatch, capsys, noise_dbfs, levels):
+@pytest.mark.parametrize("program,requested,noise_dbfs,levels", [
+    ("bass", None, -60, [-18, -23]), ("bass", None, -100, [-18, -23, -28, -33]), ("bass", None, -20, []),
+    ("room", "-10,-20", -100, [-20]), ("room", "auto", -100, [-18, -23, -28, -33]),
+])
+def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, requested, noise_dbfs, levels):
     def facts(plan):
         ready = ready_facts(plan)
         return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record,
@@ -646,13 +652,14 @@ def test_bass_dry_run_lists_admissible_session_offsets(monkeypatch, capsys, nois
 
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
     opener = _opener()
-    code, body = _run(["run", "--program", "bass", "--dry-run"],
+    code, body = _run(["run", "--program", program, "--dry-run", *(["--levels", requested] if requested else [])],
                       opener, monkeypatch, capsys)
     assert code == (0 if levels else 1)
     assert body["dry_run"] is True
     assert body["admissible_levels_db"] == levels
-    assert [row["offset_db"] for row in body["levels"]] == [0, -5, -10, -15]
-    assert [row["level_db"] for row in body["levels"]] == [-18, -23, -28, -33]
+    expected = [-10, -20] if requested == "-10,-20" else [-18, -23, -28, -33]
+    assert [row["offset_db"] for row in body["levels"]] == [level + 18 for level in expected]
+    assert [row["level_db"] for row in body["levels"]] == expected
     assert not opener.requests
 
 
@@ -693,7 +700,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     verb, flags, noise, levels,
 ):
     from jasper.active_speaker import bundles, round_bank, plan_run
-    from jasper.active_speaker.bass_levels import BassLevelLadder, preflight_levels, prepare_bass_captures
+    from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
     from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
     from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
     from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, default_out
@@ -756,12 +763,12 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
                 production=SimpleNamespace(graph=fakes.graph, compose=None),
                 conductor=conductor, refs={}, trims={},
                 ceiling_s=30, ceiling_db_spl=85, camilla_factory=lambda: box, verify_only=False,
-                level=plan.level, ladder=report if isinstance(report, BassLevelLadder) else None,
+                level=plan.level, levels=plan.levels, ladder=report if isinstance(report, LevelLadder) else None,
             )
             runner = wired.build_v2_wired_run_and_consume(
                 conductor, door=door, signals=plan_run.RunSignals(), position_gate=gate,
                 ceiling_s=30, manifest=manifest, request=plan, analyze=analyze, assessor=assessor,
-                captures=prepare_bass_captures(plan, roles_bands=conductor._roles), execute=execute,
+                captures=prepare_level_captures(plan, roles_bands=conductor._roles), execute=execute,
             )
             asyncio.run(runner(SimpleNamespace(session_id=manifest.run_id)))
             bundles.mark_state(bundle, "closed")

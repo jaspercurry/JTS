@@ -409,6 +409,7 @@ class AngleCaptureRequest:
     program: str = ""
     candidates: tuple[str, ...] = ()
     level: LevelPolicy = LevelPolicy()
+    levels: tuple[float, ...] | None = None
     repeats: int = 1
     retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION
 
@@ -443,6 +444,17 @@ class AngleCaptureRequest:
     def _validate_policy(self) -> None:
         if not isinstance(self.level, LevelPolicy):
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "level must be a LevelPolicy")
+        if self.levels is not None:
+            if not isinstance(self.levels, (tuple, list)) or not self.levels or None in self.levels:
+                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "levels must be a nonempty sequence")
+            for value in self.levels:
+                replace(self.level, level_db=value)
+            levels = tuple(float(value) for value in self.levels)
+            if len(set(levels)) != len(levels):
+                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "levels must be distinct")
+            if len(levels) == 1:
+                object.__setattr__(self, "level", replace(self.level, level_db=levels[0]))
+            object.__setattr__(self, "levels", levels if len(levels) > 1 else None)
         for name, minimum in (("repeats", 1), ("retries_per_pose", 0)):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
@@ -460,7 +472,9 @@ class AngleCaptureRequest:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            **asdict(self), "template": self.template.to_dict(), "level": self.level.to_dict(),
+            **{key: value for key, value in asdict(self).items() if key != "levels"},
+            **({"levels": list(self.levels)} if self.levels is not None else {}),
+            "template": self.template.to_dict(), "level": self.level.to_dict(),
             "stops": [
                 {f.name: candidate_identity(stop.candidate_id) if f.name == "candidate_id" else
                  list(stop.seat_offset_m) if f.name == "seat_offset_m" and stop.seat_offset_m is not None else getattr(stop, f.name)
@@ -482,10 +496,10 @@ class AngleCaptureRequest:
         unknown = set(doc) - {f.name for f in fields(cls)} - {"kind", "artifact_schema_version", "staged_at"}
         if unknown:
             raise ValueError(f"unknown request fields: {sorted(unknown)}")
-        missing = {f.name for f in fields(cls)} - set(doc)
+        missing = {f.name for f in fields(cls)} - set(doc) - {"levels"}
         if missing:
             raise ValueError(f"request must state {', '.join(sorted(missing))}")
-        values = {f.name: doc[f.name] for f in fields(cls)}
+        values = {f.name: doc[f.name] for f in fields(cls) if f.name in doc}
         for name in ("mover", "program"):
             if not isinstance(values[name], str):
                 raise ValueError(f"{name} must be text")
@@ -725,6 +739,7 @@ def request_for_program(
     mover: str = MOVER_HUMAN,
     template: MeasureSpec = DEFAULT_TEMPLATE,
     level: LevelPolicy = LevelPolicy(),
+    levels: tuple[float, ...] | None = None,
     repeats: int = 1,
     retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION,
 ) -> AngleCaptureRequest:
@@ -756,7 +771,7 @@ def request_for_program(
         mover=mover,
         template=template,
         candidates=candidates,
-        level=level,
+        level=level, levels=levels,
         repeats=repeats, retries_per_pose=retries_per_pose,
         # ``spot`` carries caller geometry rather than a registry row, so its
         # size names nothing an operator chose.
