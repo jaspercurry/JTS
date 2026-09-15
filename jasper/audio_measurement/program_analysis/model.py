@@ -675,6 +675,11 @@ class DriverResponse:
     repeat_responses: tuple["DriverResponse", ...] = ()
     repeat_index: int | None = None
 
+    @property
+    def fit_floor_hz(self) -> float | None:
+        trusted: float | None = self.gating.get("f_trusted_hz")
+        return self.validity_floor_hz if trusted is None else trusted
+
 
 @dataclass(frozen=True)
 class AlignmentEstimate:

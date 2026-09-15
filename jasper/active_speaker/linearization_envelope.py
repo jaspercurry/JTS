@@ -393,10 +393,7 @@ def compose_envelope(
         )
 
     occurrences: tuple[DriverResponse, ...] = (primary, *primary.repeat_responses)
-    known_floors = [
-        floor for o in occurrences
-        if (floor := o.gating.get("f_trusted_hz") or o.validity_floor_hz) is not None
-    ]
+    known_floors = [floor for o in occurrences if (floor := o.fit_floor_hz) is not None]
     conservative_floor_hz = max(known_floors) if known_floors else math.inf
 
     lo_hz, hi_hz = excited_band_hz

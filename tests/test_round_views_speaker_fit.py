@@ -15,7 +15,7 @@ from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
 from jasper.active_speaker.branch_target import branch_target
-from jasper.active_speaker.crossover_v2.intervention import compose_sigma_db, decide_trim
+from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, compose_sigma_db, decide_trim
 from jasper.active_speaker.crossover_v2.driver_prescription import _check_composed
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
@@ -40,7 +40,7 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.cli import crossover_prescriber, round_views
 from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round
 from jasper.active_speaker.round_packet import INDEX_FILENAME, _fits, write_round_packet
-from jasper.active_speaker.speaker_fit import design_clouds, speaker_fit
+from jasper.active_speaker.speaker_fit import design_clouds, fit_feature_curves, speaker_fit
 from jasper.active_speaker.candidate_bank import find_banked_candidate
 from jasper.active_speaker.candidate_parts import baseline_candidate_id, candidate_from_design_draft
 from jasper.active_speaker.commissioning_experiment import commissioning_candidate
@@ -281,6 +281,16 @@ def test_speaker_fit_respects_banked_trusted_floor(speaker_round, capsys, truste
     analysis = ProgramAnalysis(phase="measure", program_id=program.program_id, locations=(),
                               driver_responses=(replace(response, repeat_responses=(response, response)),))
     curves = analysis_curve_records(analysis, program) + [record["curves"][1]]
+    if trusted_floor_hz is None:
+        curves[0].pop("trusted_floor_hz")
+    restored = response_from_banked_curve(curves[0])[0]
+    assert all(r.gating == ({} if trusted_floor_hz is None else {"f_trusted_hz": trusted_floor_hz})
+               for r in (restored, *restored.repeat_responses))
+    assert restored.fit_floor_hz == (trusted_floor_hz or 143)
+    assert replace(restored, validity_floor_hz=None).fit_floor_hz == trusted_floor_hz
+    sparse = replace(restored, freqs_hz=np.array([100., 150., 151.]), magnitude_db=np.zeros(3),
+                     complex_tf=np.ones(3, dtype=complex))
+    assert len(fit_feature_curves(CloudFitTerms(boost_responses=(sparse, restored)))) == 1
     rows = []
     for deg in (-20, 0, 20):
         take = {**record, "curves": curves, "take_id": f"floor-{deg}", "position_deg": deg}

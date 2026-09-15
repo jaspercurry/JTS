@@ -131,6 +131,8 @@ def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
         "freqs_hz": [float(hz) for hz in curve.freqs_hz],
         "magnitude_db": [float(db) for db in 20.0 * np.log10(magnitude)],
         "phase_deg": [float(deg) for deg in np.degrees(np.angle(tf))],
+        # Ruling S3 one field further (ADR-0228 entry 2): offline fit inputs —
+        # repeat_curves, validity_floor_hz, trusted_floor_hz.
         "validity_floor_hz": curve.validity_floor_hz,
         "trusted_floor_hz": curve.trusted_floor_hz,
         "gate_window_ms": curve.gate_window_ms,
