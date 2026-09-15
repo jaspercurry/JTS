@@ -53,6 +53,7 @@ class LateralPoseCurve:
     repeat_curves: tuple["LateralPoseCurve", ...] = ()
     gate_window_ms: float | None = None
     floor_source: str | None = None
+    trusted_floor_hz: float | None = None
 
 
 def lateral_evidence_grid_hz() -> np.ndarray:
@@ -85,6 +86,7 @@ def lateral_pose_curve(
         complex_tf=tf[take],
         band_hz=(float(band_hz[0]), float(band_hz[1])),
         validity_floor_hz=response.validity_floor_hz,
+        trusted_floor_hz=(response.gating or {}).get("f_trusted_hz"),
         gate_window_ms=(response.gating or {}).get("window_ms"),
         floor_source=(response.gating or {}).get("floor_source"),
         repeat_curves=tuple(
@@ -129,12 +131,8 @@ def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
         "freqs_hz": [float(hz) for hz in curve.freqs_hz],
         "magnitude_db": [float(db) for db in 20.0 * np.log10(magnitude)],
         "phase_deg": [float(deg) for deg in np.degrees(np.angle(tf))],
-        # Ruling S3 one field further (ADR-0228 entry 2): the
-        # linearization envelope reads the conservative floor ACROSS
-        # occurrences and its sigma term reads the repeats, so a round banked
-        # without these two cannot be re-fitted offline. Additive: a round
-        # banked before this carries neither key.
         "validity_floor_hz": curve.validity_floor_hz,
+        "trusted_floor_hz": curve.trusted_floor_hz,
         "gate_window_ms": curve.gate_window_ms,
         "floor_source": curve.floor_source,
         "smoothing_fractional_octave": 0,

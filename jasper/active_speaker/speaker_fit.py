@@ -106,7 +106,7 @@ def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str,
                     if parsed is None or parsed[0].role != role:
                         raise ValueError("design pose has no fit response")
                     responses.append(parsed[0])
-                    lo = max(lo, parsed[1][0], parsed[0].freqs_hz[0], parsed[0].validity_floor_hz or 0.0)
+                    lo = max(lo, parsed[1][0], parsed[0].freqs_hz[0], parsed[0].gating.get("f_trusted_hz") or parsed[0].validity_floor_hz or 0.0)
                     hi = min(hi, parsed[1][1], parsed[0].freqs_hz[-1])
                 grid = DEFAULT_ENVELOPE_GRID_HZ[(DEFAULT_ENVELOPE_GRID_HZ >= lo) & (DEFAULT_ENVELOPE_GRID_HZ <= hi)]
                 if grid.size < 2:
@@ -125,7 +125,7 @@ def fit_feature_curves(cloud: CloudFitTerms) -> list[tuple[np.ndarray, np.ndarra
     curves = []
     for response in cloud.boost_responses:
         grid = DEFAULT_ENVELOPE_GRID_HZ
-        grid = grid[(grid >= max(response.freqs_hz[0], response.validity_floor_hz or 0.0)) & (grid <= response.freqs_hz[-1])]
+        grid = grid[(grid >= max(response.freqs_hz[0], response.gating.get("f_trusted_hz") or response.validity_floor_hz or 0.0)) & (grid <= response.freqs_hz[-1])]
         curves.append((grid, ladder_smooth(grid, np.interp(grid, response.freqs_hz, response.magnitude_db))))
     return curves
 

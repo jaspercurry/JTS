@@ -359,10 +359,9 @@ def compose_envelope(
     hard OUT_OF_BAND pre-mask evaluated BEFORE the min and a final
     ladder-smoothing pass so term handoffs have no audible cliffs.
 
-    In-band = ``excited_band_hz`` intersected with
-    ``[conservative_validity_floor_hz, grid top]`` — the HIGHEST
-    ``validity_floor_hz`` across primary and repeats (+inf if none has
-    one). A bin at the ceiling sentinel is reported as
+    In-band starts at the higher of the excited band's lower edge and the
+    highest trusted floor across primary and repeats (validity floor when
+    absent, +inf if neither is known). A bin at the ceiling sentinel is
     :attr:`ReasonCode.FITTED` rather than an arbitrary tie-break; a term at
     exactly 0 is a hard boundary the smoothing pass may not blur across.
 
@@ -395,14 +394,14 @@ def compose_envelope(
 
     occurrences: tuple[DriverResponse, ...] = (primary, *primary.repeat_responses)
     known_floors = [
-        o.validity_floor_hz for o in occurrences if o.validity_floor_hz is not None
+        floor for o in occurrences
+        if (floor := o.gating.get("f_trusted_hz") or o.validity_floor_hz) is not None
     ]
     conservative_floor_hz = max(known_floors) if known_floors else math.inf
 
     lo_hz, hi_hz = excited_band_hz
     excited_mask = (grid_hz >= lo_hz) & (grid_hz <= hi_hz)
     floor_mask = grid_hz >= conservative_floor_hz
-    # Grid top is grid_hz's own maximum -- no separate upper check needed.
     in_band_mask = excited_mask & floor_mask
 
     # Tri-state; see the docstring.

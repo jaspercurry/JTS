@@ -1704,7 +1704,7 @@ def response_from_banked_curve(curve: Mapping[str, Any]):
         freqs_hz=freqs,
         magnitude_db=20.0 * np.log10(np.abs(tf)),
         complex_tf=tf,
-        gating={},
+        gating={"f_trusted_hz": curve.get("trusted_floor_hz")},
         snr=None,
         validity_floor_hz=None if floor is None else float(floor),
         repeat_responses=tuple(repeats),

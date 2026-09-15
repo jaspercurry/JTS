@@ -266,6 +266,46 @@ def test_design_cloud_bounds_each_roles_fit(speaker_round, capsys, changes, expe
         assert not proposal["cloud"]["band_spread"]
 
 
+@pytest.mark.parametrize("trusted_floor_hz", [357.0, None])
+def test_speaker_fit_respects_banked_trusted_floor(speaker_round, capsys, trusted_floor_hz):
+    root, record, program, _, _, _ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    grid = np.geomspace(60, 4000, 1024)
+    db = (-6 * np.exp(-0.5 * (np.log2(grid / 300) / 0.12) ** 2)
+          + 6 * np.exp(-0.5 * (np.log2(grid / 900) / 0.18) ** 2))
+    response = DriverResponse(
+        role="woofer", freqs_hz=grid, magnitude_db=db, complex_tf=10 ** (db / 20) + 0j,
+        gating={"f_trusted_hz": trusted_floor_hz}, snr=None, validity_floor_hz=143,
+    )
+    analysis = ProgramAnalysis(phase="measure", program_id=program.program_id, locations=(),
+                              driver_responses=(replace(response, repeat_responses=(response, response)),))
+    curves = analysis_curve_records(analysis, program) + [record["curves"][1]]
+    rows = []
+    for deg in (-20, 0, 20):
+        take = {**record, "curves": curves, "take_id": f"floor-{deg}", "position_deg": deg}
+        path = directory / "positions" / f"{take['take_id']}.json"
+        path.write_text(json.dumps(take))
+        rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), take))
+    group = manifest_set(rows, set_id="speaker-set")
+    group["capture_basis"]["role"] = "woofer"
+    candidate = json.loads((directory / "candidate.json").read_text())
+    for take in group["takes"]:
+        take["analysis"] = candidate["analysis"]
+    write_manifest(root, groups=[group])
+    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set", "--take", "floor-0"]) == 0
+    proposal = json.loads(capsys.readouterr().out)["linearization"]["woofer"]
+    fit = proposal["fit"]
+    assert all(f["freq"] >= (trusted_floor_hz or 150) for f in fit["filters"])
+    assert fit["reason_summary"]["250"] == ("envelope_out_of_band" if trusted_floor_hz else "envelope_fitted")
+    assert any(800 < f["freq"] < 1000 and f["gain"] < -1 for f in fit["filters"])
+    assert fit["fit_band_hz"][0] >= (trusted_floor_hz or 150)
+    assert (250 in [b["center_hz"] for b in proposal["cloud"]["band_spread"]]) == (trusted_floor_hz is None)
+    if trusted_floor_hz:
+        assert fit["residual_rms_db"] < 1
+        assert fit["residual_max_db"] < 3
+
+
 @pytest.mark.parametrize("run_program", ["speaker", "speaker/full"])
 def test_speaker_fit_reads_the_run_purpose_behind_a_sized_program(speaker_round, capsys, run_program):
     root, record, program, *_ = speaker_round
