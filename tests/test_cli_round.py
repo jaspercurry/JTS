@@ -778,6 +778,11 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     assert Path(body["packet"]) == Path(body["round_dir"]) / "packet.json"
     assert {"sets", "series", "limits", "applied", "artifacts", "unavailable"} <= packet.keys()
     assert len(packet["artifacts"]["bass_views"]) == len(levels) * (2 if verb == "trial" else 1)
+    assert len(packet["bass"]) == len(packet["artifacts"]["bass_views"])
+    assert {entry["set_id"] for entry in packet["bass"]} == {group["set_id"] for group in packet["sets"]}
+    for entry in packet["bass"]:
+        assert entry == {**json.loads(Path(entry["out"]).read_text()), "set_id": entry["set_id"], "out": entry["out"]}
+    assert {take["record"]["level_db"] for entry in packet["bass"] for take in entry["takes"]} == set(levels)
     assert {take["record"]["level_db"] for view in packet["artifacts"]["bass_views"]
             for take in json.loads(Path(view["out"]).read_text())["takes"]} == set(levels)
     assert join.call_count == (1 if len(levels) > 1 else 0)

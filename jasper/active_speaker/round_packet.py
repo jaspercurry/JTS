@@ -157,10 +157,17 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
         errors.append({"artifact": "frequency", "reason": getattr(exc, "reason", "frequency_unavailable")})
     if (target / PICTURE_FILENAME).is_file():
         artifacts["frequency_png"] = str(target / PICTURE_FILENAME)
+    analysis: dict[str, list[dict[str, Any]]] = {"room": [], "bass": []}
     for row in views:
         if row["view"].startswith(("room", "bass")):
             artifacts["room_views" if row["view"].startswith("room") else "bass_views"].append(
                 {key: row[key] for key in ("view", "set_id", "out", "status", "reason") if key in row})
+        if row["view"] == purpose and purpose in analysis and row["status"] == "written" and row.get("out"):
+            document = json.loads(Path(row["out"]).read_text())
+            if purpose == "room":
+                document.pop("limits", None)
+            analysis[purpose].append({**document, "out": row["out"],
+                                     "set_id": row.get("set_id") or manifest["sets"][0]["set_id"]})
     try:
         sources = prescription_sources(inputs)
     except ROUND_INPUT_ERRORS:
@@ -199,6 +206,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                                    "fault": t.get("fault") or (t.get("quality") or {}).get("fault"), **gate_fields(t)} for t in g["takes"]]}
                        for g in manifest.get("sets", ())], "series": series,
               "fits": _fits(inputs, manifest, sources, clouds) if purpose == PURPOSE_SPEAKER else [],
+              **analysis,
               "alignment": round_alignment(manifest, sources) if purpose == PURPOSE_SPEAKER else [],
               "packet_fingerprint": fingerprint, "limits": limits, "artifacts": artifacts, "unavailable": errors}
     if purpose == PURPOSE_SPEAKER:
