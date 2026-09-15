@@ -216,7 +216,7 @@ class LiveTurn(ProviderTurn, Protocol):
         ...
 
     def last_chunk_at(self) -> float:
-        """Loop time of the most recent audio chunk specifically (not tool
+        """`time.monotonic()` of the most recent audio chunk specifically (not tool
         calls / turn_complete), so the host can tell a model that is
         producing TTS from one that is merely working."""
         ...

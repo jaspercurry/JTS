@@ -60,13 +60,7 @@ from ._supervisor import (
     await_connected, failure_detail, request_planned_reopen, request_unplanned_reopen,
 )
 from .input_policy import NOISE_REDUCTION_FAR, NOISE_REDUCTION_NEAR
-from .session import (
-    AudioOutChunk,
-    ConnectionState,
-    LiveTurn,
-    TurnCapture,
-    log_first_chunk,
-)
+from .session import AudioOutChunk, ConnectionState, LiveTurn, TurnCapture
 
 logger = logging.getLogger(__name__)
 
@@ -367,23 +361,13 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             return
         if not data:
             return
-        now = asyncio.get_event_loop().time()
-        self._last_activity_at = now
-        self._last_chunk_at = now
-        self._chunks_received += 1
         chunk_bytes = len(data)
         self._chunk_bytes_total += chunk_bytes
         if chunk_bytes > self._chunk_bytes_max:
             self._chunk_bytes_max = chunk_bytes
-        if not self._first_chunk_logged:
-            self._first_chunk_logged = True
+        if not self._first_chunk_bytes:
             self._first_chunk_bytes = chunk_bytes
-            log_first_chunk(
-                logger,
-                getattr(self._conn, "PROVIDER_NAME", "openai"),
-                turn_start_monotonic=self._started_at_monotonic,
-                end_input_monotonic=self._end_input_at_monotonic,
-            )
+        self._note_audio_chunk(_time.monotonic())
         if item_id:
             # 24 kHz mono pcm16 = 48 bytes/ms. Accumulate per item so a later
             # truncate can clamp to this item's received duration.

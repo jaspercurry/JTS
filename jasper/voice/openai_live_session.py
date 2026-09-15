@@ -320,9 +320,7 @@ class OpenAILiveTurn(BaseLiveTurn):
             return
         now = time.monotonic()
         if audioop.rms(pcm, 2) > AUDIBLE_RMS_FLOOR:
-            self._last_chunk_at = now
-            self._chunks_received += 1
-            self._note_activity()
+            self._note_audio_chunk(now)
         elif self._last_chunk_at and now - self._last_chunk_at <= SILENCE_BRIDGE_SEC:
             self._quiet_played += 1
         else:
