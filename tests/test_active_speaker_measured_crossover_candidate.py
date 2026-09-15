@@ -63,7 +63,7 @@ def _candidate(
 ) -> MeasuredCrossoverCandidate:
     preset = preset or _preset()
     trims = trims if trims is not None else {"woofer": 0.0, "tweeter": -3.5}
-    kwargs = {}
+    kwargs: dict = {}
     if alignment is not None:
         kwargs["alignment"] = alignment
     if linearization is not None:
@@ -690,6 +690,13 @@ def test_from_mapping_rejects_non_mapping_bass_extension():
         MeasuredCrossoverCandidate.from_mapping(raw)
 
     assert excinfo.value.code == "bass_extension_malformed"
+
+
+def test_invalid_bass_descriptor_keeps_its_field_code():
+    with pytest.raises(MeasuredCrossoverCandidateError) as caught:
+        _candidate(bass_extension={"low_boost_db": 0, "reference_level_db": -35,
+                                   "detector_lowpass_hz": 80, "compressor_threshold_dbfs": -12})
+    assert caught.value.code == "bass_low_boost_db_invalid"
 
 
 def test_exclusion_evidence_tampering_trips_the_tamper_check():
