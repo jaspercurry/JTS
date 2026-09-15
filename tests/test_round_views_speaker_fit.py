@@ -410,7 +410,7 @@ def test_speaker_fit_reads_declared_budgets_and_only_overrides_stdout(speaker_ro
 
 
 def test_empty_manifest_has_no_packet_fits(speaker_round):
-    assert _fits(round_inputs(speaker_round[0]), {}) == []
+    assert _fits(round_inputs(speaker_round[0]), {}, {}, {}) == []
 
 
 @pytest.mark.parametrize("other_identity", [
@@ -602,14 +602,14 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
     expected = {(g["set_id"], t["take_id"], t["pose"]["deg"], t["role"])
                 for g in manifest["sets"] for t in g["takes"] if t["selected"]}
     assert len(packet["fits"]) == len(expected) == 2 * (pose_count + candidate_count)
-    assert [row["fit_index"] for row in packet["verdicts"]["fits"]] == list(range(len(expected)))
-    assert len(packet["verdicts"]["poses"]) == pose_count + candidate_count
-    for verdict in packet["verdicts"]["fits"]:
-        fit = packet["fits"][verdict["fit_index"]]
+    assert len(packet["verdicts"]) == pose_count + candidate_count
+    for fit in packet["fits"]:
+        features = [feature["position_variance"] for feature in fit["filters"]]
         count = pose_count if fit["set_id"].startswith("True-") else candidate_count
-        assert any(feature["positions_deep"] == count for feature in verdict["features"])
-        assert all(feature["cv_percent"] == (pytest.approx(0) if count >= 2 else None)
-                   for feature in verdict["features"] if feature["positions_deep"] == count)
+        deep = count if count >= 3 else 0
+        assert any(feature["positions_deep"] == deep for feature in features)
+        assert all(feature["cv_percent"] == (pytest.approx(0) if deep else None)
+                   for feature in features if feature["positions_deep"] == deep)
     assert {(f["set_id"], f["take_id"], f["pose"]["deg"], f["role"]) for f in packet["fits"]} == expected
     assert all(f["mic_tier"] == "reference" and isinstance(f["filters"], list)
                and f["residual_rms_db"] is not None and f["budget"] for f in packet["fits"])
@@ -626,7 +626,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
     index = (banked.path / INDEX_FILENAME).read_text().splitlines()
     assert f"Fingerprint: {packet['packet_fingerprint']}" in index
     heads = ("Measured:", "Applied:", "Result:", "## Decisions", "driver:", "blend:", "alignment:", "topology:",
-             "gate ", "series ", "fit ", "null ceiling:", "## Artifacts", "## Tools", "Fingerprint:")
+             "gate ", "series ", "fit ", "null ceiling ", "## Artifacts", "## Tools", "Fingerprint:")
     positions = [next(i for i, line in enumerate(index) if line.startswith(head)) for head in heads]
     assert positions == sorted(positions)
     tools = [shlex.split(line[3:-1]) for line in index if line.startswith("- `")]

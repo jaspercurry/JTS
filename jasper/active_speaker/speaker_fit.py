@@ -18,7 +18,7 @@ from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, boost_allowed, fit_branches
 from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_MEASURE, STAGE_MEASURE_CAPABILITIES, open_stage
 from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, take_artifact_path
-from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, prescription_sources, round_artifact_dir, take_order
+from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, round_artifact_dir
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve
@@ -84,21 +84,19 @@ def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str,
         groups.setdefault(key, []).append(group)
     clouds: dict[str, CloudFitTerms] = {}
     for (_, _, _, _, role), members in groups.items():
-        bearings: dict[float, Mapping[str, Any]] = {}
-        for take in sorted((take for group in members for take in group["takes"]),
-                           key=take_order):
-            pose = take["pose"]
-            if role and role != REGIME_SUMMED and (take.get("role") or role) == role and (
-                take["selected"] and take.get("phase") == "measure" and
-                pose.get("kind") == POSE_KIND_BEARING and pose.get("deg") is not None
-            ):
-                bearings[pose["deg"]] = take
+        bearings = latest_measure_takes(
+            ((group, take) for group in members for take in group["takes"]),
+            key=lambda group, take: (take["pose"]["deg"],) if (
+                role and role != REGIME_SUMMED and (take.get("role") or role) == role
+                and take["pose"].get("kind") == POSE_KIND_BEARING and take["pose"].get("deg") is not None
+            ) else None,
+        )
         cloud = CloudFitTerms(n_positions=len(bearings))
         if len(bearings) >= 3:
             try:
                 responses = []
                 lo, hi = 0.0, float("inf")
-                for take in bearings.values():
+                for _group, take in bearings.values():
                     curve = take.get("curve")
                     if not curve:
                         path = take_artifact_path(inputs.session_dir, take["artifacts"]["record_id"])

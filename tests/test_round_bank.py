@@ -470,6 +470,7 @@ def test_room_packet_keeps_views_limits_and_series_stats(tmp_path):
                         view_runner=run_bookkeeping, **_ssot(tmp_path, present=False))
     packet = json.loads((banked.path / "packet.json").read_text())
     assert packet["program"] == "room" and packet["fits"] == []
+    assert "verdicts" not in packet
     assert {view["view"] for view in packet["artifacts"]["room_views"]} == {"room", "room-grade"}
     assert all(Path(view["out"]).is_file() for view in packet["artifacts"]["room_views"] if view["status"] == "written")
     assert len(packet["series"]) == 7

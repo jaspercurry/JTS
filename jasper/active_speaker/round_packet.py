@@ -91,11 +91,9 @@ def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Cal
     return destination
 
 
-def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str, Any] | None = None,
-          clouds: Mapping[str, CloudFitTerms] | None = None) -> list[dict[str, Any]]:
+def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str, Any],
+          clouds: Mapping[str, CloudFitTerms]) -> list[dict[str, Any]]:
     computed: dict[str, Any] = {}
-    sources = prescription_sources(inputs) if sources is None else sources
-    clouds = design_clouds(inputs, manifest) if clouds is None else clouds
     fits = []
     for group in manifest.get("sets", ()):
         for take in group["takes"]:
@@ -208,7 +206,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
             packet["commissioning"] = bank_commissioning_experiment(target, manifest, sources, packet["alignment"])
         except ROUND_INPUT_ERRORS + (CandidateBankRefusal,) as exc:
             packet["commissioning"] = {"status": "unavailable", "reason": getattr(exc, "code", "commissioning_candidate_unavailable")}
-    packet["verdicts"] = round_verdicts(packet, inputs, manifest=manifest, clouds=clouds, sources=sources)
+        packet["verdicts"] = round_verdicts(packet, inputs, manifest=manifest, clouds=clouds, sources=sources)
     atomic_write_json(target / PACKET_FILENAME, packet)
     (target / INDEX_FILENAME).write_text(packet_index(packet, target, views, manifest))
     return packet

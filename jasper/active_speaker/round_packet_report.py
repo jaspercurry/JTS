@@ -46,9 +46,9 @@ def series_stats(plot: Mapping[str, Any], trusted_floor_hz: float | None) -> dic
         band = values[valid & (freqs >= lo) & (freqs < hi)]
         bands[f"{center:g}"] = number(_power_mean_db(band) if band.size else None, lo)
     return {
-        "rms_100_10k_db": number(plot["rms_db"], 100),
         "tilt_db_per_decade": number(float(np.polyfit(np.log10(freqs[measured]), values[measured], 1)[0])
                                      if np.unique(freqs[measured]).size >= 2 else None, 100),
+        "rms_100_10k_db": number(plot["rms_db"], 100),
         "band_means_db": bands,
         "low_end_means_db": {f"{b['band_hz'][0]}_{b['band_hz'][1]}": number(b["mean_db"], b["band_hz"][0])
                              for b in plot["band_means"]},
@@ -149,27 +149,26 @@ def packet_index(
     for series in packet["series"]:
         take = takes.get((series["set_id"], series["take_id"], series["role"]), {})
         stats = []
-        for name in ("tilt_db_per_decade", "rms_100_10k_db", "band_means_db", "low_end_means_db"):
-            rows = series["stats"][name]
+        for name, rows in series["stats"].items():
             for label, row in ([(name, rows)] if "value" in rows else [(f"{name}[{key}]", value) for key, value in rows.items()]):
                 mark = f" (below trusted floor {take.get('trusted_floor_hz')} Hz)" if row["below_trusted_floor"] else ""
                 stats.append(f"{label}={json.dumps(row['value'])}{mark}")
         lines.append(f"series {series['role']}: set {series['set_id']}; take {series['take_id']}; "
                      f"pose {json.dumps(series['pose'])}; " + "; ".join(stats))
-    for verdict in packet.get("verdicts", {}).get("fits", ()):
-        fit = packet["fits"][verdict["fit_index"]]
+    for fit in packet["fits"]:
         cloud = fit.get("cloud") or {}
-        spread = {f"{center:g} Hz": next((band for band in cloud.get("band_spread", ())
-                                        if band["center_hz"] == center), None)
-                  for center in verdict["crossover_band_centers_hz"]}
-        fields = {key: fit[key] for key in ("residual_rms_db", "residual_max_db", "reason_summary")}
-        fields.update(cross_pose_spread=spread, design_poses=cloud.get("design_poses"),
-                      **{key: verdict[key] for key in ("repeat_spread_db", "residual_within_repeat_spread", "reason")})
-        fields["features"] = [{"freq_hz": fit["filters"][feature["filter_index"]]["freq"], **feature}
-                              for feature in verdict["features"]]
+        fields = {key: fit[key] for key in ("residual_rms_db", "residual_max_db", "reason_summary", "crossover_band_spread")}
+        fields.update(design_poses=cloud.get("design_poses"), **fit["verdict"], filters=fit["filters"])
         lines.append(f"fit {fit['role']}: set {fit['set_id']}; take {fit['take_id']}; pose {json.dumps(fit['pose'])}; "
                      + "; ".join(f"{key}={json.dumps(value)}" for key, value in fields.items()))
-    lines += ["null ceiling: " + json.dumps(row) for row in packet.get("verdicts", {}).get("poses", ())]
+    for row in packet.get("verdicts", ()):
+        summary = f"unavailable ({row['reason']})"
+        if row["branch_gap_db"] is not None:
+            lo, hi = row["band_hz"]
+            louder = f"{row['louder_role']} louder" if row["louder_role"] else "equal levels"
+            summary = (f"gap {row['branch_gap_db']} dB ({louder}) → ceiling {json.dumps(row['null_ceiling_db'])} dB "
+                       f"over {lo:g}–{hi:g} Hz" + (f" ({row['reason']})" if row["reason"] else ""))
+        lines.append(f"null ceiling {json.dumps(row['pose'])}: {summary}; takes {', '.join(row['take_ids'])}")
     lines += ["## Artifacts", f"{json.dumps(packet['artifacts'], separators=(',', ':'))}; packet: {PACKET_FILENAME}",
               "## Tools", "\n".join(f"- `{cmd}`" for cmd in dict.fromkeys(commands)),
               f"Fingerprint: {packet['packet_fingerprint']}"]

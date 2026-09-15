@@ -33,6 +33,11 @@ class PEQ:
     gain: float    # dB — negative = cut, positive = boost
 
 
+def bell_half_width_oct(q: float) -> float:
+    """RBJ peaking half-gain width, in octaves."""
+    return math.asinh(1.0 / (2.0 * max(q, 1e-3))) / math.log(2.0)
+
+
 def _bell_response_db(
     eval_freqs: np.ndarray,
     fc: float,
@@ -53,8 +58,7 @@ def _bell_response_db(
     # Avoid log of 0 / negative
     safe = np.where(omega > 0, omega, 1.0)
     delta_oct = np.log2(safe)
-    # RBJ peaking-EQ half-bandwidth (octaves) for this Q; max() guards q -> 0.
-    bw = math.asinh(1.0 / (2.0 * max(q, 1e-3))) / math.log(2.0)
+    bw = bell_half_width_oct(q)
     response = gain_db / (1.0 + (delta_oct / bw) ** 2)
     response[omega <= 0] = 0.0
     return response
