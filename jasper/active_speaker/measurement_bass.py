@@ -16,6 +16,7 @@ from jasper.audio_measurement.program import AMBIENT_SEGMENT_ID, KIND_SILENCE
 from jasper.audio_measurement.program_analysis import analysis_diagnostic_summary
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.sweep_levels import sweep_band_levels
+from jasper.audio_measurement.repeated_sweep import sweep_ambient_id
 
 from .crossover_v2.record_index import measurement_documents, record_path
 from .measurement_analysis import AnalyzedMeasurement, analyzed_measurements
@@ -30,13 +31,18 @@ def _finite(values: np.ndarray) -> list[float | None]:
 
 def _quiet(take: AnalyzedMeasurement) -> tuple[np.ndarray, list[int] | None]:
     segments = take.program.segments
+    locations = {loc.segment_id: loc.scheduled_start for loc in take.analysis.locations}
+    pass_ambient = next((s for s in segments if s.segment_id == sweep_ambient_id("sweep_verify")), None)
+    if pass_ambient is not None:
+        start = locations[pass_ambient.segment_id]
+        stop = start + pass_ambient.n_samples
+        return take.samples[start:stop], [start, stop]
     ambient = next((s for s in segments if s.segment_id == AMBIENT_SEGMENT_ID), None)
     if ambient is None:
         return np.array([]), None
     first = segments.index(ambient)
     while first and segments[first - 1].kind == KIND_SILENCE:
         first -= 1
-    locations = {loc.segment_id: loc.scheduled_start for loc in take.analysis.locations}
     # Leave one second after the courtesy tone for its acoustic tail.
     start = locations[segments[first].segment_id] + (take.sample_rate if first else 0)
     stop = locations[ambient.segment_id] + ambient.n_samples
@@ -98,6 +104,9 @@ def bass_take(take: AnalyzedMeasurement) -> dict[str, Any]:
         "program_id": program.program_id,
         "sweep_band_hz": [segment.f1_hz, segment.f2_hz],
         "sweep_duration_s": segment.n_samples / take.sample_rate,
+        "passes": [{"segment_id": s.segment_id, "start_sample": s.start_sample, "n_samples": s.n_samples,
+                    "ambient_segment_id": sweep_ambient_id(s.segment_id)}
+                   for s in program.segments if sweep_ambient_id(s.segment_id) in {p.segment_id for p in program.segments}],
         "calibration": document["calibration"],
         "frequency_curve": curve,
         "diagnostics": diagnostics, "quiet_samples": quiet_samples, "bands": bands,

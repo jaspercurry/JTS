@@ -29,7 +29,8 @@ PURPOSES = (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REFERENCE)
 REGIME_PER_DRIVER = "per_driver"
 REGIME_SUMMED = "summed"
 REGIME_BRANCHES = "branches"
-REGIMES = (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES)
+REGIME_NEAR_FIELD = "near_field"
+REGIMES = (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES, REGIME_NEAR_FIELD)
 
 _LEGACY_PURPOSE_BY_KIND = {
     POSE_KIND_BEARING: PURPOSE_SPEAKER,
@@ -61,7 +62,10 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
     resolved = resolved_measurement_purpose(purpose, kind)
     if regime not in REGIMES:
         raise ValueError(f"a measurement regime must be one of {REGIMES}, got {regime!r}")
-    if resolved != PURPOSE_SPEAKER and regime != REGIME_SUMMED:
+    if regime == REGIME_NEAR_FIELD:
+        if resolved != PURPOSE_BASS:
+            raise ValueError("near-field program captures require purpose bass")
+    elif resolved != PURPOSE_SPEAKER and regime != REGIME_SUMMED:
         raise ValueError(f"{resolved} measurements require the summed regime")
     return resolved
 
@@ -174,6 +178,7 @@ class MeasurementProgram:
     mover: str | None = None
     layout: str = ""
     levels: str | None = None
+    stimulus: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.poses:
@@ -244,7 +249,7 @@ def _load_programs(
     raw = json.loads(_config_text(path))
     if not isinstance(raw, dict):
         raise ValueError("measurement plan must be an object")
-    unknown = set(raw) - {"layouts", "programs", "default_sizes"}
+    unknown = set(raw) - {"layouts", "programs", "default_sizes", "stimuli"}
     if unknown:
         raise ValueError(f"measurement plan has unknown fields: {sorted(unknown)}")
 
@@ -273,7 +278,7 @@ def _load_programs(
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise ValueError(f"program {index} must be an object")
-        unknown = set(row) - {"id", "size", "layout", "purpose", "regime", "levels"}
+        unknown = set(row) - {"id", "size", "layout", "purpose", "regime", "levels", "stimulus"}
         if unknown:
             raise ValueError(f"program {index} has unknown fields: {sorted(unknown)}")
         try:
@@ -295,6 +300,7 @@ def _load_programs(
             regime=row.get("regime", REGIME_PER_DRIVER),
             mover=movers.get(layout),
             layout=layout, levels=row.get("levels"),
+            stimulus=raw.get("stimuli", {})[row["stimulus"]] if row.get("stimulus") else None,
         )
 
     defaults_raw = raw.get("default_sizes")
@@ -376,7 +382,9 @@ def run_program(purpose: str, poses: str | None = None) -> MeasurementProgram:
         return selected
     for row in sorted(_PROGRAMS.values(), key=lambda row: row.program_id != purpose):
         if poses in (row.layout, f"{row.program_id}_{row.size}", f"{row.program_id}/{row.size}"):
-            return replace(row, program_id=purpose, purpose=purpose, regime=selected.regime, levels=selected.levels)
+            return replace(row, program_id=purpose, purpose=purpose,
+                           regime=row.regime if row.purpose == purpose else selected.regime,
+                           levels=selected.levels, stimulus=selected.stimulus)
     return replace(selected, size="custom", layout="", poses=tuple(
         ProgramPose(int(value.strip()), 0) for value in poses.split(",")
     ))

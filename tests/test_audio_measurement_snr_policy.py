@@ -34,7 +34,7 @@ import pytest
 
 from jasper.audio_measurement import program_analysis, snr_policy, sweep
 from jasper.audio_measurement.quality_model import DRIVER
-from jasper.audio_measurement.sweep_levels import sweep_band_levels
+from jasper.audio_measurement.sweep_levels import SweepNoiseWindowError, sweep_band_levels
 
 SR = 48000
 
@@ -45,19 +45,19 @@ def test_sweep_dwell_power_and_noise_use_the_same_units(quiet_seconds):
     rng = np.random.default_rng(91)
     quiet = rng.normal(0, 0.001, SR * quiet_seconds)
     capture = signal + rng.normal(0, 0.001, signal.size)
+    if not quiet_seconds:
+        with pytest.raises(SweepNoiseWindowError) as caught:
+            sweep_band_levels(capture, quiet, SR, meta, 0, [(50, 80)])
+        assert caught.value.code == "sweep_noise_window_too_short"
+        return
     rows = sweep_band_levels(capture, quiet, SR, meta, 0, [(10, 20), (50, 80), (200, 300)])
     assert len(rows) == 1
     row = rows[0]
     assert row["signal_plus_noise_dbfs"] == pytest.approx(-23.01, abs=0.3)
-    if quiet_seconds:
-        noise_db = -60 + 10 * math.log10(30 / (SR / 2))
-        assert row["noise_p10_p50_p90_dbfs"][1] == pytest.approx(noise_db, abs=1)
-        assert row["estimated_snr_db"] == pytest.approx(-23.01 - noise_db, abs=2)
-        assert row["quiet_windows"] > 1
-    else:
-        assert row["noise_p10_p50_p90_dbfs"] is None
-        assert row["estimated_snr_db"] is None
-        assert row["quiet_windows"] == 0
+    noise_db = -60 + 10 * math.log10(30 / (SR / 2))
+    assert row["noise_p10_p50_p90_dbfs"][1] == pytest.approx(noise_db, abs=1)
+    assert row["estimated_snr_db"] == pytest.approx(-23.01 - noise_db, abs=2)
+    assert row["quiet_windows"] > 1
 
 
 def _bands(rows):

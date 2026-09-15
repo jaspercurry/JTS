@@ -15,6 +15,7 @@ import numpy as np
 
 from jasper.audio_measurement.mic_meter import classify_mic_meter
 from jasper.audio_measurement.branch_program import is_branch_program
+from jasper.audio_measurement.repeated_sweep import average_summed_capture
 from .branches import analyze_branches
 from .alignment_pairs import estimate_adjacent_alignment
 
@@ -834,7 +835,7 @@ def _analyze_verify(
     fc_hz = float(priors.crossover_fc_hz) if priors.crossover_fc_hz else None
     seg = program.segment("sweep_verify")
     full_ir, _pre = _deconvolve_window(
-        capture, seg, global_offset + seg.start_sample, sample_rate
+        average_summed_capture(program, capture, global_offset), seg, global_offset + seg.start_sample, sample_rate
     )
     n_fft = _n_fft_for(full_ir)
     summed = _driver_response(

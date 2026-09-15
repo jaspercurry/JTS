@@ -129,7 +129,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
     return analyze, assessor
 
 
-def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None) -> Any:
+def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None, *, context: Any = None) -> Any:
     excitation = conductor._excitation
     if spec.program_phase == PHASE_CHECK:
         program = excitation.check_program()
@@ -147,8 +147,15 @@ def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None)
         return excitation.measure_program(gains)
     excitation = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)
     backoff = 0.0 if stimulus_dbfs is None else BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs
-    program = (excitation.cloud_program(extra_backoff_db=backoff) if spec.program_phase == PHASE_CLOUD_VERIFY
-               else excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s))
+    if spec.stimulus is not None:
+        from jasper.active_speaker.bass_stimulus import build_bass_program  # lazy: keeps jasper.web numpy-free
+
+        program = build_bass_program(excitation, spec.stimulus, safety_profile=context.safety_profile,
+                                     role_targets=context.role_targets, extra_backoff_db=backoff,
+                                     courtesy_prelude=spec.program_phase != PHASE_CLOUD_VERIFY)
+    else:
+        program = (excitation.cloud_program(extra_backoff_db=backoff) if spec.program_phase == PHASE_CLOUD_VERIFY
+                   else excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s))
     if spec.program_phase == PHASE_VERIFY:
         conductor._verify_program = program
     elif spec.program_phase == PHASE_CLOUD_VERIFY:

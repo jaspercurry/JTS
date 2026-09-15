@@ -483,6 +483,7 @@ def _bind_compose(
     *, box: BoxDeclaration, store: Any, session_id: str, cam_factory: Any,
     config_dir: str, graph: Any, measurement_profile: Any = None,
 ) -> Any:
+    from jasper.active_speaker.bass_stimulus import build_bass_program  # lazy: hardware execution loads numerical analysis
     from jasper.active_speaker.crossover_v2.composition import bind_program_composer
     from jasper.active_speaker.crossover_v2.measure_spec import CANDIDATE_SCOPES, GRAPH_SCOPE_DRIVERS
     from jasper.active_speaker.candidate_bank import find_banked_candidate
@@ -500,6 +501,9 @@ def _bind_compose(
 
     def program_for_spec(spec: Any, stimulus_dbfs: float | None) -> Any:
         peak = BASE_STIMULUS_PEAK_DBFS if stimulus_dbfs is None else stimulus_dbfs
+        if spec.stimulus is not None:
+            return build_bass_program(excitation, spec.stimulus, safety_profile=box.safety_profile,
+                                      role_targets=box.role_targets, extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - peak)
         if spec.graph_scope == GRAPH_SCOPE_DRIVERS:
             return excitation.measure_program({role.role: peak for role in box.roles_bands})
         summed = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)

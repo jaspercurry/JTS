@@ -52,6 +52,7 @@ from .journey import (
     PHASE_VERIFY,
 )
 from .programs import (
+    SessionExcitation,
     PILOT_LEVEL_DELTA_DB,
     courtesy_prelude_for_phase,
     measurement_band_hz,
@@ -69,6 +70,7 @@ if TYPE_CHECKING:
 def build_inline_session_spec(
     captures: Sequence[tuple[MeasureSpec, CloudPositionPrompt, str]], *,
     roles_bands: Sequence[RoleBand], fc_hz: float | None,
+    safety_profile: Mapping[str, Any] | None = None, role_targets: Mapping[str, str] | None = None,
     acknowledgement_binding: str, retries_per_pose: int, **spec_kwargs: Any,
 ) -> Any:
     prompts = [prompt for _, prompt, _ in captures]
@@ -77,7 +79,15 @@ def build_inline_session_spec(
     entries = []
     for index, (spec, prompt, _) in enumerate(captures, 1):
         phase = spec.program_phase
-        if phase == PHASE_CHECK:
+        if spec.stimulus is not None:
+            from ..bass_stimulus import build_bass_program  # lazy: keeps jasper.web numpy-free
+
+            program = build_bass_program(
+                SessionExcitation(tuple(roles_bands), {}, 0.0, fc_hz, {}), spec.stimulus,
+                safety_profile=safety_profile or {}, role_targets=role_targets or {},
+                courtesy_prelude=phase != PHASE_CLOUD_VERIFY,
+            )
+        elif phase == PHASE_CHECK:
             program = build_check_program(roles_bands, courtesy_prelude=True)
         elif phase == PHASE_MEASURE:
             program = build_measure_program({r.role: BASE_STIMULUS_PEAK_DBFS for r in roles_bands}, roles_bands)

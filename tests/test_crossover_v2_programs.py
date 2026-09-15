@@ -62,6 +62,7 @@ from jasper.active_speaker.crossover_v2.programs import (
 )
 from jasper.audio_measurement.program import KIND_COURTESY_TONE
 from jasper.web.correction_run_host import compose_plan_program
+from tests.test_active_speaker_program_admission import _profile_and_targets
 
 from tests.crossover_v2_fixtures import (
     CAPS,
@@ -524,15 +525,19 @@ def test_prepared_summed_captures_keep_the_program_band(purpose, size):
     captures = prepare_plan_captures(request, roles_bands=_roles())
     excitation = _excitation(CAPS, {"woofer": 4.0, "tweeter": 4.0})
     host = SimpleNamespace(_excitation=excitation)
+    _, safety, targets = _profile_and_targets(woofer_floor=20, woofer_upper=4000,
+                                               max_sweep_duration_s=4, minimum_cooldown_s=2)
+    context = SimpleNamespace(safety_profile=safety, role_targets=targets)
     for capture in captures:
         spec = capture.spec
         if spec.graph_scope == "drivers":
             continue
-        program = compose_plan_program(host, spec, None)
-        sweep, = [s for s in program.stimulus_segments() if s.kind == "summed_sweep"]
-        expected = (150.0, 20000.0) if purpose == "speaker" else (20.0, 20000.0)
-        assert (sweep.f1_hz, sweep.f2_hz) == expected
-        assert spec.sweep_band_hz == (() if purpose == "speaker" else expected)
+        program = compose_plan_program(host, spec, None, context=context)
+        sweeps = [s for s in program.stimulus_segments() if s.kind == "summed_sweep"]
+        expected = {"speaker": (150, 20000), "room": (20, 20000), "bass": (20, 1100)}[purpose]
+        assert len(sweeps) == (3 if purpose == "bass" else 1)
+        assert all((sweep.f1_hz, sweep.f2_hz) == expected for sweep in sweeps)
+        assert spec.sweep_band_hz == (expected if purpose == "room" else ())
         assert (program.program_id == excitation.verify_program().program_id) is (purpose == "speaker")
 
 

@@ -92,6 +92,7 @@ def test_available_programs_is_the_sorted_registry() -> None:
         ("baseline", "full"),
         ("bass", "axis"),
         ("bass", "cloud"),
+        ("bass", "nearfield"),
         ("bass", "quick"),
         ("branches", "express"),
         ("close", "spot"),
