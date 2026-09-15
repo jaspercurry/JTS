@@ -264,7 +264,9 @@ class WakeLoop:
         # only writer; every path here only reads the gate.
         self._measurement_active: asyncio.Event = asyncio.Event()
         self.measurement_hold = MeasurementHold(
-            self, session_active=lambda: self._turns.state is State.SESSION,
+            self._assistant_output, self._measurement_active, self._content_activity,
+            invalidate_input=lambda reason: self._invalidate_input(reason),
+            session_active=lambda: self._turns.state is State.SESSION,
         )
 
         # User-driven mic mute, set via the MUTE / UNMUTE UDS commands.
@@ -421,10 +423,6 @@ class WakeLoop:
     @property
     def _ducker(self) -> FanInDucker:
         return self._assistant_output.ducker
-
-    @property
-    def _volume_coordinator(self) -> VolumeCoordinator:
-        return self._assistant_output.volume_coordinator
 
     def _create_fire_and_forget_task(
         self,
@@ -831,11 +829,6 @@ class WakeLoop:
         self._reset_session_input()
         if self._vad_off is not None:
             self._vad_off.reset()
-
-    async def _drain_inflight_output(self, *, timeout_sec: float) -> bool:
-        return await self._assistant_output.drain_inflight(
-            timeout_sec=timeout_sec,
-        )
 
     async def _play_mute_click(self, *, going_on: bool) -> None:
         await self._assistant_output.play_mute_click(going_on=going_on)

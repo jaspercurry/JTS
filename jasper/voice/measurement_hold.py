@@ -2,18 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper-voice's lease on a room-correction measurement window.
-
-The window itself is owned by ``jasper.measurement_window``; this is the
-voice daemon's copy of "a measurement is live", driven by the MEASURE_PAUSE /
-MEASURE_RESUME control-socket commands and, at startup, by
-:meth:`MeasurementHold.adopt_live_window`. It closes assistant output admission,
-gates the mic, hands the volume-owner lease over, pauses the outputd content
-meter, and keeps a crash backstop armed so a coordinator that dies mid-sweep
-cannot strand the speaker silent.
-
-``WakeLoop._measurement_active`` stays the hot-path gate every wake/session
-path reads; this class is its only writer.
+"""Voice-side measurement lease, driven by MEASURE_PAUSE / MEASURE_RESUME
+and startup adoption. ``jasper.measurement_window`` owns the window;
+this class alone writes the shared measurement event read by wake/session paths.
 """
 
 from __future__ import annotations
@@ -29,7 +20,8 @@ from ..control.measurement_hold import read_measurement_hold
 from ..log_event import log_event
 
 if TYPE_CHECKING:
-    from ..voice_daemon import WakeLoop
+    from .assistant_output import AssistantOutput
+    from .content_activity import ContentActivityTracker
 
 logger = logging.getLogger("jasper.voice_daemon")
 
@@ -122,13 +114,17 @@ class MeasurementHold:
 
     def __init__(
         self,
-        wake_loop: "WakeLoop",
+        output: AssistantOutput,
+        measurement_active: asyncio.Event,
+        content_activity: ContentActivityTracker,
         *,
+        invalidate_input: Callable[[str], None],
         session_active: Callable[[], bool],
     ) -> None:
-        self._wake_loop = wake_loop
-        # Predicate rather than a State read: State lives in voice_daemon, and
-        # importing it here at runtime would close an import cycle.
+        self._output = output
+        self._measurement_active = measurement_active
+        self._content_activity = content_activity
+        self._invalidate_input = invalidate_input
         self._session_active = session_active
         self._transition_lock = asyncio.Lock()
         self._safety_task: asyncio.Task | None = None
@@ -279,7 +275,7 @@ class MeasurementHold:
         try:
             if self._session_active():
                 return "BUSY", None
-            opening = not self._wake_loop._measurement_active.is_set()
+            opening = not self._measurement_active.is_set()
             deferred_cancel = False
             opened = False
             completed = False
@@ -298,7 +294,7 @@ class MeasurementHold:
                     if deferred_cancel:
                         raise asyncio.CancelledError
                     await self._await_pause_step(
-                        self._wake_loop._output_gate.pause_admission(),
+                        self._output.gate.pause_admission(),
                         deadline_monotonic=setup_deadline,
                         phase="admission",
                     )
@@ -306,7 +302,7 @@ class MeasurementHold:
                     # Synchronous through safety installation: recovery is
                     # armed before any external await.
                     self._set_active_local(True, trigger="pause")
-                    self._wake_loop._content_activity.pause()
+                    self._content_activity.pause()
                     self._arm_safety_locked(autoclear_sec)
                 else:
                     # Replacement first, so the active measurement never has a
@@ -326,14 +322,14 @@ class MeasurementHold:
                     if deferred_cancel:
                         raise asyncio.CancelledError
 
-                volume = self._wake_loop._volume_coordinator
+                volume = self._output.volume_coordinator
                 await self._await_pause_step(
                     volume.note_measurement_active(True),
                     deadline_monotonic=setup_deadline,
                     phase="volume_guard",
                 )
                 await self._await_pause_step(
-                    self._wake_loop._tts.pause_content_meter_for_measurement(
+                    self._output.tts.pause_content_meter_for_measurement(
                         setup_deadline,
                     ),
                     deadline_monotonic=setup_deadline,
@@ -341,7 +337,7 @@ class MeasurementHold:
                 )
                 meter_paused = True
 
-                drain = self._wake_loop._drain_inflight_output
+                drain = self._output.drain_inflight
                 drained = not opening or await drain(
                     timeout_sec=max(
                         0.0,
@@ -427,7 +423,7 @@ class MeasurementHold:
             if (
                 generation != self._lease_generation
                 or self._safety_task is not current
-                or not self._wake_loop._measurement_active.is_set()
+                or not self._measurement_active.is_set()
             ):
                 return
             logger.warning(
@@ -618,10 +614,10 @@ class MeasurementHold:
         # Output admission reopens before the mic ungates so no ordering of
         # awaits can leave a wake heard but its chirp refused (non-negotiable 6),
         # and before meter IPC, whose adapter may be recovering from a stuck send.
-        await self._wake_loop._output_gate.resume_admission()
+        await self._output.gate.resume_admission()
         self._set_active_local(False, trigger=trigger)
-        self._wake_loop._content_activity.resume()
-        volume = self._wake_loop._volume_coordinator
+        self._content_activity.resume()
+        volume = self._output.volume_coordinator
 
         if deadline_monotonic is not None:
             # The final quarter-second is rollback reserve. Clear the volume
@@ -635,7 +631,7 @@ class MeasurementHold:
             )
             if resume_meter:
                 await self._restore_step_before_deadline(
-                    self._wake_loop._tts.resume_content_meter(),
+                    self._output.tts.resume_content_meter(),
                     deadline_monotonic=deadline_monotonic,
                     event="measurement.meter_resume_failed",
                     trigger=trigger,
@@ -643,7 +639,7 @@ class MeasurementHold:
             return
 
         try:
-            await self._wake_loop._tts.resume_content_meter()
+            await self._output.tts.resume_content_meter()
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as e:
             log_event(
                 logger,
@@ -690,14 +686,14 @@ class MeasurementHold:
     def _set_active_local(self, active: bool, *, trigger: str) -> None:
         """Update the hot-path gate synchronously inside transition ownership."""
 
-        gate = self._wake_loop._measurement_active
+        gate = self._measurement_active
         changed = gate.is_set() != bool(active)
         if active:
             gate.set()
         else:
             gate.clear()
         if changed:
-            self._wake_loop._invalidate_input("MEASURING")
+            self._invalidate_input("MEASURING")
             log_event(
                 logger,
                 "measurement.reconcile_guard",
