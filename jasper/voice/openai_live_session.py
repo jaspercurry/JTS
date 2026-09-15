@@ -425,7 +425,6 @@ class OpenAILiveTurn(BaseLiveTurn):
 class OpenAILiveConnection(BaseLiveConnection):
     PROVIDER_NAME = "openai_live"
     _logger = logger
-    _log_tag = "openai live connection:"
 
     def __init__(self, *, api_key, model="gpt-live-1", voice="marin", backend_model="gpt-5.4-mini", connect=None):
         super().__init__(model=model, voice=voice)

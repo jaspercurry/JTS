@@ -511,7 +511,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         self._proactive_buffer_sec = proactive_buffer_sec
         self._connect_factory = connect_factory
         self._base_url = base_url
-        self._log_tag = f"{self.PROVIDER_NAME} connection:"
         # Lazy SDK client — only built when ``connect_factory`` is None.
         # We do this lazily so test setups can construct the connection
         # object without the openai package installed.

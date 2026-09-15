@@ -208,7 +208,7 @@ async def test_manual_start_failure_cues_the_cause(
     async def _begin_turn_that_fails(**_kwargs) -> None:
         nonlocal paused
         paused = connection_drops
-        raise RuntimeError("live connection: not connected after backoff window")
+        raise RuntimeError("gemini connection: not connected after backoff window")
 
     wl = _make_wake_loop(
         cues=_SpyCues(),

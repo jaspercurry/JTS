@@ -544,9 +544,6 @@ class BaseLiveConnection:
 
     PROVIDER_NAME: str = ""
     _session: Any
-    # Prefix for this provider's human-readable log lines, e.g. "openai
-    # connection:".
-    _log_tag: str = ""
     # The subclass's module logger, so a line raised from a shared method
     # still lands under the provider's own logger name.
     _logger: logging.Logger = logger
@@ -557,6 +554,10 @@ class BaseLiveConnection:
     # Whether this provider's watchdog reconnect is a rotation it chose
     # (Gemini) rather than a server cap it is pre-empting (OpenAI).
     _watchdog_is_planned: bool = False
+
+    @property
+    def _log_tag(self) -> str:
+        return f"{self.PROVIDER_NAME} connection:"
 
     def __init__(
         self,
