@@ -79,10 +79,6 @@ export function defaultActiveSpeakerStep(ctx) {
   return ctx.currentStep || 'research';
 }
 
-export function outputStepTitle(step, view) {
-  return view && view.label || 'this card';
-}
-
 export function activeCommissionGroup(topology) {
   // The single active (2/3-way) speaker group commissioning targets, if any.
   var groups = topology && Array.isArray(topology.speaker_groups) ?
@@ -94,61 +90,20 @@ export function activeCommissionGroup(topology) {
   return null;
 }
 
-// Map a backend commissioning-view next_action endpoint to the page's existing
-// click `data-act`. Only the two next_action ids the research footer can dispatch
-// on a clean draft (save the design draft / prepare the crossover preview) have a
-// direct button; every later-step pointer becomes "Continue".
-function nextActionAct(action) {
-  var endpoint = action && typeof action === 'object' ? String(action.endpoint || '') : '';
-  if (endpoint.indexOf('/design-draft') >= 0) return 'save-driver-design';
-  if (endpoint.indexOf('/crossover-preview') >= 0) return 'prepare-crossover-preview';
-  return '';
-}
-
-// The saved next action owns the footer; the browser owns unsaved edits.
-export function commissioningStepFooter(step, view, client) {
-  client = client || {};
-  var fallback = client.clientFallback || {};
-  fallback = {
-    label: String(fallback.label || ''),
-    primary: fallback.primary !== false,
-    disabled: !!fallback.disabled,
-    act: String(fallback.act || ''),
-    step: fallback.step ? String(fallback.step) : undefined,
-    source: 'client'
-  };
-  var dirty = !!client.layoutDirty || !!client.draftDirty || !!client.saving;
-  var nextAction = view && typeof view === 'object' && view.next_action &&
-    typeof view.next_action === 'object' ? view.next_action : null;
-
-  if (step === 'research') {
-    if (dirty || !nextAction) return fallback;
-    var act = nextActionAct(nextAction);
-    if (act === 'prepare-crossover-preview') {
-      return {
-        label: String(nextAction.label || 'Preview crossover'),
-        primary: true,
-        // Backend enables whenever the saved design is ready; keep it disabled
-        // until the live topology actually has the preview inputs.
-        disabled: !client.previewInputsReady,
-        act: act,
-        source: 'backend'
-      };
-    }
-    if (act === 'save-driver-design') {
-      return {
-        label: String(nextAction.label || 'Save values'),
-        primary: true,
-        disabled: false,
-        act: act,
-        source: 'backend'
-      };
-    }
-    return {label: 'Continue', primary: true, disabled: false,
-      act: 'output-step-next', step: 'research', source: 'backend'};
-  }
-
-  return fallback;
+export function nextActionAct(action) {
+  action = action || {};
+  var program = action.program || 'speaker';
+  var run = {act: '', step: 'experiment', program: program,
+    command: 'sudo /opt/jasper/.venv/bin/jasper-round run --program ' + program};
+  return {
+    declare_speaker: {act: 'open-output-layout', step: 'layout'},
+    save_driver_values: {act: 'save-driver-design', step: 'research'},
+    preview_crossover: {act: 'prepare-crossover-preview', step: 'research'},
+    run_speaker_program: run,
+    apply_candidate: {act: 'save-apply-baseline-profile', step: 'profile'},
+    run_program: run,
+    copy_prompt: {act: 'copy-tuning-handoff', step: '', program: program}
+  }[action.id] || {act: '', step: ''};
 }
 
 // Bass-management crossover corner bounds. These MUST equal

@@ -2,17 +2,30 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Seat-level leveling card for /sound/speaker/ — starts, polls, and stops
-// jasper-seat-level (jasper/web/sound_seat_level.py). Self-contained: main.js
-// only calls initSeatLevel() once and, on pagehide, isSeatLevelRunning() /
-// stopSeatLevel() — the same safety-stop shape it already gives the
-// volume-floor tone, so a leveling pass never keeps ramping the household's
-// volume after the page is gone.
-
 import { getJSON, postJSON, startPolling } from "/assets/shared/js/http.js";
 
 var running = false;
 var stopPoll = null;
+var mountedCard = null;
+
+export function renderSeatLevelCard() {
+  return `<section class="info-card" id="seat-level-card">
+    <h2 class="eyebrow">Seat-level leveling</h2>
+    <p class="form-hint">Ramp the volume until a calibrated mic at your
+    listening seat reads your target level, then bank it as the crossover
+    session's measurement reference.</p>
+    <div class="field">
+      <label for="seat-level-target">Target level (dB SPL)</label>
+      <input id="seat-level-target" type="number" step="0.5" inputmode="decimal"
+             autocomplete="off">
+    </div>
+    <div class="form-actions">
+      <button type="button" class="btn btn--ghost" id="seat-level-start">Start leveling</button>
+      <button type="button" class="btn btn--danger" id="seat-level-stop" hidden>Stop</button>
+    </div>
+    <p class="form-hint" id="seat-level-status" role="status" aria-live="polite"></p>
+  </section>`;
+}
 
 function els() {
   return {
@@ -121,6 +134,8 @@ export function isSeatLevelRunning() {
 export function initSeatLevel() {
   var e = els();
   if (!e.card) return;
+  if (mountedCard) { e.card.replaceWith(mountedCard); return; }
+  mountedCard = e.card;
   e.start.addEventListener('click', startLeveling);
   e.stop.addEventListener('click', function() { stopSeatLevel(); });
   fetchStatus();
