@@ -56,6 +56,7 @@ from ._common import (
     REASON_UNWRITABLE,
     _REASON_BY_CODE,
     _ROUND_TOOL_ERRORS,
+    VIEW_PURPOSES,
     add_rungs_ms_argument,
     default_out,
     refused_by_name,
@@ -133,6 +134,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     for family in _FAMILIES:
         family.add_parser(sub)
+
+    for choice in sub._choices_actions:
+        purposes = VIEW_PURPOSES[choice.dest]
+        choice.help = f"[{'/'.join(purposes) if purposes else 'all'}] {choice.help}"
 
     for child in sub.choices.values():
         child.allow_abbrev = False

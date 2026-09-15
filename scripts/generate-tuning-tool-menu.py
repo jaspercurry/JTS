@@ -175,10 +175,24 @@ def _subcommand_names(parser: argparse.ArgumentParser) -> tuple[str, ...]:
     return ()
 
 
+def _subcommand_labels(parser: argparse.ArgumentParser) -> tuple[str, ...]:
+    names = _subcommand_names(parser)
+    action = next((item for item in parser._actions
+                   if isinstance(item, argparse._SubParsersAction)), None)
+    help_by_name = {} if action is None else {
+        choice.dest: choice.help for choice in action._choices_actions
+    }
+    return tuple(
+        f"{name} {help_by_name[name].split()[0]}"
+        if help_by_name.get(name, "").startswith("[") else name
+        for name in names
+    )
+
+
 def _tool_row(module_name: str) -> str:
     module = importlib.import_module(module_name)
     parser = module.build_parser()
-    subcommands = _subcommand_names(parser)
+    subcommands = _subcommand_labels(parser)
     tool = parser.prog + (" " + "\\|".join(subcommands) if subcommands else "")
     description = " ".join((parser.description or "").split())
     where = Path(module.__file__).resolve().relative_to(ROOT)
