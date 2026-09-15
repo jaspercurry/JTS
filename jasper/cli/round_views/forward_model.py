@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from jasper.active_speaker.crossover_v2.capture_prediction import capture_prediction
+from jasper.active_speaker.crossover_v2.capture_prediction import DEFAULT_BRANCHES, capture_prediction
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.forward_model import ForwardModelError
 from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE, failed, stage
@@ -44,6 +44,7 @@ def _cmd_forward_model(args: argparse.Namespace) -> int:
             measured_round=Path(args.measured_round) if args.measured_round else None,
             measured_capture_id=measured.take_id(args.measured_take) if measured else None,
             expected_prediction_fingerprint=args.expected_prediction_fingerprint,
+            branch_roles=tuple(args.branches),
         )
     except ForwardModelError as exc:
         return failed(EXIT_REFUSED, exc.refusal_reason, {"message": str(exc), **exc.detail})
@@ -83,5 +84,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     forward.add_argument("--basis-candidate-json", help="source candidate artifact, checked against the selected take; otherwise resolve its candidate ID from the bank")
     forward.add_argument("--candidate-root", help="candidate bank root for offline source-candidate lookup")
     forward.add_argument("--window-ms", type=float, help="one shared diagnostic window in ms; default is the shipped reference window")
+    forward.add_argument("--branches", nargs=2, default=DEFAULT_BRANCHES, metavar=("FIRST", "SECOND"),
+                         help="two exact recorded branch identities; defaults to woofer tweeter")
     forward.add_argument("--expected-prediction-fingerprint", help="bind the comparison to the fingerprint in the saved pretrial forecast")
     forward.set_defaults(func=_cmd_forward_model)

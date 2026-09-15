@@ -14,9 +14,10 @@ from tests.test_audio_measurement_program_analysis import SR, _band_impulse, _sy
 
 
 @pytest.mark.parametrize("epsilon,polarity", [(0.0, 1), (80e-6, -1), (-60e-6, 1)])
-def test_solo_and_sum_keep_measured_level_phase_and_recording_clock(epsilon, polarity):
+@pytest.mark.parametrize("branches", [("woofer", "tweeter"), ("left:woofer", "left:woofer:rear")])
+def test_solo_and_sum_keep_measured_level_phase_and_recording_clock(epsilon, polarity, branches):
     base = build_verify_program(1600, measurement_band_hz=(150, 20000), gain_db=-20, sweep_s=.6, courtesy_prelude=False)
-    program = build_branch_program(base, {"woofer": 0, "tweeter": 1})
+    program = build_branch_program(base, dict(zip(branches, (0, 1))))
     sweeps = [s for s in program.stimulus_segments() if s.kind != "pilot"]
     assert len(sweeps) == 6
     assert {s.gain_db for s in sweeps} == {-20}
@@ -41,5 +42,5 @@ def test_solo_and_sum_keep_measured_level_phase_and_recording_clock(epsilon, pol
     predicted = lower.complex_tf[mask] + upper.complex_tf[mask]
     summed = result.summed_response.complex_tf[mask]
     assert np.percentile(abs(20 * np.log10(abs(predicted / summed))), 95) < .2
-    assert {r["role"] for r in result.branch_diagnostic["responses"]} == {"woofer", "tweeter", "summed"}
+    assert {r["role"] for r in result.branch_diagnostic["responses"]} == {*branches, "summed"}
     assert all(len(r["impulse"]) <= round(.4 * SR) for r in result.branch_diagnostic["responses"])
