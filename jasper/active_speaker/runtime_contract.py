@@ -296,6 +296,7 @@ class OutputAssignment:
     startup_muted: bool
     protection_required: bool
     protection_status: str
+    output_variant: str = "primary"
 
     @property
     def roleful(self) -> bool:
@@ -318,6 +319,7 @@ class OutputAssignment:
             "speaker_kind": self.speaker_kind,
             "speaker_mode": self.speaker_mode,
             "role": self.role,
+            **({"output_variant": self.output_variant} if self.output_variant != "primary" else {}),
             "physical_output_index": self.physical_output_index,
             "identity_verified": self.identity_verified,
             "startup_muted": self.startup_muted,
@@ -484,6 +486,7 @@ def _assignment(group: SpeakerGroup, channel: SpeakerChannel) -> OutputAssignmen
         speaker_kind=group.kind,
         speaker_mode=group.mode,
         role=channel.role,
+        output_variant=channel.output_variant,
         physical_output_index=channel.physical_output_index,
         identity_verified=bool(channel.identity_verified),
         startup_muted=bool(channel.startup_muted),
@@ -1522,14 +1525,15 @@ def _unsafe_post_split_gains(payload: dict[str, Any]) -> tuple[str, ...]:
 def _safe_commissioning_tail_filter(payload: dict[str, Any], name: str) -> bool:
     runtime_lane = name.startswith("as_commission_")
     output_mute = False
-    if name.startswith("as_out") and name.endswith("_commission_mute"):
-        index_s = name.removeprefix("as_out").removesuffix("_commission_mute")
+    suffix = "_rear_pending_mute" if name.endswith("_rear_pending_mute") else "_commission_mute"
+    if name.startswith("as_out") and name.endswith(suffix):
+        index_s = name.removeprefix("as_out").removesuffix(suffix)
         try:
             index = int(index_s)
         except ValueError:
             pass
         else:
-            output_mute = name == _commission_mute_name(index)
+            output_mute = name == f"as_out{index}{suffix}"
     if not runtime_lane and not output_mute:
         return False
     filter_type = _filter_type(payload, name)
@@ -2174,7 +2178,9 @@ def _commissioning_output_chain(
         cursor += 1
     delay_name = _driver_delay_name(assignment.role)
     limiter_name = driver_limiter_name(assignment.role)
-    expected_tail = (delay_name, limiter_name, mute_name)
+    expected_tail = (delay_name, limiter_name, mute_name) + (
+        (f"as_out{channel}_rear_pending_mute",) if assignment.output_variant == "rear" else ()
+    )
     delay = _filter_params(payload, delay_name)
     delay_ms = _strict_finite_number(delay.get("delay"))
     limiter = _filter_params(payload, limiter_name)
@@ -2524,6 +2530,16 @@ def _active_graph_evidence(
         ))
         return {"issues": issues, "safe": False}
     view = view_from_yaml_dict(payload)
+    # Until fitted rear transfer/protection is admitted (issue #5161), even a
+    # manually edited graph must leave every rear physical output silent.
+    for assignment in contract.assignments:
+        if assignment.output_variant == "rear" and assignment.physical_output_index is not None:
+            index = assignment.physical_output_index
+            if not output_terminally_muted(
+                payload, view, index, mute_name=f"as_out{index}_rear_pending_mute",
+                mute_gain_db=STARTUP_MUTE_GAIN_DB,
+            ):
+                issues.append(_issue("blocker", "rear_output_not_muted", f"Rear output {index + 1} requires a fitted transfer and protection"))
     if payload.get("processors") or any(
         not isinstance(step, Mapping) or step.get("type") not in {"Filter", "Mixer"}
         for step in payload.get("pipeline", [])
@@ -2826,7 +2842,7 @@ def _active_graph_evidence(
                 output for output, item in by_output.items() if item.role == role
             }
             post_split_names = _post_split_filter_names(payload, channel=index)
-            role_chain_names = post_split_names[:-1]
+            role_chain_names = post_split_names[:-(2 if assignment.output_variant == "rear" else 1)]
             if index == min(role_channels) and not _canonical_chain_grouped(
                 payload,
                 expected_channels=role_channels,

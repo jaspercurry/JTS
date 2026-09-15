@@ -23,6 +23,7 @@ from jasper.camilla_emit import (
     BASS_MANAGEMENT_CROSSOVER_ORDER,
 )
 from jasper.json_fields import JsonFields
+from jasper.output_topology import OUTPUT_VARIANT_SCHEMA_VERSION, SUPPORTED_OUTPUT_VARIANTS
 
 SCHEMA_VERSION = 1
 ACTIVE_PRESET_KIND = "jts_active_speaker_preset"
@@ -254,6 +255,7 @@ class OutputChannel:
     driver_role: str
     label: str
     startup_muted: bool = True
+    output_variant: str = "primary"
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "OutputChannel":
@@ -270,6 +272,7 @@ class OutputChannel:
             driver_role=driver_role,
             label=_require_text(raw.get("label"), "output.label", max_chars=80),
             startup_muted=_bool(raw.get("startup_muted", True), "output.startup_muted"),
+            output_variant=str(raw.get("output_variant", "primary")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -279,6 +282,7 @@ class OutputChannel:
             "driver_role": self.driver_role,
             "label": self.label,
             "startup_muted": self.startup_muted,
+            **({"output_variant": self.output_variant} if self.output_variant != "primary" else {}),
         }
 
 
@@ -288,6 +292,10 @@ class ActiveChannelMap:
 
     layout: str
     outputs: tuple[OutputChannel, ...]
+
+    @property
+    def schema_version(self) -> int:
+        return OUTPUT_VARIANT_SCHEMA_VERSION if any(o.output_variant != "primary" for o in self.outputs) else SCHEMA_VERSION
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "ActiveChannelMap":
@@ -305,7 +313,7 @@ class ActiveChannelMap:
         roles = required_driver_roles(way_count)
         sides = _required_sides(self.layout)
         seen_indexes: set[int] = set()
-        seen_slots: set[tuple[str, str]] = set()
+        seen_slots: set[tuple[str, str, str]] = set()
         for output in self.outputs:
             if output.index in seen_indexes:
                 raise ActiveSpeakerConfigError(f"duplicate output index {output.index}")
@@ -322,15 +330,19 @@ class ActiveChannelMap:
                 raise ActiveSpeakerConfigError(
                     f"output driver role {output.driver_role!r} invalid for {way_count}-way"
                 )
-            slot = (output.side, output.driver_role)
+            if output.output_variant not in SUPPORTED_OUTPUT_VARIANTS or (
+                output.output_variant == "rear" and output.driver_role != "woofer"
+            ):
+                raise ActiveSpeakerConfigError("rear output variant requires the woofer role")
+            slot = (output.side, output.driver_role, output.output_variant)
             if slot in seen_slots:
                 raise ActiveSpeakerConfigError(
                     f"duplicate output for {output.side}/{output.driver_role}"
                 )
             seen_slots.add(slot)
-        required = {(side, role) for side in sides for role in roles}
+        required = {(side, role, "primary") for side in sides for role in roles}
         missing = sorted(required - seen_slots)
-        extra = sorted(seen_slots - required)
+        extra = sorted(slot for slot in seen_slots - required if slot[2] != "rear")
         if missing:
             raise ActiveSpeakerConfigError(f"missing output channels: {missing}")
         if extra:
@@ -647,7 +659,7 @@ class ActiveSpeakerPreset:
     def from_mapping(cls, raw: Any) -> "ActiveSpeakerPreset":
         if not isinstance(raw, dict):
             raise ActiveSpeakerConfigError("preset must be an object")
-        if raw.get("artifact_schema_version") != SCHEMA_VERSION:
+        if raw.get("artifact_schema_version") not in {SCHEMA_VERSION, OUTPUT_VARIANT_SCHEMA_VERSION}:
             raise ActiveSpeakerConfigError("unsupported active-speaker schema version")
         if raw.get("kind") != ACTIVE_PRESET_KIND:
             raise ActiveSpeakerConfigError("unsupported active-speaker preset kind")
@@ -683,6 +695,8 @@ class ActiveSpeakerPreset:
             ),
         )
         preset.validate()
+        if raw["artifact_schema_version"] < preset.channel_map.schema_version:
+            raise ActiveSpeakerConfigError("rear output variants require schema version 2")
         return preset
 
     def validate(self) -> None:
@@ -724,7 +738,7 @@ class ActiveSpeakerPreset:
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
-            "artifact_schema_version": SCHEMA_VERSION,
+            "artifact_schema_version": self.channel_map.schema_version,
             "kind": ACTIVE_PRESET_KIND,
             "preset_id": self.preset_id,
             "name": self.name,
@@ -863,7 +877,7 @@ class SpeakerBaselineProfile:
     def from_mapping(cls, raw: Any) -> "SpeakerBaselineProfile":
         if not isinstance(raw, dict):
             raise ActiveSpeakerConfigError("baseline must be an object")
-        if raw.get("artifact_schema_version") != SCHEMA_VERSION:
+        if raw.get("artifact_schema_version") not in {SCHEMA_VERSION, OUTPUT_VARIANT_SCHEMA_VERSION}:
             raise ActiveSpeakerConfigError("unsupported baseline schema version")
         if raw.get("kind") != ACTIVE_BASELINE_KIND:
             raise ActiveSpeakerConfigError("unsupported baseline kind")
@@ -877,6 +891,8 @@ class SpeakerBaselineProfile:
             verification=BaselineVerification.from_mapping(raw.get("verification")),
         )
         profile.validate()
+        if raw["artifact_schema_version"] < profile.channel_map.schema_version:
+            raise ActiveSpeakerConfigError("rear output variants require schema version 2")
         return profile
 
     def validate(self) -> None:
@@ -891,7 +907,7 @@ class SpeakerBaselineProfile:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "artifact_schema_version": SCHEMA_VERSION,
+            "artifact_schema_version": self.channel_map.schema_version,
             "kind": ACTIVE_BASELINE_KIND,
             "baseline_id": self.baseline_id,
             "preset_id": self.preset_id,

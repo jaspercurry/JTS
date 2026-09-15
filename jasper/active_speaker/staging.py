@@ -334,12 +334,6 @@ def load_staged_startup_config(
     }
 
 
-def _channels_by_role(group: SpeakerGroup | None) -> dict[str, SpeakerChannel]:
-    if group is None:
-        return {}
-    return {channel.role: channel for channel in group.channels}
-
-
 def _software_guard_requested(group: SpeakerGroup | None) -> bool:
     return any(
         channel.role == "tweeter"
@@ -470,12 +464,12 @@ def _active_groups_for_preset(
 
 def _channels_by_side_role(
     groups: list[SpeakerGroup],
-) -> dict[tuple[str, str], SpeakerChannel]:
-    channels: dict[tuple[str, str], SpeakerChannel] = {}
+) -> dict[tuple[str, str, str], SpeakerChannel]:
+    channels: dict[tuple[str, str, str], SpeakerChannel] = {}
     for group in groups:
         side = group.kind if group.kind in {"left", "right"} else "mono"
         for channel in group.channels:
-            channels[(side, channel.role)] = channel
+            channels[(side, channel.role, channel.output_variant)] = channel
     return channels
 
 
@@ -497,6 +491,7 @@ def _target_outputs_for_groups(
                 "speaker_label": group.label,
                 "speaker_kind": group.kind,
                 "role": channel.role,
+                **({"output_variant": channel.output_variant} if channel.output_variant != "primary" else {}),
                 "physical_output_index": channel.physical_output_index,
                 "human_output_label": channel.human_output_label,
                 "identity_verified": channel.identity_verified,
@@ -706,10 +701,9 @@ def _preset_from_crossover_preview(
             ))
             continue
         side = group.kind if group.kind in {"left", "right"} else "mono"
-        channels = _channels_by_role(group)
-        for role in roles:
-            channel = channels.get(role)
-            if channel is None or channel.physical_output_index is None:
+        for channel in group.channels:
+            role = channel.role
+            if channel.physical_output_index is None:
                 issues.append(_issue(
                     "blocker",
                     "crossover_preview_channel_unassigned",
@@ -720,6 +714,7 @@ def _preset_from_crossover_preview(
                 index=channel.physical_output_index,
                 side=side,
                 driver_role=role,
+                output_variant=channel.output_variant,
                 label=(
                     channel.human_output_label
                     or f"DAC output {channel.physical_output_index + 1}"
@@ -832,7 +827,7 @@ def _preset_from_crossover_preview(
             preset_id=f"preview-{_safe_stem(topology.topology_id)}-{way_count}way",
             name=f"{topology.name} preview-derived active {way_count}-way",
             way_count=way_count,
-            channel_map=ActiveChannelMap(layout=layout, outputs=tuple(outputs)),
+            channel_map=ActiveChannelMap(layout=layout, outputs=tuple(sorted(outputs, key=lambda item: item.index))),
             drivers={
                 role: _driver_spec_from_preview(role, drivers_raw.get(role))
                 for role in roles
@@ -1093,11 +1088,12 @@ def _bind_preset_to_topology(
     roles = required_driver_roles(preset.way_count) if preset_shape_ok else ()
     channels_by_slot = _channels_by_side_role(active_groups)
     sides = ("mono",) if preset.channel_map.layout == "mono" else ("left", "right")
-    required_slots = [(side, role) for side in sides for role in roles]
+    required_slots = [(side, role, "primary") for side in sides for role in roles]
+    required_slots.extend(slot for slot in channels_by_slot if slot[2] != "primary")
     missing_roles = [
         f"{side}/{role}"
-        for side, role in required_slots
-        if (side, role) not in channels_by_slot
+        for side, role, variant in required_slots
+        if (side, role, variant) not in channels_by_slot
     ]
     if missing_roles:
         issues.append(_issue(
@@ -1107,10 +1103,10 @@ def _bind_preset_to_topology(
         ))
     assigned_roles = [
         f"{side}/{role}"
-        for side, role in required_slots
+        for side, role, variant in required_slots
         if (
-            (side, role) in channels_by_slot
-            and channels_by_slot[(side, role)].physical_output_index is not None
+            (side, role, variant) in channels_by_slot
+            and channels_by_slot[(side, role, variant)].physical_output_index is not None
         )
     ]
     gates.append(_gate(
@@ -1125,8 +1121,8 @@ def _bind_preset_to_topology(
     ))
 
     physical_indexes: list[int] = []
-    for side, role in required_slots:
-        channel = channels_by_slot.get((side, role))
+    for side, role, variant in required_slots:
+        channel = channels_by_slot.get((side, role, variant))
         if channel is None or channel.physical_output_index is None:
             continue
         physical_indexes.append(channel.physical_output_index)
@@ -1134,6 +1130,7 @@ def _bind_preset_to_topology(
             index=channel.physical_output_index,
             side=side,
             driver_role=role,
+            output_variant=variant,
             label=channel.human_output_label or f"DAC output {channel.physical_output_index + 1}",
             startup_muted=True,
         ))
@@ -1159,26 +1156,26 @@ def _bind_preset_to_topology(
             "protected staging requires active outputs to be contiguous from DAC output 1",
         ))
     role_output_indexes = {
-        (side, role): channels_by_slot[(side, role)].physical_output_index
-        for side, role in required_slots
+        (side, role, variant): channels_by_slot[(side, role, variant)].physical_output_index
+        for side, role, variant in required_slots
         if (
-            (side, role) in channels_by_slot
-            and channels_by_slot[(side, role)].physical_output_index is not None
+            (side, role, variant) in channels_by_slot
+            and channels_by_slot[(side, role, variant)].physical_output_index is not None
         )
     }
     role_order_ok = (
         bool(required_slots)
         and len(role_output_indexes) == len(required_slots)
         and all(
-            role_output_indexes.get((side, role)) == index
-            for index, (side, role) in enumerate(required_slots)
+            role_output_indexes.get((side, role, variant)) == index
+            for index, (side, role, variant) in enumerate(required_slots)
         )
     )
     expected_role_order = ", ".join(
         f"{side} {role} on DAC output {index + 1}"
         if side != "mono"
         else f"{role} on DAC output {index + 1}"
-        for index, (side, role) in enumerate(required_slots)
+        for index, (side, role, variant) in enumerate(required_slots)
     )
     gates.append(_gate(
         "active_output_role_order",
@@ -1209,8 +1206,8 @@ def _bind_preset_to_topology(
 
     tweeter_channels = [
         channel
-        for (side, role), channel in channels_by_slot.items()
-        if role == "tweeter" and (side, role) in required_slots
+        for (side, role, variant), channel in channels_by_slot.items()
+        if role == "tweeter" and (side, role, variant) in required_slots
     ]
     tweeter_guard_declared = bool(tweeter_channels) and all(
         channel.startup_muted
@@ -2263,5 +2260,4 @@ def prepare_driver_commissioning_config(
         ),
     )
     return payload
-
 

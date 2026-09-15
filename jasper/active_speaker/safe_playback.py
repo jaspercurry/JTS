@@ -126,6 +126,7 @@ def playback_target_signature(target: Any) -> dict[str, Any] | None:
         "speaker_group_id": group_id,
         "role": role or None,
         "output_index": output_index,
+        **({"output_variant": target["output_variant"]} if target.get("output_variant", "primary") != "primary" else {}),
     }
 
 

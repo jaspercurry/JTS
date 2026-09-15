@@ -40,6 +40,7 @@ from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputTopology,
+    physical_target_id as _target_id,
     main_speaker_groups,
     topology_is_subless_passive_mains,
 )
@@ -107,10 +108,6 @@ def _text(value: Any, *, max_chars: int = 240) -> str | None:
 def _fingerprint(payload: Mapping[str, Any]) -> str:
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _target_id(group_id: str, role: str) -> str:
-    return f"{group_id}:{role}"
 
 
 # A 2-way group's single crossover region is always woofer<->tweeter — the
@@ -248,6 +245,7 @@ def _target_fingerprint(
         "speaker_group_kind": target.get("speaker_group_kind"),
         "speaker_group_mode": target.get("speaker_group_mode"),
         "role": target.get("role"),
+        **({"output_variant": target["output_variant"]} if target.get("output_variant", "primary") != "primary" else {}),
         "output_index": target.get("output_index"),
         "identity_verified": bool(target.get("identity_verified")),
     })
@@ -267,7 +265,8 @@ def physical_driver_target(
     """
 
     target = {
-        "target_id": _target_id(group.id, channel.role),
+        "target_id": channel.target_id(group.id),
+        **({"output_variant": channel.output_variant} if channel.output_variant != "primary" else {}),
         "speaker_group_id": group.id,
         "speaker_group_label": group.label,
         "speaker_group_kind": group.kind,
@@ -702,6 +701,7 @@ def _target_signature(target: Mapping[str, Any]) -> dict[str, Any] | None:
         "speaker_group_id": target.get("speaker_group_id"),
         "role": target.get("role"),
         "driver_role": target.get("role"),
+        "output_variant": target.get("output_variant", "primary"),
         "output_index": target.get("output_index"),
     })
 
@@ -780,6 +780,7 @@ def current_driver_floor_evidence(
     *,
     speaker_group_id: str,
     role: str,
+    output_variant: str = "primary",
 ) -> dict[str, Any]:
     """Validate durable identity/floor evidence from a current-state summary.
 
@@ -789,7 +790,7 @@ def current_driver_floor_evidence(
     """
     group_id = str(speaker_group_id or "").strip()
     role_id = str(role or "").strip().lower()
-    target_id = _target_id(group_id, role_id)
+    target_id = _target_id(group_id, role_id, output_variant)
     target = _target_lookup(topology).get(target_id)
     summary = measurements.get("summary")
     # Confirmation-only latest -- never `latest_driver_measurements`, which is
@@ -1311,7 +1312,7 @@ def record_driver_measurement(
     state = load_measurement_state(topology, state_path=path)
     group_id = _text(raw.get("speaker_group_id"), max_chars=80) or ""
     role = (_text(raw.get("role"), max_chars=40) or "").lower()
-    target_id = _target_id(group_id, role)
+    target_id = _target_id(group_id, role, str(raw.get("output_variant", "primary")))
     target = _target_lookup(topology).get(target_id)
     outcome = (_text(raw.get("outcome"), max_chars=40) or "").lower()
     observed, clipping, meter = _mic_meter_from(raw, calibration_level)

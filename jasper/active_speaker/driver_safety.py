@@ -253,14 +253,11 @@ def _visible_values_for_target(
 
 
 def _topology_driver_style(topology: OutputTopology, target_id: str) -> str | None:
-    """The topology-owned driver style for one physical target, or None.
-
-    ``target_id`` is ``f"{group.id}:{channel.role}"`` throughout this module.
-    """
+    """The topology-owned driver style for one physical target, or None."""
 
     for group in topology.speaker_groups:
         for channel in group.channels:
-            if f"{group.id}:{channel.role}" == target_id:
+            if channel.target_id(group.id) == target_id:
                 return channel.driver_style
     return None
 
@@ -901,7 +898,7 @@ def build_driver_research_request(
         role = str(target.get("role") or "")
         role_counts[role] = role_counts.get(role, 0) + 1
     driver_styles = {
-        f"{group.id}:{channel.role}": channel.driver_style
+        channel.target_id(group.id): channel.driver_style
         for group in topology.speaker_groups
         for channel in group.channels
         if channel.driver_style
@@ -1033,7 +1030,7 @@ def validate_driver_research_request(
             "driver_research_request targets do not exactly match the current physical targets"
         )
     driver_styles = {
-        f"{group.id}:{channel.role}": channel.driver_style
+        channel.target_id(group.id): channel.driver_style
         for group in topology.speaker_groups
         for channel in group.channels
         if channel.driver_style
@@ -1709,7 +1706,7 @@ def _profile_core(
         role = str(physical.get("role") or "")
         role_counts[role] = role_counts.get(role, 0) + 1
     driver_styles = {
-        f"{group.id}:{channel.role}": channel.driver_style
+        channel.target_id(group.id): channel.driver_style
         for group in topology.speaker_groups
         for channel in group.channels
         if channel.driver_style
