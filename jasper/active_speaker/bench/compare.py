@@ -74,7 +74,7 @@ _PRECISION_DTYPE = "<f8"
 
 #: How far inside the sweep's own band the analysis band starts and ends:
 #: one sixth of an octave, the finest fractional-octave window this flow
-#: uses anywhere (``linearization_fit._ladder_smooth``'s bottom rung) --
+#: uses anywhere (``linearization_fit.ladder_smooth``'s bottom rung) --
 #: backed off by one resolution element from each sweep edge's fade/rate
 #: transition.
 BAND_EDGE_GUARD_OCTAVES: float = 1.0 / 6.0

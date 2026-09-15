@@ -60,7 +60,7 @@ from jasper.active_speaker.linearization_fit import (
     _core_or_fallback_mask,
     _highshelf_response_db,
     _lift_stage,
-    _ladder_smooth,
+    ladder_smooth,
     _power_band_average_db,
     _shelf_stage,
     _solve_band_mask,
@@ -595,14 +595,14 @@ def test_highshelf_matches_sound_profile_reference_implementation():
 
 
 # --------------------------------------------------------------------------- #
-# _ladder_smooth -- imported from linearization_envelope (single shared
+# ladder_smooth -- imported from linearization_envelope (single shared
 # implementation); parity with a hand-rolled reference
 # --------------------------------------------------------------------------- #
 
 
 def test_ladder_smooth_matches_hand_rolled_reference():
     """A third, freshly-written implementation, independent of the shared
-    ``_ladder_smooth`` this test file imports -- matching this test file's
+    ``ladder_smooth`` this test file imports -- matching this test file's
     own house convention (see test_active_speaker_linearization_envelope.py's
     _hand_ladder_smooth)."""
     grid = DEFAULT_ENVELOPE_GRID_HZ
@@ -611,7 +611,7 @@ def test_ladder_smooth_matches_hand_rolled_reference():
     mid = smooth_fractional_octave(grid, magnitude, fraction=3)
     coarse = smooth_fractional_octave(grid, magnitude, fraction=2)
     expected = np.where(grid < 4_000.0, fine, np.where(grid < 10_000.0, mid, coarse))
-    np.testing.assert_array_equal(_ladder_smooth(grid, magnitude), expected)
+    np.testing.assert_array_equal(ladder_smooth(grid, magnitude), expected)
 
 
 # --------------------------------------------------------------------------- #
@@ -721,7 +721,7 @@ def test_reported_residual_grades_the_realized_biquad_not_the_lorentzian():
     assert fit.hf_continuation_spend_db == 0.0
 
     grid_hz = envelope.freqs_hz
-    smoothed_db = _ladder_smooth(
+    smoothed_db = ladder_smooth(
         grid_hz, np.interp(grid_hz, resp.freqs_hz, resp.magnitude_db)
     )
     # The two evaluators, over the WHOLE cascade, on the fit's own grid.
@@ -838,7 +838,7 @@ def test_every_stage_combination_reports_the_realized_cascades_residual():
             if not fit.filters or fit.fit_band_hz == (0.0, 0.0):
                 continue
             grid_hz = envelope.freqs_hz
-            smoothed_db = _ladder_smooth(
+            smoothed_db = ladder_smooth(
                 grid_hz, np.interp(grid_hz, resp.freqs_hz, resp.magnitude_db)
             )
             exact_db = smoothed_db + 20.0 * np.log10(
@@ -1138,7 +1138,7 @@ def test_cd_horn_realized_cascade_tracks_cut_target_within_tolerance():
     fit = fit_driver_linearization(resp, envelope)
     assert fit.hf_continuation_spend_db > 0.0
     grid = envelope.freqs_hz
-    smoothed = _ladder_smooth(grid, np.interp(grid, resp.freqs_hz, resp.magnitude_db))
+    smoothed = ladder_smooth(grid, np.interp(grid, resp.freqs_hz, resp.magnitude_db))
     realized = 20.0 * np.log10(
         np.abs(complex_correction_response(fit.filters, grid))
     )
@@ -3560,7 +3560,7 @@ def test_a_boost_into_a_measured_excess_is_refused_and_named():
     grid_hz = envelope.freqs_hz
     anchor = 434.01678699822264
     idx = int(np.argmin(np.abs(grid_hz - anchor)))
-    smoothed_db = _ladder_smooth(
+    smoothed_db = ladder_smooth(
         grid_hz, np.interp(grid_hz, resp.freqs_hz, resp.magnitude_db)
     )
     # The premise: at the anchor bin the measurement is HOT, like the session's.
@@ -4006,7 +4006,7 @@ def test_declared_fit_budget_bounds_the_realized_fit(field, value, shape):
             assert "max_filters" not in fit.budget_binding
         if value == 0:
             assert fit.correction_giveback_db == fit.hf_continuation_spend_db == 0
-        measured = _ladder_smooth(envelope.freqs_hz, np.interp(envelope.freqs_hz, response.freqs_hz, response.magnitude_db))
+        measured = ladder_smooth(envelope.freqs_hz, np.interp(envelope.freqs_hz, response.freqs_hz, response.magnitude_db))
         mask = _core_or_fallback_mask(envelope, envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB)
         corrected = measured + 20 * np.log10(np.abs(complex_correction_response(fit.filters, envelope.freqs_hz)))
         assert fit.correction_giveback_db == pytest.approx(

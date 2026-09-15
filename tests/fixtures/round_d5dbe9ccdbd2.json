@@ -197,7 +197,7 @@
   "fits": [
     {
       "cloud": {"band_spread": [{"center_hz": 2000.0, "f_hi": 2825.234500494769, "f_lo": 1615.118381017347, "max_sigma_db": 1.103016043550224, "n_bins": 21, "sigma_db": 0.815763999253154}], "design_poses": 3},
-      "filters": [{"biquad_type": "Peaking", "freq": 2258.9907078305932, "gain": -4.767210591938349, "q": 2.5084450965786256}],
+      "filters": [{"biquad_type": "Peaking", "freq": 2258.9907078305932, "gain": -4.767210591938349, "q": 2.5084450965786256}, {"biquad_type": "Peaking", "freq": 3951.523652427268, "gain": -3.3372158352268557, "q": 2.0385116160278245}],
       "pose": {"deg": 0, "distance_m": 1.0, "elevation_deg": 0, "kind": "bearing", "place": ["bearing", 0, 0, null, null], "seat_offset_m": null},
       "role": "tweeter",
       "set_id": "46ca147c9b65bc5b0b1b5d12b17703b82e9b306d1b183b52cf2a19ff993a357e",
@@ -213,7 +213,7 @@
     },
     {
       "cloud": {"band_spread": [{"center_hz": 2000.0, "f_hi": 2825.234500494769, "f_lo": 1615.118381017347, "max_sigma_db": 1.103016043550224, "n_bins": 21, "sigma_db": 0.815763999253154}], "design_poses": 3},
-      "filters": [{"biquad_type": "Peaking", "freq": 2258.9907078305932, "gain": -2.8917081978562904, "q": 2.0}],
+      "filters": [{"biquad_type": "Peaking", "freq": 2258.9907078305932, "gain": -2.8917081978562904, "q": 2.0}, {"biquad_type": "Peaking", "freq": 3951.523652427268, "gain": -4.12702901077631, "q": 1.4727834896584113}],
       "pose": {"deg": -20, "distance_m": 1.0, "elevation_deg": 0, "kind": "bearing", "place": ["bearing", -20, 0, null, null], "seat_offset_m": null},
       "role": "tweeter",
       "set_id": "345b80b1ab09b069d3b15ff71e3c342ad563eca06d348ea2ad58a8dc82e25712",
@@ -221,7 +221,7 @@
     },
     {
       "cloud": {"band_spread": [{"center_hz": 2000.0, "f_hi": 2825.234500494769, "f_lo": 1615.118381017347, "max_sigma_db": 1.103016043550224, "n_bins": 21, "sigma_db": 0.815763999253154}], "design_poses": 3},
-      "filters": [{"biquad_type": "Peaking", "freq": 2258.9907078305932, "gain": -4.205541148670427, "q": 3.494998277792232}],
+      "filters": [{"biquad_type": "Peaking", "freq": 2258.9907078305932, "gain": -4.205541148670427, "q": 3.494998277792232}, {"biquad_type": "Peaking", "freq": 3951.523652427268, "gain": -4.891884888376109, "q": 2.4685185703950623}],
       "pose": {"deg": 20, "distance_m": 1.0, "elevation_deg": 0, "kind": "bearing", "place": ["bearing", 20, 0, null, null], "seat_offset_m": null},
       "role": "tweeter",
       "set_id": "345b80b1ab09b069d3b15ff71e3c342ad563eca06d348ea2ad58a8dc82e25712",

@@ -48,6 +48,7 @@ from jasper.active_speaker.crossover_v2.alignment_prescription import PRESCRIPTI
 from jasper.active_speaker.measured_crossover_candidate import effective_preset
 from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
 from tests.run_manifest_fixture import manifest_set, write_manifest
+from tests.crossover_v2_fixtures import _fixture_applied_profile
 
 
 @pytest.fixture
@@ -595,9 +596,13 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
     manifest = write_manifest(root, groups=groups)
     monkeypatch.setattr("jasper.active_speaker.measurement_analysis.analyze_measurement_bundle",
                         lambda *a, **kw: pytest.fail("speaker packet reopened WAVs"))
+    applied_path = tmp_path / "applied-profile.json"
+    applied_path.write_text(json.dumps({**_fixture_applied_profile(fc_hz=2400),
+                                       "kind": BASELINE_PROFILE_KIND, "artifact_schema_version": SCHEMA_VERSION}))
     mark_state(inputs.session_dir, "applied")
     banked = bank_round(inputs.session_dir, campaign_root=tmp_path / "bank", state_path=inputs.state_path,
-                        design_draft_path=root / "design-draft.json", view_runner=round_views.run_bookkeeping)
+                        design_draft_path=root / "design-draft.json", applied_profile_path=applied_path,
+                        view_runner=round_views.run_bookkeeping)
     packet = json.loads((banked.path / "packet.json").read_text())
     expected = {(g["set_id"], t["take_id"], t["pose"]["deg"], t["role"])
                 for g in manifest["sets"] for t in g["takes"] if t["selected"]}

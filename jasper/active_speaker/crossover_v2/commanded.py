@@ -27,6 +27,10 @@ from jasper.audio_measurement.program_analysis import (
     summed_model_residual_delay_us,
 )
 
+from jasper.active_speaker.branch_chain import sections_by_role
+from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, CrossoverRegion
+
+from .contracts import CandidateAcousticContext, CrossoverV2ContractError
 from .plan_assembly import SummationFrame, compose_linearized_prediction
 
 __all__ = [
@@ -38,6 +42,7 @@ __all__ = [
     "graph_predicted_sum",
     "previous_graph_prediction",
     "profile_crossover_fc_hz",
+    "profile_crossover_regions",
     "profile_graph_summation",
 ]
 
@@ -146,54 +151,23 @@ def profile_graph_summation(
     )
 
 
-def profile_crossover_fc_hz(profile: Mapping[str, Any] | None) -> float | None:
-    """The crossover corner one applied profile's graph was built at, or ``None``.
-
-    The one owner of "which ``C`` did this profile run": the previous side of the
-    commanded axis only models the graph the speaker played while that corner
-    matches the corner the capture was composed at.
-
-    Read off ``recomposition_snapshot["preset"]`` through the same
-    :class:`~jasper.active_speaker.profile.ActiveSpeakerPreset` parse every other
-    snapshot reader uses, reduced through
-    :class:`~.contracts.CandidateAcousticContext`, which fails closed on a split
-    or empty section set rather than picking a region.
-
-    ``None`` for a profile with no snapshot, an unparseable preset, or a section
-    set that names no one corner: the corner cannot be checked, so the previous
-    graph cannot be affirmed and the probe declines to grade.
-    """
-    from jasper.active_speaker.branch_chain import sections_by_role
-    from jasper.active_speaker.crossover_v2.contracts import (
-        CandidateAcousticContext,
-        CrossoverV2ContractError,
-    )
-    from jasper.active_speaker.profile import (
-        ActiveSpeakerConfigError,
-        ActiveSpeakerPreset,
-    )
-
-    if not isinstance(profile, Mapping):
-        return None
-    snapshot = profile.get("recomposition_snapshot")
+def profile_crossover_regions(profile: Mapping[str, Any] | None) -> tuple[CrossoverRegion, ...]:
+    """The applied snapshot's parsed crossover regions, empty when unavailable."""
+    snapshot = profile.get("recomposition_snapshot") if isinstance(profile, Mapping) else None
     raw = snapshot.get("preset") if isinstance(snapshot, Mapping) else None
     if not isinstance(raw, Mapping):
-        return None
+        return ()
     try:
-        preset = ActiveSpeakerPreset.from_mapping(dict(raw))
-        fc_hz = float(
-            CandidateAcousticContext.from_sections(
-                sections_by_role(preset.crossover_regions),
-            ).fc_hz
-        )
-    except (
-        ActiveSpeakerConfigError,
-        CrossoverV2ContractError,
-        AttributeError,
-        KeyError,
-        TypeError,
-        ValueError,
-    ):
+        return ActiveSpeakerPreset.from_mapping(dict(raw)).crossover_regions
+    except (ActiveSpeakerConfigError, AttributeError, KeyError, TypeError, ValueError):
+        return ()
+
+
+def profile_crossover_fc_hz(profile: Mapping[str, Any] | None) -> float | None:
+    """One applied crossover corner, or ``None`` for absent, invalid or split sections."""
+    try:
+        fc_hz = float(CandidateAcousticContext.from_sections(sections_by_role(profile_crossover_regions(profile))).fc_hz)
+    except (CrossoverV2ContractError, AttributeError, KeyError, TypeError, ValueError):
         return None
     return fc_hz if math.isfinite(fc_hz) and fc_hz > 0.0 else None
 

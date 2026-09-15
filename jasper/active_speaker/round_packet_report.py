@@ -16,7 +16,7 @@ from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.audio_measurement.spatial_combine import octave_bands_hz
 from jasper.json_fields import finite_float
 
-from .crossover_v2.frequency_view import _position_label
+from .crossover_v2.frequency_view import position_label
 from .crossover_v2.round_inputs import SetTakes
 from .flat_spec import _power_mean_db
 from .measurement_programs import POSE_KIND_BEARING, PURPOSE_SPEAKER, run_purpose
@@ -79,9 +79,9 @@ def _decision(contract: Mapping[str, Any]) -> str:
 
 def _pose_token(pose: Mapping[str, Any]) -> str:
     if pose.get("kind") == "seat":
-        return str(pose.get("name") or pose.get("id") or f"seat{tuple(pose['seat_offset_m'])}")
-    return _position_label({"position_deg": pose.get("deg"),
-                            "vertical_deg": pose.get("elevation_deg")}).replace("-", "−")
+        return str(pose.get("name") or pose.get("id") or f"seat{tuple(pose.get('seat_offset_m') or ())}")
+    return position_label({"position_deg": pose.get("deg"),
+                           "vertical_deg": pose.get("elevation_deg")})
 
 
 def _span(rows: list[Mapping[str, Any]], key: str) -> str:
@@ -162,10 +162,13 @@ def packet_index(
                 stats.append(f"{label}={json.dumps(row['value'])}{mark}")
         lines.append(f"series {series['role']}: pose {_pose_token(series['pose'])}; " + "; ".join(stats)
                      + f"; set {series['set_id']}; take {series['take_id']}")
+    lines += [f"crossover_band_spread=null; reason={reason}" for reason in dict.fromkeys(
+        fit.get("crossover_band_spread_reason") for fit in packet["fits"]
+    ) if reason]
     for fit in packet["fits"]:
         cloud = fit.get("cloud") or {}
         bands = "; ".join("crossover " + " ".join(f"{key}={band[key]:.4g}" for key in ("center_hz", "sigma_db", "max_sigma_db"))
-                          for band in fit["crossover_band_spread"].values())
+                          for band in (fit["crossover_band_spread"] or {}).values())
         fields = {key: fit[key] for key in ("residual_rms_db", "residual_max_db", "reason_summary")}
         fields.update(design_poses=cloud.get("design_poses"), **fit["verdict"], filters=fit["filters"])
         lines.append(f"fit {fit['role']}: pose {_pose_token(fit['pose'])}; " + (bands + "; " if bands else "")
@@ -176,9 +179,11 @@ def packet_index(
         if row["branch_gap_db"] is not None:
             lo, hi = row["band_hz"]
             louder = f"{row['louder_role']} louder" if row["louder_role"] else "equal levels"
-            summary = (f"gap {row['branch_gap_db']} dB ({louder}) → ceiling {json.dumps(row['null_ceiling_db'])} dB "
+            ceiling = f"{row['null_ceiling_db']:.4g}" if row['null_ceiling_db'] is not None else "null"
+            summary = (f"gap {row['branch_gap_db']:.4g} dB ({louder}) → ceiling {ceiling} dB "
                        f"over {lo:g}–{hi:g} Hz" + (f" ({row['reason']})" if row["reason"] else ""))
-        lines.append(f"null ceiling {_pose_token(row['pose'])}: {summary}; takes {', '.join(row['take_ids'])}")
+        lines.append(f"null ceiling {_pose_token(row['pose'])}: {summary}; capture_graph {json.dumps(row['capture_graph'])}; "
+                     f"takes {', '.join(row['take_ids'])}")
     lines += ["## Artifacts", f"{json.dumps(packet['artifacts'], separators=(',', ':'))}; packet: {PACKET_FILENAME}",
               "## Tools", "\n".join(f"- `{cmd}`" for cmd in dict.fromkeys(commands)),
               f"Fingerprint: {packet['packet_fingerprint']}"]
