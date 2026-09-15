@@ -27,6 +27,7 @@ from ..assistant_loudness import (
     active_voice_identity,
     tts_envelope_lufs_for_level,
 )
+from ..assistant_volume import resolved_route_consumes_volume_context
 from ..tts_playout import (
     TtsPlayout,
     tts_wire_is_wide as _tts_wire_is_wide,
@@ -39,10 +40,7 @@ from ..cues.manager import (
     REASON_UNKNOWN_SLUG,
     wait_tts_drained_owned,
 )
-from ..tts_routing import (
-    tts_socket_feeds_post_dsp_outputd,
-    tts_socket_feeds_pre_dsp_fanin,
-)
+from ..tts_routing import resolve_tts_routing_snapshot
 from ..volume_coordinator import VolumeCoordinator
 from ._tasks import await_cleanup_owned
 from .earcons import (
@@ -649,9 +647,8 @@ class AssistantOutput:
         # post-DSP outputd mix (a reconciled passive member). The same wire
         # message is sent either way — the post-DSP consumer owns the
         # structural downstream-is-zero fact. Ambiguous/legacy routes stay off.
-        route_consumes_context = (
-            tts_socket_feeds_pre_dsp_fanin(os.environ)
-            or tts_socket_feeds_post_dsp_outputd(os.environ)
+        route_consumes_context = resolved_route_consumes_volume_context(
+            resolve_tts_routing_snapshot(os.environ),
         )
         context_reader = (
             getattr(self.volume_coordinator, "effective_volume_context", None)

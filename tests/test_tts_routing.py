@@ -13,10 +13,9 @@ the voice daemon's PREPARE_ASSISTANT gate share.
 import pytest
 
 from jasper.tts_routing import (
+    resolve_tts_routing_snapshot,
     resolved_tts_socket_feeds_post_dsp_outputd,
     resolved_tts_socket_feeds_pre_dsp_fanin,
-    tts_socket_feeds_post_dsp_outputd,
-    tts_socket_feeds_pre_dsp_fanin,
 )
 
 _OUTPUTD_SOCKET = "/run/jasper-outputd/tts.sock"
@@ -56,7 +55,6 @@ def test_env_reader_layers_the_grouping_file(
 ):
     path = tmp_path / "grouping-voice.env"
     path.write_text(grouping_file)
-    assert tts_socket_feeds_pre_dsp_fanin({}, grouping_env_path=str(path)) is pre_dsp
-    assert (
-        tts_socket_feeds_post_dsp_outputd({}, grouping_env_path=str(path)) is post_dsp
-    )
+    resolved = resolve_tts_routing_snapshot({}, grouping_env_path=str(path))
+    assert resolved_tts_socket_feeds_pre_dsp_fanin(resolved) is pre_dsp
+    assert resolved_tts_socket_feeds_post_dsp_outputd(resolved) is post_dsp
