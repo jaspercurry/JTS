@@ -56,6 +56,16 @@ Repeat spread and pose spread answer different questions. No fit filter should
 rest on its `budget.max_gain_db` rail. Measure the composed graph, then stop
 when it answers the question.
 
+Read `alignment_verdict` beside the timing rows. A delay and its inverted
+spelling one half-period later have the same phase at Fc; at 2500 Hz they
+are 200 µs of group delay apart. `folded_delay_us` puts each pose in the
+normal frame; `spread_us` reports their range. Trust the measured-sum take
+in `decided_by` to choose the lobe, and author `basis_delay_us` from that
+take's committed delay. `snr_waived` names takes committed with insufficient
+alignment SNR. `flatness_improvement_db` compares ripple on the same metric;
+`refinement_delta_us` is committed minus scored seed, while `epsilon_ppm`
+is clock drift. `gcc_delay_us` is the bare correlation estimate.
+
 Read each pair's `objective`: `summed_fit_committed` identifies a committed
 summed fit. Inspect `committed.delay_us`, `committed.polarity`,
 `summed_fit_margin`, `delay_interval_us` and `summed_fit_verdict`.

@@ -225,7 +225,8 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, pea
         rung = verdict.next_gain_db
         await manifest.append({**record, "analysis": analysis_json(analysis)}, record["take_id"], verdict,
                               complete=True, started_s=attempt, ended_s=attempt + 1, level_observation={})
-    pair, = round_alignment(manifest.to_dict(), {})
+    rows, _ = round_alignment(manifest.to_dict(), {})
+    pair, = rows
     level = pair["levels"]["woofer"]
     assert level["alignment_level_db"] == pytest.approx(-30 + raise_db)
     assert level["alignment_snr_shortfall_db"] == {"before": 6, "after": pytest.approx(after)}

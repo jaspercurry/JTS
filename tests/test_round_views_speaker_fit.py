@@ -5,6 +5,7 @@ import json
 import shlex
 from dataclasses import asdict, replace
 from pathlib import Path
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -74,10 +75,10 @@ def speaker_round(tmp_path):
     analysis = ProgramAnalysis(
         phase="measure", program_id=program.program_id, locations=(), driver_responses=tuple(responses),
         alignment=AlignmentEstimate(delay_us=157.5, raw_delay_us=162, parallax_us=4.5,
-                                    polarity="inverted", polarity_sign=-1, confidence=0.9, seed_delay_us=120),
+                                    polarity="inverted", polarity_sign=-1, confidence=0.9, seed_delay_us=-205, polarity_agrees_with_sum=False),
         candidate=CrossoverCandidate(trim_db={"woofer": 0, "tweeter": -3}, polarity="inverted",
                                      delay_us=157.5, predicted_ripple_db=1.25, confidence=0.9,
-                                     seed_polarity_sign=1, alignment_seed_ripple_db=3.5,
+                                     seed_polarity_sign=1, alignment_seed_ripple_db=3.5, alignment_seed_delay_us=120,
                                      alignment_objective="flat_sum_committed", flatness_improvement_db=2.25,
                                      anchor_delay_us=150, snap_delta_us=7.5),
     )
@@ -155,9 +156,11 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
         assert result["linearization"][role]["excited_band_hz"] == list(bands[role])
         assert result["linearization"][role]["envelope"]["sigma_source"] == "paired_repeats"
     alignment = result["alignment"]
-    assert alignment["drift_us"] == alignment["committed"]["delay_us"] - alignment["seed"]["delay_us"]
-    assert alignment["committed"] == {"delay_us": 157.5, "polarity": "inverted", "ripple_db": 1.25}
-    assert alignment["seed"] == {"delay_us": 120, "polarity": "normal", "ripple_db": 3.5}
+    assert alignment["refinement_delta_us"] == alignment["committed"]["delay_us"] - alignment["seed"]["delay_us"]
+    assert alignment["committed"] == {"delay_us": 157.5, "polarity": "inverted"}
+    assert alignment["seed"] == {"delay_us": 120, "polarity": "normal"}
+    assert alignment["polarity_agrees_with_sum"] is False
+    assert alignment["gcc_delay_us"] == -205
     assert result["trim"] == json.loads(json.dumps({**asdict(trim), "outcome": trim.outcome, "committed_side": trim.committed_side}))
     pending = [result]
     while pending:
@@ -495,7 +498,7 @@ def test_design_cloud_joins_retakes_without_borrowing_graphs(speaker_round, othe
     clouds = design_clouds(inputs, manifest)
     assert {key: cloud.n_positions for key, cloud in clouds.items()} == (
         {"first": 2, "retaken": 1, "older": 1, "other": 1} if anonymous else {"first": 3, "retaken": 3, "older": 3, "other": 1})
-    assert len(round_alignment(manifest, prescription_sources(inputs))) == (5 if anonymous else 4)
+    assert len(round_alignment(manifest, prescription_sources(inputs))[0]) == (5 if anonymous else 4)
     assert len(clouds["retaken"].boost_responses) == (0 if anonymous else 3)
     for selected, expected in (("first", 2 if anonymous else 3), ("other", 1)):
         take = group["takes"][1] if selected == "first" else other["takes"][0]
@@ -507,6 +510,54 @@ def test_design_cloud_joins_retakes_without_borrowing_graphs(speaker_round, othe
         assert result["vocabulary"] == ("bounded_boost" if expected == 3 else "cut_only")
 
 
+@pytest.mark.parametrize("off_axis,agree", [((210.591, 234.312, "inverted"), False), ((10.591, 34.312, "normal"), True)])
+def test_round_timing_folds_lobes_and_names_the_measured_sum(speaker_round, off_axis, agree):
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    group = manifest_set([(path, record)], set_id="timing")
+    take = group["takes"][0]
+    group["takes"] = [{**take, "take_id": f"take-{deg}", "pose": {"kind": "bearing", "deg": deg, "elevation_deg": 0},
+        "analysis": {"delay_us": delay, "polarity": polarity, "trim_db": {"woofer": 0, "tweeter": -3},
+                     "alignment_objective": "summed_fit_committed" if deg == 0 else "flat_sum_committed",
+                     "snr_waived_roles": ["tweeter"] if deg == 0 else []},
+        "quality": {"evidence": {"snr.tweeter.alignment.verdict": "insufficient"}}}
+        for deg, delay, polarity in ((0, 13, "normal"), (-20, off_axis[0], off_axis[2]), (20, off_axis[1], off_axis[2]))]
+    rows, verdict = round_alignment({"sets": [group]}, {}, fc_hz=2500)
+    assert len(rows) == 3
+    assert verdict == {
+        "folded_delay_us": {"0": 13.0, "-20": 10.591, "20": 34.312},
+        "spread_us": 23.721, "lobe_us": 200.0, "lobes_agree": agree,
+        "decided_by": {"pose": 0, "objective": "summed_fit_committed", "take_id": "take-0"},
+        "snr_waived": ["take-0"],
+    }
+
+
+def test_packet_timing_keeps_known_corner_when_one_contract_is_unavailable(speaker_round, monkeypatch):
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    groups = []
+    for set_id, deg, delay, polarity in (("on-axis", 0, 13, "normal"), ("unavailable", -20, 210.591, "inverted"),
+                                       ("off-axis", 20, 234.312, "inverted")):
+        group = manifest_set([(path, record)], set_id=set_id)
+        group["takes"][0].update(take_id=set_id, pose={"kind": "bearing", "deg": deg, "elevation_deg": 0},
+                                 analysis={"delay_us": delay, "polarity": polarity, "trim_db": {"woofer": 0, "tweeter": -3}})
+        groups.append(group)
+    write_manifest(root, groups=groups)
+    contract = {"speaker": {"alignment": {"bounds": {"fc_hz": 2500}}}}
+    monkeypatch.setattr("jasper.active_speaker.round_packet.prescription_contracts",
+                        Mock(side_effect=[contract, ValueError(), contract]))
+    packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
+    assert packet["limits"]["unavailable"]["status"] == "unavailable"
+    verdict = packet["alignment_verdict"]
+    assert verdict["lobe_us"] == 200.0
+    assert verdict["folded_delay_us"] == {"0": 13.0, "-20": 10.591, "20": 34.312}
+    assert verdict["spread_us"] == 23.721
+    assert verdict["lobes_agree"] is False
+
+
 @pytest.mark.parametrize("held,declared,fault", [(False, False, "capture_clipped"), (True, True, "capture_clipped"), (True, False, None)])
 def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared, fault):
     root, record, program, *_ = speaker_round
@@ -516,14 +567,14 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
         polarity="normal" if held else "inverted", predicted_ripple_db=0.348, confidence=0 if held else 0.9,
         alignment_objective=ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR if held else "summed_fit_committed",
         summed_fit_rms_db=0.348, summed_fit_margin=1.1 if held else 2.12,
-        summed_fit_verdict="ambiguous" if held else "committed", delay_interval_us=(181, 201), seed_polarity_sign=1)
+        summed_fit_verdict="ambiguous" if held else "committed", delay_interval_us=(181, 201), seed_polarity_sign=1, alignment_seed_delay_us=120)
     analysis = analysis_json(ProgramAnalysis(phase="measure", program_id=program.program_id, locations=(),
         candidate=candidate, alignment=AlignmentEstimate(delay_us=candidate.delay_us, raw_delay_us=candidate.delay_us,
             parallax_us=4.5 if declared else 0, polarity=candidate.polarity, polarity_sign=1 if held else -1,
             confidence=candidate.confidence, seed_delay_us=120)))
     expected = {"objective": candidate.alignment_objective,
-                "committed": {"delay_us": candidate.delay_us, "polarity": candidate.polarity, "ripple_db": 0.348},
-                "seed": {"delay_us": 120, "polarity": "normal", "ripple_db": None},
+                "committed": {"delay_us": candidate.delay_us, "polarity": candidate.polarity},
+                "seed": {"delay_us": 120, "polarity": "normal"},
                 "confidence": candidate.confidence, "summed_fit_rms_db": 0.348, "summed_fit_margin": candidate.summed_fit_margin,
                 "delay_interval_us": [181, 201], "summed_fit_verdict": candidate.summed_fit_verdict,
                 "parallax_us": 4.5 if declared else 0, "driver_spacing_source": "declared" if declared else "unknown",
@@ -778,7 +829,7 @@ def test_first_speaker_experiment_banks_measured_alignment_for_apply(
     assert first["alignment"]["take_id"] == group["takes"][0]["take_id"]
     pair = next(row for row in packet["alignment"] if row["take_id"] == group["takes"][0]["take_id"])
     assert {key: first["alignment"][key] for key in pair} == pair
-    assert pair["committed"] == {"delay_us": delay, "polarity": polarity, "ripple_db": analysis["predicted_ripple_db"]}
+    assert pair["committed"] == {"delay_us": delay, "polarity": polarity}
     assert pair["trim_db"] == analysis["trim_db"]
     candidate = find_banked_candidate(first["candidate_fingerprint"], root=tmp_path / "bank").candidate
     assert candidate.role_attenuations_db == analysis["trim_db"]

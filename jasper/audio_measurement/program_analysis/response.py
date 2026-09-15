@@ -500,6 +500,7 @@ class AlignmentPairSelection:
     summed_fit_rms_db: float | None = None
     summed_fit_margin: float | None = None
     delay_interval_us: tuple[float, float] | None = None
+    snr_waived_roles: tuple[str, ...] = ()
 
     @property
     def polarity_agrees_with_sum(self) -> bool | None:
@@ -565,6 +566,7 @@ def _select_summed_alignment_pair(
     reference: SummedAlignmentReference, woofer_role: str, tweeter_role: str,
     fc_hz: float, anchor_delay_us: float, seed_delay_us: float,
     seed_polarity_sign: int, delay_bounds_us: tuple[float, float] | None,
+    branch_snr_insufficient: tuple[str, ...] = (),
 ) -> AlignmentPairSelection:
     W = W * reference.response_by_role[woofer_role](freqs)
     T = T * reference.response_by_role[tweeter_role](freqs)
@@ -628,6 +630,7 @@ def _select_summed_alignment_pair(
         left_anchor_lobe=abs(delay - anchor_delay_us) > half_period_us(fc_hz),
         summed_fit_rms_db=rms, summed_fit_margin=margin,
         delay_interval_us=(interval[0], interval[1]),
+        snr_waived_roles=branch_snr_insufficient,
     )
 
 

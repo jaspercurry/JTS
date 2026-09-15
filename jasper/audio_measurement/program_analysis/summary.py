@@ -117,7 +117,8 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
         out["delay_us"] = round(float(alignment.delay_us), 3)
         for field in ("alignment_pair_count", "alignment_pair_spread_us", "alignment_drift_residual_us"):
             out[field] = getattr(alignment, field, None)
-        seed_delay_us = getattr(alignment, "seed_delay_us", None)
+        seed_delay_us = getattr(getattr(analysis, "candidate", None), "alignment_seed_delay_us", None)
+        out["gcc_delay_us"] = round(alignment.seed_delay_us if alignment.seed_delay_us is not None else alignment.delay_us, 3)
         if seed_delay_us is not None:
             out["alignment_seed_delay_us"] = round(float(seed_delay_us), 3)
             out["alignment_refinement_delta_us"] = round(

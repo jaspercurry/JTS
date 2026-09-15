@@ -18,7 +18,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2 import diagnostics
 from jasper.active_speaker.crossover_v2.programs import CHECK_PROBE_BACKOFF_DB
 from jasper.active_speaker.crossover_v2_flow import (
     ALIGNMENT_CONFIDENCE_TRUST_FLOOR,
@@ -652,7 +651,7 @@ def test_check_diag_names_which_rung_2_signal_fired(caplog):
     assert fields["tweeter_delta_implausible"] == "false"
 
 
-def test_measure_diag_logs_full_numbers_on_accept(caplog, monkeypatch):
+def test_measure_diag_logs_full_numbers_on_accept(caplog):
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
     fakes.measure = lambda program: ProgramAnalysis(
@@ -682,7 +681,7 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog, monkeypatch):
         candidate=CrossoverCandidate(
             trim_db={"woofer": -3.0, "tweeter": 0.0}, polarity="normal",
             delay_us=150.0, predicted_ripple_db=1.23, confidence=0.9,
-            alignment_seed_ripple_db=4.56, flatness_improvement_db=3.33,
+            alignment_seed_ripple_db=4.56, alignment_seed_delay_us=120, flatness_improvement_db=3.33,
             anchor_delay_us=145.0, snap_delta_us=5.0, snap_found=True,
             alignment_objective="flat_sum_committed", seed_polarity_sign=-1,
             left_anchor_lobe=True,
@@ -691,7 +690,6 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog, monkeypatch):
         predicted_sum=(np.linspace(100.0, 20000.0, 64), np.zeros(64)),
         glitch_detected=False,
     )
-    monkeypatch.setattr(diagnostics, "analysis_json", lambda analysis: {"drift_us": 37.5})
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
@@ -701,7 +699,7 @@ def test_measure_diag_logs_full_numbers_on_accept(caplog, monkeypatch):
     assert fields["alignment_confidence"] == "0.9"
     assert fields["alignment_confidence_source"] == "gcc_phat_seed"
     assert fields["alignment_seed_delay_us"] == "120.0"
-    assert fields["alignment_refinement_delta_us"] == "37.5"
+    assert fields["alignment_refinement_delta_us"] == "30.0"
     assert fields["gate_window_ms"] == "8.0"  # min(8.0, 9.0)
     assert fields["validity_floor_hz"] == "180.0"  # max(180.0) — only one floor set
     assert fields["epsilon_ppm"] == "30.0"

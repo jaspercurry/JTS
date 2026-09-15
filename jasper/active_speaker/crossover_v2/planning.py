@@ -167,6 +167,7 @@ def analysis_json(
     drift = analysis.drift
     align = analysis.alignment
     cand = analysis.candidate
+    seed = cand.alignment_seed_delay_us if cand else None
     return {
         "schema_version": 1,
         "kind": "jts_program_analysis_evidence",
@@ -184,14 +185,11 @@ def analysis_json(
             round(align.alignment_drift_residual_us, 3)
             if align and align.alignment_drift_residual_us is not None else None
         ),
-        "alignment_seed_delay_us": (
-            round(float(align.seed_delay_us), 3)
-            if align and align.seed_delay_us is not None else None
-        ),
-        "drift_us": (
-            round(float(align.delay_us - align.seed_delay_us), 3)
-            if align and align.seed_delay_us is not None else None
-        ),
+        "alignment_seed_delay_us": round(float(seed), 3) if seed is not None else None,
+        "gcc_delay_us": (round(align.seed_delay_us if align.seed_delay_us is not None else align.delay_us, 3)
+                         if align else None),
+        "refinement_delta_us": round(align.delay_us - seed, 3) if align and seed is not None else None,
+        "snr_waived_roles": list(cand.snr_waived_roles) if cand else [],
         "trim_decision": detached_json({
             **asdict(trim), "strategy": trim.strategy.value,
             "outcome": trim.outcome, "committed_side": trim.committed_side,

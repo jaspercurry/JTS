@@ -420,11 +420,9 @@ def _analyze_measure(
         # Reads BOTH branches' ALIGNMENT-class verdict (the 35 dB law), not
         # the magnitude one every surface displays.
         alignment_roles = {seg_w.role, seg_t.role}
-        branch_snr_insufficient = any(
-            driver_alignment_snr_verdict(resp) == ALIGNMENT_SNR_REFUSAL_VERDICT
-            for resp in responses
+        branch_snr_insufficient = tuple(sorted({resp.role for resp in responses
             if resp.role in alignment_roles
-        )
+            and driver_alignment_snr_verdict(resp) == ALIGNMENT_SNR_REFUSAL_VERDICT}))
         candidate, predicted_sum = _build_candidate(
             woofer_full_ir, tweeter_full_ir, sample_rate, n_fft, fc_hz,
             seg_w.role, seg_t.role, alignment, calibration,
@@ -500,7 +498,7 @@ def _build_candidate(
     woofer_sweep_lo_hz: float | None = None,
     tweeter_sweep_hi_hz: float | None = None,
     alignment_delay_bounds_us: tuple[float, float] | None = None,
-    branch_snr_insufficient: bool = False,
+    branch_snr_insufficient: tuple[str, ...] = (),
     applied_alignment: AppliedAlignment | None = None,
     explicit_alignment_delay_us: float | None = None,
     explicit_alignment_polarity_sign: int | None = None,
@@ -589,6 +587,7 @@ def _build_candidate(
             fc_hz=fc_hz, anchor_delay_us=anchor_delay_us,
             seed_delay_us=seed_delay_us, seed_polarity_sign=alignment.polarity_sign,
             delay_bounds_us=alignment_delay_bounds_us,
+            branch_snr_insufficient=branch_snr_insufficient,
         )
     fit_rms_db = None if summed_selection is None else summed_selection.summed_fit_rms_db
     fit_margin = None if summed_selection is None else summed_selection.summed_fit_margin
@@ -603,7 +602,7 @@ def _build_candidate(
             seed_delay_us=seed_delay_us,
             seed_polarity_sign=alignment.polarity_sign,
             delay_bounds_us=alignment_delay_bounds_us,
-            branch_snr_insufficient=branch_snr_insufficient,
+            branch_snr_insufficient=bool(branch_snr_insufficient),
             applied_alignment=applied_alignment,
             explicit_delay_us=explicit_alignment_delay_us,
             explicit_polarity_sign=explicit_alignment_polarity_sign,
@@ -832,6 +831,8 @@ def _build_candidate(
         summed_fit_rms_db=fit_rms_db, summed_fit_margin=fit_margin, summed_fit_verdict=fit_verdict,
         delay_interval_us=None if selection is None else selection.delay_interval_us,
         alignment_seed_ripple_db=seed_ripple_db,
+        alignment_seed_delay_us=None if selection is None else selection.seed_delay_us,
+        snr_waived_roles=() if selection is None else selection.snr_waived_roles,
         flatness_improvement_db=flatness_improvement_db,
         anchor_delay_us=anchor_delay_us,
         snap_delta_us=snap_delta_us,
