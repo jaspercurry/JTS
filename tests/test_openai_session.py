@@ -273,6 +273,27 @@ async def test_transport_close_failure_redacts_the_connection_secret(caplog):
     assert "plainvalue123" not in fields["detail"]
 
 
+async def test_session_close_failure_redacts_the_connection_secret(caplog):
+    key = "private-test-credential"
+    conn = OpenAIRealtimeConnection(api_key=key)
+
+    class _Session:
+        async def close(self):
+            raise RuntimeError(f"close rejected: {key}")
+
+    with caplog.at_level(logging.DEBUG):
+        await conn._close_with_timeout(_Session())
+
+    fields = event_fields(caplog, "provider.close_failed")
+    assert (fields["provider"], fields["phase"]) == ("openai", "session")
+    assert fields["detail"]
+    (record,) = event_records(caplog, "provider.close_failed")
+    assert record.name == "jasper.voice.openai_session"
+    assert record.levelno == logging.DEBUG
+    for record in caplog.records:
+        assert key not in record.getMessage()
+
+
 # ---------------------------------------------------------------------------
 # Tests against a live (faked) connection.
 # ---------------------------------------------------------------------------
@@ -1160,7 +1181,7 @@ async def test_function_call_round_trip():
         await conn.stop()
 
 
-async def test_unserializable_tool_result_does_not_kill_the_turn():
+async def test_unserializable_tool_result_does_not_kill_the_turn(caplog):
     """A tool returning a non-JSON-serializable payload must NOT crash
     the dispatch (which would escalate to _receive_loop's broad except
     and force a full session reconnect). The send is now guarded: it
@@ -1218,6 +1239,13 @@ async def test_unserializable_tool_result_does_not_kill_the_turn():
         # Output is a valid JSON string carrying an error, not a crash.
         parsed = json.loads(item_create["item"]["output"])
         assert "error" in parsed
+        fields = event_fields(caplog, "provider.tool_result_unserializable")
+        assert (fields["provider"], fields["tool"], fields["exc_type"]) == (
+            "openai", "broken_tool", "TypeError",
+        )
+        (record,) = event_records(caplog, "provider.tool_result_unserializable")
+        assert record.name == "jasper.voice.openai_session"
+        assert record.levelno == logging.WARNING
 
         await _wait_until(
             lambda: any(e.get("type") == "response.create" for e in sess.sent),
@@ -2736,6 +2764,10 @@ async def test_playout_queue_ceiling_drops_the_newest_chunk(caplog, monkeypatch)
             "both over-ceiling chunks must be counted, not just the first"
         )
         fields = event_fields(caplog, "turn.audio_overflow")
+        assert fields["provider"] == "openai"
+        (record,) = event_records(caplog, "turn.audio_overflow")
+        assert record.name == "jasper.voice.openai_session"
+        assert record.levelno == logging.WARNING
         assert int(fields["queued_bytes"]) == 10
         assert int(fields["dropped_bytes"]) == 1, (
             "only the FIRST drop of the turn logs; later drops just count"
