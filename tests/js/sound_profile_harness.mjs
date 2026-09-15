@@ -2198,6 +2198,78 @@ async function testActiveRouteLimitsRenderedTemplates() {
 }
 
 
+async function testSpeakerLayoutMatrixAndRearIdentity() {
+  for (const layout of ['mono', 'stereo']) {
+    for (const speakerMode of ['passive', 'active_2way', 'active_3way', 'cardioid']) {
+      const topology = speakerMode === 'cardioid'
+        ? (layout === 'mono' ? activeTwoWayTopologyPayload() : activeStereoTwoWayTopologyPayload())
+        : emptyTopologyPayload();
+      topology.hardware.physical_output_count = 8;
+      const originalChannels = structuredClone(topology.speaker_groups);
+      topology.hardware.outputs = Array.from({length: 8}, (_, index) => ({index}));
+      const saves = [], identities = [];
+      const harness = setupHarness(baseFetch({
+        './output-topology': (_path, options = {}) => {
+          if (options.method === 'POST') saves.push(JSON.parse(options.body).output_topology);
+          return Promise.resolve(response({
+            output_topology: saves.at(-1) || topology,
+            topology_revision: 'saved',
+            active_playback_route: activeRoutePayload({transport_channel_count: 8}),
+          }));
+        },
+        './active-speaker/channel-identity': (_path, options) => {
+          identities.push(JSON.parse(options.body));
+          return Promise.resolve(response({output_topology: saves.at(-1)}));
+        },
+      }));
+      await harness.flush(); await harness.flush(); await harness.flush();
+      for (const [axis, value] of [['layout', layout], ['speaker-mode', speakerMode === 'cardioid' ? 'active_3way' : speakerMode]]) {
+        harness.dispatchClick({'data-act': 'output-template-axis', 'data-axis': axis, 'data-value': value});
+        await harness.flush(); await harness.flush();
+      }
+      if (speakerMode === 'cardioid') {
+        harness.dispatchChange({checked: true, hasAttribute: name => name === 'data-output-cardioid'});
+        await harness.flush(); await harness.flush();
+        const html = harness.elements.get('view-body').innerHTML;
+        assert.ok(html.includes('Front woofer') && html.includes('Rear woofer'));
+      }
+      harness.dispatchClick({'data-act': 'save-output-topology'});
+      await harness.flush(); await harness.flush(); await harness.flush();
+      const saved = saves.at(-1);
+      const count = layout === 'mono' ? 1 : 2;
+      const perSpeaker = speakerMode === 'passive' ? 1 : speakerMode === 'active_2way' ? 2 : 3;
+      assert.equal(saved.speaker_groups.length, count);
+      assert.equal(new Set(saved.speaker_groups.flatMap(g => g.channels.map(c => c.physical_output_index))).size, count * perSpeaker);
+      assert.equal(saved.artifact_schema_version, speakerMode === 'cardioid' ? 2 : 1);
+      for (const group of saved.speaker_groups) {
+        assert.equal(group.channels.length, perSpeaker);
+        if (speakerMode === 'cardioid') {
+          assert.deepEqual(group.channels.slice(0, 2), originalChannels.find(g => g.id === group.id).channels);
+          assert.equal(group.mode, 'active_2_way');
+          assert.deepEqual(group.channels.map(c => c.role), ['woofer', 'tweeter', 'woofer']);
+          assert.equal(group.channels.at(-1).output_variant, 'rear');
+          assert.equal(group.channels.at(-1).startup_muted, true);
+        }
+      }
+      if (speakerMode !== 'cardioid') continue;
+      const group = saved.speaker_groups[0];
+      const frontIndex = group.channels[0].physical_output_index;
+      harness.dispatchChange({value: '7', getAttribute: name => ({
+        'data-group-id': group.id, 'data-role': 'woofer', 'data-output-variant': 'rear',
+      })[name], hasAttribute: name => name === 'data-output-channel'});
+      harness.dispatchClick({'data-act': 'save-output-topology'});
+      await harness.flush(); await harness.flush(); await harness.flush();
+      assert.equal(saves.at(-1).speaker_groups[0].channels[0].physical_output_index, frontIndex);
+      assert.equal(saves.at(-1).speaker_groups[0].channels.at(-1).physical_output_index, 7);
+      harness.dispatchClick({'data-act': 'mark-output-identity', 'data-group-id': group.id,
+        'data-role': 'woofer', 'data-output-variant': 'rear', 'data-verified': 'true'});
+      await harness.flush(); await harness.flush(); await harness.flush();
+      assert.equal(identities.at(-1).output_variant, 'rear');
+    }
+  }
+  return {speakerLayoutMatrixAndRearIdentity: true};
+}
+
 async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
   const topology = activeTwoWayTopologyPayload();
   topology.hardware.physical_output_count = 8;
@@ -6775,6 +6847,7 @@ results.push(await testDirectCrossoverEditRefreshesProposalAndFooter());
 results.push(await testTweeterTypeChangeInvalidatesCopiedResearchBinding());
 results.push(await testThreeWayRendersEveryPhysicalComponentChoice());
 results.push(await testActiveRouteLimitsRenderedTemplates());
+results.push(await testSpeakerLayoutMatrixAndRearIdentity());
 results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
 results.push(await testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview());
 results.push(await testUnknownDriverStyleRendersWithoutGuessedFloor());

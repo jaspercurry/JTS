@@ -33,6 +33,8 @@ import {
   crossoverSettingKey,
   driverSetting,
   outputGroups,
+  outputChannelLabel,
+  physicalTargetId,
   outputRoleSummary,
   pairRoleKey,
   physicalOutputLabel
@@ -64,7 +66,10 @@ function driverResearchTargets(topology) {
       var role = String(channel.role || '');
       if (allowedRoles.indexOf(role) < 0) return;
       targets.push({
-        target_id: String(group.id || '') + ':' + role,
+        target_id: physicalTargetId(String(group.id || ''), role, channel.output_variant),
+        role_label: (group.channels || []).some(function(ch) { return ch.output_variant === 'rear'; })
+          ? outputChannelLabel(group, channel) : null,
+        output_variant: channel.output_variant || 'primary',
         role: role,
         group_id: String(group.id || ''),
         group_label: String(group.label || group.id || 'Speaker'),

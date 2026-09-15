@@ -88,14 +88,24 @@ function outputActiveRoute() {
   return outputTopology.activeRoute || null;
 }
 
-function outputAssignedToOtherMap(topology, groupId, role) {
+function physicalTargetId(groupId, role, variant) {
+  return groupId + ':' + role + (variant && variant !== 'primary' ? ':' + variant : '');
+}
+function outputChannelLabel(group, channel) {
+  if (channel.role === 'woofer' && (group.channels || []).some(function(ch) {
+    return ch.output_variant === 'rear';
+  })) return channel.output_variant === 'rear' ? 'Rear woofer' : 'Front woofer';
+  return humanRole(channel.role);
+}
+function outputAssignedToOtherMap(topology, groupId, role, variant) {
   var out = {};
   outputGroups(topology).forEach(function(group) {
     (group.channels || []).forEach(function(channel) {
       if (channel.physical_output_index == null) return;
-      if ((group.id || '') === groupId && (channel.role || '') === role) return;
+      if (physicalTargetId(group.id || '', channel.role || '', channel.output_variant) ===
+          physicalTargetId(groupId, role, variant)) return;
       out[String(channel.physical_output_index)] =
-        (group.label || group.id) + ' · ' + humanRole(channel.role);
+        (group.label || group.id) + ' · ' + outputChannelLabel(group, channel);
     });
   });
   return out;
@@ -219,14 +229,73 @@ function activeOutputGroups(topology) {
   });
 }
 
-function outputTemplateKindFromAxes(layout, speakerMode) {
+function outputTemplateKindFromAxes(layout, speakerMode, cardioid) {
   if (layout !== 'mono' && layout !== 'stereo') return '';
   if (speakerMode !== 'passive' &&
       speakerMode !== 'active_2way' &&
       speakerMode !== 'active_3way') {
     return '';
   }
-  return layout + '_' + speakerMode;
+  return layout + '_' + (speakerMode === 'active_3way' && cardioid ? 'active_cardioid' : speakerMode);
+}
+function outputTemplateDefinition(kind) {
+  var match = /^(mono|stereo)_(passive|active_2way|active_3way|active_cardioid)$/.exec(kind);
+  if (!match) return null;
+  var stereo = match[1] === 'stereo';
+  var speaker = {
+    passive: {label: 'passive', mode: 'full_range_passive', roles: ['full_range'], hint: 'Full-range'},
+    active_2way: {label: 'active 2-way', mode: 'active_2_way', roles: ['woofer', 'tweeter'], hint: 'Woofer + tweeter'},
+    active_3way: {label: 'active 3-way', mode: 'active_3_way', roles: ['woofer', 'mid', 'tweeter'], hint: 'Woofer + mid + tweeter'},
+    active_cardioid: {label: 'cardioid', mode: 'active_2_way', roles: ['woofer', 'tweeter'], hint: 'Front woofer + rear woofer + tweeter'}
+  }[match[2]];
+  var sides = stereo ? ['left', 'right'] : ['mono'];
+  var groups = sides.map(function(side, sideIndex) {
+    return {
+      id: stereo ? side : 'main',
+      label: stereo ? (sideIndex ? 'Right speaker' : 'Left speaker') : 'Main speaker',
+      kind: side,
+      mode: speaker.mode,
+      position: {x: stereo ? (sideIndex ? 0.65 : -0.65) : 0, y: 0.42, rotation_degrees: 0},
+      channels: speaker.roles.map(function(role, index) {
+        return outputChannel(role, sideIndex * speaker.roles.length + index);
+      })
+    };
+  });
+  if (match[2] === 'active_cardioid') groups.forEach(function(group, index) {
+    group.channels.push(Object.assign(outputChannel('woofer', sides.length * 2 + index), {output_variant: 'rear'}));
+  });
+  var label = (stereo ? 'Stereo ' : 'Mono ') + speaker.label;
+  return {
+    id: kind, label: label, hint: speaker.hint,
+    name: label + (stereo ? ' outputs' : ' output'),
+    minOutputs: groups.reduce(function(count, group) { return count + group.channels.length; }, 0),
+    groups: groups,
+    routing: stereo ? {main_left_group_id: 'left', main_right_group_id: 'right'} : {mono_group_id: 'main'}
+  };
+}
+function outputTemplateGroups(template, topology) {
+  var oldGroups = outputGroups(topology);
+  var groups = clone(template.groups);
+  var used = {};
+  var pending = [];
+  groups.forEach(function(group) {
+    var old = oldGroups.find(function(item) { return item.id === group.id; });
+    group.channels = group.channels.map(function(channel) {
+      var match = old && old.channels.find(function(item) {
+        return physicalTargetId(group.id, item.role, item.output_variant) ===
+          physicalTargetId(group.id, channel.role, channel.output_variant);
+      });
+      if (!match || match.physical_output_index == null) { pending.push(channel); return channel; }
+      used[match.physical_output_index] = true;
+      return clone(match);
+    });
+  });
+  pending.forEach(function(channel) {
+    var output = physicalOutputOptions(topology).find(function(item) { return !used[item.index]; });
+    channel.physical_output_index = output ? output.index : null;
+    if (output) used[output.index] = true;
+  });
+  return groups;
 }
 function outputTemplateIsActive(template) {
   return !!(template && template.id && template.id.indexOf('_active_') >= 0);
@@ -313,6 +382,7 @@ export {
   observedOutputHardware,
   outputAssignedToOtherMap,
   outputChannel,
+  outputChannelLabel,
   outputChannelGuardReady,
   outputClockDomainReport,
   outputGroups,
@@ -320,9 +390,12 @@ export {
   outputHardwareMismatch,
   outputHasSubwoofer,
   outputRoleSummary,
+  outputTemplateDefinition,
+  outputTemplateGroups,
   outputTemplateKindFromAxes,
   outputTemplateUnavailableReason,
   pairRoleKey,
+  physicalTargetId,
   physicalOutputLabel,
   physicalOutputOptions,
   removeSubwooferFromTopology,

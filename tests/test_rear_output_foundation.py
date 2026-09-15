@@ -15,8 +15,9 @@ from jasper.active_speaker.safe_playback import playback_target_signature
 from jasper.active_speaker.staging import _bind_preset_to_topology, compile_preset_from_crossover_preview
 from jasper.output_topology import (
     OutputTopology, OutputTopologyError, channel_identity_report,
-    set_channel_identity_verified, topology_config_fingerprint, _with_server_owned_identity,
+    set_channel_identity_verified, save_output_topology, topology_config_fingerprint, _with_server_owned_identity,
 )
+from jasper.web.sound_active_speaker import _active_speaker_channel_identity_save_payload
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_active_speaker_runtime_contract import _active_topology, _classify_staged_active, _dynamic_bass_descriptor
 from tests.test_active_speaker_staging import _crossover_preview
@@ -168,3 +169,20 @@ def test_runtime_refuses_audible_rear_graph(mutation):
         payload["pipeline"].append({"type": "Mixer", "name": "split_active_2way"})
     result = _classify_staged_active(topology, yaml.safe_dump(payload))
     assert "rear_output_not_muted" in {i["code"] for i in result.issues}
+
+
+@pytest.mark.parametrize("variant", ["primary", "rear"])
+def test_identity_route_confirms_only_the_selected_woofer(monkeypatch, tmp_path, variant):
+    path = tmp_path / "topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    raw = _rear_pair("mono")[1].to_dict()
+    for channel in raw["speaker_groups"][0]["channels"]:
+        channel["identity_verified"] = False
+    save_output_topology(OutputTopology.from_mapping(raw), path)
+    response = _active_speaker_channel_identity_save_payload({
+        "speaker_group_id": "mono", "role": "woofer", "output_variant": variant,
+        "identity_verified": True,
+    })
+    assert {item["id"] for item in response["channel_identity"]["targets"] if item["identity_verified"]} == {
+        "mono:woofer" + (":rear" if variant == "rear" else ""),
+    }

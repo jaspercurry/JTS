@@ -680,6 +680,7 @@ def _active_speaker_channel_identity_save_payload(
             speaker_group_id=speaker_group_id,
             role=role,
             identity_verified=verified,
+            output_variant=str(raw.get("output_variant", "primary")),
         )
 
         # Un-confirming an ASSIGNED lane of a ROLEFUL topology declares doubt
@@ -728,6 +729,7 @@ def _active_speaker_channel_identity_save_payload(
         topology_id=updated.topology_id,
         group_id=speaker_group_id,
         role=role,
+        output_variant=str(raw.get("output_variant", "primary")),
         status=str(report.get("status")),
         verified="%d/%d"
         % (report.get("verified_channel_count"), report.get("assigned_channel_count")),
