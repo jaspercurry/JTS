@@ -149,14 +149,18 @@ import {
   observedOutputHardware,
   outputAssignedToOtherMap,
   outputChannel,
+  outputChannelLabel,
   outputClockDomainReport,
   outputGroups,
   outputHardware,
   outputHardwareMismatch,
   outputHasSubwoofer,
+  outputTemplateDefinition,
+  outputTemplateGroups,
   outputTemplateKindFromAxes,
   outputTemplateUnavailableReason,
   pairRoleKey,
+  physicalTargetId,
   physicalOutputLabel,
   physicalOutputOptions,
   removeSubwooferFromTopology
@@ -777,7 +781,8 @@ import {
         if (!channel || !channel.role) return;
         var assigned = channel.physical_output_index != null;
         targets.push({
-          id: (group.id || '') + ':' + channel.role,
+          id: physicalTargetId(group.id || '', channel.role, channel.output_variant),
+          output_variant: channel.output_variant || 'primary',
           speaker_group_id: group.id || '',
           speaker_label: group.label || group.id || '',
           role: channel.role,
@@ -804,11 +809,12 @@ import {
   function outputIdentityReport() {
     return outputTopology.identity || identityReportFromTopology(currentOutputTopology());
   }
-  function identityTargetFor(groupId, role) {
+  function identityTargetFor(groupId, role, variant) {
     var report = outputIdentityReport();
     var targets = report && Array.isArray(report.targets) ? report.targets : [];
     return targets.find(function(target) {
-      return target.speaker_group_id === groupId && target.role === role;
+      return target.speaker_group_id === groupId && target.role === role &&
+        (target.output_variant || 'primary') === (variant || 'primary');
     }) || null;
   }
   function addSubwooferToTopology(topology) {
@@ -1388,7 +1394,8 @@ import {
     if (!mainGroups.length) {
       return {
         layout: outputPage.templateDraftAxes.layout || '',
-        speakerMode: outputPage.templateDraftAxes.speakerMode || ''
+        speakerMode: outputPage.templateDraftAxes.speakerMode || '',
+        cardioid: !!outputPage.templateDraftAxes.cardioid
       };
     }
     var kinds = mainGroups.map(function(group) { return group.kind; });
@@ -1401,7 +1408,10 @@ import {
       active_2_way: 'active_2way',
       active_3_way: 'active_3way'
     }[mode] || 'passive';
-    return {layout: layout, speakerMode: speakerMode};
+    var cardioid = mainGroups.some(function(group) {
+      return (group.channels || []).some(function(channel) { return channel.output_variant === 'rear'; });
+    });
+    return {layout: layout, speakerMode: cardioid ? 'active_3way' : speakerMode, cardioid: cardioid};
   }
   function outputTemplateChoiceDisabled(count, axis, value, axes) {
     count = Number(count) || 0;
@@ -1410,7 +1420,7 @@ import {
     var layout = axis === 'layout' ? value : axes.layout;
     var speakerMode = axis === 'speaker-mode' ? value : axes.speakerMode;
     if (layout && speakerMode) {
-      var template = outputTemplateDefinition(outputTemplateKindFromAxes(layout, speakerMode));
+      var template = outputTemplateDefinition(outputTemplateKindFromAxes(layout, speakerMode, axes.cardioid));
       return outputTemplateUnavailableReason(template, topology, hasSub);
     }
     if (axis === 'layout') {
@@ -1440,7 +1450,7 @@ import {
     var count = Number(hardware && hardware.physical_output_count) || 0;
     var axes = outputTemplateAxesForTopology(topology);
     var selectedTemplate = outputTemplateDefinition(
-      outputTemplateKindFromAxes(axes.layout, axes.speakerMode)
+      outputTemplateKindFromAxes(axes.layout, axes.speakerMode, axes.cardioid)
     );
     var hasSub = outputHasSubwoofer(topology);
     var selectedLabel = selectedTemplate
@@ -1463,7 +1473,7 @@ import {
     var speakerChoices = [
       {value: 'passive', label: 'Passive', hint: 'Full-range output per speaker'},
       {value: 'active_2way', label: 'Active 2-way', hint: 'Woofer + tweeter'},
-      {value: 'active_3way', label: 'Active 3-way', hint: 'Woofer + mid + tweeter'}
+      {value: 'active_3way', label: 'Active 3-way', hint: 'Three independently driven outputs'}
     ];
     return '<div class="output-card output-card--templates">' +
       '<div class="output-card__head"><div><p class="output-card__title">Main speakers</p>' +
@@ -1500,6 +1510,11 @@ import {
           '</div>' +
         '</div>' +
       '</div>' +
+      (axes.speakerMode === 'active_3way'
+        ? '<label class="setting-row"><span><strong>Cardioid</strong>' +
+          '<span class="setting-row__hint">Front woofer, rear woofer and tweeter. Rear starts muted for tuning.</span></span>' +
+          '<input type="checkbox" data-output-cardioid' + (axes.cardioid ? ' checked' : '') + '></label>'
+        : '') +
       '<dl class="active-speaker-facts output-facts output-template-summary">' +
         '<div><dt>Selected setup</dt><dd>' + escapeHtml(selectedLabel) + '</dd></div>' +
         '<div><dt>Outputs needed</dt><dd>' + escapeHtml(
@@ -1517,7 +1532,7 @@ import {
     var nextOutput = firstUnusedOutputIndex(topology);
     var axes = outputTemplateAxesForTopology(topology);
     var selectedTemplate = outputTemplateDefinition(
-      outputTemplateKindFromAxes(axes.layout, axes.speakerMode)
+      outputTemplateKindFromAxes(axes.layout, axes.speakerMode, axes.cardioid)
     );
     var addIssue = outputTemplateUnavailableReason(selectedTemplate, topology, true);
     var disabled = !hasLayout || (!hasSub && (nextOutput == null || addIssue));
@@ -2012,12 +2027,12 @@ import {
         var label = channel.human_output_label ||
           (channel.physical_output_index == null ? 'No output assigned' :
             physicalOutputLabel(topology, channel.physical_output_index));
-        var target = identityTargetFor(group.id, channel.role) || {};
-        var targetId = target.id || (group.id + ':' + channel.role);
+        var target = identityTargetFor(group.id, channel.role, channel.output_variant) || {};
+        var targetId = target.id || physicalTargetId(group.id, channel.role, channel.output_variant);
         var busy = outputTopology.identitySaving === targetId;
         var disabled = outputTopology.dirty || busy ||
           channel.physical_output_index == null;
-        var otherAssigned = outputAssignedToOtherMap(topology, group.id || '', channel.role || '');
+        var otherAssigned = outputAssignedToOtherMap(topology, group.id || '', channel.role || '', channel.output_variant);
         var allowPeerSwap = Array.isArray(group.channels) && group.channels.length === 2;
         var peerOutputIndexes = {};
         if (allowPeerSwap) {
@@ -2041,10 +2056,10 @@ import {
           })
         ).join('');
         var model = targetModel({
-          target_id: String(group.id || '') + ':' + String(channel.role || ''),
+          target_id: targetId,
           role: String(channel.role || '')
         }, topology);
-        var hardwareLabel = (group.label || group.id) + ' · ' + humanRole(channel.role) +
+        var hardwareLabel = (group.label || group.id) + ' · ' + outputChannelLabel(group, channel) +
           (model ? ' · ' + model : '');
         return '<div class="output-role">' +
           '<div class="output-role__text">' +
@@ -2055,7 +2070,8 @@ import {
           '<label class="output-role__select">' +
             '<span>DAC channel</span>' +
             '<select data-output-channel data-group-id="' + escapeHtml(group.id || '') +
-              '" data-role="' + escapeHtml(channel.role || '') + '">' +
+              '" data-role="' + escapeHtml(channel.role || '') + '" data-output-variant="' +
+              escapeHtml(channel.output_variant || 'primary') + '">' +
               selectOptions +
             '</select>' +
           '</label>' +
@@ -2064,8 +2080,9 @@ import {
               'data-act="mark-output-identity" ' +
               'data-group-id="' + escapeHtml(group.id) + '" ' +
               'data-role="' + escapeHtml(channel.role) + '" ' +
+              'data-output-variant="' + escapeHtml(channel.output_variant || 'primary') + '" ' +
               'data-verified="' + (channel.identity_verified ? 'false' : 'true') + '" ' +
-              'data-label="' + escapeHtml((group.label || group.id) + ' ' + humanRole(channel.role) + ' on ' + label) + '"' +
+              'data-label="' + escapeHtml((group.label || group.id) + ' ' + outputChannelLabel(group, channel) + ' on ' + label) + '"' +
               (disabled ? ' disabled' : '') + '>' +
               escapeHtml(busy ? 'Saving' : (channel.identity_verified ? 'Change' : 'Confirm output')) + '</button>' +
           '</div>' +
@@ -2964,11 +2981,16 @@ import {
       refreshDriverResearchDerivedUi();
       return;
     }
+    if (ev.target.hasAttribute && ev.target.hasAttribute('data-output-cardioid')) {
+      setOutputTemplateAxis('cardioid', String(ev.target.checked));
+      return;
+    }
     if (ev.target.hasAttribute && ev.target.hasAttribute('data-output-channel')) {
       setOutputChannelAssignment(
         ev.target.getAttribute('data-group-id') || '',
         ev.target.getAttribute('data-role') || '',
-        ev.target.value
+        ev.target.value,
+        ev.target.getAttribute('data-output-variant') || 'primary'
       );
       return;
     }
@@ -3324,7 +3346,7 @@ import {
     if (!changed) return;
     setOutputDraft(next);
   }
-  function setOutputChannelAssignment(groupId, role, rawValue) {
+  function setOutputChannelAssignment(groupId, role, rawValue, variant) {
     var topology = currentOutputTopology();
     if (!topology) return;
     var next = baseOutputDraft(topology);
@@ -3345,7 +3367,7 @@ import {
     outputGroups(next).forEach(function(group) {
       if ((group.id || '') !== groupId) return;
       (group.channels || []).forEach(function(channel) {
-        if ((channel.role || '') === role) {
+        if ((channel.role || '') === role && (channel.output_variant || 'primary') === (variant || 'primary')) {
           targetGroup = group;
           targetChannel = channel;
         }
@@ -3408,130 +3430,6 @@ import {
     setOutputDraft(next);
     status('Tweeter style updated.');
   }
-  function outputTemplateDefinition(kind) {
-    return {
-      mono_passive: {
-        id: 'mono_passive',
-        label: 'Mono passive',
-        hint: 'One full-range channel',
-        minOutputs: 1,
-        name: 'Mono passive output',
-        groups: [{
-          id: 'main', label: 'Main speaker', kind: 'mono',
-          mode: 'full_range_passive',
-          position: {x: 0, y: 0.42, rotation_degrees: 0},
-          channels: [outputChannel('full_range', 0)]
-        }],
-        routing: {mono_group_id: 'main'}
-      },
-      mono_active_2way: {
-        id: 'mono_active_2way',
-        label: 'Mono active 2-way',
-        hint: 'Woofer + tweeter',
-        minOutputs: 2,
-        name: 'Mono active 2-way output',
-        groups: [{
-          id: 'main', label: 'Main speaker', kind: 'mono',
-          mode: 'active_2_way',
-          position: {x: 0, y: 0.42, rotation_degrees: 0},
-          channels: [outputChannel('woofer', 0), outputChannel('tweeter', 1)]
-        }],
-        routing: {mono_group_id: 'main'}
-      },
-      mono_active_3way: {
-        id: 'mono_active_3way',
-        label: 'Mono active 3-way',
-        hint: 'Woofer + mid + tweeter',
-        minOutputs: 3,
-        name: 'Mono active 3-way output',
-        groups: [{
-          id: 'main', label: 'Main speaker', kind: 'mono',
-          mode: 'active_3_way',
-          position: {x: 0, y: 0.42, rotation_degrees: 0},
-          channels: [
-            outputChannel('woofer', 0),
-            outputChannel('mid', 1),
-            outputChannel('tweeter', 2)
-          ]
-        }],
-        routing: {mono_group_id: 'main'}
-      },
-      stereo_passive: {
-        id: 'stereo_passive',
-        label: 'Stereo passive',
-        hint: 'Left + right full-range',
-        minOutputs: 2,
-        name: 'Stereo passive outputs',
-        groups: [
-          {
-            id: 'left', label: 'Left speaker', kind: 'left',
-            mode: 'full_range_passive',
-            position: {x: -0.65, y: 0.42, rotation_degrees: 0},
-            channels: [outputChannel('full_range', 0)]
-          },
-          {
-            id: 'right', label: 'Right speaker', kind: 'right',
-            mode: 'full_range_passive',
-            position: {x: 0.65, y: 0.42, rotation_degrees: 0},
-            channels: [outputChannel('full_range', 1)]
-          }
-        ],
-        routing: {main_left_group_id: 'left', main_right_group_id: 'right'}
-      },
-      stereo_active_2way: {
-        id: 'stereo_active_2way',
-        label: 'Stereo active 2-way',
-        hint: 'Two channels per speaker',
-        minOutputs: 4,
-        name: 'Stereo active 2-way outputs',
-        groups: [
-          {
-            id: 'left', label: 'Left speaker', kind: 'left',
-            mode: 'active_2_way',
-            position: {x: -0.65, y: 0.42, rotation_degrees: 0},
-            channels: [outputChannel('woofer', 0), outputChannel('tweeter', 1)]
-          },
-          {
-            id: 'right', label: 'Right speaker', kind: 'right',
-            mode: 'active_2_way',
-            position: {x: 0.65, y: 0.42, rotation_degrees: 0},
-            channels: [outputChannel('woofer', 2), outputChannel('tweeter', 3)]
-          }
-        ],
-        routing: {main_left_group_id: 'left', main_right_group_id: 'right'}
-      },
-      stereo_active_3way: {
-        id: 'stereo_active_3way',
-        label: 'Stereo active 3-way',
-        hint: 'Three channels per speaker',
-        minOutputs: 6,
-        name: 'Stereo active 3-way outputs',
-        groups: [
-          {
-            id: 'left', label: 'Left speaker', kind: 'left',
-            mode: 'active_3_way',
-            position: {x: -0.65, y: 0.42, rotation_degrees: 0},
-            channels: [
-              outputChannel('woofer', 0),
-              outputChannel('mid', 1),
-              outputChannel('tweeter', 2)
-            ]
-          },
-          {
-            id: 'right', label: 'Right speaker', kind: 'right',
-            mode: 'active_3_way',
-            position: {x: 0.65, y: 0.42, rotation_degrees: 0},
-            channels: [
-              outputChannel('woofer', 3),
-              outputChannel('mid', 4),
-              outputChannel('tweeter', 5)
-            ]
-          }
-        ],
-        routing: {main_left_group_id: 'left', main_right_group_id: 'right'}
-      }
-    }[kind] || null;
-  }
   async function setOutputTemplate(kind, options) {
     options = options || {};
     if (outputTopology.dirty && !options.skipDirtyConfirm &&
@@ -3566,7 +3464,8 @@ import {
       return;
     }
     next.name = template.name;
-    next.speaker_groups = template.groups;
+    next.speaker_groups = outputTemplateGroups(template, next);
+    next.artifact_schema_version = kind.endsWith('_cardioid') ? 2 : 1;
     next.routing = {
       main_left_group_id: template.routing.main_left_group_id || null,
       main_right_group_id: template.routing.main_right_group_id || null,
@@ -3592,14 +3491,15 @@ import {
     var axes = outputTemplateAxesForTopology(topology);
     var layout = axis === 'layout' ? value : axes.layout;
     var speakerMode = axis === 'speaker-mode' ? value : axes.speakerMode;
-    outputPage.templateDraftAxes = {layout: layout || '', speakerMode: speakerMode || ''};
+    axes.cardioid = axis === 'cardioid' ? value === 'true' : axes.cardioid;
+    outputPage.templateDraftAxes = {layout: layout || '', speakerMode: speakerMode || '', cardioid: axes.cardioid};
     if (!layout || !speakerMode) {
       status(layout ? 'Choose passive, active 2-way, or active 3-way to continue.' :
         'Choose mono or stereo to continue.');
       render();
       return;
     }
-    var kind = outputTemplateKindFromAxes(layout, speakerMode);
+    var kind = outputTemplateKindFromAxes(layout, speakerMode, axes.cardioid);
     if (!kind) {
       status('Choose a supported speaker layout option.', true);
       return;
@@ -3626,7 +3526,7 @@ import {
     if (modeValue !== 'remove') {
       var axes = outputTemplateAxesForTopology(next);
       var template = outputTemplateDefinition(
-        outputTemplateKindFromAxes(axes.layout, axes.speakerMode)
+        outputTemplateKindFromAxes(axes.layout, axes.speakerMode, axes.cardioid)
       );
       var unavailableReason = outputTemplateUnavailableReason(template, next, true);
       if (unavailableReason) {
@@ -4165,6 +4065,7 @@ import {
     }
     var groupId = button.getAttribute('data-group-id') || '';
     var role = button.getAttribute('data-role') || '';
+    var variant = button.getAttribute('data-output-variant') || 'primary';
     var verified = button.getAttribute('data-verified') !== 'false';
     var label = button.getAttribute('data-label') || (groupId + ' ' + role);
     var message = verified
@@ -4181,7 +4082,7 @@ import {
       status('Stopped the test tone. Output confirmation was not changed.');
       return;
     }
-    outputTopology.identitySaving = groupId + ':' + role;
+    outputTopology.identitySaving = physicalTargetId(groupId, role, variant);
     outputTopology.error = '';
     outputTopology.touched = true;
     render();
@@ -4189,6 +4090,7 @@ import {
       var payload = await postJSON('./active-speaker/channel-identity', {
         speaker_group_id: groupId,
         role: role,
+        output_variant: variant,
         identity_verified: verified
       });
       ingestOutputTopology(payload);

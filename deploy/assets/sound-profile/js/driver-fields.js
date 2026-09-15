@@ -383,7 +383,7 @@ function renderAdvancedDriverSettings(topology) {
       var setting = driverSetting(targetId);
       return '<section class="driver-research__advanced-driver">' +
         '<div><h4 class="setting-row__title">' +
-          escapeHtml(target.group_label + ' · ' + driverResearchRoleLabel(target.role)) +
+          escapeHtml(target.group_label + ' · ' + (target.role_label || driverResearchRoleLabel(target.role))) +
           '</h4><p class="setting-row__hint">' +
           escapeHtml(target.output_label) + '</p></div>' +
         '<div class="driver-research__advanced-group">' +
@@ -635,7 +635,7 @@ function renderDriverEchoBack(topology) {
     if (driverResearch.editedDriverTargets[target.target_id]) {
       return '<section class="driver-echo__driver">' +
         '<h4 class="setting-row__title">' +
-          escapeHtml(driverResearchRoleLabel(target.role)) + '</h4>' +
+          escapeHtml((target.role_label || driverResearchRoleLabel(target.role))) + '</h4>' +
         '<p class="setting-row__hint">You changed these values, so the ' +
           'research reply no longer describes them.</p>' +
       '</section>';
@@ -644,7 +644,7 @@ function renderDriverEchoBack(topology) {
     if (!rows) return '';
     return '<section class="driver-echo__driver">' +
       '<h4 class="setting-row__title">' +
-        escapeHtml(driverResearchRoleLabel(target.role)) + '</h4>' +
+        escapeHtml((target.role_label || driverResearchRoleLabel(target.role))) + '</h4>' +
       rows +
     '</section>';
   }).filter(Boolean).join('');
