@@ -225,10 +225,7 @@ export function commissionPayloadFailure(payload) {
 }
 
 export function commissioningTimingLabel(view) {
-  var alignment = ((view || {}).first_experiment || {}).alignment;
-  if (!alignment) return '';
-  if (alignment.status === 'measured') return 'timing measured';
-  return 'timing declared' + (alignment.reason ? ' (' + alignment.reason + ')' : '');
+  return (((view || {}).timing || {}).saved || '');
 }
 
 function commissionIssueCodes(payload) {

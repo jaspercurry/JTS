@@ -2148,6 +2148,7 @@ import {
     var profile = activeSpeaker.baselineProfile || {};
     var appliedRecord = baselineProfileAppliedRecord();
     var timing = commissioningTimingLabel(activeSpeaker.commissioningView);
+    var timingVerification = (((activeSpeaker.commissioningView || {}).timing || {}).verification || '');
     var config = appliedRecord ? {path: appliedRecord.config_path} : (profile.config || {});
     var permissions = profile.permissions || {};
     var applied = baselineProfileApplied();
@@ -2199,6 +2200,7 @@ import {
           escapeHtml(applied ? 'active' : (appliedRecord || readyToApply ? 'saved' : (applyBlocked ? 'blocked' : (revalidating ? 'recheck' : 'not saved')))) + '</span></div>' +
       body +
       (timing ? '<p class="setting-row__hint">' + escapeHtml(timing) + '</p>' : '') +
+      (timingVerification ? '<p class="setting-row__hint">' + escapeHtml(timingVerification) + '</p>' : '') +
       renderLevelMatchSummary(profile) +
       (issueRows ? '<ul class="active-speaker-issues active-speaker-issues--warning">' + issueRows + '</ul>' : '') +
       actions +

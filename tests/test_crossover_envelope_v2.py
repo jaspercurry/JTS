@@ -21,6 +21,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_VERIFY,
     PHASE_LATERAL,
 )
+from jasper.active_speaker.operator_copy import TIMING_RESET_NOTE
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
     REASON_VERIFY_INCONCLUSIVE,
@@ -149,6 +150,7 @@ def test_durable_completion_survives_an_empty_capture_slot(phase, receipt, curre
     assert (env["screen"], env["terminal_status"], env["phase"]) == ("finished", "complete", phase)
     assert env["round_ordinal"] == (None if phase == "done" else current_ordinal)
     assert env["next_action"]["id"] == "reset"
+    assert env["action_note"] == TIMING_RESET_NOTE
 
 
 @pytest.mark.parametrize("fault, action_id, target", [

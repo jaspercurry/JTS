@@ -198,6 +198,42 @@ def test_apply_posts_the_named_fingerprint_when_it_is_the_live_one(
     assert len(opener.posts()) == 1
 
 
+@pytest.mark.parametrize("keep_timing", [False, True])
+def test_reset_composes_and_applies_the_selected_timing_scope(keep_timing, monkeypatch, capsys):
+    from jasper.active_speaker import baseline_profile, candidate_bank, candidate_parts
+    from jasper.cli import crossover_prescriber
+    from jasper import output_topology
+
+    documents = []
+    timing = {"delay_us": 22, "polarity": "normal", "provenance": "measured"}
+    monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state",
+                        lambda: {"timing": timing} if keep_timing else {})
+    monkeypatch.setattr(candidate_parts, "candidate_from_applied_profile", lambda *args: object())
+    monkeypatch.setattr(output_topology, "load_output_topology_strict", lambda: object())
+    monkeypatch.setattr(crossover_prescriber, "compose_prescription_document",
+                        lambda document, **kwargs: documents.append(document) or SimpleNamespace())
+    monkeypatch.setattr(candidate_bank, "publish_authored_candidate",
+                        lambda candidate: SimpleNamespace(fingerprint=_FINGERPRINT))
+
+    opener = _opener(v2={"candidate": {"fingerprint": _FINGERPRINT}})
+    code, body = _run(["reset", *(["--keep-timing"] if keep_timing else [])],
+                      opener, monkeypatch, capsys)
+
+    assert code == cli.EXIT_OK
+    assert documents == [{
+        "kind": "jts_prescription", "schema": 1, "base": "saved",
+        "sections": {name: {} for name in (
+            "driver", "blend", *(("alignment",) if not keep_timing else ()), "room", "bass"
+        )},
+        "rationale": "Reset the applied tuning layers.",
+    }]
+    assert body["timing"] == {"saved": keep_timing,
+                              "provenance": "measured" if keep_timing else None}
+    assert [json.loads(request.data) for request in opener.posts()] == [
+        {"expected_candidate_fingerprint": _FINGERPRINT},
+    ]
+
+
 @pytest.mark.parametrize("payload,reason", [
     ({"status": "apply_failed", "issue": {"code": "apply_failed", "message": "Load failed."}}, "apply_failed"),
     ({"status": "blocked", "issue": {"id": "boost_over_declared_bound", "message": "Boost exceeded."}}, "boost_over_declared_bound"),

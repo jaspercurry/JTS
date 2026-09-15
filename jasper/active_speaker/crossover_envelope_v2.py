@@ -45,6 +45,7 @@ from .crossover_v2.refusal_copy import (
     reason_message,
 )
 from .crossover_v2.refusal_copy import REASON_VOLUME_UNRESOLVED
+from .operator_copy import TIMING_RESET_NOTE
 
 logger = logging.getLogger(__name__)
 
@@ -484,6 +485,7 @@ def _envelope(
         alternate_actions = [*([next_action] if next_action and next_action != timing_action else []), *(alternate_actions or [])]
         next_action = timing_action
     next_action = next_action or timing_action
+    actions = [next_action, *(alternate_actions or [])]
     return {
         "schema_version": CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
         "flow": "v2",
@@ -499,6 +501,10 @@ def _envelope(
         "capture": (_mapping(status.get("capture")) or None) if advertise_capture else None,
         "next_action": next_action,
         "alternate_actions": alternate_actions or [],
+        "action_note": TIMING_RESET_NOTE if any(
+            action and action.get("id") in {"reset", "restart_session", "reset_timing"} for action in actions
+        ) else None,
+        "timing": dict(_mapping(status.get("timing"))),
         "busy": bool(busy),
         "progress": _progress(active_step),
         "applied": _applied_chip(status),
@@ -596,6 +602,8 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             "capture": _mapping(status.get("capture")) or None,
             "next_action": None,
             "alternate_actions": [],
+            "action_note": None,
+            "timing": dict(_mapping(status.get("timing"))),
             "progress": {"position": 0, "total": len(_STEP_IDS)},
             "applied": _applied_chip(status),
             "round": None,

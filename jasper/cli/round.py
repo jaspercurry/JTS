@@ -15,6 +15,7 @@ from jasper.net.http_security import _is_loopback_name
 from jasper.json_fields import age_seconds, parse_utc_iso
 
 from jasper.active_speaker.movers import MOVERS
+from jasper.active_speaker.operator_copy import TIMING_RESET_NOTE
 from jasper.active_speaker.wizard_client import (
     CSRF_PAGE_PATH, STATUS_PATH, REASON_ANSWER_LOST,
     WizardClient, apply_by_fingerprint, error_of, wait_for_round,
@@ -28,7 +29,7 @@ from ._refusal import (
 
 PROG = "jasper-round"
 DEFAULT_TIMEOUT_S = 900.0
-AUTHORITY_TIER = "mutating-with-gates (`run`/`trial`/`placed`/`stop`/`wait`/`apply` write; `status` reads)"
+AUTHORITY_TIER = "mutating-with-gates (`run`/`trial`/`placed`/`stop`/`wait`/`apply`/`reset` write; `status` reads)"
 LOST_ANSWER_ADVICE = "the apply may have taken effect; read the live candidate before trying again"
 
 
@@ -209,6 +210,43 @@ def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: reset-only state
+    from jasper.active_speaker.candidate_bank import (  # lazy: reset-only bank
+        BankedCandidate, CandidateBankRefusal, publish_authored_candidate,
+    )
+    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: reset-only composition
+    from jasper.cli.crossover_prescriber import (  # lazy: reset-only prescription stack imports NumPy
+        compose_prescription_document, reset_prescription_document,
+    )
+    from jasper.active_speaker.state_paths import baseline_profile_state_path  # lazy: reset-only base
+    from jasper.output_topology import load_output_topology_strict  # lazy: reset-only topology
+    from jasper.audio_measurement.bundles import BundleError  # lazy: reset-only bank writer
+
+    try:
+        applied = load_applied_baseline_profile_state() or {}
+        base = candidate_from_applied_profile(load_output_topology_strict(), applied)
+        document = reset_prescription_document(keep_timing=args.keep_timing)
+        candidate = compose_prescription_document(
+            document, base=BankedCandidate(base, "", "", baseline_profile_state_path()),
+        )
+        published = publish_authored_candidate(candidate)
+    except (CandidateBankRefusal, BundleError, OSError, TypeError, ValueError) as exc:
+        return failed(EXIT_UNREADABLE, "reset_compose_failed", str(exc))
+    result = apply_by_fingerprint(client, published.fingerprint)
+    fingerprint = str(result["candidate_fingerprint"])
+    if result["status"] != "applied":
+        return _wizard_failure(EXIT_REFUSED, str(result["reason"]),
+                               {"candidate_fingerprint": fingerprint}, result.get("payload"))
+    timing = (load_applied_baseline_profile_state() or {}).get("timing")
+    return _answer(
+        "reset", f"applied {fingerprint}", candidate_fingerprint=fingerprint,
+        http=result["http"], outcome=result["outcome"],
+        timing={"saved": timing is not None,
+                "provenance": timing.get("provenance") if isinstance(timing, dict) else None},
+    )
+
+
 def _connection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--hostname", help="speaker hostname used for the Host header")
     parser.add_argument("--base-url", default="http://127.0.0.1", help="wizard address")
@@ -261,6 +299,10 @@ def build_parser() -> argparse.ArgumentParser:
     _connection_args(apply)
     apply.add_argument("fingerprint", help="banked candidate fingerprint")
     apply.set_defaults(func=_cmd_apply)
+    reset = sub.add_parser("reset", help="clear applied tuning layers", description=TIMING_RESET_NOTE)
+    _connection_args(reset)
+    reset.add_argument("--keep-timing", action="store_true", help="keep saved timing and its provenance")
+    reset.set_defaults(func=_cmd_reset)
     return parser
 
 
