@@ -41,11 +41,12 @@ class SeatLevelTargetError(ValueError):
     """The requested seat-SPL target is not a band this speaker may chase."""
 
 
-def validate_commissioning_spl(level_db_spl: float, *, ceiling_db_spl: float) -> None:
+def validate_commissioning_spl(level_db_spl: float, *, ceiling_db_spl: float, ramped: bool) -> None:
     if not math.isfinite(level_db_spl) or not math.isfinite(ceiling_db_spl):
         raise SeatLevelTargetError("measurement SPL and commissioning ceiling must be finite")
-    if level_db_spl > ceiling_db_spl - MAX_STEP_DB - CEILING_MARGIN_DB:
-        raise SeatLevelTargetError(f"measurement SPL {level_db_spl:g} exceeds the commissioning envelope at {ceiling_db_spl:g}")
+    bound = ceiling_db_spl - CEILING_MARGIN_DB - (MAX_STEP_DB if ramped else 0.0)
+    if level_db_spl > bound:
+        raise SeatLevelTargetError(f"measurement SPL {level_db_spl:g} exceeds the commissioning bound of {bound:g} dB SPL")
 
 
 @dataclass(frozen=True)
@@ -100,7 +101,7 @@ class SeatLevelTarget:
             raise SeatLevelTargetError("seat-SPL target and tolerance must be finite")
         if self.tolerance_db <= 0.0:
             raise SeatLevelTargetError("seat-SPL tolerance must be positive")
-        validate_commissioning_spl(self.high_db_spl, ceiling_db_spl=ceiling_db_spl)
+        validate_commissioning_spl(self.high_db_spl, ceiling_db_spl=ceiling_db_spl, ramped=True)
 
     def to_dict(self) -> dict[str, Any]:
         return {

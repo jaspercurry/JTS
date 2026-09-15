@@ -57,6 +57,7 @@ class LevelLadder:
         return {
             "levels": [{"offset_db": report.plan.level.offset_db if report.plan.level.resolved else None,
                         "level_db": report.plan.level.volume_db,
+                        "predicted_db_spl": report.plan.level.predicted_db_spl,
                         "admissible": not report.blocking, **report.to_dict()}
                        for report in self.levels],
             "admissible_levels_db": [report.plan.level.volume_db for report in self.admissible],
@@ -75,7 +76,17 @@ def level_ladder(plan: AngleCaptureRequest, facts: PreflightFacts) -> LevelLadde
 
 
 def preflight_levels(plan: AngleCaptureRequest, facts: PreflightFacts,
-                     levels: str | None = None) -> PreflightReport | LevelLadder:
+                     levels: str | None = None, *, spl: str | None = None) -> PreflightReport | LevelLadder:
+    if spl is not None:
+        if levels is not None or plan.levels is not None or plan.level.level_db is not None:
+            raise ValueError("spl requires a plan without levels or level-db")
+        requested = tuple(float(value) for value in spl.split(","))
+        report = preflight(plan, facts)
+        anchor = report.plan.level.resolved
+        if anchor is None:
+            return report
+        plan = replace(report.plan, levels=tuple(anchor.reference_volume_db + (value - anchor.anchor_db_spl)
+                                                for value in requested))
     if levels is not None:
         if not isinstance(levels, str) or plan.level.level_db is not None:
             raise ValueError("levels require a plan without level-db")

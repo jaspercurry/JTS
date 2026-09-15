@@ -100,6 +100,7 @@ class PreflightReport:
             "mic_moves": self.mic_moves, "price": dict(self.price),
             "spl_ceiling_db_spl": self.spl_ceiling_db_spl,
             "level": {"resolved": self.plan.level.resolved is not None,
+                      "predicted_db_spl": self.plan.level.predicted_db_spl,
                       **{key: value for key, value in self.plan.level.to_dict().items() if key != "mode"}},
             "live_admission": list(LIVE_ADMISSION),
         }
@@ -161,24 +162,27 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
                 if plan.level.resolved is not None and plan.level != level:
                     raise LevelUnresolved("seat_anchor_unusable", "The carried anchor differs from the banked anchor")
                 plan = replace(plan, level=level)
-                predicted = anchor.anchor_db_spl + level.offset_db
+                predicted = level.predicted_db_spl
                 try:
-                    validate_commissioning_spl(predicted, ceiling_db_spl=stop)
+                    validate_commissioning_spl(predicted, ceiling_db_spl=stop, ramped=False)
                 except SeatLevelTargetError as exc:
                     issues.append(replace(PreflightIssue.from_code(WALK_LEVEL_POLICY_INVALID, str(exc)),
                                           evidence={"level_db": level.volume_db, "predicted_db_spl": predicted,
                                                     "ceiling_db_spl": stop}))
                 ambient = facts.anchor.record.get("ambient_report")
-                band = (target_band_hz() if any(pose.purpose == PURPOSE_BASS for pose in plan.stops)
-                        else facts.summed_pilot_band_hz)
-                if band is not None and isinstance(ambient, Mapping) and any(pose.plays_summed for pose in plan.stops):
+                summed = [pose for pose in plan.stops if pose.plays_summed]
+                bands = []
+                if any(pose.purpose == PURPOSE_BASS for pose in summed):
+                    bands.append((target_band_hz(), False))
+                if facts.summed_pilot_band_hz and any(pose.purpose != PURPOSE_BASS for pose in summed):
+                    bands.append((facts.summed_pilot_band_hz, True))
+                for band, blocking in bands if isinstance(ambient, Mapping) else ():
                     rows = _ambient_rows_in_band(band, ambient.get("bands") or ())
                     pilot_dbfs = check_target_capture_dbfs(facts.anchor.sensitivity, predicted)
-                    # Remove when measured programs no longer require pilot SNR admission.
                     if rows and not _snr_floor_ok(ambient, pilot_dbfs, [band]):
                         lo, hi, noise_dbfs = max(rows, key=lambda row: row[2])
                         code = REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT
-                        issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence={
+                        issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message, blocking=blocking), evidence={
                             "level_db": level.volume_db, "predicted_pilot_capture_dbfs": pilot_dbfs,
                             "pilot_band_hz": band, "ambient_row": {"band_hz": (lo, hi), "level_dbfs": noise_dbfs},
                             "floor_dbfs": noise_dbfs + DRIVER.snr_ok_db,

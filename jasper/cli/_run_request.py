@@ -32,7 +32,7 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
         except OSError:
             pass
     if args.plan:
-        if any(getattr(args, key) is not None for key in ("program", "poses", "candidates", "repeats", "mover", "level_db", "levels")):
+        if any(getattr(args, key) is not None for key in ("program", "poses", "candidates", "repeats", "mover", "level_db", "levels", "spl")):
             raise ValueError("a plan document already states its run parameters")
         document = read_json_source(args.plan)
         if not isinstance(document, dict):
@@ -53,5 +53,5 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
         mover=args.mover or program.mover or "human",
     )
     facts = read_preflight_facts(request)
-    levels = args.levels if args.levels is not None else (program.levels if args.level_db is None else None)
-    return preflight_levels(request, facts, levels)
+    levels = args.levels if args.levels is not None else (program.levels if args.level_db is None and args.spl is None else None)
+    return preflight_levels(request, facts, levels, spl=args.spl)
