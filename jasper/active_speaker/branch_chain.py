@@ -530,3 +530,60 @@ def branch_headroom_db(
             filters, sections=sections, trim_db=trim_db, grid_hz=grid_hz,
         )
     )
+
+
+def boost_headroom_by_role(
+    *, session_volume_db: float | None, caps_dbfs: Mapping[str, float],
+    branch_context: Mapping[str, tuple[Sequence[CrossoverSection], float]],
+    linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    spl_headroom_db: float | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Remaining boost, dB, for full-scale content (0 dBFS) at the session fader.
+
+    Branch level (dBFS) is session volume (dB) plus the peak of the carried
+    crossover/linearization cascade and role trim (dB). A total replacement
+    passes no old linearization: its attenuation and boost will disappear.
+    Crossover attenuation is not credited on a cut-only branch (the existing
+    branch peak evaluator's conservative bound). Caps are the effective-peak
+    dBFS values from resolve_driver_excitation_ceilings. No cap means only the
+    digital ceiling and observed SPL headroom bind. A negative margin is
+    disclosed through branch_level_dbfs; available boost bottoms out at zero.
+    Missing session volume uses the hearing clamp's worst case, 0 dB, and
+    remains null in the derivation.
+    """
+    from .crossover_v2.capture_dispatch import capped_gain_ceilings  # lazy: capture_dispatch imports branch_chain
+    from .crossover_v2.programs import GAIN_CAP_BACKOFF_DB  # lazy: programs imports branch_chain
+    from jasper.audio_measurement.program_analysis.model import GAIN_MAX_DIGITAL_PEAK_DBFS  # lazy: program_analysis imports branch_chain
+
+    volume = 0.0 if session_volume_db is None else session_volume_db
+    if not all(math.isfinite(value) for value in (
+        volume, *caps_dbfs.values(),
+        *(trim for _, trim in branch_context.values()),
+        *((spl_headroom_db,) if spl_headroom_db is not None else ()),
+    )):
+        raise ValueError("boost headroom requires finite levels")
+    ceilings = capped_gain_ceilings(caps_dbfs, volume, {
+        role: GAIN_MAX_DIGITAL_PEAK_DBFS - volume for role in branch_context
+    })
+    out = {}
+    for role, (sections, trim) in branch_context.items():
+        gain = branch_chain_peak_db((linearization or {}).get(role, ()), sections=sections, trim_db=trim)
+        branch_level = volume + gain
+        limits = {"digital_ceiling": GAIN_MAX_DIGITAL_PEAK_DBFS - branch_level}
+        cap = caps_dbfs.get(role)
+        if cap is not None:
+            limits["driver_cap"] = ceilings[role] - gain
+        if spl_headroom_db is not None:
+            limits["spl_stop"] = spl_headroom_db
+        binding = min(limits, key=lambda key: limits[key])
+        headroom = max(0.0, limits[binding])
+        out[role] = {
+            "headroom_db": headroom, "cap_dbfs": cap,
+            "cap_backoff_db": GAIN_CAP_BACKOFF_DB if cap is not None else None,
+            "branch_level_dbfs": branch_level, "trim_db": trim,
+            "session_volume_db": session_volume_db,
+            "digital_ceiling_dbfs": GAIN_MAX_DIGITAL_PEAK_DBFS,
+            "spl_headroom_db": spl_headroom_db, "binding": binding,
+            "max_spl_spend_bound_db": headroom_charge_db(headroom),
+        }
+    return out

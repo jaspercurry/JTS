@@ -31,6 +31,7 @@ from jasper.active_speaker.crossover_v2.prescription_contract import (
     CONTRACT_COMMAND, SECTIONS, contract_digests, contract_json, prescription_contracts,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import contract_sources, default_out, round_inputs
+from jasper.active_speaker.driver_protection import driver_protection_profile
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
 from jasper.audio_measurement import room_limits as limits
@@ -149,8 +150,8 @@ def test_speaker_limits_come_from_the_declared_hardware_and_round(round_bank):
     expected = driver.driver_passbands_from_safety_profile(draft["driver_safety_profile"])
     assert speaker["driver"]["bounds"]["passbands_hz"] == {role: list(band) for role, band in expected.items()}
     bounds = speaker["driver"]["bounds"]
-    assert bounds["max_composed_boost_db"] == driver.DRIVER_MAX_COMPOSED_BOOST_DB
-    assert bounds["max_spl_spend_bound_db"] == driver.MAX_SPL_SPEND_BOUND_DB
+    assert set(bounds["boost_headroom"]) == set(expected)
+    assert all(row["headroom_db"] == 0.0 for row in bounds["boost_headroom"].values())
     assert speaker["blend"]["bounds"]["boost_route"]["available"] is False
     assert speaker["blend"]["bounds"]["boost_route"]["reason"] == blend.BOOST_ROUTE_UNAVAILABLE
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
@@ -336,3 +337,29 @@ def test_applied_preset_fallback_matches_the_packets_reader(round_bank, capsys, 
     )
     assert contract_digests(contracts) == packet["contracts"]
     assert (contracts["speaker"]["alignment"]["bounds"]["fc_hz"] is not None) is valid
+
+
+@pytest.mark.parametrize("volume,legacy_seed,headroom", [
+    (-41.09, False, (33.08, 17.4)), (None, False, (0.0, 0.0)), (-41.09, True, (35.09, 36.0)),
+])
+def test_speaker_contract_publishes_derived_headroom(round_bank, volume, legacy_seed, headroom):
+    bank, session = round_bank
+    sources = contract_sources(session)
+    sources["candidate"]["role_attenuations_db"] = {"woofer": 0.0, "tweeter": -9.52}
+    sources["manifest"]["sets"][0]["takes"] = [{"selected": True, "level": {
+        "level_db": volume, "loudest_half_second_db_spl": 40.0, "stimulus_dbfs": -6.0,
+    }}]
+    draft = json.loads((bank / "design-draft.json").read_text())
+    for target in draft["driver_safety_profile"]["targets"]:
+        target["target_id"] = target["role"]
+        target["level_duration_limits"] = {"max_effective_peak_dbfs": -8.0 if target["role"] == "woofer" else -33.2}
+    if legacy_seed:
+        for target in draft["driver_safety_profile"]["targets"]:
+            target["level_duration_limits"]["max_effective_peak_dbfs"] = driver_protection_profile(target["role"]).max_auto_level_dbfs
+    bounds = prescription_contracts(**sources, draft=draft)["speaker"]["driver"]["bounds"]["boost_headroom"]
+    assert bounds["woofer"]["headroom_db"] == pytest.approx(headroom[0])
+    assert bounds["tweeter"]["headroom_db"] == pytest.approx(headroom[1])
+    assert bounds["tweeter"]["spl_headroom_db"] == 36.0
+    assert bounds["tweeter"]["max_spl_spend_bound_db"] == pytest.approx(headroom[1] + 1.0 if headroom[1] else 0.0)
+    assert bounds["tweeter"]["session_volume_db"] == volume
+    assert bounds["tweeter"]["cap_dbfs"] == (None if legacy_seed else -33.2)

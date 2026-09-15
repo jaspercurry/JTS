@@ -90,6 +90,7 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
         prescription = driver.read_driver_prescription(
             raw, packet_fingerprint=packet.get("packet_fingerprint"),
             passbands_hz=speaker["driver"]["bounds"]["passbands_hz"],
+            boost_headroom=speaker["driver"]["bounds"]["boost_headroom"],
             classifications=packet_feature_classifications(packet),
             incumbent_filters=packet_incumbent_linearization(packet),
         )

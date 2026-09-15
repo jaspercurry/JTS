@@ -25,15 +25,10 @@ from typing import Any
 
 import numpy as np
 
-# Leaf of the crossover_v2 DAG. Facts about the graph — the ONE biquad
-# evaluator, the emitter's filter vocabulary, the shelf steepness it actually
-# spells, the trim floor, the declared protection edges — are CONSUMED here,
-# the opposite of the lockstep rule the policy bounds below follow: bounds
-# with a source are RESTATED, not imported;
-# tests/test_crossover_v2_driver_prescription.py pins each pair.
 from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
-    HEADROOM_MARGIN_DB,
+    headroom_charge_db,
+    boost_headroom_by_role,
     _evaluation_grid,
     chain_response,
 )
@@ -80,9 +75,7 @@ __all__ = [
     "DECLARED_TILT_BOUND_DB_PER_OCTAVE",
     "DECLARED_TILT_FIELD",
     "DRIVER_MAX_BOOST_Q",
-    "DRIVER_MAX_COMPOSED_BOOST_DB",
     "DRIVER_MAX_FILTERS_PER_ROLE",
-    "DRIVER_MAX_FILTER_BOOST_DB",
     "DRIVER_MIN_BOOST_DB",
     "DRIVER_MIN_CUT_DB",
     "DRIVER_PRESCRIPTION_KIND",
@@ -93,7 +86,6 @@ __all__ = [
     "EXPECTED_DELTA_BOUND_DB",
     "EXPECTED_DELTA_FIELD",
     "LINEARIZATION_CANDIDATE_FIELD",
-    "MAX_SPL_SPEND_BOUND_DB",
     "ClassificationBasis",
     "check_driver_document_size",
     "DriverPassbands",
@@ -152,14 +144,7 @@ DECLARED_TILT_BOUND_DB_PER_OCTAVE = 3.0
 # bounds — every one restored from the engine that already emits into this seam
 # --------------------------------------------------------------------------- #
 
-#: Widest Q one prescribed per-driver BOOST may use — ``linearization_fit.
-#: _PEAKING_Q_MAX``, the fit engine's PEAKING ceiling. A boost keeps a width
-#: ceiling because the caps that bound its maximum-SPL spend are read on a
-#: SAMPLED grid, and no fixed resolution bounds an arbitrary Q; this is the
-#: width at which the composed reading stays the upper bound
-#: :data:`MAX_SPL_SPEND_BOUND_DB`'s proof needs. A CUT carries no policy
-#: ceiling at all (ADR-0207) — only the instrument-fidelity one and the eight
-#: slots :data:`DRIVER_MAX_FILTERS_PER_ROLE` allows.
+# Q; bounds between-bin residue in the composed peak evaluator.
 DRIVER_MAX_BOOST_Q = 8.0
 
 def driver_max_q_for_gain(gain_db: float) -> float:
@@ -186,87 +171,9 @@ def driver_max_q_for_gain(gain_db: float) -> float:
 #: receipt as :attr:`DriverPrescription.subaudible_filters`.
 DRIVER_MIN_CUT_DB = 0.5
 
-#: Highest ONE prescribed boost may go, dB — ``camilla_yaml.
-#: MAX_LINEARIZATION_BOOST_DB`` / ``linearization_fit.PER_FILTER_BOOST_CAP_DB``,
-#: the rail the fit engine emits up to, restated on this module's lockstep rule.
-#: A prescription at this ceiling is therefore emittable rather than accepted
-#: here and refused downstream. Equal to
-#: :data:`DRIVER_MAX_COMPOSED_BOOST_DB` (ADR-0207), so two boost filters both
-#: at this rail can never clear the composed cap — each alone reads 12.0 there
-#: and skirt overlap only adds (two Q-8 boosts a third of an octave apart still
-#: compose to 12.7802). The composed cap binds every multi-filter boost; this
-#: one binds the single-filter case.
-DRIVER_MAX_FILTER_BOOST_DB = 12.0
-
-#: Ceiling on the COMPOSED boost's peak over one role's passband, dB. POLICY
-#: (ADR-0207) — the one bound here restored from no neighbour, since the fit
-#: engine leaves total boost deliberately unbounded.
-#:
-#: It sizes the whole class's cost, and carries that weight ONLY because
-#: :func:`_composed_grid` reads the cascade on the same span the charge is
-#: taken over. That span clause is load-bearing: a band-limited reading made
-#: this sentence false once while every other word of it stayed true. Given it,
-#: the remaining terms in the emitted branch (crossover sections, per-driver
-#: trim) are non-positive everywhere, so a role's evaluated chain peak cannot
-#: exceed this and ``branch_chain.headroom_charge_db`` cannot charge more than
-#: :data:`MAX_SPL_SPEND_BOUND_DB`. Per ROLE: the emitter folds roles by worst
-#: branch, not by sum, so a document's total spend is this bound and not a
-#: multiple of it.
-DRIVER_MAX_COMPOSED_BOOST_DB = 12.0
-
-#: The magnitude below which the fit engine calls a boost cosmetic, dB. DEFINED
-#: by :data:`DRIVER_MIN_CUT_DB` rather than restated beside it, because
-#: "inaudible, wastes a filter slot" does not depend on the sign; it carries
-#: its own name only so the contract a prescriber reads names a floor per sign.
 DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB
 
-#: The most maximum SPL one accepted document can cost the household, dB.
-#: DERIVED, not chosen, in four steps:
-#:
-#: 1. ``branch_chain.headroom_charge_db(peak) = peak + HEADROOM_MARGIN_DB`` for
-#:    any peak above ``_PEAK_EPS_DB`` (0.01 dB) — the whole charge formula.
-#: 2. :func:`_check_composed` refuses any role whose evaluated cascade peak
-#:    exceeds :data:`DRIVER_MAX_COMPOSED_BOOST_DB` by more than
-#:    :data:`_COMPOSED_BOOST_EVAL_TOL_DB`, so an accepted document reads
-#:    ``peak <= 12.0 + 1e-9``.
-#: 3. THE SPAN CLAUSE, which the whole proof rests on: that reading is taken on
-#:    :func:`_composed_grid`, which is ``branch_chain._evaluation_grid``
-#:    IMPORTED (the charge's own span) unioned with a dense sweep of the role's
-#:    band, so gate and charge read the same domain. Without it the inference
-#:    is unsound, not merely loose — a band-limited gate once passed a cascade
-#:    at 3.58 dB that the emitter charged 10.75 dB for.
-#: 4. The emitter's peak cannot exceed the gate's, for two reasons both needed:
-#:    the remaining terms in the emitted branch (crossover sections, per-driver
-#:    trim) are non-positive to within 1e-8 dB (worst measured +1.1654e-09 dB,
-#:    an LR8 section near 20 Hz — floating-point residue from cascading eight
-#:    biquads); and the emitter evaluates on a strict SUBSET of
-#:    :func:`_composed_grid`, so its maximum cannot exceed the superset's.
-#:
-#: Therefore ``charge <= 12.0 + 1.0 = 13.0`` at published precision (carrying
-#: both tolerances, 13.000000011 dB). The bound is ATTAINED, not approached:
-#: one filter at :data:`DRIVER_MAX_FILTER_BOOST_DB` at any Q composes to
-#: exactly 12.000000 here, so its charge is exactly 13.000000.
-#:
-#: Imported rather than restated because it is a CONSEQUENCE of the charge
-#: formula, not a policy this gate re-validates: a margin that moved must move
-#: this too.
-#:
-#: **What this bounds is the CHARGE, not the realized peak.** Above ~18 kHz the
-#: sampling residue exceeds ``HEADROOM_MARGIN_DB`` (#2850, open), so up there
-#: the -1.0 dB per-driver soft-clip limiters are the backstop rather than this
-#: arithmetic.
-MAX_SPL_SPEND_BOUND_DB = DRIVER_MAX_COMPOSED_BOOST_DB + HEADROOM_MARGIN_DB
-
-#: Slack on the COMPOSED BOOST comparison alone, dB, so the evaluator's own
-#: double-precision residue cannot decide a policy question. Needed only
-#: because ruling R8 (ADR-0207) made :data:`DRIVER_MAX_FILTER_BOOST_DB` and
-#: :data:`DRIVER_MAX_COMPOSED_BOOST_DB` the SAME number: a single filter at the
-#: rail composes to it exactly in arithmetic, and the biquad evaluates it to a
-#: residue whose SIGN depends on centre frequency and Q. Swept over 4,000
-#: random (freq, Q) draws at the rail, the worst |residue| is 2.416e-13 dB, so
-#: 1e-9 sits ~4 orders above it and ~7 below the 4-decimal precision every
-#: charge is published at — it cannot absorb a real cascade. Boost side only;
-#: the cut side has no composed bound to collide with (ADR-0207).
+# dB; absorbs f64 cascade evaluation residue, below YAML's 4-decimal precision.
 _COMPOSED_BOOST_EVAL_TOL_DB = 1e-9
 
 #: How many filters one role may carry — ``linearization_fit.
@@ -307,7 +214,6 @@ ROLE_UNKNOWN = "driver_role_unknown"
 PASSBAND_UNAVAILABLE = "driver_passband_unavailable"
 FILTER_OUTSIDE_PASSBAND = "driver_filter_outside_passband"
 FILTER_Q_OUT_OF_RANGE = "driver_filter_q_out_of_range"
-FILTER_BOOST_TOO_HIGH = "driver_filter_boost_too_high"
 COMPOSED_BOOST_EXCEEDED = "driver_composed_boost_exceeded"
 TRIM_PIN_MALFORMED = "driver_trim_pin_malformed"
 DRIVER_EXPECTATION_MALFORMED = "driver_expectation_malformed"
@@ -329,7 +235,6 @@ DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     PASSBAND_UNAVAILABLE,
     FILTER_OUTSIDE_PASSBAND,
     FILTER_Q_OUT_OF_RANGE,
-    FILTER_BOOST_TOO_HIGH,
     COMPOSED_BOOST_EXCEEDED,
     TRIM_PIN_MALFORMED,
     DRIVER_EXPECTATION_MALFORMED,
@@ -454,6 +359,7 @@ class DriverPrescription:
     #: Which role carried it. The emitter folds by worst BRANCH, so the number
     #: alone cannot say where the spend went.
     composed_boost_role: str | None = None
+    max_spl_spend_bound_db: float = 0.0
     #: How many incumbent filters the named roles REPLACE — see
     #: :func:`_check_displaced`.
     displaced_filters: int | None = None
@@ -528,7 +434,7 @@ class DriverPrescription:
             "boosts_in_crossover_overlap": self.boosts_in_crossover_overlap,
             "composed_boost_db": self.composed_boost_db,
             "composed_boost_role": self.composed_boost_role,
-            "max_spl_spend_bound_db": MAX_SPL_SPEND_BOUND_DB,
+            "max_spl_spend_bound_db": self.max_spl_spend_bound_db,
             "displaced_filters": self.displaced_filters,
             "displaced_boost_db": self.displaced_boost_db,
             "displaced_boost_role": self.displaced_boost_role,
@@ -842,23 +748,11 @@ def _check_bounds(
             )
         # 10**(gain/40) is exactly 0.0 below ~-12960 dB, and `_biquad_coeffs`
         # divides by it — an uncaught ZeroDivisionError at evaluation time.
-        if 10.0 ** (gain / 40.0) == 0.0:
+        if gain / 40.0 > math.log10(float(np.finfo(np.float64).max)) or 10.0 ** (gain / 40.0) == 0.0:
             _refuse(
                 FILTER_MALFORMED,
-                f"filter {position} gain {gain:g} dB underflows 64-bit "
+                f"filter {position} gain {gain:g} dB exceeds finite 64-bit "
                 "arithmetic and cannot be evaluated or emitted",
-            )
-        if gain > DRIVER_MAX_FILTER_BOOST_DB:
-            _refuse(
-                FILTER_BOOST_TOO_HIGH,
-                f"filter {position} boosts {gain:.2f} dB at {freq:.1f} Hz, "
-                f"past the {DRIVER_MAX_FILTER_BOOST_DB:g} dB per-filter "
-                "ceiling, which is the same rail the deterministic fit "
-                "engine emits up to and the emitter re-validates against",
-                role=role,
-                freq_hz=freq,
-                gain_db=gain,
-                max_boost_db=DRIVER_MAX_FILTER_BOOST_DB,
             )
     return "boost" if any(float(e["gain"]) > 0.0 for e in filters) else "cut"
 
@@ -901,28 +795,9 @@ def _composed_grid(
 
 def _check_composed(
     filters: tuple[dict[str, Any], ...], passbands: DriverPassbands, *,
-    max_boost_db: float | None = None,
+    boost_headroom: Mapping[str, Mapping[str, Any]],
 ) -> tuple[float, str | None]:
-    """The composed BOOST cap, per role, on the EVALUATED cascade.
-
-    Returns ``(worst composed BOOST across the document in dB, the role it
-    belongs to)`` — ``(0.0, None)`` when nothing rises above unity. That is the
-    number :data:`MAX_SPL_SPEND_BOUND_DB` bounds and the receipt reports; the
-    ROLE rides with it because the emitter folds by worst BRANCH.
-
-    Through ``chain_response``, the ONE biquad evaluator here, so this gate and
-    the emitter's accounting cannot disagree about what CamillaDSP realizes,
-    and on :func:`_composed_grid`, never on a supplied axis.
-
-    Read WITHOUT the crossover sections and WITHOUT the branch trim, both of
-    which are non-positive to within 1e-8 dB — the trim by construction
-    (``intervention.anchor_trims`` normalizes it), the LR sections by
-    measurement (worst +1.1654e-09 dB, floating-point residue at LR8 near a
-    20 Hz corner). So this reading is an UPPER bound on the emitter's charge,
-    the direction a gate's number must err — an inference that is only sound
-    because the span is the charge's own.
-    """
-    max_boost_db = DRIVER_MAX_COMPOSED_BOOST_DB if max_boost_db is None else max_boost_db
+    """Check the total replacement cascade against each role's physical headroom."""
     worst_boost = 0.0
     worst_role: str | None = None
     for role, band in sorted(passbands.items()):
@@ -938,11 +813,15 @@ def _check_composed(
         composed = 20.0 * np.log10(
             np.maximum(np.abs(np.asarray(chain_response(role_filters, grid))), 1e-12)
         )
+        if not np.all(np.isfinite(composed)):
+            _refuse(FILTER_MALFORMED, "cascade cannot be evaluated in finite arithmetic", role=role)
         # The extremum can and does land outside the declared band (measured as
         # low as 1.92 Hz and as high as 21.5 kHz), so the refusal names the
         # FREQUENCY rather than an interval the number may not be inside.
         peak_index = int(np.argmax(composed))
         peak_boost = max(0.0, float(composed[peak_index]))
+        bound = boost_headroom[role]
+        max_boost_db = float(bound["headroom_db"])
         if peak_boost > max_boost_db + _COMPOSED_BOOST_EVAL_TOL_DB:
             _refuse(
                 COMPOSED_BOOST_EXCEEDED,
@@ -956,7 +835,8 @@ def _check_composed(
                 composed_boost_db=peak_boost,
                 composed_boost_hz=float(grid[peak_index]),
                 max_composed_boost_db=max_boost_db,
-                max_spl_spend_bound_db=MAX_SPL_SPEND_BOUND_DB,
+                binding=bound["binding"],
+                max_spl_spend_bound_db=headroom_charge_db(max_boost_db),
             )
         # `>` not `>=`: the FIRST role reaching the worst value keeps it, so a
         # tie is decided by sorted role order rather than evaluation order.
@@ -1214,6 +1094,7 @@ def read_driver_prescription(
     passbands_hz: DriverPassbands | None,
     classifications: Sequence[FeatureVerdict] | None,
     incumbent_filters: Mapping[str, Sequence[Mapping[str, Any]]] | None,
+    boost_headroom: Mapping[str, Mapping[str, Any]],
 ) -> DriverPrescription | None:
     """THE request gate. One point, and the one place every bound is applied.
 
@@ -1222,9 +1103,9 @@ def read_driver_prescription(
     :class:`~.blend_prescription.BlendPrescriptionRefused` naming which gate
     said no.
 
-    The four keywords are the evidence packet's own answers, read out by
+    The keywords are the evidence packet's own answers, read out by
     :mod:`.evidence_packet`'s named readers. Taking VALUES rather than the
-    packet keeps this module a leaf of the DAG. All four are required and
+    packet keeps this module a leaf of the DAG. They are required and
     undefaulted, so a caller cannot lose the evidence's own opinion silently:
     they are the only inputs a prescriber willing to lie cannot forge.
     ``incumbent_filters`` bounds nothing and ``None`` is a legitimate value for
@@ -1287,8 +1168,19 @@ def read_driver_prescription(
                     role=role, speaker_roles=sorted(passbands),
                 )
 
+    boost_headroom = dict(boost_headroom)
+    for role, trim in pinned_trim_db:
+        bound = boost_headroom[role]
+        previous_trim = float(bound["trim_db"])
+        spl = bound["spl_headroom_db"]
+        boost_headroom.update(boost_headroom_by_role(
+            session_volume_db=float(bound["branch_level_dbfs"]) - previous_trim,
+            caps_dbfs={role: bound["cap_dbfs"]} if bound["cap_dbfs"] is not None else {},
+            branch_context={role: ((), trim)},
+            spl_headroom_db=spl - (trim - previous_trim) if spl is not None else None,
+        ))
     prescription_class = _check_bounds(filters, passbands)
-    composed_boost_db, composed_boost_role = _check_composed(filters, passbands)
+    composed_boost_db, composed_boost_role = _check_composed(filters, passbands, boost_headroom=boost_headroom)
     basis, unvouched_filters = _check_classification(filters, classifications)
     displaced_filters, displaced_boost_db, displaced_boost_role = _check_displaced(
         filters, incumbent_filters, passbands
@@ -1313,6 +1205,9 @@ def read_driver_prescription(
         ),
         composed_boost_db=composed_boost_db,
         composed_boost_role=composed_boost_role,
+        max_spl_spend_bound_db=max((headroom_charge_db(float(bound["headroom_db"]))
+                                    for role, bound in boost_headroom.items()
+                                    if any(entry["role"] == role for entry in filters)), default=0.0),
         displaced_filters=displaced_filters,
         displaced_boost_db=displaced_boost_db,
         displaced_boost_role=displaced_boost_role,
@@ -1325,15 +1220,7 @@ def read_driver_prescription(
 
 
 def driver_prescription_route(prescription: DriverPrescription) -> str:
-    """Which candidate field this prescription lands in.
-
-    :data:`LINEARIZATION_CANDIDATE_FIELD` is the role-keyed field the Layer-1a
-    fit already writes, so a prescribed per-driver filter is byte-shaped like a
-    fitted one and passes the same emitter gates. BOTH signs take it, and it
-    carries no condition of its own — the spend a boost costs is bounded by
-    :data:`MAX_SPL_SPEND_BOUND_DB`, which :func:`_check_composed` applies at
-    the boundary and the emitter re-proves.
-    """
+    """The role-keyed linearization seam shared with the fitter."""
     return LINEARIZATION_CANDIDATE_FIELD
 
 
@@ -1521,8 +1408,7 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "and emitter realize faithfully. What a cut spends is one "
                 "of max_filters_per_role's slots"
             ),
-            "max_filter_boost_db": DRIVER_MAX_FILTER_BOOST_DB,
-            "max_composed_boost_db": DRIVER_MAX_COMPOSED_BOOST_DB,
+            "boost_headroom": "Per-role bounds.boost_headroom in the speaker contract",
             "subaudible_below_db": DRIVER_MIN_CUT_DB,
             "a_shallower_filter_discloses_and_is_admitted": (
                 "there is no magnitude FLOOR on either sign. A filter under "
@@ -1564,7 +1450,7 @@ def driver_prescription_response_format() -> dict[str, Any]:
             ),
             "eligible_classification": DEFECT_BOOSTABLE,
             "a_boost_owes_nothing_a_cut_does_not": (
-                "both signs are bounded by the same depth caps and disclosed by "
+                "both signs use the same shape checks and are disclosed by "
                 "the same classification_bar. What differs is the COST: a cut "
                 "spends a filter slot, a boost also spends maximum SPL, up to "
                 "max_spl_spend_bound_db — which is also why a boost is the one "
@@ -1573,7 +1459,7 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "packet) — nothing refuses a deeper one, and nothing makes it "
                 "work either"
             ),
-            "max_spl_spend_bound_db": MAX_SPL_SPEND_BOUND_DB,
+            "max_spl_spend_bound_db": "Derived per role in bounds.boost_headroom",
             "spend_is_a_step_function": (
                 "a branch that stays at or under unity is charged NOTHING. The "
                 "first admissible boost in a band the branch already runs at "
@@ -1591,7 +1477,6 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "boost SPENDS is bounded by the caps above either way"
             ),
             "refusals": sorted({
-                FILTER_BOOST_TOO_HIGH,
                 COMPOSED_BOOST_EXCEEDED,
                 FILTER_Q_OUT_OF_RANGE,
             }),

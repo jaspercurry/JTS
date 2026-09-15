@@ -95,7 +95,8 @@ def test_empty_clears_and_omitted_layers_inherit(base, section, empty):
 @pytest.fixture
 def evidence(bass_packet):
     return PrescriptionEvidence(
-        {"draft": _draft(), "room_median": _room_median(), "bass_evidence": bass_packet},
+        {"draft": _draft(), "room_median": _room_median(), "bass_evidence": bass_packet,
+         "manifest": {"sets": [{"takes": [{"selected": True, "level": {"level_db": -35.69}}]}]}},
         {"packet_fingerprint": "p" * 64}, MEDIAN_SHA256, bass_packet["round_id"],
     )
 
@@ -133,7 +134,7 @@ def bass_round(round_bank, bass_packet):
 
 @pytest.mark.parametrize("section, payload, code", [
     ("room", room_document(filters=[{"freq": NULL_HZ, "q": 1, "gain": 1}]), "boost_not_admitted"),
-    ("driver", driver_document([{"role": "woofer", "biquad_type": "Peaking", "freq": 900, "q": 1, "gain": 13}], {"packet_fingerprint": "p" * 64}), "driver_filter_boost_too_high"),
+    ("driver", driver_document([{"role": "woofer", "biquad_type": "Peaking", "freq": 900, "q": 1, "gain": 50}], {"packet_fingerprint": "p" * 64}), "driver_composed_boost_exceeded"),
     ("topology", {}, "composition_topology_required"),
     ("blend", {"kind": "unknown"}, "prescription_kind_unknown"),
 ])

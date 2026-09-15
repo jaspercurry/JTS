@@ -45,6 +45,7 @@ from jasper.active_speaker.crossover_v2.round_views import (
     verify_pose_curve,
 )
 from jasper.active_speaker.crossover_v2.gate_sweep import ROUTE_SIGMA_GROWTH, WINDOW_MOVED
+from jasper.active_speaker.branch_chain import boost_headroom_by_role
 from jasper.active_speaker.crossover_v2.driver_prescription import (
     DRIVER_PRESCRIPTION_KIND,
     DRIVER_PRESCRIPTION_SCHEMA_VERSION,
@@ -404,13 +405,6 @@ def test_the_measured_delta_pools_only_the_seats_the_target_re_measured(tmp_path
 def test_frozen_reference_echoes_the_pre_registration_beside_the_measured_move(
     tmp_path,
 ):
-    """One round trip: a staged driver document, through the door, onto the
-    candidate stamp the round banks, out of this view (row 2.9).
-
-    The two declared numbers are DISCLOSURE — the view echoes them and
-    subtracts, and grades nothing by them, so the measured half is exactly
-    what the same rounds produce with no document at all.
-    """
     delta_db = 0.6
     baseline_dir = _make_round_dir(
         tmp_path, "baseline",
@@ -437,6 +431,8 @@ def test_frozen_reference_echoes_the_pre_registration_beside_the_measured_move(
         passbands_hz={"tweeter": (1600.0, 20000.0)},
         classifications=None,
         incumbent_filters=None,
+        boost_headroom=boost_headroom_by_role(session_volume_db=None, caps_dbfs={},
+                                             branch_context={"tweeter": ((), 0.0)}),
     )
     (
         target_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/cap1"

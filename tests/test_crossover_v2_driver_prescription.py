@@ -2,34 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The per-driver prescription class: full-band, both signs, classify first.
-
-Four things are pinned here and they fail in different ways:
-
-* **the bounds are the fit engine's own** — every CUT ceiling this gate applies
-  is numerically the constant ``linearization_fit`` already emits up to, so a
-  prescriber can never be granted a move the deterministic path could not make,
-  and re-deriving one of them moves both. The two BOOST ceilings are the
-  sibling prescription class's instead, and pinned as such;
-* **the classification reading DISCLOSES and never refuses** (owner ruling,
-  2026-08-23) — a filter with no verdict of its own sign for its target is
-  COUNTED onto ``unvouched_filters``, and the mutation that re-adds the refusal
-  kills a document the gate now admits;
-* **a boost is bounded by what it COSTS, not by what vouches for it** — the
-  per-filter and composed caps and the crossover knee, which together hold the
-  maximum-SPL spend at 13.0 dB; the depth a verdict reports rides the receipt
-  for a reader to weigh;
-* **a document may carry any filter the EMITTER can build** — ``Peaking``,
-  ``Highshelf``, ``Lowshelf`` — in the only placements the emitter can name
-  them, so a shelf accepted here cannot raise at emission;
-* **an accepted prescription reaches the emitted graph through the SAME
-  per-branch seam the fit uses**, and survives the emitter's own independent
-  re-validation there.
-
-Synthetic bundle on ``tmp_path``, for the reason the blend suite states:
-``captures/`` is gitignored and a suite that needed it would only run on one
-laptop.
-"""
+"""Driver prescription shape, physical headroom, and emitted cascade behavior."""
 
 from __future__ import annotations
 
@@ -49,6 +22,7 @@ from jasper.active_speaker.baseline_profile import (
 from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
     HEADROOM_MARGIN_DB,
+    boost_headroom_by_role,
     chain_response,
 )
 from jasper.active_speaker.crossover_v2 import driver_prescription as dp
@@ -59,12 +33,9 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
 )
 from jasper.active_speaker.crossover_v2.driver_prescription import (
     DRIVER_MAX_BOOST_Q,
-    DRIVER_MAX_COMPOSED_BOOST_DB,
-    DRIVER_MAX_FILTER_BOOST_DB,
     DRIVER_MAX_FILTERS_PER_ROLE,
     DRIVER_MIN_BOOST_DB,
     DRIVER_MIN_CUT_DB,
-    MAX_SPL_SPEND_BOUND_DB,
     DRIVER_PRESCRIPTION_KIND,
     DRIVER_PRESCRIPTION_REFUSAL_REASONS,
     DRIVER_PRESCRIPTION_SCHEMA_VERSION,
@@ -287,14 +258,23 @@ def packet(tmp_path: Path) -> dict[str, Any]:
     return _speaker(tmp_path)
 
 
-def _gate(packet: dict[str, Any], document: Any) -> Any:
-    """The gate, called the one way its four inputs are meant to be derived."""
+HEADROOM = boost_headroom_by_role(
+    session_volume_db=-35.69, caps_dbfs={"woofer": -8.0, "tweeter": -33.2},
+    branch_context={"woofer": ((), 0.0), "tweeter": ((), -9.52)},
+)
+BOOST_HEADROOM_DB = HEADROOM["tweeter"]["headroom_db"]
+SPL_SPEND_DB = HEADROOM["tweeter"]["max_spl_spend_bound_db"]
+
+
+def _gate(packet: dict[str, Any], document: Any, headroom=None) -> Any:
+    """Judge a packet with the fixture's declared level context."""
     return read_driver_prescription(
         document,
         packet_fingerprint=packet.get("packet_fingerprint"),
         passbands_hz=packet_driver_passbands_hz(packet),
         classifications=packet_feature_classifications(packet),
         incumbent_filters=packet_incumbent_linearization(packet),
+        boost_headroom=headroom or HEADROOM,
     )
 
 
@@ -705,8 +685,7 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     assert "min_boost_db" not in bounds
     assert "subaudible_filters" in bounds["a_shallower_filter_discloses_and_is_admitted"]
     assert bounds["max_filters_per_role"] == DRIVER_MAX_FILTERS_PER_ROLE
-    assert bounds["max_filter_boost_db"] == DRIVER_MAX_FILTER_BOOST_DB
-    assert bounds["max_composed_boost_db"] == DRIVER_MAX_COMPOSED_BOOST_DB
+    assert "boost_headroom" in bounds
     # The EMITTER's set, not a second literal: the contract a prescriber reads
     # and the graph its filters will be built into name the same filters.
     assert set(bounds["biquad_types"]) == set(
@@ -721,7 +700,7 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     assert bar["eligible_classification_for_a_boost"] == DEFECT_BOOSTABLE
     assert "eligible_classification" not in bar
     assert fmt["boosts"]["eligible_classification"] == DEFECT_BOOSTABLE
-    assert fmt["boosts"]["max_spl_spend_bound_db"] == MAX_SPL_SPEND_BOUND_DB
+
     # NOTHING, since 2026-08-23: the depth bar that was a boost's one extra
     # debt is a disclosure now, so what differs between the signs is the COST
     # and not a bar. A contract still claiming an asymmetric bar would send a
@@ -738,7 +717,6 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     # boost-only bar now, so the block a boost's author reads is where it has to
     # be named. The floor refusal left the same day and must not be here.
     assert set(fmt["boosts"]["refusals"]) == {
-        dp.FILTER_BOOST_TOO_HIGH,
         dp.COMPOSED_BOOST_EXCEEDED,
         dp.FILTER_Q_OUT_OF_RANGE,
     }
@@ -1798,7 +1776,7 @@ def test_a_boost_is_admitted_against_a_banked_boostable_dip(tmp_path):
     assert prescription.composed_boost_db == pytest.approx(3.0, abs=0.01)
     record = prescription.to_dict()
     assert record["composed_boost_db"] == prescription.composed_boost_db
-    assert record["max_spl_spend_bound_db"] == MAX_SPL_SPEND_BOUND_DB
+    assert record["max_spl_spend_bound_db"] == SPL_SPEND_DB
 
 
 def test_a_document_may_carry_a_cut_and_a_boost_and_each_pays_its_own_bar(tmp_path):
@@ -1972,56 +1950,11 @@ def test_an_unusable_depth_no_longer_decides_anything(tmp_path, depth):
     assert prescription.filters[0]["gain"] == 1.0
 
 
-def test_a_nonsense_depth_is_still_capped_by_the_policy_ceilings(tmp_path):
-    """A banked row claiming a 500 dB dip does not widen what may be
-    prescribed: the per-filter ceiling and the composed budget are the bounds,
-    and no number a prescriber or a classifier supplies can move them."""
-    packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=500.0)]))
-
-    assert _gate(
-        packet, _document([_boost(gain=DRIVER_MAX_FILTER_BOOST_DB)], packet)
-    ).filters[0]["gain"] == DRIVER_MAX_FILTER_BOOST_DB
-
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document(
-            [_boost(gain=DRIVER_MAX_FILTER_BOOST_DB + 0.01)], packet
-        ))
-    assert excinfo.value.reason == dp.FILTER_BOOST_TOO_HIGH
 
 
 # --- the shape bounds, boost half ------------------------------------------- #
 
 
-@pytest.mark.parametrize(("gain", "accepted"), [
-    (0.49, True), (0.5, True), (3.0, True), (12.0, True), (12.01, False),
-])
-def test_the_per_filter_boost_ceiling_is_inclusive(tmp_path, gain, accepted):
-    """12.0 dB is this class's ceiling since R8, and the only bound left here.
-
-    3.0 stays in the table as an ordinary mid-range case — it was the ceiling
-    itself until 2026-08-22, and the row that used to assert 12.0 is REFUSED now
-    asserts it is admitted, which is the whole of what R8 changed here. 0.49
-    turned over the same way on 2026-08-29: the cosmetic floor discloses.
-
-    12.0 being ACCEPTED is the load-bearing row: it is the rail the emitter
-    re-validates against, so a document at the ceiling has to survive emission
-    rather than be accepted here and refused downstream. It reaches the composed
-    cap at the same time (the two caps are equal), which is why that comparison
-    carries ``_COMPOSED_BOOST_EVAL_TOL_DB``.
-    """
-    packet = _speaker(tmp_path, classification=_boostable([_dip(depth_db=20.0)]))
-    document = _document([_boost(gain=gain)], packet)
-
-    if accepted:
-        prescription = _gate(packet, document)
-        assert prescription.filters[0]["gain"] == gain
-        assert prescription.subaudible_filters == (
-            1 if gain < DRIVER_MIN_BOOST_DB else 0
-        )
-        return
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, document)
-    assert excinfo.value.reason == dp.FILTER_BOOST_TOO_HIGH
 
 
 @pytest.mark.parametrize(("q", "accepted"), [(0.5, True), (8.0, True), (8.1, False)])
@@ -2072,9 +2005,9 @@ def test_two_admissible_boosts_may_still_compose_past_the_budget(tmp_path):
 
     assert excinfo.value.reason == dp.COMPOSED_BOOST_EXCEEDED
     assert excinfo.value.evidence["composed_boost_db"] == pytest.approx(14.239, abs=0.01)
-    assert excinfo.value.evidence["max_composed_boost_db"] == DRIVER_MAX_COMPOSED_BOOST_DB
+    assert excinfo.value.evidence["max_composed_boost_db"] == BOOST_HEADROOM_DB
     # The refusal states the household-facing consequence, not only the bound.
-    assert excinfo.value.evidence["max_spl_spend_bound_db"] == MAX_SPL_SPEND_BOUND_DB
+    assert excinfo.value.evidence["max_spl_spend_bound_db"] == SPL_SPEND_DB
 
 
 def test_the_composed_boost_cap_is_load_bearing_not_decorative(tmp_path, monkeypatch):
@@ -2090,8 +2023,8 @@ def test_the_composed_boost_cap_is_load_bearing_not_decorative(tmp_path, monkeyp
     with pytest.raises(BlendPrescriptionRefused):
         _gate(packet, document)
 
-    monkeypatch.setattr(dp, "DRIVER_MAX_COMPOSED_BOOST_DB", 99.0)
-    assert _gate(packet, document).composed_boost_db == pytest.approx(14.239, abs=0.01)
+    wider = {role: {**bound, "headroom_db": 99.0} for role, bound in HEADROOM.items()}
+    assert _gate(packet, document, wider).composed_boost_db == pytest.approx(14.239, abs=0.01)
 
 
 def test_the_composed_grid_sees_a_narrow_boost_at_a_wide_bands_edge(tmp_path):
@@ -2186,8 +2119,10 @@ def test_a_cascade_peaking_outside_its_band_is_still_refused(
     """
     packet = _speaker(tmp_path, classification=_woofer_dips(freqs))
 
+    headroom = boost_headroom_by_role(session_volume_db=-20.01, caps_dbfs={"woofer": -8.0},
+                                     branch_context={"woofer": ((), 0.0)})
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document(filters, packet))
+        _gate(packet, _document(filters, packet), {**HEADROOM, **headroom})
 
     assert excinfo.value.reason == dp.COMPOSED_BOOST_EXCEEDED
     assert excinfo.value.evidence["composed_boost_db"] == pytest.approx(
@@ -2345,7 +2280,7 @@ def test_the_knee_finding_reads_a_bells_centre_and_not_the_overlap_as_a_band(tmp
     # Centred just above the woofer's 3 kHz ceiling, and WIDE, so its skirt
     # covers the overlap it is not centred in.
     outside = {"role": "tweeter", "biquad_type": "Peaking", "freq": 3200.0,
-               "q": 0.5, "gain": DRIVER_MAX_FILTER_BOOST_DB}
+               "q": 0.5, "gain": BOOST_HEADROOM_DB}
 
     prescription = _gate(packet, _document([outside], packet))
 
@@ -2374,14 +2309,14 @@ def test_a_shelf_reaches_the_overlap_and_the_charge_is_what_bounds_it(tmp_path):
     the emitter already performs.
 
     The chain, end to end: the composed cap holds the covered side to
-    :data:`~.driver_prescription.DRIVER_MAX_COMPOSED_BOOST_DB`, the emitter
+    :data:`~.driver_prescription.BOOST_HEADROOM_DB`, the emitter
     charges ``peak + HEADROOM_MARGIN_DB`` before the split, and the charge
     exceeds the lift — so the overlap lands BELOW unity. That is the argument
     the docstring makes; this is the measurement it rests on.
 
     **Two numbers, and they are different on purpose.** The gate's arithmetic
     gives the cap-implied BOUND (12.0 + 1.0 = 13.0 =
-    :data:`~.driver_prescription.MAX_SPL_SPEND_BOUND_DB`), which is what one
+    :data:`~.driver_prescription.SPL_SPEND_DB`), which is what one
     accepted document can cost at worst. What the emitter actually returns is
     lower — ``linearization_headroom_db`` reads the branch the graph emits, and
     the tweeter's own LR4 high-pass takes the realized peak below the gate's —
@@ -2396,7 +2331,7 @@ def test_a_shelf_reaches_the_overlap_and_the_charge_is_what_bounds_it(tmp_path):
     # Cornered at the top of the tweeter's declared band: everything below is
     # covered, the whole overlap included.
     shelf = {"role": "tweeter", "biquad_type": "Lowshelf", "freq": 20000.0,
-             "gain": DRIVER_MAX_FILTER_BOOST_DB}
+             "gain": BOOST_HEADROOM_DB}
 
     prescription = _gate(packet, _document([shelf], packet))
 
@@ -2412,11 +2347,11 @@ def test_a_shelf_reaches_the_overlap_and_the_charge_is_what_bounds_it(tmp_path):
     assert float(np.max(covered)) == pytest.approx(12.0, abs=0.001)
     # …and the spend it is charged is the full published bound, no more.
     assert prescription.composed_boost_db == pytest.approx(
-        DRIVER_MAX_COMPOSED_BOOST_DB, abs=1e-6
+        BOOST_HEADROOM_DB, abs=1e-6
     )
     # (a) the cap-implied BOUND, from this gate's own arithmetic.
     bound = prescription.composed_boost_db + HEADROOM_MARGIN_DB
-    assert bound == pytest.approx(MAX_SPL_SPEND_BOUND_DB, abs=1e-6)
+    assert bound == pytest.approx(SPL_SPEND_DB, abs=1e-6)
     # (b) what the EMITTER returns for the same filter on the shipped two-way,
     # computed rather than quoted. Lower than (a), because the branch carries
     # its own LR4 high-pass at 1600 Hz.
@@ -2550,64 +2485,8 @@ def test_an_all_cuts_document_routes_exactly_as_it_did_before_the_boost_class(
 # --- the numbers, pinned against the constants they were restored from ------- #
 
 
-def test_the_boost_ceilings_are_the_emitters_rail_not_the_sibling_classs():
-    """LOCKSTEP pin. Ruling **R8**, as an assertion — and the overturn it carries.
-
-    Until 2026-08-22 this test asserted the OPPOSITE, on the owner's 2026-08-18
-    ruling that "a new permission should not open at the ceiling of an old one":
-    both boost ceilings equalled the blend class's (3.0 / 4.0) and both sat
-    strictly under the fit engine's 12 dB rail. R8 overturns that on its own
-    terms — the tournament banks a pre-registered expected delta per candidate,
-    which is the closed-loop prediction whose absence was the reason to open low.
-
-    So the per-filter ceiling is now the emitter's own rail, which is what makes
-    a prescription at the ceiling emittable instead of accepted here and refused
-    downstream; and both ceilings have LEFT the blend class, which keeps its own
-    3.0 / 4.0 because R8 moved only this class.
-    """
-    from jasper.active_speaker.crossover_v2.blend_prescription import (
-        PRESCRIPTION_MAX_FILTER_BOOST_DB,
-        PRESCRIPTION_MAX_TOTAL_BOOST_DB,
-    )
-    from jasper.active_speaker.linearization_fit import PER_FILTER_BOOST_CAP_DB
-
-    assert DRIVER_MAX_FILTER_BOOST_DB == 12.0
-    assert DRIVER_MAX_COMPOSED_BOOST_DB == 12.0
-    # The per-filter ceiling IS the emitter's rail, in lockstep with both owners
-    # of that number, so a document at the ceiling survives emission.
-    assert DRIVER_MAX_FILTER_BOOST_DB == camilla_yaml.MAX_LINEARIZATION_BOOST_DB
-    assert DRIVER_MAX_FILTER_BOOST_DB == PER_FILTER_BOOST_CAP_DB
-    # ...and the blend class did NOT move with it.
-    assert PRESCRIPTION_MAX_FILTER_BOOST_DB == 3.0
-    assert PRESCRIPTION_MAX_TOTAL_BOOST_DB == 4.0
-    assert DRIVER_MAX_FILTER_BOOST_DB > PRESCRIPTION_MAX_FILTER_BOOST_DB
-    assert DRIVER_MAX_COMPOSED_BOOST_DB > PRESCRIPTION_MAX_TOTAL_BOOST_DB
 
 
-def test_the_max_spl_spend_bound_is_derived_from_the_charge_formula():
-    """It is a CONSEQUENCE of ``headroom_charge_db``, not a number chosen here.
-
-    ``charge(peak) = peak + HEADROOM_MARGIN_DB`` above the epsilon, and the
-    composed cap bounds the peak — so a margin that moved must move this too,
-    which is why it is imported rather than restated.
-
-    **Re-proved at 13.0 dB for R8's widened caps.** Each step of the derivation
-    the constant's own comment states gets an assertion here, so the published
-    number cannot drift from the arithmetic that produced it.
-    """
-    from jasper.active_speaker.branch_chain import (
-        HEADROOM_MARGIN_DB, headroom_charge_db,
-    )
-
-    # Step 1: the charge formula is one addition, and nothing else.
-    assert HEADROOM_MARGIN_DB == 1.0
-    assert headroom_charge_db(7.5) == 7.5 + HEADROOM_MARGIN_DB
-    # Step 2: the composed cap bounds an accepted document's peak.
-    assert DRIVER_MAX_COMPOSED_BOOST_DB == 12.0
-    # Steps 1+2 compose to the published bound, and it lands at 13.0.
-    assert MAX_SPL_SPEND_BOUND_DB == DRIVER_MAX_COMPOSED_BOOST_DB + HEADROOM_MARGIN_DB
-    assert MAX_SPL_SPEND_BOUND_DB == 13.0
-    assert headroom_charge_db(DRIVER_MAX_COMPOSED_BOOST_DB) == MAX_SPL_SPEND_BOUND_DB
 
 
 def test_the_span_clause_is_what_makes_the_bound_sound():
@@ -2646,7 +2525,7 @@ def test_the_span_clause_is_what_makes_the_bound_sound():
 def test_the_bound_is_attained_by_one_filter_at_the_per_filter_rail():
     """13.0 dB is a tight maximum, not a ceiling nothing reaches.
 
-    One filter at ``DRIVER_MAX_FILTER_BOOST_DB``, at any Q, composes to exactly
+    One filter at ``BOOST_HEADROOM_DB``, at any Q, composes to exactly
     the composed cap and charges exactly the bound. This is what R8 means by the
     worst-case max-SPL spend moving 5 -> 13 dB, and it is only expressible
     because R8 set the two caps equal.
@@ -2656,14 +2535,14 @@ def test_the_bound_is_attained_by_one_filter_at_the_per_filter_rail():
 
     for q in (0.5, 3.0, 8.0):
         one = [{"type": "Peaking", "freq": 6245.0, "q": q,
-                "gain": DRIVER_MAX_FILTER_BOOST_DB}]
+                "gain": BOOST_HEADROOM_DB}]
         grid = dp._composed_grid(one, 1600.0, 20000.0)
         peak = float(np.max(20.0 * np.log10(
             np.maximum(np.abs(np.asarray(chain_response(one, grid))), 1e-12)
         )))
-        assert peak == pytest.approx(DRIVER_MAX_COMPOSED_BOOST_DB, abs=1e-9)
+        assert peak == pytest.approx(BOOST_HEADROOM_DB, abs=1e-9)
         assert headroom_charge_db(peak) == pytest.approx(
-            MAX_SPL_SPEND_BOUND_DB, abs=1e-9
+            SPL_SPEND_DB, abs=1e-9
         )
 
 
@@ -2671,7 +2550,7 @@ def test_no_admissible_cascade_charges_more_than_the_published_bound():
     """The safety claim itself, swept rather than argued.
 
     The four-step derivation says an admitted document cannot be charged past
-    ``MAX_SPL_SPEND_BOUND_DB``. This walks random filter sets over the gate's
+    ``SPL_SPEND_DB``. This walks random filter sets over the gate's
     OWN rails — 1-4 Peaking filters, gains 0.5 to the per-filter ceiling, Q
     across the whole envelope, centres anywhere in a tweeter's band — keeps the
     ones ``_check_composed`` would admit, and charges each through
@@ -2694,7 +2573,7 @@ def test_no_admissible_cascade_charges_more_than_the_published_bound():
                 "freq": float(np.exp(rng.uniform(np.log(lo), np.log(hi)))),
                 "q": float(rng.uniform(0.5, dp.DRIVER_MAX_BOOST_Q)),
                 "gain": float(rng.uniform(
-                    dp.DRIVER_MIN_BOOST_DB, DRIVER_MAX_FILTER_BOOST_DB
+                    dp.DRIVER_MIN_BOOST_DB, BOOST_HEADROOM_DB
                 )),
             }
             for _i in range(int(rng.integers(1, 5)))
@@ -2703,14 +2582,14 @@ def test_no_admissible_cascade_charges_more_than_the_published_bound():
         peak = float(np.max(20.0 * np.log10(
             np.maximum(np.abs(np.asarray(chain_response(filters, grid))), 1e-12)
         )))
-        if peak > DRIVER_MAX_COMPOSED_BOOST_DB + dp._COMPOSED_BOOST_EVAL_TOL_DB:
+        if peak > BOOST_HEADROOM_DB + dp._COMPOSED_BOOST_EVAL_TOL_DB:
             continue  # the gate refuses it, so it is not this bound's problem
         admitted += 1
         worst = max(worst, headroom_charge_db(peak))
 
     assert admitted == 1538, "the seed moved; re-derive the comment's numbers"
     assert worst == pytest.approx(12.999377, abs=1e-5)
-    assert worst <= MAX_SPL_SPEND_BOUND_DB
+    assert worst <= SPL_SPEND_DB
 
 
 def test_the_composed_tolerance_absorbs_only_the_evaluators_own_noise():
@@ -2736,7 +2615,7 @@ def test_the_composed_tolerance_absorbs_only_the_evaluators_own_noise():
     # ...and is orders below the 4-decimal precision every charge is published
     # at, so the 13.0 dB bound is unmoved at every digit anyone reads.
     assert dp._COMPOSED_BOOST_EVAL_TOL_DB < 0.5e-4
-    assert round(MAX_SPL_SPEND_BOUND_DB + dp._COMPOSED_BOOST_EVAL_TOL_DB, 4) == 13.0
+    assert round(SPL_SPEND_DB + dp._COMPOSED_BOOST_EVAL_TOL_DB, 4) == 13.0
 
 
 def test_the_boost_floor_is_the_cut_floor_because_it_is_the_same_argument():
@@ -2954,7 +2833,7 @@ def test_an_admitted_boost_is_still_charged_and_re_proved_at_the_graph(tmp_path)
     # is aimed at. Those two bounds were the same number until R8 widened the
     # ceiling to 12.0, so this asserts the one that actually binds.
     assert prescription.filters[0]["gain"] == TWEETER_DIP_DEPTH_DB
-    assert TWEETER_DIP_DEPTH_DB < DRIVER_MAX_FILTER_BOOST_DB
+    assert TWEETER_DIP_DEPTH_DB < BOOST_HEADROOM_DB
 
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
     emitted = emit_active_speaker_baseline_config(
@@ -2971,7 +2850,7 @@ def test_an_admitted_boost_is_still_charged_and_re_proved_at_the_graph(tmp_path)
     assert _headroom_gain_db(flat) == 0.0
     assert _headroom_gain_db(emitted) == pytest.approx(-3.9699, abs=1e-3)
     # And what it may cost is still the published bound, not the open door.
-    assert -_headroom_gain_db(emitted) < MAX_SPL_SPEND_BOUND_DB
+    assert -_headroom_gain_db(emitted) < SPL_SPEND_DB
 
     # The re-proof reads the emitted graph and nothing else.
     graph = classify_camilla_graph(
@@ -3635,17 +3514,17 @@ def test_a_shelf_pays_the_same_caps_as_a_bell(tmp_path):
              "q": 2.0}
 
     at_the_rail = _gate(
-        packet, _document([dict(shelf, gain=DRIVER_MAX_FILTER_BOOST_DB)], packet),
+        packet, _document([dict(shelf, gain=BOOST_HEADROOM_DB)], packet),
     )
     assert at_the_rail.composed_boost_db == pytest.approx(
-        DRIVER_MAX_COMPOSED_BOOST_DB, abs=1e-6
+        BOOST_HEADROOM_DB, abs=1e-6
     )
 
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document(
-            [dict(shelf, gain=DRIVER_MAX_FILTER_BOOST_DB + 0.01)], packet,
+            [dict(shelf, gain=BOOST_HEADROOM_DB + 0.01)], packet,
         ))
-    assert excinfo.value.reason == dp.FILTER_BOOST_TOO_HIGH
+    assert excinfo.value.reason == dp.COMPOSED_BOOST_EXCEEDED
 
     # The cut arm has no ceiling to pay (ADR-0207): the same shelf cutting
     # past the retired 12 dB rail is admitted.
@@ -3685,26 +3564,26 @@ def test_a_shelf_pair_whose_corners_do_not_overlap_composes_to_the_rail(
 
     The number matters as much as the verdict. It composes AT 12.0, not under
     it, so this pair is admitted and charged the full
-    :data:`MAX_SPL_SPEND_BOUND_DB` — the same worst case one Peaking at the rail
+    :data:`SPL_SPEND_DB` — the same worst case one Peaking at the rail
     already attains. This ORDERING reaches the designed maximum without moving
     it; the reversed one below is what the cap is actually for.
     """
     packet = _speaker(tmp_path, classification=_boostable())
-    pair = _shelf_pair(lead_hz, taper_hz, DRIVER_MAX_FILTER_BOOST_DB)
+    pair = _shelf_pair(lead_hz, taper_hz, BOOST_HEADROOM_DB)
 
     prescription = _gate(packet, _document(pair, packet))
 
     assert prescription.composed_boost_db == pytest.approx(
-        DRIVER_MAX_COMPOSED_BOOST_DB, abs=1e-6
+        BOOST_HEADROOM_DB, abs=1e-6
     )
-    assert prescription.composed_boost_db <= DRIVER_MAX_COMPOSED_BOOST_DB + 1e-9
+    assert prescription.composed_boost_db <= BOOST_HEADROOM_DB + 1e-9
     # One dB past the rail on either shelf and the per-filter cap takes it
     # first, so the pair can never be authored deeper than this.
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document(
-            [dict(pair[0], gain=DRIVER_MAX_FILTER_BOOST_DB + 1.0), pair[1]], packet,
+            [dict(pair[0], gain=BOOST_HEADROOM_DB + 1.0), pair[1]], packet,
         ))
-    assert excinfo.value.reason == dp.FILTER_BOOST_TOO_HIGH
+    assert excinfo.value.reason == dp.COMPOSED_BOOST_EXCEEDED
 
 
 @pytest.mark.parametrize(("lead_hz", "taper_hz", "composed_db"), [
@@ -3732,7 +3611,7 @@ def test_a_shelf_pair_whose_corners_cross_is_refused_by_the_composed_cap(
     argument, which is why it catches the case the argument misses.
     """
     packet = _speaker(tmp_path, classification=_boostable())
-    pair = _shelf_pair(lead_hz, taper_hz, DRIVER_MAX_FILTER_BOOST_DB)
+    pair = _shelf_pair(lead_hz, taper_hz, BOOST_HEADROOM_DB)
 
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document(pair, packet))
@@ -3741,7 +3620,7 @@ def test_a_shelf_pair_whose_corners_cross_is_refused_by_the_composed_cap(
     assert excinfo.value.evidence["composed_boost_db"] == pytest.approx(
         composed_db, abs=0.001
     )
-    assert composed_db > DRIVER_MAX_COMPOSED_BOOST_DB
+    assert composed_db > BOOST_HEADROOM_DB
 
 
 def test_a_negative_gain_shelf_never_puts_the_branch_above_unity(tmp_path):
@@ -3783,7 +3662,7 @@ def test_a_displaced_incumbent_is_disclosed_and_never_refused(tmp_path):
 
     prescription = _gate(packet, _document([_cut(gain=-0.5)], packet))
 
-    assert prescription.displaced_boost_db > DRIVER_MAX_COMPOSED_BOOST_DB - 2.0
+    assert prescription.displaced_boost_db > BOOST_HEADROOM_DB - 2.0
     assert prescription.prescription_class == "cut"
 
 
@@ -3796,3 +3675,59 @@ def test_without_an_incumbent_record_the_displacement_is_unknown_not_zero(tmp_pa
     assert prescription.displaced_filters is None
     assert prescription.displaced_boost_db is None
     assert prescription.displaced_boost_role is None
+
+
+@pytest.mark.parametrize("volume,caps,spl,expected,binding", [
+    (-41.09, {"woofer": -8.0, "tweeter": -33.2}, None, (33.08, 17.40), ("driver_cap", "driver_cap")),
+    (-21.09, {"woofer": -8.0, "tweeter": -33.2}, None, (13.08, 0.0), ("driver_cap", "driver_cap")),
+    (-41.09, {}, None, (35.09, 44.61), ("digital_ceiling", "digital_ceiling")),
+    (-41.09, {"woofer": -8.0, "tweeter": -33.2}, 5.0, (5.0, 5.0), ("spl_stop", "spl_stop")),
+])
+def test_boost_headroom_derivation(volume, caps, spl, expected, binding):
+    bounds = boost_headroom_by_role(session_volume_db=volume, caps_dbfs=caps,
+                                   branch_context={"woofer": ((), 0.0), "tweeter": ((), -9.52)},
+                                   spl_headroom_db=spl)
+    for index, role in enumerate(("woofer", "tweeter")):
+        row = bounds[role]
+        assert row["headroom_db"] == pytest.approx(expected[index])
+        assert row["branch_level_dbfs"] == pytest.approx(volume + (0.0 if index == 0 else -9.52))
+        assert row["cap_dbfs"] == caps.get(role)
+        assert row["digital_ceiling_dbfs"] == -6.0
+        assert row["spl_headroom_db"] == spl
+        assert row["binding"] == binding[index]
+        assert row["max_spl_spend_bound_db"] == pytest.approx(expected[index] + HEADROOM_MARGIN_DB if expected[index] else 0.0)
+
+
+@pytest.mark.parametrize("cap,spl,binding", [(-33.2, None, "driver_cap"), (None, None, "digital_ceiling"), (None, 17.4, "spl_stop")])
+@pytest.mark.parametrize("offset,accepted", [(-0.1, True), (0.1, False)])
+def test_composed_boost_uses_physical_headroom(packet, cap, spl, binding, offset, accepted):
+    headroom = boost_headroom_by_role(session_volume_db=-41.09,
+                                    caps_dbfs={"tweeter": cap} if cap is not None else {},
+                                    branch_context={"tweeter": ((), -9.52)}, spl_headroom_db=spl)
+    bound = headroom["tweeter"]["headroom_db"]
+    document = _document([_boost(gain=(bound + offset) / 2)] * 2, packet)
+    if accepted:
+        result = _gate(packet, document, {**HEADROOM, **headroom})
+        assert result.composed_boost_db == pytest.approx(bound + offset)
+        assert result.to_dict()["max_spl_spend_bound_db"] == pytest.approx(bound + HEADROOM_MARGIN_DB)
+    else:
+        with pytest.raises(BlendPrescriptionRefused) as exc:
+            _gate(packet, document, {**HEADROOM, **headroom})
+        assert exc.value.reason == dp.COMPOSED_BOOST_EXCEEDED
+        assert exc.value.evidence["binding"] == binding
+        assert exc.value.evidence["max_composed_boost_db"] == pytest.approx(bound)
+
+
+def test_a_total_cascade_can_offset_a_filter_above_headroom(packet):
+    document = _document([_boost(gain=20.0), _boost(gain=-10.0)], packet)
+    assert _gate(packet, document).composed_boost_db == pytest.approx(10.0)
+
+
+def test_a_louder_trim_pin_reduces_boost_headroom(packet):
+    document = _document([_boost(gain=4.0)], packet)
+    document["pinned_trim_db"] = {"tweeter": 0.0}
+    with pytest.raises(BlendPrescriptionRefused) as exc:
+        _gate(packet, document)
+    assert exc.value.reason == dp.COMPOSED_BOOST_EXCEEDED
+    assert exc.value.evidence["binding"] == "driver_cap"
+    assert exc.value.evidence["max_composed_boost_db"] == pytest.approx(2.48)

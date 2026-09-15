@@ -742,14 +742,14 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
 
     Every chain here is one the OLD composed gate would have ADMITTED — the
     population that is actually on hardware — at the FIT ENGINE's own rails
-    (``PER_FILTER_BOOST_CAP_DB``, Q <= 8, <= 8 filters in the shipped tweeter
+    (``12.0``, Q <= 8, <= 8 filters in the shipped tweeter
     band), because the fit emits to hardware too. Its per-filter rail was four
     times the prescription class's until ruling R8 (2026-08-22) moved that class
     onto the same 12.0 dB rail; the rails are EQUAL now, and this corpus is
     drawn at them either way.
 
     **R8 re-drew this corpus into a different one, not a bigger one.** The
-    admission filter below is ``DRIVER_MAX_COMPOSED_BOOST_DB``, which R8 moved
+    admission filter below is ``12.0``, which R8 moved
     4.0 -> 12.0, so the population went 230 -> 900 accepted at this seed — but
     only **8** of the 230 pre-R8 chains appear in the 900, and 222 are gone. The
     cap is not a filter over a fixed sample: it ``continue``s BEFORE the
@@ -810,10 +810,8 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
     proof over the whole space.
     """
     from jasper.active_speaker.crossover_v2.driver_prescription import (
-        DRIVER_MAX_COMPOSED_BOOST_DB,
         DRIVER_MAX_FILTERS_PER_ROLE,
     )
-    from jasper.active_speaker.linearization_fit import PER_FILTER_BOOST_CAP_DB
 
     band = (1600.0, 20_000.0)
     rng = np.random.default_rng(2758)
@@ -827,14 +825,14 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
                 float(np.exp(rng.uniform(np.log(band[0]), np.log(band[1])))),
                 float(rng.uniform(0.5, 8.0)),
                 float(rng.uniform(
-                    -PER_FILTER_BOOST_CAP_DB, PER_FILTER_BOOST_CAP_DB
+                    -12.0, 12.0
                 )),
             )
             for _ in range(int(rng.integers(1, DRIVER_MAX_FILTERS_PER_ROLE + 1)))
         ]
         if not any(f["gain"] > 0.0 for f in filters):
             continue
-        if _old_gate_composed_db(filters, band) > DRIVER_MAX_COMPOSED_BOOST_DB:
+        if _old_gate_composed_db(filters, band) > 12.0:
             continue  # the old gate refused it, so it is not on any hardware
         accepted += 1
         trim_db = float(rng.uniform(-6.0, 0.0))
@@ -931,7 +929,7 @@ def test_a_rails_legal_pair_near_nyquist_still_under_reads_past_the_margin():
     """The residual #2850 band, pinned rather than left to the tripwire alone.
 
     A mixed-sign Peaking pair at the fit engine's own rails (``_PEAKING_Q_MAX``
-    8.0, ``PER_FILTER_BOOST_CAP_DB`` 12.0) sitting near Nyquist still under-reads
+    8.0, ``12.0`` 12.0) sitting near Nyquist still under-reads
     on the grid by more than ``HEADROOM_MARGIN_DB`` -- the linear tail's 14-22 kHz
     fix does not reach ~23 kHz. If a future grid change closes this too, delete
     this pin AND ``test_the_classifier_cannot_vouch_into_the_under_read_band``

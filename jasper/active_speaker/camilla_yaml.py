@@ -1083,27 +1083,6 @@ def _validated_driver_corrections(
 # the two stay numerically equal.
 MAX_LINEARIZATION_FILTERS_PER_DRIVER = 8
 
-# Per-filter linearization BOOST ceiling — the lockstep duplicate of
-# ``linearization_fit.PER_FILTER_BOOST_CAP_DB``, held here for the reason the
-# filter count above is.
-#
-# It bounds ONE emitted biquad, not the correction. Total boost is uncapped and
-# is made safe by ``linearization_headroom_db`` below, which folds the worst
-# branch chain's realized peak into ``active_baseline_headroom`` so the boosted
-# band lands at or under unity however deep the correction is.
-MAX_LINEARIZATION_BOOST_DB = 12.0
-
-# Ceiling on the program-domain attenuation ``active_baseline_headroom`` may
-# carry, dB. NOT a cap on the correction — a refusal.
-#
-# The absorption mechanism turns every dB of uncapped boost into a dB of
-# pre-split attenuation, so left unbounded eight filters at the per-filter cap
-# would charge 96 dB and emit a graph that is, to a household, simply mute with
-# nothing naming why. 40 dB is the same bound
-# ``emit_active_speaker_baseline_config`` validates ``baseline_headroom_db``
-# against, and far past any correction the fit's realization gates can produce.
-MAX_PROGRAM_HEADROOM_DB = 40.0
-
 _LINEARIZATION_BIQUAD_TYPES = frozenset({"Peaking", "Highshelf", "Lowshelf"})
 
 # Public alias: a reader outside this module needs the same set to decide
@@ -1179,7 +1158,7 @@ def _validated_biquad_entry(
     *,
     label: str,
     allowed_types: frozenset[str],
-    max_gain_db: float,
+    max_gain_db: float | None,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
 ) -> dict[str, Any]:
     """Re-validate ONE persisted biquad record, or raise.
@@ -1219,7 +1198,7 @@ def _validated_biquad_entry(
         )
     if q <= 0:
         raise ActiveSpeakerConfigError(f"{label} q must be positive")
-    if gain > max_gain_db:
+    if max_gain_db is not None and gain > max_gain_db:
         raise ActiveSpeakerConfigError(
             f"{label} gain must not exceed {max_gain_db} dB"
         )
@@ -1230,15 +1209,7 @@ def _validated_linearization(
     preset: ActiveSpeakerPreset,
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Normalize + independently re-validate the per-driver linearization list.
-
-    An independent fail-closed gate, not a trust-the-caller pass-through: an
-    unknown role is dropped, a known role's list is validated field-by-field and
-    RAISES on the first violation. The per-filter boost cap it re-proves is a
-    REALIZATION-FIDELITY bound, not a hearing/SPL clamp — past it the emitted
-    filter stops being a faithful realization of the requested shape, and the
-    SPL budget is charged by headroom accounting instead.
-    """
+    """Validate per-driver filter shape; the composed chain owns headroom."""
 
     safe: dict[str, list[dict[str, Any]]] = {}
     for role, filters in (linearization or {}).items():
@@ -1259,7 +1230,7 @@ def _validated_linearization(
                 entry,
                 label=f"linearization {role}",
                 allowed_types=_LINEARIZATION_BIQUAD_TYPES,
-                max_gain_db=MAX_LINEARIZATION_BOOST_DB,
+                max_gain_db=None,
             ))
         _validate_linearization_shelf_structure(role, role_filters)
         if role_filters:
@@ -1791,13 +1762,6 @@ def _emit_baseline_filter_definitions(
         )
         + trim_db
     )
-    if total_headroom_db > MAX_PROGRAM_HEADROOM_DB:
-        raise ActiveSpeakerConfigError(
-            f"program-domain headroom {total_headroom_db:.3f} dB exceeds "
-            f"{MAX_PROGRAM_HEADROOM_DB} dB — refusing to emit a graph this "
-            "attenuated (check the linearization boost and room-correction "
-            "boost totals)"
-        )
     headroom_gain_db = 0.0 if total_headroom_db == 0 else -total_headroom_db
     lines.extend(
         emit_gain_filter(

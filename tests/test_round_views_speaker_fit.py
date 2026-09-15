@@ -252,7 +252,8 @@ def test_design_cloud_bounds_each_roles_fit(speaker_round, capsys, changes, expe
     assert all(f["freq"] >= (floor or 0) for f in boosts)
     if design_boost:
         assert fit["composed_boost_cap_db"] == 3.0
-        peak, _ = _check_composed(tuple({"role": role, **f} for f in fit["filters"]), {role: (1600, 20000)})
+        peak, _ = _check_composed(tuple({"role": role, **f} for f in fit["filters"]), {role: (1600, 20000)},
+                                  boost_headroom={role: {"headroom_db": 3.0, "binding": "fit_budget"}})
         assert peak <= 3.0 + 1e-9
         assert all(f["gain"] <= 3.0 for f in boosts)
         assert proposal["cloud"]["band_spread"]

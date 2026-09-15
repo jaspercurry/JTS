@@ -41,7 +41,6 @@ from jasper.active_speaker.linearization_fit import (
     LIFT_SUPPRESSION_REASONS,
     MAX_FILTERS_PER_DRIVER,
     MAX_NORMALIZATION_SPEND_DB,
-    PER_FILTER_BOOST_CAP_DB,
     PER_FILTER_CUT_CAP_DB,
     _CUT_REDUCTION_EPS_DB,
     _ENVELOPE_NONZERO_EPS_DB,
@@ -1813,20 +1812,18 @@ def test_a_boost_vocabulary_fills_a_dip_a_cut_only_fit_cannot():
     assert boosted.residual_max_db < cut_only.residual_max_db - 3.0
 
 
-def test_total_boost_is_uncapped_but_one_filter_is_not():
-    """The owner's ruling, precisely: arbitrary caps on the CORRECTION go, the
-    per-filter realization bound stays. A gain past that bound raises rather
-    than being silently clamped — same posture as the cut side."""
+def test_fit_respects_the_supplied_headroom():
+
     import jasper.active_speaker.linearization_fit as fit_mod
     from jasper.audio_measurement.peq import PEQ
 
     resp, envelope = _dip_response()
-    vocab = FitVocabulary(allow_boost=True)
+    vocab = FitVocabulary(allow_boost=True, per_filter_boost_cap_db=20.0)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
             fit_mod, "design_peq",
             lambda *a, **k: [
-                PEQ(freq=1500.0, q=2.0, gain=PER_FILTER_BOOST_CAP_DB + 1.0)
+                PEQ(freq=1500.0, q=2.0, gain=21.0)
             ],
         )
         with pytest.raises(RuntimeError, match="per-filter boost cap"):
@@ -3982,7 +3979,7 @@ def test_declared_fit_budget_bounds_the_realized_fit(field, value, shape):
     fit = fit_driver_linearization(response, envelope, vocabulary=vocabulary.with_budget({field: value}))
     assert ("max_filters" in fit.budget_binding) == (len(fit.filters) == fit.vocabulary.max_filters)
     assert ("max_gain_db" in fit.budget_binding) == any(
-        abs(f.gain) >= fit.vocabulary.max_gain_db - 1e-6 for f in fit.filters
+        -f.gain >= fit.vocabulary.max_gain_db - 1e-6 for f in fit.filters
     )
     if field not in {"max_filters", "max_gain_db"}:
         assert field in fit.budget_binding
@@ -3996,7 +3993,7 @@ def test_declared_fit_budget_bounds_the_realized_fit(field, value, shape):
     elif field == "max_gain_db":
         assert max(abs(f.gain) for f in before.filters) > value
         assert fit.filters or shape == "horn"
-        assert all(abs(f.gain) <= value for f in fit.filters)
+        assert all(-f.gain <= value for f in fit.filters)
     else:
         assert fit.correction_giveback_db <= value < before.correction_giveback_db
         assert all(abs(f.gain) >= _MIN_FILTER_GAIN_DB for f in fit.filters)

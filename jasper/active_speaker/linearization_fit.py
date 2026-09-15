@@ -76,11 +76,6 @@ SHELF_SLOPE_THRESHOLD_DB_PER_OCT: float = 3.0
 # policy".
 MAX_FILTERS_PER_DRIVER: int = 8
 
-# Per-filter BOOST ceiling, dB — deliberately equal to PER_FILTER_CUT_CAP_DB.
-# A REALIZATION bound, not a policy cap (survives the owner's "arbitrary gain
-# caps GO" ruling): TOTAL boost stays unbounded because a cascade composes.
-PER_FILTER_BOOST_CAP_DB: float = 12.0
-
 # A bin below this allowed-depth is "the envelope permits nothing here"
 # (float noise or a taper's asymptotic tail).
 _ENVELOPE_NONZERO_EPS_DB: float = 0.05
@@ -214,7 +209,7 @@ class FitVocabulary:
 
     allow_boost: bool = False
     #: One biquad's boost ceiling, dB.
-    per_filter_boost_cap_db: float = PER_FILTER_BOOST_CAP_DB
+    per_filter_boost_cap_db: float | None = None
     #: Bands no LIFT filter may be AIMED at (#1967) — enforced per filter on
     #: the emitted response, never as a whole-cascade veto. Cuts untouched.
     #: Empty means "nothing contradicted", not "no evidence available".
@@ -389,7 +384,7 @@ class LinearizationFilter:
     biquad_type: str  # "Peaking" | "Highshelf" | "Lowshelf"
     freq: float
     q: float
-    # dB; may be positive, up to PER_FILTER_BOOST_CAP_DB.
+    # dB.
     gain: float
 
     def to_dict(self) -> dict[str, float | str]:
@@ -1621,7 +1616,8 @@ def _lift_stage(
         f_low=f_low, f_high=f_high,
         max_filters=slots_free,
         max_cut_db=0.0,
-        max_boost_db=min(residue_peak_db, vocabulary.per_filter_boost_cap_db, vocabulary.max_gain_db),
+        max_boost_db=min(residue_peak_db, vocabulary.per_filter_boost_cap_db)
+        if vocabulary.per_filter_boost_cap_db is not None else residue_peak_db,
         cuts_only=False,
         flatness_target_db=_PEAKING_FLATNESS_TARGET_DB,
         # Explicit: bounds the #1967 drop radius. See _PEAKING_Q_MIN.
@@ -1723,7 +1719,9 @@ def _lift_stage(
         while boosts:
             try:
                 _check_composed(tuple({"role": envelope.role, **f.to_dict()} for f in boosts),
-                                {envelope.role: (f_low, f_high)}, max_boost_db=vocabulary.composed_boost_cap_db)
+                                {envelope.role: (f_low, f_high)}, boost_headroom={envelope.role: {
+                                    "headroom_db": vocabulary.composed_boost_cap_db, "binding": "fit_budget",
+                                }})
                 break
             except BlendPrescriptionRefused as exc:
                 if exc.reason != COMPOSED_BOOST_EXCEEDED:
@@ -1986,7 +1984,7 @@ def fit_driver_linearization(
     filters = list(lift.filters)
     if len(filters) == vocabulary.max_filters:
         binding.add("max_filters")
-    if any(abs(f.gain) >= vocabulary.max_gain_db - 1e-6 for f in filters):
+    if any(-f.gain >= vocabulary.max_gain_db - 1e-6 for f in filters):
         binding.add("max_gain_db")
 
     # Restore the emitter's taper-last contract: ``_lift_stage`` appends
@@ -2032,8 +2030,8 @@ def fit_driver_linearization(
     # each stage's own clamp.
     if any(f.gain < -vocabulary.max_gain_db - 1e-6 for f in filters):
         raise RuntimeError("linearization fit exceeded the per-filter cut cap")
-    if any(
-        f.gain > min(vocabulary.per_filter_boost_cap_db, vocabulary.max_gain_db) + 1e-6 for f in filters
+    if vocabulary.per_filter_boost_cap_db is not None and any(
+        f.gain > vocabulary.per_filter_boost_cap_db + 1e-6 for f in filters
     ):
         raise RuntimeError("linearization fit exceeded the per-filter boost cap")
 
