@@ -13,10 +13,13 @@ It does not direct an active measurement.
 `packet.json` holds the numbers. `index.md` names them and the commands.
 `frequency.png` shows the response. Read `result` and `reason`, then `applied`
 identity and `layers`, then the program evidence. Speaker evidence is in
-`fits`; room and bass evidence is in the files named by
-`artifacts.room_views` and `artifacts.bass_views`. A joined bass ladder adds
-`bass_table`. Read `alignment` per pair, gate lines per role, then retakes and
-their `fault`. A missing section is missing evidence.
+`fits`; room and bass evidence is in `packet["room"]` and `packet["bass"]`,
+one entry per set. Artifact paths remain as fallbacks for failed views. A
+joined bass ladder adds `bass_table`. Read `alignment` per pair. After the
+timing block, read each fit's `verdict` and `crossover_band_spread`,
+each filter's `position_variance`, and the per-pose null ceiling in
+`verdicts`. Then read role gate lines and retake `fault` values. A missing
+section is missing evidence.
 
 Numbers below the trusted floor carry `below_trusted_floor` beside their
 `value`. They are not speaker evidence. Use `jasper-round-views` for a question
@@ -32,13 +35,26 @@ and `cloud.band_spread`. `envelope_fitted` means the evidence supported the fit.
 `envelope_limited_by_mic_tier` and `envelope_limited_by_class_prior` name
 instrument or driver-class limits. A limited bin is not a defect to correct harder.
 
-Good means residual at or below the repeat spread, and cross-pose
-`band_spread[].sigma_db` near 1 dB or less over the crossover octave. The latter
-is a working cue, extending the stability heuristic in
-`docs/research/2026-07-29-attribution/02-dissertation-measure-diagnose-prescribe.md`.
-It is not a universal pass threshold. Repeat spread and pose spread answer
-different questions. No fit filter should rest on its `budget.max_gain_db`
-rail. Measure the composed graph, then stop when it answers the question.
+Read three verdicts. A fit's `verdict` gives `repeat_spread_db`,
+`residual_within_repeat_spread` and `reason`. A residual at or under the repeat
+spread means further correction is not a result. A null `repeat_spread_db`
+with `reason=repeat_floor_not_banked` means bank a repeat floor first.
+`crossover_band_spread` gives `center_hz`, `sigma_db` and `max_sigma_db`, or
+is null with `crossover_band_spread_reason`. Each proposed filter's
+`position_variance` gives
+`cv_percent`, `frequencies_hz`, `positions_deep`, `positions_total` and
+`classification`. On a three-pose round, `insufficient_positions` prints the
+CV but cannot separate the 3% and 8% cues; six deep poses can. Each `verdicts`
+pose gives `branch_gap_db`, `louder_role`, `null_ceiling_db`, `band_hz` and
+`capture_graph`. Its ceiling is the deepest reverse null the branch gap permits
+under that graph, so a shallower measured null is not a timing error.
+
+`crossover_band_spread[].sigma_db` near 1 dB or less over the crossover octave
+is a working cue, not a universal pass threshold (basis:
+`docs/research/2026-07-29-attribution/02-dissertation-measure-diagnose-prescribe.md`).
+Repeat spread and pose spread answer different questions. No fit filter should
+rest on its `budget.max_gain_db` rail. Measure the composed graph, then stop
+when it answers the question.
 
 Read each pair's `objective`: `summed_fit_committed` identifies a committed
 summed fit. Inspect `committed.delay_us`, `committed.polarity`,
@@ -93,12 +109,12 @@ positions (`ROOM_BOOST_MIN_POSITIONS`, `ROOM_BOOST_PRESENCE_MIN_FRACTION` in
 `docs/room-correction-regime-plan.md`, D5). The views still answer with the
 available count and spread. State what that evidence supports.
 
-Read the room view's `median`, `ceiling.hz` and `ceiling.provenance`, then
-`persistence`, `limits.cut_floor_db`, `limits.boost_cap_db` and `admit_boost`.
-Read `incumbent` and `incumbent_reason` before comparing candidates. These are
-fields in the room view, not top-level packet fields. The packet links the
-view and carries the contract in `limits`. Do not infer an incumbent from a
-file name when the view says the set is ambiguous.
+Read each `packet["room"]` entry's `set_id`, `median`, `ceiling.hz` and
+`ceiling.provenance`, then `persistence`, `limits.cut_floor_db`,
+`limits.boost_cap_db` and `admit_boost`. Read `incumbent` and
+`incumbent_reason` before comparison. Top-level `limits` carries the contract.
+Do not infer an incumbent from a file name when the entry says the set is
+ambiguous.
 
 Room correction ends at the printed ceiling. Above it, the speaker owns the
 curve. The ceiling follows the applied tune's trusted floor, with its source
@@ -136,10 +152,11 @@ The current ladder joins runs at distinct fixed levels. Keep the same pose
 and compatible capture conditions across them. Let the engine run the ladder;
 interpret its completed evidence together.
 
-Open the files in `artifacts.bass_views`. Each view has `takes` with `bands`,
-`estimated_snr_db` within each band, and `fundamental_qualified` masks.
-Unknown harmonic coverage is not low distortion. Read `diagnostics` before
-comparing curves. Requested gain alone does not establish actual DSP drive.
+Read each `packet["bass"]` entry's `set_id` and `takes`. Each take has
+`diagnostics`, `bands` with `estimated_snr_db` and
+`fundamental_qualified`, plus the full `fundamental_qualified` mask. Unknown
+harmonic coverage is not low distortion. Read `diagnostics` before comparing
+curves. Requested gain alone does not establish actual DSP drive.
 
 When present, `bass_table.tables[].levels[]` records `level_key`, `outcome`,
 `selected_is_measured`, `within_tolerance_on_qualified_bins` and `fit`.
