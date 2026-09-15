@@ -34,6 +34,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
 )
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.active_speaker.seat_level_reference import seat_level_reference_volume_db
+from jasper.active_speaker.rear_calibration import compile_rear_stage, diagnostic_seed, read_rear_calibration
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
@@ -44,6 +45,27 @@ PROG = "jasper-crossover-prescriber"
 AUTHORITY_TIER = "advisory (judge, contract and status read; compose banks a candidate)"
 REASON_UNREADABLE = "evidence_unreadable"
 REASON_UNWRITABLE = "output_unwritable"
+
+def _cmd_rear_calibration(args: argparse.Namespace) -> int:
+    try:
+        if args.seed:
+            if args.sample_rate is None:
+                raise ValueError("--sample-rate is required; use the installed DSP rate")
+            return answered(read_rear_calibration(diagnostic_seed(args.sample_rate)))
+        document = read_rear_calibration(json.loads(read_source_bytes(args.document)), sample_rate=args.sample_rate)
+        answer = {"ok": True, "calibration": document, "adopted": False,
+                  "requires_electrical_fitting": document["case"] == "acoustic_targets"}
+        routing = (args.channels, args.front, args.rear, args.tweeter)
+        if any(value is not None for value in routing):
+            if any(value is None for value in routing):
+                raise ValueError("stage compilation requires --channels, --front, --rear and --tweeter")
+            answer["stage"] = compile_rear_stage(document, channel_count=args.channels,
+                front_channel=args.front, rear_channel=args.rear, tweeter_channel=args.tweeter,
+                sample_rate=args.sample_rate or document["sample_rate_hz"])
+        return answered(answer)
+    except (OSError, ValueError, TypeError) as exc:
+        return failed(EXIT_REFUSED, "rear_calibration_invalid", str(exc))
+
 
 def _document_evidence(args: argparse.Namespace, document: Mapping[str, Any]) -> PrescriptionEvidence:
     inputs = round_inputs(Path(args.round)) if args.round else None
@@ -572,6 +594,14 @@ def _cmd_status(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=PROG, description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    rear = sub.add_parser("rear-calibration", help="inspect acoustic targets or compile an editable rear DSP stage; never applies")
+    source = rear.add_mutually_exclusive_group(required=True)
+    source.add_argument("--document", metavar="FILE")
+    source.add_argument("--seed", action="store_true", help="print an explicitly untuned, muted starting document")
+    rear.add_argument("--sample-rate", type=int, metavar="HZ")
+    for name in ("channels", "front", "rear", "tweeter"):
+        rear.add_argument("--" + name, type=int, help="explicit physical channel count / zero-based assignment for stage compilation")
+    rear.set_defaults(func=_cmd_rear_calibration)
     contract = sub.add_parser("contract", help="schemas and bounds evaluated on a round")
     contract.add_argument("--round", metavar="DIR")
     add_set_argument(contract)
