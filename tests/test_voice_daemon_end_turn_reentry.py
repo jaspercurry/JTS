@@ -392,9 +392,10 @@ async def test_closure_completes_without_waiting_for_the_provider_release():
 
     teardown = asyncio.create_task(wl._turns.end("conversation_ended"))
     try:
-        await wait_until(lambda: wl._turns.state is State.WAKE)
+        await asyncio.wait_for(teardown, timeout=10.0)
         assert order == ["chirp_False", "duck_restore"]
         assert teardown.done()
+        assert wl._turns.state is State.WAKE
     finally:
         finish_release.set()
         await asyncio.gather(teardown, return_exceptions=True)
