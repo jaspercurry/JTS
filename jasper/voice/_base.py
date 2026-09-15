@@ -671,6 +671,14 @@ class BaseLiveConnection:
     def last_failure_detail(self) -> str | None:
         return self._outage.detail
 
+    def _log_server_error(self, *, code: str | None, error_type: str | None, message: str | None) -> None:
+        log_event(
+            self._logger, "provider.server_error", provider=self.PROVIDER_NAME,
+            code=code, error_type=error_type,
+            message=failure_detail(RuntimeError(message), literals=self._secret_literals()) if message else "",
+            level=logging.WARNING,
+        )
+
     def _secret_literals(self) -> tuple[str, ...]:
         """Secret values this connection holds, for redaction fallback.
 
