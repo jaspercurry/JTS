@@ -129,9 +129,12 @@ def packet_index(
         parallax = json.dumps(pair["parallax_us"])
         if pair["driver_spacing_source"] == "unknown":
             parallax += " (driver spacing undeclared)"
-        lines.append(f"timing: {'/'.join(pair['roles'])} · {pair['take_id']} · {pair['objective']}; "
+        lines.append(f"timing: {'/'.join(pair['roles'])} · {pair['take_id']} · {_pose_token(pair['pose'])} · {pair['objective']}; "
                      f"delay {pair['committed']['delay_us']} us; polarity {pair['committed']['polarity']}; margin {pair['summed_fit_margin']}; "
-                     f"interval {json.dumps(pair['delay_interval_us'])} us; parallax {parallax}")
+                     f"interval {json.dumps(pair['delay_interval_us'])} us; parallax {parallax}; "
+                     + "; ".join(f"{role} SNR {snr['verdict']} "
+                                 + json.dumps(pair.get("levels", {}).get(role, {}), separators=(",", ":"))
+                                 for role, snr in pair["snr"].items()))
     lines += list(dict.fromkeys(f"retakes: {take['take_id']} {fault}"
                                for group in packet["sets"] for take in group["takes"]
                                if not take["selected"] and (fault := take["fault"])))

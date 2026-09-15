@@ -6,6 +6,7 @@
 from typing import Any, Mapping, Sequence
 
 from .applied_identity import applied_identity
+from .run_manifest import capture_alignment_levels
 from .baseline_profile import profile_corrections_provenance, profile_driver_corrections
 from .crossover_v2.conductor_context import driver_spacing_source
 from .crossover_v2.round_inputs import SetTakes, capture_identity, latest_measure_takes, take_order
@@ -35,6 +36,7 @@ def alignment_evidence(
         "driver_spacing_source": driver_spacing_source(sources.get("draft") or {}),
         "snr": {role: {key: evidence.get(f"snr.{role}.alignment.{key}") for key in ("verdict", "shortfall_db")}
                 for role in roles},
+        "levels": take.get("alignment") or capture_alignment_levels(evidence, {}),
         "applied": {**(applied_identity(profile) or {}),
                     "corrections": {role: {key: corrections.get(role, {}).get(key) for key in ("delay_ms", "inverted")}
                                     for role in roles},
@@ -47,8 +49,9 @@ def round_alignment(
     manifest: Mapping[str, Any], sources: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     pairs = latest_measure_takes(
-        ((group, take) for group in manifest.get("sets", ()) for take in SetTakes.from_row(group).on_axis),
+        ((group, take) for group in manifest.get("sets", ()) for take in SetTakes.from_row(group).takes),
         key=lambda group, take: (*capture_identity(group["capture_basis"], set_id=group["set_id"]),
+                                tuple(take["pose"].get(key) for key in ("kind", "deg", "elevation_deg", "distance_m")),
                                 tuple(sorted((take.get("analysis") or {})["trim_db"])))
         if (take.get("analysis") or {}).get("trim_db") else None,
     )
@@ -62,5 +65,6 @@ def round_alignment(
 
 
 def commissioning_alignment(rows: Sequence[Mapping[str, Any]], candidate_id: str) -> Mapping[str, Any] | None:
-    return max((row for row in rows if row["base"] or row["candidate_id"] in (None, candidate_id)),
+    return max((row for row in rows if (row["base"] or row["candidate_id"] in (None, candidate_id))
+                and row["pose"].get("deg") == 0 and row["pose"].get("elevation_deg") == 0),
                key=take_order, default=None)

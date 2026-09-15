@@ -21,7 +21,7 @@ from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStor
 from jasper.active_speaker.plan_run import RunDoor
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 
-from jasper.active_speaker.crossover_v2.capture_dispatch import assess
+from jasper.active_speaker.crossover_v2.capture_dispatch import assess, alignment_retry_inputs
 from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY, PHASE_CLOUD_VERIFY, PHASE_ENTRY_BASELINE
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, TakeVerdict, PhaseVerdict
 from jasper.active_speaker.seat_level_reference import check_target_capture_dbfs as anchored_check_target
@@ -114,6 +114,9 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                            capabilities=verdict.capabilities, next=verdict.next or (
                                "accept" if verdict.accepted else "fix_and_retake"),
                            next_gain_db=verdict.next_gain_db, charge=verdict.charge)
+        if kwargs.get("phase") == PHASE_MEASURE:
+            kwargs.update(alignment_retry_inputs(conductor._excitation, conductor._measure_gain_ceiling_db,
+                                                 getattr(answer, "capture_integrity", None)))
         assessed = assess(analysis, prior_verdict=prior, **kwargs)
         if verdict is None and phase == PHASE_MEASURE and assessed.next in {"retake_louder", "retake_quieter"}:
             conductor._rearm_measure_after_transient(assessed)

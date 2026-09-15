@@ -5,11 +5,19 @@
 import ast
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import capture_dispatch as cd, refusal_copy
+from jasper.active_speaker.alignment_evidence import round_alignment
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+from jasper.active_speaker.crossover_v2.planning import analysis_json
+from jasper.active_speaker.run_manifest import RunManifest
+from jasper.audio_measurement.wired_capture import WiredCaptureAnswer
+from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
 from jasper.audio_measurement import snr_policy
 from jasper.audio_measurement.frame_ledger import FrameLedger
 from jasper.audio_measurement.program_analysis.model import (
@@ -114,6 +122,91 @@ def test_louder_retake_on_a_quieter_role_keeps_the_program_peak():
     assert verdict.next == "retake_louder"
     assert verdict.gain_targets == {"tweeter": -22.0}
     assert verdict.next_gain_db == -20.0
+
+
+@pytest.mark.parametrize("cap_headroom,spl_headroom,magnitude,raise_db,capped_by,residual", [
+    (12, 20, "ok", 12, None, None),
+    (4, 20, "ok", 4, "driver_cap", 2),
+    (12, 3, "ok", 3, "spl_stop", 3),
+    (12, 0, "ok", 0, "spl_stop", 6),
+    (0, 20, "ok", 0, "driver_cap", 6),
+    (12, None, "ok", 0, "spl_stop", 6),
+    (12, float("nan"), "ok", 0, "spl_stop", 6),
+    (12, 20, "insufficient", 0, None, None),
+])
+@pytest.mark.parametrize("stop", [80, 85])
+def test_alignment_only_retry_uses_driver_and_spl_headroom(cap_headroom, spl_headroom, magnitude, raise_db, capped_by, residual, stop):
+    band = snr_policy.band_snr_verdicts(
+        decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -41}],
+        noise_bands=[{"band_id": "mid", "level_dbfs": -70}], noise_floor_dbfs_scalar=None,
+        relevant_hz=(1000, 4000), model=DRIVER,
+    )
+    response = replace(_driver_response("woofer", 8.0),
+                       snr={"alignment": band, "worst_relevant": {"verdict": magnitude}})
+    verdict = cd.assess(_analysis(driver_responses=(response,)), phase="measure", gain_db=GAINS,
+        gain_ceiling_db=GAINS, alignment_ceiling_db={"woofer": -30 + cap_headroom},
+        spl={"max_window_db_spl": stop - 3 - spl_headroom if spl_headroom is not None else None, "ceiling_db_spl": stop})
+    assert verdict.ok and verdict.fault is None
+    assert verdict.next == ("retake_louder" if raise_db else "accept")
+    assert verdict.next_gain_db == (-30 + raise_db if raise_db else None)
+    assert verdict.gain_targets == ({"woofer": -30 + raise_db} if raise_db else {})
+    assert verdict.capabilities["delay_estimate"] is False
+    assert verdict.evidence["alignment.woofer.alignment_level_db"] == -30
+    assert verdict.evidence["alignment.woofer.alignment_snr_shortfall_db"] == 6
+    assert verdict.evidence.get("alignment.woofer.alignment_level_capped_by") == capped_by
+    assert verdict.evidence.get("alignment.woofer.alignment_snr_residual_shortfall_db") == residual
+
+
+@pytest.mark.parametrize("cap,peak,raise_db,capped_by,after", [
+    (-18, 62, 12, None, 0), (-26, 62, 4, "driver_cap", 2), (-18, 79, 3, "spl_stop", 3),
+])
+async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, peak, raise_db, capped_by, after):
+    def measure(program):
+        band = snr_policy.band_snr_verdicts(
+            decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000],
+                                                        "level_dbfs": -41 + program.segment("sweep_w").gain_db + 30}],
+            noise_bands=[{"band_id": "mid", "level_dbfs": -70}], noise_floor_dbfs_scalar=None,
+            relevant_hz=(1000, 4000), model=DRIVER,
+        )
+        return replace(_measure_analysis(program),
+                       driver_responses=(replace(_driver_response("woofer", 8), snr={"alignment": band}),))
+
+    conductor = _conductor(FakeSeams(measure=measure), index_phase_map={1: "measure"}, gain_plan_db=GAINS,
+                           measure_gain_ceiling_db=GAINS, driver_caps_dbfs={"woofer": cap, "tweeter": -30})
+    manifest = RunManifest("alignment", SimpleNamespace(bank=AsyncMock(return_value="manifest")))
+    records = SimpleNamespace(enrich=None, after_bank=None)
+    analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
+    spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure")
+    rung = None
+    for attempt in (1, 2):
+        manifest.begin({"index": 1, "candidate_id": "candidate", "pose": {"kind": "bearing", "deg": 20, "elevation_deg": 0}},
+                       attempt=attempt, pose_index=0)
+        program = compose_plan_program(conductor, spec, rung)
+        gain = program.segment("sweep_w").gain_db
+        assert gain == pytest.approx(-30 + (raise_db if attempt == 2 else 0))
+        assert all(seg.effective_peak_dbfs <= conductor._excitation.caps_dbfs[seg.role]
+                   for seg in program.stimulus_segments())
+        spl = {"max_window_db_spl": peak + gain + 30, "ceiling_db_spl": 85}
+        capture = WiredCaptureAnswer(wav=b"", program=program.to_dict(), capture_integrity={"spl": spl})
+        record = {"take_id": f"take-{attempt}", "index": 1, "attempt": attempt,
+                  "phase": "measure", "program": program.to_dict()}
+        records.enrich(capture, record)
+        records.after_bank(record, record["take_id"])
+        analysis = analyze(record, record["take_id"])
+        verdict = assessor(analysis, phase="measure", program=program)
+        assert verdict.next == ("retake_louder" if attempt == 1 else "accept")
+        assert verdict.ok and verdict.fault is None
+        rung = verdict.next_gain_db
+        await manifest.append({**record, "analysis": analysis_json(analysis)}, record["take_id"], verdict,
+                              complete=True, started_s=attempt, ended_s=attempt + 1, level_observation={})
+    pair, = round_alignment(manifest.to_dict(), {})
+    level = pair["levels"]["woofer"]
+    assert level["alignment_level_db"] == -30 + raise_db
+    assert level["alignment_snr_shortfall_db"] == {"before": 6, "after": after}
+    assert level.get("alignment_level_capped_by") == capped_by
+    assert level.get("alignment_snr_residual_shortfall_db") == (after if capped_by else None)
+    assert pair["snr"]["woofer"]["verdict"] == ("ok" if after == 0 else "insufficient")
+    assert conductor._measure_gain_ceiling_db == GAINS
 
 
 @pytest.mark.parametrize("phase", PHASES)

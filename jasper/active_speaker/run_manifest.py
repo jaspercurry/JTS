@@ -26,6 +26,27 @@ TAKE_MEASURED = "measured"
 TAKE_INCOMPLETE = "incomplete"
 
 
+def capture_alignment_levels(
+    evidence: Mapping[str, Any], previous: Mapping[str, Any],
+) -> dict[str, Any]:
+    levels: dict[str, Any] = {}
+    for key, value in evidence.items():
+        if key.startswith("alignment."):
+            _, role, field = key.split(".", 2)
+            levels.setdefault(role, {})[field] = value
+    for role, level in levels.items():
+        shortfall = level.get("alignment_snr_shortfall_db")
+        prior = previous.get(role) or {}
+        level["alignment_snr_shortfall_db"] = {
+            "before": (prior.get("alignment_snr_shortfall_db") or {}).get("before", shortfall),
+            "after": shortfall,
+        }
+        if "alignment_level_capped_by" not in level and "alignment_level_capped_by" in prior:
+            level["alignment_level_capped_by"] = prior["alignment_level_capped_by"]
+            level["alignment_snr_residual_shortfall_db"] = shortfall
+    return levels
+
+
 def incumbent_fingerprints(profile: Mapping[str, Any] | None) -> dict[str, Any]:
     profile = profile or {}
     snapshot = profile.get("recomposition_snapshot") or {}
@@ -169,6 +190,10 @@ class RunManifest:
         roles = (set(curves) | {str(segment.get("role") or "summed") for segment in sweeps}) or {record.get("role", "summed")}
         take_id = str(record["take_id"])
         status = TAKE_MEASURED if complete and verdict.ok else TAKE_INCOMPLETE if not complete else "refused"
+        previous = max((take for take in self.takes if take["index"] == self._context["index"]
+                        and take["stimulus_ordinal"] == ordinal and take.get("alignment")),
+                       key=lambda take: take["attempt"], default={}).get("alignment", {})
+        alignment = capture_alignment_levels(verdict.evidence, previous)
         for role in sorted(roles):
             basis = capture_basis(record)
             # Pose is an observation axis, never a set boundary (brief §2.4).
@@ -193,7 +218,7 @@ class RunManifest:
                              ("level_db", "stimulus_dbfs", "loudness_volume_db", "program_id")},
                              "loudest_half_second_db_spl": level_observation.get("loudest_half_second_db_spl"),
                              "level_delta_db": level_observation.get("level_delta_db")},
-                   "analysis": record.get("analysis"), "curve": curve or None,
+                   "analysis": record.get("analysis"), "curve": curve or None, "alignment": alignment,
                    "quality": {"status": status,
                                "evidence": verdict.evidence, "capabilities": verdict.capabilities,
                                "usable_band_hz": band},
