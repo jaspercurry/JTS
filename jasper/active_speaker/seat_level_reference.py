@@ -11,11 +11,12 @@ import logging
 import math
 import os
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
 from jasper.audio_measurement.ramp import CEILING_MARGIN_DB, MAX_STEP_DB
+from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db, loudness_boost_db
 from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.log_event import log_event
@@ -41,12 +42,28 @@ class SeatLevelTargetError(ValueError):
     """The requested seat-SPL target is not a band this speaker may chase."""
 
 
-def validate_commissioning_spl(level_db_spl: float, *, ceiling_db_spl: float, ramped: bool) -> None:
-    if not math.isfinite(level_db_spl) or not math.isfinite(ceiling_db_spl):
-        raise SeatLevelTargetError("measurement SPL and commissioning ceiling must be finite")
-    bound = ceiling_db_spl - CEILING_MARGIN_DB - (MAX_STEP_DB if ramped else 0.0)
+def validate_commissioning_spl(level_db_spl: float, *, ceiling_db_spl: float, margin_db: float) -> None:
+    if not all(math.isfinite(value) for value in (level_db_spl, ceiling_db_spl, margin_db)) or margin_db < 0:
+        raise SeatLevelTargetError("measurement SPL, ceiling and nonnegative margin must be finite")
+    bound = ceiling_db_spl - margin_db
     if level_db_spl > bound:
         raise SeatLevelTargetError(f"measurement SPL {level_db_spl:g} exceeds the commissioning bound of {bound:g} dB SPL")
+
+
+def validate_ramp_target_spl(level_db_spl: float, *, ceiling_db_spl: float) -> None:
+    validate_commissioning_spl(level_db_spl, ceiling_db_spl=ceiling_db_spl,
+                               margin_db=MAX_STEP_DB + CEILING_MARGIN_DB)
+
+
+def rung_lift_bound_db(candidate: Mapping[str, Any], applied: Mapping[str, Any], fader_db: float) -> float:
+    def reserve(raw: Mapping[str, Any]) -> float:
+        if not raw:
+            return 0.0
+        descriptor = DynamicBassDescriptor(**raw)
+        boost = loudness_boost_db(fader_db, descriptor)
+        return dynamic_bass_gain_reserve_db(replace(descriptor, low_boost_db=boost)) if boost > 0 else 0.0
+
+    return max(0.0, reserve(candidate) - reserve(applied))
 
 
 @dataclass(frozen=True)
@@ -101,7 +118,7 @@ class SeatLevelTarget:
             raise SeatLevelTargetError("seat-SPL target and tolerance must be finite")
         if self.tolerance_db <= 0.0:
             raise SeatLevelTargetError("seat-SPL tolerance must be positive")
-        validate_commissioning_spl(self.high_db_spl, ceiling_db_spl=ceiling_db_spl, ramped=True)
+        validate_ramp_target_spl(self.high_db_spl, ceiling_db_spl=ceiling_db_spl)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -233,6 +250,12 @@ class ResolvedLevel:
     session_id: str = ""
     leveled_at: str = ""
     target_db_spl: float = DEFAULT_TARGET_DB_SPL
+
+    def fader_db_for(self, db_spl: float) -> float:
+        return self.reference_volume_db + (db_spl - self.anchor_db_spl)
+
+    def db_spl_at(self, fader_db: float) -> float:
+        return self.anchor_db_spl + (fader_db - self.reference_volume_db)
 
     def session(self) -> dict[str, Any]:
         return {"session_id": self.session_id, "gain_db": self.reference_volume_db,

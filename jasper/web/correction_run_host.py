@@ -167,8 +167,9 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
     if ladder is not None:
         ceiling_s *= len(ladder.admissible)
     sensitivity = resolved_household_sensitivity(device)
-    check_target = (anchored_check_target(sensitivity, level.resolved.anchor_db_spl + level.offset_db)
-                    if level.resolved is not None and sensitivity is not None else None)
+    predicted = level.predicted_db_spl
+    check_target = (anchored_check_target(sensitivity, predicted)
+                    if predicted is not None and sensitivity is not None else None)
     records = CapturedRecordStore(manifest, None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest,
                                           evidence=refs, verify_only=verify_only, provenance=provenance,

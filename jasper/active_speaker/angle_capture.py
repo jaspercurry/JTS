@@ -381,7 +381,7 @@ class LevelPolicy:
 
     @property
     def predicted_db_spl(self) -> float | None:
-        return self.resolved.anchor_db_spl + self.offset_db if self.resolved else None
+        return self.resolved.db_spl_at(self.level_db if self.level_db is not None else self.resolved.reference_volume_db) if self.resolved else None
 
     def to_dict(self) -> dict[str, Any]:
         return {"mode": self.mode, "level_db": self.level_db, **(asdict(self.resolved) if self.resolved is not None else {

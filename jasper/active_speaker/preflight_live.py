@@ -13,6 +13,8 @@ from jasper.audio_measurement.wired_capture import WiredCaptureError, require_wi
 
 from .angle_capture import BASE_CANDIDATE, AngleCaptureRequest, candidate_identity
 from . import candidate_bank
+from .baseline_profile import load_applied_baseline_profile_state
+from .candidate_parts import candidate_from_applied_profile
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.conductor_context import conductor_status, resolve_conductor_context
 from .crossover_v2.programs import SessionExcitation
@@ -37,10 +39,16 @@ def read_preflight_facts(
         except WiredCaptureError:
             pass
     stop = None
+    applied_bass_extension = None
     if context is not None:
         try:
             stop = commissioning_spl_ceiling_db(context.topology, preset=context.preset)
         except ValueError:
+            pass
+        try:
+            applied = candidate_from_applied_profile(context.topology, load_applied_baseline_profile_state() or {})
+            applied_bass_extension = applied.bass_extension
+        except (OSError, RuntimeError, ValueError, LookupError):
             pass
     candidates: dict[str, MeasuredCrossoverCandidate | PreflightIssue] = {}
     for name in dict.fromkeys(candidate_identity(stop.candidate_id) for stop in plan.stops):
@@ -67,4 +75,5 @@ def read_preflight_facts(
         mic_identified=bool(device is not None and device.model_key),
         anchor=anchor, summed_pilot_band_hz=pilot_band,
         commissioning_stop_db_spl=stop, mover=plan.mover, issues=tuple(issues),
+        applied_bass_extension=applied_bass_extension,
     )

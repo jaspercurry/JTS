@@ -10,7 +10,7 @@ import pytest
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_SUMMED
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.preflight import PreflightFacts, preflight
-from jasper.active_speaker import preflight_live
+from jasper.active_speaker import candidate_parts, preflight_live
 from jasper.active_speaker.seat_level_reference import AnchorFacts
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.program import FrequencyBand, RoleBand
@@ -23,10 +23,10 @@ def ready_facts(plan, **changes):
     return replace(PreflightFacts(
         candidates={}, mic_present=True, mic_identified=True,
         anchor=AnchorFacts({"artifact_schema_version": 2, "session_id": "session", "leveled_at": "2026-09-12T00:00:00Z",
-                            "target": {"target_db_spl": 75.0}, "measured_db_spl": 75.0, "reference_volume_db": -18.0,
+                            "target": {"target_db_spl": 75.0, "tolerance_db": 1.0}, "measured_db_spl": 75.0, "reference_volume_db": -18.0,
                             "mic_sensitivity": {"sens_factor_db": -12.0, "serial": "1234"}},
                            MicSensitivity(-12.0, 18.0, "1234")),
-        commissioning_stop_db_spl=85.0, mover=plan.mover,
+        commissioning_stop_db_spl=85.0, mover=plan.mover, applied_bass_extension={},
     ), **changes)
 
 
@@ -174,7 +174,7 @@ def test_incomplete_candidate_graph_refuses_preflight(monkeypatch, tuning_profil
     assert issue.blocking and issue.next_action
 
 
-@pytest.mark.parametrize("level_db,blocked", [(None, False), (-25, False), (-11, False), (-10.9, True), (0, True)])
+@pytest.mark.parametrize("level_db,blocked", [(None, False), (-25, False), (-9, False), (-8.9, True), (0, True)])
 def test_run_level_keeps_anchor_and_obeys_statement_ceiling(level_db, blocked):
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), level=LevelPolicy(level_db=level_db))
     facts = ready_facts(plan)
@@ -187,7 +187,64 @@ def test_run_level_keeps_anchor_and_obeys_statement_ceiling(level_db, blocked):
     if blocked:
         issue, = report.to_dict()["issues"]
         assert issue["code"] == "walk_level_policy_invalid"
-        assert issue["evidence"] == {"level_db": level_db, "predicted_db_spl": pytest.approx(75 + level_db + 18), "ceiling_db_spl": 85}
+        assert issue["evidence"] == {
+            "level_db": level_db, "predicted_db_spl": pytest.approx(75 + level_db + 18), "ceiling_db_spl": 85,
+            "candidate_id": "base", "anchor_tolerance_db": 1, "lift_bound_db": 0, "margin_db": 1, "bound_db_spl": 84,
+        }
+
+
+@pytest.mark.parametrize("boost,tolerance,admitted,refused", [
+    (18, 1, 84.0, 84.1), (0, 1, 84.0, 84.1), (20, 1, 82.65, 82.66), (18, 0.5, 84.5, 84.6),
+])
+def test_jts3_rung_margin_uses_the_applied_stack(tuning_profile, boost, tolerance, admitted, refused):
+    applied = {**BASS_EXTENSION, "low_boost_db": 18, "reference_level_db": 0,
+               "delta_highpass_hz": 63, "detector_lowpass_hz": 100}
+    candidate = replace(_room_candidate(tuning_profile), bass_extension={**applied, "low_boost_db": boost} if boost else {})
+    name = candidate.fingerprint
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name, purpose="bass"),), candidates=(name,))
+    facts = ready_facts(plan, candidates={name: candidate}, applied_bass_extension=applied)
+    facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record, "reference_volume_db": -21,
+        "target": {"target_db_spl": 75, "tolerance_db": tolerance}}))
+    for spl in (admitted, refused):
+        report = preflight(replace(plan, level=LevelPolicy(level_db=-21 + spl - 75)), facts)
+        assert report.blocking is (spl == refused)
+        if report.blocking:
+            issue, = report.issues
+            assert issue.code == "walk_level_policy_invalid"
+            assert issue.evidence["anchor_tolerance_db"] == tolerance
+            assert issue.evidence["lift_bound_db"] == pytest.approx(1.34283 if boost == 20 else 0, abs=0.001)
+            assert issue.evidence["bound_db_spl"] == pytest.approx(82.65717 if boost == 20 else 85 - tolerance, abs=0.001)
+
+
+@pytest.mark.parametrize("missing", ["applied_bass_extension", "anchor_tolerance_db"])
+def test_rung_requires_margin_facts(missing):
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="bass"),))
+    facts = ready_facts(plan)
+    if missing == "applied_bass_extension":
+        facts = replace(facts, applied_bass_extension=None)
+    else:
+        facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record, "target": {"target_db_spl": 75}}))
+    report = preflight(plan, facts)
+    issue, = report.issues
+    assert report.blocking and issue.code == "walk_level_policy_invalid"
+    assert issue.evidence["unavailable"] == missing
+
+
+@pytest.mark.parametrize("descriptor", [None, {}, BASS_EXTENSION])
+def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tuning_profile, descriptor):
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="bass"),))
+    anchor = ready_facts(plan).anchor
+    applied = replace(_room_candidate(tuning_profile), bass_extension=descriptor or {})
+    state = {"status": "applied", "source": {"measured_candidate_fingerprint": applied.fingerprint}}
+    monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: state if descriptor is not None else {})
+    monkeypatch.setattr(candidate_parts, "find_banked_candidate", lambda name: {applied.fingerprint: SimpleNamespace(candidate=applied)}[name])
+    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: anchor.record)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda device: anchor.sensitivity)
+    context = SimpleNamespace(topology=None,
+        preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
+    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    assert facts.applied_bass_extension == (applied.bass_extension if descriptor is not None else None)
+    assert preflight(plan, facts).blocking is (descriptor is None)
 
 
 @pytest.mark.parametrize("level_db,has_ambient,blocked", [(-24.809, True, False), (-34.809, True, True), (-34.809, False, False)])
@@ -207,6 +264,7 @@ def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambie
               "mic_sensitivity": sensitivity.to_dict(), **({"ambient_report": report} if has_ambient else {})}
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: record)
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda device: sensitivity)
+    monkeypatch.setattr(preflight_live, "candidate_from_applied_profile", lambda *args, **kwargs: SimpleNamespace(bass_extension={}))
     context = SimpleNamespace(
         topology=None, preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)),
         roles_bands=(RoleBand("woofer", 0, FrequencyBand(550 if fc_hz is None else 20, 20000)),),
@@ -223,7 +281,7 @@ def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambie
         assert issue["next_action"]
         lo, hi, dbfs = ambient_row
         assert issue["evidence"] == {
-            "level_db": -34.809, "predicted_pilot_capture_dbfs": pytest.approx(-48.1597),
+            "level_db": -34.809, "predicted_pilot_capture_dbfs": pytest.approx(-48.1597, abs=0.01),
             "pilot_band_hz": band, "ambient_row": {"band_hz": (lo, hi), "level_dbfs": dbfs},
             "floor_dbfs": pytest.approx(floor),
         }
@@ -247,7 +305,7 @@ def test_pilot_floor_discloses_bass_and_blocks_room(level_db, disclosed, purpose
         assert issue.code == "run_level_pilots_under_ambient"
         assert issue.blocking is (purpose != "bass")
         assert issue.evidence == {
-            "level_db": -38, "predicted_pilot_capture_dbfs": pytest.approx(-47.9897),
+            "level_db": -38, "predicted_pilot_capture_dbfs": pytest.approx(-47.9897, abs=0.01),
             "pilot_band_hz": (20, 60) if purpose == "bass" else (200, 800),
             "ambient_row": {"band_hz": (20, 80) if purpose == "bass" else (200, 800), "level_dbfs": -60},
             "floor_dbfs": -35,

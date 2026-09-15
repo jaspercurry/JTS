@@ -694,7 +694,7 @@ def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsy
 @pytest.mark.parametrize("program,requested,noise_dbfs,levels", [
     ("bass", None, -60, [-18, -23, -28, -33]), ("bass", None, -100, [-18, -23, -28, -33]),
     ("bass", None, -20, [-18, -23, -28, -33]),
-    ("room", "-10,-20", -100, [-20]), ("bass", "auto", None, []),
+    ("room", "-10,-20", -100, [-10, -20]), ("bass", "auto", None, []),
 ])
 def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, requested, noise_dbfs, levels):
     def facts(plan):
@@ -720,7 +720,7 @@ def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, requested
 @pytest.mark.parametrize("dry_run", [False, True])
 @pytest.mark.parametrize("spl,faders,predicted,refused", [
     ("65,75,82", [-31, -21, -14], [65, 75, 82], False),
-    ("84", [-12], [84], True),
+    ("84", [-12], [84], False), ("84.1", [-11.9], [84.1], True),
 ])
 def test_run_spl_resolves_banked_anchor(monkeypatch, capsys, dry_run, spl, faders, predicted, refused):
     def facts(plan):
@@ -734,7 +734,7 @@ def test_run_spl_resolves_banked_anchor(monkeypatch, capsys, dry_run, spl, fader
     assert code == (cli.EXIT_REFUSED if refused else cli.EXIT_OK)
     report = body if dry_run else body["detail"] if refused else body["schedule"]
     rows = [row["level"] for row in report["levels"]] if "levels" in report else [report["level"]]
-    assert [row["level_db"] for row in rows] == faders
+    assert [row["level_db"] for row in rows] == pytest.approx(faders)
     assert [row["predicted_db_spl"] for row in rows] == predicted
     if refused:
         issue, = report["issues"]
@@ -743,7 +743,20 @@ def test_run_spl_resolves_banked_anchor(monkeypatch, capsys, dry_run, spl, fader
         assert not opener.requests
     else:
         plan = AngleCaptureRequest.from_mapping(json.loads(opener.posts()[0].data)["plan"])
-        assert list(plan.levels) == faders
+        assert (list(plan.levels) if plan.levels else [plan.level.volume_db]) == faders
+
+
+@pytest.mark.parametrize("flag,values", [("--spl", "65,85,75"), ("--levels", "-28,-8,-18")])
+def test_partial_ladder_discloses_the_dropped_rung(preflight_ready, monkeypatch, capsys, flag, values):
+    opener = _opener(session=json.dumps({"capture": {"session_id": "run-1"}}))
+    code, body = _run(["run", "--program", "bass", f"{flag}={values}"], opener, monkeypatch, capsys)
+    assert code == 0
+    issue, = body["schedule"]["issues"]
+    assert issue["blocking"] is False and issue["code"] == "walk_level_policy_invalid"
+    assert issue["evidence"]["dropped"] is True
+    assert issue["evidence"]["predicted_db_spl"] == 85
+    plan = json.loads(opener.posts()[0].data)["plan"]
+    assert plan["levels"] == [-28, -18]
 
 
 def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, capsys):
