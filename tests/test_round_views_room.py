@@ -312,8 +312,11 @@ def test_room_without_an_incumbent_discloses_null_and_reason(room_round, capsys,
 
 
 @pytest.mark.parametrize("bases", [1, 2])
-def test_incumbent_room_requires_one_base(bases):
+@pytest.mark.parametrize("timing", [False, True])
+def test_incumbent_room_requires_one_base(bases, timing):
     groups = [{"set_id": f"base-{i}", "base": True, "capture_basis": {"candidate_id": "38395a08"}} for i in range(bases)]
+    if timing:
+        groups.append({"set_id": "timing", "base": True, "capture_basis": {"graph_scope": "timing"}})
     groups.append({"set_id": "trial", "base": False, "capture_basis": {"candidate_id": "trial"}})
     incumbent, reason = room_views.incumbent_room(
         {"source": {"measured_candidate_fingerprint": "another-fingerprint"}}, {"sets": groups}, set_id="trial")

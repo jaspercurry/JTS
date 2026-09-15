@@ -30,7 +30,7 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     read_position_cycle,
     takes_by_position,
 )
-from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME, round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME, RoundSetRefused, resolve_set, round_inputs
 from jasper.active_speaker.crossover_v2.round_views import load_banked_round
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_KEY, POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.feature_classifier import load_round_captures
@@ -382,6 +382,30 @@ def test_bookkeeping_unavailable_does_not_fail_the_bank(tmp_path, monkeypatch, v
     assert Path(banked.provenance["manifest"]).is_file()
 
 
+@pytest.mark.parametrize("real_set", [False, True])
+def test_bank_keeps_an_aggregate_view_beside_timing_evidence(tmp_path, real_set):
+    session, state = _live_session(tmp_path)
+    groups = [{"set_id": "timing", "capture_basis": {"graph_scope": "timing"}, "takes": []}]
+    if real_set:
+        groups.append({"set_id": "speaker", "capture_basis": {"graph_scope": "drivers"}, "takes": []})
+    write_manifest(session, program="speaker", groups=groups)
+    calls = []
+
+    def run(view, target, *, set_id=None, incumbent=None):
+        calls.append(set_id)
+        assert resolve_set(round_inputs(target), set_id).set_id == "speaker"
+        return {"view": view, "status": "written"}
+
+    banked = bank_round(session, campaign_root=tmp_path / "bank", state_path=state, view_runner=run if real_set else None)
+    assert calls == ([None] if real_set else [])
+    assert banked.provenance["views"] == [{"view": "inventory", **({"status": "written", "set_id": "speaker"} if real_set else
+        {"status": "unavailable", "reason": "view_runner_unavailable"})}]
+    if not real_set:
+        with pytest.raises(RoundSetRefused) as refused:
+            resolve_set(round_inputs(banked.path))
+        assert refused.value.reason == "round_set_unknown"
+
+
 @pytest.mark.parametrize("purpose,expected", [
     ("speaker", ("inventory",)),
     ("room", ("room", "room-grade", "frequency", "inventory")),
@@ -542,7 +566,7 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
 @pytest.mark.parametrize("contents", [None, "{"], ids=["missing", "corrupt"])
 def test_packet_skips_unreadable_written_room_artifact(tmp_path, contents):
     session, state = _live_session(tmp_path)
-    write_manifest(session, program="room")
+    manifest = write_manifest(session, program="room")
     artifact = tmp_path / "room.json"
     if contents is not None:
         artifact.write_text(contents)
@@ -557,7 +581,7 @@ def test_packet_skips_unreadable_written_room_artifact(tmp_path, contents):
                         view_runner=views, **_ssot(tmp_path, present=False))
     packet = json.loads((banked.path / "packet.json").read_text())
     assert packet["room"] == []
-    assert pointer in packet["artifacts"]["room_views"]
+    assert {**pointer, "set_id": manifest["sets"][0]["set_id"]} in packet["artifacts"]["room_views"]
 
 
 @pytest.mark.parametrize("level,slope", [(0, 0), (2, 3)])

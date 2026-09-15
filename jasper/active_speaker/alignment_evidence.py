@@ -54,7 +54,7 @@ def round_alignment(
         if (take.get("analysis") or {}).get("trim_db") else None,
     )
     rows = [{"candidate_id": group["capture_basis"].get("candidate_id"),
-             "graph_fingerprint": group["capture_basis"].get("graph_fingerprint"),
+             "graph_fingerprint": (take.get("analysis") or {}).get("timing_graph_fingerprint") or group["capture_basis"].get("graph_fingerprint"),
              "side": group["capture_basis"].get("side"), "take_id": take["take_id"], "round_id": manifest.get("round_id", manifest.get("run_id")),
              "pose": take["pose"], "record_id": take["artifacts"]["record_id"], "base": group.get("base", False),
              "timing": take.get("timing"), "attempt": take.get("attempt", 0),

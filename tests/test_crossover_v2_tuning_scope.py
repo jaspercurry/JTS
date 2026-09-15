@@ -25,6 +25,7 @@ from copy import deepcopy
 from dataclasses import replace
 from typing import Sequence
 
+import numpy as np
 import pytest
 
 pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
@@ -39,6 +40,10 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
     GRAPH_SCOPES,
     MeasureSpec,
 )
+from jasper.active_speaker.branch_chain import CrossoverSection, crossover_response_complex
+from jasper.active_speaker.camilla_yaml import driver_baseline_gain_name
+from jasper.active_speaker.crossover_v2.priors import configured_crossover_transfers
+from jasper.active_speaker.crossover_v2.summed_alignment import reference_from_graph
 from jasper.active_speaker.crossover_v2.tuning_scope import tuning_scope_fingerprint
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker import angle_capture as ac, candidate_parts, measurement_programs as mp
@@ -47,14 +52,14 @@ from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.measurement_emit import (
     MeasurementGraphProfile,
     MeasurementGraphRefused,
-    compile_tuning_graph,
+    compile_tuning_graph, measurement_bass_extension, timing_candidate,
 )
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
     MeasuredCrossoverCandidateError,
     compile_candidate_config,
-    candidate_room_peqs,
+    candidate_room_peqs, driver_corrections, effective_preset, prove_candidate_config,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.camilla_config_contract import FilterSpec
@@ -378,7 +383,7 @@ def test_candidate_compile_refuses_unrenderable_identity(tuning_profile, problem
 
 @pytest.mark.parametrize("scope", sorted(CANDIDATE_SCOPES))
 def test_candidate_scopes_require_a_named_candidate(scope):
-    assert set(GRAPH_SCOPES) == {"drivers", "candidate", "candidate_branches"}
+    assert set(GRAPH_SCOPES) == {"drivers", "candidate", "candidate_branches", "timing"}
     with pytest.raises(ValueError):
         MeasureSpec(kind="baseline", graph_scope=scope)
     assert MeasureSpec(kind="baseline", graph_scope=scope, candidate_id="fp-a").candidate_id == "fp-a"
@@ -434,7 +439,7 @@ def test_trial_plays_composed_layers_independent_of_the_applied_profile(tuning_p
     assert extract_room_peqs_from_config_text(text) == list(candidate_room_peqs(candidate))
 
 
-@pytest.mark.parametrize("scope", ["candidate", "candidate_branches"])
+@pytest.mark.parametrize("scope", sorted(CANDIDATE_SCOPES))
 def test_an_unprovable_composed_graph_refuses_before_play(tuning_profile, monkeypatch, scope):
     from jasper.active_speaker import measurement_emit
 
@@ -478,10 +483,8 @@ BASS_EXTENSION = {
 
 @pytest.mark.parametrize("scope", sorted(CANDIDATE_SCOPES))
 def test_peak_admission_uses_the_composed_bass_layer(tuning_profile, scope):
-    from jasper.active_speaker.measurement_emit import measurement_bass_extension
-
     candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION)
-    assert measurement_bass_extension(scope=scope, candidate=candidate) == candidate.bass_extension
+    assert measurement_bass_extension(scope=scope, candidate=candidate) == ({} if scope == "timing" else candidate.bass_extension)
 
 
 def test_program_base_is_banked_and_reopens_by_its_fingerprint(tuning_profile, tmp_path):
@@ -525,3 +528,58 @@ def test_banked_applied_candidate_does_not_read_the_retired_snapshot(tuning_prof
     record = {"status": "applied", "source": {"measured_candidate_fingerprint": candidate.fingerprint},
               "recomposition_snapshot": {"preset": "retired"}}
     assert candidate_from_applied_profile(tuning_profile.topology, record) == candidate
+
+
+@pytest.mark.parametrize("delay_us, polarity", [(0, "keep"), (22, "invert")])
+@pytest.mark.parametrize("output_trim_db", [0, 6])
+def test_timing_projection_keeps_only_declared_alignment_and_trims(tuning_profile, delay_us, polarity, output_trim_db):
+    candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION,
+                        alignment=MeasuredCrossoverAlignment(delay_us, "woofer", polarity))
+    before = candidate.to_dict()
+    projected = timing_candidate(candidate, output_trim_db=output_trim_db)
+    assert projected.to_dict() == {**before, "fingerprint": projected.fingerprint, "linearization": {}, "room_correction": {},
+                                  "blend_correction": [], "bass_extension": {},
+                                  "role_attenuations_db": {role: gain - output_trim_db for role, gain in candidate.role_attenuations_db.items()}}
+    assert projected.fingerprint != candidate.fingerprint
+    assert effective_preset(projected) == effective_preset(candidate)
+    assert candidate.to_dict() == before
+    assert measurement_bass_extension(scope="timing", candidate=candidate) == {}
+
+
+@pytest.mark.parametrize("scope", ["timing", "candidate"])
+def test_timing_graph_matches_its_model_and_passes_candidate_proof(tuning_profile, scope):
+    protection = {"woofer": (CrossoverSection(40, 4, True),), "tweeter": (CrossoverSection(1800, 4, True),)}
+    profile = replace(tuning_profile, protection_sections_by_role=protection)
+    candidate = replace(_room_candidate(profile), bass_extension=BASS_EXTENSION,
+        role_attenuations_db={"woofer": 0, "tweeter": -3},
+        linearization={"woofer": {"filters": [{"biquad_type": "Peaking", "freq": 60, "q": 3, "gain": 4}]}},
+        room_correction=_room_correction(sides={"mono": [{"freq": 120, "q": 2, "gain": 6}]},
+                                         basis={**_room_correction()["basis"], "admitted_boosts_hz": [120]},
+                                         boost_db_total=6, level_cost_db=6))
+    text = compile_tuning_graph(profile, candidate, scope=scope,
+                               preference_filters=build_sound_filters(SAVED), output_trim_db=6)
+    prove_candidate_config(candidate, text)
+    graph = yaml.safe_load(text)
+    assert graph["devices"]["volume_limit"] == 0.0
+    candidate_graph = yaml.safe_load(compile_tuning_graph(profile, candidate, output_trim_db=6))
+    attenuation = candidate_graph["filters"]["active_baseline_headroom"]["parameters"]["gain"]
+    assert attenuation == pytest.approx(-17, abs=.001)
+    for role, expected_db in (("woofer", -17), ("tweeter", -20)):
+        name = driver_baseline_gain_name(role)
+        total = graph["filters"][name]["parameters"]["gain"] + graph["filters"]["active_baseline_headroom"]["parameters"]["gain"]
+        assert total == pytest.approx(candidate_graph["filters"][name]["parameters"]["gain"] + attenuation)
+        assert total == pytest.approx(expected_db, abs=.001)
+    if scope == "candidate":
+        assert extract_room_peqs_from_config_text(text) == list(candidate_room_peqs(candidate))
+        return
+    assert graph["filters"]["active_baseline_headroom"]["parameters"]["gain"] == 0
+    hz = np.geomspace(1200, 5000, 100)
+    configured, signs = configured_crossover_transfers(effective_preset(candidate))
+    reference = reference_from_graph(hz, np.zeros_like(hz), graph,
+        output_channels=profile.role_channels, configured_response_by_role=configured,
+        configured_polarity_by_role=signs, band_hz=(1200, 5000))
+    assert reference is not None
+    for role, correction in driver_corrections(candidate).items():
+        played = configured[role](hz) * 10 ** ((correction["gain_db"] + attenuation) / 20) * crossover_response_complex(hz, protection.get(role, ()))
+        assert reference.response_by_role[role](hz) * configured[role](hz) == pytest.approx(played)
+    assert abs(crossover_response_complex(np.array([1800.]), protection["tweeter"])[0]) == pytest.approx(.5)

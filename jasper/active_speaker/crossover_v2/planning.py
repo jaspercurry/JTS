@@ -167,7 +167,7 @@ def analysis_json(
         "polarity": align.polarity if align else None,
         "alignment_objective": cand.alignment_objective if cand else None,
         **{key: getattr(cand, key, None) for key in (
-            "residual_rms_db", "margin_db", "repeat_spread_db", "repeat_spread_us", "repeat_count", "timing_verdict")},
+            "residual_rms_db", "margin_db", "repeat_spread_db", "repeat_spread_us", "repeat_count", "timing_verdict", "timing_graph_fingerprint")},
         "timing_saved": ({key: value for key, value in asdict(cand.timing_saved).items() if value is not None}
                          if cand and cand.timing_saved else None),
         "timing_verification": cand.timing_verification if cand else None,

@@ -123,7 +123,7 @@ _STUBS = {code: _stub(code, row) for code, row in _ROWS.items()}
 #: code rather than trust it. Derived from the table above, never re-listed.
 STUB_CODES = frozenset(_STUBS)
 GRAPH_SCOPE_DRIVERS = "drivers"
-CANDIDATE_SCOPES = frozenset({"candidate", "candidate_branches"})
+CANDIDATE_SCOPES = frozenset({"candidate", "candidate_branches", "timing"})
 GRAPH_SCOPES = (GRAPH_SCOPE_DRIVERS, *sorted(CANDIDATE_SCOPES))
 
 

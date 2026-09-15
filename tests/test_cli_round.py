@@ -32,7 +32,7 @@ from jasper.active_speaker.crossover_v2.prescription_document import judge_presc
 from jasper.active_speaker.design_draft import load_design_draft
 from jasper.web import correction_crossover_v2_apply as v2apply
 from jasper.active_speaker.crossover_v2.evidence_packet import CrossoverEvidencePacketError
-from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
 from jasper.active_speaker.measurement_programs import run_program
 from jasper.active_speaker.movers import MOVERS
 from jasper.cli import _run_request, round as cli
@@ -961,7 +961,8 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
             return {"view": view, "status": "unavailable"}
         inputs = round_inputs(target)
         document = json.loads((inputs.session_dir / EVIDENCE_ROOT / "artifacts/crossover_v2/run-1/run_manifest.json").read_text())
-        group = next(group for group in document["sets"] if set_id is None or group["set_id"] == set_id)
+        selected = resolve_set(inputs, set_id, manifest=document)
+        group = next(group for group in document["sets"] if group["set_id"] == selected.set_id)
         takes = []
         for entry in group["takes"]:
             take = deepcopy(bass_fit_pairs[0][0])
@@ -993,7 +994,9 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     assert {"sets", "series", "limits", "applied", "artifacts", "unavailable"} <= packet.keys()
     assert len(packet["artifacts"]["bass_views"]) == len(levels) * (2 if verb == "trial" else 1)
     assert len(packet["bass"]) == len(packet["artifacts"]["bass_views"])
-    assert {entry["set_id"] for entry in packet["bass"]} == {group["set_id"] for group in packet["sets"]}
+    timing_sets = {group["set_id"] for group in json.loads(Path(packet["artifacts"]["manifest"]).read_text())["sets"]
+                   if group["capture_basis"].get("graph_scope") == "timing"}
+    assert {entry["set_id"] for entry in packet["bass"]} == {group["set_id"] for group in packet["sets"]} - timing_sets
     for entry in packet["bass"]:
         assert entry == {**json.loads(Path(entry["out"]).read_text()), "set_id": entry["set_id"], "out": entry["out"]}
     assert {take["record"]["level_db"] for entry in packet["bass"] for take in entry["takes"]} == set(levels)

@@ -1190,6 +1190,12 @@ def test_the_shipped_programs_resolve_exactly_as_before(
     assert ac.walk_price(request) == price
 
 
+@pytest.mark.parametrize("repeats, ceiling_min", [(1, 32), (2, 36), (3, 40)])
+def test_walk_price_counts_every_entry_baseline_repeat(repeats, ceiling_min):
+    request = ac.request_for_program(mp.program("close", "spot"), repeats=repeats)
+    assert ac.walk_price(request)["ceiling_min"] == ceiling_min
+
+
 def test_the_seat_cube_banks_as_seven_distinct_ungated_seat_takes(
     tmp_path: Path,
 ) -> None:

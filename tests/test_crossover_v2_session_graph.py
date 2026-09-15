@@ -370,12 +370,12 @@ def test_scoped_graphs_have_distinct_cached_identities_and_one_entry_snapshot(tm
     graph = _graph(cam, tmp_path=tmp_path, emit_scoped=emit_scoped)
     with pytest.raises(SessionGraphError):
         graph.installed_graph_yaml()
-    for named in ("candidate", "candidate_branches"):
+    for named in ("candidate", "candidate_branches", "timing"):
         with pytest.raises(SessionGraphError):
             graph.select_scope(named, "")
     scopes = [
         ("drivers", ""), ("candidate", "base-speaker"), ("candidate", "base-room"),
-        ("candidate", "a"), ("candidate", "b"), ("candidate_branches", "a"),
+        ("candidate", "a"), ("candidate", "b"), ("candidate_branches", "a"), ("timing", "a"),
     ]
     fingerprints = {}
     for scope, candidate_id in scopes * 2:
@@ -398,7 +398,7 @@ def test_scoped_graphs_have_distinct_cached_identities_and_one_entry_snapshot(tm
         graph.installed_graph_yaml()
 
 
-@pytest.mark.parametrize("scope", ["candidate", "candidate_branches"])
+@pytest.mark.parametrize("scope", ["candidate", "candidate_branches", "timing"])
 @pytest.mark.parametrize("change", ["none", "path", "anchor", "live", "unmarked"])
 async def test_scoped_startup_recovery_matches_real_graph_and_retained_anchor(
     tmp_path, tuning_profile, scope, change, monkeypatch,

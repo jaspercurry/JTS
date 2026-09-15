@@ -19,7 +19,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple
 
 from jasper.json_fields import finite_float, parse_utc_iso
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_BASS, PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose
-from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from .journey import PHASE_ENTRY_BASELINE
 from jasper.active_speaker import bundles
@@ -416,7 +416,7 @@ def resolve_set(
     inputs: RoundInputs, set_id: str | None = None, *, manifest: Mapping[str, Any] | None = None,
 ) -> SetTakes:
     """Resolve the executor's set without rebuilding its identity (ADR-0299)."""
-    sets = read_run_manifest(inputs, manifest=manifest)["sets"]
+    sets = view_sets(read_run_manifest(inputs, manifest=manifest))
     if set_id is None and len(sets) > 1:
         raise RoundSetRefused("set_required", sets=[
             {"set_id": row["set_id"], "candidate_id": row["capture_basis"].get("candidate_id")}

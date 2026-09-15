@@ -418,6 +418,8 @@ class SummedAlignmentReference:
     band_hz: tuple[float, float]
     position_deg: float = 0.0
     vertical_deg: float = 0.0
+    repeat_responses: tuple["SummedAlignmentReference", ...] = ()
+    graph_fingerprint: str = ""
 
 
 @dataclass(frozen=True)
@@ -744,6 +746,7 @@ class CrossoverCandidate:
     timing_verdict: str = TIMING_ESTIMATE
     timing_saved: AppliedAlignment | None = None
     timing_verification: Mapping[str, float | None] | None = None
+    timing_graph_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.program import ExcitationProgram, KIND_SWEEP, KIND_SUMMED_SWEEP
+from .measure_spec import CANDIDATE_SCOPES
 
 
 def analysis_provenance(
@@ -37,7 +38,7 @@ def enrich_capture_record(record: Mapping[str, Any], *, layout: str | None) -> d
     provenance = record.get("provenance") or {}
     graph = provenance.get("graph") or {}
     candidate = graph.get("speaker_candidate_id") or (
-        record.get("candidate_id") if record.get("graph_scope") in {"candidate", "candidate_branches"} else None
+        record.get("candidate_id") if record.get("graph_scope") in CANDIDATE_SCOPES else None
     )
     return {
         **record,
