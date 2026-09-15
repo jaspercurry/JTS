@@ -1090,10 +1090,11 @@ def _active_speaker_startup_load_payload() -> dict[str, Any]:
     return payload
 
 
-def _active_speaker_tuning_handoff_payload() -> dict[str, Any]:
+def _active_speaker_tuning_handoff_payload(program_id: str = "speaker") -> dict[str, Any]:
     payload = build_tuning_handoff(
         commissioning_view=commissioning_coordinator.load_commissioning_view(),
         design_draft=design_draft_store.load_design_draft(),
+        program_id=program_id,
     )
     log_event(
         logger,

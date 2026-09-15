@@ -91,6 +91,7 @@ DOCS_TEST_FILES = (
     "tests/test_prepare_wake_livekit_smoke.py",
     "tests/test_prepare_wake_training_workdir.py",
     "tests/test_run_wake_training_phase0.py",
+    "tests/test_tuning_docs.py",
     "tests/test_tuning_tool_menu_generator.py",
     "tests/test_voice_eval_registry.py",
     "tests/test_wake_review.py",

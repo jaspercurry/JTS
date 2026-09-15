@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import sys
+import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -540,6 +541,18 @@ def _make_handler(
             json_route = _GET_JSON_ROUTES.get(path)
             if json_route is not None:
                 builder, event = json_route
+                if path == "/active-speaker/tuning-handoff":
+                    query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                    try:
+                        self._send_json(_active_speaker_tuning_handoff_payload(
+                            query.get("program", ["speaker"])[0]))
+                    except ValueError as e:
+                        self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+                    except Exception as e:  # noqa: BLE001
+                        send_route_failure(
+                            self._send_json, e, logger=logger, event=event,
+                        )
+                    return
                 try:
                     self._send_json(_json_route_payload(builder))
                 except Exception as e:  # noqa: BLE001

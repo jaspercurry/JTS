@@ -649,6 +649,13 @@ def test_commission_ramp_abort_http_contains_secondary_failures(
             {},
         ),
         (
+            "GET",
+            "/active-speaker/tuning-handoff",
+            "_active_speaker_tuning_handoff_payload",
+            "sound.active_speaker_tuning_handoff",
+            {},
+        ),
+        (
             "POST",
             "/active-speaker/channel-protection",
             "_active_speaker_channel_protection_save_payload",
@@ -8049,6 +8056,10 @@ def test_tuning_handoff_follows_the_pages_applied_record(monkeypatch, review_rea
     from jasper.active_speaker import tuning_handoff
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions",
+        lambda **_kwargs: [],
+    )
     payload = tuning_handoff.build_tuning_handoff(
         commissioning_view={"review": {"ready": review_ready, "may_apply": review_ready}, "applied_profile": {
             "exists": exists, "stands": stands, "candidate_fingerprint": "applied-fp",
@@ -8058,15 +8069,16 @@ def test_tuning_handoff_follows_the_pages_applied_record(monkeypatch, review_rea
     )
     assert payload["status"] == ("ready" if stands else "not_ready")
     assert payload["reason"] == (None if stands else "no_applied_baseline")
-    assert all(bool(entry["prompt"]) is stands for entry in payload["programs"])
+    assert bool(payload["prompt"]) is stands
     assert payload["binding"]["hostname"] == "jts7.local"
     assert payload["binding"]["design_draft_revision"] == 5
     assert payload["binding"]["declaration_url"] == "http://jts7.local/sound/speaker/"
 
 
 @pytest.mark.parametrize("program_id", ["speaker", "room", "bass"])
+@pytest.mark.parametrize("has_applied", [False, True])
 def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
-    monkeypatch, program_id,
+    monkeypatch, program_id, has_applied,
 ):
     """Hostname-derived, revision-stamped, and closed against credentials.
 
@@ -8080,12 +8092,20 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
     from jasper.identity.reader import DEFAULT_HOSTNAME
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions", lambda **_kwargs: [
+        Path("/var/lib/jasper/active_speaker/campaigns/round-7")])
+    applied = {
+        "exists": has_applied, "stands": has_applied,
+        "candidate_fingerprint": "applied-fp" if has_applied else None,
+        "record": "record-12" if has_applied else None,
+        "applied_at": "2026-09-13T12:00:00Z" if has_applied else None,
+    }
     payload = tuning_handoff.build_tuning_handoff(
-        commissioning_view={"applied_profile": {"exists": True, "stands": True}},
+        commissioning_view={"applied_profile": applied},
         design_draft={"revision": 5},
+        program_id=program_id,
     )
-    entry = next(entry for entry in payload["programs"] if entry["id"] == program_id)
-    prompt = entry["prompt"]
+    prompt = tuning_handoff.build_tuning_handoff_prompt(payload["binding"], program_id)
 
     assert set(payload["binding"]) == {
         "speaker_name",
@@ -8093,7 +8113,20 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
         "declaration_url",
         "crossover_url",
         "design_draft_revision",
+        "applied_candidate_fingerprint",
+        "applied_record",
+        "applied_at",
+        "latest_round_dir",
     }
+    document_positions = [prompt.index(entry["path"])
+                          for entry in tuning_handoff.reading_order()]
+    assert document_positions == sorted(document_positions)
+    assert max(document_positions) < prompt.index("This speaker:")
+    assert ("applied-fp" in prompt) is has_applied
+    assert ("record-12" in prompt) is has_applied
+    assert ("2026-09-13T12:00:00Z" in prompt) is has_applied
+    assert ("no baseline applied" in prompt) is not has_applied
+    assert "/var/lib/jasper/active_speaker/campaigns/round-7" in prompt
     assert "jts7.local" in prompt
     assert DEFAULT_HOSTNAME not in prompt
     assert str(payload["binding"]["design_draft_revision"]) in prompt
@@ -8102,27 +8135,44 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
     # them, and must keep naming ones that exist.
     assert tuning_handoff.ORIENTATION_COMMAND in prompt
     assert tuning_handoff.PROGRAM_DOOR_COMMAND in prompt
+    assert len(prompt.split()) < 250
 
 
 def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
     from jasper.active_speaker import tuning_handoff
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions", lambda **_kwargs: [
+        Path("/var/lib/jasper/active_speaker/campaigns/round-7")])
     monkeypatch.setattr(
         "jasper.active_speaker.commissioning_coordinator.load_commissioning_view",
-        lambda *a, **k: {"applied_profile": {"exists": True, "stands": True}},
+        lambda *a, **k: {"applied_profile": {
+            "exists": True, "stands": True, "candidate_fingerprint": "applied-fp",
+            "record": "record-12", "applied_at": "2026-09-13T12:00:00Z",
+        }},
     )
     monkeypatch.setattr(
         "jasper.active_speaker.design_draft.load_design_draft",
         lambda *a, **k: {"status": "ready_for_review", "revision": 2},
     )
     with sound_server(tmp_path) as base:
-        with urllib.request.urlopen(base + "/active-speaker/tuning-handoff") as resp:
+        with urllib.request.urlopen(base + "/active-speaker/tuning-handoff?program=room") as resp:
             assert resp.status == 200
             payload = json.loads(resp.read())
+        with urllib.request.urlopen(base + "/active-speaker/tuning-handoff") as resp:
+            default_payload = json.loads(resp.read())
+        with pytest.raises(urllib.error.HTTPError) as invalid:
+            urllib.request.urlopen(base + "/active-speaker/tuning-handoff?program=unknown")
 
     assert payload["status"] == "ready"
     assert payload["binding"]["design_draft_revision"] == 2
     assert [entry["id"] for entry in payload["programs"]] == ["speaker", "room", "bass"]
-    for entry in payload["programs"]:
-        assert entry["prompt"] == tuning_handoff.build_tuning_handoff_prompt(payload["binding"], entry["id"])
+    assert all("prompt" not in entry for entry in payload["programs"])
+    assert payload["program"] == "room"
+    assert payload["prompt"] == tuning_handoff.build_tuning_handoff_prompt(
+        payload["binding"], "room")
+    assert default_payload["program"] == "speaker"
+    assert default_payload["prompt"] == tuning_handoff.build_tuning_handoff_prompt(
+        default_payload["binding"], "speaker")
+    assert invalid.value.code == 400
+    assert set(json.loads(invalid.value.read())) == {"error"}

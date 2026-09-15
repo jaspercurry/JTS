@@ -35,6 +35,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.active_speaker.seat_level_reference import seat_level_reference_volume_db
 from jasper.active_speaker.state_paths import baseline_profile_state_path
+from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
 from jasper.identity.reader import CROSSOVER_PAGE_PATH, SPEAKER_SETUP_PAGE_PATH, read_identity, speaker_url
 from jasper.output_topology import load_output_topology_strict
@@ -484,55 +485,6 @@ def _next_commands(
 
 
 
-_READING_ORDER: tuple[tuple[str, str, str], ...] = (
-    ("entry and tool menu", "tuning-operator-runbook.md",
-     "short entry contract, tool discovery and optional examples"),
-    ("optional methodology", "tuning-methodology.md",
-     "measurement science and traps"),
-    ("optional doctrine", "measurement-loop-doctrine.md",
-     "roles and physical constraints"),
-)
-
-#: Where deploy/lib/install/python-runtime.sh's install_jasper() copies the
-#: three operator docs. Existence is checked rather than assumed.
-_INSTALLED_DOCS_DIR = Path("/opt/jasper/docs")
-#: The checkout's own docs/, anchored to this package rather than the CWD.
-#: Resolves to a nonexistent site-packages sibling under a venv install, which
-#: the existence check below treats as any other absence.
-_REPO_DOCS_DIR = Path(__file__).resolve().parents[2] / "docs"
-
-
-def _doc_path(filename: str) -> str:
-    """The first of (installed, checkout) that exists, else the bare repo name.
-
-    The last fallback is an identifier, not a location.
-    """
-    for candidate in (_INSTALLED_DOCS_DIR / filename, _REPO_DOCS_DIR / filename):
-        if candidate.exists():
-            return str(candidate)
-    return f"docs/{filename}"
-
-
-
-def _reading_order() -> list[dict[str, Any]]:
-    """Entry contract, then optional references, with each document's size."""
-    order: list[dict[str, Any]] = []
-    for label, filename, gives in _READING_ORDER:
-        path = _doc_path(filename)
-        try:
-            blob = Path(path).read_bytes()
-        except OSError:
-            size, lines = None, None
-        else:
-            size, lines = len(blob), blob.count(b"\n")
-        order.append({
-            "label": label, "path": path, "gives": gives,
-            "bytes": size, "lines": lines,
-        })
-    return order
-
-
-
 def status_document(
     packet: dict[str, Any] | None,
     packet_error: str,
@@ -580,7 +532,8 @@ def status_document(
         **sections,
         **context,
         "seat_level_reference_volume_db": seat_level_db,
-        "reading_order": _reading_order(),
+        "reading_order": [{key: value for key, value in entry.items() if key != "name"}
+                          for entry in reading_order()],
         "next": _next_commands(
             sections, packet_error=packet_error, seat_level_db=seat_level_db,
             session_dir=session_dir, evidence=evidence, state=state,

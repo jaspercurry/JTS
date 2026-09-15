@@ -773,7 +773,8 @@ function setupHarness(fetchHandler, options = {}) {
 function baseFetch(overrides = {}) {
   const active = activePayloads();
   return (path, options = {}) => {
-    if (overrides[path]) return overrides[path](path, options);
+    const override = overrides[path] || overrides[path.split("?")[0]];
+    if (override) return override(path, options);
     if (path === "./state") {
       return Promise.resolve(response({
         ...basePayload,
@@ -6192,12 +6193,15 @@ async function testTuningHandoffCardMintsAndGoesStale() {
       }))),
       "./active-speaker/tuning-handoff": (path) => {
         mints.push(path);
+        const selectedId = new URL(path, "http://jts.local").searchParams.get("program");
         return Promise.resolve(response({
           kind: "jts_tuning_handoff",
           status: "ready",
           reason: null,
           binding: { hostname: "jts3.local", design_draft_revision: mintRevision },
-          programs: programs.map(p => ({...p, prompt: "MINTED HANDOFF PROMPT " + p.id})),
+          programs,
+          program: selectedId,
+          prompt: "MINTED HANDOFF PROMPT " + selectedId,
         }));
       },
     }));

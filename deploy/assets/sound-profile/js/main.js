@@ -3818,14 +3818,13 @@ import {
     var field = el('tuning-handoff-prompt');
     if (!field) return;
     try {
-      var payload = await getJSON('./active-speaker/tuning-handoff');
+      var payload = await getJSON('./active-speaker/tuning-handoff?program=' + encodeURIComponent(programId));
       if (payload.status !== 'ready') {
         throw new Error('this speaker has no applied profile to hand over yet');
       }
-      var program = (payload.programs || []).find(function(item) { return item.id === programId; });
-      if (!program || !program.prompt) throw new Error('the selected tuning program is unavailable');
+      if (!payload.prompt) throw new Error('the selected tuning program is unavailable');
       tuningHandoff.programId = programId;
-      tuningHandoff.prompt = String(program.prompt);
+      tuningHandoff.prompt = String(payload.prompt);
       tuningHandoff.copiedRevision = (payload.binding || {}).design_draft_revision;
       field.value = tuningHandoff.prompt;
     } catch (e) {

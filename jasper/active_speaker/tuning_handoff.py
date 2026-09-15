@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from jasper.active_speaker.tuning_docs import reading_order
 from jasper.identity.reader import (
     CROSSOVER_PAGE_PATH,
     SPEAKER_SETUP_PAGE_PATH,
@@ -31,22 +32,32 @@ PROGRAM_DOOR_COMMAND = (
 )
 
 
-def build_tuning_handoff_binding(design_draft: Mapping[str, Any]) -> dict[str, Any]:
-    """Who this prompt was minted for, and against which declarations.
+def build_tuning_handoff_binding(
+    design_draft: Mapping[str, Any], commissioning_view: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Which speaker, declarations, applied tune and round this prompt names.
 
-    Identity and URLs only. **No credential of any kind belongs here** — not
-    the control token, not a PSK, not the peer id: this payload is minted to
-    be copied into a third-party chat session, so anything in it is disclosed
-    by construction. Access is the human's to grant over SSH.
+    **No credential of any kind belongs here** — not the control token, not a
+    PSK, not the peer id. Anything here is disclosed to a third-party chat.
     """
+    from jasper.active_speaker.crossover_v2.round_inputs import recent_round_sessions  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
+
     identity = read_identity()
     revision = design_draft.get("revision")
+    applied = commissioning_view.get("applied_profile")
+    applied = applied if isinstance(applied, Mapping) else {}
+    has_applied = applied.get("exists") is True
+    rounds = recent_round_sessions(limit=1)
     return {
         "speaker_name": identity.name,
         "hostname": identity.hostname,
         "declaration_url": speaker_url(SPEAKER_SETUP_PAGE_PATH),
         "crossover_url": speaker_url(CROSSOVER_PAGE_PATH),
         "design_draft_revision": revision if isinstance(revision, int) else 0,
+        "applied_candidate_fingerprint": applied.get("candidate_fingerprint") if has_applied else None,
+        "applied_record": applied.get("record") if has_applied else None,
+        "applied_at": applied.get("applied_at") if has_applied else None,
+        "latest_round_dir": str(rounds[0]) if rounds else None,
     }
 
 
@@ -57,19 +68,50 @@ PROGRAM_ENTRIES = (
 )
 
 
+def _program_entry(program_id: str) -> dict[str, str]:
+    entry = next((item for item in PROGRAM_ENTRIES if item["id"] == program_id), None)
+    if entry is None:
+        raise ValueError(f"unknown tuning program: {program_id}")
+    return entry
+
+
 def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> str:
-    entry = next(item for item in PROGRAM_ENTRIES if item["id"] == program_id)
+    entry = _program_entry(program_id)
     hostname = str(binding.get("hostname") or "")
+    documents = "\n".join(f"{i}. {item['path']}" for i, item in enumerate(reading_order(), 1))
+    applied = (
+        "Applied tune:\n"
+        f"candidate fingerprint: {binding.get('applied_candidate_fingerprint')}\n"
+        f"record id: {binding.get('applied_record')}\n"
+        f"applied at: {binding.get('applied_at')}"
+        if binding.get("applied_candidate_fingerprint") or binding.get("applied_record")
+        else "no baseline applied"
+    )
+    latest_round = binding.get("latest_round_dir")
     return "\n".join((
-        f"Help me run the {entry['title']} tuning program on {binding.get('speaker_name') or hostname} ({hostname}).",
+        "Read these documents in this order:",
+        documents,
+        "",
+        "This speaker:",
+        f"name: {binding.get('speaker_name') or hostname}",
+        f"hostname: {hostname}",
+        f"declaration: {binding.get('declaration_url') or ''}",
+        f"crossover: {binding.get('crossover_url') or ''}",
+        f"declaration revision: {binding.get('design_draft_revision')}",
+        "",
+        applied,
+        (f"Latest round directory: {latest_round}" if latest_round
+         else f"Latest round directory: find it with {ORIENTATION_COMMAND}"),
+        "",
+        f"Program: {entry['title']}",
         entry["description"],
+        f"Run: sudo {_BIN}/jasper-round run --program {program_id}",
+        f"Prescription contract: sudo {_BIN}/jasper-crossover-prescriber contract --round <dir> --section {program_id}",
+        "",
         f"Use existing SSH access to {hostname}; ask for a login only if access is missing.",
-        f"Start with {ORIENTATION_COMMAND}.",
-        f"Read the Entry contract and {entry['title']} section of /opt/jasper/docs/tuning-operator-runbook.md, then use its tool menu.",
-        "Find retained evidence and the current saved tune before choosing new measurements. Use the shared capture, candidate bank, trial and save tools.",
+        f"Orient with {ORIENTATION_COMMAND}.",
         f"Inspect available measurement plans with {PROGRAM_DOOR_COMMAND}.",
         "Explain the next step briefly. I place the microphone and start each position batch. Measure the chosen change, show its limits, and get my choice before saving.",
-        f"This copy names declaration revision {binding.get('design_draft_revision')}. Check the live identity and declarations at {binding.get('declaration_url') or ''} before playback.",
     ))
 
 
@@ -77,9 +119,11 @@ def build_tuning_handoff(
     *,
     commissioning_view: Mapping[str, Any],
     design_draft: Mapping[str, Any],
+    program_id: str = "speaker",
 ) -> dict[str, Any]:
     """See ADR-0312: declaration changes do not revoke an applied proof."""
-    binding = build_tuning_handoff_binding(design_draft)
+    _program_entry(program_id)
+    binding = build_tuning_handoff_binding(design_draft, commissioning_view)
     applied = commissioning_view.get("applied_profile")
     ready = isinstance(applied, Mapping) and applied.get("stands") is True
     reason = None if ready else NO_APPLIED_BASELINE
@@ -88,6 +132,7 @@ def build_tuning_handoff(
         "reason": reason,
         "binding": binding,
         "driver_spacing_mm": commissioning_view.get("driver_spacing_mm"),
-        "programs": [{**entry, "prompt": build_tuning_handoff_prompt(binding, entry["id"]) if ready else ""}
-                     for entry in PROGRAM_ENTRIES],
+        "programs": [dict(item) for item in PROGRAM_ENTRIES],
+        "program": program_id,
+        "prompt": build_tuning_handoff_prompt(binding, program_id) if ready else "",
     }
