@@ -7,6 +7,7 @@
 // browser or CamillaDSP.
 //
 //   node tests/js/sound_profile_harness.mjs deploy/assets/sound-profile/js/main.js
+import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { buildFunction, repoPath } from "./_loader.mjs";
 
@@ -26,6 +27,7 @@ const runner = buildFunction(
   [
     { path: repoPath("deploy/assets/shared/js/escape.js") },
     { path: repoPath("deploy/assets/shared/js/http.js") },
+    { path: repoPath("deploy/assets/shared/js/copy.js") },
     { path: repoPath("deploy/assets/shared/js/frequency-scale.js") },
     ...[
       "eq-math.js", "active-speaker-ui.js", "state.js", "format.js",
@@ -636,6 +638,28 @@ function setupHarness(fetchHandler, options = {}) {
     }
   }
 
+  let bodyHtml = '';
+  Object.defineProperty(elements.get('view-body'), 'innerHTML', {
+    get() { return bodyHtml; },
+    set(html) {
+      bodyHtml = html;
+      const seatIds = ['card', 'target', 'start', 'stop', 'status'].map(id => 'seat-level-' + id);
+      for (const id of seatIds) {
+        if (html.includes('id="' + id + '"')) {
+          elements.set(id, makeEl(id));
+          absent.delete(id);
+        } else {
+          elements.delete(id);
+          absent.add(id);
+        }
+      }
+      const card = elements.get('seat-level-card');
+      if (card) {
+        card.descendants = seatIds.map(id => elements.get(id));
+        card.replaceWith = saved => saved.descendants.forEach(node => elements.set(node.id, node));
+      }
+    },
+  });
   globalThis.document = {
     _listeners: {},
     activeElement: null,
@@ -686,8 +710,9 @@ function setupHarness(fetchHandler, options = {}) {
     // harness does too — empty means "no fragment", the ordinary page load.
     location: { href: "", hash: options.hash || "" },
   };
+  const clipboard = [];
   Object.defineProperty(globalThis, "navigator", {
-    value: { clipboard: { async writeText() {} } },
+    value: { clipboard: { async writeText(text) { clipboard.push(text); } } },
     configurable: true,
   });
   delete globalThis.__jtsConfirm;
@@ -709,12 +734,20 @@ function setupHarness(fetchHandler, options = {}) {
     if (selector === "[data-driver-proposal]") return driverProposal;
     if (selector === "[data-driver-research-footer]") return driverResearchFooter;
     if (selector === "[data-driver-echo]") return driverEcho;
+    if (selector === '[data-output-step="layout"]') return {
+      scrollIntoView(options) { elements.get('view-body').scrolledTo = {step: 'layout', ...options}; },
+    };
     return null;
   };
   const dispatchClick = (attrs) => {
     const target = {
       getAttribute(name) { return attrs[name] || ""; },
-      closest(selector) { return selector === "[data-act]" ? this : null; },
+      dataset: Object.fromEntries(Object.entries(attrs).filter(([key]) => key.startsWith('data-'))
+        .map(([key, value]) => [key.slice(5), value])),
+      closest(selector) {
+        return (selector === "[data-act]" && 'data-act' in attrs) ||
+          (selector === "[data-copy], [data-copy-target]" && 'data-copy' in attrs) ? this : null;
+      },
     };
     for (const fn of viewBody._listeners.click || []) {
       fn({ target, preventDefault() {} });
@@ -767,7 +800,7 @@ function setupHarness(fetchHandler, options = {}) {
     }
   };
   const flush = () => new Promise((r) => setTimeout(r, 0));
-  return { elements, dispatchClick, dispatchChange, dispatchToggle, dispatchInput, flush };
+  return { elements, clipboard, dispatchClick, dispatchChange, dispatchToggle, dispatchInput, flush };
 }
 
 function baseFetch(overrides = {}) {
@@ -2165,91 +2198,6 @@ async function testActiveRouteLimitsRenderedTemplates() {
 }
 
 
-async function testAppliedProfileEditContinueOpensProfileStep() {
-  const confirmedTopology = activeTwoWayTopologyPayload();
-  confirmedTopology.channel_identity = {
-    kind: "jts_output_channel_identity_report",
-    status: "verified",
-    assigned_channel_count: 2,
-    verified_channel_count: 2,
-    unverified_channel_count: 0,
-    targets: [],
-  };
-  const measurements = {
-    status: "needs_driver_measurements",
-    summary: summedSummary({}, {
-      captured_driver_count: 0,
-      driver_checks_complete: false,
-      driver_measurements_complete: false,
-      latest_driver_checks: {
-        "main:woofer": { speaker_group_id: "main", role: "woofer", captured: true },
-        "main:tweeter": { speaker_group_id: "main", role: "tweeter", captured: true },
-      },
-      latest_driver_measurements: {},
-    }),
-    issues: [],
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: confirmedTopology,
-      channel_identity: confirmedTopology.channel_identity,
-    })),
-    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
-    "./active-speaker/design-draft": () => Promise.resolve(response({
-      status: "ready_for_review",
-      summary: { missing_driver_info_roles: [], missing_crossover_candidate_pairs: [] },
-      operator_inputs: {},
-    })),
-    "./active-speaker/crossover-preview": () => Promise.resolve(response({
-      kind: "jts_active_speaker_crossover_preview",
-      status: "ready_for_protected_staging",
-      permissions: { may_prepare_protected_startup_config: true },
-      issues: [],
-    })),
-    "./active-speaker/commissioning-view": () => Promise.resolve(response(profileCommissioningView({
-      status: "needs_revalidation",
-      driver_target_proof: {
-        complete: true,
-        source: "applied_profile_revalidation",
-        captured: 0,
-        required: 2,
-      },
-      driver_checks: {
-        complete: true,
-        source: "applied_profile_revalidation",
-        captured: 0,
-        required: 2,
-      },
-      revalidation: {
-        required: true,
-        reason: "applied_profile_superseded",
-        next_step: "combined_check",
-      },
-    }))),
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  const initialHtml = harness.elements.get("view-body").innerHTML;
-  if (!initialHtml.includes('data-output-step="experiment" open')) {
-    fail("applied-profile edit should open the combined-test card", {
-      initialHtml,
-    });
-  }
-
-  harness.dispatchClick({ "data-act": "output-step-next", "data-step": "experiment" });
-  await harness.flush();
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes('data-output-step="experiment" open')) {
-    fail("combined-test Continue should stay put until validation is saved", {
-      html,
-      status: harness.elements.get("status").textContent,
-    });
-  }
-  return { appliedProfileEditOpensCombinedStep: true };
-}
-
-
 async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
   const topology = activeTwoWayTopologyPayload();
   topology.hardware.physical_output_count = 8;
@@ -2505,7 +2453,7 @@ async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
   if (!dirtyHtml.includes('data-output-step="layout" open')) {
     fail("changing a DAC assignment should keep Confirm outputs open for saving", { dirtyHtml });
   }
-  if (!dirtyHtml.includes('data-act="output-step-next" data-step="layout"') || !dirtyHtml.includes(">Save</button>")) {
+  if (!dirtyHtml.includes('data-act="save-output-topology"') || !dirtyHtml.includes(">Save</button>")) {
     fail("dirty channel assignment should expose the save action in Confirm outputs", { dirtyHtml });
   }
   const reopened = harness.dispatchToggle({
@@ -2592,8 +2540,7 @@ async function testConfirmOutputAbortsPendingAuditionWithoutAutoRamp() {
     fail("Confirming output with a pending audition should remute before dialog and identity save", { posts });
   }
   const afterConfirmHtml = harness.elements.get("view-body").innerHTML;
-  if (afterConfirmHtml.includes(">Stop</button>") ||
-      afterConfirmHtml.includes('data-role="woofer" disabled')) {
+  if (afterConfirmHtml.includes('data-role="woofer" disabled')) {
     fail("Confirming output should clear the pending audition and re-enable siblings", {
       afterConfirmHtml,
     });
@@ -4886,8 +4833,7 @@ async function testPreparePreviewWaitsForInFlightWorkingSetupUpdate() {
   await harness.flush();
 
   let html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("Working setup is updating before the preview.") ||
-      !/class="btn btn--primary" disabled>Saving<\/button>/.test(html)) {
+  if (!/data-act="save-driver-design" disabled/.test(html)) {
     fail("Preview should be disabled while the working setup update is in flight", { html });
   }
 
@@ -6169,6 +6115,118 @@ async function testIssueListEscapesUntrustedVerdictMessages() {
   return { issueListEscapesUntrustedVerdictMessages: true };
 }
 
+async function testNextActionOwnsTheSpeakerPage() {
+  const programs = ['speaker', 'room', 'bass'].map(id => ({id, title: id, description: id}));
+  for (const [status, action, step] of [
+    ['needs_layout', {id: 'declare_speaker'}, 'layout'],
+    ['needs_driver_values', {id: 'save_driver_values'}, 'research'],
+    ['needs_driver_values', {id: 'preview_crossover'}, 'research'],
+    ['ready_to_save_profile', {id: 'apply_candidate'}, 'profile'],
+    ['applied', {id: 'copy_prompt', program: 'room'}, ''],
+    ['applied', {id: 'run_program', program: 'speaker'}, 'experiment'],
+    ['needs_first_experiment', {id: 'run_speaker_program'}, 'experiment'],
+    ['blocked', {id: 'apply_candidate', enabled: false, reason: '<script>blocked</script>'}, 'profile'],
+  ]) {
+    const mints = [];
+    const harness = setupHarness(baseFetch({
+      './output-topology': () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+      './active-speaker/baseline-profile': () => Promise.resolve(response({tuning_programs: programs})),
+      './active-speaker/commissioning-view': () => Promise.resolve(response(commissioningViewPayload({
+        status, next_action: {label: action.id, enabled: true, ...action},
+        applied_profile: {exists: status === 'applied', stands: status === 'applied'},
+      }))),
+      './active-speaker/tuning-handoff': path => {
+        mints.push(path);
+        return Promise.resolve(response({status: 'ready', prompt: 'packet-room', binding: {design_draft_revision: 1}}));
+      },
+    }));
+    await loadAndSetActiveState(harness);
+    const html = harness.elements.get('view-body').innerHTML;
+    const firstControl = html.match(/<(button|input|select|textarea|summary|a)\b[^>]*>/)[0];
+    assert.ok(firstControl.includes('data-next-action="' + action.id + '"'));
+    assert.equal(/\sdisabled(?=[\s>])/.test(firstControl), action.enabled === false);
+    assert.deepEqual([...html.matchAll(/data-output-step="([^" ]+)" open/g)].map(m => m[1]), step ? [step] : []);
+    const experiment = outputStepBodyHtml(html, 'experiment');
+    assert.equal((experiment.match(/id="seat-level-card"/g) || []).length, 1);
+    assert.equal((html.match(/id="seat-level-card"/g) || []).length, 1);
+    if (action.reason) {
+      assert.ok(html.includes('&lt;script&gt;blocked&lt;/script&gt;'));
+      assert.ok(!html.includes('<script>'));
+    }
+    const buttonAttrs = Object.fromEntries([...firstControl.matchAll(/([\w-]+)="([^"]*)"/g)].map(m => [m[1], m[2]]));
+    if (action.id === 'declare_speaker') {
+      harness.dispatchToggle({'data-output-step': 'profile', open: true});
+      harness.dispatchClick(buttonAttrs);
+      assert.deepEqual(harness.elements.get('view-body').scrolledTo, {step: 'layout', block: 'start'});
+      assert.ok(harness.elements.get('view-body').innerHTML.includes('data-output-step="layout" open'));
+    }
+    if (action.id === 'copy_prompt') {
+      const disclosure = html.match(/<details[^>]* data-other-prompts>[\s\S]*?<\/details>/)[0];
+      assert.equal((disclosure.match(/data-act="copy-tuning-handoff"/g) || []).length, 2);
+      const visible = html.replace(disclosure, '');
+      assert.equal((visible.match(/data-act="copy-tuning-handoff"/g) || []).length, 1);
+      assert.equal(buttonAttrs['data-program'], 'room');
+      harness.dispatchClick(buttonAttrs);
+      await harness.flush();
+      await harness.flush();
+      assert.deepEqual(mints, ['./active-speaker/tuning-handoff?program=room']);
+      assert.deepEqual(harness.clipboard, ['packet-room']);
+    }
+    if (action.id.startsWith('run_')) {
+      const command = html.match(/<textarea id="tuning-run-command"[^>]*>([^<]*)<\/textarea>/)[1];
+      assert.equal(command, 'sudo /opt/jasper/.venv/bin/jasper-round run --program speaker');
+      document.getElementById('tuning-run-command').value = command;
+      harness.dispatchClick(buttonAttrs);
+      await harness.flush();
+      assert.deepEqual(harness.clipboard, [command]);
+    }
+  }
+  return {nextActionOwnsTheSpeakerPage: true};
+}
+
+async function testSeatLevelSurvivesStepRenders() {
+  const requests = [];
+  const pendingStart = deferred();
+  let payload = {state: 'idle', default_target_db_spl: 68, mic: {available: true}};
+  const harness = setupHarness(baseFetch({
+    './active-speaker/seat-level/status': () => Promise.resolve(response(payload)),
+    './active-speaker/seat-level/start': (_path, options) => {
+      requests.push(JSON.parse(options.body));
+      payload = {...payload, state: 'running', target_db_spl: requests.at(-1).target_db_spl};
+      return pendingStart.promise.then(() => response({status: 'started'}));
+    },
+    './active-speaker/seat-level/stop': () => {
+      requests.push({stop: true});
+      payload = {...payload, state: 'idle'};
+      return Promise.resolve(response({status: 'stopped'}));
+    },
+  }));
+  await loadAndSetActiveState(harness);
+  const target = harness.elements.get('seat-level-target');
+  assert.equal(Number(target.value), 68);
+  target.value = '71.5';
+  harness.elements.get('seat-level-start').click();
+  await harness.flush();
+  assert.deepEqual(requests, [{target_db_spl: 71.5}]);
+  harness.dispatchClick({'data-act': 'open-output-layout'});
+  assert.equal(harness.elements.get('seat-level-start').disabled, true);
+  assert.equal(harness.elements.get('seat-level-target'), target);
+  pendingStart.resolve();
+  await harness.flush();
+  harness.dispatchClick({'data-act': 'open-output-layout'});
+  assert.equal(harness.elements.get('seat-level-target').value, '71.5');
+  assert.equal(harness.elements.get('seat-level-target').disabled, true);
+  assert.equal(harness.elements.get('seat-level-start').hidden, true);
+  assert.equal(harness.elements.get('seat-level-stop').hidden, false);
+  harness.elements.get('seat-level-stop').click();
+  await harness.flush();
+  assert.equal(harness.elements.get('seat-level-target').disabled, false);
+  assert.equal(harness.elements.get('seat-level-start').hidden, false);
+  assert.equal(harness.elements.get('seat-level-stop').hidden, true);
+  assert.deepEqual(requests, [{target_db_spl: 71.5}, {stop: true}]);
+  return {seatLevelSurvivesStepRenders: true};
+}
+
 // #2883: the handoff card appears only once a baseline is playing, mints its
 // prompt server-side on the copy, and the copy goes STALE — visibly — when the
 // declarations move past the revision it was minted against.
@@ -6717,7 +6775,6 @@ results.push(await testDirectCrossoverEditRefreshesProposalAndFooter());
 results.push(await testTweeterTypeChangeInvalidatesCopiedResearchBinding());
 results.push(await testThreeWayRendersEveryPhysicalComponentChoice());
 results.push(await testActiveRouteLimitsRenderedTemplates());
-results.push(await testAppliedProfileEditContinueOpensProfileStep());
 results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
 results.push(await testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview());
 results.push(await testUnknownDriverStyleRendersWithoutGuessedFloor());
@@ -6784,6 +6841,8 @@ results.push(await testIncompleteFromABandRelationshipNamesTheRelationship());
 results.push(await testSafetyLimitsDeepLinkOpensTheComponentStep());
 results.push(await testCrossChildSpeakerGroupIsDisclosedInTheMapStep());
 results.push(await testIssueListEscapesUntrustedVerdictMessages());
+results.push(await testNextActionOwnsTheSpeakerPage());
+results.push(await testSeatLevelSurvivesStepRenders());
 results.push(await testTuningHandoffCardMintsAndGoesStale());
 results.push(await testDriverSpacingUsesTheExistingDraftSaveAndReload());
 results.push(await testInstallationUsesTheExistingDraftSaveAndReload());

@@ -189,33 +189,6 @@ def _crossover_child_link(page_mode: str) -> str:
     return _CROSSOVER_CHILD_LINK if page_mode == "speaker" else ""
 
 
-#: Household surface for jasper-seat-level (#2761): an operator SPL target
-#: and a big stop control, backed by jasper.web.sound_seat_level. Solo
-#: speakers only -- a bonded follower's delegation page never renders this
-#: markup, so seat-level.js's initSeatLevel() finds no #seat-level-card and
-#: no-ops (main.js's own boot gates the call on `not followerMode` too).
-_SEAT_LEVEL_CARD = """<section class="info-card" id="seat-level-card">
-    <h2 class="eyebrow">Seat-level leveling</h2>
-    <p class="form-hint">Ramp the volume until a calibrated mic at your
-    listening seat reads your target level, then bank it as the crossover
-    session's measurement reference.</p>
-    <div class="field">
-      <label for="seat-level-target">Target level (dB SPL)</label>
-      <input id="seat-level-target" type="number" step="0.5" inputmode="decimal"
-             autocomplete="off">
-    </div>
-    <div class="form-actions">
-      <button type="button" class="btn btn--primary" id="seat-level-start">Start leveling</button>
-      <button type="button" class="btn btn--danger" id="seat-level-stop" hidden>Stop</button>
-    </div>
-    <p class="form-hint" id="seat-level-status" role="status" aria-live="polite"></p>
-  </section>"""
-
-
-def _seat_level_card(page_mode: str) -> str:
-    return _SEAT_LEVEL_CARD if page_mode == "speaker" else ""
-
-
 def _sound_page_island(*, page_mode: str, follower: bool) -> str:
     """The one ``sound-page-data`` island every /sound/ shell renders.
 
@@ -350,7 +323,6 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
   <div id="view-body"></div>
   <div class="status-line" id="status" role="status" aria-live="polite"></div>
   {_crossover_child_link(page_mode)}
-  {_seat_level_card(page_mode)}
 </main>
 """
     )

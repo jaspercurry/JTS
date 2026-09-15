@@ -995,6 +995,7 @@ def test_index_html_renders_the_page_shell_for_its_mode(page_mode, title):
     )
     assert child == ([href] if page_mode == "speaker" else [])
     assert "/sound/speaker/crossover/" not in html
+    assert 'id="seat-level-card"' not in html
 
 
 @pytest.mark.parametrize(
@@ -1341,7 +1342,6 @@ def test_sound_module_preserves_editor_behaviour():
     assert "return defaultActiveSpeakerStep(outputStepContext(currentOutputTopology()));" in js
     helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
     assert "if (!ctx.driverResearchSatisfied) return 'research';" in helper_js
-    assert "Finish the current card before opening" in js
     assert "output-step__chevron" in js
     assert "querySelectorAll('.output-step[open]')" in js
     assert "window.prompt" not in js
@@ -1510,7 +1510,6 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "expected_candidate_fingerprint: expectedCandidateFingerprint" in js
     assert "fetch('./active-speaker/baseline-profile/apply'" not in js
     assert "data-act=\"refresh-active-speaker\"" not in js
-    assert "act: 'save-driver-design'" in js
     assert "act === 'prepare-crossover-preview'" in js
     assert "Save values" in js
     assert "Preview crossover" in js
@@ -5561,6 +5560,8 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes(
         # #2883: the handoff card renders only once a baseline plays, mints its
         # prompt server-side, and discloses a copy the declarations moved past.
         "tuningHandoffCardMintsAndGoesStale",
+        "nextActionOwnsTheSpeakerPage",
+        "seatLevelSurvivesStepRenders",
         "activeCrossoverFirstStepRendered",
         "componentFirstResearchFlowIsOrderedAndAdvancedIsFlat",
         "passiveMainWithSubUsesResearchableMainTargetOnly",

@@ -15,7 +15,7 @@ import {
   activeSpeakerStepState,
   clampSubwooferCrossoverFcHz,
   commissionPayloadFailure,
-  commissioningStepFooter,
+  nextActionAct,
   defaultActiveSpeakerStep,
   levelMatchSummary,
   localSubwooferGroup,
@@ -221,115 +221,26 @@ const STEREO_WITH_SUB_UNSET_FC = {
   assert.equal(hot.freq_hz, SUB_CROSSOVER_HZ_HI);
 }
 
-// --- commissioningStepFooter: backend view-model on the clean path ----------
-//
-// The research/map step footers used to re-derive readiness in the browser
-// (driverResearchStepSatisfied / crossoverPreviewReadyForProtectedStaging /
-// outputIdentityComplete). commissioningStepFooter consumes the backend
-// commissioning view-model on a CLEAN draft (`source:'backend'`) and only falls
-// back to the client descriptor for the dirty/saving cases the backend cannot
-// see (`source:'client'`). These tests pin that boundary.
-
-// Backend next_action == save the design draft -> footer renders that, verbatim
-// label, from the backend (not a client-derived "Save values").
-{
-  const f = commissioningStepFooter(
-    "research",
-    { next_action: { id: "save_driver_values", label: "Save values",
-      endpoint: "./active-speaker/design-draft", enabled: true } },
-    { previewInputsReady: true },
-  );
-  assert.equal(f.source, "backend");
-  assert.equal(f.act, "save-driver-design");
-  assert.equal(f.label, "Save values");
-  assert.equal(f.disabled, false);
+for (const [id, act, step] of [
+  ['declare_speaker', 'open-output-layout', 'layout'],
+  ['save_driver_values', 'save-driver-design', 'research'],
+  ['preview_crossover', 'prepare-crossover-preview', 'research'],
+  ['apply_candidate', 'save-apply-baseline-profile', 'profile'],
+  ['copy_prompt', 'copy-tuning-handoff', ''],
+  ['run_speaker_program', '', 'experiment'],
+  ['run_program', '', 'experiment'],
+]) {
+  for (const program of ['speaker', 'room', 'bass']) {
+    const behavior = nextActionAct({id, program});
+    assert.equal(behavior.act, act);
+    assert.equal(behavior.step, step);
+    if (id.startsWith('run_')) {
+      assert.equal(behavior.command, 'sudo /opt/jasper/.venv/bin/jasper-round run --program ' + program);
+    }
+    if (id === 'copy_prompt') assert.equal(behavior.program, program);
+  }
 }
-
-// Backend next_action == preview the crossover -> footer renders that. The LABEL
-// is backend; the ENABLED state is refined by the client preview-inputs signal
-// (the one documented divergence the browser keeps owning).
-{
-  const ready = commissioningStepFooter(
-    "research",
-    { next_action: { id: "preview_crossover", label: "Preview crossover",
-      endpoint: "./active-speaker/crossover-preview", enabled: true } },
-    { previewInputsReady: true },
-  );
-  assert.equal(ready.source, "backend");
-  assert.equal(ready.act, "prepare-crossover-preview");
-  assert.equal(ready.label, "Preview crossover");
-  assert.equal(ready.disabled, false);
-
-  const missingInputs = commissioningStepFooter(
-    "research",
-    { next_action: { id: "preview_crossover", label: "Preview crossover",
-      endpoint: "./active-speaker/crossover-preview", enabled: true } },
-    { previewInputsReady: false },
-  );
-  // Backend says enabled; the client keeps it disabled until inputs exist.
-  assert.equal(missingInputs.source, "backend");
-  assert.equal(missingInputs.disabled, true);
-  assert.equal(missingInputs.label, "Preview crossover");
-}
-
-// Backend next_action points PAST the research step (confirm outputs etc.) ->
-// the saved design+preview are complete, so the footer advances ("Continue").
-{
-  const f = commissioningStepFooter(
-    "research",
-    { next_action: { id: "confirm_outputs", label: "Confirm outputs",
-      method: "GET", enabled: true } },
-    { previewInputsReady: true },
-  );
-  assert.equal(f.source, "backend");
-  assert.equal(f.act, "output-step-next");
-  assert.equal(f.step, "research");
-  assert.equal(f.label, "Continue");
-}
-
-// Dirty / saving draft -> the backend (which only reads saved state) cannot
-// reflect the unsaved edit, so the client fallback is used verbatim.
-{
-  const saving = commissioningStepFooter(
-    "research",
-    { next_action: { id: "preview_crossover", label: "Preview crossover",
-      endpoint: "./active-speaker/crossover-preview", enabled: true } },
-    { saving: true, previewInputsReady: true,
-      clientFallback: { label: "Saving", disabled: true } },
-  );
-  assert.equal(saving.source, "client");
-  assert.equal(saving.label, "Saving");
-  assert.equal(saving.disabled, true);
-
-  const draftDirty = commissioningStepFooter(
-    "research",
-    { next_action: { id: "preview_crossover", label: "Preview crossover",
-      endpoint: "./active-speaker/crossover-preview", enabled: true } },
-    { draftDirty: true, previewInputsReady: true,
-      clientFallback: { label: "Save values", act: "save-driver-design" } },
-  );
-  assert.equal(draftDirty.source, "client");
-  assert.equal(draftDirty.act, "save-driver-design");
-
-  const layoutDirty = commissioningStepFooter(
-    "research",
-    { next_action: { id: "save_driver_values", label: "Save values",
-      endpoint: "./active-speaker/design-draft", enabled: true } },
-    { layoutDirty: true, previewInputsReady: true,
-      clientFallback: { label: "Save layout first", disabled: true } },
-  );
-  assert.equal(layoutDirty.source, "client");
-  assert.equal(layoutDirty.label, "Save layout first");
-}
-
-// No view yet (pre-first-load) -> client fallback, never a guessed backend path.
-{
-  const f = commissioningStepFooter("research", null, {
-    clientFallback: { label: "Save values", act: "save-driver-design" },
-  });
-  assert.equal(f.source, "client");
-  assert.equal(f.act, "save-driver-design");
-}
+assert.equal(nextActionAct({id: 'run_speaker_program'}).program, 'speaker');
 
 // #2344, re-pointed by #2412 Wave 3 — the ring refusal is retired, and what has
 // to REACH the household now is the arming state and the ends-disagree defect,
