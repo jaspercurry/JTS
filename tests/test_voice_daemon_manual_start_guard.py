@@ -61,7 +61,6 @@ def _make_wake_loop(**collaborators):
     wl = wake_loop_for_tests(**collaborators)
     wl._turns.state = State.WAKE
     wl._mic_muted = False
-    wl._measurement_active = asyncio.Event()
     wl._fire_and_forget = set()
     # If a guard is skipped, these would be reached — make them visible.
     wl._spend_cap = types.SimpleNamespace(allowed=lambda: True)
@@ -478,7 +477,6 @@ def _ptt_only_wake_loop():
     )
     wl._turns.state = State.WAKE
     wl._mic_muted = False
-    wl._measurement_active = asyncio.Event()
     wl._fire_and_forget = set()
     wl._spend_cap = types.SimpleNamespace(allowed=lambda: True)
     wl._begin_turn = _SpyCalls()
