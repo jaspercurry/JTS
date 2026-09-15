@@ -15,7 +15,7 @@ from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
 from jasper.active_speaker.branch_target import branch_target
-from jasper.active_speaker.crossover_v2.intervention import compose_sigma_db, decide_trim
+from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, compose_sigma_db, decide_trim
 from jasper.active_speaker.crossover_v2.driver_prescription import _check_composed
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
@@ -40,7 +40,7 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.cli import crossover_prescriber, round_views
 from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round
 from jasper.active_speaker.round_packet import INDEX_FILENAME, _fits, write_round_packet
-from jasper.active_speaker.speaker_fit import design_clouds, speaker_fit
+from jasper.active_speaker.speaker_fit import design_clouds, fit_feature_curves, speaker_fit
 from jasper.active_speaker.candidate_bank import find_banked_candidate
 from jasper.active_speaker.candidate_parts import baseline_candidate_id, candidate_from_design_draft
 from jasper.active_speaker.commissioning_experiment import commissioning_candidate
@@ -264,6 +264,56 @@ def test_design_cloud_bounds_each_roles_fit(speaker_round, capsys, changes, expe
         assert fit["lift_suppressed_reason"] == "boost_above_measured_target"
     if changes.get("missing_curve"):
         assert not proposal["cloud"]["band_spread"]
+
+
+@pytest.mark.parametrize("trusted_floor_hz", [357.0, None])
+def test_speaker_fit_respects_banked_trusted_floor(speaker_round, capsys, trusted_floor_hz):
+    root, record, program, _, _, _ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    grid = np.geomspace(60, 4000, 1024)
+    db = (-6 * np.exp(-0.5 * (np.log2(grid / 300) / 0.12) ** 2)
+          + 6 * np.exp(-0.5 * (np.log2(grid / 900) / 0.18) ** 2))
+    response = DriverResponse(
+        role="woofer", freqs_hz=grid, magnitude_db=db, complex_tf=10 ** (db / 20) + 0j,
+        gating={"f_trusted_hz": trusted_floor_hz}, snr=None, validity_floor_hz=143,
+    )
+    analysis = ProgramAnalysis(phase="measure", program_id=program.program_id, locations=(),
+                              driver_responses=(replace(response, repeat_responses=(response, response)),))
+    curves = analysis_curve_records(analysis, program) + [record["curves"][1]]
+    if trusted_floor_hz is None:
+        curves[0].pop("trusted_floor_hz")
+    restored = response_from_banked_curve(curves[0])[0]
+    assert all(r.gating == ({} if trusted_floor_hz is None else {"f_trusted_hz": trusted_floor_hz})
+               for r in (restored, *restored.repeat_responses))
+    assert restored.fit_floor_hz == (trusted_floor_hz or 143)
+    assert replace(restored, validity_floor_hz=None).fit_floor_hz == trusted_floor_hz
+    sparse = replace(restored, freqs_hz=np.array([100., 150., 151.]), magnitude_db=np.zeros(3),
+                     complex_tf=np.ones(3, dtype=complex))
+    assert len(fit_feature_curves(CloudFitTerms(boost_responses=(sparse, restored)))) == 1
+    rows = []
+    for deg in (-20, 0, 20):
+        take = {**record, "curves": curves, "take_id": f"floor-{deg}", "position_deg": deg}
+        path = directory / "positions" / f"{take['take_id']}.json"
+        path.write_text(json.dumps(take))
+        rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), take))
+    group = manifest_set(rows, set_id="speaker-set")
+    group["capture_basis"]["role"] = "woofer"
+    candidate = json.loads((directory / "candidate.json").read_text())
+    for take in group["takes"]:
+        take["analysis"] = candidate["analysis"]
+    write_manifest(root, groups=[group])
+    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set", "--take", "floor-0"]) == 0
+    proposal = json.loads(capsys.readouterr().out)["linearization"]["woofer"]
+    fit = proposal["fit"]
+    assert all(f["freq"] >= (trusted_floor_hz or 150) for f in fit["filters"])
+    assert fit["reason_summary"]["250"] == ("envelope_out_of_band" if trusted_floor_hz else "envelope_fitted")
+    assert any(800 < f["freq"] < 1000 and f["gain"] < -1 for f in fit["filters"])
+    assert fit["fit_band_hz"][0] >= (trusted_floor_hz or 150)
+    assert (250 in [b["center_hz"] for b in proposal["cloud"]["band_spread"]]) == (trusted_floor_hz is None)
+    if trusted_floor_hz:
+        assert fit["residual_rms_db"] < 1
+        assert fit["residual_max_db"] < 3
 
 
 @pytest.mark.parametrize("run_program", ["speaker", "speaker/full"])
