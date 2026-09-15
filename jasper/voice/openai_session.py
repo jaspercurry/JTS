@@ -62,7 +62,7 @@ from ._base import (
     upsample_16k_to_24k,
 )
 from ._supervisor import (
-    failure_detail, request_planned_reopen, request_unplanned_reopen,
+    failure_detail, openai_error_is_terminal, request_planned_reopen, request_unplanned_reopen,
 )
 from .input_policy import NOISE_REDUCTION_FAR, NOISE_REDUCTION_NEAR
 from .session import AudioOutChunk, ConnectionState, LiveTurn, TurnCapture
@@ -814,9 +814,6 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             f"{self._log_tag} connect ok in %.0fms (model=%s)",
             connect_ms, self._model,
         )
-        # Send session.update immediately so subsequent turns inherit
-        # the right voice/tool/VAD config. Doing this AFTER assigning
-        # ``self._session`` so ``_send_event`` can reach the connection.
         try:
             await self._send_event({
                 "type": "session.update",
@@ -830,13 +827,11 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
                         break
                     if etype == "error":
                         error = _event_field(event, "error")
-                        invalid = (
-                            _event_field(error, "type") == "invalid_request_error"
-                            and _event_field(error, "code") != "rate_limit_exceeded"
-                        )
-                        error_cls = ValueError if invalid else RuntimeError
+                        code, error_type, message = (_event_field(error, key) for key in ("code", "type", "message"))
+                        self._log_server_error(code=code, error_type=error_type, message=message)
+                        error_cls = ValueError if openai_error_is_terminal(code=code, error_type=error_type) else RuntimeError
                         raise error_cls(failure_detail(
-                            error_cls(error), literals=self._secret_literals(),
+                            error_cls(message or f"{error_type or '?'} {code or '?'}"), literals=self._secret_literals(),
                         ))
                 else:
                     raise ConnectionError("session closed before setup acknowledgement")
@@ -905,21 +900,8 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         return delay
 
     async def _receive_loop(self, events, conn) -> None:
-        """Iterate the SDK connection's event stream and route events.
-
-        Accepts both Pydantic-typed events (have ``.type`` attribute and
-        ``.model_dump()``) and dict events (test seam) — anything that
-        looks dict-like via ``getattr`` access works.
-
-        A clean iteration exit (no exception) means the remote closed
-        the WebSocket with a normal close code — typically 1001 "going
-        away" when OpenAI Realtime hits its 60-minute hard cap. The
-        ``websockets`` library treats 1000/1001 as the end of the
-        stream and ends ``async for`` without raising, so the only
-        signal we get for the cap is the iterator running out. Both
-        the exception path AND the clean-exit path must wake the
-        supervisor, otherwise the daemon sits on a dead session and
-        every subsequent wake silently fails in ``send_audio``."""
+        """The websockets library treats close codes 1000/1001 as end-of-stream and ends async for without raising.
+        Both the exception path and the clean-exit path must wake the supervisor, or later wakes silently fail in send_audio on a dead session."""
         try:
             async for event in events:
                 if self._session is not conn:
@@ -946,10 +928,9 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         if turn is not None and self._owns_turn(turn) and _is_progress_event(etype):
             turn._note_activity()
         if etype == "error":
-            detail = failure_detail(
-                RuntimeError(str(_event_field(event, "error"))), literals=self._secret_literals(),
-            )
-            logger.warning("%s server error: %s", self._log_tag, detail)
+            error = _event_field(event, "error")
+            code, error_type, message = (_event_field(error, key) for key in ("code", "type", "message"))
+            self._log_server_error(code=code, error_type=error_type, message=message)
             return
         if etype in ("session.created", "session.updated"):
             return

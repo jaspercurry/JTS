@@ -169,6 +169,11 @@ def peer_initiated_close(exc: BaseException) -> bool:
     return getattr(exc, "rcvd_then_sent", None) is not False
 
 
+# See ADR-0215
+def openai_error_is_terminal(*, code: str | None, error_type: str | None) -> bool:
+    return error_type == "invalid_request_error" and code != "rate_limit_exceeded"
+
+
 def is_transient(exc: BaseException) -> bool:
     """Whether retrying this failure can plausibly fix it.
 
