@@ -27,7 +27,7 @@ from openai.types.realtime import ResponseDoneEvent
 
 from jasper.tools import ToolRegistry, tool
 from jasper.voice import _base
-from jasper.voice._base import BaseLiveConnection, upsample_16k_to_24k
+from jasper.voice._base import BaseLiveConnection, ToolCall, upsample_16k_to_24k
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
     NEEDS_ATTENTION_CUE_SLUG,
@@ -37,6 +37,7 @@ from jasper.voice._supervisor import (
 from jasper.voice.openai_session import (
     ConnectionState,
     OpenAIRealtimeConnection,
+    OpenAIRealtimeTurn,
 )
 from jasper.voice.grok_session import GROK_WEBSOCKET_BASE_URL, GrokRealtimeConnection
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
@@ -376,6 +377,88 @@ async def test_session_update_sent_on_connect_with_manual_vad():
         await conn.stop()
 
 
+@pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
+@pytest.mark.parametrize("operation,event,level", [
+    ("audio", "provider.send_failed", logging.WARNING),
+    ("text", "provider.send_failed", logging.WARNING),
+    ("commit", "provider.end_input_failed", logging.DEBUG),
+    ("decode", "provider.audio_decode_failed", logging.WARNING),
+    ("tool", "provider.tool_result_send_failed", logging.WARNING),
+    ("cancel", "provider.cancel_ignored", logging.DEBUG),
+    ("release", "provider.release_failed", logging.WARNING),
+    ("debug_close", "provider.debug_audio_record", logging.WARNING),
+    ("debug_write", "provider.debug_audio_record", logging.WARNING),
+])
+async def test_adapter_failures_report_redacted_provider_details(
+    caplog, monkeypatch, conn_cls, operation, event, level,
+):
+    secret = "plainvalue123"
+    conn = conn_cls(api_key=secret)
+    wire = _FakeConn()
+    conn._session = wire
+    conn._state = ConnectionState.CONNECTED
+    conn._connected_event.set()
+    turn = OpenAIRealtimeTurn(conn, started_at=asyncio.get_running_loop().time())
+    conn._active_turn = turn
+
+    def fail(*args, **kwargs):
+        raise RuntimeError(f"rejected {secret}")
+
+    async def send_failed(*args, **kwargs):
+        fail()
+
+    monkeypatch.setattr(wire, "send", send_failed)
+    caplog.set_level(logging.DEBUG)
+    if operation == "audio":
+        await turn.send_audio(b"\x00\x00" * 1280)
+    elif operation == "text":
+        await turn.send_text_context("context")
+    elif operation == "commit":
+        await turn.end_input()
+    elif operation == "decode":
+        monkeypatch.setattr(base64, "b64decode", fail)
+        await turn._on_audio_delta("invalid")
+    elif operation == "tool":
+        assert not await turn._send_tool_result(ToolCall(id="call", name=secret, args={}), {})
+        assert secret not in event_fields(caplog, event)["tool"]
+    elif operation == "cancel":
+        await conn._cancel_response(turn)
+    elif operation == "release":
+        await turn.release()
+    elif operation == "debug_close":
+        monkeypatch.setattr(wire, "close", fail)
+        turn._debug_wav = wire
+        await turn.release()
+    else:
+        monkeypatch.setenv("JASPER_DEBUG_RECORD_OPENAI_AUDIO", "1")
+        monkeypatch.setattr("jasper.voice.openai_session.os.makedirs", fail)
+        await turn.send_audio(b"\x00\x00" * 1280)
+    fields = event_fields(caplog, event)
+    if operation in {"audio", "text", "commit"}:
+        assert fields["outcome"] == "turn_lost"
+    if operation in {"audio", "text"}:
+        assert fields["what"] == {"audio": "audio", "text": "text_context"}[operation]
+    assert fields["provider"] == conn.PROVIDER_NAME
+    assert fields["exc_type"] == "RuntimeError"
+    assert secret not in fields["detail"]
+    assert event_records(caplog, event)[0].levelno == level
+    assert all(secret not in record.getMessage() for record in caplog.records)
+    assert all(record.exc_info is None for record in caplog.records)
+
+
+@pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
+def test_invalid_tool_arguments_report_redacted_provider(caplog, conn_cls):
+    conn = conn_cls(api_key="plainvalue123")
+    calls = conn._extract_function_calls({"output": [{
+        "type": "function_call", "call_id": "call", "name": "plainvalue123", "arguments": "{",
+    }]})
+    assert calls == [ToolCall(id="call", name="plainvalue123", args={})]
+    fields = event_fields(caplog, "provider.tool_arguments_invalid")
+    assert fields["provider"] == conn.PROVIDER_NAME
+    assert "plainvalue123" not in fields["tool"]
+    assert event_records(caplog, "provider.tool_arguments_invalid")[0].levelno == logging.WARNING
+
+
 @pytest.mark.parametrize("server_frame", [False, True])
 async def test_session_update_failure_redacts_the_connections_own_key(caplog, server_frame):
     class _FailSessionUpdateConn(_FakeConn):
@@ -405,6 +488,9 @@ async def test_session_update_failure_redacts_the_connections_own_key(caplog, se
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == (2 if server_frame else 1)
     assert all("plainvalue123" not in record.getMessage() for record in warnings)
+    setup = event_fields(caplog, "provider.setup_failed")
+    assert setup["provider"] == conn.PROVIDER_NAME
+    assert "plainvalue123" not in setup["detail"]
     if server_frame:
         fields = event_fields(caplog, "provider.server_error")
         assert fields["provider"] == "openai"
@@ -1962,7 +2048,7 @@ async def test_stop_is_idempotent():
     assert conn._state is ConnectionState.CLOSED
 
 
-async def test_clean_iteration_exit_triggers_reconnect():
+async def test_clean_iteration_exit_triggers_reconnect(caplog):
     """OpenAI Realtime closes the WebSocket with 1001 "going away" when
     the session hits its 60-minute hard cap. ``websockets`` treats
     normal closes (1000/1001) as the end of the iterator and exits
@@ -1986,6 +2072,10 @@ async def test_clean_iteration_exit_triggers_reconnect():
         first.feed_iter_stop()
 
         await _wait_until(lambda: len(factory.conns) >= 2, timeout=3.0)
+        assert event_fields(caplog, "provider.session_closed") == {
+            "provider": conn.PROVIDER_NAME, "reason": "clean_close",
+        }
+        assert event_records(caplog, "provider.session_closed")[0].levelno == logging.WARNING
         await _wait_until(
             lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
         )
