@@ -482,9 +482,6 @@ class OpenAILiveConnection(BaseLiveConnection):
     def set_background_usage_recorder(self, recorder) -> None:
         self._usage_recorder = recorder
 
-    def _secret_literals(self) -> tuple[str, ...]:
-        return (self._api_key,)
-
     async def start(self, registry, system_instruction) -> None:
         self._registry = registry
         self._system_instruction_provider = system_instruction if callable(system_instruction) else lambda: system_instruction

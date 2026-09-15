@@ -367,15 +367,6 @@ class GeminiLiveConnection(BaseLiveConnection):
         # (ADR-0166), so nothing else may set this.
         self._drop_resumption_on_teardown = False
 
-    def _secret_literals(self) -> tuple[str, ...]:
-        """The API key, so a rejection body that echoes it still redacts.
-
-        `_KEY_PREFIX_RE` in `secret_redaction.py` knows the `AIza`
-        shape; a prefix-less or rotated key can miss it, and this is
-        the fallback (ADR-0243).
-        """
-        return (self._api_key,) if self._api_key else ()
-
     # ------------------------------------------------------------------
     # LiveConnection protocol
     # ------------------------------------------------------------------

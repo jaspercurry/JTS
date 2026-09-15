@@ -549,6 +549,7 @@ class BaseLiveConnection:
     """
 
     PROVIDER_NAME: str = ""
+    _api_key: str = ""
     _session: Any
     # The subclass's module logger, so a line raised from a shared method
     # still lands under the provider's own logger name.
@@ -700,14 +701,8 @@ class BaseLiveConnection:
         return failure_detail(exc, literals=self._secret_literals())
 
     def _secret_literals(self) -> tuple[str, ...]:
-        """Secret values this connection holds, for redaction fallback.
-
-        A rejection body can echo a credential in a shape
-        `redact_secrets`'s prefix patterns don't know; passing the exact
-        value here catches it. Base has nothing to retain — see
-        `OpenAIRealtimeConnection` for a provider that does.
-        """
-        return ()
+        # Literal fallback for a key shape the prefix patterns miss — see ADR-0243.
+        return (self._api_key,) if self._api_key else ()
 
     def wake_cue(self) -> str:
         return self._outage.wake_cue
