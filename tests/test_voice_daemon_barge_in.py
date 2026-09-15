@@ -98,9 +98,9 @@ def _playback_loop(*, score: float, active: bool, ref_ok: bool = True):
     wl._turns.input_ended = True
     wl._turns.barge_in_active = active
     wl._barge_in_reference_available = ref_ok
-    wl._barge_in_run_started_at = 0.0
-    wl._barge_in_run_peak = 0.0
-    wl._barge_in_signalled_this_run = False
+    wl._speech_run_started_at = 0.0
+    wl._speech_run_max_silero = 0.0
+    wl._speech_run_signalled = False
     return wl
 
 
@@ -122,7 +122,7 @@ def test_flag_off_frame_after_input_ended_is_dropped_exactly():
     assert turn.send_audio_calls == 0
     assert not turn._interrupt_event.is_set()
     # Run state untouched — the playback branch was never entered.
-    assert wl._barge_in_run_started_at == 0.0
+    assert wl._speech_run_started_at == 0.0
 
 
 # --- Flag ON: sustained run trips the interrupt ------------------------
@@ -138,7 +138,7 @@ def test_flag_on_single_frame_does_not_trip():
 
     assert turn.local_interrupt_calls == 0
     assert not turn._interrupt_event.is_set()
-    assert wl._barge_in_run_started_at != 0.0  # run armed
+    assert wl._speech_run_started_at != 0.0  # run armed
 
 
 def test_flag_on_sustained_run_trips_interrupt():
@@ -152,7 +152,7 @@ def test_flag_on_sustained_run_trips_interrupt():
     async def drive() -> None:
         await wl._handle_session_frame(silent_frame())  # arms the run
         # Simulate the arming window elapsing without real sleeps.
-        wl._barge_in_run_started_at -= BARGE_IN_SUSTAINED_SPEECH_SEC + 0.05
+        wl._speech_run_started_at -= BARGE_IN_SUSTAINED_SPEECH_SEC + 0.05
         await wl._handle_session_frame(silent_frame())  # now sustained -> trip
         await wl._handle_session_frame(silent_frame())  # one-shot: no re-trigger
 
@@ -176,7 +176,7 @@ def test_barge_in_telemetry_surfaces_through_session_status():
 
     async def drive() -> None:
         await wl._handle_session_frame(silent_frame())  # arm
-        wl._barge_in_run_started_at -= BARGE_IN_SUSTAINED_SPEECH_SEC + 0.05
+        wl._speech_run_started_at -= BARGE_IN_SUSTAINED_SPEECH_SEC + 0.05
         await wl._handle_session_frame(silent_frame())  # trip
 
     asyncio.run(drive())
@@ -195,15 +195,15 @@ def test_flag_on_subthreshold_breaks_run():
 
     async def drive() -> None:
         await wl._handle_session_frame(silent_frame())  # arm
-        wl._barge_in_run_started_at -= 1.0  # would trip on next supra frame
+        wl._speech_run_started_at -= 1.0  # would trip on next supra frame
         wl._vad.score = 0.1  # ...but a quiet frame lands first
         await wl._handle_session_frame(silent_frame())
 
     asyncio.run(drive())
 
     assert turn.local_interrupt_calls == 0
-    assert wl._barge_in_run_started_at == 0.0
-    assert wl._barge_in_signalled_this_run is False
+    assert wl._speech_run_started_at == 0.0
+    assert wl._speech_run_signalled is False
 
 
 def test_flag_on_threshold_respected():
@@ -214,7 +214,7 @@ def test_flag_on_threshold_respected():
     asyncio.run(wl._handle_session_frame(silent_frame()))
 
     assert turn.local_interrupt_calls == 0
-    assert wl._barge_in_run_started_at == 0.0
+    assert wl._speech_run_started_at == 0.0
 
 
 # --- The provider that owns interruption gets no host flush ------------

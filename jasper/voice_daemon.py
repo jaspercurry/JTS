@@ -302,6 +302,7 @@ class WakeLoop:
         # SPEECH_RUN_PEAK_MIN.
         self._speech_run_started_at: float = 0.0
         self._speech_run_max_silero: float = 0.0
+        self._speech_run_signalled: bool = False
 
         self._barge_in_reference_available = contract_from_config(cfg).echo_cancelled
         # Reconciliation kind for the active provider (resolved once — the
@@ -315,9 +316,6 @@ class WakeLoop:
             resolve_interrupt_reconcile(cfg.voice_provider)
             if barge_in_reconcile is None else barge_in_reconcile
         )
-        self._barge_in_run_started_at: float = 0.0
-        self._barge_in_run_peak: float = 0.0
-        self._barge_in_signalled_this_run: bool = False
         # Firing telemetry surfaced through session_status -> /state.voice.
         # `count` is a daemon-lifetime running total (NOT per-turn — a
         # per-turn counter reads 0 between turns, exactly when /state is
@@ -446,23 +444,26 @@ class WakeLoop:
             await asyncio.wait({release}, timeout=SESSION_CLOSE_TIMEOUT_SEC)
         await cancel_tracked_tasks(self._fire_and_forget)
 
-    def _sustained_run(self, score: float, threshold: float, now: float) -> bool:
+    def _sustained_run(
+        self, score: float, threshold: float, now: float, *, peak_min: float = SPEECH_RUN_PEAK_MIN,
+    ) -> bool:
         """Advance the speech run with this frame; True once it has armed.
 
         A frame at or above `threshold` extends the run and its peak; any
         frame below ends it. Armed means the run has lasted
-        SUSTAINED_SPEECH_TO_ARM_SEC and peaked at SPEECH_RUN_PEAK_MIN, and
+        SUSTAINED_SPEECH_TO_ARM_SEC and peaked at peak_min, and
         stays true for every later frame of the same run — what each caller
         does on that is its own.
         """
         if score < threshold:
             self._speech_run_started_at = self._speech_run_max_silero = 0.0
+            self._speech_run_signalled = False
             return False
         if not self._speech_run_started_at:
             self._speech_run_started_at = now
         self._speech_run_max_silero = max(self._speech_run_max_silero, score)
         return (now - self._speech_run_started_at >= SUSTAINED_SPEECH_TO_ARM_SEC
-                and self._speech_run_max_silero >= SPEECH_RUN_PEAK_MIN)
+                and self._speech_run_max_silero >= peak_min)
 
     async def play_cue(self, slug: str) -> str:
         return await self._assistant_output.play_cue_admitted(slug)
@@ -821,8 +822,7 @@ class WakeLoop:
             self._vad.reset()
         self._speech_run_started_at = self._silence_started_at = 0.0
         self._speech_run_max_silero = 0.0
-        self._barge_in_run_started_at = self._barge_in_run_peak = 0.0
-        self._barge_in_signalled_this_run = False
+        self._speech_run_signalled = False
 
     def _reset_turn_input(self) -> None:
         """Both VADs. The mid-session resets re-arm the primary leg only."""
@@ -1121,26 +1121,16 @@ class WakeLoop:
         # rather than being silently swallowed here.
         speech_prob = self._vad.predict(frame)
         now = time.monotonic() if captured_at is None else captured_at
-        if speech_prob < self._cfg.vad_barge_in_threshold:
-            # Sub-threshold frame breaks the run. A fresh continuous run
-            # must re-accumulate from zero (and may re-trigger), mirroring
-            # the wake-tail arming reset.
-            self._barge_in_run_started_at = 0.0
-            self._barge_in_run_peak = 0.0
-            self._barge_in_signalled_this_run = False
+        armed = self._sustained_run(
+            speech_prob, self._cfg.vad_barge_in_threshold, now,
+            peak_min=self._cfg.vad_barge_in_threshold,
+        )
+        if not armed or self._speech_run_signalled:
             return
-        if self._barge_in_run_started_at == 0.0:
-            self._barge_in_run_started_at = now
-            self._barge_in_run_peak = speech_prob
-        else:
-            self._barge_in_run_peak = max(self._barge_in_run_peak, speech_prob)
-        if self._barge_in_signalled_this_run:
-            return
-        sustained = now - self._barge_in_run_started_at
-        if sustained < BARGE_IN_SUSTAINED_SPEECH_SEC:
-            return
-        self._barge_in_signalled_this_run = True
-        self._signal_barge_in(silero=self._barge_in_run_peak, sustained=sustained)
+        self._speech_run_signalled = True
+        self._signal_barge_in(
+            silero=self._speech_run_max_silero, sustained=now - self._speech_run_started_at,
+        )
 
     def _signal_barge_in(self, *, silero: float, sustained: float) -> None:
         """Flush local TTS for one detected barge-in, and record that it fired.
@@ -1196,6 +1186,8 @@ class WakeLoop:
         or the push-to-talk cap without a stack trace.
         """
         self._turns.input_ended = True
+        self._speech_run_started_at = self._speech_run_max_silero = 0.0
+        self._speech_run_signalled = False
         self._turn_timeline.stamp("end_input")
         try:
             await self._turns.turn.end_input()

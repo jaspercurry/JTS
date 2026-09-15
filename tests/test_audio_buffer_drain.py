@@ -162,16 +162,16 @@ async def test_acquire_gap_resets_speech_and_silence_runs(armed):
     wl._turns.user_speech_seen = armed
     wl._speech_run_started_at = wl._silence_started_at = time.monotonic() - 1.0
     wl._speech_run_max_silero = 1.0
-    wl._barge_in_run_started_at = time.monotonic() - 1.0
     reset = []
     wl._vad.reset = lambda: reset.append(True)
     wl._vad.predict = lambda frame: float(frame[0])
-    wl._acquire_buffer.append(_frame(0 if armed else 1), discontinuity=True)
+    at = time.monotonic()
+    wl._acquire_buffer.append(_frame(0 if armed else 1), at, discontinuity=True)
     await wl._drain_acquire_audio()
     assert wl._turns.user_speech_seen is armed
     assert not wl._turns.input_ended
     assert reset == [True]
-    assert wl._barge_in_run_started_at == 0.0
+    assert wl._speech_run_started_at == (0.0 if armed else at)
 
 
 async def test_no_speech_abort_then_fresh_command(monkeypatch):
