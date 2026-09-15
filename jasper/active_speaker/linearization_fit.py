@@ -43,7 +43,7 @@ from .linearization_envelope import (
     ENVELOPE_CEILING_SENTINEL_DB,
     EnvelopeCurve,
     ReasonCode,
-    _ladder_smooth,
+    ladder_smooth,
 )
 
 if TYPE_CHECKING:
@@ -811,7 +811,7 @@ def driver_core_level_db(
     nowhere: UNKNOWN, not a placeholder that would move every other driver.
     """
     grid_hz = envelope.freqs_hz
-    smoothed_db = _ladder_smooth(
+    smoothed_db = ladder_smooth(
         grid_hz, np.interp(grid_hz, primary.freqs_hz, primary.magnitude_db)
     )
     envelope_mask = envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB
@@ -1041,7 +1041,7 @@ def _hf_repeat_spread_ok(
     if len(occurrences) < _HF_MIN_OCCURRENCES:
         return "insufficient_repeats"
     smoothed = np.stack([
-        _ladder_smooth(grid_hz, np.interp(grid_hz, o.freqs_hz, o.magnitude_db))
+        ladder_smooth(grid_hz, np.interp(grid_hz, o.freqs_hz, o.magnitude_db))
         for o in occurrences
     ])
     spread = np.max(smoothed, axis=0) - np.min(smoothed, axis=0)
@@ -1843,7 +1843,7 @@ def fit_driver_linearization(
     """
     grid_hz = envelope.freqs_hz
     measured_db = np.interp(grid_hz, primary.freqs_hz, primary.magnitude_db)
-    smoothed_db = _ladder_smooth(grid_hz, measured_db)
+    smoothed_db = ladder_smooth(grid_hz, measured_db)
 
     envelope_mask = envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB
     if not envelope_mask.any():
@@ -1975,7 +1975,7 @@ def fit_driver_linearization(
         # The MEASUREMENT, not the working curve — #2599's bound exists
         # because the two disagree once cuts are placed.
         measured_db=smoothed_db,
-        boost_evidence_db=[_ladder_smooth(grid_hz, np.interp(grid_hz, row.freqs_hz, row.magnitude_db))
+        boost_evidence_db=[ladder_smooth(grid_hz, np.interp(grid_hz, row.freqs_hz, row.magnitude_db))
                            for row in boost_evidence],
         lift_mask=lift_mask, binding=binding,
         contribution=None if centred_target is None else centred_target.contribution,

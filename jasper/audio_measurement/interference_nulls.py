@@ -56,6 +56,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from jasper.audio_measurement.alignment import parabolic_peak
 from jasper.audio_measurement.peq import bell_half_width_oct
 from jasper.audio_measurement.spatial_combine import (
     ECHO_CONFIDENCE_FLOOR,
@@ -1185,6 +1186,7 @@ def feature_position_variance(
     curves: Sequence[tuple[np.ndarray, np.ndarray]], *, freq_hz: float, q: float,
     gain_db: float, positions_total: int,
 ) -> dict[str, Any]:
+    """Track extrema on curves sampled uniformly in log frequency."""
     bw = bell_half_width_oct(q)
     lo, hi = freq_hz * 2 ** -bw, freq_hz * 2 ** bw
     flank_lo, flank_hi = freq_hz * 2 ** -(bw + FLANK_SEARCH_MAX_OCT), freq_hz * 2 ** (bw + FLANK_SEARCH_MAX_OCT)
@@ -1196,7 +1198,8 @@ def feature_position_variance(
         deepest = max((c for c in candidates if lo <= c.f_hz <= hi),
                       key=lambda c: c.depth_db, default=None)
         if deepest is not None and deepest.depth_db >= FEATURE_MIN_DEPTH_DB:
-            frequencies.append(deepest.f_hz)
+            refined = parabolic_peak(signed, deepest.index)
+            frequencies.append(float(2 ** np.interp(refined, np.arange(freqs.size), np.log2(freqs))))
     count = len(frequencies)
     cv = float(np.std(frequencies, ddof=1) / np.mean(frequencies) * 100) if count >= 2 else None
     if count < FEATURE_MIN_DEEP_POSITIONS:

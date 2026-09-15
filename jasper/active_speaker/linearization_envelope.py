@@ -105,7 +105,7 @@ def _validate_driver_class(driver_class: str) -> None:
         )
 
 
-def _ladder_smooth(grid_hz: np.ndarray, magnitude_db: np.ndarray) -> np.ndarray:
+def ladder_smooth(grid_hz: np.ndarray, magnitude_db: np.ndarray) -> np.ndarray:
     """1/6 oct below 4 kHz, 1/3 oct to 10 kHz, 1/2 oct above, hard-stitched.
     Mirrors compute_sigma.py's ``ladder_smooth_loggrid``."""
     fine = smooth_fractional_octave(grid_hz, magnitude_db, fraction=6)
@@ -156,7 +156,7 @@ def compute_sigma_curve(
     centered_curves = []
     for occurrence in occurrences:
         resampled_db = np.interp(grid_hz, occurrence.freqs_hz, occurrence.magnitude_db)
-        smoothed_db = _ladder_smooth(grid_hz, resampled_db)
+        smoothed_db = ladder_smooth(grid_hz, resampled_db)
         ref_db = float(np.mean(smoothed_db[valid_mask]))
         centered_curves.append(smoothed_db - ref_db)
 
@@ -488,7 +488,7 @@ def compose_envelope(
     # not isclose, so a tiny but non-zero permission keeps it.
     hard_zero_mask = smoothable_value <= 0.0
     masked_depth_db = np.where(in_band_mask, smoothable_value, 0.0)
-    smoothed_depth_db = _ladder_smooth(grid_hz, masked_depth_db)
+    smoothed_depth_db = ladder_smooth(grid_hz, masked_depth_db)
     smoothed_depth_db = np.where(
         in_band_mask & ~spatially_excluded_mask & ~hard_zero_mask,
         smoothed_depth_db,
