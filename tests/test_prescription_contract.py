@@ -149,8 +149,8 @@ def test_speaker_limits_come_from_the_declared_hardware_and_round(round_bank):
     expected = driver.driver_passbands_from_safety_profile(draft["driver_safety_profile"])
     assert speaker["driver"]["bounds"]["passbands_hz"] == {role: list(band) for role, band in expected.items()}
     bounds = speaker["driver"]["bounds"]
-    assert bounds["max_composed_boost_db"] == driver.DRIVER_MAX_COMPOSED_BOOST_DB
-    assert bounds["max_spl_spend_bound_db"] == driver.MAX_SPL_SPEND_BOUND_DB
+    assert set(bounds["boost_headroom"]) == set(expected)
+    assert all(row["program_headroom_remaining_db"] == 40.0 for row in bounds["boost_headroom"].values())
     assert speaker["blend"]["bounds"]["boost_route"]["available"] is False
     assert speaker["blend"]["bounds"]["boost_route"]["reason"] == blend.BOOST_ROUTE_UNAVAILABLE
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
@@ -336,3 +336,31 @@ def test_applied_preset_fallback_matches_the_packets_reader(round_bank, capsys, 
     )
     assert contract_digests(contracts) == packet["contracts"]
     assert (contracts["speaker"]["alignment"]["bounds"]["fc_hz"] is not None) is valid
+
+
+@pytest.mark.parametrize("manifest", [
+    {"sets": [{"takes": [{"selected": True, "level": {
+        "level_db": -21.09, "loudest_half_second_db_spl": 40.0, "stimulus_dbfs": -6.0,
+    }}]}]}, {}, {"sets": [None, {"takes": [None, {}]}, {}]}, {"sets": None},
+])
+def test_speaker_contract_publishes_playback_cost_with_unreadable_measurements(round_bank, manifest):
+    bank, session = round_bank
+    sources = contract_sources(session)
+    sources["candidate"]["role_attenuations_db"] = {"woofer": 0.0, "tweeter": -9.52}
+    sources["candidate"]["linearization"] = {"tweeter": {"filters": [
+        {"biquad_type": "Peaking", "freq": 12000.0, "gain": 6.0, "q": 1.0},
+    ]}}
+    sources["manifest"] = manifest
+    draft = json.loads((bank / "design-draft.json").read_text())
+    for target in draft["driver_safety_profile"]["targets"]:
+        target["level_duration_limits"] = {"max_effective_peak_dbfs": -8.0 if target["role"] == "woofer" else -33.2}
+    bounds = prescription_contracts(**sources, draft=draft)["speaker"]["driver"]["bounds"]["boost_headroom"]
+    assert bounds["tweeter"]["composed_boost_db"] == pytest.approx(6.0)
+    assert bounds["woofer"]["composed_boost_db"] == 0.0
+    for row in bounds.values():
+        assert row["program_headroom_spent_db"] == 0.0
+        assert row["program_headroom_remaining_db"] == 40.0
+        assert row["max_program_headroom_db"] == 40.0
+        assert row["binding"] is None
+        assert row["session_volume_db"] == (-21.09 if manifest.get("sets") and manifest["sets"][0] else None)
+        assert row["spl_headroom_db"] == (42.0 if row["session_volume_db"] is not None else None)

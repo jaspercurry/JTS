@@ -30,14 +30,14 @@ from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.camilla_config_contract import SHELF_Q as _HIGHSHELF_Q
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
-from .branch_chain import chain_response
-from .crossover_v2._prescription_common import BlendPrescriptionRefused
+from .branch_chain import chain_response, branch_headroom_db
 from .branch_target import (
     SIGNIFICANT_GAIN_DB,
     STOPBAND_GAIN_MARGIN_OCTAVES,
     BranchTarget,
     octave_scaled,
 )
+from .camilla_yaml import MAX_PROGRAM_HEADROOM_DB
 from .linearization_budget import DEFAULT_FIT_BUDGET, normalise_fit_budget
 from .linearization_envelope import (
     ENVELOPE_CEILING_SENTINEL_DB,
@@ -75,11 +75,6 @@ SHELF_SLOPE_THRESHOLD_DB_PER_OCT: float = 3.0
 # Hard cap on filters per driver (shelf + peaking) — design doc "Fitting
 # policy".
 MAX_FILTERS_PER_DRIVER: int = 8
-
-# Per-filter BOOST ceiling, dB — deliberately equal to PER_FILTER_CUT_CAP_DB.
-# A REALIZATION bound, not a policy cap (survives the owner's "arbitrary gain
-# caps GO" ruling): TOTAL boost stays unbounded because a cascade composes.
-PER_FILTER_BOOST_CAP_DB: float = 12.0
 
 # A bin below this allowed-depth is "the envelope permits nothing here"
 # (float noise or a taper's asymptotic tail).
@@ -214,7 +209,7 @@ class FitVocabulary:
 
     allow_boost: bool = False
     #: One biquad's boost ceiling, dB.
-    per_filter_boost_cap_db: float = PER_FILTER_BOOST_CAP_DB
+    per_filter_boost_cap_db: float = DEFAULT_FIT_BUDGET["max_gain_db"]
     #: Bands no LIFT filter may be AIMED at (#1967) — enforced per filter on
     #: the emitted response, never as a whole-cascade veto. Cuts untouched.
     #: Empty means "nothing contradicted", not "no evidence available".
@@ -225,7 +220,7 @@ class FitVocabulary:
     boost_floor_hz: float | None = None
     max_gain_db: float = PER_FILTER_CUT_CAP_DB
     max_giveback_db: float = MAX_NORMALIZATION_SPEND_DB
-    composed_boost_cap_db: float | None = None
+    composed_boost_cap_db: float = MAX_PROGRAM_HEADROOM_DB
 
     def __post_init__(self) -> None:
         normalise_fit_budget(self.budget_dict())
@@ -389,7 +384,7 @@ class LinearizationFilter:
     biquad_type: str  # "Peaking" | "Highshelf" | "Lowshelf"
     freq: float
     q: float
-    # dB; may be positive, up to PER_FILTER_BOOST_CAP_DB.
+    # dB.
     gain: float
 
     def to_dict(self) -> dict[str, float | str]:
@@ -489,8 +484,7 @@ class LinearizationFit:
     def to_dict(self) -> dict[str, Any]:
         return {
             "role": self.role,
-            **({"composed_boost_cap_db": self.vocabulary.composed_boost_cap_db}
-               if self.vocabulary.composed_boost_cap_db is not None else {}),
+            "composed_boost_cap_db": self.vocabulary.composed_boost_cap_db,
             "budget": self.vocabulary.budget_dict(),
             "budget_binding": list(self.budget_binding),
             "filters": [f.to_dict() for f in self.filters],
@@ -1717,23 +1711,15 @@ def _lift_stage(
         realized_db = 20.0 * np.log10(np.maximum(
             np.abs(complex_correction_response(tuple(boosts), grid_hz)), 1e-12,
         ))
-    if vocabulary.composed_boost_cap_db is not None:
-        from .crossover_v2.driver_prescription import _check_composed, COMPOSED_BOOST_EXCEEDED  # lazy: prescription imports this fit module
-
-        while boosts:
-            try:
-                _check_composed(tuple({"role": envelope.role, **f.to_dict()} for f in boosts),
-                                {envelope.role: (f_low, f_high)}, max_boost_db=vocabulary.composed_boost_cap_db)
-                break
-            except BlendPrescriptionRefused as exc:
-                if exc.reason != COMPOSED_BOOST_EXCEEDED:
-                    raise
-                boosts.pop()
-                if binding is not None:
-                    binding.add("composed_boost_cap_db")
-        realized_db = 20.0 * np.log10(np.maximum(
-            np.abs(complex_correction_response(tuple(boosts), grid_hz)), 1e-12,
-        ))
+    while boosts and branch_headroom_db(
+        [f.to_dict() for f in (*reduced, *boosts)],
+    ) > vocabulary.composed_boost_cap_db:
+        boosts.pop()
+        if binding is not None:
+            binding.add("composed_boost_cap_db")
+    realized_db = 20.0 * np.log10(np.maximum(
+        np.abs(complex_correction_response(tuple(boosts), grid_hz)), 1e-12,
+    ))
     return _Lift(
         tuple([*reduced, *boosts]), requested_db, from_reduced_cuts_db,
         float(np.max(realized_db)), "",
@@ -2030,10 +2016,10 @@ def fit_driver_linearization(
 
     # Per-filter caps are HARD invariants; re-prove here rather than trust
     # each stage's own clamp.
-    if any(f.gain < -vocabulary.max_gain_db - 1e-6 for f in filters):
-        raise RuntimeError("linearization fit exceeded the per-filter cut cap")
+    if any(abs(f.gain) > vocabulary.max_gain_db + 1e-6 for f in filters):
+        raise RuntimeError("linearization fit exceeded the declared gain budget")
     if any(
-        f.gain > min(vocabulary.per_filter_boost_cap_db, vocabulary.max_gain_db) + 1e-6 for f in filters
+        f.gain > vocabulary.per_filter_boost_cap_db + 1e-6 for f in filters
     ):
         raise RuntimeError("linearization fit exceeded the per-filter boost cap")
 

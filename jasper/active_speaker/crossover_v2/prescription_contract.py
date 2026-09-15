@@ -14,14 +14,17 @@ from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any
 
-from jasper.active_speaker.branch_chain import beaming_onset_hz
+from jasper.active_speaker.branch_chain import beaming_onset_hz, boost_headroom_by_role
 from .conductor_context import _resolve_radiating_diameter_by_role
 from jasper.active_speaker.excitation_safety_plan import (
     ExcitationSafetyPlanError,
     resolve_driver_measurement_band_hz,
     resolve_driver_protection_slope_db_per_octave,
 )
-from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, SIDES_BY_LAYOUT
+from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB, _branch_context
+from jasper.active_speaker.linearization_fit import linearization_filters_by_role
+from jasper.active_speaker.measured_crossover_candidate import room_peqs_from_correction
+from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, SIDES_BY_LAYOUT, SPL_RAISE_MARGIN_DB
 from jasper.audio_measurement import room_limits as rl
 from jasper.bass_extension import dynamic as bass
 from jasper.json_fields import finite_float
@@ -109,13 +112,36 @@ def _preset(candidate: Mapping[str, Any]) -> ActiveSpeakerPreset | None:
 
 
 def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
-             preset: ActiveSpeakerPreset | None) -> dict[str, Any]:
+             preset: ActiveSpeakerPreset | None, candidate: Mapping[str, Any],
+             manifest: Mapping[str, Any]) -> dict[str, Any]:
     blend_format = blend.prescription_response_format()
     driver_format = driver.driver_prescription_response_format()
     alignment_format = alignment.alignment_prescription_response_format()
     topology_format = topology.topology_prescription_response_format()
     safety = _mapping(draft.get("driver_safety_profile"))
     passbands = driver.driver_passbands_from_safety_profile(safety)
+    groups = manifest.get("sets")
+    takes = [take for group in (groups if isinstance(groups, list) else [])
+             if isinstance(group, Mapping) and isinstance(group.get("takes"), list)
+             for take in group["takes"] if isinstance(take, Mapping) and take.get("selected")]
+    levels = [value for take in takes if (value := finite_float(_mapping(take.get("level")).get("level_db"))) is not None]
+    spl_margins = []
+    if preset is not None:
+        for take in takes:
+            level = _mapping(take.get("level"))
+            spl = finite_float(level.get("loudest_half_second_db_spl"))
+            if spl is not None:
+                spl_margins.append(max(0.0, preset.safety.max_commissioning_level_db_spl - spl - SPL_RAISE_MARGIN_DB))
+    context = _branch_context(preset, {
+        role: {"gain_db": trim} for role, trim in _mapping(candidate.get("role_attenuations_db")).items()
+    }) if preset is not None else {role: ((), 0.0) for role in passbands}
+    headroom = boost_headroom_by_role(
+        branch_context=context,
+        linearization=linearization_filters_by_role(_mapping(candidate.get("linearization"))),
+        room_peqs=room_peqs_from_correction(_mapping(candidate.get("room_correction")), preset) if preset else (),
+        session_volume_db=max(levels) if levels and len(levels) == len(takes) else None,
+        spl_headroom_db=min(spl_margins) if spl_margins else None,
+    )
     band = _mapping(_mapping(receipt.get("round_measurements")).get("blend")).get("band_hz")
     fc = topology.candidate_topology(SimpleNamespace(source_preset=preset))
     corner = fc["fc_hz"] if fc else None
@@ -179,9 +205,8 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
                 "max_filters_per_role": driver.DRIVER_MAX_FILTERS_PER_ROLE,
                 "q_range_cut": [driver.EVALUABLE_Q_MIN, driver.EVALUABLE_Q_MAX],
                 "q_max_boost": driver.DRIVER_MAX_BOOST_Q,
-                "max_filter_boost_db": driver.DRIVER_MAX_FILTER_BOOST_DB,
-                "max_composed_boost_db": driver.DRIVER_MAX_COMPOSED_BOOST_DB,
-                "max_spl_spend_bound_db": driver.MAX_SPL_SPEND_BOUND_DB,
+                "boost_headroom": headroom,
+                "boost_headroom_rule": f"Program headroom spent must not exceed {MAX_PROGRAM_HEADROOM_DB:g} dB",
                 "shelf_rule": driver_format["bounds"]["where_a_shelf_may_sit"],
                 "shelf_q": driver.SHELF_Q,
             },
@@ -335,11 +360,12 @@ def prescription_contracts(*, draft: Mapping[str, Any] | None = None,
                            room_persistence: Mapping[str, Any] | None = None,
                            room_ceiling: Mapping[str, Any] | None = None,
                            bass_evidence: Mapping[str, Any] | None = None,
-                           applied_profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                           applied_profile: Mapping[str, Any] | None = None,
+                           manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
     candidate = candidate or {}
     preset = _preset(candidate) or _preset({"source_preset":
         _mapping((applied_profile or {}).get("recomposition_snapshot")).get("preset")})
-    return {"speaker": _speaker(draft or {}, receipt or {}, preset),
+    return {"speaker": _speaker(draft or {}, receipt or {}, preset, candidate, manifest or {}),
             "room": _room(room_median or {}, room_persistence or {}, room_ceiling or {}, preset),
             "bass": _bass(bass_evidence or {})}
 

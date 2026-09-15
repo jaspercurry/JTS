@@ -41,7 +41,6 @@ from jasper.active_speaker.linearization_fit import (
     LIFT_SUPPRESSION_REASONS,
     MAX_FILTERS_PER_DRIVER,
     MAX_NORMALIZATION_SPEND_DB,
-    PER_FILTER_BOOST_CAP_DB,
     PER_FILTER_CUT_CAP_DB,
     _CUT_REDUCTION_EPS_DB,
     _ENVELOPE_NONZERO_EPS_DB,
@@ -1813,23 +1812,21 @@ def test_a_boost_vocabulary_fills_a_dip_a_cut_only_fit_cannot():
     assert boosted.residual_max_db < cut_only.residual_max_db - 3.0
 
 
-def test_total_boost_is_uncapped_but_one_filter_is_not():
-    """The owner's ruling, precisely: arbitrary caps on the CORRECTION go, the
-    per-filter realization bound stays. A gain past that bound raises rather
-    than being silently clamped — same posture as the cut side."""
+def test_fit_respects_the_supplied_headroom():
+
     import jasper.active_speaker.linearization_fit as fit_mod
     from jasper.audio_measurement.peq import PEQ
 
     resp, envelope = _dip_response()
-    vocab = FitVocabulary(allow_boost=True)
+    vocab = FitVocabulary(allow_boost=True, per_filter_boost_cap_db=2.0)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
             fit_mod, "design_peq",
             lambda *a, **k: [
-                PEQ(freq=1500.0, q=2.0, gain=PER_FILTER_BOOST_CAP_DB + 1.0)
+                PEQ(freq=1500.0, q=2.0, gain=3.0)
             ],
         )
-        with pytest.raises(RuntimeError, match="per-filter boost cap"):
+        with pytest.raises(RuntimeError):
             fit_driver_linearization(resp, envelope, vocabulary=vocab)
 
 

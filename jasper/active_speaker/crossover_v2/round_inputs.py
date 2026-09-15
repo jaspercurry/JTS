@@ -300,6 +300,7 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
         inputs, banked_round_of(session_dir) or session_dir, ROOM_ARTIFACT, set_id,
     )) or {}
     return {"candidate": _read_json_mapping(artifact_dir / "candidate.json") or {},
+            "manifest": _read_json_mapping(artifact_dir / RUN_MANIFEST_FILENAME) or {},
             **{f"room_{section}": room.get(section, {})
                for section in ("median", "persistence", "ceiling")}}
 

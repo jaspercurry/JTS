@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
+from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role, boost_headroom_by_role
 from jasper.active_speaker.alignment_evidence import alignment_evidence
 from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, boost_allowed, fit_branches
@@ -23,17 +23,16 @@ from jasper.active_speaker.crossover_v2.round_views import response_from_banked_
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve, ladder_smooth
 from jasper.active_speaker.linearization_budget import fit_budgets_by_role, normalise_fit_budget
-from jasper.active_speaker.linearization_fit import FitVocabulary
+from jasper.active_speaker.linearization_fit import FitVocabulary, linearization_filters_by_role
+from jasper.active_speaker.measured_crossover_candidate import room_peqs_from_correction
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_SPEAKER, REGIME_SUMMED, run_purpose
-from jasper.active_speaker.profile import CrossoverRegion
+from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
 from jasper.audio_measurement.bundles import relative_artifact_path
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.spatial_combine import _band_spread, octave_bands_hz
 
 from .crossover_v2.round_inputs import resolve_set
-
-_DESIGN_BOOST_CAP_DB = 3.0
 
 
 class SpeakerFitUnreadable(RoundViewsError):
@@ -143,9 +142,16 @@ def _production_vocabulary(
         plan = open_stage(
             STAGE_MEASURE_CAPABILITIES, index_phase_map=dict(enumerate(state["session_phases"])),
         ).plan
-    sections = sections_by_role(
-        CrossoverRegion.from_mapping(region)
-        for region in candidate["source_preset"].get("crossover_regions") or ()
+    sections = sections_by_role(CrossoverRegion.from_mapping(region)
+                                for region in candidate["source_preset"].get("crossover_regions") or ())
+    trims = candidate.get("role_attenuations_db") or {}
+    linearization = linearization_filters_by_role(candidate.get("linearization") or {})
+    room = candidate.get("room_correction") or {}
+    headroom = boost_headroom_by_role(
+        branch_context={role: (sections.get(role, ()), float(trims.get(role, 0.0)))
+                        for role in sections.keys() | budgets.keys() | trims.keys() | linearization.keys()},
+        linearization=linearization,
+        room_peqs=room_peqs_from_correction(room, ActiveSpeakerPreset.from_mapping(candidate["source_preset"])) if room else (),
     )
     vocabularies = {}
     for role, budget in budgets.items():
@@ -162,10 +168,11 @@ def _production_vocabulary(
                 cloud_phase_planned=PHASE_CLOUD_MEASURE in plan.phases,
                 cloud_present=bool(candidate.get("exclusion_evidence")),
             )
-        vocabulary = FitVocabulary(allow_boost=allowed).with_budget(budget)
+        remaining = headroom[role]["program_headroom_remaining_db"]
+        vocabulary = FitVocabulary(allow_boost=allowed, per_filter_boost_cap_db=remaining,
+                                   composed_boost_cap_db=remaining).with_budget(budget)
         if design_cloud and allowed:
-            vocabulary = replace(vocabulary, per_filter_boost_cap_db=_DESIGN_BOOST_CAP_DB, composed_boost_cap_db=_DESIGN_BOOST_CAP_DB,
-                                 boost_floor_hz=max(radiating_band_hz(sections[role])[0], vocabulary.boost_floor_hz or 0.0))
+            vocabulary = replace(vocabulary, boost_floor_hz=max(radiating_band_hz(sections[role])[0], vocabulary.boost_floor_hz or 0.0))
         vocabularies[role] = vocabulary
     return vocabularies
 
@@ -238,7 +245,7 @@ def speaker_fit(
     branches = fit_branches(
         drivers, source_preset=candidate["source_preset"], mic_tiers={driver.role: tier for driver in drivers},
         vocabulary=vocabularies,
-        cloud={role: clouds[role] for role in bands if vocabularies[role].composed_boost_cap_db is not None},
+        cloud={role: clouds[role] for role in bands if role in clouds},
     )
     linearization = {driver.role: {
         "vocabulary": "bounded_boost" if vocabularies[driver.role].allow_boost else "cut_only",

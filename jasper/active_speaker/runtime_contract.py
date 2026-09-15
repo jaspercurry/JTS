@@ -58,7 +58,6 @@ from .startup_hold import staged_startup_hold_active
 from .camilla_yaml import (
     BASELINE_HEADROOM_DB,
     BASELINE_LIMITER_CLIP_LIMIT_DB,
-    MAX_LINEARIZATION_BOOST_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
     baseline_protection_name,
@@ -1824,20 +1823,8 @@ def _linearization_filter_safe(
     *,
     name: str,
     biquad_types: tuple[str, ...],
-    max_gain_db: float,
 ) -> bool:
-    """One named linearization Biquad proves its type and gain for its slot.
-
-    The shelf slot allows Highshelf or Lowshelf, the peak slot Peaking, the
-    taper slot Highshelf — the same posture the fit engine enforces, re-proved
-    independently here against the emitted graph.
-
-    ``max_gain_db`` is the per-filter REALIZATION cap: past it an RBJ biquad's
-    Q-dependent transition stops being a faithful realization of the shape asked
-    for. Cuts are unconditionally safe. It is NOT the clipping rail — that is
-    the whole chain's business, proved once per branch in
-    :func:`_consume_linearization_chain` over the evaluated peak, because a
-    +6 dB boost sitting inside its own crossover's stopband costs nothing."""
+    """Check slot shape and finite gain; the composed branch owns headroom."""
 
     if _filter_type(payload, name) != "Biquad":
         return False
@@ -1845,7 +1832,7 @@ def _linearization_filter_safe(
     if str(params.get("type") or "") not in biquad_types:
         return False
     gain = _strict_finite_number(params.get("gain"))
-    return gain is not None and gain <= max_gain_db
+    return gain is not None
 
 
 def _consume_linearization_chain(
@@ -1899,7 +1886,6 @@ def _consume_linearization_chain(
     if index < len(chain) and chain[index] == shelf_name:
         if not _linearization_filter_safe(
             payload, name=shelf_name, biquad_types=("Highshelf", "Lowshelf"),
-            max_gain_db=MAX_LINEARIZATION_BOOST_DB,
         ):
             return index, False
         emitted.append(_linearization_biquad(payload, shelf_name))
@@ -1911,7 +1897,6 @@ def _consume_linearization_chain(
             break
         if not _linearization_filter_safe(
             payload, name=peak_name, biquad_types=("Peaking",),
-            max_gain_db=MAX_LINEARIZATION_BOOST_DB,
         ):
             return index, False
         emitted.append(_linearization_biquad(payload, peak_name))
@@ -1921,7 +1906,6 @@ def _consume_linearization_chain(
     if index < len(chain) and chain[index] == taper_name:
         if not _linearization_filter_safe(
             payload, name=taper_name, biquad_types=("Highshelf",),
-            max_gain_db=MAX_LINEARIZATION_BOOST_DB,
         ):
             return index, False
         emitted.append(_linearization_biquad(payload, taper_name))

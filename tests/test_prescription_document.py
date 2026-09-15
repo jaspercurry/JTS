@@ -95,7 +95,8 @@ def test_empty_clears_and_omitted_layers_inherit(base, section, empty):
 @pytest.fixture
 def evidence(bass_packet):
     return PrescriptionEvidence(
-        {"draft": _draft(), "room_median": _room_median(), "bass_evidence": bass_packet},
+        {"draft": _draft(), "room_median": _room_median(), "bass_evidence": bass_packet,
+         "manifest": {"sets": [{"takes": [{"selected": True, "level": {"level_db": -21.09}}]}]}},
         {"packet_fingerprint": "p" * 64}, MEDIAN_SHA256, bass_packet["round_id"],
     )
 
@@ -133,7 +134,7 @@ def bass_round(round_bank, bass_packet):
 
 @pytest.mark.parametrize("section, payload, code", [
     ("room", room_document(filters=[{"freq": NULL_HZ, "q": 1, "gain": 1}]), "boost_not_admitted"),
-    ("driver", driver_document([{"role": "woofer", "biquad_type": "Peaking", "freq": 900, "q": 1, "gain": 13}], {"packet_fingerprint": "p" * 64}), "driver_filter_boost_too_high"),
+    ("driver", driver_document([{"role": "woofer", "biquad_type": "Peaking", "freq": 900, "q": 1, "gain": 50}], {"packet_fingerprint": "p" * 64}), "driver_composed_boost_exceeded"),
     ("topology", {}, "composition_topology_required"),
     ("blend", {"kind": "unknown"}, "prescription_kind_unknown"),
 ])
@@ -476,3 +477,24 @@ def test_room_digest_names_judged_envelope_and_inheritance_drops_stale_match(bas
     assert inherited.analysis["resolution"]["room"] == "base"
     assert inherited.room_correction == child.room_correction
     assert inherited.analysis["room_source"] == source
+
+
+@pytest.mark.parametrize("gain,trim,expected_spend", [(6.0, -9.52, 0.0), (39.0, 0.0, 40.0)])
+def test_driver_door_prices_the_resolved_program(base, bank, evidence, gain, trim, expected_spend):
+    from tests.test_active_speaker_measured_crossover_candidate import _room_basis
+
+    boosted_room = _room_correction(
+        sides={"mono": [{"freq": 100.0, "q": 2.0, "gain": 2.0}]},
+        basis=_room_basis(admitted_boosts_hz=[100.0]), boost_db_total=2.0, level_cost_db=2.0,
+    )
+    base = publish_authored_candidate(replace(base.candidate, room_correction=boosted_room), root=bank)
+    section = driver_document([
+        {"role": "tweeter", "biquad_type": "Peaking", "freq": 12000.0, "q": 1.0, "gain": gain},
+    ], dict(evidence.packet), pinned_trim_db={"tweeter": trim})
+    child = judge_prescription_document(document(base.fingerprint, {"driver": section, "room": {}}),
+                                        base=base, evidence=evidence)
+    text = compile_candidate_config(child, playback_device="null")
+    prove_candidate_config(child, text)
+    assert child.linearization["tweeter"]["filters"][0]["gain"] == gain
+    spent = -yaml.safe_load(text)["filters"]["active_baseline_headroom"]["parameters"]["gain"]
+    assert spent == pytest.approx(expected_spend, abs=0.01)
