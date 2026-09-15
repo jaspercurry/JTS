@@ -80,12 +80,11 @@ class ManualMicRuntime:
     pre-roll from the room mic.
     """
 
-    __slots__ = ("source_id", "mic", "device")
+    __slots__ = ("source_id", "mic")
 
-    def __init__(self, source_id: str, mic: MicCapture, device: str):
+    def __init__(self, source_id: str, mic: MicCapture):
         self.source_id = source_id
         self.mic = mic
-        self.device = device
 
 
 async def keepalive_ticks() -> "AsyncIterator[None]":

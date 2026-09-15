@@ -5,8 +5,8 @@
 """The shared fake push-to-talk remote every WakeLoop/PushToTalk test wants.
 
 Every push-to-talk test builds the same `ManualMicRuntime` for the one
-remote source the fixtures care about — the source id and device path
-never vary, only whether the test needs a mic double that actually behaves
+remote source the fixtures care about — the source id
+never varies, only whether the test needs a mic double that actually behaves
 (`_IdleMic()` and friends) rather than a bare sentinel.
 """
 from __future__ import annotations
@@ -22,5 +22,5 @@ def remote_mic(mic: object | None = None) -> ManualMicRuntime:
     test needs frame behavior.
     """
     return ManualMicRuntime(
-        "wiim_remote_2", object() if mic is None else mic, "udp:9892",
+        "wiim_remote_2", object() if mic is None else mic,
     )
