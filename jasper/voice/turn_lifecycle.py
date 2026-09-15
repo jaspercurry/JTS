@@ -529,7 +529,6 @@ class TurnLifecycle:
         if self.turn is None:
             return
         self.conversation_end_requested = True
-        self.turn.request_local_interrupt()
         self._spawn(self.end("conversation_ended"), name="conversation-end")
 
     async def finish_response(self, reason: str) -> None:
@@ -778,9 +777,7 @@ class TurnLifecycle:
         async def end_segment() -> None:
             if episode is not None and self._output.gate.is_current(episode):
                 try:
-                    # Endings where the queued tail must not reach the room:
-                    # output already failed, or the user asked us to stop.
-                    if reason in FAILED_END_REASONS or reason == "conversation_ended":
+                    if reason in FAILED_END_REASONS:
                         await self._output.tts.flush()
                 finally:
                     await self._output.tts.end_segment()

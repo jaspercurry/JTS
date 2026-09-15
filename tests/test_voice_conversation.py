@@ -56,14 +56,50 @@ async def test_endpointed_answer_closes_the_turn_once_playout_drains():
 
 
 async def test_end_conversation_tool_closes_even_without_more_mic_frames():
-    loop = answered_loop()
+    written, draining, drained = (asyncio.Event() for _ in range(3))
+
+    async def hold_write():
+        written.set()
+        await asyncio.Event().wait()
+
+    async def drain():
+        draining.set()
+        await drained.wait()
+
+    tts = FakeTts(on_drain=drain)
+    loop = answered_loop(tts=tts)
+    turn = OpenAILiveTurn(OpenAILiveConnection(api_key="test"), time.monotonic())
+    goodbye = b"\x00\x40" * 120
+    turn._reserve_playout = False
+    turn._enqueue_audio(AudioOutChunk(goodbye))
+    turn._enqueue_audio(AudioOutChunk(b"\x00\x20" * 120))
+    loop._turns.turn = turn
+    loop._wake_telemetry.outcome = AsyncMock()
+    loop._turns.output_episode = await loop._assistant_output.begin_turn_episode(None)
+    playback = asyncio.create_task(play_responses(turn, tts, on_first_write=hold_write))
+    loop._turns.bg_tasks = {playback}
     registry = ToolRegistry()
     register_conversation_tools(registry, loop._turns.request_conversation_end)
-    result = await dispatch_tool(registry, "end_conversation", {})
-    await wait_until(lambda: loop._turns.state is State.WAKE)
-    assert result == {"status": "conversation_ended"}
-    assert loop._usage_store.close_calls == 1
-    await loop._cancel_fire_and_forget_tasks()
+    try:
+        await wait_signalled(written, "goodbye accepted", producer=playback)
+        result = await dispatch_tool(registry, "end_conversation", {})
+        await wait_signalled(draining, "goodbye and chirp drain")
+        assert tts.flush_calls == 0
+        assert tts.end_segment_calls == 1
+        assert tts.writes == [goodbye, loop._assistant_output._chirp_off_pcm]
+        assert tts.calls[-3:] == ["end_segment", "write_segment", "wait_drained"]
+        assert playback.done()
+        assert loop._turns.state is State.SESSION
+        loop._wake_telemetry.outcome.assert_awaited_once_with("completed", "conversation_ended")
+        drained.set()
+        await wait_until(lambda: loop._turns.state is State.WAKE)
+        assert result == {"status": "conversation_ended"}
+        assert loop._usage_store.close_calls == 1
+    finally:
+        drained.set()
+        playback.cancel()
+        await asyncio.gather(playback, return_exceptions=True)
+        await loop._cancel_fire_and_forget_tasks()
 
 
 @pytest.mark.parametrize(
