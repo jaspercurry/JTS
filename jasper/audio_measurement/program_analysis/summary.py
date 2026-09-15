@@ -11,7 +11,7 @@ from typing import Any, Mapping
 
 from jasper.audio_measurement import gate_disclosure
 from .check import channel_map_isolation_db
-from .model import DRIVER_SNR_ALIGNMENT_KEY, DriverResponse
+from .model import DRIVER_SNR_ALIGNMENT_KEY, DriverResponse, TIMING_NEEDS_MEASUREMENT
 from .response import polarity_label
 
 
@@ -137,9 +137,10 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
     if candidate is not None:
         out["predicted_ripple_db"] = round(float(candidate.predicted_ripple_db), 4)
         out["alignment_objective"] = getattr(candidate, "alignment_objective", "")
-        for field in ("summed_fit_rms_db", "summed_fit_margin", "delay_interval_us"):
+        for field in ("residual_rms_db", "margin_db", "repeat_spread_db", "repeat_spread_us", "repeat_count", "timing_verdict", "timing_verification"):
             out[field] = getattr(candidate, field, None)
-        out["summed_fit_verdict"] = getattr(candidate, "summed_fit_verdict", "unavailable")
+        if getattr(candidate, "timing_verdict", None) == TIMING_NEEDS_MEASUREMENT:
+            out["delay_us"] = None
         seed_polarity_sign = getattr(candidate, "seed_polarity_sign", None)
         out["seed_polarity"] = (
             None if seed_polarity_sign is None
@@ -239,7 +240,6 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
             getattr(integrity, "clipped_segments", ()) or ()
         )
 
-    # Present on EVERY phase, unlike the integrity block above.
     ledger = getattr(analysis, "frame_ledger", None)
     if ledger is not None:
         out["frames_received"] = ledger.received_frames

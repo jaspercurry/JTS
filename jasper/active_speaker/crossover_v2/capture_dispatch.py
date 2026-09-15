@@ -19,7 +19,7 @@ from jasper.audio_measurement.program_analysis import (
 )
 from jasper.audio_measurement.program_analysis.check import alignment_snr_gain_adjustment
 from jasper.audio_measurement.program_analysis.model import (
-    ALIGNMENT_COMMITTED_SUMMED_FIT, DRIVER_SNR_ALIGNMENT_KEY, GAIN_MAX_DIGITAL_PEAK_DBFS, MeasurementPriors, ProgramAnalysis,
+    DRIVER_SNR_ALIGNMENT_KEY, GAIN_MAX_DIGITAL_PEAK_DBFS, MeasurementPriors, ProgramAnalysis,
 )
 from jasper.audio_measurement.program_analysis.summary import driver_alignment_snr_verdict, driver_snr_verdict
 from jasper.active_speaker.profile import SPL_RAISE_MARGIN_DB
@@ -130,7 +130,6 @@ def _assess_recording(
         "delay_estimate": alignment is not None and alignment.status == ALIGNMENT_OK,
         "level_solve": analysis.gain_plan is not None and analysis.gain_plan.snr_floor_ok,
     }
-    summed_fit = analysis.candidate is not None and analysis.candidate.alignment_objective == ALIGNMENT_COMMITTED_SUMMED_FIT
     for response in responses:
         for decision, snr_verdict in (("magnitude", driver_snr_verdict(response)),
                                       (DRIVER_SNR_ALIGNMENT_KEY, driver_alignment_snr_verdict(response))):
@@ -146,7 +145,7 @@ def _assess_recording(
                 if value is not None:
                     evidence[f"{prefix}.{key}"] = value
             evidence[f"{prefix}.verdict"] = snr_verdict or "unknown"
-            if snr_verdict == "insufficient" and not (decision == "alignment" and summed_fit):
+            if snr_verdict == "insufficient":
                 capabilities["delay_estimate" if decision == "alignment" else "magnitude"] = False
     if alignment is not None:
         evidence.update(alignment_status=alignment.status, delay_us=float(alignment.delay_us))
@@ -239,7 +238,7 @@ def _assess_recording(
     stop = finite_float(spl.get("ceiling_db_spl"))
     headroom = (max(0.0, min(stop, spl_stop_db_spl) - peak_spl - SPL_RAISE_MARGIN_DB)
                 if peak_spl is not None and stop is not None and spl_stop_db_spl is not None else None)
-    alignment_only = phase == "measure" and capabilities["magnitude"] and not summed_fit
+    alignment_only = phase == "measure" and capabilities["magnitude"]
     alignment_ceiling_db = (capped_gain_ceilings(caps_dbfs, session_volume_db,
                             dict.fromkeys(caps_dbfs, GAIN_MAX_DIGITAL_PEAK_DBFS))
                             if alignment_only and headroom is not None and caps_dbfs is not None else None)
@@ -251,7 +250,7 @@ def _assess_recording(
         max_raise_db=headroom or 0.0,
     )
     evidence.update(levels)
-    if adjusted and not summed_fit:
+    if adjusted:
         return replace(verdict, next="retake_louder", next_gain_db=program_peak(adjusted), charge="speaker",
                        evidence={**evidence, **{f"next_gain_db.{role}": gain for role, gain in adjusted.items()}})
     return verdict

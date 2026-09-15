@@ -5,13 +5,13 @@ import json
 import shlex
 from dataclasses import asdict, replace
 from pathlib import Path
-from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.alignment_evidence import round_alignment
+from jasper.active_speaker.crossover_envelope_v2 import _envelope
 from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
@@ -34,8 +34,7 @@ from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.gating import FLOOR_SEARCH_BOUND, f_trusted_floor_hz
 from jasper.audio_measurement.program import RoleBand, build_measure_program
 from jasper.audio_measurement.program_analysis import (
-    ALIGNMENT_OK, ALIGNMENT_COMMITTED_FLAT_SUM, ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
-    ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR, ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
+    ALIGNMENT_OK, ALIGNMENT_ESTIMATED_FLAT_SUM, ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     AlignmentEstimate, CrossoverCandidate, DriverResponse, ProgramAnalysis, RealizedLevelMatch,
 )
 from jasper.cli import crossover_prescriber, round_views
@@ -79,7 +78,7 @@ def speaker_round(tmp_path):
         candidate=CrossoverCandidate(trim_db={"woofer": 0, "tweeter": -3}, polarity="inverted",
                                      delay_us=157.5, predicted_ripple_db=1.25, confidence=0.9,
                                      seed_polarity_sign=1, alignment_seed_ripple_db=3.5, alignment_seed_delay_us=120,
-                                     alignment_objective="flat_sum_committed", flatness_improvement_db=2.25,
+                                     alignment_objective="flat_sum_estimate", flatness_improvement_db=2.25,
                                      anchor_delay_us=150, snap_delta_us=7.5),
     )
     match = RealizedLevelMatch(0, 0.5, 0.5, 3, True, (800, 1600), (1600, 3200))
@@ -497,54 +496,6 @@ def test_design_cloud_joins_retakes_without_borrowing_graphs(speaker_round, othe
         assert result["linearization"]["tweeter"]["composed_boost_cap_db"] == 40.0
 
 
-@pytest.mark.parametrize("off_axis,agree", [((210.591, 234.312, "inverted"), False), ((10.591, 34.312, "normal"), True)])
-def test_round_timing_folds_lobes_and_names_the_measured_sum(speaker_round, off_axis, agree):
-    root, record, *_ = speaker_round
-    inputs = round_inputs(root)
-    path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
-    group = manifest_set([(path, record)], set_id="timing")
-    take = group["takes"][0]
-    group["takes"] = [{**take, "take_id": f"take-{deg}", "pose": {"kind": "bearing", "deg": deg, "elevation_deg": 0},
-        "analysis": {"delay_us": delay, "polarity": polarity, "trim_db": {"woofer": 0, "tweeter": -3},
-                     "alignment_objective": "summed_fit_committed" if deg == 0 else "flat_sum_committed",
-                     "snr_waived_roles": ["tweeter"] if deg == 0 else []},
-        "quality": {"evidence": {"snr.tweeter.alignment.verdict": "insufficient"}}}
-        for deg, delay, polarity in ((0, 13, "normal"), (-20, off_axis[0], off_axis[2]), (20, off_axis[1], off_axis[2]))]
-    rows, verdict = round_alignment({"sets": [group]}, {}, fc_hz=2500)
-    assert len(rows) == 3
-    assert verdict == {
-        "folded_delay_us": {"0": 13.0, "-20": 10.591, "20": 34.312},
-        "spread_us": 23.721, "lobe_us": 200.0, "lobes_agree": agree,
-        "decided_by": {"pose": 0, "objective": "summed_fit_committed", "take_id": "take-0"},
-        "snr_waived": ["take-0"],
-    }
-
-
-def test_packet_timing_keeps_known_corner_when_one_contract_is_unavailable(speaker_round, monkeypatch):
-    root, record, *_ = speaker_round
-    inputs = round_inputs(root)
-    directory, _ = round_artifact_dir(inputs.session_dir)
-    path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
-    groups = []
-    for set_id, deg, delay, polarity in (("on-axis", 0, 13, "normal"), ("unavailable", -20, 210.591, "inverted"),
-                                       ("off-axis", 20, 234.312, "inverted")):
-        group = manifest_set([(path, record)], set_id=set_id)
-        group["takes"][0].update(take_id=set_id, pose={"kind": "bearing", "deg": deg, "elevation_deg": 0},
-                                 analysis={"delay_us": delay, "polarity": polarity, "trim_db": {"woofer": 0, "tweeter": -3}})
-        groups.append(group)
-    write_manifest(root, groups=groups)
-    contract = {"speaker": {"alignment": {"bounds": {"fc_hz": 2500}}}}
-    monkeypatch.setattr("jasper.active_speaker.round_packet.prescription_contracts",
-                        Mock(side_effect=[contract, ValueError(), contract]))
-    packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
-    assert packet["limits"]["unavailable"]["status"] == "unavailable"
-    verdict = packet["alignment_verdict"]
-    assert verdict["lobe_us"] == 200.0
-    assert verdict["folded_delay_us"] == {"0": 13.0, "-20": 10.591, "20": 34.312}
-    assert verdict["spread_us"] == 23.721
-    assert verdict["lobes_agree"] is False
-
-
 @pytest.mark.parametrize("held,declared,fault", [(False, False, "capture_clipped"), (True, True, "capture_clipped"), (True, False, None)])
 def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared, fault):
     root, record, program, *_ = speaker_round
@@ -552,9 +503,9 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
     directory, _ = round_artifact_dir(inputs.session_dir)
     candidate = CrossoverCandidate(trim_db={"woofer": 0, "tweeter": -3}, delay_us=120 if held else 191,
         polarity="normal" if held else "inverted", predicted_ripple_db=0.348, confidence=0 if held else 0.9,
-        alignment_objective=ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR if held else "summed_fit_committed",
-        summed_fit_rms_db=0.348, summed_fit_margin=1.1 if held else 2.12,
-        summed_fit_verdict="ambiguous" if held else "committed", delay_interval_us=(181, 201), seed_polarity_sign=1, alignment_seed_delay_us=120)
+        alignment_objective="saved_timing" if held else "summed_fit_committed",
+        residual_rms_db=0.348, margin_db=1.1 if held else 2.12,
+        timing_verdict="saved" if held else "measured", repeat_spread_db=.1, repeat_spread_us=2, repeat_count=3, seed_polarity_sign=1, alignment_seed_delay_us=120)
     analysis = analysis_json(ProgramAnalysis(phase="measure", program_id=program.program_id, locations=(),
         candidate=candidate, alignment=AlignmentEstimate(delay_us=candidate.delay_us, raw_delay_us=candidate.delay_us,
             parallax_us=4.5 if declared else 0, polarity=candidate.polarity, polarity_sign=1 if held else -1,
@@ -562,8 +513,8 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
     expected = {"objective": candidate.alignment_objective,
                 "committed": {"delay_us": candidate.delay_us, "polarity": candidate.polarity},
                 "seed": {"delay_us": 120, "polarity": "normal"},
-                "confidence": candidate.confidence, "summed_fit_rms_db": 0.348, "summed_fit_margin": candidate.summed_fit_margin,
-                "delay_interval_us": [181, 201], "summed_fit_verdict": candidate.summed_fit_verdict,
+                "confidence": candidate.confidence, "residual_rms_db": 0.348, "margin_db": candidate.margin_db,
+                "repeat_spread_db": .1, "repeat_spread_us": 2, "repeat_count": 3, "timing_verdict": candidate.timing_verdict,
                 "parallax_us": 4.5 if declared else 0, "driver_spacing_source": "declared" if declared else "unknown",
                 "snr": {"woofer": {"verdict": "ok", "shortfall_db": 0},
                         "tweeter": {"verdict": "insufficient", "shortfall_db": 8.5}}}
@@ -611,7 +562,6 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
         assert answer["applied"]["candidate"] == "applied-candidate"
         assert answer["applied"]["record"] == "a" * 12
         assert answer["applied"]["corrections"] == corrections
-        assert answer["applied"]["corrections_provenance"] == provenance
         assert answer["levels"] == levels
     assert all(t["alignment"] == levels for group in packet["sets"] for t in group["takes"])
     assert pair["take_id"] == take["take_id"]
@@ -752,18 +702,14 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
 
 
 @pytest.mark.parametrize("trial,delay,seed,polarity,status,objective,confidence,reason", [
-    (False, 157.5, 120, "inverted", ALIGNMENT_OK, ALIGNMENT_COMMITTED_FLAT_SUM, 0.9, ""),
-    (True, -157.5, -120, "normal", ALIGNMENT_OK, ALIGNMENT_COMMITTED_FLAT_SUM, 0.9, ""),
-    (False, 0, 0, "normal", ALIGNMENT_OK, ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR, 0,
-     ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR),
-    (False, 400, 120, "normal", ALIGNMENT_OK, ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR, 0,
-     ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR),
-    (False, 1200, 1200, "inverted", ALIGNMENT_OK, ALIGNMENT_COMMITTED_FLAT_SUM, 0.9, PRESCRIPTION_OUTSIDE_DECLARED_WINDOW),
-    (False, 500, 120, "inverted", ALIGNMENT_OK, ALIGNMENT_COMMITTED_FLAT_SUM, 0.9, PRESCRIPTION_OUT_OF_LOBE),
-    (False, 157.5, 120, "inverted", ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW, ALIGNMENT_COMMITTED_FLAT_SUM, 0.9,
+    (False, 157.5, 120, "inverted", ALIGNMENT_OK, "summed_fit_committed", 0.9, ""),
+    (True, -157.5, -120, "normal", ALIGNMENT_OK, "summed_fit_committed", 0.9, ""),
+    (False, 1200, 1200, "inverted", ALIGNMENT_OK, "summed_fit_committed", 0.9, PRESCRIPTION_OUTSIDE_DECLARED_WINDOW),
+    (False, 500, 120, "inverted", ALIGNMENT_OK, "summed_fit_committed", 0.9, PRESCRIPTION_OUT_OF_LOBE),
+    (False, 157.5, 120, "inverted", ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW, "summed_fit_committed", 0.9,
      ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW),
-    (False, 157.5, 120, "inverted", None, ALIGNMENT_COMMITTED_FLAT_SUM, 0.9, "commissioning_alignment_unavailable"),
-    (False, 0, 0, "normal", ALIGNMENT_OK, ALIGNMENT_COMMITTED_FLAT_SUM, 0, "commissioning_alignment_unavailable"),
+    (False, 157.5, 120, "inverted", None, "summed_fit_committed", 0.9, "commissioning_alignment_unavailable"),
+    (False, 0, 0, "normal", ALIGNMENT_OK, ALIGNMENT_ESTIMATED_FLAT_SUM, 0, ALIGNMENT_ESTIMATED_FLAT_SUM),
 ])
 def test_first_speaker_experiment_banks_measured_alignment_for_apply(
     speaker_round, tmp_path, monkeypatch, trial, delay, seed, polarity, status, objective, confidence, reason,
@@ -775,7 +721,8 @@ def test_first_speaker_experiment_banks_measured_alignment_for_apply(
     assert analysis["alignment_status"] == ALIGNMENT_OK
     analysis.update(delay_us=delay, polarity=polarity, trim_db={"woofer": 0, "tweeter": -3},
                     alignment_seed_delay_us=seed, alignment_status=status, alignment_objective=objective,
-                    alignment_confidence=confidence)
+                    alignment_confidence=confidence, timing_verdict="measured" if objective == "summed_fit_committed" else "estimate",
+                    residual_rms_db=.2, margin_db=.4, repeat_spread_db=.1, repeat_spread_us=2)
     topology = mono_output_topology()
     draft = standard_design_draft(topology)
     draft["driver_research"]["crossover_candidates"][0].update(
@@ -878,3 +825,32 @@ def test_fit_budget_excludes_replaced_role_but_charges_other_branches(speaker_ro
     assert vocabulary.per_filter_boost_cap_db == pytest.approx(remaining, abs=0.05)
     assert vocabulary.composed_boost_cap_db == pytest.approx(remaining, abs=0.05)
     assert vocabulary.max_gain_db == 2.0
+
+
+@pytest.mark.parametrize("residual,noise,action", [(0.6, .2, None), (.61, .2, "reset_timing"), (2, None, None), (None, None, "measure_timing")])
+def test_packet_timing_verification_and_next_action(speaker_round, residual, noise, action):
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    timing = {"delay_us": 22.0, "polarity": "normal", "provenance": "measured", "measured": {"take_id": "original"}} if residual is not None else None
+    verification = {"residual_rms_db": residual, "repeat_noise_db": noise} if timing else None
+    verdict = "saved" if timing else "needs_measurement"
+    profile_path = root / "applied-profile.json"
+    profile = {"kind": BASELINE_PROFILE_KIND, "artifact_schema_version": SCHEMA_VERSION, "status": "applied"}
+    profile_path.write_text(json.dumps({**profile, **({"timing": timing} if timing else {})}))
+    group = manifest_set([(path, record)], set_id="timing")
+    group["takes"][0].update(pose={"kind": "bearing", "deg": 0, "elevation_deg": 0},
+        analysis={"trim_db": {"woofer": 0, "tweeter": -3}, "delay_us": 22, "polarity": "normal",
+                  "timing_saved": timing, "timing_verdict": verdict,
+                  "timing_verification": verification})
+    write_manifest(root, groups=[group])
+    packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
+    assert packet["alignment_verdict"] == {"saved": timing, "verification": verification}
+    assert (packet["next_action"] or {}).get("id") == action
+    previous = {"id": "continue"}
+    envelope = _envelope(screen="finished", active_step="measure", verdict="", next_action=previous, alternate_actions=[{"id": "stop"}], status={"crossover_v2": {
+        "candidate": {"timing_saved": timing, "timing_verification": verification, "timing_verdict": verdict}}})
+    assert envelope["next_action"]["id"] == ("reset_timing" if action == "reset_timing" else "continue")
+    assert envelope["alternate_actions"] == ([previous, {"id": "stop"}] if action == "reset_timing" else [{"id": "stop"}])
+    assert json.loads(profile_path.read_text()).get("timing") == timing

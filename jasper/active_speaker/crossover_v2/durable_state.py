@@ -734,13 +734,8 @@ def _candidate_summary(
         "alignment_confidence": analysis.get("alignment_confidence"),
         # Result-screen expert disclosure only.
         "predicted_ripple_db": analysis.get("predicted_ripple_db"),
-        # WHICH objective committed this candidate's (polarity, delay) pair,
-        # and whether the committed delay left the comb lobe its physical
-        # anchor owns (#2598). The review screen must not word a
-        # declared-design commitment as a measured one; the lobe flag is a
-        # receipt line, because that mode is magnitude-flat and an on-axis
-        # VERIFY cannot contradict it.
         "alignment_objective": analysis.get("alignment_objective"),
+        **{key: analysis.get(key) for key in ("timing_verdict", "timing_saved", "timing_verification", "repeat_count")},
         # …and whether the polarity above was MEASURED or held by the request.
         # Its own key because the objective cannot say: a pinned round commits
         # the same ``explicit_prescription_committed`` an unpinned one does.

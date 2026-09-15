@@ -215,12 +215,6 @@ class RoundEvidence:
     #: from, or ``None`` for a round whose delay the aligner chose on its own.
     #: Banked verbatim as provenance, never graded here.
     alignment_prescription: "AlignmentPrescription | None" = None
-    #: WHICH commitment produced the round's delay
-    #: (:data:`~jasper.audio_measurement.program_analysis.ALIGNMENT_COMMITMENTS`),
-    #: or ``""`` when no candidate was committed. A reachable rail (an
-    #: ``ALIGNMENT_OK`` estimate with no scorable band) commits the estimator's
-    #: seed while the round still carries the prescribed candidate's name, so
-    #: the outcome is banked beside the request.
     alignment_objective: str = ""
     #: The crossover corner + order this round was PINNED to, or ``None`` for a
     #: round that ran the speaker's commissioned crossover. Banked verbatim as

@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Mapping
+from typing import Any, Callable, Mapping
 
 import numpy as np
 
@@ -149,47 +149,16 @@ ALIGNMENT_FLATNESS_MAX_STEPS = 200
 # RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB so neither silently retunes the other.
 ALIGNMENT_FLAT_MINIMUM_EPSILON_DB = 0.25
 
-#: What the candidate's (polarity, delay) pair IS, never why an alternative was rejected.
-ALIGNMENT_COMMITTED_FLAT_SUM = "flat_sum_committed"
+ALIGNMENT_ESTIMATED_FLAT_SUM = "flat_sum_estimate"
 ALIGNMENT_COMMITTED_SUMMED_FIT = "summed_fit_committed"
-SUMMED_FIT_MIN_MARGIN = 1.5
-SummedFitVerdict = Literal["committed", "inconclusive", "unavailable"]
-ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR = "declared_committed_after_low_snr"
-#: The declared polarity at the delay the applied graph already carries.
-ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR = "applied_alignment_held_after_low_snr"
-#: A graph is applied but its inter-driver delay could not be read, so no delay is committed.
-ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY = (
-    "no_delay_committed_after_unreadable_apply"
-)
-#: The delay came from a host-validated explicit prescription
-#: (:data:`MeasurementPriors.explicit_alignment_delay_us`); polarity is still the flat-sum answer.
 ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION = "explicit_prescription_committed"
-#: The same prescription on a capture the SNR verdict refused for alignment.
-ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR = (
-    "explicit_prescription_held_after_low_snr"
-)
-ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND = "seed_committed_no_scoring_band"
-ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED = "seed_committed_alignment_refused"
-ALIGNMENT_COMMITMENTS = frozenset({
-    ALIGNMENT_COMMITTED_FLAT_SUM,
-    ALIGNMENT_COMMITTED_SUMMED_FIT,
-    ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
-    ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
-    ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
-    ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
-    ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
-    ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND,
-    ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED,
-})
-#: Membership rule: the capture's alignment evidence was wholly untrusted, so
-#: neither polarity nor anchor may be spoken for
-#: (tests/test_crossover_envelope_v2.py pins this against the household copy).
-ALIGNMENT_DECLARED_POLARITY_OBJECTIVES = frozenset({
-    ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
-    ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
-    ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
-    ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
-})
+ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR = "explicit_prescription_held_after_low_snr"
+ALIGNMENT_SAVED_TIMING = "saved_timing"
+TIMING_MEASURED = "measured"
+TIMING_NEEDS_MEASUREMENT = "needs_measurement"
+TIMING_SAVED = "saved"
+TIMING_AUTHORED = "authored"
+TIMING_ESTIMATE = "estimate"
 #: Commitments an explicit prescription produced; read by
 #: crossover_v2.coordinator._round_measurements as the prescription's ``committed`` bit.
 ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES = frozenset({
@@ -200,16 +169,10 @@ ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES = frozenset({
 #: not sufficient for :attr:`AlignmentPairSelection.polarity_agrees_with_sum`,
 #: which checks :attr:`~AlignmentPairSelection.polarity_pinned` first.
 _FLAT_SUM_POLARITY_OBJECTIVES = frozenset({
-    ALIGNMENT_COMMITTED_FLAT_SUM,
+    ALIGNMENT_ESTIMATED_FLAT_SUM,
     ALIGNMENT_COMMITTED_SUMMED_FIT,
     ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
 })
-#: Commitments the selector itself made, vs. the two where the seed simply stood.
-_SELECTOR_COMMITTED_OBJECTIVES = frozenset({
-    *_FLAT_SUM_POLARITY_OBJECTIVES,
-    *ALIGNMENT_DECLARED_POLARITY_OBJECTIVES,
-})
-
 #: Verdict at which a branch stops being evidence a polarity flip may rest on
 #: (the ALIGNMENT decision class, 35 dB ``DRIVER.alignment_snr_ok_db``, no
 #: ``reduced`` rung); ``unknown``/absent means never computed.
@@ -443,17 +406,12 @@ class MeasurementGeometry:
 
 @dataclass(frozen=True)
 class AppliedAlignment:
-    """What the APPLIED graph says about its own inter-driver delay.
+    """Saved inter-driver timing in the signed analysis frame. See ADR-0319."""
 
-    ``delay_us`` is that delay in :class:`AlignmentEstimate`'s signed frame,
-    or ``None`` when a graph is applied but its record does not say. A
-    wrapper rather than a bare ``float | None``: the question has THREE
-    answers — absent (``MeasurementPriors.applied_alignment is None``) means
-    nothing is commissioned, while ``AppliedAlignment(None)`` means
-    something IS playing and we cannot say what.
-    """
-
-    delay_us: float | None
+    delay_us: float
+    polarity: str
+    provenance: str
+    measured: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -487,17 +445,8 @@ class MeasurementPriors:
     applied-delay magnitude range the flatness refinement may search;
     ``None`` keeps GCC as the applied-delay estimate.
 
-    ``applied_alignment`` and ``explicit_alignment_delay_us`` are host facts
-    read on exactly one path, :func:`_select_alignment_pair`.
-    ``applied_alignment`` (what this speaker already plays) is committed
-    only on the low-SNR refusal — never a seed, bound, or prior on the
-    scored path, since a capture good enough to score must not be pulled
-    toward the answer the speaker already has. ``explicit_alignment_delay_us``
-    is a host-validated prescription (:func:`jasper.active_speaker.crossover_v2.alignment_prescription.read_alignment_prescription`),
-    committed as the delay; ``None`` leaves automatic selection
-    byte-identical. ``explicit_alignment_polarity_sign`` pins the BASIN a fit
-    may solve in (delay and polarity are degenerate on axis); never set
-    without ``explicit_alignment_delay_us``.
+    ``applied_alignment`` holds the saved timing record. Its absence permits
+    a decision; its presence permits verification only.
 
     ``mic_tier`` is the correction-envelope trust tier
     (``linearization_envelope.MIC_TIERS``); ``None`` means "no tier known",
@@ -661,8 +610,8 @@ class DriverResponse:
 
     ``repeat_responses`` holds this same driver's additional located sweep
     occurrences (``repeat_index`` 1, 2, ...), populated only on the PRIMARY
-    response (``sweep_w``/``sweep_t``). Diagnostic only; the aligner consumes
-    repeat IRs directly, while candidate/trim responses stay on the primary.
+    response (``sweep_w``/``sweep_t``). The timing fit consumes every paired
+    repeat; the trim solve uses the primary response.
     """
 
     role: str
@@ -691,7 +640,7 @@ class AlignmentEstimate:
 
     GCC is the capture-quality seed: ``seed_delay_us`` records that
     corrected delay, while ``delay_us`` is whatever
-    the alignment selector committed from summed fit, ripple, or held design.
+    the saved timing or this read's proposed timing.
     ``confidence_source='gcc_phat_seed'`` marks that ``confidence`` belongs
     to the seed, not the commitment. ``raw_delay_us`` is the pre-parallax
     coordinate, so ``delay_us == raw_delay_us - parallax_us``.
@@ -740,19 +689,15 @@ class CrossoverCandidate:
     ``alignment_objective`` names the joint delay/polarity commitment.
     ``seed_polarity_sign`` retains correlation's answer. ``left_anchor_lobe``
     records a commitment more than half a period at Fc from the physical anchor.
-    Summed-fit RMS is in dB; its margin is the other polarity's minimum RMS
-    divided by the winner's. ``summed_fit_verdict`` records whether that fit
-    committed. Only a committed fit carries ``delay_interval_us``: the winning
-    polarity's interval within 0.05 dB of its minimum.
+    Timing confidence compares the polarity margin with this read's repeat
+    spread, both in dB. Missing repeats cannot establish confidence.
 
     ``anchor_delay_us`` is the bare anchor; ``snap_delta_us`` is
     ``committed - anchor``; ``snap_found`` records whether a local
     correlation peak existed inside the snap radius.
     ``alignment_seed_ripple_db`` is ripple at the SEED pair,
     ``flatness_improvement_db`` is ``seed_ripple - committed_ripple``:
-    non-negative on the flat-sum path by construction, but can be NEGATIVE
-    on the low-SNR path — the disclosure of what declining a
-    noise-derived flatness claim cost on paper.
+    a disclosure on the driver-only estimate, never timing confidence.
 
     ``predicted_ripple_db`` is measured on the INDEPENDENTLY ALIGNED
     (zero-residual) branch sum at the committed polarity — deliberately not
@@ -775,7 +720,6 @@ class CrossoverCandidate:
     confidence: float
     alignment_seed_ripple_db: float | None = None
     alignment_seed_delay_us: float | None = None
-    snr_waived_roles: tuple[str, ...] = ()
     flatness_improvement_db: float | None = None
     anchor_delay_us: float | None = None
     snap_delta_us: float | None = None
@@ -797,10 +741,14 @@ class CrossoverCandidate:
     #: admitted no-op and a one-sided skip (all three share
     #: ``trim_db[tweeter] == trim_band_average_db[tweeter]``).
     ripple_polish_rejected_delta_db: float | None = None
-    summed_fit_rms_db: float | None = None
-    summed_fit_margin: float | None = None
-    summed_fit_verdict: SummedFitVerdict = "unavailable"
-    delay_interval_us: tuple[float, float] | None = None
+    residual_rms_db: float | None = None
+    margin_db: float | None = None
+    repeat_spread_db: float | None = None
+    repeat_spread_us: float | None = None
+    repeat_count: int | None = None
+    timing_verdict: str = TIMING_ESTIMATE
+    timing_saved: AppliedAlignment | None = None
+    timing_verification: Mapping[str, float | None] | None = None
 
 
 @dataclass(frozen=True)

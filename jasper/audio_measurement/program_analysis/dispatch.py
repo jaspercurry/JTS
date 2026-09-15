@@ -46,14 +46,10 @@ from .check import (
 from .drift import _estimate_drift, _sweep_occurrences_by_role
 from .locate import _global_offset, _locate_segments
 from .model import (
-    ALIGNMENT_COMMITTED_FLAT_SUM,
-    ALIGNMENT_COMMITTED_SUMMED_FIT,
-    SUMMED_FIT_MIN_MARGIN,
-    SummedFitVerdict,
-    ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED,
-    ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND,
-    ALIGNMENT_DECLARED_POLARITY_OBJECTIVES,
-    ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES,
+    ALIGNMENT_ESTIMATED_FLAT_SUM,
+    ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR, ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
+    ALIGNMENT_COMMITTED_SUMMED_FIT, ALIGNMENT_SAVED_TIMING,
+    TIMING_AUTHORED, TIMING_ESTIMATE, TIMING_MEASURED, TIMING_NEEDS_MEASUREMENT, TIMING_SAVED,
     ALIGNMENT_OK,
     ALIGNMENT_SNR_REFUSAL_VERDICT,
     AlignmentEstimate,
@@ -70,7 +66,6 @@ from .model import (
     ProgramAnalysis,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     SegmentLocation,
-    _SELECTOR_COMMITTED_OBJECTIVES,
     VERIFY_NOTCH_EXCLUSION_DB,
     VERIFY_TRACKING_SMOOTHING_FRACTION,
 )
@@ -79,7 +74,6 @@ from .response import (
     branch_level_bands_hz,
     _deconvolve_window,
     _driver_response,
-    _finite_or_none,
     _gate_floor_hz,
     _n_fft_for,
     polarity_label,
@@ -432,33 +426,19 @@ def _analyze_measure(
             branch_snr_insufficient=branch_snr_insufficient,
             summed_alignment=priors.summed_alignment, geometry=geometry,
             applied_alignment=priors.applied_alignment,
+            repeat_responses=responses,
             explicit_alignment_delay_us=priors.explicit_alignment_delay_us,
             explicit_alignment_polarity_sign=priors.explicit_alignment_polarity_sign,
         )
-        # `_build_candidate` owns the selection; the estimate published here
-        # must carry what was committed, with correlation's own answer
-        # preserved beside it as the seed.
-        if candidate.alignment_objective in _SELECTOR_COMMITTED_OBJECTIVES:
-            alignment = replace(
-                alignment,
-                polarity=candidate.polarity,
-                polarity_sign=polarity_sign_of(candidate.polarity),
-                # READ, not re-derived — the candidate carries the answer.
-                polarity_agrees_with_sum=candidate.polarity_agrees_with_sum,
-            )
-        # The delay half keeps its own condition: the anchor path is where
-        # the committed delay can differ from the estimate's GCC seed.
-        if candidate.anchor_delay_us is not None:
-            alignment = replace(
-                alignment,
-                delay_us=candidate.delay_us,
-                raw_delay_us=candidate.delay_us + alignment.parallax_us,
-                seed_delay_us=alignment.delay_us,
-                confidence_source="gcc_phat_seed",
-            )
-        if candidate.alignment_objective == ALIGNMENT_COMMITTED_SUMMED_FIT:
-            alignment = replace(alignment, confidence=candidate.confidence,
-                                confidence_source=ALIGNMENT_COMMITTED_SUMMED_FIT)
+        alignment = replace(
+            alignment, delay_us=candidate.delay_us,
+            status=ALIGNMENT_OK if candidate.timing_verdict in (TIMING_SAVED, TIMING_AUTHORED) else alignment.status,
+            raw_delay_us=candidate.delay_us + alignment.parallax_us,
+            seed_delay_us=alignment.delay_us, polarity=candidate.polarity,
+            polarity_sign=polarity_sign_of(candidate.polarity),
+            polarity_agrees_with_sum=candidate.polarity_agrees_with_sum,
+            confidence_source="gcc_phat_seed",
+        )
     else:
         # One branch radiates the whole band, so the model IS that branch.
         predicted_sum = (responses[0].freqs_hz, responses[0].magnitude_db)
@@ -503,6 +483,7 @@ def _build_candidate(
     explicit_alignment_delay_us: float | None = None,
     explicit_alignment_polarity_sign: int | None = None,
     summed_alignment: SummedAlignmentReference | None = None,
+    repeat_responses: tuple[DriverResponse, ...] = (),
     geometry: MeasurementGeometry | None = None,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
     freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
@@ -561,154 +542,74 @@ def _build_candidate(
     seed_delay_us = alignment.delay_us
     anchor_delay_us = None
     snap_found = False
-    # THE FRAME, gated on the aligner's own status alone. The aligner
-    # single-sources the physical peak-gap anchor; everything downstream
-    # derives from it rather than re-running the argmax. NOT also gated on
-    # declared bounds, which would conflate the frame with the seed
-    # question below — measured at a 20.37 dB penalty when confused.
     if alignment.status == ALIGNMENT_OK and alignment.anchor_delay_us is not None:
         anchor_delay_us = float(alignment.anchor_delay_us)
-    # THE SEED DELAY — a different question, bounds-gated. The gated
-    # local-peak snap is correlation's own refined delay within
-    # +/-(period/6) at Fc; with no declared bounds the seed is the bare
-    # GCC estimate instead.
     if anchor_delay_us is not None and alignment_delay_bounds_us is not None:
         if alignment.snapped_delay_us is not None:
             seed_delay_us = float(alignment.snapped_delay_us)
             snap_found = True
         else:
             seed_delay_us = anchor_delay_us
-    summed_selection = None
-    if (summed_alignment is not None and anchor_delay_us is not None and geometry is not None
-            and (geometry.position_deg, geometry.vertical_deg) == (summed_alignment.position_deg, summed_alignment.vertical_deg)):
-        summed_selection = _select_summed_alignment_pair(
+    selection = None
+    verification = None
+    delay_us, polarity_sign = seed_delay_us, alignment.polarity_sign
+    alignment_objective = TIMING_NEEDS_MEASUREMENT if summed_alignment is not None else ALIGNMENT_ESTIMATED_FLAT_SUM
+    if applied_alignment is not None:
+        delay_us, polarity_sign = applied_alignment.delay_us, polarity_sign_of(applied_alignment.polarity)
+        alignment_objective = ALIGNMENT_SAVED_TIMING
+    elif explicit_alignment_delay_us is not None:
+        delay_us = explicit_alignment_delay_us
+        polarity_sign = explicit_alignment_polarity_sign if explicit_alignment_polarity_sign is not None else 1
+        alignment_objective = ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR if branch_snr_insufficient else ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
+    design_axis = (geometry is not None and (geometry.position_deg, geometry.vertical_deg) == (0, 0))
+    if (summed_alignment is not None and design_axis and anchor_delay_us is not None
+            and (summed_alignment.position_deg, summed_alignment.vertical_deg) == (0, 0)):
+        by_role = {response.role: response for response in repeat_responses}
+        repeats = tuple(zip(by_role[woofer_role].repeat_responses, by_role[tweeter_role].repeat_responses)) if by_role else ()
+        selection = _select_summed_alignment_pair(
             freqs, W, T, reference=summed_alignment,
             woofer_role=woofer_role, tweeter_role=tweeter_role,
             fc_hz=fc_hz, anchor_delay_us=anchor_delay_us,
             seed_delay_us=seed_delay_us, seed_polarity_sign=alignment.polarity_sign,
             delay_bounds_us=alignment_delay_bounds_us,
-            branch_snr_insufficient=branch_snr_insufficient,
+            repeats=tuple((w.complex_tf, t.complex_tf) for w, t in repeats), saved=applied_alignment,
         )
-    fit_rms_db = None if summed_selection is None else summed_selection.summed_fit_rms_db
-    fit_margin = None if summed_selection is None else summed_selection.summed_fit_margin
-    fit_verdict: SummedFitVerdict = ("unavailable" if fit_margin is None else
-                                   "committed" if fit_margin >= SUMMED_FIT_MIN_MARGIN else "inconclusive")
-    selection = summed_selection if fit_verdict == "committed" else (
-        _select_alignment_pair(
-            freqs, W, T,
-            fc_hz=fc_hz, lo_hz=lo_clamped, hi_hz=hi,
+        if applied_alignment is not None:
+            verification = {"residual_rms_db": selection.residual_rms_db, "repeat_noise_db": selection.repeat_noise_db}
+        elif explicit_alignment_delay_us is None:
+            alignment_objective = selection.objective
+            if alignment_objective == ALIGNMENT_COMMITTED_SUMMED_FIT:
+                delay_us, polarity_sign = selection.delay_us, selection.polarity_sign
+    elif summed_alignment is None and applied_alignment is None and explicit_alignment_delay_us is None:
+        selection = _select_alignment_pair(
+            freqs, W, T, fc_hz=fc_hz, lo_hz=lo_clamped, hi_hz=hi,
             trim_w_db=trim_w, trim_t_db=trim_t_band_average,
-            anchor_delay_us=anchor_delay_us,
-            seed_delay_us=seed_delay_us,
-            seed_polarity_sign=alignment.polarity_sign,
-            delay_bounds_us=alignment_delay_bounds_us,
+            anchor_delay_us=anchor_delay_us, seed_delay_us=seed_delay_us,
+            seed_polarity_sign=alignment.polarity_sign, delay_bounds_us=alignment_delay_bounds_us,
             branch_snr_insufficient=bool(branch_snr_insufficient),
-            applied_alignment=applied_alignment,
-            explicit_delay_us=explicit_alignment_delay_us,
-            explicit_polarity_sign=explicit_alignment_polarity_sign,
-        )
-        if alignment.status == ALIGNMENT_OK
-        else None
-    )
-    if selection is None:
-        polarity_sign = alignment.polarity_sign
-        delay_us = seed_delay_us
-        seed_ripple_db = None
-        flatness_improvement_db = None
-        left_anchor_lobe = False
-        alignment_objective = (
-            ALIGNMENT_COMMITTED_SEED_ALIGNMENT_REFUSED
-            if alignment.status != ALIGNMENT_OK
-            else ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND
-        )
-    else:
-        polarity_sign = selection.polarity_sign
-        delay_us = selection.delay_us
-        alignment_objective = selection.objective
-        left_anchor_lobe = selection.left_anchor_lobe
-        seed_ripple_db = flatness_improvement_db = None
-        if math.isfinite(selection.seed_ripple_db) and math.isfinite(selection.ripple_db):
-            seed_ripple_db = selection.seed_ripple_db
-            flatness_improvement_db = selection.flatness_improvement_db
-        log_event(
-            logger, "program_analysis.alignment_selection",
-            # WARNING on: correlation losing the polarity, any non-flat-sum
-            # commitment, or leaving the anchor's comb lobe.
-            level=(
-                logging.INFO if (
-                    selection.objective == ALIGNMENT_COMMITTED_FLAT_SUM
-                    and selection.polarity_agrees_with_sum
-                    and not selection.left_anchor_lobe
-                ) else logging.WARNING
-            ),
-            woofer_role=woofer_role, tweeter_role=tweeter_role,
-            objective=selection.objective,
-            summed_fit_verdict=fit_verdict, summed_fit_rms_db=fit_rms_db, summed_fit_margin=fit_margin,
-            fc_hz=round(float(fc_hz), 3),
-            band_hz=(round(float(lo_clamped), 1), round(float(hi), 1)),
-            polarity=polarity_label(selection.polarity_sign),
-            delay_us=round(float(selection.delay_us), 3),
-            # BOTH ripples go through the None-safe rounder: the low-SNR
-            # path commits without a search, so a NaN branch can reach either.
-            ripple_db=_finite_or_none(selection.ripple_db, 4),
-            seed_polarity=polarity_label(selection.seed_polarity_sign),
-            seed_delay_us=round(float(selection.seed_delay_us), 3),
-            seed_ripple_db=_finite_or_none(selection.seed_ripple_db, 4),
-            polarity_agrees_with_sum=selection.polarity_agrees_with_sum,
-            flatness_improvement_db=_finite_or_none(
-                selection.flatness_improvement_db, 4,
-            ),
-            grid_points=selection.grid_points,
-            grid_step_us=round(float(selection.grid_step_us), 3),
-            branch_snr_insufficient=bool(branch_snr_insufficient),
-            # The number that WAS held (or None), beside the anchor that was
-            # DECLINED, separating "design asks for none" from "could not read".
-            applied_delay_us=(
-                None if applied_alignment is None or applied_alignment.delay_us is None
-                else round(float(applied_alignment.delay_us), 3)
-            ),
-            applied_alignment_present=applied_alignment is not None,
-            # None on every ordinary session; non-None is greppable as "this
-            # round's delay was prescribed, not searched".
-            prescribed_delay_us=(
-                None if explicit_alignment_delay_us is None
-                else round(float(explicit_alignment_delay_us), 3)
-            ),
-            # None when no prescription was made; "unpinned" when one was
-            # made and left the basin to the objective.
-            prescribed_polarity=(
-                None if explicit_alignment_delay_us is None
-                else "unpinned" if explicit_alignment_polarity_sign is None
-                else polarity_label(int(explicit_alignment_polarity_sign))
-            ),
-            anchor_delay_us=(
-                None if anchor_delay_us is None
-                else round(float(anchor_delay_us), 3)
-            ),
-            left_anchor_lobe=selection.left_anchor_lobe,
-        )
-    # A prescription that never reached a commitment must not be absorbed
-    # quietly: emitted AFTER the block above so it can name what WAS
-    # committed instead of printing null.
-    if (
-        explicit_alignment_delay_us is not None
-        and alignment_objective not in ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES
-    ):
-        log_event(
-            logger, "program_analysis.alignment_prescription_not_committed",
-            level=logging.WARNING,
-            woofer_role=woofer_role, tweeter_role=tweeter_role,
-            fc_hz=round(float(fc_hz), 3),
-            prescribed_delay_us=round(float(explicit_alignment_delay_us), 3),
-            committed_delay_us=round(float(delay_us), 3),
-            prescribed_polarity=(
-                "unpinned" if explicit_alignment_polarity_sign is None
-                else polarity_label(int(explicit_alignment_polarity_sign))
-            ),
-            committed_polarity=polarity_label(polarity_sign),
-            alignment_status=alignment.status,
-            objective=alignment_objective,
-        )
+        ) if alignment.status == ALIGNMENT_OK else None
+        if selection is not None:
+            delay_us, polarity_sign = selection.delay_us, selection.polarity_sign
+    timing_verdict = {
+        ALIGNMENT_COMMITTED_SUMMED_FIT: TIMING_MEASURED, ALIGNMENT_SAVED_TIMING: TIMING_SAVED,
+        ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR: TIMING_AUTHORED,
+        ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION: TIMING_AUTHORED,
+        ALIGNMENT_ESTIMATED_FLAT_SUM: TIMING_ESTIMATE,
+    }.get(alignment_objective, TIMING_NEEDS_MEASUREMENT)
+    seed_ripple_db = selection.seed_ripple_db if selection else None
+    flatness_improvement_db = selection.flatness_improvement_db if selection else None
+    left_anchor_lobe = bool(selection and selection.left_anchor_lobe)
+    log_event(logger, "program_analysis.alignment_selection",
+              objective=alignment_objective, timing_verdict=timing_verdict,
+              delay_us=delay_us, polarity=polarity_label(polarity_sign),
+              prescribed_delay_us=explicit_alignment_delay_us,
+              prescribed_polarity=(None if explicit_alignment_delay_us is None else "unpinned"
+                                  if explicit_alignment_polarity_sign is None else polarity_label(explicit_alignment_polarity_sign)),
+              residual_rms_db=selection.residual_rms_db if selection else None,
+              margin_db=selection.margin_db if selection else None,
+              repeat_spread_db=selection.repeat_spread_db if selection else None,
+              repeat_spread_us=selection.repeat_spread_us if selection else None, repeat_count=selection.repeat_count if selection else None,
+              polarity_agrees_with_sum=selection.polarity_agrees_with_sum if selection else None)
     snap_delta_us = None if anchor_delay_us is None else delay_us - anchor_delay_us
     # Polish the tweeter trim for minimum summed-response ripple, seeded by
     # the band-average match, guarded against a result further than
@@ -801,7 +702,7 @@ def _build_candidate(
     # phasing it would let an untrusted number kill a correctly-aligned
     # speaker there. `snap_delta_us` still RECORDS the disagreement.
     _alignment_unmeasured = (
-        alignment_objective in ALIGNMENT_DECLARED_POLARITY_OBJECTIVES
+        alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR
     )
     residual_delay_us = summed_model_residual_delay_us(
         alignment.anchor_delay_us
@@ -824,15 +725,14 @@ def _build_candidate(
         polarity=polarity_label(polarity_sign),
         delay_us=delay_us,
         predicted_ripple_db=ripple,
-        # Dimensionless RMS ratio: 1x -> 0 confidence, 2x -> 0.5, infinite -> 1.
-        confidence=(1.0 - 1.0 / max(selection.summed_fit_margin, 1.0)
-                    if selection is not None and selection.objective == ALIGNMENT_COMMITTED_SUMMED_FIT and selection.summed_fit_margin is not None
-                    else alignment.confidence),
-        summed_fit_rms_db=fit_rms_db, summed_fit_margin=fit_margin, summed_fit_verdict=fit_verdict,
-        delay_interval_us=None if selection is None else selection.delay_interval_us,
+        confidence=alignment.confidence,
+        residual_rms_db=selection.residual_rms_db if selection else None,
+        margin_db=selection.margin_db if selection else None,
+        repeat_spread_db=selection.repeat_spread_db if selection else None,
+        repeat_spread_us=selection.repeat_spread_us if selection else None, repeat_count=selection.repeat_count if selection else None,
+        timing_verdict=timing_verdict, timing_saved=applied_alignment, timing_verification=verification,
         alignment_seed_ripple_db=seed_ripple_db,
-        alignment_seed_delay_us=None if selection is None else selection.seed_delay_us,
-        snr_waived_roles=() if selection is None else selection.snr_waived_roles,
+        alignment_seed_delay_us=seed_delay_us,
         flatness_improvement_db=flatness_improvement_db,
         anchor_delay_us=anchor_delay_us,
         snap_delta_us=snap_delta_us,
@@ -845,7 +745,7 @@ def _build_candidate(
         polarity_agrees_with_sum=(
             None if selection is None else selection.polarity_agrees_with_sum
         ),
-        polarity_pinned=bool(selection is not None and selection.polarity_pinned),
+        polarity_pinned=explicit_alignment_polarity_sign is not None and applied_alignment is None,
         ripple_polish_rejected_delta_db=ripple_polish_rejected_delta_db,
     )
     return candidate, (freqs, predicted_db)

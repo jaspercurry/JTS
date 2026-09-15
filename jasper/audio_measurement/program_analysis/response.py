@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, TYPE_CHECKING
 
 import numpy as np
-from scipy.optimize import brentq, minimize_scalar
+from scipy.optimize import minimize_scalar
 
 from jasper.audio_measurement import analysis, deconv, gate_disclosure, gating, snr_policy
 from jasper.audio_measurement.comparison_bands import (
@@ -27,13 +27,8 @@ from jasper.audio_measurement.program import (
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.log_event import log_event
 from .model import (
-    ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
-    ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR,
-    ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
-    ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
-    ALIGNMENT_COMMITTED_FLAT_SUM,
-    ALIGNMENT_COMMITTED_SUMMED_FIT,
-    ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY,
+    ALIGNMENT_ESTIMATED_FLAT_SUM,
+    ALIGNMENT_COMMITTED_SUMMED_FIT, ALIGNMENT_SAVED_TIMING, TIMING_NEEDS_MEASUREMENT,
     ALIGNMENT_FLAT_MINIMUM_EPSILON_DB,
     ALIGNMENT_FLATNESS_MAX_STEPS,
     ALIGNMENT_FLATNESS_SPAN_PERIODS,
@@ -445,16 +440,6 @@ def _ripple_db(freqs: np.ndarray, magnitude: np.ndarray, lo: float, hi: float) -
     return float(np.max(band_db) - np.min(band_db))
 
 
-def _finite_or_none(value: float, ndigits: int) -> float | None:
-    """``round(value, ndigits)``, or ``None`` when it is not a finite number.
-
-    For journal fields that quote a measured quantity which CAN be non-finite:
-    ``None`` reads as "no number", where a bare NaN reads as a number and
-    survives into whatever parses the line.
-    """
-    return round(float(value), ndigits) if math.isfinite(value) else None
-
-
 def polarity_label(polarity_sign: int) -> str:
     """``+1 -> "normal"``, ``-1 -> "inverted"``. The ONE spelling of the map."""
     return "normal" if polarity_sign >= 0 else "inverted"
@@ -467,40 +452,27 @@ def polarity_sign_of(polarity: str) -> int:
 
 @dataclass(frozen=True)
 class AlignmentPairSelection:
-    """What :func:`_select_alignment_pair` committed, and the evidence for it.
-
-    ``polarity_sign``/``delay_us`` are the committed pair; ``ripple_db`` is
-    the summed blend ripple there. ``seed_*`` is the pair correlation alone
-    would have shipped, scored on the SAME objective; ``objective`` names
-    which commitment this is (:data:`ALIGNMENT_COMMITMENTS`).
-    ``grid_points``/``grid_step_us`` describe the delay grid searched per
-    polarity (``1``/``0.0`` when nothing was searched).
-
-    ``left_anchor_lobe`` is True when the committed delay sits more than
-    half a period at Fc from the anchor — legitimate when the objective is
-    that sure, but also the shape a fooled objective would take, so it
-    raises the selection log to WARNING.
-    """
+    """A timing read or driver-only estimate, with its evidence. See ADR-0319."""
 
     polarity_sign: int
     delay_us: float
-    ripple_db: float
+    ripple_db: float | None
     seed_polarity_sign: int
     seed_delay_us: float
-    seed_ripple_db: float
+    seed_ripple_db: float | None
     objective: str
-    grid_points: int
-    grid_step_us: float
     left_anchor_lobe: bool = False
     #: Was the POLARITY axis pinned by the request rather than searched?
     #: The objective string can't carry this (a pinned round still commits
     #: ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION); read via
     #: :attr:`polarity_agrees_with_sum` instead.
     polarity_pinned: bool = False
-    summed_fit_rms_db: float | None = None
-    summed_fit_margin: float | None = None
-    delay_interval_us: tuple[float, float] | None = None
-    snr_waived_roles: tuple[str, ...] = ()
+    residual_rms_db: float | None = None
+    margin_db: float | None = None
+    repeat_spread_db: float | None = None
+    repeat_spread_us: float | None = None
+    repeat_count: int | None = None
+    repeat_noise_db: float | None = None
 
     @property
     def polarity_agrees_with_sum(self) -> bool | None:
@@ -517,9 +489,9 @@ class AlignmentPairSelection:
         return self.polarity_sign == self.seed_polarity_sign
 
     @property
-    def flatness_improvement_db(self) -> float:
+    def flatness_improvement_db(self) -> float | None:
         """``seed_ripple - committed_ripple``: what the objective bought."""
-        return self.seed_ripple_db - self.ripple_db
+        return self.seed_ripple_db - self.ripple_db if self.seed_ripple_db is not None and self.ripple_db is not None else None
 
 
 def _alignment_delay_grid(fc_hz, anchor_delay_us, seed_delay_us, delay_bounds_us):
@@ -566,71 +538,69 @@ def _select_summed_alignment_pair(
     reference: SummedAlignmentReference, woofer_role: str, tweeter_role: str,
     fc_hz: float, anchor_delay_us: float, seed_delay_us: float,
     seed_polarity_sign: int, delay_bounds_us: tuple[float, float] | None,
-    branch_snr_insufficient: tuple[str, ...] = (),
+    repeats: tuple[tuple[np.ndarray, np.ndarray], ...] = (),
+    saved: AppliedAlignment | None = None,
 ) -> AlignmentPairSelection:
-    W = W * reference.response_by_role[woofer_role](freqs)
-    T = T * reference.response_by_role[tweeter_role](freqs)
-    score = _summed_fit_comparator(freqs, W, T, reference, anchor_delay_us)
+    """One confidence rule and one residual model for decision and verification."""
+    w_chain = reference.response_by_role[woofer_role](freqs)
+    t_chain = reference.response_by_role[tweeter_role](freqs)
+    scores = [_summed_fit_comparator(freqs, w * w_chain, t * t_chain, reference, anchor_delay_us)
+              for w, t in ((W, T), *repeats)]
+
+    def score(sign, delay):
+        return float(np.sqrt(np.mean([evaluate(sign, delay) ** 2 for evaluate in scores])))
+
+    def spread(values):
+        return max(values) - min(values) if len(values) > 1 else None
+
+    if saved is not None:
+        sign, delay = polarity_sign_of(saved.polarity), saved.delay_us
+        return AlignmentPairSelection(
+            sign, delay, None, seed_polarity_sign, seed_delay_us, None,
+            ALIGNMENT_SAVED_TIMING, residual_rms_db=score(sign, delay),
+            repeat_noise_db=spread([evaluate(sign, delay) for evaluate in scores]),
+            repeat_count=len(scores),
+        )
     grid, step = _alignment_delay_grid(fc_hz, anchor_delay_us, seed_delay_us, delay_bounds_us)
     grid = sorted(set(grid))
     lower, upper = (0.0, math.inf) if delay_bounds_us is None else sorted(abs(float(b)) for b in delay_bounds_us)
-    scans, limits = {}, {}
-    for sign in (1, -1):
-        coarse = [(delay, score(sign, delay)) for delay in grid]
-        center, _ = min(coarse, key=lambda item: item[1])
+
+    def fit(evaluate, sign):
+        values = {d: evaluate(sign, d) for d in grid}
+        center = min(values, key=values.__getitem__)
         radius = 1e6 / fc_hz
         extended = sorted(set([*grid, *np.arange(center - radius, center + radius + step / 2, step)])) if step else grid
-        bracket_grid = [d for d in extended if abs(d - center) <= radius and lower <= abs(d) <= upper]
-        values = {d: error for d, error in coarse}
-        for d in bracket_grid:
+        bracket = [d for d in extended if abs(d - center) <= radius and lower <= abs(d) <= upper]
+        for d in bracket:
             if d not in values:
-                values[d] = score(sign, d)
-        coarse = list(values.items())
-        limits[sign] = (min(values), max(values))
-        # Refine each local minimum: coarse quantization can rank adjacent lobes incorrectly.
-        for i, d in enumerate(bracket_grid):
-            lo, hi = bracket_grid[max(0, i - 1)], bracket_grid[min(len(bracket_grid) - 1, i + 1)]
+                values[d] = evaluate(sign, d)
+        # Refine every local minimum; coarse quantization can reorder adjacent lobes.
+        for i, d in enumerate(bracket):
+            lo, hi = bracket[max(0, i - 1)], bracket[min(len(bracket) - 1, i + 1)]
             if (lo == hi or values[d] > min(values[lo], values[hi])
                     or values[d] == values[lo] == values[hi] or (lower > 0 and lo < 0 < hi)):
                 continue
-            optimum = minimize_scalar(lambda d: score(sign, d), bounds=(lo, hi), method="bounded", options={"xatol": .1}).x
-            coarse.extend((d, score(sign, d)) for d in (math.floor(optimum), math.ceil(optimum)) if lo <= d <= hi)
-        scans[sign] = coarse
-    minima = {sign: min(scan, key=lambda item: item[1]) for sign, scan in scans.items()}
+            optimum = minimize_scalar(lambda d: evaluate(sign, d), bounds=(lo, hi), method="bounded", options={"xatol": .1}).x
+            for refined in (math.floor(optimum), math.ceil(optimum)):
+                if lo <= refined <= hi:
+                    values[refined] = evaluate(sign, refined)
+        return min(values.items(), key=lambda item: item[1])
+
+    minima = {sign: fit(score, sign) for sign in (1, -1)}
     sign = min(minima, key=lambda sign: minima[sign][1])
     delay, rms = minima[sign]
-    margin = minima[-sign][1] / max(rms, np.finfo(float).eps)
-    interval = []
-    for direction in (-1, 1):
-        edge = delay
-        limit = max(limits[sign][0], lower if delay >= 0 else -upper) if direction < 0 else min(limits[sign][1], upper if delay >= 0 else -lower)
-        # Report the contiguous basin within 0.05 dB RMS, at 1 us resolution.
-        for _ in range(len(grid)):
-            next_edge = max(limit, edge - step) if direction < 0 else min(limit, edge + step)
-            if score(sign, next_edge) > rms + .05:
-                edge = brentq(lambda d: score(sign, d) - rms - .05, *sorted((edge, next_edge)))
-                break
-            edge = next_edge
-            if edge == limit:
-                break
-        interval.append(min(delay, float(math.ceil(edge))) if direction < 0 else max(delay, float(math.floor(edge))))
-
-    def ripple(sign, delay):
-        return _ripple_db(freqs, predicted_branch_sum(
-            W, T, 0.0, 0.0, sign, freqs_hz=freqs,
-            residual_delay_us=summed_model_residual_delay_us(anchor_delay_us, delay),
-        ), *reference.band_hz)
-
+    margin = minima[-sign][1] - rms
+    repeat_fits = [{polarity: fit(evaluate, polarity) for polarity in (1, -1)} for evaluate in scores]
+    spread_db = spread([result[sign][1] for result in repeat_fits])
+    spread_us = spread([result[sign][0] for result in repeat_fits])
+    left_lobe = abs(delay - anchor_delay_us) > half_period_us(fc_hz)
+    confident = spread_db is not None and margin > spread_db and not left_lobe
     return AlignmentPairSelection(
-        polarity_sign=sign, delay_us=delay, ripple_db=ripple(sign, delay),
-        seed_polarity_sign=seed_polarity_sign, seed_delay_us=seed_delay_us,
-        seed_ripple_db=ripple(seed_polarity_sign, seed_delay_us),
-        objective=ALIGNMENT_COMMITTED_SUMMED_FIT,
-        grid_points=len(scans[sign]), grid_step_us=step,
-        left_anchor_lobe=abs(delay - anchor_delay_us) > half_period_us(fc_hz),
-        summed_fit_rms_db=rms, summed_fit_margin=margin,
-        delay_interval_us=(interval[0], interval[1]),
-        snr_waived_roles=branch_snr_insufficient,
+        sign, delay, None, seed_polarity_sign, seed_delay_us, None,
+        ALIGNMENT_COMMITTED_SUMMED_FIT if confident else TIMING_NEEDS_MEASUREMENT,
+        left_anchor_lobe=left_lobe, residual_rms_db=rms, margin_db=margin,
+        repeat_spread_db=spread_db, repeat_spread_us=spread_us,
+        repeat_count=len(scores),
     )
 
 
@@ -649,58 +619,8 @@ def _select_alignment_pair(
     seed_polarity_sign: int,
     delay_bounds_us: tuple[float, float] | None = None,
     branch_snr_insufficient: bool = False,
-    applied_alignment: AppliedAlignment | None = None,
-    explicit_delay_us: float | None = None,
-    explicit_polarity_sign: int | None = None,
 ) -> AlignmentPairSelection | None:
-    """Commit the (polarity, delay) pair whose predicted blend sums flattest.
-
-    ONE objective for both halves of one decision: the ripple of ``W + s*T``
-    over ``[lo_hz, hi_hz]``, scored across ``s in {+1, -1}`` and a delay
-    grid of :data:`ALIGNMENT_FLATNESS_STEP_US` steps spanning
-    +/-:data:`ALIGNMENT_FLATNESS_SPAN_PERIODS` period(s) at ``fc_hz`` around
-    ``anchor_delay_us`` — polarity and delay trade against each other, so
-    scoring them separately would compare one against a guess about the
-    other. Correlation stays in the loop as the SEED and tie-break: within
-    :data:`ALIGNMENT_FLAT_MINIMUM_EPSILON_DB` of the global minimum, the
-    search keeps whichever is closest to the seed.
-
-    ``trim_w_db``/``trim_t_db`` are the LEVEL-MATCH trims (band-average),
-    not the ripple-polished tweeter trim — the polish needs a polarity, so
-    scoring at the polished trim would be circular.
-
-    ``delay_bounds_us`` is the preset's declared |delay| range; grid points
-    outside it are dropped (the seed pair is exempt).
-
-    ``branch_snr_insufficient`` is the refusal
-    (:data:`ALIGNMENT_SNR_REFUSAL_VERDICT`): the pair is not searched but
-    COMMITTED to the declared design (relative polarity ``+1``) at a delay
-    this capture did not supply — never the anchor or GCC seed, which are
-    this capture's own answer and exactly what a low-SNR capture gets
-    wrong (across nine jts3 positions the anchor read +59.6 us on-axis
-    against six clustered near -211 us and two wild). The delay comes from
-    ``applied_alignment`` (what the speaker already plays) or ``0.0``; three
-    arms/objectives distinguish held/declared/unreadable-apply.
-
-    ``left_anchor_lobe`` fires when the committed delay and this capture's
-    anchor disagree by more than half a period at Fc, raising the selection
-    log to WARNING — legitimate when the objective is that sure, but also
-    the shape a fooled objective would take.
-
-    ``explicit_delay_us`` is a host-validated PRESCRIPTION (delay from a
-    named measured basis, bounded to +/-half a period at Fc); it fixes the
-    delay axis to exactly that point and outranks the low-SNR ladder.
-    Deliberately NOT an anchor substitute — re-centring the search on it
-    would let the objective wander off the prescribed value.
-    ``explicit_polarity_sign`` pins the other axis the same way (on both
-    prescription arms), recording :attr:`~AlignmentPairSelection.polarity_pinned`
-    so ``polarity_agrees_with_sum`` reports ``None`` rather than a search
-    result that never ran.
-
-    Returns ``None`` when the objective cannot be evaluated at all (no
-    frequency bin in range, or no finite-score candidate), leaving the
-    caller on the seed with a WARNING.
-    """
+    """Driver-only first estimate; never a measured timing decision."""
     band = (freqs >= lo_hz) & (freqs <= hi_hz)
     if not np.any(band):
         return None
@@ -731,73 +651,12 @@ def _select_alignment_pair(
 
     seed_ripple_db = _ripple_at(seed_polarity_sign, seed_delay_us)
 
-    if explicit_delay_us is not None and branch_snr_insufficient:
-        # The prescription stands (it did not come from this capture); an
-        # unpinned polarity commits declared relative polarity +1 instead.
-        prescribed_us = float(explicit_delay_us)
-        prescribed_sign = (
-            1 if explicit_polarity_sign is None else int(explicit_polarity_sign)
-        )
-        return AlignmentPairSelection(
-            polarity_sign=prescribed_sign,
-            delay_us=prescribed_us,
-            ripple_db=_ripple_at(prescribed_sign, prescribed_us),
-            seed_polarity_sign=seed_polarity_sign,
-            seed_delay_us=seed_delay_us,
-            seed_ripple_db=seed_ripple_db,
-            objective=ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
-            grid_points=1,
-            grid_step_us=0.0,
-            left_anchor_lobe=_left_anchor_lobe(prescribed_us),
-            polarity_pinned=explicit_polarity_sign is not None,
-        )
-
     if branch_snr_insufficient:
-        # Neither `anchor_delay_us` nor `seed_delay_us` may be read here:
-        # both are this capture's own answer, and this capture was refused.
-        held_delay_us = (
-            None if applied_alignment is None else applied_alignment.delay_us
-        )
-        committed_delay_us = 0.0 if held_delay_us is None else float(held_delay_us)
-        if held_delay_us is not None:
-            objective = ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR
-        elif applied_alignment is None:
-            objective = ALIGNMENT_COMMITTED_DECLARED_AFTER_LOW_SNR
-        else:
-            objective = ALIGNMENT_COMMITTED_NONE_AFTER_UNREADABLE_APPLY
-        return AlignmentPairSelection(
-            polarity_sign=1,
-            delay_us=committed_delay_us,
-            ripple_db=_ripple_at(1, committed_delay_us),
-            seed_polarity_sign=seed_polarity_sign,
-            seed_delay_us=seed_delay_us,
-            seed_ripple_db=seed_ripple_db,
-            objective=objective,
-            grid_points=1,
-            grid_step_us=0.0,
-            left_anchor_lobe=_left_anchor_lobe(committed_delay_us),
-        )
-
-    # The delay is only scorable against an anchor: with none, the residual
-    # is 0.0 for every candidate, so search the polarity alone.
-    grid_step_us = 0.0
+        return None
     delays = [seed_delay_us]
-    # A prescription fixes the delay axis to exactly one point. The seed is
-    # NOT appended here (unlike elsewhere): that would let the search
-    # silently return the seed's delay instead of the prescribed one.
-    if explicit_delay_us is not None:
-        delays = [float(explicit_delay_us)]
-    elif anchor_delay_us is not None and fc_hz > 0.0:
-        delays, grid_step_us = _alignment_delay_grid(
-            fc_hz, anchor_delay_us, seed_delay_us, delay_bounds_us,
-        )
-
-    # The polarity axis, pinned the same way: the seed sign is not added
-    # back, for the same reason the seed delay is not.
-    signs = (
-        (1, -1) if explicit_polarity_sign is None
-        else (int(explicit_polarity_sign),)
-    )
+    if anchor_delay_us is not None and fc_hz > 0.0:
+        delays, _ = _alignment_delay_grid(fc_hz, anchor_delay_us, seed_delay_us, delay_bounds_us)
+    signs = (1, -1)
     pairs = [(sign, delay) for sign in signs for delay in delays]
     # Non-finite scores are not candidates (only fires on a branch TF that
     # already carries NaN/inf).
@@ -838,15 +697,8 @@ def _select_alignment_pair(
         seed_polarity_sign=seed_polarity_sign,
         seed_delay_us=seed_delay_us,
         seed_ripple_db=seed_ripple_db,
-        objective=(
-            ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
-            if explicit_delay_us is not None
-            else ALIGNMENT_COMMITTED_FLAT_SUM
-        ),
-        grid_points=len(delays),
-        grid_step_us=grid_step_us,
+        objective=ALIGNMENT_ESTIMATED_FLAT_SUM,
         left_anchor_lobe=_left_anchor_lobe(committed_delay_us),
-        polarity_pinned=explicit_polarity_sign is not None,
     )
 
 
