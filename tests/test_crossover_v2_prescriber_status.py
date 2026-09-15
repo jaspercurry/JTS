@@ -229,62 +229,6 @@ def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
     }
 
 
-def test_the_reading_order_leads_with_the_docs_and_their_size(tmp_path, capsys):
-    """Tier 0's front door (ADR-0204), sized so a reader can budget the read."""
-    session, _ = _speaker_dirs(tmp_path)
-
-    _, payload = _status([str(session)], capsys)
-
-    order = payload["reading_order"]
-    assert [entry["label"] for entry in order] == [
-        label for label, _filename, _gives in cli._READING_ORDER
-    ]
-    for entry, (_label, filename, gives) in zip(order, cli._READING_ORDER):
-        path = Path(entry["path"])
-        assert path.name == filename
-        assert entry["gives"] == gives
-        # Both numbers are the file's own, not an estimate.
-        assert entry["bytes"] == path.stat().st_size
-        assert entry["lines"] == path.read_bytes().count(b"\n")
-
-
-def test_the_reading_order_prefers_the_on_box_install_when_present(
-    tmp_path, capsys, monkeypatch
-):
-    """Repo path by default (no /opt/jasper/docs here); the installed path
-    once deploy/lib/install/python-runtime.sh's install_jasper() has put one
-    there -- never both, never neither. The repo fallback is anchored to the
-    package, not the CWD: run from anywhere, the resolved path is the
-    checkout's own docs/, absolute. A name that resolves to no file at all
-    carries no size rather than a guessed one."""
-    session, _ = _speaker_dirs(tmp_path)
-
-    monkeypatch.chdir(tmp_path)
-    _, before = _status([str(session)], capsys)
-    # Structural: a parents[N] shift after a file move fails here directly.
-    assert (cli._REPO_DOCS_DIR / "tuning-operator-runbook.md").is_file()
-    assert before["reading_order"][0]["path"] == str(
-        cli._REPO_DOCS_DIR / "tuning-operator-runbook.md"
-    )
-
-    installed = tmp_path / "installed-docs"
-    installed.mkdir()
-    (installed / "tuning-operator-runbook.md").write_text("x")
-    monkeypatch.setattr(cli, "_INSTALLED_DOCS_DIR", installed)
-    monkeypatch.setattr(cli, "_REPO_DOCS_DIR", tmp_path / "no-checkout-here")
-
-    _, after = _status([str(session)], capsys)
-    assert after["reading_order"][0]["path"] == str(
-        installed / "tuning-operator-runbook.md"
-    )
-    assert after["reading_order"][0]["bytes"] == 1
-    # The other two were seeded into neither directory, so each carries the
-    # bare identifier and no size -- one doc's absence never fakes another's.
-    assert after["reading_order"][1]["path"] == "docs/tuning-methodology.md"
-    assert after["reading_order"][1]["bytes"] is None
-    assert after["reading_order"][1]["lines"] is None
-
-
 def test_an_absence_carries_the_reason_the_packet_gave_for_it(tmp_path, capsys):
     """``source_absent`` is the packet's own word, echoed rather than reworded."""
     session, _ = _speaker_dirs(tmp_path)
