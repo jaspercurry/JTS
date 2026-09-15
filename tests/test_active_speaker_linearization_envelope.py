@@ -43,16 +43,14 @@ from jasper.active_speaker.linearization_envelope import (
     EnvelopeCurve,
     EnvelopeTerm,
     ReasonCode,
-    class_prior_limit,
     compose_envelope,
     compute_sigma_curve,
     mic_trust_limit,
-    position_stability_limit,
+    position_spread_db,
     repeatability_limit,
     spatial_exclusion_limit,
 )
 from jasper.active_speaker.linearization_fit import (
-    PER_FILTER_CUT_CAP_DB,
     complex_correction_response,
     fit_driver_linearization,
 )
@@ -387,7 +385,7 @@ def test_repeatability_limit_rejects_unknown_tier():
 
 
 # --------------------------------------------------------------------------- #
-# mic_trust_limit / class_prior_limit -- shape + conservativeness
+# mic_trust_limit
 # --------------------------------------------------------------------------- #
 
 
@@ -397,13 +395,6 @@ def test_mic_trust_limit_taper_monotone_non_increasing(tier):
     assert np.all(np.diff(curve) <= 1e-9)
     assert curve.max() == pytest.approx(ENVELOPE_CEILING_SENTINEL_DB)
     assert curve.min() == pytest.approx(0.0, abs=1e-9)
-
-
-@pytest.mark.parametrize("driver_class", DRIVER_CLASSES)
-def test_class_prior_limit_taper_monotone_non_increasing(driver_class):
-    curve = class_prior_limit(DEFAULT_ENVELOPE_GRID_HZ, driver_class=driver_class)
-    assert np.all(np.diff(curve) <= 1e-9)
-    assert curve.max() == pytest.approx(ENVELOPE_CEILING_SENTINEL_DB)
 
 
 def test_mic_trust_limit_phone_is_conservative_vs_every_other_tier():
@@ -419,27 +410,9 @@ def test_mic_trust_limit_phone_is_conservative_vs_every_other_tier():
         assert np.all(phone <= other + 1e-9), tier
 
 
-def test_class_prior_limit_unknown_is_conservative_vs_every_other_class():
-    """'unknown' is a valid, closed-vocabulary driver class (not an error)
-    representing 'we don't know this driver's class' -- it must never
-    trust more than any class we actually have a researched prior for."""
-    grid = DEFAULT_ENVELOPE_GRID_HZ
-    unknown = class_prior_limit(grid, driver_class="unknown")
-    for driver_class in DRIVER_CLASSES:
-        if driver_class == "unknown":
-            continue
-        other = class_prior_limit(grid, driver_class=driver_class)
-        assert np.all(unknown <= other + 1e-9), driver_class
-
-
 def test_mic_trust_limit_rejects_unknown_tier():
     with pytest.raises(ValueError):
         mic_trust_limit(DEFAULT_ENVELOPE_GRID_HZ, tier="iphone")
-
-
-def test_class_prior_limit_rejects_unknown_class():
-    with pytest.raises(ValueError):
-        class_prior_limit(DEFAULT_ENVELOPE_GRID_HZ, driver_class="tweeter")
 
 
 @pytest.mark.parametrize(
@@ -664,32 +637,6 @@ def test_compose_envelope_zeroes_where_mic_trust_reaches_exactly_zero(tier):
     assert curve.allowed_depth_db[~zero_bins].max() > 1.0
 
 
-def test_compose_envelope_zeroes_where_the_class_prior_reaches_exactly_zero():
-    """The rule is about ANY term, not mic-trust specifically.
-
-    ``class_prior_limit`` for the conservative ``unknown`` class tapers to
-    exactly 0 at 12 kHz — below ``reference`` mic-trust's own 16 kHz zero — so
-    this bin set is owned by a different term entirely.
-    """
-    grid = DEFAULT_ENVELOPE_GRID_HZ
-    primary = _zero_sigma_primary("tweeter", freqs_hz=grid)
-    curve = compose_envelope(
-        "tweeter", primary,
-        excited_band_hz=(150.0, 20_000.0),
-        mic_tier="reference",
-        driver_class="unknown",
-        grid_hz=grid,
-    )
-    class_prior = curve.terms[ReasonCode.LIMITED_BY_CLASS_PRIOR]
-    zero_bins = class_prior <= 0.0
-    assert zero_bins.any()
-    # The class prior zeroes BELOW where reference mic-trust does, so these
-    # bins prove the rule is term-agnostic.
-    mic_trust = curve.terms[ReasonCode.LIMITED_BY_MIC_TIER]
-    assert (mic_trust[zero_bins] > 0.0).any()
-    assert np.all(curve.allowed_depth_db[zero_bins] == 0.0)
-
-
 def test_compose_envelope_still_smooths_inside_the_non_zero_region():
     """Hardening the boundary must not introduce a cliff INSIDE the band.
 
@@ -712,11 +659,6 @@ def test_compose_envelope_still_smooths_inside_the_non_zero_region():
     interior = (grid > 200.0) & (grid < 15_000.0)
     steps = np.abs(np.diff(depth[interior]))
     assert steps.max() < 2.0, "interior must stay smooth, no new cliff"
-    # The approach to the boundary is a taper, not a plunge from the ceiling:
-    # the last bin that still has permission holds only a couple of dB.
-    non_zero = np.flatnonzero(depth > 0.0)
-    assert depth[non_zero[-1]] < 4.0
-    assert depth[non_zero[-1]] > 0.0
 
 
 def test_compose_envelope_out_of_band_treatment_is_unchanged_by_the_zero_rule():
@@ -932,14 +874,9 @@ def test_reason_code_vocabulary_is_stable():
     assert ReasonCode.FITTED == "envelope_fitted"
     assert ReasonCode.LIMITED_BY_MIC_TIER == "envelope_limited_by_mic_tier"
     assert ReasonCode.LIMITED_BY_REPEATABILITY == "envelope_limited_by_repeatability"
-    assert ReasonCode.LIMITED_BY_CLASS_PRIOR == "envelope_limited_by_class_prior"
     assert (
         ReasonCode.LIMITED_BY_SPATIAL_EXCLUSION
         == "envelope_limited_by_spatial_exclusion"
-    )
-    assert (
-        ReasonCode.LIMITED_BY_POSITION_STABILITY
-        == "envelope_limited_by_position_stability"
     )
     assert (
         ReasonCode.LIMITED_BY_VERIFY_DIVERGENCE
@@ -950,7 +887,7 @@ def test_reason_code_vocabulary_is_stable():
         == "envelope_beyond_measurement_confidence"
     )
     assert ReasonCode.OUT_OF_BAND == "envelope_out_of_band"
-    assert len(list(ReasonCode)) == 9
+    assert len(list(ReasonCode)) == 7
 
 
 def test_mic_tiers_and_driver_classes_vocabulary_is_stable():
@@ -1087,7 +1024,7 @@ def test_spatial_exclusion_limit_single_bin_grid_reduces_to_containment():
 
 
 # --------------------------------------------------------------------------- #
-# position_stability_limit (PR-6a)
+# Position spread
 # --------------------------------------------------------------------------- #
 
 
@@ -1104,188 +1041,6 @@ def _band(center_hz: float, sigma_db: float, *, f_lo=None, f_hi=None) -> BandSpr
         n_bins=100,
     )
 
-
-def test_position_stability_limit_empty_spread_is_all_sentinel():
-    curve = position_stability_limit(
-        DEFAULT_ENVELOPE_GRID_HZ, (), n_positions=10, tier="reference",
-    )
-    assert np.all(curve == ENVELOPE_CEILING_SENTINEL_DB)
-
-
-def test_position_stability_limit_reads_the_standard_error_not_the_raw_spread():
-    """Known-answer, and the whole design decision in two numbers.
-
-    sigma = 2.0 dB in both clouds. At N=4 the standard error is 1.0 dB, twice
-    the ``reference`` tier's 0.5 dB tolerable, so the limit is
-    ``24 * 0.5/1.0 = 12.0`` dB. At N=16 the SAME 2.0 dB spread gives a 0.5 dB
-    standard error and the term is back at the sentinel: dispersing more
-    positions buys back depth, which is the ``1/sqrt(N)`` law the term
-    exists to express. A raw-sigma reading would return 6.0 dB for both.
-    """
-    grid = DEFAULT_ENVELOPE_GRID_HZ
-    spread = (_band(1000.0, 2.0),)
-    inside = (grid >= 1000.0 / _SQRT2) & (grid <= 1000.0 * _SQRT2)
-
-    four = position_stability_limit(grid, spread, n_positions=4, tier="reference")
-    sixteen = position_stability_limit(grid, spread, n_positions=16, tier="reference")
-    assert four[inside] == pytest.approx(12.0)
-    assert sixteen[inside] == pytest.approx(ENVELOPE_CEILING_SENTINEL_DB)
-    # A raw-sigma reading would have been this, at both N:
-    assert ENVELOPE_CEILING_SENTINEL_DB * 0.5 / 2.0 == pytest.approx(6.0)
-
-
-def test_position_stability_limit_is_monotone_non_increasing_in_sigma():
-    grid = DEFAULT_ENVELOPE_GRID_HZ
-    previous = None
-    for sigma_db in (0.0, 0.5, 1.0, 2.0, 4.0, 8.0):
-        curve = position_stability_limit(
-            grid, (_band(1000.0, sigma_db),), n_positions=9, tier="reference",
-        )
-        if previous is not None:
-            assert np.all(curve <= previous + 1e-12)
-        previous = curve
-
-
-def test_position_stability_limit_unreported_bands_stay_at_the_sentinel():
-    """"No reading, no additional constraint" -- deliberately NOT the
-    "no evidence, no permission" rule a missing repeat sigma gets. A cloud
-    whose grid stopped short must not silently delete the envelope above it.
-    """
-    grid = DEFAULT_ENVELOPE_GRID_HZ
-    curve = position_stability_limit(
-        grid, (_band(1000.0, 4.0),), n_positions=4, tier="reference",
-    )
-    outside = (grid < 1000.0 / _SQRT2) | (grid > 1000.0 * _SQRT2)
-    assert outside.any()
-    assert np.all(curve[outside] == ENVELOPE_CEILING_SENTINEL_DB)
-    assert np.all(curve[~outside] < ENVELOPE_CEILING_SENTINEL_DB)
-
-
-def test_position_stability_limit_overlapping_bands_take_the_tighter_limit():
-    grid = DEFAULT_ENVELOPE_GRID_HZ
-    quiet = _band(1000.0, 0.4, f_lo=800.0, f_hi=1600.0)
-    noisy = _band(2000.0, 4.0, f_lo=1200.0, f_hi=3000.0)
-    curve = position_stability_limit(
-        grid, (quiet, noisy), n_positions=4, tier="reference",
-    )
-    overlap = (grid >= 1200.0) & (grid <= 1600.0)
-    assert overlap.any()
-    # sigma 4.0 / sqrt(4) = 2.0 -> 24 * 0.5/2.0 = 6.0 dB, the noisier band's.
-    assert curve[overlap] == pytest.approx(6.0)
-
-
-def test_position_stability_limit_shares_the_mapping_with_repeatability():
-    """The two terms differ ONLY in which sigma they hand to the shared
-    mapping -- pinned so a future edit to one cannot quietly fork the other.
-    """
-    grid = DEFAULT_ENVELOPE_GRID_HZ
-    sigma_db, n_positions = 3.0, 9
-    stability = position_stability_limit(
-        grid, (_band(1000.0, sigma_db, f_lo=grid[0], f_hi=grid[-1]),),
-        n_positions=n_positions, tier="consumer",
-    )
-    equivalent = repeatability_limit(
-        np.full_like(grid, sigma_db / np.sqrt(n_positions)),
-        tier="consumer", grid_hz=grid,
-    )
-    assert np.array_equal(stability, equivalent)
-
-
-def test_position_stability_limit_rejects_bad_tier_and_a_thin_cloud():
-    grid = DEFAULT_ENVELOPE_GRID_HZ
-    with pytest.raises(ValueError, match="unknown mic tier"):
-        position_stability_limit(grid, (), n_positions=4, tier="studio")
-    with pytest.raises(ValueError, match="n_positions must be >= 2"):
-        position_stability_limit(
-            grid, (_band(1000.0, 1.0),), n_positions=1, tier="reference",
-        )
-
-
-# The worst cross-position spread the S0 main leg produced: sigma 3.0957 dB
-# in the 16 kHz band across N = 10 positions. Committed as literals so the
-# test below is HARDWARE-FREE and runs in CI -- the corpus test that measured
-# them (test_s0_position_stability_calibration_populations) is env-gated and
-# skips there, which is exactly the gap this constant closes.
-#
-# RE-DERIVED 2026-08-02 (#2045), 3.0878 -> 3.0957, for PR #1991's prominence
-# vote re-gating cloud_04 -- see tests._flat_lin_corpus "The 2026-08-02 re-pin
-# era".
-#
-# **This literal is a FROZEN STAND-IN for an env-gated corpus measurement, and
-# it must be re-derived whenever that corpus moves.** Nothing in CI can catch
-# it going stale: the test below happily keeps passing against a number the
-# hardware no longer produces, because the corpus test that would disagree is
-# skipped there. That is the #1884 failure mode (corpus CI invisibility) in
-# miniature -- and it is not hypothetical, it is how this constant survived
-# #1991 while every env-gated reading around it moved. Re-derive it through
-# position_stability_limit against the live corpus; do not transcribe it.
-_S0_WORST_BAND_SIGMA_DB = 3.0957
-_S0_WORST_BAND_N_POSITIONS = 10
-
-
-def test_shared_sigma_tolerable_keeps_the_s0_worst_case_above_the_fit_cap():
-    """Guards the 0.26 dB margin the whole position-stability design rests on.
-
-    ``position_stability_limit`` is inert on a protocol-following cloud only
-    because the S0 main leg's worst standard error (3.0957/sqrt(10) =
-    0.979 dB) maps to **12.26 dB** at ``reference`` tier, which is above the
-    fit's 12 dB ``PER_FILTER_CUT_CAP_DB`` -- so ``min(12, allowed_depth)``
-    never moves and the emitted filters are unchanged.
-
-    RE-PINNED 2026-08-02 (#2045) for PR #1991's prominence vote -- see
-    ``tests._flat_lin_corpus`` "The 2026-08-02 re-pin era" and the
-    frozen-stand-in warning on :data:`_S0_WORST_BAND_SIGMA_DB` above. The
-    margin got THINNER, 0.29 -> 0.26 dB, which is the direction that matters
-    for a guard whose whole job is that this limit stays above the cut cap.
-
-    (The corpus's real bands produce 12.2579 dB. This test drives one
-    synthetic band from the 4-dp rounded constant above and gets 12.2581 dB.
-    Same measurement, two roundings, well inside this test's own 0.01 dB
-    tolerance; both are stated so the pair cannot read as a contradiction.)
-
-    **The hazard this exists for.** :data:`_SIGMA_TOLERABLE_DB` is now shared
-    by two terms. A future retune motivated by *repeatability* -- tightening
-    ``reference`` from 0.5 to 0.4 dB, a perfectly reasonable thing to want --
-    drops that same limit to 9.81 dB, and the stability term starts binding
-    the emitted fit on a cloud nobody thought had changed. The
-    ``test_position_stability_limit_shares_the_mapping_with_repeatability``
-    contract cannot catch it (both terms move together, so they stay in
-    agreement while the answer goes wrong), and the corpus test that
-    measured the margin skips in CI. This one does not.
-
-    Regime: S0 corpus, JTS3 cdhorn, ten-position desk cloud, 16 kHz octave
-    band, ``reference`` mic tier. The margin is class-independent -- this
-    term reads only the cloud and the tier.
-    """
-    grid = DEFAULT_ENVELOPE_GRID_HZ
-    worst = _band(16_000.0, _S0_WORST_BAND_SIGMA_DB)
-    limit = position_stability_limit(
-        grid, (worst,), n_positions=_S0_WORST_BAND_N_POSITIONS, tier="reference",
-    )
-    inside = limit < ENVELOPE_CEILING_SENTINEL_DB
-    assert inside.any()
-    shipped_limit_db = float(limit[inside].min())
-
-    assert shipped_limit_db == pytest.approx(12.26, abs=0.01)
-    assert shipped_limit_db >= PER_FILTER_CUT_CAP_DB
-
-    # The counterfactual that makes this test load-bearing, from the same
-    # documented mapping (ceiling * min(1, tolerable / sigma)), written out
-    # here rather than imported so a change to the module's own helper cannot
-    # move both sides at once.
-    standard_error_db = _S0_WORST_BAND_SIGMA_DB / math.sqrt(
-        _S0_WORST_BAND_N_POSITIONS
-    )
-    tightened_limit_db = ENVELOPE_CEILING_SENTINEL_DB * min(
-        1.0, 0.4 / standard_error_db
-    )
-    assert tightened_limit_db == pytest.approx(9.81, abs=0.01)
-    assert tightened_limit_db < PER_FILTER_CUT_CAP_DB
-
-
-# --------------------------------------------------------------------------- #
-# compose_envelope + the cloud terms (PR-6a)
-# --------------------------------------------------------------------------- #
 
 _COMPOSE_BAND_HZ = (2000.0, 18_000.0)
 
@@ -1304,7 +1059,7 @@ def _compose(primary, **kwargs) -> EnvelopeCurve:
 def test_compose_envelope_absent_cloud_evidence_is_byte_identical():
     """The additivity contract: omitted, ``None``, and empty all compose to
     the pre-PR-6a curve exactly -- same numbers, same reasons, and a
-    ``terms`` mapping still holding exactly the three original keys."""
+    ``terms`` mapping still holding exactly the two depth terms."""
     primary = _zero_sigma_primary("tweeter", freqs_hz=DEFAULT_ENVELOPE_GRID_HZ)
     baseline = _compose(primary)
     variants = (
@@ -1320,7 +1075,6 @@ def test_compose_envelope_absent_cloud_evidence_is_byte_identical():
     assert set(baseline.terms) == {
         ReasonCode.LIMITED_BY_MIC_TIER,
         ReasonCode.LIMITED_BY_REPEATABILITY,
-        ReasonCode.LIMITED_BY_CLASS_PRIOR,
     }
 
 
@@ -1370,24 +1124,50 @@ def test_compose_envelope_cloud_terms_can_only_narrow():
     assert np.any(narrowed.allowed_depth_db < baseline.allowed_depth_db)
 
 
-def test_compose_envelope_position_stability_wins_where_it_binds():
+@pytest.mark.parametrize("bands,positions", [(None, 2), ((), None)])
+def test_compose_envelope_requires_band_spread_and_n_positions_together(bands, positions):
+    primary = _zero_sigma_primary("tweeter", freqs_hz=DEFAULT_ENVELOPE_GRID_HZ)
+    with pytest.raises(ValueError):
+        _compose(primary, band_spread=bands, n_positions=positions)
+
+
+@pytest.mark.parametrize("positions,spread", [(0, None), (1, None), (2, 6 / math.sqrt(2)), (4, 3.0)])
+def test_position_spread_is_disclosed_without_limiting_depth(positions, spread):
     grid = DEFAULT_ENVELOPE_GRID_HZ
     primary = _zero_sigma_primary("tweeter", freqs_hz=grid)
-    # sigma 6 dB over 4 positions -> se 3.0 dB -> 24 * 0.5/3.0 = 4.0 dB, well
-    # below mic-trust and class-prior at 3 kHz (both still at the sentinel).
-    curve = _compose(primary, band_spread=(_band(3000.0, 6.0),), n_positions=4)
+    curve = _compose(primary, band_spread=(_band(3000.0, 6.0),), n_positions=positions)
+    baseline = _compose(primary)
     idx = int(np.argmin(np.abs(grid - 3000.0)))
-    assert curve.reason[idx] == ReasonCode.LIMITED_BY_POSITION_STABILITY
-    assert curve.terms[ReasonCode.LIMITED_BY_POSITION_STABILITY][idx] == pytest.approx(
-        4.0
-    )
+    assert curve.reason[idx] == ReasonCode.FITTED
+    assert np.array_equal(curve.allowed_depth_db, baseline.allowed_depth_db)
+    fit = fit_driver_linearization(primary, curve).to_dict()
+    assert fit["reason_summary"]["4000"] == ReasonCode.FITTED
+    assert fit["position_spread_db"] is None if spread is None else fit["position_spread_db"]["4000"] == pytest.approx(spread)
+    if spread is None:
+        assert curve.position_spread_db is None
+    else:
+        assert curve.position_spread_db[idx] == pytest.approx(spread)
+        assert np.isnan(curve.position_spread_db[0])
 
 
-def test_compose_envelope_requires_band_spread_and_n_positions_together():
-    primary = _zero_sigma_primary("tweeter", freqs_hz=DEFAULT_ENVELOPE_GRID_HZ)
-    for kwargs in ({"band_spread": (_band(1000.0, 1.0),)}, {"n_positions": 8}):
-        with pytest.raises(ValueError, match="must be supplied together"):
-            _compose(primary, **kwargs)
+@pytest.mark.parametrize("driver_class,full_to", [
+    ("unknown", 6000), ("compression_horn", 10000), ("soft_dome", 14000),
+    ("metal_dome", 16000), ("beryllium_diamond_dome", 17000), ("ribbon_amt", 17000),
+])
+def test_class_prior_is_disclosed_without_limiting_depth(driver_class, full_to):
+    primary = _zero_sigma_primary("tweeter")
+    curve = compose_envelope("tweeter", primary, excited_band_hz=(2000, 20000),
+                             mic_tier="reference", driver_class=driver_class)
+    baseline = compose_envelope("tweeter", primary, excited_band_hz=(2000, 20000), mic_tier="reference")
+    assert np.array_equal(curve.allowed_depth_db, baseline.allowed_depth_db)
+    assert curve.reason == baseline.reason
+    assert curve.class_prior_hz == {"full_to_hz": full_to, "taper_zero_hz": full_to * 2}
+
+
+def test_position_spread_overlapping_bands_report_the_larger_error():
+    result = position_spread_db(np.array([2000, 3000, 4000]),
+                                (_band(3000, 2, f_lo=2000, f_hi=4000), _band(3000, 6, f_lo=2500, f_hi=3500)), n_positions=4)
+    assert result == pytest.approx([1, 3, 1])
 
 
 def test_default_grid_step_pins_the_coarseness_the_edge_rule_is_about():
@@ -1477,264 +1257,7 @@ def _realized_correction_db(fit, grid_hz: np.ndarray) -> np.ndarray:
 
 
 @requires_s0_curves
-def test_s0_position_stability_calibration_populations(s0_main_captures):
-    """Re-derives ``position_stability_limit``'s whole calibration table.
-
-    Measured 2026-07-26, five S0 cloud groupings at ``reference`` tier, over
-    the seven octave bands inside ``DEFAULT_ENVELOPE_GRID_HZ``'s 150 Hz
-    floor. Each row is (N, sigma range, standard-error range, limit range),
-    and the assertions below pin the calibration to the measurement.
-
-    RE-PINNED 2026-08-02 (#2045) for PR #1991's prominence vote, which
-    re-gates ``cloud_04`` -- see ``tests._flat_lin_corpus`` "The 2026-08-02
-    re-pin era". Exactly the two groupings that CONTAIN cloud_04 moved
-    (``main_all_10`` and ``main_tweeter_height_6``); ``main_hand_width_low_4``
-    (cloud_07-10), ``desk_front_edge_3`` and ``ground_plane_3`` were
-    byte-identical THEN, which was the control on that change.
-
-    RE-PINNED AGAIN 2026-09-10 (#2568) for commit ``4300a546d``, which
-    changed ``deconv.regularized_deconvolution_full``'s Tikhonov floor from
-    additive ``|X|**2 + eps`` to ``max(|X|**2, eps)``. Every S0 capture this
-    table is built from is deconvolved through that function, so this time
-    ALL FIVE groupings moved -- there is no unaffected control, because the
-    change sits upstream of every one of them. ``main_tweeter_height_6``
-    happens to land back inside the old ``abs=0.001``/``abs=0.01``
-    tolerances (its numbers are unchanged below), which is coincidence, not
-    immunity. ``ground_plane_3`` moved the most: sigma_min 0.362 -> 0.429,
-    sigma_max 3.173 -> 3.190, limit_min 6.55 -> 6.52 dB. ``main_all_10``'s
-    limit_min tightens again, 12.26 -> 12.24 dB, still 0.24 dB clear of
-    ``PER_FILTER_CUT_CAP_DB``.
-    """
-    from tests._flat_lin_corpus import (
-        S0_DESK_EDGE,
-        S0_GROUND_PLANE,
-        S0_MAIN_HAND_WIDTH_LOW,
-        S0_MAIN_TWEETER_HEIGHT,
-    )
-
-    def _subset(only):
-        return [c for c in s0_main_captures if c.position_id in only]
-
-    groupings = {
-        "main_all_10": combine_positions(s0_main_captures),
-        "main_tweeter_height_6": combine_positions(_subset(S0_MAIN_TWEETER_HEIGHT)),
-        "main_hand_width_low_4": combine_positions(_subset(S0_MAIN_HAND_WIDTH_LOW)),
-        "desk_front_edge_3": combine_positions(s0_position_captures(S0_DESK_EDGE)),
-        "ground_plane_3": combine_positions(s0_position_captures(S0_GROUND_PLANE)),
-    }
-    expected = {
-        # name: (N, sigma_lo, sigma_hi, se_lo, se_hi, limit_lo, worst_band_hz)
-        "main_all_10": (10, 0.921, 3.100, 0.291, 0.980, 12.24, 16_000.0),
-        "main_tweeter_height_6": (6, 0.190, 1.222, 0.078, 0.499, 24.00, 16_000.0),
-        "main_hand_width_low_4": (4, 0.962, 3.031, 0.481, 1.515, 7.92, 16_000.0),
-        "desk_front_edge_3": (3, 0.306, 1.737, 0.177, 1.003, 11.97, 16_000.0),
-        "ground_plane_3": (3, 0.429, 3.190, 0.248, 1.842, 6.52, 8000.0),
-    }
-
-    for name, combined in groupings.items():
-        n, sig_lo, sig_hi, se_lo, se_hi, limit_lo, worst_hz = expected[name]
-        assert combined.n_positions == n, name
-        bands = [
-            band for band in combined.band_spread
-            if band.center_hz >= DEFAULT_ENVELOPE_GRID_HZ[0]
-        ]
-        assert [band.center_hz for band in bands] == [
-            250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16_000.0,
-        ], name
-
-        sigmas = np.array([band.sigma_db for band in bands])
-        errors = sigmas / np.sqrt(n)
-        assert sigmas.min() == pytest.approx(sig_lo, abs=0.001), name
-        assert sigmas.max() == pytest.approx(sig_hi, abs=0.001), name
-        assert errors.min() == pytest.approx(se_lo, abs=0.001), name
-        assert errors.max() == pytest.approx(se_hi, abs=0.001), name
-
-        limit = position_stability_limit(
-            DEFAULT_ENVELOPE_GRID_HZ, bands, n_positions=n, tier="reference",
-        )
-        assert float(limit.min()) == pytest.approx(limit_lo, abs=0.01), name
-        assert float(limit.max()) == pytest.approx(
-            ENVELOPE_CEILING_SENTINEL_DB
-        ), name
-        # The band that produced the tightest limit.
-        assert bands[int(np.argmax(errors))].center_hz == worst_hz, name
-
-    # The claim the term's shape rests on: the plan's own cloud shape is not
-    # narrowed below the fit's per-filter cut cap; the thin ones are.
-    assert expected["main_all_10"][5] > PER_FILTER_CUT_CAP_DB
-    assert expected["main_hand_width_low_4"][5] < PER_FILTER_CUT_CAP_DB
-    assert expected["ground_plane_3"][5] < PER_FILTER_CUT_CAP_DB
-
-
-@requires_s0_curves
-def test_s0_position_stability_narrows_the_envelope_but_not_the_fit(s0_replay):
-    """What the stability term costs a protocol-following cloud: nothing.
-
-    Measured 2026-07-26, the term supplied ALONE (no exclusion mask) against
-    the same envelope without it, on the S0 ten-position cloud.
-
-    RE-PINNED 2026-09-10 (#2568) for commit ``4300a546d`` (Tikhonov floor
-    ``|X|**2 + eps`` -> ``max(|X|**2, eps)``, see the calibration-populations
-    test above for the mechanism): the deconvolution feeds this table's
-    sigma curve directly, so the narrowing widened on ``compression_horn`` --
-    30 bins -> 43, span 5082.1-11433.5 Hz -> 5082.1-16444.9 Hz, max drop
-    7.03 -> 7.08 dB -- and a second octave (12 kHz) now also crosses from
-    ``envelope_limited_by_class_prior`` to
-    ``envelope_limited_by_position_stability``. ``unknown``'s bin count and
-    span happen to survive (18 bins, 5082.1-8174.7 Hz), only its max drop
-    moves, 5.196 -> 5.24 dB.
-
-    The **8 newest bins that changed, 13521.8-16444.9 Hz on
-    ``compression_horn``, now cross the per-bin cut cap** (``min(12 dB,
-    allowed_depth_db)`` moves there, where it did not before) -- that is
-    checked explicitly below rather than folded into a blanket
-    equal-everywhere claim, because it is no longer true everywhere. It
-    stays true UP TO that point, and the fit is verified unaffected in
-    either case: the CD-horn continuation stage suppresses itself at
-    ``insufficient_repeats`` on this two-occurrence corpus (see
-    ``test_s0_replay_fit_places_no_gain_inside_identified_nulls``), so no
-    filter this corpus ever emits reaches within 10 kHz of the differing
-    bins -- both fits' filters top out at 3533.4 Hz. The emitted fit stays
-    byte-identical, which is the actual claim this test exists to make.
-
-    What DOES change is the disclosure, which is the point of the term
-    existing at all: the ``compression_horn`` fit's 8 kHz (and, newly,
-    12 kHz) octave summaries move from ``envelope_fitted`` /
-    ``envelope_limited_by_class_prior`` to
-    ``envelope_limited_by_position_stability``, so the report can say which
-    instrument is holding the ceiling even though nothing was given up. The
-    ``unknown`` fit's summary does not move -- the class prior is already
-    tighter than the stability term everywhere it is read.
-
-    This is the claim ``position_stability_limit``'s docstring makes about
-    its own regime, checked at the surface that matters rather than on the
-    term's curve.
-    """
-    grid = DEFAULT_ENVELOPE_GRID_HZ
-    for driver_class, n_changed, span_hz, max_drop_db, cap_diff_floor_hz, reason_delta in (
-        (
-            _S0_TWEETER_CLASS, 43, (5082.1, 16_444.9), 7.08, 13_521.8,
-            {
-                "8000": (
-                    ReasonCode.FITTED.value,
-                    ReasonCode.LIMITED_BY_POSITION_STABILITY.value,
-                ),
-                "12000": (
-                    ReasonCode.LIMITED_BY_CLASS_PRIOR.value,
-                    ReasonCode.LIMITED_BY_POSITION_STABILITY.value,
-                ),
-            },
-        ),
-        ("unknown", 18, (5082.1, 8174.7), 5.24, None, {}),
-    ):
-        common = dict(
-            excited_band_hz=s0_replay.excited_band_hz,
-            mic_tier="reference",
-            driver_class=driver_class,
-            grid_hz=grid,
-        )
-        bare = compose_envelope("summed", s0_replay.primary, **common)
-        stable = compose_envelope(
-            "summed", s0_replay.primary, **common,
-            band_spread=s0_replay.combined.band_spread,
-            n_positions=s0_replay.combined.n_positions,
-        )
-        drop = bare.allowed_depth_db - stable.allowed_depth_db
-        changed = np.flatnonzero(np.abs(drop) > 1e-9)
-        assert int(changed.size) == n_changed, driver_class
-        assert float(grid[changed[0]]) == pytest.approx(span_hz[0], abs=0.1)
-        assert float(grid[changed[-1]]) == pytest.approx(span_hz[1], abs=0.1)
-        assert float(drop.max()) == pytest.approx(max_drop_db, abs=0.01)
-        assert float(drop.min()) >= 0.0  # narrowing only
-
-        # The surface the fit reads. Equal everywhere on `unknown`; on
-        # `compression_horn` it differs at exactly 8 bins, all >= the named
-        # floor and all beyond where either fit's HF-suppressed filters ever
-        # reach (see docstring), so the fit itself stays unaffected either
-        # way -- verified directly below via `bare_fit == stable_fit`.
-        cap_bare = np.minimum(PER_FILTER_CUT_CAP_DB, bare.allowed_depth_db)
-        cap_stable = np.minimum(PER_FILTER_CUT_CAP_DB, stable.allowed_depth_db)
-        cap_diff = np.flatnonzero(cap_bare != cap_stable)
-        if cap_diff_floor_hz is None:
-            assert cap_diff.size == 0, driver_class
-        else:
-            assert cap_diff.size == 8, driver_class
-            assert float(grid[cap_diff[0]]) == pytest.approx(
-                cap_diff_floor_hz, abs=0.1
-            ), driver_class
-        bare_fit = fit_driver_linearization(s0_replay.primary, bare).to_dict()
-        stable_fit = fit_driver_linearization(s0_replay.primary, stable).to_dict()
-        bare_reasons = bare_fit.pop("reason_summary")
-        stable_reasons = stable_fit.pop("reason_summary")
-        assert bare_fit == stable_fit, driver_class
-        assert {
-            octave: (bare_reasons[octave], stable_reasons[octave])
-            for octave in bare_reasons
-            if bare_reasons[octave] != stable_reasons[octave]
-        } == reason_delta, driver_class
-
-
-@requires_s0_curves
 def test_s0_replay_fit_places_no_gain_inside_identified_nulls(s0_replay):
-    """THE acceptance, on the declared-``compression_horn`` regime.
-
-    Measured 2026-07-26, INTERVALS RE-PINNED 2026-08-02 (#2045) for PR
-    #1991's prominence vote, which re-gates ``cloud_04`` -- see
-    ``tests._flat_lin_corpus`` "The 2026-08-02 re-pin era". The three
-    intervals then moved by at most 28 Hz an edge (8016-9427 -> 8015-9428,
-    10842-12348 -> 10841-12351, 14280-15679 -> 14276-15651).
-
-    RE-PINNED AGAIN 2026-09-10 (#2568) for commit ``4300a546d`` (Tikhonov
-    floor ``|X|**2 + eps`` -> ``max(|X|**2, eps)``, see the calibration
-    tests above for the mechanism): every capture the registry reads is
-    deconvolved through that function, so the three interval edges moved
-    again, this time narrower and lower -- 8015-9428 -> 8010-9399,
-    10841-12351 -> 10829-12339, 14276-15651 -> 14271-15612. That drops the
-    point-contained bin count 14 -> 13 and, because the widened
-    reference-tier mic-trust shelf (#3297) now covers the third rung
-    (14271-15612 Hz sits inside 12-20 kHz), the BARE envelope's range inside
-    the nulls moves from 2.82-22.80 dB to 10.13-24.00 dB (the ceiling
-    sentinel). None of that touches the invariant this test exists to
-    prove: the fit places **no filter** anywhere near the (now-shifted)
-    nulls -- its two peaking cuts still sit at 2388.9 and 3533.4 Hz -- and
-    every point-contained bin still reports ``LIMITED_BY_SPATIAL_EXCLUSION``.
-
-    The registry identifies three rungs over 5-19 kHz --
-    8010-9399, 10829-12339 and 14271-15612 Hz. With the merged mask composed
-    in, the envelope allows **exactly 0.0 dB** at all thirteen envelope-grid
-    bins inside them (against 10.13-24.00 dB without it), the fit places **no
-    filter** anywhere near them (its two peaking cuts sit at 2388.9 and
-    3533.4 Hz), and every one of those bins reports
-    ``LIMITED_BY_SPATIAL_EXCLUSION``.
-
-    **What is left inside a null is the analytic skirt of filters centred
-    octaves below, and it is a CUT.** Signed realized correction inside the
-    three intervals reads -0.0620 to -0.0068 dB: never positive, so the null
-    is never *filled* -- which is the plan's actual non-goal, and is
-    guaranteed absolutely by the pre-existing cut-only invariant rather than
-    by anything this PR added. A minimum-phase biquad cascade has no compact
-    support, so "exactly zero inside an interval" is not a claim any fit of
-    this shape can make; the honest claims are the three above plus this
-    bound.
-
-    **What the fit band shows, stated to its evidence and no further.** The
-    fit band is **identical** to the no-mask fit's -- 2020.0-19448.6 Hz as of
-    this re-pin, wider than the 2020.0-15991.5 Hz measured before #3297
-    widened the reference-tier mic-trust shelf, since that shelf is what the
-    top of this band tracks. The exclusion still punches holes inside the
-    band rather than truncating it at the first null, so the fit keeps its
-    PERMISSION to correct above 8 kHz. That is not the same as demonstrating
-    correction up there, and this corpus cannot demonstrate it: every filter
-    either fit emits sits at 2388.9 or 3533.4 Hz, well below the first null
-    at 8010 Hz, because the CD-horn continuation stage -- the stage that
-    would place HF content -- suppresses itself at ``insufficient_repeats``
-    on a corpus giving each position two occurrences
-    (``LinearizationFit.hf_continuation_suppressed_reason``, asserted
-    below). It suppresses identically with and without the mask, so the
-    comparison stays clean; it also means "the surrounding envelope is
-    corrected" is a claim about preserved permission here, and a session with
-    >= 3 occurrences per position is what would exercise the rest of it.
-    """
     grid = DEFAULT_ENVELOPE_GRID_HZ
     intervals = s0_replay.registry.excluded_bands_hz
     assert [(round(lo), round(hi)) for lo, hi in intervals] == [
@@ -1762,7 +1285,7 @@ def test_s0_replay_fit_places_no_gain_inside_identified_nulls(s0_replay):
     ) == pytest.approx(1.4648, abs=0.0002)
 
     assert np.all(masked.allowed_depth_db[inside] == 0.0)
-    assert float(bare.allowed_depth_db[inside].min()) == pytest.approx(10.13, abs=0.02)
+    assert float(bare.allowed_depth_db[inside].min()) == pytest.approx(14.31, abs=0.02)
     assert float(bare.allowed_depth_db[inside].max()) == pytest.approx(24.00, abs=0.02)
     for i in np.flatnonzero(inside):
         assert masked.reason[i] == ReasonCode.LIMITED_BY_SPATIAL_EXCLUSION
@@ -1774,8 +1297,8 @@ def test_s0_replay_fit_places_no_gain_inside_identified_nulls(s0_replay):
         assert emitted.gain <= 0.0
         assert not any(f_lo <= emitted.freq <= f_hi for f_lo, f_hi in intervals)
 
-    assert float(realized_db[inside].max()) == pytest.approx(-0.0068, abs=0.001)
-    assert float(realized_db[inside].min()) == pytest.approx(-0.0620, abs=0.001)
+    assert float(realized_db[inside].max()) == pytest.approx(-0.0071, abs=0.001)
+    assert float(realized_db[inside].min()) == pytest.approx(-0.0644, abs=0.001)
 
     assert fit.fit_band_hz == bare_fit.fit_band_hz
     assert fit.fit_band_hz[0] == pytest.approx(2020.0, abs=1.0)
@@ -1792,132 +1315,7 @@ def test_s0_replay_fit_places_no_gain_inside_identified_nulls(s0_replay):
 
 
 @requires_s0_curves
-def test_s0_replay_unknown_class_pins_the_undeclared_regime(s0_replay):
-    """The second acceptance case: with the class left undeclared, the
-    EXISTING class prior already refuses the top octave and the new terms
-    only narrow.
-
-    ``unknown``'s ``full_to`` is 6 kHz with a taper to 12 kHz, so the
-    15 kHz rung's interval is at 0.0 allowed depth **before** any mask
-    exists, and the 12 k / 16 k octave summaries stay
-    ``LIMITED_BY_CLASS_PRIOR`` even with the mask composed in. The 8.7 kHz
-    rung is where the two regimes differ: ``compression_horn`` (``full_to``
-    10 kHz) has ``ENVELOPE_CEILING_SENTINEL_DB`` (24.00 dB) of real authority
-    there and the exclusion is what removes it, while ``unknown`` has 13.99 dB
-    from the prior alone. This is why every 8-16 kHz statement about these
-    terms has to name its class.
-
-    Re-measured after #3297 widened the reference tier's mic-trust taper
-    (``_MIC_TRUST_TABLE_HZ["reference"]``'s full-trust shelf, 8 kHz -> 12 kHz,
-    owner ruling 2026-08-29): 8.7 kHz used to sit just past the old shelf, in
-    the taper, at 22.80 dB; it now sits inside the widened shelf, where
-    ``compression_horn``'s class prior no longer trims it either, so both
-    terms read the flat sentinel. ``unknown``'s 13.99 dB is untouched -- its
-    own class prior tapers well below 8.7 kHz regardless of the mic-trust
-    table.
-    """
-    grid = DEFAULT_ENVELOPE_GRID_HZ
-    first_interval = s0_replay.registry.excluded_bands_hz[0]
-    top_interval = s0_replay.registry.excluded_bands_hz[-1]
-    first = (grid >= first_interval[0]) & (grid <= first_interval[1])
-    top = (grid >= top_interval[0]) & (grid <= top_interval[1])
-
-    bare_unknown = _s0_envelope(s0_replay, "unknown", cloud=False)
-    masked_unknown = _s0_envelope(s0_replay, "unknown", cloud=True)
-    bare_horn = _s0_envelope(s0_replay, _S0_TWEETER_CLASS, cloud=False)
-    masked_horn = _s0_envelope(s0_replay, _S0_TWEETER_CLASS, cloud=True)
-
-    assert np.all(bare_unknown.allowed_depth_db[top] == 0.0)
-    assert np.all(masked_unknown.allowed_depth_db <= bare_unknown.allowed_depth_db)
-
-    # The 8.7 kHz rung, the two class regimes side by side.
-    assert float(bare_horn.allowed_depth_db[first].max()) == pytest.approx(
-        ENVELOPE_CEILING_SENTINEL_DB, abs=0.02
-    )
-    assert float(bare_unknown.allowed_depth_db[first].max()) == pytest.approx(
-        13.99, abs=0.02
-    )
-
-    idx_12k = int(np.argmin(np.abs(grid - 12_000.0)))
-    assert masked_unknown.reason[idx_12k] == ReasonCode.LIMITED_BY_CLASS_PRIOR
-    assert masked_horn.reason[idx_12k] == ReasonCode.LIMITED_BY_SPATIAL_EXCLUSION
-
-
-@requires_s0_curves
 def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
-    """Predicted-sum ripple, compared on the SAME bins with both fits.
-
-    **The masked fit is slightly worse, not equal** -- +0.0670 dB on
-    ``compression_horn`` -- so this test asserts the exact measured
-    difference, which IS the bound, rather than the "no regression" the
-    plan's acceptance line asks for in prose.
-
-    The comparison window is the BARE fit's band minus every masked bin --
-    one window for both fits, which is what makes the two RMS figures
-    comparable -- 69 bins on the ``compression_horn`` regime, 56 on
-    ``unknown``. The metric is the RMS deviation of the predicted sum about
-    its own median. **Its absolute value is not a ripple figure**: it is
-    dominated by the tweeter's own uncorrected top-octave rolloff, because
-    this corpus gives each position two occurrences and the CD-horn
-    continuation stage suppresses itself at ``insufficient_repeats``. Only
-    the difference between the two fits, on identical bins, is being read
-    here.
-
-    Why the honesty mask now costs 0.2733 dB of level, not 0.0382
-    ------------------------------------------------------------
-
-    The masked arm's cost is set by how much of an identified null the BARE
-    arm's core level mask reaches over: ``target_level_db`` is the median of
-    ``smoothed_db`` on that mask, so dropping null bins can only raise it.
-    #3297 widened reference-tier mic trust to 12k-20k, which extends the
-    core level mask 2020-7949.3 Hz -> 2020-9941.9 Hz. The old mask poked ONE
-    bin into the first identified null (7949.3 Hz, -28.68 dB, that
-    interval's conservatively-rasterized outer edge) and the median moved
-    0.0382 dB. The new mask contains all **seven** of that null's bins
-    (7949.3-9401.2 Hz, -28.68 to -30.29 dB) and the median moves **0.2733
-    dB**, both cuts shrinking with it.
-
-    ``4300a546d``'s deconvolution floor (``|X|**2 + eps`` ->
-    ``max(|X|**2, eps)``) stacks on top of that; it is not the cause.
-    Measured on this corpus as a 2x2 (floor form x mic-trust table), on
-    ``compression_horn``, as (bins, ripple delta, level shift)::
-
-        add + old (the era these were pinned in)  61  +0.0059  -0.0382
-        add + new                                 68  +0.0351  -0.1548
-        max + old                                 62  +0.0050  -0.0425
-        max + new (HEAD)                          69  +0.0670  -0.2733
-
-    The floor change ALONE moves the level shift 0.0382 -> 0.0425 dB, inside
-    the old budget. It is also a fix rather than drift: ``eps = 1e-3 *
-    peak|X|**2`` against a log sweep whose ``|X(f)|**2`` falls as 1/f leaves
-    ``|X|**2/eps`` at only ~6 by 19 kHz, so the additive form shrinks the
-    recovered magnitude by ``|X|**2/(|X|**2 + eps)`` -- -0.045 dB at 500 Hz
-    but -1.32 dB at 19 kHz. Deconvolving a synthetic known-flat system (a
-    pure delay, driven by this corpus's own 6.0 s verify sweep) recovers
-    0.7987 dB RMS error and a -1.2607 dB 500 Hz -> 19 kHz tilt under
-    ``|X|**2 + eps``, against 0.0135 dB RMS and -0.0152 dB under
-    ``max(|X|**2, eps)``. That tilt was reaching the emitted filters.
-
-    The two 0.05 dB budgets this test used to carry are therefore gone
-    rather than re-scaled: they were sized to an era when the two arms'
-    level masks differed by one bin, and any replacement near 0.3 dB would
-    be a number with no derivation. What replaces them is the DIRECTION the
-    mechanism above guarantees -- dropping null bins raises a median, so on
-    a cut-only arm the mask can only make a cut shallower, never deeper and
-    never a boost -- carried alongside the exact pins.
-
-    **The two fits no longer share a band on ``unknown``, and that is the
-    hardening showing through.** ``class_prior_limit`` for ``unknown`` is
-    exactly 0 from 12 kHz up, so the composed envelope now ends there
-    instead of carrying blurred depth past it; the second identified null
-    (10829-12339 Hz) then reaches that zero with nothing correctable left
-    between them, and the masked band stops at 10513.6 Hz rather than
-    punching a hole and continuing. On ``compression_horn`` -- whose class
-    prior does not zero until 20 kHz -- the exclusion still punches holes
-    inside a shared band, exactly as before. Filters are identical either
-    way on ``unknown``, so there the change is in the band the fit REPORTS,
-    not in what the speaker plays.
-    """
     grid = DEFAULT_ENVELOPE_GRID_HZ
     measured_db = np.interp(
         grid, s0_replay.primary.freqs_hz, s0_replay.primary.magnitude_db
@@ -1927,8 +1325,8 @@ def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
         excluded |= (grid >= f_lo) & (grid <= f_hi)
 
     for driver_class, n_bins, expected_delta_db, bands_agree in (
-        (_S0_TWEETER_CLASS, 69, 0.0670, True),
-        ("unknown", 56, 0.0, False),
+        (_S0_TWEETER_CLASS, 69, 0.1145, True),
+        ("unknown", 69, 0.1145, True),
     ):
         bare_fit = fit_driver_linearization(
             s0_replay.primary, _s0_envelope(s0_replay, driver_class, cloud=False)
@@ -1955,7 +1353,6 @@ def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
         assert masked_rms - bare_rms == pytest.approx(expected_delta_db, abs=0.002)
         assert masked_rms >= bare_rms
 
-    # The seven-bin cause named above.
     horn_bare = fit_driver_linearization(
         s0_replay.primary, _s0_envelope(s0_replay, _S0_TWEETER_CLASS, cloud=False)
     )
@@ -1963,9 +1360,10 @@ def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
         s0_replay.primary, _s0_envelope(s0_replay, _S0_TWEETER_CLASS, cloud=True)
     )
     assert horn_bare.target_level_db - horn_masked.target_level_db == pytest.approx(
-        -0.2733, abs=0.002
+        -0.3334, abs=0.002
     )
-    assert [f.freq for f in horn_bare.filters] == [f.freq for f in horn_masked.filters]
+    assert [f.freq for f in horn_bare.filters[:2]] == [f.freq for f in horn_masked.filters]
+    assert len(horn_bare.filters) == 3
     # Direction, not a budget: the mask drops null bins from the level mask,
     # which can only raise the median it is taken over, so every cut gets
     # shallower and none crosses into gain.
@@ -1975,41 +1373,13 @@ def test_s0_replay_ripple_stays_within_bound_outside_excluded_bands(s0_replay):
     )
     assert max(
         abs(a.gain - b.gain) for a, b in zip(horn_bare.filters, horn_masked.filters)
-    ) == pytest.approx(0.2734, abs=0.002)
+    ) == pytest.approx(0.3334, abs=0.002)
 
 
 @requires_s0_curves
 def test_s0_pre_smoothing_exclusion_would_have_cost_the_comb_peaks_real_depth(
     s0_replay,
 ):
-    """The counterfactual behind ``compose_envelope``'s smoothing-order
-    decision: one rule mutated, nothing else.
-
-    Rebuilds the envelope with the exclusion zeros pushed THROUGH the ladder
-    smoother instead of applied after it, with every other input held fixed
-    -- using this file's own ``_hand_ladder_smooth`` and the per-term curves
-    the shipped ``EnvelopeCurve`` already carries, so no private module
-    state is touched and the ONLY difference is the ordering. The hand-built
-    counterfactual therefore also carries #1752's term-exact-zero rule: it is
-    held FIXED so that smoothing ORDER stays the one mutated variable.
-
-    Measured on the S0 main leg at ``compression_horn``: 18 in-band bins
-    lose allowed depth, worst 5.47 dB. The comb peak at 12786.4 Hz, sitting
-    *between* the second and third identified nulls and fully correctable,
-    would have fallen from 13.14 to 7.67 dB; the one at 10223.7 Hz from
-    16.21 to 12.00 dB.
-
-    Re-measured after #3297 widened the reference tier's mic-trust taper
-    (``_MIC_TRUST_TABLE_HZ["reference"]``'s exact-zero, 16 kHz -> 20 kHz,
-    owner ruling 2026-08-29): only 1 of these bins now sits at mic-trust's
-    own exact zero, versus 5 before, so the bin count no longer falls to 13
-    -- it stays at 18, and the two named peaks lose more than previously
-    pinned.
-
-    Those peaks are what the registry sized its intervals to protect
-    (``IdentifiedNull``: half-depth width, so the span's comb *peaks* stay
-    correctable), which is why the shipped order applies the mask last.
-    """
     grid = DEFAULT_ENVELOPE_GRID_HZ
     masked = _s0_envelope(s0_replay, _S0_TWEETER_CLASS, cloud=True)
 
@@ -2041,14 +1411,14 @@ def test_s0_pre_smoothing_exclusion_would_have_cost_the_comb_peaks_real_depth(
 
     # Strictly a loss, never a gain: smoothing zeros in can only pull down.
     correctable = in_band & ~excluded
-    assert np.all(counterfactual[correctable] <= masked.allowed_depth_db[correctable])
+    assert np.all(counterfactual[correctable] <= masked.allowed_depth_db[correctable] + 1e-12)
     losses = masked.allowed_depth_db[correctable] - counterfactual[correctable]
     assert int(np.count_nonzero(losses > 0.005)) == 18
-    assert float(losses.max()) == pytest.approx(5.47, abs=0.02)
+    assert float(losses.max()) == pytest.approx(7.21, abs=0.02)
 
     for f_hz, shipped_db, pre_smoothing_db in (
-        (10_223.7, 16.21, 12.00),
-        (12_786.4, 13.14, 7.67),
+        (10_223.7, 23.97, 18.92),
+        (12_786.4, 21.49, 14.29),
     ):
         i = int(np.argmin(np.abs(grid - f_hz)))
         assert not excluded[i]

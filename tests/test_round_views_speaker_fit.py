@@ -27,7 +27,7 @@ from jasper.active_speaker.crossover_v2.round_views import response_from_banked_
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands, analysis_curve_records
 from jasper.active_speaker.linearization_envelope import compose_envelope
 from jasper.active_speaker.linearization_fit import (
-    FitVocabulary, core_level_band_hz, fit_driver_linearization, measurement_hole_bands_hz,
+    FitVocabulary, LinearizationFilter, complex_correction_response, core_level_band_hz, fit_driver_linearization, measurement_hole_bands_hz,
 )
 from jasper.active_speaker.profile import CrossoverRegion
 from jasper.audio_measurement.excitation_admission import FrequencyBand
@@ -41,7 +41,7 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.cli import crossover_prescriber, round_views
 from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round
 from jasper.active_speaker.round_packet import INDEX_FILENAME, _fits, write_round_packet
-from jasper.active_speaker.speaker_fit import design_clouds, fit_feature_curves, speaker_fit
+from jasper.active_speaker.speaker_fit import _fit_vocabularies, design_clouds, fit_feature_curves, speaker_fit
 from jasper.active_speaker.candidate_bank import find_banked_candidate
 from jasper.active_speaker.candidate_parts import baseline_candidate_id, candidate_from_design_draft
 from jasper.active_speaker.commissioning_experiment import commissioning_candidate
@@ -105,16 +105,11 @@ def speaker_round(tmp_path):
     return root, record, program, classes, region, trim
 
 
-@pytest.mark.parametrize("vocabulary,cloud_planned,cloud_present,post_apply_verifies,expected", [
-    (None, False, False, True, "bounded_boost"),
-    (None, True, False, True, "cut_only"),
-    (None, True, True, True, "bounded_boost"),
-    (None, False, False, False, "cut_only"),
-    ("cut_only", False, False, True, "cut_only"),
-    ("bounded_boost", True, False, True, "bounded_boost"),
+@pytest.mark.parametrize("cloud_planned,cloud_present,post_apply_verifies", [
+    (False, False, True), (True, False, True), (True, True, True), (False, False, False),
 ])
 def test_speaker_fit_matches_explicit_math_and_banked_decisions(
-    speaker_round, vocabulary, cloud_planned, cloud_present, post_apply_verifies, expected, capsys,
+    speaker_round, cloud_planned, cloud_present, post_apply_verifies, capsys,
 ):
     root, record, program, classes, region, trim = speaker_round
     inputs = round_inputs(root)
@@ -130,11 +125,10 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
     candidate["exclusion_evidence"] = {"n_positions": 3, "excluded_bands_hz": [], "band_spread": []} if cloud_present else {}
     candidate_path.write_text(json.dumps(candidate))
     before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
-    flags = [] if vocabulary is None else ["--vocabulary", vocabulary]
-    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set", *flags]) == 0
+    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert {"linearization", "alignment", "trim"} <= result.keys()
-    assert result["vocabulary"] == expected
+    assert result["boost_evidence"]["design_poses"] == 1
     bands = _primary_sweep_bands(program)
     responses = {curve["role"]: response_from_banked_curve(curve)[0] for curve in record["curves"]}
     sections = sections_by_role([CrossoverRegion.from_mapping(region)])
@@ -149,7 +143,7 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
     ])
     for role, response in responses.items():
         fit = fit_driver_linearization(response, envelopes[role],
-                                       vocabulary=FitVocabulary(allow_boost=expected == "bounded_boost"),
+                                       vocabulary=FitVocabulary(allow_boost=True, per_filter_boost_cap_db=40),
                                        radiating_band_hz=radiating[role], blind_bands_hz=blind,
                                        target=branch_target(sections[role], envelopes[role].freqs_hz))
         assert result["linearization"][role]["fit"] == json.loads(json.dumps(fit.to_dict()))
@@ -173,25 +167,13 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
     assert before == {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
-@pytest.mark.parametrize("changes,expected", [
-    pytest.param({"poses": 2}, "cut_only", id="two-poses"),
-    pytest.param({}, "bounded_boost", id="three-poses"),
-    pytest.param({"role": "woofer"}, "cut_only", id="lowpass"),
-    pytest.param({"role": "main"}, "cut_only", id="one-way"),
-    pytest.param({"exclusion": True}, "bounded_boost", id="existing-exclusion"),
-    pytest.param({"verifies": False}, "bounded_boost", id="no-verify"),
-    pytest.param({"verifies": False, "cloud_planned": False}, "bounded_boost", id="no-cloud-or-verify"),
-    pytest.param({"floor": 100.0}, "bounded_boost", id="lower-budget-floor"),
-    pytest.param({"floor": 8000.0}, "bounded_boost", id="higher-budget-floor"),
-    pytest.param({"override": "bounded_boost", "verifies": False}, "bounded_boost", id="operator-boost"),
-    pytest.param({"override": "cut_only"}, "cut_only", id="operator-cuts"),
-    pytest.param({"disagree": True}, "bounded_boost", id="off-axis-contradiction"),
-    pytest.param({"stimulus": "reference_axis"}, "bounded_boost", id="reference-axis-takes"),
-    pytest.param({"basis_role": "summed"}, "cut_only", id="summed-set"),
-    pytest.param({"missing_curve": True}, "cut_only", id="missing-cloud-curve"),
+@pytest.mark.parametrize("changes", [
+    {"poses": 1}, {"poses": 2}, {}, {"role": "woofer"}, {"role": "main"}, {"exclusion": True},
+    {"verifies": False}, {"verifies": False, "cloud_planned": False}, {"floor": 100.0}, {"floor": 8000.0},
+    {"horn_positions": 3}, {"horn_positions": 1}, {"disagree": True}, {"stimulus": "reference_axis"}, {"basis_role": "summed"}, {"missing_curve": True},
 ])
-def test_design_cloud_bounds_each_roles_fit(speaker_round, capsys, changes, expected):
-    root, record, program, _, region, _ = speaker_round
+def test_design_cloud_discloses_evidence_for_each_roles_fit(speaker_round, capsys, changes):
+    root, record, program, *_ = speaker_round
     inputs = round_inputs(root)
     role, poses = changes.get("role", "tweeter"), changes.get("poses", 3)
     state = json.loads(inputs.state_path.read_text())
@@ -208,6 +190,10 @@ def test_design_cloud_bounds_each_roles_fit(speaker_round, capsys, changes, expe
         candidate["analysis"]["program_id"] = program.program_id
         candidate["source_preset"]["crossover_regions"] = []
     (directory / "candidate.json").write_text(json.dumps(candidate))
+    if changes.get("horn_positions"):
+        (root / "design-draft.json").write_text(json.dumps({"manual_settings": {
+            "drivers": [{"role": role, "driver_class": "compression_horn"}],
+        }}))
     response = replace(response_from_banked_curve(record["curves"][1])[0], role=role, repeat_responses=())
     rows = []
     for index, (deg, kind, phase) in enumerate([
@@ -217,6 +203,13 @@ def test_design_cloud_bounds_each_roles_fit(speaker_round, capsys, changes, expe
     ]):
         depth = -7 if changes.get("disagree") and deg else changes.get("depth", 7)
         db = -depth * np.exp(-0.5 * (np.log2(response.freqs_hz / 6000) / 0.25) ** 2)
+        if changes.get("horn_positions"):
+            db = -5 * np.minimum(
+                np.clip(np.log2(response.freqs_hz / 10000) / np.log2(1.2), 0, 1),
+                np.clip(np.log2(20000 / response.freqs_hz) / np.log2(1.25), 0, 1),
+            )
+            if changes["horn_positions"] == 1 and deg:
+                db = np.zeros_like(db)
         measured = replace(response, magnitude_db=db, complex_tf=10 ** (db / 20) + 0j)
         analysis = ProgramAnalysis(phase="measure", program_id=program.program_id, locations=(),
                                   driver_responses=(replace(measured, repeat_responses=(measured, measured)),))
@@ -231,39 +224,36 @@ def test_design_cloud_bounds_each_roles_fit(speaker_round, capsys, changes, expe
     group["capture_basis"].update(role=changes.get("basis_role", role), stimulus=changes.get("stimulus"))
     for take in group["takes"]:
         take.update(role=changes.get("basis_role", role), analysis=candidate["analysis"])
-    write_manifest(root, groups=[group])
-    flags = [arg for key in ("floor", "override") if key in changes
-             for arg in ("--boost-floor-hz" if key == "floor" else "--vocabulary", str(changes[key]))]
+    manifest = write_manifest(root, groups=[group])
+    flags = ["--boost-floor-hz", str(changes["floor"])] if "floor" in changes else []
     assert round_views.main(["speaker-fit", str(root), "--set", role, "--take", "design-0", *flags]) == 0
     result = json.loads(capsys.readouterr().out)
     proposal, fit = result["linearization"][role], result["linearization"][role]["fit"]
-    assert result["vocabulary"] == proposal["vocabulary"] == expected
-    assert result["cloud"] == proposal["cloud"]
-    assert proposal["cloud"]["design_poses"] == (0 if changes.get("override") or changes.get("basis_role") else poses)
-    design_boost = expected == "bounded_boost" and not changes.get("override") and not changes.get("exclusion")
+    assert result["boost_evidence"] == proposal["boost_evidence"]
+    assert proposal["boost_evidence"]["design_poses"] == (0 if changes.get("basis_role") else poses)
     floor = changes.get("floor")
-    if design_boost:
-        floor = max(radiating_band_hz(sections_by_role([CrossoverRegion.from_mapping(region)])[role])[0], floor or 0)
     assert fit["budget"]["boost_floor_hz"] == floor
-    assert proposal["per_filter_boost_cap_db"] == 40.0
-    assert proposal["composed_boost_cap_db"] == 40.0
+    assert proposal["per_filter_boost_cap_db"] == proposal["composed_boost_cap_db"] == 40.0
     boosts = [f for f in fit["filters"] if f["gain"] > 0]
-    assert all(f["freq"] >= (floor or 0) for f in boosts)
-    if design_boost:
-        assert fit["composed_boost_cap_db"] == 40.0
-        peak, _ = _check_composed(tuple({"role": role, **f} for f in fit["filters"]), {role: (1600, 20000)})
-        assert peak <= 39.0 + 1e-9
-        assert all(f["gain"] <= fit["budget"]["max_gain_db"] for f in boosts)
-        assert proposal["cloud"]["band_spread"]
-    if expected == "cut_only" or changes.get("disagree"):
-        assert not boosts
-    elif floor != 8000:
+    assert all(f["freq"] >= (floor or 0) and f["gain"] <= fit["budget"]["max_gain_db"] for f in boosts)
+    if role != "woofer" and floor != 8000:
         assert boosts
+    peak, _ = _check_composed(tuple({"role": role, **f} for f in fit["filters"]), {role: (1600, 20000)})
+    assert peak <= 39.0 + 1e-9
     if changes.get("disagree"):
-        assert any(b["sigma_db"] > 0 for b in proposal["cloud"]["band_spread"])
-        assert fit["lift_suppressed_reason"] == "boost_above_measured_target"
-    if changes.get("missing_curve"):
-        assert not proposal["cloud"]["band_spread"]
+        assert max(v for v in fit["position_spread_db"].values() if v is not None) > 1
+    if changes.get("horn_positions"):
+        correction = complex_correction_response([LinearizationFilter(**f) for f in fit["filters"]], np.array([12000, 16000]))
+        assert np.all(20 * np.log10(np.abs(correction)) > 0)
+        assert fit["class_prior_hz"] == {"full_to_hz": 10000, "taper_zero_hz": 20000}
+        spread = fit["position_spread_db"]["16000"]
+        assert spread == pytest.approx(0) if changes["horn_positions"] == 3 else spread > 1
+        packet_fit = next(f for f in _fits(inputs, manifest, prescription_sources(inputs), design_clouds(inputs, manifest))
+                          if f["role"] == role and f["take_id"] == "design-0")
+        assert packet_fit["position_spread_db"] == fit["position_spread_db"]
+        assert packet_fit["class_prior_hz"] == fit["class_prior_hz"]
+    if changes.get("missing_curve") or changes.get("basis_role") or poses < 2:
+        assert fit["position_spread_db"] is None
 
 
 @pytest.mark.parametrize("trusted_floor_hz", [357.0, None])
@@ -310,7 +300,7 @@ def test_speaker_fit_respects_banked_trusted_floor(speaker_round, capsys, truste
     assert fit["reason_summary"]["250"] == ("envelope_out_of_band" if trusted_floor_hz else "envelope_fitted")
     assert any(800 < f["freq"] < 1000 and f["gain"] < -1 for f in fit["filters"])
     assert fit["fit_band_hz"][0] >= (trusted_floor_hz or 150)
-    assert (250 in [b["center_hz"] for b in proposal["cloud"]["band_spread"]]) == (trusted_floor_hz is None)
+    assert (250 in [b["center_hz"] for b in proposal["boost_evidence"]["band_spread"]]) == (trusted_floor_hz is None)
     if trusted_floor_hz:
         assert fit["residual_rms_db"] < 1
         assert fit["residual_max_db"] < 3
@@ -503,8 +493,8 @@ def test_design_cloud_joins_retakes_without_borrowing_graphs(speaker_round, othe
         path.write_text(json.dumps({**record, "take_id": take["take_id"]}))
         take["artifacts"] = {"record_id": str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts"))}
         result = speaker_fit(inputs, manifest, selected, take["take_id"])
-        assert result["cloud"]["design_poses"] == expected
-        assert result["vocabulary"] == ("bounded_boost" if expected == 3 else "cut_only")
+        assert result["boost_evidence"]["design_poses"] == expected
+        assert result["linearization"]["tweeter"]["composed_boost_cap_db"] == 40.0
 
 
 @pytest.mark.parametrize("off_axis,agree", [((210.591, 234.312, "inverted"), False), ((10.591, 34.312, "normal"), True)])
@@ -717,7 +707,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
     for fit in packet["fits"]:
         features = [feature["position_variance"] for feature in fit["filters"]]
         count = pose_count if fit["set_id"].startswith("True-") else candidate_count
-        deep = count if count >= 3 else 0
+        deep = count if count >= 2 else 0
         assert any(feature["positions_deep"] == deep for feature in features)
         assert all(feature["cv_percent"] == (pytest.approx(0) if deep else None)
                    for feature in features if feature["positions_deep"] == deep)
@@ -726,9 +716,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
                and f["residual_rms_db"] is not None and f["budget"] for f in packet["fits"])
     for fit in packet["fits"]:
         count = pose_count if fit["set_id"].startswith("True-") else candidate_count
-        bounded = fit["role"] == "tweeter" and count == 3
-        assert fit["vocabulary"] == ("bounded_boost" if bounded else "cut_only")
-        assert fit["cloud"]["design_poses"] == count
+        assert fit["boost_evidence"]["design_poses"] == count
         assert fit["composed_boost_cap_db"] == 40.0
     assert len(packet["series"]) == len(expected)
     assert all(s["stats"]["rms_100_10k_db"]["value"] is not None for s in packet["series"])
@@ -877,19 +865,16 @@ def test_first_experiment_unavailable_codes(speaker_round, tmp_path, missing, re
     assert "candidate_fingerprint" not in result
 
 
-@pytest.mark.parametrize("incumbent_boost,remaining", [(0.0, 40.0), (36.0, 3.0)])
-def test_fit_budget_inherits_program_headroom(speaker_round, incumbent_boost, remaining):
-    from jasper.active_speaker.speaker_fit import _production_vocabulary
-
-    root, _, _, _, region, _ = speaker_round
-    inputs = round_inputs(root)
-    vocabularies = _production_vocabulary(inputs, {
+@pytest.mark.parametrize("incumbent_role,remaining", [("tweeter", 40.0), ("woofer", 3.0)])
+def test_fit_budget_excludes_replaced_role_but_charges_other_branches(speaker_round, incumbent_role, remaining):
+    *_, region, _ = speaker_round
+    vocabularies = _fit_vocabularies({
         "source_preset": {"crossover_regions": [region]},
-        "linearization": {"tweeter": {"filters": [
-            {"biquad_type": "Highshelf", "freq": 6000.0, "q": 0.70710678, "gain": incumbent_boost},
+        "linearization": {incumbent_role: {"filters": [
+            {"biquad_type": "Peaking", "freq": 300.0, "q": 1.0, "gain": 36.0},
         ]}},
-    }, {}, {"tweeter": {"max_gain_db": 2.0}}, "bounded_boost")
+    }, {"tweeter": {"max_gain_db": 2.0}})
     vocabulary = vocabularies["tweeter"]
-    assert vocabulary.per_filter_boost_cap_db == pytest.approx(remaining, abs=0.01)
-    assert vocabulary.composed_boost_cap_db == pytest.approx(remaining, abs=0.01)
+    assert vocabulary.per_filter_boost_cap_db == pytest.approx(remaining, abs=0.05)
+    assert vocabulary.composed_boost_cap_db == pytest.approx(remaining, abs=0.05)
     assert vocabulary.max_gain_db == 2.0

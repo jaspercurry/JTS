@@ -653,16 +653,7 @@ def _candidate_octave_reasons(
 def _candidate_octave_driver_classes(
     linearization: Any, octaves: Mapping[str, Mapping[str, float]],
 ) -> dict[str, str]:
-    """Per-role declared ``driver_class`` (``LinearizationFit.driver_class``),
-    the third sibling of the octave numbers and their verdicts.
-
-    Gated on the same ``octaves`` membership as
-    :func:`_candidate_octave_reasons`. A separate key because ``driver_class``
-    is a per-FIT scalar rather than a per-band verdict, and because
-    ``LIMITED_BY_CLASS_PRIOR`` fires for every declared class: the remedy
-    reading this must tell an already-declared class from an undeclared one,
-    since only the second has an action left to take.
-    """
+    """Declared driver classes for the roles with octave evidence."""
     out: dict[str, str] = {}
     for role, fit in (linearization or {}).items():
         if not isinstance(fit, Mapping) or str(role) not in octaves:

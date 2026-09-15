@@ -3612,8 +3612,6 @@ class CrossoverV2Session:
             roles=self._role_names,
             driver_class_by_role=self._driver_class_by_role,
             fit_budget_by_role=self._fit_budget_by_role,
-            post_apply_verifies=self.post_apply_verifies,
-            cloud_phase_planned=PHASE_CLOUD_MEASURE in self._journey.plan.phases,
             plan_linearization=plan_linearization,
             journal=self._journal_linearization,
         )

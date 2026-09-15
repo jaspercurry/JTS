@@ -162,8 +162,6 @@ def _planner_request(sections: dict[str, Any]) -> iv.LinearizationRequest:
             conductor._tweeter.role: (seg_t.f1_hz, seg_t.f2_hz),
         },
         driver_class_by_role=conductor._driver_class_by_role,
-        post_apply_verifies=conductor.post_apply_verifies,
-        cloud_phase_planned=flow.PHASE_CLOUD_MEASURE in conductor.session_phases,
         cloud=None,
     )
 
@@ -330,8 +328,6 @@ def test_planning_twice_over_one_request_returns_equal_output(monkeypatch):
             "tweeter": (seg_t.f1_hz, seg_t.f2_hz),
         },
         driver_class_by_role=conductor._driver_class_by_role,
-        post_apply_verifies=True,
-        cloud_phase_planned=False,
     )
     before = (dict(request.raw_trim_db), dict(request.trim_band_average_db))
 
@@ -373,8 +369,6 @@ def test_the_request_snapshots_the_trim_mappings_it_was_handed():
         anchor_delay_us=None,
         mic_tier="reference",
         branch_floor_hz=None,
-        post_apply_verifies=True,
-        cloud_phase_planned=False,
     )
     raw["tweeter"] = -99.0
     average["tweeter"] = -99.0
@@ -406,8 +400,6 @@ def test_the_journal_port_receives_every_record_in_plan_order(monkeypatch):
             "tweeter": (seg_t.f1_hz, seg_t.f2_hz),
         },
         driver_class_by_role=conductor._driver_class_by_role,
-        post_apply_verifies=True,
-        cloud_phase_planned=False,
     )
     streamed: list[iv.JournalRecord] = []
     plan = iv.plan_linearization(request, journal=streamed.append)
@@ -566,8 +558,6 @@ def _request(**overrides):
         anchor_delay_us=None,
         mic_tier="reference",
         branch_floor_hz=None,
-        post_apply_verifies=True,
-        cloud_phase_planned=False,
     )
     kwargs.update(overrides)
     return iv.LinearizationRequest(**kwargs)
@@ -1063,8 +1053,6 @@ def test_the_request_refuses_inputs_the_eligibility_gate_should_have_caught():
         anchor_delay_us=None,
         mic_tier="reference",
         branch_floor_hz=None,
-        post_apply_verifies=True,
-        cloud_phase_planned=False,
     )
     with pytest.raises(iv.PlannerInputError):
         iv.LinearizationRequest(

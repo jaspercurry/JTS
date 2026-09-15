@@ -279,7 +279,7 @@ def exclusion_evidence_json(
     """The fit's cloud inputs, as the candidate's exclusion reason of record.
 
     Enough that a reader holding only ``candidate.json`` can re-derive
-    ``spatial_exclusion_limit`` and ``position_stability_limit``.
+    ``spatial_exclusion_limit`` and ``position_spread_db``.
     ``cloud_result`` must be read by the caller at CALL time: only its CURRENT
     value describes the cloud retained at confirm, since a retake re-closes the
     group (#1872). ``cloud_measure.json``'s own copy can lag it — the evidence
@@ -352,8 +352,6 @@ def plan_for_candidate(
     program_for_phase: Callable[[str], Any],
     roles: Sequence[str],
     driver_class_by_role: Mapping[str, str],
-    post_apply_verifies: bool,
-    cloud_phase_planned: bool,
     plan_linearization: Callable[..., LinearizationPlan],
     journal: Callable[[Any], None] | None = None,
     fit_budget_by_role: Mapping[str, Mapping[str, Any]] | None = None,
@@ -395,11 +393,6 @@ def plan_for_candidate(
         excited_band_hz=excited_band_hz,
         driver_class_by_role=driver_class_by_role,
         fit_budget_by_role=fit_budget_by_role,
-        # Boost permission's one necessary condition, plus the clause telling
-        # "no cloud by design" apart from "a cloud was planned and lost". The
-        # planner cannot see a session's phase list, so the host answers both.
-        post_apply_verifies=post_apply_verifies,
-        cloud_phase_planned=cloud_phase_planned,
         cloud=cloud,
     )
     return plan_linearization(request, journal=journal)

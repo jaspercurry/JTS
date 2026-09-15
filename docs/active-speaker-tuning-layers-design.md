@@ -69,10 +69,9 @@ the measured case; it does not impose a new fixed campaign on all speakers.
 
 [linearization_envelope.py](../jasper/active_speaker/linearization_envelope.py)
 owns the fitter's per-frequency allowance. Its terms combine microphone trust,
-repeat agreement, driver class, and optional spatial exclusion and position
-stability evidence. The smallest applicable allowance
-limits the default fit. Read the returned reasons and the code-owned caps rather
-than treating this document as a second table of numbers.
+repeat agreement, and optional spatial exclusion. The smallest allowance limits
+the fit. Driver class and position spread are disclosures for the prescriber;
+see the [speaker playbook](tuning-playbook.md#speaker).
 
 The envelope and optional diagnostics answer different questions:
 

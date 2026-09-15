@@ -381,10 +381,6 @@ def _normalise_driver_common(
             f"{prefix}.notes",
             max_chars=MAX_DRIVER_NOTE_CHARS,
         ),
-        # #1665 component entry: physical facts about the driver, not safety
-        # limits. driver_class feeds compose_envelope's class_prior_limit;
-        # radiating_diameter_mm is the ka-beaming input (#1675). pad is the
-        # third such field and is parsed below, outside the safety normaliser.
         "driver_class": _driver_class(raw.get("driver_class"), f"{prefix}.driver_class"),
         "radiating_diameter_mm": _positive_float(
             raw.get("radiating_diameter_mm"),

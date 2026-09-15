@@ -12,11 +12,10 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role, boost_headroom_by_role
+from jasper.active_speaker.branch_chain import sections_by_role, boost_headroom_by_role
 from jasper.active_speaker.alignment_evidence import alignment_evidence
 from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
-from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, boost_allowed, fit_branches
-from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_MEASURE, STAGE_MEASURE_CAPABILITIES, open_stage
+from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, fit_branches
 from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, take_artifact_path
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, round_artifact_dir
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
@@ -91,7 +90,8 @@ def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str,
             ) else None,
         )
         cloud = CloudFitTerms(n_positions=len(bearings))
-        if len(bearings) >= 3:
+        # Standard error needs two positions; see linearization_envelope.position_spread_db.
+        if len(bearings) >= 2:
             try:
                 responses = []
                 lo, hi = 0.0, float("inf")
@@ -130,56 +130,34 @@ def fit_feature_curves(cloud: CloudFitTerms) -> list[tuple[np.ndarray, np.ndarra
     return curves
 
 
-def _production_vocabulary(
-    inputs: RoundInputs, candidate: dict[str, Any], clouds: Mapping[str, CloudFitTerms],
-    budgets: Mapping[str, Mapping[str, Any]], override: str | None,
+def _fit_vocabularies(
+    candidate: Mapping[str, Any], budgets: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, FitVocabulary]:
-    plan = None
-    if override is None:
-        if inputs.state_path is None:
-            raise RoundViewsError("production vocabulary requires the capture's journey state")
-        state = json.loads(inputs.state_path.read_text())
-        plan = open_stage(
-            STAGE_MEASURE_CAPABILITIES, index_phase_map=dict(enumerate(state["session_phases"])),
-        ).plan
     sections = sections_by_role(CrossoverRegion.from_mapping(region)
                                 for region in candidate["source_preset"].get("crossover_regions") or ())
     trims = candidate.get("role_attenuations_db") or {}
     linearization = linearization_filters_by_role(candidate.get("linearization") or {})
     room = candidate.get("room_correction") or {}
-    headroom = boost_headroom_by_role(
-        branch_context={role: (sections.get(role, ()), float(trims.get(role, 0.0)))
-                        for role in sections.keys() | budgets.keys() | trims.keys() | linearization.keys()},
-        linearization=linearization,
-        room_peqs=room_peqs_from_correction(room, ActiveSpeakerPreset.from_mapping(candidate["source_preset"])) if room else (),
-    )
+    context = {role: (sections.get(role, ()), float(trims.get(role, 0.0)))
+               for role in sections.keys() | budgets.keys() | trims.keys() | linearization.keys()}
+    room_peqs = room_peqs_from_correction(room, ActiveSpeakerPreset.from_mapping(candidate["source_preset"])) if room else ()
     vocabularies = {}
     for role, budget in budgets.items():
-        cloud = clouds.get(role)
-        design_cloud = override is None and cloud is not None and cloud.n_positions >= 3 and not candidate.get("exclusion_evidence")
-        ready = design_cloud and bool(cloud and cloud.band_spread) and any(s.highpass for s in sections.get(role, ()))
-        # The design cloud is its own evidence: the bound below and the apply-time
-        # checks are the safeguards, not the session's phase list.
-        if design_cloud:
-            allowed = ready
-        else:
-            allowed = override == "bounded_boost" if plan is None else boost_allowed(
-                post_apply_verifies=plan.post_apply_verifies,
-                cloud_phase_planned=PHASE_CLOUD_MEASURE in plan.phases,
-                cloud_present=bool(candidate.get("exclusion_evidence")),
-            )
+        headroom = boost_headroom_by_role(
+            branch_context=context,
+            linearization={name: filters for name, filters in linearization.items() if name != role},
+            room_peqs=room_peqs,
+        )
         remaining = headroom[role]["program_headroom_remaining_db"]
-        vocabulary = FitVocabulary(allow_boost=allowed, per_filter_boost_cap_db=remaining,
-                                   composed_boost_cap_db=remaining).with_budget(budget)
-        if design_cloud and allowed:
-            vocabulary = replace(vocabulary, boost_floor_hz=max(radiating_band_hz(sections[role])[0], vocabulary.boost_floor_hz or 0.0))
-        vocabularies[role] = vocabulary
+        vocabularies[role] = FitVocabulary(
+            allow_boost=True, per_filter_boost_cap_db=remaining, composed_boost_cap_db=remaining,
+        ).with_budget(budget)
     return vocabularies
 
 
 def speaker_fit(
     inputs: RoundInputs, manifest: Mapping[str, Any], set_id: str, take_id: str | None = None,
-    *, vocabulary: str | None = None, budget: Mapping[str, Any] | None = None,
+    *, budget: Mapping[str, Any] | None = None,
     clouds_by_set: Mapping[str, CloudFitTerms] | None = None, sources: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     selected = resolve_set(inputs, set_id, manifest=manifest)
@@ -223,18 +201,12 @@ def speaker_fit(
     bands = _primary_sweep_bands(program)
     if not 1 <= len(bands) <= 2:
         raise RoundViewsError("speaker-fit requires one or two measured driver roles")
-    clouds = {}
-    if vocabulary is None:
-        if clouds_by_set is None:
-            clouds_by_set = design_clouds(inputs, manifest)
-        clouds = {group["capture_basis"].get("role") or "": clouds_by_set[group["set_id"]]
-                  for group in manifest["sets"] if group["set_id"] in clouds_by_set
-                  and any(t["selected"] and t["take_id"] == take_id for t in group["takes"])}
-    try:
-        vocabularies = _production_vocabulary(inputs, candidate, clouds,
-                                             {role: {**budgets.get(role, {}), **overrides} for role in bands}, vocabulary)
-    except (OSError, ValueError, TypeError, LookupError) as exc:
-        raise SpeakerFitUnreadable(str(exc)) from exc
+    if clouds_by_set is None:
+        clouds_by_set = design_clouds(inputs, manifest)
+    clouds = {group["capture_basis"].get("role") or "": clouds_by_set[group["set_id"]]
+              for group in manifest["sets"] if group["set_id"] in clouds_by_set
+              and any(t["selected"] and t["take_id"] == take_id for t in group["takes"])}
+    vocabularies = _fit_vocabularies(candidate, {role: {**budgets.get(role, {}), **overrides} for role in bands})
     curves = {curve["role"]: curve for curve in curves_for_take(record, manifest)}
     drivers = []
     for role, band in bands.items():
@@ -248,8 +220,7 @@ def speaker_fit(
         cloud={role: clouds[role] for role in bands if role in clouds},
     )
     linearization = {driver.role: {
-        "vocabulary": "bounded_boost" if vocabularies[driver.role].allow_boost else "cut_only",
-        "cloud": {"design_poses": clouds[driver.role].n_positions,
+        "boost_evidence": {"design_poses": clouds[driver.role].n_positions,
                   "band_spread": [asdict(band) for band in clouds[driver.role].band_spread]}
         if driver.role in clouds else {"design_poses": 0, "band_spread": []},
         "per_filter_boost_cap_db": vocabularies[driver.role].per_filter_boost_cap_db,
@@ -261,7 +232,7 @@ def speaker_fit(
     selected_fit = linearization.get(selected.capture_basis.get("role") or drivers[0].role, linearization[drivers[0].role])
     return dict(
         set_id=selected.set_id, take_id=take_id,
-        vocabulary=selected_fit["vocabulary"], cloud=selected_fit["cloud"], linearization=linearization,
+        boost_evidence=selected_fit["boost_evidence"], linearization=linearization,
         alignment=alignment_evidence({**take, "analysis": analysis}, sources),
         trim=analysis.get("trim_decision"),
     )

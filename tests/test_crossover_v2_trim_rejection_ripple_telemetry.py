@@ -116,8 +116,6 @@ def _planner_request(conductor, analysis) -> iv.LinearizationRequest:
             conductor._tweeter.role: (seg_t.f1_hz, seg_t.f2_hz),
         },
         driver_class_by_role=conductor._driver_class_by_role,
-        post_apply_verifies=conductor.post_apply_verifies,
-        cloud_phase_planned=False,
         cloud=None,
     )
 

@@ -181,10 +181,10 @@ def packet_index(
         fit.get("crossover_band_spread_reason") for fit in packet["fits"]
     ) if reason]
     for fit in packet["fits"]:
-        cloud = fit.get("cloud") or {}
+        cloud = fit.get("boost_evidence") or {}
         bands = "; ".join("crossover " + " ".join(f"{key}={band[key]:.4g}" for key in ("center_hz", "sigma_db", "max_sigma_db"))
                           for band in (fit["crossover_band_spread"] or {}).values())
-        fields = {key: fit[key] for key in ("residual_rms_db", "residual_max_db", "reason_summary")}
+        fields = {key: fit.get(key) for key in ("residual_rms_db", "residual_max_db", "reason_summary", "position_spread_db", "class_prior_hz")}
         fields.update(design_poses=cloud.get("design_poses"), **fit["verdict"], filters=fit["filters"])
         lines.append(f"fit {fit['role']}: pose {_pose_token(fit['pose'])}; " + (bands + "; " if bands else "")
                      + "; ".join(f"{key}={json.dumps(value)}" for key, value in fields.items())

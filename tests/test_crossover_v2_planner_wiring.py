@@ -118,41 +118,6 @@ def test_the_request_carries_the_measure_programs_own_sweep_bands():
     assert request.roles == (c._woofer.role, c._tweeter.role)
 
 
-def test_the_request_carries_the_two_facts_the_analysis_cannot_know():
-    """``post_apply_verifies`` and ``cloud_phase_planned`` are the host's.
-
-    Both gate boost permission, and neither is derivable from a
-    ``ProgramAnalysis`` — they describe the JOURNEY this session resolved. A
-    request that defaulted either would grant or withhold a lift on the wrong
-    evidence, so both are asserted against the conductor's own answer, and both
-    are exercised in both states.
-    """
-    for verifies in (True, False):
-        fakes = FakeSeams()
-        fakes.measure = lambda program: _eligible_measure_analysis(program)
-        c = _conductor(fakes, post_apply_verifies=verifies)
-        _run_phase(c, 1, 1)
-        analysis = _eligible_measure_analysis(
-            c.program_for_phase(flow.PHASE_MEASURE)
-        )
-
-        seen: list[iv.LinearizationRequest] = []
-        real = iv.plan_linearization
-
-        def spy(request, __real=real, __seen=seen, **kwargs):
-            __seen.append(request)
-            return __real(request, **kwargs)
-
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(flow, "plan_linearization", spy)
-            c._plan_linearization(analysis, analysis.candidate, None)
-
-        assert seen[0].post_apply_verifies is verifies
-        assert seen[0].cloud_phase_planned is (
-            flow.PHASE_CLOUD_MEASURE in c.session_phases
-        )
-
-
 # --------------------------------------------------------------------------- #
 # the journal port
 # --------------------------------------------------------------------------- #

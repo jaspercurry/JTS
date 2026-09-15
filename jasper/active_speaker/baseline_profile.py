@@ -1031,13 +1031,9 @@ def applied_program_level_delta_db(
     materially quieter speaker the instant the config swaps.
 
     **This is an input to ANALYSIS, never to the speaker's level.** The
-    absorption is the excitation-safety property (see
-    ``camilla_yaml.MAX_LINEARIZATION_BOOST_DB``'s note: it is what keeps the
-    boosted band "at or under unity no matter how deep the correction"), so
-    compensating it at the main volume would put the boosted band over the
-    driver's excitation cap by the branch's own boost — up to the full charge,
-    on a sustained swept sine, below the per-driver limiters' reach. The
-    correct consumer is
+    absorption keeps the boosted branch at or below unity (see
+    ``camilla_yaml.program_headroom_db``). Compensating at main volume would
+    undo that attenuation. The consumer is
     :func:`~jasper.active_speaker.delta_probe.classify_delta_probe`, whose
     realized-vs-commanded comparison is not mean-centered and would otherwise
     read this move as a defect.
