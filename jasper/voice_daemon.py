@@ -1241,7 +1241,7 @@ class WakeLoop:
             return
         assert self._turns.turn is not None
         if self._turns.turn.continuous_input and not self._turns.manual_endpoint_this_turn:
-            await self._handle_continuous_frame(frame, captured_at=captured_at)
+            await self._handle_continuous_frame(frame)
             return
         if self._turns.input_ended:
             if self._turns.barge_in_active:
@@ -1279,7 +1279,7 @@ class WakeLoop:
                 return
         await self._send_session_audio(frame)
 
-    async def _handle_continuous_frame(self, frame, *, captured_at=None) -> None:
+    async def _handle_continuous_frame(self, frame) -> None:
         now = time.monotonic()
         speaking = (self._turns.turn.audio_chunks_pending() > 0
                     or self._tts.expected_drain_at() > now)

@@ -1041,7 +1041,6 @@ async def _open_manual_mics(
         manual_mics.append(ManualMicRuntime(
             source_id,
             manual_mic,
-            device,
         ))
     return manual_mics
 
