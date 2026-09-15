@@ -154,7 +154,7 @@ async def test_backend_nudge_failure_reports_redacted_provider_details(caplog, m
 
 async def test_user_transcript_timestamp_uses_monotonic_time(monkeypatch):
     clock = FrozenClock()
-    monkeypatch.setattr(openai_live_session, "time", clock)
+    monkeypatch.setattr(_base, "_time", clock)
     async with live_turn() as turn:
         assert turn.last_user_transcript_at() == 0.0
         for direction in ("input", "output", "input"):

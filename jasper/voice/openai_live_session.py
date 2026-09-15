@@ -121,7 +121,6 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._input_caught_up = 0.0
         self._sender = None
         self._transcript_intervals = {"user": [], "assistant": []}
-        self._last_user_transcript_at = 0.0
         self._seconds = 0.0
         self._quiet_played = 0
         self._quiet_discarded = 0
@@ -157,9 +156,6 @@ class OpenAILiveTurn(BaseLiveTurn):
             silence_ms=silence_ms,
         )
         return True
-
-    def last_user_transcript_at(self) -> float:
-        return self._last_user_transcript_at
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
         if self._released or self._turn_lost:
@@ -326,8 +322,6 @@ class OpenAILiveTurn(BaseLiveTurn):
             self._on_output_audio(base64.b64decode(event["delta"]))
         elif kind in {"session.input_transcript.delta", "session.output_transcript.delta"}:
             speaker = "user" if kind == "session.input_transcript.delta" else "assistant"
-            if speaker == "user":
-                self._last_user_transcript_at = time.monotonic()
             self._transcript_intervals[speaker].append({k: event[k] for k in ("delta", "start_ms", "end_ms")})
             self.add_transcript(**{speaker: event["delta"]})
             self._note_activity()

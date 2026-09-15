@@ -1112,7 +1112,7 @@ class WakeLoop:
         now = time.monotonic() if captured_at is None else captured_at
         armed = self._sustained_run(
             speech_prob, self._cfg.vad_barge_in_threshold, now,
-            peak_min=self._cfg.vad_barge_in_threshold,
+            peak_min=0.0,
         )
         if not armed or self._speech_run_signalled:
             return
