@@ -24,12 +24,14 @@ import numpy as np
 from jasper.active_speaker.angle_capture import LevelPolicy, ResolvedLevel
 from jasper.active_speaker.arm_walk import CAPTURE_CANCEL_PATH, LoopbackSession
 from jasper.active_speaker.plan_run import RunSignals
+from jasper.active_speaker import plan_run
 from tests.test_active_speaker_measurement_door import box as box
 from tests.test_cli_measure import HOUSEHOLD_DB
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureAnswer,
+    CaptureBeginDeferred,
     CaptureStopped,
 )
 from jasper.audio_measurement.calibration import MicSensitivity
@@ -55,7 +57,8 @@ from jasper.active_speaker.crossover_v2 import wired_stimulus as core_capture
 from jasper.active_speaker.crossover_v2 import summed_alignment
 
 from tests.test_wired_capture import UMIK2_USB_ID, _Sensitivity, _make_card
-from tests.test_plan_run import AnsweredGate
+from tests.test_plan_run import AnsweredGate, _walk
+from jasper.web._common import refusal_envelope
 from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
 from tests.crossover_v2_banked_round import bank_executor_take
@@ -642,11 +645,11 @@ def _run_door(tmp_path, box, fakes, manifest, records=None):
     )
 
 
-def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=None):
+def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=None, request=None):
     from jasper.active_speaker import plan_run
     from jasper.active_speaker.run_manifest import RunManifest
     from tests.engine_twin import FakeSeams as EngineSeams
-    from tests.test_plan_run import _Store, _analysis, _walk
+    from tests.test_plan_run import _Store, _analysis
     from tests.crossover_v2_fixtures import _conductor, FakeSeams as FlowSeams
     from jasper.active_speaker.plan_run import PlanCapture
     from jasper.active_speaker.angle_capture import LevelPolicy, ResolvedLevel
@@ -661,7 +664,7 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
     monkeypatch.setattr(v2state, "persist_conductor_state", lambda *a, **k: None)
     monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda *a, **k: None)
     monkeypatch.setattr(v2state, "_persist_execution_result", lambda *a, **k: None)
-    request = replace(_walk([0, 20]), level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
+    request = replace(request or _walk([0, 20]), level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
     captures = tuple(PlanCapture(stop, MeasureSpec(kind="verify", graph_scope="candidate",
         candidate_id=stop.candidate_id, positions=(stop.angle_deg,), program_phase=phase))
         for stop in request.stops) if phase else None
@@ -719,6 +722,51 @@ def test_plan_host_controls_drain_the_session(monkeypatch, tmp_path, box, signal
     assert fakes.graph.restores == 1
     assert box.volume_db == HOUSEHOLD_DB
     assert manifest.finalized
+
+
+@pytest.mark.parametrize("reason, detail, code", [
+    ("unregistered_capture_reason", "", "internal_error"),
+    ("unregistered_capture_reason", "capture=4", "internal_error"),
+    ("retries_spent", "", "retries_spent"),
+])
+def test_plan_host_preserves_refusal_reason(monkeypatch, tmp_path, box, reason, detail, code):
+    runner, session, _, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box)
+    manifest.reason, manifest.detail = reason, detail
+    monkeypatch.setattr(plan_run, "run_plan", AsyncMock(return_value=manifest))
+    failures = []
+    monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda conductor, code: failures.append(code))
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
+        asyncio.run(runner(session))
+    envelope = refusal_envelope(caught.value)
+    assert envelope["code"] == code
+    assert envelope["error"] == (detail if code == reason else f"{reason}: {detail}")
+    assert failures == [code]
+
+
+async def test_host_retake_after_budget_exhaustion_keeps_its_code(monkeypatch, tmp_path, box):
+    signals = RunSignals()
+
+    class RetakingGate(AnsweredGate):
+        def gate(self, index, attempt, entry):
+            if index == 3:
+                signals.retake.set()
+                raise CaptureBeginDeferred("awaiting_position", "placement")
+            return super().gate(index, attempt, entry)
+
+    runner, session, _, manifest, _, _ = _plan_host(
+        monkeypatch, tmp_path, box, gate=RetakingGate(), signals=signals,
+        request=_walk([0], ("fp-a", "fp-b", "fp-c")),
+    )
+    verdicts = iter([
+        *(refusal_copy.TakeVerdict(False, "snr_floor", next="fix_and_retake", charge="operator") for _ in range(4)),
+        refusal_copy.TakeVerdict(True),
+    ])
+    monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
+    monkeypatch.setattr(plan_run, "POSITION_HOLD_POLL_S", 0)
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
+        await runner(session)
+    assert manifest.records.snapshots[-1]["reason"] == caught.value.code == "retries_spent"
+    assert [take.get("fault") for take in manifest.takes] == ["snr_floor"] * 4 + [None]
 
 
 @pytest.mark.parametrize("caller,code,template", [
