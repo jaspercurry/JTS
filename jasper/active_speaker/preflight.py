@@ -25,9 +25,10 @@ from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs,
     compile_candidate_config, prove_candidate_config,
 )
-from .measurement_programs import PURPOSE_BASS
+from .measurement_programs import PURPOSE_BASS, pilot_floor_blocking
 from .seat_level_reference import (
-    AnchorFacts, LevelUnresolved, SeatLevelTargetError, check_target_capture_dbfs, resolve_anchor_level, validate_commissioning_spl,
+    AnchorFacts, LevelUnresolved, SeatLevelTargetError, check_target_capture_dbfs, resolve_anchor_level,
+    rung_lift_bound_db, validate_commissioning_spl,
 )
 
 # Rechecked at participation; a dry run reserves none of these resources.
@@ -65,6 +66,7 @@ class PreflightFacts:
     mover: str
     issues: tuple[PreflightIssue, ...] = ()
     summed_pilot_band_hz: tuple[float, float] | None = None
+    applied_bass_extension: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,7 @@ class PreflightReport:
             "mic_moves": self.mic_moves, "price": dict(self.price),
             "spl_ceiling_db_spl": self.spl_ceiling_db_spl,
             "level": {"resolved": self.plan.level.resolved is not None,
+                      "predicted_db_spl": self.plan.level.predicted_db_spl,
                       **{key: value for key, value in self.plan.level.to_dict().items() if key != "mode"}},
             "live_admission": list(LIVE_ADMISSION),
         }
@@ -123,10 +126,13 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
         valid_shape = False
 
     scopes: dict[str, str] = {}
+    bass_extensions: dict[str, Mapping[str, Any]] = {}
     for name in dict.fromkeys(candidate_identity(stop.candidate_id) for stop in plan.stops):
-        if name == BASE_CANDIDATE:
-            continue
         candidate = facts.candidates.get(name)
+        if name == BASE_CANDIDATE and candidate is None:
+            if facts.applied_bass_extension is not None:
+                bass_extensions[name] = facts.applied_bass_extension
+            continue
         if isinstance(candidate, PreflightIssue):
             issues.append(candidate)
             continue
@@ -139,6 +145,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
             )
             prove_candidate_config(candidate, graph)
             scopes[name] = "candidate"
+            bass_extensions[name] = candidate.bass_extension
         except ValueError as exc:
             add("measurement_candidate_invalid", f"{name}: {exc}")
 
@@ -161,28 +168,51 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
                 if plan.level.resolved is not None and plan.level != level:
                     raise LevelUnresolved("seat_anchor_unusable", "The carried anchor differs from the banked anchor")
                 plan = replace(plan, level=level)
-                predicted = anchor.anchor_db_spl + level.offset_db
-                try:
-                    validate_commissioning_spl(predicted, ceiling_db_spl=stop)
-                except SeatLevelTargetError as exc:
-                    issues.append(replace(PreflightIssue.from_code(WALK_LEVEL_POLICY_INVALID, str(exc)),
-                                          evidence={"level_db": level.volume_db, "predicted_db_spl": predicted,
-                                                    "ceiling_db_spl": stop}))
+                fader = level.level_db if level.level_db is not None else anchor.reference_volume_db
+                predicted = anchor.db_spl_at(fader)
+                target = facts.anchor.record.get("target")
+                tolerance = finite_float(target.get("tolerance_db")) if isinstance(target, Mapping) else None
+                unavailable = ("applied_bass_extension" if facts.applied_bass_extension is None else
+                               "anchor_tolerance_db" if tolerance is None or tolerance <= 0 else None)
+                if unavailable:
+                    issues.append(replace(PreflightIssue.from_code(WALK_LEVEL_POLICY_INVALID,
+                                          f"Cannot derive the rung margin: {unavailable}"),
+                                          evidence={"unavailable": unavailable, "level_db": fader}))
+                elif facts.applied_bass_extension is not None and tolerance is not None:
+                    for name, descriptor in bass_extensions.items():
+                        try:
+                            lift = rung_lift_bound_db(descriptor, facts.applied_bass_extension, fader)
+                        except (TypeError, ValueError) as exc:
+                            add(WALK_LEVEL_POLICY_INVALID, f"Cannot derive the bass lift for {name}: {exc}")
+                            continue
+                        margin = tolerance + lift
+                        try:
+                            validate_commissioning_spl(predicted, ceiling_db_spl=stop, margin_db=margin)
+                        except SeatLevelTargetError as exc:
+                            detail = f"{exc}; margin = anchor tolerance {tolerance:g} + bass lift bound {lift:g} dB"
+                            issues.append(replace(PreflightIssue.from_code(WALK_LEVEL_POLICY_INVALID, detail), evidence={
+                                "level_db": fader, "predicted_db_spl": predicted, "ceiling_db_spl": stop,
+                                "candidate_id": name, "anchor_tolerance_db": tolerance, "lift_bound_db": lift,
+                                "margin_db": margin, "bound_db_spl": stop - margin,
+                            }))
                 ambient = facts.anchor.record.get("ambient_report")
-                band = (target_band_hz() if any(pose.purpose == PURPOSE_BASS for pose in plan.stops)
-                        else facts.summed_pilot_band_hz)
-                if band is not None and isinstance(ambient, Mapping) and any(pose.plays_summed for pose in plan.stops):
-                    rows = _ambient_rows_in_band(band, ambient.get("bands") or ())
+                if isinstance(ambient, Mapping):
                     pilot_dbfs = check_target_capture_dbfs(facts.anchor.sensitivity, predicted)
-                    # Remove when measured programs no longer require pilot SNR admission.
-                    if rows and not _snr_floor_ok(ambient, pilot_dbfs, [band]):
-                        lo, hi, noise_dbfs = max(rows, key=lambda row: row[2])
-                        code = REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT
-                        issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence={
-                            "level_db": level.volume_db, "predicted_pilot_capture_dbfs": pilot_dbfs,
-                            "pilot_band_hz": band, "ambient_row": {"band_hz": (lo, hi), "level_dbfs": noise_dbfs},
-                            "floor_dbfs": noise_dbfs + DRIVER.snr_ok_db,
-                        }))
+                    for purpose in dict.fromkeys(pose.purpose for pose in plan.stops if pose.plays_summed):
+                        band = target_band_hz() if purpose == PURPOSE_BASS else facts.summed_pilot_band_hz
+                        if band is None:
+                            continue
+                        rows = _ambient_rows_in_band(band, ambient.get("bands") or ())
+                        # Remove when measured programs no longer require pilot SNR admission.
+                        if rows and not _snr_floor_ok(ambient, pilot_dbfs, [band]):
+                            lo, hi, noise_dbfs = max(rows, key=lambda row: row[2])
+                            code = REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT
+                            issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message,
+                                                  blocking=pilot_floor_blocking(purpose)), evidence={
+                                "level_db": fader, "predicted_pilot_capture_dbfs": pilot_dbfs,
+                                "pilot_band_hz": band, "ambient_row": {"band_hz": (lo, hi), "level_dbfs": noise_dbfs},
+                                "floor_dbfs": noise_dbfs + DRIVER.snr_ok_db,
+                            }))
             except (LevelUnresolved, LateralWalkRefused) as exc:
                 add(exc.reason, exc.detail)
 

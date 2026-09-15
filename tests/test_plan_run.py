@@ -750,7 +750,8 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
 
     hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
     results = await run_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS)
-    expected = [(0, -18), (0, -23)] + ([] if partial else [(20, -18), (20, -23)])
+    expected = ([(0, -18), (0, -23)] if partial else
+                [(pose, level) for pose in (0, 20) for level in (-18, -23, -28, -33)])
     assert [(call["position_deg"], call["level_db"]) for call in fakes.play.calls] == expected
     assert len(gate.grants) == (1 if partial else 2)
     assert sum(result.mic_moves for result in results) == len(gate.grants)

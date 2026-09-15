@@ -6236,7 +6236,7 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch
 @pytest.mark.parametrize("levels,phases", [
     (None, ("entry_baseline", "lateral", "lateral")),
     ((-18, -23), ("lateral",)),
-    ((-10, -18), ("entry_baseline", "lateral")),
+    ((-8, -18), ("entry_baseline", "lateral")),
 ])
 def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, tmp_path, levels, phases):
     from jasper.web import correction_crossover_v2_wired as wired

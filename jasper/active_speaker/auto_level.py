@@ -10,11 +10,12 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from jasper.audio_measurement.ramp import CEILING_MARGIN_DB, HARD_CEILING_DBFS, MAX_STEP_DB, SPL_CEILING_EXCEEDED, capped_gap_step_db
+from jasper.audio_measurement.ramp import HARD_CEILING_DBFS, MAX_STEP_DB, SPL_CEILING_EXCEEDED, capped_gap_step_db
 from jasper.audio_measurement.wired_capture import WiredCaptureError, WiredSplCeilingExceeded
 from jasper.env_load import bounded_env_float
 
 from .volume_latch import read_fader_db, set_and_confirm_volume
+from .seat_level_reference import SeatLevelTargetError, validate_ramp_target_spl
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import MicSensitivity
@@ -64,8 +65,12 @@ async def level_to(
     """The watched reader enforces the SPL stop; an unwatched reader has no stop."""
     if not all(math.isfinite(value) for value in (
         target_db_spl, tolerance_db, stop_db_spl, max_main_volume_db, sensitivity.sens_factor_db,
-    )) or tolerance_db <= 0 or target_db_spl + tolerance_db > stop_db_spl - MAX_STEP_DB - CEILING_MARGIN_DB:
+    )) or tolerance_db <= 0:
         raise ValueError("Level target and tolerance must fit below the commissioning stop")
+    try:
+        validate_ramp_target_spl(target_db_spl + tolerance_db, ceiling_db_spl=stop_db_spl)
+    except SeatLevelTargetError:
+        raise ValueError("Level target and tolerance must fit below the commissioning stop") from None
     cap = min(max_main_volume_db, HARD_CEILING_DBFS)
     result = LevelResult("refused")
     if sensitivity.dbfs_from_db_spl(target_db_spl + tolerance_db) > HARD_CEILING_DBFS:

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run a plan across poses, graphs and levels, bank its packet, commission a speaker and apply candidates."""
+"""Run a plan at --spl dB SPL or --levels fader dB, bank its packet, commission a speaker and apply candidates."""
 from __future__ import annotations
 
 import argparse
@@ -232,6 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_args.add_argument("--wait", action="store_true", help="wait for completion and bank the round with its packet")
     levels = run_args.add_mutually_exclusive_group()
     levels.add_argument("--levels", help="auto uses admissible session offsets; or absolute dB levels, e.g. --levels=-10,-20")
+    levels.add_argument("--spl", help="dB SPL at the mark, mapped through the banked anchor, e.g. --spl 65,75,82")
     levels.add_argument("--level-db", type=float, help="one absolute run fader level in dB; overrides the program's level default")
     run = sub.add_parser("run", parents=[run_args], help="run a plan, with auto or explicit levels; optionally wait and bank its packet")
     run.add_argument("--program", choices=("speaker", "room", "bass"))

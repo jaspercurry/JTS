@@ -28,7 +28,7 @@ from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, SafetyEnvelope
 from jasper.active_speaker.seat_level_reference import (
     DEFAULT_TOLERANCE_DB,
-    SeatLevelTarget,
+    SeatLevelTarget, SeatLevelTargetError, validate_commissioning_spl, validate_ramp_target_spl,
 )
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from tests.active_speaker_fixtures import (
@@ -229,3 +229,15 @@ def test_ruled_75_db_seat_frame_validates_under_the_ruled_stop() -> None:
 
     assert (target.low_db_spl, target.high_db_spl) == (74.0, 76.0)
     target.validate(ceiling_db_spl=RULED_STOP_DB_SPL)
+
+
+@pytest.mark.parametrize("margin_db,edge", [(None, 76.0), (1.0, 84.0), (1.0 + 12.0, 72.0)])
+@pytest.mark.parametrize("excess_db", [0.0, 0.1])
+def test_ramp_and_rung_bounds(margin_db, edge, excess_db):
+    rule = validate_ramp_target_spl if margin_db is None else validate_commissioning_spl
+    kwargs = {} if margin_db is None else {"margin_db": margin_db}
+    if excess_db:
+        with pytest.raises(SeatLevelTargetError):
+            rule(edge + excess_db, ceiling_db_spl=RULED_STOP_DB_SPL, **kwargs)
+    else:
+        rule(edge, ceiling_db_spl=RULED_STOP_DB_SPL, **kwargs)

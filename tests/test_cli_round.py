@@ -582,6 +582,13 @@ def test_retired_round_arguments_are_usage_errors(argv):
     assert exc.value.code == 2
 
 
+@pytest.mark.parametrize("flag,value", [("--levels", "auto"), ("--level-db", "-21")])
+def test_spl_excludes_fader_flags(flag, value):
+    with pytest.raises(SystemExit) as exc:
+        cli.build_parser().parse_args(["run", "--spl", "75", flag, value])
+    assert exc.value.code == 2
+
+
 @pytest.mark.parametrize("state", ["awaiting_join", "starting", "awaiting_capture", "stopping"])
 def test_wait_does_not_bank_before_capture_cleanup(state, monkeypatch, capsys):
     opener = _run_opener({"status": state})
@@ -595,6 +602,13 @@ def test_wait_does_not_bank_before_capture_cleanup(state, monkeypatch, capsys):
     (["--repeats", "0"], "walk_level_policy_invalid"),
     (["--program", "room", "--mover", "arm"], "walk_mover_mismatch"),
     (["--program", "room", "--dry-run", "--levels=-10,-10"], "walk_level_policy_invalid"),
+    (["--spl", "75,75"], "walk_level_policy_invalid"),
+    (["--spl", "nan"], "walk_level_policy_invalid"),
+    (["--spl", "inf"], "walk_level_policy_invalid"),
+    (["--spl", ""], "program_plan_shape_invalid"),
+    (["--spl", "75,"], "program_plan_shape_invalid"),
+    (["--spl", "auto"], "program_plan_shape_invalid"),
+    (["--plan", "unused", "--spl", "75"], "program_plan_shape_invalid"),
 ])
 def test_run_shape_refusal_is_json(preflight_ready, argv, reason, monkeypatch, capsys):
     code, body = _run(["run", *argv], _opener(), monkeypatch, capsys)
@@ -678,8 +692,9 @@ def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsy
 
 
 @pytest.mark.parametrize("program,requested,noise_dbfs,levels", [
-    ("bass", None, -60, [-18, -23]), ("bass", None, -100, [-18, -23, -28, -33]), ("bass", None, -20, []),
-    ("room", "-10,-20", -100, [-20]), ("bass", "auto", None, []),
+    ("bass", None, -60, [-18, -23, -28, -33]), ("bass", None, -100, [-18, -23, -28, -33]),
+    ("bass", None, -20, [-18, -23, -28, -33]),
+    ("room", "-10,-20", -100, [-10, -20]), ("bass", "auto", None, []),
 ])
 def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, requested, noise_dbfs, levels):
     def facts(plan):
@@ -700,6 +715,48 @@ def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, requested
     assert [row["offset_db"] for row in body["levels"]] == [level + 18 if level is not None else None for level in expected]
     assert [row["level_db"] for row in body["levels"]] == expected
     assert not opener.requests
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("spl,faders,predicted,refused", [
+    ("65,75,82", [-31, -21, -14], [65, 75, 82], False),
+    ("84", [-12], [84], False), ("84.1", [-11.9], [84.1], True),
+])
+def test_run_spl_resolves_banked_anchor(monkeypatch, capsys, dry_run, spl, faders, predicted, refused):
+    def facts(plan):
+        ready = ready_facts(plan)
+        return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record, "reference_volume_db": -21}))
+
+    monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
+    opener = _opener(session=json.dumps({"capture": {"session_id": "run-1"}}))
+    code, body = _run(["run", "--program", "bass", "--spl", spl, *(["--dry-run"] if dry_run else [])],
+                      opener, monkeypatch, capsys)
+    assert code == (cli.EXIT_REFUSED if refused else cli.EXIT_OK)
+    report = body if dry_run else body["detail"] if refused else body["schedule"]
+    rows = [row["level"] for row in report["levels"]] if "levels" in report else [report["level"]]
+    assert [row["level_db"] for row in rows] == pytest.approx(faders)
+    assert [row["predicted_db_spl"] for row in rows] == predicted
+    if refused:
+        issue, = report["issues"]
+        assert issue["code"] == "walk_level_policy_invalid" and issue["blocking"]
+    if dry_run or refused:
+        assert not opener.requests
+    else:
+        plan = AngleCaptureRequest.from_mapping(json.loads(opener.posts()[0].data)["plan"])
+        assert (list(plan.levels) if plan.levels else [plan.level.volume_db]) == faders
+
+
+@pytest.mark.parametrize("flag,values", [("--spl", "65,85,75"), ("--levels", "-28,-8,-18")])
+def test_partial_ladder_discloses_the_dropped_rung(preflight_ready, monkeypatch, capsys, flag, values):
+    opener = _opener(session=json.dumps({"capture": {"session_id": "run-1"}}))
+    code, body = _run(["run", "--program", "bass", f"{flag}={values}"], opener, monkeypatch, capsys)
+    assert code == 0
+    issue, = body["schedule"]["issues"]
+    assert issue["blocking"] is False and issue["code"] == "walk_level_policy_invalid"
+    assert issue["evidence"]["dropped"] is True
+    assert issue["evidence"]["predicted_db_spl"] == 85
+    plan = json.loads(opener.posts()[0].data)["plan"]
+    assert plan["levels"] == [-28, -18]
 
 
 def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, capsys):
@@ -728,11 +785,11 @@ def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, c
 @pytest.mark.parametrize("verb,flags,noise,levels", [
     ("run", ["--level-db", "-18"], -60, [-18]),
     ("run", ["--levels=-18"], -60, [-18]),
-    ("run", ["--levels", "auto"], -55, [-18]),
-    ("run", ["--levels", "auto"], -60, [-18, -23]),
+    ("run", ["--levels", "auto"], -55, [-18, -23, -28, -33]),
+    ("run", ["--levels", "auto"], -60, [-18, -23, -28, -33]),
     ("run", ["--levels", "auto"], -100, [-18, -23, -28, -33]),
     ("run", ["--levels=-18,-28"], -100, [-18, -28]),
-    ("trial", [], -60, [-18, -23]),
+    ("trial", [], -60, [-18, -23, -28, -33]),
 ])
 def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     monkeypatch, capsys, tmp_path, box, bass_fit_pairs, tuning_profile, isolated_candidate_bank,
