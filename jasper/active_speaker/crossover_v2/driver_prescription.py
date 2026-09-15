@@ -1279,6 +1279,13 @@ def read_driver_prescription(
             "required_protection_filters",
         )
     passbands = dict(passbands_hz)
+    if not filters:
+        for role, _ in pinned_trim_db:
+            if role not in passbands:
+                _refuse(
+                    TRIM_PIN_MALFORMED, f"pinned_trim_db names unknown speaker role {role!r}",
+                    role=role, speaker_roles=sorted(passbands),
+                )
 
     prescription_class = _check_bounds(filters, passbands)
     composed_boost_db, composed_boost_role = _check_composed(filters, passbands)

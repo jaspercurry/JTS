@@ -1217,7 +1217,7 @@ def test_an_absent_pin_is_the_ordinary_round_and_names_nothing(packet):
     assert _gate(packet, _document([_cut()], packet)).to_dict()["pinned_trim_db"] == {}
 
 
-@pytest.mark.parametrize("pin", [
+@pytest.mark.parametrize("pin, filters", [(pin, [_cut()]) for pin in [
     [("tweeter", -6.5)],
     "tweeter",
     {"tweeter": "-6.5"},
@@ -1242,13 +1242,16 @@ def test_an_absent_pin_is_the_ordinary_round_and_names_nothing(packet):
     # Two keys that strip to one role: a silent last-wins would let a document
     # name two trims for a driver and ship whichever iterated last.
     {"tweeter": -3.0, " tweeter": -6.5},
-])
-def test_the_pin_is_judged_once_and_refuses_under_one_name(packet, pin):
+]] + [({"mid": -3.0}, [])])
+def test_the_pin_is_judged_once_and_refuses_under_one_name(packet, pin, filters):
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut()], packet, pinned_trim_db=pin))
+        _gate(packet, _document(filters, packet, pinned_trim_db=pin))
 
     assert excinfo.value.reason == dp.TRIM_PIN_MALFORMED
     assert dp.TRIM_PIN_MALFORMED in dp.DRIVER_PRESCRIPTION_REFUSAL_REASONS
+    if not filters:
+        assert excinfo.value.evidence["role"] == "mid"
+        assert excinfo.value.evidence["speaker_roles"] == ["tweeter", "woofer"]
 
 
 @pytest.mark.parametrize("db", [0.0, -0.0, dp.MAX_ATTENUATION_DB, -12.25])
