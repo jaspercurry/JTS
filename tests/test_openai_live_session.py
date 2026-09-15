@@ -125,6 +125,33 @@ async def test_backend_nudge_only_sends_when_no_delegation_is_in_flight(monkeypa
         )
 
 
+async def test_backend_nudge_failure_reports_redacted_provider_details(caplog, monkeypatch):
+    secret = "plainvalue123"
+    conn = OpenAILiveConnection(api_key=secret, connect=LiveSocket)
+    turn = openai_live_session.OpenAILiveTurn(conn, started_at=0.0)
+
+    async def send_failed(event):
+        raise RuntimeError(f"rejected {secret}")
+
+    monkeypatch.setattr(conn, "_send", send_failed)
+    caplog.set_level(logging.DEBUG)
+    assert not await turn.nudge_backend(silence_ms=2000)
+
+    fields = event_fields(caplog, "provider.send_failed")
+    assert fields["provider"] == "openai_live"
+    assert fields["operation"] == "nudge"
+    assert fields["outcome"] == "turn_lost"
+    assert fields["exc_type"] == "RuntimeError"
+    assert secret not in fields["detail"]
+    assert all(secret not in value for value in fields.values())
+    assert event_records(caplog, "provider.send_failed") == caplog.records
+    assert caplog.records[0].levelno == logging.WARNING
+    assert all(record.exc_info is None for record in caplog.records)
+    assert turn.turn_lost()
+    assert turn._audio_q.get_nowait() is None
+    assert turn._audio_q.empty()
+
+
 async def test_user_transcript_timestamp_uses_monotonic_time(monkeypatch):
     clock = FrozenClock()
     monkeypatch.setattr(openai_live_session, "time", clock)

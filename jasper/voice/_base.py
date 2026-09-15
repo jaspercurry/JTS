@@ -531,6 +531,15 @@ class BaseLiveTurn:
         """
         self._last_activity_at = asyncio.get_event_loop().time()
 
+    def _on_send_failed(self, exc: Exception, *, operation: str) -> None:
+        log_event(
+            self._conn._logger, "provider.send_failed", provider=self._conn.PROVIDER_NAME,
+            operation=operation, outcome="turn_lost",
+            exc_type=type(exc).__name__, detail=self._conn._redacted(exc),
+            level=logging.WARNING,
+        )
+        self._on_connection_lost()
+
     def _on_connection_lost(self) -> None:
         """The WebSocket dropped while this turn was active."""
         self._cancel_tools()

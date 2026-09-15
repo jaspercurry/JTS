@@ -227,7 +227,7 @@ async def _complete_turn(turn, session):
 
 @pytest.mark.parametrize("operation,event,level", [
     ("send_audio", "provider.send_failed", logging.WARNING),
-    ("end_input", "provider.end_input_failed", logging.DEBUG),
+    ("end_input", "provider.send_failed", logging.WARNING),
     ("cancel_response", "barge.cancel_failed", logging.WARNING),
 ])
 async def test_turn_failure_events_redact_key(caplog, monkeypatch, operation, event, level):
