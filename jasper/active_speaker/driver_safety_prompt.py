@@ -9,11 +9,16 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
+from .declaration_vocabulary import (
+    supported_declaration_filter_types,
+    supported_declaration_slopes_db_per_octave,
+)
 from .driver_protection import (
     driver_low_limit_plausibility_band_hz,
     driver_protection_profile,
 )
 from .driver_safety import DRIVER_RESEARCH_KIND
+from .test_signal_plan import DEFAULT_DRIVER_SWEEP_DURATION_S, DRIVER_SWEEP_DURATIONS_S
 
 
 _PROMPT_TARGET_KEYS = (
@@ -158,22 +163,6 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     :func:`validate_research_low_limit_plausibility`.
     """
 
-    # Dropped from the ASK (still accepted, normalised and prefilled when a
-    # reply includes them): ``manufacturer`` and ``recommended_lowpass_hz`` have
-    # no computational consumer, and ``gain_offset_db`` is a guessed level that
-    # would outrank the derived trim in baseline_profile's ladder (measured >
-    # pinned > estimate > sensitivity).
-    #
-    # The crossover vocabulary the KEY GUIDE states is READ from the compiler,
-    # never spelled here: the reply is refused against exactly these sets when
-    # it is saved, so asking for a vocabulary the saver rejects is an invisible
-    # deadlock. Imported inside the call because this module is the research
-    # surface, not an audio-graph consumer.
-    from .declaration_vocabulary import (
-        supported_declaration_filter_types,
-        supported_declaration_slopes_db_per_octave,
-    )
-
     # The result shape is fenced because a chat UI's copy button copies the
     # code block's contents, not the prose around it.
     target_count = len(request.get("targets", []))
@@ -183,6 +172,10 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     # floor is round and every offset here is a multiple of 500).
     hp = int(_prompt_example_highpass_hz(request))
     hard_low = hp - 500
+    sweep_durations = ", ".join(f"{role} {seconds:g} s" for role, seconds in DRIVER_SWEEP_DURATIONS_S.items())
+    example_duration = min((DRIVER_SWEEP_DURATIONS_S.get(str(target.get("role")), DEFAULT_DRIVER_SWEEP_DURATION_S)
+                            for target in request.get("targets", []) if isinstance(target, Mapping)),
+                           default=DEFAULT_DRIVER_SWEEP_DURATION_S)
     return "\n".join(
         (
             "You are a loudspeaker-driver datasheet researcher. Your entire reply is data for a machine to parse, not prose for a human.",
@@ -220,7 +213,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             "hard_excitation_band_hz: the published usable range when there is one, otherwise the range typical for that type, tightened at both ends. Its LOWER edge is derived from recommended_highpass_hz, so what matters here is the upper edge.",
             "measurement_band_hz is the driver's published frequency-response range — for example a compression driver rated 1.0-18.0 kHz sends [1000, 18000]. Send the published range even when it extends below the minimum crossover; this build clamps the analysis window up into the allowed band itself.",
             "Nest the bands: the measurement band sits inside the hard excitation band. A reply that does not nest is refused.",
-            "level_duration_limits: measurement-protocol discipline, not datasheet facts. Send max_sweep_duration_s 4, max_repeat_count 3, minimum_cooldown_s 2 unless a datasheet says stricter.",
+            f"level_duration_limits: measurement-protocol discipline, not datasheet facts. Send max_sweep_duration_s at the role's protocol ceiling ({sweep_durations}; other roles {DEFAULT_DRIVER_SWEEP_DURATION_S:g} s), max_repeat_count 3, minimum_cooldown_s 2 unless a datasheet says stricter.",
             "max_effective_peak_dbfs is the one key in that object that IS a datasheet fact, so send it ONLY when the manufacturer publishes a level limit for this driver — a maximum input level, or a power rating stated as a limit you can convert. Omit the key entirely when they publish none; that is the ordinary answer and it is not a gap to record in unknowns. Never estimate it, and never send a protocol default in its place: this build chooses the measurement level from the driver's declared sensitivity against its low-frequency sibling's own limit, and a made-up number here would override that with a guess.",
             "",
             *_driver_research_prompt_limits(request),
@@ -242,7 +235,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             '    "recommended_highpass_slope_db_per_octave": 12,',
             f'    "hard_excitation_band_hz": [{hard_low}, 20000],',
             f'    "measurement_band_hz": [{hp - 1000}, 18000],',
-            '    "level_duration_limits": {"max_sweep_duration_s":4,"max_repeat_count":3,"minimum_cooldown_s":2},',
+            f'    "level_duration_limits": {{"max_sweep_duration_s":{example_duration:g},"max_repeat_count":3,"minimum_cooldown_s":2}},',
             '    "cabinet": {"enclosure_kind":"sealed|vented|passive_radiator|open_baffle|transmission_line|unknown","radiator_count":1,"effective_radiating_diameter_mm":null,"baffle_width_mm":null},',
             '    "driver_class": "compression_horn|soft_dome|metal_dome|beryllium_diamond_dome|ribbon_amt|unknown",',
             '    "radiating_diameter_mm": 25,',

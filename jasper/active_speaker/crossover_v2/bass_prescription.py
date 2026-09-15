@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bind a dynamic-bass descriptor to qualified fundamentals in its round."""
+"""Bind a dynamic-bass descriptor to its round and disclose unqualified bands."""
 
 from __future__ import annotations
 
@@ -18,9 +18,8 @@ from ._prescription_common import BlendPrescriptionRefused, _refuse
 
 BASS_ROUND_MISMATCH = "bass_round_mismatch"
 BASS_EVIDENCE_UNAVAILABLE = "bass_evidence_unavailable"
-BASS_BAND_UNQUALIFIED = "bass_band_unqualified"
 BASS_PRESCRIPTION_REFUSAL_REASONS = DYNAMIC_BASS_REFUSAL_REASONS | {
-    BASS_ROUND_MISMATCH, BASS_EVIDENCE_UNAVAILABLE, BASS_BAND_UNQUALIFIED,
+    BASS_ROUND_MISMATCH, BASS_EVIDENCE_UNAVAILABLE,
 }
 BassPrescriptionRefused = BlendPrescriptionRefused
 
@@ -45,10 +44,12 @@ class BassPrescription:
     descriptor: Mapping[str, Any]
     round_id: str
     evidence_status: str
+    unqualified_boost_bands_hz: list[list[float]]
 
     def to_dict(self) -> dict[str, Any]:
         return {**self.descriptor, "round_id": self.round_id,
-                "evidence_status": self.evidence_status}
+                "evidence_status": self.evidence_status,
+                "unqualified_boost_bands_hz": self.unqualified_boost_bands_hz}
 
 
 def bass_prescription_response_format() -> dict[str, Any]:
@@ -80,8 +81,5 @@ def read_bass_prescription(raw: Any, *, evidence: Mapping[str, Any]) -> BassPres
                  for take in view.get("takes", []) for band in take.get("bands", [])
                  if band.get("fundamental_qualified") is True}
     # At the allowed 20 Hz detector minimum, the first measured band supplies the endpoint.
-    for band in bands or [BASS_BANDS_HZ[0]]:
-        if band not in qualified:
-            _refuse(BASS_BAND_UNQUALIFIED, f"No qualified fundamental in {band[0]:g}-{band[1]:g} Hz.",
-                    band_hz=list(band), boost_band_hz=[lower, upper])
-    return BassPrescription(descriptor, round_id, status)
+    unqualified = [list(band) for band in bands or [BASS_BANDS_HZ[0]] if band not in qualified]
+    return BassPrescription(descriptor, round_id, status, unqualified)
