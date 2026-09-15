@@ -164,8 +164,7 @@ Choose `low_boost_db` to match the measured roll-off: compare the base corner
 and per-band `realized_boost_db` in `bass_table.tables[].levels[]`; overshoot
 above the corner beyond repeat spread means too much boost for the box.
 Keep `delta_highpass_hz` near 25 to 30 Hz for sub-20 Hz protection, never
-at the extension target: a high corner tilts the boost upward and discards
-the extension.
+at the extension target: a high corner tilts boost up and discards extension.
 Set `detector_lowpass_hz` at the top of the boosted band.
 Unqualified boosted bands are disclosed on the document, and the room
 layer, fitted through bass, absorbs the residual tail.

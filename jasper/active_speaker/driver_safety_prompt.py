@@ -9,6 +9,10 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
+# The crossover vocabulary the KEY GUIDE states is READ from the compiler,
+# never spelled here: the reply is refused against exactly these sets when
+# it is saved, so asking for a vocabulary the saver rejects is an invisible
+# deadlock.
 from .declaration_vocabulary import (
     supported_declaration_filter_types,
     supported_declaration_slopes_db_per_octave,
@@ -176,6 +180,11 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
     example_duration = min((DRIVER_SWEEP_DURATIONS_S.get(str(target.get("role")), DEFAULT_DRIVER_SWEEP_DURATION_S)
                             for target in request.get("targets", []) if isinstance(target, Mapping)),
                            default=DEFAULT_DRIVER_SWEEP_DURATION_S)
+    # Dropped from the ASK (still accepted, normalised and prefilled when a
+    # reply includes them): ``manufacturer`` and ``recommended_lowpass_hz`` have
+    # no computational consumer, and ``gain_offset_db`` is a guessed level that
+    # would outrank the derived trim in baseline_profile's ladder (measured >
+    # pinned > estimate > sensitivity).
     return "\n".join(
         (
             "You are a loudspeaker-driver datasheet researcher. Your entire reply is data for a machine to parse, not prose for a human.",
