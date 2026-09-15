@@ -270,10 +270,10 @@ PROVIDERS: tuple[ProviderCatalogEntry, ...] = (
         # WebSocket playback keeps the whole assistant turn server-side; the
         # client must send conversation.item.truncate at the heard boundary.
         interrupt_reconcile=InterruptReconcile.NEEDS_CLIENT_TRUNCATE,
-        # The adapter's own module-top `import audioop` is why this entry
-        # exists: on Python 3.13 that name comes from the `audioop-lts`
-        # backport, not the stdlib. `openai` is listed separately because
-        # openai_session defers it to `_resolve_connect_call`.
+        # _base.py's module-top `import audioop`, reached through openai_session's `from
+        # ._base import`, is why this entry exists: on Python 3.13 that name comes from
+        # the `audioop-lts` backport, not the stdlib. `openai` is listed separately
+        # because openai_session defers it to `_resolve_connect_call`.
         runtime_imports=("jasper.voice.openai_session", "openai"),
     ),
     ProviderCatalogEntry(
