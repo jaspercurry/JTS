@@ -4098,7 +4098,7 @@ _VERDICTS_WITHOUT_NUMBERS = {
                     "role": "woofer",
                     "observe_octave_summary": {"8000": -0.3},
                     "reason_summary": {
-                        "8000": "envelope_limited_by_class_prior",
+                        "8000": "envelope_limited_by_mic_tier",
                     },
                     "driver_class": "unknown",
                 },

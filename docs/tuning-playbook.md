@@ -38,11 +38,15 @@ stays in force. The fitter uses remaining program headroom and the owner's
 
 A fit is already proposed. Each `fits` entry identifies its role and pose.
 Read `reason_summary` before `filters`, `residual_rms_db`, `residual_max_db`
-and `cloud.band_spread`. `envelope_fitted` means the evidence supported the fit.
-`envelope_limited_by_position_stability` and
-`envelope_limited_by_spatial_exclusion` mean the poses disagreed.
-`envelope_limited_by_mic_tier` and `envelope_limited_by_class_prior` name
-instrument or driver-class limits. A limited bin is not a defect to correct harder.
+and `boost_evidence`. `envelope_fitted` means the bin was fitted.
+`position_spread_db` reports standard error across positions in dB at the
+`reason_summary` bands; null means fewer than two readable positions.
+Weigh this spread yourself: a boost into a dip at one position can harm the
+other positions; a droop at every position is a correction target.
+`class_prior_hz` gives the declared class's `full_to_hz` and `taper_zero_hz`
+as guidance. Neither field limits the fit. `envelope_limited_by_mic_tier`
+names the instrument limit; `envelope_limited_by_spatial_exclusion` names
+an identified null.
 
 Read three verdicts. A fit's `verdict` gives `repeat_spread_db`,
 `residual_within_repeat_spread` and `reason`. A residual at or under the repeat

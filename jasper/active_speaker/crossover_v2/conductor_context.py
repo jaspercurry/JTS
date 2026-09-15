@@ -117,10 +117,6 @@ class V2ConductorContext(Generic[_Level]):
     # AND the play-time readmission so the composed levels and the admission
     # gate cannot disagree about a derived HF ceiling.
     declared_sensitivities: dict[str, float] = field(default_factory=dict)
-    # Per-role declared driver technology class, feeding the conductor's
-    # Layer-1a linearization fit (``linearization_envelope.compose_envelope``'s
-    # class_prior_limit term). A role absent here fits under the conservative
-    # "unknown" class default.
     driver_class_by_role: dict[str, str] = field(default_factory=dict)
     # Per-role declared effective radiating diameter in mm, the ka/beaming
     # prior, which is DISCLOSURE and never a bound. It reaches the conductor by
@@ -420,9 +416,6 @@ def resolve_conductor_context(
     # figure with any declared in-line pad folded in (#1665) -- threaded into
     # every cap resolution below. This is the one owner of that fact (ADR-0227 §9).
     declared_sensitivities = declared_effective_driver_sensitivities(draft)
-    # The declaration's per-role driver technology class (#1665), threaded
-    # into the conductor construction sites below so the Layer-1a
-    # linearization fit (compose_envelope's class_prior_limit term) sees it.
     driver_class_by_role = _resolve_driver_class_by_role(draft)
     # #1675: the ka/beaming prior, off the SAME draft path, as disclosure.
     radiating_diameter_mm_by_role = _resolve_radiating_diameter_by_role(draft)

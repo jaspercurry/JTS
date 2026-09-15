@@ -152,12 +152,7 @@ def max_q_for_gain(gain_db: float) -> float:
     return PRESCRIPTION_MAX_BOOST_Q if gain_db > 0.0 else EVALUABLE_Q_MAX
 
 
-#: Per-filter BOOST ceiling, dB — this class's alone, and tunable by ruling
-#: rather than by a caller. Deliberately a separate constant from the
-#: deterministic solver's :data:`~.blend_correction.BLEND_MAX_FILTER_CUT_DB`
-#: and from :data:`~.driver_prescription.DRIVER_MAX_FILTER_BOOST_DB` (12.0),
-#: which ``tests/test_crossover_v2_driver_prescription.py`` pins as an
-#: INEQUALITY so one edit cannot move both.
+#: Per-filter boost ceiling in dB for the blend stage.
 PRESCRIPTION_MAX_FILTER_BOOST_DB = 3.0
 
 #: Ceiling on the COMPOSED boost's peak over the region, dB — enforced on the

@@ -125,7 +125,7 @@ def round_verdicts(
         fit["crossover_band_spread"] = {
             f"{band['center_hz']:g} Hz": band
             for region in regions if fit["role"] in (region.lower_driver, region.upper_driver)
-            for band in (fit.get("cloud") or {}).get("band_spread", ())
+            for band in (fit.get("boost_evidence") or {}).get("band_spread", ())
             if band["f_lo"] <= region.fc_hz < band["f_hi"]
         } if regions else None
         fit["crossover_band_spread_reason"] = None if regions else "no_applied_crossover"

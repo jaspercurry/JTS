@@ -85,7 +85,6 @@ __all__ = [
     "PlannerInputError",
     "SIGMA_TOLERABLE_DB",
     "anchor_trims",
-    "boost_allowed",
     "compare_level_definitions",
     "compose_sigma_db",
     "decide_trim",
@@ -426,16 +425,6 @@ class LinearizationRequest:
     mic_tier: str
     branch_floor_hz: float | None
     """The shared reflection-gate floor; ``None`` when no response reported one."""
-
-    post_apply_verifies: bool
-    """Does the JOURNEY measure what the speaker did with a boost? Boost's ONE
-    necessary condition."""
-
-    cloud_phase_planned: bool
-    """Did this session PLAN a spatial cloud? Distinguishes "absent by design"
-    (the driver-only path, boost permitted) from "planned and lost" (boost
-    withheld) — the two share a ``cloud is None`` signature and are different
-    evidence states."""
 
     cloud: CloudFitTerms | None = None
     trim_sanity_margin_db: float = LINEARIZATION_TRIM_SANITY_MARGIN_DB
@@ -800,12 +789,6 @@ def decide_trim(
     )
 
 
-def boost_allowed(*, post_apply_verifies: bool, cloud_phase_planned: bool, cloud_present: bool) -> bool:
-    # A planned-but-lost cloud withholds boost; absent by design permits it.
-    # See docs/historical/linearization-campaign-2026-07.md §4.2.
-    return post_apply_verifies and (cloud_present or not cloud_phase_planned)
-
-
 @dataclass(frozen=True)
 class BranchFits:
     envelopes: Mapping[str, EnvelopeCurve]
@@ -861,7 +844,6 @@ def fit_branches(
             .with_budget(driver.fit_budget),
             radiating_band_hz=radiating[driver.role], blind_bands_hz=blind,
             target=branch_target(sections.get(driver.role, ()), envelopes[driver.role].freqs_hz),
-            boost_evidence=role_cloud.boost_responses if (role_cloud := clouds.get(driver.role)) else (),
         )
         for driver in drivers
     }
@@ -947,10 +929,7 @@ def plan_linearization(
         request.drivers, sections=sections,
         mic_tiers={role: request.mic_tier for role in roles},
         vocabulary=FitVocabulary(
-            allow_boost=boost_allowed(
-                post_apply_verifies=request.post_apply_verifies,
-                cloud_phase_planned=request.cloud_phase_planned, cloud_present=request.cloud is not None,
-            ),
+            allow_boost=True,
             boost_excluded_bands_hz=request.cloud.boost_excluded_bands_hz if request.cloud else (),
         ),
         cloud=request.cloud, on_bands=disclose_bands,
@@ -1577,8 +1556,6 @@ def request_from_analysis(
     roles: Sequence[str],
     excited_band_hz: Mapping[str, tuple[float, float]],
     driver_class_by_role: Mapping[str, str],
-    post_apply_verifies: bool,
-    cloud_phase_planned: bool,
     cloud: Any = None,
     fit_budget_by_role: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> LinearizationRequest:
@@ -1586,8 +1563,7 @@ def request_from_analysis(
 
     The one place the host's measurement objects are unpacked into the
     planner's explicit inputs. A *derivation*, not a policy: every value is read
-    straight off the analysis, and the two facts the analysis cannot know
-    (``post_apply_verifies``, ``cloud_phase_planned``) are the host's to pass.
+    straight off the analysis.
 
     Raises :class:`PlannerInputError` when the analysis lacks a driver response
     for a role, or when a PAIR carries no alignment — both of which the host's
@@ -1638,7 +1614,5 @@ def request_from_analysis(
         ),
         mic_tier=str(analysis.mic_tier),
         branch_floor_hz=measure_validity_floor_hz(analysis),
-        post_apply_verifies=bool(post_apply_verifies),
-        cloud_phase_planned=bool(cloud_phase_planned),
         cloud=CloudFitTerms.from_evidence(cloud),
     )

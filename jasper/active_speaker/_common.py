@@ -32,10 +32,6 @@ ACTIVE_CROSSOVER_ROLE_PAIRS: dict[str, tuple[tuple[str, str], ...]] = {
     "active_3_way": (("woofer", "mid"), ("mid", "tweeter")),
 }
 
-# Closed vocabulary shared by component entry (design_draft.py's schema, the
-# /sound/ wizard's driver-type pick) and the correction-envelope math
-# (linearization_envelope.compose_envelope's class_prior_limit term), so neither
-# side imports the other. linearization_envelope re-exports the name.
 DRIVER_CLASSES: tuple[str, ...] = (
     "compression_horn",
     "soft_dome",

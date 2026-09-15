@@ -203,13 +203,12 @@ class FitVocabulary:
 
     Deliberately small: every field is a move the fit can MAKE, not a fact
     about the speaker. Way count, driver roles, pad authority and alignment
-    are the composer's business. ``allow_boost`` is the evidence gate — the
-    v2 session grants it only when the commission will run the delta probe.
+    are the composer's business.
     """
 
     allow_boost: bool = False
     #: One biquad's boost ceiling, dB.
-    per_filter_boost_cap_db: float = DEFAULT_FIT_BUDGET["max_gain_db"]
+    per_filter_boost_cap_db: float = MAX_PROGRAM_HEADROOM_DB
     #: Bands no LIFT filter may be AIMED at (#1967) — enforced per filter on
     #: the emitted response, never as a whole-cascade veto. Cuts untouched.
     #: Empty means "nothing contradicted", not "no evidence available".
@@ -480,6 +479,8 @@ class LinearizationFit:
     blind_zone_placements: tuple[BlindZonePlacement, ...] = ()
     vocabulary: FitVocabulary = CUT_ONLY_VOCABULARY
     budget_binding: tuple[str, ...] = ()
+    position_spread_db: Mapping[str, float | None] | None = None
+    class_prior_hz: Mapping[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -493,6 +494,8 @@ class LinearizationFit:
             "residual_rms_db": self.residual_rms_db,
             "residual_max_db": self.residual_max_db,
             "reason_summary": dict(self.reason_summary),
+            "position_spread_db": self.position_spread_db,
+            "class_prior_hz": dict(self.class_prior_hz),
             MIC_TIER_FIELD: self.mic_tier,
             "driver_class": self.driver_class,
             "n_repeats": self.n_repeats,
@@ -605,15 +608,18 @@ def _power_band_average_db(magnitude_db: np.ndarray, mask: np.ndarray) -> float:
     return 10.0 * math.log10(max(float(np.mean(power)), 1e-12))
 
 
-def _octave_band_reason_summary(envelope: EnvelopeCurve) -> dict[str, str]:
-    grid = envelope.freqs_hz
-    out: dict[str, str] = {}
-    for center in _OCTAVE_BAND_CENTERS_HZ:
-        if center < grid[0] or center > grid[-1]:
-            continue
-        idx = int(np.argmin(np.abs(grid - center)))
-        out[str(int(center))] = envelope.reason[idx].value
-    return out
+def _envelope_disclosures(envelope: EnvelopeCurve) -> dict[str, Any]:
+    indices = {str(int(center)): int(np.argmin(np.abs(envelope.freqs_hz - center)))
+               for center in _OCTAVE_BAND_CENTERS_HZ
+               if envelope.freqs_hz[0] <= center <= envelope.freqs_hz[-1]}
+    spread = envelope.position_spread_db
+    return {
+        "reason_summary": {center: envelope.reason[idx].value for center, idx in indices.items()},
+        "position_spread_db": None if spread is None else {
+            center: float(spread[idx]) if np.isfinite(spread[idx]) else None for center, idx in indices.items()
+        },
+        "class_prior_hz": envelope.class_prior_hz,
+    }
 
 
 def _empty_fit(envelope: EnvelopeCurve) -> LinearizationFit:
@@ -624,7 +630,7 @@ def _empty_fit(envelope: EnvelopeCurve) -> LinearizationFit:
         target_level_db=0.0,
         residual_rms_db=0.0,
         residual_max_db=0.0,
-        reason_summary=_octave_band_reason_summary(envelope),
+        **_envelope_disclosures(envelope),
         mic_tier=envelope.mic_tier,
         driver_class=envelope.driver_class,
         n_repeats=envelope.n_repeats,
@@ -664,7 +670,7 @@ def _observe_octave_summary(
 ) -> dict[str, float]:
     """The honesty ladder's OBSERVE level: per-octave achieved-vs-target
     magnitude to the grid's own top, independent of the fit/verify bands.
-    Mirrors :func:`_octave_band_reason_summary`'s octave-center sampling so
+    Mirrors :func:`_envelope_disclosures`'s octave-center sampling so
     the two dicts key identically. ``target_curve_db`` per-bin since R10a —
     a flat target over the whole grid would report a two-way branch's
     stopband attenuation as a deficit of tens of dB.
@@ -681,17 +687,9 @@ def _observe_octave_summary(
 def _core_or_fallback_mask(
     envelope: EnvelopeCurve, envelope_mask: np.ndarray,
 ) -> np.ndarray:
-    """The "core passband" — bins where BOTH mic-trust and class-prior still
-    sit at the ceiling sentinel — intersected with the fit-eligible mask.
-    Falls back to the whole fit-eligible mask when the core is empty.
-    """
+    """Mic-trusted bins inside the fit band; use the full band if empty."""
     mic_trust = envelope.terms[ReasonCode.LIMITED_BY_MIC_TIER]
-    class_prior = envelope.terms[ReasonCode.LIMITED_BY_CLASS_PRIOR]
-    core = (
-        np.isclose(mic_trust, ENVELOPE_CEILING_SENTINEL_DB)
-        & np.isclose(class_prior, ENVELOPE_CEILING_SENTINEL_DB)
-        & envelope_mask
-    )
+    core = np.isclose(mic_trust, ENVELOPE_CEILING_SENTINEL_DB) & envelope_mask
     return core if core.any() else envelope_mask
 
 
@@ -844,7 +842,7 @@ def _adaptive_band_trim(
     """Adaptive fit-band trim. Returns inclusive ``(lo_idx, hi_idx)`` grid
     indices. The seed is CURVE-SHAPE-DRIVEN, not trust-driven — the extremes
     of ``envelope_mask`` bins within one cut budget of ``target_level_db``
-    — deliberately not the mic-trust/class-prior "core" region, since a
+    — deliberately not the mic-trust "core" region, since a
     driver's acoustic rolloff has nothing to do with mic trust. From that
     seed it extends outward, stopping the first time the smoothed curve
     drops below the floor or the mask ends.
@@ -1530,7 +1528,6 @@ def _lift_stage(
     vocabulary: FitVocabulary,
     *,
     measured_db: np.ndarray,
-    boost_evidence_db: Sequence[np.ndarray] = (),
     lift_mask: np.ndarray | None = None,
     contribution: np.ndarray | None = None,
     gain_permitted: np.ndarray | None = None,
@@ -1659,12 +1656,9 @@ def _lift_stage(
     # #2599's measured-target bound, per filter, placed AFTER both
     # whole-cascade gates above so a refused cascade cannot return as an
     # accepted subset.
-    evidence_drops = []
-    for observed_db in (measured_db, *boost_evidence_db):
-        boosts, drops = _boost_evidence_verdicts(
-            boosts, grid_hz, target_curve_db - np.asarray(observed_db, dtype=np.float64), band_mask,
-        )
-        evidence_drops.extend(drops)
+    boosts, evidence_drops = _boost_evidence_verdicts(
+        boosts, grid_hz, target_curve_db - measured_db, band_mask,
+    )
     if evidence_drops:
         if not boosts:
             return _Lift(
@@ -1775,7 +1769,6 @@ def fit_driver_linearization(
     radiating_band_hz: tuple[float, float] | None = None,
     blind_bands_hz: Sequence[tuple[float, float]] = (),
     target: BranchTarget | None = None,
-    boost_evidence: Sequence[DriverResponse] = (),
 ) -> LinearizationFit:
     """Fit one driver's linearization from its measured response and
     correction envelope.
@@ -1961,8 +1954,6 @@ def fit_driver_linearization(
         # The MEASUREMENT, not the working curve — #2599's bound exists
         # because the two disagree once cuts are placed.
         measured_db=smoothed_db,
-        boost_evidence_db=[ladder_smooth(grid_hz, np.interp(grid_hz, row.freqs_hz, row.magnitude_db))
-                           for row in boost_evidence],
         lift_mask=lift_mask, binding=binding,
         contribution=None if centred_target is None else centred_target.contribution,
         gain_permitted=(
@@ -2060,14 +2051,14 @@ def fit_driver_linearization(
 
     # Octave centers ABOVE the confidence ceiling are disclosed as
     # beyond-measurement-confidence when the CD-horn stage fired.
-    reason_summary = _octave_band_reason_summary(envelope)
+    disclosures = _envelope_disclosures(envelope)
     if hf.filters:
-        reason_summary = {
+        disclosures["reason_summary"] = {
             center: (
                 ReasonCode.BEYOND_MEASUREMENT_CONFIDENCE.value
                 if float(center) > hf.ceiling_hz else code
             )
-            for center, code in reason_summary.items()
+            for center, code in disclosures["reason_summary"].items()
         }
 
     return LinearizationFit(
@@ -2077,7 +2068,7 @@ def fit_driver_linearization(
         target_level_db=target_level_db,
         residual_rms_db=residual_rms_db,
         residual_max_db=residual_max_db,
-        reason_summary=reason_summary,
+        **disclosures,
         mic_tier=envelope.mic_tier,
         driver_class=envelope.driver_class,
         n_repeats=envelope.n_repeats,

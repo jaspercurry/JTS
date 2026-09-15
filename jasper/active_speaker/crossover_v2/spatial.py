@@ -365,19 +365,6 @@ def entry_baseline_screens(
 # --------------------------------------------------------------------------- #
 
 
-# The fewest RESOLVED positions a cloud group can close with and still produce a
-# usable claim, so a position the flow gives up on degrades the group instead of
-# ending the session.
-#
-# DERIVED, not chosen: ``linearization_envelope.position_stability_limit``
-# raises ``ValueError`` for ``n_positions < 2``, because a cross-position spread
-# across fewer than two positions is undefined.
-#
-# Deliberately NOT ``MIN_CLOUD_MEASURE_POSITIONS`` /
-# ``MIN_CLOUD_VERIFY_POSITIONS``: those are PLAN-DECLARATION floors, enforced
-# before any capture happens. Between this floor and the declared one the claim
-# is degraded, and degradation is DISCLOSED (the geometry verdict's
-# ``n_positions`` / ``thin_evidence``), not gated.
 MIN_RESOLVED_CLOUD_POSITIONS = 2
 
 

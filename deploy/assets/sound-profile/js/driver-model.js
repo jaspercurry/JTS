@@ -133,15 +133,6 @@ function driverStyleLabel(style) {
   var entry = hfDriverStyleEntry(style);
   return entry ? entry.label : String(style || '').replace(/_/g, ' ');
 }
-// #1665 advanced driver detail: the driver's physical technology, which feeds
-// jasper.active_speaker.linearization_envelope.compose_envelope's
-// class_prior_limit() term (a more conservative correction ceiling for a
-// class known to run out of linear excursion or HF extension sooner).
-// Distinct from driver_style above (topology-owned; it drives the tweeter's
-// default minimum crossover, the plausibility band, and the commissioning-
-// tone gate's fallback — see driver_protection.py): driver_class applies to
-// every role and is saved on manual_settings.drivers, mirroring DRIVER_CLASSES
-// in jasper/active_speaker/_common.py.
 function driverClasses() {
   return [
     {value: 'unknown', label: 'Unknown'},

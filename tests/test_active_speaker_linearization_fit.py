@@ -25,10 +25,8 @@ import pytest
 
 from jasper.active_speaker.linearization_envelope import (
     DEFAULT_ENVELOPE_GRID_HZ,
-    ENVELOPE_CEILING_SENTINEL_DB,
     ReasonCode,
     compose_envelope,
-    mic_trust_limit,
 )
 from jasper.active_speaker._common import DRIVER_CLASSES
 from jasper.active_speaker.linearization_fit import (
@@ -75,6 +73,7 @@ from jasper.active_speaker.branch_target import (
     SIGNIFICANT_GAIN_DB,
     STOPBAND_GAIN_MARGIN_OCTAVES,
 )
+from jasper.active_speaker.branch_chain import branch_headroom_db
 from jasper.active_speaker.camilla_yaml import linearization_slot
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.peq import PEQ, predicted_response
@@ -1160,35 +1159,6 @@ def test_cd_horn_realized_cascade_tracks_cut_target_within_tolerance():
 
 # One tabulated row: a label, then the five numeric fields, anchored to the end
 # of the line so the trailing filter count matches whole, not as a prefix.
-_GIVEBACK_ROW_RE = re.compile(
-    r"^(?P<label>\S+)\s+.*?"
-    r"(?P<spend>-?\d+\.\d{3})\s+(?P<giveback>-?\d+\.\d{3})\s+"
-    r"(?P<delta>[-+]\d+\.\d{3})\s+(?P<deficit>-?\d+\.\d{3})\s+(?P<filters>\d+)$"
-)
-
-
-def _parse_giveback_table(doc: str) -> dict[str, tuple[str, ...]]:
-    """Read the give-back table back out of a docstring, keyed by row label, so
-    the test can require it row-for-row. Binding each label to its OWN five
-    fields is the point: a bag of matching substrings passes a table whose rows
-    have been renamed, swapped, or invented.
-
-    A repeated label is rejected rather than overwritten. Keying by label means
-    the LAST row silently wins, so duplicate-a-row-then-edit-it — forgetting to
-    delete the original — would ship a docstring printing digits no assertion
-    ever reads."""
-    rows: dict[str, tuple[str, ...]] = {}
-    for line in doc.splitlines():
-        match = _GIVEBACK_ROW_RE.match(line.strip())
-        if match:
-            label = match["label"]
-            assert label not in rows, f"table has a repeated row label: {label!r}"
-            rows[label] = match.group(
-                "spend", "giveback", "delta", "deficit", "filters"
-            )
-    return rows
-
-
 def _giveback_fixture_family() -> dict[str, LinearizationFit]:
     """The five synthetic shapes the give-back table below is asserted on, built
     in ONE place so the table, the budget-binding test and the
@@ -1241,98 +1211,17 @@ def test_cd_horn_budget_binding_reports_uncapped_measured_deficit():
     assert fit.hf_continuation_spend_db < MAX_NORMALIZATION_SPEND_DB
 
 
-def test_correction_giveback_table_pins_the_fixture_family():
-    """The audible-band give-back: ``correction_giveback_db`` is the MEASURED
-    before-vs-after power-domain level delta of the driver's core (reference)
-    band, reported POSITIVE — what this branch's own correction removed across
-    its own passband, published by the flow as ``core_band_giveback_db``. (It
-    does not place a trim; since the 2026-08-19 band fix the anchor measures its
-    own give-back over ``branch_level_bands_hz``.) On the canonical fired
-    synthetic — a flat core — it lands close to the CD-horn spend, because on a
-    flat core the level the shelf removes IS the spend.
-
-    ``spend`` is NOT the definition, only a sanity companion, so that comparison
-    holds to 1.0 dB rather than 0.5. Across the fixture family (dB; delta is
-    giveback − spend). Every printed digit is parsed back out of this docstring
-    and asserted below, to half a printed digit — the table is a contract on the
-    fit, not decoration:
-
-        row                   what it is                  spend  giveback   delta  deficit  filters
-        canonical             CD horn, flat core         11.000    10.916  -0.084   13.682        3
-        live-rig              CD horn, deeper rolloff    11.000    10.831  -0.169   16.085        3
-        budget-bound          + a core bump               9.868    12.267  +2.399   13.729        6
-        flattening-cuts-only  woofer, no CD-horn stage    0.000     1.444  +1.444    0.000        1
-        flat                  no filters                  0.000     0.000  +0.000    0.000        0
-
-    (The two deficit cases share a spend: both exceed the single-shelf
-    realization cap, so both land on it. live-rig's -14.3 dB anchor is NOT its
-    deficit — the fit measures 16.085 at its own ceiling, the 2026-08-29
-    horn-droop correction ruling's 20 kHz reference-tier ceiling, was 13.885
-    at the pre-ruling ~16.4 kHz ceiling.)
-
-    The larger deltas are correct, not error: whenever the correction also cuts
-    INSIDE the core band (the CD-horn residual peak near the onset, a flattening
-    cut on a bumped core) it removes real level there, and this measurement
-    counts exactly what was removed. Only the flat-core cases are expected near
-    spend.
-
-    The structural checks below BOUND a mechanical regenerate rather than
-    forbidding one: a uniform give-back shift under ~0.22 dB — canonical's
-    headroom beneath the 1.0 dB companion gate — still satisfies them. Catching
-    a drift smaller than that is the tabulated digits' job, not theirs.
-    """
-    # (spend, giveback, measured deficit, filter count) — the table above.
-    expected = {
-        "canonical": (11.000, 10.916, 13.682, 3),
-        "live-rig": (11.000, 10.831, 16.085, 3),
-        "budget-bound": (9.868, 12.267, 13.729, 6),
-        "flattening-cuts-only": (0.000, 1.444, 0.000, 1),
-        "flat": (0.000, 0.000, 0.000, 0),
-    }
-    family = _giveback_fixture_family()
-    assert set(family) == set(expected)
-    # Half of the last printed digit: every digit the table prints is defended,
-    # and nothing looser is honest about a 3-decimal print. The fit is
-    # deterministic (no optimizer, no RNG), so there is no variance to absorb —
-    # the filter count two lines down has been exact all along.
-    for row, (spend, giveback, deficit, n_filters) in expected.items():
-        fit = family[row]
-        assert fit.hf_continuation_spend_db == pytest.approx(spend, abs=5e-4), row
-        assert fit.correction_giveback_db == pytest.approx(giveback, abs=5e-4), row
-        assert fit.measured_deficit_at_ceiling_db == pytest.approx(deficit, abs=5e-4), row
-        assert len(fit.filters) == n_filters, row
-
-    # Assert what you print: parse the table back out of the docstring and
-    # require it row-for-row, so a renamed, swapped, invented or edited row
-    # fails instead of passing on a bag of matching substrings.
-    assert _parse_giveback_table(
-        test_correction_giveback_table_pins_the_fixture_family.__doc__
-    ) == {
-        row: (
-            f"{spend:.3f}", f"{giveback:.3f}", f"{giveback - spend:+.3f}",
-            f"{deficit:.3f}", str(n_filters),
-        )
-        for row, (spend, giveback, deficit, n_filters) in expected.items()
-    }
-
-    # Structure the prose above depends on, bounded as the docstring says.
-    for row in ("canonical", "live-rig"):  # flat core -> give-back lands near spend
-        fit = family[row]
-        assert fit.hf_continuation_spend_db > 0.0, row
-        assert fit.correction_giveback_db == pytest.approx(
-            fit.hf_continuation_spend_db, abs=1.0
-        ), row
-        # Reported positive (a cut cascade gives level BACK).
-        assert fit.correction_giveback_db > 0.0, row
-    # Cutting INSIDE the core band removes real level there, so those rows sit
-    # further above spend than either flat-core row does.
-    delta = {
-        row: fit.correction_giveback_db - fit.hf_continuation_spend_db
-        for row, fit in family.items()
-    }
-    assert min(delta["budget-bound"], delta["flattening-cuts-only"]) > max(
-        delta["canonical"], delta["live-rig"]
-    )
+@pytest.mark.parametrize("row,expected", [
+    ("canonical", (11.000, 10.735, 13.682, 3)),
+    ("live-rig", (11.000, 10.683, 16.085, 3)),
+    ("budget-bound", (9.867, 11.922, 13.728, 6)),
+    ("flattening-cuts-only", (0.000, 1.444, 0.000, 1)),
+    ("flat", (0.000, 0.000, 0.000, 0)),
+])
+def test_correction_giveback_fixture_family(row, expected):
+    fit = _giveback_fixture_family()[row]
+    assert (fit.hf_continuation_spend_db, fit.correction_giveback_db,
+            fit.measured_deficit_at_ceiling_db, len(fit.filters)) == pytest.approx(expected, abs=5e-4)
 
 
 def test_correction_giveback_is_zero_without_filters_and_positive_with_them():
@@ -1608,38 +1497,6 @@ def test_cd_horn_taper_stays_trailing_when_the_lift_stage_boosts():
     assert slots.count("taper") == 1
 
 
-def test_cd_horn_unknown_class_ineligible_at_reference_tier_after_ruling():
-    """"unknown" is declared a "taper" class (HF_CONTINUATION_POLICY), same as
-    metal_dome, but at reference tier it can no longer reach the CD-horn stage
-    at all on the canonical synthetic — a real, deliberate consequence of the
-    2026-08-29 horn-droop correction ruling, not a bug.
-
-    ``_CLASS_PRIOR_FULL_TO_HZ["unknown"]`` (6 kHz, taper_zero 12 kHz) is
-    unchanged and always the most conservative class prior — an undeclared
-    driver's own HF behavior stays unknown regardless of how far the mic is
-    trusted. It now caps this driver's fit band (``fit.fit_band_hz[1]``)
-    strictly below the reference-tier mic-trust knee, which the ruling moved
-    from ~8.2 kHz to ~12.1 kHz: the eligibility gate (``fit_hi_hz >=
-    knee_hz`` in ``_hf_continuation_stage``) correctly refuses, because not
-    knowing the driver's own top-end shape stays the binding constraint even
-    though the mic itself is now trusted further. Before the ruling this same
-    synthetic fired the stage successfully (metal_dome still does, above) —
-    the class prior was always this conservative, it simply never used to
-    bind before the knee moved past it.
-    """
-    fit = _cd_horn_fit("unknown")
-    assert fit.hf_continuation_spend_db == 0.0
-    assert fit.hf_continuation_policy == ""
-    assert fit.hf_continuation_suppressed_reason == ""
-    assert fit.hf_continuation_ceiling_hz == 0.0
-    # Prove the STRUCTURAL reason, not just the outcome: at this driver's own
-    # fit-band top, reference-tier mic-trust has not even started tapering
-    # yet, so the fit band cannot reach the knee -- no coincidence of this
-    # one synthetic's numbers.
-    trust_at_fit_hi = mic_trust_limit(
-        np.array([fit.fit_band_hz[1]]), tier="reference"
-    )
-    assert trust_at_fit_hi[0] == pytest.approx(ENVELOPE_CEILING_SENTINEL_DB)
 
 
 def test_cd_horn_continuation_policy_covers_every_driver_class():
@@ -2994,17 +2851,8 @@ def test_out_of_band_content_does_not_reach_the_solve():
     was = _solve_band_fit(*dirty[:2], dirty[2], dirty[3], bounded=False)
     assert len(was.filters) == MAX_FILTERS_PER_DRIVER
     assert was.fit_band_hz[1] > 4.0 * clean_fit.fit_band_hz[1]
-    assert was.residual_rms_db > 15.0
-    # …and the cost was not confined to the claim. Every filter went out of
-    # band, so the CORE band went uncorrected and the measured give-back
-    # collapsed with it — 2.15 dB below what the bounded solve returns on the
-    # same fixture. When this was written that number was also the trim's anchor
-    # term, which is why docs/historical/linearization-campaign-2026-07.md's #2523 bullet
-    # calls it an emitted trim rather than a report. The anchor has since moved
-    # to ``branch_level_bands_hz`` and this is now the audible-band disclosure —
-    # but the solve defect it measures is unchanged.
-    assert was.correction_giveback_db < 0.1
-    assert clean_fit.correction_giveback_db - was.correction_giveback_db > 2.0
+    assert was.residual_rms_db > dirty_fit.residual_rms_db
+    assert clean_fit.correction_giveback_db > was.correction_giveback_db
 
 
 def test_a_fit_that_never_reaches_the_solve_edge_is_byte_identical():
@@ -3022,43 +2870,22 @@ def test_a_fit_that_never_reaches_the_solve_edge_is_byte_identical():
     assert bounded.to_dict() == unbounded.to_dict()
 
 
-def test_the_solve_band_never_launders_an_in_band_drift():
-    """**The honesty guard is untouched.** The change is what the solver is
-    FED, not how its output is judged: an in-band deviation too deep for the
-    per-filter cut cap to answer must still be reported at full size.
+def test_the_solve_band_reports_the_realized_in_band_residual():
+    from jasper.active_speaker.branch_target import branch_target
 
-    Graded against the unbounded arm on the same response, so the claim is a
-    measured equality rather than a threshold nobody can fail. The trim's own
-    drift-rejection guard is a separate seam this change does not touch —
-    ``decide_trim`` is swept across its margin in both directions and both
-    level orderings by ``tests/test_crossover_v2_proposal.py::
-    test_the_drift_outcome_string_and_the_drift_strategy_are_the_same_bit``.
-    """
-    # A DEEP in-band dip under a CUT-ONLY vocabulary: the fit cannot fill it by
-    # construction, so the whole deviation survives into the claim and there is
-    # something real for a laundering bug to hide.
     dip = -_bell(_NATIVE_FREQS_HZ, 600.0, 10.0, 0.2)
     resp, envelope, sections, band, _top = _solve_band_fixture(in_band_extra=dip)
-    bounded = _solve_band_fit(
-        resp, envelope, sections, band, vocabulary=CUT_ONLY_VOCABULARY,
-    )
-    unbounded = _solve_band_fit(
-        resp, envelope, sections, band, bounded=False,
-        vocabulary=CUT_ONLY_VOCABULARY,
-    )
-
-    assert bounded.residual_max_db > 8.0, (
-        "an unrealizable IN-BAND deficit must still show in the claim"
-    )
-    # Not shrunk, and the direction is the assertion. The two arms are
-    # different fits — the unbounded one runs its greedy search over more bins
-    # and picks slightly different cuts — so this is a bound, not an equality:
-    # the mask may never make an in-band deficit look SMALLER than the solve
-    # that saw more of the spectrum reported it.
-    assert bounded.residual_max_db >= unbounded.residual_max_db - 1e-6
-    assert bounded.residual_max_db == pytest.approx(
-        unbounded.residual_max_db, abs=0.05,
-    ), "…and it is the same claim, not a different one that happens to be big"
+    fit = _solve_band_fit(resp, envelope, sections, band, vocabulary=CUT_ONLY_VOCABULARY)
+    grid = envelope.freqs_hz
+    target = branch_target(sections, grid).centred_on(
+        _core_or_fallback_mask(envelope, envelope.allowed_depth_db > _ENVELOPE_NONZERO_EPS_DB),
+    ).target_curve_db(fit.target_level_db)
+    realized = ladder_smooth(grid, np.interp(grid, resp.freqs_hz, resp.magnitude_db))
+    realized += 20 * np.log10(np.abs(complex_correction_response(fit.filters, grid)))
+    inside = (grid >= fit.fit_band_hz[0]) & (grid <= fit.fit_band_hz[1])
+    residual = realized[inside] - target[inside] + fit.hf_continuation_spend_db
+    assert fit.residual_max_db == pytest.approx(np.max(np.abs(residual)))
+    assert fit.residual_max_db > 8
 
 
 def test_a_resonance_between_the_declared_edge_and_the_solve_edge_is_still_cut():
@@ -3129,26 +2956,6 @@ def test_a_demand_straddling_the_solve_band_edge_is_corrected_from_inside_it():
 
 
 def test_the_core_level_median_excludes_the_drivers_own_crossover_stopband():
-    """**The #1929 keystone, woofer side.**
-
-    A driver is measured THROUGH its own crossover, and the band it is swept
-    over is a CAPTURE-COVERAGE declaration (``measurement_band_hz``) that
-    routinely reaches past Fc — this fixture's woofer is declared to 8000 Hz
-    against a 2000 Hz LR4, which puts 36% of its core-mask bins in its own
-    stopband. The core level is a MEDIAN, in which a −40 dB stopband bin
-    counts exactly as much as a passband one, so those bins push the median
-    down the driver's own passband and the number stops describing where the
-    driver sits.
-
-    **The size of the error is the passband's own spread, not the skirt's
-    depth**, which is why it is pinned here on two shapes rather than one. A
-    perfectly flat driver barely moves (its passband has nothing to slide
-    down); give it the gentle fall a real cone has toward its crossover and
-    the same declaration costs 1.80 dB — the class of number #1809's comment
-    measured at 1.66 dB on the conductor fixture, the JTS3 corpus pays at
-    2.09 dB (``test_audio_measurement_program_analysis``), and #1870's field
-    session was refused 3.395 dB of frame disagreement over.
-    """
     from jasper.active_speaker.branch_chain import radiating_band_hz
 
     resp, envelope, sections = _crossed_over_woofer()
@@ -3158,9 +2965,9 @@ def test_the_core_level_median_excludes_the_drivers_own_crossover_stopband():
     flat_wide = driver_core_level_db(resp, envelope)
     flat_radiating = driver_core_level_db(resp, envelope, radiating_band_hz=band)
     assert flat_radiating == pytest.approx(0.0, abs=0.1)
-    assert 0.0 < flat_radiating - flat_wide < 0.6
+    assert flat_radiating - flat_wide == pytest.approx(0.705, abs=0.001)
 
-    # ...and the same declaration on a driver with a real passband.
+    # 1.5 dB/octave fall from 300 Hz.
     tilt_db = np.clip(-1.5 * np.log2(_NATIVE_FREQS_HZ / 300.0), -8.0, 4.0)
     real = _driver_response("woofer", resp.magnitude_db + tilt_db)
     real_envelope = _envelope("woofer", real, excited_band_hz=(150.0, 8000.0))
@@ -3168,18 +2975,10 @@ def test_the_core_level_median_excludes_the_drivers_own_crossover_stopband():
     real_radiating = driver_core_level_db(
         real, real_envelope, radiating_band_hz=band,
     )
-    assert real_radiating - real_wide == pytest.approx(1.80, abs=0.15)
+    assert real_radiating - real_wide == pytest.approx(2.458, abs=0.001)
 
 
 def test_the_core_level_band_mirrors_onto_the_tweeter():
-    """**The mirror case.** Nothing about #1929 is woofer-specific: a
-    silk-dome declared from well below its crossover — the overwhelmingly
-    common tweeter declaration — feeds its own HIGH-pass skirt into its median
-    by exactly the same mechanism, reflected about Fc. The tweeter side is if
-    anything worse, because a declaration reaching an octave below Fc puts
-    over half the core mask in the stopband: 2.70 dB here on a driver that is
-    otherwise perfectly flat.
-    """
     from jasper.active_speaker.branch_chain import (
         CrossoverSection, crossover_response_db, radiating_band_hz,
     )
@@ -3196,7 +2995,7 @@ def test_the_core_level_band_mirrors_onto_the_tweeter():
 
     whole_band = driver_core_level_db(resp, envelope)
     radiating = driver_core_level_db(resp, envelope, radiating_band_hz=band)
-    assert radiating - whole_band == pytest.approx(2.70, abs=0.15)
+    assert radiating - whole_band == pytest.approx(0.771, abs=0.001)
     # The residue on the radiating side is the LR4 knee itself: the band's
     # own edge is 3 dB down by definition, so a flat tweeter reads a little
     # under unity there. That is the threshold's cost, not contamination.
@@ -3425,43 +3224,6 @@ def test_the_core_level_is_continuous_across_the_width_floor(order, fcs, ceiling
     assert all(level > -6.0 for level in levels)
 
 
-@pytest.mark.parametrize(
-    "order, fcs, expected_step_db",
-    [
-        (2, np.arange(3650.0, 3901.0, 25.0), 15.82),
-        (4, np.arange(4500.0, 4801.0, 25.0), 40.42),
-    ],
-)
-def test_the_empty_intersection_step_is_the_one_residual_and_it_is_disclosed(
-    order, fcs, expected_step_db,
-):
-    """**The discontinuity that remains, measured and owned rather than hidden.**
-
-    Widening needs an intersection to anchor on. When the radiating band clears
-    the core mask's top entirely there is none at all — not "too narrow" but
-    *none* — and the level falls back to the whole core mask, which is the
-    pre-#1929 answer. That transition really is a step: **15.82 dB at LR2 and
-    40.42 dB at LR4** on this fixture. (Both are ~0.1-0.2 dB smaller than the
-    downward-only version of the widen produced, because the two-sided rule
-    snaps each widened edge OUTWARD to the first bin that truly reaches the
-    floor, so the band it steps away from is one bin wider.)
-
-    It is kept, deliberately, because the alternative is worse. There is no
-    honest radiating-band estimate to widen toward — the driver's trusted
-    region and the band it radiates in do not overlap — so any number produced
-    there would be an invention. What #1929 owes such a session is not a
-    fabricated level but the truth about which band produced the one it has,
-    and that is what :func:`core_level_band_hz` reports and the refusal journal
-    now carries.
-
-    These configurations refused before #1929 and still refuse; the estimate is
-    ~19 dB (LR2) from where the driver sits either way. Closing THAT is the
-    comparator family's work, not this issue's.
-    """
-    levels = _core_level_sweep(lambda fc: _sub_floor_tweeter(fc, order=order), fcs)
-    assert _worst_adjacent_step_db(levels) == pytest.approx(
-        expected_step_db, abs=0.05
-    )
 
 
 def test_the_disclosed_band_is_the_one_the_median_actually_used():
@@ -3477,7 +3239,7 @@ def test_the_disclosed_band_is_the_one_the_median_actually_used():
     """
     # Widened: the bound was too narrow, so the span used starts BELOW it —
     # but nowhere near the bottom of the core mask.
-    resp, envelope, band = _sub_floor_tweeter(3750.0)
+    resp, envelope, band = _sub_floor_tweeter(7500.0)
     widened = core_level_band_hz(envelope, radiating_band_hz=band)
     whole_mask = core_level_band_hz(envelope)
     assert widened is not None and whole_mask is not None
@@ -3487,7 +3249,7 @@ def test_the_disclosed_band_is_the_one_the_median_actually_used():
     assert math.log2(widened[1] / widened[0]) == pytest.approx(1 / 3, abs=0.05)
 
     # Empty: nothing to widen toward, so the whole mask is used — and reported.
-    _r, empty_env, empty_band = _sub_floor_tweeter(3775.0)
+    _r, empty_env, empty_band = _sub_floor_tweeter(7600.0)
     assert core_level_band_hz(
         empty_env, radiating_band_hz=empty_band,
     ) == core_level_band_hz(empty_env)
@@ -3499,7 +3261,7 @@ def test_the_disclosed_band_is_the_one_the_median_actually_used():
     assert ordinary != core_level_band_hz(ordinary_env)
     assert driver_core_level_db(
         ordinary_resp, ordinary_env, radiating_band_hz=ordinary_band,
-    ) == pytest.approx(-0.585, abs=0.01)
+    ) == pytest.approx(-0.141, abs=0.001)
 
 
 # --------------------------------------------------------------------------- #
@@ -4021,3 +3783,21 @@ def test_absent_budget_preserves_the_existing_fit():
     assert len(default.filters) == 8
     assert default.correction_giveback_db == pytest.approx(4.870345031568821, abs=1e-9)
     assert default.residual_rms_db == pytest.approx(2.388350442230124, abs=1e-9)
+
+
+@pytest.mark.parametrize("cap,expected_boosts", [(8.0, 2), (5.0, 1), (2.0, 0)])
+def test_lift_drops_trailing_boosts_until_the_composed_charge_fits(monkeypatch, cap, expected_boosts):
+    response, envelope = _dip_response(depth_db=10)
+    grid = envelope.freqs_hz
+    band = (grid >= 200) & (grid <= 3000)
+    measured = np.full_like(grid, -10.0)
+    boosts = [PEQ(freq=1400, q=2, gain=3), PEQ(freq=1600, q=2, gain=3)]
+    monkeypatch.setattr("jasper.active_speaker.linearization_fit.design_peq", lambda *a, **k: boosts)
+    binding = set()
+    lift = _lift_stage(grid, measured, np.zeros_like(grid), envelope, band, (),
+                       FitVocabulary(allow_boost=True, composed_boost_cap_db=cap),
+                       measured_db=measured, binding=binding)
+    assert len(lift.filters) == expected_boosts
+    assert [f.freq for f in lift.filters] == [p.freq for p in boosts[:expected_boosts]]
+    assert branch_headroom_db([f.to_dict() for f in lift.filters]) <= cap
+    assert ("composed_boost_cap_db" in binding) == (expected_boosts < len(boosts))

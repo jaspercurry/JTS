@@ -18,7 +18,10 @@ from tests.crossover_v2_fixtures import _one_way_preset
 
 @pytest.fixture
 def live_round():
-    return json.loads((Path(__file__).parent / "fixtures/round_d5dbe9ccdbd2.json").read_text())
+    packet = json.loads((Path(__file__).parent / "fixtures/round_d5dbe9ccdbd2.json").read_text())
+    for fit in packet["fits"]:
+        fit["boost_evidence"] = fit.pop("cloud")
+    return packet
 
 
 @pytest.mark.parametrize(
@@ -119,7 +122,7 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap):
                 "residual_max_db": 2,
                 "reason_summary": {},
                 "filters": [],
-                "cloud": {
+                "boost_evidence": {
                     "design_poses": 0,
                     "band_spread": [
                         {
@@ -155,7 +158,7 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap):
         if residual is None
         else None
     )
-    assert fit["crossover_band_spread"] == {"2000 Hz": fit["cloud"]["band_spread"][0]}
+    assert fit["crossover_band_spread"] == {"2000 Hz": fit["boost_evidence"]["band_spread"][0]}
     (ceiling,) = packet["verdicts"]
     assert ceiling["branch_gap_db"] == (abs(gap) if gap is not None else None)
     assert ceiling["louder_role"] == (("woofer" if gap > 0 else "tweeter") if gap else None)
@@ -184,7 +187,7 @@ def test_live_round_verdicts(tmp_path, live_round, band_lo, contains_crossover):
     clouds = design_clouds(inputs, manifest)
     for fit in fixture["fits"]:
         fit.update(residual_rms_db=2.4, residual_max_db=6.1, reason_summary={})
-        fit["cloud"]["band_spread"][0]["f_lo"] = band_lo
+        fit["boost_evidence"]["band_spread"][0]["f_lo"] = band_lo
     packet = {"round_id": "d5dbe9ccdbd2", "program": manifest["program"], "result": "complete", "reason": None,
               "level": None, "applied": {"candidate": None, "record": None, "layers": {}},
               "artifacts": {"frequency_view": None}, "limits": {}, "packet_fingerprint": None,
@@ -200,11 +203,11 @@ def test_live_round_verdicts(tmp_path, live_round, band_lo, contains_crossover):
     assert ceiling["band_hz"] == [1600, 4000]
     assert ceiling["capture_graph"] == manifest["sets"][2]["capture_basis"]["graph_fingerprint"]
     for fit in packet["fits"]:
-        expected = {"2000 Hz": fit["cloud"]["band_spread"][0]} if contains_crossover else {}
+        expected = {"2000 Hz": fit["boost_evidence"]["band_spread"][0]} if contains_crossover else {}
         assert fit["crossover_band_spread"] == expected
         if fit["role"] != "tweeter":
             continue
-        band, = fit["cloud"]["band_spread"]
+        band, = fit["boost_evidence"]["band_spread"]
         assert (band["center_hz"], band["sigma_db"], band["max_sigma_db"]) == pytest.approx((2000, 0.815763999253154, 1.103016043550224))
         measured = next(band for band in clouds[fit["set_id"]].band_spread if band.center_hz == 2000)
         assert measured.sigma_db == pytest.approx(band["sigma_db"])
