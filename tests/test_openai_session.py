@@ -1677,7 +1677,7 @@ async def test_idle_context_reset_reopens_through_the_supervisor(conn_cls):
         )
         assert len(factory.conns) >= 2
         # No orphan: the live session is the only one left open.
-        assert [c for c in factory.conns if not c.closed] == [conn._conn]
+        assert [c for c in factory.conns if not c.closed] == [conn._session]
         turn3 = await conn.acquire_turn()
         await turn3.release()
     finally:
