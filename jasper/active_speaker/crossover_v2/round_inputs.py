@@ -305,6 +305,8 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
 
 
 def prescription_sources(inputs: RoundInputs | None, *, set_id: str | None = None) -> dict[str, Any]:
+    from jasper.active_speaker.round_packet_report import PACKET_FILENAME  # lazy: packet report imports this reader
+
     if inputs is None:
         return {}
     if set_id is not None:
@@ -312,6 +314,7 @@ def prescription_sources(inputs: RoundInputs | None, *, set_id: str | None = Non
     sources = contract_sources(inputs, set_id=set_id)
     artifact_dir, _ = round_artifact_dir(inputs.session_dir)
     return {**sources,
+            "bass_evidence": _read_json_mapping((banked_round_of(inputs.session_dir) or inputs.session_dir) / PACKET_FILENAME) or {},
             "draft": (_read_json_mapping(inputs.design_draft_path) or {}) if inputs.design_draft_path else {},
             "receipt": (_read_json_mapping(artifact_dir / "round_receipt.json") or {}) if artifact_dir else {},
             "applied_profile": load_applied_baseline_profile_state(inputs.applied_profile_path) if inputs.applied_profile_path else None}

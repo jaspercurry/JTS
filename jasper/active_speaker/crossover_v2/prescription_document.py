@@ -14,9 +14,9 @@ from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankR
 from jasper.active_speaker.candidate_parts import compose_candidate
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
-from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 
 from . import alignment_prescription as alignment
+from . import bass_prescription as bass
 from . import blend_prescription as blend
 from . import driver_prescription as driver
 from . import room_prescription as room
@@ -130,7 +130,11 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
         assert room_pin is not None
         return room.room_prescription_to_candidate_fields(room_pin)["room_correction"], {**room_pin.to_dict(), "measured_basis": room_pin.measured_basis}
     if name == "bass":
-        return validate_dynamic_bass_descriptor(raw), dict(raw)
+        bass_packet = evidence.sources.get("bass_evidence", packet)
+        bass_pin = bass.read_bass_prescription(
+            raw, round_id=evidence.round_id, packet_fingerprint=bass_packet.get("packet_fingerprint"), evidence=bass_packet,
+        )
+        return bass_pin.descriptor, bass_pin.to_dict()
     raise PrescriptionDocumentRefused("prescription_kind_unknown", name, "unknown section kind")
 
 
@@ -171,7 +175,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
     if document["base"] != "saved" and document["base"] != base.fingerprint:
         raise PrescriptionDocumentRefused("composition_base_mismatch", None, "document and resolved base differ")
     evidence = evidence or PrescriptionEvidence()
-    contracts = prescription_contracts(**{**evidence.sources, "candidate": base.candidate.to_dict()})
+    contracts = prescription_contracts(**{"bass_evidence": evidence.packet, **evidence.sources, "candidate": base.candidate.to_dict()})
     selected: dict[str, Any] = {}
     judged: dict[str, Any] = {}
     fc_hz = contracts["speaker"]["alignment"]["bounds"]["fc_hz"]
@@ -193,7 +197,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
                 topology.TopologyPrescriptionRefused) as exc:
             raise PrescriptionDocumentRefused(exc.reason, name, exc.detail, evidence=getattr(exc, "evidence", {})) from exc
         except (ValueError, TypeError, KeyError) as exc:
-            raise PrescriptionDocumentRefused("bass_extension_invalid" if name == "bass" else "prescription_malformed", name, str(exc)) from exc
+            raise PrescriptionDocumentRefused("prescription_malformed", name, str(exc)) from exc
     try:
         return compose_candidate(
             base, sections=selected, rationale=document["rationale"],

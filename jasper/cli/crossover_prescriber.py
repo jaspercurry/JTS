@@ -51,14 +51,15 @@ def _document_evidence(args: argparse.Namespace, document: Mapping[str, Any]) ->
     if inputs is not None and sections.get("room"):
         resolve_set(inputs, args.set)
     sources = prescription_sources(inputs, set_id=args.set)
-    packet: dict[str, Any] = {}
+    packet = dict(sources.get("bass_evidence") or {}) if sections.get("bass") else {}
     if not getattr(args, "preview", False) and inputs is not None and (sections.get("driver") or sections.get("blend")):
         packet = _load_packet(args, inputs=inputs)
     try:
         sha = _room_median(sources.get("room_median", {}))[1] if sections.get("room") else ""
     except RoomPrescriptionRefused as exc:
         raise PrescriptionDocumentRefused(exc.reason, "room", exc.detail, evidence=exc.evidence) from exc
-    return PrescriptionEvidence(sources, packet, sha, Path(args.round).name if args.round else "")
+    round_dir = (banked_round_of(inputs.session_dir) or inputs.session_dir) if inputs else None
+    return PrescriptionEvidence(sources, packet, sha, round_dir.name if round_dir else "")
 
 
 def _room_median(source: Path | Mapping[str, Any]) -> tuple[RoomMedian, str]:

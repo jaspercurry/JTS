@@ -27,6 +27,7 @@ from jasper.bass_extension import dynamic as bass
 from jasper.json_fields import finite_float
 
 from . import alignment_prescription as alignment
+from . import bass_prescription
 from . import blend_prescription as blend
 from . import driver_prescription as driver
 from . import room_prescription as room
@@ -291,7 +292,8 @@ def _room(raw: Mapping[str, Any], persistence: Mapping[str, Any],
     return result
 
 
-def _bass() -> dict[str, Any]:
+def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    format_ = bass_prescription.bass_prescription_response_format()
     properties = {
         "low_boost_db": {"type": "number", "exclusiveMinimum": bass.LOW_BOOST_DB_MIN,
                          "maximum": bass.NATIVE_LOUDNESS_BOOST_MAX_DB},
@@ -307,11 +309,13 @@ def _bass() -> dict[str, Any]:
     for field in fields(bass.DynamicBassDescriptor):
         if field.default is not MISSING:
             properties[field.name]["default"] = field.default
+    properties.update({name: {"type": "string", "minLength": 1, "description": description}
+                       for name, description in format_["required_top_level"].items()})
     return {
-        "schema": _object(properties, sorted(bass._REQUIRED_FIELDS)),
+        "schema": _object(properties, sorted(bass._REQUIRED_FIELDS | format_["required_top_level"].keys())),
         "bounds": {"delta_highpass_hz_exclusive_upper_field": "detector_lowpass_hz"},
-        "refusal_codes": [],
-        "refusal_type": "ValueError",
+        "refusal_codes": format_["refusal_reasons"],
+        **bass_prescription.bass_evidence_status(evidence),
         "shared_headroom": {
             "adr": "ADR-0257",
             "layers": ["driver_linearization", "room", "bass_extension"],
@@ -328,13 +332,14 @@ def prescription_contracts(*, draft: Mapping[str, Any] | None = None,
                            room_median: Mapping[str, Any] | None = None,
                            room_persistence: Mapping[str, Any] | None = None,
                            room_ceiling: Mapping[str, Any] | None = None,
+                           bass_evidence: Mapping[str, Any] | None = None,
                            applied_profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
     candidate = candidate or {}
     preset = _preset(candidate) or _preset({"source_preset":
         _mapping((applied_profile or {}).get("recomposition_snapshot")).get("preset")})
     return {"speaker": _speaker(draft or {}, receipt or {}, preset),
             "room": _room(room_median or {}, room_persistence or {}, room_ceiling or {}, preset),
-            "bass": _bass()}
+            "bass": _bass(bass_evidence or {})}
 
 
 _SNR_NOT_AN_UNCERTAINTY: dict[str, str] = {'<role>_snr_db': "the worst per-band signal-to-noise ratio over the bands that decide this DRIVER role's MAGNITUDE claims — its level and its overlap-band trim. A ratio is not a spread about a reading: it BOUNDS the random error a level measured in that band can carry, and it does not shrink as captures are added, because it is a property of the capture conditions rather than of how many times they were repeated", '<role>_snr_verdict': "the policy's own answer about the figure above, in jasper.audio_measurement.snr_policy's per-band rank — a REFUSAL vocabulary that ships a shortfall in dB, deliberately not the quality_model trust labels it resembles. The words are not spelled here: they have an owner, and a copy that agrees today is still a copy. A verdict, not a quantity: there is nothing here to be uncertain by", '<role>_snr_band': 'which band produced the worst reading above. A label, not a quantity', '<role>_alignment_snr_db': "the same worst-band ratio over the bands that decide this DRIVER role's ALIGNMENT claims — polarity and delay — which need far more SNR because a null of depth D cannot be measured with less than roughly D + 10 dB. Published apart from the magnitude figure rather than pooled with it: the two answer different questions under different floors, and one number would let a capture that is fine for a trim read as fine for a null depth", '<role>_alignment_snr_verdict': "the same policy's answer about the alignment figure, under the alignment floor rather than the magnitude one — which is why one capture can legitimately carry a passing magnitude verdict and a refusing alignment one at the same time. A verdict, not a quantity", '<role>_alignment_snr_band': 'which band produced the worst alignment reading. A label, not a quantity', '<role>_pilot_snr_db': "the quiet-pilot in-band SNR this PILOT role's snr_valid is thresholded from. The role vocabulary here is the pilot's, not a driver's — 'summed' appears and names no driver. Null when the capture carried no ambient window to validate against, which is an absent measurement rather than a low one. Like every ratio here it bounds a random error without being one", 'pilot_snr_ok': "whether EVERY pilot in the capture cleared its own SNR floor, and null when the capture carried no pilots at all — 'no evidence', never a pass. A boolean verdict over the per-pilot figures above", 'gain_plan_snr_floor_ok': 'the room-quality gate: whether the ambient report cleared the floor the target capture level needs. False also when that report was missing or unreadable, so it is a gate outcome rather than a measurement, and never a spread'}
