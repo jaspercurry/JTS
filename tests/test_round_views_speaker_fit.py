@@ -827,15 +827,17 @@ def test_fit_budget_excludes_replaced_role_but_charges_other_branches(speaker_ro
     assert vocabulary.max_gain_db == 2.0
 
 
-@pytest.mark.parametrize("residual,noise,action", [(0.6, .2, None), (.61, .2, "reset_timing"), (2, None, None), (None, None, "measure_timing")])
-def test_packet_timing_verification_and_next_action(speaker_round, residual, noise, action):
+@pytest.mark.parametrize("verdict,residual,noise,action", [
+    ("saved", .6, .2, None), ("saved", .61, .2, "reset_timing"), ("saved", 2, None, None),
+    ("measured", None, None, "apply_timing"), ("needs_measurement", None, None, "measure_timing"),
+])
+def test_packet_timing_verification_and_next_action(speaker_round, verdict, residual, noise, action):
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
     path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
     timing = {"delay_us": 22.0, "polarity": "normal", "provenance": "measured", "measured": {"take_id": "original"}} if residual is not None else None
     verification = {"residual_rms_db": residual, "repeat_noise_db": noise} if timing else None
-    verdict = "saved" if timing else "needs_measurement"
     profile_path = root / "applied-profile.json"
     profile = {"kind": BASELINE_PROFILE_KIND, "artifact_schema_version": SCHEMA_VERSION, "status": "applied"}
     profile_path.write_text(json.dumps({**profile, **({"timing": timing} if timing else {})}))
@@ -844,6 +846,8 @@ def test_packet_timing_verification_and_next_action(speaker_round, residual, noi
         analysis={"trim_db": {"woofer": 0, "tweeter": -3}, "delay_us": 22, "polarity": "normal",
                   "timing_saved": timing, "timing_verdict": verdict,
                   "timing_verification": verification})
+    group["takes"].append({**group["takes"][0], "take_id": "off-axis", "pose": {"kind": "bearing", "deg": 20, "elevation_deg": 0},
+                          "analysis": {**group["takes"][0]["analysis"], "timing_verdict": "needs_measurement"}})
     write_manifest(root, groups=[group])
     packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
     assert packet["alignment_verdict"] == {"saved": timing, "verification": verification}

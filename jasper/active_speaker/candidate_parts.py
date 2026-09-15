@@ -169,8 +169,7 @@ def resolve_alignment(
         if not isinstance(pin, MeasuredCrossoverAlignment):
             fields = alignment_to_candidate_fields(pin, roles=roles)
             return MeasuredCrossoverAlignment(*fields[:2], fields[2] or base.alignment.polarity or "keep"), "document"
-        if not measured:
-            return pin, "document"
+        return pin, "measured" if measured else "document"
     source: AlignmentSource = "saved" if saved is not None else "measured"
     pair = saved if saved is not None else read.get("committed") or {}
     if saved is not None or measured:
