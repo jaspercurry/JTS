@@ -539,6 +539,27 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
     assert positions == sorted(positions)
 
 
+@pytest.mark.parametrize("contents", [None, "{"], ids=["missing", "corrupt"])
+def test_packet_skips_unreadable_written_room_artifact(tmp_path, contents):
+    session, state = _live_session(tmp_path)
+    write_manifest(session, program="room")
+    artifact = tmp_path / "room.json"
+    if contents is not None:
+        artifact.write_text(contents)
+    pointer = {"view": "room", "status": "written", "out": str(artifact)}
+
+    def views(view, target, **kwargs):
+        return pointer if view == "room" else {
+            "view": view, "status": "unavailable", "reason": "view_runner_unavailable",
+        }
+
+    banked = bank_round(session, campaign_root=tmp_path / "bank", state_path=state,
+                        view_runner=views, **_ssot(tmp_path, present=False))
+    packet = json.loads((banked.path / "packet.json").read_text())
+    assert packet["room"] == []
+    assert pointer in packet["artifacts"]["room_views"]
+
+
 @pytest.mark.parametrize("level,slope", [(0, 0), (2, 3)])
 def test_packet_stats_use_the_saved_series_reference(tmp_path, level, slope):
 

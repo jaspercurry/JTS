@@ -163,7 +163,10 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
             artifacts["room_views" if row["view"].startswith("room") else "bass_views"].append(
                 {key: row[key] for key in ("view", "set_id", "out", "status", "reason") if key in row})
         if row["view"] == purpose and purpose in analysis and row["status"] == "written" and row.get("out"):
-            document = json.loads(Path(row["out"]).read_text())
+            try:
+                document = json.loads(Path(row["out"]).read_text())
+            except (OSError, ValueError):
+                continue
             if purpose == "room":
                 document.pop("limits", None)
             analysis[purpose].append({**document, "out": row["out"],
