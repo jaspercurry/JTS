@@ -15,7 +15,6 @@ import logging
 
 import pytest
 
-from jasper.voice._base import BaseLiveConnection
 from tests._log_events import event_fields
 from tests._gemini_fakes import GoAway as _GoAway
 from tests._gemini_fakes import Response as _GoAwayResp
@@ -98,11 +97,10 @@ async def test_released_turn_reports_usage_under_the_shared_event(caplog):
 def test_secret_literals_reports_the_api_key():
     """A rejection body echoing the key in a shape `redact_secrets`'s
     prefix patterns don't know still redacts, because the connection
-    hands its own key back as a literal (ADR-0243). The base class
-    returns none — it holds no secret of its own."""
+    hands its own key back as a literal (ADR-0243)."""
     conn = GeminiLiveConnection(api_key="plainvalue123", model="fake")
     assert conn._secret_literals() == ("plainvalue123",)
-    assert BaseLiveConnection._secret_literals(conn) == ()
+    assert GeminiLiveConnection(api_key="", model="fake", connect_factory=lambda: None)._secret_literals() == ()
 
 
 class _FakeReceiveSession:

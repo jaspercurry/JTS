@@ -27,7 +27,7 @@ from openai.types.realtime import ResponseDoneEvent
 
 from jasper.tools import ToolRegistry, tool
 from jasper.voice import _base
-from jasper.voice._base import BaseLiveConnection, ToolCall, upsample_16k_to_24k
+from jasper.voice._base import ToolCall, upsample_16k_to_24k
 from jasper.voice._supervisor import (
     CANT_CONNECT_CUE_SLUG,
     NEEDS_ATTENTION_CUE_SLUG,
@@ -247,11 +247,10 @@ def test_invalid_noise_reduction_rejected_at_construction():
 def test_secret_literals_reports_the_api_key():
     """A rejection body echoing the key in a shape `redact_secrets`'s
     prefix patterns don't know still redacts, because the connection
-    hands its own key back as a literal (ADR-0243). The base class
-    returns none — it holds no secret of its own."""
+    hands its own key back as a literal (ADR-0243)."""
     conn = OpenAIRealtimeConnection(api_key="plainvalue123")
     assert conn._secret_literals() == ("plainvalue123",)
-    assert BaseLiveConnection._secret_literals(conn) == ()
+    assert OpenAIRealtimeConnection(api_key="")._secret_literals() == ()
 
 
 async def test_transport_close_failure_redacts_the_connection_secret(caplog):
