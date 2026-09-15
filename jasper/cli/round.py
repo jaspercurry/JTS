@@ -235,7 +235,11 @@ def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
     try:
         applied = load_applied_baseline_profile_state() or {}
         base = candidate_from_applied_profile(load_output_topology_strict(), applied)
-        document = reset_prescription_document(keep_timing=args.keep_timing)
+        corrections = applied.get("corrections") or {}
+        trims_db = {role: values["gain_db"] for role, values in corrections.items()}
+        document = reset_prescription_document(
+            keep_timing=args.keep_timing, trims_db=trims_db,
+        )
         candidate = compose_prescription_document(
             document, base=BankedCandidate(base, "", "", baseline_profile_state_path()),
         )
@@ -253,7 +257,7 @@ def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
     timing = (load_applied_baseline_profile_state() or {}).get("timing")
     return _answer(
         "reset", f"applied {fingerprint}", candidate_fingerprint=fingerprint,
-        http=result["http"], outcome=result["outcome"],
+        http=result["http"], outcome=result["outcome"], trims_db=trims_db,
         timing={"saved": timing is not None,
                 "provenance": timing.get("provenance") if isinstance(timing, dict) else None},
     )
