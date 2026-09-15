@@ -1,22 +1,13 @@
 #!/usr/bin/env python3
+# Owns the generated blocks of the installed tuning docs.
 
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render the tuning runbook's generated tables from their owning data.
+"""Render the installed tuning docs' generated blocks from their owners.
 
-ADR-0204: per-tool detail lives in each
-CLI's own ``--help``; this table is only the index, one row per tool, so
-drift between the runbook and a tool's real prog/description/exit-code
-surface is structurally impossible -- the table is a *rendering* of the
-CLIs, never a second description of them (the counted-in-one-place pattern,
-ADR-0181). ``TUNING_TOOL_MODULES`` below is the roster: exactly the
-``[project.scripts]`` entries this runbook's tool menu names, each with its
-own ``build_parser()`` and a module-level ``AUTHORITY_TIER`` constant this
-script reads rather than re-derives. ``jasper-doctor`` and non-CLI surfaces
-are deliberately absent because they have no safe argparse metadata to
-render.
+See ADR-0204 for the CLI menu and ADR-0181 for one owner per fact.
 
 Usage::
 
@@ -27,11 +18,123 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNBOOK = ROOT / "docs" / "tuning-operator-runbook.md"
+PLAYBOOK = ROOT / "docs" / "tuning-playbook.md"
+BOUNDS_BEGIN = "<!-- BOUNDS_BEGIN -->"
+BOUNDS_END = "<!-- BOUNDS_END -->"
+
+BOUND_OWNERS = {
+    "contract": "jasper.active_speaker.crossover_v2.prescription_contract:prescription_contracts()",
+    "driver": "jasper.active_speaker.crossover_v2.driver_prescription:driver_prescription_response_format()",
+    "blend": "jasper.active_speaker.crossover_v2.blend_prescription:prescription_response_format()",
+    "room": "jasper.audio_measurement.room_limits",
+    "alignment": "jasper.audio_measurement.program_analysis.model",
+    "timing": "jasper.audio_measurement.program_analysis.response",
+    "quality": "jasper.audio_measurement.quality_model",
+    "gating": "jasper.audio_measurement.gating",
+    "bass": "jasper.bass_extension.measurement",
+}
+
+BOUND_SOURCES = {
+    "Speaker": (
+        ("driver.passband", "Hz", "contract.speaker.driver.bounds.passbands_hz"),
+        ("driver.cut_Q", "Q", "contract.speaker.driver.bounds.q_range_cut"),
+        ("driver.boost_Q_max", "Q", "contract.speaker.driver.bounds.q_max_boost"),
+        ("driver.filter_boost_max", "dB", "contract.speaker.driver.bounds.max_filter_boost_db"),
+        ("driver.composed_boost_max", "dB", "contract.speaker.driver.bounds.max_composed_boost_db"),
+        ("driver.cut_rule", "rule", "driver.bounds.cuts_are_free"),
+        ("driver.filters_per_role", "count", "contract.speaker.driver.bounds.max_filters_per_role"),
+        ("driver.shelf_rule", "rule", "contract.speaker.driver.bounds.shelf_rule"),
+        ("driver.shelf_Q", "Q", "contract.speaker.driver.bounds.shelf_q"),
+        ("driver.subaudible_below", "dB", "contract.speaker.driver.disclosures.subaudible_below_db"),
+        ("driver.declared_tilt", "dB/octave", "contract.speaker.driver.schema.properties.declared_tilt_db_per_octave"),
+        ("blend.passband", "Hz", "contract.speaker.blend.bounds.band_hz"),
+        ("blend.cut_Q", "Q", "contract.speaker.blend.bounds.q_range_cut"),
+        ("blend.boost_Q_max", "Q", "contract.speaker.blend.bounds.q_max_boost"),
+        ("blend.filter_boost_max", "dB", "contract.speaker.blend.bounds.max_filter_boost_db"),
+        ("blend.composed_boost_max", "dB", "contract.speaker.blend.bounds.max_composed_boost_db"),
+        ("blend.cut_rule", "rule", "blend.bounds.cuts_are_free"),
+        ("blend.filters", "count", "contract.speaker.blend.bounds.max_filters"),
+        ("blend.filter_type", "type", "contract.speaker.blend.schema.properties.filters.items.properties.biquad_type.const"),
+        ("blend.boost_route", "rule", "contract.speaker.blend.bounds.boost_route"),
+        ("alignment.lobe", "us", "timing.half_period_us"),
+        ("alignment.lobe_applies_to", "us", "contract.speaker.alignment.bounds.lobe_applies_to"),
+        ("alignment.margin_min", "ratio", "alignment.SUMMED_FIT_MIN_MARGIN"),
+        ("alignment.SNR_floor", "dB", "quality.DRIVER.alignment_snr_ok_db"),
+        ("gate.trusted_floor_multiplier", "cycles", "gating.TRUSTED_FLOOR_MULTIPLIER"),
+    ),
+    "Room": (
+        ("passband", "Hz", "contract.room.bounds.band_hz"),
+        ("floor", "Hz", "room.ROOM_FLOOR_HZ"),
+        ("ceiling", "Hz", "contract.room.bounds.ceiling_hz"),
+        ("cut_Q", "Q", "contract.room.bounds.q_range"),
+        ("filter_boost_max", "dB", "contract.room.bounds.max_filter_boost_db"),
+        ("total_boost_max", "dB", "contract.room.bounds.max_total_boost_db"),
+        ("cut_floor_before_spread_and_taper", "dB", "room.ROOM_MAX_CUT_DB"),
+        ("spread_tolerance", "dB", "room.TOLERABLE_STD_DB"),
+        ("filters_per_side", "count", "contract.room.bounds.max_filters_per_side"),
+        ("filter_type", "type", "contract.room.schema.properties.sides.additionalProperties.items.properties.biquad_type.const"),
+        ("composed_tolerance", "dB", "contract.room.bounds.composed_tolerance_db"),
+        ("boost_dip_max", "dB", "room.ROOM_BOOST_MAX_DIP_DB"),
+        ("boost_dip_min", "dB", "room.ROOM_BOOST_MIN_DIP_DB"),
+        ("boost_positions_min", "count", "room.ROOM_BOOST_MIN_POSITIONS"),
+        ("boost_presence_min", "fraction", "room.ROOM_BOOST_PRESENCE_MIN_FRACTION"),
+        ("boost_depth_agreement", "dB", "room.ROOM_BOOST_DEPTH_AGREEMENT_DB"),
+        ("boost_width_min", "octaves", "room.ROOM_BOOST_MIN_WIDTH_OCTAVES"),
+        ("taper", "octaves", "room.ROOM_TAPER_OCTAVES"),
+    ),
+    "Bass": (
+        ("low_boost", "dB", "contract.bass.schema.properties.low_boost_db"),
+        ("reference_level", "dB", "contract.bass.schema.properties.reference_level_db"),
+        ("detector_lowpass", "Hz", "contract.bass.schema.properties.detector_lowpass_hz"),
+        ("compressor_threshold", "dBFS", "contract.bass.schema.properties.compressor_threshold_dbfs"),
+        ("compressor_factor", "ratio", "contract.bass.schema.properties.compressor_factor"),
+        ("compressor_attack", "s", "contract.bass.schema.properties.compressor_attack_s"),
+        ("compressor_release", "s", "contract.bass.schema.properties.compressor_release_s"),
+        ("delta_highpass", "Hz", "contract.bass.schema.properties.delta_highpass_hz"),
+        ("delta_highpass_exclusive_upper", "field", "contract.bass.bounds.delta_highpass_hz_exclusive_upper_field"),
+        ("shared_headroom_layers", "layers", "contract.bass.shared_headroom.layers"),
+        ("target_band", "Hz", "bass.TARGET.freqs_hz"),
+        ("target_magnitude", "dB", "bass.TARGET.magnitude_db"),
+        ("target_tolerance", "dB", "bass.TOLERANCE_DB"),
+    ),
+}
+
+
+def _source_value(owner: str) -> Any:
+    module, _, path = owner.partition(":")
+    value = importlib.import_module(module)
+    for name in path.split(".") if path else ():
+        call = name.endswith("()")
+        value = getattr(value, name.removesuffix("()"))
+        if call:
+            value = value()
+    return value
+
+
+def render_bounds() -> str:
+    owners = {name: _source_value(source) for name, source in BOUND_OWNERS.items()}
+    lines = [BOUNDS_BEGIN, "```text"]
+    lines.extend(f"{name} = {source}" for name, source in BOUND_OWNERS.items())
+    for program, entries in BOUND_SOURCES.items():
+        lines += ["", program, "| Name | Value | Unit | Constant or function field |", "|---|---|---|---|"]
+        for name, unit, source in entries:
+            owner, *keys = source.split(".")
+            value = owners[owner]
+            for key in keys:
+                value = value[key] if isinstance(value, Mapping) else getattr(value, key)
+            rendered = (f"{value.__name__}(fc_hz)" if callable(value) else
+                        json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+            rendered = rendered.replace("—", "--").replace("|", "\\|")
+            lines.append(f"| {name} | {rendered} | {unit} | {source} |")
+    return "\n".join([*lines, "```", BOUNDS_END])
 
 BEGIN_MARKER = (
     "<!-- BEGIN GENERATED TOOL MENU "
@@ -109,30 +212,33 @@ def render_document(text: str) -> str:
     return spliced(text, render_table())
 
 
+def render_playbook(text: str) -> str:
+    return _spliced(text, BOUNDS_BEGIN, BOUNDS_END, render_bounds())
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--check", action="store_true",
-        help="verify the committed runbook matches the regenerated table; "
+        help="verify both installed docs match their regenerated blocks; "
              "write nothing, exit 1 on drift",
     )
     args = parser.parse_args(argv)
 
-    current = RUNBOOK.read_text(encoding="utf-8")
-    updated = render_document(current)
-
-    if args.check:
-        if updated != current:
+    stale = False
+    for path, render in ((RUNBOOK, render_document), (PLAYBOOK, render_playbook)):
+        current = path.read_text(encoding="utf-8")
+        updated = render(current)
+        if args.check and updated != current:
+            stale = True
             print(
-                f"error: {RUNBOOK} generated content is stale -- re-run "
+                f"error: {path} generated content is stale -- re-run "
                 "scripts/generate-tuning-tool-menu.py without --check",
                 file=sys.stderr,
             )
-            return 1
-        return 0
-
-    RUNBOOK.write_text(updated, encoding="utf-8")
-    return 0
+        elif not args.check and updated != current:
+            path.write_text(updated, encoding="utf-8")
+    return int(stale)
 
 
 if __name__ == "__main__":

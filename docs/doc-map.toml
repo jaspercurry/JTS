@@ -734,6 +734,7 @@ docs = [
   "docs/active-speaker-tuning-layers-design.md",
   "docs/gating-v2-plan.md",
   "docs/room-correction-regime-plan.md",
+  "docs/tuning-playbook.md",
   # Entry route, generated tool menu, artifact effects, and diagnostic access.
   "docs/tuning-operator-runbook.md",
   # Optional science: evidence limits, interpretation, and measurement traps.

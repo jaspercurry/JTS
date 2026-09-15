@@ -1,0 +1,305 @@
+# Tuning playbook
+
+## How to read any round
+
+Read this first. The [runbook](tuning-operator-runbook.md) is the command
+reference. The [methodology](tuning-methodology.md) explains the science.
+The [doctrine](measurement-loop-doctrine.md) defines roles and physical limits.
+
+Software and a person run the experiment. The LLM reads the completed packet
+once, asks analysis views for missing answers, and writes one prescription.
+It does not direct an active measurement.
+
+`packet.json` holds the numbers. `index.md` names them and the commands.
+`frequency.png` shows the response. Read `result` and `reason`, then `applied`
+identity and `layers`, then the program evidence. Speaker evidence is in
+`fits`; room and bass evidence is in the files named by
+`artifacts.room_views` and `artifacts.bass_views`. A joined bass ladder adds
+`bass_table`. Read `alignment` per pair, gate lines per role, then retakes and
+their `fault`. A missing section is missing evidence.
+
+Numbers below the trusted floor carry `below_trusted_floor` beside their
+`value`. They are not speaker evidence. Use `jasper-round-views` for a question
+the packet did not answer. Never recompute a number it prints.
+
+## Speaker
+
+A fit is already proposed. Each `fits` entry identifies its role and pose.
+Read `reason_summary` before `filters`, `residual_rms_db`, `residual_max_db`
+and `cloud.band_spread`. `envelope_fitted` means the evidence supported the fit.
+`envelope_limited_by_position_stability` and
+`envelope_limited_by_spatial_exclusion` mean the poses disagreed.
+`envelope_limited_by_mic_tier` and `envelope_limited_by_class_prior` name
+instrument or driver-class limits. A limited bin is not a defect to correct harder.
+
+Good means residual at or below the repeat spread, and cross-pose
+`band_spread[].sigma_db` near 1 dB or less over the crossover octave. The latter
+is a working cue, extending the stability heuristic in
+`docs/research/2026-07-29-attribution/02-dissertation-measure-diagnose-prescribe.md`.
+It is not a universal pass threshold. Repeat spread and pose spread answer
+different questions. No fit filter should rest on its `budget.max_gain_db`
+rail. Measure the composed graph, then stop when it answers the question.
+
+Read each pair's `objective`: `summed_fit_committed` identifies a committed
+summed fit. Inspect `committed.delay_us`, `committed.polarity`,
+`summed_fit_margin`, `delay_interval_us` and `summed_fit_verdict`.
+A margin above 1.5 is a clear result; equality also meets
+`program_analysis/model.py`'s `SUMMED_FIT_MIN_MARGIN`. Read `applied.corrections`
+with `applied.corrections_provenance`. Read `parallax_us` with
+`driver_spacing_source`. Do not confuse a geometric estimate with a measured delay.
+
+Settle structure before response. Decide topology, polarity, delay and trims
+in the same document. Re-derive filters fitted to another alignment
+(`0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md`;
+`docs/research/2026-08-31-tuning-methodology-deep-research/00-adjudications.md`).
+Even a commissioned box with good passive alignment needs an authored
+`alignment` section. Copy the packet's committed value and name its basis.
+
+If low SNR holds the passive estimate, inspect `snr`, then use
+`delay-landscape`. If a measured answer would change the prescription, a person
+starts `jasper-null`; `delay-confirm` compares the result. It plays sound.
+A reverse null near −20 dB on delay alone is a delay answer. One that will
+not pass −10 dB at any delay points to level or slope
+(`02-dissertation-measure-diagnose-prescribe.md`, Stage 3).
+A 10 dB branch gap limits cancellation to about 3.3 dB relative to the louder
+branch: `−20·log10(1 − 10^(−Δ/20))` (derivation in `tuning-methodology.md`).
+That reference differs from shoulder-based null depth.
+
+Cut peaks; leave dips. A broad, low-Q peak can be audible near a quarter dB;
+a high-Q peak can need about 10 dB. These depend on the signal
+(`docs/research/2026-08-31-tuning-methodology-deep-research/01-correction-granularity-and-audibility.md`).
+A boost must be wide enough for `DRIVER_MAX_BOOST_Q`; a cut may be narrow.
+A feature that moves with pose or gate window suggests interference.
+Feature-frequency CV, the spread divided by its mean, below 3% suggests
+source-fixed; above 8% suggests position-variant; between is uncertain
+(`docs/research/2026-07-29-attribution/07-reanalysis-position-variance.md`).
+`classify-features` and `sweep` use saved evidence.
+
+Read `gate_window_ms`, `validity_floor_hz`, `trusted_floor_hz` and `floor_source`
+per role. Nothing below the trusted floor, 2.5 divided by gate length in
+seconds, supports a speaker claim
+(`docs/research/2026-08-31-tuning-methodology-deep-research/03-gating-windowing-and-low-frequency-truth.md`).
+Write one document. `jasper-crossover-prescriber contract --round <dir> --section speaker`
+prints the schema. A refusal names the crossed bound; correct that field.
+
+## Room
+
+The room layer reads the median across seats, through the applied speaker
+tune. One seat cannot show which features persist. Seek at least three
+positions before a room claim; three is the boost-admission minimum, not a
+rule that makes smaller clouds unreadable. A boost needs presence at 70% of
+positions (`ROOM_BOOST_MIN_POSITIONS`, `ROOM_BOOST_PRESENCE_MIN_FRACTION` in
+`jasper/audio_measurement/room_limits.py`; design basis in
+`docs/room-correction-regime-plan.md`, D5). The views still answer with the
+available count and spread. State what that evidence supports.
+
+Read the room view's `median`, `ceiling.hz` and `ceiling.provenance`, then
+`persistence`, `limits.cut_floor_db`, `limits.boost_cap_db` and `admit_boost`.
+Read `incumbent` and `incumbent_reason` before comparing candidates. These are
+fields in the room view, not top-level packet fields. The packet links the
+view and carries the contract in `limits`. Do not infer an incumbent from a
+file name when the view says the set is ambiguous.
+
+Room correction ends at the printed ceiling. Above it, the speaker owns the
+curve. The ceiling follows the applied tune's trusted floor, with its source
+and any fallback disclosed
+(`0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md`).
+Seats are ungated by design: room reflections are part of the response being
+measured. A short speaker gate would remove that evidence.
+
+The cut floor varies by frequency with the cross-position sigma. A large
+spread supports less correction. A boost is admitted only where seats agree
+on a dip with enough width and bounded depth. The current room boost cap is
+6 dB; a dip deeper than 10 dB is not filled (`ROOM_MAX_FILTER_BOOST_DB`,
+`ROOM_BOOST_MAX_DIP_DB`, `room_limits.py`; regime-plan D5). These are current
+implementation limits, not universal audibility thresholds. Read the per-bin
+cap before spending the full allowance.
+
+Taper the limit over one-third octave below the ceiling, as ADR-0256 directs
+and `ROOM_TAPER_OCTAVES` implements. Do not end correction at a sharp edge.
+Check the whole composed response, since overlapping filters add.
+
+`jasper-crossover-prescriber judge --preview` answers limits and predicted
+residual without banking a candidate. It previews the room section only.
+Good means median residual under the seat spread, no boost into a dip that
+changes with position, and a response that respects the ceiling. A preview
+can settle which document to measure; it cannot prove the sound of an
+unplayed graph.
+
+## Bass
+
+Bass is level-dependent. A result at one level establishes only that level.
+ADR-0304 records why the level axis matters
+(`0304-the-bass-level-axis-is-fixed-level-windows.md`). Its in-run scheduling
+decision was superseded by `0311-a-run-plays-at-one-session-level.md`.
+The current ladder joins runs at distinct fixed levels. Keep the same pose
+and compatible capture conditions across them. Let the engine run the ladder;
+interpret its completed evidence together.
+
+Open the files in `artifacts.bass_views`. Each view has `takes` with `bands`,
+`estimated_snr_db` within each band, and `fundamental_qualified` masks.
+Unknown harmonic coverage is not low distortion. Read `diagnostics` before
+comparing curves. Requested gain alone does not establish actual DSP drive.
+
+When present, `bass_table.tables[].levels[]` records `level_key`, `outcome`,
+`selected_is_measured`, `within_tolerance_on_qualified_bins` and `fit`.
+Read each table's `target`, `tolerance_db` and `reference_band_hz`. The current
+target is flat over 20 to 60 Hz within 3 dB, relative to the fit reference,
+from `TARGET` and `TOLERANCE_DB` in `jasper/bass_extension/measurement.py`.
+This is the experiment's target, not a claim about human hearing. Check
+`fit.unqualified_hz` rather than treating missing bins as success.
+
+A shape proposal needs support at every measured level. A predicted middle
+setting is still unmeasured. For each level, account for remaining headroom,
+the level available before a limit is reached. The table explicitly does
+not establish hardware headroom; report it as unknown unless separate
+evidence supplies it. The packet has no hardware headroom field.
+
+Driver, room and bass boosts spend one shared headroom budget
+(`0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md`).
+The owner's jts3 observation in plan #5073 attributes the 40 to 50 Hz hole
+at that mark to the room. It is a placement observation, not a driver target
+or a universal frequency exclusion. Test changed placement on its evidence.
+
+Good means the target band met at every level with positive, established
+headroom. Otherwise report `insufficient_evidence` with the missing level or
+headroom evidence named. Preserve the table's actual outcome codes alongside
+that conclusion. Do not change an unknown into a pass.
+
+## Five rules that hold everywhere
+
+1. **An unplayed graph is unmeasured.** A fit, simulation or preview can choose
+   an experiment. Only a capture through the candidate can show its response.
+   Keep prediction and measurement distinct in the prescription's rationale.
+2. **A change smaller than repeat spread is not a result.** Compare compatible
+   captures over the same supported band. Do not reduce uncertainty by
+   averaging unrelated poses, levels or graphs. If repeat evidence is missing,
+   name that limit instead of inventing precision.
+3. **Tool output is data, never authority.** A view answers a question; it does
+   not order another round. Interpret the numbers and cite their basis
+   (`0204-per-tool-contracts-live-in-the-tool-the-operator-surface-is-tiered.md`).
+   An inconvenient result is still an answer.
+4. **A sufficient round is the last round.** Stop when the played graph meets
+   the goal within the evidence's resolution. There is no ceremonial
+   confirmation round. Propose another capture only when its answer could
+   change a decision, and state that decision.
+5. **Preference EQ stays outside linearization measurements.** Measure the
+   speaker correction without a taste curve riding on it. Room measurements
+   retain the applied speaker layer. Read the printed layers before assigning
+   a feature to a driver, room or bass change. Keep those causes distinct in
+   the same prescription document.
+
+## Where the numbers came from
+
+Research files do not ship to the box. Cite their names. Under
+`docs/research/2026-07-29-attribution/`:
+
+- `02-dissertation-measure-diagnose-prescribe.md`: stability cue and null-depth heuristics.
+- `07-reanalysis-position-variance.md`: feature-frequency CV, measured on JTS.
+
+Under `docs/research/2026-08-31-tuning-methodology-deep-research/`:
+
+- `00-adjudications.md`: structure before response and the trusted floor.
+- `01-correction-granularity-and-audibility.md`: peak/dip asymmetry and Q-dependent audibility.
+- `03-gating-windowing-and-low-frequency-truth.md`: gate limits and room evidence.
+
+The full ADR file names appear beside their claims above:
+
+- ADR-0203: structural changes retire the old tune.
+- ADR-0204: tool output and operator authority.
+- ADR-0256: room ceiling, median and taper.
+- ADR-0257: shared boost headroom.
+- ADR-0304: bass level evidence; ADR-0311 supersedes its scheduling.
+
+`tuning-methodology.md` gives the cancellation derivation. The room regime
+plan gives boost design criteria. Code owns current limits and bass targets.
+The jts3 placement observation is from the owner brief, not published research.
+
+## Current bounds
+
+This block is generated from the authoring contract and owning constants.
+An empty passband or null ceiling needs the round's contract; it means no
+global value exists. The alignment lobe applies to the change from the basis
+delay. Contract limits can exceed the fit's disclosed working budget.
+
+<!-- BOUNDS_BEGIN -->
+```text
+contract = jasper.active_speaker.crossover_v2.prescription_contract:prescription_contracts()
+driver = jasper.active_speaker.crossover_v2.driver_prescription:driver_prescription_response_format()
+blend = jasper.active_speaker.crossover_v2.blend_prescription:prescription_response_format()
+room = jasper.audio_measurement.room_limits
+alignment = jasper.audio_measurement.program_analysis.model
+timing = jasper.audio_measurement.program_analysis.response
+quality = jasper.audio_measurement.quality_model
+gating = jasper.audio_measurement.gating
+bass = jasper.bass_extension.measurement
+
+Speaker
+| Name | Value | Unit | Constant or function field |
+|---|---|---|---|
+| driver.passband | {} | Hz | contract.speaker.driver.bounds.passbands_hz |
+| driver.cut_Q | [0.0001,1000000.0] | Q | contract.speaker.driver.bounds.q_range_cut |
+| driver.boost_Q_max | 8.0 | Q | contract.speaker.driver.bounds.q_max_boost |
+| driver.filter_boost_max | 12.0 | dB | contract.speaker.driver.bounds.max_filter_boost_db |
+| driver.composed_boost_max | 12.0 | dB | contract.speaker.driver.bounds.max_composed_boost_db |
+| driver.cut_rule | "a cut (gain <= 0) carries no depth ceiling and no composed ceiling: it only removes level and cannot clip at any depth, and the round's own measured verify with auto-restore is the net. Its Q must sit in [0.0001, 1e+06] (ADR-0207) -- not a policy ceiling but the range this system's evaluator and emitter realize faithfully. What a cut spends is one of max_filters_per_role's slots" | rule | driver.bounds.cuts_are_free |
+| driver.filters_per_role | 8 | count | contract.speaker.driver.bounds.max_filters_per_role |
+| driver.shelf_rule | "leading a role's chain, or -- a Highshelf only -- ending it after a Lowshelf lead. Anywhere else the emitter cannot name the filter and the document is refused. Peaking sits anywhere" | rule | contract.speaker.driver.bounds.shelf_rule |
+| driver.shelf_Q | 0.7071067811865475 | Q | contract.speaker.driver.bounds.shelf_q |
+| driver.subaudible_below | 0.5 | dB | contract.speaker.driver.disclosures.subaudible_below_db |
+| driver.declared_tilt | {"type":"number","minimum":-3.0,"maximum":3.0} | dB/octave | contract.speaker.driver.schema.properties.declared_tilt_db_per_octave |
+| blend.passband | null | Hz | contract.speaker.blend.bounds.band_hz |
+| blend.cut_Q | [0.0001,1000000.0] | Q | contract.speaker.blend.bounds.q_range_cut |
+| blend.boost_Q_max | 2.0 | Q | contract.speaker.blend.bounds.q_max_boost |
+| blend.filter_boost_max | 3.0 | dB | contract.speaker.blend.bounds.max_filter_boost_db |
+| blend.composed_boost_max | 4.0 | dB | contract.speaker.blend.bounds.max_composed_boost_db |
+| blend.cut_rule | "a cut (gain <= 0) carries no depth ceiling and no composed ceiling: any depth the arithmetic can evaluate is admitted, and the round's own measured verify with auto-restore is the net. Its Q must sit in [0.0001, 1e+06] (ADR-0207) -- not a policy ceiling but the range this system's evaluator and emitter realize faithfully. A boost (gain > 0) is capped at Q 2 -- its composed SPL spend is read on a sampled grid, and no fixed grid can bound an arbitrarily narrow boost's between-bin peak" | rule | blend.bounds.cuts_are_free |
+| blend.filters | 2 | count | contract.speaker.blend.bounds.max_filters |
+| blend.filter_type | "Peaking" | type | contract.speaker.blend.schema.properties.filters.items.properties.biquad_type.const |
+| blend.boost_route | {"available":false,"reason":"boost_route_unavailable","detail":"The route refuses every boost today."} | rule | contract.speaker.blend.bounds.boost_route |
+| alignment.lobe | half_period_us(fc_hz) | us | timing.half_period_us |
+| alignment.lobe_applies_to | "abs(delay_us - basis_delay_us)" | us | contract.speaker.alignment.bounds.lobe_applies_to |
+| alignment.margin_min | 1.5 | ratio | alignment.SUMMED_FIT_MIN_MARGIN |
+| alignment.SNR_floor | 35.0 | dB | quality.DRIVER.alignment_snr_ok_db |
+| gate.trusted_floor_multiplier | 2.5 | cycles | gating.TRUSTED_FLOOR_MULTIPLIER |
+
+Room
+| Name | Value | Unit | Constant or function field |
+|---|---|---|---|
+| passband | null | Hz | contract.room.bounds.band_hz |
+| floor | 20.0 | Hz | room.ROOM_FLOOR_HZ |
+| ceiling | null | Hz | contract.room.bounds.ceiling_hz |
+| cut_Q | [1.0,8.0] | Q | contract.room.bounds.q_range |
+| filter_boost_max | 6.0 | dB | contract.room.bounds.max_filter_boost_db |
+| total_boost_max | 6.0 | dB | contract.room.bounds.max_total_boost_db |
+| cut_floor_before_spread_and_taper | -10.0 | dB | room.ROOM_MAX_CUT_DB |
+| spread_tolerance | 6.0 | dB | room.TOLERABLE_STD_DB |
+| filters_per_side | 8 | count | contract.room.bounds.max_filters_per_side |
+| filter_type | "Peaking" | type | contract.room.schema.properties.sides.additionalProperties.items.properties.biquad_type.const |
+| composed_tolerance | 0.5 | dB | contract.room.bounds.composed_tolerance_db |
+| boost_dip_max | 10.0 | dB | room.ROOM_BOOST_MAX_DIP_DB |
+| boost_dip_min | 3.0 | dB | room.ROOM_BOOST_MIN_DIP_DB |
+| boost_positions_min | 3 | count | room.ROOM_BOOST_MIN_POSITIONS |
+| boost_presence_min | 0.7 | fraction | room.ROOM_BOOST_PRESENCE_MIN_FRACTION |
+| boost_depth_agreement | 3.0 | dB | room.ROOM_BOOST_DEPTH_AGREEMENT_DB |
+| boost_width_min | 0.16666666666666666 | octaves | room.ROOM_BOOST_MIN_WIDTH_OCTAVES |
+| taper | 0.3333333333333333 | octaves | room.ROOM_TAPER_OCTAVES |
+
+Bass
+| Name | Value | Unit | Constant or function field |
+|---|---|---|---|
+| low_boost | {"type":"number","exclusiveMinimum":0.0,"maximum":20.0} | dB | contract.bass.schema.properties.low_boost_db |
+| reference_level | {"type":"number","minimum":-100.0,"maximum":0.0} | dB | contract.bass.schema.properties.reference_level_db |
+| detector_lowpass | {"type":"number","minimum":20.0,"maximum":200.0} | Hz | contract.bass.schema.properties.detector_lowpass_hz |
+| compressor_threshold | {"type":"number","minimum":-60.0,"maximum":0.0} | dBFS | contract.bass.schema.properties.compressor_threshold_dbfs |
+| compressor_factor | {"type":"number","exclusiveMinimum":1.0,"maximum":20.0,"default":10.0} | ratio | contract.bass.schema.properties.compressor_factor |
+| compressor_attack | {"type":"number","minimum":0.001,"maximum":0.1,"default":0.01} | s | contract.bass.schema.properties.compressor_attack_s |
+| compressor_release | {"type":"number","minimum":0.01,"maximum":2.0,"default":0.25} | s | contract.bass.schema.properties.compressor_release_s |
+| delta_highpass | {"type":["number","null"],"minimum":10.0,"default":null} | Hz | contract.bass.schema.properties.delta_highpass_hz |
+| delta_highpass_exclusive_upper | "detector_lowpass_hz" | field | contract.bass.bounds.delta_highpass_hz_exclusive_upper_field |
+| shared_headroom_layers | ["driver_linearization","room","bass_extension"] | layers | contract.bass.shared_headroom.layers |
+| target_band | [20.0,60.0] | Hz | bass.TARGET.freqs_hz |
+| target_magnitude | [0.0,0.0] | dB | bass.TARGET.magnitude_db |
+| target_tolerance | 3.0 | dB | bass.TOLERANCE_DB |
+```
+<!-- BOUNDS_END -->

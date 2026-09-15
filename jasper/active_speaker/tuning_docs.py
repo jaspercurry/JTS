@@ -11,6 +11,11 @@ from typing import Any
 
 READING_ORDER: tuple[tuple[str, str, str], ...] = (
     (
+        "playbook",
+        "tuning-playbook.md",
+        "how to read a round, prescribe and stop; current bounds",
+    ),
+    (
         "entry and tool menu",
         "tuning-operator-runbook.md",
         "short entry contract, tool discovery and optional examples",
@@ -27,10 +32,8 @@ READING_ORDER: tuple[tuple[str, str, str], ...] = (
     ),
 )
 
-#: Where deploy/lib/install/python-runtime.sh's install_jasper() copies the
-#: operator docs. Existence is checked rather than assumed.
+# See deploy/lib/install/python-runtime.sh:install_jasper.
 _INSTALLED_DOCS_DIR = Path("/opt/jasper/docs")
-#: The checkout's docs, anchored to this package rather than the current directory.
 _REPO_DOCS_DIR = Path(__file__).resolve().parents[2] / "docs"
 
 
@@ -43,7 +46,7 @@ def doc_path(name: str) -> str:
 
 
 def reading_order() -> list[dict[str, Any]]:
-    """Entry contract, then optional references, with each document's size."""
+    """Playbook, tool menu and references, with each document's size."""
     order: list[dict[str, Any]] = []
     for label, name, gives in READING_ORDER:
         path = doc_path(name)
