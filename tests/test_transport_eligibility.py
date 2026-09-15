@@ -1024,7 +1024,8 @@ def test_a_live_park_says_which_shape_parked_the_box(
     Both household writers compose from the same table, so the incident row
     and the card cannot say different things about one park.
     """
-    from jasper.control.audio_health import PARKED_DETAIL, _transport_park_signal
+    from jasper.control.audio_health import _transport_park_signal
+    from jasper.control.audio_signal_path import PARKED_DETAIL
     from jasper.control.audio_state_issues import _state_issues
 
     state = transport_eligibility.snapshot(topology, env)
@@ -1048,8 +1049,7 @@ def test_a_live_park_says_which_shape_parked_the_box(
 
 
 def test_each_park_class_gets_its_own_household_sentence():
-    from jasper.control.audio_health import PARKED_DETAIL
-    from jasper.control.audio_signal_path import _park_detail
+    from jasper.control.audio_signal_path import PARKED_DETAIL, _park_detail
 
     details = set()
     for case in _PARK_CASES:
@@ -1068,8 +1068,8 @@ def test_an_unnamed_park_class_keeps_the_canned_sentence():
     It degrades to what every class said before this table existed, which is
     the one thing a park must never do: go quiet.
     """
-    from jasper.control.audio_health import PARKED_DETAIL, _transport_park_signal
-    from jasper.control.audio_signal_path import PARKED_HEADLINE
+    from jasper.control.audio_health import _transport_park_signal
+    from jasper.control.audio_signal_path import PARKED_DETAIL, PARKED_HEADLINE
     from jasper.control.audio_state_issues import _state_issues
 
     state = {

@@ -18,12 +18,10 @@ import copy
 import logging
 import threading
 import time
-from collections import deque
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
-from ..music_sources import Source
 from ..platform import wire
 from ..platform.status_socket import (
     MUX_CONTROL_SOCKET_PATH,
@@ -32,28 +30,22 @@ from ..platform.status_socket import (
 from ..platform.uds import mux_socket_command
 from ..source_intent import read_source_intents
 from .airplay_health import AirPlayHealthSampler, SAMPLE_INTERVAL_SEC
-from ._health_fields import (
-    _MONITOR_ERRORS,
-    _as_int,
-    _finite_number,
-    _mapping,
-    _nonnegative_counter,
+from ._health_fields import _MONITOR_ERRORS, _mapping
+from .audio_health import (
+    RESTART_WATCH_UNITS,
+    _health_prelude,
+    _incident_context,
+    compose_audio_health,
 )
-from ._health_sources import _SOURCE_LABELS
-from .audio_health import RESTART_WATCH_UNITS, _incident_context, compose_audio_health
+from .audio_health_events import (
+    CounterBaselines,
+    record_counter_events,
+    record_raw_events,
+)
 from .audio_incident_view import _present_incident
-from .audio_incidents import IncidentStore, IssueTracker, SessionRollup, issue_row
+from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
 from .audio_route_claim import read_route_claim
-from .audio_signal_path import (
-    _active_source,
-    _activity_truth_unknown,
-    _activity_unavailable_signal,
-    _parked_signal,
-    _selected_source,
-    _signal_path,
-    _undeclared_hardware_signal,
-)
-from .audio_source_cards import _not_applicable_timing, _usb_timing
+from .audio_signal_path import _parked_signal, _selected_source, _undeclared_hardware_signal
 from .audio_state_issues import _state_issues
 
 logger = logging.getLogger(__name__)
@@ -189,14 +181,7 @@ class AudioHealthSampler:
         self._service_states: dict[str, dict[str, Any]] = {}
         self._snapshot: dict[str, Any] | None = None
         self._last_route_sample_at = 0.0
-        self._previous_input_xruns: dict[str, int] | None = None
-        self._previous_usb_buffer_counts: tuple[int, int] | None = None
-        self._previous_fanin_pings_skipped: int | None = None
-        self._previous_outputd_xruns: dict[str, int] | None = None
-        self._previous_service_restarts: dict[str, int | None] | None = None
-        self._previous_outputd_clipped: int | None = None
-        self._seen_raw_events: deque[tuple[Any, ...]] = deque(maxlen=40)
-        self._seen_raw_event_set: set[tuple[Any, ...]] = set()
+        self._counter_baselines = CounterBaselines()
         self._lock = threading.Lock()
         self._stopped = False
         self._thread = threading.Thread(
@@ -361,8 +346,10 @@ class AudioHealthSampler:
             self._transport_park = transport_park_reader.snapshot()
             self._last_route_sample_at = now
 
-        active_source = _active_source(airplay, mux_status)
-        activity_unknown = _activity_truth_unknown(airplay, mux_status)
+        route_state = _mapping(self._route)
+        active_source, activity_unknown, signal_path, latency = _health_prelude(
+            airplay, outputd, mux_status, route_state,
+        )
         selected_source = _selected_source(airplay)
         if activity_unknown:
             if (
@@ -383,22 +370,6 @@ class AudioHealthSampler:
         except RuntimeError:
             logger.debug("audio health source-intent probe failed", exc_info=True)
             intents = None
-        signal_path = _signal_path(airplay, outputd, active_source)
-        if activity_unknown and signal_path.get("status") not in {"issue", "unknown"}:
-            signal_path = _activity_unavailable_signal()
-        current = _mapping(airplay.get("current"))
-        fanin = _mapping(current.get("fanin"))
-        inputs = _mapping(fanin.get("inputs"))
-        host_clock = _mapping(fanin.get("host_clock")) or None
-        if active_source == Source.USBSINK.value:
-            latency = _usb_timing(
-                _mapping(self._route),
-                host_clock,
-                _mapping(inputs.get(Source.USBSINK.value)),
-                active=True,
-            )
-        else:
-            latency = _not_applicable_timing()
         # Computed once here and passed to _state_issues below, so the incident
         # rows and the overall headline cannot present a different verdict for
         # the same tick: the raw path.outputd_unavailable row must not
@@ -415,7 +386,7 @@ class AudioHealthSampler:
             self._service_states,
             intents,
             activity_unknown=activity_unknown,
-            coherence_park=_parked_signal(_mapping(self._route)),
+            coherence_park=_parked_signal(route_state),
             undeclared_hardware=undeclared_hardware,
             transport_park=self._transport_park,
         )
@@ -427,17 +398,33 @@ class AudioHealthSampler:
             )
         ]
         with self._issues.batch(now):
-            self._record_raw_events(
+            raw_points = record_raw_events(
+                self._counter_baselines,
                 airplay,
                 active_source=active_source,
                 now=now,
             )
-            clipping_issue, preserve_clipping = self._record_counter_events(
+            counter_points, clipping_issue, preserve_clipping = record_counter_events(
+                self._counter_baselines,
                 airplay,
                 outputd,
                 now,
+                session_source_id=self._session.source_id,
+                service_states=self._service_states,
+                restart_watch_units=RESTART_WATCH_UNITS,
                 context=context,
             )
+            for candidate, when, count, point_context, observed_at in (
+                *raw_points, *counter_points,
+            ):
+                self._issues.record_point(
+                    candidate,
+                    when,
+                    count=count,
+                    context=point_context,
+                    observed_at=observed_at,
+                )
+                self._session.record_point(candidate, when, count=count)
             if clipping_issue is not None:
                 tracked_state_issues.append(clipping_issue)
             preserve_unseen_keys: set[str] = set()
@@ -515,298 +502,3 @@ class AudioHealthSampler:
         if cached is not None:
             return cached
         return transport_park_reader.snapshot()
-
-    def _record_point(
-        self,
-        candidate: dict[str, Any],
-        when: float,
-        *,
-        count: int,
-        context: Mapping[str, Any] | None,
-        observed_at: float | None = None,
-    ) -> None:
-        self._issues.record_point(
-            candidate,
-            when,
-            count=count,
-            context=context,
-            observed_at=observed_at,
-        )
-        self._session.record_point(candidate, when, count=count)
-
-    def _record_raw_events(
-        self,
-        airplay: Mapping[str, Any],
-        *,
-        active_source: str | None,
-        now: float,
-    ) -> None:
-        for raw in airplay.get("events") or []:
-            if not isinstance(raw, Mapping):
-                continue
-            fingerprint = (
-                raw.get("ts"), raw.get("type"), raw.get("count"), raw.get("detail")
-            )
-            if fingerprint in self._seen_raw_event_set:
-                continue
-            if len(self._seen_raw_events) == self._seen_raw_events.maxlen:
-                oldest = self._seen_raw_events.popleft()
-                self._seen_raw_event_set.discard(oldest)
-            self._seen_raw_events.append(fingerprint)
-            self._seen_raw_event_set.add(fingerprint)
-            event_type = str(raw.get("type") or "")
-            if event_type == "camilla_short_read":
-                # Documented inaudible recovered partials are technical evidence,
-                # not a household issue. A playback underrun is surfaced below.
-                continue
-            if (
-                event_type == "fanin_airplay_xrun"
-                and active_source != Source.AIRPLAY.value
-            ):
-                continue
-            if event_type == "camilla_playback_underrun":
-                candidate = issue_row(
-                    f"path.{event_type}",
-                    scope="path",
-                    impact="continuity",
-                    severity="issue",
-                    title=str(raw.get("title") or "Audio path recovered"),
-                    detail=str(raw.get("detail") or "The shared path recovered."),
-                )
-            elif event_type.startswith("shairport_") or event_type == "fanin_airplay_xrun":
-                impact = "sync" if event_type in {
-                    "shairport_packet_drop",
-                    "shairport_oos",
-                    "shairport_sync_positive",
-                    "shairport_sync_negative",
-                    "shairport_offset_too_short",
-                } else "continuity"
-                candidate = issue_row(
-                    f"airplay.{event_type}",
-                    scope="source",
-                    source_id=Source.AIRPLAY.value,
-                    impact=impact,
-                    severity=(
-                        "issue" if raw.get("severity") == "issue" else "warn"
-                    ),
-                    title=str(raw.get("title") or "AirPlay recovered"),
-                    detail=str(raw.get("detail") or "AirPlay recovered."),
-                )
-            else:
-                continue
-            event_time = _finite_number(raw.get("ts"))
-            when = float(event_time) if event_time is not None else now
-            self._record_point(
-                candidate,
-                when,
-                count=_as_int(raw.get("count"), 1),
-                context=None,
-                observed_at=now,
-            )
-
-    def _record_counter_events(
-        self,
-        airplay: Mapping[str, Any],
-        outputd: Mapping[str, Any] | None,
-        now: float,
-        *,
-        context: Mapping[str, Any],
-    ) -> tuple[dict[str, Any] | None, bool]:
-        current = _mapping(airplay.get("current"))
-        fanin = _mapping(current.get("fanin"))
-        watchdog = _mapping(fanin.get("watchdog"))
-        pings_skipped = _as_int(watchdog.get("pings_skipped"))
-        if self._previous_fanin_pings_skipped is not None:
-            skipped_delta = pings_skipped - self._previous_fanin_pings_skipped
-            if skipped_delta > 0:
-                self._record_point(
-                    issue_row(
-                        "path.fanin_watchdog_recovered",
-                        scope="path",
-                        impact="continuity",
-                        severity="issue",
-                        title="Sound recovered after a brief pause",
-                        # No number in the sentence: `skipped_delta` counts
-                        # watchdog ticks missed — how LONG one stall lasted,
-                        # not how many stalls there were. It rides the
-                        # structured `count` field below instead.
-                        detail=(
-                            "Sound stopped moving through the speaker briefly "
-                            "and resumed."
-                        ),
-                    ),
-                    now,
-                    count=skipped_delta,
-                    context=context,
-                )
-        self._previous_fanin_pings_skipped = pings_skipped
-        inputs = _mapping(fanin.get("inputs"))
-        input_counts = {
-            source_id: _as_int(_mapping(observation).get("xrun_count"))
-            for source_id, observation in inputs.items()
-            if isinstance(source_id, str)
-            and bool(_mapping(observation).get("present"))
-        }
-        if self._previous_input_xruns is not None:
-            for source_id, count in input_counts.items():
-                if (
-                    source_id == Source.AIRPLAY.value
-                    or source_id != self._session.source_id
-                ):
-                    continue  # AirPlay has its own events; idle lanes are noise.
-                previous = self._previous_input_xruns.get(source_id, count)
-                delta = count - previous
-                if delta > 0:
-                    self._record_point(
-                        issue_row(
-                            f"{source_id}.input_xrun",
-                            scope="source",
-                            source_id=source_id,
-                            impact="continuity",
-                            severity="issue",
-                            title=f"{_SOURCE_LABELS.get(source_id, source_id)} input recovered",
-                            detail=f"The input recovered {delta} interruption(s).",
-                        ),
-                        now,
-                        count=delta,
-                        context=context,
-                    )
-        self._previous_input_xruns = input_counts
-
-        usb_input = _mapping(inputs.get(Source.USBSINK.value))
-        unlocks = _nonnegative_counter(
-            _mapping(usb_input.get("resampler")).get("unlock_count")
-        )
-        stream_stops = _nonnegative_counter(
-            _mapping(usb_input.get("direct")).get("stream_stops")
-        )
-        if unlocks is None or stream_stops is None:
-            self._previous_usb_buffer_counts = None
-        else:
-            previous_usb = self._previous_usb_buffer_counts
-            if previous_usb is not None:
-                unlock_delta = unlocks - previous_usb[0]
-                stop_delta = stream_stops - previous_usb[1]
-                if (
-                    unlock_delta > 0
-                    and stop_delta >= 0
-                    and self._session.source_id == Source.USBSINK.value
-                ):
-                    unexpected = max(0, unlock_delta - stop_delta)
-                    if unexpected:
-                        self._record_point(
-                            issue_row(
-                                "usbsink.latency_buffer_underfill",
-                                scope="source",
-                                source_id=Source.USBSINK.value,
-                                impact="continuity",
-                                severity="issue",
-                                title="USB input buffer ran dry",
-                                detail=(
-                                    "USB audio arrived too late for the selected "
-                                    "buffer. JTS refilled it and resumed playback."
-                                ),
-                            ),
-                            now,
-                            count=unexpected,
-                            context=context,
-                        )
-            self._previous_usb_buffer_counts = (unlocks, stream_stops)
-
-        # None, not 0, for a unit systemd could not be asked about: a probe
-        # that failed and recovered would otherwise read as a restart burst.
-        restarts = {
-            unit: _nonnegative_counter(
-                _mapping(self._service_states.get(unit)).get("n_restarts"),
-            )
-            for unit in RESTART_WATCH_UNITS
-        }
-        if self._previous_service_restarts is not None:
-            for unit, stem in RESTART_WATCH_UNITS.items():
-                previous_restarts = self._previous_service_restarts.get(unit)
-                current_restarts = restarts[unit]
-                if previous_restarts is None or current_restarts is None:
-                    continue
-                delta = current_restarts - previous_restarts
-                if delta > 0:
-                    self._record_point(
-                        issue_row(
-                            f"{stem}.restarted",
-                            scope="path",
-                            impact="continuity",
-                            severity="issue",
-                            title="Sound restarted itself",
-                            detail=(
-                                "Part of the speaker's sound handling restarted, "
-                                "so playback was interrupted for a moment."
-                            ),
-                        ),
-                        now,
-                        count=delta,
-                        context=context,
-                    )
-        self._previous_service_restarts = restarts
-
-        if outputd is None:
-            self._previous_outputd_xruns = None
-            self._previous_outputd_clipped = None
-            return None, True
-        outputd_map = _mapping(outputd)
-        clipping_issue: dict[str, Any] | None = None
-        clipped_samples = _nonnegative_counter(
-            _mapping(outputd_map.get("mix")).get("clipped_samples"),
-        )
-        preserve_clipping = False
-        if clipped_samples is None:
-            self._previous_outputd_clipped = None
-            preserve_clipping = True
-        elif self._previous_outputd_clipped is None:
-            self._previous_outputd_clipped = clipped_samples
-            preserve_clipping = True
-        else:
-            clipped_delta = clipped_samples - self._previous_outputd_clipped
-            if clipped_delta > 0:
-                clipping_issue = issue_row(
-                    "path.outputd_clipping",
-                    scope="path",
-                    impact="quality",
-                    severity="issue",
-                    title="Audio clipping detected",
-                    detail=(
-                        f"JTS observed {clipped_delta} clipped sample(s) "
-                        "in the latest output interval."
-                    ),
-                )
-            elif clipped_delta < 0:
-                # A daemon restart/reset establishes a new baseline; it does
-                # not prove that an already-observed episode recovered.
-                preserve_clipping = True
-            self._previous_outputd_clipped = clipped_samples
-        outputd_counts = {
-            "content": _as_int(_mapping(outputd_map.get("content")).get("xrun_count")),
-            "dac": _as_int(_mapping(outputd_map.get("dac")).get("xrun_count")),
-        }
-        if self._previous_outputd_xruns is not None:
-            for stage, count in outputd_counts.items():
-                previous = self._previous_outputd_xruns.get(stage, count)
-                delta = count - previous
-                if delta > 0:
-                    title = (
-                        "Sound to the speaker recovered"
-                        if stage == "dac" else "Music path recovered"
-                    )
-                    self._record_point(
-                        issue_row(
-                            f"path.outputd_{stage}_xrun",
-                            scope="path",
-                            impact="continuity",
-                            severity="issue",
-                            title=title,
-                            detail=f"Sound was interrupted {delta} time(s) and resumed.",
-                        ),
-                        now,
-                        count=delta,
-                        context=context,
-                    )
-        self._previous_outputd_xruns = outputd_counts
-        return clipping_issue, preserve_clipping
