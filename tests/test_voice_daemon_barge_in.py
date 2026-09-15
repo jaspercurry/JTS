@@ -144,7 +144,7 @@ def test_flag_on_single_frame_does_not_trip():
 def test_flag_on_sustained_run_trips_interrupt():
     """Once the run has lasted >= the arming window, a further
     supra-threshold frame sets the turn's interrupt event exactly once."""
-    from jasper.voice_daemon import BARGE_IN_SUSTAINED_SPEECH_SEC
+    from jasper.voice_daemon import SUSTAINED_SPEECH_TO_ARM_SEC
 
     wl = _playback_loop(score=0.9, active=True)
     turn = wl._turns.turn
@@ -152,7 +152,7 @@ def test_flag_on_sustained_run_trips_interrupt():
     async def drive() -> None:
         await wl._handle_session_frame(silent_frame())  # arms the run
         # Simulate the arming window elapsing without real sleeps.
-        wl._speech_run_started_at -= BARGE_IN_SUSTAINED_SPEECH_SEC + 0.05
+        wl._speech_run_started_at -= SUSTAINED_SPEECH_TO_ARM_SEC + 0.05
         await wl._handle_session_frame(silent_frame())  # now sustained -> trip
         await wl._handle_session_frame(silent_frame())  # one-shot: no re-trigger
 
@@ -165,7 +165,7 @@ def test_flag_on_sustained_run_trips_interrupt():
 def test_barge_in_telemetry_surfaces_through_session_status():
     """A fired barge-in increments the daemon-lifetime counters that
     /state.voice.barge_in pulls through from session_status."""
-    from jasper.voice_daemon import BARGE_IN_SUSTAINED_SPEECH_SEC
+    from jasper.voice_daemon import SUSTAINED_SPEECH_TO_ARM_SEC
 
     wl = _playback_loop(score=0.9, active=True)
 
@@ -176,7 +176,7 @@ def test_barge_in_telemetry_surfaces_through_session_status():
 
     async def drive() -> None:
         await wl._handle_session_frame(silent_frame())  # arm
-        wl._speech_run_started_at -= BARGE_IN_SUSTAINED_SPEECH_SEC + 0.05
+        wl._speech_run_started_at -= SUSTAINED_SPEECH_TO_ARM_SEC + 0.05
         await wl._handle_session_frame(silent_frame())  # trip
 
     asyncio.run(drive())

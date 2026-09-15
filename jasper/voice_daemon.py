@@ -152,14 +152,6 @@ SUSTAINED_SPEECH_TO_ARM_SEC = 0.20
 # "turn aborts and user re-wakes" rather than a confabulated answer.
 SPEECH_RUN_PEAK_MIN = 0.60
 
-# In-session barge-in: how long the user must speak continuously (each
-# frame >= JASPER_VAD_BARGE_IN_THRESHOLD) before we flush local TTS.
-# Reuses the wake-tail arming duration so a real spoken interruption
-# clears it within ~200 ms while a single bleed transient cannot. The
-# per-frame bar is the (stricter) barge-in threshold, not the loose
-# wake-tail 0.15 — bleed false-positives are the failure mode here.
-BARGE_IN_SUSTAINED_SPEECH_SEC = SUSTAINED_SPEECH_TO_ARM_SEC
-
 
 class WakeLoop:
     """Sole consumer of the primary mic. Dispatches each frame to either
@@ -297,9 +289,6 @@ class WakeLoop:
         self._wake_event_at_monotonic: float = 0.0
 
         self._silence_started_at: float = 0.0
-        # Anchor and peak of the current speech run; `_sustained_run` owns
-        # both lifetimes. The peak rejects wake-tail audio — see
-        # SPEECH_RUN_PEAK_MIN.
         self._speech_run_started_at: float = 0.0
         self._speech_run_max_silero: float = 0.0
         self._speech_run_signalled: bool = False
