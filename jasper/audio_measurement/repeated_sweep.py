@@ -25,7 +25,12 @@ def summed_alignment_limit_samples(program: ExcitationProgram) -> int:
     cos(2*pi*f*dt) >= 10**(-budget/20); using the full arrival spread
     bounds loss relative to either extreme pass, without realigning audio.
     """
-    ceiling = max(s.f2_hz for s in program.segments if s.kind == KIND_SUMMED_SWEEP)
+    ceilings: list[float] = []
+    for segment in program.segments:
+        if segment.kind == KIND_SUMMED_SWEEP:
+            assert segment.f2_hz is not None
+            ceilings.append(segment.f2_hz)
+    ceiling = max(ceilings)
     return math.floor(math.acos(10 ** (-REPEAT_LEVEL_TOLERANCE_DB / 20))
                       * program.sample_rate_hz / (2 * math.pi * ceiling))
 

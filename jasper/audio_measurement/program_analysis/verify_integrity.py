@@ -167,7 +167,8 @@ def _verify_capture_integrity(
                                      {loc.segment_id: loc.located_start for loc in sweeps})
         if refusal:
             checks.append(IntegrityCheck(refusal, INTEGRITY_FAIL))
-        if refusal in (None, "summed_pass_arrival_drift") and confidence_min >= SWEEP_LOCATE_CONFIDENCE_FLOOR:
+        if (refusal in (None, "summed_pass_arrival_drift") and confidence_min is not None
+                and confidence_min >= SWEEP_LOCATE_CONFIDENCE_FLOOR):
             drift = _estimate_drift(program, capture, sample_rate, locations)
     for name, input_code in (
         (INTEGRITY_CHECK_REPEAT_EPSILON, "epsilon_out_of_bound"),
