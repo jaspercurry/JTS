@@ -701,6 +701,7 @@ class BaseLiveConnection:
         return failure_detail(exc, literals=self._secret_literals())
 
     def _secret_literals(self) -> tuple[str, ...]:
+        # Literal fallback for a key shape the prefix patterns miss — see ADR-0243.
         return (self._api_key,) if self._api_key else ()
 
     def wake_cue(self) -> str:
