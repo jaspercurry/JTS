@@ -41,7 +41,6 @@ Session lifecycle
 from __future__ import annotations
 
 import asyncio
-import audioop
 import base64
 import contextlib
 import json
@@ -55,7 +54,13 @@ from jasper.log_event import log_event
 if TYPE_CHECKING:
     import wave
 
-from ._base import BaseLiveConnection, BaseLiveTurn, ToolCall
+from ._base import (
+    OPENAI_AUDIO_RATE_HZ,
+    BaseLiveConnection,
+    BaseLiveTurn,
+    ToolCall,
+    upsample_16k_to_24k,
+)
 from ._supervisor import (
     await_connected, failure_detail, request_planned_reopen, request_unplanned_reopen,
 )
@@ -70,13 +75,6 @@ from .session import (
 
 logger = logging.getLogger(__name__)
 
-
-# Wire-format constants. The OpenAI Realtime ``audio/pcm`` discriminator
-# accepts only 24 kHz (verified against ``RealtimeAudioFormats.AudioPCM``
-# in openai-python's typed API). The XVF3800 captures at 16 kHz mono;
-# we polyphase-upsample 16 → 24 inside the turn before base64-encoding.
-OPENAI_AUDIO_RATE_HZ = 24000
-DAEMON_MIC_RATE_HZ = 16000
 
 # Bound a provider that opens the socket but never accepts session.update.
 SESSION_SETUP_TIMEOUT_SEC = 15.0
@@ -137,32 +135,6 @@ def _normalize_noise_reduction(value: str | None) -> str:
             "OpenAI noise_reduction must be one of: " + ", ".join(allowed)
         )
     return wire
-
-
-# ---------- Audio helpers ---------------------------------------------------
-
-
-def _upsample_16k_to_24k(
-    pcm_16k: bytes, state: tuple | None,
-) -> tuple[bytes, tuple]:
-    """Polyphase upsample 16 kHz mono int16 → 24 kHz mono int16.
-
-    Uses ``audioop.ratecv``. State must persist across calls within a
-    turn so the resampler doesn't introduce phase discontinuities at
-    frame boundaries — pass the returned state back in on the next
-    call. Reset state to ``None`` at turn start.
-
-    ``audioop`` was REMOVED from Python 3.13's stdlib (PEP 594), and
-    PiOS Trixie ships 3.13. The ``audioop-lts`` backport on PyPI is a
-    drop-in replacement that registers under the ``audioop`` import
-    name — pyproject.toml depends on it conditionally for 3.13+, so
-    this import resolves transparently on every supported Python
-    version. If/when ``audioop-lts`` stops being maintained, swap to
-    ``scipy.signal.resample_poly`` or a hand-rolled 3:2 polyphase
-    filter."""
-    return audioop.ratecv(
-        pcm_16k, 2, 1, DAEMON_MIC_RATE_HZ, OPENAI_AUDIO_RATE_HZ, state,
-    )
 
 
 # ---------- Per-turn adapter ------------------------------------------------
@@ -659,7 +631,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         self, turn: OpenAIRealtimeTurn, pcm_16khz: bytes,
     ) -> bool:
         # Polyphase 16 → 24 kHz upsample. State persists per-turn.
-        pcm_24khz, turn._resample_state = _upsample_16k_to_24k(
+        pcm_24khz, turn._resample_state = upsample_16k_to_24k(
             pcm_16khz, turn._resample_state,
         )
         if not pcm_24khz:

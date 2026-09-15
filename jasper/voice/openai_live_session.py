@@ -19,10 +19,9 @@ from typing import Any, AsyncIterator
 
 from ..backoff import reconnect_delay
 from ..log_event import log_event
-from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn, ToolCall
+from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn, ToolCall, upsample_16k_to_24k
 from ._supervisor import failure_detail, is_transient
 from ._tasks import await_cleanup_owned
-from .openai_session import _upsample_16k_to_24k
 from .session import AudioOutChunk, ConnectionState, TurnCapture, TurnUsage
 
 logger = logging.getLogger(__name__)
@@ -152,7 +151,7 @@ class OpenAILiveTurn(BaseLiveTurn):
     async def _send_input(self, pcm: bytes) -> None:
         if not self._input_admitted:
             pcm = bytes(len(pcm))
-        wire, self._resample_state = _upsample_16k_to_24k(pcm, self._resample_state)
+        wire, self._resample_state = upsample_16k_to_24k(pcm, self._resample_state)
         await self._conn._send({"type": "session.input_audio.append", "audio": base64.b64encode(wire).decode("ascii")})
 
     async def _send_audio_stream(self) -> None:

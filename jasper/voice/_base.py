@@ -17,6 +17,7 @@ Lines logged from here go to the subclass's own `_logger` and carry its
 from __future__ import annotations
 
 import asyncio
+import audioop
 import json
 import logging
 import time as _time
@@ -97,6 +98,37 @@ def close_code_and_reason(exc: BaseException) -> tuple[int | None, str | None]:
     if rcvd is not None:
         return code, getattr(rcvd, "reason", None)
     return code, getattr(exc, "message", None)
+
+
+# Wire-format constants. The OpenAI Realtime ``audio/pcm`` discriminator
+# accepts only 24 kHz (verified against ``RealtimeAudioFormats.AudioPCM``
+# in openai-python's typed API). The XVF3800 captures at 16 kHz mono;
+# we polyphase-upsample 16 → 24 inside the turn before base64-encoding.
+OPENAI_AUDIO_RATE_HZ = 24000
+DAEMON_MIC_RATE_HZ = 16000
+
+
+def upsample_16k_to_24k(
+    pcm_16k: bytes, state: tuple | None,
+) -> tuple[bytes, tuple]:
+    """Polyphase upsample 16 kHz mono int16 → 24 kHz mono int16.
+
+    Uses ``audioop.ratecv``. State must persist across calls within a
+    turn so the resampler doesn't introduce phase discontinuities at
+    frame boundaries — pass the returned state back in on the next
+    call. Reset state to ``None`` at turn start.
+
+    ``audioop`` was REMOVED from Python 3.13's stdlib (PEP 594), and
+    PiOS Trixie ships 3.13. The ``audioop-lts`` backport on PyPI is a
+    drop-in replacement that registers under the ``audioop`` import
+    name — pyproject.toml depends on it conditionally for 3.13+, so
+    this import resolves transparently on every supported Python
+    version. If/when ``audioop-lts`` stops being maintained, swap to
+    ``scipy.signal.resample_poly`` or a hand-rolled 3:2 polyphase
+    filter."""
+    return audioop.ratecv(
+        pcm_16k, 2, 1, DAEMON_MIC_RATE_HZ, OPENAI_AUDIO_RATE_HZ, state,
+    )
 
 
 @dataclass(frozen=True, slots=True)
