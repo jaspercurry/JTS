@@ -494,7 +494,7 @@ class MeasuredCrossoverCandidate:
             try:
                 dynamic_bass = validate_dynamic_bass_descriptor(self.bass_extension)
             except ValueError as exc:
-                _refuse("bass_extension_invalid", str(exc))
+                _refuse(getattr(exc, "reason"), str(exc))
             object.__setattr__(self, "bass_extension", dynamic_bass)
         # A list, not a mapping, so the shape check differs from its neighbours
         # above; the exact-JSON-data walk and the freeze are the same.

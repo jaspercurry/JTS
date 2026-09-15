@@ -24,6 +24,7 @@ from . import topology_prescription as topology
 from .evidence_packet import packet_feature_classifications, packet_incumbent_linearization, packet_positional_evidence
 from .prescription_contract import contract_digests, contract_json, prescription_contracts
 from .refusal_copy import refusal_copy_for
+from .round_inputs import prescription_sources
 
 DOCUMENT_KIND = "jts_prescription"
 SECTION_KINDS = {
@@ -51,7 +52,7 @@ class PrescriptionDocumentRefused(ValueError):
 
 @dataclass(frozen=True)
 class PrescriptionEvidence:
-    sources: Mapping[str, Any] = field(default_factory=dict)
+    sources: Mapping[str, Any] = field(default_factory=lambda: prescription_sources(None))
     packet: Mapping[str, Any] = field(default_factory=dict)
     room_median_sha256: str = ""
     round_id: str = ""
@@ -130,10 +131,7 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
         assert room_pin is not None
         return room.room_prescription_to_candidate_fields(room_pin)["room_correction"], {**room_pin.to_dict(), "measured_basis": room_pin.measured_basis}
     if name == "bass":
-        bass_packet = evidence.sources.get("bass_evidence", packet)
-        bass_pin = bass.read_bass_prescription(
-            raw, round_id=evidence.round_id, packet_fingerprint=bass_packet.get("packet_fingerprint"), evidence=bass_packet,
-        )
+        bass_pin = bass.read_bass_prescription(raw, evidence=evidence.sources["bass_evidence"])
         return bass_pin.descriptor, bass_pin.to_dict()
     raise PrescriptionDocumentRefused("prescription_kind_unknown", name, "unknown section kind")
 
@@ -175,7 +173,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
     if document["base"] != "saved" and document["base"] != base.fingerprint:
         raise PrescriptionDocumentRefused("composition_base_mismatch", None, "document and resolved base differ")
     evidence = evidence or PrescriptionEvidence()
-    contracts = prescription_contracts(**{"bass_evidence": evidence.packet, **evidence.sources, "candidate": base.candidate.to_dict()})
+    contracts = prescription_contracts(**{**evidence.sources, "candidate": base.candidate.to_dict()})
     selected: dict[str, Any] = {}
     judged: dict[str, Any] = {}
     fc_hz = contracts["speaker"]["alignment"]["bounds"]["fc_hz"]

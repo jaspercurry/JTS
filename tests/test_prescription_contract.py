@@ -238,7 +238,10 @@ def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(cap
     assert contracts["room"]["evidence_status"] == room.ROOM_MEDIAN_UNAVAILABLE
     assert contracts["room"]["bounds"]["cut_floor_db"] is None
     contract = contracts["bass"]
-    assert set(contract["schema"]["properties"]) == dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS | {"round_id", "packet_fingerprint"}
+    assert set(contract["schema"]["properties"]) == dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS | {"round_id"}
+    assert bass.BASS_PRESCRIPTION_REFUSAL_REASONS == {
+        "bass_band_unqualified", "bass_round_mismatch", "bass_evidence_unavailable", "bass_descriptor_malformed",
+    } | {f"bass_{name}_invalid" for name in dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS}
     assert contract["schema"]["properties"]["low_boost_db"]["maximum"] == dynamic.NATIVE_LOUDNESS_BOOST_MAX_DB
     assert contract["evidence_status"] == bass.BASS_EVIDENCE_UNAVAILABLE
     assert contract["shared_headroom"]["adr"] == "ADR-0257"
@@ -246,6 +249,7 @@ def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(cap
 
 def test_bass_contract_reads_saved_packet_and_discloses_every_level(round_bank, bass_packet, capsys):
     bank, _ = round_bank
+    bass_packet["round_id"] = bank.name
     (bank / "packet.json").write_text(json.dumps(bass_packet))
     assert cli.main(["contract", "--round", str(bank), "--section", "bass"]) == 0
     contract = json.loads(capsys.readouterr().out)

@@ -44,50 +44,44 @@ def bass_evidence_status(evidence: Mapping[str, Any]) -> dict[str, Any]:
 class BassPrescription:
     descriptor: Mapping[str, Any]
     round_id: str
-    packet_fingerprint: str
     evidence_status: str
-    evidence_status_detail: Mapping[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         return {**self.descriptor, "round_id": self.round_id,
-                "packet_fingerprint": self.packet_fingerprint, "evidence_status": self.evidence_status,
-                "evidence_status_detail": dict(self.evidence_status_detail)}
+                "evidence_status": self.evidence_status}
 
 
 def bass_prescription_response_format() -> dict[str, Any]:
     return {
         "required_top_level": {
             "round_id": "copy round_id from packet.json",
-            "packet_fingerprint": "copy packet_fingerprint from the same packet.json",
         },
         "refusal_reasons": sorted(BASS_PRESCRIPTION_REFUSAL_REASONS),
     }
 
 
-def read_bass_prescription(raw: Any, *, round_id: str, packet_fingerprint: str | None,
-                           evidence: Mapping[str, Any]) -> BassPrescription:
-    status = bass_evidence_status(evidence)
-    if status["evidence_status"] != "evaluated":
-        _refuse(BASS_EVIDENCE_UNAVAILABLE, "The round has no bass evidence.", round_id=round_id)
+def read_bass_prescription(raw: Any, *, evidence: Mapping[str, Any]) -> BassPrescription:
     try:
         descriptor = validate_dynamic_bass_descriptor({key: value for key, value in raw.items()
-                                                       if key not in {"round_id", "packet_fingerprint"}}
+                                                       if key != "round_id"}
                                                       if isinstance(raw, Mapping) else raw)
     except DynamicBassDescriptorError as exc:
         _refuse(exc.reason, str(exc), field=exc.field)
-    if (not round_id or not packet_fingerprint
-            or evidence.get("round_id") != round_id or evidence.get("packet_fingerprint") != packet_fingerprint
-            or raw.get("round_id") != round_id or raw.get("packet_fingerprint") != packet_fingerprint):
-        _refuse(BASS_ROUND_MISMATCH, "The bass prescription must name this round and packet.",
-                round_id=round_id, packet_fingerprint=packet_fingerprint)
+    round_id = evidence.get("round_id")
+    status = bass_evidence_status(evidence)["evidence_status"]
+    if not round_id or status != "evaluated":
+        _refuse(BASS_EVIDENCE_UNAVAILABLE, "The round has no bass evidence.", round_id=round_id)
+    if raw.get("round_id") != round_id:
+        _refuse(BASS_ROUND_MISMATCH, "The bass prescription must name this round.", round_id=round_id)
     lower = max(BASS_BANDS_HZ[0][0], descriptor["delta_highpass_hz"] or BASS_BANDS_HZ[0][0])
     upper = descriptor["detector_lowpass_hz"]
     bands = [(lo, hi) for lo, hi in BASS_BANDS_HZ if lo < upper and hi > lower]
     qualified = {tuple(band["band_hz"]) for view in evidence.get("bass", [])
                  for take in view.get("takes", []) for band in take.get("bands", [])
                  if band.get("fundamental_qualified") is True}
+    # At the allowed 20 Hz detector minimum, the first measured band supplies the endpoint.
     for band in bands or [BASS_BANDS_HZ[0]]:
         if band not in qualified:
             _refuse(BASS_BAND_UNQUALIFIED, f"No qualified fundamental in {band[0]:g}-{band[1]:g} Hz.",
                     band_hz=list(band), boost_band_hz=[lower, upper])
-    return BassPrescription(descriptor, round_id, packet_fingerprint, **status)
+    return BassPrescription(descriptor, round_id, status)

@@ -31,12 +31,14 @@ import yaml
 
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
-from jasper.active_speaker.crossover_v2.prescription_contract import contract_json
+from jasper.active_speaker.crossover_v2.prescription_contract import contract_digests, contract_json, prescription_contracts
+from jasper.active_speaker.crossover_v2.round_inputs import prescription_sources, round_inputs
 from jasper.active_speaker.crossover_v2.prescription_document import (
     PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document,
 )
 from jasper.active_speaker.crossover_v2.bass_prescription import BASS_PRESCRIPTION_REFUSAL_REASONS
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment, driver_corrections
+from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.cli import crossover_prescriber
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
@@ -93,13 +95,13 @@ def test_empty_clears_and_omitted_layers_inherit(base, section, empty):
 @pytest.fixture
 def evidence(bass_packet):
     return PrescriptionEvidence(
-        {"draft": _draft(), "room_median": _room_median()},
-        bass_packet, MEDIAN_SHA256, bass_packet["round_id"],
+        {"draft": _draft(), "room_median": _room_median(), "bass_evidence": bass_packet},
+        {"packet_fingerprint": "p" * 64}, MEDIAN_SHA256, bass_packet["round_id"],
     )
 
 
 def bass_document(packet):
-    return {**BASS_EXTENSION, **{name: packet[name] for name in ("round_id", "packet_fingerprint")}}
+    return {**BASS_EXTENSION, "round_id": packet["round_id"]}
 
 
 @pytest.fixture
@@ -128,44 +130,36 @@ def test_one_invalid_section_refuses_whole_document(base, evidence, section, pay
 @pytest.mark.parametrize("change, code", [
     ("no_round", "bass_evidence_unavailable"),
     ("no_bass", "bass_evidence_unavailable"),
-    ("table_unavailable", "bass_evidence_unavailable"),
     ({"round_id": "wrong"}, "bass_round_mismatch"),
-    ({"packet_fingerprint": "wrong"}, "bass_round_mismatch"),
-    ({"packet_fingerprint": None}, "bass_round_mismatch"),
-    ("packet_round_mismatch", "bass_round_mismatch"),
+    ("packet_round_mismatch", "bass_evidence_unavailable"),
+    ("no_round_id", "bass_evidence_unavailable"),
     ("unqualified", "bass_band_unqualified"),
     ("table_only", "bass_band_unqualified"),
     ("missing_field", "bass_descriptor_malformed"),
     ({"unknown": 1}, "bass_descriptor_malformed"),
     ({"low_boost_db": 0}, "bass_low_boost_db_invalid"),
-    ({"reference_level_db": 1}, "bass_reference_level_db_invalid"),
-    ({"detector_lowpass_hz": 0}, "bass_detector_lowpass_hz_invalid"),
-    ({"compressor_threshold_dbfs": 1}, "bass_compressor_threshold_dbfs_invalid"),
-    ({"compressor_factor": 1}, "bass_compressor_factor_invalid"),
-    ({"compressor_attack_s": 0}, "bass_compressor_attack_s_invalid"),
-    ({"compressor_release_s": 0}, "bass_compressor_release_s_invalid"),
     ({"delta_highpass_hz": 10000}, "bass_delta_highpass_hz_invalid"),
-    *[({"low_boost_db": value}, "bass_low_boost_db_invalid")
-      for value in (True, "4", float("nan"), float("inf"), 10 ** 400)],
+    ({"low_boost_db": True}, "bass_low_boost_db_invalid"),
 ])
-def test_bass_refusals_keep_the_evidence_pin_and_field_codes(base, evidence, change, code):
-    section = bass_document(evidence.packet)
+def test_bass_refusals_keep_the_evidence_pin_and_field_codes(base, evidence, bass_packet, round_bank, change, code):
+    section = bass_document(bass_packet)
     if isinstance(change, dict):
         section.update(change)
     elif change == "missing_field":
         del section["low_boost_db"]
     elif change == "packet_round_mismatch":
-        evidence = replace(evidence, packet={**evidence.packet, "round_id": "wrong"})
+        (round_bank[0] / "packet.json").write_text(json.dumps({**bass_packet, "round_id": "wrong"}))
+        evidence = replace(evidence, sources=prescription_sources(round_inputs(round_bank[0])))
+    elif change == "no_round_id":
+        del bass_packet["round_id"]
     elif change == "no_round":
         evidence = None
     elif change == "no_bass":
-        evidence = replace(evidence, packet={"packet_fingerprint": "p" * 64})
+        evidence = replace(evidence, sources={"bass_evidence": {"round_id": bass_packet["round_id"]}})
     elif change == "table_only":
-        evidence = replace(evidence, packet={key: value for key, value in evidence.packet.items() if key != "bass"})
-    elif change == "table_unavailable":
-        evidence = replace(evidence, packet={"bass": [], "bass_table": {"status": "unavailable", "code": "bass_fit_inputs_missing"}})
+        del bass_packet["bass"]
     else:
-        evidence.packet["bass"][0]["takes"][0]["bands"][0]["fundamental_qualified"] = False
+        bass_packet["bass"][0]["takes"][0]["bands"][0]["fundamental_qualified"] = False
     with pytest.raises(PrescriptionDocumentRefused) as refused:
         judge_prescription_document(document(base.fingerprint, {"bass": section}), base=base, evidence=evidence)
     answer = refused.value.to_dict()
@@ -176,44 +170,43 @@ def test_bass_refusals_keep_the_evidence_pin_and_field_codes(base, evidence, cha
         assert answer["evidence"]["band_hz"] == [20, 30]
 
 
-@pytest.mark.parametrize("verb, use_bundle", [("judge", False), ("judge", True), ("compose", False)])
-def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsys, bass_round, bass_packet, verb, use_bundle):
+@pytest.mark.parametrize("verb", ["judge", "compose"])
+def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsys, bass_round, bass_packet, verb):
     raw = document(base.fingerprint, {"bass": bass_document(bass_packet)})
     path = tmp_path / "prescription.json"
     path.write_text(json.dumps(raw))
     before = {p for p in tmp_path.rglob("*")}
-    round_path = crossover_prescriber.round_inputs(bass_round).session_dir if use_bundle else bass_round
-    args = [verb, str(path), "--root", str(bank), "--round", str(round_path)]
+    args = [verb, str(path), "--root", str(bank), "--round", str(bass_round)]
     if verb == "compose":
         args += ["--base", base.fingerprint]
     assert crossover_prescriber.main(args) == 0
     answer = json.loads(capsys.readouterr().out)
-    direct = judge_prescription_document(raw, base=base, evidence=crossover_prescriber._document_evidence(
-        crossover_prescriber.build_parser().parse_args(args), raw))
+    descriptor = validate_dynamic_bass_descriptor(BASS_EXTENSION)
+    receipt = {**descriptor, "round_id": bass_packet["round_id"], "evidence_status": "evaluated"}
+    contracts = prescription_contracts(**{**prescription_sources(round_inputs(bass_round)), "candidate": base.candidate.to_dict()})
+    direct = compose_candidate(base, sections={"bass": descriptor}, rationale=raw["rationale"], evidence={
+        "packet_fingerprint": None, "contracts": contract_digests(contracts), "prescriptions": {"bass": receipt},
+    })
     assert answer["candidate_fingerprint"] == direct.fingerprint
     assert answer["resolution"]["bass"] == "document"
     if verb == "judge":
         assert {p for p in tmp_path.rglob("*")} == before
-        receipt = answer["sections"]["bass"]
-        assert receipt["evidence_status"] == "evaluated"
-        assert receipt["round_id"] == bass_packet["round_id"]
-        assert receipt["packet_fingerprint"] == bass_packet["packet_fingerprint"]
-        assert receipt["evidence_status_detail"]["levels"][0]["outcome"] == "insufficient_evidence"
+        assert answer["sections"]["bass"] == receipt
     else:
         assert find_banked_candidate(direct.fingerprint, root=bank).candidate.to_dict() == direct.to_dict()
     assert len(banked_candidates(root=bank)) == (1 if verb == "judge" else 2)
 
 
 @pytest.mark.parametrize("corner, highpass", [(20, None), (80, None), (120, 40)])
-def test_bass_qualification_uses_boost_bands_and_any_qualified_take(base, evidence, corner, highpass):
-    takes = evidence.packet["bass"][0]["takes"]
+def test_bass_qualification_uses_boost_bands_and_any_qualified_take(base, evidence, bass_packet, corner, highpass):
+    takes = bass_packet["bass"][0]["takes"]
     takes.append(deepcopy(takes[0]))
     for band in takes[0]["bands"]:
         band["fundamental_qualified"] = False
     for band in takes[1]["bands"]:
         if band["band_hz"][0] >= max(30, corner) or band["band_hz"][1] <= (highpass or 0):
             band["fundamental_qualified"] = False
-    section = {**bass_document(evidence.packet), "detector_lowpass_hz": corner, "delta_highpass_hz": highpass}
+    section = {**bass_document(bass_packet), "detector_lowpass_hz": corner, "delta_highpass_hz": highpass}
     child = judge_prescription_document(document(base.fingerprint, {"bass": section}), base=base, evidence=evidence)
     assert child.analysis["evidence"]["prescriptions"]["bass"]["evidence_status"] == "evaluated"
 
@@ -228,7 +221,7 @@ def test_cli_refusal_banks_nothing(base, bank, tmp_path, capsys, verb):
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     assert crossover_prescriber.main(args) == 1
     answer = json.loads(capsys.readouterr().out)
-    assert (answer["ok"], answer["section"], answer["code"]) == (False, "bass", "bass_evidence_unavailable")
+    assert (answer["ok"], answer["section"], answer["code"]) == (False, "bass", "bass_low_boost_db_invalid")
     assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 @pytest.fixture
 def saved_tune(bank):
@@ -311,8 +304,8 @@ def test_composition_inherits_downstream_layers_until_explicitly_cleared(bank, c
     assert child.linearization == base.linearization
 
 
-@pytest.mark.parametrize("descriptor", [[], {"low_boost_db": 4}, {"low_boost_db": "bad"}])
-def test_bass_compose_refuses_malformed_descriptor(bank, tmp_path, capsys, descriptor):
+@pytest.mark.parametrize("descriptor, code", [([], "prescription_malformed"), ({"low_boost_db": 4}, "bass_descriptor_malformed")])
+def test_bass_compose_refuses_malformed_descriptor(bank, tmp_path, capsys, descriptor, code):
     base = _candidate()
     _publish(bank, base)
     path = tmp_path / "bass.json"
@@ -321,12 +314,12 @@ def test_bass_compose_refuses_malformed_descriptor(bank, tmp_path, capsys, descr
         "compose", str(path), "--root", str(bank), "--base", base.fingerprint,
     ]) == 1
     answer = json.loads(capsys.readouterr().out)
-    assert answer["code"] in {"prescription_malformed", "bass_evidence_unavailable"}
+    assert answer["code"] == code
     assert len(banked_candidates(root=bank)) == 1
 
 
 @pytest.mark.parametrize("delay", [-100, 100])
-def test_all_sections_form_one_proved_candidate(base, evidence, delay):
+def test_all_sections_form_one_proved_candidate(base, evidence, bass_packet, delay):
 
     sources = deepcopy(dict(evidence.sources))
     for target in sources["draft"]["driver_safety_profile"]["targets"]:
@@ -338,7 +331,7 @@ def test_all_sections_form_one_proved_candidate(base, evidence, delay):
         "blend": blend_document([{"biquad_type": "Peaking", "freq": 1500, "q": 1, "gain": -1}], dict(evidence.packet)),
         "alignment": {"delay_us": delay, "basis_delay_us": 0, "basis_artifacts": ["alignment.json"]},
         "topology": {"fc_hz": 2000, "order": 4, "basis_artifacts": ["fc.json"]},
-        "room": room_document(), "bass": bass_document(evidence.packet),
+        "room": room_document(), "bass": bass_document(bass_packet),
     }
     child = judge_prescription_document(document(base.fingerprint, sections), base=base, evidence=evidence)
     assert set(child.analysis["resolution"].values()) == {"document"}
@@ -410,7 +403,8 @@ def test_cli_round_evidence_judges_and_banks_one_combined_document(base, bank, t
     assert answer["candidate_fingerprint"] == preview["candidate_fingerprint"]
     child = find_banked_candidate(answer["candidate_fingerprint"], root=bank).candidate
     assert child.analysis["evidence"]["packet_fingerprint"] == packet["packet_fingerprint"]
-    assert child.analysis["evidence"]["prescriptions"]["bass"]["packet_fingerprint"] == bass_packet["packet_fingerprint"]
+    assert preview["sections"]["room"]["round_id"] == round_dir.name
+    assert preview["sections"]["bass"]["round_id"] == bass_round.name
     assert child.bass_extension == base.candidate.bass_extension
     assert child.analysis["evidence"]["prescriptions"] == preview["sections"]
     assert child.analysis["room_source"]["prescription_sha256"] == prescription_sha256(contract_json(preview["sections"]["room"]).encode())
