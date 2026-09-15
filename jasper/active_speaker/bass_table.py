@@ -73,7 +73,7 @@ def fit_bass_table(
     levels = []
     for key, group in sorted(groups.items()):
         prescribed = loudness_boost_db(key[1], settings) if settings else None
-        row = {"level_key": dict(zip(LEVEL_FIELDS, key)), "loudness_boost_db": prescribed,
+        row: dict[str, object] = {"level_key": dict(zip(LEVEL_FIELDS, key)), "loudness_boost_db": prescribed,
                "prescribed_boost_db": prescribed, "code": None, "next_action": None,
                "fit": None, "selected_is_measured": False, "within_tolerance_on_qualified_bins": None,
                "selected_scale": None, "selected_descriptor": None,

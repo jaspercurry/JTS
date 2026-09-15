@@ -149,8 +149,9 @@ def bass_level_evidence(
     compression = [{"band_hz": [lo, hi], "value_db": prescribed_boost_db - measured
                     if (measured := mean_delta(lo, hi)) is not None and prescribed_boost_db is not None else None}
                    for lo, hi in boost_bands]
-    snr = [finite_float(_band(take, lo, hi).get("estimated_snr_db")) for pair in pairs for take in pair
-           for lo, hi in BASS_BANDS_HZ if boost_band and lo < boost_band[1] and hi > boost_band[0]]
+    snr = [value for pair in pairs for take in pair
+           for lo, hi in BASS_BANDS_HZ if boost_band and lo < boost_band[1] and hi > boost_band[0]
+           if (value := finite_float(_band(take, lo, hi).get("estimated_snr_db"))) is not None]
     spreads = []
     for repeats in curves.values():
         if len(repeats) > 1:
@@ -168,6 +169,6 @@ def bass_level_evidence(
             "compression_includes": ["compressor", "driver"],
             **_harmonics(groups, boost_bands),
             "base_db_spl_at_mark": _level_spl(groups, 0), "candidate_db_spl_at_mark": _level_spl(groups, 1),
-            "snr_margin_db": min(snr) - DRIVER.snr_warn_db if snr and all(s is not None for s in snr) else None,
+            "snr_margin_db": min(snr) - DRIVER.snr_warn_db if snr else None,
             "repeat_spread_db": float(np.sqrt(np.mean(np.square(spreads)))) if spreads else None,
             "position_spread_db": None}
