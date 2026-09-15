@@ -1818,15 +1818,15 @@ def test_fit_respects_the_supplied_headroom():
     from jasper.audio_measurement.peq import PEQ
 
     resp, envelope = _dip_response()
-    vocab = FitVocabulary(allow_boost=True, per_filter_boost_cap_db=20.0)
+    vocab = FitVocabulary(allow_boost=True, per_filter_boost_cap_db=2.0)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(
             fit_mod, "design_peq",
             lambda *a, **k: [
-                PEQ(freq=1500.0, q=2.0, gain=21.0)
+                PEQ(freq=1500.0, q=2.0, gain=3.0)
             ],
         )
-        with pytest.raises(RuntimeError, match="per-filter boost cap"):
+        with pytest.raises(RuntimeError):
             fit_driver_linearization(resp, envelope, vocabulary=vocab)
 
 
@@ -3979,7 +3979,7 @@ def test_declared_fit_budget_bounds_the_realized_fit(field, value, shape):
     fit = fit_driver_linearization(response, envelope, vocabulary=vocabulary.with_budget({field: value}))
     assert ("max_filters" in fit.budget_binding) == (len(fit.filters) == fit.vocabulary.max_filters)
     assert ("max_gain_db" in fit.budget_binding) == any(
-        -f.gain >= fit.vocabulary.max_gain_db - 1e-6 for f in fit.filters
+        abs(f.gain) >= fit.vocabulary.max_gain_db - 1e-6 for f in fit.filters
     )
     if field not in {"max_filters", "max_gain_db"}:
         assert field in fit.budget_binding
@@ -3993,7 +3993,7 @@ def test_declared_fit_budget_bounds_the_realized_fit(field, value, shape):
     elif field == "max_gain_db":
         assert max(abs(f.gain) for f in before.filters) > value
         assert fit.filters or shape == "horn"
-        assert all(-f.gain <= value for f in fit.filters)
+        assert all(abs(f.gain) <= value for f in fit.filters)
     else:
         assert fit.correction_giveback_db <= value < before.correction_giveback_db
         assert all(abs(f.gain) >= _MIN_FILTER_GAIN_DB for f in fit.filters)

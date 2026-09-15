@@ -27,15 +27,14 @@ the packet did not answer. Never recompute a number it prints.
 
 ## Speaker
 
-A driver's total boost is bounded by the remaining headroom in
-`bounds.boost_headroom`: its declared effective-peak cap, the digital peak
-ceiling, and the household SPL stop. The derivation uses full-scale content at
-the round's session volume and the role trim. Old linearization is excluded
-because a prescription replaces that role's whole chain. The cap resolver's
-backoff remains included. Missing SPL data is `null`; it is not evidence of
-spare SPL. The charge bound uses the same headroom plus the emitter's margin.
-There is no fixed per-filter gain rail. The mic calibration tier still limits
-where the fitter has evidence.
+The emitter absorbs the largest branch peak plus its margin before the
+branches split. Boost spends program headroom (maximum SPL); it cannot raise a
+branch above the fader. `bounds.boost_headroom` discloses that cost and the
+remaining budget. The door refuses total program absorption above 40 dB
+(ADR-0219). Measurement excitation caps do not bound playback; session volume
+and measurement SPL headroom are disclosures here. The measurement SPL stop
+stays in force. The fitter uses remaining program headroom and the owner's
+`fit_budget.max_gain_db`; the mic tier limits where it has evidence.
 
 A fit is already proposed. Each `fits` entry identifies its role and pose.
 Read `reason_summary` before `filters`, `residual_rms_db`, `residual_max_db`
@@ -280,7 +279,7 @@ Speaker
 | driver.trim_pin_scope | "{<role>: <dB, between -60.0 and 0>} -- pin that driver's LEVEL instead of letting this round re-solve it. Only for a role whose chain you replace or clear; filters: [] clears every role's chain and admits trim pins. Use it when the chain you are prescribing was shaped against a level this round will not re-derive: the trim is re-solved every round from a level-match datum, so a chain carried over from another round otherwise rides a level it was not shaped against. A trim you name is CARRIED, never re-solved, and it is never a measurement of this round" | rule | contract.speaker.driver.bounds.trim_pin_scope |
 | driver.cut_Q | [0.0001,1000000.0] | Q | contract.speaker.driver.bounds.q_range_cut |
 | driver.boost_Q_max | 8.0 | Q | contract.speaker.driver.bounds.q_max_boost |
-| driver.boost_headroom | {} | dB | contract.speaker.driver.bounds.boost_headroom |
+| driver.boost_headroom_rule | "Program headroom spent must not exceed 40 dB" | dB | contract.speaker.driver.bounds.boost_headroom_rule |
 | driver.cut_rule | "a cut (gain <= 0) carries no depth ceiling and no composed ceiling: it only removes level and cannot clip at any depth, and the round's own measured verify with auto-restore is the net. Its Q must sit in [0.0001, 1e+06] (ADR-0207) -- not a policy ceiling but the range this system's evaluator and emitter realize faithfully. What a cut spends is one of max_filters_per_role's slots" | rule | driver.bounds.cuts_are_free |
 | driver.filters_per_role | 8 | count | contract.speaker.driver.bounds.max_filters_per_role |
 | driver.shelf_rule | "leading a role's chain, or -- a Highshelf only -- ending it after a Lowshelf lead. Anywhere else the emitter cannot name the filter and the document is refused. Peaking sits anywhere" | rule | contract.speaker.driver.bounds.shelf_rule |

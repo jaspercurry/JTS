@@ -1083,6 +1083,9 @@ def _validated_driver_corrections(
 # the two stay numerically equal.
 MAX_LINEARIZATION_FILTERS_PER_DRIVER = 8
 
+# Never silently mute the program through headroom absorption (ADR-0219).
+MAX_PROGRAM_HEADROOM_DB = 40.0
+
 _LINEARIZATION_BIQUAD_TYPES = frozenset({"Peaking", "Highshelf", "Lowshelf"})
 
 # Public alias: a reader outside this module needs the same set to decide
@@ -1586,6 +1589,19 @@ def _emit_sub_baseline_definitions(
     ]
 
 
+def program_headroom_db(
+    linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None,
+    *, branch_context: Mapping[str, tuple[Sequence["CrossoverSection"], float]],
+    room_peqs: Sequence[PeqFilter] = (),
+    baseline_headroom_db: float = BASELINE_HEADROOM_DB,
+    output_trim_db: float = 0.0,
+) -> float:
+    """Total program attenuation in dB, including shared gains and branch peaks."""
+    return (baseline_headroom_db + total_positive_boost_db(room_peqs)
+            + linearization_headroom_db(linearization, branch_context=branch_context)
+            + max(0.0, output_trim_db))
+
+
 def linearization_headroom_db(
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None,
     *,
@@ -1745,23 +1761,15 @@ def _emit_baseline_filter_definitions(
     # folding the trim into its value keeps a flat-window crossing a parameter
     # write rather than stepping the gain by the whole trim, un-ducked, the
     # moment a band crosses ±0.05 dB. Matches the stereo path's `sound_preamp`.
-    trim_db = max(0.0, output_trim_db)
-    total_headroom_db = (
-        baseline_headroom_db
-        + total_positive_boost_db(room_peqs)
-        + linearization_headroom_db(
-            linearization,
-            # Built only when there is a boost to charge for: the context
-            # itself imports branch_chain, and with it numpy, which the
-            # cut-only path must not pay for (see linearization_has_boost).
-            branch_context=(
-                _branch_context(preset, corrections)
-                if linearization_has_boost(linearization)
-                else {}
-            ),
-        )
-        + trim_db
+    total_headroom_db = program_headroom_db(
+        linearization, baseline_headroom_db=baseline_headroom_db,
+        room_peqs=room_peqs, output_trim_db=output_trim_db,
+        branch_context=_branch_context(preset, corrections) if linearization_has_boost(linearization) else {},
     )
+    if total_headroom_db > MAX_PROGRAM_HEADROOM_DB:
+        raise ActiveSpeakerConfigError(
+            f"program headroom {total_headroom_db:g} dB exceeds {MAX_PROGRAM_HEADROOM_DB:g} dB"
+        )
     headroom_gain_db = 0.0 if total_headroom_db == 0 else -total_headroom_db
     lines.extend(
         emit_gain_filter(

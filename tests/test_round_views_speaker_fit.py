@@ -185,7 +185,6 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
     pytest.param({"floor": 8000.0}, "bounded_boost", id="higher-budget-floor"),
     pytest.param({"override": "bounded_boost", "verifies": False}, "bounded_boost", id="operator-boost"),
     pytest.param({"override": "cut_only"}, "cut_only", id="operator-cuts"),
-    pytest.param({"depth": 18.0}, "bounded_boost", id="composed-cap"),
     pytest.param({"disagree": True}, "bounded_boost", id="off-axis-contradiction"),
     pytest.param({"stimulus": "reference_axis"}, "bounded_boost", id="reference-axis-takes"),
     pytest.param({"basis_role": "summed"}, "cut_only", id="summed-set"),
@@ -246,23 +245,20 @@ def test_design_cloud_bounds_each_roles_fit(speaker_round, capsys, changes, expe
     if design_boost:
         floor = max(radiating_band_hz(sections_by_role([CrossoverRegion.from_mapping(region)])[role])[0], floor or 0)
     assert fit["budget"]["boost_floor_hz"] == floor
-    assert proposal["per_filter_boost_cap_db"] == (3.0 if design_boost else FitVocabulary().per_filter_boost_cap_db)
-    assert proposal["composed_boost_cap_db"] == (3.0 if design_boost else None)
+    assert proposal["per_filter_boost_cap_db"] == 40.0
+    assert proposal["composed_boost_cap_db"] == 40.0
     boosts = [f for f in fit["filters"] if f["gain"] > 0]
     assert all(f["freq"] >= (floor or 0) for f in boosts)
     if design_boost:
-        assert fit["composed_boost_cap_db"] == 3.0
-        peak, _ = _check_composed(tuple({"role": role, **f} for f in fit["filters"]), {role: (1600, 20000)},
-                                  boost_headroom={role: {"headroom_db": 3.0, "binding": "fit_budget"}})
-        assert peak <= 3.0 + 1e-9
-        assert all(f["gain"] <= 3.0 for f in boosts)
+        assert fit["composed_boost_cap_db"] == 40.0
+        peak, _ = _check_composed(tuple({"role": role, **f} for f in fit["filters"]), {role: (1600, 20000)})
+        assert peak <= 39.0 + 1e-9
+        assert all(f["gain"] <= fit["budget"]["max_gain_db"] for f in boosts)
         assert proposal["cloud"]["band_spread"]
     if expected == "cut_only" or changes.get("disagree"):
         assert not boosts
     elif floor != 8000:
         assert boosts
-    if changes.get("depth") == 18:
-        assert "composed_boost_cap_db" in fit["budget_binding"]
     if changes.get("disagree"):
         assert any(b["sigma_db"] > 0 for b in proposal["cloud"]["band_spread"])
         assert fit["lift_suppressed_reason"] == "boost_above_measured_target"
@@ -733,7 +729,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
         bounded = fit["role"] == "tweeter" and count == 3
         assert fit["vocabulary"] == ("bounded_boost" if bounded else "cut_only")
         assert fit["cloud"]["design_poses"] == count
-        assert fit["composed_boost_cap_db"] == (3.0 if bounded else None)
+        assert fit["composed_boost_cap_db"] == 40.0
     assert len(packet["series"]) == len(expected)
     assert all(s["stats"]["rms_100_10k_db"]["value"] is not None for s in packet["series"])
     assert packet["result"] == "complete" and set(packet["limits"]) == {g["set_id"] for g in groups}
@@ -879,3 +875,21 @@ def test_first_experiment_unavailable_codes(speaker_round, tmp_path, missing, re
     result = json.loads((banked.path / "packet.json").read_text())["commissioning"]
     assert (result["status"], result["reason"]) == ("unavailable", reason)
     assert "candidate_fingerprint" not in result
+
+
+@pytest.mark.parametrize("incumbent_boost,remaining", [(0.0, 40.0), (36.0, 3.0)])
+def test_fit_budget_inherits_program_headroom(speaker_round, incumbent_boost, remaining):
+    from jasper.active_speaker.speaker_fit import _production_vocabulary
+
+    root, _, _, _, region, _ = speaker_round
+    inputs = round_inputs(root)
+    vocabularies = _production_vocabulary(inputs, {
+        "source_preset": {"crossover_regions": [region]},
+        "linearization": {"tweeter": {"filters": [
+            {"biquad_type": "Highshelf", "freq": 6000.0, "q": 0.70710678, "gain": incumbent_boost},
+        ]}},
+    }, {}, {"tweeter": {"max_gain_db": 2.0}}, "bounded_boost")
+    vocabulary = vocabularies["tweeter"]
+    assert vocabulary.per_filter_boost_cap_db == pytest.approx(remaining, abs=0.01)
+    assert vocabulary.composed_boost_cap_db == pytest.approx(remaining, abs=0.01)
+    assert vocabulary.max_gain_db == 2.0

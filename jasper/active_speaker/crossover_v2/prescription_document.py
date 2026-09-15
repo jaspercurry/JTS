@@ -12,8 +12,13 @@ from typing import Any
 
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal
 from jasper.active_speaker.candidate_parts import compose_candidate
-from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
+from jasper.active_speaker.camilla_yaml import _branch_context
+from jasper.active_speaker.linearization_fit import linearization_filters_by_role
+from jasper.active_speaker.measured_crossover_candidate import (
+    MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, room_peqs_from_correction, driver_corrections,
+)
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
+from .topology_prescription import apply_topology_pin
 
 from . import alignment_prescription as alignment
 from . import bass_prescription as bass
@@ -21,7 +26,7 @@ from . import blend_prescription as blend
 from . import driver_prescription as driver
 from . import room_prescription as room
 from . import topology_prescription as topology
-from .evidence_packet import packet_feature_classifications, packet_incumbent_linearization, packet_positional_evidence
+from .evidence_packet import packet_feature_classifications, packet_positional_evidence
 from .prescription_contract import contract_digests, contract_json, prescription_contracts
 from .refusal_copy import refusal_copy_for
 from .round_inputs import prescription_sources
@@ -82,17 +87,19 @@ def read_prescription_document(raw: Any) -> Mapping[str, Any]:
 
 def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
                    contracts: Mapping[str, Any], evidence: PrescriptionEvidence,
-                   fc_hz: float | None) -> tuple[Any, Mapping[str, Any]]:
+                   fc_hz: float | None, selected: Mapping[str, Any]) -> tuple[Any, Mapping[str, Any]]:
     packet = dict(evidence.packet)
     speaker = contracts["speaker"]
     if name == "driver":
+        preset, _ = apply_topology_pin(selected.get("topology"), preset=base.candidate.source_preset, fc_hz=None)
         driver.check_driver_document_size(json.dumps(raw).encode())
         prescription = driver.read_driver_prescription(
             raw, packet_fingerprint=packet.get("packet_fingerprint"),
             passbands_hz=speaker["driver"]["bounds"]["passbands_hz"],
-            boost_headroom=speaker["driver"]["bounds"]["boost_headroom"],
+            branch_context=_branch_context(preset, driver_corrections(base.candidate)),
+            room_peqs=room_peqs_from_correction(selected.get("room", base.candidate.room_correction) or {}, preset),
             classifications=packet_feature_classifications(packet),
-            incumbent_filters=packet_incumbent_linearization(packet),
+            incumbent_filters=linearization_filters_by_role(base.candidate.linearization),
         )
         assert prescription is not None
         fields = driver.driver_prescription_to_candidate_fields(prescription, fitted=None)
@@ -178,7 +185,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
     selected: dict[str, Any] = {}
     judged: dict[str, Any] = {}
     fc_hz = contracts["speaker"]["alignment"]["bounds"]["fc_hz"]
-    for name in ("topology", "driver", "blend", "alignment", "room", "bass"):
+    for name in ("topology", "blend", "alignment", "room", "bass", "driver"):
         if name not in document["sections"]:
             continue
         section = document["sections"][name]
@@ -188,7 +195,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
         section = _section_payload(name, section, document["rationale"], contracts)
         try:
             selected[name], judged[name] = _judge_section(
-                name, section, base=base, contracts=contracts, evidence=evidence, fc_hz=fc_hz,
+                name, section, base=base, contracts=contracts, evidence=evidence, fc_hz=fc_hz, selected=selected,
             )
             if name == "topology":
                 fc_hz = selected[name].fc_hz

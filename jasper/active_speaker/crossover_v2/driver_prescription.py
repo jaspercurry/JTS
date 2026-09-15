@@ -25,15 +25,19 @@ from typing import Any
 
 import numpy as np
 
+from jasper.camilla_config_contract import PeqFilter
+
 from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
-    headroom_charge_db,
+    CrossoverSection,
     boost_headroom_by_role,
+    branch_chain_peak_db,
     _evaluation_grid,
     chain_response,
 )
 from jasper.active_speaker.camilla_yaml import (
     LINEARIZATION_BIQUAD_TYPES,
+    MAX_PROGRAM_HEADROOM_DB,
     linearization_slot,
 )
 # The emitter drops a shelf entry's own ``q`` and spells this instead, so a
@@ -662,8 +666,8 @@ def _boosts_in_crossover_overlap(
     **It refuses nothing.** Both drivers radiate in the overlap, so a
     per-driver boost there moves the summed response the crossover stage owns —
     worth telling a reader, not worth stopping a round for. Centres only: a
-    filter whose SKIRT reaches into the overlap is not counted, and what bounds
-    the SPEND is the composed and per-filter caps that run either way.
+    filter whose skirt reaches into the overlap is not counted. Program
+    headroom bounds the spend of the full branch chain.
     """
     overlaps = _crossover_overlaps(passbands)
     if not overlaps:
@@ -767,23 +771,10 @@ _COMPOSED_GRID_POINTS = 2048
 def _composed_grid(
     role_filters: Sequence[Mapping[str, Any]], lo: float, hi: float
 ) -> np.ndarray:
-    """The grid the composed caps are read on: the CHARGE's own span, unioned
-    with a dense sweep of the role's declared band.
+    """Full-spectrum grid for comparing a replacement with its incumbent.
 
-    Both halves are needed, each closing one failure.
-
-    DOMAIN. ``camilla_yaml.linearization_headroom_db`` charges the cascade's
-    peak over the WHOLE spectrum, and a mixed-sign cascade's extremum can sit
-    outside the hull of its own centres — six +3.0 dB Q-0.7 filters at 40 Hz
-    with two -12.0 dB Q-2.0 filters at 48 Hz, all inside the woofer's
-    40-3000 Hz band, peak at 29.5 Hz and are charged 10.75 dB for a document a
-    band-limited reading passed at 3.58. So the span is
-    ``branch_chain._evaluation_grid``'s own, IMPORTED rather than mirrored.
-
-    RESOLUTION. That span samples 1/48 octave, coarser inside one driver's band
-    than a Q-8 filter needs, so a dense per-band sweep is unioned in. The union
-    can only read HIGHER than either half, the only direction a safety bound
-    may move.
+    Mixed-sign cascades can peak outside their declared band. The dense
+    per-band sweep also resolves narrow differences between two cascades.
     """
     return _evaluation_grid(
         role_filters,
@@ -794,13 +785,12 @@ def _composed_grid(
 
 
 def _check_composed(
-    filters: tuple[dict[str, Any], ...], passbands: DriverPassbands, *,
-    boost_headroom: Mapping[str, Mapping[str, Any]],
+    filters: tuple[dict[str, Any], ...], passbands: DriverPassbands,
 ) -> tuple[float, str | None]:
-    """Check the total replacement cascade against each role's physical headroom."""
+    """Disclose the largest composed boost across the replacement cascades."""
     worst_boost = 0.0
     worst_role: str | None = None
-    for role, band in sorted(passbands.items()):
+    for role in sorted(passbands):
         role_filters = [
             {key: value for key, value in entry.items() if key != "role"}
             for entry in filters
@@ -808,41 +798,9 @@ def _check_composed(
         ]
         if not role_filters:
             continue
-        lo, hi = band
-        grid = _composed_grid(role_filters, lo, hi)
-        composed = 20.0 * np.log10(
-            np.maximum(np.abs(np.asarray(chain_response(role_filters, grid))), 1e-12)
-        )
-        if not np.all(np.isfinite(composed)):
+        peak_boost = branch_chain_peak_db(role_filters)
+        if not math.isfinite(peak_boost):
             _refuse(FILTER_MALFORMED, "cascade cannot be evaluated in finite arithmetic", role=role)
-        # The extremum can and does land outside the declared band (measured as
-        # low as 1.92 Hz and as high as 21.5 kHz), so the refusal names the
-        # FREQUENCY rather than an interval the number may not be inside.
-        peak_index = int(np.argmax(composed))
-        peak_boost = max(0.0, float(composed[peak_index]))
-        bound = boost_headroom[role]
-        max_boost_db = float(bound["headroom_db"])
-        if peak_boost > max_boost_db + _COMPOSED_BOOST_EVAL_TOL_DB:
-            _refuse(
-                COMPOSED_BOOST_EXCEEDED,
-                f"the {role}'s composed cascade boosts {peak_boost:.2f} dB at "
-                f"its peak ({grid[peak_index]:.1f} Hz), past the "
-                f"{max_boost_db:g} dB ceiling. Two filters "
-                "whose skirts overlap deliver more than either alone, and "
-                "every dB above unity is charged against the household's "
-                "maximum SPL",
-                role=role,
-                composed_boost_db=peak_boost,
-                composed_boost_hz=float(grid[peak_index]),
-                max_composed_boost_db=max_boost_db,
-                binding=bound["binding"],
-                max_spl_spend_bound_db=headroom_charge_db(max_boost_db),
-            )
-        # `>` not `>=`: the FIRST role reaching the worst value keeps it, so a
-        # tie is decided by sorted role order rather than evaluation order.
-        # `peak_boost > 0.0` not `>= 0.0`: a document that puts nothing above
-        # unity has no role that spent, and naming one would attribute 0.0 dB
-        # to whichever role sorted first.
         if peak_boost > 0.0 and (worst_role is None or peak_boost > worst_boost):
             worst_boost, worst_role = peak_boost, role
     return worst_boost, worst_role
@@ -1094,28 +1052,15 @@ def read_driver_prescription(
     passbands_hz: DriverPassbands | None,
     classifications: Sequence[FeatureVerdict] | None,
     incumbent_filters: Mapping[str, Sequence[Mapping[str, Any]]] | None,
-    boost_headroom: Mapping[str, Mapping[str, Any]],
+    branch_context: Mapping[str, tuple[Sequence[CrossoverSection], float]],
+    room_peqs: Sequence[PeqFilter] = (),
 ) -> DriverPrescription | None:
-    """THE request gate. One point, and the one place every bound is applied.
+    """Validate total role replacements against the program that will be emitted.
 
-    ``None`` when there is no prescription — the deterministic path, untouched.
-    Otherwise a validated :class:`DriverPrescription`, or
-    :class:`~.blend_prescription.BlendPrescriptionRefused` naming which gate
-    said no.
-
-    The keywords are the evidence packet's own answers, read out by
-    :mod:`.evidence_packet`'s named readers. Taking VALUES rather than the
-    packet keeps this module a leaf of the DAG. They are required and
-    undefaulted, so a caller cannot lose the evidence's own opinion silently:
-    they are the only inputs a prescriber willing to lie cannot forge.
-    ``incumbent_filters`` bounds nothing and ``None`` is a legitimate value for
-    it, unlike the three above — it buys the one disclosure
-    :func:`_check_displaced` makes.
-
-    Order is deliberate — shape, identity, bands, per-filter bounds, composed
-    cascade — because each stage sends a prescriber somewhere different. The
-    DISCLOSURES run last, so a document the gate refuses never pays for them.
-    The bounds are INCLUSIVE.
+    Branch context carries crossover sections and trims in dB. Unnamed roles
+    keep their incumbent filters; an empty filter list clears all roles.
+    Room PEQs are the selected program's shared correction. These trusted
+    inputs come from the base candidate and judged document sections.
     """
     if raw is None:
         return None
@@ -1160,27 +1105,22 @@ def read_driver_prescription(
             "required_protection_filters",
         )
     passbands = dict(passbands_hz)
-    if not filters:
-        for role, _ in pinned_trim_db:
-            if role not in passbands:
-                _refuse(
-                    TRIM_PIN_MALFORMED, f"pinned_trim_db names unknown speaker role {role!r}",
-                    role=role, speaker_roles=sorted(passbands),
-                )
-
-    boost_headroom = dict(boost_headroom)
-    for role, trim in pinned_trim_db:
-        bound = boost_headroom[role]
-        previous_trim = float(bound["trim_db"])
-        spl = bound["spl_headroom_db"]
-        boost_headroom.update(boost_headroom_by_role(
-            session_volume_db=float(bound["branch_level_dbfs"]) - previous_trim,
-            caps_dbfs={role: bound["cap_dbfs"]} if bound["cap_dbfs"] is not None else {},
-            branch_context={role: ((), trim)},
-            spl_headroom_db=spl - (trim - previous_trim) if spl is not None else None,
-        ))
     prescription_class = _check_bounds(filters, passbands)
-    composed_boost_db, composed_boost_role = _check_composed(filters, passbands, boost_headroom=boost_headroom)
+    for role, _ in pinned_trim_db:
+        if role not in passbands:
+            _refuse(ROLE_UNKNOWN, "unknown speaker role", role=role, speaker_roles=sorted(passbands))
+    context = {**{role: ((), 0.0) for role in passbands}, **branch_context}
+    for role, trim in pinned_trim_db:
+        context[role] = (context.get(role, ((), 0.0))[0], trim)
+    proposed = dict(incumbent_filters or {}) if filters else {}
+    for role in {entry["role"] for entry in filters}:
+        proposed[role] = [entry for entry in filters if entry["role"] == role]
+    composed_boost_db, composed_boost_role = _check_composed(filters, passbands)
+    headroom = boost_headroom_by_role(branch_context=context, linearization=proposed, room_peqs=room_peqs)
+    cost = headroom[composed_boost_role] if composed_boost_role else next(iter(headroom.values()))
+    if cost["program_headroom_spent_db"] > MAX_PROGRAM_HEADROOM_DB + _COMPOSED_BOOST_EVAL_TOL_DB:
+        _refuse(COMPOSED_BOOST_EXCEEDED, "program headroom exhausted",
+                role=composed_boost_role, **cost)
     basis, unvouched_filters = _check_classification(filters, classifications)
     displaced_filters, displaced_boost_db, displaced_boost_role = _check_displaced(
         filters, incumbent_filters, passbands
@@ -1205,9 +1145,7 @@ def read_driver_prescription(
         ),
         composed_boost_db=composed_boost_db,
         composed_boost_role=composed_boost_role,
-        max_spl_spend_bound_db=max((headroom_charge_db(float(bound["headroom_db"]))
-                                    for role, bound in boost_headroom.items()
-                                    if any(entry["role"] == role for entry in filters)), default=0.0),
+        max_spl_spend_bound_db=MAX_PROGRAM_HEADROOM_DB,
         displaced_filters=displaced_filters,
         displaced_boost_db=displaced_boost_db,
         displaced_boost_role=displaced_boost_role,
@@ -1459,7 +1397,7 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "packet) — nothing refuses a deeper one, and nothing makes it "
                 "work either"
             ),
-            "max_spl_spend_bound_db": "Derived per role in bounds.boost_headroom",
+            "max_spl_spend_bound_db": MAX_PROGRAM_HEADROOM_DB,
             "spend_is_a_step_function": (
                 "a branch that stays at or under unity is charged NOTHING. The "
                 "first admissible boost in a band the branch already runs at "

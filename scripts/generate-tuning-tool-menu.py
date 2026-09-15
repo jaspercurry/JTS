@@ -50,7 +50,7 @@ BOUND_SOURCES = {
         ("driver.trim_pin_scope", "rule", "contract.speaker.driver.bounds.trim_pin_scope"),
         ("driver.cut_Q", "Q", "contract.speaker.driver.bounds.q_range_cut"),
         ("driver.boost_Q_max", "Q", "contract.speaker.driver.bounds.q_max_boost"),
-        ("driver.boost_headroom", "dB", "contract.speaker.driver.bounds.boost_headroom"),
+        ("driver.boost_headroom_rule", "dB", "contract.speaker.driver.bounds.boost_headroom_rule"),
         ("driver.cut_rule", "rule", "driver.bounds.cuts_are_free"),
         ("driver.filters_per_role", "count", "contract.speaker.driver.bounds.max_filters_per_role"),
         ("driver.shelf_rule", "rule", "contract.speaker.driver.bounds.shelf_rule"),

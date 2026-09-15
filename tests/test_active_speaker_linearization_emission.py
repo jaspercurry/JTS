@@ -37,7 +37,6 @@ from jasper.active_speaker.camilla_yaml import (
     driver_linearization_taper_name,
     linearization_headroom_db,
 )
-from tests.test_crossover_v2_driver_prescription import BOOST_HEADROOM_DB, SPL_SPEND_DB
 from jasper.active_speaker.linearization_fit import (
     MAX_FILTERS_PER_DRIVER,
     _HIGHSHELF_Q,
@@ -104,8 +103,6 @@ def test_max_linearization_filters_matches_fit_engine_cap():
     fit-engine-produced candidate could be silently rejected by the emitter's
     independent re-validation."""
     assert MAX_LINEARIZATION_FILTERS_PER_DRIVER == MAX_FILTERS_PER_DRIVER
-
-
 
 
 # --------------------------------------------------------------------------- #
@@ -355,8 +352,6 @@ def test_linearization_rejects_unsupported_biquad_type(bad_type):
         )
 
 
-
-
 def test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom():
     """The PR-L5 doctrine amendment, at the emitter: a boost is emitted as
     asked, and the program-domain ``active_baseline_headroom`` gain grows by
@@ -447,74 +442,16 @@ def test_linearization_headroom_is_zero_for_a_cut_only_correction():
 
 
 def test_a_prescribable_boost_is_charged_its_realized_chain_peak():
-    """The deepest ONE admissible prescribed boost, priced.
-
-    +12.0 dB at Q 8 on 6245 Hz is exactly ``20.0`` since
-    R8, on a feature the 2026-08-19 record classifies boostable. It sits in the
-    tweeter's own passband, 0.0301 dB down its 1600 Hz LR4 high-pass — so the
-    realized chain peak is 11.9699 dB, not the 12.0 the filter asks for, and the
-    charge is that plus ``branch_chain.HEADROOM_MARGIN_DB``.
-
-    This is the WORST single-filter case the widened gate admits, and it lands
-    0.0301 dB under the published bound rather than over it. (At the old 3.0 dB
-    ceiling the same fixture charged 3.9699.)
-    """
     preset = _preset()
     flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
     boosted = emit_active_speaker_baseline_config(
         preset, playback_device=ACTIVE_PCM,
-        linearization={"tweeter": [_peak(6245.0, BOOST_HEADROOM_DB, q=8.0)]},
+        linearization={"tweeter": [_peak(6245.0, 12.0, q=8.0)]},
     )
 
     assert _headroom_gain_db(flat) == 0.0
     assert _headroom_gain_db(boosted) == pytest.approx(-12.9699, abs=1e-3)
-    assert _headroom_gain_db(boosted) > -SPL_SPEND_DB
-
-
-def test_the_prescription_boost_cap_is_what_keeps_the_charge_under_the_bound():
-    """The load-bearing arithmetic: the gate's 12.0 dB composed cap IS the 13.0.
-
-    Two +9.0 dB Q-8 boosts 0.1233 octaves apart compose to 11.916 dB on the
-    gate's own evaluation — just inside ``BOOST_HEADROOM_DB`` — and
-    the emitter charges 12.861 dB for them. Move them 0.0049 octaves closer and
-    the gate REFUSES at 12.088 dB composed, which would have charged 13.067 dB.
-    So the published bound is not a slogan beside the cap; it is the cap.
-
-    The emitter charges a little LESS than ``gate peak + 1.0`` (12.861 against
-    12.916) because the branch it prices also carries the 1600 Hz LR4 high-pass,
-    and that term only subtracts. That gap is step 4 of the derivation in
-    ``driver_prescription.SPL_SPEND_DB``, observed: the gate's reading
-    is an UPPER bound on what the emitter will charge, which is the direction a
-    safety bound has to err.
-
-    Re-derived at R8's widened caps on 2026-08-22. The same test at the old
-    caps used two +3.0 dB boosts 0.12 octaves apart (3.993 composed / 4.970
-    charged) against 0.115 (4.062 / 5.021). The gains had to move off the
-    per-filter rail to build this straddle at all: R8 set the per-filter and
-    composed caps to the SAME 12.0, so two filters both at the per-filter rail
-    can never compose to under the composed cap — each reads 12.0 alone and any
-    overlap only adds.
-    """
-    preset = _preset()
-    flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
-
-    def charged(separation_octaves: float) -> float:
-        text = emit_active_speaker_baseline_config(
-            preset, playback_device=ACTIVE_PCM,
-            linearization={"tweeter": [
-                _peak(6245.0, 9.0, q=8.0),
-                _peak(6245.0 * 2 ** separation_octaves, 9.0, q=8.0),
-            ]},
-        )
-        return _headroom_gain_db(flat) - _headroom_gain_db(text)
-
-    assert SPL_SPEND_DB == BOOST_HEADROOM_DB + 1.0
-    assert SPL_SPEND_DB == pytest.approx(13.0)
-    assert charged(0.1233) == pytest.approx(12.8612, abs=1e-3)
-    assert charged(0.1233) < SPL_SPEND_DB
-    # The first arrangement past the gate's cap, and it is past the bound too.
-    assert charged(0.1184) == pytest.approx(13.0668, abs=1e-3)
-    assert charged(0.1184) > SPL_SPEND_DB
+    assert _headroom_gain_db(boosted) > -40.0
 
 
 @pytest.mark.parametrize(("freq", "gain", "expected_charge"), [
@@ -564,8 +501,6 @@ def test_a_prescribable_boost_reproves_against_the_graph_it_emitted():
 
     assert graph.allowed is True, graph.issues
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
-
-
 
 
 def test_the_headroom_charge_cannot_be_asked_for_without_a_branch_context():
@@ -1098,14 +1033,12 @@ def test_linearization_boost_beside_room_peq_boost_still_proves():
     assert graph.allowed is True, graph.issues
 
 
-def test_large_boost_is_emitted_with_its_full_headroom_charge():
-    text = emit_active_speaker_baseline_config(
-        _preset(), playback_device=ACTIVE_PCM,
-        linearization={"tweeter": [_peak(6000.0, 22.0), _peak(6000.0, 22.0)]},
-    )
-    assert _headroom_gain_db(text) < -40.0
-    graph = classify_camilla_graph(topology=_active_topology("mono", "active_2_way"), text=text)
-    assert graph.allowed is True
+def test_runaway_program_headroom_is_refused():
+    with pytest.raises(ActiveSpeakerConfigError):
+        emit_active_speaker_baseline_config(
+            _preset(), playback_device=ACTIVE_PCM,
+            linearization={"tweeter": [_peak(6000.0, 22.0)] * 3},
+        )
 
 
 def test_a_generous_program_headroom_still_emits():
