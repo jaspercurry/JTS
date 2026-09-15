@@ -346,6 +346,8 @@ def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
             "delta_highpass_hz_exclusive_upper_field": "detector_lowpass_hz",
             "delta_lowpass_hz_exclusive_lower_field": "delta_highpass_hz",
             "delta_lowpass_hz_exclusive_lower_fallback": bass.DELTA_HIGHPASS_HZ_MIN,
+            "delta_lowpass_hz_playback_admission": "unavailable",
+            "delta_lowpass_hz_composite_dip_tolerance_db": bass.COMPOSITE_DIP_TOLERANCE_DB,
         },
         "refusal_codes": format_["refusal_reasons"],
         **bass_prescription.bass_evidence_status(evidence),

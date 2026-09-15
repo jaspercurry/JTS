@@ -15,6 +15,8 @@ proofs, fingerprint sensitivity to every new field, and the
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import yaml as yaml_lib
 
@@ -36,6 +38,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.camilla_config_contract import PeqFilter
+from jasper.bass_extension.dynamic import DynamicBassDescriptor, DynamicBassDescriptorError
 
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
@@ -675,13 +678,43 @@ def test_bass_extension_is_fingerprinted_and_reopened():
         "compressor_attack_s": 0.01,
         "compressor_release_s": 0.25,
         "delta_highpass_hz": None,
-        "delta_lowpass_hz": None,
     }
     tampered = candidate.to_dict()
     tampered["bass_extension"] = {**reopened.bass_extension, "low_boost_db": 2.0}
     with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
         MeasuredCrossoverCandidate.from_mapping(tampered)
     assert excinfo.value.code == "candidate_tampered"
+
+
+@pytest.mark.parametrize("optional, fingerprint", [
+    ({}, "02e523e0cbe63f4a9f2ed58b87b6088f8c4b7c7d80cb6c2ae3686f43b10a5ce1"),
+    ({"delta_lowpass_hz": None}, "152efe9e468cbd2609defe2f988e508b40a4bb5fe7bc1a957b102cf0f6c4676f"),
+    ({"delta_lowpass_hz": 100.0}, "58fabd1413534b5dd66b4cab9a0083325fc775667c1be5693fb2b555068e53c0"),
+])
+def test_jts3_bass_descriptor_era_preserves_identity_and_bytes(tmp_path, optional, fingerprint):
+    """Bass settings from applied candidate 0dc99d52; the fixture has its own preset and identity."""
+    candidate = _candidate(bass_extension={
+        "low_boost_db": 18.0, "delta_highpass_hz": 63.0, "detector_lowpass_hz": 100.0,
+        "reference_level_db": 0.0, "compressor_threshold_dbfs": -18.0, **optional,
+    })
+    raw = candidate.to_dict()
+    raw["fingerprint"] = fingerprint
+    path = tmp_path / "candidate.json"
+    encoded = json.dumps(raw, sort_keys=True).encode()
+    path.write_bytes(encoded)
+
+    reopened = MeasuredCrossoverCandidate.from_mapping(json.loads(path.read_bytes()))
+
+    assert reopened.fingerprint == fingerprint
+    assert json.dumps(reopened.to_dict(), sort_keys=True).encode() == encoded == path.read_bytes()
+    descriptor = DynamicBassDescriptor(**reopened.bass_extension)
+    assert descriptor.delta_lowpass_hz == optional.get("delta_lowpass_hz")
+    if descriptor.delta_lowpass_hz is None:
+        prove_candidate_config(reopened, compile_candidate_config(reopened, playback_device="hw:ActiveDAC"))
+    else:
+        with pytest.raises(DynamicBassDescriptorError) as refused:
+            compile_candidate_config(reopened, playback_device="hw:ActiveDAC")
+        assert refused.value.evidence["constraint"] == "delta_lowpass_unavailable"
 
 
 def test_from_mapping_rejects_non_mapping_bass_extension():

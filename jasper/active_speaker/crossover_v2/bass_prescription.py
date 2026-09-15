@@ -11,7 +11,7 @@ from typing import Any
 
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
 from jasper.bass_extension.dynamic import (
-    DYNAMIC_BASS_REFUSAL_REASONS, DynamicBassDescriptorError, validate_dynamic_bass_descriptor,
+    DYNAMIC_BASS_REFUSAL_REASONS, DynamicBassDescriptor, DynamicBassDescriptorError, validate_dynamic_bass_descriptor,
 )
 
 from ._prescription_common import BlendPrescriptionRefused, _refuse
@@ -65,8 +65,9 @@ def read_bass_prescription(raw: Any, *, evidence: Mapping[str, Any]) -> BassPres
         descriptor = validate_dynamic_bass_descriptor({key: value for key, value in raw.items()
                                                        if key != "round_id"}
                                                       if isinstance(raw, Mapping) else raw)
+        DynamicBassDescriptor(**descriptor).validate_for_playback()
     except DynamicBassDescriptorError as exc:
-        _refuse(exc.reason, str(exc), field=exc.field)
+        _refuse(exc.reason, str(exc), field=exc.field, **exc.evidence)
     round_id = evidence.get("round_id")
     status = bass_evidence_status(evidence)["evidence_status"]
     if not round_id or status != "evaluated":
@@ -74,7 +75,7 @@ def read_bass_prescription(raw: Any, *, evidence: Mapping[str, Any]) -> BassPres
     if raw.get("round_id") != round_id:
         _refuse(BASS_ROUND_MISMATCH, "The bass prescription must name this round.", round_id=round_id)
     lower = max(BASS_BANDS_HZ[0][0], descriptor["delta_highpass_hz"] or BASS_BANDS_HZ[0][0])
-    upper = descriptor["delta_lowpass_hz"] or descriptor["detector_lowpass_hz"]
+    upper = descriptor["detector_lowpass_hz"]
     bands = [(lo, hi) for lo, hi in BASS_BANDS_HZ if lo < upper and hi > lower]
     qualified = {tuple(band["band_hz"]) for view in evidence.get("bass", [])
                  for take in view.get("takes", []) for band in take.get("bands", [])

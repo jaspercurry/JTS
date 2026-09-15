@@ -106,6 +106,8 @@ BOUND_SOURCES = {
         ("delta_lowpass", "Hz", "contract.bass.schema.properties.delta_lowpass_hz"),
         ("delta_lowpass_exclusive_lower", "field", "contract.bass.bounds.delta_lowpass_hz_exclusive_lower_field"),
         ("delta_lowpass_exclusive_lower_fallback", "Hz", "contract.bass.bounds.delta_lowpass_hz_exclusive_lower_fallback"),
+        ("delta_lowpass_playback_admission", "status", "contract.bass.bounds.delta_lowpass_hz_playback_admission"),
+        ("delta_lowpass_composite_dip_tolerance", "dB", "contract.bass.bounds.delta_lowpass_hz_composite_dip_tolerance_db"),
         ("shared_headroom_layers", "layers", "contract.bass.shared_headroom.layers"),
         ("target_band", "Hz", "bass.TARGET.freqs_hz"),
         ("target_magnitude", "dB", "bass.TARGET.magnitude_db"),

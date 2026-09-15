@@ -291,6 +291,8 @@ def test_bass_schema_edges_match_the_validator(name):
             dynamic.validate_dynamic_bass_descriptor({**baseline, name: upper})
         assert dynamic.validate_dynamic_bass_descriptor({**baseline, name: math.nextafter(upper, -math.inf)})[name] < upper
     if name == "delta_lowpass_hz":
+        assert contract["bounds"]["delta_lowpass_hz_playback_admission"] == "unavailable"
+        assert contract["bounds"]["delta_lowpass_hz_composite_dip_tolerance_db"] == dynamic.COMPOSITE_DIP_TOLERANCE_DB
         lower_field = contract["bounds"]["delta_lowpass_hz_exclusive_lower_field"]
         fallback = contract["bounds"]["delta_lowpass_hz_exclusive_lower_fallback"]
         assert fallback == prop["exclusiveMinimum"]
@@ -298,7 +300,11 @@ def test_bass_schema_edges_match_the_validator(name):
             baseline[lower_field] = highpass
             lower = highpass or fallback
             accepted = math.nextafter(lower, math.inf)
-            assert dynamic.validate_dynamic_bass_descriptor({**baseline, name: accepted})[name] == accepted
+            stored = dynamic.validate_dynamic_bass_descriptor({**baseline, name: accepted})
+            assert stored[name] == accepted
+            with pytest.raises(dynamic.DynamicBassDescriptorError) as playback_refused:
+                dynamic.DynamicBassDescriptor(**stored).validate_for_playback()
+            assert playback_refused.value.evidence["constraint"] == "delta_lowpass_unavailable"
             for refused in (lower, math.nextafter(lower, -math.inf)):
                 with pytest.raises(dynamic.DynamicBassDescriptorError) as refused_error:
                     dynamic.validate_dynamic_bass_descriptor({**baseline, name: refused})

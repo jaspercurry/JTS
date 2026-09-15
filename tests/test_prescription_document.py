@@ -164,6 +164,7 @@ def test_one_invalid_section_refuses_whole_document(base, evidence, section, pay
     ({"delta_highpass_hz": 63, "delta_lowpass_hz": 62}, "bass_delta_lowpass_hz_invalid"),
     ({"delta_highpass_hz": 63, "delta_lowpass_hz": 63}, "bass_delta_lowpass_hz_invalid"),
     ({"delta_lowpass_hz": 201}, "bass_delta_lowpass_hz_invalid"),
+    ({"low_boost_db": 18, "delta_highpass_hz": 63, "delta_lowpass_hz": 100}, "bass_delta_lowpass_hz_invalid"),
     ({"low_boost_db": True}, "bass_low_boost_db_invalid"),
 ])
 def test_bass_refusals_keep_the_evidence_pin_and_field_codes(base, evidence, bass_packet, round_bank, change, code):
@@ -193,6 +194,10 @@ def test_bass_refusals_keep_the_evidence_pin_and_field_codes(base, evidence, bas
     assert {"ok", "code", "section", "next_action", "error", "evidence"} <= answer.keys()
     if code == "bass_band_unqualified":
         assert answer["evidence"]["band_hz"] == [20, 30]
+    if isinstance(change, dict) and change.get("delta_lowpass_hz") == 100:
+        assert answer["evidence"]["modeled_dip_db"] == pytest.approx(7.719724, abs=1e-6)
+        assert answer["evidence"]["modeled_dip_hz"] == pytest.approx(119.183, abs=0.01)
+        assert answer["evidence"]["model_tolerance_db"] == 0.0
 
 
 @pytest.mark.parametrize("verb", ["judge", "compose"])
@@ -222,31 +227,18 @@ def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsy
     assert len(banked_candidates(root=bank)) == (1 if verb == "judge" else 2)
 
 
-@pytest.mark.parametrize("corner, highpass, lowpass", [
-    (20, None, None), (80, None, None), (120, 40, None),
-    (120, 63, 99), (120, 63, 100), (80, 40, 100),
-])
-def test_bass_qualification_uses_boost_bands_and_any_qualified_take(base, evidence, bass_packet, corner, highpass, lowpass):
+@pytest.mark.parametrize("corner, highpass", [(20, None), (80, None), (120, 40)])
+def test_bass_qualification_uses_boost_bands_and_any_qualified_take(base, evidence, bass_packet, corner, highpass):
     takes = bass_packet["bass"][0]["takes"]
     takes.append(deepcopy(takes[0]))
     for band in takes[0]["bands"]:
         band["fundamental_qualified"] = False
     for band in takes[1]["bands"]:
-        if band["band_hz"][0] >= max(30, lowpass or corner) or band["band_hz"][1] <= (highpass or 0):
+        if band["band_hz"][0] >= max(30, corner) or band["band_hz"][1] <= (highpass or 0):
             band["fundamental_qualified"] = False
-    section = {**bass_document(bass_packet), "detector_lowpass_hz": corner,
-               "delta_highpass_hz": highpass, "delta_lowpass_hz": lowpass}
+    section = {**bass_document(bass_packet), "detector_lowpass_hz": corner, "delta_highpass_hz": highpass}
     child = judge_prescription_document(document(base.fingerprint, {"bass": section}), base=base, evidence=evidence)
     assert child.analysis["evidence"]["prescriptions"]["bass"]["evidence_status"] == "evaluated"
-    assert child.bass_extension["delta_lowpass_hz"] == lowpass
-    if lowpass is not None and lowpass < corner:
-        del section["delta_lowpass_hz"]
-        with pytest.raises(PrescriptionDocumentRefused) as refused:
-            judge_prescription_document(document(base.fingerprint, {"bass": section}), base=base, evidence=evidence)
-        answer = refused.value.to_dict()
-        assert answer["code"] == "bass_band_unqualified"
-        assert answer["evidence"]["band_hz"] == [100, 125]
-        assert answer["evidence"]["boost_band_hz"] == [highpass, corner]
 
 
 @pytest.mark.parametrize("verb", ["judge", "compose"])

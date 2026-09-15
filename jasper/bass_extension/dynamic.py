@@ -12,6 +12,7 @@ from dataclasses import dataclass, fields
 from typing import Any
 
 from jasper.json_fields import finite_float
+from .delta_composite import COMPOSITE_DIP_TOLERANCE_DB, PROOF_SHELF_HZ, modeled_composite_dip
 
 
 # CamillaDSP v4.1.3 Loudness parameter range; not a driver capability estimate.
@@ -53,10 +54,11 @@ DYNAMIC_BASS_REFUSAL_REASONS = frozenset({"bass_descriptor_malformed"} | {
 
 
 class DynamicBassDescriptorError(ValueError):
-    def __init__(self, field: str, detail: str) -> None:
+    def __init__(self, field: str, detail: str, *, evidence: Mapping[str, Any] | None = None) -> None:
         super().__init__(detail)
         self.field = field
         self.reason = "bass_descriptor_malformed" if field == "dynamic_bass" else f"bass_{field}_invalid"
+        self.evidence = dict(evidence or {})
 
 
 def _finite(value: float, name: str) -> float:
@@ -117,6 +119,22 @@ class DynamicBassDescriptor:
                 )
             object.__setattr__(self, "delta_lowpass_hz", corner)
 
+    def validate_for_playback(self) -> None:
+        # Remove this refusal when a delta low-pass design proves |1+delta| >= 1.
+        # Both evaluated Butterworth orders cut; stored descriptors remain readable.
+        if self.delta_lowpass_hz is not None:
+            raise DynamicBassDescriptorError("delta_lowpass_hz",
+                "No delta low-pass design is qualified without cutting the original response",
+                evidence={
+                    "constraint": "delta_lowpass_unavailable",
+                    "model_shelf_hz": PROOF_SHELF_HZ,
+                    "model_tolerance_db": COMPOSITE_DIP_TOLERANCE_DB,
+                    "lowpass_order": 2,
+                    **modeled_composite_dip(boost_db=self.low_boost_db, highpass_hz=self.delta_highpass_hz,
+                                            lowpass_hz=self.delta_lowpass_hz),
+                },
+            )
+
 
 def validate_dynamic_bass_descriptor(value: Any) -> dict[str, Any]:
     """Return the normalized strict candidate payload or raise ``ValueError``."""
@@ -127,7 +145,9 @@ def validate_dynamic_bass_descriptor(value: Any) -> dict[str, Any]:
     if not _REQUIRED_FIELDS <= keys or not keys <= _REQUIRED_FIELDS | _OPTIONAL_FIELDS:
         raise DynamicBassDescriptorError("dynamic_bass", "dynamic_bass has unknown or missing fields")
     descriptor = DynamicBassDescriptor(**dict(value))
-    return {name: getattr(descriptor, name) for name in sorted(_REQUIRED_FIELDS | _OPTIONAL_FIELDS)}
+    # An absent nullable field must not change persisted bytes or their fingerprint.
+    return {name: getattr(descriptor, name) for name in sorted(_REQUIRED_FIELDS | _OPTIONAL_FIELDS)
+            if name != "delta_lowpass_hz" or name in value}
 
 
 def loudness_boost_db(canonical_volume_db: float, descriptor: DynamicBassDescriptor) -> float:

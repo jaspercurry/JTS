@@ -51,6 +51,8 @@ def build_native_dynamic_bass_graph(
     detector therefore sees the actual level presented to this graph.
     """
 
+    descriptor.validate_for_playback()
+
     if type(channels) is not int or channels <= 0:
         raise ValueError("channels must be a positive integer")
     if (
@@ -95,16 +97,13 @@ def build_native_dynamic_bass_graph(
         },
     }
     delta_filters: list[str] = []
-    for kind, corner in (("Highpass", descriptor.delta_highpass_hz),
-                         ("Lowpass", descriptor.delta_lowpass_hz)):
-        if corner is None:
-            continue
-        name = f"{PREFIX}_delta_{kind.lower()}"
+    if descriptor.delta_highpass_hz is not None:
+        name = f"{PREFIX}_delta_highpass"
         filters[name] = {
             "type": "BiquadCombo",
             "parameters": {
-                "type": f"Butterworth{kind}",
-                "freq": corner,
+                "type": "ButterworthHighpass",
+                "freq": descriptor.delta_highpass_hz,
                 "order": 2,
             },
         }

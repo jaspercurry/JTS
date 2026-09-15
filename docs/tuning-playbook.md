@@ -343,6 +343,8 @@ Bass
 | delta_lowpass | {"type":["number","null"],"exclusiveMinimum":10.0,"maximum":200.0,"default":null} | Hz | contract.bass.schema.properties.delta_lowpass_hz |
 | delta_lowpass_exclusive_lower | "delta_highpass_hz" | field | contract.bass.bounds.delta_lowpass_hz_exclusive_lower_field |
 | delta_lowpass_exclusive_lower_fallback | 10.0 | Hz | contract.bass.bounds.delta_lowpass_hz_exclusive_lower_fallback |
+| delta_lowpass_playback_admission | "unavailable" | status | contract.bass.bounds.delta_lowpass_hz_playback_admission |
+| delta_lowpass_composite_dip_tolerance | 0.0 | dB | contract.bass.bounds.delta_lowpass_hz_composite_dip_tolerance_db |
 | shared_headroom_layers | ["driver_linearization","room","bass_extension"] | layers | contract.bass.shared_headroom.layers |
 | target_band | [20.0,60.0] | Hz | bass.TARGET.freqs_hz |
 | target_magnitude | [0.0,0.0] | dB | bass.TARGET.magnitude_db |
