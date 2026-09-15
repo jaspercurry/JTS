@@ -165,7 +165,6 @@ docs = [
   "AGENTS.md",
   "QUICKSTART.md",
   "BRINGUP.md",
-  "docs/install-hardware-tier-and-staleness.md",
 ]
 requires_docs_when = [
   "The supported deploy path, first-run setup flow, install targets, service ownership, or laptop/Pi state files change.",

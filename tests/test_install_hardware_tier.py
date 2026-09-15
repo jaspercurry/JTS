@@ -2,19 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Hardware-tier detection + arch preflight guards (Workstream D).
-
-`detect_hardware_tier` / `_hardware_tier_arch_supported` /
-`hardware_tier_preflight` are small bash helpers in
-deploy/install.sh that name the box's hardware tier (RAM/CPU/arch) once,
-up front, and fail fast on an unsupported architecture before any
-mutation. They sit on the deploy path and are easy to regress, so the
-SKU matrix is pinned here with synthetic-/proc injection — the same
-no-hardware pattern tests/test_install_profile_tiers.py uses for the
-Zero-2-W profile default and the low-memory Cargo build.
-
-Design note: docs/install-hardware-tier-and-staleness.md.
-"""
+"""Hardware-tier and architecture behavior under synthetic /proc inputs."""
 from __future__ import annotations
 
 import re
