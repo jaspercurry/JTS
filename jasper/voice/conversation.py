@@ -12,6 +12,7 @@ from typing import Callable
 
 from ..log_event import log_event
 from ..tools import ToolRegistry, tool
+from .prompt import DISMISSAL_PHRASES_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ def register_conversation_tools(registry: ToolRegistry, request_end: Callable[[]
     # on Live, a barge-in on the other adapters — deliberately.
     @tool(survives_cancellation=True, llm_description=(
         "End this voice conversation and return to wake-word listening. Use for a "
-        "standalone cancel, never mind, okay thanks, or goodbye. Do not use for "
+        f"standalone {DISMISSAL_PHRASES_TEXT}. Do not use for "
         "cancel my timer, stop music, or thanks followed by another request; "
         "use the relevant local tool instead. Ending does not undo completed actions."
     ))

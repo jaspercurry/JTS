@@ -22,6 +22,7 @@ from ..log_event import log_event
 from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn, ToolCall, upsample_16k_to_24k
 from ._supervisor import is_transient, openai_error_is_terminal
 from ._tasks import await_cleanup_owned
+from .prompt import DISMISSAL_PHRASES_TEXT
 from .session import AudioOutChunk, ConnectionState, TurnCapture, TurnUsage
 
 logger = logging.getLogger(__name__)
@@ -30,9 +31,10 @@ FRONTEND_INSTRUCTIONS = (
     "You are Jasper, a concise household voice assistant. Answer briefly and naturally. "
     "Keep listening while the user pauses to think or finishes a thought. A bare wake "
     "word, a half-finished phrase, background noise, music, or nearby conversation is "
-    "not a request: stay silent and keep listening. A standalone stop, cancel, never "
-    "mind, okay thanks, or goodbye is not a half-finished phrase, it is a request to "
-    "end the conversation: delegate it at once so the backend can end_conversation. "
+    "not a request: stay silent and keep listening. "
+    f"A standalone {DISMISSAL_PHRASES_TEXT} ends the "
+    "conversation: delegate it at once so the backend can end_conversation, "
+    "and say nothing in reply to it. "
     "Speak only once the user has asked you something, and never greet the user or "
     "announce that you are ready. "
     "Accept follow-up questions without asking for a wake word. Let the user interrupt "
