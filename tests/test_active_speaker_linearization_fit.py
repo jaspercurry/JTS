@@ -3224,6 +3224,20 @@ def test_the_core_level_is_continuous_across_the_width_floor(order, fcs, ceiling
     assert all(level > -6.0 for level in levels)
 
 
+@pytest.mark.parametrize("order,fcs,expected_step_db", [
+    (2, np.arange(7300.0, 7801.0, 25.0), 22.807),
+    (4, np.arange(9000.0, 9601.0, 25.0), 56.485),
+])
+def test_the_empty_intersection_step_is_the_one_residual_and_it_is_disclosed(
+    order, fcs, expected_step_db,
+):
+    levels = _core_level_sweep(lambda fc: _sub_floor_tweeter(fc, order=order), fcs)
+    assert _worst_adjacent_step_db(levels) == pytest.approx(expected_step_db, abs=0.05)
+    jump = int(np.argmax(np.abs(np.diff(levels))))
+    for fc, falls_back in zip(fcs[jump:jump + 2], (False, True)):
+        _, envelope, band = _sub_floor_tweeter(fc, order=order)
+        used = core_level_band_hz(envelope, radiating_band_hz=band)
+        assert (used == core_level_band_hz(envelope)) is falls_back
 
 
 def test_the_disclosed_band_is_the_one_the_median_actually_used():

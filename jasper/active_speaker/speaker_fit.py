@@ -90,6 +90,7 @@ def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str,
             ) else None,
         )
         cloud = CloudFitTerms(n_positions=len(bearings))
+        # Standard error needs two positions; see linearization_envelope.position_spread_db.
         if len(bearings) >= 2:
             try:
                 responses = []

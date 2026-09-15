@@ -332,10 +332,13 @@ def compose_envelope(
     ``sigma_db`` is a tri-state seam: unset computes from ``primary``'s
     repeats, an ndarray is used verbatim, explicit ``None`` forces "no
     repeatability evidence". Cloud arguments default to absent (term not
-    added). Position spread is report-only.
+    added). Position spread is report-only; its bands and position count must
+    be supplied together.
     """
     _validate_tier(mic_tier)
     _validate_driver_class(driver_class)
+    if (band_spread is None) != (n_positions is None):
+        raise ValueError("band_spread and n_positions must be supplied together")
 
     occurrences: tuple[DriverResponse, ...] = (primary, *primary.repeat_responses)
     known_floors = [floor for o in occurrences if (floor := o.fit_floor_hz) is not None]

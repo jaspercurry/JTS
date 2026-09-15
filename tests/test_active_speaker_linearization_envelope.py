@@ -1124,6 +1124,13 @@ def test_compose_envelope_cloud_terms_can_only_narrow():
     assert np.any(narrowed.allowed_depth_db < baseline.allowed_depth_db)
 
 
+@pytest.mark.parametrize("bands,positions", [(None, 2), ((), None)])
+def test_compose_envelope_requires_band_spread_and_n_positions_together(bands, positions):
+    primary = _zero_sigma_primary("tweeter", freqs_hz=DEFAULT_ENVELOPE_GRID_HZ)
+    with pytest.raises(ValueError):
+        _compose(primary, band_spread=bands, n_positions=positions)
+
+
 @pytest.mark.parametrize("positions,spread", [(0, None), (1, None), (2, 6 / math.sqrt(2)), (4, 3.0)])
 def test_position_spread_is_disclosed_without_limiting_depth(positions, spread):
     grid = DEFAULT_ENVELOPE_GRID_HZ
