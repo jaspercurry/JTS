@@ -60,9 +60,7 @@ def round_alignment(
              "timing": take.get("timing"), "attempt": take.get("attempt", 0),
              **alignment_evidence(take, sources)}
             for group, take in pairs.values()]
-    verified = max((row for row in rows if row["timing_verification"] is not None
-                    and row["pose"].get("deg") == 0 and row["pose"].get("elevation_deg") == 0),
-                   key=take_order, default=None)
+    verified = commissioning_alignment([row for row in rows if row["timing_verification"] is not None])
     saved = (sources.get("applied_profile") or {}).get("timing")
     return rows, {
         "saved": saved,
@@ -70,17 +68,19 @@ def round_alignment(
     }
 
 
-def commissioning_alignment(rows: Sequence[Mapping[str, Any]], candidate_id: str) -> Mapping[str, Any] | None:
-    return max((row for row in rows if (row["base"] or row["candidate_id"] in (None, candidate_id))
+def commissioning_alignment(rows: Sequence[Mapping[str, Any]], candidate_id: str | None = None) -> Mapping[str, Any] | None:
+    return max((row for row in rows if (candidate_id is None or row["base"] or row["candidate_id"] in (None, candidate_id))
                 and row["pose"].get("deg") == 0 and row["pose"].get("elevation_deg") == 0),
                key=take_order, default=None)
 
-def timing_next_action(timing: Mapping[str, Any], *, needs_measurement: bool = False) -> dict[str, str] | None:
+def timing_next_action(timing: Mapping[str, Any], *, measured: bool = False, needs_measurement: bool = False) -> dict[str, str] | None:
     verification = timing.get("verification") or {}
     residual, noise = (finite_float(verification.get(key)) for key in ("residual_rms_db", "repeat_noise_db"))
     if timing.get("saved") is not None:
         if residual is not None and noise is not None and residual > 3 * noise:
             return {"id": "reset_timing", "label": "the saved timing no longer explains the sum: re-measure timing (reset timing)"}
+    elif measured:
+        return {"id": "apply_timing", "label": "timing measured; apply a document to save it"}
     elif needs_measurement:
         return {"id": "measure_timing", "label": "measure timing again: louder, quieter room"}
     return None

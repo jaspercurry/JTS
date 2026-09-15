@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal
+from jasper.active_speaker.alignment_evidence import commissioning_alignment, round_alignment
+from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.candidate_parts import compose_candidate
 from jasper.active_speaker.camilla_yaml import _branch_context
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
@@ -205,13 +207,19 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
         except (ValueError, TypeError, KeyError) as exc:
             raise PrescriptionDocumentRefused("prescription_malformed", name, str(exc)) from exc
     try:
+        rows, _ = round_alignment({**(evidence.sources.get("manifest") or {}), "round_id": evidence.round_id},
+                                 evidence.sources) if evidence.round_id else ([], {})
+        read = commissioning_alignment(rows, base.fingerprint)
         return compose_candidate(
             base, sections=selected, rationale=document["rationale"],
+            base_profile=(evidence.sources.get("applied_profile") if evidence.round_id and document["base"] != "saved"
+                          else load_applied_baseline_profile_state()),
             room_prescription_sha256=(blend.prescription_sha256(contract_json(judged["room"]).encode())
                                       if selected.get("room") else ""),
             room_measured_basis=judged.get("room", {}).get("measured_basis"),
             evidence={"packet_fingerprint": evidence.packet.get("packet_fingerprint"),
-                      "contracts": contract_digests(contracts), "prescriptions": judged},
+                      "contracts": contract_digests(contracts), "prescriptions": judged,
+                      **({"commissioning": {"alignment": read}} if read is not None else {})},
         )
     except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
         raise PrescriptionDocumentRefused(exc.code, "topology" if exc.code == "composition_topology_required" else None, exc.detail) from exc

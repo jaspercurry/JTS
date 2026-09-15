@@ -897,34 +897,38 @@ def test_a_follower_domain_graph_never_touches_the_solo_base_trim(
     assert dbt.load_base_trim() == banked
 
 
-@pytest.mark.parametrize("verdict", ["measured", "authored", "estimate", "needs_measurement"])
+@pytest.mark.parametrize("source", ["measured", "document", "saved", "cleared", "base"])
 @pytest.mark.parametrize("delay", [-37.5, 22.0])
-def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, verdict, delay):
+def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source, delay):
     load_applied = baseline_profile_mod.load_applied_baseline_profile_state
     topology = _topology()
     draft = standard_design_draft(topology)
     declaration, base = declared_graph_fixture(topology, draft)
     fields = {"margin_db": .6, "residual_rms_db": .2, "repeat_spread_db": .1, "repeat_spread_us": 2, "repeat_count": 3}
     identity = {"round_id": "r1", "take_id": "t2", "graph_fingerprint": "graph", "at": "2026-09-15T12:00:00Z"}
+    incumbent = {"delay_us": delay, "polarity": "inverted", "provenance": "measured",
+                 "measured": {**fields, **identity, "at": "2026-09-14T12:00:00Z"}}
     candidate = replace(base, alignment=MeasuredCrossoverAlignment(abs(delay), "tweeter" if delay > 0 else "woofer", "invert"),
-        analysis={"measurement_status": "unmeasured", "timing_verdict": verdict, "evidence": {"commissioning": {"alignment": {
-            "timing_verdict": verdict, "committed": {"delay_us": delay, "polarity": "inverted"}, **fields, **identity}}}})
+        analysis={"measurement_status": "unmeasured", "resolution": {"alignment": source}, "evidence": {"commissioning": {"alignment": {
+            "timing_verdict": "measured", "committed": {"delay_us": delay, "polarity": "inverted"}, **fields, **identity}}}})
     monkeypatch.setattr(baseline_profile_mod, "_bank_applied_base_trim", lambda *a: None)
     monkeypatch.setattr(baseline_profile_mod, "release_staged_startup_hold", lambda: None)
     prepared = baseline_profile_mod.prepare_applied_baseline_profile(candidate, declaration=declaration,
-        design_draft=draft, measurements={}, applied_at=identity["at"])
+        design_draft=draft, measurements={}, applied_at=identity["at"], provenance={"timing": incumbent})
     path = tmp_path / "applied.json"
     baseline_profile_mod.persist_applied_baseline_profile(prepared, apply_state={"result": "success"}, state_path=path)
     applied = load_applied(path)
     assert all(not ({"delay_ms", "inverted"} & set(values)) for values in applied["corrections_provenance"].values())
-    if verdict in ("estimate", "needs_measurement"):
+    if source in ("cleared", "base"):
         assert "timing" not in applied
         assert applied_profile_timing(applied) is None
         return
     expected = {"delay_us": delay, "polarity": "inverted",
-                "provenance": "measured" if verdict == "measured" else "authored_by_model"}
-    if verdict == "measured":
+                "provenance": "measured" if source == "measured" else "authored_by_model"}
+    if source == "measured":
         expected["measured"] = {**fields, **identity}
+    elif source == "saved":
+        expected = incumbent
     assert applied["timing"] == expected
     assert {key: value for key, value in asdict(applied_profile_timing(applied)).items() if value is not None} == expected
     corrections = applied["corrections"]

@@ -96,9 +96,52 @@ def test_empty_clears_and_omitted_layers_inherit(base, section, empty):
 def evidence(bass_packet):
     return PrescriptionEvidence(
         {"draft": _draft(), "room_median": _room_median(), "bass_evidence": bass_packet,
-         "manifest": {"sets": [{"takes": [{"selected": True, "level": {"level_db": -21.09}}]}]}},
+         "manifest": {"sets": [{"set_id": "base", "capture_basis": {},
+                                "takes": [{"selected": True, "level": {"level_db": -21.09}}]}]}},
         {"packet_fingerprint": "p" * 64}, MEDIAN_SHA256, bass_packet["round_id"],
     )
+
+
+def timing_evidence(base, *, saved=None, verdict="measured", axis=0):
+    return PrescriptionEvidence(sources={"applied_profile": {"timing": saved} if saved else None,
+        "bass_evidence": {}, "manifest": {"run_id": "capture-run", "sets": [{
+            "set_id": "base", "base": True, "capture_basis": {"candidate_id": base.fingerprint, "graph_fingerprint": "graph"},
+            "takes": [{"take_id": "t2", "selected": True, "phase": "measure",
+                "pose": {"kind": "bearing", "deg": axis, "elevation_deg": 0}, "artifacts": {"record_id": "read.json"},
+                "analysis": {"timing_verdict": verdict, "alignment_status": "ok", "delay_us": -37.5, "polarity": "inverted",
+                    "trim_db": {"woofer": 0, "tweeter": -9}, "margin_db": .6, "residual_rms_db": .2,
+                    "repeat_spread_db": .1, "repeat_spread_us": 2, "repeat_count": 3}}]}]}}, round_id="r1")
+
+
+@pytest.mark.parametrize("source,saved,verdict,axis,has_round,base_name", [
+    ("document", True, "measured", 0, True, "banked"), ("cleared", True, "measured", 0, True, "banked"),
+    ("saved", True, "measured", 0, True, "banked"), ("saved", True, "measured", 0, False, "banked"),
+    ("saved", True, "measured", 0, True, "saved"),
+    ("measured", False, "measured", 0, True, "banked"), ("base", False, "needs_measurement", 0, True, "banked"),
+    ("base", False, "measured", 30, True, "banked"), ("base", False, "measured", 0, False, "banked"),
+])
+def test_document_resolves_timing_once(base, monkeypatch, source, saved, verdict, axis, has_round, base_name):
+    record = {"delay_us": 22, "polarity": "normal", "provenance": "set_by_user"} if saved else None
+    evidence = timing_evidence(base, saved=record, verdict=verdict, axis=axis)
+    if not has_round or base_name == "saved":
+        monkeypatch.setattr("jasper.active_speaker.crossover_v2.prescription_document.load_applied_baseline_profile_state",
+                            lambda: {"timing": record} if record else None)
+    if base_name == "saved":
+        evidence = replace(evidence, sources={**evidence.sources, "applied_profile": None})
+    if not has_round:
+        evidence = replace(evidence, round_id="")
+    sections = {"alignment": {"delay_us": 100, "basis_delay_us": 0, "basis_artifacts": ["alignment.json"]}} if source == "document" else {"alignment": {}} if source == "cleared" else {}
+    child = judge_prescription_document(document("saved" if base_name == "saved" else base.fingerprint, sections), base=base, evidence=evidence)
+    assert child.analysis["resolution"]["alignment"] == source
+    assert child.alignment == {"document": MeasuredCrossoverAlignment(100, "tweeter", "keep"),
+        "cleared": MeasuredCrossoverAlignment(), "saved": MeasuredCrossoverAlignment(22, "tweeter", "keep"),
+        "measured": MeasuredCrossoverAlignment(37.5, "woofer", "invert"), "base": base.candidate.alignment}[source]
+    if source == "measured":
+        read = child.analysis["evidence"]["commissioning"]["alignment"]
+        assert {key: read[key] for key in ("round_id", "take_id", "graph_fingerprint", "margin_db", "residual_rms_db",
+                                         "repeat_spread_db", "repeat_spread_us", "repeat_count")} == {
+            "round_id": "r1", "take_id": "t2", "graph_fingerprint": "graph", "margin_db": .6, "residual_rms_db": .2,
+            "repeat_spread_db": .1, "repeat_spread_us": 2, "repeat_count": 3}
 
 
 def bass_document(packet):
