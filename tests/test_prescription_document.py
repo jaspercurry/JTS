@@ -37,6 +37,8 @@ from jasper.active_speaker.crossover_v2.prescription_document import (
     PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document,
 )
 from jasper.active_speaker.crossover_v2.bass_prescription import BASS_PRESCRIPTION_REFUSAL_REASONS
+from jasper.active_speaker.round_packet import write_round_packet
+from tests.run_manifest_fixture import write_manifest
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment, driver_corrections
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.cli import crossover_prescriber
@@ -196,8 +198,6 @@ def test_one_invalid_section_refuses_whole_document(base, evidence, section, pay
     ({"round_id": "wrong"}, "bass_round_mismatch"),
     ("packet_round_mismatch", "bass_evidence_unavailable"),
     ("no_round_id", "bass_evidence_unavailable"),
-    ("unqualified", "bass_band_unqualified"),
-    ("table_only", "bass_band_unqualified"),
     ("missing_field", "bass_descriptor_malformed"),
     ({"unknown": 1}, "bass_descriptor_malformed"),
     ({"low_boost_db": 0}, "bass_low_boost_db_invalid"),
@@ -205,7 +205,7 @@ def test_one_invalid_section_refuses_whole_document(base, evidence, section, pay
     ({"low_boost_db": True}, "bass_low_boost_db_invalid"),
 ])
 def test_bass_refusals_keep_the_evidence_pin_and_field_codes(base, evidence, bass_packet, round_bank, change, code):
-    section = bass_document(bass_packet)
+    section = {**bass_document(bass_packet), "delta_highpass_hz": 25, "detector_lowpass_hz": 100}
     if isinstance(change, dict):
         section.update(change)
     elif change == "missing_field":
@@ -219,18 +219,12 @@ def test_bass_refusals_keep_the_evidence_pin_and_field_codes(base, evidence, bas
         evidence = None
     elif change == "no_bass":
         evidence = replace(evidence, sources={"bass_evidence": {"round_id": bass_packet["round_id"]}})
-    elif change == "table_only":
-        del bass_packet["bass"]
-    else:
-        bass_packet["bass"][0]["takes"][0]["bands"][0]["fundamental_qualified"] = False
     with pytest.raises(PrescriptionDocumentRefused) as refused:
         judge_prescription_document(document(base.fingerprint, {"bass": section}), base=base, evidence=evidence)
     answer = refused.value.to_dict()
     assert (answer["section"], answer["code"]) == ("bass", code)
     assert code in BASS_PRESCRIPTION_REFUSAL_REASONS
     assert {"ok", "code", "section", "next_action", "error", "evidence"} <= answer.keys()
-    if code == "bass_band_unqualified":
-        assert answer["evidence"]["band_hz"] == [20, 30]
 
 
 @pytest.mark.parametrize("verb", ["judge", "compose"])
@@ -245,7 +239,8 @@ def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsy
     assert crossover_prescriber.main(args) == 0
     answer = json.loads(capsys.readouterr().out)
     descriptor = validate_dynamic_bass_descriptor(BASS_EXTENSION)
-    receipt = {**descriptor, "round_id": bass_packet["round_id"], "evidence_status": "evaluated"}
+    receipt = {**descriptor, "round_id": bass_packet["round_id"], "evidence_status": "evaluated",
+               "unqualified_boost_bands_hz": []}
     contracts = prescription_contracts(**{**prescription_sources(round_inputs(bass_round)), "candidate": base.candidate.to_dict()})
     direct = compose_candidate(base, sections={"bass": descriptor}, rationale=raw["rationale"], evidence={
         "packet_fingerprint": None, "contracts": contract_digests(contracts), "prescriptions": {"bass": receipt},
@@ -260,18 +255,39 @@ def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsy
     assert len(banked_candidates(root=bank)) == (1 if verb == "judge" else 2)
 
 
-@pytest.mark.parametrize("corner, highpass", [(20, None), (80, None), (120, 40)])
-def test_bass_qualification_uses_boost_bands_and_any_qualified_take(base, evidence, bass_packet, corner, highpass):
+def test_bass_below_qualified_floor_is_disclosed_by_judge_and_packet(base, bank, evidence, bass_packet, bass_round, round_bank, tmp_path, capsys):
+    for band in bass_packet["bass"][0]["takes"][0]["bands"]:
+        band["fundamental_qualified"] = band["band_hz"][0] >= 63
+    section = {**bass_document(bass_packet), "delta_highpass_hz": 25, "detector_lowpass_hz": 100}
+    raw = document(base.fingerprint, {"bass": section})
+    child = judge_prescription_document(raw, base=base, evidence=evidence)
+    receipt = child.analysis["evidence"]["prescriptions"]["bass"]
+    assert receipt["unqualified_boost_bands_hz"] == [[20, 30], [30, 40], [40, 50], [50, 63]]
+    assert receipt["evidence_status"] == "evaluated"
+    (bass_round / "packet.json").write_text(json.dumps(bass_packet))
+    path = tmp_path / "prescription.json"
+    path.write_text(json.dumps(raw))
+    assert crossover_prescriber.main(["judge", str(path), "--root", str(bank), "--round", str(bass_round)]) == 0
+    assert json.loads(capsys.readouterr().out)["sections"]["bass"] == receipt
+    directory = round_bank[1] / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY"
+    (directory / "candidate.json").write_text(json.dumps(child.to_dict()))
+    write_manifest(bass_round, program="bass")
+    packet = write_round_packet(bass_round, str(directory / "run_manifest.json"), [])
+    assert packet["prescriptions"]["bass"] == receipt
+
+
+@pytest.mark.parametrize("corner, highpass, unqualified", [(20, None, [[20, 30]]), (80, None, [[20, 30]]), (120, 40, [])])
+def test_bass_qualification_uses_boost_bands_and_any_qualified_take(base, evidence, bass_packet, corner, highpass, unqualified):
     takes = bass_packet["bass"][0]["takes"]
     takes.append(deepcopy(takes[0]))
     for band in takes[0]["bands"]:
         band["fundamental_qualified"] = False
     for band in takes[1]["bands"]:
-        if band["band_hz"][0] >= max(30, corner) or band["band_hz"][1] <= (highpass or 0):
+        if band["band_hz"][0] == 20 or band["band_hz"][0] >= max(30, corner) or band["band_hz"][1] <= (highpass or 0):
             band["fundamental_qualified"] = False
     section = {**bass_document(bass_packet), "detector_lowpass_hz": corner, "delta_highpass_hz": highpass}
     child = judge_prescription_document(document(base.fingerprint, {"bass": section}), base=base, evidence=evidence)
-    assert child.analysis["evidence"]["prescriptions"]["bass"]["evidence_status"] == "evaluated"
+    assert child.analysis["evidence"]["prescriptions"]["bass"]["unqualified_boost_bands_hz"] == unqualified
 
 
 @pytest.mark.parametrize("verb", ["judge", "compose"])

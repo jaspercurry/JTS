@@ -161,10 +161,15 @@ Read each `packet["bass"]` entry's `set_id` and `takes`. Each take has
 harmonic coverage is not low distortion. Read `diagnostics` before comparing
 curves. Requested gain alone does not establish actual DSP drive.
 
-The table, `bass_table.tables[].levels[]`, shows each level's bass reach.
-`base_response` and `candidate_response` give −3, −6 and −10 dB corners,
-slope and `qualified_from_hz`. Bounded corners end at qualified coverage.
-Base and candidate SPL use each take's calibrated loudest half-second.
+The shelf has a fixed corner near 70 Hz and slope 12.
+Choose `low_boost_db` to match the measured roll-off: compare the base corner
+and per-band `realized_boost_db` in `bass_table.tables[].levels[]`; overshoot
+above the corner beyond repeat spread means too much boost for the box.
+Keep `delta_highpass_hz` near 25 to 30 Hz for sub-20 Hz protection, never
+at the extension target: a high corner tilts boost up and discards extension.
+Set `detector_lowpass_hz` at the top of the boosted band.
+Unqualified boosted bands are disclosed on the document, and the room
+layer, fitted through bass, absorbs the residual tail.
 
 `prescribed_boost_db` minus `realized_boost_db` is the drive evidence.
 `compression_db` includes compressor and driver action in the boost band.
@@ -175,16 +180,11 @@ Read `snr_margin_db` and `repeat_spread_db`; `position_spread_db` is reserved.
 
 Driver, room and bass boosts spend one shared headroom budget
 (`0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md`).
-The owner's jts3 observation in plan #5073 attributes the 40 to 50 Hz hole
-at that mark to the room. It is a placement observation, not a driver target
-or a universal frequency exclusion. Test changed placement on its evidence.
 
-Grade reach, boost and harmonics per level.
-Flat 20 to 60 Hz within 3 dB remains the experiment's declared target,
-owned by `TARGET` and `TOLERANCE_DB` in `jasper/bass_extension/measurement.py`.
-Preserve `outcome` codes and missing bins in `fit`. This target is one field.
-Middle settings remain unmeasured. Harmonics give no gate or hardware limit.
-Unknown does not mean pass.
+Grade reach, boost and harmonics per level against `TARGET` and `TOLERANCE_DB`
+in `jasper/bass_extension/measurement.py`; preserve `outcome` and missing bins
+in `fit`.
+Middle settings remain unmeasured; harmonics give no gate or hardware limit.
 
 ## Five rules that hold everywhere
 
