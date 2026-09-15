@@ -5820,7 +5820,6 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     ):
         monkeypatch.setenv(env_name, str(tmp_path / f"{env_name.lower()}.json"))
     monkeypatch.setattr(reset_flow, "handle_status", lambda *, capture=None: ({}, 200))
-    monkeypatch.setattr(reset_flow, "_active_group_member", lambda: False)
     monkeypatch.setattr(
         "jasper.web.correction_crossover_flow._build_envelope_logged",
         lambda status: {"screen": "start", "active": True, "steps": [], "nudges": []},

@@ -25,7 +25,6 @@ import { crossoverMainModule, elementWithLiveText as element } from "./_dom.mjs"
 const ids = [
   "crossover-verdict",
   "crossover-applied",
-  "crossover-start-over",
   "crossover-steps",
   "crossover-nudges",
   "crossover-review",
@@ -79,7 +78,6 @@ const { elements, render, runAction, setStatus } = await crossoverMainModule({
   },
   extraStubs: {
     getJSON: async () => ({ ...baseEnvelope }),
-    jtsConfirm: async () => true,
     renderCloud: () => {},
     redrawCloudChart: () => {},
     postJSON: async () => {

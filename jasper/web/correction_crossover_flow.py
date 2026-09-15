@@ -32,10 +32,8 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <p id="crossover-verdict" class="form-hint">Checking the speaker…</p>
     <span id="crossover-applied" class="badge badge--idle" hidden></span>
     <div class="crossover-card__footer">
-      <button id="crossover-start-over" class="btn btn--ghost" type="button">Start over</button>
       <p class="form-hint">
-        <a href="http://{html.escape(hostname, quote=True)}/sound/speaker/">Remove the active crossover entirely</a>
-        — this returns the speaker to a plain stereo crossover.
+        <a href="http://{html.escape(hostname, quote=True)}/sound/speaker/">Back to the speaker page</a>
       </p>
     </div>
   </section>
@@ -126,34 +124,6 @@ def handle_status(
     return payload, HTTPStatus.OK
 
 
-def _active_group_member() -> bool:
-    """True when this speaker is an active multi-room group member.
-
-    Read fresh from ``grouping.env`` via the pure declared-config predicates
-    (``is_active_leader`` / ``is_bonded_follower``) — no cross-origin HTTP,
-    so it is cheap to compute on the correction daemon. Fail-open to ``False``
-    (a read failure must never over-warn a solo household). The "Start over"
-    confirm copy uses this: a bonded speaker's group crossover is rebuilt from
-    the CLEARED measurement evidence, so it needs re-measurement after a scoped
-    reset (fail-safe to solo) — see ``jasper.active_speaker.reset`` and
-    ``jasper.web.correction_crossover_backend.reset_measurement_journey``.
-    """
-    try:
-        from jasper.multiroom.config import (
-            is_active_leader,
-            is_bonded_follower,
-            load_config,
-        )
-    except ImportError:
-        # Fail-open to the solo copy if the multiroom module is unavailable.
-        return False
-    # load_config is total (documented never-raises: a missing/unreadable
-    # grouping.env resolves to the all-off config), and the two predicates are
-    # pure, so no broad catch is warranted here.
-    cfg = load_config()
-    return is_active_leader(cfg) or is_bonded_follower(cfg)
-
-
 def _build_envelope_logged(status: Mapping[str, Any]) -> dict[str, Any]:
     """Serve the v2 session crossover envelope for ``status`` and log the serve."""
 
@@ -185,10 +155,6 @@ def handle_envelope(
     passive speakers get ``active=False`` (Layer A hidden)."""
     status, _ = handle_status(capture=capture)
     envelope = _build_envelope_logged(status)
-    # The "Start over" confirm copy is grouping-aware; carry the (cheap,
-    # fail-open) member flag on every polled envelope so the button that is
-    # always visible confirms with copy that is true in the current state.
-    envelope["grouping_member"] = _active_group_member()
     return envelope, HTTPStatus.OK
 
 
@@ -229,7 +195,6 @@ def handle_reset(
 
     status, _ = handle_status(capture=capture)
     envelope = _build_envelope_logged(status)
-    envelope["grouping_member"] = _active_group_member()
     # Surface the honest outcome, not the static intent: ``status`` is
     # ``partial`` when any file failed to unlink, and ``errors`` names them —
     # the page branches its message on this rather than always painting green.

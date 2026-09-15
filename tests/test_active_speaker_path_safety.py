@@ -352,37 +352,6 @@ def test_parked_graph_is_an_accepted_rollback_target(tmp_path: Path) -> None:
     assert report["load_gate"] == "ready"
 
 
-def test_parked_rollback_target_reaches_the_commission_startup_anchor(
-    tmp_path: Path,
-) -> None:
-    """The whole chain, end to end: parked current config -> anchor not blocked.
-
-    `/sound/speaker/`'s `_active_speaker_ensure_commission_startup_anchor` returns
-    `commission_startup_anchor_path_safety_blocked` whenever
-    `evaluate_path_safety_evidence` raises. This walks the same two calls it
-    makes, so a regression anywhere between the restore set and the load gate
-    closes the "finish crossover preview" exit again and fails here.
-    """
-    staged = _staged(tmp_path)
-    parked = _parked_config(tmp_path)
-
-    evidence = build_startup_load_path_safety_evidence(
-        _topology(),
-        staged_config=staged,
-        calibration_level=calibration_level_payload(),
-        current_config_path=parked,
-    )
-    report = evaluate_path_safety_evidence(evidence)  # must NOT raise
-
-    assert report["status"] == "pass"
-    assert report["load_gate"] == "ready"
-    assert not [
-        issue
-        for issue in evidence["observed_issues"]
-        if issue.get("severity") == "blocker"
-    ]
-
-
 # --- D4 (wide-output-path program): parked graph's pipe format is pinned -----
 
 

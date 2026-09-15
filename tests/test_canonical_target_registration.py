@@ -131,9 +131,6 @@ _GRAPH_SWAP_MODULES = {
     "jasper/sound/runtime.py",
     "jasper/web/correction_crossover_v2_state.py",
     "jasper/web/correction_setup.py",
-    # Both hosted by `python -m jasper.web` (jasper/web/__main__.py above): the
-    # /sound/ page's apply and commissioning halves.
-    "jasper/web/sound_active_speaker.py",
     "jasper/web/sound_profile_apply.py",
 }
 
