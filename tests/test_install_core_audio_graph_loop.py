@@ -684,6 +684,7 @@ _LEFT_OFF_BY_THE_TAIL = frozenset(
 # does not exist here; shim it converged so its own WARN arm is the one
 # variable the degraded run below changes.
 _TAIL_RECONCILER_SHIMS = """
+install_run_bounded() { shift 2; "$@"; }
 /usr/local/sbin/jasper-audio-hardware-reconcile() { return 0; }
 require_outputd_ready() {
     systemctl stop jasper-outputd.service jasper-voice.service

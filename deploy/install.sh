@@ -672,6 +672,16 @@ install_camilladsp() {
     # exists.
 }
 
+install_run_bounded() {
+    local seconds="$1" status=0
+    shift 2
+    timeout --kill-after=5s "${seconds}s" "$@" || status=$?
+    if (( status == 124 || status == 137 )); then
+        jasper_install_log "event=install.command_timeout command=${1##*/} timeout_s=${seconds}"
+    fi
+    return "${status}"
+}
+
 run_captured_command() {
     # run_captured_command <output-variable> <command...>
     # Capture combined stdout/stderr, always replay it, and preserve the
@@ -738,7 +748,7 @@ ensure_outputd_camilla_statefile() {
     # incomplete, and any topology with a tweeter/protected role park instead.
     local output
     echo "  Checking outputd Camilla statefile against active-speaker runtime contract"
-    if ! run_captured_command output \
+    if ! run_captured_command output install_run_bounded 60 -- \
         /opt/jasper/.venv/bin/jasper-active-speaker runtime-safe-graph \
         --statefile /var/lib/camilladsp/outputd-statefile.yml \
         --flat-config "${CAMILLA_CONF}/outputd-cutover.yml" \
@@ -764,15 +774,9 @@ reconcile_sound_dsp_state() {
         return 0
     fi
     echo "  Reconciling current sound DSP graph"
-    local -a cmd=(/opt/jasper/.venv/bin/jasper-sound reconcile-current-dsp --fail-open)
-    if command -v timeout >/dev/null 2>&1; then
-        cmd=(timeout --kill-after=5s 30s "${cmd[@]}")
-    else
-        echo "  WARN: coreutils timeout missing; sound DSP reconcile may block"
-    fi
     local status
     set +e
-    output="$("${cmd[@]}" 2>&1)"
+    output="$(install_run_bounded 30 -- /opt/jasper/.venv/bin/jasper-sound reconcile-current-dsp --fail-open 2>&1)"
     status=$?
     set -e
     if (( status != 0 )); then
@@ -819,7 +823,7 @@ ensure_crossover_camilla_statefile() {
     # JASPER_RESTART_* knob here — only the seed write.
     local output
     echo "  Seeding camilla#2 crossover statefile via active-speaker runtime contract"
-    if ! run_captured_command output \
+    if ! run_captured_command output install_run_bounded 60 -- \
         /opt/jasper/.venv/bin/jasper-active-speaker runtime-safe-graph \
         --statefile /var/lib/camilladsp/crossover-statefile.yml \
         --flat-config "${CAMILLA_CONF}/outputd-cutover.yml" \
@@ -1078,7 +1082,7 @@ reconcile_aec_state() {
     # aec_mode.env has one BASH writer: ensure_mode_file in the run below.
     local aec_bridge_marker="/run/jasper-aec-reconcile/aec-bridge-ready"
     systemctl enable jasper-aec-reconcile.service
-    if ! /usr/local/sbin/jasper-aec-reconcile --reason install; then
+    if ! install_run_bounded 125 -- /usr/local/sbin/jasper-aec-reconcile --reason install; then
         echo "  WARN: AEC/mic reconcile failed. Check logs with: journalctl -u jasper-aec-reconcile -e"
         JASPER_CORE_GRAPH_TAIL_DEGRADED=1
         if [[ -e "$aec_bridge_marker" ]]; then
@@ -1107,18 +1111,8 @@ reconcile_grouping_state() {
 }
 
 resolve_fanin_coupling_default() {
-    # Enable the boot-time default-resolution unit AND run the pass once now so
-    # this deploy converges the box onto the shipped defaults:
-    #   - fan-in coupling: the ring, the only central transport (ADR-0100);
-    #   - USB combo (JASPER_FANIN_USB_DIRECT + _HOST_CLOCK + _RESAMPLER_CUSHION_DECAY):
-    #     enabled on a gadget box (dtoverlay=dwc2,dr_mode=peripheral present), else
-    #     cleared.
-    # An already-converged box remains a zero-churn confirm.
-    # Mirrors reconcile_aec_state / reconcile_grouping_state: reconciler is the
-    # single env writer; daemons read the resolved env. The reconciler CLI hydrates
-    # its own env (load_env_files) so the camilla re-emit keeps the tuned chunksize.
     systemctl enable jasper-fanin-coupling-auto.service
-    /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason install || {
+    install_run_bounded 772 -- /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason install || {
         echo "  WARN: fan-in coupling default resolution failed. Check logs with: journalctl -u jasper-fanin-coupling-auto -e"
         JASPER_CORE_GRAPH_TAIL_DEGRADED=1
     }
@@ -1547,7 +1541,7 @@ regenerate_audio_cues() {
     # We deliberately do NOT pre-source jasper.env here: doing so puts
     # those vars into the shell's environment first, where load_env_files's
     # setdefault preserves them and the wizard file can't override.
-    if ! /opt/jasper/.venv/bin/jasper-cues regenerate; then
+    if ! install_run_bounded 300 -- /opt/jasper/.venv/bin/jasper-cues regenerate; then
         echo "  WARNING: cue regenerate failed unexpectedly. " \
              "Daemon will retry at startup. To force a refresh later: " \
              "sudo systemctl restart jasper-voice"

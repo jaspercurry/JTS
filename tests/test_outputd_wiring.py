@@ -1089,8 +1089,6 @@ def _run_ensure_outputd_camilla_statefile(
 ) -> tuple[subprocess.CompletedProcess[str], list[str], list[str]]:
     """Run install.sh's statefile step with its graph command stubbed out.
 
-    `run_captured_command` is the seam: it records the argv the step builds
-    without needing /opt/jasper's venv, and drives the branch the step takes.
     """
     workdir = tmp_path / f"run{sum(1 for _ in tmp_path.iterdir())}"
     workdir.mkdir()
@@ -1103,10 +1101,11 @@ def _run_ensure_outputd_camilla_statefile(
             "-c",
             "set -uo pipefail\n"
             f'CAMILLA_CONF="{workdir}/camilladsp"\n'
-            "run_captured_command() {\n"
-            "  local variable=\"$1\"; shift\n"
+            f"{_bash_function(REPO / 'deploy/install.sh', 'run_captured_command')}\n"
+            "install_run_bounded() {\n"
+            "  shift 2\n"
             f'  printf "%s\\n" "$*" >> "{graph_log}"\n'
-            f'  printf -v "$variable" "%s" {shlex.quote(graph_output)}\n'
+            f'  printf "%s" {shlex.quote(graph_output)}\n'
             f"  return {graph_status}\n"
             "}\n"
             f"{step}\nensure_outputd_camilla_statefile",

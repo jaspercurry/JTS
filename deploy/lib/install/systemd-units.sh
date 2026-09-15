@@ -1359,7 +1359,7 @@ start_streambox_runtime_units() {
     systemctl enable --now jasper-accessory-reconcile.path
     park_audio_clients_for_core_graph_restart
     reset_failed_core_graph_restart_targets
-    /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || {
+    install_run_bounded 55 -- /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || {
         echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
         JASPER_CORE_GRAPH_TAIL_DEGRADED=1
     }
@@ -1390,10 +1390,6 @@ start_streambox_runtime_units() {
         systemctl stop "${unit}.service" 2>/dev/null || true
     done
     reconcile_grouping_state
-    # Run the owner now, not only at next boot. Since #2285 there is no
-    # install-profile gate: a streambox resolves its coupling on the same
-    # per-box ring evidence as any other box, and the independent USB decision
-    # still arms DIRECT capture from canonical source intent either way.
     resolve_fanin_coupling_default
     # Last step that can leave a core-graph unit deliberately stopped.
     forget_core_graph_park_record
@@ -1410,7 +1406,7 @@ start_streambox_runtime_units() {
     # remote picks up new code, then let the reconciler publish the mic source
     # a paired remote needs.
     restart_jasper_control_and_input
-    /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
+    install_run_bounded 65 -- /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
         echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
 }
 
@@ -1617,7 +1613,7 @@ install_systemd_units() {
     # runtime state once the graph is coherent.
     park_audio_clients_for_core_graph_restart
     reset_failed_core_graph_restart_targets
-    /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || {
+    install_run_bounded 55 -- /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || {
         echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
         JASPER_CORE_GRAPH_TAIL_DEGRADED=1
     }
@@ -1663,7 +1659,7 @@ install_systemd_units() {
     # Optional adapter-backed mic sources are profile-gated. Reconcile after
     # code deploy so a paired WiiM Remote 2 starts immediately, while speakers
     # without one never load the BLE decoder at all.
-    /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
+    install_run_bounded 65 -- /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
         echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
 
     # Reconcile software AEC against whatever mic hardware is actually
