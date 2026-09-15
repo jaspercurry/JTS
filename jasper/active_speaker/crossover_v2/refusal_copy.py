@@ -21,6 +21,11 @@ from .spatial import GEOMETRY_RETRY_POSITIONS
 logger = logging.getLogger(__name__)
 
 LOCATE_RETRY_ACTION = "Check the volume and the microphone, then try again."
+TIMING_RESET_NOTE = (
+    "Timing is the physical arrival difference between the drivers. Once measured with confidence it does not change "
+    "with EQ, room or bass work. Reset it only if you moved or replaced a driver, changed the enclosure, or changed "
+    "the crossover so much that you want a fresh read."
+)
 
 
 # The four generic screen templates, each parameterized by reason copy.

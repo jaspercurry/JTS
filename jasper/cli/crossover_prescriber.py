@@ -32,7 +32,7 @@ from jasper.active_speaker.crossover_v2.prescription_document import (
 from jasper.active_speaker.crossover_v2.round_inputs import (
     banked_round_of, recent_round_sessions, round_inputs, prescription_sources, resolve_set, RoundInputs,
 )
-from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.seat_level_reference import seat_level_reference_volume_db
 from jasper.active_speaker.rear_calibration import compile_rear_stage, diagnostic_seed, read_rear_calibration
 from jasper.active_speaker.state_paths import baseline_profile_state_path
@@ -45,6 +45,23 @@ PROG = "jasper-crossover-prescriber"
 AUTHORITY_TIER = "advisory (judge, contract and status read; compose banks a candidate)"
 REASON_UNREADABLE = "evidence_unreadable"
 REASON_UNWRITABLE = "output_unwritable"
+
+
+def reset_prescription_document(*, keep_timing: bool) -> dict[str, Any]:
+    sections: dict[str, dict[str, Any]] = {
+        name: {} for name in ("driver", "blend", "alignment", "room", "bass")
+    }
+    if keep_timing:
+        sections.pop("alignment")
+    return {"kind": "jts_prescription", "schema": 1, "base": "saved",
+            "sections": sections, "rationale": "Reset the applied tuning layers."}
+
+
+def compose_prescription_document(
+    document: Mapping[str, Any], *, base: BankedCandidate,
+    evidence: PrescriptionEvidence | None = None,
+) -> MeasuredCrossoverCandidate:
+    return judge_prescription_document(document, base=base, evidence=evidence)
 
 def _cmd_rear_calibration(args: argparse.Namespace) -> int:
     try:
@@ -111,7 +128,7 @@ def _cmd_document(args: argparse.Namespace) -> int:
         evidence = _document_evidence(args, document)
         if args.command == "judge" and args.preview:
             return answered(preview_room_document(document, base=base, evidence=evidence))
-        candidate = judge_prescription_document(document, base=base, evidence=evidence)
+        candidate = compose_prescription_document(document, base=base, evidence=evidence)
     except PrescriptionDocumentRefused as exc:
         print(json.dumps(exc.to_dict(), sort_keys=True))
         return EXIT_UNREADABLE if exc.code == REASON_UNREADABLE else EXIT_REFUSED

@@ -259,7 +259,12 @@ def latest_banked_rounds(
         except ValueError:
             continue
         if purpose in (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS) and purpose not in found:
-            found[purpose] = {"round_dir": str(directory), "started_at": modified_at}
+            found[purpose] = {
+                "round_dir": str(directory), "started_at": modified_at,
+                **({"alignment_verdict": packet.get("alignment_verdict"),
+                    "next_action": packet.get("next_action")}
+                   if purpose == PURPOSE_SPEAKER else {}),
+            }
         if len(found) == 3:
             break
     return found

@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { buildFunction, repoPath } from "./_loader.mjs";
 
-const modulePath = process.argv[2];
+const modulePath = process.argv[2] || "deploy/assets/sound-profile/js/main.js";
 const siblingDir = dirname(modulePath);
 
 // http.js's promptForControlToken (behind a lazy dialog.js import) parses but
@@ -2727,10 +2727,10 @@ async function testAppliedProfileCardUsesCommissioningRecord() {
   const reviewPath = "/var/lib/camilladsp/review.yml";
   const blocker = {severity: "blocker", code: "baseline_profile_apply_failed", message: "Restore failed at the DSP load."};
   for (const [stands, hasPrevious, restoreStatus, alignment, timing] of [
-    [true, true, "applied", {status: "measured", reason: null}, "timing measured"],
-    [true, false, undefined, {status: "declared", reason: null}, "timing declared"],
+    [true, true, "applied", {status: "measured", reason: null}, "Saved timing: delay 22 µs; polarity normal; provenance measured."],
+    [true, false, undefined, {status: "declared", reason: null}, "Saved timing: delay 18 µs; polarity normal; provenance authored_by_model."],
     [false, true, "applied", {status: "alignment_unmeasured", reason: "delay_out_of_bounds"},
-      "timing declared (delay_out_of_bounds)"],
+      "Saved timing: delay 18 µs; polarity inverted; provenance set_by_user."],
     [true, true, "apply_failed"], [true, true, "unexpected"],
   ]) {
     applied.stands = stands;
@@ -2748,7 +2748,7 @@ async function testAppliedProfileCardUsesCommissioningRecord() {
       "./active-speaker/commissioning-view": () => Promise.resolve(response(
         profileCommissioningView({
           status: "applied", current_step: "profile",
-          applied_profile: applied, first_experiment: {alignment},
+          applied_profile: applied, first_experiment: {alignment}, timing: timing ? {saved: timing} : undefined,
           stepStatuses: {layout: "done", research: "done", experiment: "done", profile: "done"},
         })
       )),
@@ -2768,7 +2768,7 @@ async function testAppliedProfileCardUsesCommissioningRecord() {
 
     const html = harness.elements.get("view-body").innerHTML;
     if (timing && !html.includes(timing)) fail("Apply card timing is missing", {alignment, timing});
-    if (!timing && html.includes("timing declared")) fail("Missing evidence invented timing");
+    if (!timing && html.includes("Saved timing")) fail("Missing evidence invented timing");
     if (html.includes('<p class="setting-row__hint"></p>')) fail("Empty timing left a blank hint");
     if (!html.includes(applied.config_path) || html.includes(reviewPath)) {
       fail("Applied profile card used the wrong config path", {applied, reviewPath});

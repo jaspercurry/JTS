@@ -10,7 +10,11 @@ import logging
 from typing import Any
 
 from jasper.active_speaker import web_commissioning
+from jasper.active_speaker.applied_identity import applied_identity
+from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.crossover_v2.conductor_context import conductor_status
+from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds
+from jasper.active_speaker.timing_status import timing_status_lines
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -81,9 +85,6 @@ def status_payload() -> dict[str, Any]:
     targets: dict[str, Any] = targets_raw if isinstance(targets_raw, dict) else {}
     driver_count = len(targets.get("drivers") or [])
     summed_count = len(targets.get("summed") or [])
-    from jasper.active_speaker.baseline_profile import (
-        load_applied_baseline_profile_state,
-    )
     # The envelope gates the measurement flow on the driver safety profile's
     # own confirmed-and-current verdict (evaluate_driver_safety_profile), not
     # on "protected setup" readiness alone: JTS3 hardware evidence showed an
@@ -105,7 +106,11 @@ def status_payload() -> dict[str, Any]:
             )
         except (OSError, RuntimeError, TypeError, ValueError):
             payload["driver_safety_profile_evaluation"] = None
-    payload["applied_profile"] = load_applied_baseline_profile_state()
+    applied = load_applied_baseline_profile_state()
+    payload["applied_profile"] = applied
+    identity = applied_identity(applied)
+    recent = latest_banked_rounds(identity) if identity is not None else {}
+    payload["timing"] = timing_status_lines(applied, recent.get("speaker"))
     # v2 session state (Wave 5a). Fail-soft: an unreadable v2 state must
     # never take down the whole status surface.
     try:

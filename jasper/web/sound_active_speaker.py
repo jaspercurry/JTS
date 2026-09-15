@@ -1586,6 +1586,14 @@ async def _active_speaker_commissioning_view_payload(
         camilla_factory=camilla_factory,
     )
     view = load_commissioning_view(commission=commission)
+    from jasper.active_speaker.applied_identity import applied_identity  # lazy: view-only bank lookup
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: view-only state
+    from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds  # lazy: view-only bank lookup
+    from jasper.active_speaker.timing_status import timing_status_lines  # lazy: view-only formatting
+    applied = load_applied_baseline_profile_state()
+    identity = applied_identity(applied)
+    recent = latest_banked_rounds(identity) if identity is not None else {}
+    view["timing"] = timing_status_lines(applied, recent.get("speaker"))
     active_summed_test = _active_summed_test_snapshot()
     _attach_active_summed_test(view, active_summed_test)
     log_event(

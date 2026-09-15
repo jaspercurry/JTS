@@ -224,11 +224,8 @@ export function commissionPayloadFailure(payload) {
   return 'This driver can’t be tested yet — finish the earlier setup steps first.';
 }
 
-export function commissioningTimingLabel(view) {
-  var alignment = ((view || {}).first_experiment || {}).alignment;
-  if (!alignment) return '';
-  if (alignment.status === 'measured') return 'timing measured';
-  return 'timing declared' + (alignment.reason ? ' (' + alignment.reason + ')' : '');
+export function timingStatusLine(view, field) {
+  return (((view || {}).timing || {})[field] || '');
 }
 
 function commissionIssueCodes(payload) {

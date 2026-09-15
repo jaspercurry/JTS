@@ -6512,6 +6512,42 @@ def test_apply_after_draft_edit_loads_the_trial_composers_exact_bytes(monkeypatc
     assert not list(tmp_path.rglob("run_manifest.json"))
 
 
+@pytest.mark.parametrize("clear_alignment", [False, True])
+def test_document_apply_keeps_timing_only_when_alignment_is_inherited(monkeypatch, tmp_path, clear_alignment):
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
+    from jasper.active_speaker.candidate_bank import BankedCandidate, publish_authored_candidate
+    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
+    from jasper.active_speaker.crossover_v2.prescription_document import judge_prescription_document
+
+    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    incumbent = replace(_run6_measured_candidate(preset), analysis={"measurement_status": "unmeasured"})
+    publish_authored_candidate(incumbent)
+    cam = _FakeApplyCam()
+    assert v2apply.handle_v2_apply(
+        {"expected_candidate_fingerprint": incumbent.fingerprint}, _bg_run_async, lambda: cam,
+    )["status"] == "applied"
+    profile_path = tmp_path / "baseline_profile.json"
+    profile = json.loads(profile_path.read_text())
+    timing = {"delay_us": 22, "polarity": "normal", "provenance": "set_by_user"}
+    profile["timing"] = timing
+    profile_path.write_text(json.dumps(profile))
+    base = candidate_from_applied_profile(topology, load_applied_baseline_profile_state())
+    sections = {"driver": {}, **({"alignment": {}} if clear_alignment else {})}
+    document = {"kind": "jts_prescription", "schema": 1, "base": "saved",
+                "sections": sections, "rationale": "Reset driver tuning."}
+    candidate = judge_prescription_document(
+        document, base=BankedCandidate(base, "", "", profile_path),
+    )
+    publish_authored_candidate(candidate)
+
+    assert v2apply.handle_v2_apply(
+        {"expected_candidate_fingerprint": candidate.fingerprint}, _bg_run_async, lambda: cam,
+    )["status"] == "applied"
+    applied = load_applied_baseline_profile_state()
+    assert applied is not None
+    assert applied.get("timing") == (None if clear_alignment else timing)
+
+
 @pytest.mark.parametrize("fault,code", [
     ("bank", "not_found"), ("declaration", "driver_safety_profile_not_confirmed"),
     ("floor", "crossover_below_declared_protection_floor"),

@@ -82,7 +82,9 @@ async def apply_candidate(
                 return {"status": "blocked", "issue": issue, "issues": [issue], "apply": None}
             target = baseline_profile.baseline_candidate_config_path(text)
             prepared = baseline_profile.prepare_applied_baseline_profile(selected, declaration=declaration, design_draft=draft,
-                measurements=measurements, config_path=target, config_sha256=sha)
+                measurements=measurements, config_path=target, config_sha256=sha,
+                provenance={"timing": incumbent["timing"]} if incumbent and "timing" in incumbent
+                and (selected.analysis.get("resolution") or {}).get("alignment") == "base" else None)
             prepared.update(issues=list(selected.analysis.get("issues") or []),
                             candidate_fingerprint=baseline_profile.baseline_candidate_fingerprint(prepared))
             if expected_candidate_fingerprint is not None:

@@ -148,7 +148,7 @@ function renderNudges(nudges, expertDetails) {
   els.nudges.replaceChildren(...rows);
 }
 
-function renderActions(primary, alternates = []) {
+function renderActions(primary, alternates = [], note = '', timing = {}) {
   els.action.replaceChildren();
   const actions = [primary, ...(Array.isArray(alternates) ? alternates : [])]
     .filter(Boolean);
@@ -216,6 +216,9 @@ function renderActions(primary, alternates = []) {
     }
     els.action.append(control);
   });
+  for (const text of [timing.saved, timing.verification, note]) {
+    if (text) els.action.append(el('p', {class: 'form-hint', text}));
+  }
 }
 
 // The prompt the walk is standing on, kept across the poll that follows a
@@ -363,8 +366,8 @@ let lastActionRowKey = null;
 // actually depends on, nothing else (no envelope fields like verdict_text/
 // steps that render() already updates through their own, non-destructive
 // setters).
-function actionRowKey(primary, alternates) {
-  return JSON.stringify({primary: primary || null, alternates, busy});
+function actionRowKey(primary, alternates, note, timing) {
+  return JSON.stringify({primary: primary || null, alternates, note, timing, busy});
 }
 
 // One gate for every render and action completion prevents competing capture controls.
@@ -391,10 +394,10 @@ function renderActionRow(env) {
   // `disabled` without otherwise touching primary/alternates (see
   // stopCapture/runAction's finally blocks, which rely on THIS
   // function re-rendering once busy flips back to false).
-  const key = actionRowKey(primary, shownAlternates);
+  const key = actionRowKey(primary, shownAlternates, env.action_note, env.timing);
   if (key === lastActionRowKey) return;
   lastActionRowKey = key;
-  renderActions(primary, shownAlternates);
+  renderActions(primary, shownAlternates, env.action_note, env.timing || {});
 }
 
 // One primary control at a time: closing's Save/Record-again actions make the
