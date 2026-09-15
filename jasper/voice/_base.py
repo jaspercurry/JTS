@@ -148,11 +148,7 @@ class ToolCall:
 
 
 class BaseLiveTurn:
-    """The per-turn state every provider's turn keeps identically.
-
-    This is the provider-independent half of `session.LiveTurn`; an
-    adapter supplies the other half, `session.ProviderTurn`.
-    """
+    """Shared state for `session.LiveTurn`; adapters supply `session.ProviderTurn`."""
 
     owns_interruption = False
     continuous_input = False
@@ -199,6 +195,7 @@ class BaseLiveTurn:
             bucket: dict.fromkeys(keys, 0)
             for bucket, keys in self.usage_detail_buckets.items()
         } or None
+        self._last_user_transcript_at = 0.0
         # Retained only so WakeLoop can write opt-in conversation history;
         # never logged — the flight recorder dumps DEBUG records around
         # failures, so household utterances must not reach one.
@@ -209,7 +206,7 @@ class BaseLiveTurn:
         return False
 
     def last_user_transcript_at(self) -> float:
-        return 0.0
+        return self._last_user_transcript_at
 
     def _start_tool_calls(self, calls: list[ToolCall]) -> None:
         if self._released or self._turn_lost or self._cancel_requested or self._server_turn_complete:
@@ -390,7 +387,8 @@ class BaseLiveTurn:
         )
 
     def add_transcript(self, *, user: str = "", assistant: str = "") -> None:
-        """Append one wire delta to the turn's running transcript."""
+        if user:
+            self._last_user_transcript_at = _time.monotonic()
         self._user_transcript += user
         self._assistant_transcript += assistant
 
