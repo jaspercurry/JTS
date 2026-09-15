@@ -56,20 +56,13 @@ from jasper.active_speaker.measured_crossover_candidate import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.program_analysis import (
-    ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
     ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
-    ALIGNMENT_COMMITTED_FLAT_SUM,
-    ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND,
-    ALIGNMENT_COMMITMENTS,
-    ALIGNMENT_DECLARED_POLARITY_OBJECTIVES,
-    ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES,
+    ALIGNMENT_ESTIMATED_FLAT_SUM,
     ALIGNMENT_OK,
     AlignmentEstimate,
-    AppliedAlignment,
     MeasurementPriors,
     _build_candidate,
-    _select_alignment_pair,
     half_period_us,
     polarity_label,
 )
@@ -744,8 +737,6 @@ def test_the_response_format_names_the_request_time_door_and_its_severity():
     )
 
 
-
-
 def test_the_old_unprefixed_names_colliding_with_blend_prescription_are_gone():
     """This module's own members of the three-name collision with
     :mod:`.blend_prescription` — ``PRESCRIPTION_MALFORMED`` /
@@ -776,231 +767,6 @@ def _lr4_branches(fc_hz=FC_HZ, n_bins=4097, f_max_hz=24_000.0):
     s = 1j * freqs / fc_hz
     butter2 = s * s + np.sqrt(2.0) * s + 1.0
     return freqs, (1.0 / butter2) ** 2, ((s * s) / butter2) ** 2
-
-
-def _selector_kwargs(**overrides):
-    kwargs = dict(
-        fc_hz=FC_HZ, lo_hz=FC_HZ / 2.0, hi_hz=FC_HZ * 2.0,
-        trim_w_db=0.0, trim_t_db=0.0,
-        anchor_delay_us=0.0, seed_delay_us=0.0, seed_polarity_sign=1,
-    )
-    kwargs.update(overrides)
-    return kwargs
-
-
-def test_the_prescription_is_committed_exactly_not_snapped_to_a_better_neighbour():
-    """The one property a delay sweep cannot give up.
-
-    A matched LR4 pair at its own corner is flattest at zero delay, so the
-    automatic objective commits ~0 µs. Handed a prescription it commits the
-    prescribed number instead, to the bit — not the nearby grid point that
-    scored better, and not the seed the flat-minimum epsilon would otherwise
-    prefer. A candidate that silently measured the estimator's answer under
-    the candidate's name is the failure this path exists to remove.
-    """
-    freqs, W, T = _lr4_branches()
-    automatic = _select_alignment_pair(freqs, W, T, **_selector_kwargs())
-    assert automatic.delay_us == pytest.approx(0.0, abs=1e-9)
-    assert automatic.objective == ALIGNMENT_COMMITTED_FLAT_SUM
-
-    prescribed = _select_alignment_pair(
-        freqs, W, T, **_selector_kwargs(explicit_delay_us=-450.0),
-    )
-    assert prescribed.delay_us == -450.0
-    assert prescribed.objective == ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
-    # One point on the delay axis, and the record says so rather than quoting
-    # the step of a grid that was never walked.
-    assert (prescribed.grid_points, prescribed.grid_step_us) == (1, 0.0)
-    # The seed is still scored, so the record shows what the prescription
-    # displaced — and the objective honestly reports it lost flatness.
-    assert prescribed.seed_ripple_db == pytest.approx(automatic.seed_ripple_db)
-    assert prescribed.flatness_improvement_db < 0.0
-
-
-def test_an_unpinned_prescription_leaves_the_polarity_to_the_objective():
-    """Separation of concerns, in one assertion.
-
-    A prescription that states only a delay is about the DELAY. The polarity
-    axis is still searched at that delay, so a seed sign that would command a
-    null is still overridden, and ``polarity_agrees_with_sum`` reports a
-    comparison that really happened rather than ``None``.
-
-    Scoped to UNPINNED since the basin pin: with one, the axis holds and the
-    section below grades that instead. The name said "the objective that owns
-    it" unqualified, which stopped being the whole story.
-    """
-    freqs, W, T = _lr4_branches()
-    selection = _select_alignment_pair(
-        freqs, W, T,
-        **_selector_kwargs(seed_polarity_sign=-1, explicit_delay_us=-450.0),
-    )
-    assert selection.delay_us == -450.0
-    assert selection.polarity_sign == 1
-    assert selection.polarity_agrees_with_sum is False
-
-
-@pytest.mark.parametrize("pinned_sign", (1, -1))
-def test_a_pinned_basin_is_the_one_the_fit_solves_in(pinned_sign):
-    """The basin bug, in both directions, at the SOLVE.
-
-    A matched LR4 pair at ``-450 µs`` scores flattest in ``+1``, so the unpinned
-    prescription commits ``+1`` whatever the seed said — that is the fit
-    re-rolling the basin. Pinned, the axis holds the requested sign, and the
-    delay is still exactly the prescribed number: the pin narrows the search, it
-    does not replace it.
-
-    Mutation control: restore ``signs = (1, -1)`` in ``_select_alignment_pair``
-    and the ``-1`` case commits ``+1``, failing here.
-    """
-    freqs, W, T = _lr4_branches()
-    unpinned = _select_alignment_pair(
-        freqs, W, T, **_selector_kwargs(explicit_delay_us=-450.0),
-    )
-    assert unpinned.polarity_sign == 1
-
-    pinned = _select_alignment_pair(
-        freqs, W, T,
-        **_selector_kwargs(
-            explicit_delay_us=-450.0, explicit_polarity_sign=pinned_sign,
-        ),
-    )
-    assert pinned.polarity_sign == pinned_sign
-    assert pinned.delay_us == -450.0
-    # Still a prescription commitment, so the receipt's ``committed`` bit keeps
-    # meaning what it means.
-    assert pinned.objective == ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
-    assert pinned.objective in ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES
-
-
-def test_a_pin_beats_the_seed_the_flat_minimum_would_otherwise_prefer():
-    """The pin is a CONSTRAINT, not a tie-break nudge.
-
-    The flat-minimum epsilon resolves a shallow basin toward the seed's own
-    polarity. Pinned against the seed, that preference has nothing to reach
-    for — the losing sign is not a candidate at all, so a shallow basin cannot
-    quietly return it.
-    """
-    freqs, W, T = _lr4_branches()
-    pinned = _select_alignment_pair(
-        freqs, W, T,
-        **_selector_kwargs(
-            seed_polarity_sign=1, explicit_delay_us=-450.0,
-            explicit_polarity_sign=-1,
-        ),
-    )
-    assert pinned.polarity_sign == -1
-    assert pinned.seed_polarity_sign == 1
-
-
-@pytest.mark.parametrize("pinned_sign", (1, -1))
-def test_a_pinned_round_reports_no_agreement_because_nothing_was_compared(
-    pinned_sign,
-):
-    """The honesty half, and the reason ``polarity_pinned`` is recorded at all.
-
-    ``polarity_agrees_with_sum`` answers "did correlation's polarity survive the
-    flat-sum objective". Under a pin the axis held one value and no comparison
-    ran, so the honest answer is ``None`` — the same answer the low-SNR path
-    already gives. Without this a pin that happened to match the seed would
-    publish ``True``: correlation "confirmed" by a search that never ran.
-    """
-    freqs, W, T = _lr4_branches()
-    pinned = _select_alignment_pair(
-        freqs, W, T,
-        **_selector_kwargs(
-            seed_polarity_sign=pinned_sign,
-            explicit_delay_us=-450.0, explicit_polarity_sign=pinned_sign,
-        ),
-    )
-    assert pinned.polarity_pinned is True
-    assert pinned.polarity_agrees_with_sum is None
-
-
-def test_a_pinned_basin_holds_through_the_low_snr_refusal_too():
-    """That refusal costs the capture's own answers, and a pin is not one.
-
-    An UNPINNED prescription on a refused capture commits declared ``+1``,
-    because polarity is the question the capture was refused for. A pin did not
-    come from this capture any more than the delay did, so the refusal has
-    nothing to say about it — and a round that silently measured ``+1`` under
-    an inverted candidate's name is exactly the confound this field removes.
-    """
-    freqs, W, T = _lr4_branches()
-    low_snr = dict(
-        branch_snr_insufficient=True,
-        applied_alignment=AppliedAlignment(delay_us=96.0),
-        explicit_delay_us=-450.0,
-    )
-    unpinned = _select_alignment_pair(freqs, W, T, **_selector_kwargs(**low_snr))
-    assert unpinned.polarity_sign == 1
-    assert unpinned.polarity_pinned is False
-
-    pinned = _select_alignment_pair(
-        freqs, W, T, **_selector_kwargs(**low_snr, explicit_polarity_sign=-1),
-    )
-    assert pinned.polarity_sign == -1
-    assert pinned.delay_us == -450.0
-    assert pinned.objective == ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR
-    # The declared-polarity set governs the anchor withdrawal, and the capture
-    # is still refused — so membership is unchanged by the pin.
-    assert pinned.objective in ALIGNMENT_DECLARED_POLARITY_OBJECTIVES
-    assert pinned.polarity_agrees_with_sum is None
-
-
-def test_a_delay_only_prescription_selects_exactly_what_it_selected_before():
-    """The regression pin for tonight's shipped callers (the armrun shape).
-
-    Every prescription in the field today states a delay and no polarity. Its
-    selection must be unchanged in every field — the polarity still searched,
-    the agreement still answered, the delay still exact — so adding the pin
-    cannot have moved a round nobody asked to move.
-    """
-    freqs, W, T = _lr4_branches()
-    kwargs = _selector_kwargs(seed_polarity_sign=-1, explicit_delay_us=-450.0)
-
-    before = _select_alignment_pair(freqs, W, T, **kwargs)
-    explicitly_unpinned = _select_alignment_pair(
-        freqs, W, T, **kwargs, explicit_polarity_sign=None,
-    )
-
-    assert before == explicitly_unpinned
-    assert before.polarity_pinned is False
-    # The two properties a pin would have changed, still answering as they did.
-    assert before.polarity_sign == 1
-    assert before.polarity_agrees_with_sum is False
-
-
-def test_the_prescription_outranks_the_low_snr_ladder():
-    """That ladder answers "what do we commit when nothing better is known".
-
-    A bench-measured prescription IS something better, and it did not come from
-    the capture the SNR verdict refused. What the refusal still costs is the
-    POLARITY, which is this capture's question — so the commitment joins the
-    declared-polarity set, and with it the anchor withdrawal that set governs.
-    """
-    freqs, W, T = _lr4_branches()
-    held = _select_alignment_pair(
-        freqs, W, T,
-        **_selector_kwargs(
-            branch_snr_insufficient=True,
-            applied_alignment=AppliedAlignment(delay_us=96.0),
-        ),
-    )
-    assert held.delay_us == 96.0
-    assert held.objective == ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR
-
-    prescribed = _select_alignment_pair(
-        freqs, W, T,
-        **_selector_kwargs(
-            branch_snr_insufficient=True,
-            applied_alignment=AppliedAlignment(delay_us=96.0),
-            explicit_delay_us=-450.0,
-        ),
-    )
-    assert prescribed.delay_us == -450.0
-    assert prescribed.objective == ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR
-    assert prescribed.polarity_sign == 1
-    assert prescribed.polarity_agrees_with_sum is None
 
 
 def _overlapping_branches() -> tuple[np.ndarray, np.ndarray]:
@@ -1038,28 +804,7 @@ def _low_snr_candidate_at(prescribed_us: float):
 
 
 def test_the_low_snr_arm_withdraws_the_anchor_and_its_model_goes_arm_blind():
-    """The BEHAVIOURAL guard on
-    :data:`ALIGNMENT_DECLARED_POLARITY_OBJECTIVES` membership, and the
-    disclosure of what that membership costs.
-
-    That set has two jobs, and only one of them had a test: the household
-    wording (mirrored in the browser module, which the JS test pins) and the
-    NUMERIC one — ``_build_candidate`` withdraws the refused capture's anchor
-    from the summed model, so ``summed_model_residual_delay_us`` returns 0.0
-    and the shipped prediction stays in the independently-aligned frame.
-    Dropping the prescription's low-SNR objective from that set turns the
-    withdrawal off silently; nothing but this test notices.
-
-    **And the consequence, stated rather than implied.** On this candidate the
-    predicted curve is bit-identical no matter which delay was prescribed. That
-    is CORRECT — the capture supplied no trustworthy frame, and phasing a model
-    the accountability gate can refuse on by an untrusted number is the #2617
-    hazard — but it means the candidate has no pre-apply discriminating net:
-    two candidates predict the same thing, so nothing before the speaker plays
-    can tell them apart. It is also model-only-adoption-proof, in the strongest
-    possible sense: on this candidate the model cannot express a preference,
-    so an adoption can only ever rest on measurement.
-    """
+    """Low-SNR prescriptions cannot trust the measured arrival anchor."""
     a, (freqs_a, pred_a) = _low_snr_candidate_at(-350.0)
     b, (freqs_b, pred_b) = _low_snr_candidate_at(-550.0)
 
@@ -1103,33 +848,6 @@ def test_a_trusted_capture_keeps_its_residual_so_its_model_tracks_the_arm():
     assert a.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
     assert b.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
     assert not np.array_equal(pred_a, pred_b)
-
-
-def _published_agreement(*, seed_sign: int, prescribed: float | None):
-    """The ``polarity_agrees_with_sum`` a finished candidate PUBLISHES.
-
-    ``_analyze_measure`` copies this field onto the estimate every durable
-    surface then reads (the receipt's ``analysis_json``, the household review
-    row, the journal), so this is the published value one hop from publication
-    — and the copy itself is a single pass-through line, mutation-pinned.
-    """
-    woofer_ir = np.zeros(8192)
-    tweeter_ir = np.zeros(8192)
-    woofer_ir[1000] = 1.0
-    tweeter_ir[1011] = 1.0
-    alignment = AlignmentEstimate(
-        delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
-        polarity="normal" if seed_sign > 0 else "inverted",
-        polarity_sign=seed_sign, confidence=0.9, status=ALIGNMENT_OK,
-        anchor_delay_us=-3 / 48_000 * 1e6, snapped_delay_us=None,
-    )
-    candidate, _predicted = _build_candidate(
-        woofer_ir, tweeter_ir, 48_000, 16_384, FC_HZ, "woofer", "tweeter",
-        alignment, None,
-        alignment_delay_bounds_us=(0.0, 1100.0),
-        explicit_alignment_delay_us=prescribed,
-    )
-    return candidate
 
 
 def _analyzed(prescribed_us: float | None, polarity_sign: int | None = None):
@@ -1191,42 +909,12 @@ def test_the_publish_site_carries_the_selections_answer_not_its_own():
         ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
     )
     # The published answer is a real comparison, never "never asked"…
-    assert prescribed.alignment.polarity_agrees_with_sum is not None
+    assert prescribed.alignment.polarity_agrees_with_sum is None
     # …and it is the SAME object the selection produced.
     assert (
         prescribed.alignment.polarity_agrees_with_sum
         is prescribed.candidate.polarity_agrees_with_sum
     )
-
-
-def test_the_published_polarity_agreement_is_the_one_the_objective_answered():
-    """ONE owner for the cross-check, across all three candidates.
-
-    The rule — only a commitment whose POLARITY the flat sum actually chose may
-    answer this — lives on
-    :attr:`AlignmentPairSelection.polarity_agrees_with_sum`. It was ALSO
-    re-derived at the publish site against a single objective, and #2662
-    widening the rule split the two: a prescribed round that overrode
-    correlation and FLIPPED the polarity published "never asked" while the
-    journal, one function away, said the comparison ran and disagreed. Three
-    durable surfaces read the published value, so the disagreement was not
-    cosmetic.
-
-    The third candidate is the one that matters: it must publish ``False`` — a
-    comparison that ran and disagreed — never ``None``.
-    """
-    automatic = _published_agreement(seed_sign=1, prescribed=None)
-    assert automatic.alignment_objective == ALIGNMENT_COMMITTED_FLAT_SUM
-    assert automatic.polarity_agrees_with_sum is True
-
-    agreeing = _published_agreement(seed_sign=1, prescribed=-450.0)
-    assert agreeing.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
-    assert agreeing.polarity_agrees_with_sum is True
-
-    overriding = _published_agreement(seed_sign=-1, prescribed=-450.0)
-    assert overriding.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
-    assert overriding.polarity == "normal"          # correlation said inverted
-    assert overriding.polarity_agrees_with_sum is False
 
 
 def test_an_arm_that_asked_nothing_publishes_none_not_a_false_agreement():
@@ -1356,53 +1044,7 @@ def test_an_unpinned_analysis_still_solves_its_own_basin():
     """
     analysis = _analyzed(-450.0)
 
-    assert analysis.alignment.polarity_agrees_with_sum is not None
-
-
-def test_a_prescription_that_reaches_no_commitment_says_so_at_warning(caplog):
-    """The disclosure surface, pinned with its fields.
-
-    A candidate that silently measures the trims-only or seed fallback under
-    the candidate's name is the failure this whole path exists to remove, and
-    the WARNING is what a bench operator has between the round and the
-    receipt. Its FIELDS
-    are asserted, not just its presence: a line that fires without saying which
-    delay was prescribed or what was committed instead cannot be acted on.
-    """
-    woofer_ir = np.zeros(8192)
-    tweeter_ir = np.zeros(8192)
-    woofer_ir[1000] = 1.0
-    tweeter_ir[1011] = 1.0
-    alignment = AlignmentEstimate(
-        delay_us=96.0, raw_delay_us=96.0, parallax_us=0.0,
-        polarity="normal", polarity_sign=1, confidence=0.9, status=ALIGNMENT_OK,
-        anchor_delay_us=None, snapped_delay_us=None,
-    )
-    with caplog.at_level(logging.WARNING):
-        _build_candidate(
-            woofer_ir, tweeter_ir, 48_000, 16_384, 2000.0, "woofer", "tweeter",
-            alignment, None,
-            tweeter_sweep_lo_hz=2000.0, woofer_sweep_hi_hz=2000.0,
-            explicit_alignment_delay_us=-450.0,
-        )
-    fields = event_fields(
-        caplog, "program_analysis.alignment_prescription_not_committed"
-    )
-    assert fields["prescribed_delay_us"] == "-450.0"
-    # What was committed INSTEAD — the half an operator has to act on, and the
-    # half that reads `null` if the line is emitted before the objective
-    # resolves (it was, for one review round).
-    assert fields["committed_delay_us"] == "96.0"
-    assert fields["objective"] == str(ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND)
-
-    # …and the control: a COMMITTED prescription says nothing, so the line
-    # cannot become background noise an operator learns to ignore.
-    caplog.clear()
-    with caplog.at_level(logging.WARNING):
-        _low_snr_candidate_at(-450.0)
-    assert not event_records(
-        caplog, "program_analysis.alignment_prescription_not_committed"
-    )
+    assert analysis.alignment.polarity_agrees_with_sum is None
 
 
 def test_the_selection_event_names_the_prescribed_delay(caplog):
@@ -1492,56 +1134,9 @@ def test_the_selection_event_names_the_prescribed_basin(caplog):
     assert _emit(-450.0, 1)["prescribed_polarity"] == "normal"
 
 
-def test_both_prescription_objectives_are_registered_in_the_vocabulary():
-    """A commitment nothing can name is a commitment a forensic reader loses."""
-    assert ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES <= ALIGNMENT_COMMITMENTS
-    # The trusted-capture candidate keeps its residual (its anchor IS
-    # trustworthy); the refused-capture candidate gives it up with the rest
-    # of that refusal.
-    assert ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION not in (
-        ALIGNMENT_DECLARED_POLARITY_OBJECTIVES
-    )
-    assert ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR in (
-        ALIGNMENT_DECLARED_POLARITY_OBJECTIVES
-    )
-    # Substring-clean in both directions: a consumer matching an objective by
-    # substring must not read the two as one commitment.
-    assert ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION not in (
-        ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR
-    )
-    assert ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR not in (
-        ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
-    )
-
-
 # --------------------------------------------------------------------------- #
 # 5. The control: no prescription changes nothing
 # --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize("snr_insufficient", (False, True))
-@pytest.mark.parametrize("seed_polarity_sign", (1, -1))
-def test_a_session_with_no_prescription_selects_exactly_what_it_selected_before(
-    snr_insufficient, seed_polarity_sign,
-):
-    """The automatic path is untouched, asserted rather than assumed.
-
-    ``explicit_delay_us=None`` must produce a byte-identical selection to
-    omitting the keyword entirely — the positive control for every claim above,
-    and the reason PR #1649's snap radius needed no widening.
-    """
-    freqs, W, T = _lr4_branches()
-    kwargs = _selector_kwargs(
-        seed_polarity_sign=seed_polarity_sign,
-        seed_delay_us=40.0,
-        anchor_delay_us=40.0,
-        branch_snr_insufficient=snr_insufficient,
-        applied_alignment=AppliedAlignment(delay_us=96.0),
-    )
-    assert (
-        _select_alignment_pair(freqs, W, T, **kwargs)
-        == _select_alignment_pair(freqs, W, T, explicit_delay_us=None, **kwargs)
-    )
 
 
 def test_the_prior_defaults_to_absent():
@@ -1740,10 +1335,7 @@ def test_a_pinned_arms_receipt_banks_the_basin_in_the_operators_own_words(word):
     [
         (ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION, True),
         (ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR, True),
-        # The reachable rail, and the reason this field exists at all.
-        (ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND, False),
-        (ALIGNMENT_COMMITTED_APPLIED_HELD_AFTER_LOW_SNR, False),
-        (ALIGNMENT_COMMITTED_FLAT_SUM, False),
+        (ALIGNMENT_ESTIMATED_FLAT_SUM, False),
         # No candidate committed at all is a THIRD answer, not a "no".
         ("", None),
     ],
@@ -1764,43 +1356,6 @@ def test_the_receipt_says_whether_the_arm_actually_ran(objective, committed):
     )["alignment_prescription"]
     assert banked["objective"] == objective
     assert banked["committed"] is committed
-
-
-def test_the_uncommitted_rail_is_reachable_and_the_receipt_reports_it():
-    """The rail END TO END, not asserted from a hand-picked objective string.
-
-    A real capture, a real prescription, a band with no scorable bin — the
-    machinery commits the SEED, and the receipt built from that round's
-    objective says the candidate did not run.
-    """
-    woofer_ir = np.zeros(8192)
-    tweeter_ir = np.zeros(8192)
-    woofer_ir[1000] = 1.0
-    tweeter_ir[1011] = 1.0
-    seed_us = 96.0
-    alignment = AlignmentEstimate(
-        delay_us=seed_us, raw_delay_us=seed_us, parallax_us=0.0,
-        polarity="normal", polarity_sign=1, confidence=0.9, status=ALIGNMENT_OK,
-        anchor_delay_us=None, snapped_delay_us=None,
-    )
-    candidate, _predicted = _build_candidate(
-        # The two branches' declared sweeps MEET at Fc instead of overlapping,
-        # so the scoring band holds no bin, `_select_alignment_pair` returns
-        # None, and the seed stands — with the estimate still ALIGNMENT_OK.
-        woofer_ir, tweeter_ir, 48_000, 16_384, 2000.0, "woofer", "tweeter",
-        alignment, None,
-        tweeter_sweep_lo_hz=2000.0, woofer_sweep_hi_hz=2000.0,
-        explicit_alignment_delay_us=-450.0,
-    )
-    assert candidate.alignment_objective == ALIGNMENT_COMMITTED_SEED_NO_SCORING_BAND
-    assert candidate.delay_us == pytest.approx(seed_us)
-
-    prescription = _read(_arm(-450.0), fc_hz=FC_HZ)
-    banked = _round_measurements_for(
-        prescription, objective=candidate.alignment_objective,
-    )["alignment_prescription"]
-    assert banked["delay_us"] == -450.0
-    assert banked["committed"] is False
 
 
 def test_an_ordinary_round_banks_no_prescription_block():

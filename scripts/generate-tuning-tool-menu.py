@@ -22,7 +22,7 @@ import json
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNBOOK = ROOT / "docs" / "tuning-operator-runbook.md"
@@ -68,7 +68,6 @@ BOUND_SOURCES = {
         ("blend.boost_route", "rule", "contract.speaker.blend.bounds.boost_route"),
         ("alignment.lobe", "us", "timing.half_period_us"),
         ("alignment.lobe_applies_to", "us", "contract.speaker.alignment.bounds.lobe_applies_to"),
-        ("alignment.margin_min", "ratio", "alignment.SUMMED_FIT_MIN_MARGIN"),
         ("alignment.SNR_floor", "dB", "quality.DRIVER.alignment_snr_ok_db"),
         ("alignment.SPL_raise_margin", "dB", "safety.SPL_RAISE_MARGIN_DB"),
         ("gate.trusted_floor_multiplier", "cycles", "gating.TRUSTED_FLOOR_MULTIPLIER"),
@@ -183,7 +182,7 @@ def _subcommand_labels(parser: argparse.ArgumentParser) -> tuple[str, ...]:
     action = next((item for item in parser._actions
                    if isinstance(item, argparse._SubParsersAction)), None)
     help_by_name = {} if action is None else {
-        choice.dest: choice.help for choice in action._choices_actions
+        choice.dest: choice.help or "" for choice in action._choices_actions
     }
     return tuple(
         f"{name} {help_by_name[name].split()[0]}"
@@ -198,7 +197,7 @@ def _tool_row(module_name: str) -> str:
     subcommands = _subcommand_labels(parser)
     tool = parser.prog + (" " + "\\|".join(subcommands) if subcommands else "")
     description = " ".join((parser.description or "").split())
-    where = Path(module.__file__).resolve().relative_to(ROOT)
+    where = Path(cast(str, module.__file__)).resolve().relative_to(ROOT)
     return f"| `{tool}` | {description} | {module.AUTHORITY_TIER} | `{where}` |"
 
 

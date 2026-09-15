@@ -12,7 +12,8 @@ from typing import Any, Callable, Mapping
 from jasper.atomic_io import atomic_write_json
 
 from .applied_identity import applied_identity
-from .alignment_evidence import round_alignment
+from jasper.audio_measurement.program_analysis.model import TIMING_NEEDS_MEASUREMENT
+from .alignment_evidence import round_alignment, timing_next_action
 from .baseline_profile import profile_linearization
 from .candidate_bank import CandidateBankRefusal
 from .commissioning_experiment import bank_commissioning_experiment
@@ -196,10 +197,8 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
         fingerprint = None
         errors.append({"artifact": "packet_fingerprint", "reason": getattr(exc, "reason", "evidence_unavailable")})
     clouds = design_clouds(inputs, manifest) if purpose == PURPOSE_SPEAKER else {}
-    corners = {contract.get("alignment", {}).get("bounds", {}).get("fc_hz") for contract in limits.values()}
-    corners.discard(None)
     alignments, alignment_verdict = round_alignment(
-        manifest, sources, fc_hz=next(iter(corners)) if len(corners) == 1 else None,
+        {**manifest, "round_id": target.name}, sources,
     ) if purpose == PURPOSE_SPEAKER else ([], None)
     packet = {"schema": "jts_round_packet/2", "round_id": target.name, "run_id": manifest.get("run_id"),
               "result": manifest.get("status"), "reason": manifest.get("reason"),
@@ -216,6 +215,8 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
               "fits": _fits(inputs, manifest, sources, clouds) if purpose == PURPOSE_SPEAKER else [],
               **analysis,
               "alignment": alignments, "alignment_verdict": alignment_verdict,
+              "next_action": timing_next_action(alignment_verdict or {},
+                  needs_measurement=any(row["timing_verdict"] == TIMING_NEEDS_MEASUREMENT for row in alignments)),
               "packet_fingerprint": fingerprint, "limits": limits, "artifacts": artifacts, "unavailable": errors}
     if purpose == PURPOSE_SPEAKER:
         try:

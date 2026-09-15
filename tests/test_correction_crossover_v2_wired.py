@@ -860,7 +860,7 @@ async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monk
 async def test_executor_retains_summed_reference_before_measure(monkeypatch, caplog, banked, position, vertical, scope):
     conductor = _conductor(FlowSeams(), index_phase_map={1: "check", 2: "entry_baseline", 3: "measure"},
                            measure_entry_baseline=None)
-    monkeypatch.setattr(conductor, "_applied_alignment", lambda: AppliedAlignment(191.6))
+    monkeypatch.setattr(conductor, "_applied_alignment", lambda: AppliedAlignment(191.6, "normal", "authored_by_model"))
     conductor._check_ambient_report = {"bands": [{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -45}]}
     freqs = np.linspace(100, 20000, 100)
     reference = SummedAlignmentReference(freqs, np.zeros(100),
@@ -906,7 +906,7 @@ async def test_executor_retains_summed_reference_before_measure(monkeypatch, cap
     else:
         build_reference.assert_not_called()
         assert events == [{"code": "summed_reference_unreadable", "reason": "no_entry_baseline"}]
-        assert analysis.candidate.alignment_objective == "applied_alignment_held_after_low_snr"
+        assert analysis.candidate.alignment_objective == "saved_timing"
 
 
 @pytest.mark.parametrize("phase", ["check", "measure", "verify"])

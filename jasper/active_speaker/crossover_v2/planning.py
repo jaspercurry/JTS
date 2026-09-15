@@ -2,16 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""ONE candidate, assembled — and what its linearization produced (#2291).
-
-Owns the build: the eligibility gate, the planner request this candidate's
-sections imply, the cloud evidence its envelope consumed, and the emitted
-``MeasuredCrossoverCandidate``. Two rules: the crossover corner is derived
-from the candidate's own sections, never a session Fc; and this module logs
-nothing itself except ONE guarded ``log_event`` call — the guard for a
-``journal`` port that raised being handed a record (#2361), the one channel
-a broken port cannot also take down.
-"""
+"""Build one measured candidate and expose its analysis evidence."""
 
 from __future__ import annotations
 
@@ -26,7 +17,10 @@ from jasper.audio_measurement.program_analysis import (
     polarity_label,
 )
 from jasper.log_event import log_event
+from jasper.audio_measurement.program_analysis.model import AppliedAlignment, TIMING_NEEDS_MEASUREMENT
+from jasper.active_speaker.baseline_profile import PROVENANCE_MEASURED, PROVENANCE_AUTHORED_BY_MODEL, PROVENANCE_SET_BY_USER
 
+from ..measured_crossover_candidate import MeasuredCrossoverAlignment, MeasuredCrossoverCandidate
 from ..branch_chain import CrossoverSection, sections_by_role
 from .alignment_prescription import AlignmentPrescription
 from .candidates import CloudFitEvidence, LinearizationState
@@ -48,28 +42,19 @@ __all__ = [
     "FailureRecord",
     "alignment_to_candidate_fields",
     "analysis_json",
-    "applied_profile_delay_us",
+    "applied_profile_timing",
     "build_candidate",
     "exclusion_evidence_json",
     "ineligible_reason",
     "plan_for_candidate",
 ]
 
-#: The one event name this module discloses through its ``journal`` port.
 EVENT_FIT_FAILED = "correction.crossover_v2_linearization_fit_failed"
 
-#: Said INSTEAD of :data:`EVENT_FIT_FAILED` when the ``journal`` port itself
-#: raises carrying that record (#2361). Must stay substring-clean of
-#: :data:`EVENT_FIT_FAILED` in both directions: consumers match events by bare
-#: substring against ``caplog.text``.
 EVENT_FIT_FAILED_JOURNAL_DROPPED = (
     "correction.crossover_v2_linearization_fit_journal_dropped"
 )
 
-#: What :func:`build_candidate`'s ``journal`` call is guarded against.
-#: Enumerated rather than a blind ``except Exception`` (ruff BLE; the frozen
-#: broad-except budget). ``OSError`` is in the set because the port is a
-#: logging delegate, and a handler with nowhere to write raises exactly that.
 _JOURNAL_ERRORS = (
     ArithmeticError,
     AttributeError,
@@ -113,11 +98,15 @@ def alignment_to_candidate_fields(
     there is a lone branch — the candidate falls back to a trims-only apply.
     """
     if isinstance(analysis, Mapping):
+        if analysis.get("timing_verdict") == TIMING_NEEDS_MEASUREMENT:
+            return None, None, None
         status, delay, measured_polarity = (analysis.get(key) for key in ("alignment_status", "delay_us", "polarity"))
     elif isinstance(analysis, AlignmentPrescription):
         status, delay = ALIGNMENT_OK, analysis.delay_us
         polarity = analysis.polarity
     else:
+        if getattr(getattr(analysis, "candidate", None), "timing_verdict", None) == TIMING_NEEDS_MEASUREMENT:
+            return None, None, None
         est = analysis.alignment
         status, delay, measured_polarity = (est.status, est.delay_us, est.polarity) if est else (None, None, None)
     if not isinstance(analysis, AlignmentPrescription):
@@ -128,36 +117,18 @@ def alignment_to_candidate_fields(
     return abs(delay_us), roles[1] if delay_us >= 0 else roles[0], polarity
 
 
-def applied_profile_delay_us(
-    applied_profile: Mapping[str, Any] | None,
-    *,
-    woofer_role: str,
-    tweeter_role: str,
-) -> float | None:
-    """The inter-driver delay the APPLIED graph carries, in the analysis frame.
-
-    The inverse of :func:`alignment_to_candidate_fields`; one module owns both
-    directions of the sign fold. Its one consumer (#2617) is
-    ``MeasurementPriors.applied_alignment``. An absent ``delay_ms`` is a ZERO,
-    not a gap — the profile records a magnitude only on the delayed role
-    (``MeasuredCrossoverCandidate.driver_corrections``). ``None`` — never a
-    guessed ``0.0`` — when there is no applied profile, when the authoritative
-    corrections name fewer than both roles, or when the result is non-finite.
-    """
-    from jasper.active_speaker.baseline_profile import profile_driver_corrections
-
-    corrections = profile_driver_corrections(applied_profile)
-    woofer, tweeter = corrections.get(woofer_role), corrections.get(tweeter_role)
-    if not isinstance(woofer, Mapping) or not isinstance(tweeter, Mapping):
+def applied_profile_timing(applied_profile: Mapping[str, Any] | None) -> AppliedAlignment | None:
+    """Absence of the profile's timing record is the only reset. See ADR-0319."""
+    record = (applied_profile or {}).get("timing")
+    required = {"delay_us", "polarity", "provenance"}
+    if not isinstance(record, Mapping) or not required <= record.keys() or record.keys() - required - {"measured"}:
         return None
-    try:
-        delay_us = 1000.0 * (
-            float(tweeter.get("delay_ms") or 0.0)
-            - float(woofer.get("delay_ms") or 0.0)
-        )
-    except (TypeError, ValueError):
+    delay = record["delay_us"]
+    if (not isinstance(delay, (int, float)) or isinstance(delay, bool) or not math.isfinite(delay)
+            or record["polarity"] not in ("normal", "inverted")
+            or record["provenance"] not in (PROVENANCE_MEASURED, PROVENANCE_AUTHORED_BY_MODEL, PROVENANCE_SET_BY_USER)):
         return None
-    return delay_us if math.isfinite(delay_us) else None
+    return AppliedAlignment(float(delay), record["polarity"], record["provenance"], record.get("measured"))
 
 
 def analysis_json(
@@ -174,7 +145,7 @@ def analysis_json(
         "program_id": analysis.program_id,
         "epsilon_ppm": round(float(drift.epsilon_ppm), 3) if drift else None,
         "glitch_detected": bool(analysis.glitch_detected),
-        "delay_us": round(float(align.delay_us), 3) if align else None,
+        "delay_us": round(float(align.delay_us), 3) if align and not (cand and cand.timing_verdict == TIMING_NEEDS_MEASUREMENT) else None,
         "alignment_status": align.status if align else None,
         "alignment_pair_count": align.alignment_pair_count if align else None,
         "alignment_pair_spread_us": (
@@ -189,17 +160,17 @@ def analysis_json(
         "gcc_delay_us": (round(align.seed_delay_us if align.seed_delay_us is not None else align.delay_us, 3)
                          if align else None),
         "refinement_delta_us": round(align.delay_us - seed, 3) if align and seed is not None else None,
-        "snr_waived_roles": list(cand.snr_waived_roles) if cand else [],
         "trim_decision": detached_json({
             **asdict(trim), "strategy": trim.strategy.value,
             "outcome": trim.outcome, "committed_side": trim.committed_side,
         }) if trim is not None else None,
         "polarity": align.polarity if align else None,
         "alignment_objective": cand.alignment_objective if cand else None,
-        "summed_fit_rms_db": cand.summed_fit_rms_db if cand else None,
-        "summed_fit_margin": cand.summed_fit_margin if cand else None,
-        "summed_fit_verdict": cand.summed_fit_verdict if cand else "unavailable",
-        "delay_interval_us": cand.delay_interval_us if cand else None,
+        **{key: getattr(cand, key, None) for key in (
+            "residual_rms_db", "margin_db", "repeat_spread_db", "repeat_spread_us", "repeat_count", "timing_verdict")},
+        "timing_saved": ({key: value for key, value in asdict(cand.timing_saved).items() if value is not None}
+                         if cand and cand.timing_saved else None),
+        "timing_verification": cand.timing_verification if cand else None,
         "seed_polarity": (
             None if cand is None or cand.seed_polarity_sign is None
             else polarity_label(int(cand.seed_polarity_sign))
@@ -420,11 +391,6 @@ def build_candidate(
     ``plan``, ``exclusion_evidence`` and ``journal`` are ports. ``journal`` is
     REQUIRED (#2361) and stays safe when it raises — see the guard below.
     """
-    from jasper.active_speaker.measured_crossover_candidate import (
-        MeasuredCrossoverAlignment,
-        MeasuredCrossoverCandidate,
-    )
-
     delay_us, delay_role, polarity = alignment_to_candidate_fields(
         analysis, roles=roles,
     )

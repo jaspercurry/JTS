@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from copy import deepcopy
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ import pytest
 import yaml as yaml_lib
 
 from jasper.active_speaker import driver_base_trim as dbt
+from jasper.active_speaker.crossover_v2.planning import applied_profile_timing
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
 from jasper.active_speaker import (
     emit_active_speaker_baseline_config,
@@ -43,7 +45,7 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import (
-    declared_profile_fixture,
+    declared_profile_fixture, declared_graph_fixture, standard_design_draft,
     mono_output_topology,
     valid_camilla_config as _valid_config,  # noqa: F401 - shared fixture export
 )
@@ -51,12 +53,6 @@ from tests.test_active_speaker_profile import _two_way_preset
 from tests._log_events import event_field_maps
 
 
-# What a REAL MEASURE analysis records and PR-L4 item 5 counts as evidence: the
-# trim solve's own per-role output, and the cross-branch alignment confidence
-# (measured across both branches at once, hence summed-domain evidence). Stub
-# analyses in this file carried neither, which is fine while a candidate's mere
-# existence satisfied the completeness flags and is not once the flags count
-# what the analysis actually recorded.
 _MEASURE_EVIDENCE = {
     "trim_band_average_db": {"woofer": 0.0, "tweeter": -12.4},
     "alignment_confidence": 0.82,
@@ -899,3 +895,51 @@ def test_a_follower_domain_graph_never_touches_the_solo_base_trim(
     )
 
     assert dbt.load_base_trim() == banked
+
+
+@pytest.mark.parametrize("verdict", ["measured", "authored", "estimate", "needs_measurement"])
+@pytest.mark.parametrize("delay", [-37.5, 22.0])
+def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, verdict, delay):
+    load_applied = baseline_profile_mod.load_applied_baseline_profile_state
+    topology = _topology()
+    draft = standard_design_draft(topology)
+    declaration, base = declared_graph_fixture(topology, draft)
+    fields = {"margin_db": .6, "residual_rms_db": .2, "repeat_spread_db": .1, "repeat_spread_us": 2, "repeat_count": 3}
+    identity = {"round_id": "r1", "take_id": "t2", "graph_fingerprint": "graph", "at": "2026-09-15T12:00:00Z"}
+    candidate = replace(base, alignment=MeasuredCrossoverAlignment(abs(delay), "tweeter" if delay > 0 else "woofer", "invert"),
+        analysis={"measurement_status": "unmeasured", "timing_verdict": verdict, "evidence": {"commissioning": {"alignment": {
+            "timing_verdict": verdict, "committed": {"delay_us": delay, "polarity": "inverted"}, **fields, **identity}}}})
+    monkeypatch.setattr(baseline_profile_mod, "_bank_applied_base_trim", lambda *a: None)
+    monkeypatch.setattr(baseline_profile_mod, "release_staged_startup_hold", lambda: None)
+    prepared = baseline_profile_mod.prepare_applied_baseline_profile(candidate, declaration=declaration,
+        design_draft=draft, measurements={}, applied_at=identity["at"])
+    path = tmp_path / "applied.json"
+    baseline_profile_mod.persist_applied_baseline_profile(prepared, apply_state={"result": "success"}, state_path=path)
+    applied = load_applied(path)
+    assert all(not ({"delay_ms", "inverted"} & set(values)) for values in applied["corrections_provenance"].values())
+    if verdict in ("estimate", "needs_measurement"):
+        assert "timing" not in applied
+        assert applied_profile_timing(applied) is None
+        return
+    expected = {"delay_us": delay, "polarity": "inverted",
+                "provenance": "measured" if verdict == "measured" else "authored_by_model"}
+    if verdict == "measured":
+        expected["measured"] = {**fields, **identity}
+    assert applied["timing"] == expected
+    assert {key: value for key, value in asdict(applied_profile_timing(applied)).items() if value is not None} == expected
+    corrections = applied["corrections"]
+    assert 1000 * (corrections["tweeter"]["delay_ms"] - corrections["woofer"]["delay_ms"]) == pytest.approx(delay)
+    later = baseline_profile_mod.prepare_applied_baseline_profile(replace(candidate, analysis={"measurement_status": "unmeasured"}), declaration=declaration,
+        design_draft=draft, measurements={}, provenance=applied)
+    assert later["timing"] == expected
+    assert later["corrections"] == corrections
+    applied.pop("timing")
+    assert applied_profile_timing(applied) is None
+
+
+@pytest.mark.parametrize("record", [
+    {"delay_us": 22, "polarity": "normal", "provenance": "measured", "extra": 1},
+    {"polarity": "normal", "provenance": "measured"},
+])
+def test_timing_reader_returns_none_for_invalid_record(record):
+    assert applied_profile_timing({"timing": record}) is None

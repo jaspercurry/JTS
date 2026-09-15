@@ -2,13 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compile and apply accepted active-speaker baseline profiles.
-
-The baseline profile is the handoff from commissioning into normal playback:
-it consumes saved crossover settings plus measurement evidence, writes a
-durable CamillaDSP candidate YAML, and can explicitly load that YAML through
-the shared DSP apply transaction. It does not play tones or capture audio.
-"""
+"""Compile and apply accepted active-speaker baseline profiles."""
 
 from __future__ import annotations
 
@@ -18,6 +12,7 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Mapping, Sequence
 
@@ -76,6 +71,7 @@ from .level_trim import (
     attenuation_from_group_deltas,
 )
 from .measured_crossover_candidate import (
+    MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
     candidate_on_declaration, driver_corrections, effective_preset,
 )
@@ -141,6 +137,8 @@ LEVEL_SITTING_TOLERANCE_DB = MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB
 # it directly (it only appears via the gain-source migration map below).
 PROVENANCE_MANUAL = "manual"
 PROVENANCE_MEASURED = "measured"
+PROVENANCE_AUTHORED_BY_MODEL = "authored_by_model"
+PROVENANCE_SET_BY_USER = "set_by_user"
 PROVENANCE_RECOMMENDED_START = "recommended_start"
 PROVENANCE_PRESERVED = "preserved"
 
@@ -857,6 +855,7 @@ def _frozen_applied_profile(
         "config": dict(applied.get("config") or {}),
         "corrections": dict(applied.get("corrections") or {}),
         "corrections_source": dict(applied.get("corrections_source") or {}),
+        **({"timing": applied["timing"]} if "timing" in applied else {}),
         "gain_provenance": dict(applied.get("gain_provenance") or {}),
         "corrections_provenance": dict(applied.get("corrections_provenance") or {}),
         "level_match": dict(applied.get("level_match") or {}),
@@ -920,35 +919,11 @@ def profile_program_headroom_db(profile: Mapping[str, Any] | None) -> float:
 def profile_blend_correction(
     profile: Mapping[str, Any] | None,
 ) -> tuple[Any, ...] | None:
-    """The blend correction an applied profile carries, or ``None`` if unknown.
+    """Read the snapshot first, then the legacy top-level blend correction.
 
-    Same snapshot-first authority rule :func:`profile_linearization` states —
-    the ``recomposition_snapshot`` copy is the one a recompose re-emits, so it
-    is the one that describes the graph; the top-level mirror is the fallback
-    for a profile written before the snapshot carried it.
-
-    **``None`` and ``()`` are different answers and both are load-bearing.**
-    ``()`` means "this profile applied no blend correction" — true of every
-    profile written before decision 10, and of every first round. ``None``
-    means "there is no readable applied profile", i.e. the incumbent cannot be
-    established at all. The round refuses to prescribe on ``None`` rather than
-    assuming zero, because assuming zero would double-count the correction the
-    measurement was actually taken through — the precise shape #2653 reverted
-    for the level datum.
-
-    What this CANNOT detect, stated rather than implied: a graph applied out of
-    band, by hand, that the profile no longer describes. The applied profile is
-    this speaker's single record of what is running, and every other consumer
-    of it (linearization, boosts, alignment) trusts it the same way.
-
-    **This answers WHERE, not WHETHER-VALID, and it deliberately does not
-    filter.** Entry-level validation belongs to
-    ``crossover_v2.blend_correction.blend_filters_from_mapping``, which is the
-    single owner of "is this a record this system wrote". An earlier version
-    dropped non-mapping entries here, which silently TRUNCATED a corrupt list
-    into a shorter valid-looking one — a caller would then have applied a
-    partial correction believing it was whole. Every entry is passed through
-    exactly as persisted so the strict reader can refuse the list.
+    None means unknown; () means no correction. Never turn unknown into zero:
+    that can double-count correction already present in the measured graph.
+    Preserve every entry for blend_filters_from_mapping to validate.
     """
 
     if not isinstance(profile, Mapping):
@@ -1008,15 +983,6 @@ def profile_driver_corrections(profile: Mapping[str, Any] | None) -> Mapping[str
     ):
         return {}
     return corrections
-
-
-def profile_corrections_provenance(profile: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    if not profile_driver_corrections(profile):
-        return {}
-    snapshot = (profile or {}).get("recomposition_snapshot")
-    layer = snapshot if isinstance(snapshot, Mapping) and isinstance(snapshot.get("corrections"), Mapping) else profile or {}
-    provenance = layer.get("corrections_provenance")
-    return provenance if isinstance(provenance, Mapping) else {}
 
 
 def applied_program_level_delta_db(
@@ -1555,7 +1521,7 @@ def _measured_candidate_metadata(
         "sources": {role: "measured" if measured else "operator_pinned" for role in roles},
         "gain_provenance": {role: "measured" if measured else "operator_pinned" for role in roles},
         "provisional": False,
-        "corrections_provenance": {role: dict.fromkeys(("gain_db", "delay_ms", "inverted"), origin) for role in roles},
+        "corrections_provenance": {role: {"gain_db": origin} for role in roles},
         "level_match": {"groups_total": len(groups), "groups_measured": len(groups) if measured else 0,
                         "comparison": "strict_measured_candidate" if measured else "", "incomparable_groups": [],
                         "applied": measured, "newest_capture_at": created_at if measured else None,
@@ -1578,6 +1544,26 @@ def _protection_projection(profile: Mapping[str, Any] | None) -> dict[str, Any] 
             "required_protection_filters": [dict(requirement) for requirement in target["required_protection_filters"]],
         } for target in profile["targets"]],
     }
+
+
+def _candidate_timing(candidate: MeasuredCrossoverCandidate, at: str) -> dict[str, Any] | None:
+    from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED, TIMING_AUTHORED  # lazy: analysis loads NumPy
+
+    evidence = candidate.analysis
+    commissioning = (evidence.get("evidence") or {}).get("commissioning") or {}
+    read = commissioning.get("alignment") or {}
+    if read.get("timing_verdict") == TIMING_MEASURED:
+        pair = read["committed"]
+        return {"delay_us": pair["delay_us"], "polarity": pair["polarity"], "provenance": PROVENANCE_MEASURED,
+                "measured": {**{key: read[key] for key in ("margin_db", "residual_rms_db", "repeat_spread_db", "repeat_spread_us",
+                                                         "repeat_count", "round_id", "take_id", "graph_fingerprint")}, "at": at}}
+    if ((evidence.get("resolution") or {}).get("alignment") == "document"
+            or evidence.get("timing_verdict") == TIMING_AUTHORED) and candidate.alignment.delay_us is not None:
+        roles = required_driver_roles(candidate.source_preset.way_count)
+        return {"delay_us": candidate.alignment.delay_us * (1 if candidate.alignment.delay_role == roles[1] else -1),
+                "polarity": "inverted" if candidate.alignment.polarity == "invert" else "normal",
+                "provenance": PROVENANCE_AUTHORED_BY_MODEL}
+    return None
 
 
 def prepare_applied_baseline_profile(
@@ -1609,14 +1595,24 @@ def prepare_applied_baseline_profile(
               **({"driver_protection_fingerprint": _fingerprint(protection)} if protection is not None else {}),
               "measured_candidate_fingerprint": candidate.fingerprint}
     source["fingerprint"] = _fingerprint({key: value for key, value in source.items() if key != "fingerprint"})
-    corrections = driver_corrections(candidate)
+    from .crossover_v2.planning import alignment_to_candidate_fields  # lazy: planning loads NumPy
+
+    at = applied_at or _utc_now()
+    saved = (provenance or {}).get("timing")
+    timing = saved if saved is not None else _candidate_timing(candidate, at)
+    projected = candidate
+    if timing is not None:
+        fields = alignment_to_candidate_fields({**timing, "alignment_status": "ok"},
+                                              roles=required_driver_roles(candidate.source_preset.way_count))
+        projected = replace(candidate, alignment=MeasuredCrossoverAlignment(*fields))
+    corrections = driver_corrections(projected)
     linearization = linearization_filters_by_role(candidate.linearization)
-    meta = _measured_candidate_metadata(candidate, declaration.preset, declaration.topology, measurements, applied_at or _utc_now())
+    meta = _measured_candidate_metadata(candidate, declaration.preset, declaration.topology, measurements, at)
     snapshot = {
         **((provenance or {}).get("recomposition_snapshot") or {}),
         "schema_version": 1, "domain": "full", "topology_id": declaration.topology.topology_id,
         "topology_fingerprint": source["topology_fingerprint"],
-        "preset": effective_preset(candidate_on_declaration(candidate, declaration.preset)).to_dict(), "corrections": corrections,
+        "preset": effective_preset(candidate_on_declaration(projected, declaration.preset)).to_dict(), "corrections": corrections,
         "linearization": linearization, "blend_correction": list(candidate.blend_correction),
         "room_correction": dict(candidate.room_correction), "bass_extension": dict(candidate.bass_extension),
         "driver_protection": protection, "playback_device": declaration.playback_device,
@@ -1640,6 +1636,9 @@ def prepare_applied_baseline_profile(
         "blend_correction": snapshot["blend_correction"], "room_correction": snapshot["room_correction"],
         "recomposition_snapshot": snapshot,
     }
+    if timing is not None:
+        applied["timing"] = timing
+    snapshot.pop("corrections_provenance", None)
     return applied
 
 
@@ -1656,7 +1655,8 @@ def persist_applied_baseline_profile(
     identity = baseline_candidate_fingerprint(candidate)
     if (existing and existing.get("status") == "applied"
             and baseline_candidate_fingerprint(existing) == identity
-            and existing.get("config") == candidate.get("config")):
+            and existing.get("config") == candidate.get("config")
+            and existing.get("timing") == candidate.get("timing")):
         return existing
     now = applied_at or _utc_now()
     applied = {**candidate, "status": "applied", "applied_at": now, "updated_at": now,

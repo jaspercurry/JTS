@@ -11,8 +11,7 @@ from typing import Any, Mapping, Sequence, cast
 
 from jasper.output_topology import OutputTopology
 from jasper.atomic_io import atomic_write_json
-from jasper.audio_measurement.program_analysis import ALIGNMENT_COMMITTED_FLAT_SUM
-from jasper.json_fields import finite_float
+from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED
 
 from .candidate_bank import load_candidate_artifact, publish_authored_candidate
 from .candidate_parts import candidate_from_design_draft, compose_candidate
@@ -30,10 +29,8 @@ def commissioning_experiment_summary(candidate: MeasuredCrossoverCandidate) -> d
     packet = candidate.analysis.get("evidence", {}).get("commissioning") or {}
     return {
         "candidate_fingerprint": candidate.fingerprint if packet else None,
-        "alignment": {
-            "status": "measured" if packet.get("status") == "awaiting_apply" else packet.get("status", "declared"),
-            "reason": packet.get("reason") or None,
-        },
+        "alignment": {"status": TIMING_MEASURED if packet.get("status") == "awaiting_apply" else packet.get("status", "declared"),
+                      "reason": packet.get("reason") or None},
     }
 
 
@@ -73,10 +70,8 @@ def bank_commissioning_experiment(
     base = publish_authored_candidate(declared, root=target.parent)
     sections: dict[str, Any] = {"driver": {"role_attenuations_db": alignment["trim_db"], "linearization": {}}}
     reason = ""
-    if alignment["objective"] != ALIGNMENT_COMMITTED_FLAT_SUM:
+    if alignment.get("timing_verdict") != TIMING_MEASURED:
         reason = alignment["objective"] or "commissioning_alignment_unavailable"
-    elif (finite_float(alignment["confidence"]) or 0) <= 0:
-        reason = "commissioning_alignment_unavailable"
     else:
         preset = declared.source_preset
         try:

@@ -989,65 +989,11 @@ class CrossoverV2Session:
         )
 
     def _applied_alignment(self) -> AppliedAlignment | None:
-        """What this speaker's applied graph plays, for the low-SNR refusal.
+        from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: baseline imports the flow
 
-        The only prior that comes from the SPEAKER rather than the session, and
-        the only one that reads a file, so it is read HERE and handed down: the
-        analysis is a pure function of (program, WAV, priors) and must not
-        acquire a side channel to Layer-A state (issue #2617's architecture
-        constraint).
-
-        Three answers, and the middle one is why this returns a wrapper rather
-        than a bare float: ``None`` is "no graph is applied", an
-        :class:`AppliedAlignment` carrying a delay is "hold this", and one
-        carrying ``None`` is "a graph IS applied and its record does not say
-        what it plays". The refusal commits no delay for the last two, but only
-        the second may be disclosed as the design's own answer.
-
-        **How reachable is that third answer?** Narrowly, and the honest bound
-        is worth stating rather than assuming away.
-        ``baseline_profile.persist_applied_baseline_profile`` REFUSES to write
-        a profile without a ``recomposition_snapshot`` mapping, and
-        its preparation records ``corrections``,
-        so no machine-written profile lands here unreadable. What can is a
-        hand-edited or truncated state file, or a record from an era before
-        those keys — and since #2617 routes through
-        ``baseline_profile.profile_driver_corrections``, the older top-level
-        mirror is read too, so an era gap is no longer one of them. It is a
-        fail-safe with a disclosure rather than a path with a frequency.
-
-        Never raises. A missing or unparseable state file is already ``None``
-        from the reader; this also catches one that is valid JSON but
-        structurally wrong (hand-edited), which must read as "nothing applied"
-        rather than crash a MEASURE analysis over a fact one refusal path
-        consults.
-
-        Read per MEASURE analysis rather than cached at session open, since
-        that is the moment the answer has to be true: one small JSON read a
-        few times per session, against a stale field that would silently
-        outlive an out-of-band reconcile.
-        """
-        from jasper.active_speaker.baseline_profile import (
-            load_applied_baseline_profile_state,
-        )
-
-        tweeter_role = self._tweeter_role
-        if tweeter_role is None:
-            # An inter-driver arrival gap needs two drivers.
+        if self._tweeter_role is None:
             return None
-        try:
-            applied = load_applied_baseline_profile_state()
-        except (OSError, TypeError, ValueError):
-            return None
-        if applied is None:
-            return None
-        return AppliedAlignment(
-            delay_us=_planning.applied_profile_delay_us(
-                applied,
-                woofer_role=self._woofer.role,
-                tweeter_role=tweeter_role,
-            ),
-        )
+        return _planning.applied_profile_timing(load_applied_baseline_profile_state())
 
     def _applied_blend_correction(self) -> tuple[Mapping[str, Any], ...] | None:
         """The blend correction the post-apply capture rode, or ``None``."""

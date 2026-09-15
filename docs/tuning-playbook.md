@@ -69,40 +69,10 @@ Repeat spread and pose spread answer different questions. No fit filter should
 rest on its `budget.max_gain_db` rail. Measure the composed graph, then stop
 when it answers the question.
 
-Read `alignment_verdict` beside the timing rows. A delay and its inverted
-spelling one half-period later have the same phase at Fc; at 2500 Hz they
-are 200 µs of group delay apart. `folded_delay_us` puts each pose in the
-normal frame; `spread_us` reports their range. Trust the measured-sum take
-in `decided_by` to choose the lobe, and author `basis_delay_us` from that
-take's committed delay. `snr_waived` names takes committed with insufficient
-alignment SNR. `flatness_improvement_db` compares ripple on the same metric;
-`refinement_delta_us` is committed minus scored seed, while `epsilon_ppm`
-is clock drift. `gcc_delay_us` is the bare correlation estimate.
+Settle structure before response. Decide topology and trims in the same document. Re-derive filters fitted to another alignment (`0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md`; `docs/research/2026-08-31-tuning-methodology-deep-research/00-adjudications.md`).
 
-Read each pair's `objective`: `summed_fit_committed` identifies a committed
-summed fit. Inspect `committed.delay_us`, `committed.polarity`,
-`summed_fit_margin`, `delay_interval_us` and `summed_fit_verdict`.
-A margin above 1.5 is a clear result; equality also meets
-`program_analysis/model.py`'s `SUMMED_FIT_MIN_MARGIN`. Read `applied.corrections`
-with `applied.corrections_provenance`. Read `parallax_us` with
-`driver_spacing_source`. Do not confuse a geometric estimate with a measured delay.
-
-Settle structure before response. Decide topology, polarity, delay and trims
-in the same document. Re-derive filters fitted to another alignment
-(`0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md`;
-`docs/research/2026-08-31-tuning-methodology-deep-research/00-adjudications.md`).
-Even a commissioned box with good passive alignment needs an authored
-`alignment` section. Copy the packet's committed value and name its basis.
-
-If low SNR holds the passive estimate, inspect `snr`, then use
-`delay-landscape`. If a measured answer would change the prescription, a person
-starts `jasper-null`; `delay-confirm` compares the result. It plays sound.
-A reverse null near −20 dB on delay alone is a delay answer. One that will
-not pass −10 dB at any delay points to level or slope
-(`02-dissertation-measure-diagnose-prescribe.md`, Stage 3).
-A 10 dB branch gap limits cancellation to about 3.3 dB relative to the louder
-branch: `−20·log10(1 − 10^(−Δ/20))` (derivation in `tuning-methodology.md`).
-That reference differs from shoulder-based null depth.
+If SNR is low, inspect `snr`, then use `delay-landscape`. If a measured answer would change the prescription, a person starts `jasper-null`; `delay-confirm` compares the result. It plays sound. A reverse null near −20 dB on delay alone is a delay answer. One that will not pass −10 dB at any delay points to level or slope (`02-dissertation-measure-diagnose-prescribe.md`, Stage 3).
+A 10 dB branch gap limits cancellation to about 3.3 dB relative to the louder branch: `−20·log10(1 − 10^(−Δ/20))` (derivation in `tuning-methodology.md`). That reference differs from shoulder-based null depth.
 
 Cut peaks; leave dips. A broad, low-Q peak can be audible near a quarter dB;
 a high-Q peak can need about 10 dB. These depend on the signal
@@ -120,6 +90,14 @@ seconds, supports a speaker claim
 (`docs/research/2026-08-31-tuning-methodology-deep-research/03-gating-windowing-and-low-frequency-truth.md`).
 Write one document. `jasper-crossover-prescriber contract --round <dir> --section speaker`
 prints the schema. A refusal names the crossed bound; correct that field.
+
+## Timing
+
+Timing is geometry. Measure it once with confidence, save its provenance, and keep it until the user resets it. Leave `alignment` out of a document unless the user asked for a new measurement or an explicit value. Reset only for a moved or replaced driver, a changed enclosure, or a crossover change large enough to need a fresh read.
+
+Read `alignment_verdict.saved` and its `verification` line: `residual_rms_db` against `repeat_noise_db`. Act only on `next_action`; verification never changes the saved value. Pose rows disclose `margin_db`, `residual_rms_db`, `repeat_spread_db`, `repeat_spread_us`, and `repeat_count` (paired driver takes used). A missing spread means the read cannot establish confidence. See [ADR-0319](adr/0319-timing-measured-once-with-confidence.md).
+
+`flatness_improvement_db` compares ripple on the same metric; `refinement_delta_us` is committed minus scored seed, `epsilon_ppm` is clock drift, and `gcc_delay_us` is the bare correlation estimate. Read `parallax_us` with `driver_spacing_source`; a geometric estimate is not a measured delay.
 
 ## Room
 
@@ -301,7 +279,6 @@ Speaker
 | blend.boost_route | {"available":false,"reason":"boost_route_unavailable","detail":"The route refuses every boost today."} | rule | contract.speaker.blend.bounds.boost_route |
 | alignment.lobe | half_period_us(fc_hz) | us | timing.half_period_us |
 | alignment.lobe_applies_to | "abs(delay_us - basis_delay_us)" | us | contract.speaker.alignment.bounds.lobe_applies_to |
-| alignment.margin_min | 1.5 | ratio | alignment.SUMMED_FIT_MIN_MARGIN |
 | alignment.SNR_floor | 35.0 | dB | quality.DRIVER.alignment_snr_ok_db |
 | alignment.SPL_raise_margin | 3.0 | dB | safety.SPL_RAISE_MARGIN_DB |
 | gate.trusted_floor_multiplier | 2.5 | cycles | gating.TRUSTED_FLOOR_MULTIPLIER |

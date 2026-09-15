@@ -293,3 +293,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0316](0316-rear-woofer-outputs-have-a-physical-variant-identity.md) | Rear woofer outputs have a physical variant identity | accepted |
 | [0317](0317-wall-placement-starts-at-the-cabinet-back.md) | Wall placement starts at the cabinet back | accepted |
 | [0318](0318-rear-calibration-separates-acoustic-targets-from-electrical-settings.md) | Rear calibration separates acoustic targets from electrical settings | accepted |
+| [0319](0319-timing-measured-once-with-confidence.md) | Timing is measured once with confidence | accepted |

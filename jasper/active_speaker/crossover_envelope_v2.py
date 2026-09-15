@@ -10,6 +10,8 @@ from typing import Any, Mapping
 
 from ..json_fields import finite_float as _finite
 from ..log_event import log_event
+from jasper.audio_measurement.program_analysis.model import TIMING_NEEDS_MEASUREMENT
+from .alignment_evidence import timing_next_action
 from .frequency_display import prepare_frequency_curve
 from .crossover_v2.durable_state import FINDING_HOUSEHOLD_REFS_KEY
 from .crossover_v2.coordinator import series_position_from_state
@@ -473,6 +475,15 @@ def _envelope(
     round_ordinal: int | None = None,
 ) -> dict[str, Any]:
     resting = screen in {"awaiting_plan", "finished"}
+    candidate = _mapping(_v2(status).get("candidate"))
+    timing_action = timing_next_action(
+        {"saved": candidate.get("timing_saved"), "verification": candidate.get("timing_verification")},
+        needs_measurement=candidate.get("timing_verdict") == TIMING_NEEDS_MEASUREMENT,
+    )
+    if timing_action and timing_action["id"] == "reset_timing":
+        alternate_actions = [*([next_action] if next_action and next_action != timing_action else []), *(alternate_actions or [])]
+        next_action = timing_action
+    next_action = next_action or timing_action
     return {
         "schema_version": CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
         "flow": "v2",
@@ -484,11 +495,7 @@ def _envelope(
         "steps": _step_payload(active_step, _done_before(active_step)),
         "verdict_text": verdict,
         "nudges": nudges or [],
-        # Optional collapsed expert-disclosure lines (#1605) — the frontend folds
-        # them behind a <details>. Empty on every screen that has none.
         "expert_details": list(expert_details or []),
-        # A terminal / restart screen must stop advertising the dead phone link
-        # and its QR — the session it pointed at is gone.
         "capture": (_mapping(status.get("capture")) or None) if advertise_capture else None,
         "next_action": next_action,
         "alternate_actions": alternate_actions or [],
@@ -773,25 +780,7 @@ def crossover_v2_phase(
 
 
 def _provenance_note(measured_this_session: bool | None) -> str:
-    """PR-7's household-facing provenance caption — one owner of the copy, so
-    the chart never has to (or may) phrase this itself.
-
-    A re-armed session's ``persist_conductor_state`` can carry a group's
-    ``cloud`` entry forward from an EARLIER session verbatim (see
-    :func:`~jasper.active_speaker.crossover_v2.durable_state._cloud_summary`'s
-    own comment and the B1 fix above it) — so
-    ``/state.crossover_v2.cloud`` and the envelope can describe a measurement
-    that did not happen in the session currently open on the page. Silently
-    charting it as fresh would be exactly the kind of measured-narrow-
-    stated-wide claim this program exists to avoid.
-
-    ``""`` for both "definitely current" and "unknown" (a durable state
-    written before this marker existed, or the whole entry unavailable) —
-    mirrors :func:`~jasper.active_speaker.crossover_v2.spatial._geometry_guidance_copy`'s
-    "empty string when nothing to say" rule rather than asserting freshness
-    it cannot prove. Only the one state worth interrupting the household
-    for — data that is KNOWN to be stale — gets a sentence.
-    """
+    """Caption the provenance without treating missing evidence as measured."""
     if measured_this_session is False:
         return (
             "This chart is from a previous session's measurement — "
