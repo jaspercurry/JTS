@@ -531,6 +531,10 @@ class LocalSubwoofer:
         }
 
 
+# dB of retry reserve for the 87.7 dB Z transient at jts3's stop (#5073, A1).
+SPL_RAISE_MARGIN_DB = 3.0
+
+
 @dataclass(frozen=True)
 class SafetyEnvelope:
     """Commissioning bounds that keep hardware bring-up conservative."""

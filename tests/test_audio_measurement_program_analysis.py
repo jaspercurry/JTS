@@ -8220,6 +8220,9 @@ def test_absolute_target_carries_the_candidates_configured_polarity():
     (191.0, -1, (0, 0), "missing_gain", True, "applied_alignment_held_after_low_snr", "unavailable"),
     (191.0, -1, (0, 0), "flat", True, "applied_alignment_held_after_low_snr", "inconclusive"),
     (191.0, -1, (0, 0), "flat", False, "flat_sum_committed", "inconclusive"),
+    (191.0, -1, (-20, 0), "measured", False, "flat_sum_committed", "unavailable"),
+    (191.0, -1, (20, 0), "measured", False, "flat_sum_committed", "unavailable"),
+    (191.0, -1, (0, 20), "measured", False, "flat_sum_committed", "unavailable"),
 ])
 def test_measured_sum_commits_alignment_when_ripple_basins_are_degenerate(monkeypatch, caplog, delay_us, sign, pose, reference_kind, low_snr, objective, verdict):
     from jasper.audio_measurement.program_analysis import dispatch
@@ -8229,7 +8232,7 @@ def test_measured_sum_commits_alignment_when_ripple_basins_are_degenerate(monkey
     freqs = np.linspace(0, SR / 2, 4097)
     W = np.ones(freqs.size, dtype=complex)
     T = 0.45 * np.exp((0 if reference_kind == "flat" else 0.02j) * (freqs / FC_HZ) ** 2)
-    branches = iter((W, T) * 2)
+    branches = iter((W, T) * 4)
     monkeypatch.setattr(dispatch, "_aligned_branch_tf", lambda *a, **k: (freqs, next(branches), {}))
     summed = predicted_branch_sum(W, T, 0, 0, sign, freqs_hz=freqs, residual_delay_us=delay_us)
     reference = SummedAlignmentReference(
@@ -8254,6 +8257,18 @@ def test_measured_sum_commits_alignment_when_ripple_basins_are_degenerate(monkey
         ambient_report={"bands": [{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -45 if low_snr else -100}]},
     )
     geometry = MeasurementGeometry(position_deg=pose[0], vertical_deg=pose[1])
+    if pose != (0, 0) and not low_snr:
+        probe = analyze_program_capture(program, capture, SR, geometry=geometry, priors=priors)
+        snr = min(r.snr[DRIVER_SNR_ALIGNMENT_KEY]["worst_relevant"]["estimated_snr_db"] for r in probe.driver_responses)
+        priors = dataclasses.replace(priors, ambient_report={"bands": [
+            {"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -100 + snr - 29}]})
+        before = analyze_program_capture(program, capture, SR, geometry=geometry, priors=priors)
+        assert before.candidate.alignment_objective == "applied_alignment_held_after_low_snr"
+        assert min(r.snr[DRIVER_SNR_ALIGNMENT_KEY]["worst_relevant"]["estimated_snr_db"] for r in before.driver_responses) == pytest.approx(29)
+        program = build_measure_program({"woofer": -18, "tweeter": -18}, _roles(),
+                                        sweep_durations={"woofer": .3, "tweeter": .3})
+        capture = _synthesize(program, woofer_ir=impulse, tweeter_ir=impulse, noise=0)
+        caplog.clear()
     caplog.set_level(logging.INFO, logger="jasper.audio_measurement.program_analysis")
     result = analyze_program_capture(program, capture, SR, geometry=geometry, priors=priors)
     candidate = result.candidate

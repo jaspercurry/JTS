@@ -445,7 +445,7 @@ def test_design_cloud_joins_retakes_without_borrowing_graphs(speaker_round, othe
     clouds = design_clouds(inputs, manifest)
     assert {key: cloud.n_positions for key, cloud in clouds.items()} == (
         {"first": 2, "retaken": 1, "older": 1, "other": 1} if anonymous else {"first": 3, "retaken": 3, "older": 3, "other": 1})
-    assert len(round_alignment(manifest, prescription_sources(inputs))) == 2
+    assert len(round_alignment(manifest, prescription_sources(inputs))) == (5 if anonymous else 4)
     assert len(clouds["retaken"].boost_responses) == (0 if anonymous else 3)
     for selected, expected in (("first", 2 if anonymous else 3), ("other", 1)):
         take = group["takes"][1] if selected == "first" else other["takes"][0]
@@ -502,8 +502,10 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
     group["capture_basis"].update(role="woofer")
     take = group["takes"][0]
     evidence = {f"snr.{role}.alignment.{key}": value for role, row in expected["snr"].items() for key, value in row.items()}
+    levels = {"tweeter": {"alignment_level_db": -26, "alignment_snr_shortfall_db": {"before": 12.5, "after": 8.5},
+                          "alignment_level_capped_by": "driver_cap", "alignment_snr_residual_shortfall_db": 8.5}}
     take.update(analysis=analysis, role="woofer", pose={"kind": "bearing", "deg": 0, "elevation_deg": 0},
-                quality={"evidence": evidence}, timing={"ended_s": 2})
+                quality={"evidence": evidence}, timing={"ended_s": 2}, alignment=levels)
     refused = {**take, "take_id": "refused", "selected": False}
     if fault:
         refused.update({"quality": {"fault": fault}} if held else {"fault": fault})
@@ -512,7 +514,9 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
     manifest = write_manifest(root, groups=[group, {**group, "set_id": "duplicate", "capture_basis": {
         **group["capture_basis"], "role": "tweeter"}}])
     packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
-    pair, = packet["alignment"]
+    pair, off_axis = packet["alignment"]
+    assert off_axis["pose"]["deg"] == 20
+    assert off_axis["committed"]["delay_us"] == 900
     fit = speaker_fit(round_inputs(root), manifest, "timing", take["take_id"])
     for answer in (pair, json.loads(json.dumps(fit["alignment"]))):
         assert {key: answer[key] for key in expected} == expected
@@ -520,9 +524,13 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
         assert answer["applied"]["record"] == "a" * 12
         assert answer["applied"]["corrections"] == corrections
         assert answer["applied"]["corrections_provenance"] == provenance
+        assert answer["levels"] == levels
+    assert all(t["alignment"] == levels for group in packet["sets"] for t in group["takes"])
     assert pair["take_id"] == take["take_id"]
     lines = (root / INDEX_FILENAME).read_text().splitlines()
-    assert len([line for line in lines if line.startswith("timing:")]) == 1
+    assert len([line for line in lines if line.startswith("timing:")]) == 2
+    start = next(i for i, line in enumerate(lines) if line.startswith("timing:"))
+    assert max(map(len, lines[start:lines.index("## Decisions")])) <= 160
     assert {t["fault"] for g in packet["sets"] for t in g["takes"] if not t["selected"]} == {fault}
     assert [line for line in lines if line.startswith("retakes:")] == ([f"retakes: refused {fault}"] if fault else [])
 
@@ -718,7 +726,7 @@ def test_first_speaker_experiment_banks_measured_alignment_for_apply(
     assert first["status"] == ("alignment_unmeasured" if reason else "awaiting_apply"), first
     assert first["reason"] == reason
     assert first["alignment"]["take_id"] == group["takes"][0]["take_id"]
-    pair, = packet["alignment"]
+    pair = next(row for row in packet["alignment"] if row["take_id"] == group["takes"][0]["take_id"])
     assert {key: first["alignment"][key] for key in pair} == pair
     assert pair["committed"] == {"delay_us": delay, "polarity": polarity, "ripple_db": analysis["predicted_ripple_db"]}
     assert pair["trim_db"] == analysis["trim_db"]

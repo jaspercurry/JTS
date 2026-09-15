@@ -205,7 +205,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                                      "room": snapshot.get("room_correction", profile.get("room_correction")),
                                      "bass": snapshot.get("bass_extension")}},
               "sets": [{"set_id": g["set_id"], "candidate_id": g["capture_basis"].get("candidate_id"), "base": g.get("base", False),
-                        "takes": [{**{key: t.get(key) for key in ("take_id", "pose", "role", "selected")},
+                        "takes": [{**{key: t.get(key) for key in ("take_id", "pose", "role", "selected", "alignment")},
                                    "fault": t.get("fault") or (t.get("quality") or {}).get("fault"), **gate_fields(t)} for t in g["takes"]]}
                        for g in manifest.get("sets", ())], "series": series,
               "fits": _fits(inputs, manifest, sources, clouds) if purpose == PURPOSE_SPEAKER else [],

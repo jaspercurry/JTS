@@ -248,6 +248,7 @@ room = jasper.audio_measurement.room_limits
 alignment = jasper.audio_measurement.program_analysis.model
 timing = jasper.audio_measurement.program_analysis.response
 quality = jasper.audio_measurement.quality_model
+safety = jasper.active_speaker.profile
 gating = jasper.audio_measurement.gating
 bass = jasper.bass_extension.measurement
 
@@ -278,6 +279,7 @@ Speaker
 | alignment.lobe_applies_to | "abs(delay_us - basis_delay_us)" | us | contract.speaker.alignment.bounds.lobe_applies_to |
 | alignment.margin_min | 1.5 | ratio | alignment.SUMMED_FIT_MIN_MARGIN |
 | alignment.SNR_floor | 35.0 | dB | quality.DRIVER.alignment_snr_ok_db |
+| alignment.SPL_raise_margin | 3.0 | dB | safety.SPL_RAISE_MARGIN_DB |
 | gate.trusted_floor_multiplier | 2.5 | cycles | gating.TRUSTED_FLOOR_MULTIPLIER |
 
 Room

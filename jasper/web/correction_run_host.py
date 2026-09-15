@@ -114,6 +114,11 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                            capabilities=verdict.capabilities, next=verdict.next or (
                                "accept" if verdict.accepted else "fix_and_retake"),
                            next_gain_db=verdict.next_gain_db, charge=verdict.charge)
+        if kwargs.get("phase") == PHASE_MEASURE:
+            kwargs.update(gain_ceiling_db=conductor._measure_gain_ceiling_db, caps_dbfs=conductor._excitation.caps_dbfs,
+                          session_volume_db=conductor._excitation.session_volume_db,
+                          spl_stop_db_spl=conductor._preset.safety.max_commissioning_level_db_spl,
+                          spl=(getattr(answer, "capture_integrity", None) or {}).get("spl"))
         assessed = assess(analysis, prior_verdict=prior, **kwargs)
         if verdict is None and phase == PHASE_MEASURE and assessed.next in {"retake_louder", "retake_quieter"}:
             conductor._rearm_measure_after_transient(assessed)
