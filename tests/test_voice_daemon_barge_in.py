@@ -248,6 +248,21 @@ async def _drive_sustained_speech(wl) -> None:
     await wl._handle_session_frame(silent_frame())
 
 
+def test_continuous_barge_in_uses_capture_time(monkeypatch):
+    wl = _continuous_loop(owns_interruption=False)
+    monkeypatch.setattr("jasper.voice_daemon.time.monotonic", lambda: 100.0)
+
+    async def drive() -> None:
+        await wl._handle_session_frame(silent_frame(), captured_at=10.0)
+        await wl._handle_session_frame(silent_frame(), captured_at=11.0)
+
+    asyncio.run(drive())
+
+    assert wl._turns.continuous_speech_started == 10.0
+    assert wl._turns.continuous_last_speech == 11.0
+    assert wl._turns.turn.local_interrupt_calls == 1
+
+
 @pytest.mark.parametrize("owns_interruption", [False, True])
 def test_continuous_barge_in_flushes_only_when_the_host_owns_interruption(
     caplog, owns_interruption,
