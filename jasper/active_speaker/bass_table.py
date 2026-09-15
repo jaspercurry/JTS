@@ -14,6 +14,7 @@ from jasper.json_fields import finite_float
 
 from .bass_comparison import CHANGE_FIELDS, bass_capture_context
 from .bass_fit import REFERENCE_BAND_HZ, BassFitCoverageUnavailable, fit_bass_shape
+from .bass_level_evidence import bass_level_evidence
 from .crossover_v2.measurement_context import compare_capture_basis
 from .crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
 
@@ -71,34 +72,41 @@ def fit_bass_table(
         contexts.append(comparison)
     levels = []
     for key, group in sorted(groups.items()):
-        row = {"level_key": dict(zip(LEVEL_FIELDS, key)), "loudness_boost_db": loudness_boost_db(key[1], settings) if settings else None,
+        prescribed = loudness_boost_db(key[1], settings) if settings else None
+        row = {"level_key": dict(zip(LEVEL_FIELDS, key)), "loudness_boost_db": prescribed,
+               "prescribed_boost_db": prescribed, "code": None, "next_action": None,
+               "fit": None, "selected_is_measured": False, "within_tolerance_on_qualified_bins": None,
+               "selected_scale": None, "selected_descriptor": None,
                "sources": [{"before": before["record_path"], "after": after["record_path"]} for before, after in group]}
         try:
             fit = fit_bass_shape(group, candidate_id=candidate_id, descriptor=descriptor,
                                 target=target, reference_band_hz=reference_band_hz)
         except BassFitCoverageUnavailable as refusal:
-            levels.append({**row, "outcome": "insufficient_evidence", "code": refusal.code,
-                           "next_action": refusal_copy_for(refusal.code)[1], "fit": None,
-                           "selected_is_measured": False, "within_tolerance_on_qualified_bins": None,
-                           "selected_scale": None, "selected_descriptor": None})
-            continue
-        passing = [choice for choice in fit["choices"] if choice["scale"] in (0.0, 1.0)
-                   and choice["max_abs_error_db"] <= tolerance]
-        selected = min(passing, key=lambda choice: choice["mean_pose_rms_db"]) if passing else next(
-            choice for choice in fit["choices"] if choice["scale"] == fit["selected_scale"])
-        measured = selected["scale"] in (0.0, 1.0)
-        complete = not fit["unqualified_hz"]
-        within = selected["max_abs_error_db"] <= tolerance
-        outcome = ("insufficient_evidence" if not complete else
-                   "target_not_met" if not within else
-                   "measurement_required" if not measured else "target_met")
-        levels.append({**row, "outcome": outcome,
-                       "selected_is_measured": measured, "within_tolerance_on_qualified_bins": within,
-                       "selected_scale": selected["scale"], "selected_descriptor": selected["descriptor"], "fit": fit})
+            row.update(outcome="insufficient_evidence", code=refusal.code,
+                       next_action=refusal_copy_for(refusal.code)[1])
+        else:
+            passing = [choice for choice in fit["choices"] if choice["scale"] in (0.0, 1.0)
+                       and choice["max_abs_error_db"] <= tolerance]
+            selected = min(passing, key=lambda choice: choice["mean_pose_rms_db"]) if passing else next(
+                choice for choice in fit["choices"] if choice["scale"] == fit["selected_scale"])
+            measured = selected["scale"] in (0.0, 1.0)
+            complete = not fit["unqualified_hz"]
+            within = selected["max_abs_error_db"] <= tolerance
+            outcome = ("insufficient_evidence" if not complete else
+                       "target_not_met" if not within else
+                       "measurement_required" if not measured else "target_met")
+            row.update(outcome=outcome, selected_is_measured=measured, within_tolerance_on_qualified_bins=within,
+                       selected_scale=selected["scale"], selected_descriptor=selected["descriptor"], fit=fit)
+        levels.append({**row, **bass_level_evidence(group, descriptor=descriptor, prescribed_boost_db=prescribed,
+                                                   reference_band_hz=reference_band_hz)})
     return {"schema": "jts_bass_table/1", "candidate_id": candidate_id, "target": dict(target),
             "tolerance_db": tolerance, "reference_band_hz": list(reference_band_hz),
             "tested_volume_range_db": [min(key[0] for key in groups), max(key[0] for key in groups)],
             "stimulus_dbfs": first["stimulus_dbfs"], "capture_context": contexts, "levels": levels,
             "limits": ["This table fits the recorded stimulus and bass-reference settings; it is not a runtime schedule.",
-                       "No extrapolation beyond measured boost or resolved window gains. Hardware headroom is not established.",
+                       "No extrapolation beyond measured boost or resolved window gains. Harmonics describe measured headroom, not a hardware limit.",
+                       "Compression is prescribed minus realized boost, including both compressor and driver action.",
+                       "The single-repeat harmonic evidence floor is 1 dB, not a hearing threshold; repeats combine base and candidate band standard deviations in quadrature at each pose. Decreases are not rises.",
+                       "Curves use medians within each pose, then across poses. SPL uses the same pose weighting on each take's calibrated loudest half-second statistic.",
+                       "Repeat spread is the RMS of fundamental standard deviations within repeated poses and both arms. Position spread is not yet estimated.",
                        "Intermediate descriptors require measurement before application. Missing frequency bins remain unproven."]}

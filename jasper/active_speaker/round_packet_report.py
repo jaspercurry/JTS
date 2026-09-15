@@ -17,6 +17,7 @@ from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.audio_measurement.spatial_combine import octave_bands_hz
 from jasper.json_fields import finite_float
 
+from .bass_table_report import bass_table_markdown, bass_table_rows
 from .crossover_v2.frequency_view import position_label
 from .crossover_v2.round_inputs import SetTakes
 from .flat_spec import _power_mean_db
@@ -199,6 +200,8 @@ def packet_index(
                        f"over {lo:g}–{hi:g} Hz" + (f" ({row['reason']})" if row["reason"] else ""))
         lines.append(f"null ceiling {_pose_token(row['pose'])}: {summary}; capture_graph {json.dumps(row['capture_graph'])}; "
                      f"takes {', '.join(row['take_ids'])}")
+    if bass_rows := bass_table_rows(packet.get("bass_table", {})):
+        lines.append(bass_table_markdown(bass_rows))
     lines += ["## Artifacts", f"{json.dumps(packet['artifacts'], separators=(',', ':'))}; packet: {PACKET_FILENAME}",
               "## Tools", "\n".join(f"- `{cmd}`" for cmd in dict.fromkeys(commands)),
               f"Fingerprint: {packet['packet_fingerprint']}"]

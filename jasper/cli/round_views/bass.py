@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from jasper.active_speaker.bass_table_report import bass_table_markdown, bass_table_rows
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
 from jasper.bass_extension.measurement import TARGET, TOLERANCE_DB
 from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE, failed
@@ -87,7 +88,7 @@ def _cmd(args: argparse.Namespace) -> int:
                 payload = fit_run(args)
                 levels = [row for table in payload["tables"] for row in table["levels"]]
                 summary = {"run_ids": payload["run_ids"], "level_count": len(levels),
-                           "outcomes": [row["outcome"] for row in levels]}
+                           "outcomes": [row["outcome"] for row in levels], "levels": bass_table_rows(payload)}
     except CrossoverV2Refused as refusal:
         message, action = refusal_copy_for(refusal.code)
         return failed(EXIT_REFUSED, refusal.code, refusal.args[0] if refusal.args else message,
@@ -99,4 +100,5 @@ def _cmd(args: argparse.Namespace) -> int:
     except _ROUND_TOOL_ERRORS as exc:
         return failed(EXIT_UNREADABLE, REASON_UNREADABLE, str(exc))
     written = _write(payload, args.out, destination)
-    return answer(args.command, out=written, **summary, line=f"{args.command} -> {written}")
+    table = bass_table_markdown(summary["levels"]) if args.command == "bass-fit-table" else ""
+    return answer(args.command, out=written, **summary, line=f"{args.command} -> {written}\n{table}".rstrip())
