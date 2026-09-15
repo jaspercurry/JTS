@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
+from jasper.active_speaker.measurement_programs import (
+    PURPOSE_BASS,
+    PURPOSE_ROOM,
+    PURPOSE_SPEAKER,
+)
 from jasper.active_speaker.frequency_view import FREQUENCY_VIEW_FILENAME
 from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
@@ -83,6 +88,7 @@ class ViewArtifact(NamedTuple):
     takes: tuple[str, ...] = (TAKES_THIS_ROUND,)
     in_artifact_dir: bool = False
     producer: str | None = None
+    purposes: tuple[str, ...] = ()
 
 #: The artifacts a round carries, declared once: the subcommands take their
 #: default output path from this table and ``inventory`` names each one's
@@ -94,44 +100,52 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "run-manifest": ViewArtifact(RUN_MANIFEST_FILENAME, in_artifact_dir=True, producer="plan_run.run_plan"),
     "dsp-replay": ViewArtifact("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--bass-reference-db", "<db>", "--out", "<render-dir>")),
     "dsp-levels": ViewArtifact("dsp_levels.json", ("<dsp_replay.json>", "--raw", "<output.f64le>", "--window-s", "<start>", "<stop>")),
-    "bass-fit-table": ViewArtifact("bass_table.json", (TAKES_THIS_ROUND, "--run", "<run-id>", "--candidate", "<candidate.json>", "--target", "<target.json>", "--tolerance-db", "<db>")),
-    "entry": ViewArtifact("entry_state_grade.json"),
-    "frozen": ViewArtifact("frozen_reference.json", TAKES_AFTER_ANOTHER),
-    "per-seat": ViewArtifact("per_seat.json"),
+    "bass-fit-table": ViewArtifact("bass_table.json", (TAKES_THIS_ROUND, "--run", "<run-id>", "--candidate", "<candidate.json>", "--target", "<target.json>", "--tolerance-db", "<db>"), purposes=(PURPOSE_BASS,)),
+    "entry": ViewArtifact("entry_state_grade.json", purposes=(PURPOSE_SPEAKER,)),
+    "frozen": ViewArtifact("frozen_reference.json", TAKES_AFTER_ANOTHER, purposes=(PURPOSE_SPEAKER,)),
+    "per-seat": ViewArtifact("per_seat.json", purposes=(PURPOSE_ROOM,)),
     "repeat": ViewArtifact("repeatability.json", TAKES_BEFORE_ANOTHER),
     "candidates": ViewArtifact("candidates.json"),
-    "agreement": ViewArtifact("agreement.json"),
-    "co-metrics": ViewArtifact("audibility_co_metrics.json"),
-    "directivity": ViewArtifact("directivity.json"),
-    "cloud-binding": ViewArtifact("cloud_binding.json"),
-    "forward-model": ViewArtifact("forward_model.json", TAKES_SET),
+    "agreement": ViewArtifact("agreement.json", purposes=(PURPOSE_ROOM,)),
+    "co-metrics": ViewArtifact("audibility_co_metrics.json", purposes=(PURPOSE_ROOM,)),
+    "directivity": ViewArtifact("directivity.json", purposes=(PURPOSE_ROOM,)),
+    "cloud-binding": ViewArtifact("cloud_binding.json", purposes=(PURPOSE_SPEAKER,)),
+    "forward-model": ViewArtifact("forward_model.json", TAKES_SET, purposes=(PURPOSE_SPEAKER,)),
     "sweep --scope verdict": ViewArtifact("spec_gate_sensitivity.json", TAKES_SET),
     "sweep --scope round": ViewArtifact("gate_sweep.json", TAKES_SET),
     "sweep --scope take": ViewArtifact("window_view.json", (*TAKES_SET, "--take", "<take-id>")),
     "frequency": ViewArtifact(FREQUENCY_VIEW_FILENAME),
-    "bass": ViewArtifact("bass_view.json", TAKES_SET),
+    "bass": ViewArtifact("bass_view.json", TAKES_SET, purposes=(PURPOSE_BASS,)),
     "bass-compare": ViewArtifact("bass_comparison.json", (
         "<before-round>", TAKES_THIS_ROUND, "--before-set", "<before-set-id>",
         "--after-set", "<set-id>", "--change", "<change>",
-    )),
-    "delay-landscape": ViewArtifact("delay_landscape.json"),
-    "delay-confirm": ViewArtifact("delay_confirmation.json"),
-    "close-reference": ViewArtifact("close_reference.json", TAKES_FAR_AND_CLOSE),
-    "room": ViewArtifact(ROOM_ARTIFACT, TAKES_SET),
+    ), purposes=(PURPOSE_BASS,)),
+    "delay-landscape": ViewArtifact("delay_landscape.json", purposes=(PURPOSE_SPEAKER,)),
+    "delay-confirm": ViewArtifact("delay_confirmation.json", purposes=(PURPOSE_SPEAKER,)),
+    "close-reference": ViewArtifact("close_reference.json", TAKES_FAR_AND_CLOSE, purposes=(PURPOSE_SPEAKER,)),
+    "room": ViewArtifact(ROOM_ARTIFACT, TAKES_SET, purposes=(PURPOSE_ROOM,)),
     # The packet owns these two names, so the rows take those constants rather
     # than a second spelling of them.
     "distortion": ViewArtifact(
-        HARMONICS_ARTIFACT, (TAKES_THIS_ROUND,), in_artifact_dir=True
+        HARMONICS_ARTIFACT, (TAKES_THIS_ROUND,), in_artifact_dir=True,
+        purposes=(PURPOSE_SPEAKER,),
     ),
     "classify-features": ViewArtifact(
-        CLASSIFICATION_ARTIFACT, (TAKES_THIS_ROUND,), in_artifact_dir=True
+        CLASSIFICATION_ARTIFACT, (TAKES_THIS_ROUND,), in_artifact_dir=True,
+        purposes=(PURPOSE_SPEAKER,),
     ),
     "findings": ViewArtifact("findings.json"),
-    "room-grade": ViewArtifact("room_grade.json", TAKES_SET),
+    "room-grade": ViewArtifact("room_grade.json", TAKES_SET, purposes=(PURPOSE_ROOM,)),
     # The banker writes this index; inventory reports its presence.
     "position-cycle": ViewArtifact(
         POSITION_CYCLE_FILENAME, ("--run", "<run-id>"), producer="jasper-round wait",
     ),
+}
+
+VIEW_PURPOSES = {
+    **{name.split()[0]: spec.purposes for name, spec in ARTIFACT_BY_VIEW.items()},
+    "repeat-floor": (),
+    "speaker-fit": (PURPOSE_SPEAKER,),
 }
 
 INVENTORY_ARTIFACT = ARTIFACT_BY_VIEW["inventory"].artifact

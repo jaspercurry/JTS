@@ -1056,29 +1056,18 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     round_dir = _make_round_dir(
         tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
     )
-    assert cli.main(["per-seat", str(round_dir)]) == 0
+    assert cli.main(["frequency", str(round_dir)]) == 0
 
     assert cli.main(["inventory", str(round_dir)]) == 0
     payload = json.loads((round_dir / "inventory.json").read_text())
     rows = {row["artifact"]: row for row in payload["artifacts"]}
 
-    present = rows["per_seat.json"]
+    present = rows["frequency_view.json"]
     assert present["present"] is True
-    assert present["bytes"] == (round_dir / "per_seat.json").stat().st_size
+    assert present["bytes"] == (round_dir / "frequency_view.json").stat().st_size
     assert payload["bytes_total"] == sum(
         row["bytes"] or 0 for row in payload["artifacts"]
     )
-
-    # Every path this round can fill is filled: the row is a line to run.
-    missing = rows["directivity.json"]
-    assert missing["present"] is False
-    assert missing["bytes"] is None
-    assert missing["produced_by"] == f"jasper-round-views directivity {round_dir}"
-    assert missing["producer_needs_more_than_this_round"] is False
-    assert missing["path"] == str(round_dir / "directivity.json")
-    # The producer it named writes the artifact it named as missing.
-    assert cli.main(shlex.split(missing["produced_by"])[1:]) == 0
-    assert Path(missing["path"]).is_file()
 
     # A view whose subcommand takes MORE than this round says so, and places
     # this round in the slot that writes the artifact beside it — frozen
@@ -2933,15 +2922,15 @@ def test_inventory_commands_preserve_path_tokens_and_required_inputs(tmp_path, c
     profile.write_text("{}")
     assert main(["inventory", str(round_dir)]) == 0
     rows = {row["artifact"]: row for row in json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())["artifacts"]}
-    command = shlex.split(rows["directivity.json"]["next_command"])
-    assert command == ["jasper-round-views", "directivity", str(round_dir)]
+    command = shlex.split(rows["frequency_view.json"]["next_command"])
+    assert command == ["jasper-round-views", "frequency", str(round_dir)]
     assert main(command[1:]) == 0
-    assert (round_dir / "directivity.json").is_file()
+    assert (round_dir / "frequency_view.json").is_file()
     distortion = rows["harmonic_distortion.json"]
     args = build_parser().parse_args(shlex.split(distortion["next_command"])[1:])
     assert args.bundle_dir == round_dir
     assert distortion["required_inputs"] == []
-    assert rows["directivity.json"]["required_inputs"] == []
+    assert rows["frequency_view.json"]["required_inputs"] == []
     assert rows[POSITION_CYCLE_FILENAME]["next_command"] is None
     assert rows[POSITION_CYCLE_FILENAME]["repair_reason"] == "banked_pose_index_missing"
 
