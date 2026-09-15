@@ -45,6 +45,7 @@ from .session import (
     ConnectionState,
     CuePlayer,
     TurnUsage,
+    log_first_chunk,
 )
 
 logger = logging.getLogger(__name__)
@@ -167,8 +168,8 @@ class BaseLiveTurn:
         self._conn = conn
         self._audio_q: asyncio.Queue[AudioOutChunk | None] = asyncio.Queue()
         self._interrupt_event = asyncio.Event()
-        # Loop time (asyncio) of the last inbound progress event, and of
-        # the last audio chunk specifically.
+        # Loop time (asyncio) of the last inbound progress event;
+        # `time.monotonic()` of the last audio chunk specifically.
         self._last_activity_at: float = started_at
         self._last_chunk_at: float = 0.0
         self._first_chunk_logged = False
@@ -478,6 +479,24 @@ class BaseLiveTurn:
             assistant_chars=len(self._assistant_transcript.strip()),
             **self._release_fields(),
         )
+
+    def _note_audio_chunk(self, now: float) -> None:
+        """Account for one chunk of assistant audio, received at `now`.
+
+        `now` is the caller's own `time.monotonic()` reading, so an
+        adapter's local chunk timing and this anchor share one instant.
+        """
+        self._note_activity()
+        self._last_chunk_at = now
+        self._chunks_received += 1
+        if not self._first_chunk_logged:
+            self._first_chunk_logged = True
+            log_first_chunk(
+                self._conn._logger,
+                self._conn.PROVIDER_NAME,
+                turn_start_monotonic=self._started_at_monotonic,
+                end_input_monotonic=self._end_input_at_monotonic,
+            )
 
     def _note_activity(self) -> None:
         """Reset the pre-response idle anchor.
