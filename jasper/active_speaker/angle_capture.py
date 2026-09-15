@@ -447,6 +447,7 @@ class AngleCaptureRequest:
         if self.levels is not None:
             if not isinstance(self.levels, (tuple, list)) or not self.levels or None in self.levels:
                 raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "levels must be a nonempty sequence")
+            # LevelPolicy owns the fader range check for each requested level.
             for value in self.levels:
                 replace(self.level, level_db=value)
             levels = tuple(float(value) for value in self.levels)
@@ -472,8 +473,7 @@ class AngleCaptureRequest:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            **{key: value for key, value in asdict(self).items() if key != "levels"},
-            **({"levels": list(self.levels)} if self.levels is not None else {}),
+            **{key: value for key, value in asdict(self).items() if key != "levels" or value is not None},
             "template": self.template.to_dict(), "level": self.level.to_dict(),
             "stops": [
                 {f.name: candidate_identity(stop.candidate_id) if f.name == "candidate_id" else

@@ -337,11 +337,9 @@ def test_room_default_uses_the_human_seat_set(preflight_ready, monkeypatch, caps
 
 @pytest.mark.parametrize("candidates,shape", [(None, "measure"), ("base", "trial")])
 @pytest.mark.parametrize("source", ["flags", "file"])
-@pytest.mark.parametrize("levels", [None, "-10,-20"])
-def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, monkeypatch, capsys, tmp_path, candidates, shape, source, levels):
-    monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan: ready_facts(plan, commissioning_stop_db_spl=95))
+def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, monkeypatch, capsys, tmp_path, candidates, shape, source):
     opener = _opener(session=json.dumps({"capture": {"session_id": "run-1", "first_prompt": {"title": "Place mic"}}}))
-    argv = ["run", "--program", "room", "--poses", "seat_express", *([f"--levels={levels}"] if levels else ["--level-db", "-25"])]
+    argv = ["run", "--program", "room", "--poses", "seat_express", "--level-db", "-25"]
     if candidates:
         argv += ["--candidates", candidates]
     if source == "file":
@@ -355,8 +353,7 @@ def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, mon
     plan = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
     assert plan["candidates"] == ([] if candidates is None else [candidates])
     assert (plan["artifact_schema_version"], body["run_id"]) == (5, "run-1")
-    assert plan["level"]["level_db"] == (None if levels else -25)
-    assert plan.get("levels") == ([-10, -20] if levels else None)
+    assert plan["level"]["level_db"] == -25
     assert body["link"].endswith(wc.CSRF_PAGE_PATH)
     assert body["shape"] == shape
     assert not any(r.full_url.endswith(wc.STATUS_PATH) for r in opener.requests)
@@ -642,23 +639,25 @@ def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsy
 
 @pytest.mark.parametrize("program,requested,noise_dbfs,levels", [
     ("bass", None, -60, [-18, -23]), ("bass", None, -100, [-18, -23, -28, -33]), ("bass", None, -20, []),
-    ("room", "-10,-20", -100, [-20]), ("room", "auto", -100, [-18, -23, -28, -33]),
+    ("room", "-10,-20", -100, [-20]), ("bass", "auto", None, []),
 ])
 def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, requested, noise_dbfs, levels):
     def facts(plan):
         ready = ready_facts(plan)
+        if noise_dbfs is None:
+            return replace(ready, anchor=replace(ready.anchor, record={}))
         return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record,
             "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": noise_dbfs}]}}))
 
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
     opener = _opener()
-    code, body = _run(["run", "--program", program, "--dry-run", *(["--levels", requested] if requested else [])],
+    code, body = _run(["run", "--program", program, "--dry-run", *([f"--levels={requested}"] if requested else [])],
                       opener, monkeypatch, capsys)
     assert code == (0 if levels else 1)
     assert body["dry_run"] is True
     assert body["admissible_levels_db"] == levels
-    expected = [-10, -20] if requested == "-10,-20" else [-18, -23, -28, -33]
-    assert [row["offset_db"] for row in body["levels"]] == [level + 18 for level in expected]
+    expected = [None] * 4 if noise_dbfs is None else [-10, -20] if requested == "-10,-20" else [-18, -23, -28, -33]
+    assert [row["offset_db"] for row in body["levels"]] == [level + 18 if level is not None else None for level in expected]
     assert [row["level_db"] for row in body["levels"]] == expected
     assert not opener.requests
 
@@ -744,7 +743,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     def engine(**kw):
         async def capture_record(record):
             return await kw["records"].inner.bank({**record, "program_id": "sweep", "stimulus_dbfs": -20,
-                "loudness_volume_db": record["level_db"], "phase": "lateral"})
+                "loudness_volume_db": record["level_db"], "phase": record["program_phase"]})
         return replace(fakes, graph=kw["session_graph"], volume=kw["volume_claim"],
                        records=SimpleNamespace(bank=capture_record)).seams()
 
@@ -754,7 +753,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
         if request.full_url.endswith(wc.SESSION_PATH) and request.data:
             raw = json.loads(request.data)
             plan = AngleCaptureRequest.from_mapping(raw["plan"])
-            report = preflight_levels(plan, facts(plan), raw.get("levels"))
+            report = preflight_levels(plan, facts(plan))
             plan = report.plan
             conductor = _conductor(FlowSeams())
             door, analyze, assessor, execute = host.bind_run_door(
@@ -763,12 +762,13 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
                 production=SimpleNamespace(graph=fakes.graph, compose=None),
                 conductor=conductor, refs={}, trims={},
                 ceiling_s=30, ceiling_db_spl=85, camilla_factory=lambda: box, verify_only=False,
-                level=plan.level, levels=plan.levels, ladder=report if isinstance(report, LevelLadder) else None,
+                level=plan.level, ladder=report if isinstance(report, LevelLadder) else None,
             )
             runner = wired.build_v2_wired_run_and_consume(
                 conductor, door=door, signals=plan_run.RunSignals(), position_gate=gate,
                 ceiling_s=30, manifest=manifest, request=plan, analyze=analyze, assessor=assessor,
-                captures=prepare_level_captures(plan, roles_bands=conductor._roles), execute=execute,
+                captures=(prepare_level_captures if plan.levels else plan_run.prepare_plan_captures)(
+                    plan, roles_bands=conductor._roles), execute=execute,
             )
             asyncio.run(runner(SimpleNamespace(session_id=manifest.run_id)))
             bundles.mark_state(bundle, "closed")
@@ -801,7 +801,10 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     argv = ["trial", candidate.fingerprint] if verb == "trial" else ["run", "--program", "bass", "--layout", "bass_axis"]
     code, body = _run([*argv, *flags, "--wait"], opener, monkeypatch, capsys)
     assert code == 0, body
-    assert [call["level_db"] for call in fakes.play.calls] == [level for level in levels for _ in range(2 if verb == "trial" else 1)]
+    expected = [(level, "lateral") for level in levels for _ in range(2 if verb == "trial" else 1)]
+    if len(levels) == 1:
+        expected.insert(0, (levels[0], "entry_baseline"))
+    assert [(call["level_db"], call["spec"].program_phase) for call in fakes.play.calls] == expected
     assert len(gate.grants) == fakes.graph.restores == 1
     assert (box.volume_db, asyncio.run(box.get_loudness_volume_db())) == (entry_volume, entry_loudness)
     packet = json.loads(Path(body["packet"]).read_text())

@@ -157,11 +157,10 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                   manifest: Any, production: Any, conductor: Any, refs: Any,
                   trims: Any, ceiling_s: float, ceiling_db_spl: float | None,
                   camilla_factory: Any, verify_only: bool, provenance: Any = None,
-                  level: LevelPolicy = LevelPolicy(), levels: tuple[float, ...] | None = None,
-                  ladder: LevelLadder | None = None,
+                  level: LevelPolicy = LevelPolicy(), ladder: LevelLadder | None = None,
                   capture_indexes: tuple[int, ...] = ()) -> tuple[RunDoor, Any, Any, Any]:
-    if levels is not None:
-        ceiling_s *= len(levels)
+    if ladder is not None:
+        ceiling_s *= len(ladder.admissible)
     sensitivity = resolved_household_sensitivity(device)
     check_target = (anchored_check_target(sensitivity, level.resolved.anchor_db_spl + level.offset_db)
                     if level.resolved is not None and sensitivity is not None else None)
@@ -189,9 +188,8 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                        action="measuring", plan=v2volume.session_volume_plan(), wall_clock_ceiling_s=ceiling_s),
         build, sensitivity, device, ceiling_db_spl,
     )
-    if levels is None or len(levels) <= 1:
+    if ladder is None or ladder.plan.levels is None:
         return door, analyze, assessor, None
-    assert ladder is not None
 
     async def execute(request: Any, *, gate: Any, signals: Any, captures: Any, **_kwargs: Any) -> Any:
         packet = RoundPacket(manifest, ladder.to_dict())

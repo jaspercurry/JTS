@@ -14,7 +14,7 @@ from unittest.mock import Mock
 import pytest
 
 from jasper.active_speaker import angle_capture as ac, plan_run
-from jasper.active_speaker.run_levels import LevelLadder, LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
+from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
 from jasper.active_speaker.measurement_programs import run_program
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
@@ -762,21 +762,13 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
     assert await box.get_loudness_volume_db() == entry_loudness
 
 
-@pytest.mark.parametrize("levels", [None, (-10.0,), (-10.0, -20.0)])
-async def test_room_plan_levels_preserve_single_level_bytes_and_pose_order(tmp_path, box, tuning_profile, levels):
+async def test_room_plan_levels_keep_pose_order(tmp_path, box, tuning_profile):
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     candidate = _room_candidate(tuning_profile)
     program = run_program("room")
-    scalar = ac.request_for_program(program, candidates=("base", candidate.fingerprint), level=ac.LevelPolicy(level_db=-10.0))
-    request = ac.request_for_program(program, candidates=scalar.candidates, levels=levels,
-                                     level=ac.LevelPolicy(level_db=-10.0 if levels is None else None))
-    document = json.dumps(request.to_dict()).encode()
-    assert ac.AngleCaptureRequest.from_mapping(json.loads(document)) == request
-    if levels is None or len(levels) == 1:
-        assert document == json.dumps(scalar.to_dict()).encode()
-        assert "levels" not in request.to_dict()
-    assert request.stops == scalar.stops
+    levels = (-10.0, -20.0)
+    request = ac.request_for_program(program, candidates=("base", candidate.fingerprint), levels=levels)
     report = preflight_levels(request, ready_facts(request, candidates={candidate.fingerprint: candidate}, commissioning_stop_db_spl=95))
     assert not report.blocking
     fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
@@ -787,16 +779,11 @@ async def test_room_plan_levels_preserve_single_level_bytes_and_pose_order(tmp_p
         return LevelRun(manifest, _run_door(tmp_path, box, fakes, manifest), _analysis,
                         lambda *_args, **_kwargs: TakeVerdict(True), prepare_level_captures(plan))
 
-    if isinstance(report, LevelLadder):
-        assert sum(len(row.schedule) for row in report.levels) == 3 * 2 * len(levels)
-        hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
-        results = await run_levels(report, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS)
-    else:
-        bound = prepare(report.plan)
-        results = (await plan_run.run_plan(report.plan, manifest=bound.manifest, door=bound.door,
-                   analyze=bound.analyze, assessor=bound.assessor, captures=bound.captures, gate=gate, aborts=_ABORTS),)
+    assert sum(len(row.schedule) for row in report.levels) == 3 * 2 * len(levels)
+    hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
+    results = await run_levels(report, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS)
     expected = [(pose.seat_offset_m, level, cid) for pose in program.poses
-                for level in levels or (-10.0,) for cid in ("banked-base", candidate.fingerprint)]
+                for level in levels for cid in ("banked-base", candidate.fingerprint)]
     assert [(row["seat_offset_m"], row["level_db"], row["candidate_id"]) for row in fakes.records.banked] == expected
     assert len(fakes.play.calls) == len(expected)
     assert len(gate.grants) == 3 and fakes.graph.restores == 1

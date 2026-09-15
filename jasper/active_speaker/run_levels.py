@@ -81,7 +81,10 @@ def preflight_levels(plan: AngleCaptureRequest, facts: PreflightFacts,
             raise ValueError("levels require a plan without level-db")
         if levels == "auto":
             return level_ladder(plan, facts)
-        plan = replace(plan, levels=tuple(float(value) for value in levels.split(",")))
+        try:
+            plan = replace(plan, levels=tuple(float(value) for value in levels.split(",")))
+        except LateralWalkRefused as exc:
+            raise ValueError(exc.detail) from exc
     if plan.levels is None:
         return preflight(plan, facts)
     return LevelLadder(tuple(preflight(replace(plan, levels=None, level=replace(plan.level, level_db=value)), facts)

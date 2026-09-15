@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import sys
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlsplit
@@ -232,8 +231,8 @@ def build_parser() -> argparse.ArgumentParser:
     _connection_args(run_args)
     run_args.add_argument("--wait", action="store_true", help="wait for completion and bank the round with its packet")
     levels = run_args.add_mutually_exclusive_group()
-    levels.add_argument("--levels", help="auto uses admissible session offsets; or comma-separated absolute dB levels")
-    levels.add_argument("--level-db", type=float, help="one absolute run fader level in dB; bass otherwise uses auto levels")
+    levels.add_argument("--levels", help="auto uses admissible session offsets; or absolute dB levels, e.g. --levels=-10,-20")
+    levels.add_argument("--level-db", type=float, help="one absolute run fader level in dB; overrides the program's level default")
     run = sub.add_parser("run", parents=[run_args], help="run a plan, with auto or explicit levels; optionally wait and bank its packet")
     run.add_argument("--program", choices=("speaker", "room", "bass"))
     poses = run.add_mutually_exclusive_group()
@@ -265,10 +264,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    for index in range(len(argv) - 1, 0, -1):
-        if argv[index - 1] == "--levels" and argv[index].startswith("-") and "," in argv[index]:
-            argv[index - 1:index + 1] = [f"--levels={argv[index]}"]
     args = build_parser().parse_args(argv)
     if args.command == "run" and args.dry_run and not _is_loopback_name(urlsplit(args.base_url).hostname or ""):
         from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY  # lazy: refused run copy
