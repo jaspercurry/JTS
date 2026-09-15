@@ -70,8 +70,9 @@ def bookkeeping_views(purpose: str) -> tuple[tuple[str, bool, bool], ...]:
     """View name, per-set scope, and whether it grades against the base."""
     return {
         PURPOSE_SPEAKER: (("inventory", True, False),),
-        PURPOSE_ROOM: (("room", True, False), ("room-grade", True, True), ("frequency", False, False)),
-        PURPOSE_BASS: (("bass", True, False), ("frequency", False, False)),
+        PURPOSE_ROOM: (("room", True, False), ("room-grade", True, True), ("frequency", False, False),
+                       ("inventory", True, False)),
+        PURPOSE_BASS: (("bass", True, False), ("frequency", False, False), ("inventory", True, False)),
     }.get(purpose, ())
 
 

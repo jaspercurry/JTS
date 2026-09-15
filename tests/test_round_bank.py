@@ -382,22 +382,30 @@ def test_bookkeeping_unavailable_does_not_fail_the_bank(tmp_path, monkeypatch, v
     assert Path(banked.provenance["manifest"]).is_file()
 
 
-@pytest.mark.parametrize("purpose", ["speaker", "room", "bass"])
-def test_bank_runs_the_programs_registered_views(tmp_path, purpose):
-    from jasper.active_speaker.measurement_programs import bookkeeping_views
+@pytest.mark.parametrize("purpose,expected", [
+    ("speaker", ("inventory",)),
+    ("room", ("room", "room-grade", "frequency", "inventory")),
+    ("bass", ("bass", "frequency", "inventory")),
+])
+def test_bank_runs_the_programs_registered_views(tmp_path, purpose, expected):
     session, state = _live_session(tmp_path)
     write_manifest(session, program=purpose)
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, view_runner=run_bookkeeping)
     views = banked.provenance["views"]
-    assert tuple(row["view"] for row in views) == tuple(name for name, _, _ in bookkeeping_views(purpose))
+    assert tuple(row["view"] for row in views) == expected
     for row in views:
         if row["status"] == "written":
             assert Path(row["out"]).is_file()
         else:
             assert row["status"] == "unavailable" and row["reason"]
             assert row["reason"] not in {"inputs_required", "verb_not_registered"}
+    assert views[-1]["status"] == "written"
+    inventory = json.loads(Path(views[-1]["out"]).read_text())
+    present = {row["view"] for row in inventory["artifacts"] if row["present"]}
+    assert {row["view"] for row in views[:-1] if row["status"] == "written"} <= present
     if purpose == "speaker":
-        assert views[0]["status"] == "written"
+        packet = json.loads((banked.path / "packet.json").read_text())
+        assert packet["room"] == packet["bass"] == []
 
 
 @pytest.mark.parametrize("purpose,base", [("room", False), ("room", True), ("speaker", True)])
@@ -419,8 +427,9 @@ def test_bank_fans_out_views_with_the_base(tmp_path, purpose, base):
         assert calls == [("inventory", row["set_id"], None) for row in groups]
     else:
         assert calls == [("room", row["set_id"], None) for row in groups] + [
-            ("room-grade", f"trial-{i}", None) for i in range(2) if base] + [("frequency", None, None)]
-        assert banked.provenance["views"][len(groups):-1] == [
+            ("room-grade", f"trial-{i}", None) for i in range(2) if base] + [("frequency", None, None)] + [
+            ("inventory", row["set_id"], None) for row in groups]
+        assert banked.provenance["views"][len(groups):-1-len(groups)] == [
             {"view": "room-grade", "set_id": f"trial-{i}", **(
                 {"status": "written", "incumbent_set_id": "base"} if base else
                 {"status": "unavailable", "reason": "room_incumbent_set_unavailable"})} for i in range(2)]
@@ -461,33 +470,94 @@ def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, reque
         assert len(answer["series"]) == (7 if purpose == "room" else 1)
 
 
-def test_room_packet_keeps_views_limits_and_series_stats(tmp_path):
-
-    source = bank_seat_round(tmp_path / "source")
+@pytest.mark.parametrize("purpose", ["room", "bass"])
+@pytest.mark.parametrize("failed", [False, True])
+def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, request, purpose, failed):
+    if purpose == "room":
+        source = bank_seat_round(tmp_path / "source")
+    else:
+        source, _, _, bank = request.getfixturevalue("summed_capture_bundle")
+        asyncio.run(bank("baseline"))
+        write_manifest(source, program=purpose)
     inputs = round_inputs(source)
     mark_state(inputs.session_dir, "applied")
+
+    def views(view, target, **kwargs):
+        answer = run_bookkeeping(view, target, **kwargs)
+        if view == purpose:
+            assert answer["status"] == "written", answer
+            if failed:
+                return {**answer, "status": "unavailable", "reason": "analysis_fixture_unavailable"}
+        return answer
+
     banked = bank_round(inputs.session_dir, campaign_root=tmp_path / "bank", state_path=inputs.state_path,
-                        view_runner=run_bookkeeping, **_ssot(tmp_path, present=False))
+                        view_runner=views, **_ssot(tmp_path, present=False))
     packet = json.loads((banked.path / "packet.json").read_text())
-    assert packet["program"] == "room" and packet["fits"] == []
+    assert packet["program"] == purpose and packet["fits"] == []
+    assert packet["bass" if purpose == "room" else "room"] == []
     assert "verdicts" not in packet
-    assert {view["view"] for view in packet["artifacts"]["room_views"]} == {"room", "room-grade"}
-    assert all(Path(view["out"]).is_file() for view in packet["artifacts"]["room_views"] if view["status"] == "written")
-    assert len(packet["series"]) == 7
+    pointers = packet["artifacts"][f"{purpose}_views"]
+    assert {view["view"] for view in pointers} == ({"room", "room-grade"} if purpose == "room" else {"bass"})
+    pointer, = [view for view in pointers if view["view"] == purpose]
+    document = json.loads(Path(pointer["out"]).read_text())
+    if failed:
+        assert packet[purpose] == []
+        assert pointer["status"] == "unavailable" and pointer["reason"] == "analysis_fixture_unavailable"
+    else:
+        entry, = packet[purpose]
+        assert entry == {**{key: value for key, value in document.items() if purpose != "room" or key != "limits"},
+                         "set_id": packet["sets"][0]["set_id"], "out": pointer["out"]}
+        assert entry["set_id"] in packet["limits"]
+        if purpose == "room":
+            assert entry["room_median_sha256"] == document["room_median_sha256"]
+            assert entry["median"]["ceiling_hz"] == document["median"]["ceiling_hz"]
+            assert entry["median"]["n_positions"] == document["median"]["n_positions"] == 7
+        else:
+            take, = entry["takes"]
+            saved, = document["takes"]
+            assert take["record"]["take_id"] == "baseline" and take["record"]["level_db"] == -20
+            assert len(take["bands"]) == len(saved["bands"]) > 0
+            assert [band["fundamental_qualified"] for band in take["bands"]] == [
+                band["fundamental_qualified"] for band in saved["bands"]]
+    assert len(packet["series"]) == (7 if purpose == "room" else 1)
     for series in packet["series"]:
-        assert series["set_id"] in packet["limits"] and series["pose"]["kind"] == "seat"
+        assert series["set_id"] in packet["limits"]
         assert series["stats"]["rms_100_10k_db"]["value"] < 0.5
         assert abs(series["stats"]["tilt_db_per_decade"]["value"]) < 0.5
         assert series["stats"]["band_means_db"] and series["stats"]["low_end_means_db"]
-    limits, = packet["limits"].values()
-    assert limits["bounds"]["freqs_hz"] and limits["bounds"]["taper_knee_hz"] is not None
-    assert len(limits["bounds"]["cut_floor_db"]) == len(limits["bounds"]["freqs_hz"])
+        if purpose == "room":
+            assert series["pose"]["kind"] == "seat"
+    if purpose == "room":
+        limits, = packet["limits"].values()
+        assert limits["bounds"]["freqs_hz"] and limits["bounds"]["taper_knee_hz"] is not None
+        assert len(limits["bounds"]["cut_floor_db"]) == len(limits["bounds"]["freqs_hz"])
     index = (banked.path / INDEX_FILENAME).read_text().splitlines()
     assert f"Fingerprint: {packet['packet_fingerprint']}" in index
     heads = ("Measured:", "Applied:", "Result:", "## Decisions", "decision:", "gate ", "series ",
              "## Artifacts", "## Tools", "Fingerprint:")
     positions = [next(i for i, line in enumerate(index) if line.startswith(head)) for head in heads]
     assert positions == sorted(positions)
+
+
+@pytest.mark.parametrize("contents", [None, "{"], ids=["missing", "corrupt"])
+def test_packet_skips_unreadable_written_room_artifact(tmp_path, contents):
+    session, state = _live_session(tmp_path)
+    write_manifest(session, program="room")
+    artifact = tmp_path / "room.json"
+    if contents is not None:
+        artifact.write_text(contents)
+    pointer = {"view": "room", "status": "written", "out": str(artifact)}
+
+    def views(view, target, **kwargs):
+        return pointer if view == "room" else {
+            "view": view, "status": "unavailable", "reason": "view_runner_unavailable",
+        }
+
+    banked = bank_round(session, campaign_root=tmp_path / "bank", state_path=state,
+                        view_runner=views, **_ssot(tmp_path, present=False))
+    packet = json.loads((banked.path / "packet.json").read_text())
+    assert packet["room"] == []
+    assert pointer in packet["artifacts"]["room_views"]
 
 
 @pytest.mark.parametrize("level,slope", [(0, 0), (2, 3)])
