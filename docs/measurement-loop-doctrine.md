@@ -73,8 +73,8 @@ coverage limits; do not demand a ceremonial last round.
 
 ## 4. The hard-stop enumeration (closed list)
 
-[AGENTS.md](../AGENTS.md#non-negotiables-closed-list--nothing-else-is-safety)
-owns the repository-wide non-negotiables. Their measurement mechanisms are:
+`AGENTS.md` establishes the repository-wide non-negotiables. Their measurement
+mechanisms are:
 
 1. **Excitation caps:** declared driver bands, level-duration limits, and the
    session volume admitted by `excitation_safety_plan.py`. The fader hold must

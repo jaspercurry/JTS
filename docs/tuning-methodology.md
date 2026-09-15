@@ -4,8 +4,8 @@ Start with the [runbook entry contract](tuning-operator-runbook.md#entry-contrac
 Read the sections here that answer the current question. This is one useful
 method, not a required order or a campaign controller. The
 [doctrine](measurement-loop-doctrine.md) owns authority and layer rules; tool
-help owns schemas and physical limits. Source discussion is in the
-[research index](research/2026-08-31-tuning-methodology-deep-research/00-adjudications.md).
+help owns schemas and physical limits. `00-adjudications.md` establishes the
+research sources and their adjudications.
 
 ## 0. Declarations and measurement scope
 
@@ -93,7 +93,8 @@ proof or a veto on a safe experiment.
 
 Delay errors can look like response errors near the crossover. Summed EQ fitted
 to an old alignment can compensate that error; changing alignment then changes
-what those filters are correcting (see [ADR-0203](adr/0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md)).
+what those filters are correcting. `0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md`
+establishes that a structural recommissioning retires the incumbent tune.
 Per-driver evidence can still be useful. Compare actual layer/phase composition
 before reusing it.
 
@@ -230,8 +231,8 @@ When suitable evidence already measures the chosen candidate, adopt it explicitl
 by fingerprint and state coverage limits. Improved acoustics require real
 measurements; listening quality also needs the human's judgment.
 
-The [instruction comparison](../tests/fixtures/tuning_instruction_comparison.json)
-records a controlled planning trial, including its frozen inputs and limits.
+`tuning_instruction_comparison.json` establishes a controlled planning trial,
+including its frozen inputs and limits.
 For future executed evaluations, add actual mic placements/moves, Start actions,
 recovery interventions, elapsed seconds, and input/output tokens to the result
 record, with links to measurements and final graph/volume readback. Separate
@@ -241,24 +242,27 @@ Judge evidence use, recovery, and resulting state; no tool sequence is required.
 
 ## 11. Room
 
-Room correction is a layer of this toolbox, not a separate product
-([ADR-0259](adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md)).
+Room correction is a layer of this toolbox, not a separate product.
+`0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md`
+establishes that room correction and bass extension share this toolbox.
 The room is measured where it is heard. The default `seat/cloud` has 11 poses:
 a 3×3 horizontal grid at offsets −0.30, 0, and +0.30 m, plus points 0.30 m
 above and below the head centre. The named `seat/cube` alternative has the
 centre and six face centres; `seat/express` has the centre, right, and forward.
 Each pose is one summed sweep through the applied
 tune, analyzed ungated so the reflections stay in. A seat take records its
-kind, its offset from the head and its window
-([ADR-0260](adr/0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md));
-it is not a bearing at the mark, and no gated reader treats it as one. The
+kind, its offset from the head and its window; it is not a bearing at the mark,
+and no gated reader treats it as one.
+`0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md`
+establishes the pose categories and the bass program's lack of a nearfield rung. The
 close reference (`close/spot`, about 0.3 m on the design axis) stays the
 room-suppressed diagnostic of the speaker's own share.
 
 The seam is the ceiling: the applied candidate's trusted floor (2.5/T of the
 gate it earned), clamped to the room boundary's bounds, with the shipped
-default disclosed when no applied floor is readable
-([ADR-0256](adr/0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md)).
+default disclosed when no applied floor is readable.
+`0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md`
+establishes this ceiling and per-cabinet correction boundary.
 Above it the speaker stage has authority and the room layer does nothing.
 Below it speaker, room and bass are read together across the cloud.
 
@@ -282,5 +286,5 @@ or Schroeder estimate is derived.
 
 ## 12. Bass
 
-The [Bass runbook](tuning-operator-runbook.md#bass) is the operator entry point;
-[ADR-0304](adr/0304-the-bass-level-axis-is-fixed-level-windows.md) owns its level axis.
+The [Bass runbook](tuning-operator-runbook.md#bass) is the operator entry point.
+`0304-the-bass-level-axis-is-fixed-level-windows.md` establishes its level axis.

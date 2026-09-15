@@ -842,8 +842,8 @@ jasper-round-views classify-features <bundle-dir> --at 1037 --at 4149
   instrument: a turntable swings at fixed height and radius and a position cloud
   is a floor plan, so a floor or ceiling bounce is invariant to every position
   it saw. It is disclosed once, in the evidence packet's `not_evaluated` block
-  as `vertical_plane_response`. **Exit codes** are the shared stage-named rule
-  the [operator runbook](tuning-operator-runbook.md)'s "Exit codes" owns.
+  as `vertical_plane_response`. The refusal record's own fields and each tool's
+  `--help` are the reference.
 
 Coverage is built on synthetic speakers whose answers are known before the
 instrument runs: `tests/test_crossover_v2_feature_classifier.py`.
@@ -909,8 +909,8 @@ jasper-round-views agreement <round-dir>
   subcommand that produces each one, from the CLI's own `ARTIFACT_BY_VIEW`, so
   they are not enumerated here. `repeat-floor` is the exception: it publishes
   nowhere by default — pass `--install`, `--out PATH`, or both. On failure it
-  publishes the shared record and the shared stage-named exit code (the
-  [operator runbook](tuning-operator-runbook.md)'s "Exit codes" owns both).
+  publishes the shared refusal record; that record's own fields and each tool's
+  `--help` are the reference.
 
 ---
 

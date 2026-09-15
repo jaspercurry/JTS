@@ -8,8 +8,8 @@ A failure is an output, not an error, and there are three of them: the
 instrument REFUSED a round it could read, the input was UNREADABLE, or the
 result was UNWRITABLE. The machine-readable record goes to stdout, one
 sentence goes to stderr, and the exit code says which of the three it was,
-because that is what tells an operator where to go. The record's shape is
-stated once, in docs/tuning-operator-runbook.md's "Exit codes".
+because that is what tells an operator where to go. The refusal record's own
+fields and each tool's ``--help`` are the reference.
 
 Every tool in the runbook's tool menu takes its codes from here; a tool whose
 own failures are finer-grained than three says so in its ``reason`` slug,

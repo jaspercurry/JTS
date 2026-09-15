@@ -16,8 +16,7 @@ ADR-0181). ``TUNING_TOOL_MODULES`` below is the roster: exactly the
 own ``build_parser()`` and a module-level ``AUTHORITY_TIER`` constant this
 script reads rather than re-derives. ``jasper-doctor`` and non-CLI surfaces
 are deliberately absent because they have no safe argparse metadata to
-render. The fault table is a rendering of ``REASON_REGISTRY`` and its
-household-facing copy.
+render.
 
 Usage::
 
@@ -31,8 +30,6 @@ import importlib
 import sys
 from pathlib import Path
 
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
-
 ROOT = Path(__file__).resolve().parents[1]
 RUNBOOK = ROOT / "docs" / "tuning-operator-runbook.md"
 
@@ -41,11 +38,6 @@ BEGIN_MARKER = (
     "(scripts/generate-tuning-tool-menu.py -- do not hand-edit) -->"
 )
 END_MARKER = "<!-- END GENERATED TOOL MENU -->"
-FAULT_BEGIN_MARKER = (
-    "<!-- BEGIN GENERATED FAULT TABLE "
-    "(scripts/generate-tuning-tool-menu.py -- do not hand-edit) -->"
-)
-FAULT_END_MARKER = "<!-- END GENERATED FAULT TABLE -->"
 
 # The tuning tools this table covers: the [project.scripts] entries from
 # pyproject.toml that docs/tuning-operator-runbook.md's tool menu names, in
@@ -96,29 +88,6 @@ def render_table() -> str:
     return f"{BEGIN_MARKER}\n{header}\n{rows}\n{END_MARKER}"
 
 
-def _cell(value: object) -> str:
-    return " ".join(str(value).split()).replace("|", "\\|")
-
-
-def render_fault_table() -> str:
-    header = "| Code | What happened | What to do next | Screen |\n|---|---|---|---|"
-    rows = []
-    for code, spec in sorted(REASON_REGISTRY.items()):
-        happened = spec.retry_copy.message if spec.retry_copy else spec.message
-        if spec.next_action is not None:
-            action = spec.next_action["label"]
-        elif spec.retry_copy is not None:
-            action = spec.retry_copy.retry_action
-        else:
-            action = ""
-        rows.append(
-            f"| `{_cell(code)}` | {_cell(happened)} | {_cell(action)} | "
-            f"`{_cell(spec.template)}` |"
-        )
-    body = "\n".join(rows)
-    return f"{FAULT_BEGIN_MARKER}\n{header}\n{body}\n{FAULT_END_MARKER}"
-
-
 def _spliced(text: str, begin: str, end_marker: str, generated: str) -> str:
     """``text`` with the region between the markers replaced by ``generated``.
 
@@ -137,13 +106,7 @@ def spliced(text: str, generated: str) -> str:
 
 
 def render_document(text: str) -> str:
-    updated = spliced(text, render_table())
-    return _spliced(
-        updated,
-        FAULT_BEGIN_MARKER,
-        FAULT_END_MARKER,
-        render_fault_table(),
-    )
+    return spliced(text, render_table())
 
 
 def main(argv: list[str] | None = None) -> int:
