@@ -100,7 +100,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "run-manifest": ViewArtifact(RUN_MANIFEST_FILENAME, in_artifact_dir=True, producer="plan_run.run_plan"),
     "dsp-replay": ViewArtifact("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--bass-reference-db", "<db>", "--out", "<render-dir>")),
     "dsp-levels": ViewArtifact("dsp_levels.json", ("<dsp_replay.json>", "--raw", "<output.f64le>", "--window-s", "<start>", "<stop>")),
-    "bass-fit-table": ViewArtifact("bass_table.json", (TAKES_THIS_ROUND, "--run", "<run-id>", "--candidate", "<candidate.json>", "--target", "<target.json>", "--tolerance-db", "<db>"), purposes=(PURPOSE_BASS,)),
+    "bass-fit-table": ViewArtifact("bass_table.json", (TAKES_THIS_ROUND, "--candidate", "<candidate.json>", "--target", "<target.json>", "--tolerance-db", "<db>"), purposes=(PURPOSE_BASS,)),
     "entry": ViewArtifact("entry_state_grade.json", purposes=(PURPOSE_SPEAKER,)),
     "frozen": ViewArtifact("frozen_reference.json", TAKES_AFTER_ANOTHER, purposes=(PURPOSE_SPEAKER,)),
     "per-seat": ViewArtifact("per_seat.json", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),

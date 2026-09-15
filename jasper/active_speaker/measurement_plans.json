@@ -89,7 +89,7 @@
     "branches": "express",
     "seat": "cloud",
     "room": "seat",
-    "bass": "cloud",
+    "bass": "axis",
     "close": "spot"
   }
 }

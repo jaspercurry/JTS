@@ -74,7 +74,9 @@ def fit_run(args, *, target: Mapping[str, Any] | None = None) -> dict[str, Any]:
                                             code="bass_fit_candidate_unreadable")
                 bucket = candidates[candidate_id] if candidate_id in descriptors else baseline
                 bucket[key].append(take)
-    target = json.loads(args.target.read_text()) if target is None else target
+    target = args.target if target is None else target
+    if isinstance(target, Path):
+        target = json.loads(target.read_text())
     if not descriptors and baseline:
         baseline_takes = [take for rows in baseline.values() for take in rows]
         candidate_ids = {take["record"]["candidate_id"] for take in baseline_takes}

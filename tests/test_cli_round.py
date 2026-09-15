@@ -283,6 +283,9 @@ def test_trial_uses_authored_section_and_keeps_candidates_at_each_pose(
     opener = _opener(session='{"session_id": "trial-1"}')
     argv = ["trial", fingerprint, *(["--mover", mover] if mover else [])]
     code, body = _run(argv, opener, monkeypatch, capsys)
+    if mover == "human" and default_mover == "arm":
+        assert code == 1 and body["reason"] == "walk_mover_mismatch"
+        return
     assert code == 0 and body["verb"] == "trial" and body["shape"] == "trial"
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
     expected = run_program(program, "room_quick" if section == "room" and mover == "arm" else layout)
@@ -333,14 +336,12 @@ def test_room_default_uses_the_human_seat_set(preflight_ready, monkeypatch, caps
 
 
 @pytest.mark.parametrize("candidates,shape", [(None, "measure"), ("base", "trial")])
-@pytest.mark.parametrize("source", ["flags", "file", "confirmed"])
+@pytest.mark.parametrize("source", ["flags", "file"])
 def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, monkeypatch, capsys, tmp_path, candidates, shape, source):
     opener = _opener(session=json.dumps({"capture": {"session_id": "run-1", "first_prompt": {"title": "Place mic"}}}))
     argv = ["run", "--program", "room", "--poses", "seat_express", "--level-db", "-25"]
     if candidates:
         argv += ["--candidates", candidates]
-    if source == "confirmed":
-        argv += ["--mover", "confirmed"]
     if source == "file":
         from jasper.cli._run_request import resolve_run
         request = resolve_run(cli.build_parser().parse_args(argv)).plan
@@ -554,7 +555,7 @@ def test_wait_does_not_bank_before_capture_cleanup(state, monkeypatch, capsys):
     assert len(opener.requests) == 1
 
 
-@pytest.mark.parametrize("argv,reason", [(["--repeats", "0"], "walk_level_policy_invalid"), (["--program", "room", "--mover", "arm"], "walk_over_mover_envelope")])
+@pytest.mark.parametrize("argv,reason", [(["--repeats", "0"], "walk_level_policy_invalid"), (["--program", "room", "--mover", "arm"], "walk_mover_mismatch")])
 def test_run_shape_refusal_is_json(argv, reason, monkeypatch, capsys):
     code, body = _run(["run", *argv], _opener(), monkeypatch, capsys)
     assert code == 1
@@ -626,7 +627,7 @@ def test_remote_dry_run_refuses_before_reading_local_facts(monkeypatch, capsys, 
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsys, dry_run):
     opener = _opener(session='{"session_id": "run-1"}')
-    code, body = _run(["run", "--program", "bass", "--layout", "bass_axis", "--level-db", "-25", *(["--dry-run"] if dry_run else [])],
+    code, body = _run(["run", "--program", "bass", "--level-db", "-25", *(["--dry-run"] if dry_run else [])],
                       opener, monkeypatch, capsys)
     body = body if dry_run else body["schedule"]
     assert code == 0 and body["mic_moves"] == 1
@@ -645,7 +646,7 @@ def test_bass_dry_run_lists_admissible_session_offsets(monkeypatch, capsys, nois
 
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
     opener = _opener()
-    code, body = _run(["run", "--program", "bass", "--layout", "bass_axis", "--dry-run"],
+    code, body = _run(["run", "--program", "bass", "--dry-run"],
                       opener, monkeypatch, capsys)
     assert code == (0 if levels else 1)
     assert body["dry_run"] is True
@@ -653,6 +654,29 @@ def test_bass_dry_run_lists_admissible_session_offsets(monkeypatch, capsys, nois
     assert [row["offset_db"] for row in body["levels"]] == [0, -5, -10, -15]
     assert [row["level_db"] for row in body["levels"]] == [-18, -23, -28, -33]
     assert not opener.requests
+
+
+def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, capsys):
+    seen = []
+
+    def facts(plan):
+        seen.append(plan.mover)
+        return ready_facts(plan)
+
+    monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
+    code, body = _run(
+        ["run", "--program", "bass", "--mover", "human", "--dry-run"],
+        _opener(), monkeypatch, capsys,
+    )
+    assert code == 1 and body["reason"] == "walk_mover_mismatch"
+
+    for mover in ("arm", "human"):
+        code, _ = _run(
+            ["run", "--program", "speaker", "--mover", mover, "--dry-run"],
+            _opener(), monkeypatch, capsys,
+        )
+        assert code == 0
+    assert seen == ["arm", "human"]
 
 
 @pytest.mark.parametrize("verb,flags,noise,levels", [

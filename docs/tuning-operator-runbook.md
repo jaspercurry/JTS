@@ -9,7 +9,7 @@ Register the wired microphone with `jasper-mic-calibration`; set its capture con
 1. Run `jasper-round run --program <speaker|room|bass>` for a measurement, or `jasper-round trial <fp>` to compare a candidate with base at the poses for its authored section. Each pose measures both before the mic moves. A document with several authored sections must be split. Use `run --dry-run` to inspect a custom plan without sound.
 2. Join at each pose. With `--mover human`, open the returned page, follow its pose prompt, and use its in-place, Retake, or Done action. With `--mover arm`, run `jasper-angle-capture serve`. With `--mover confirmed`, call `jasper-round placed --run <id>` only after the person confirms placement. End a run nobody joins with `jasper-round stop --run <id>`.
 3. Run `jasper-round wait --run <id>`. Read `index.md` first; the packet holds applied layers, set limits, series statistics, and a fit for each selected Speaker take and role. Add `--verbose` to see the view results. Use `status` to inspect progress without granting placement.
-4. Select evidence by set. `speaker-fit`, `room`, and `repeat` use `jasper-round-views <verb> <round-dir> --set <set-id>`. Use `jasper-round-views sweep <round-dir> --scope round --set <set-id>`. Use `jasper-round-views bass-fit-table <round-dir…> --candidate <candidate.json> --target <target.json> --tolerance-db <db>`. `inventory` lists exact available commands.
+4. Select evidence by set. `speaker-fit`, `room`, and `repeat` use `jasper-round-views <verb> <round-dir> --set <set-id>`. Use `jasper-round-views sweep <round-dir> --scope round --set <set-id>`. Use `jasper-round-views bass-fit-table <round-dir…> --candidate <candidate.json>`; `--target` and `--tolerance-db` override the owned defaults. `inventory` lists exact available commands.
 5. Author one prescription document. Run `jasper-crossover-prescriber judge <doc> --round <round-dir> --set <set-id>`, then `compose <doc> --base <fingerprint|saved> --round <round-dir> --set <set-id>`.
 6. Trial the composed fingerprint with the same loop. Then run `jasper-round apply <fingerprint>`. Apply requires a banked complete trial of that graph, intact trial evidence, matching identity, and a proved layer stack. Its verification dimensions are advice, not another gate.
 
@@ -23,7 +23,7 @@ Room defaults to `room/seat`: the three `seat_express` poses with the human move
 
 ## Bass
 
-`jasper-round run --program bass --layout bass_axis --dry-run` lists the session level and offsets −5, −10, and −15 dB without sound. Each level uses the banked ambient bands to check SNR over the bass target band. An explicit `--level-db L --dry-run` checks only that level.
+`jasper-round run --program bass --dry-run` lists the session level and offsets −5, −10, and −15 dB without sound. Each level uses the banked ambient bands to check SNR over the bass target band. An explicit `--level-db L --dry-run` checks only that level.
 
 `jasper-round run --program bass` (or `jasper-round trial <fp>` for a bass candidate) runs the admissible level ladder at one pose under one hold, and `wait` joins the levels into the packet. `--level-db L` keeps one level, whose packet carries its bass view without a join.
 
