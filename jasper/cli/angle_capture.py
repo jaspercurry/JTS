@@ -25,8 +25,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     The loop owns a stall vocabulary of its own
     (``jasper.active_speaker.arm_walk.EXIT_NAMES``); it is published here as the
     refusal's ``reason`` rather than as a number, because a tool in the menu
-    exits 0/1/2/3 and nothing else (docs/tuning-operator-runbook.md, "Exit
-    codes"). A park signal leaves through ``install_park_on_signals``' own
+    exits 0/1/2/3 and nothing else. The refusal record's own fields and each
+    tool's ``--help`` are the reference. A park signal leaves through
+    ``install_park_on_signals``' own
     ``128 + signum`` instead, which is the shell's spelling and not this
     module's to assign.
     """
