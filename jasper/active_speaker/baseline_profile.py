@@ -79,6 +79,7 @@ from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
     candidate_on_declaration, driver_corrections, effective_preset,
 )
+from .measurement_programs import PURPOSE_BASS, PURPOSE_ROOM, PURPOSE_SPEAKER
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 from .profile import LEVEL_MATCH_AXIS, snapshot_declares_single_branch
 from . import passive_profile as _passive
@@ -976,6 +977,16 @@ def profile_linearization(profile: Mapping[str, Any] | None) -> Mapping[str, Any
     if not isinstance(linearization, Mapping):
         linearization = profile.get("linearization")
     return linearization if isinstance(linearization, Mapping) else {}
+
+
+def applied_layers(profile: Mapping[str, Any] | None) -> dict[str, bool]:
+    profile = profile or {}
+    snapshot = profile.get("recomposition_snapshot") or {}
+    return {
+        PURPOSE_SPEAKER: bool(profile_linearization(profile)),
+        PURPOSE_ROOM: bool(snapshot.get("room_correction", profile.get("room_correction"))),
+        PURPOSE_BASS: bool(snapshot.get("bass_extension", profile.get("bass_extension"))),
+    }
 
 
 def profile_driver_corrections(profile: Mapping[str, Any] | None) -> Mapping[str, Any]:

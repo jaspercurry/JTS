@@ -7,8 +7,11 @@ from dataclasses import replace
 from jasper.active_speaker import baseline_profile, commissioning_experiment
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.commissioning_coordinator import load_commissioning_view
+from jasper.active_speaker.crossover_v2 import round_inputs
 from jasper.cli.doctor import active_speaker as doctor
 from jasper.doctor_contract import check_row
+from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
+from jasper.json_fields import parse_utc_iso
 from jasper.web import correction_crossover_v2_status as v2status
 from jasper.web.correction_crossover_v2_grade import GRADE_NOT_APPLIED
 from tests.test_active_speaker_baseline_profile import _v2_candidate
@@ -41,16 +44,22 @@ def _ready_preview() -> dict:
     }
 
 
-def _applied_anchor(basename: str = "candidate_f7e9.yml") -> dict:
+def _applied_anchor(basename: str = "candidate_f7e9.yml", *, layers=("speaker",)) -> dict:
     return {
         "status": "applied",
         "applied_at": "2026-08-30T01:33:34Z",
-        "linearization": {"tweeter": [{"type": "Peaking"}]},
+        "source": {"measured_candidate_fingerprint": "saved-speaker"},
+        "recomposition_snapshot": {
+            "linearization": {"tweeter": [{"type": "Peaking"}]} if "speaker" in layers else {},
+            "room_correction": {"filters": [{"gain_db": -2}]} if "room" in layers else {},
+            "bass_extension": {"enabled": True} if "bass" in layers else {},
+        },
         "blend_correction": [{"type": "Peaking"}],
         "config": {
             "path": "/var/lib/camilladsp/configs/" + basename,
             "basename": basename,
             "exists": True,
+            "sha256": "abcdef012345" * 5 + "abcd",
         },
     }
 
@@ -60,37 +69,58 @@ def _applied_baseline_profile(**overrides) -> dict:
             "permissions": {"may_compile": True, "may_apply": False}, "issues": [], **overrides}
 
 
-@pytest.mark.parametrize("stage,current,status,action", [
-    ("declaration", "research", "needs_driver_values", "save_driver_values"),
-    ("safety", "research", "needs_driver_safety_profile", "save_driver_values"),
-    ("experiment", "experiment", "needs_first_experiment", "run_speaker_program"),
-    ("apply", "profile", "ready_to_save_profile", "apply_candidate"),
-    ("applied", "profile", "applied", None),
-    ("displaced", "profile", "ready_to_save_profile", "apply_candidate"),
-    ("passive", "layout", "not_required", None),
+@pytest.mark.parametrize("status,current,action,enabled,program,layers,rounds", [
+    ("needs_layout", "layout", "declare_speaker", True, None, (), ()),
+    ("needs_driver_values", "research", "save_driver_values", True, None, (), ()),
+    ("needs_driver_safety_profile", "research", "save_driver_values", True, None, (), ()),
+    ("needs_first_experiment", "experiment", "run_speaker_program", True, "speaker", (), ()),
+    ("ready_to_save_profile", "profile", "apply_candidate", True, None, (), ()),
+    ("blocked", "profile", "apply_candidate", False, None, (), ()),
+    ("applied", "profile", "run_program", True, "speaker", ("speaker",), ()),
+    ("not_required", "layout", "run_program", True, "room", (), ()),
+    ("applied", "profile", "copy_prompt", True, "speaker", (), (("speaker", 1),)),
+    ("applied", "profile", "run_program", True, "speaker", (), (("speaker", 0),)),
+    ("applied", "profile", "run_program", True, "room", ("speaker",), (("speaker", 1),)),
+    ("applied", "profile", "copy_prompt", True, "room", ("speaker",), (("room", 1),)),
+    ("applied", "profile", "run_program", True, "bass", ("speaker", "room"), (("room", 1),)),
+    ("applied", "profile", "copy_prompt", True, "bass", ("speaker", "room"), (("bass", 1),)),
+    ("applied", "profile", "run_program", True, "speaker", ("speaker", "room", "bass"), (("speaker", 1),)),
+    ("not_required", "layout", "copy_prompt", True, "room", (), (("room", 1),)),
 ])
-def test_commissioning_is_declaration_safety_experiment_apply(stage, current, status, action):
+def test_every_commissioning_state_has_one_next_action(status, current, action, enabled, program, layers, rounds):
     draft = _ready_design()
-    if stage == "declaration":
+    topology = passive_stereo_output_topology() if status == "not_required" else _topology()
+    if status == "needs_layout":
+        topology = replace(topology, speaker_groups=())
+    elif status == "needs_driver_values":
         draft = {}
-    elif stage == "safety":
+    elif status == "needs_driver_safety_profile":
         draft["driver_safety_profile_evaluation"]["confirmed_and_current"] = False
+    applied = _applied_anchor(layers=layers)
+    applied_at = parse_utc_iso(applied["applied_at"])
+    recent = {name: {"round_dir": f"/bank/{name}", "started_at": applied_at + age} for name, age in rounds}
     view = build_commissioning_view(
-        passive_stereo_output_topology() if stage == "passive" else _topology(),
-        design_draft=draft, crossover_preview=_ready_preview(), baseline_profile=_applied_baseline_profile(),
-        applied_profile=_applied_anchor() if stage in {"applied", "displaced"} else None,
-        applied_profile_verdict=APPLIED_PROFILE_DISPLACED if stage == "displaced" else "",
-        first_experiment={"candidate_fingerprint": "measured-fp"} if stage in {"apply", "displaced"} else None,
+        topology, design_draft=draft, crossover_preview=_ready_preview(),
+        baseline_profile=_applied_baseline_profile(permissions={"may_apply": status != "blocked"}),
+        applied_profile=applied if status == "applied" else None, recent_rounds=recent,
+        first_experiment={"candidate_fingerprint": "measured-fp"} if action == "apply_candidate" else None,
     )
     assert [step["id"] for step in view["steps"]] == ["layout", "research", "experiment", "profile"]
     assert sum(step["status"] == "active" for step in view["steps"]) <= 1
     assert view["current_step"] == current
     assert view["status"] == status
-    assert view["next_action"].get("id") == action
+    assert (view["next_action"]["id"], view["next_action"]["enabled"], view["next_action"].get("program")) == (
+        action, enabled, program)
     assert "command" not in view["next_action"]
     assert view["combined_groups"] == []
     if action == "apply_candidate":
         assert view["next_action"]["body"] == {"expected_candidate_fingerprint": "measured-fp"}
+    elif action == "copy_prompt":
+        assert view["next_action"]["round_dir"] == recent[program]["round_dir"]
+    elif action == "declare_speaker":
+        assert view["next_action"]["endpoint"] == SPEAKER_SETUP_PAGE_PATH
+        assert view["next_action"]["method"] == "GET"
+    _assert_household_safe(view["next_action"]["label"], "action")
     assert {"driver_values", "driver_target_proof", "driver_checks", "summed_validation", "output_identity"} <= view.keys()
 
 
@@ -113,9 +143,39 @@ def test_every_step_message_is_household_safe(ready, passive):
     for step in view["steps"]:
         _assert_household_safe(step["message"], f"step {step['id']}")
         _assert_household_safe(step["label"], f"step {step['id']}")
-    for action in (view["next_action"], view["secondary_action"]):
-        _assert_household_safe(action.get("label", ""), "action")
-        assert "command" not in action
+    _assert_household_safe(view["next_action"]["label"], "action")
+    assert "command" not in view["next_action"]
+
+
+@pytest.mark.parametrize("displaced", [False, True])
+def test_preview_and_displaced_profile_keep_existing_actions(displaced):
+    view = build_commissioning_view(
+        _topology(), design_draft=_ready_design(), crossover_preview=_ready_preview() if displaced else {},
+        baseline_profile=_applied_baseline_profile(), applied_profile=_applied_anchor() if displaced else None,
+        applied_profile_verdict=APPLIED_PROFILE_DISPLACED if displaced else "",
+        first_experiment={"candidate_fingerprint": "measured-fp"},
+    )
+    assert view["status"] == ("ready_to_save_profile" if displaced else "needs_driver_values")
+    assert view["next_action"]["id"] == ("apply_candidate" if displaced else "preview_crossover")
+    assert view["next_action"]["enabled"] is True
+
+
+def test_loaded_commissioning_view_uses_banked_rounds(monkeypatch, tmp_path):
+    topology, _ = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    profile = _applied_anchor(layers=())
+    identities = []
+
+    def recent(identity):
+        identities.append(identity)
+        return {"speaker": {"round_dir": "/bank/speaker", "started_at": parse_utc_iso(profile["applied_at"]) + 1}}
+
+    monkeypatch.setattr(round_inputs, "latest_banked_rounds", recent)
+    monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda: profile)
+    view = load_commissioning_view(topology)
+    assert identities == [applied_identity(profile)]
+    assert view["next_action"]["id"] == "copy_prompt"
+    assert view["next_action"]["program"] == "speaker"
+    assert view["next_action"]["round_dir"] == "/bank/speaker"
 
 
 @pytest.mark.parametrize("ready", [False, True])

@@ -5,10 +5,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Mapping
 
+from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
+from jasper.json_fields import finite_float, parse_utc_iso
 from jasper.output_topology import OutputTopology, channel_identity_report, topology_is_subless_passive_mains
 from .applied_identity import applied_identity
+from .measurement_programs import PURPOSE_BASS, PURPOSE_ROOM, PURPOSE_SPEAKER
 from .wizard_client import APPLY_PATH
 
 COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
@@ -19,6 +23,33 @@ COMMISSIONING_STEP_PAGE_TITLES = {
     "experiment": "First speaker experiment",
     "profile": "Apply speaker profile",
 }
+_MEASURE_LABELS = {PURPOSE_SPEAKER: "Measure the baseline", PURPOSE_ROOM: "Measure the room", PURPOSE_BASS: "Measure bass"}
+
+
+def _next_program_action(
+    profile: Mapping[str, Any] | None,
+    identity: Mapping[str, Any],
+    recent_rounds: Mapping[str, Mapping[str, Any]],
+    *,
+    passive: bool = False,
+) -> dict[str, Any]:
+    """Choose from the latest banked round per program for this applied identity."""
+    from .baseline_profile import applied_layers  # lazy: baseline imports measurement
+
+    programs = (PURPOSE_ROOM, PURPOSE_BASS) if passive else (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS)
+    baseline = {"id": "run_program", "enabled": True,
+                "program": programs[0], "label": _MEASURE_LABELS[programs[0]]}
+    # Plan #5073 §2 rule (a): no round for this identity means measure the baseline first.
+    if not recent_rounds:
+        return baseline
+    layers = applied_layers(profile)
+    program = next((program for program in programs if not layers[program]), programs[0])
+    round_ = recent_rounds.get(program) or {}
+    applied_at = parse_utc_iso(str(identity.get("applied_at") or "")) or 0
+    if not layers[program] and (finite_float(round_.get("started_at")) or 0) > applied_at:
+        return {"id": "copy_prompt", "label": f"Copy the {program} prompt", "enabled": True,
+                "program": program, "round_dir": round_["round_dir"]}
+    return {**baseline, "program": program, "label": _MEASURE_LABELS[program]}
 
 
 def build_commissioning_view(
@@ -34,6 +65,7 @@ def build_commissioning_view(
     applied_profile: Mapping[str, Any] | None = None,
     applied_profile_verdict: str = "",
     first_experiment: Mapping[str, Any] | None = None,
+    recent_rounds: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     from .baseline_profile import APPLIED_PROFILE_DISPLACED, reviewed_candidate_refusal  # lazy: baseline imports measurement
 
@@ -77,13 +109,13 @@ def build_commissioning_view(
                       "status": status, "message": messages[step_id]})
     current = next((step["id"] for step in steps if step["status"] == "active"),
                    "layout" if passive else "profile")
-    action: dict[str, Any] = {}
-    if profile_applied:
-        status = "applied"
-    elif has_layout and passive:
-        status = VIEW_STATUS_NOT_REQUIRED
+    if profile_applied or (has_layout and passive):
+        status = "applied" if profile_applied else VIEW_STATUS_NOT_REQUIRED
+        action = _next_program_action(applied_profile, applied, recent_rounds or {}, passive=passive)
     elif not has_layout:
         status = "needs_layout"
+        action = {"id": "declare_speaker", "label": "Declare the speaker", "enabled": True,
+                  "endpoint": SPEAKER_SETUP_PAGE_PATH, "method": "GET", "body": {}}
     elif not values_ready:
         status = "needs_driver_safety_profile" if design_ready and preview_ready else "needs_driver_values"
         needs_preview = design_ready and safety_ready and not preview_ready
@@ -94,7 +126,7 @@ def build_commissioning_view(
     elif not experiment_complete:
         status = "needs_first_experiment"
         action = {"id": "run_speaker_program", "label": "Run speaker experiment", "enabled": True,
-                  "endpoint": "/sound/speaker/crossover/", "method": "GET", "body": {}}
+                  "endpoint": "/sound/speaker/crossover/", "method": "GET", "body": {}, "program": PURPOSE_SPEAKER}
     else:
         status = "ready_to_save_profile" if review_ready else "blocked"
         action = {"id": "apply_candidate", "label": "Apply speaker profile", "enabled": review_ready,
@@ -106,7 +138,7 @@ def build_commissioning_view(
               "required": int(summary.get("required_driver_check_count") or summary.get("required_driver_count") or 0)}
     return {
         "artifact_schema_version": 1, "kind": COORDINATOR_KIND, "status": status,
-        "steps": steps, "current_step": current, "next_action": action, "secondary_action": {},
+        "steps": steps, "current_step": current, "next_action": action,
         "first_experiment": {**experiment, "complete": experiment_complete}, "combined_groups": [],
         "applied_profile": {
             "stands": profile_applied, "verdict": applied_profile_verdict if profile_applied else "",
@@ -154,6 +186,7 @@ def load_commissioning_view(
     from jasper.active_speaker.calibration_level import load_calibration_level_state
     from jasper.active_speaker.commissioning_experiment import commissioning_candidate, commissioning_experiment_summary  # lazy: candidate imports baseline
     from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds  # lazy: reader imports baseline
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
     from jasper.active_speaker.startup_load import load_startup_load_state
@@ -183,6 +216,7 @@ def load_commissioning_view(
         baseline_profile=baseline,
         calibration_level=calibration_level,
         applied_profile=applied,
+        recent_rounds=latest_banked_rounds(applied_identity(applied) or {}),
         first_experiment=experiment,
         applied_profile_verdict=read_applied_profile_verdict(applied),
     )
@@ -198,8 +232,6 @@ def read_applied_profile_verdict(applied: Mapping[str, Any] | None) -> str:
     fresh stat sees the file go missing under it. Two reads at wizard cadence;
     nothing polled reaches this.
     """
-
-    from pathlib import Path
 
     from .baseline_profile import (
         APPLIED_PROFILE_CONFIG_MISSING,
