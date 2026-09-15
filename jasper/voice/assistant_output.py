@@ -18,7 +18,6 @@ import logging
 import os
 import time
 from collections.abc import Awaitable, Callable, Coroutine
-from inspect import isawaitable
 from typing import Any
 
 from jasper.log_event import log_event
@@ -42,7 +41,7 @@ from ..cues.manager import (
 )
 from ..tts_routing import resolve_tts_routing_snapshot
 from ..volume_coordinator import VolumeCoordinator
-from ._tasks import await_cleanup_owned
+from ._tasks import await_cleanup_owned, capture_cleanup_error, run_cleanup_phases
 from .earcons import (
     _generate_listening_chirp,
     _generate_mute_click,
@@ -55,20 +54,6 @@ from .output_gate import (
 
 logger = logging.getLogger("jasper.voice_daemon")
 INTERNAL_ERROR_CUE_SLUG = "internal_error"
-
-
-async def capture_cleanup_error(
-    operation: Callable[[], object],
-) -> BaseException | None:
-    """Run one sync/async cleanup step and return any raised outcome."""
-
-    try:
-        outcome = operation()
-        if isawaitable(outcome):
-            await outcome
-    except BaseException as error:  # noqa: BLE001 - one cleanup capture boundary
-        return error
-    return None
 
 
 class FanInDucker:
@@ -715,7 +700,6 @@ class AssistantOutput:
         episode: AssistantOutputEpisode | None,
     ) -> None:
         """Release only this turn's output, after its completion feedback drains."""
-        first_base_error: BaseException | None = None
         steps: list[tuple[str, Callable[[], object], bool]] = []
         opening = self._opening_feedback
         if opening is not None and opening[0] == episode:
@@ -732,21 +716,16 @@ class AssistantOutput:
             ("content_meter_resume", self.tts.resume_content_meter, False),
             ("output_episode_release", lambda: self._output_gate.end_turn(episode), True),
         ))
-        for phase, operation, needs_output in steps:
-            # A handover transfers the episode and duck, not the turn's meters.
-            if needs_output and (
-                episode is None or not self._output_gate.is_current(episode)
-            ):
-                continue
-            error = await capture_cleanup_error(operation)
-            if isinstance(error, Exception):
-                log_event(
-                    logger, "turn.output_cleanup_failed", phase=phase,
-                    exc_type=type(error).__name__, err=str(error),
-                    level=logging.WARNING,
+        # A handover transfers the episode and duck, not the turn's meters.
+        first_base_error = await run_cleanup_phases(
+            (
+                (phase, operation) for phase, operation, needs_output in steps
+                if not needs_output or (
+                    episode is not None and self._output_gate.is_current(episode)
                 )
-            elif first_base_error is None:
-                first_base_error = error
+            ),
+            event="turn.output_cleanup_failed",
+        )
         if self._opening_feedback is opening:
             self._opening_feedback = None
         if self._closing_feedback is closing:

@@ -39,7 +39,7 @@ from .voice.conversation import (
     END_OF_UTTERANCE_SILENCE_SEC, NO_SPEECH_ABORT_SEC,
 )
 from .voice._base import SESSION_CLOSE_TIMEOUT_SEC
-from .voice._tasks import cancel_tracked_tasks, track_task
+from .voice._tasks import cancel_tracked_tasks, capture_cleanup_error, track_task
 from .voice.input_policy import contract_from_config
 from .voice.measurement_hold import MeasurementHold
 from .voice.peering_client import PeeringClient
@@ -67,7 +67,6 @@ from .voice.assistant_output import (
     INTERNAL_ERROR_CUE_SLUG,
     AssistantOutput,
     FanInDucker,
-    capture_cleanup_error,
 )
 from .voice.output_gate import AssistantOutputGate
 from .volume_coordinator import VolumeCoordinator
