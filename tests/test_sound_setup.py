@@ -8056,7 +8056,10 @@ def test_tuning_handoff_follows_the_pages_applied_record(monkeypatch, review_rea
     from jasper.active_speaker import tuning_handoff
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
-    monkeypatch.setattr(tuning_handoff, "recent_round_sessions", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions",
+        lambda **_kwargs: [],
+    )
     payload = tuning_handoff.build_tuning_handoff(
         commissioning_view={"review": {"ready": review_ready, "may_apply": review_ready}, "applied_profile": {
             "exists": exists, "stands": stands, "candidate_fingerprint": "applied-fp",
@@ -8089,7 +8092,7 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
     from jasper.identity.reader import DEFAULT_HOSTNAME
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
-    monkeypatch.setattr(tuning_handoff, "recent_round_sessions", lambda **_kwargs: [
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions", lambda **_kwargs: [
         Path("/var/lib/jasper/active_speaker/campaigns/round-7")])
     applied = {
         "exists": has_applied, "stands": has_applied,
@@ -8139,7 +8142,7 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
     from jasper.active_speaker import tuning_handoff
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
-    monkeypatch.setattr(tuning_handoff, "recent_round_sessions", lambda **_kwargs: [
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions", lambda **_kwargs: [
         Path("/var/lib/jasper/active_speaker/campaigns/round-7")])
     monkeypatch.setattr(
         "jasper.active_speaker.commissioning_coordinator.load_commissioning_view",

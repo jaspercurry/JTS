@@ -194,6 +194,7 @@ def test_saved_candidate_migration_preserves_driver_attenuations(saved_tune):
 @pytest.mark.parametrize("base_kind", ["saved", "banked"])
 def test_bass_compose_uses_saved_layers_without_reviving_old_candidate(bank, saved_tune, tmp_path, monkeypatch, capsys, base_kind):
 
+    v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     topology, applied = saved_tune
     original = deepcopy(applied)
     monkeypatch.setattr(crossover_prescriber, "load_output_topology_strict", lambda: topology)
@@ -223,6 +224,7 @@ def test_bass_compose_uses_saved_layers_without_reviving_old_candidate(bank, sav
     assert validated_base_graph(proposed, child.bass_extension, (0,)) == baseline
     assert applied == original
     assert v2state.load_v2_state() is None
+    v2state.set_state_path_for_tests(None)
 
 
 @pytest.mark.parametrize("change", [None, "bass_off", "speaker", "room"])

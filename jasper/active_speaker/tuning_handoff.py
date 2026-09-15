@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from jasper.active_speaker.crossover_v2.round_inputs import recent_round_sessions
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.identity.reader import (
     CROSSOVER_PAGE_PATH,
@@ -41,6 +40,8 @@ def build_tuning_handoff_binding(
     **No credential of any kind belongs here** — not the control token, not a
     PSK, not the peer id. Anything here is disclosed to a third-party chat.
     """
+    from jasper.active_speaker.crossover_v2.round_inputs import recent_round_sessions  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
+
     identity = read_identity()
     revision = design_draft.get("revision")
     applied = commissioning_view.get("applied_profile")
