@@ -27,6 +27,8 @@ END_CONVERSATION_TOOL = "end_conversation"
 
 # The longer backend wait requires audio accepted by playout.
 UNANSWERED_SPEECH_SEC = 8.0
+# Past the frontend's own reply latency, well inside the 8 s unanswered bound.
+NUDGE_SILENCE_SEC = 2.0
 ACKNOWLEDGED_BACKEND_SEC = 30.0
 
 
@@ -53,6 +55,7 @@ async def continuous_watchdog(
     started_at = time.monotonic()
     next_spend_check = started_at
     pending_state, progressed_at = (0, 0.0), started_at
+    nudged_speech_started = 0.0
     while True:
         await asyncio.sleep(WATCHDOG_POLL_SEC)
         lost = turn.turn_lost()
@@ -80,7 +83,16 @@ async def continuous_watchdog(
                 )
             continue
         if not lost and accepted_at < speech_started:
+            if (
+                nudged_speech_started != speech_started
+                and turn.last_chunk_at() < speech_started
+                and now - last_speech >= NUDGE_SILENCE_SEC
+            ):
+                if await turn.nudge_backend(silence_ms=int((now - last_speech) * 1000)):
+                    nudged_speech_started = speech_started
             if now - last_speech >= UNANSWERED_SPEECH_SEC:
+                if turn.last_user_transcript_at() >= speech_started and not turn.backend_pending:
+                    return "unanswered_utterance"
                 return "response_stalled"
             continue
         if not lost and turn.backend_pending:

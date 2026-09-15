@@ -56,14 +56,12 @@ from .wake_telemetry import WakeTelemetry
 
 logger = logging.getLogger("jasper.voice_daemon")
 
-# `end` reasons the household or the daemon itself chose: whoever muted,
-# shut down or spoke over the turn already knows why it went quiet, so no
-# failure cue is owed however little the model said.
 NO_ANSWER_CUE_SUPPRESSED_REASONS = frozenset({
     "mic_muted",
     "stopping",
     "barge_in",
     "conversation_ended",
+    "unanswered_utterance",
     "measurement_active",
 })
 

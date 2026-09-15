@@ -121,6 +121,7 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._input_caught_up = 0.0
         self._sender = None
         self._transcript_intervals = {"user": [], "assistant": []}
+        self._last_user_transcript_at = 0.0
         self._seconds = 0.0
         self._quiet_played = 0
         self._quiet_discarded = 0
@@ -142,6 +143,23 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._calls = {}
         self._counted_responses = set()
         self.backend_pending = False
+
+    async def nudge_backend(self, *, silence_ms: int) -> bool:
+        if self.backend_pending or self.turn_lost():
+            return False
+        try:
+            await self._conn._send({"type": "response.create"})
+        except Exception:  # noqa: BLE001
+            self._on_connection_lost()
+            return False
+        log_event(
+            logger, "provider.backend_nudged", provider=self._conn.PROVIDER_NAME,
+            silence_ms=silence_ms,
+        )
+        return True
+
+    def last_user_transcript_at(self) -> float:
+        return self._last_user_transcript_at
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
         if self._released or self._turn_lost:
@@ -308,6 +326,8 @@ class OpenAILiveTurn(BaseLiveTurn):
             self._on_output_audio(base64.b64decode(event["delta"]))
         elif kind in {"session.input_transcript.delta", "session.output_transcript.delta"}:
             speaker = "user" if kind == "session.input_transcript.delta" else "assistant"
+            if speaker == "user":
+                self._last_user_transcript_at = time.monotonic()
             self._transcript_intervals[speaker].append({k: event[k] for k in ("delta", "start_ms", "end_ms")})
             self.add_transcript(**{speaker: event["delta"]})
             self._note_activity()
