@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Mapping, NamedTuple
 
-from jasper.json_fields import finite_float
+from jasper.json_fields import finite_float, parse_utc_iso
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_BASS, PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
@@ -243,8 +243,11 @@ def latest_banked_rounds(
     """Latest packet per program and applied identity within a bounded recent window."""
     from jasper.active_speaker.round_packet_report import PACKET_FILENAME  # lazy: packet report imports this reader
 
+    applied_at = parse_utc_iso(str(identity.get("applied_at") or ""))
     found: dict[str, dict[str, Any]] = {}
     for modified_at, directory in _recent_round_directories(session_dir, limit=limit)[:max(0, limit)]:
+        if applied_at is not None and modified_at <= applied_at:
+            break
         if not (directory / "bundle").is_dir():
             continue
         packet = _read_json_mapping(directory / PACKET_FILENAME) or {}
