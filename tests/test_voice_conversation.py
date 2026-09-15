@@ -144,6 +144,81 @@ async def test_partial_transcripts_do_not_end_the_conversation():
         await asyncio.gather(task, return_exceptions=True)
 
 
+@pytest.mark.parametrize("second_utterance", [False, True])
+@pytest.mark.parametrize("nudge_result", [False, True])
+async def test_unanswered_speech_gets_one_nudge_per_utterance(monkeypatch, second_utterance, nudge_result):
+    now = 100.0
+    speech_started = now
+    turn = FakeLiveTurn()
+    turn.nudge_backend_result = nudge_result
+
+    async def tick(seconds):
+        nonlocal now, speech_started
+        assert len(turn.nudge_backend_calls) == int(now >= 102) + int(second_utterance and now >= 106)
+        now += seconds
+        assert now <= 112
+        if second_utterance and now == 104:
+            speech_started = now
+
+    monkeypatch.setattr(conversation, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(conversation, "asyncio", SimpleNamespace(sleep=tick))
+    reason = await continuous_watchdog(
+        turn, FakeTts(), followup_seconds=5, stall_seconds=120,
+        user_activity=lambda: (speech_started, speech_started), last_accepted_at=lambda: 0,
+    )
+    assert reason == "response_stalled"
+    assert now == (112 if second_utterance else 108)
+    assert turn.nudge_backend_calls == [2000] * (2 if second_utterance else 1)
+
+
+@pytest.mark.parametrize("transcript_at, pending, lost, expected", [
+    (100.0, False, False, "unanswered_utterance"),
+    (0.0, False, False, "response_stalled"),
+    (99.0, False, False, "response_stalled"),
+    (100.0, True, False, "response_stalled"),
+    (100.0, False, True, "connection_lost"),
+])
+async def test_unanswered_verdict_requires_this_utterance_transcribed_and_backend_idle(
+    monkeypatch, transcript_at, pending, lost, expected,
+):
+    now = 107.75
+    turn = FakeLiveTurn()
+    turn.user_transcript_at = transcript_at
+    turn.backend_pending = pending
+    turn.turn_lost = lambda: lost
+
+    async def tick(seconds):
+        nonlocal now
+        now += seconds
+        assert now == 108
+
+    monkeypatch.setattr(conversation, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(conversation, "asyncio", SimpleNamespace(sleep=tick))
+    assert await continuous_watchdog(
+        turn, FakeTts(), followup_seconds=5, stall_seconds=120,
+        user_activity=lambda: (100, 100), last_accepted_at=lambda: 0,
+    ) == expected
+
+
+@pytest.mark.parametrize("input_ended", [False, True])
+async def test_unanswered_utterance_ends_with_chirp_and_complete_outcome(input_ended):
+    tts = FakeTts()
+    loop = answered_loop(tts=tts)
+    loop._turns.turn = FakeLiveTurn(bytes_sent=3200)
+    loop._turns.playback_report.accepted_audio = False
+    loop._turns.input_ended = input_ended
+    loop._turns._timeline.anchor_at()
+    cue = AsyncMock()
+    loop._turns._play_cue = cue
+    loop._turns.output_episode = await loop._assistant_output.begin_turn_episode(None)
+    await loop._turns.end("unanswered_utterance")
+    assert tts.writes == [loop._assistant_output._chirp_off_pcm]
+    cue.assert_not_awaited()
+    assert loop._turns._timeline.last_turn_ms["outcome"] == "complete"
+    assert loop._turns.silent_responses_session == 0
+    await loop._cancel_fire_and_forget_tasks()
+
+
 @pytest.mark.parametrize("reason", ["followup_timeout", "conversation_ended"])
 async def test_the_hang_up_chirp_is_written_ahead_of_the_teardown_behind_it(reason):
     """The teardown runs behind the cue, not in front of it."""

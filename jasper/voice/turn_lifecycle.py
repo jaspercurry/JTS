@@ -64,6 +64,7 @@ NO_ANSWER_CUE_SUPPRESSED_REASONS = frozenset({
     "stopping",
     "barge_in",
     "conversation_ended",
+    "unanswered_utterance",
     "measurement_active",
 })
 

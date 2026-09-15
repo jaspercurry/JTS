@@ -51,6 +51,7 @@ SYSTEM_INSTRUCTION = (
     "An okay or thanks that answers a question you just asked is an answer to that "
     "question, not a dismissal; treat it as a yes for a pending confirmation. "
     "Cancel my timer and stop music still require their local tools. "
+    "If the last user utterance is not addressed to the assistant (noise, a fragment, nearby talk), respond with nothing. "
     "Ask a clarifying question only when the "
     "user's request is genuinely ambiguous and you cannot proceed "
     "otherwise — in that case ask one specific question and nothing "

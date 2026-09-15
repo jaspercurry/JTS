@@ -205,6 +205,12 @@ class BaseLiveTurn:
         self._user_transcript = ""
         self._assistant_transcript = ""
 
+    async def nudge_backend(self, *, silence_ms: int) -> bool:
+        return False
+
+    def last_user_transcript_at(self) -> float:
+        return 0.0
+
     def _start_tool_calls(self, calls: list[ToolCall]) -> None:
         if self._released or self._turn_lost or self._cancel_requested or self._server_turn_complete:
             return

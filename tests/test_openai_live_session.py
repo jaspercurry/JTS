@@ -30,7 +30,7 @@ from tests._log_events import event_field_maps, event_fields, event_records
 from tests._playout import FakeTts
 
 
-CLIENT_EVENT = TypeAdapter(ClientEventParam)
+CLIENT_EVENT: TypeAdapter[ClientEventParam] = TypeAdapter(ClientEventParam)
 
 
 class LiveSocket:
@@ -95,6 +95,41 @@ async def live_turn():
 
 def backend(delegation, kind, **fields):
     return {"type": "response.event", "delegation_id": delegation, "event": {"type": kind, **fields}}
+
+
+@pytest.mark.parametrize("state", ["fresh", "completed", "pending", "lost"])
+async def test_backend_nudge_only_sends_when_no_delegation_is_in_flight(caplog, state):
+    caplog.set_level(logging.INFO)
+    async with live_turn() as turn:
+        if state in {"completed", "pending"}:
+            await turn.on_event({"type": "session.delegation.created", "delegation": {"id": "d1"}})
+            if state == "completed":
+                await turn.on_event(backend("d1", "response.completed", response={"id": "r1"}))
+        elif state == "lost":
+            turn._on_connection_lost()
+        socket = turn._conn._session
+        socket.sent.clear()
+        allowed = state in {"fresh", "completed"}
+        assert await turn.nudge_backend(silence_ms=2000) is allowed
+        assert socket.sent == ([{"type": "response.create"}] if allowed else [])
+        assert event_field_maps(caplog, "provider.backend_nudged") == (
+            [{"provider": "openai_live", "silence_ms": "2000"}] if allowed else []
+        )
+
+
+async def test_user_transcript_timestamp_uses_monotonic_time(monkeypatch):
+    clock = FrozenClock()
+    monkeypatch.setattr(openai_live_session, "time", clock)
+    async with live_turn() as turn:
+        assert turn.last_user_transcript_at() == 0.0
+        for direction in ("input", "output", "input"):
+            clock.now += 1
+            before = turn.last_user_transcript_at()
+            await turn.on_event({
+                "type": f"session.{direction}_transcript.delta", "delta": "okay",
+                "start_ms": 0, "end_ms": 1000,
+            })
+            assert turn.last_user_transcript_at() == (clock.now if direction == "input" else before)
 
 
 async def delegate(turn, delegation, response_id, name, args):
