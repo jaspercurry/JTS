@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""In-capture clock drift, estimated from the MEASURE sweep repeats."""
+"""In-capture clock drift, estimated from repeated sweeps."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from jasper.audio_measurement.program import ExcitationProgram, KIND_SWEEP
+from jasper.audio_measurement.program import ExcitationProgram, KIND_SWEEP, KIND_SUMMED_SWEEP
 from jasper.audio_measurement.timeline_slip import (
     fit_timeline_step,
     GLITCH_INPUT_TIMELINE_SLIP,
@@ -56,18 +56,13 @@ def _sweep_occurrence_index(segment_id: str) -> int:
 def _sweep_occurrences_by_role(
     locations: Sequence[SegmentLocation],
 ) -> dict[str, list[SegmentLocation]]:
-    """Group MEASURE ``KIND_SWEEP`` locations by driver role, each list
-    ordered first->last by ID-encoded occurrence index
-    (:func:`_sweep_occurrence_index`), not physical schedule position — the
-    N=3 layout interleaves w1,t1,w2,t2,... (design §5.4).
-    """
+    """Group driver repeats by occurrence index and summed repeats by schedule."""
     by_role: dict[str, list[tuple[int, SegmentLocation]]] = {}
     for loc in locations:
-        if loc.kind != KIND_SWEEP or not loc.role:
-            continue
-        by_role.setdefault(loc.role, []).append(
-            (_sweep_occurrence_index(loc.segment_id), loc)
-        )
+        if loc.kind == KIND_SUMMED_SWEEP:
+            by_role.setdefault("summed", []).append((loc.scheduled_start, loc))
+        elif loc.kind == KIND_SWEEP and loc.role:
+            by_role.setdefault(loc.role, []).append((_sweep_occurrence_index(loc.segment_id), loc))
     return {
         role: [loc for _idx, loc in sorted(pairs, key=lambda pair: pair[0])]
         for role, pairs in by_role.items()
@@ -158,17 +153,11 @@ def _estimate_drift(
     sample_rate: int,
     locations: Sequence[SegmentLocation],
 ) -> DriftEstimate:
-    occurrences_by_role = _sweep_occurrences_by_role(locations)
-    # Only SWEEP-kind stimuli anchor the drift baselines; a leading pilot
-    # pair's short/quiet windows locate more coarsely and would manufacture
-    # spurious desync (pilots are judged separately, on their own verdict).
-    stimulus_locs = [loc for loc in locations if loc.kind == KIND_SWEEP]
-
-    # Primary gate: the WOOFER's first-vs-LAST located occurrence — the one
-    # literal anchor kept, since a MEASURE program always contains "sweep_w".
-    woofer_role = program.segment("sweep_w").role
-    assert woofer_role is not None, "a MEASURE sweep segment always carries a role"
-    woofer_occurrences = occurrences_by_role.get(woofer_role, [])
+    kind = KIND_SWEEP if any(loc.kind == KIND_SWEEP for loc in locations) else KIND_SUMMED_SWEEP
+    stimulus_locs = [loc for loc in locations if loc.kind == kind]
+    occurrences_by_role = _sweep_occurrences_by_role(stimulus_locs)
+    primary = program.segment("sweep_w" if kind == KIND_SWEEP else "sweep_verify")
+    woofer_occurrences = occurrences_by_role.get(primary.role or "summed", [])
     w1 = woofer_occurrences[0] if woofer_occurrences else None
     w2 = woofer_occurrences[-1] if len(woofer_occurrences) >= 2 else None
 
@@ -214,7 +203,7 @@ def _estimate_drift(
     repeat_level_delta_db = 0.0
     repeat_level_disagrees = False
     if w1 is not None and w2 is not None:
-        level_seg_w = program.segment("sweep_w")
+        level_seg_w = primary
         if level_seg_w.f1_hz is None or level_seg_w.f2_hz is None:
             raise ValueError("woofer sweep segment has no declared band")
         w1_samples = _pilot_trim_fade(
@@ -284,4 +273,5 @@ def _estimate_drift(
         glitch_inputs=glitch_inputs,
         discontinuity_samples=discontinuity_samples,
         discontinuity_after_segment=discontinuity_after,
+        discontinuity_resolvable=slip_fit.resolvable,
     )

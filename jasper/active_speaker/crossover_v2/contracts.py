@@ -24,7 +24,6 @@ from jasper.audio_measurement.evidence_identity import (
 from jasper.json_fields import finite_float
 
 from ..branch_chain import CrossoverSection
-from ..measurement_programs import REGIME_NEAR_FIELD
 
 __all__ = [
     "ADOPTION_ROWS",
@@ -1300,7 +1299,7 @@ BANKED_TAKE_GLOB = "crossover_v2/*/positions/*.json"
 #: Spelled here because `record_store` writes it and `record_index` reads it.
 MEASURE_KIND_KEY = "measure_kind"
 
-#: The two capture regimes. Owner: `driver_acoustics.CAPTURE_GEOMETRIES`.
+REGIME_NEAR_FIELD = "near_field"
 REGIME_REFERENCE_AXIS = "reference_axis"
 MEASURE_REGIMES = (REGIME_NEAR_FIELD, REGIME_REFERENCE_AXIS)
 

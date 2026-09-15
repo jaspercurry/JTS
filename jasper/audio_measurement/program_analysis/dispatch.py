@@ -835,7 +835,9 @@ def _analyze_verify(
     fc_hz = float(priors.crossover_fc_hz) if priors.crossover_fc_hz else None
     seg = program.segment("sweep_verify")
     full_ir, _pre = _deconvolve_window(
-        average_summed_capture(program, capture, global_offset), seg, global_offset + seg.start_sample, sample_rate
+        average_summed_capture(program, capture, global_offset,
+                               {loc.segment_id: loc.located_start for loc in locations}),
+        seg, global_offset + seg.start_sample, sample_rate
     )
     n_fft = _n_fft_for(full_ir)
     summed = _driver_response(
@@ -992,7 +994,7 @@ def _analyze_verify(
     # Computed on EVERY verify-shaped analysis: the tracking comparison
     # above is exactly what a spliced/clipped recording invalidates.
     integrity = _verify_capture_integrity(
-        program, sample_rate, locations, frame_ledger,
+        program, sample_rate, locations, frame_ledger, capture=capture, offset=global_offset,
     )
     return ProgramAnalysis(
         phase=program.phase,

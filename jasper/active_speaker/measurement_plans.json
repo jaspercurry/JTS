@@ -1,6 +1,6 @@
 {
   "stimuli": {
-    "bass": {"band_hz": ["woofer_floor", 1100.0], "passes": "max_repeat_count", "ambient": "derived"}
+    "bass": {"ceiling_hz": 1100.0}
   },
   "layouts": {
     "speaker_mark": [{"azimuth_deg": 0, "elevation_deg": 0, "repeats": 2}],

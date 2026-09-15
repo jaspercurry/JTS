@@ -441,7 +441,7 @@ def stubbed_capabilities(spec: MeasureSpec) -> tuple[CapabilityStub, ...]:
     "play, bank, and say what the banked evidence is still owed".
     """
     codes: list[str] = []
-    if spec.regime == REGIME_NEAR_FIELD:
+    if spec.regime == REGIME_NEAR_FIELD and spec.graph_scope == GRAPH_SCOPE_DRIVERS:
         codes.append(NEAR_FIELD_SPLICE_NOT_IMPLEMENTED)
     if spec.level_ladder_dbfs:
         codes.append(DISTORTION_VS_LEVEL_NOT_IMPLEMENTED)

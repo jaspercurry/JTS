@@ -15,13 +15,6 @@ from .snr_policy import band_levels_dbfs
 from .sweep import SweepMeta
 
 
-class SweepNoiseWindowError(ValueError):
-    code = "sweep_noise_window_too_short"
-
-    def __init__(self) -> None:
-        super().__init__(self.code)
-
-
 def sweep_band_sample_ranges(
     sweep: SweepMeta, sample_rate: int, bands: Sequence[tuple[float, float]],
 ) -> list[tuple[float, float, int, int]]:
@@ -37,20 +30,12 @@ def sweep_band_sample_ranges(
     return ranges
 
 
-def require_sweep_noise_window(
-    sweep: SweepMeta, sample_rate: int, bands: Sequence[tuple[float, float]], quiet_samples: int,
-) -> None:
-    if any(stop - start > quiet_samples for _, _, start, stop in sweep_band_sample_ranges(sweep, sample_rate, bands)):
-        raise SweepNoiseWindowError()
-
-
 def sweep_band_levels(
     capture: np.ndarray, quiet: np.ndarray, sample_rate: int, sweep: SweepMeta,
     anchor: int, bands: Sequence[tuple[float, float]],
 ) -> list[dict[str, Any]]:
     """Raw power units on both sides; short dwell and changing noise limit precision."""
     rows = []
-    require_sweep_noise_window(sweep, sample_rate, bands, quiet.size)
     for lo, hi, start, stop in sweep_band_sample_ranges(sweep, sample_rate, bands):
         size = stop - start
         if size < 8 or anchor + start < 0 or anchor + stop > capture.size:

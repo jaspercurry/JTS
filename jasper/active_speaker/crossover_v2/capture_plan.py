@@ -83,9 +83,9 @@ def build_inline_session_spec(
             from ..bass_stimulus import build_bass_program  # lazy: keeps jasper.web numpy-free
 
             program = build_bass_program(
-                SessionExcitation(tuple(roles_bands), {}, 0.0, fc_hz, {}), spec.stimulus,
+                SessionExcitation(tuple(roles_bands), {}, 0.0, fc_hz, {}), spec.stimulus,  # never played; duration only
                 safety_profile=safety_profile or {}, role_targets=role_targets or {},
-                courtesy_prelude=phase != PHASE_CLOUD_VERIFY,
+                courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase),
             )
         elif phase == PHASE_CHECK:
             program = build_check_program(roles_bands, courtesy_prelude=True)

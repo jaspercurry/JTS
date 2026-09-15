@@ -9,6 +9,7 @@ from jasper.web import correction_crossover_v2_volume as v2volume
 from dataclasses import replace
 from typing import Any
 
+from jasper.active_speaker.crossover_v2.programs import courtesy_prelude_for_phase
 from jasper.active_speaker.angle_capture import LevelPolicy
 from jasper.active_speaker.run_levels import LevelLadder, LevelRun, prepare_level_captures, run_levels
 from jasper.active_speaker.round_packet import RoundPacket
@@ -129,7 +130,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
     return analyze, assessor
 
 
-def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None, *, context: Any = None) -> Any:
+def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None, *, context: Any) -> Any:
     excitation = conductor._excitation
     if spec.program_phase == PHASE_CHECK:
         program = excitation.check_program()
@@ -152,7 +153,7 @@ def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None,
 
         program = build_bass_program(excitation, spec.stimulus, safety_profile=context.safety_profile,
                                      role_targets=context.role_targets, extra_backoff_db=backoff,
-                                     courtesy_prelude=spec.program_phase != PHASE_CLOUD_VERIFY)
+                                     courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase))
     else:
         program = (excitation.cloud_program(extra_backoff_db=backoff) if spec.program_phase == PHASE_CLOUD_VERIFY
                    else excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s))

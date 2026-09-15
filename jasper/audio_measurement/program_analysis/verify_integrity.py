@@ -9,13 +9,17 @@ from __future__ import annotations
 import logging
 from typing import Sequence
 
+import numpy as np
+
 from jasper.audio_measurement.frame_ledger import FrameLedger
 from jasper.audio_measurement.program import (
     ExcitationProgram,
     KIND_SUMMED_SWEEP,
     STIMULUS_KINDS,
 )
+from jasper.audio_measurement.repeated_sweep import summed_pass_refusal
 from jasper.log_event import log_event
+from .drift import _estimate_drift
 from .model import (
     CaptureIntegrity,
     INTEGRITY_CHECK_CLIPPED_RUN,
@@ -99,31 +103,14 @@ def _verify_capture_integrity(
     sample_rate: int,
     locations: Sequence[SegmentLocation],
     frame_ledger: FrameLedger,
+    *, capture: np.ndarray | None = None, offset: int = 0,
 ) -> CaptureIntegrity:
-    """Capture-integrity evidence for a ONE-summed-sweep program.
+    """Check frame accounting, located sweeps, clipping and available repeat pairs.
 
-    ``_estimate_drift`` cannot run here: its three glitch inputs all compare
-    a role's repeated sweeps, and VERIFY plays one mono summed sweep. The
-    honest record is "drift checks did not run, here is what did".
-
-    What runs, in routing order: (0) frame accounting
-    (:func:`_frame_accounting_checks`), ahead of every signal question — a
-    capture missing a render quantum can locate its sweep perfectly and
-    still be a splice; (1) heard — locate confidence against
-    :data:`SWEEP_LOCATE_CONFIDENCE_FLOOR`; (2) schedule — |residual| against
-    :data:`SWEEP_SCHEDULE_RESIDUAL_CEILING_MS`, only when (1) passed
-    (otherwise ``not_evaluated`` with the residual still disclosed); (3)
-    clipped run, independent of (1). Pilot segments are excluded from (1)
-    and (2) (short/quiet windows locate coarsely) and included in (3).
-
-    What (2) cannot see: a splice INSIDE the summed sweep (the residual is
-    measured at the located START; needs more sweeps than VERIFY has — (0)
-    only closes the browser-visible half of this class); a splice BEFORE
-    the first stimulus (absorbed by the global offset, correctly, since a
-    uniformly shifted capture is not corrupt); and anything on a
-    pilot-less VERIFY program, where the summed sweep IS the anchor and its
-    residual is structurally ~0 (every session-composed VERIFY carries a
-    leading pilot pair instead).
+    Repeat checks use raw audio. Coherence must hold before scheduled-window
+    averaging; a constant acoustic delay cancels from the arrival spread.
+    Single sweeps cannot answer repeat questions. The step fit additionally
+    requires enough repeats to leave two residual degrees of freedom.
     """
     sweeps = [loc for loc in locations if loc.kind == KIND_SUMMED_SWEEP]
     stimuli = [loc for loc in locations if loc.kind in STIMULUS_KINDS]
@@ -172,18 +159,33 @@ def _verify_capture_integrity(
             INTEGRITY_CHECK_CLIPPED_RUN,
             INTEGRITY_FAIL if clipped_segments else INTEGRITY_PASS,
         ))
-    for name in (
-        INTEGRITY_CHECK_REPEAT_EPSILON,
-        INTEGRITY_CHECK_REPEAT_LEVEL,
-        INTEGRITY_CHECK_WITHIN_ROLE_DESYNC,
+    refusal = None
+    drift = None
+    repeated = sum(segment.kind == KIND_SUMMED_SWEEP for segment in program.segments) > 1
+    if repeated and capture is not None:
+        refusal = summed_pass_refusal(program, capture, offset,
+                                     {loc.segment_id: loc.located_start for loc in sweeps})
+        if refusal:
+            checks.append(IntegrityCheck(refusal, INTEGRITY_FAIL))
+        if refusal in (None, "summed_pass_arrival_drift") and confidence_min >= SWEEP_LOCATE_CONFIDENCE_FLOOR:
+            drift = _estimate_drift(program, capture, sample_rate, locations)
+    for name, input_code in (
+        (INTEGRITY_CHECK_REPEAT_EPSILON, "epsilon_out_of_bound"),
+        (INTEGRITY_CHECK_REPEAT_LEVEL, "repeat_level_disagree"),
+        (INTEGRITY_CHECK_WITHIN_ROLE_DESYNC, "residual_desync"),
+        (INTEGRITY_CHECK_DISCONTINUITY_STEP, "timeline_slip"),
     ):
-        checks.append(IntegrityCheck(
-            name, INTEGRITY_NOT_EVALUATED, _INTEGRITY_NO_REPEAT_PAIR,
-        ))
-    checks.append(IntegrityCheck(
-        INTEGRITY_CHECK_DISCONTINUITY_STEP, INTEGRITY_NOT_EVALUATED,
-        _INTEGRITY_STEP_NEEDS_MORE_SWEEPS,
-    ))
+        if drift is None:
+            checks.append(IntegrityCheck(
+                name, INTEGRITY_NOT_EVALUATED,
+                refusal or (_INTEGRITY_SWEEP_NOT_HEARD if repeated else
+                            _INTEGRITY_STEP_NEEDS_MORE_SWEEPS if name == INTEGRITY_CHECK_DISCONTINUITY_STEP
+                            else _INTEGRITY_NO_REPEAT_PAIR),
+            ))
+        elif name == INTEGRITY_CHECK_DISCONTINUITY_STEP and not drift.discontinuity_resolvable:
+            checks.append(IntegrityCheck(name, INTEGRITY_NOT_EVALUATED, _INTEGRITY_STEP_NEEDS_MORE_SWEEPS))
+        else:
+            checks.append(IntegrityCheck(name, INTEGRITY_FAIL if input_code in drift.glitch_inputs else INTEGRITY_PASS))
 
     integrity = CaptureIntegrity(
         checks=tuple(checks),

@@ -22,6 +22,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from jasper.active_speaker.crossover_v2.programs import courtesy_prelude_for_phase
 from jasper.cli._logging import CLI_LOG_FORMAT
 from jasper.cli._refusal import (
     EXIT_OK as EXIT_OK,
@@ -488,7 +489,7 @@ def _bind_compose(
     from jasper.active_speaker.crossover_v2.measure_spec import CANDIDATE_SCOPES, GRAPH_SCOPE_DRIVERS
     from jasper.active_speaker.candidate_bank import find_banked_candidate
     from jasper.active_speaker.measurement_emit import measurement_bass_extension
-    from jasper.active_speaker.crossover_v2.programs import SessionExcitation
+    from jasper.active_speaker.crossover_v2.programs import SessionExcitation  # lazy: optional measurement runtime
     from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
     from jasper.active_speaker.program_playback import ProgramPlaybackError
     from jasper.active_speaker.volume_latch import MeasurementFaderDrift, hold_fader_at
@@ -503,7 +504,8 @@ def _bind_compose(
         peak = BASE_STIMULUS_PEAK_DBFS if stimulus_dbfs is None else stimulus_dbfs
         if spec.stimulus is not None:
             return build_bass_program(excitation, spec.stimulus, safety_profile=box.safety_profile,
-                                      role_targets=box.role_targets, extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - peak)
+                                      role_targets=box.role_targets, extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - peak,
+                                      courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase))
         if spec.graph_scope == GRAPH_SCOPE_DRIVERS:
             return excitation.measure_program({role.role: peak for role in box.roles_bands})
         summed = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)

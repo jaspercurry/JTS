@@ -253,6 +253,17 @@ def _load_programs(
     if unknown:
         raise ValueError(f"measurement plan has unknown fields: {sorted(unknown)}")
 
+    stimuli = raw.get("stimuli", {})
+    if not isinstance(stimuli, dict):
+        raise ValueError("measurement plan stimuli must be an object")
+    for name, spec in stimuli.items():
+        _text(name, "stimulus name")
+        if not isinstance(spec, dict) or set(spec) != {"ceiling_hz"}:
+            raise ValueError(f"stimulus {name!r} must contain only ceiling_hz")
+        ceiling = spec["ceiling_hz"]
+        if isinstance(ceiling, bool) or not isinstance(ceiling, (int, float)) or not 0 < ceiling < math.inf:
+            raise ValueError(f"stimulus {name!r} ceiling_hz must be positive and finite")
+
     layouts_raw = raw.get("layouts")
     if not isinstance(layouts_raw, dict) or not layouts_raw:
         raise ValueError("measurement plan layouts must be a nonempty object")
@@ -289,6 +300,11 @@ def _load_programs(
             raise ValueError(f"program {index} is missing {exc.args[0]}") from None
         if layout not in layouts:
             raise ValueError(f"program {program_id}/{size} names unknown layout {layout!r}")
+        stimulus = row.get("stimulus")
+        if stimulus is not None:
+            _text(stimulus, f"program {program_id}/{size} stimulus")
+            if stimulus not in stimuli:
+                raise ValueError(f"program {program_id}/{size} names unknown stimulus {stimulus!r}")
         key = (program_id, size)
         if key in programs:
             raise ValueError(f"measurement plan repeats program {program_id}/{size}")
@@ -300,7 +316,7 @@ def _load_programs(
             regime=row.get("regime", REGIME_PER_DRIVER),
             mover=movers.get(layout),
             layout=layout, levels=row.get("levels"),
-            stimulus=raw.get("stimuli", {})[row["stimulus"]] if row.get("stimulus") else None,
+            stimulus=stimuli[stimulus] if stimulus is not None else None,
         )
 
     defaults_raw = raw.get("default_sizes")
@@ -384,7 +400,7 @@ def run_program(purpose: str, poses: str | None = None) -> MeasurementProgram:
         if poses in (row.layout, f"{row.program_id}_{row.size}", f"{row.program_id}/{row.size}"):
             return replace(row, program_id=purpose, purpose=purpose,
                            regime=row.regime if row.purpose == purpose else selected.regime,
-                           levels=selected.levels, stimulus=selected.stimulus)
+                           levels=selected.levels, stimulus=row.stimulus if row.purpose == purpose else selected.stimulus)
     return replace(selected, size="custom", layout="", poses=tuple(
         ProgramPose(int(value.strip()), 0) for value in poses.split(",")
     ))

@@ -82,6 +82,8 @@ class ProgramAdmissionRefusal(str, Enum):
     TARGET_NOT_MAPPED = "program_target_not_mapped"
     CHANNEL_ROLE_INCONSISTENT = "program_channel_role_inconsistent"
     SEGMENT_OUTSIDE_LIMITS = "program_segment_outside_limits"
+    REPEAT_COUNT_OVER_CAP = "program_repeat_count_over_cap"
+    COOLDOWN_BELOW_MINIMUM = "program_cooldown_below_minimum"
     CHANNEL_PEAK_OVER_CAP = "program_channel_peak_over_cap"
     OUT_OF_SEGMENT_ENERGY = "program_out_of_segment_energy"
     MANIFEST_PEAK_MISMATCH = "program_manifest_peak_mismatch"
@@ -761,6 +763,16 @@ def readmit_summed_program_from_wav(
         # Reserve the maximum lift; admission remains valid across Aux updates.
         boost_db = bass_boost_db if output in bass_channels else 0.0
         input_caps.append(cap - boost_db)
+        limits = declared[fingerprint]["level_duration_limits"]
+        sweeps = sorted((s for s in program.segments if s.kind == KIND_SUMMED_SWEEP
+                         and (not branches or s.channel == channels_by_role[role])), key=lambda s: s.start_sample)
+        if len(sweeps) > limits["max_repeat_count"]:
+            refusals.append(ProgramAdmissionRefusal.REPEAT_COUNT_OVER_CAP)
+        cooldown = math.ceil(limits["minimum_cooldown_s"] * program.sample_rate_hz)
+        if any(b.start_sample - a.start_sample - a.n_samples < cooldown
+               or pcm[b.start_sample - cooldown:b.start_sample, b.channel].any()
+               for a, b in zip(sweeps, sweeps[1:])):
+            refusals.append(ProgramAdmissionRefusal.COOLDOWN_BELOW_MINIMUM)
         requirements = declared[fingerprint]["required_protection_filters"]
         protected_floor_hz = float(declared[fingerprint]["hard_excitation_band_hz"][0])
         for requirement in requirements:

@@ -40,6 +40,7 @@ from .volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .crossover_v2.capture_plan import V2PlanShape, room_sweep_band_hz, stage1_base_entries
 from .crossover_v2.contracts import (
+    REGIME_NEAR_FIELD as MEASURE_REGIME_NEAR_FIELD,
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
     POLARITY_NORMAL,
@@ -692,7 +693,7 @@ def stop_specs(
             candidate_id=stop.candidate_id or baseline_id,
             graph_scope="candidate_branches" if stop.regime == REGIME_BRANCHES else "candidate",
             stimulus=stop.stimulus,
-            regime=REGIME_NEAR_FIELD if stop.regime == REGIME_NEAR_FIELD else request.template.regime,
+            regime=MEASURE_REGIME_NEAR_FIELD if stop.regime == REGIME_NEAR_FIELD else request.template.regime,
         ))
     return tuple(spec for spec in placed for _ in range(request.repeats))
 
