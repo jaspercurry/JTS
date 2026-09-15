@@ -52,9 +52,8 @@ FRONTEND_INSTRUCTIONS = (
 # follow-up window never opens (`continuous_watchdog` in .conversation).
 SILENCE_BRIDGE_SEC = 0.8
 
-# Initial reserve for 40–110 ms delivery deficits, also capped in wall time.
-# A silence gap cannot identify a new answer, so it must not re-arm the wait.
-PLAYOUT_RESERVE_SEC = 0.15
+# Re-arm at backend answer completion before its first audible chunk: 250 ms absorbs measured 43–92 ms deficits with margin and adds at most 250 ms of first-syllable latency per delegated answer.
+PLAYOUT_RESERVE_SEC = 0.25
 
 # int16 RMS floor for "this delta carries speech" (about -60 dBFS).
 AUDIBLE_RMS_FLOOR = 32
@@ -130,6 +129,7 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._finalized = False
         self._startup_terminal = False
         self._delegation_id = None
+        self._chunks_at_delegation = self._chunks_received
         # Delegation the in-flight tool round answers; a correction moves
         # `_delegation_id` on and abandons that round's results.
         self._round_delegation = None
@@ -312,6 +312,7 @@ class OpenAILiveTurn(BaseLiveTurn):
             self._delegation_id = delegation["id"]
             self._response_ids.clear()
             self._calls.clear()
+            self._chunks_at_delegation = self._chunks_received
             self._set_backend_pending(True, "delegation_started")
             self.backend_completed_at = 0.0
             self._note_activity()
@@ -405,6 +406,13 @@ class OpenAILiveTurn(BaseLiveTurn):
         if self.backend_pending == pending:
             return
         self.backend_pending = pending
+        # response.completed without tool calls hands the answer to speech;
+        # tool rounds keep pending true, and trailing clauses do not change it.
+        if reason == "response_completed":
+            if self._queued_bytes == 0 and self._chunks_received == self._chunks_at_delegation:
+                self._reserve_playout = True
+            self._last_delta_at = 0.0
+            self._last_delta_audio_sec = 0.0
         log_event(
             logger, "provider.backend_pending", provider=self._conn.PROVIDER_NAME,
             pending=pending, reason=reason,
