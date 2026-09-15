@@ -19,8 +19,9 @@ from typing import Any, AsyncIterator
 
 from ..backoff import reconnect_delay
 from ..log_event import log_event
+from ..secret_redaction import redact_secrets
 from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn, ToolCall
-from ._supervisor import failure_detail, is_transient
+from ._supervisor import FAILURE_DETAIL_LIMIT, failure_detail, is_transient
 from ._tasks import await_cleanup_owned
 from .openai_session import _upsample_16k_to_24k
 from .session import AudioOutChunk, ConnectionState, TurnCapture, TurnUsage
@@ -623,7 +624,19 @@ class OpenAILiveConnection(BaseLiveConnection):
                 if event["type"] == "session.started":
                     self._started.set()
                 elif event["type"] == "error":
-                    raise RuntimeError("Live command rejected")
+                    error = event.get("error") or {}
+                    code, error_type = error.get("code"), error.get("type")
+                    log_event(
+                        logger, "provider.live_error", provider=self.PROVIDER_NAME,
+                        code=code, error_type=error_type,
+                        message=redact_secrets(
+                            str(error.get("message") or ""), literals=self._secret_literals(),
+                        )[:FAILURE_DETAIL_LIMIT],
+                        level=logging.WARNING,
+                    )
+                    raise RuntimeError(
+                        f"Live command rejected: {code or '?'} {error_type or '?'}",
+                    )
                 else:
                     await turn.on_event(event)
                     if event["type"] == "session.closed":
