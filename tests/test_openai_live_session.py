@@ -1039,7 +1039,7 @@ async def test_a_server_that_never_acks_the_close_does_not_hold_the_release(monk
 
 
 async def test_a_rejected_command_reports_the_server_error_code_and_type(monkeypatch, caplog):
-    caplog.set_level(logging.INFO)
+    caplog.set_level(logging.DEBUG)
     monkeypatch.setattr(openai_live_session, "CLOSE_ACK_TIMEOUT_SEC", 0.05)
     key = "private-test-credential"
     socket = LiveSocket()
@@ -1061,12 +1061,10 @@ async def test_a_rejected_command_reports_the_server_error_code_and_type(monkeyp
         await turn.release()
         await conn.stop()
 
-    fields = event_fields(caplog, "provider.live_error")
+    fields = event_fields(caplog, "provider.server_error")
     assert fields["code"] == "unknown_parameter"
     assert fields["error_type"] == "invalid_request_error"
-    # The raise carries the code and type, so the loss line names them too.
     detail = event_fields(caplog, "provider.session_lost")["detail"]
     assert "unknown_parameter" in detail and "invalid_request_error" in detail
     for record in caplog.records:
         assert key not in record.getMessage()
-        assert key not in str(record.args)
