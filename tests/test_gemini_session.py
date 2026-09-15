@@ -15,7 +15,7 @@ import logging
 
 import pytest
 
-from tests._log_events import event_fields
+from tests._log_events import event_fields, event_records
 from tests._gemini_fakes import GoAway as _GoAway
 from tests._gemini_fakes import Response as _GoAwayResp
 
@@ -92,6 +92,37 @@ async def test_released_turn_reports_usage_under_the_shared_event(caplog):
     assert fields["provider"] == "gemini"
     assert (fields["input_tokens"], fields["output_tokens"]) == ("11", "7")
     assert fields["assistant_chars"] == "8"
+
+
+@pytest.mark.parametrize("operation", ["audio", "end_input"])
+async def test_adapter_failures_report_redacted_provider_details(caplog, monkeypatch, operation):
+    secret = "plainvalue123"
+    conn = GeminiLiveConnection(api_key=secret, model="fake")
+    turn = GeminiLiveTurn(conn, started_at=0.0)
+
+    async def send_failed(*args, **kwargs):
+        raise RuntimeError(f"rejected {secret}")
+
+    monkeypatch.setattr(conn, "_send_realtime_input", send_failed)
+    caplog.set_level(logging.DEBUG)
+    if operation == "audio":
+        await turn.send_audio(b"\x00\x00" * 1280)
+    else:
+        await turn.end_input()
+
+    fields = event_fields(caplog, "provider.send_failed")
+    assert fields["provider"] == "gemini"
+    assert fields["operation"] == operation
+    assert fields["outcome"] == "turn_lost"
+    assert fields["exc_type"] == "RuntimeError"
+    assert secret not in fields["detail"]
+    assert all(secret not in value for value in fields.values())
+    assert event_records(caplog, "provider.send_failed") == caplog.records
+    assert caplog.records[0].levelno == logging.WARNING
+    assert all(record.exc_info is None for record in caplog.records)
+    assert turn.turn_lost()
+    assert turn._audio_q.get_nowait() is None
+    assert turn._audio_q.empty()
 
 
 def test_secret_literals_reports_the_api_key():

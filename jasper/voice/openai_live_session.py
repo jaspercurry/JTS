@@ -149,8 +149,8 @@ class OpenAILiveTurn(BaseLiveTurn):
             return False
         try:
             await self._conn._send({"type": "response.create"})
-        except Exception:  # noqa: BLE001
-            self._on_connection_lost()
+        except Exception as e:  # noqa: BLE001
+            self._on_send_failed(e, operation="nudge")
             return False
         log_event(
             logger, "provider.backend_nudged", provider=self._conn.PROVIDER_NAME,
@@ -411,7 +411,6 @@ class OpenAILiveTurn(BaseLiveTurn):
         elif kind == "response.completed":
             calls = self._calls.pop(response_id, [])
             if calls:
-                # A correction cancels the old round before a new round is started.
                 await self._drain_tool_round()
                 # Must stay after the drain above: setting this before the
                 # old round's task is cancelled would let it answer under

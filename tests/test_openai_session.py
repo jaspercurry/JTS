@@ -379,8 +379,8 @@ async def test_session_update_sent_on_connect_with_manual_vad():
 @pytest.mark.parametrize("conn_cls", [OpenAIRealtimeConnection, GrokRealtimeConnection])
 @pytest.mark.parametrize("operation,event,level", [
     ("audio", "provider.send_failed", logging.WARNING),
-    ("text", "provider.send_failed", logging.WARNING),
-    ("commit", "provider.end_input_failed", logging.DEBUG),
+    ("text_context", "provider.send_failed", logging.WARNING),
+    ("end_input", "provider.send_failed", logging.WARNING),
     ("decode", "provider.audio_decode_failed", logging.WARNING),
     ("tool", "provider.tool_result_send_failed", logging.WARNING),
     ("cancel", "provider.cancel_ignored", logging.DEBUG),
@@ -410,9 +410,9 @@ async def test_adapter_failures_report_redacted_provider_details(
     caplog.set_level(logging.DEBUG)
     if operation == "audio":
         await turn.send_audio(b"\x00\x00" * 1280)
-    elif operation == "text":
+    elif operation == "text_context":
         await turn.send_text_context("context")
-    elif operation == "commit":
+    elif operation == "end_input":
         await turn.end_input()
     elif operation == "decode":
         monkeypatch.setattr(base64, "b64decode", fail)
@@ -433,10 +433,14 @@ async def test_adapter_failures_report_redacted_provider_details(
         monkeypatch.setattr("jasper.voice.openai_session.os.makedirs", fail)
         await turn.send_audio(b"\x00\x00" * 1280)
     fields = event_fields(caplog, event)
-    if operation in {"audio", "text", "commit"}:
+    if operation in {"audio", "text_context", "end_input"}:
         assert fields["outcome"] == "turn_lost"
-    if operation in {"audio", "text"}:
-        assert fields["what"] == {"audio": "audio", "text": "text_context"}[operation]
+        assert fields["operation"] == operation
+        assert turn.turn_lost()
+        assert turn._audio_q.get_nowait() is None
+        assert turn._audio_q.empty()
+    if operation in {"audio", "text_context"}:
+        assert fields["what"] == operation
     assert fields["provider"] == conn.PROVIDER_NAME
     assert fields["exc_type"] == "RuntimeError"
     assert secret not in fields["detail"]

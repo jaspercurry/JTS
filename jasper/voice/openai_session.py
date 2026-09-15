@@ -185,14 +185,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
             if await self._conn._send_audio_chunk(self, pcm_16khz_int16):
                 self._bytes_sent += len(pcm_16khz_int16)
         except Exception as e:  # noqa: BLE001
-            log_event(
-                self._conn._logger, "provider.send_failed", provider=self._conn.PROVIDER_NAME,
-                what="audio", outcome="turn_lost",
-                exc_type=type(e).__name__, detail=self._conn._redacted(e),
-                level=logging.WARNING,
-            )
-            self._turn_lost = True
-            await self._audio_q.put(None)
+            self._on_send_failed(e, operation="audio")
 
     async def send_text_context(self, text: str) -> None:
         if self._released or self._turn_lost or self._committed:
@@ -206,14 +199,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
                 },
             }, turn=self)
         except Exception as e:  # noqa: BLE001
-            log_event(
-                self._conn._logger, "provider.send_failed", provider=self._conn.PROVIDER_NAME,
-                what="text_context", outcome="turn_lost",
-                exc_type=type(e).__name__, detail=self._conn._redacted(e),
-                level=logging.WARNING,
-            )
-            self._turn_lost = True
-            await self._audio_q.put(None)
+            self._on_send_failed(e, operation="text_context")
 
     async def end_input(self) -> None:
         """Commit the user audio buffer and trigger a response.
@@ -227,14 +213,7 @@ class OpenAIRealtimeTurn(BaseLiveTurn):
         try:
             await self._conn._commit_and_create_response(self)
         except Exception as e:  # noqa: BLE001
-            log_event(
-                self._conn._logger, "provider.end_input_failed", provider=self._conn.PROVIDER_NAME,
-                outcome="turn_lost",
-                exc_type=type(e).__name__, detail=self._conn._redacted(e),
-                level=logging.DEBUG,
-            )
-            self._turn_lost = True
-            await self._audio_q.put(None)
+            self._on_send_failed(e, operation="end_input")
 
     async def release(self) -> None:
         if self._released:

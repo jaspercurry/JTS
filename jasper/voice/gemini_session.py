@@ -129,16 +129,7 @@ class GeminiLiveTurn(BaseLiveTurn):
             )):
                 self._bytes_sent += len(pcm_16khz_int16)
         except Exception as e:  # noqa: BLE001
-            # The connection's reconnect supervisor will pick up the WS
-            # drop. Mark the turn as lost so the daemon stops trying.
-            log_event(
-                self._conn._logger, "provider.send_failed", provider=self._conn.PROVIDER_NAME,
-                exc_type=type(e).__name__,
-                detail=self._conn._redacted(e),
-                outcome="turn_lost", level=logging.WARNING,
-            )
-            self._turn_lost = True
-            await self._audio_q.put(None)
+            self._on_send_failed(e, operation="audio")
 
     async def send_text_context(self, text: str) -> None:
         if self._released or self._turn_lost:
@@ -154,14 +145,7 @@ class GeminiLiveTurn(BaseLiveTurn):
         try:
             await self._conn._send_realtime_input(self, activity_end=types.ActivityEnd())
         except Exception as e:  # noqa: BLE001
-            log_event(
-                self._conn._logger, "provider.end_input_failed", provider=self._conn.PROVIDER_NAME,
-                exc_type=type(e).__name__,
-                detail=self._conn._redacted(e),
-                outcome="turn_lost", level=logging.DEBUG,
-            )
-            self._turn_lost = True
-            await self._audio_q.put(None)
+            self._on_send_failed(e, operation="end_input")
 
     async def release(self) -> None:
         if self._released:
