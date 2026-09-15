@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Operator lines for saved timing and its latest verification."""
+"""Format timing status without importing the NumPy-backed analysis stack."""
 
 from collections.abc import Mapping
 from typing import Any

@@ -36,6 +36,7 @@ from .crossover_v2.spatial import _geometry_guidance_copy
 from .crossover_v2.refusal_copy import (
     REASON_REGISTRY,
     ReasonSpec,
+    TIMING_RESET_NOTE,
     NON_RETRIABLE_CODES,
     TEMPLATE_FIX_AND_RETRY,
     TEMPLATE_HARD_STOP,
@@ -45,7 +46,6 @@ from .crossover_v2.refusal_copy import (
     reason_message,
 )
 from .crossover_v2.refusal_copy import REASON_VOLUME_UNRESOLVED
-from .operator_copy import TIMING_RESET_NOTE
 
 logger = logging.getLogger(__name__)
 
@@ -502,7 +502,7 @@ def _envelope(
         "next_action": next_action,
         "alternate_actions": alternate_actions or [],
         "action_note": TIMING_RESET_NOTE if any(
-            action and action.get("id") in {"reset", "restart_session", "reset_timing"} for action in actions
+            action and action.get("id") == "reset_timing" for action in actions
         ) else None,
         "timing": dict(_mapping(status.get("timing"))),
         "busy": bool(busy),

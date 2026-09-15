@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { buildFunction, repoPath } from "./_loader.mjs";
 
-const modulePath = process.argv[2];
+const modulePath = process.argv[2] || "deploy/assets/sound-profile/js/main.js";
 const siblingDir = dirname(modulePath);
 
 // http.js's promptForControlToken (behind a lazy dialog.js import) parses but

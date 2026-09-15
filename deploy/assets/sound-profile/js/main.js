@@ -31,7 +31,7 @@ import {
   activeSpeakerStepState,
   clampSubwooferCrossoverFcHz,
   nextActionAct,
-  commissioningTimingLabel,
+  timingStatusLine,
   commissionPayloadFailure,
   defaultActiveSpeakerStep,
   humanRole,
@@ -2147,8 +2147,8 @@ import {
   function renderBaselineProfileCard() {
     var profile = activeSpeaker.baselineProfile || {};
     var appliedRecord = baselineProfileAppliedRecord();
-    var timing = commissioningTimingLabel(activeSpeaker.commissioningView);
-    var timingVerification = (((activeSpeaker.commissioningView || {}).timing || {}).verification || '');
+    var timing = timingStatusLine(activeSpeaker.commissioningView, 'saved');
+    var timingVerification = timingStatusLine(activeSpeaker.commissioningView, 'verification');
     var config = appliedRecord ? {path: appliedRecord.config_path} : (profile.config || {});
     var permissions = profile.permissions || {};
     var applied = baselineProfileApplied();

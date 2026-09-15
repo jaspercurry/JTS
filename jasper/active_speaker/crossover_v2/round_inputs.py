@@ -263,7 +263,7 @@ def latest_banked_rounds(
                 "round_dir": str(directory), "started_at": modified_at,
                 **({"alignment_verdict": packet.get("alignment_verdict"),
                     "next_action": packet.get("next_action")}
-                   if purpose == PURPOSE_SPEAKER and packet.get("alignment_verdict") else {}),
+                   if purpose == PURPOSE_SPEAKER else {}),
             }
         if len(found) == 3:
             break

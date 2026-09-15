@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 from pathlib import Path
 from typing import Any, Sequence
@@ -15,7 +16,6 @@ from jasper.net.http_security import _is_loopback_name
 from jasper.json_fields import age_seconds, parse_utc_iso
 
 from jasper.active_speaker.movers import MOVERS
-from jasper.active_speaker.operator_copy import TIMING_RESET_NOTE
 from jasper.active_speaker.wizard_client import (
     CSRF_PAGE_PATH, STATUS_PATH, REASON_ANSWER_LOST,
     WizardClient, apply_by_fingerprint, error_of, wait_for_round,
@@ -31,6 +31,14 @@ PROG = "jasper-round"
 DEFAULT_TIMEOUT_S = 900.0
 AUTHORITY_TIER = "mutating-with-gates (`run`/`trial`/`placed`/`stop`/`wait`/`apply`/`reset` write; `status` reads)"
 LOST_ANSWER_ADVICE = "the apply may have taken effect; read the live candidate before trying again"
+
+
+class _RoundSubparser(argparse.ArgumentParser):
+    def format_help(self) -> str:
+        if self.prog.endswith(" reset"):
+            from jasper.active_speaker.crossover_v2.refusal_copy import TIMING_RESET_NOTE  # lazy: help-only operator copy
+            self.description = TIMING_RESET_NOTE
+        return super().format_help()
 
 
 def _answer(verb: str, human: str, **fields: Any) -> int:
@@ -219,6 +227,7 @@ def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
     from jasper.cli.crossover_prescriber import (  # lazy: reset-only prescription stack imports NumPy
         compose_prescription_document, reset_prescription_document,
     )
+    from jasper.active_speaker.crossover_v2.prescription_document import PrescriptionDocumentRefused  # lazy: reset-only document
     from jasper.active_speaker.state_paths import baseline_profile_state_path  # lazy: reset-only base
     from jasper.output_topology import load_output_topology_strict  # lazy: reset-only topology
     from jasper.audio_measurement.bundles import BundleError  # lazy: reset-only bank writer
@@ -231,6 +240,9 @@ def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
             document, base=BankedCandidate(base, "", "", baseline_profile_state_path()),
         )
         published = publish_authored_candidate(candidate)
+    except PrescriptionDocumentRefused as exc:
+        print(json.dumps(exc.to_dict(), sort_keys=True))
+        return EXIT_UNREADABLE if exc.code == "evidence_unreadable" else EXIT_REFUSED
     except (CandidateBankRefusal, BundleError, OSError, TypeError, ValueError) as exc:
         return failed(EXIT_UNREADABLE, "reset_compose_failed", str(exc))
     result = apply_by_fingerprint(client, published.fingerprint)
@@ -261,11 +273,11 @@ def _timeout(value: str) -> float:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=PROG, description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
-    timeout_args = argparse.ArgumentParser(add_help=False)
+    sub = parser.add_subparsers(dest="command", required=True, parser_class=_RoundSubparser)
+    timeout_args = _RoundSubparser(add_help=False)
     timeout_args.add_argument("--verbose", action="store_true", help="include the banked view results")
     timeout_args.add_argument("--timeout", "--timeout-s", type=_timeout, default=DEFAULT_TIMEOUT_S, help="wait limit in seconds")
-    run_args = argparse.ArgumentParser(add_help=False, parents=[timeout_args])
+    run_args = _RoundSubparser(add_help=False, parents=[timeout_args])
     _connection_args(run_args)
     run_args.add_argument("--wait", action="store_true", help="wait for completion and bank the round with its packet")
     levels = run_args.add_mutually_exclusive_group()
@@ -299,7 +311,7 @@ def build_parser() -> argparse.ArgumentParser:
     _connection_args(apply)
     apply.add_argument("fingerprint", help="banked candidate fingerprint")
     apply.set_defaults(func=_cmd_apply)
-    reset = sub.add_parser("reset", help="clear applied tuning layers", description=TIMING_RESET_NOTE)
+    reset = sub.add_parser("reset", help="clear applied tuning layers")
     _connection_args(reset)
     reset.add_argument("--keep-timing", action="store_true", help="keep saved timing and its provenance")
     reset.set_defaults(func=_cmd_reset)

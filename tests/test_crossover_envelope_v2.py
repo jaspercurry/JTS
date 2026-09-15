@@ -21,7 +21,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_VERIFY,
     PHASE_LATERAL,
 )
-from jasper.active_speaker.operator_copy import TIMING_RESET_NOTE
+from jasper.active_speaker.timing_status import timing_status_lines
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
     REASON_VERIFY_INCONCLUSIVE,
@@ -150,7 +150,27 @@ def test_durable_completion_survives_an_empty_capture_slot(phase, receipt, curre
     assert (env["screen"], env["terminal_status"], env["phase"]) == ("finished", "complete", phase)
     assert env["round_ordinal"] == (None if phase == "done" else current_ordinal)
     assert env["next_action"]["id"] == "reset"
-    assert env["action_note"] == TIMING_RESET_NOTE
+    assert env["action_note"] is None
+
+
+@pytest.mark.parametrize("profile,round_,expected", [
+    (None, None, {"saved": "", "verification": ""}),
+    ({"timing": {"delay_us": 22, "polarity": "normal", "provenance": "measured",
+                 "measured": {"margin_db": 1.2, "repeat_spread_db": .3, "repeat_spread_us": 2}}}, None,
+     {"saved": "Saved timing: delay 22 µs; polarity normal; provenance measured; margin 1.2 dB; repeat spread 0.3 dB / 2 µs.",
+      "verification": ""}),
+    ({"timing": {"delay_us": 22, "polarity": "normal", "provenance": "set_by_user"}},
+     {"alignment_verdict": {"verification": {"residual_rms_db": .61, "repeat_noise_db": .2}}},
+     {"saved": "Saved timing: delay 22 µs; polarity normal; provenance set_by_user.",
+      "verification": "Saved timing explains today's sum to within 0.61 dB; repeat noise 0.2 dB."}),
+    ({"timing": {"delay_us": 22, "polarity": "normal", "provenance": "set_by_user"}},
+     {"alignment_verdict": {"verification": {"residual_rms_db": .61, "repeat_noise_db": .2}},
+      "next_action": {"label": "Reset timing"}},
+     {"saved": "Saved timing: delay 22 µs; polarity normal; provenance set_by_user.",
+      "verification": "Saved timing explains today's sum to within 0.61 dB; repeat noise 0.2 dB; Reset timing."}),
+])
+def test_timing_status_lines(profile, round_, expected):
+    assert timing_status_lines(profile, round_) == expected
 
 
 @pytest.mark.parametrize("fault, action_id, target", [

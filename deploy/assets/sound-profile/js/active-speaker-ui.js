@@ -224,8 +224,8 @@ export function commissionPayloadFailure(payload) {
   return 'This driver can’t be tested yet — finish the earlier setup steps first.';
 }
 
-export function commissioningTimingLabel(view) {
-  return (((view || {}).timing || {}).saved || '');
+export function timingStatusLine(view, field) {
+  return (((view || {}).timing || {})[field] || '');
 }
 
 function commissionIssueCodes(payload) {
