@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ..aec import bridge_reference
 from ..mic_capture import MicCapture
 from ..aec_sweep import (
     AGC1_ENABLED_ENV,
@@ -131,18 +132,17 @@ class WakeTelemetry:
                 if _fire.score_at else None
             )
             tel[_cols["mic_rms"]] = _fire.mic_rms_dbfs
+        # Unset knobs must read as the lab pack's default, or the row
+        # records a config the engine did not run.
         bridge_config = {
-            # Unset knobs must read as the lab pack's default, or the row
-            # records a config the engine did not run.
             "ns_enabled": _pack_knob(NS_ENABLED_ENV),
             "ns_level": _pack_knob(NS_LEVEL_ENV),
             "agc1_enabled": _pack_knob(AGC1_ENABLED_ENV),
             "agc1_target_dbfs": _pack_knob(AGC1_TARGET_DBFS_ENV),
             "agc1_max_gain_db": _pack_knob(AGC1_MAX_GAIN_DB_ENV),
-            "ref_gain_db": os.environ.get("JASPER_AEC_REF_GAIN_DB", "0"),
-            "mic_gain_db": os.environ.get("JASPER_AEC_MIC_GAIN_DB", "0"),
-            "ref_hpf_hz": os.environ.get("JASPER_AEC_REF_HPF_HZ", "125"),
-            "chip_hpf_hz": os.environ.get("JASPER_AEC_CHIP_HPF_HZ", "125"),
+            "ref_gain_db": os.environ.get("JASPER_AEC_REF_GAIN_DB", bridge_reference.AEC_REF_GAIN_DB_DEFAULT),
+            "mic_gain_db": os.environ.get("JASPER_AEC_MIC_GAIN_DB", bridge_reference.AEC_MIC_GAIN_DB_DEFAULT),
+            "ref_hpf_hz": os.environ.get("JASPER_AEC_REF_HPF_HZ", bridge_reference.AEC_REF_HPF_HZ_DEFAULT),
         }
         try:
             accepted = await store.begin_event(

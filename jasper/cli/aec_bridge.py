@@ -114,6 +114,7 @@ from jasper.aec.bridge_config import (
     validate_usb_mic_device,
 )
 from jasper.aec.bridge_reference import (
+    AEC_MIC_GAIN_DB_DEFAULT,
     REF_RATE,
     outputd_ref_udp_thread,
     ref_clip_percent,
@@ -327,7 +328,7 @@ def _aec_loop(  # noqa: PLR0915
     # high gain cannot push hard-clip distortion into the wake-word input.
     global _out_clipped_samples, _out_total_samples
     global _ref_starved_frames
-    mic_gain_db = float(os.environ.get("JASPER_AEC_MIC_GAIN_DB", "0"))
+    mic_gain_db = float(os.environ.get("JASPER_AEC_MIC_GAIN_DB", AEC_MIC_GAIN_DB_DEFAULT))
     mic_gain_lin = 10.0 ** (mic_gain_db / 20.0)
     # Stall-recovery threshold: consecutive seconds of empty mic_q before
     # bailing for a systemd-driven restart; 0 disables it. See BridgeStalled.
