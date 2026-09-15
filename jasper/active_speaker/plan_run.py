@@ -315,6 +315,7 @@ async def run_specs(
     signals: RunSignals | None = None, spl_monitor: str = "",
     clock: Callable[[], float] = time.monotonic,
     gain_ceiling_db: Mapping[str, float] | None = None,
+    assessor: Callable[..., TakeVerdict] | None = None,
 ) -> RunManifest:
     manifest.request_fingerprint = json_fingerprint({"specs": [s.to_dict() for s in specs]})
     manifest.spl_monitor = spl_monitor
@@ -330,7 +331,8 @@ async def run_specs(
     work = [_Work(spec, stop, 0, i, len(specs), None)
             for i, (spec, stop) in enumerate(zip(specs, manifest.planned), 1)]
     return await _run(work, session=session, manifest=manifest, analyze=analyze, gate=None,
-                      aborts=aborts, signals=signals or RunSignals(), retries=MAX_EXTRA_ATTEMPTS_PER_POSITION, clock=clock, gain_ceiling_db=gain_ceiling_db)
+                      aborts=aborts, signals=signals or RunSignals(), retries=MAX_EXTRA_ATTEMPTS_PER_POSITION,
+                      clock=clock, gain_ceiling_db=gain_ceiling_db, assessor=assessor)
 
 
 class _Control(Exception):
@@ -488,6 +490,7 @@ async def _run(
                             analysis = await asyncio.to_thread(analyze, record, record_id)
                             program = ExcitationProgram.from_dict(record["program"]) if record.get("program") else None
                             assessed = await asyncio.to_thread(assessor or assess, analysis, phase=program.phase if program else spec.program_phase or "verify",
+                                              spl=(record.get("capture_integrity") or {}).get("spl"),
                                               program=program, gain_ceiling_db=gain_ceiling_db, level_verdict=level_verdict)
                             if program is not None:
                                 record = {**record, "curves": analysis_curve_records(analysis, program),

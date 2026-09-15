@@ -529,6 +529,8 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
     assert pair["take_id"] == take["take_id"]
     lines = (root / INDEX_FILENAME).read_text().splitlines()
     assert len([line for line in lines if line.startswith("timing:")]) == 2
+    start = next(i for i, line in enumerate(lines) if line.startswith("timing:"))
+    assert max(map(len, lines[start:lines.index("## Decisions")])) <= 160
     assert {t["fault"] for g in packet["sets"] for t in g["takes"] if not t["selected"]} == {fault}
     assert [line for line in lines if line.startswith("retakes:")] == ([f"retakes: refused {fault}"] if fault else [])
 

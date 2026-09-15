@@ -41,7 +41,7 @@ def capture_alignment_levels(
             "before": (prior.get("alignment_snr_shortfall_db") or {}).get("before", shortfall),
             "after": shortfall,
         }
-        if "alignment_level_capped_by" not in level and "alignment_level_capped_by" in prior:
+        if shortfall is not None and shortfall > 0 and "alignment_level_capped_by" not in level and "alignment_level_capped_by" in prior:
             level["alignment_level_capped_by"] = prior["alignment_level_capped_by"]
             level["alignment_snr_residual_shortfall_db"] = shortfall
     return levels

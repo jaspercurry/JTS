@@ -717,7 +717,7 @@ async def _measure(
                     result = await _ran(
                         session, specs, manifest=manifest,
                         analyze=partial(_analyze_take, Path(store.bundle_dir), manifest, box.fc_hz),
-                        gain_ceiling_db=box.caps_dbfs,
+                        box=box,
                         spl_monitor=spl_note,
                     )
                 except CommissioningEvidenceStoreError as exc:
@@ -804,14 +804,17 @@ async def _ran(
     spl_monitor: str,
     manifest: Any,
     analyze: Any,
-    gain_ceiling_db: Mapping[str, float],
+    box: BoxDeclaration,
 ) -> Any:
     from jasper.active_speaker import plan_run  # lazy: executor import cost
+    from jasper.active_speaker.crossover_v2.capture_dispatch import assess  # lazy: measurement analysis import cost
 
     return await plan_run.run_specs(
         specs, session=session, manifest=manifest, analyze=analyze,
         aborts=_session_scoped_aborts(), spl_monitor=spl_monitor,
-        gain_ceiling_db=gain_ceiling_db,
+        gain_ceiling_db=box.caps_dbfs,
+        assessor=partial(assess, caps_dbfs=box.caps_dbfs, session_volume_db=box.session_volume_db,
+                         spl_stop_db_spl=box.preset.safety.max_commissioning_level_db_spl),
     )
 
 

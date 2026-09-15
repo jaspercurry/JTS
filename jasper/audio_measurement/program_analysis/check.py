@@ -765,6 +765,7 @@ def alignment_snr_gain_adjustment(
     gain_db: Mapping[str, float],
     ceiling_db: Mapping[str, float],
     *, alignment_ceiling_db: Mapping[str, float] | None = None,
+    alignment_limit_reason: str | None = None,
     max_raise_db: float = 0.0,
 ) -> tuple[dict[str, float], dict[str, float | bool | str]]:
     """Price a measured shortfall within the caller's digital and SPL ceilings."""
@@ -787,9 +788,14 @@ def alignment_snr_gain_adjustment(
                 or shortfall is None or current is None or shortfall <= 0):
             continue
         requested = current + shortfall + MEASURE_SNR_SOLVE_MARGIN_DB
+        if alignment_limit_reason:
+            evidence[prefix + "alignment_level_capped_by"] = alignment_limit_reason
+            evidence[prefix + "alignment_snr_residual_shortfall_db"] = shortfall
         if alignment_ceiling_db is not None:
             driver = finite_float(alignment_ceiling_db.get(response.role))
             if driver is None:
+                evidence[prefix + "alignment_level_capped_by"] = "ceiling_unavailable"
+                evidence[prefix + "alignment_snr_residual_shortfall_db"] = shortfall
                 continue
             spl = current + max(0.0, max_raise_db)
             ceiling = min(driver, spl)
