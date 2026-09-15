@@ -439,8 +439,6 @@ async def test_adapter_failures_report_redacted_provider_details(
         assert turn.turn_lost()
         assert turn._audio_q.get_nowait() is None
         assert turn._audio_q.empty()
-    if operation in {"audio", "text_context"}:
-        assert fields["what"] == operation
     assert fields["provider"] == conn.PROVIDER_NAME
     assert fields["exc_type"] == "RuntimeError"
     assert secret not in fields["detail"]

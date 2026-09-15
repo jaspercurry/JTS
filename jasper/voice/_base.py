@@ -534,7 +534,7 @@ class BaseLiveTurn:
     def _on_send_failed(self, exc: Exception, *, operation: str) -> None:
         log_event(
             self._conn._logger, "provider.send_failed", provider=self._conn.PROVIDER_NAME,
-            operation=operation, what=operation, outcome="turn_lost",
+            operation=operation, outcome="turn_lost",
             exc_type=type(exc).__name__, detail=self._conn._redacted(exc),
             level=logging.WARNING,
         )
