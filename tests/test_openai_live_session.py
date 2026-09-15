@@ -26,7 +26,7 @@ from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConne
 from jasper.voice.session import ConnectionState
 from jasper.voice.turn_playback import PlaybackReport, play_responses
 from tests._async_wait import wait_signalled, wait_until
-from tests._log_events import event_fields, event_records
+from tests._log_events import event_field_maps, event_fields, event_records
 from tests._playout import FakeTts
 
 
@@ -840,12 +840,12 @@ async def test_an_audible_delta_after_a_long_gap_rearms_silence_bridging(monkeyp
 
 
 @pytest.mark.parametrize("finish", ["filled", "short", "continuation", "late_clause", "interrupt", "cancel", "release", "lost"])
-async def test_playout_reserve_is_bounded_and_rearms_only_after_interrupt(monkeypatch, finish):
+async def test_playout_reserve_is_bounded_and_rearms_after_interrupt(monkeypatch, finish):
     clock = FrozenClock()
     monkeypatch.setattr(openai_live_session, "time", clock)
     if finish in {"cancel", "release", "lost"}:
         monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 1.0)
-    pcm = AUDIBLE_PCM * 20  # 100 ms: two deltas cross the 150 ms reserve.
+    pcm = AUDIBLE_PCM * 30  # 150 ms: two deltas cross the 250 ms reserve.
     async with live_turn() as turn:
         audio = turn.audio_out_chunks()
         pending = asyncio.create_task(anext(audio))
@@ -913,6 +913,62 @@ async def test_playout_reserve_is_bounded_and_rearms_only_after_interrupt(monkey
             closing.set()
             if release is not None:
                 await release
+
+
+async def test_each_answer_reserves_playout_and_excludes_backend_think_time(monkeypatch, caplog):
+    clock = FrozenClock()
+    monkeypatch.setattr(openai_live_session, "time", clock)
+    monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 0.2)
+    caplog.set_level(logging.INFO)
+    pcm = AUDIBLE_PCM * 30
+    async with live_turn() as turn:
+        @tool()
+        def lookup() -> dict:
+            """Look up the answer."""
+            return {"answer": 42}
+
+        turn._conn._registry.register(lookup)
+        audio = turn.audio_out_chunks()
+        pending = None
+        try:
+            for answer in (1, 2):
+                delegation, response_id = f"d{answer}", f"r{answer}"
+                if answer == 2:
+                    clock.now += 0.5
+                    await delegate(turn, delegation, "tool_round", "lookup", {})
+                    await asyncio.wait_for(turn._tool_task, 1.0)
+                    assert turn.backend_pending
+                else:
+                    await turn.on_event({"type": "session.delegation.created", "delegation": {"id": delegation}})
+                await turn.on_event(backend(delegation, "response.created", response={"id": response_id}))
+                await turn.on_event(backend(delegation, "response.completed", response={"id": response_id}))
+                await turn.on_event(output_audio(pcm))
+                pending = asyncio.create_task(anext(audio))
+                await asyncio.sleep(0)
+                assert not pending.done()
+                await turn.on_event(output_audio(pcm))
+                assert (await asyncio.wait_for(pending, 1.0)).pcm == pcm
+                assert (await anext(audio)).pcm == pcm
+                assert turn.audio_chunks_pending() == 0
+            reserves = event_field_maps(caplog, "provider.playout_reserve")
+            assert len(reserves) == 2
+            assert [fields["result"] for fields in reserves] == ["filled", "filled"]
+            assert event_records(caplog, "provider.output_deficit") == []
+            monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 10.0)
+            await turn.on_event({"type": "session.delegation.created", "delegation": {"id": "d3"}})
+            await turn.on_event(backend("d3", "response.created", response={"id": "r3"}))
+            await turn.on_event(output_audio(pcm))
+            assert (await asyncio.wait_for(anext(audio), 0.2)).pcm == pcm
+            assert turn.audio_chunks_pending() == 0
+            await turn.on_event(backend("d3", "response.completed", response={"id": "r3"}))
+            await turn.on_event(output_audio(pcm))
+            assert (await asyncio.wait_for(anext(audio), 0.2)).pcm == pcm
+            assert event_field_maps(caplog, "provider.playout_reserve") == reserves
+        finally:
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            await audio.aclose()
 
 
 @pytest.mark.parametrize("gap_sec, quiet, expected", [
