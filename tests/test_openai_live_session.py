@@ -915,7 +915,8 @@ async def test_playout_reserve_is_bounded_and_rearms_after_interrupt(monkeypatch
                 await release
 
 
-async def test_each_answer_reserves_playout_and_excludes_backend_think_time(monkeypatch, caplog):
+@pytest.mark.parametrize("arm_when", ["queued", "parked"])
+async def test_each_answer_reserves_playout_and_excludes_backend_think_time(monkeypatch, caplog, arm_when):
     clock = FrozenClock()
     monkeypatch.setattr(openai_live_session, "time", clock)
     monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 0.2)
@@ -929,45 +930,75 @@ async def test_each_answer_reserves_playout_and_excludes_backend_think_time(monk
 
         turn._conn._registry.register(lookup)
         audio = turn.audio_out_chunks()
-        pending = None
+        played = asyncio.Queue()
+
+        async def consume():
+            async for chunk in audio:
+                played.put_nowait(chunk.pcm)
+
+        consumer = asyncio.create_task(consume())
         try:
+            await asyncio.sleep(0)
             for answer in (1, 2):
-                delegation, response_id = f"d{answer}", f"r{answer}"
                 if answer == 2:
-                    clock.now += 0.5
-                    await delegate(turn, delegation, "tool_round", "lookup", {})
+                    clock.now += SILENCE_BRIDGE_SEC + 0.1
+                    await turn.on_event(backend("d1", "response.created", response={"id": "tool_round"}))
+                    await turn.on_event(backend("d1", "response.output_item.done", item={
+                        "type": "function_call", "call_id": "lookup_call", "name": "lookup", "arguments": "{}",
+                    }))
+                    await turn.on_event(backend("d1", "response.completed", response={"id": "tool_round"}))
                     await asyncio.wait_for(turn._tool_task, 1.0)
+                    assert turn._conn._session.sent[-1] == {"type": "response.create"}
                     assert turn.backend_pending
                 else:
-                    await turn.on_event({"type": "session.delegation.created", "delegation": {"id": delegation}})
-                await turn.on_event(backend(delegation, "response.created", response={"id": response_id}))
-                await turn.on_event(backend(delegation, "response.completed", response={"id": response_id}))
+                    await turn.on_event({"type": "session.delegation.created", "delegation": {"id": "d1"}})
                 await turn.on_event(output_audio(pcm))
-                pending = asyncio.create_task(anext(audio))
                 await asyncio.sleep(0)
-                assert not pending.done()
+                assert played.empty()
                 await turn.on_event(output_audio(pcm))
-                assert (await asyncio.wait_for(pending, 1.0)).pcm == pcm
-                assert (await anext(audio)).pcm == pcm
+                assert await asyncio.wait_for(played.get(), 1.0) == pcm
+                assert await asyncio.wait_for(played.get(), 1.0) == pcm
                 assert turn.audio_chunks_pending() == 0
             reserves = event_field_maps(caplog, "provider.playout_reserve")
             assert len(reserves) == 2
             assert [fields["result"] for fields in reserves] == ["filled", "filled"]
             assert event_records(caplog, "provider.output_deficit") == []
             monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 10.0)
-            await turn.on_event({"type": "session.delegation.created", "delegation": {"id": "d3"}})
-            await turn.on_event(backend("d3", "response.created", response={"id": "r3"}))
+            if arm_when == "queued":
+                await turn.on_event(output_audio(pcm))
+                await turn.on_event({"type": "session.delegation.created", "delegation": {"id": "d3"}})
+                await turn.on_event(backend("d3", "response.created", response={"id": "r3"}))
+            clock.now += 0.1
             await turn.on_event(output_audio(pcm))
-            assert (await asyncio.wait_for(anext(audio), 0.2)).pcm == pcm
+            expected_chunks = 2 if arm_when == "queued" else 1
+            assert turn.audio_chunks_pending() == expected_chunks
+            for _ in range(expected_chunks):
+                assert await asyncio.wait_for(played.get(), 0.2) == pcm
             assert turn.audio_chunks_pending() == 0
-            await turn.on_event(backend("d3", "response.completed", response={"id": "r3"}))
+            if arm_when == "queued":
+                await turn.on_event(backend("d3", "response.completed", response={"id": "r3"}))
+            clock.now += 0.1
             await turn.on_event(output_audio(pcm))
-            assert (await asyncio.wait_for(anext(audio), 0.2)).pcm == pcm
+            assert await asyncio.wait_for(played.get(), 0.2) == pcm
             assert event_field_maps(caplog, "provider.playout_reserve") == reserves
+            assert turn.audio_chunks_pending() == 0
+            clock.now += SILENCE_BRIDGE_SEC + 0.1
+            monkeypatch.setattr(openai_live_session, "PLAYOUT_RESERVE_SEC", 0.2)
+            if arm_when == "parked":
+                await turn.on_event({"type": "session.delegation.created", "delegation": {"id": "d3"}})
+            await turn.on_event(output_audio(pcm))
+            await asyncio.sleep(0)
+            assert played.empty()
+            await turn.on_event(output_audio(pcm))
+            assert await asyncio.wait_for(played.get(), 1.0) == pcm
+            assert await asyncio.wait_for(played.get(), 1.0) == pcm
+            reserves = event_field_maps(caplog, "provider.playout_reserve")
+            assert len(reserves) == 3
+            assert [fields["result"] for fields in reserves] == ["filled", "filled", "filled"]
+            assert event_records(caplog, "provider.output_deficit") == []
         finally:
-            if pending is not None:
-                pending.cancel()
-                await asyncio.gather(pending, return_exceptions=True)
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
             await audio.aclose()
 
 
