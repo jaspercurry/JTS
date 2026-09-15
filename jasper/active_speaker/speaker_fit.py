@@ -13,6 +13,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
+from jasper.active_speaker.branch_target import branch_target
 from jasper.active_speaker.alignment_evidence import alignment_evidence
 from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, boost_allowed, fit_branches
@@ -21,7 +22,7 @@ from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, t
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, round_artifact_dir
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
-from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve
+from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve, _ladder_smooth
 from jasper.active_speaker.linearization_budget import fit_budgets_by_role, normalise_fit_budget
 from jasper.active_speaker.linearization_fit import FitVocabulary
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_SPEAKER, REGIME_SUMMED, run_purpose
@@ -119,6 +120,23 @@ def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str,
                 pass
         clouds.update((group["set_id"], cloud) for group in members)
     return clouds
+
+
+def fit_feature_curves(
+    cloud: CloudFitTerms, *, role: str, regions: list[Mapping[str, Any]],
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    sections = sections_by_role(CrossoverRegion.from_mapping(region) for region in regions)
+    grid = DEFAULT_ENVELOPE_GRID_HZ
+    target = branch_target(sections.get(role, ()), grid)
+    curves = []
+    for response in cloud.boost_responses:
+        magnitude = _ladder_smooth(grid, np.interp(grid, response.freqs_hz, response.magnitude_db))
+        if target is not None:
+            magnitude -= target.shape_db
+        valid = ((grid >= max(response.freqs_hz[0], response.validity_floor_hz or 0.0))
+                 & (grid <= response.freqs_hz[-1]))
+        curves.append((grid[valid], magnitude[valid]))
+    return curves
 
 
 def _production_vocabulary(

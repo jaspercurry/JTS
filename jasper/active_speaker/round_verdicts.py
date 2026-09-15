@@ -15,13 +15,14 @@ from jasper.audio_measurement.interference_nulls import (
     branch_gap_null_depth_ceiling_db,
     feature_position_variance,
 )
-from jasper.audio_measurement.spatial_combine import octave_bands_hz
 from jasper.json_fields import finite_float
 
+from .crossover_v2.commanded import profile_crossover_fc_hz
 from .crossover_v2.intervention import CloudFitTerms
 from .crossover_v2.position_cycle import parse_curve_magnitude
 from .crossover_v2.round_inputs import RoundInputs, capture_identity, latest_measure_takes
 from .repeat_floor import load_repeat_floor, stopping_thresholds
+from .speaker_fit import fit_feature_curves
 
 
 def _null_ceilings(
@@ -114,18 +115,20 @@ def round_verdicts(
                     else "repeat_floor_unavailable" if spread is None else None)
     if unit != "db":
         spread = None
-    regions = ((sources.get("candidate") or {}).get("source_preset") or {}).get(
-        "crossover_regions"
-    ) or []
+    profile = sources.get("applied_profile") or {}
+    fc_hz = profile_crossover_fc_hz(profile)
+    preset = (profile["recomposition_snapshot"]["preset"] if fc_hz is not None
+              else (sources.get("candidate") or {}).get("source_preset") or {})
+    regions = preset.get("crossover_regions") or []
     for fit in packet["fits"]:
         cloud = clouds.get(fit["set_id"], CloudFitTerms())
-        curves = [(response.freqs_hz, response.magnitude_db) for response in cloud.boost_responses]
+        curves = fit_feature_curves(cloud, role=fit["role"], regions=regions)
         residual = fit.get("residual_rms_db")
-        spread_by_center = {band["center_hz"]: band for band in (fit.get("cloud") or {}).get("band_spread", ())}
         fit["crossover_band_spread"] = {
-            f"{center:g} Hz": spread_by_center.get(center)
+            f"{band['center_hz']:g} Hz": band
             for region in regions if fit["role"] in (region["lower_driver"], region["upper_driver"])
-            for center, lo, hi in octave_bands_hz(0, float("inf")) if lo <= region["fc_hz"] < hi
+            for band in (fit.get("cloud") or {}).get("band_spread", ())
+            if band["f_lo"] <= region["fc_hz"] <= band["f_hi"]
         }
         fit["verdict"] = {"repeat_spread_db": spread,
                           "residual_within_repeat_spread": residual <= spread if residual is not None and spread is not None else None,

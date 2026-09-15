@@ -2,40 +2,28 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.repeat_floor import derive_repeat_floor, write_repeat_floor
 from jasper.active_speaker.round_packet_report import INDEX_FILENAME, packet_index, series_stats
 from jasper.active_speaker.round_verdicts import round_verdicts
-from jasper.audio_measurement.program_analysis import DriverResponse
+from jasper.active_speaker.speaker_fit import design_clouds
+from jasper.audio_measurement.interference_nulls import feature_position_variance
 
 
 @pytest.mark.parametrize(
-    "unit,residual,cv,count,total,gap,gain,classification",
+    "cv,count,total,gain,classification",
     [
-        ("db", 0.5, 2, 6, 6, 10, 7, "source_fixed"),
-        ("db", 1.5, 5, 6, 6, 0, -7, "unsure"),
-        ("db", 1.0, 10, 6, 6, -10, 7, "position_variant"),
-        (None, 0.5, 2, 6, 6, 10, -7, "source_fixed"),
-        ("db", 0.5, 5, 3, 3, 0, -7, "insufficient_positions"),
-        ("db", None, 2, 6, 10, 10, 7, "source_fixed"),
-        ("us", 0.5, 2, 6, 6, None, 7, "source_fixed"),
+        (2, 6, 6, 7, "source_fixed"), (5, 6, 6, -7, "unsure"),
+        (10, 6, 6, 7, "position_variant"), (2, 6, 6, -7, "source_fixed"),
+        (5, 3, 3, -7, "insufficient_positions"), (2, 6, 10, 7, "source_fixed"),
     ],
 )
-def test_round_verdict_numbers(
-    tmp_path, unit, residual, cv, count, total, gap, gain, classification
-):
-    (tmp_path / "bundle" / "session").mkdir(parents=True)
-    if unit:
-        floor = derive_repeat_floor(rounds=[{}, {}], samples={"residual": [0, 1]}, units={"residual": unit})
-        write_repeat_floor(
-            {**floor, "aggregate_metric": "residual"},
-            state_path=tmp_path / "repeat-floor.json",
-        )
+def test_feature_variance_direction(cv, count, total, gain, classification):
     offsets = np.linspace(-1, 1, count)
     centers = 1000 * (1 + cv / 100 * offsets / np.std(offsets, ddof=1))
     grid = np.unique(np.r_[np.geomspace(100, 10000, 1024), centers])
@@ -44,12 +32,21 @@ def test_round_verdict_numbers(
         depth = gain if len(responses) < count else 1
         magnitude = -depth * np.exp(-0.5 * (np.log2(grid / center) / 0.03) ** 2)
         magnitude -= 2 * gain * np.exp(-0.5 * (np.log2(grid / 1450) / 0.015) ** 2)
-        responses.append(
-            DriverResponse(
-                "woofer", grid, magnitude, 10 ** (magnitude / 20) + 0j, {}, None, None
-            )
-        )
-    cloud = CloudFitTerms(n_positions=total, boost_responses=tuple(responses))
+        responses.append((grid, magnitude))
+    feature = feature_position_variance(responses, freq_hz=1000, q=2, gain_db=gain, positions_total=total)
+    assert feature == {"cv_percent": pytest.approx(cv), "positions_deep": count, "positions_total": total,
+                       "classification": classification, "frequencies_hz": pytest.approx(centers)}
+
+
+@pytest.mark.parametrize("unit,residual,gap", [
+    ("db", 0.5, 10), ("db", 1.5, 0), ("db", 1.0, -10), (None, 0.5, 10),
+    ("db", None, 10), ("us", 0.5, None),
+])
+def test_round_verdict_numbers(tmp_path, unit, residual, gap):
+    (tmp_path / "bundle" / "session").mkdir(parents=True)
+    if unit:
+        floor = derive_repeat_floor(rounds=[{}, {}], samples={"residual": [0, 1]}, units={"residual": unit})
+        write_repeat_floor({**floor, "aggregate_metric": "residual"}, state_path=tmp_path / "repeat-floor.json")
     pose = {"kind": "bearing", "deg": 0, "elevation_deg": 0}
     groups = []
     for role, band, level in (
@@ -92,7 +89,7 @@ def test_round_verdict_numbers(
     )
     manifest = {"sets": groups}
     sources = {"candidate": {"source_preset": {"crossover_regions": [
-        {"fc_hz": 2400, "lower_driver": "woofer", "upper_driver": "tweeter"},
+        {"id": "pair", "order": 4, "fc_hz": 2400, "lower_driver": "woofer", "upper_driver": "tweeter"},
     ]}}}
     stats = series_stats({"freqs_hz": [100, 1000, 10000], "deviation_db": [-2, 0, 2],
                           "rms_db": (8 / 3) ** 0.5,
@@ -116,9 +113,9 @@ def test_round_verdict_numbers(
                 "residual_rms_db": residual,
                 "residual_max_db": 2,
                 "reason_summary": {},
-                "filters": [{"freq": 1000, "q": 2, "gain": gain}],
+                "filters": [],
                 "cloud": {
-                    "design_poses": total,
+                    "design_poses": 0,
                     "band_spread": [
                         {
                             "center_hz": 2000,
@@ -136,7 +133,7 @@ def test_round_verdict_numbers(
         packet,
         round_inputs(tmp_path),
         manifest=manifest,
-        clouds={"woofer": cloud},
+        clouds={},
         sources=sources,
     )
     fit, = packet["fits"]
@@ -154,14 +151,6 @@ def test_round_verdict_numbers(
         else None
     )
     assert fit["crossover_band_spread"] == {"2000 Hz": fit["cloud"]["band_spread"][0]}
-    feature = fit["filters"][0]["position_variance"]
-    assert feature["cv_percent"] == pytest.approx(cv)
-    assert (
-        feature["positions_deep"],
-        feature["positions_total"],
-        feature["classification"],
-    ) == (count, total, classification)
-    assert feature["frequencies_hz"] == pytest.approx(centers)
     (ceiling,) = packet["verdicts"]
     assert ceiling["branch_gap_db"] == (abs(gap) if gap is not None else None)
     assert ceiling["louder_role"] == (("woofer" if gap > 0 else "tweeter") if gap else None)
@@ -176,3 +165,58 @@ def test_round_verdict_numbers(
     (tmp_path / INDEX_FILENAME).write_text(index)
     for prefix in ("series woofer:", "fit woofer:", "null ceiling "):
         assert sum(line.startswith(prefix) for line in index.splitlines()) == 1
+
+
+@pytest.mark.parametrize("band_lo,contains_crossover", [(1615.118381017347, True), (2500.01, False)])
+def test_live_round_verdicts(tmp_path, band_lo, contains_crossover):
+    fixture = json.loads((Path(__file__).parent / "fixtures/round_d5dbe9ccdbd2.json").read_text())
+    manifest, sources = fixture["manifest"], fixture["sources"]
+    sources["candidate"] = {"source_preset": {"crossover_regions": [
+        {**sources["applied_profile"]["recomposition_snapshot"]["preset"]["crossover_regions"][0], "fc_hz": 8000},
+    ]}}
+    (tmp_path / "bundle/session").mkdir(parents=True)
+    inputs = round_inputs(tmp_path)
+    clouds = design_clouds(inputs, manifest)
+    for fit in fixture["fits"]:
+        fit.update(residual_rms_db=2.4, residual_max_db=6.1, reason_summary={})
+        fit["cloud"]["band_spread"][0]["f_lo"] = band_lo
+    packet = {"round_id": "d5dbe9ccdbd2", "program": manifest["program"], "result": "complete", "reason": None,
+              "level": None, "applied": {"candidate": None, "record": None, "layers": {}},
+              "artifacts": {"frequency_view": None}, "limits": {}, "packet_fingerprint": None,
+              "sets": [{**group, "takes": [{**take, "fault": None} for take in group["takes"]]}
+                       for group in manifest["sets"]], "series": [], "fits": fixture["fits"]}
+    packet["verdicts"] = round_verdicts(packet, inputs, manifest=manifest, sources=sources, clouds=clouds)
+    assert len(packet["verdicts"]) == 3
+    ceiling = packet["verdicts"][0]
+    assert ceiling["pose"]["deg"] == 0
+    assert ceiling["take_ids"] == ["wired-dd7bfccfb97c6d66_take_0003"] * 2
+    assert (ceiling["branch_gap_db"], ceiling["null_ceiling_db"]) == pytest.approx((13.060389458919104, 2.1839927942315023))
+    assert ceiling["louder_role"] == "tweeter"
+    assert ceiling["band_hz"] == [1600, 4000]
+    for fit in packet["fits"]:
+        expected = {"2000 Hz": fit["cloud"]["band_spread"][0]} if contains_crossover else {}
+        assert fit["crossover_band_spread"] == expected
+        if fit["role"] != "tweeter":
+            continue
+        band, = fit["cloud"]["band_spread"]
+        assert (band["center_hz"], band["sigma_db"], band["max_sigma_db"]) == pytest.approx((2000, 0.815763999253154, 1.103016043550224))
+        measured = next(band for band in clouds[fit["set_id"]].band_spread if band.center_hz == 2000)
+        assert measured.sigma_db == pytest.approx(band["sigma_db"])
+        feature, = fit["filters"]
+        assert feature["position_variance"] == {
+            "positions_deep": 3, "positions_total": 3, "cv_percent": 0,
+            "frequencies_hz": pytest.approx([2258.9907078305932] * 3), "classification": "insufficient_positions",
+        }
+        packet["series"].append({**fit, "stats": {"rms_100_10k_db": {"value": 2.4, "below_trusted_floor": False}}})
+    packet["series"].append({**packet["series"][0], "pose": {"kind": "seat", "deg": 0, "name": "sofa", "seat_offset_m": [0, 0, 0]}})
+    index = packet_index(packet, tmp_path, [], manifest)
+    assert any(line.startswith("series tweeter: pose sofa;") for line in index.splitlines())
+    for fit, token in zip((f for f in packet["fits"] if f["role"] == "tweeter"), ("0°", "−20°", "+20°")):
+        for kind in ("fit", "series"):
+            line = next(line for line in index.splitlines() if line.startswith(f"{kind} tweeter: pose {token};"))
+            assert fit["take_id"] in line and fit["set_id"] in line
+            if kind == "fit" and contains_crossover:
+                assert "center_hz=2000 sigma_db=0.8158 max_sigma_db=1.103" in line[:160]
+            else:
+                assert "2.4" in line[:160]
+    json.dumps(packet, allow_nan=False)
