@@ -732,6 +732,7 @@ def _build_candidate(
         repeat_spread_db=selection.repeat_spread_db if selection else None,
         repeat_spread_us=selection.repeat_spread_us if selection else None, repeat_count=selection.repeat_count if selection else None,
         timing_verdict=timing_verdict, timing_saved=applied_alignment, timing_verification=verification,
+        timing_graph_fingerprint=summed_alignment.graph_fingerprint if selection and summed_alignment else None,
         alignment_seed_ripple_db=seed_ripple_db,
         alignment_seed_delay_us=seed_delay_us,
         flatness_improvement_db=flatness_improvement_db,

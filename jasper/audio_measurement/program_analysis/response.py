@@ -542,10 +542,10 @@ def _select_summed_alignment_pair(
     saved: AppliedAlignment | None = None,
 ) -> AlignmentPairSelection:
     """One confidence rule and one residual model for decision and verification."""
-    w_chain = reference.response_by_role[woofer_role](freqs)
-    t_chain = reference.response_by_role[tweeter_role](freqs)
-    scores = [_summed_fit_comparator(freqs, w * w_chain, t * t_chain, reference, anchor_delay_us)
-              for w, t in ((W, T), *repeats)]
+    scores = [_summed_fit_comparator(
+        freqs, w * summed.response_by_role[woofer_role](freqs),
+        t * summed.response_by_role[tweeter_role](freqs), summed, anchor_delay_us,
+    ) for summed in (reference, *reference.repeat_responses) for w, t in ((W, T), *repeats)]
 
     def score(sign, delay):
         return float(np.sqrt(np.mean([evaluate(sign, delay) ** 2 for evaluate in scores])))

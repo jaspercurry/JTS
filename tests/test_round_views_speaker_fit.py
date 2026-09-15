@@ -722,7 +722,7 @@ def test_first_speaker_experiment_banks_measured_alignment_for_apply(
     analysis.update(delay_us=delay, polarity=polarity, trim_db={"woofer": 0, "tweeter": -3},
                     alignment_seed_delay_us=seed, alignment_status=status, alignment_objective=objective,
                     alignment_confidence=confidence, timing_verdict="measured" if objective == "summed_fit_committed" else "estimate",
-                    residual_rms_db=.2, margin_db=.4, repeat_spread_db=.1, repeat_spread_us=2)
+                    residual_rms_db=.2, margin_db=.4, repeat_spread_db=.1, repeat_spread_us=2, timing_graph_fingerprint="played-timing")
     topology = mono_output_topology()
     draft = standard_design_draft(topology)
     draft["driver_research"]["crossover_candidates"][0].update(
@@ -763,6 +763,7 @@ def test_first_speaker_experiment_banks_measured_alignment_for_apply(
     assert {key: first["alignment"][key] for key in pair} == pair
     assert pair["committed"] == {"delay_us": delay, "polarity": polarity}
     assert pair["trim_db"] == analysis["trim_db"]
+    assert pair["graph_fingerprint"] == "played-timing" != group["capture_basis"]["graph_fingerprint"]
     candidate = find_banked_candidate(first["candidate_fingerprint"], root=tmp_path / "bank").candidate
     assert candidate.role_attenuations_db == analysis["trim_db"]
     if reason:

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Mapping, Sequence
 
 from jasper.camilla_config_contract import FilterSpec
@@ -38,7 +38,7 @@ __all__ = [
     "measurement_bass_extension",
 ]
 
-TuningGraphScope = Literal["candidate", "candidate_branches"]
+TuningGraphScope = Literal["candidate", "candidate_branches", "timing"]
 
 
 @dataclass(frozen=True)
@@ -104,7 +104,7 @@ def measurement_bass_extension(
     candidate_id: str = "",
 ) -> dict[str, Any]:
     """Resolve the same optional layer for graph emission and peak admission."""
-    if scope == GRAPH_SCOPE_DRIVERS:
+    if scope in (GRAPH_SCOPE_DRIVERS, "timing"):
         return {}
     if candidate is None and candidate_id:
         candidate = candidate_bank.find_banked_candidate(candidate_id).candidate
@@ -120,6 +120,10 @@ def require_candidate_speaker_identity(candidate: MeasuredCrossoverCandidate, pr
         raise MeasurementGraphRefused("measurement_candidate_speaker_mismatch", candidate.fingerprint)
 
 
+def timing_candidate(candidate: MeasuredCrossoverCandidate) -> MeasuredCrossoverCandidate:
+    return replace(candidate, linearization={}, room_correction={}, blend_correction=(), bass_extension={})
+
+
 def compile_tuning_graph(
     profile: MeasurementGraphProfile,
     candidate: MeasuredCrossoverCandidate | None = None,
@@ -128,7 +132,7 @@ def compile_tuning_graph(
     preference_filters: Sequence[FilterSpec] | None = None,
     output_trim_db: float = 0.0,
 ) -> str:
-    """Compile and prove the candidate's complete speaker, room and bass graph."""
+    """Compile and prove the candidate at the requested layer."""
     if scope not in CANDIDATE_SCOPES:
         raise MeasurementGraphRefused("measurement_scope_invalid", scope)
     if candidate is None:
@@ -137,6 +141,9 @@ def compile_tuning_graph(
         raise MeasurementGraphRefused("measurement_candidate_invalid", type(candidate).__name__)
     require_candidate_speaker_identity(candidate, profile.preset)
     candidate = candidate_on_declaration(candidate, profile.preset)
+    if scope == "timing":
+        candidate = timing_candidate(candidate)
+        preference_filters, output_trim_db = (), 0.0
     # The shared reducer skips malformed records; refuse before it loses identity.
     if set(candidate.linearization) - set(required_driver_roles(candidate.source_preset.way_count)) or any(
         not isinstance(value, Mapping) or not _filter_list(value.get("filters"))

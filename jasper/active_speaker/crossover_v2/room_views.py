@@ -298,7 +298,8 @@ def incumbent_room(
     snapshot = profile.get("recomposition_snapshot") or {}
     correction = snapshot.get("room_correction", profile.get("room_correction")) or {}
     basis = correction.get("basis") or {}
-    matches = [row["set_id"] for row in manifest["sets"] if row.get("base")]
+    matches = [row["set_id"] for row in manifest["sets"] if row.get("base")
+               and row.get("capture_basis", {}).get("graph_scope") != "timing"]
     if len(matches) != 1:
         return None, "room_incumbent_set_ambiguous" if matches else "room_incumbent_set_unavailable"
     return {

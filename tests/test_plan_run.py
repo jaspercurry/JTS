@@ -612,8 +612,8 @@ def test_run_resolves_one_baseline_before_any_take(monkeypatch, available, prepa
     assert len(calls) == 1
     if available:
         assert result.status == "complete"
-        assert [spec.candidate_id for spec in result.specs.values()] == ["banked-base"] * (6 + prepared)
-        assert fakes.graph.scopes == [("candidate", "banked-base")] * (6 + prepared)
+        assert [spec.candidate_id for spec in result.specs.values()] == ["banked-base"] * (6 + request.repeats * prepared)
+        assert fakes.graph.scopes == [("timing", "banked-base")] * (request.repeats * prepared) + [("candidate", "banked-base")] * 6
     else:
         assert result.reason == "measurement_baseline_unavailable"
         assert result.finalized and not result.attempts
@@ -660,16 +660,24 @@ async def test_run_door_requires_a_resolved_ceiling_and_watch(tmp_path, box, cei
     ("summed", "base", ("entry_baseline", "lateral")),
     ("summed", "candidate-a", ("lateral",)),
 ])
-def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, phases):
+@pytest.mark.parametrize("repeats", [1, 3])
+def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, phases, repeats):
     request = ac.AngleCaptureRequest(
         stops=(ac.AngleStop(20, regime, candidate_id=candidate),),
-        candidates=(candidate,), repeats=2,
+        candidates=(candidate,), repeats=repeats,
     )
     captures = plan_run.prepare_plan_captures(request)
-    assert tuple(capture.spec.program_phase for capture in captures) == (*phases, phases[-1])
-    assert [capture.repeat for capture in captures[-2:]] == [1, 2]
-    assert [capture.stop.angle_deg for capture in captures[-2:]] == [20, 20]
-    assert all(capture.stop.angle_deg == 0 for capture in captures[:-2])
+    assert tuple(capture.spec.program_phase for capture in captures) == tuple(
+        phase for phase in phases for _ in range(1 if phase == "check" else repeats))
+    assert [capture.repeat for capture in captures[-repeats:]] == list(range(1, repeats + 1))
+    assert [capture.stop.angle_deg for capture in captures[-repeats:]] == [20] * repeats
+    assert all(capture.stop.angle_deg == 0 for capture in captures[:-repeats])
+    timing = [capture for capture in captures if capture.spec.program_phase == "entry_baseline"]
+    assert [capture.repeat for capture in timing] == (list(range(1, repeats + 1)) if candidate == "base" else [])
+    assert all((capture.spec.graph_scope, capture.stop.regime, capture.spec.positions, capture.spec.vertical_deg)
+               == ("timing", "summed", (0,), 0) for capture in timing)
+    assert all(capture.spec.graph_scope == ("drivers" if regime == "per_driver" else "candidate")
+               for capture in captures[-repeats:])
 
 
 @pytest.mark.parametrize("requested,level", [(None, -15), (-25, -25), (0, 0)])

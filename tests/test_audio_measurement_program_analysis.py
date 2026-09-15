@@ -77,8 +77,8 @@ from jasper.audio_measurement.comparison_bands import (
     crossover_region_band_hz,
     overlap_band_hz,
 )
-from jasper.audio_measurement.program_analysis import alignment_pairs
-from jasper.audio_measurement.program_analysis.model import SummedAlignmentReference
+from jasper.audio_measurement.program_analysis import alignment_pairs, dispatch
+from jasper.audio_measurement.program_analysis.model import AppliedAlignment, DriverResponse, SummedAlignmentReference
 from jasper.audio_measurement.program_analysis.response import _select_summed_alignment_pair
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_ESTIMATED_FLAT_SUM,
@@ -7635,7 +7635,6 @@ def test_alignment_snr_uses_the_shared_sweep_band(monkeypatch):
 @pytest.mark.parametrize("bins", [4097, 262145])
 def test_summed_fit_sliced_comparator_matches_full_axis(bins):
     from jasper.audio_measurement import analysis
-    from jasper.audio_measurement.program_analysis.model import SummedAlignmentReference
     from jasper.audio_measurement.program_analysis.response import _summed_fit_comparator
 
     freqs = np.linspace(0, SR / 2, bins)
@@ -7651,21 +7650,29 @@ def test_summed_fit_sliced_comparator_matches_full_axis(bins):
 
 
 @pytest.mark.parametrize("phase_noise,verdict", [((0, .002), "measured"), ((0, 1.5), "needs_measurement"), ((0,), "needs_measurement")])
-def test_timing_confidence_uses_the_reads_repeats(phase_noise, verdict):
+@pytest.mark.parametrize("summed_noise", [None, .002, 8.0])
+def test_timing_confidence_uses_the_reads_repeats(phase_noise, verdict, summed_noise):
     freqs = np.linspace(0, SR / 2, 1025)
     W = np.ones(freqs.size, dtype=complex)
     T = .45 * np.exp(.2j * (freqs / FC_HZ) ** 2)
     measured = predicted_branch_sum(W, T, 0, 0, -1, freqs_hz=freqs, residual_delay_us=40)
     reference = SummedAlignmentReference(freqs, 20 * np.log10(abs(measured)),
         {role: np.ones_like for role in ("woofer", "tweeter")}, (1200, 5000))
+    if summed_noise is not None:
+        reference = dataclasses.replace(reference, repeat_responses=(dataclasses.replace(reference,
+            magnitude_db=reference.magnitude_db + summed_noise * np.sin(freqs / 400)),))
+        if len(phase_noise) == 1 and summed_noise < 1:
+            verdict = "measured"
+        elif summed_noise > 1:
+            verdict = "needs_measurement"
     selection = _select_summed_alignment_pair(freqs, W, T, reference=reference,
         woofer_role="woofer", tweeter_role="tweeter", fc_hz=FC_HZ, anchor_delay_us=0,
         seed_delay_us=0, seed_polarity_sign=1, delay_bounds_us=(0, 500),
         repeats=tuple((W, T * np.exp(1j * noise * (freqs / FC_HZ) ** 2)) for noise in phase_noise[1:]))
     assert selection.objective == ("summed_fit_committed" if verdict == "measured" else verdict)
-    assert selection.repeat_count == len(phase_noise)
+    assert selection.repeat_count == len(phase_noise) * (1 if summed_noise is None else 2)
     assert selection.residual_rms_db is not None and selection.margin_db >= 0
-    if len(phase_noise) == 1:
+    if selection.repeat_count == 1:
         assert selection.repeat_spread_db is selection.repeat_spread_us is None
         assert selection.residual_rms_db == pytest.approx(0, abs=1e-10)
         assert 0 < selection.margin_db < 20 * np.log10((1 + .45) / (1 - .45))
@@ -7679,10 +7686,8 @@ def test_timing_confidence_uses_the_reads_repeats(phase_noise, verdict):
 
 @pytest.mark.parametrize("saved,pose", [(True, (0, 0)), (True, (20, 0)), (False, (0, 0))])
 @pytest.mark.parametrize("repeat_counts", [(1, 1), (1, 2), (2, 1)])
-def test_saved_timing_is_held_until_the_record_is_removed(monkeypatch, saved, pose, repeat_counts):
-    from jasper.audio_measurement.program_analysis import dispatch
-    from jasper.audio_measurement.program_analysis.model import AppliedAlignment, DriverResponse
-
+@pytest.mark.parametrize("summed_repeats", [1, 2])
+def test_saved_timing_is_held_until_the_record_is_removed(monkeypatch, saved, pose, repeat_counts, summed_repeats):
     freqs = np.linspace(0, SR / 2, 1025)
     W = np.ones(freqs.size, dtype=complex)
     T = .45 * np.exp(.2j * (freqs / FC_HZ) ** 2)
@@ -7690,7 +7695,9 @@ def test_saved_timing_is_held_until_the_record_is_removed(monkeypatch, saved, po
     monkeypatch.setattr(dispatch, "_aligned_branch_tf", lambda *a, **k: (freqs, next(branches), {}))
     measured = predicted_branch_sum(W, T, 0, 0, -1, freqs_hz=freqs, residual_delay_us=40)
     reference = SummedAlignmentReference(freqs, 20 * np.log10(abs(measured)),
-        {role: np.ones_like for role in ("woofer", "tweeter")}, (1200, 5000))
+        {role: np.ones_like for role in ("woofer", "tweeter")}, (1200, 5000), graph_fingerprint="timing-graph")
+    reference = dataclasses.replace(reference, repeat_responses=(dataclasses.replace(reference,
+        magnitude_db=reference.magnitude_db + .002 * np.sin(freqs / 400)),) * (summed_repeats - 1))
     responses = tuple(DriverResponse(role, freqs, np.zeros(freqs.size), tf, {}, None, None,
         repeat_responses=(DriverResponse(role, freqs, np.zeros(freqs.size), tf, {}, None, None),) * count)
         for (role, tf), count in zip((("woofer", W), ("tweeter", T)), repeat_counts))
@@ -7706,9 +7713,10 @@ def test_saved_timing_is_held_until_the_record_is_removed(monkeypatch, saved, po
     assert candidate.delay_us == (22 if saved else pytest.approx(40, abs=1))
     assert candidate.polarity == ("normal" if saved else "inverted")
     assert candidate.timing_saved == timing
-    assert candidate.repeat_count == (1 + min(repeat_counts) if pose == (0, 0) else None)
+    assert candidate.timing_graph_fingerprint == ("timing-graph" if pose == (0, 0) else None)
+    assert candidate.repeat_count == ((1 + min(repeat_counts)) * summed_repeats if pose == (0, 0) else None)
     if saved and pose == (0, 0):
         assert candidate.timing_verification["residual_rms_db"] > 0
-        assert candidate.timing_verification["repeat_noise_db"] == 0
+        assert (candidate.timing_verification["repeat_noise_db"] > 0) == (summed_repeats > 1)
     else:
         assert candidate.timing_verification is None

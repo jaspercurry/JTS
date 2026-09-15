@@ -289,14 +289,15 @@ def _bookkeeping(
     views = bookkeeping_views(purpose)
     sets = [row for row in document.get("sets", ())
             if isinstance(row, Mapping) and isinstance(row.get("set_id"), str)]
-    multiple_bases = sum(bool(row.get("base")) for row in sets) > 1
+    view_sets = [row for row in sets if row.get("capture_basis", {}).get("graph_scope") != "timing"]
+    multiple_bases = sum(bool(row.get("base")) for row in view_sets) > 1
 
     def unavailable(view: str, reason: str) -> dict[str, Any]:
         return {"view": view, "status": "unavailable", "reason": reason}
 
     results = []
     for view, per_set, grades_against_base in views:
-        targets = sets if per_set and len(sets) > 1 else [None]
+        targets = ([row if len(sets) > 1 else None for row in view_sets] if per_set and sets else [None])
         for row in targets:
             set_id = row["set_id"] if row else None
             incumbent_id = None

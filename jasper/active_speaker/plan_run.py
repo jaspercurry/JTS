@@ -166,7 +166,9 @@ def prepare_plan_captures(
                                 prompts=(resolve_request(base_request)[0].prompt,), baseline_id=BASE_CANDIDATE,
                                 roles_bands=roles_bands)
         assert base_spec is not None
-        captures.append(PlanCapture(base_request.stops[0], replace(base_spec, program_phase=PHASE_ENTRY_BASELINE)))
+        captures.extend(PlanCapture(base_request.stops[0], replace(
+            base_spec, graph_scope="timing", program_phase=PHASE_ENTRY_BASELINE,
+        ), repeat) for repeat in range(1, request.repeats + 1))
     for offset, spec in enumerate(placed):
         stop = request.stops[offset // request.repeats]
         if spec is None:

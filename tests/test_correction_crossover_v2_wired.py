@@ -854,8 +854,8 @@ async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monk
 
 
 @pytest.mark.parametrize("banked,position,vertical,scope", [
-    (True, 0, 0, "candidate"), (True, 0, 0, "applied"), (False, 0, 0, "candidate"),
-    (True, 20, 0, "candidate"), (True, 0, 20, "candidate"), (True, 0, 0, "drivers"),
+    (True, 0, 0, "timing"), (True, 0, 0, "candidate"), (True, 0, 0, "applied"), (False, 0, 0, "timing"),
+    (True, 20, 0, "timing"), (True, 0, 20, "timing"), (True, 0, 0, "drivers"),
 ])
 async def test_executor_retains_summed_reference_before_measure(monkeypatch, caplog, banked, position, vertical, scope):
     conductor = _conductor(FlowSeams(), index_phase_map={1: "check", 2: "entry_baseline", 3: "measure"},
@@ -894,7 +894,7 @@ async def test_executor_retains_summed_reference_before_measure(monkeypatch, cap
                   "graph_scope": scope, "graph_fingerprint": "played-graph"}
         record_id = await records.bank_answer(record, WiredCaptureAnswer(wav=wav, program=program.to_dict()))
         analysis = analyze(saved[-1], record_id)
-    available = banked and position == vertical == 0 and scope in {"applied", "candidate"}
+    available = banked and position == vertical == 0 and scope == "timing"
     assert conductor._measure_priors().summed_alignment is (reference if available else None)
     events = event_field_maps(caplog, "active_speaker.summed_reference_unreadable")
     if available:
