@@ -215,7 +215,7 @@ class RunManifest:
                 basis["stimulus_dbfs"] = max(gains)
             set_id = json_fingerprint(basis)
             group = self._sets.setdefault(set_id, {"set_id": set_id, "capture_basis": basis,
-                "base": candidate_identity(self._context.get("candidate_id") or "") == BASE_CANDIDATE, "takes": []})
+                "base": self._context.get("base", candidate_identity(self._context.get("candidate_id") or "") == BASE_CANDIDATE), "takes": []})
             curve = curves.get(role, {})
             band = curve.get("band_hz")
             if band:

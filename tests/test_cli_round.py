@@ -23,10 +23,10 @@ from unittest.mock import Mock
 import pytest
 import yaml
 
-from jasper.active_speaker import round_bank, round_packet, wizard_client as wc
-from jasper.active_speaker.angle_capture import AngleCaptureRequest
+from jasper.active_speaker import candidate_parts, round_bank, round_packet, wizard_client as wc
+from jasper.active_speaker.angle_capture import AngleCaptureRequest, resolve_request, stop_specs
 from jasper.active_speaker.bundles import mark_state
-from jasper.active_speaker.candidate_bank import publish_authored_candidate
+from jasper.active_speaker.candidate_bank import find_banked_candidate, publish_authored_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_design_draft
 from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.crossover_v2.prescription_document import judge_prescription_document
@@ -35,15 +35,17 @@ from jasper.web import correction_crossover_v2_apply as v2apply
 from jasper.active_speaker.crossover_v2.evidence_packet import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
 from jasper.active_speaker.measurement_programs import run_program
+from jasper.active_speaker.measurement_emit import compile_tuning_graph
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
 from jasper.cli import _run_request, round as cli
 from jasper.cli._refusal import STATUS_BY_CODE
+from jasper.sound.camilla_yaml import extract_room_peqs_from_config_text
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
 from tests.crossover_v2_banked_round import bank_measure_round
 from tests.run_manifest_fixture import write_manifest
-from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile, _room_candidate
+from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile, _room_candidate, BASS_EXTENSION
 from tests.test_preflight import ready_facts
 from tests.test_arm_walk import FakeWalkClock
 from tests.test_correction_crossover_v2_endpoints import _FakeApplyCam, _seed_baseline_apply_environment
@@ -339,12 +341,30 @@ def test_an_apply_whose_answer_is_lost_is_not_a_wizard_refusal(
 
 
 @pytest.fixture
-def preflight_ready(monkeypatch):
-    monkeypatch.setattr(_run_request, "read_preflight_facts", ready_facts)
+def banked_run_facts(tuning_profile, isolated_candidate_bank, monkeypatch, request):
+    applied = replace(_room_candidate(tuning_profile), analysis={"measurement_status": "unmeasured"},
+                      bass_extension=getattr(request, "param", {}))
+    publish_authored_candidate(applied)
+    monkeypatch.setattr(candidate_parts, "load_output_topology_strict", lambda: tuning_profile.topology)
+    monkeypatch.setattr(candidate_parts, "load_applied_baseline_profile_state", lambda: {
+        "status": "applied", "source": {"measured_candidate_fingerprint": applied.fingerprint},
+    })
+    def facts(plan, **changes):
+        candidates = dict(changes.pop("candidates", {}))
+        for name in plan.candidates:
+            if name != "base" and name not in candidates:
+                candidates[name] = find_banked_candidate(name).candidate
+        return ready_facts(plan, candidates=candidates, **changes)
+    return facts
 
 
 @pytest.fixture
-def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
+def preflight_ready(banked_run_facts, monkeypatch):
+    monkeypatch.setattr(_run_request, "read_preflight_facts", banked_run_facts)
+
+
+@pytest.fixture
+def bank_trial(tuning_profile, banked_run_facts, monkeypatch):
     candidates = {}
     def bank(resolution):
         candidate = replace(_room_candidate(tuning_profile), analysis={
@@ -353,7 +373,7 @@ def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
         publish_authored_candidate(candidate)
         candidates[candidate.fingerprint] = candidate
         monkeypatch.setattr(_run_request, "read_preflight_facts",
-                            lambda plan: ready_facts(plan, candidates=candidates))
+                            lambda plan: banked_run_facts(plan, candidates=candidates))
         return candidate.fingerprint
     return bank
 
@@ -384,9 +404,13 @@ def test_trial_uses_authored_section_and_keeps_candidates_at_each_pose(
     expected = run_program(program, "room_quick" if "room" in sections and mover == "arm" else layout)
     assert plan.program == f"{program}/{expected.size}"
     assert plan.mover == (mover or default_mover)
-    assert plan.candidates == ("base", fingerprint)
+    if program == "bass":
+        assert tuple(find_banked_candidate(name).candidate.analysis["base"]["fingerprint"]
+                     for name in plan.candidates) == (candidate_parts.baseline_candidate_id(), fingerprint)
+    else:
+        assert plan.candidates == ("base", fingerprint)
     assert [(stop.place, stop.candidate_id, stop.regime) for stop in plan.stops] == [
-        (pose.place, candidate, "summed") for pose in expected.poses for candidate in ("", fingerprint)
+        (pose.place, candidate if candidate != "base" else "", "summed") for pose in expected.poses for candidate in plan.candidates
     ]
     assert plan.level.level_db is None and plan.level.resolved.reference_volume_db == -18
 
@@ -763,6 +787,45 @@ def test_trial_posts_the_named_composed_candidate(tuning_profile, monkeypatch, c
     assert {stop["candidate_id"] for stop in plan["stops"]} == {candidate.fingerprint}
 
 
+@pytest.mark.parametrize("program,selection", [
+    ("bass", "default"), ("bass", "base"), ("bass", "named"), ("bass", "trial"),
+    ("room", "default"), ("room", "named"),
+])
+@pytest.mark.parametrize("banked_run_facts", [{**BASS_EXTENSION, "low_boost_db": 2.0}], indirect=True)
+def test_run_plays_bass_below_room(preflight_ready, tuning_profile, monkeypatch, capsys, program, selection):
+    applied = find_banked_candidate(candidate_parts.baseline_candidate_id()).candidate
+    named = replace(applied, bass_extension=BASS_EXTENSION,
+                    analysis={"measurement_status": "unmeasured", "resolution": {"bass": "document"}})
+    publish_authored_candidate(named)
+    argv = ["trial", named.fingerprint] if selection == "trial" else ["run", "--program", program]
+    if selection in {"base", "named"}:
+        argv += ["--candidates", "base" if selection == "base" else named.fingerprint]
+    opener = _opener(session='{"session_id": "run-1"}')
+    code, body = _run([*argv, "--level-db", "-25"], opener, monkeypatch, capsys)
+    assert code == 0, body
+    plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
+    specs = stop_specs(plan, baseline_id=applied.fingerprint,
+                       prompts=[stop.prompt for stop in resolve_request(plan)])
+    parents = (applied, named) if selection == "trial" else (named if selection == "named" else applied,)
+    for index, spec in enumerate(specs):
+        parent = parents[index % len(parents)]
+        played = find_banked_candidate(spec.candidate_id).candidate
+        assert spec.graph_scope == "candidate"
+        assert played.bass_extension == parent.bass_extension
+        assert (played.source_preset, played.role_attenuations_db, played.alignment, played.blend_correction) == (
+            parent.source_preset, parent.role_attenuations_db, parent.alignment, parent.blend_correction)
+        assert {role: row["filters"] for role, row in played.linearization.items()} == {
+            role: row["filters"] for role, row in parent.linearization.items()}
+        if program == "bass":
+            assert played.fingerprint != parent.fingerprint
+            assert played.room_correction == {} and played.analysis["resolution"]["room"] == "cleared"
+        else:
+            assert played == parent
+        graph = compile_tuning_graph(tuning_profile, played)
+        room = extract_room_peqs_from_config_text(graph)
+        assert bool(room) == (program == "room")
+
+
 def test_run_names_a_lost_response(preflight_ready, monkeypatch, capsys):
     code, body = _run(["run"], _opener(session="bad json"), monkeypatch, capsys)
     assert code == 2 and body["reason"] == "run_answer_invalid"
@@ -808,9 +871,9 @@ def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsy
     ("bass", None, -20, [-33, -28, -23, -18]),
     ("room", "-10,-20", -100, [-20, -10]), ("bass", "auto", None, []),
 ])
-def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, requested, noise_dbfs, levels):
+def test_dry_run_lists_admissible_levels(banked_run_facts, monkeypatch, capsys, program, requested, noise_dbfs, levels):
     def facts(plan):
-        ready = ready_facts(plan)
+        ready = banked_run_facts(plan)
         if noise_dbfs is None:
             return replace(ready, anchor=replace(ready.anchor, record={}))
         return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record,
@@ -834,9 +897,9 @@ def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, requested
     ("65,75,82", [-31, -21, -14], [65, 75, 82], False),
     ("84", [-12], [84], False), ("84.1", [-11.9], [84.1], True),
 ])
-def test_run_spl_resolves_banked_anchor(monkeypatch, capsys, dry_run, spl, faders, predicted, refused):
+def test_run_spl_resolves_banked_anchor(banked_run_facts, monkeypatch, capsys, dry_run, spl, faders, predicted, refused):
     def facts(plan):
-        ready = ready_facts(plan)
+        ready = banked_run_facts(plan)
         return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record, "reference_volume_db": -21}))
 
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
@@ -875,9 +938,9 @@ def test_ladder_defers_later_rungs_until_measurement(preflight_ready, monkeypatc
 @pytest.mark.parametrize("identity,requested,admitted", [
     ("other", 84, 74.23), ("other", 65, 65), (None, 84, 74.23), ("anchor", 84, 84),
 ])
-def test_dry_run_caps_only_the_unmeasured_stimulus_opener(monkeypatch, capsys, identity, requested, admitted):
+def test_dry_run_caps_only_the_unmeasured_stimulus_opener(banked_run_facts, monkeypatch, capsys, identity, requested, admitted):
     def facts(plan):
-        ready = ready_facts(plan, program_ids_for=lambda _: (identity,) if identity else ())
+        ready = banked_run_facts(plan, program_ids_for=lambda _: (identity,) if identity else ())
         return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record,
             "measured_db_spl": 74.23, "reference_volume_db": -22.23, "stimulus": {"program_id": "anchor"}}))
 
@@ -928,7 +991,7 @@ def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, c
     ("trial", [], -60, [-18, -23, -28, -33]),
 ])
 def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
-    monkeypatch, capsys, tmp_path, box, bass_fit_pairs, tuning_profile, isolated_candidate_bank,
+    monkeypatch, capsys, tmp_path, box, bass_fit_pairs, tuning_profile, banked_run_facts,
     verb, flags, noise, levels,
 ):
     from jasper.active_speaker import bundles, round_bank, plan_run
@@ -945,7 +1008,6 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     from tests.engine_twin import FakeSeams
     from tests.crossover_v2_fixtures import _conductor, FakeSeams as FlowSeams
     from tests.test_plan_run import AnsweredGate, _analysis
-    from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
 
     candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION,
                         analysis={"resolution": {"bass": "document"}, "measurement_status": "unmeasured"})
@@ -953,11 +1015,10 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     monkeypatch.setattr(bass_table_inputs, "join_bass_rounds", join)
     publish_authored_candidate(candidate)
     def facts(plan):
-        ready = ready_facts(plan, candidates={candidate.fingerprint: candidate})
+        ready = banked_run_facts(plan)
         return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record,
             "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": noise}]}}))
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
-    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_id", lambda: "baseline-fp")
     info = bundles.open_bundle(mono_output_topology(), calibration_id="", sessions_dir=tmp_path / "sessions")
     bundle = Path(info["bundle_dir"])
     store = CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"])
@@ -1046,6 +1107,11 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     assert packet["result"] == "complete" and len(packet.get("runs", [packet])) == len(levels)
     assert Path(body["packet"]) == Path(body["round_dir"]) / "packet.json"
     assert {"sets", "series", "limits", "applied", "artifacts", "unavailable"} <= packet.keys()
+    played = {call["spec"].candidate_id for call in fakes.play.calls}
+    assert {group["candidate_id"] for group in packet["sets"]} == played
+    assert {group["capture_basis"]["candidate_id"] for group in
+            json.loads(Path(packet["artifacts"]["manifest"]).read_text())["sets"]} == played
+    assert all(find_banked_candidate(name).candidate.analysis["resolution"]["room"] == "cleared" for name in played)
     assert len(packet["artifacts"]["bass_views"]) == len(levels) * (2 if verb == "trial" else 1)
     assert len(packet["bass"]) == len(packet["artifacts"]["bass_views"])
     timing_sets = {group["set_id"] for group in json.loads(Path(packet["artifacts"]["manifest"]).read_text())["sets"]

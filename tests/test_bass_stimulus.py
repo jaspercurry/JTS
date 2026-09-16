@@ -35,6 +35,7 @@ from jasper.web.correction_run_host import compose_plan_program
 from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
 from tests.test_active_speaker_program_admission import _profile_and_targets, _roles
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
+from tests.active_speaker_fixtures import banked_declared_candidate as banked_declared_candidate
 
 pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 
@@ -57,7 +58,7 @@ def _bass(fixture, **kwargs):
                               safety_profile=safety, role_targets=targets, **kwargs)
 
 
-def test_registry_stimulus_reaches_the_capture_spec():
+def test_registry_stimulus_reaches_the_capture_spec(banked_declared_candidate):
     rows = load_programs().values()
     bass = [row for row in rows if row.purpose == "bass"]
     assert {row.layout for row in bass} == {"bass_axis", "seat_cloud", "room_quick", "bass_nearfield"}
@@ -65,11 +66,11 @@ def test_registry_stimulus_reaches_the_capture_spec():
         assert (row.stimulus is not None) == (row.purpose == "bass")
     for row in bass:
         assert row.stimulus == {"ceiling_hz": 1100.0}
-        request = request_for_program(row, mover=row.mover or "human", candidates=("trial",))
+        request = request_for_program(row, mover=row.mover or "human", candidates=(banked_declared_candidate.fingerprint,))
         assert all(capture.spec.stimulus == row.stimulus for capture in prepare_plan_captures(request))
     near = run_program("bass", "bass_nearfield")
     assert (near.regime, near.mover, near.capture_count) == ("near_field", "human", 1)
-    capture, = prepare_plan_captures(request_for_program(near, candidates=("trial",)))
+    capture, = prepare_plan_captures(request_for_program(near, candidates=(banked_declared_candidate.fingerprint,)))
     assert (capture.spec.regime, capture.stop.kind, capture.stop.distance_m) == ("near_field", "close", 0.03)
 
 
@@ -111,10 +112,10 @@ def test_bass_schedule_fits_caps_and_noise_windows(bass_fixture, floor):
 
 
 @pytest.mark.parametrize("size", ["axis", "nearfield"])
-def test_bass_capture_program_agrees_across_surfaces(bass_fixture, monkeypatch, size):
+def test_bass_capture_program_agrees_across_surfaces(bass_fixture, banked_declared_candidate, monkeypatch, size):
     topology, safety, targets, excitation = bass_fixture
     row = program("bass", size)
-    request = request_for_program(row, mover=row.mover, candidates=("trial",))
+    request = request_for_program(row, mover=row.mover, candidates=(banked_declared_candidate.fingerprint,))
     capture, = prepare_plan_captures(request)
     context = SimpleNamespace(safety_profile=safety, role_targets=targets)
     played = compose_plan_program(SimpleNamespace(_excitation=excitation), capture.spec, None, context=context)

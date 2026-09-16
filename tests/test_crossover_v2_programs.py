@@ -42,6 +42,8 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+from tests.active_speaker_fixtures import banked_declared_candidate as banked_declared_candidate
+from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.angle_capture import request_for_program
@@ -519,8 +521,9 @@ def test_summed_sweep_fits_the_tightest_role_duration(limit, band, requested_s):
 @pytest.mark.parametrize(("purpose", "size"), [
     ("speaker", "mark"), ("room", "arm"), ("room", "cloud"), ("bass", "quick"), ("bass", "cloud"),
 ])
-def test_prepared_summed_captures_keep_the_program_band(purpose, size):
+def test_prepared_summed_captures_keep_the_program_band(purpose, size, banked_declared_candidate, monkeypatch):
     layout = measurement_program(purpose, size)
+    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_id", lambda: banked_declared_candidate.fingerprint)
     request = request_for_program(layout, mover=layout.mover or "human")
     captures = prepare_plan_captures(request, roles_bands=_roles())
     excitation = _excitation(CAPS, {"woofer": 4.0, "tweeter": 4.0})
