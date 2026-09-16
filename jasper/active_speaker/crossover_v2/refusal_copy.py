@@ -999,7 +999,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "placement_required": "Confirm the microphone position before taking another measurement.",
         "retry_gain_missing": "The retake has no test level to use.",
         "take_stopped": "The measurement stopped before the capture was accepted.",
-        "cancelled": "The measurement was cancelled.",
+        "cancelled": "The measurement was stopped before it finished.",
         "measurement_door_session_live": "Another measurement is already in progress.",
         "measurement_door_no_volume_owner": "The speaker could not take control of the measurement volume.",
         "measurement_door_volume_not_open": "The speaker could not confirm the measurement volume.",
