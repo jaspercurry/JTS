@@ -1035,6 +1035,28 @@ def test_the_gate_refuses_a_malformed_identity_or_provenance(packet, over, reaso
     assert excinfo.value.reason == reason
 
 
+@pytest.mark.parametrize(("filters", "pin", "reason"), [
+    ([], None, None),
+    ([], {"tweeter": -9.52}, None),
+    ([_cut()], None, dp.DRIVER_PRESCRIPTION_PROVENANCE_MISSING),
+])
+def test_only_a_nonempty_driver_chain_requires_packet_provenance(
+    packet, filters, pin, reason,
+):
+    document = _document(filters, packet, **({"pinned_trim_db": pin} if pin else {}))
+    document.pop("packet_fingerprint")
+    document.pop("prescriber")
+
+    if reason:
+        with pytest.raises(BlendPrescriptionRefused) as excinfo:
+            _gate(packet, document)
+        assert excinfo.value.reason == reason
+    else:
+        accepted = _gate(packet, document)
+        assert accepted.filters == ()
+        assert dict(accepted.pinned_trim_db) == (pin or {})
+
+
 def test_a_packet_mismatch_discloses_which_evidence_this_side_had(packet):
     """F-7: a laptop-built and a Pi-built packet of the same round can
     disagree on fingerprint because the evidence INPUTS differed, not

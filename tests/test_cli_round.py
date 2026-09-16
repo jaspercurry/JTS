@@ -206,55 +206,43 @@ def test_apply_posts_the_named_fingerprint_when_it_is_the_live_one(
     assert len(opener.posts()) == 1
 
 
-@pytest.mark.parametrize(("keep_timing", "trims_db"), [
-    (False, {"tweeter": -9.52, "woofer": 0.0}),
-    (True, {"tweeter": -9.52, "woofer": 0.0}),
-    (False, {}),
-])
+@pytest.mark.parametrize("keep_timing", [False, True])
 def test_reset_composes_and_applies_the_selected_timing_scope(
-    keep_timing, trims_db, monkeypatch, capsys,
+    keep_timing, monkeypatch, capsys, tmp_path, isolated_candidate_bank,
 ):
-    from jasper.active_speaker import baseline_profile, candidate_bank, candidate_parts
-    from jasper.cli import crossover_prescriber
+    from jasper.active_speaker import baseline_profile, candidate_bank
     from jasper import output_topology
 
-    documents = []
+    topology, _ = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    base = publish_authored_candidate(
+        candidate_from_design_draft(topology, load_design_draft(topology=topology))
+    )
+    trims_db = base.candidate.role_attenuations_db
     timing = {"delay_us": 22, "polarity": "normal", "provenance": "measured"}
-    applied = {"timing": {**timing, "provenance": "incumbent"}, **(
+    applied = {"status": "applied", "source": {"measured_candidate_fingerprint": base.fingerprint},
+               "timing": {**timing, "provenance": "incumbent"}, **(
         {"corrections": {role: {"gain_db": db} for role, db in trims_db.items()}}
         if trims_db else {}
     )}
     persisted = {"timing": timing} if keep_timing else {}
     load_applied = Mock(side_effect=[applied, persisted])
     monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", load_applied)
-    monkeypatch.setattr(candidate_parts, "candidate_from_applied_profile", lambda *args: object())
-    monkeypatch.setattr(output_topology, "load_output_topology_strict", lambda: object())
-    monkeypatch.setattr(crossover_prescriber, "compose_prescription_document",
-                        lambda document, **kwargs: documents.append(document) or SimpleNamespace())
-    monkeypatch.setattr(candidate_bank, "publish_authored_candidate",
-                        lambda candidate: SimpleNamespace(fingerprint=_FINGERPRINT))
+    monkeypatch.setattr(output_topology, "load_output_topology_strict", lambda: topology)
 
-    opener = _opener(v2={"candidate": {"fingerprint": _FINGERPRINT}})
+    opener = _opener()
     code, body = _run(["reset", *(["--keep-timing"] if keep_timing else [])],
                       opener, monkeypatch, capsys)
 
-    assert code == cli.EXIT_OK
-    assert documents == [{
-        "kind": "jts_prescription", "schema": 1, "base": "saved",
-        "sections": {
-            "driver": {"filters": [], **({"pinned_trim_db": trims_db} if trims_db else {})},
-            **{name: {} for name in (
-                "blend", *(("alignment",) if not keep_timing else ()), "room", "bass"
-            )},
-        },
-        "rationale": "Reset the applied tuning layers.",
-    }]
+    assert code == cli.EXIT_OK, body
+    candidate = candidate_bank.find_banked_candidate(body["candidate_fingerprint"]).candidate
+    assert candidate.role_attenuations_db == base.candidate.role_attenuations_db
+    assert candidate.linearization == {}
     assert body["timing"] == {"saved": keep_timing,
                               "provenance": "measured" if keep_timing else None}
     assert body["trims_db"] == trims_db
     assert load_applied.call_count == 2
     assert [json.loads(request.data) for request in opener.posts()] == [
-        {"expected_candidate_fingerprint": _FINGERPRINT},
+        {"expected_candidate_fingerprint": candidate.fingerprint},
     ]
 
 
