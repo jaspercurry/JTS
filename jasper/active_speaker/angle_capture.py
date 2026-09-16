@@ -49,7 +49,7 @@ from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS, MeasureSpec
 from .crossover_v2.programs import program_for_phase
 from .measurement_programs import (
-    POSE_KIND_BEARING, PURPOSE_ROOM,
+    POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER,
     MeasurementProgram,
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
@@ -58,6 +58,7 @@ from .measurement_programs import (
     REGIMES,
     validated_capture_purpose,
     pose_place,
+    run_purpose,
     validated_pose,
     validated_angle,
 )
@@ -689,7 +690,8 @@ def stop_specs(
             kind=MEASURE_KIND_CANDIDATE if stop.candidate_id else MEASURE_KIND_VERIFY,
             positions=(stop.angle_deg,),
             sweep_band_hz=() if stop.stimulus else request.template.sweep_band_hz or (
-                room_sweep_band_hz(roles_bands, (prompt,)) if roles_bands else None
+                room_sweep_band_hz(roles_bands, (prompt,))
+                if roles_bands and run_purpose(request.program) != PURPOSE_SPEAKER else None
             ) or (),
             sweep_s=None if stop.stimulus else request.template.sweep_s,
             vertical_deg=stop.elevation_deg,
