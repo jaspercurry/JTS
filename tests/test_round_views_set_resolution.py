@@ -344,7 +344,9 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
         document = json.loads(out.read_text())
         doc = document["median"]
         assert document["persistence"]["n_positions"] == doc["n_positions"]
-        assert doc["median_db"] == room_views.room_median(legacy.takes, room_views.room_ceiling(None))["median_db"]
+        assert doc["median_db"] == room_views.room_median(
+            legacy.takes, room_views.room_ceiling(root),
+        )["median_db"]
         assert answer["n_positions"] == doc["n_positions"] == 7
         assert len({p["pose_key"] for p in doc["positions"]}) == 7
         assert doc["coverage_hz"] == [ROOM_FLOOR_HZ, 200.0]
