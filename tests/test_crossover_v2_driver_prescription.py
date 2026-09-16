@@ -1035,6 +1035,45 @@ def test_the_gate_refuses_a_malformed_identity_or_provenance(packet, over, reaso
     assert excinfo.value.reason == reason
 
 
+@pytest.mark.parametrize(("filters", "pin", "reason"), [
+    ([], None, None),
+    ([], {"tweeter": -9.52}, None),
+    ([_cut()], None, dp.DRIVER_PRESCRIPTION_PROVENANCE_MISSING),
+])
+def test_only_a_nonempty_driver_chain_requires_packet_provenance(
+    packet, filters, pin, reason,
+):
+    document = _document(filters, packet, **({"pinned_trim_db": pin} if pin else {}))
+    document.pop("packet_fingerprint")
+    document.pop("prescriber")
+
+    if reason:
+        with pytest.raises(BlendPrescriptionRefused) as excinfo:
+            _gate(packet, document)
+        assert excinfo.value.reason == reason
+    else:
+        accepted = _gate(packet, document)
+        assert accepted.filters == ()
+        assert dict(accepted.pinned_trim_db) == (pin or {})
+
+
+@pytest.mark.parametrize(("filters", "reason"), [
+    ([], None),
+    ([_cut(role="aux")], dp.ROLE_UNKNOWN),
+])
+def test_only_an_empty_chain_may_pin_a_role_known_by_branch_context(
+    packet, filters, reason,
+):
+    document = _document(filters, packet, pinned_trim_db={"aux": -3.0})
+    context = {**BRANCH_CONTEXT, "aux": ((), 0.0)}
+    if reason:
+        with pytest.raises(BlendPrescriptionRefused) as excinfo:
+            _gate(packet, document, context=context)
+        assert excinfo.value.reason == reason
+    else:
+        assert dict(_gate(packet, document, context=context).pinned_trim_db) == {"aux": -3.0}
+
+
 def test_a_packet_mismatch_discloses_which_evidence_this_side_had(packet):
     """F-7: a laptop-built and a Pi-built packet of the same round can
     disagree on fingerprint because the evidence INPUTS differed, not

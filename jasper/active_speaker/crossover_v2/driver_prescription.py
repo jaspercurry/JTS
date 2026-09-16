@@ -1025,19 +1025,23 @@ def _parse_prescription(
             f"{DRIVER_PRESCRIPTION_SCHEMA_VERSION}, got {version!r}",
             supported=DRIVER_PRESCRIPTION_SCHEMA_VERSION,
         )
+    filters = _parse_filters(raw.get("filters"))
     fingerprint = raw.get(PACKET_FINGERPRINT_FIELD)
-    if not isinstance(fingerprint, str) or not fingerprint.strip():
+    if filters and (not isinstance(fingerprint, str) or not fingerprint.strip()):
         _refuse(
             DRIVER_PRESCRIPTION_PROVENANCE_MISSING,
             f"a prescription must echo the packet's {PACKET_FINGERPRINT_FIELD}",
         )
-    model, operator = _prescriber(raw.get("prescriber"), reason=DRIVER_PRESCRIPTION_PROVENANCE_MISSING)
+    if filters:
+        fingerprint = str(fingerprint).strip()
+        model, operator = _prescriber(raw.get("prescriber"), reason=DRIVER_PRESCRIPTION_PROVENANCE_MISSING)
+    else:
+        fingerprint, model, operator = "", "", ""
     rationale, dropped = _rationale(raw.get("rationale"), reason=DRIVER_PRESCRIPTION_MALFORMED)
-    filters = _parse_filters(raw.get("filters"))
     return (
         filters,
         _parse_pinned_trim(raw.get("pinned_trim_db"), filters),
-        fingerprint.strip(),
+        fingerprint,
         model,
         operator,
         rationale,
@@ -1070,12 +1074,12 @@ def read_driver_prescription(
     ) = _parse_prescription(raw)
     expected_delta_db, declared_tilt = _pre_registration(raw)
 
-    if not isinstance(packet_fingerprint, str) or not packet_fingerprint:
+    if filters and (not isinstance(packet_fingerprint, str) or not packet_fingerprint):
         _refuse(
             DRIVER_PRESCRIPTION_PACKET_MISMATCH,
             "the evidence packet carries no fingerprint to compare against",
         )
-    if fingerprint != packet_fingerprint:
+    if filters and fingerprint != packet_fingerprint:
         _refuse(
             DRIVER_PRESCRIPTION_PACKET_MISMATCH,
             "this prescription answers a different evidence packet "
@@ -1095,7 +1099,7 @@ def read_driver_prescription(
             },
         )
 
-    if not passbands_hz:
+    if filters and not passbands_hz:
         _refuse(
             PASSBAND_UNAVAILABLE,
             "this speaker's evidence declares no per-driver band, so there is "
@@ -1104,11 +1108,12 @@ def read_driver_prescription(
             "driver-safety profile — its own measurement_band_hz and "
             "required_protection_filters",
         )
-    passbands = dict(passbands_hz)
+    passbands = dict(passbands_hz or {})
     prescription_class = _check_bounds(filters, passbands)
     for role, _ in pinned_trim_db:
-        if role not in passbands:
-            _refuse(ROLE_UNKNOWN, "unknown speaker role", role=role, speaker_roles=sorted(passbands))
+        if role not in passbands and not (not filters and role in branch_context):
+            _refuse(ROLE_UNKNOWN, "unknown speaker role", role=role,
+                    speaker_roles=sorted(set(passbands) | set(branch_context)))
     context = {**{role: ((), 0.0) for role in passbands}, **branch_context}
     for role, trim in pinned_trim_db:
         context[role] = (context.get(role, ((), 0.0))[0], trim)
