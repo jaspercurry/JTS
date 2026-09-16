@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compose candidate interventions without carrying their parents' measurement claims."""
+"""Compose candidate parts and retain timing provenance. See ADR-0319."""
 
 from __future__ import annotations
 
@@ -188,8 +188,9 @@ def compose_candidate(
     evidence: Mapping[str, Any] | None = None,
     base_profile: Mapping[str, Any] | None = None,
 ) -> MeasuredCrossoverCandidate:
-    """Replace selected parts without inheriting their measurement claims."""
+    """Replace selected parts and retain unchanged measured timing."""
     selected = dict(sections or {})
+    evidence = dict(evidence or {})
     if "topology" in selected and not selected["topology"]:
         raise CandidateBankRefusal("composition_topology_required", "the hardware topology cannot be cleared")
     preset = base.candidate.source_preset
@@ -209,10 +210,23 @@ def compose_candidate(
         role: _linearization_entry(entry["filters"], role=role, sections=sections_by_driver, trim_db=trims[role])
         for role, entry in linearization.items()
     }
+    roles = required_driver_roles(preset.way_count)
     resolved_alignment, alignment_source = resolve_alignment(
-        base.candidate, selected, roles=required_driver_roles(preset.way_count),
-        saved=(base_profile or {}).get("timing"), commissioning=(evidence or {}).get("commissioning") or {},
+        base.candidate, selected, roles=roles,
+        saved=(base_profile or {}).get("timing"), commissioning=evidence.get("commissioning") or {},
     )
+    base_analysis = base.candidate.analysis
+    read = ((base_analysis.get("evidence") or {}).get("commissioning") or {}).get("alignment") or {}
+    if alignment_source == "base" and read.get("committed") and (
+        (base_analysis.get("resolution") or {}).get("alignment") == "measured"
+        or read.get("timing_verdict") == TIMING_MEASURED
+    ):
+        fields = alignment_to_candidate_fields({**read["committed"], "alignment_status": "ok"}, roles=roles)
+        if resolved_alignment == base.candidate.alignment == MeasuredCrossoverAlignment(*fields):
+            evidence["commissioning"] = {
+                **(evidence.get("commissioning") or {}), "alignment": {**read, "timing_verdict": TIMING_MEASURED},
+            }
+            alignment_source = "measured"
     room = dict(selected.get("room", base.candidate.room_correction) or {})
     bass = dict(selected.get("bass", base.candidate.bass_extension) or {})
     resolution = {
@@ -224,7 +238,7 @@ def compose_candidate(
         "kind": COMPOSITION_KIND,
         "measurement_status": "unmeasured",
         "resolution": resolution,
-        "evidence": dict(evidence or {}),
+        "evidence": evidence,
         "base": _source(base),
         "rationale": rationale,
     }

@@ -146,6 +146,42 @@ def test_document_resolves_timing_once(base, monkeypatch, source, saved, verdict
             "repeat_spread_db": .1, "repeat_spread_us": 2, "repeat_count": 3}
 
 
+@pytest.mark.parametrize("source,verdict,drift", [
+    ("measured", "measured", {}), ("measured", None, {}), ("base", "measured", {}),
+    ("base", None, {}), ("base", "needs_measurement", {}),
+    ("measured", "measured", {"delay_us": 38.5}),
+    ("measured", "measured", {"delay_role": "tweeter"}),
+    ("measured", "measured", {"polarity": "keep"}),
+])
+def test_room_document_carries_only_unchanged_measured_timing(base, bank, evidence, source, verdict, drift):
+    measured = judge_prescription_document(document(base.fingerprint), base=base, evidence=timing_evidence(base))
+    analysis = deepcopy(measured.analysis)
+    analysis["resolution"]["alignment"] = source
+    read = analysis["evidence"]["commissioning"]["alignment"]
+    if verdict is None:
+        read.pop("timing_verdict")
+        if source == "base":
+            analysis["evidence"].pop("commissioning")
+    else:
+        read["timing_verdict"] = verdict
+    parent = publish_authored_candidate(replace(measured, analysis=analysis,
+        alignment=replace(measured.alignment, **drift)), root=bank)
+    before = deepcopy(parent.candidate.to_dict())
+    child = judge_prescription_document(document(parent.fingerprint, {"room": room_document()}),
+                                       base=parent, evidence=evidence)
+    carried = not drift and (source == "measured" or verdict == "measured")
+    assert child.analysis["resolution"]["alignment"] == ("measured" if carried else "base")
+    assert child.alignment == parent.candidate.alignment
+    assert child.analysis["measurement_status"] == "unmeasured"
+    assert child.analysis["evidence"]["packet_fingerprint"] == evidence.packet["packet_fingerprint"]
+    assert child.analysis["resolution"]["room"] == "document"
+    if carried:
+        assert child.analysis["evidence"]["commissioning"]["alignment"] == {**read, "timing_verdict": "measured"}
+    else:
+        assert "commissioning" not in child.analysis["evidence"]
+    assert parent.candidate.to_dict() == before
+
+
 def bass_document(packet):
     return {**BASS_EXTENSION, "round_id": packet["round_id"]}
 

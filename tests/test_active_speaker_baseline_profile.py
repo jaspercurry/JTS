@@ -14,6 +14,8 @@ import pytest
 import yaml as yaml_lib
 
 from jasper.active_speaker import driver_base_trim as dbt
+from jasper.active_speaker.candidate_bank import publish_authored_candidate
+from jasper.active_speaker.candidate_parts import compose_candidate
 from jasper.active_speaker.crossover_v2.planning import applied_profile_timing
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
 from jasper.active_speaker import (
@@ -50,6 +52,7 @@ from tests.active_speaker_fixtures import (
     valid_camilla_config as _valid_config,  # noqa: F401 - shared fixture export
 )
 from tests.test_active_speaker_profile import _two_way_preset
+from tests.test_active_speaker_measured_crossover_candidate import _room_correction
 from tests._log_events import event_field_maps
 
 
@@ -897,7 +900,7 @@ def test_a_follower_domain_graph_never_touches_the_solo_base_trim(
     assert dbt.load_base_trim() == banked
 
 
-@pytest.mark.parametrize("source", ["measured", "document", "saved", "cleared", "base"])
+@pytest.mark.parametrize("source", ["measured", "composed", "document", "saved", "cleared", "base"])
 @pytest.mark.parametrize("delay", [-37.5, 22.0])
 def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source, delay):
     load_applied = baseline_profile_mod.load_applied_baseline_profile_state
@@ -909,12 +912,15 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source,
     incumbent = {"delay_us": delay, "polarity": "inverted", "provenance": "measured",
                  "measured": {**fields, **identity, "at": "2026-09-14T12:00:00Z"}}
     candidate = replace(base, alignment=MeasuredCrossoverAlignment(abs(delay), "tweeter" if delay > 0 else "woofer", "invert"),
-        analysis={"measurement_status": "unmeasured", "resolution": {"alignment": source}, "evidence": {"commissioning": {"alignment": {
+        analysis={"measurement_status": "unmeasured", "resolution": {"alignment": "measured" if source == "composed" else source}, "evidence": {"commissioning": {"alignment": {
             "timing_verdict": "measured", "committed": {"delay_us": delay, "polarity": "inverted"}, **fields, **identity}}}})
+    if source == "composed":
+        candidate = compose_candidate(publish_authored_candidate(candidate), sections={"room": _room_correction()},
+                                      evidence={"packet_fingerprint": "room-round"})
     monkeypatch.setattr(baseline_profile_mod, "_bank_applied_base_trim", lambda *a: None)
     monkeypatch.setattr(baseline_profile_mod, "release_staged_startup_hold", lambda: None)
     prepared = baseline_profile_mod.prepare_applied_baseline_profile(candidate, declaration=declaration,
-        design_draft=draft, measurements={}, applied_at=identity["at"], provenance={"timing": incumbent})
+        design_draft=draft, measurements={}, applied_at=identity["at"], provenance={} if source == "composed" else {"timing": incumbent})
     path = tmp_path / "applied.json"
     baseline_profile_mod.persist_applied_baseline_profile(prepared, apply_state={"result": "success"}, state_path=path)
     applied = load_applied(path)
@@ -924,8 +930,8 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source,
         assert applied_profile_timing(applied) is None
         return
     expected = {"delay_us": delay, "polarity": "inverted",
-                "provenance": "measured" if source == "measured" else "authored_by_model"}
-    if source == "measured":
+                "provenance": "measured" if source in ("measured", "composed") else "authored_by_model"}
+    if source in ("measured", "composed"):
         expected["measured"] = {**fields, **identity}
     elif source == "saved":
         expected = incumbent
