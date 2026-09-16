@@ -103,6 +103,7 @@ from jasper.audio_measurement.program import (
     segment_stimulus,
 )
 from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.repeated_sweep import repeat_summed_program
 from jasper.active_speaker.crossover_v2 import capture_dispatch as cd
 from jasper.audio_measurement.program_analysis import locate as locate_mod
 from jasper.audio_measurement.program_analysis.model import DriftEstimate, DISCONTINUITY_UNRESOLVED
@@ -113,6 +114,7 @@ from jasper.audio_measurement.program_analysis import (
     LOCATOR_RATE_HZ,
     SEGMENT_SEARCH_S,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
+    SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     MeasurementPriors,
     _band_rms_dbfs,
     _earliest_strong_peak,
@@ -1563,3 +1565,77 @@ def test_measure_without_anchor_evidence_has_no_anchor_rung():
     screen = cd.assess(analysis, phase="measure")
     assert screen.fault is None
     assert screen.evidence["mic_meter_status"] == "unmeasured"
+
+
+@pytest.mark.parametrize("passes,displacement_ms", [
+    (1, 0), (2, 0), (3, 0),
+    (2, 2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS),
+    (2, 2 * SEGMENT_SEARCH_S * 1000),
+    (3, -2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS),
+    (3, 2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS),
+    (3, 2 * SEGMENT_SEARCH_S * 1000),
+])
+def test_repeated_summed_anchor_uses_sweep_spacing(monkeypatch, passes, displacement_ms):
+    program = _verify_program(sweep_band_hz=(20.0, 1100.0))
+    if passes > 1:
+        program = repeat_summed_program(program, passes=passes, quiet_samples=SR, cooldown_s=2)
+    capture = _pristine(program, noise=1e-6)
+    if displacement_ms:
+        second = program.segment("sweep_verify_repeat_1")
+        start = GLOBAL_OFFSET + second.start_sample
+        stop = start + second.n_samples + program.segment("tail").n_samples
+        samples = capture[start:stop].copy()
+        capture[start:stop] = 0
+        shift = round(displacement_ms * SR / 1000)
+        capture[start + shift:stop + shift] = samples
+
+    locate = locate_mod._locate_in_window
+    first_sweep = program.segment("sweep_verify")
+    pilot = program.segment("pilot_summed_lo")
+    pilot_stimulus = segment_stimulus(pilot)
+    arrival = _earliest_strong_peak(capture, pilot_stimulus,
+        sample_rate=SR, band_hz=(pilot.f1_hz, pilot.f2_hz))
+    scheduled = arrival - pilot.start_sample + first_sweep.start_sample
+    pilot_scores = {scheduled: (0.5498, 0.385),
+                    scheduled - _pilot_spacing(program): (0.3351, 0.011)}
+
+    def field_pilot_scores(capture, stim, scheduled, n, *, sample_rate, band_hz=None):
+        located, confidence, presence = locate(
+            capture, stim, scheduled, n, sample_rate=sample_rate, band_hz=band_hz,
+        )
+        if n == first_sweep.n_samples and band_hz is None:
+            for at, scores in pilot_scores.items():
+                if abs(scheduled - at) < SEGMENT_SEARCH_S * SR:
+                    confidence, presence = scores
+        return located, confidence, presence
+
+    monkeypatch.setattr(locate_mod, "_locate_in_window", field_pilot_scores)
+    _, _, pilot_anchor = locate_mod._resolve_anchor(
+        program, capture, SR, arrival, pilot, {pilot.segment_id: pilot_stimulus},
+    )
+    assert pilot_anchor.ambiguous is True
+    assert pilot_anchor.presence == 0.385
+    assert pilot_anchor.confidence == 0.5498
+
+    analysis = analyze_program_capture(program, capture, SR)
+    verdict = cd.assess(analysis, phase="verify", purpose="bass" if passes > 1 else "room", program=program)
+    if passes == 1:
+        assert analysis.anchor == pilot_anchor
+        assert verdict.fault == "anchor_ambiguous"
+        return
+    anchor = analysis.anchor
+    assert anchor.anchor == "sweep_pass_1"
+    assert anchor.witness == "sweep_pass_2"
+    assert anchor.shift_ms == pytest.approx((GLOBAL_OFFSET + 200) / SR * 1000, abs=0.5)
+    assert anchor.corroborated is (not displacement_ms)
+    assert anchor.ambiguous is bool(displacement_ms)
+    assert verdict.ok is (not displacement_ms)
+    assert verdict.fault == ("anchor_ambiguous" if displacement_ms else None)
+    assert verdict.evidence["anchor"] == anchor.anchor
+    assert verdict.evidence["anchor_witness"] == anchor.witness
+    assert verdict.evidence["anchor_shift_ms"] == anchor.shift_ms
+    assert verdict.evidence["anchor_witness_residual_ms"] == anchor.witness_residual_ms
+    assert verdict.evidence["anchor_presence"] == anchor.presence
+    assert verdict.evidence["anchor_confidence"] == anchor.confidence
+    if abs(displacement_ms) < SEGMENT_SEARCH_S * 1000:
+        assert anchor.witness_residual_ms == pytest.approx(displacement_ms, abs=0.5)

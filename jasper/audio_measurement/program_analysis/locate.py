@@ -9,10 +9,12 @@ from __future__ import annotations
 import logging
 
 import numpy as np
+from scipy.signal import correlate, resample_poly
 
 from jasper.audio_measurement.alignment import _bandlimit
 from jasper.audio_measurement.program import (
     ExcitationProgram,
+    KIND_SUMMED_SWEEP,
     ProgramSegment,
     segment_stimulus,
     STIMULUS_KINDS,
@@ -26,6 +28,7 @@ from .model import (
     SEGMENT_SEARCH_S,
     SegmentLocation,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
+    SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     WITNESS_BAND_FLOOR_HZ,
 )
 from .signals import _has_clipped_run, _locate, _peak_dbfs
@@ -38,6 +41,7 @@ def _earliest_strong_peak(
     frac: float = 0.6,
     band_hz: tuple[float | None, float | None] | None = None,
     sample_rate: int | None = None,
+    repeat_offsets_samples: tuple[int, ...] = (),
 ) -> int:
     """Index of the EARLIEST normalized-correlation peak within ``frac`` of max.
 
@@ -47,6 +51,9 @@ def _earliest_strong_peak(
     scores the same as a louder later one; taking the earliest lag within
     ``frac`` of the max picks the true first occurrence.
 
+    For repeats, a first occurrence must also rank on the product of the
+    correlations at its scheduled repeat offsets.
+
     ``band_hz`` restricts similarity to the stimulus's OWN declared band —
     without it, room noise the stimulus never occupied suppresses a quiet
     member's score (a quiet pilot once scored below gate despite better
@@ -54,8 +61,6 @@ def _earliest_strong_peak(
     sliding every analysis window one pilot spacing). A caller with no band
     to declare keeps the full-band behavior.
     """
-    from scipy.signal import correlate
-
     cap = np.asarray(capture, dtype=np.float64)
     stim = np.asarray(stimulus, dtype=np.float64)
     cap = cap - cap.mean()
@@ -85,6 +90,13 @@ def _earliest_strong_peak(
     # ratio up; a floor at a small fraction of the loudest window is enough.
     floor = 1e-6 * float(local_norm.max()) + 1e-12
     ncc = np.abs(num) / (local_norm * stim_norm + floor)
+    if repeat_offsets_samples:
+        first = ncc[:-repeat_offsets_samples[-1]]
+        paired = first.copy()
+        for offset in repeat_offsets_samples:
+            paired *= ncc[offset:offset + first.size]
+        paired[first < frac * float(ncc.max())] = 0.0
+        ncc = paired
     peak = float(ncc.max()) if ncc.size else 0.0
     if peak <= 0.0:
         return 0
@@ -258,17 +270,20 @@ def _global_offset(
     The whole-capture matched filter runs at :data:`LOCATOR_RATE_HZ`; the
     coarse arrival is then refined at the full rate inside a tiny window, so
     the returned offset is full-rate-exact. That locate answers WHERE, not
-    WHICH occurrence — :func:`_resolve_anchor` arbitrates that and owns the
-    returned segment. The fourth return value carries its measured evidence.
+    WHICH occurrence. Repeated summed sweeps use their scheduled spacing;
+    other programs use :func:`_resolve_anchor`. The fourth return value
+    carries the measured evidence.
     """
-    from scipy.signal import resample_poly
-
     stimuli: dict[str, np.ndarray] = {}
-    first = None
-    for seg in program.segments:
-        if seg.kind in STIMULUS_KINDS:
-            first = seg
-            break
+    sweeps = [seg for seg in program.segments if seg.kind == KIND_SUMMED_SWEEP]
+    repeated = len(sweeps) > 1 and all(
+        _stimulus_shape(seg) == _stimulus_shape(sweeps[0])
+        and seg.start_sample >= previous.start_sample + previous.n_samples
+        for previous, seg in zip(sweeps, sweeps[1:])
+    )
+    first = sweeps[0] if repeated else next(
+        (seg for seg in program.segments if seg.kind in STIMULUS_KINDS), None,
+    )
     if first is None:
         raise ValueError("program has no stimulus segment to locate against")
     stim = segment_stimulus(first)
@@ -283,7 +298,9 @@ def _global_offset(
         capture_lo = capture
         stim_lo = np.asarray(stim, dtype=np.float64)
     coarse = _earliest_strong_peak(
-        capture_lo, stim_lo, band_hz=band_hz, sample_rate=sample_rate // down
+        capture_lo, stim_lo, band_hz=band_hz, sample_rate=sample_rate // down,
+        repeat_offsets_samples=tuple(round((seg.start_sample - first.start_sample) / down)
+                                     for seg in sweeps[1:]) if repeated else (),
     ) * down
 
     # Full-rate refinement in a +/-4*down window: bounded cost, full-rate precision.
@@ -297,10 +314,47 @@ def _global_offset(
         )
     else:
         arrival = coarse
+    if repeated:
+        offset = arrival - first.start_sample
+        sweep_evidence = _resolve_sweep_anchor(program, capture, sample_rate, offset, sweeps[1], stim)
+        return offset, first, stimuli, sweep_evidence
     anchor, global_offset, evidence = _resolve_anchor(
         program, capture, sample_rate, arrival, first, stimuli
     )
     return global_offset, anchor, stimuli, evidence
+
+
+def _resolve_sweep_anchor(
+    program: ExcitationProgram, capture: np.ndarray, sample_rate: int,
+    offset: int, witness: ProgramSegment, stimulus: np.ndarray,
+) -> AnchorEvidence:
+    scheduled = offset + witness.start_sample
+    located, confidence, presence = _locate_in_window(
+        capture, stimulus, scheduled, witness.n_samples, sample_rate=sample_rate,
+    )
+    assert witness.f1_hz is not None and witness.f2_hz is not None
+    band_start = max(WITNESS_BAND_FLOOR_HZ, witness.f1_hz)
+    if confidence < SWEEP_LOCATE_CONFIDENCE_FLOOR and band_start < witness.f2_hz:
+        located, confidence, _ = _locate_in_window(
+            capture, stimulus, scheduled, witness.n_samples, sample_rate=sample_rate,
+            band_hz=(band_start, witness.f2_hz),
+        )
+    residual_ms = (located - scheduled) / sample_rate * 1000.0
+    corroborated = (confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
+                    and abs(residual_ms) <= SWEEP_SCHEDULE_RESIDUAL_CEILING_MS)
+    evidence = AnchorEvidence(
+        anchor="sweep_pass_1", witness="sweep_pass_2", shift_ms=offset / sample_rate * 1000.0,
+        witness_residual_ms=residual_ms, ambiguous=not corroborated,
+        presence=presence, confidence=confidence, corroborated=corroborated,
+    )
+    log_event(
+        logger, "program_analysis.anchor", level=logging.INFO if corroborated else logging.WARNING,
+        phase=program.phase, program_id=program.program_id, anchor=evidence.anchor,
+        witness=evidence.witness, shift_ms=evidence.shift_ms,
+        witness_residual_ms=residual_ms, presence=presence, confidence=confidence,
+        corroborated=corroborated, ambiguous=evidence.ambiguous,
+    )
+    return evidence
 
 
 def _locate_in_window(

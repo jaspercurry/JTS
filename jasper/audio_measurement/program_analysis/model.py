@@ -911,6 +911,11 @@ class AnchorEvidence:
     presence: float | None = None
     confidence: float | None = None
     corroborated: bool | None = None
+    anchor: str | None = None
+    witness: str | None = None
+    # Capture time minus program time, in milliseconds.
+    shift_ms: float | None = None
+    witness_residual_ms: float | None = None
 
 
 @dataclass(frozen=True)
