@@ -13,7 +13,9 @@ from jasper.json_fields import finite_float, parse_utc_iso
 from jasper.output_topology import OutputTopology, channel_identity_report, topology_is_subless_passive_mains
 from .applied_identity import applied_identity
 from .measurement_programs import PURPOSE_BASS, PURPOSE_ROOM, PURPOSE_SPEAKER
-from .wizard_client import APPLY_PATH
+from .wizard_client import APPLY_PATH, CAPTURE_CANCEL_PATH
+from .round_copy import round_lines, packet_lines, ROUND_LABELS
+from .measurement_programs import available_programs, program
 
 COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
 VIEW_STATUS_NOT_REQUIRED = "not_required"
@@ -24,6 +26,62 @@ COMMISSIONING_STEP_PAGE_TITLES = {
     "profile": "Apply speaker profile",
 }
 _MEASURE_LABELS = {PURPOSE_SPEAKER: "Measure the baseline", PURPOSE_ROOM: "Measure the room", PURPOSE_BASS: "Measure bass"}
+
+
+def round_status(capture: Mapping[str, Any]) -> list[str]:
+    facts = capture.get("run") or {}
+    if facts.get("round_dir"):
+        lines = packet_lines(facts["round_dir"])
+        if lines:
+            return lines
+        facts = {**facts, "packet_error": "packet_unreadable"}
+    return round_lines(facts, pending=bool(capture.get("position_pending") or capture.get("join")))
+
+
+def round_capture(capture: Mapping[str, Any]) -> dict[str, Any]:
+    from .crossover_v2.position_gate import RETAKE_ENDPOINT  # lazy: gate imports measurement
+
+    result = dict(capture)
+    facts = capture.get("run") or {}
+    held = capture.get("join") or capture.get("position_pending")
+    if not facts.get("pose") or not facts.get("poses"):
+        return result
+    result["round_lines"] = round_status(capture)
+    pending = dict(held or {})
+    pending.update(mover=facts.get("mover", pending.get("mover")), prompt={"title": "", "body": "", "progress": ""})
+    pending["actions"] = [{**action, "label": ROUND_LABELS.get(action["id"], action["label"])}
+                          for action in pending.get("actions", ()) if action["id"] != "retake"]
+    pending["actions"] += [
+        {"id": "retake", "label": ROUND_LABELS["retake"], "endpoint": RETAKE_ENDPOINT, "body": {}},
+        {"id": "reset_round", "label": ROUND_LABELS["reset_round"], "endpoint": CAPTURE_CANCEL_PATH, "body": {}},
+    ]
+    if pending["mover"] != "human":
+        pending["actions"] = []
+    result["round_pending"] = pending
+    return result
+
+
+def round_choices(status: Mapping[str, Any]) -> list[dict[str, Any]]:
+    from .angle_capture import request_for_program, LateralWalkRefused  # lazy: measurement planning
+    from .crossover_v2.conductor_context import resolve_conductor_context  # lazy: measurement planning
+    from .plan_run import prepare_plan_captures, preview_schedule  # lazy: measurement planning
+    from .crossover_v2.contracts import CrossoverV2FlowError  # lazy: measurement planning
+
+    context = resolve_conductor_context(status, require_banked_level=False)
+    choices = []
+    for name, size in available_programs():
+        selected = program(name, size)
+        choice: dict[str, Any] = {"id": f"{name}/{size}", "label": f"{name}/{size}"}
+        try:
+            request = request_for_program(selected, mover=selected.mover or "human")
+            captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
+            facts = preview_schedule(request, captures, context)
+            choice.update(lines=round_lines(facts), action={"id": "run_program", "label": ROUND_LABELS["run_program"],
+                          "endpoint": "/sound/speaker/crossover/v2/session", "body": {"plan": request.to_dict()}})
+        except (ValueError, LateralWalkRefused, CrossoverV2FlowError) as exc:
+            choice["lines"] = [str(exc)]
+        choices.append(choice)
+    return choices
 
 
 def _next_program_action(

@@ -12,6 +12,8 @@ from ..json_fields import finite_float as _finite
 from ..log_event import log_event
 from jasper.audio_measurement.program_analysis.model import TIMING_NEEDS_MEASUREMENT
 from .alignment_evidence import timing_next_action
+from .commissioning_coordinator import round_capture, round_status
+from .round_copy import ROUND_LABELS
 from .frequency_display import prepare_frequency_curve
 from .crossover_v2.durable_state import FINDING_HOUSEHOLD_REFS_KEY
 from .crossover_v2.coordinator import series_position_from_state
@@ -495,10 +497,13 @@ def _envelope(
         "phase": _v2(status).get("phase"),
         "active": True,
         "steps": _step_payload(active_step, _done_before(active_step)),
-        "verdict_text": verdict,
+        "verdict_text": "" if screen in {"measure", "verify"} and _mapping(_mapping(status.get("capture")).get("run")).get("poses") else verdict,
         "nudges": nudges or [],
         "expert_details": list(expert_details or []),
-        "capture": (_mapping(status.get("capture")) or None) if advertise_capture else None,
+        "capture": round_capture(_mapping(status.get("capture"))) if advertise_capture else None,
+        "round_lines": round_status(_mapping(status.get("capture"))),
+        "round_choices": status.get("round_choices", []),
+        "round_default": status.get("round_default"),
         "next_action": next_action,
         "alternate_actions": alternate_actions or [],
         "action_note": TIMING_RESET_NOTE if any(
@@ -525,8 +530,7 @@ def _envelope(
 def _awaiting_plan_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     return _envelope(
         screen="awaiting_plan", active_step="microphone_check",
-        verdict="No measurement is planned. Start one with jasper-round run "
-                "(the LLM does this); this page joins it.",
+        verdict=ROUND_LABELS["choose_program"],
         status=status, advertise_capture=False,
     )
 
@@ -579,7 +583,7 @@ def _failure_envelope(code: str, status: Mapping[str, Any]) -> dict[str, Any]:
         screen="finished", active_step="verify", terminal_status=None if live else CAPTURE_FAILED,
         verdict=_reason_message(code, spec, status) if spec else "Measurement failed.",
         nudges=[] if live else [{"code": "run_ended", "severity": "info", "text":
-            "This run has ended. Start the next measurement with jasper-round run."}],
+            ROUND_LABELS["choose_program"]}],
         next_action=action, status=status, advertise_capture=live,
     )
 

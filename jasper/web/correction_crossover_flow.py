@@ -12,6 +12,8 @@ from http import HTTPStatus
 from typing import Any, Mapping
 
 from ..log_event import log_event
+from jasper.active_speaker.capture_status import SESSION_ENDED_STATUSES
+from jasper.active_speaker.measurement_programs import program
 from .chrome import canonical_header, canonical_page
 
 logger = logging.getLogger(__name__)
@@ -64,14 +66,14 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
   </section>
 
   <section class="info-card" aria-live="polite">
+    <dl class="deflist"><dt>Round</dt><dd id="crossover-round-lines"></dd></dl>
+    <div id="crossover-round-choice" hidden>
+      <div class="field"><label for="crossover-round-select">Pose set</label><select id="crossover-round-select"></select></div>
+      <div id="crossover-round-summary"></div>
+      <div id="crossover-round-start" class="form-actions"></div>
+    </div>
     <div id="crossover-action" class="measurement-row__actions"></div>
     <div id="crossover-capture" hidden>
-      <!-- The walkthrough: one prompted spot at a time, for a session whose
-           operator is at THIS browser rather than on a capture page (#2881).
-           Eyebrow (which spot) / title (the move) / hint (the supporting
-           clause) is the same three-slot grammar the capture page's step
-           screen uses, and the words in all three come from the capture
-           plan, so the two surfaces read alike without sharing markup. -->
       <div id="crossover-walk" class="capture-walk" hidden>
         <!-- Page-local metric/imperial preference (#3629, #1941 Q2). Every
              prompt below already carries both units in one string
@@ -155,6 +157,17 @@ def handle_envelope(
     passive speakers get ``active=False`` (Layer A hidden)."""
     status, _ = handle_status(capture=capture)
     envelope = _build_envelope_logged(status)
+    live = status.get("capture") or {}
+    if envelope["screen"] in {"awaiting_plan", "finished"} and (not live or live.get("status") in SESSION_ENDED_STATUSES):
+        from jasper.active_speaker.commissioning_coordinator import load_commissioning_view, round_choices  # lazy: planning reads measurement
+        from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError  # lazy: measurement planning
+
+        try:
+            selected = program(load_commissioning_view()["next_action"].get("program") or "speaker")
+            envelope["round_default"] = f"{selected.program_id}/{selected.size}"
+            envelope["round_choices"] = round_choices(status)
+        except (OSError, ValueError, CrossoverV2FlowError) as exc:
+            envelope["round_lines"] = [*envelope.get("round_lines", []), str(exc)]
     return envelope, HTTPStatus.OK
 
 
