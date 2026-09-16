@@ -7,20 +7,24 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from dataclasses import replace
-from typing import Any
+from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_json
 from .commissioning_evidence_store import CommissioningEvidenceStoreError
-from .frequency_view import FrequencyRun, build_frequency_view
+from .frequency_view import FrequencyRun, build_frequency_view, manifest_frequency_run
 from .frequency_plot import DEFAULT_REF_BAND_HZ, prepare_plot_curve, render_frequency_view
 from .measurement_analysis import MeasurementAnalysisRefused, analyze_measurement_bundle
 from .measurement_bass import bass_view
+from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose
+from .run_manifest import room_sets
+from .crossover_v2.gate_sweep import reference_gated_measurement
 from .crossover_v2.room_grade import bundle_graph_scopes, grade_room_median, read_room_median
 from .crossover_v2.room_views import room_document
 from .crossover_v2.room_selection import select_seat_takes
 from .crossover_v2.round_captures import RoundCapturesRefused
 from .crossover_v2.round_inputs import RoundInputs, RoundSetRefused, round_inputs, read_run_manifest, resolve_set, default_out
 from .round_view_artifacts import ARTIFACT_BY_VIEW
+from .round_packet_report import gate_fields
 
 REFUSE_NO_SEAT_TAKES = "room_no_seat_takes"
 
@@ -29,21 +33,46 @@ def analyzed_frequency_run(path: Path, *, calibration_root: Path | None = None,
                            run_reference_db: float | None = None) -> FrequencyRun:
     try:
         inputs = round_inputs(path)
-        run = analyze_measurement_bundle(
+        try:
+            manifest = read_run_manifest(inputs)
+        except RoundSetRefused as exc:
+            if exc.reason not in {"round_manifest_missing", "round_manifest_unfinalized"}:
+                raise
+            manifest = {}
+        purpose = run_purpose(manifest.get("program"))
+        run = manifest_frequency_run(manifest) if purpose == PURPOSE_SPEAKER else analyze_measurement_bundle(
             inputs.session_dir, calibration_root=calibration_root, run_reference_db=run_reference_db,
         )
+        rows: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = [
+            (group, take) for group in manifest.get("sets", ()) for take in group["takes"]]
+        rooms = manifest.get("sets", ()) if purpose == PURPOSE_ROOM else room_sets(manifest) if purpose == PURPOSE_SPEAKER else []
+        series = []
+        derived: dict[str, dict[str, Any]] = {}
+        for curve in run.series:
+            group, take = next(((g, t) for g, t in rows if t["take_id"] == curve.details.get("take_id")
+                               and (not curve.details.get("set_id") or g["set_id"] == curve.details["set_id"])
+                               and t.get("role") in (None, curve.details.get("role"))), ({}, {}))
+            curve = replace(curve, details={**curve.details, "base": group.get("base", False),
+                                           "set_id": group.get("set_id"),
+                                           **gate_fields({"curve": curve.details}),
+                                           "window": "gated" if curve.details.get("gate_window_ms") else "ungated"})
+            series.append(curve)
+            if group not in rooms or not take.get("selected") or curve.details.get("role") != "summed":
+                continue
+            record_path = take["artifacts"]["record_id"]
+            if record_path not in derived:
+                derived[record_path] = reference_gated_measurement(inputs.session_dir, record_path,
+                                                                 calibration_root=calibration_root)
+            gated = derived[record_path]
+            series.append(replace(curve, id=f"{curve.id}:gated", label=f"{curve.label} · Gated",
+                                  freqs_hz=gated["freqs_hz"], magnitude_db=gated["magnitude_db"],
+                                  smoothing_fractional_octave=gated["smoothing_fractional_octave"],
+                                  details={**curve.details, **{key: value for key, value in gated.items()
+                                           if key not in {"freqs_hz", "magnitude_db", "smoothing_fractional_octave"}}}))
+        return replace(run, series=tuple(series))
     except CommissioningEvidenceStoreError as exc:
         raise MeasurementAnalysisRefused(exc.code.value) from exc
-    try:
-        manifest = read_run_manifest(inputs)
-    except RoundSetRefused as exc:
-        if exc.reason not in {"round_manifest_missing", "round_manifest_unfinalized"}:
-            raise
-        return run
-    bases = {take["take_id"] for group in manifest["sets"] if group.get("base") for take in group["takes"]}
-    return replace(run, series=tuple(replace(curve, details={
-        **curve.details, "base": curve.details.get("take_id") in bases,
-    }) for curve in run.series))
+
 
 
 def frequency_payload(run_a: FrequencyRun, run_b: FrequencyRun | None = None, *, ref_band_hz=DEFAULT_REF_BAND_HZ,
