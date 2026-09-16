@@ -679,12 +679,21 @@ def test_baseline_pairs_driver_and_room_reads_and_keeps_timing_at_entry(layout, 
 def test_speaker_room_layout_pairs_driver_and_summed_stops_with_entry_timing():
     program = run_program("speaker", "room_quick")
     request = ac.request_for_program(program, mover=ac.MOVER_ARM)
+    roles = tuple(_roles())
 
     assert [(stop.regime, stop.purpose) for stop in request.stops] == [
         pair for _pose in program.poses
         for pair in [(ac.REGIME_PER_DRIVER, "speaker"), (ac.REGIME_SUMMED, "room")]
     ]
-    timing = [capture for capture in plan_run.prepare_plan_captures(request)
+    captures = plan_run.prepare_plan_captures(request, roles_bands=roles)
+    room_capture = next(capture for capture in captures if capture.stop.purpose == "room")
+    room_band = ac.room_sweep_band_hz(
+        roles, (room_capture.resolved(request).prompt,)
+    )
+    assert room_band is not None and room_band[0] == 20.0
+    assert {capture.spec.sweep_band_hz for capture in captures if capture.stop.purpose == "room"} == {room_band}
+    assert {capture.spec.sweep_band_hz for capture in captures if capture.stop.purpose == "speaker"} == {()}
+    timing = [capture for capture in captures
               if capture.spec.graph_scope == "timing"]
     assert [(capture.stop.angle_deg, capture.spec.program_phase) for capture in timing] == [
         (0, "entry_baseline")]

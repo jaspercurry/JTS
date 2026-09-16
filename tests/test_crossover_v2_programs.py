@@ -519,7 +519,7 @@ def test_summed_sweep_fits_the_tightest_role_duration(limit, band, requested_s):
 @pytest.mark.parametrize(("purpose", "size"), [
     ("speaker", "mark"), ("room", "arm"), ("room", "cloud"), ("bass", "quick"), ("bass", "cloud"),
 ])
-def test_prepared_summed_captures_keep_the_program_band(purpose, size):
+def test_prepared_summed_captures_use_the_stop_purpose_band(purpose, size):
     layout = measurement_program(purpose, size)
     request = request_for_program(layout, mover=layout.mover or "human")
     captures = prepare_plan_captures(request, roles_bands=_roles())
@@ -534,11 +534,12 @@ def test_prepared_summed_captures_keep_the_program_band(purpose, size):
             continue
         program = compose_plan_program(host, spec, None, context=context)
         sweeps = [s for s in program.stimulus_segments() if s.kind == "summed_sweep"]
-        expected = {"speaker": (150, 20000), "room": (20, 20000), "bass": (20, 1100)}[purpose]
+        stop_purpose = capture.stop.purpose or purpose
+        expected = {"speaker": (150, 20000), "room": (20, 20000), "bass": (20, 1100)}[stop_purpose]
         assert len(sweeps) == (3 if purpose == "bass" else 1)
         assert all((sweep.f1_hz, sweep.f2_hz) == expected for sweep in sweeps)
-        assert spec.sweep_band_hz == (expected if purpose == "room" else ())
-        assert (program.program_id == excitation.verify_program().program_id) is (purpose == "speaker")
+        assert spec.sweep_band_hz == (expected if stop_purpose == "room" else ())
+        assert (program.program_id == excitation.verify_program().program_id) is (stop_purpose == "speaker")
 
 
 def test_per_driver_measure_keeps_declared_bands_with_a_room_session():

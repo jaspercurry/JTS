@@ -56,9 +56,9 @@ from .measurement_programs import (
     REGIME_BRANCHES,
     REGIME_NEAR_FIELD,
     REGIMES,
+    resolved_measurement_purpose,
     validated_capture_purpose,
     pose_place,
-    run_purpose,
     validated_pose,
     validated_angle,
 )
@@ -691,7 +691,7 @@ def stop_specs(
             positions=(stop.angle_deg,),
             sweep_band_hz=() if stop.stimulus else request.template.sweep_band_hz or (
                 room_sweep_band_hz(roles_bands, (prompt,))
-                if roles_bands and run_purpose(request.program) != PURPOSE_SPEAKER else None
+                if roles_bands and resolved_measurement_purpose(stop.purpose, stop.kind) != PURPOSE_SPEAKER else None
             ) or (),
             sweep_s=None if stop.stimulus else request.template.sweep_s,
             vertical_deg=stop.elevation_deg,
