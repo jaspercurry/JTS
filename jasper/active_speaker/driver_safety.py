@@ -1125,6 +1125,8 @@ def validate_driver_research_request(
                     "cabinet",
                     "level_duration_limits",
                     "operator_notes",
+                    "recommended_highpass_hz",
+                    "recommended_highpass_slope_db_per_octave",
                 } | LEGACY_DROPPED_DRIVER_FIELDS,
             )
             context = normalise_driver_safety_fields(
