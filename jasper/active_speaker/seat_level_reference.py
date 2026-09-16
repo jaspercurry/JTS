@@ -23,12 +23,12 @@ from jasper.log_event import log_event
 
 from ._common import finite_float
 from .profile import SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
-
-logger = logging.getLogger(__name__)
 from .volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import MicSensitivity
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 2
 SEAT_LEVEL_REFERENCE_KIND = "jts_active_speaker_seat_level_reference"
@@ -40,13 +40,13 @@ DEFAULT_TOLERANCE_DB = 1.0
 
 
 class SeatLevelTargetError(ValueError):
-    """The requested seat-SPL target is not a band this speaker may chase."""
+    """Invalid commissioning SPL target."""
 
 
 def validate_commissioning_spl(level_db_spl: float, *, ceiling_db_spl: float, margin_db: float) -> None:
     if not all(math.isfinite(value) for value in (level_db_spl, ceiling_db_spl, margin_db)) or margin_db < 0:
         raise SeatLevelTargetError("measurement SPL, ceiling and nonnegative margin must be finite")
-    bound = ceiling_db_spl - margin_db
+    bound = spl_raise_bound_db_spl(ceiling_db_spl, margin_db=margin_db)
     if level_db_spl > bound:
         raise SeatLevelTargetError(f"measurement SPL {level_db_spl:g} exceeds the commissioning bound of {bound:g} dB SPL")
 
@@ -102,6 +102,10 @@ def measured_rung_admission(
             "bound_by": "measured_window_crest" if admitted < fader_db else None}
 
 
+def stimulus_mismatch(anchor_program_id: str | None, program_id: str | None) -> bool | None:
+    return anchor_program_id != program_id if anchor_program_id and program_id else None
+
+
 @dataclass(frozen=True)
 class StimulusProvenance:
     """The summed program and the statistic used for the session gain."""
@@ -126,15 +130,7 @@ class StimulusProvenance:
 
 @dataclass(frozen=True)
 class SeatLevelTarget:
-    """A seat-SPL band, validated against the profile's commissioning ceiling.
-
-    The band is ``[target - tolerance, target + tolerance]``. Its TOP — not its
-    midpoint — is what must clear the ceiling: a band whose upper edge sits
-    above ``max_commissioning_level_db_spl`` is asking the ramp to aim at a
-    level the profile forbids, and is refused at construction rather than
-    silently clipped (a clipped band would converge somewhere the operator
-    never asked for and record it as the reference).
-    """
+    """A seat-SPL band whose upper edge must clear the commissioning bound."""
 
     target_db_spl: float
     tolerance_db: float

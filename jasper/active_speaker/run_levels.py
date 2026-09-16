@@ -25,6 +25,7 @@ from .crossover_v2.position_gate import PositionGate
 from .plan_run import Analyze, PlanCapture, RunDoor, RunSignals, _Control, _grant, prepare_plan_captures, run_plan
 from .preflight import PreflightFacts, PreflightIssue, PreflightReport, preflight
 from .run_manifest import RunManifest
+from .seat_level_reference import stimulus_mismatch
 
 LEVEL_OFFSETS_DB = (0.0, -5.0, -10.0, -15.0)
 
@@ -61,7 +62,7 @@ class LevelLadder:
                              evidence={**issue.evidence, "level_db": report.plan.level.volume_db,
                                        "predicted_db_spl": report.plan.level.predicted_db_spl, "dropped": True})
                      for report in self.levels if report.blocking
-                     for issue in (next(issue for issue in report.issues if issue.blocking),))
+                     for issue in (report.blocking_issue,))
 
     @property
     def spl_ceiling_db_spl(self) -> float | None:
@@ -90,7 +91,7 @@ def level_ladder(plan: AngleCaptureRequest, facts: PreflightFacts) -> LevelLadde
     anchor = anchor_report.plan.level.resolved
     return _ladder(tuple(replace(plan, level=replace(plan.level,
                         level_db=anchor.reference_volume_db + offset if anchor else None))
-                         for offset in sorted(LEVEL_OFFSETS_DB)), facts)
+                         for offset in LEVEL_OFFSETS_DB), facts)
 
 
 def _ladder(plans: Sequence[AngleCaptureRequest], facts: PreflightFacts) -> LevelLadder:
@@ -150,7 +151,7 @@ async def run_levels(
     """Finish admissible levels at each pose under one mic hold."""
     admitted = ladder.admissible
     if not admitted:
-        issue = next(issue for issue in ladder.levels[0].issues if issue.blocking)
+        issue = ladder.levels[0].blocking_issue
         raise LateralWalkRefused(issue.code, issue.detail)
     signals = signals or RunSignals()
     results: list[RunManifest] = []
@@ -181,7 +182,7 @@ async def run_levels(
                     if save_ladder:
                         await save_ladder(ladder.to_dict())
                     if report.blocking:
-                        issue = next(issue for issue in report.issues if issue.blocking)
+                        issue = report.blocking_issue
                         raise LateralWalkRefused(issue.code, issue.detail)
                     gate.publish({"status": "running", "pose": pose_index,
                                   "level": {"session": request.level.resolved.session() if request.level.resolved else None,
@@ -200,8 +201,7 @@ async def run_levels(
                             "run_stimulus": {"program_id": basis["program_id"],
                                              "wav_sha256": basis["stimulus_wav_sha256"],
                                              "peak_dbfs": basis["stimulus_peak_dbfs"]},
-                            "stimulus_mismatch": (anchor_stimulus["program_id"] != basis["program_id"]
-                                if anchor_stimulus.get("program_id") and basis["program_id"] else None),
+                            "stimulus_mismatch": stimulus_mismatch(anchor_stimulus.get("program_id"), basis["program_id"]),
                             "measured_offset_db": measured - predicted
                                 if measured is not None and predicted is not None else None})
                         return bound.analyze(record, record_id)

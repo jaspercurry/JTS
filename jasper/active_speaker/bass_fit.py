@@ -84,10 +84,8 @@ def fit_bass_shape(
             raise CrossoverV2Refused(code="bass_fit_pose_missing")
         reference, aligned = aligned_bass_pair(before, after, grid, reference_band_hz)
         shared = np.isfinite(aligned).all(axis=0)
-        common = [smooth_bass_curve(grid, np.where(shared, curve, np.nan)) for curve in aligned]
-        shared_curves[pose].append(common)
-        curves[pose].append([common[side] if np.array_equal(np.isfinite(curve), shared)
-                             else smooth_bass_curve(grid, curve) for side, curve in enumerate(aligned)])
+        shared_curves[pose].append([smooth_bass_curve(grid, np.where(shared, curve, np.nan)) for curve in aligned])
+        curves[pose].append([smooth_bass_curve(grid, curve) for curve in aligned])
         groups[pose].append((before, after))
         sources.append({"before": before["record_path"], "after": after["record_path"],
                         "reference_db": reference, "comparison": match, "across_positions": across})

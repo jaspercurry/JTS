@@ -184,20 +184,18 @@ def _verify_capture_integrity(
                 loc.located_start + program.segment(loc.segment_id).n_samples])[0]
                 for loc in repeat_locations if loc.kind == KIND_SUMMED_SWEEP)
             checks.append(IntegrityCheck("zero_fill_runs", INTEGRITY_FAIL if zero_runs else INTEGRITY_PASS))
-    for name, input_code in (
-        (INTEGRITY_CHECK_REPEAT_EPSILON, "epsilon_out_of_bound"),
-        (INTEGRITY_CHECK_REPEAT_LEVEL, "repeat_level_disagree"),
-        (INTEGRITY_CHECK_WITHIN_ROLE_DESYNC, "residual_desync"),
-        (INTEGRITY_CHECK_DISCONTINUITY_STEP, "timeline_slip"),
+    for name, input_code, unavailable in (
+        (INTEGRITY_CHECK_REPEAT_EPSILON, "epsilon_out_of_bound", _INTEGRITY_NO_REPEAT_PAIR),
+        (INTEGRITY_CHECK_REPEAT_LEVEL, "repeat_level_disagree", _INTEGRITY_NO_REPEAT_PAIR),
+        (INTEGRITY_CHECK_WITHIN_ROLE_DESYNC, "residual_desync", _INTEGRITY_NO_REPEAT_PAIR),
+        (INTEGRITY_CHECK_DISCONTINUITY_STEP, "timeline_slip", _INTEGRITY_STEP_NEEDS_MORE_SWEEPS),
     ):
         if repeated and name != INTEGRITY_CHECK_DISCONTINUITY_STEP:
             continue
         if drift is None:
             checks.append(IntegrityCheck(
                 name, INTEGRITY_NOT_EVALUATED,
-                refusal or (_INTEGRITY_SWEEP_NOT_HEARD if repeated else
-                            _INTEGRITY_STEP_NEEDS_MORE_SWEEPS if name == INTEGRITY_CHECK_DISCONTINUITY_STEP
-                            else _INTEGRITY_NO_REPEAT_PAIR),
+                refusal or (_INTEGRITY_SWEEP_NOT_HEARD if repeated else unavailable),
             ))
         elif name == INTEGRITY_CHECK_DISCONTINUITY_STEP and not drift.discontinuity_resolvable:
             checks.append(IntegrityCheck(name, INTEGRITY_NOT_EVALUATED, _INTEGRITY_STEP_NEEDS_MORE_SWEEPS))

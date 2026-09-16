@@ -13,7 +13,7 @@ from typing import Any
 
 from jasper.camilla_config_contract import SHELF_Q, FilterSpec
 from jasper.json_fields import finite_float
-from jasper.sound.profile import _filter_response_complex, _freq_trig
+from jasper.sound.profile import _filter_response_complex, _freq_trig  # Share CamillaDSP math so boost and profile predictions agree.
 
 
 # CamillaDSP v4.1.3 Loudness parameter range; not a driver capability estimate.
@@ -135,7 +135,6 @@ def loudness_boost_db(canonical_volume_db: float, descriptor: DynamicBassDescrip
 def expected_boost_db(
     descriptor: DynamicBassDescriptor, fader_db: float, freqs_hz: Iterable[float],
 ) -> list[float]:
-    """Model CamillaDSP's uncompressed slope-12 shelf with a delta high-pass."""
     frequencies = list(freqs_hz)
     trig = _freq_trig(frequencies)
     shelf = _filter_response_complex(
