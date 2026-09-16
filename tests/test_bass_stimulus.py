@@ -288,6 +288,8 @@ def test_noisy_passes_still_average_at_the_schedule(bass_fixture, tmp_path, monk
     assert take.analysis.glitch_detected is dropout
     if noise_rms == 0.11:
         assert integrity.locate_confidence_min == pytest.approx(0.5, abs=0.05)
+        assert take.analysis.anchor.corroborated is True
+        assert take.analysis.anchor.ambiguous is False
     evidence = integrity.to_dict()
     assert evidence["pass_alignment"] == "scheduled"
     assert set(evidence["pass_offsets_samples"].values()) == {0}

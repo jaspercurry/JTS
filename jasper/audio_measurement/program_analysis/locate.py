@@ -316,7 +316,7 @@ def _global_offset(
         arrival = coarse
     if repeated:
         offset = arrival - first.start_sample
-        sweep_evidence = _resolve_sweep_anchor(program, capture, sample_rate, offset, sweeps[1], stim)
+        sweep_evidence = _resolve_sweep_anchor(program, capture, sample_rate, offset, first, sweeps[1], stim)
         return offset, first, stimuli, sweep_evidence
     anchor, global_offset, evidence = _resolve_anchor(
         program, capture, sample_rate, arrival, first, stimuli
@@ -326,25 +326,39 @@ def _global_offset(
 
 def _resolve_sweep_anchor(
     program: ExcitationProgram, capture: np.ndarray, sample_rate: int,
-    offset: int, witness: ProgramSegment, stimulus: np.ndarray,
+    offset: int, first: ProgramSegment, witness: ProgramSegment, stimulus: np.ndarray,
 ) -> AnchorEvidence:
+    """Distinguish a displaced sweep witness from an unlocated one.
+
+    Search through the inter-pass quiet span so an off-schedule copy can
+    establish ambiguity beyond the normal segment search window.
+    """
+    # A clean template can locate a sweep when two noisy captures cannot be
+    # aligned reliably. align_summed_capture's shared-power rule controls
+    # sample shifts, not audibility; both use SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
+    # for the timing tolerance.
     scheduled = offset + witness.start_sample
+    search_samples = max(round(SEGMENT_SEARCH_S * sample_rate),
+                         witness.start_sample - first.start_sample - first.n_samples)
     located, confidence, presence = _locate_in_window(
         capture, stimulus, scheduled, witness.n_samples, sample_rate=sample_rate,
+        search_samples=search_samples,
     )
     assert witness.f1_hz is not None and witness.f2_hz is not None
     band_start = max(WITNESS_BAND_FLOOR_HZ, witness.f1_hz)
     if confidence < SWEEP_LOCATE_CONFIDENCE_FLOOR and band_start < witness.f2_hz:
-        located, confidence, _ = _locate_in_window(
+        located, confidence, presence = _locate_in_window(
             capture, stimulus, scheduled, witness.n_samples, sample_rate=sample_rate,
             band_hz=(band_start, witness.f2_hz),
+            search_samples=search_samples,
         )
     residual_ms = (located - scheduled) / sample_rate * 1000.0
-    corroborated = (confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
-                    and abs(residual_ms) <= SWEEP_SCHEDULE_RESIDUAL_CEILING_MS)
+    found = confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
+    displaced = abs(residual_ms) > SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
+    corroborated = found and not displaced
     evidence = AnchorEvidence(
-        anchor="sweep_pass_1", witness="sweep_pass_2", shift_ms=offset / sample_rate * 1000.0,
-        witness_residual_ms=residual_ms, ambiguous=not corroborated,
+        anchor=first.segment_id, witness=witness.segment_id, shift_ms=offset / sample_rate * 1000.0,
+        witness_residual_ms=residual_ms, ambiguous=found and displaced,
         presence=presence, confidence=confidence, corroborated=corroborated,
     )
     log_event(
@@ -365,8 +379,9 @@ def _locate_in_window(
     *,
     sample_rate: int,
     band_hz: tuple[float, float] | None = None,
+    search_samples: int | None = None,
 ) -> tuple[int, float, float]:
-    """Matched-filter ``stim`` at ``scheduled`` +/- :data:`SEGMENT_SEARCH_S`.
+    """Matched-filter ``stim`` at ``scheduled`` +/- :data:`SEGMENT_SEARCH_S` by default.
 
     Returns BOTH scores, since they answer different questions: ``confidence``
     is the peakedness margin (is the winning lag sharp against its own
@@ -376,7 +391,7 @@ def _locate_in_window(
     correlation similarity, which does say. A window too short to hold
     ``stim`` yields ``(scheduled, 0.0, 0.0)``, never a located claim.
     """
-    search = int(round(SEGMENT_SEARCH_S * sample_rate))
+    search = int(round(SEGMENT_SEARCH_S * sample_rate)) if search_samples is None else search_samples
     lo = max(0, scheduled - search)
     hi = min(capture.size, scheduled + n_samples + search)
     window = capture[lo:hi]

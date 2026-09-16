@@ -1567,26 +1567,28 @@ def test_measure_without_anchor_evidence_has_no_anchor_rung():
     assert screen.evidence["mic_meter_status"] == "unmeasured"
 
 
-@pytest.mark.parametrize("passes,displacement_ms", [
-    (1, 0), (2, 0), (3, 0),
-    (2, 2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS),
-    (2, 2 * SEGMENT_SEARCH_S * 1000),
-    (3, -2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS),
-    (3, 2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS),
-    (3, 2 * SEGMENT_SEARCH_S * 1000),
+@pytest.mark.parametrize("passes,displacement_ms,buried", [
+    (1, 0, False), (2, 0, False), (3, 0, False), (3, 0, True),
+    (2, 2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, False),
+    (2, 2 * SEGMENT_SEARCH_S * 1000, False),
+    (3, -2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, False),
+    (3, 2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, False),
+    (3, 2 * SEGMENT_SEARCH_S * 1000, False),
 ])
-def test_repeated_summed_anchor_uses_sweep_spacing(monkeypatch, passes, displacement_ms):
+def test_repeated_summed_anchor_uses_sweep_spacing(monkeypatch, passes, displacement_ms, buried):
     program = _verify_program(sweep_band_hz=(20.0, 1100.0))
     if passes > 1:
         program = repeat_summed_program(program, passes=passes, quiet_samples=SR, cooldown_s=2)
     capture = _pristine(program, noise=1e-6)
-    if displacement_ms:
+    if displacement_ms or buried:
         second = program.segment("sweep_verify_repeat_1")
         start = GLOBAL_OFFSET + second.start_sample
         stop = start + second.n_samples + program.segment("tail").n_samples
         samples = capture[start:stop].copy()
         capture[start:stop] = 0
         shift = round(displacement_ms * SR / 1000)
+        if buried:
+            samples = np.random.default_rng(19).normal(0, 0.01, samples.size) + samples * 1e-6
         capture[start + shift:stop + shift] = samples
 
     locate = locate_mod._locate_in_window
@@ -1599,9 +1601,9 @@ def test_repeated_summed_anchor_uses_sweep_spacing(monkeypatch, passes, displace
     pilot_scores = {scheduled: (0.5498, 0.385),
                     scheduled - _pilot_spacing(program): (0.3351, 0.011)}
 
-    def field_pilot_scores(capture, stim, scheduled, n, *, sample_rate, band_hz=None):
+    def field_pilot_scores(capture, stim, scheduled, n, *, sample_rate, band_hz=None, search_samples=None):
         located, confidence, presence = locate(
-            capture, stim, scheduled, n, sample_rate=sample_rate, band_hz=band_hz,
+            capture, stim, scheduled, n, sample_rate=sample_rate, band_hz=band_hz, search_samples=search_samples,
         )
         if n == first_sweep.n_samples and band_hz is None:
             for at, scores in pilot_scores.items():
@@ -1624,18 +1626,21 @@ def test_repeated_summed_anchor_uses_sweep_spacing(monkeypatch, passes, displace
         assert verdict.fault == "anchor_ambiguous"
         return
     anchor = analysis.anchor
-    assert anchor.anchor == "sweep_pass_1"
-    assert anchor.witness == "sweep_pass_2"
+    assert anchor.anchor == first_sweep.segment_id
+    assert anchor.witness == program.segment("sweep_verify_repeat_1").segment_id
     assert anchor.shift_ms == pytest.approx((GLOBAL_OFFSET + 200) / SR * 1000, abs=0.5)
-    assert anchor.corroborated is (not displacement_ms)
+    assert anchor.corroborated is (not displacement_ms and not buried)
     assert anchor.ambiguous is bool(displacement_ms)
-    assert verdict.ok is (not displacement_ms)
-    assert verdict.fault == ("anchor_ambiguous" if displacement_ms else None)
+    assert verdict.ok is (not displacement_ms and not buried)
+    assert verdict.fault == ("anchor_ambiguous" if displacement_ms else "anchor_too_quiet" if buried else None)
+    if buried:
+        assert anchor.confidence < SWEEP_LOCATE_CONFIDENCE_FLOOR
+        assert verdict.charge == "speaker"
     assert verdict.evidence["anchor"] == anchor.anchor
     assert verdict.evidence["anchor_witness"] == anchor.witness
     assert verdict.evidence["anchor_shift_ms"] == anchor.shift_ms
     assert verdict.evidence["anchor_witness_residual_ms"] == anchor.witness_residual_ms
     assert verdict.evidence["anchor_presence"] == anchor.presence
     assert verdict.evidence["anchor_confidence"] == anchor.confidence
-    if abs(displacement_ms) < SEGMENT_SEARCH_S * 1000:
+    if not buried:
         assert anchor.witness_residual_ms == pytest.approx(displacement_ms, abs=0.5)
