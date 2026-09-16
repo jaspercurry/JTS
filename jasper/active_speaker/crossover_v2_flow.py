@@ -2211,10 +2211,12 @@ class CrossoverV2Session:
         re-arm MEASURE with a level backoff, or its curve stops being comparable.
         """
         program = self.program_for_phase(PHASE_LATERAL)
-        kind = _spatial.lateral_pose_screens(
+        screen = (_spatial.lateral_pose_screens if pilot_floor_blocking(self._capture_purpose(PHASE_LATERAL, index))
+                  else _spatial.lateral_recording_screens)
+        kind = screen(
             _spatial.CaptureScreens(
                 stimulus_located=_stimulus_locate_ok(analysis),
-                pilot_snr_ok=analysis.pilot_snr_ok if pilot_floor_blocking(self._capture_purpose(PHASE_LATERAL, index)) else None,
+                pilot_snr_ok=analysis.pilot_snr_ok,
                 linearity_ok=analysis.linearity_ok,
                 glitch_detected=bool(analysis.glitch_detected),
                 sweep_locate_confidence_ok=_sweep_locate_confidence_ok(analysis),
@@ -2366,7 +2368,7 @@ class CrossoverV2Session:
         kind = _spatial.cloud_position_screens(
             _spatial.CaptureScreens(
                 stimulus_located=_stimulus_locate_ok(analysis),
-                pilot_snr_ok=analysis.pilot_snr_ok if pilot_floor_blocking(self._capture_purpose(phase, index)) else None,
+                pilot_snr_ok=analysis.pilot_snr_ok,
                 linearity_ok=analysis.linearity_ok,
                 glitch_detected=bool(analysis.glitch_detected),
                 sweep_locate_confidence_ok=_sweep_locate_confidence_ok(analysis),
@@ -2376,6 +2378,7 @@ class CrossoverV2Session:
                 any_sweep_clipped=_any_sweep_clipped(analysis),
             ),
             has_summed_response=response is not None,
+            purpose=self._capture_purpose(phase, index),
         )
         if kind is not None:
             return PhaseVerdict(False, _screen_refusal_code(kind))

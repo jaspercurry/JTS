@@ -16,7 +16,7 @@ import pytest
 from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
 from jasper.active_speaker.measurement_programs import pilot_floor_blocking, run_program
-from jasper.active_speaker.crossover_v2 import capture_dispatch
+from jasper.active_speaker.crossover_v2 import capture_dispatch, spatial
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
@@ -798,7 +798,7 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
 
 
 @pytest.mark.parametrize("purpose", ["bass", "room", "speaker"])
-async def test_pilot_floor_policy_keeps_take_and_packet_evidence(tmp_path, purpose):
+async def test_pilot_floor_policy_keeps_take_and_packet_evidence(tmp_path, monkeypatch, purpose):
     program = _conductor(FlowSeams()).program_for_phase("verify")
     analysis = _verify_analysis(program, pilot_snr_ok=False, pilot_hi_dbfs=-65, linearity=None)
     analysis = replace(analysis, pilots=(replace(analysis.pilots[0], snr_valid=False, snr_db=0.0),),
@@ -815,16 +815,24 @@ async def test_pilot_floor_policy_keeps_take_and_packet_evidence(tmp_path, purpo
                            lateral_consumer="forward_model_evidence",
                            index_phase_map={1: "lateral", 2: "cloud_verify", 3: "cloud_verify", 4: "entry_baseline"})
     conductor._measure_program = program
+    lateral_name = "lateral_pose_screens" if blocking else "lateral_recording_screens"
+    lateral_screen = Mock(wraps=getattr(spatial, lateral_name))
+    cloud_screen = Mock(wraps=spatial.cloud_position_screens)
+    monkeypatch.setattr(spatial, lateral_name, lateral_screen)
+    monkeypatch.setattr(spatial, "cloud_position_screens", cloud_screen)
     pose = conductor._consume_lateral_pose(1, 1, analysis, None)
     assert (pose.accepted, pose.code) == (not blocking, kind)
+    assert lateral_screen.call_args.args[0].pilot_snr_ok is False
     cloud = conductor._cloud_position_verdict("cloud_verify", 2, 1, analysis, None)
     assert (cloud.accepted, cloud.code) == (not blocking, kind)
+    assert cloud_screen.call_args.args[0].pilot_snr_ok is False
     baseline, _ = conductor._entry_baseline_verdict(analysis)
     assert (baseline.accepted, baseline.code) == (not blocking, kind)
     result, _ = await _run_gated(request, analyze=lambda *_args: analysis)
     assert result.status == ("partial" if blocking else "complete")
     take = _takes(result.to_dict())[0]
     assert take["screens"][0]["blocking"] is blocking
+    assert take["screens"][0]["evidence"]["pilot_snr_ok"] is False
     assert take["screens"][0]["evidence"]["pilots"][0]["level_hi_dbfs"] == -65
 
     manifest = RunManifest("pilot", _Store(FakeSeams().records), program=purpose)
