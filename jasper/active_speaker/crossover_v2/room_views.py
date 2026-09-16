@@ -155,6 +155,11 @@ def _stacked(
     return freqs, rows
 
 
+def _coverage_hz(takes: Sequence[SeatTake], ceiling: Ceiling) -> list[float]:
+    return [max(ROOM_FLOOR_HZ, *(take.band_hz[0] for take in takes)),
+            min(ceiling.ceiling_hz, *(take.band_hz[1] for take in takes))]
+
+
 # --------------------------------------------------------------------------- #
 # the median
 # --------------------------------------------------------------------------- #
@@ -164,7 +169,8 @@ def room_median(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, Any]:
     """The contract a room candidate reads: median, spread, deviations."""
     freqs, rows = _stacked(takes, ROOM_FLOOR_HZ, ceiling.ceiling_hz)
     median = np.median(rows, axis=0)
-    support = spatial_support(len(takes))
+    coverage_hz = _coverage_hz(takes, ceiling)
+    support = spatial_support(len(takes), coverage_floor_hz=coverage_hz[0])
     return {
         "freqs_hz": freqs.tolist(),
         "median_db": median.tolist(),
@@ -182,8 +188,7 @@ def room_median(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, Any]:
         "ceiling_hz": ceiling.ceiling_hz,
         "ceiling_source": ceiling.source,
         "window": _window(takes),
-        "coverage_hz": [max(ROOM_FLOOR_HZ, *(t.band_hz[0] for t in takes)),
-                        min(ceiling.ceiling_hz, *(t.band_hz[1] for t in takes))],
+        "coverage_hz": coverage_hz,
     }
 
 
@@ -274,14 +279,14 @@ def room_persistence(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, A
             "presence_fraction": present / len(takes),
         })
     features.sort(key=lambda f: (-f["presence_fraction"], -abs(f["median_depth_db"])))
+    coverage_hz = _coverage_hz(takes, ceiling)
     return {
         "n_positions": len(takes),
-        "spatial_support": spatial_support(len(takes)),
+        "spatial_support": spatial_support(len(takes), coverage_floor_hz=coverage_hz[0]),
         "ceiling_hz": ceiling.ceiling_hz,
         "ceiling_source": ceiling.source,
         "window": _window(takes),
-        "coverage_hz": [max(ROOM_FLOOR_HZ, *(t.band_hz[0] for t in takes)),
-                        min(ceiling.ceiling_hz, *(t.band_hz[1] for t in takes))],
+        "coverage_hz": coverage_hz,
         "thresholds": {
             "depth_db": FEATURE_DEPTH_DB,
             "min_width_octaves": FEATURE_MIN_WIDTH_OCTAVES,

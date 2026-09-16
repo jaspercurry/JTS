@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -36,7 +37,8 @@ from jasper.cli.round_views import room
 from jasper.cli.round_views._common import resolve_set
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.room_prescription import (
-    ROOM_MEDIAN_MISMATCH, RoomPrescriptionRefused, read_room_median, read_room_prescription,
+    ROOM_MEDIAN_MISMATCH, ROOM_MEDIAN_UNAVAILABLE, RoomPrescriptionRefused,
+    read_room_median, read_room_prescription,
 )
 from jasper.audio_measurement import room_limits
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry, boundary_prior
@@ -100,6 +102,32 @@ def test_room_views_disclose_spatial_support(tmp_path, capsys, n_positions, suff
         assert doc["spread_db"][at] == pytest.approx(np.std(np.arange(n_positions)))
     else:
         assert doc["spread_db"] is None
+
+
+@pytest.mark.parametrize(("floor_hz", "sufficient", "reason"), [
+    (room_limits.ROOM_FLOOR_HZ * 1.01, True, ""),
+    (150.0, False, "coverage_short"),
+])
+def test_room_coverage_support_is_tolerant_disclosed_and_enforced(
+    tmp_path, floor_hz, sufficient, reason,
+):
+    round_dir = bank_seat_round(tmp_path, magnitudes_db=_cube()[:3])
+    selected = select_seat_takes(round_inputs(round_dir).session_dir)
+    takes = tuple(replace(take, band_hz=(floor_hz, take.band_hz[1])) for take in selected.takes)
+    ceiling = room_views.room_ceiling(None)
+
+    document = room_views.room_median(takes, ceiling)
+    persistence = room_views.room_persistence(takes, ceiling)
+
+    support = {"n_positions": 3, "sufficient": sufficient, "reason": reason}
+    assert document["coverage_hz"][0] == floor_hz
+    assert document["spatial_support"] == persistence["spatial_support"] == support
+    if sufficient:
+        assert read_room_median(document).coverage_hz == pytest.approx(document["coverage_hz"])
+    else:
+        with pytest.raises(RoomPrescriptionRefused) as excinfo:
+            read_room_median(document)
+        assert excinfo.value.reason == ROOM_MEDIAN_UNAVAILABLE
 
 
 def test_room_persistence_counts_what_holds_across_the_cube(tmp_path: Path, capsys) -> None:

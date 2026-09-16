@@ -381,8 +381,7 @@ def test_an_accepted_set_becomes_the_candidates_room_peqs():
     assert candidate.room_correction["ceiling_hz"] == CEILING_HZ
 
 
-@pytest.mark.parametrize("gain", [-2.0, 2.0])
-def test_narrow_measurement_coverage_keeps_the_room_ceiling_taper(gain):
+def test_room_judge_refuses_short_measurement_coverage():
     raw = _room_median()
     freqs = np.geomspace(50.0, 200.0, 121)
     raw.update(
@@ -393,9 +392,9 @@ def test_narrow_measurement_coverage_keeps_the_room_ceiling_taper(gain):
     for position in raw["positions"]:
         position["deviation_db"] = [0.0] * len(freqs)
     with pytest.raises(RoomPrescriptionRefused) as excinfo:
-        _read(_document(filters=[{"freq": 180.0, "q": 1.0, "gain": gain}]), raw)
-    assert excinfo.value.reason == TAPER_VIOLATED
-    assert excinfo.value.evidence["freq_hz"] > raw["coverage_hz"][1]
+        _read(_document(filters=[]), raw)
+    assert excinfo.value.reason == ROOM_MEDIAN_UNAVAILABLE
+    assert excinfo.value.evidence["coverage_hz"] == raw["coverage_hz"]
 
 
 @pytest.mark.parametrize("verb", ["judge", "compose"])

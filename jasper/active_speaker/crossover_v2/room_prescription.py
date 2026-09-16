@@ -38,6 +38,7 @@ from jasper.audio_measurement.room_boundary import (
     ROOM_MEDIAN_WINDOW,
 )
 from jasper.audio_measurement.room_limits import (
+    ROOM_FLOOR_COVERAGE_LIMIT_HZ,
     ROOM_MAX_FILTER_BOOST_DB,
     ROOM_MAX_FILTERS_PER_SIDE,
     ROOM_MAX_TOTAL_BOOST_DB,
@@ -286,6 +287,8 @@ def read_room_median(raw: Mapping[str, Any]) -> RoomMedian:
         if not np.allclose(span, [freqs[0], freqs[-1]], rtol=1e-8, atol=0):
             _unavailable("coverage_hz must match the supported grid endpoints")
         coverage = (float(span[0]), float(span[1]))
+        if coverage[0] > ROOM_FLOOR_COVERAGE_LIMIT_HZ:
+            _unavailable("coverage_hz does not reach the room floor", coverage_hz=list(coverage))
     # The producer writes the median at measurement level; a room correction
     # moves shape, never level, so the trend is read against its own robust
     # level over the band and that reference is disclosed.
