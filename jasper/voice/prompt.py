@@ -5,13 +5,6 @@
 from __future__ import annotations
 
 
-DISMISSAL_PHRASES = (
-    "stop", "cancel", "never mind", "okay thanks", "goodbye", "okay", "that's all", "thanks",
-    "thank you", "okay thank you", "we're done",
-)
-DISMISSAL_PHRASES_TEXT = f"{', '.join(DISMISSAL_PHRASES[:-1])}, or {DISMISSAL_PHRASES[-1]}"
-
-
 # Structured per OpenAI's Realtime Prompting Guide
 # (cookbook.openai.com/examples/realtime_prompting_guide):
 #   Role & Objective → Personality & Tone → Verbosity →
@@ -46,8 +39,6 @@ SYSTEM_INSTRUCTION = (
     "answering, stop: don't ask follow-up questions, don't offer "
     "related actions, don't invite further conversation, don't "
     "restate the question. Accept follow-up requests in the same conversation. "
-    f"Use end_conversation for standalone {DISMISSAL_PHRASES_TEXT}; do not produce a spoken reply "
-    "for a dismissal. "
     "An okay or thanks that answers a question you just asked is an answer to that "
     "question, not a dismissal; treat it as a yes for a pending confirmation. "
     "Cancel my timer and stop music still require their local tools. "

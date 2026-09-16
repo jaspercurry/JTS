@@ -21,7 +21,6 @@ from pydantic import TypeAdapter
 from jasper.tools import ToolRegistry, tool
 from jasper.voice import _base, openai_live_session
 from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG, NEEDS_ATTENTION_CUE_SLUG, OUT_OF_CREDIT_CUE_SLUG, is_transient
-from jasper.voice.conversation import END_CONVERSATION_TOOL, register_conversation_tools
 from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConnection
 from jasper.voice.session import ConnectionState
 from jasper.voice.turn_playback import PlaybackReport, play_responses
@@ -95,76 +94,6 @@ async def live_turn():
 
 def backend(delegation, kind, **fields):
     return {"type": "response.event", "delegation_id": delegation, "event": {"type": kind, **fields}}
-
-
-@pytest.mark.parametrize("state", ["fresh", "completed", "pending", "lost", "send_failed"])
-async def test_backend_nudge_only_sends_when_no_delegation_is_in_flight(monkeypatch, caplog, state):
-    caplog.set_level(logging.INFO)
-    async with live_turn() as turn:
-        if state in {"completed", "pending"}:
-            await turn.on_event({"type": "session.delegation.created", "delegation": {"id": "d1"}})
-            if state == "completed":
-                await turn.on_event(backend("d1", "response.completed", response={"id": "r1"}))
-        elif state == "lost":
-            turn._on_connection_lost()
-        socket = turn._conn._session
-        socket.sent.clear()
-        allowed = state in {"fresh", "completed"}
-
-        async def fail_send(event):
-            raise ConnectionError
-
-        with monkeypatch.context() as patch:
-            if state == "send_failed":
-                patch.setattr(turn._conn, "_send", fail_send)
-            assert await turn.nudge_backend(silence_ms=2000) is allowed
-        assert turn.turn_lost() is (state in {"lost", "send_failed"})
-        assert socket.sent == ([{"type": "response.create"}] if allowed else [])
-        assert event_field_maps(caplog, "provider.backend_nudged") == (
-            [{"provider": "openai_live", "silence_ms": "2000"}] if allowed else []
-        )
-
-
-async def test_backend_nudge_failure_reports_redacted_provider_details(caplog, monkeypatch):
-    secret = "plainvalue123"
-    conn = OpenAILiveConnection(api_key=secret, connect=LiveSocket)
-    turn = openai_live_session.OpenAILiveTurn(conn, started_at=0.0)
-
-    async def send_failed(event):
-        raise RuntimeError(f"rejected {secret}")
-
-    monkeypatch.setattr(conn, "_send", send_failed)
-    caplog.set_level(logging.DEBUG)
-    assert not await turn.nudge_backend(silence_ms=2000)
-
-    fields = event_fields(caplog, "provider.send_failed")
-    assert fields["provider"] == "openai_live"
-    assert fields["operation"] == "nudge"
-    assert fields["outcome"] == "turn_lost"
-    assert fields["exc_type"] == "RuntimeError"
-    assert secret not in fields["detail"]
-    assert all(secret not in value for value in fields.values())
-    assert event_records(caplog, "provider.send_failed") == caplog.records
-    assert caplog.records[0].levelno == logging.WARNING
-    assert all(record.exc_info is None for record in caplog.records)
-    assert turn.turn_lost()
-    assert turn._audio_q.get_nowait() is None
-    assert turn._audio_q.empty()
-
-
-async def test_user_transcript_timestamp_uses_monotonic_time(monkeypatch):
-    clock = FrozenClock()
-    monkeypatch.setattr(_base, "_time", clock)
-    async with live_turn() as turn:
-        assert turn.last_user_transcript_at() == 0.0
-        for direction in ("input", "output", "input"):
-            clock.now += 1
-            before = turn.last_user_transcript_at()
-            await turn.on_event({
-                "type": f"session.{direction}_transcript.delta", "delta": "okay",
-                "start_ms": 0, "end_ms": 1000,
-            })
-            assert turn.last_user_transcript_at() == (clock.now if direction == "input" else before)
 
 
 async def delegate(turn, delegation, response_id, name, args):
@@ -1149,39 +1078,6 @@ async def test_playback_cleanup_preserves_overflow_for_final_accounting(monkeypa
             assert turn.audio_dropped_bytes() == expected
         finally:
             await audio.aclose()
-
-
-async def test_a_dismissal_survives_a_delegation_that_cancels_its_round():
-    """A new delegation cancels the in-flight tool round; the user's
-    "never mind" is not a request that a later one can make obsolete."""
-    socket = LiveSocket()
-    registry = ToolRegistry()
-    ends = []
-    register_conversation_tools(registry, lambda: ends.append("end"))
-    dispatching, resume = asyncio.Event(), asyncio.Event()
-
-    async def observer(stage, name):
-        if stage == "called" and name == END_CONVERSATION_TOOL:
-            dispatching.set()
-            await resume.wait()
-
-    registry.set_dispatch_observer(lambda: observer)
-    conn = OpenAILiveConnection(api_key="test", connect=lambda: socket)
-    await conn.start(registry, "Be brief.")
-    turn = await conn.acquire_turn()
-    try:
-        await delegate(turn, "d1", "r1", END_CONVERSATION_TOOL, {})
-        await wait_until(dispatching.is_set)
-        await turn.on_event({
-            "type": "session.delegation.created",
-            "delegation": {"id": "d2", "target": "responses"},
-        })
-        resume.set()
-        await wait_until(lambda: ends == ["end"])
-    finally:
-        resume.set()
-        await turn.release()
-        await conn.stop()
 
 
 async def test_a_server_that_never_acks_the_close_does_not_hold_the_release(monkeypatch):

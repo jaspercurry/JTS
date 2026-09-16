@@ -113,7 +113,6 @@ class _FakeWakeLoop:
         self._trace = trace
         trace.append(("wake_loop", "enter"))
         self.bind_tool_dispatch = lambda: None
-        self.request_conversation_end = lambda: None
         self.play_supervisor_cue = lambda *a, **k: None
         self.announce_timer = lambda *a, **k: None
         self.measurement_hold = SimpleNamespace(

@@ -706,7 +706,7 @@ class Config:
             # making progress but never answers is released instead by
             # the cap below, measured from end-of-input.
             idle_timeout_sec=_env_int("JASPER_IDLE_TIMEOUT_SEC", 20),
-            followup_timeout_sec=_env_float("JASPER_FOLLOWUP_TIMEOUT_SEC", 5.0),
+            followup_timeout_sec=_env_float("JASPER_FOLLOWUP_TIMEOUT_SEC", 2.0),
             # Last-resort cap on one answer, applied twice: after a
             # provider has begun speaking but never sends turn_complete,
             # and — measured from end-of-input — on a turn that keeps

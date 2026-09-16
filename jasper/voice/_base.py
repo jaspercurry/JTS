@@ -195,18 +195,11 @@ class BaseLiveTurn:
             bucket: dict.fromkeys(keys, 0)
             for bucket, keys in self.usage_detail_buckets.items()
         } or None
-        self._last_user_transcript_at = 0.0
         # Retained only so WakeLoop can write opt-in conversation history;
         # never logged — the flight recorder dumps DEBUG records around
         # failures, so household utterances must not reach one.
         self._user_transcript = ""
         self._assistant_transcript = ""
-
-    async def nudge_backend(self, *, silence_ms: int) -> bool:
-        return False
-
-    def last_user_transcript_at(self) -> float:
-        return self._last_user_transcript_at
 
     def _start_tool_calls(self, calls: list[ToolCall]) -> None:
         if self._released or self._turn_lost or self._cancel_requested or self._server_turn_complete:
@@ -245,9 +238,7 @@ class BaseLiveTurn:
         """Answer one round of model-issued calls, then let it continue.
 
         `dispatch_tool` owns the whole tool contract — timeout, unknown
-        tool, error-to-payload shaping, the lifecycle observer, and the
-        `survives_cancellation` shield, which is why nothing here adds a
-        second one."""
+        tool, error-to-payload shaping, and the lifecycle observer."""
         registry = self._conn._registry
         assert registry is not None
         started = _time.monotonic()
@@ -387,8 +378,6 @@ class BaseLiveTurn:
         )
 
     def add_transcript(self, *, user: str = "", assistant: str = "") -> None:
-        if user:
-            self._last_user_transcript_at = _time.monotonic()
         self._user_transcript += user
         self._assistant_transcript += assistant
 

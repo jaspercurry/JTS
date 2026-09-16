@@ -62,7 +62,6 @@ from ..renderer import RendererClient
 from ..spotify_router import Router, build_router
 from ..timers import Timer, TimerScheduler, announcement_text
 from ..tools import ToolRegistry, UntrustedContentMonitor
-from .conversation import register_conversation_tools
 from ..tools.packs import ToolDeps, outcomes_to_state, register_packs
 from ..tool_prompt_overrides import read_prompt_overrides
 from ..tool_state import read_tool_state
@@ -1087,7 +1086,6 @@ def _wire_wake_loop(
 ) -> None:
     """Hand the loop to the registry and the connection, releases included."""
     _release(stack, "wake_loop", wake_loop.close_conversation_store)
-    register_conversation_tools(registry, wake_loop.request_conversation_end)
     registry.set_dispatch_observer(
         wake_loop.bind_tool_dispatch,
     )

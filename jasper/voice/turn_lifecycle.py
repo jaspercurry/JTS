@@ -60,8 +60,6 @@ NO_ANSWER_CUE_SUPPRESSED_REASONS = frozenset({
     "mic_muted",
     "stopping",
     "barge_in",
-    "conversation_ended",
-    "unanswered_utterance",
     "measurement_active",
 })
 
@@ -152,7 +150,6 @@ class TurnLifecycle:
         self.playback_report = PlaybackReport()
         self.bg_tasks: set[asyncio.Task] = set()
         self.output_episode: AssistantOutputEpisode | None = None
-        self.conversation_end_requested = False
         self.barge_in_active: bool = False
 
         # End-of-utterance detection state (per-turn), written by the loop's
@@ -525,12 +522,6 @@ class TurnLifecycle:
             name="voice-turn-background-end",
         )
 
-    def request_conversation_end(self) -> None:
-        if self.turn is None:
-            return
-        self.conversation_end_requested = True
-        self._spawn(self.end("conversation_ended"), name="conversation-end")
-
     async def finish_response(self, reason: str) -> None:
         if self.ending or self.turn is None:
             return
@@ -538,7 +529,7 @@ class TurnLifecycle:
             await self.end(reason)
             await self._play_cue(reason)
             return
-        await self.end("conversation_ended" if self.conversation_end_requested else reason)
+        await self.end(reason)
 
     def endpointer_label(self) -> str:
         """Which mechanism closes the current turn's user input.
@@ -578,7 +569,6 @@ class TurnLifecycle:
             self.turn = None
             self.session_id = None
             self.output_episode = None
-            self.conversation_end_requested = False
             self.bg_tasks = set()
             self._bg_end_scheduled = False
             self._push_to_talk.active_source = None

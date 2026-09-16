@@ -8,11 +8,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Callable
 
 from ..log_event import log_event
-from ..tools import ToolRegistry, tool
-from .prompt import DISMISSAL_PHRASES_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -22,30 +19,9 @@ END_OF_UTTERANCE_SILENCE_SEC = 0.8
 # second-scale.
 WATCHDOG_POLL_SEC = 0.25
 NO_SPEECH_ABORT_SEC = 5.0
-END_CONVERSATION_TOOL = "end_conversation"
-
-
-# The longer backend wait requires audio accepted by playout.
-UNANSWERED_SPEECH_SEC = 8.0
-# Past the frontend's own reply latency, well inside the 8 s unanswered bound.
-NUDGE_SILENCE_SEC = 2.0
+# The frontend needs time to voice a completed backend answer.
+BACKEND_ANSWER_GRACE_SEC = 8.0
 ACKNOWLEDGED_BACKEND_SEC = 30.0
-
-
-def register_conversation_tools(registry: ToolRegistry, request_end: Callable[[], None]) -> None:
-    # A dismissal survives cancellation from any source — a new delegation
-    # on Live, a barge-in on the other adapters — deliberately.
-    @tool(survives_cancellation=True, llm_description=(
-        "End this voice conversation and return to wake-word listening. Use for a "
-        f"standalone {DISMISSAL_PHRASES_TEXT}. Do not use for "
-        "cancel my timer, stop music, or thanks followed by another request; "
-        "use the relevant local tool instead. Ending does not undo completed actions."
-    ))
-    async def end_conversation() -> dict:
-        request_end()
-        return {"status": "conversation_ended"}
-
-    registry.register(end_conversation)
 
 
 async def continuous_watchdog(
@@ -55,7 +31,6 @@ async def continuous_watchdog(
     started_at = time.monotonic()
     next_spend_check = started_at
     pending_state, progressed_at = (0, 0.0), started_at
-    nudged_speech_started = 0.0
     while True:
         await asyncio.sleep(WATCHDOG_POLL_SEC)
         lost = turn.turn_lost()
@@ -82,19 +57,6 @@ async def continuous_watchdog(
                     writing_since,
                 )
             continue
-        if not lost and accepted_at < speech_started:
-            if (
-                nudged_speech_started != speech_started
-                and turn.last_chunk_at() < speech_started
-                and now - last_speech >= NUDGE_SILENCE_SEC
-            ):
-                if await turn.nudge_backend(silence_ms=int((now - last_speech) * 1000)):
-                    nudged_speech_started = speech_started
-            if now - last_speech >= UNANSWERED_SPEECH_SEC:
-                if turn.last_user_transcript_at() >= speech_started and not turn.backend_pending:
-                    return "unanswered_utterance"
-                return "response_stalled"
-            continue
         if not lost and turn.backend_pending:
             if now - last_speech >= ACKNOWLEDGED_BACKEND_SEC:
                 return "response_stalled"
@@ -116,7 +78,7 @@ async def continuous_watchdog(
         if speech_started <= turn.backend_completed_at and accepted_at < turn.backend_completed_at:
             # Backend completion alone is not proof that its answer reached playout.
             deadline = max(deadline, min(
-                turn.backend_completed_at + UNANSWERED_SPEECH_SEC,
+                turn.backend_completed_at + BACKEND_ANSWER_GRACE_SEC,
                 last_speech + ACKNOWLEDGED_BACKEND_SEC,
             ))
         if now >= deadline:

@@ -483,7 +483,7 @@ def test_config_import_chain_does_not_require_httpx():
     assert result.stdout.strip() == "ok"
 
 
-@pytest.mark.parametrize("raw, expected", [(None, 5.0), ("0", 0.0), ("2.5", 2.5), ("-1", None), ("nan", None), ("inf", None)])
+@pytest.mark.parametrize("raw, expected", [(None, 2.0), ("0", 0.0), ("2.5", 2.5), ("-1", None), ("nan", None), ("inf", None)])
 def test_shared_followup_timeout(monkeypatch, raw, expected):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     if raw is None:
