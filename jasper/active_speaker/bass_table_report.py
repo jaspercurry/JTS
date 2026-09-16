@@ -47,10 +47,10 @@ def bass_table_markdown(rows: list[dict[str, Any]]) -> str:
         return "; ".join(fields) or "null"
 
     lines = ["## Bass by level", "",
-             "| Candidate | Main dB | Base / candidate dB SPL | Prescribed dB | Realized dB by Hz band | Base −3 / −10 Hz | Candidate −3 / −10 Hz | Qualified from Hz (base / candidate) | Headroom | Knee dB SPL by Hz band | Headroom remaining dB by Hz band |",
+             "| Candidate | Main dB | Base / candidate dB SPL | Law dB | Prescribed / realized dB by Hz band | Base −3 / −10 Hz | Candidate −3 / −10 Hz | Qualified from Hz (base / candidate) | Headroom | Knee dB SPL by Hz band | Headroom remaining dB by Hz band |",
              "|---|---:|---:|---:|---|---|---|---|---|---|---|"]
     for row in rows:
-        realized = "; ".join(f"{band['band_hz'][0]:g}–{band['band_hz'][1]:g}: {number(band['value_db'])}"
+        realized = "; ".join(f"{band['band_hz'][0]:g}–{band['band_hz'][1]:g}: {number(band.get('prescribed_boost_db'))} / {number(band['value_db'])}"
                              for band in row["realized_boost_db"]) or "null"
         headroom = row["headroom_verdict"] or "unknown"
         for rise in row["headroom_rises"] or ():
@@ -64,7 +64,8 @@ def bass_table_markdown(rows: list[dict[str, Any]]) -> str:
                   corners(row["base_response"]), corners(row["candidate_response"]),
                   qualified, headroom, ladder(row, "knee_level_db_spl"), ladder(row, "headroom_remaining_db")]
         lines.append("| " + " | ".join(str(field).replace("|", "\\|").replace("\n", " ") for field in fields) + " |")
-    lines += ["", "Bound marks the qualified floor, not a measured crossing. Prescribed minus realized includes compressor and driver action. "
+    lines += ["", "Bound marks the qualified floor, not a measured crossing. Prescribed boost models CamillaDSP's shelf and delta high-pass at the recorded fader. "
+              "Band means use the same qualified bins as realized boost; their difference includes compressor and driver action and model error. "
               "Within-level harmonic deltas use repeat spread, or a 1 dB evidence floor for one repeat; this is not a hearing threshold. "
               "Across-level knees use repeat spread or level uncertainty from the worst SNR; headroom uses measured SPL and marks an unreached knee as extrapolated."]
     return "\n".join(lines)

@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from jasper.audio_measurement.quality_model import DRIVER
+from jasper.bass_extension.dynamic import DynamicBassDescriptor, expected_boost_db
 from jasper.json_fields import finite_float
 
 from .bass_comparison import bass_curve_on_grid, common_bass_bins
@@ -210,17 +211,21 @@ def bass_level_evidence(
     grid, delta = aligned["freqs_hz"], aligned["delta"]
     groups, curves = aligned["groups"], aligned["curves"]
     pairs = [pair for repeats in groups.values() for pair in repeats]
+    prescribed = np.asarray(expected_boost_db(
+        DynamicBassDescriptor(**descriptor), pairs[0][1]["record"]["loudness_volume_db"], grid,
+    )) if descriptor else np.full(grid.shape, np.nan)
     boost_band = [descriptor.get("delta_highpass_hz") or BASS_BANDS_HZ[0][0],
                   descriptor["detector_lowpass_hz"]] if descriptor else None
     boost_bands = [(max(lo, boost_band[0]), min(hi, boost_band[1])) for lo, hi in BASS_BANDS_HZ
                    if boost_band and lo < boost_band[1] and hi > boost_band[0]]
 
-    def mean_delta(lo, hi):
-        mask = np.isfinite(delta) & (grid >= lo) & (grid < hi)
-        return float(np.mean(delta[mask])) if mask.any() else None
+    def band_mean(values, lo, hi):
+        mask = np.isfinite(delta) & np.isfinite(values) & (grid >= lo) & (grid < hi)
+        return float(np.mean(values[mask])) if mask.any() else None
 
-    compression = [{"band_hz": [lo, hi], "value_db": prescribed_boost_db - measured
-                    if (measured := mean_delta(lo, hi)) is not None and prescribed_boost_db is not None else None}
+    compression = [{"band_hz": [lo, hi], "value_db": expected - measured
+                    if (measured := band_mean(delta, lo, hi)) is not None
+                    and (expected := band_mean(prescribed, lo, hi)) is not None else None}
                    for lo, hi in boost_bands]
     snr = [value for pair in pairs for take in pair
            for lo, hi in BASS_BANDS_HZ if boost_band and lo < boost_band[1] and hi > boost_band[0]
@@ -238,7 +243,8 @@ def bass_level_evidence(
             "candidate_response": _response(grid, aligned["candidate"], [pair[1] for pair in pairs], aligned["reference_band_hz"][0]),
             "sources": aligned["sources"], "position_count": len(groups), "take_pair_count": len(pairs),
             "prescribed_boost_db": prescribed_boost_db, "boost_band_hz": boost_band,
-            "realized_boost_db": [{"band_hz": [lo, hi], "value_db": mean_delta(lo, hi)} for lo, hi in BASS_BANDS_HZ],
+            "realized_boost_db": [{"band_hz": [lo, hi], "value_db": band_mean(delta, lo, hi),
+                                   "prescribed_boost_db": band_mean(prescribed, lo, hi)} for lo, hi in BASS_BANDS_HZ],
             "compression_db": compression,
             "compression_includes": ["compressor", "driver"],
             **_harmonics(groups, boost_bands),
