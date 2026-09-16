@@ -177,6 +177,11 @@ def test_room_document_carries_only_unchanged_measured_timing(base, bank, eviden
     assert child.analysis["resolution"]["room"] == "document"
     if carried:
         assert child.analysis["evidence"]["commissioning"]["alignment"] == {**read, "timing_verdict": "measured"}
+        child_base = publish_authored_candidate(child, root=bank)
+        grandchild = judge_prescription_document(document(child_base.fingerprint, {"room": room_document()}),
+                                                base=child_base, evidence=evidence)
+        assert grandchild.analysis["evidence"]["commissioning"]["alignment"]["timing_verdict"] == "measured"
+        assert grandchild.analysis["resolution"]["alignment"] == "measured"
     else:
         assert "commissioning" not in child.analysis["evidence"]
     assert parent.candidate.to_dict() == before
