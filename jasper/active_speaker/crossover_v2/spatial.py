@@ -46,7 +46,7 @@ from .pose_curve import (
     LATERAL_EVIDENCE_BAND_HZ, LATERAL_EVIDENCE_POINTS_PER_OCTAVE,
     LateralPoseCurve, lateral_evidence_grid_hz, lateral_pose_curve, pose_curve_record,
 )
-from ..measurement_programs import POSE_KIND_BEARING, validated_pose
+from ..measurement_programs import POSE_KIND_BEARING, pilot_floor_blocking, validated_pose
 from .contracts import (
     DESIGN_AXIS_DEG,
     POSITION_AXES,
@@ -307,6 +307,7 @@ def entry_baseline_screens(
     *,
     stimulus_located: bool,
     reference_mark: str,
+    purpose: str | None = None,
 ) -> EntryBaselineScreen:
     """The "before" capture: screen it, and reduce it when it passes.
 
@@ -334,7 +335,7 @@ def entry_baseline_screens(
     """
     if not stimulus_located:
         return EntryBaselineScreen(SCREEN_LOCATE_FAILED)
-    if analysis.pilot_snr_ok is False:
+    if analysis.pilot_snr_ok is False and pilot_floor_blocking(purpose):
         return EntryBaselineScreen(SCREEN_PILOT_LEVEL_COLLAPSE)
     integrity = analysis.capture_integrity
     validity = evaluate_capture_validity(integrity)

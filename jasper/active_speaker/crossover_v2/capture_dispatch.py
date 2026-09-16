@@ -7,11 +7,11 @@
 from __future__ import annotations
 
 import math
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any, Mapping
 
 from jasper.audio_measurement import gate_disclosure
-from jasper.audio_measurement.program import KIND_SWEEP, STIMULUS_KINDS
+from jasper.audio_measurement.program import KIND_PILOT, KIND_SWEEP, STIMULUS_KINDS
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
     INTEGRITY_CHECK_SWEEP_HEARD,
@@ -19,10 +19,11 @@ from jasper.audio_measurement.program_analysis import (
 )
 from jasper.audio_measurement.program_analysis.check import alignment_snr_gain_adjustment
 from jasper.audio_measurement.program_analysis.model import (
-    DRIVER_SNR_ALIGNMENT_KEY, GAIN_MAX_DIGITAL_PEAK_DBFS, MeasurementPriors, ProgramAnalysis,
+    DRIVER_SNR_ALIGNMENT_KEY, GAIN_MAX_DIGITAL_PEAK_DBFS, PILOT_MIN_SNR_DB, MeasurementPriors, ProgramAnalysis,
 )
 from jasper.audio_measurement.program_analysis.summary import driver_alignment_snr_verdict, driver_snr_verdict
 from jasper.active_speaker.profile import SPL_RAISE_MARGIN_DB
+from jasper.active_speaker.measurement_programs import pilot_floor_blocking
 from .sweep_spec import REQUIRED_SAMPLE_RATE_HZ
 from jasper.json_fields import finite_float
 
@@ -61,11 +62,25 @@ def level_drift_verdict(
                                  if value is not None})
 
 
+def pilot_screens(analysis: ProgramAnalysis, *, purpose: str | None = None,
+                  program: ExcitationProgram | None = None) -> list[dict[str, Any]]:
+    if analysis.pilot_snr_ok is not False:
+        return []
+    bands = {segment.role: [segment.f1_hz, segment.f2_hz] for segment in program.segments
+             if segment.kind == KIND_PILOT} if program else {}
+    return [{"code": reasons.REASON_PILOT_LEVEL_COLLAPSE, "blocking": pilot_floor_blocking(purpose),
+             "evidence": {"pilot_snr_ok": False, "required_snr_db": PILOT_MIN_SNR_DB,
+                          "ambient_report": analysis.ambient_report,
+                          "pilots": [{**asdict(pilot), "snr_db": finite_float(pilot.snr_db),
+                                      "band_hz": bands.get(pilot.role)} for pilot in analysis.pilots]}}]
+
+
 def assess(
     analysis: ProgramAnalysis, *, level_verdict: TakeVerdict | None = None,
-    prior_verdict: TakeVerdict | None = None, **kwargs: Any,
+    prior_verdict: TakeVerdict | None = None, purpose: str | None = None, **kwargs: Any,
 ) -> TakeVerdict:
-    verdict = prior_verdict if prior_verdict is not None else _assess_recording(analysis, **kwargs)
+    verdict = prior_verdict if prior_verdict is not None else _assess_recording(analysis, purpose=purpose, **kwargs)
+    verdict = replace(verdict, screens=pilot_screens(analysis, purpose=purpose, program=kwargs.get("program")))
     if level_verdict is None:
         return verdict
     verdict = replace(verdict, evidence={**verdict.evidence, **level_verdict.evidence})
@@ -77,6 +92,7 @@ def assess(
 
 def _assess_recording(
     analysis: ProgramAnalysis, *, phase: str,
+    purpose: str | None = None,
     priors: MeasurementPriors | None = None,
     program: ExcitationProgram | None = None,
     gain_db: Mapping[str, float] | None = None,
@@ -190,7 +206,7 @@ def _assess_recording(
                 else quiet(reasons.REASON_SNR_FLOOR))
     if phase == "check" and analysis.channel_map_ok is False:
         return refuse(reasons.REASON_CHANNEL_MAP_MISMATCH, next="stop", charge="none", ok=True)
-    if analysis.pilot_snr_ok is False:
+    if analysis.pilot_snr_ok is False and pilot_floor_blocking(purpose):
         return quiet(reasons.REASON_SNR_FLOOR if phase == "check" else reasons.REASON_PILOT_LEVEL_COLLAPSE)
     # Retire when locate can resolve the timeline without a corroborating witness.
     if anchor is not None and anchor.corroborated is False:

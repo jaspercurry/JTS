@@ -264,7 +264,7 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import (
 
 from jasper.audio_measurement import measurement_geometry as _measurement_geometry
 
-from .measurement_programs import gate_exemption, resolved_measurement_purpose
+from .measurement_programs import gate_exemption, pilot_floor_blocking, resolved_measurement_purpose
 
 DECLARED_GEOMETRY_PATH = _measurement_geometry.DEFAULT_PATH
 
@@ -1586,6 +1586,11 @@ class CrossoverV2Session:
             # the selector is pure and has no business knowing it.
             raise CrossoverV2FlowError(str(exc)) from exc
 
+    def _capture_purpose(self, phase: str, index: int) -> str | None:
+        prompt = (self._prompt_shown_for(phase, index) if phase in GROUP_PHASES else
+                  self._lateral_prompts[0] if phase == PHASE_ENTRY_BASELINE and self._lateral_prompts else None)
+        return resolved_measurement_purpose(prompt.purpose, prompt.kind) if prompt else None
+
     def _capture_geometry(self, phase: str, index: int) -> MeasurementGeometry:
         """Apply the plan's analysis purpose to this capture."""
         spec = self._measure_specs_by_index.get(index)
@@ -1593,7 +1598,7 @@ class CrossoverV2Session:
         if phase in GROUP_PHASES:
             prompt = self._prompt_shown_for(phase, index)
             position, vertical = position_angle_deg(prompt), position_elevation_deg(prompt)
-            exemption = gate_exemption(resolved_measurement_purpose(prompt.purpose, prompt.kind))
+            exemption = gate_exemption(self._capture_purpose(phase, index))
         return replace(self._geometry, gate_exempt_reason=exemption, position_deg=position, vertical_deg=vertical)
 
     def consume_capture(
@@ -1652,6 +1657,8 @@ class CrossoverV2Session:
             verdict,
             pilot_heard=analysis.pilot_snr_ok,
             reflection_measured=reflection_measured,
+            payload={**verdict.payload, "screens": _dispatch.pilot_screens(
+                analysis, purpose=self._capture_purpose(phase, index), program=program)},
         )
         ledger = self._slot_attempts.get(slot)
         if ledger is not None:
@@ -2207,7 +2214,7 @@ class CrossoverV2Session:
         kind = _spatial.lateral_pose_screens(
             _spatial.CaptureScreens(
                 stimulus_located=_stimulus_locate_ok(analysis),
-                pilot_snr_ok=analysis.pilot_snr_ok,
+                pilot_snr_ok=analysis.pilot_snr_ok if pilot_floor_blocking(self._capture_purpose(PHASE_LATERAL, index)) else None,
                 linearity_ok=analysis.linearity_ok,
                 glitch_detected=bool(analysis.glitch_detected),
                 sweep_locate_confidence_ok=_sweep_locate_confidence_ok(analysis),
@@ -2295,7 +2302,9 @@ class CrossoverV2Session:
                     bool((summed.gating or {}).get("applied")) if summed is not None else None
                 ),
                 **self._capture_stamp(result),
-            ), **({"branch_diagnostic": analysis.branch_diagnostic, "regime": "branches"} if analysis.branch_diagnostic else {})},
+            ), "screens": _dispatch.pilot_screens(analysis, purpose=self._capture_purpose(PHASE_LATERAL, pose.index),
+                                                  program=self.program_for_phase(PHASE_LATERAL)),
+             **({"branch_diagnostic": analysis.branch_diagnostic, "regime": "branches"} if analysis.branch_diagnostic else {})},
         )
 
     def _lateral_claim(self, index: int) -> "_spatial.TakeClaim":
@@ -2357,7 +2366,7 @@ class CrossoverV2Session:
         kind = _spatial.cloud_position_screens(
             _spatial.CaptureScreens(
                 stimulus_located=_stimulus_locate_ok(analysis),
-                pilot_snr_ok=analysis.pilot_snr_ok,
+                pilot_snr_ok=analysis.pilot_snr_ok if pilot_floor_blocking(self._capture_purpose(phase, index)) else None,
                 linearity_ok=analysis.linearity_ok,
                 glitch_detected=bool(analysis.glitch_detected),
                 sweep_locate_confidence_ok=_sweep_locate_confidence_ok(analysis),
@@ -2451,6 +2460,8 @@ class CrossoverV2Session:
             wav_sha256=_capture_wav_sha256(result),
             curves=self._banked_curves(phase, analysis),
         )
+        metadata["screens"] = _dispatch.pilot_screens(
+            analysis, purpose=self._capture_purpose(phase, position.index), program=self.program_for_phase(phase))
         self._group_position_meta.setdefault(phase, {})[
             position.position_id
         ] = metadata
@@ -2974,6 +2985,7 @@ class CrossoverV2Session:
             analysis,
             stimulus_located=_stimulus_locate_ok(analysis),
             reference_mark=_REFERENCE_MARK_DESIGN_AXIS,
+            purpose=self._capture_purpose(PHASE_ENTRY_BASELINE, 1),
         )
         if screen.kind is not None:
             return (
@@ -3019,6 +3031,9 @@ class CrossoverV2Session:
             glitch_detected=bool(analysis.glitch_detected),
             curves=self._banked_curves(PHASE_ENTRY_BASELINE, analysis),
         )
+        metadata["screens"] = _dispatch.pilot_screens(
+            analysis, purpose=self._capture_purpose(PHASE_ENTRY_BASELINE, index),
+            program=self.program_for_phase(PHASE_ENTRY_BASELINE))
         # The TAKE id, not the store's record id: ``read_entry_baseline_take``
         # answers a banked take's ``take_id`` under this name.
         artifact_ref = (

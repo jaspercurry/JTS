@@ -15,7 +15,8 @@ import pytest
 
 from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
-from jasper.active_speaker.measurement_programs import run_program
+from jasper.active_speaker.measurement_programs import pilot_floor_blocking, run_program
+from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
@@ -25,10 +26,12 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_SPL_CEILING_EXCEEDED, TakeVerdict,
 )
 from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE
+from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.volume_owner import ClaimKind, volume_owner
-from tests.crossover_v2_fixtures import _loc
+from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor, _loc, _verify_analysis
+from tests.crossover_v2_banked_round import bank_seat_round
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, SeamFailure, open_session
 from tests.test_preflight import ready_facts
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
@@ -738,41 +741,110 @@ async def test_bass_levels_refuse_when_no_level_is_admissible():
     assert not hold.mock_calls and not prepare.mock_calls
 
 
-@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize("partial", [False, True, "last", "all", "stop"])
 async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, partial):
-    from tests.test_correction_crossover_v2_wired import _run_door
+    from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     request = _walk([0, 20], candidates=("base",))
     request = replace(request, stops=tuple(replace(stop, purpose="bass") for stop in request.stops))
     facts = ready_facts(request)
     facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record,
         "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": -60}]}}))
-    ladder = level_ladder(request, facts)
+    ladder = preflight_levels(request, facts, "-28,-23,-18")
     fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
+    packet = RoundPacket(RunManifest("ladder", _Store(fakes.records)), ladder.to_dict())
     entry_volume, entry_loudness = box.volume_db, await box.get_loudness_volume_db()
 
     def prepare(plan):
         assert fakes.graph.restores == 0
-        manifest = RunManifest(f"run-{len(manifests)}", _Store(fakes.records))
+        manifest = RunManifest(f"run-{len(manifests)}", packet)
         manifests.append(manifest)
         door = _run_door(tmp_path, box, fakes, manifest)
-        verdict = (TakeVerdict(False, fault=REASON_CLIPPED, next="fix_and_retake")
-                   if partial and len(manifests) == 2 else TakeVerdict(True))
+        verdict = (TakeVerdict(False, fault=REASON_SPL_CEILING_EXCEEDED, next="stop") if partial == "stop" else
+                   TakeVerdict(False, fault=REASON_CLIPPED, next="fix_and_retake")
+                   if partial and (partial == "all" or len(manifests) == (6 if partial == "last" else 1)) else TakeVerdict(True))
         return LevelRun(manifest, door, _analysis, lambda *_args, **_kwargs: verdict)
 
     hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
-    results = await run_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS)
-    expected = ([(0, -18), (0, -23)] if partial else
-                [(pose, level) for pose in (0, 20) for level in (-18, -23, -28, -33)])
+    signals = plan_run.RunSignals()
+    results = await run_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS, signals=signals)
+    await packet.finish()
+    document = packet.to_dict()
+    expected = ([(0, -28)] if partial == "stop" else
+                [(pose, level) for pose in (0, 20) for level in (-28, -23, -18)])
     assert [(call["position_deg"], call["level_db"]) for call in fakes.play.calls] == expected
-    assert len(gate.grants) == (1 if partial else 2)
+    assert len(gate.grants) == (1 if partial == "stop" else 2)
     assert sum(result.mic_moves for result in results) == len(gate.grants)
     assert all(result.finalized for result in results)
-    assert results[-1].status == ("partial" if partial else "complete")
+    statuses = ["partial" if partial and (partial == "all" or index == (5 if partial == "last" else 0)) else "complete"
+                for index in range(len(expected))]
+    assert [run["status"] for run in document["runs"]] == statuses
+    assert document["status"] == ("partial" if partial in ("all", "stop") else "complete")
+    issues = document["schedule"]["issues"]
+    assert len(issues) == statuses.count("partial")
+    assert all(issue["blocking"] is False for issue in issues)
+    if partial:
+        reason = REASON_SPL_CEILING_EXCEEDED if partial == "stop" else REASON_CLIPPED
+        refused = document["runs"][-1 if partial == "last" else 0]
+        assert issues[0]["code"] == refused["reason"] == reason
+        assert refused["not_measured"][0]["reason"] == reason
+    assert signals.stop.is_set() is (partial == "stop")
+    if partial == "stop":
+        assert signals.stop_reason == REASON_SPL_CEILING_EXCEEDED
     assert len({result.run_id for result in results}) == len(expected)
     assert fakes.graph.restores == 1
     assert box.volume_db == entry_volume
     assert await box.get_loudness_volume_db() == entry_loudness
+
+
+@pytest.mark.parametrize("purpose", ["bass", "room", "speaker"])
+async def test_pilot_floor_policy_keeps_take_and_packet_evidence(tmp_path, purpose):
+    program = _conductor(FlowSeams()).program_for_phase("verify")
+    analysis = _verify_analysis(program, pilot_snr_ok=False, pilot_hi_dbfs=-65, linearity=None)
+    analysis = replace(analysis, pilots=(replace(analysis.pilots[0], snr_valid=False, snr_db=0.0),),
+                       ambient_report={"bands": [{"band_hz": [500, 2000], "level_dbfs": -65}]})
+    blocking = pilot_floor_blocking(purpose)
+    verdict = capture_dispatch.assess(analysis, phase="verify", purpose=purpose, program=program)
+    assert verdict.ok is (not blocking)
+    assert verdict.fault == ("pilot_level_collapse" if blocking else None)
+    kind = "pilot_level_collapse" if blocking else None
+    request = _walk([0])
+    request = replace(request, stops=(replace(request.stops[0], purpose=purpose),))
+    prompt = ac.resolve_request(request)[0].prompt
+    conductor = _conductor(FlowSeams(), lateral_prompts=(prompt,), verify_prompts=(prompt,),
+                           lateral_consumer="forward_model_evidence",
+                           index_phase_map={1: "lateral", 2: "cloud_verify", 3: "cloud_verify", 4: "entry_baseline"})
+    conductor._measure_program = program
+    pose = conductor._consume_lateral_pose(1, 1, analysis, None)
+    assert (pose.accepted, pose.code) == (not blocking, kind)
+    cloud = conductor._cloud_position_verdict("cloud_verify", 2, 1, analysis, None)
+    assert (cloud.accepted, cloud.code) == (not blocking, kind)
+    baseline, _ = conductor._entry_baseline_verdict(analysis)
+    assert (baseline.accepted, baseline.code) == (not blocking, kind)
+    result, _ = await _run_gated(request, analyze=lambda *_args: analysis)
+    assert result.status == ("partial" if blocking else "complete")
+    take = _takes(result.to_dict())[0]
+    assert take["screens"][0]["blocking"] is blocking
+    assert take["screens"][0]["evidence"]["pilots"][0]["level_hi_dbfs"] == -65
+
+    manifest = RunManifest("pilot", _Store(FakeSeams().records), program=purpose)
+    manifest.begin({"index": 1, "repeat": 1, "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
+    await manifest.append({"take_id": "pilot", "program": program.to_dict()}, "record", verdict,
+                          complete=True, started_s=0, ended_s=1, level_observation={})
+    root = await asyncio.to_thread(bank_seat_round, tmp_path / "round")
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest.to_dict()))
+    packet = write_round_packet(root, str(path), [])
+    screen = packet["sets"][0]["takes"][0]["screens"][0]
+    assert screen == verdict.screens[0]
+    assert (screen["code"], screen["blocking"]) == ("pilot_level_collapse", blocking)
+    evidence = screen["evidence"]
+    pilot = evidence["pilots"][0]
+    band = next(segment for segment in program.segments if segment.kind == "pilot")
+    assert pilot["band_hz"] == [band.f1_hz, band.f2_hz]
+    assert (pilot["level_lo_dbfs"], pilot["level_hi_dbfs"], pilot["snr_db"]) == (-75, -65, 0)
+    assert evidence["required_snr_db"] > pilot["snr_db"]
+    assert evidence["ambient_report"] == analysis.ambient_report
 
 
 async def test_room_plan_levels_keep_pose_order(tmp_path, box, tuning_profile):

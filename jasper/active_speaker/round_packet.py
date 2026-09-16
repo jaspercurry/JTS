@@ -48,15 +48,19 @@ class RoundPacket:
                 merged = sets.setdefault(group["set_id"], {**group, "takes": []})
                 merged["takes"].extend({**take, "run_id": run["run_id"]} for take in group["takes"])
         first = runs[0] if runs else self.manifest.to_dict()
+        measured = any(take["selected"] for group in sets.values() for take in group["takes"])
+        issues = [{"code": run["reason"] or next((row["reason"] for row in run["not_measured"]), "take_incomplete"),
+                   "blocking": False, "evidence": {"run_id": run["run_id"], "level": run["level"],
+                                                    "status": run["status"], "not_measured": run["not_measured"]}}
+                  for run in runs if run["finalized"] and run["status"] != "complete"]
         return {**first, "run_id": self.manifest.run_id, "sets": list(sets.values()),
-                "schedule": self.schedule,
-                "runs": [{key: run[key] for key in ("run_id", "level", "status", "reason", "request_fingerprint")}
+                "schedule": {**self.schedule, "issues": [*self.schedule.get("issues", ()), *issues]},
+                "runs": [{key: run[key] for key in ("run_id", "level", "status", "reason", "not_measured", "request_fingerprint")}
                          for run in runs],
                 "level": {"session": first["level"].get("session")},
                 "finalized": self.finalized,
-                "status": "complete" if self.finalized and runs and all(run["status"] == "complete" for run in runs)
-                          and not self.manifest.reason else "partial",
-                "reason": self.manifest.reason or next((run["reason"] for run in runs if run["reason"]), ""),
+                "status": "complete" if self.finalized and measured else "partial",
+                "reason": self.manifest.reason or (issues[0]["code"] if issues and not measured else ""),
                 "honoured": {**first["honoured"], **{
                     key: sum(run["honoured"][key] for run in runs)
                     for key in ("mic_moves", "stops_planned", "takes_measured", "takes_refused")}},
@@ -214,6 +218,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                                      "bass": snapshot.get("bass_extension")}},
               "sets": [{"set_id": g["set_id"], "candidate_id": g["capture_basis"].get("candidate_id"), "base": g.get("base", False),
                         "takes": [{**{key: t.get(key) for key in ("take_id", "pose", "role", "selected", "alignment")},
+                                   "screens": t.get("screens", []),
                                    "fault": t.get("fault") or (t.get("quality") or {}).get("fault"), **gate_fields(t)} for t in g["takes"]]}
                        for g in manifest.get("sets", ())], "series": series,
               "fits": _fits(inputs, manifest, sources, clouds) if purpose == PURPOSE_SPEAKER else [],

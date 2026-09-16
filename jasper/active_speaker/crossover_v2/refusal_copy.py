@@ -1266,6 +1266,7 @@ class TakeVerdict:
     # Absolute stimulus dBFS. Per-role targets are carried in evidence.
     next_gain_db: float | None = None
     charge: TakeCharge = "none"
+    screens: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def gain_targets(self) -> dict[str, float]:
@@ -1301,6 +1302,7 @@ class PhaseVerdict:
     @classmethod
     def from_take(cls, take: TakeVerdict) -> PhaseVerdict:
         return cls(take.ok and take.fault is None and take.next == "accept", take.fault,
+                   payload={"screens": take.screens} if take.screens else {},
                    evidence=take.evidence, capabilities=take.capabilities, next=take.next,
                    next_gain_db=take.next_gain_db, charge=take.charge)
 
