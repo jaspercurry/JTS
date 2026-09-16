@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
+"""Resolve the plan's bass stimulus against the driven targets' declared caps."""
+
 from __future__ import annotations
 
 import math
