@@ -436,28 +436,6 @@ async def test_silence_does_not_count_as_an_answer_and_mute_discards_buffered_in
         await conn.stop()
 
 
-async def test_captured_audio_has_a_wire_time_only_after_sending(monkeypatch):
-    clock = FrozenClock()
-    monkeypatch.setattr(openai_live_session, "time", clock)
-    socket = LiveSocket()
-    conn = OpenAILiveConnection(api_key="test", connect=lambda: socket)
-    await conn.start(ToolRegistry(), "Be brief.")
-    turn = await conn.acquire_turn()
-    try:
-        captured_at = clock.now
-        await turn.send_audio(b"\xff\x7f" * 1280)
-        assert turn.wire_time_for(captured_at) is None
-        clock.now += 1.5
-        await wait_until(lambda: any(e["type"] == "session.input_audio.append" for e in socket.sent))
-        sent_at = turn.wire_time_for(captured_at)
-        assert isinstance(sent_at, float) and sent_at >= captured_at
-        assert sent_at == clock.now
-        assert turn.wire_time_for(captured_at + 1.0) is None
-    finally:
-        await turn.release()
-        await conn.stop()
-
-
 async def test_speech_buffered_during_the_dial_catches_up_and_live_input_stays_paced(
     monkeypatch, caplog,
 ):

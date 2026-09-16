@@ -22,6 +22,8 @@ NO_SPEECH_ABORT_SEC = 5.0
 # The frontend needs time to voice a completed backend answer.
 BACKEND_ANSWER_GRACE_SEC = 8.0
 ACKNOWLEDGED_BACKEND_SEC = 30.0
+# Measured 2026-09-16: 0–1.4 s plus a >2 s tail; 5 s covers it and keeps dismissal within a breath.
+FIRST_ANSWER_SEC = 5.0
 
 
 async def continuous_watchdog(
@@ -53,7 +55,7 @@ async def continuous_watchdog(
             if now - writing_since >= stall_seconds:
                 return _resolved(
                     "playout_stalled", now, last_speech, accepted_at,
-                    tts.expected_drain_at(), turn.audio_chunks_pending(), turn, None, None,
+                    tts.expected_drain_at(), turn.audio_chunks_pending(), turn, None,
                     writing_since,
                 )
             continue
@@ -69,17 +71,19 @@ async def continuous_watchdog(
             if now - progressed_at >= stall_seconds:
                 return _resolved(
                     "playout_stalled", now, last_speech, accepted_at,
-                    drain_at, pending, turn, None, None,
+                    drain_at, pending, turn, None,
                 )
             continue
         if lost:
             return "connection_lost"
-        speech_sent_at = turn.wire_time_for(last_speech)
-        if speech_sent_at is None:
-            if now - last_speech >= ACKNOWLEDGED_BACKEND_SEC:
-                return "response_stalled"
+        if accepted_at < speech_started and turn.backend_completed_at < speech_started:
+            if now - last_speech >= FIRST_ANSWER_SEC:
+                return _resolved(
+                    "followup_timeout", now, last_speech, accepted_at,
+                    drain_at, pending, turn, last_speech + FIRST_ANSWER_SEC,
+                )
             continue
-        deadline = followup_seconds + max(speech_sent_at, accepted_at, drain_at)
+        deadline = followup_seconds + max(last_speech, accepted_at, drain_at)
         if speech_started <= turn.backend_completed_at and accepted_at < turn.backend_completed_at:
             # Backend completion alone is not proof that its answer reached playout.
             deadline = max(
@@ -92,12 +96,12 @@ async def continuous_watchdog(
         if now >= deadline:
             return _resolved(
                 "followup_timeout", now, last_speech, accepted_at,
-                drain_at, pending, turn, deadline, speech_sent_at,
+                drain_at, pending, turn, deadline,
             )
 
 
 def _resolved(
-    reason, now, last_speech, accepted_at, drain_at, pending, turn, deadline, speech_sent_at,
+    reason, now, last_speech, accepted_at, drain_at, pending, turn, deadline,
     writing_since=0.0,
 ):
     """Disambiguate normal close from an unheard answer in the turn timeline.
@@ -107,9 +111,6 @@ def _resolved(
     log_event(
         logger, "voice.turn_deadline", reason=reason,
         last_speech_age_ms=int((now - last_speech) * 1000),
-        wire_lag_ms=(
-            int((speech_sent_at - last_speech) * 1000) if speech_sent_at is not None and last_speech else None
-        ),
         accepted_age_ms=int((now - accepted_at) * 1000) if accepted_at else None,
         drain_age_ms=int((now - drain_at) * 1000) if drain_at else None,
         overdue_ms=None if deadline is None else int((now - deadline) * 1000),

@@ -204,9 +204,6 @@ class LiveTurn(ProviderTurn, Protocol):
         not yet on the wire. Idempotent; a turn that buffers none no-ops."""
         ...
 
-    def wire_time_for(self, captured_at: float) -> float | None:
-        ...
-
     def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
         """Yield TTS audio (24 kHz mono int16 PCM, with optional provider
         item identity) until the turn is released or the connection drops."""

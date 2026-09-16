@@ -299,9 +299,6 @@ class BaseLiveTurn:
     def discard_input(self) -> None:
         """Nothing to revoke: only a continuous adapter buffers input."""
 
-    def wire_time_for(self, captured_at: float) -> float | None:
-        return captured_at
-
     async def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
         while True:
             chunk = await self._audio_q.get()
