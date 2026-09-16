@@ -1641,6 +1641,7 @@ def test_a_request_built_from_a_manual_highpass_validates_on_save() -> None:
     manual = deepcopy(_manual_settings())
     manual["drivers"][1]["recommended_highpass_hz"] = 2500.0
     manual["drivers"][1]["recommended_highpass_slope_db_per_octave"] = 24.0
+    manual["drivers"][1]["fit_budget"] = {"max_gain_db": 6.0}
     manual = normalise_manual_settings(manual)
     assert manual is not None
     topology = mono_output_topology(card_id=None)
@@ -1650,6 +1651,7 @@ def test_a_request_built_from_a_manual_highpass_validates_on_save() -> None:
     context = validated["targets"][1]["operator_declared_context"]
     assert context["recommended_highpass_hz"] == 2500.0
     assert context["recommended_highpass_slope_db_per_octave"] == 24.0
+    assert context["fit_budget"]["max_gain_db"] == 6.0
 
 
 def test_a_research_request_fingerprinted_before_the_cut_still_validates() -> None:
