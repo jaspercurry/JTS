@@ -1464,6 +1464,7 @@ def test_request_round_trip_and_capture_schedule(repeats, candidates):
     assert doc["level"] == {"mode": "hold_reference", "level_db": -25, "anchor_db_spl": 75.8,
                             "reference_volume_db": -12.7, "mic_serial": "8108494",
                             "session_id": "", "leveled_at": "", "target_db_spl": 75.0}
+    assert doc["level_source"] == "operator"
     assert (doc["repeats"], doc["retries_per_pose"]) == (repeats, 2)
     assert ac.AngleCaptureRequest.from_mapping(doc) == request
     specs = ac.stop_specs(request, baseline_id="banked-base",

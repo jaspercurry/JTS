@@ -369,7 +369,8 @@ def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
     (("driver", "room"), "room", "seat_express", "human"),
 ])
 def test_trial_uses_authored_section_and_keeps_candidates_at_each_pose(
-    bank_trial, monkeypatch, capsys, sections, program, layout, default_mover, mover,
+    bank_trial, banked_session_level, monkeypatch, capsys, sections, program,
+    layout, default_mover, mover,
 ):
     resolution = dict.fromkeys(("driver", "blend", "alignment", "topology", "room", "bass"), "base")
     fingerprint = bank_trial({**resolution, **dict.fromkeys(sections, "document")})
@@ -388,7 +389,13 @@ def test_trial_uses_authored_section_and_keeps_candidates_at_each_pose(
     assert [(stop.place, stop.candidate_id, stop.regime) for stop in plan.stops] == [
         (pose.place, candidate, "summed") for pose in expected.poses for candidate in ("", fingerprint)
     ]
-    assert plan.level.level_db is None and plan.level.resolved.reference_volume_db == -18
+    if expected.levels is None:
+        assert plan.level.level_db == -20
+        assert plan.level.resolved.reference_volume_db == -18
+        assert plan.level_source == "seat_reference"
+    else:
+        assert plan.level.level_db is None
+        assert plan.level_source == "program_default"
 
 
 @pytest.mark.parametrize("mover", ["human", "arm"])

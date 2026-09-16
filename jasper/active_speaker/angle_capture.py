@@ -145,6 +145,7 @@ __all__ = [
 
 
 LEVEL_HOLD_REFERENCE = "hold_reference"
+LEVEL_SOURCES = ("seat_reference", "program_default", "operator")
 REQUEST_SCHEMA_VERSION = 5
 REQUEST_KIND = "jts_active_speaker_angle_capture_request_staged"
 
@@ -418,6 +419,7 @@ class AngleCaptureRequest:
     program: str = ""
     candidates: tuple[str, ...] = ()
     level: LevelPolicy = LevelPolicy()
+    level_source: str = ""
     levels: tuple[float, ...] | None = None
     repeats: int = 1
     retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION
@@ -453,6 +455,12 @@ class AngleCaptureRequest:
     def _validate_policy(self) -> None:
         if not isinstance(self.level, LevelPolicy):
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "level must be a LevelPolicy")
+        if not self.level_source:
+            object.__setattr__(self, "level_source", "operator" if self.level.level_db is not None
+                               or self.levels is not None else
+                               "seat_reference" if self.level.resolved is not None else "program_default")
+        if self.level_source not in LEVEL_SOURCES:
+            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, f"level_source must be one of {LEVEL_SOURCES}")
         if self.levels is not None:
             if not isinstance(self.levels, (tuple, list)) or not self.levels or None in self.levels:
                 raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "levels must be a nonempty sequence")
@@ -505,7 +513,7 @@ class AngleCaptureRequest:
         unknown = set(doc) - {f.name for f in fields(cls)} - {"kind", "artifact_schema_version", "staged_at"}
         if unknown:
             raise ValueError(f"unknown request fields: {sorted(unknown)}")
-        missing = {f.name for f in fields(cls)} - set(doc) - {"levels"}
+        missing = {f.name for f in fields(cls)} - set(doc) - {"levels", "level_source"}
         if missing:
             raise ValueError(f"request must state {', '.join(sorted(missing))}")
         values = {f.name: doc[f.name] for f in fields(cls) if f.name in doc}
@@ -752,6 +760,7 @@ def request_for_program(
     mover: str = MOVER_HUMAN,
     template: MeasureSpec = DEFAULT_TEMPLATE,
     level: LevelPolicy = LevelPolicy(),
+    level_source: str = "",
     levels: tuple[float, ...] | None = None,
     repeats: int = 1,
     retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION,
@@ -783,7 +792,7 @@ def request_for_program(
         mover=mover,
         template=template,
         candidates=candidates,
-        level=level, levels=levels,
+        level=level, level_source=level_source, levels=levels,
         repeats=repeats, retries_per_pose=retries_per_pose,
         # ``spot`` carries caller geometry rather than a registry row, so its
         # size names nothing an operator chose.

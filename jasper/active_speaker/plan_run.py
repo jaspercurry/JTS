@@ -343,14 +343,17 @@ async def run_plan(
         stops = [resolved[offset // request.repeats] for offset in range(len(specs))]
         places = [request.stops[offset // request.repeats].place for offset in range(len(specs))]
     anchor = request.level.resolved
-    if anchor is not None:
-        manifest.level = {"session": anchor.session(),
-                          "run": {"level_db": request.level.volume_db, "offset_db": request.level.offset_db}}
     level = request.level.volume_db
     if level is None and session is not None:
         level = session.measurement_level_db
     if level is None or (door is None and (session is None or level != session.measurement_level_db)):
         raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a resolved session level")
+    manifest.level = {
+        **({"session": anchor.session()} if anchor is not None else {}),
+        "run": {"level_db": level,
+                "offset_db": request.level.offset_db if anchor is not None else None,
+                "level_source": request.level_source},
+    }
     expanded = []
     planned: list[dict[str, Any]] = []
     for pose_index, (_place, batch) in enumerate(groupby(enumerate(specs), key=lambda row: places[row[0]])):
