@@ -13,7 +13,6 @@ from typing import Any, Mapping
 
 from ..log_event import log_event
 from jasper.active_speaker.capture_status import SESSION_ENDED_STATUSES
-from jasper.active_speaker.measurement_programs import program
 from .chrome import canonical_header, canonical_page
 
 logger = logging.getLogger(__name__)
@@ -149,7 +148,7 @@ def _build_envelope_logged(status: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def handle_envelope(
-    *, capture: dict[str, Any] | None = None,
+    *, capture: dict[str, Any] | None = None, selected_program: str = "",
 ) -> tuple[dict[str, Any], HTTPStatus]:
     """GET /crossover/envelope: the server-computed commissioning screen envelope
     the dumb frontend renders each step from (revision plan §3.2), aligned with
@@ -159,15 +158,9 @@ def handle_envelope(
     envelope = _build_envelope_logged(status)
     live = status.get("capture") or {}
     if envelope["screen"] in {"awaiting_plan", "finished"} and (not live or live.get("status") in SESSION_ENDED_STATUSES):
-        from jasper.active_speaker.commissioning_coordinator import load_commissioning_view, round_choices  # lazy: planning reads measurement
-        from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError  # lazy: measurement planning
+        from jasper.active_speaker.commissioning_coordinator import round_choices  # lazy: planning reads measurement
 
-        try:
-            selected = program(load_commissioning_view()["next_action"].get("program") or "speaker")
-            envelope["round_default"] = f"{selected.program_id}/{selected.size}"
-            envelope["round_choices"] = round_choices(status)
-        except (OSError, ValueError, CrossoverV2FlowError) as exc:
-            envelope["round_lines"] = [*envelope.get("round_lines", []), str(exc)]
+        envelope["round_choices"] = round_choices(status, selected_program)
     return envelope, HTTPStatus.OK
 
 

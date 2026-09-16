@@ -11,7 +11,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from jasper.active_speaker.crossover_v2.programs import program_for_spec
+from jasper.active_speaker.crossover_v2.programs import program_for_spec, predictive_program_for_spec
 from jasper.active_speaker.angle_capture import LevelPolicy
 from jasper.active_speaker.run_levels import LevelLadder, LevelRun, prepare_level_captures, run_levels
 from jasper.active_speaker.round_packet import RoundPacket
@@ -152,8 +152,6 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                   camilla_factory: Any, verify_only: bool, provenance: Any = None,
                   level: LevelPolicy = LevelPolicy(), ladder: LevelLadder | None = None,
                   capture_indexes: tuple[int, ...] = (), context: Any = None) -> tuple[RunDoor, Any, Any, Any]:
-    from jasper.active_speaker.crossover_v2.programs import predictive_program_for_spec  # lazy: run-only schedule binding
-
     if ladder is not None:
         ceiling_s *= len(ladder.admissible)
     sensitivity = resolved_household_sensitivity(device)
@@ -228,9 +226,8 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
 
 
 async def publish_round_packet(bundle: Path, gate: Any) -> None:
-    from jasper.active_speaker.round_bank import finish_round  # lazy: packet analysis stays outside web imports
+    from jasper.active_speaker.round_bank import finish_round  # lazy: packet analysis
 
-    banked, _error = await asyncio.to_thread(finish_round, bundle)
     progress = gate.published().get("run") or {}
-    gate.publish({**progress, **({"round_dir": str(banked.path)} if banked else
-                                {"packet_error": "packet_save_failed"})})
+    banked, _ = await asyncio.to_thread(finish_round, bundle)
+    gate.publish({**progress, **({"round_dir": str(banked.path)} if banked else {"packet_error": "packet_save_failed"})})

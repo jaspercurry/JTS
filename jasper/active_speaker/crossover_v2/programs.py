@@ -11,8 +11,9 @@ re-admits the rendered artifact against its protected graph.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import partial
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
@@ -364,3 +365,12 @@ def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Map
     if spec.graph_scope == "candidate_branches":
         program = build_branch_program(program, {role.role: role.channel for role in excitation.roles})
     return program
+
+
+def predictive_program_for_spec(context: Any) -> Callable[[Any], ExcitationProgram]:
+    # Gain changes preserve segment count; preview can precede the CHECK level solve.
+    excitation = SessionExcitation(context.roles_bands, context.driver_caps_dbfs, 0.0, context.fc_hz,
+                                   context.driver_sweep_duration_limits_s)
+    return partial(program_for_spec, excitation=excitation,
+                   gain_plan_db={r.role: BASE_STIMULUS_PEAK_DBFS for r in excitation.roles},
+                   safety_profile=context.safety_profile, role_targets=context.role_targets)

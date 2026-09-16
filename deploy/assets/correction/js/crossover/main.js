@@ -129,7 +129,7 @@ function renderRound(env) {
   if (els.roundChoice.dataset.key === key) return;
   els.roundChoice.dataset.key = key;
   if (!choices.length) return;
-  const selected = els.roundSelect.value || env.round_default;
+  const selected = els.roundSelect.value || choices.find(row => row.default)?.id;
   els.roundSelect.replaceChildren(...choices.map(row => el('option', {value: row.id, text: row.label})));
   els.roundSelect.value = selected;
   els.roundSelect.disabled = busy;
@@ -304,7 +304,7 @@ function setUnitsButtons(unit) {
 
 function renderWalk(capture, {active, yielded}) {
   const walking = Boolean(active && !CAPTURE_WINDING_DOWN.has(capture.status));
-  const held = walking ? (capture.round_pending || capture.join || capture.position_pending) : null;
+  const held = walking ? (capture.join || capture.position_pending) : null;
   const pending = held && held.mover === 'human' ? held : null;
   // The entry the gate is EXECUTING, and the only thing that moves during a
   // pose batch: configs 2..N are granted under the first config's release, so
@@ -331,8 +331,7 @@ function renderWalk(capture, {active, yielded}) {
   els.walkHeadline.textContent = formatDistances(walkPrompt.title || '');
   els.walkDetail.textContent = formatDistances(walkPrompt.body || '');
   els.walkDetail.hidden = !walkPrompt.body;
-  if (els.walkUnitsImperial.parentElement) els.walkUnitsImperial.parentElement.hidden = Boolean(capture.round_pending);
-  renderWalkDiagram(capture.round_pending ? null : walkGeometry);
+  renderWalkDiagram(walkGeometry);
   if (pending && pending.actions?.length) {
     els.walkAction.replaceChildren(...pending.actions.map((action, index) => {
       const button = el('button', {
@@ -382,7 +381,7 @@ function renderCapture(capture, {suppressConnectAffordance = false} = {}) {
     !suppressConnectAffordance &&
     (capture.join || capture.position_pending)?.mover === 'human',
   );
-  els.captureStatus.textContent = capture.round_pending ? '' : awaitingReader
+  els.captureStatus.textContent = awaitingReader
     ? 'The tone plays as soon as you confirm the microphone is in place.'
     : 'Measuring on the microphone plugged into the speaker.';
 }
@@ -406,7 +405,7 @@ function actionRowKey(primary, alternates, note, timing) {
 // One gate for every render and action completion prevents competing capture controls.
 function renderActionRow(env) {
   if (!env) return;
-  const captureActive = captureIsActive(env.capture);
+  const captureActive = captureIsActive(env.capture) || env.busy;
   // A live capture suppresses new actions unless the envelope marks them
   // show_during_capture; the same rule applies to primary and alternate actions.
   const showPrimary = !captureActive
@@ -427,10 +426,13 @@ function renderActionRow(env) {
   // `disabled` without otherwise touching primary/alternates (see
   // stopCapture/runAction's finally blocks, which rely on THIS
   // function re-rendering once busy flips back to false).
-  const key = actionRowKey(primary, shownAlternates, env.action_note, env.timing);
+  const actions = env.pending?.actions;
+  const shownPrimary = actions ? actions[0] : primary;
+  const shownActions = actions ? actions.slice(1) : shownAlternates;
+  const key = actionRowKey(shownPrimary, shownActions, env.action_note, env.timing);
   if (key === lastActionRowKey) return;
   lastActionRowKey = key;
-  renderActions(primary, shownAlternates, env.action_note, env.timing || {});
+  renderActions(shownPrimary, shownActions, env.action_note, env.timing || {});
 }
 
 // One primary control at a time: closing's Save/Record-again actions make the
@@ -456,7 +458,7 @@ function render(env) {
     suppressConnectAffordance: screenOwnsLiveControl(env),
   });
   renderActionRow(env);
-  schedulePoll(captureIsActive(env.capture) || passive ? POLL_MS : null);
+  schedulePoll(captureIsActive(env.capture) || env.busy || passive ? POLL_MS : null);
 }
 
 async function stopCapture() {
@@ -567,7 +569,7 @@ async function runRefreshQueue() {
   do {
     refreshQueued = false;
     const epoch = renderEpoch;
-    const env = await getJSON('/sound/speaker/crossover/envelope');
+    const env = await getJSON('/sound/speaker/crossover/envelope?program=' + encodeURIComponent(els.roundSelect?.value || ''));
     if (epoch === renderEpoch) render(env);
   } while (refreshQueued);
 }
@@ -585,7 +587,11 @@ function refresh() {
 
 if (typeof document !== 'undefined') {
   els.captureStop.addEventListener('click', stopCapture);
-  els.roundSelect?.addEventListener('change', renderRoundChoice);
+  els.roundSelect?.addEventListener('change', () => {
+    renderRoundChoice();
+    renderEpoch += 1;
+    refresh().catch(error => setStatus(error.message, 'bad'));
+  });
   // Page-local units preference (#3629, #1941 Q2): a static toggle, wired
   // once here like Stop above -- unlike the walk's own action
   // button, it is never rebuilt by a render pass.

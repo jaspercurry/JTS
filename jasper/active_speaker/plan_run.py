@@ -11,7 +11,7 @@ import sys
 import time
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import asdict, dataclass, field, replace
-from itertools import groupby
+from itertools import accumulate, groupby
 from collections import Counter
 from functools import partial
 from threading import Event, Lock
@@ -52,7 +52,7 @@ from .crossover_v2.spatial import analysis_curve_records
 from .crossover_v2.planning import analysis_json
 from .restore_wait import resilient_restore
 from .measurement_programs import POSE_KIND_BEARING, PURPOSE_SPEAKER
-from .crossover_v2.programs import SessionExcitation, program_for_spec
+from .crossover_v2.programs import predictive_program_for_spec
 from .run_manifest import RunManifest
 
 from jasper.audio_measurement.calibration import resolve_mic_sensitivity
@@ -227,68 +227,57 @@ HUMAN_MOVE_ALLOWANCE_S = 30
 
 def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], program_for_spec: Callable[[MeasureSpec], ExcitationProgram],
                    *, mover: str, program: str = "") -> dict[str, Any]:
-    poses, batches, pose_sweeps = [], [], []
-    timing_sweeps = 0
+    poses, pose_sweeps, work_sweeps = [], [], []
     for _, batch in groupby(captures, key=lambda capture: capture[0]["place"]):
-        rows = list(batch)
-        poses.append(dict(rows[0][0]))
-        programs = [program_for_spec(spec) for _, spec in rows]
-        batches.append(programs)
-        sweep_rows = [(spec, p, s) for (_, spec), p in zip(rows, programs) for s in p.stimulus_segments()]
-        keys = [(spec.graph_scope, spec.candidate_id, spec.program_phase, s.role, s.kind) for spec, _, s in sweep_rows]
+        details: list[dict[str, Any]] = []
+        keys = []
+        for pose, spec in batch:
+            if not details:
+                poses.append(dict(pose))
+            excitation = program_for_spec(spec)
+            segments = excitation.stimulus_segments()
+            work_sweeps.append(len(segments))
+            for segment in segments:
+                keys.append((spec.graph_scope, spec.candidate_id, spec.program_phase, segment.role, segment.kind))
+                details.append({"role": segment.role or "summed", "kind": segment.kind, "phase": spec.program_phase,
+                                "scope": spec.graph_scope, "seconds": segment.n_samples / excitation.sample_rate_hz})
         totals = Counter(keys)
         seen: Counter[tuple[str, str | None, str | None, str | None, str]] = Counter()
-        details = []
-        for key, (spec, p, s) in zip(keys, sweep_rows):
+        for key, row in zip(keys, details):
             seen[key] += 1
-            details.append({"role": s.role or "summed", "kind": s.kind, "phase": spec.program_phase,
-                            "repeat": seen[key], "repeats": totals[key],
-                            "program_repeats": sum(t.role == s.role and t.kind == s.kind for t in p.stimulus_segments())})
+            row.update(repeat=seen[key], repeats=totals[key])
         pose_sweeps.append(details)
-        timing_sweeps += sum(s.kind == KIND_SUMMED_SWEEP for (_, spec), p in zip(rows, programs)
-                             if spec.graph_scope == "timing" for s in p.stimulus_segments())
-    counts = [sum(len(p.stimulus_segments()) for p in batch) for batch in batches]
+    rows = [row for pose_rows in pose_sweeps for row in pose_rows]
+    counts = [len(pose_rows) for pose_rows in pose_sweeps]
     return {"program": program, "mover": mover, "poses": len(poses), "pose_details": poses,
-            "sweeps_per_pose": counts, "sweeps": sum(counts), "timing_sweeps": timing_sweeps,
-            "preparation_sweeps": sum(s.kind == KIND_PILOT for batch in batches for p in batch for s in p.stimulus_segments()),
-            "estimated_seconds": sum(s.n_samples / p.sample_rate_hz for batch in batches for p in batch
-                                     for s in p.stimulus_segments()) +
+            "sweeps_per_pose": counts, "sweeps": len(rows), "work_sweeps": work_sweeps,
+            "timing_sweeps": sum(row["scope"] == "timing" and row["kind"] == KIND_SUMMED_SWEEP for row in rows),
+            "preparation_sweeps": sum(row["kind"] == KIND_PILOT for row in rows),
+            "estimated_seconds": sum(row["seconds"] for row in rows) +
                                  (len(poses) * HUMAN_MOVE_ALLOWANCE_S if mover == "human" else 0),
             "pose_sweeps": pose_sweeps}
 
 
-
 def preview_schedule(request: AngleCaptureRequest, captures: Sequence[PlanCapture], context: Any) -> dict[str, Any]:
-    excitation = SessionExcitation(context.roles_bands, context.driver_caps_dbfs, 0.0, context.fc_hz,
-                                   context.driver_sweep_duration_limits_s)
-    compose = partial(program_for_spec, excitation=excitation,
-                      gain_plan_db={r.role: 0.0 for r in excitation.roles},
-                      safety_profile=context.safety_profile, role_targets=context.role_targets)
-    return schedule_facts([(_pose(c.stop), c.spec) for c in captures], compose,
+    return schedule_facts([(_pose(c.stop), c.spec) for c in captures], predictive_program_for_spec(context),
                           mover=request.mover, program=request.program or "")
 
 
 async def publish_sweeps(progress: dict[str, Any], gate: PositionGate, before: int,
                          program: ExcitationProgram, play: Callable[[], Awaitable[Any]]) -> Any:
-    segments = program.stimulus_segments()
-    counts = Counter((s.role, s.kind) for s in segments)
-    repeats: Counter[tuple[str | None, str]] = Counter()
     handles = []
-    def publish(fields: dict[str, Any]) -> None:
-        progress.update(fields)
+    def publish(index: int) -> None:
+        try:
+            row = progress["pose_sweeps"][progress["pose"] - 1][before + index - 1]
+        except (KeyError, IndexError):
+            return
+        progress.update(sweep=before + index, role=row["role"], sweep_kind=row["kind"],
+                        repeat=row["repeat"], repeats=row["repeats"])
         gate.publish(progress)
     try:
-        for index, segment in enumerate(segments, 1):
-            key = segment.role, segment.kind
-            repeats[key] += 1
-            scheduled = progress.get("pose_sweeps") or ()
-            pose_index, sweep_index = progress["pose"] - 1, before + index - 1
-            rows = scheduled[pose_index] if 0 <= pose_index < len(scheduled) else ()
-            row = rows[sweep_index] if 0 <= sweep_index < len(rows) else {}
-            fields = {"sweep": before + index, "role": segment.role or "summed", "sweep_kind": segment.kind,
-                      "repeat": row.get("repeat", repeats[key]), "repeats": row.get("repeats", counts[key])}
+        for index, segment in enumerate(program.stimulus_segments(), 1):
             handles.append(asyncio.get_running_loop().call_later(segment.start_sample / program.sample_rate_hz,
-                                                                 publish, fields))
+                                                                 publish, index))
         return await play()
     finally:
         for handle in handles:
@@ -304,7 +293,6 @@ async def run_plan(
     clock: Callable[[], float] = time.monotonic,
     gain_ceiling_db: Mapping[str, float] | None = None,
     captures: Sequence[PlanCapture] | None = None,
-    program_for_spec: Callable[[MeasureSpec], ExcitationProgram] | None = None,
     admit: Callable[[int, int, Any, SlotAttempts], None] | None = None,
     assessor: Callable[..., TakeVerdict] | None = None,
     measure: Callable[[TuningSession, MeasureSpec], Awaitable[Any]] | None = None,
@@ -388,8 +376,7 @@ async def run_plan(
     return await _run(work, session=session, door=door, level=level,
                       manifest=manifest, analyze=analyze, gate=gate,
                       aborts=aborts, signals=signals or RunSignals(), retries=request.retries_per_pose,
-                      clock=clock, gain_ceiling_db=gain_ceiling_db, admit=admit, assessor=assessor, measure=measure,
-                      program_for_spec=program_for_spec or (door.program_for_spec if door else None))
+                      clock=clock, gain_ceiling_db=gain_ceiling_db, admit=admit, assessor=assessor, measure=measure)
 
 
 async def run_specs(
@@ -447,7 +434,6 @@ async def _run(
     admit: Callable[[int, int, Any, SlotAttempts], None] | None = None,
     assessor: Callable[..., TakeVerdict] | None = None,
     measure: Callable[[TuningSession, MeasureSpec], Awaitable[Any]] | None = None,
-    program_for_spec: Callable[[MeasureSpec], ExcitationProgram] | None = None,
 ) -> RunManifest:
     def default_admit(index: int, attempt: int, entry: Any, ledger: SlotAttempts) -> None:
         if ledger.charge != "none":
@@ -477,9 +463,9 @@ async def _run(
     playing = [item.spec for item in work]
     moved: set[int] = set()
     verdict: TakeVerdict | None = None
-    schedule = schedule_facts([(item.stop["pose"], item.spec) for item in work], program_for_spec,
-                              mover=manifest.asked["mover"], program=manifest.program or "") if program_for_spec else {}
-    sweep_counts = [len(program_for_spec(item.spec).stimulus_segments()) for item in work] if program_for_spec else []
+    schedule: dict[str, Any] = schedule_facts([(item.stop["pose"], item.spec) for item in work], door.program_for_spec,
+                              mover=manifest.asked["mover"], program=manifest.program or "") if door and door.program_for_spec else {"poses": len(ledgers)}
+    sweep_offsets = list(accumulate(schedule.get("work_sweeps", [0] * len(work)), initial=0))
     progress: dict[str, Any] = {}
     notices: dict[str, Any] = {}
     stack = AsyncExitStack()
@@ -527,19 +513,17 @@ async def _run(
                     playing[offset] = replace(playing[offset], level_ladder_dbfs=(retry.next_gain_db,))
             spec = playing[offset]
             attempt = attempts[offset] + 1
-            before = sum(sweep_counts[i] for i in range(offset) if work[i].pose_index == item.pose_index) if sweep_counts else 0
+            before = sweep_offsets[offset] - sweep_offsets[offset - item.config + 1]
             if retry:
                 notices.update(retake_reason=retry.fault or "operator", retake_sweep=before + 1,
                                retake_pose=item.pose_index + 1, retake_action=retry.next,
-                               retake_sweep_end=before + (sweep_counts[offset] if sweep_counts else 1))
+                               retake_sweep_end=before + sweep_offsets[offset + 1] - sweep_offsets[offset])
                 if retry.next == "retake_louder":
                     notices["level_raise_dbfs"] = retry.next_gain_db
-            progress = {**schedule, **notices, "pose": item.pose_index + 1, "poses": len(ledgers),
+            progress = {**schedule, **notices, "pose": item.pose_index + 1,
                         "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
-                        "budget": ledger.to_payload(), "sweep": before + 1,
-                        "sweep_total": schedule.get("sweeps_per_pose", [])[item.pose_index] if schedule else None,
-                        "pose_detail": item.stop["pose"]}
+                        "budget": ledger.to_payload(), "sweep": before + 1}
             entry = item.entry
             if retry and retry.next == "fix_and_retake" and retry.fault and entry:
                 entry = SimpleNamespace(screen={**entry.screen, "body": REASON_REGISTRY[retry.fault].message})

@@ -29,24 +29,32 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     verify_inconclusive_message,
 )
 from jasper.active_speaker.flat_spec import evaluate_flat_spec, spec_flatness_gauge
-from jasper.active_speaker.round_copy import ROUND_LABELS, round_lines
+from jasper.active_speaker.round_copy import round_lines
 
 V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "verify")
 
 
-@pytest.mark.parametrize("placed", [False, True])
-def test_round_lines_and_pose_actions_come_from_the_coordinator(placed):
-    facts = {"pose": 2, "poses": 3, "mover": "human", "sweep": 4, "sweep_total": 7,
+@pytest.mark.parametrize("placed, terminal", [(False, False), (True, False), (True, True)])
+def test_round_lines_and_pose_actions_come_from_the_coordinator(placed, terminal):
+    facts = {"pose": 2, "poses": 3, "mover": "human", "sweep": 4, "sweeps_per_pose": [7, 7, 7],
              "role": "tweeter", "repeat": 2, "repeats": 3,
-             "pose_detail": {"deg": -20, "elevation_deg": 0}}
+             "pose_details": [{}, {"deg": -20, "elevation_deg": 0}, {}]}
     action = {"id": "position_ready", "label": "", "endpoint": "/placed", "body": {"index": 3, "attempt": 1}}
-    capture = {"status": "awaiting_capture", "run": facts,
+    if terminal:
+        facts["status"] = "complete"
+    capture = {"status": "complete" if terminal else "awaiting_capture", "run": facts,
                "position_pending": None if placed else {"mover": "human", "actions": [action]}}
     env = build_crossover_envelope_v2({**_status(phase="measure"), "capture": capture})
     assert env["round_lines"] == round_lines(facts, pending=not placed)
-    actions = env["capture"]["round_pending"]["actions"]
+    if terminal:
+        assert env["pending"] is None and not env["busy"]
+        assert env["capture"] is None and env["next_action"]
+        return
+    actions = env["pending"]["actions"]
     assert [a["id"] for a in actions] == (["retake", "reset_round"] if placed else ["position_ready", "retake", "reset_round"])
-    assert all(a["label"] == ROUND_LABELS[a["id"]] for a in actions)
+    assert env["capture"] is None and env["busy"]
+    if not placed:
+        assert actions[0] is action
     assert actions[-2]["endpoint"] == "/sound/speaker/crossover/v2/retake"
     assert actions[-1]["endpoint"] == "/sound/speaker/crossover/capture-cancel"
     assert actions[-1]["body"] == actions[-2]["body"] == {}

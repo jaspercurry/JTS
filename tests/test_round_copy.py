@@ -4,21 +4,28 @@
 import pytest
 
 from jasper.active_speaker.crossover_v2.refusal_copy import CAPTURE_QUALITY_REFUSAL_CODES, refusal_copy_for
-from jasper.active_speaker.round_copy import ROUND_LABELS, round_lines, coverage_lines
+from jasper.active_speaker.round_copy import RUN_ENDED, round_lines, coverage_lines, round_verdict
 
 
-def test_live_and_placement_lines():
-    facts = {"pose": 2, "poses": 3, "mover": "human", "pose_detail": {"deg": -20, "elevation_deg": 0},
-             "sweep": 4, "sweep_total": 7, "role": "tweeter", "repeat": 2, "repeats": 3}
-    assert round_lines(facts) == ["Pose 2 of 3, sweep 4 of 7: tweeter repeat 2 of 3.",
-                                 "Keep the microphone still until the tone stops."]
-    assert round_lines(facts, pending=True) == ["Pose 2 of 3: 20° left, ear height (human).",
-        "Place the microphone. Confirm it is placed to play this pose's sweeps."]
-    assert round_lines({"retake_pose": 2, "retake_sweep": 5, "retake_reason": "snr_floor",
-                        "retake_action": "retake_louder", "level_raise_dbfs": -12}) == [
-        "Pose 2, sweep 5: The room is too loud right now, or the microphone is too far away. "
-        "Quiet the room or move the microphone closer, then try again. Taking it again louder.",
-        "Raising the sweep level to -12 dBFS."]
+@pytest.mark.parametrize("facts, pending, expected", [
+    ({"pose": 2, "poses": 3, "mover": "human", "sweeps_per_pose": [7, 7, 7], "pose_details": [{}, {}, {}],
+      "sweep": 4, "role": "tweeter", "repeat": 2, "repeats": 3}, False,
+     ["Pose 2 of 3, sweep 4 of 7: tweeter repeat 2 of 3.", "Keep the microphone still until the tone stops."]),
+    ({"pose": 2, "poses": 3, "mover": "human", "pose_details": [{}, {"deg": -20, "elevation_deg": 15}, {}]}, True,
+     ["Pose 2 of 3: -20° · 15° up (human).", "Place the microphone. Confirm it is placed to play this pose's sweeps."]),
+    ({"retake_pose": 2, "retake_sweep": 5, "retake_reason": "snr_floor",
+      "retake_action": "retake_louder", "level_raise_dbfs": -12}, False,
+     ["Pose 2, sweep 5: The room is too loud right now, or the microphone is too far away. "
+      "Quiet the room or move the microphone closer, then try again. Taking it again louder.",
+      "Raising the sweep level to -12 dBFS."]),
+])
+def test_live_and_placement_lines(facts, pending, expected):
+    assert round_lines(facts, pending=pending) == expected
+
+
+@pytest.mark.parametrize("facts, expected", [({}, "verdict"), ({"poses": 3}, "")])
+def test_round_verdict(facts, expected):
+    assert round_verdict(facts, "verdict") == expected
 
 
 @pytest.mark.parametrize("reason", sorted(CAPTURE_QUALITY_REFUSAL_CODES | {
@@ -35,18 +42,18 @@ def test_retake_uses_registry_words_without_codes(reason):
 
 def test_manual_redo_and_ended_round_lines():
     assert round_lines({"retake_pose": 2, "retake_reason": "operator"}) == ["Pose 2: you asked to redo this pose."]
-    assert ROUND_LABELS["run_ended"] == "This run has ended. Choose a pose set to start the next one."
+    assert RUN_ENDED == "This run has ended. Choose a pose set to start the next one."
 
 
 @pytest.mark.parametrize("error", ["OSError", "packet_save_failed"])
 def test_packet_failure_keeps_details_out_of_copy(error):
     assert round_lines({"status": "complete", "takes": 3, "packet_error": error}) == [
-        "Measured: 3 takes; not measured: 0 planned captures.",
+        "Measured: 3 takes.", "Not measured: 0 planned captures.",
         "The round packet could not be saved. Run jasper-round wait to try again."]
 
 
 def test_pre_round_lines_count_the_supplied_schedule():
-    sweeps = [{"role": "woofer", "kind": "sweep", "phase": "measure", "program_repeats": 3}] * 3
+    sweeps = [{"role": "woofer", "kind": "sweep", "phase": "measure", "repeats": 3}] * 3
     facts = {"program": "tournament/full", "poses": 3, "mover": "human", "sweeps_per_pose": [3, 3, 3],
              "sweeps": 9, "pose_sweeps": [sweeps] * 3, "estimated_seconds": 126}
     assert round_lines(facts) == [
@@ -62,5 +69,5 @@ def test_post_round_coverage_keeps_packet_words():
               "next_action": {"label": "Measure timing again"}, "disclosures": ["packet disclosure"]}
     manifest = {"not_measured": [{"pose": {"deg": 20}, "reason": "complete_requested"}]}
     assert coverage_lines(packet, manifest) == ["Measured: 1 take.",
-        "Waived: 20° right, ear height.", "Unqualified band (woofer): below 250 Hz.",
+        "Waived: +20°.", "Unqualified band (woofer): below 250 Hz.",
         "packet disclosure", "Measure timing again"]

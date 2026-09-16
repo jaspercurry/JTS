@@ -68,6 +68,10 @@ def _granted(
     }
 
 
+def retake_action() -> dict[str, Any]:
+    return {"id": "retake", "label": "Redo this pose", "endpoint": RETAKE_ENDPOINT, "body": {}}
+
+
 class PositionGate:
     """Thread-safe capture admission shared by human and external movers.
 
@@ -169,7 +173,7 @@ class PositionGate:
                  "endpoint": POSITION_READY_ENDPOINT,
                  "body": {"index": index, "attempt": attempt, "degrees": target,
                           "vertical_deg": vertical}},
-                {"id": "retake", "label": "Retake", "endpoint": RETAKE_ENDPOINT, "body": {}},
+                retake_action(),
                 {"id": "done", "label": "Done", "endpoint": COMPLETE_ENDPOINT, "body": {}},
             ] if self._mover == MOVER_HUMAN else [],
         }

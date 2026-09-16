@@ -7,8 +7,7 @@ from __future__ import annotations
 
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.active_speaker.crossover_v2.programs import program_for_spec
-from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
+from jasper.active_speaker.crossover_v2.programs import predictive_program_for_spec
 from jasper.web.correction_run_host import compose_plan_program
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
@@ -1132,9 +1131,10 @@ def test_predictive_segment_count_survives_solved_gains_and_live_level(scope, ph
     conductor = _conductor(FlowSeams(), gain_plan_db={"woofer": -50.0, "tweeter": -57.0})
     spec = MeasureSpec(kind="baseline", graph_scope=scope, program_phase=phase,
                        candidate_id=None if scope == "drivers" else "fp-a")
-    predicted = program_for_spec(spec, conductor._excitation,
-        {r.role: BASE_STIMULUS_PEAK_DBFS for r in conductor._roles},
-        safety_profile={}, role_targets={})
+    context = SimpleNamespace(roles_bands=conductor._roles, driver_caps_dbfs=conductor._excitation.caps_dbfs,
+                              fc_hz=conductor._excitation.fc_hz, safety_profile={}, role_targets={},
+                              driver_sweep_duration_limits_s=conductor._excitation.sweep_duration_limits_s)
+    predicted = predictive_program_for_spec(context)(spec)
     for stimulus_dbfs in (None, -48.0):
         live = compose_plan_program(conductor, spec, stimulus_dbfs, context=SimpleNamespace())
         assert len(live.stimulus_segments()) == len(predicted.stimulus_segments())

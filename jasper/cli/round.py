@@ -163,11 +163,9 @@ def _cmd_status(client: WizardClient, args: argparse.Namespace) -> int:
 
 def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
     from jasper.active_speaker.round_bank import (  # lazy: banking imports analysis
-        RoundBankError, bank_round,
+        RoundBankError, finish_round,
     )
-    from .round_views import run_bookkeeping  # lazy: wait-only view dispatch
-    from .round_views._bass_inputs import join_bass_rounds  # lazy: wait-only bass analysis
-    from jasper.active_speaker.round_packet import finish_bass_packet, wait_answer  # lazy: wait-only packet assembly
+    from jasper.active_speaker.round_packet import wait_answer  # lazy: wait-only packet assembly
 
     previous_lines: list[str] = []
     def show_progress(progress):
@@ -183,17 +181,10 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
     session_dir = _round_session_dir(args.run)
     if not session_dir:
         return failed(EXIT_UNREADABLE, "capture_bundle_unavailable", result)
-    try:
-        banked = bank_round(
-            Path(session_dir), view_runner=run_bookkeeping,
-        )
-        manifest = banked.provenance.get("manifest")
-        if manifest and Path(manifest).is_file():
-            finish_bass_packet(banked.path, Path(manifest), join_levels=join_bass_rounds)
-    except RoundBankError as exc:
-        return failed(EXIT_REFUSED, exc.reason, str(exc))
-    except OSError as exc:
-        return failed(EXIT_WRITE_FAILED, "write_failed", str(exc))
+    banked, error = finish_round(Path(session_dir))
+    if banked is None:
+        return failed(EXIT_REFUSED if isinstance(error, RoundBankError) else EXIT_WRITE_FAILED,
+                      error.reason if isinstance(error, RoundBankError) else "write_failed", str(error))
     return answered(wait_answer(banked, result, verbose=args.verbose),
                     "\n".join([f"Run banked at {banked.path}", *packet_lines(str(banked.path))]), sort_keys=False)
 

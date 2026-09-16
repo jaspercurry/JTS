@@ -563,7 +563,7 @@ def test_status_reads_progress_once(monkeypatch, capsys):
 
 
 def test_status_prints_composed_sweep_lines(capsys):
-    progress = {"pose": 2, "poses": 3, "sweep": 4, "sweep_total": 7, "role": "tweeter", "repeat": 2, "repeats": 3}
+    progress = {"pose": 2, "poses": 3, "sweep": 4, "sweeps_per_pose": [7, 7, 7], "pose_details": [{}, {}, {}], "role": "tweeter", "repeat": 2, "repeats": 3}
     client = SimpleNamespace(run_status=lambda run_id: (200, progress))
     assert cli._cmd_status(client, SimpleNamespace(run="run-1")) == 0
     output = capsys.readouterr()

@@ -14,6 +14,7 @@ import json
 import re
 import hashlib
 import wave
+from unittest.mock import Mock
 
 import numpy as np
 from pathlib import Path
@@ -629,3 +630,30 @@ def test_packet_stats_use_the_saved_series_reference(tmp_path, level, slope):
     assert match.groups()[:2] == (packet["applied"]["candidate"][:12], packet["applied"]["record"])
     assert len(packet["applied"]["candidate"]) == 64
     assert json.loads(match[3]) == packet["applied"]["layers"]
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_finish_round_banks_packet_or_records_save_failure(tmp_path, monkeypatch, failure):
+    from jasper.active_speaker import round_bank
+
+    def bank(*args, **kwargs):
+        if failure:
+            raise OSError("disk unavailable")
+        return round_bank.BankedRound(tmp_path, {})
+    monkeypatch.setattr(round_bank, "bank_round", bank)
+    manifest = tmp_path / "evidence/v1/artifacts/crossover_v2/run" / RUN_MANIFEST_FILENAME
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"status": "complete", "sets": []}))
+    logged = Mock()
+    monkeypatch.setattr(round_bank, "log_event", logged)
+    banked, error = round_bank.finish_round(tmp_path)
+    assert (banked is None) == failure
+    assert isinstance(error, OSError) if failure else error is None
+    if banked:
+        assert banked.path == tmp_path
+    assert json.loads(manifest.read_text()) == {"status": "complete", "sets": [],
+        **({"packet_error_detail": "OSError: disk unavailable"} if failure else {})}
+    if failure:
+        assert logged.call_args.kwargs["detail"] == json.loads(manifest.read_text())["packet_error_detail"]
+    else:
+        logged.assert_not_called()
