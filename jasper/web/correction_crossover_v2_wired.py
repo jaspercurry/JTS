@@ -127,7 +127,7 @@ def build_v2_wired_run_and_consume(
 
         def publish_failure(exc: BaseException) -> str:
             envelope = refusal_envelope(exc)
-            code = envelope["code"] or "internal_error"
+            code = envelope["code"] if envelope["code"] in REASON_REGISTRY else "internal_error"
             if isinstance(exc, (asyncio.CancelledError, CaptureStopped)):
                 code = signals.stop_reason
             envelope = refusal_envelope(code=code)
@@ -137,6 +137,7 @@ def build_v2_wired_run_and_consume(
                                        "next_action": envelope["next_action"]})
             return str(code)
 
+        result = None
         try:
             try:
                 result = await (execute or plan_run.run_plan)(
@@ -156,7 +157,8 @@ def build_v2_wired_run_and_consume(
                 raise CrossoverV2Refused(detail if code == result.reason else f"{result.reason}: {detail}", code=code)
         except BaseException as exc:  # noqa: BLE001 - persist every terminal arm
             code = publish_failure(exc)
-            v2state._persist_terminal_failure(conductor, code, detail=manifest.detail or exception_detail(exc))
+            detail = result.detail if result is not None else ""
+            v2state._persist_terminal_failure(conductor, code, detail=detail or exception_detail(exc))
             raise
         else:
             try:

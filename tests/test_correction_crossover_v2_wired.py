@@ -26,6 +26,7 @@ from jasper.active_speaker.arm_walk import CAPTURE_CANCEL_PATH, LoopbackSession
 from jasper.active_speaker.plan_run import RunSignals
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
 from jasper.active_speaker.run_manifest import RunManifest
+from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramPlaybackTransaction
 from jasper.active_speaker import plan_run
 from tests.test_active_speaker_measurement_door import box as box
@@ -769,6 +770,30 @@ async def test_capture_failure_keeps_exception_detail_in_the_round(monkeypatch, 
     assert saved["code"] == manifest.reason == code
     assert saved["detail"] == manifest.detail == "ValueError: x"
     assert fakes.graph.restores == 1
+
+
+async def test_run_failure_without_result_keeps_detail_and_restore(monkeypatch, tmp_path):
+    monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "state.json")
+    conductor = _conductor(FlowSeams())
+    v2state.save_v2_state({"session_id": conductor.session_id, "execution": {"volume_restore": "stale"}})
+    door = SimpleNamespace(opened=None)
+
+    async def execute(*args, **kwargs):
+        try:
+            raise RuntimeError("x")
+        finally:
+            door.opened = SimpleNamespace(restore_result=SessionVolumeRestoreResult.EXACT_RESTORED)
+
+    runner = v2wired.build_v2_wired_run_and_consume(
+        conductor, door=door, signals=RunSignals(), ceiling_s=30,
+        manifest=None, request=None, captures=None, analyze=None, assessor=None, execute=execute,
+    )
+    with pytest.raises(RuntimeError):
+        await runner(SimpleNamespace(session_id=conductor.session_id))
+    state = v2state.load_v2_state()
+    assert state["failure"]["code"] == "internal_error"
+    assert state["failure"]["detail"] == "RuntimeError: x"
+    assert state["execution"]["volume_restore"] == "exact_restored"
 
 
 @pytest.mark.parametrize("repeats", [1, 3])
