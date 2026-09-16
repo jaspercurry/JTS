@@ -33,7 +33,7 @@ from jasper.active_speaker.crossover_v2.prescription_contract import (
 from jasper.active_speaker.crossover_v2.round_inputs import contract_sources, default_out, round_inputs
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
-from jasper.active_speaker.bass_table_report import bass_table_rows
+from jasper.active_speaker.bass_table_report import BASS_READOUT_FIELDS, bass_table_rows
 from jasper.audio_measurement import room_limits as limits
 from jasper.bass_extension import dynamic
 from jasper.cli import crossover_prescriber as cli
@@ -250,12 +250,19 @@ def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(cap
 def test_bass_contract_reads_saved_packet_and_discloses_every_level(round_bank, bass_packet, capsys):
     bank, _ = round_bank
     bass_packet["round_id"] = bank.name
+    for level in bass_packet["bass_table"]["tables"][0]["levels"]:
+        level.update(sources=[{"before": "/tmp/base.json", "after": r"C:\captures\after.json"}],
+                     records=["/tmp/record.json"], compression_includes=["compressor", "driver"], harmonics_delta_db=[])
     (bank / "packet.json").write_text(json.dumps(bass_packet))
     assert cli.main(["contract", "--round", str(bank), "--section", "bass"]) == 0
     contract = json.loads(capsys.readouterr().out)
     assert contract["evidence_status"] == "evaluated"
     assert set(contract["refusal_codes"]) == bass.BASS_PRESCRIPTION_REFUSAL_REASONS
-    assert contract["evidence_status_detail"]["levels"] == bass_table_rows(bass_packet["bass_table"])
+    levels = contract["evidence_status_detail"]["levels"]
+    assert levels == bass_table_rows(bass_packet["bass_table"])
+    for level in levels:
+        assert set(level) == set(BASS_READOUT_FIELDS)
+        assert not any(separator in json.dumps(level) for separator in ("/", "\\"))
 
 
 def test_evidence_declarations_are_served_as_templates_and_cannot_be_mutated():

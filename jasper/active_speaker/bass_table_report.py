@@ -7,9 +7,15 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+BASS_READOUT_FIELDS = (
+    "candidate_id", "level_key", "base_db_spl_at_mark", "candidate_db_spl_at_mark",
+    "prescribed_boost_db", "realized_boost_db", "compression_db", "base_response", "candidate_response",
+    "headroom_verdict", "headroom_rises", "snr_margin_db", "repeat_spread_db", "position_spread_db",
+)
+
 
 def bass_table_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
-    return [{"candidate_id": table["candidate_id"], **row}
+    return [{key: table["candidate_id"] if key == "candidate_id" else row.get(key) for key in BASS_READOUT_FIELDS}
             for table in payload.get("tables", ()) for row in table["levels"]]
 
 
@@ -35,12 +41,14 @@ def bass_table_markdown(rows: list[dict[str, Any]]) -> str:
         headroom = row["headroom_verdict"] or "unknown"
         for rise in row["headroom_rises"] or ():
             headroom += f"; H{rise['order']} {rise['band_hz'][0]:g}–{rise['band_hz'][1]:g} Hz: {rise['delta_db']:+.1f} dB"
+        floors = [(row[key] or {}).get("qualified_from_hz") for key in ("base_response", "candidate_response")]
+        qualified = "No qualified evidence" if all(floor is None for floor in floors) and all(
+            band["value_db"] is None for band in row["realized_boost_db"]) else " / ".join(map(number, floors))
         fields = [row["candidate_id"], number(row["level_key"]["level_db"]),
                   f"{number(row['base_db_spl_at_mark'])} / {number(row['candidate_db_spl_at_mark'])}",
                   number(row["prescribed_boost_db"]), realized,
                   corners(row["base_response"]), corners(row["candidate_response"]),
-                  " / ".join(number((row[key] or {}).get("qualified_from_hz")) for key in ("base_response", "candidate_response")),
-                  headroom]
+                  qualified, headroom]
         lines.append("| " + " | ".join(str(field).replace("|", "\\|").replace("\n", " ") for field in fields) + " |")
     lines += ["", "Bound marks the qualified floor, not a measured crossing. Prescribed minus realized includes compressor and driver action. "
               "Harmonics use repeat spread, or a 1 dB evidence floor for one repeat; this is not a hearing threshold."]

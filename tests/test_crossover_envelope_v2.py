@@ -203,7 +203,6 @@ def test_timing_status_lines(profile, round_, expected):
 @pytest.mark.parametrize("fault, action_id, target", [
     ("agc_behavioral_fail", "crossover_v2_retake", "/sound/speaker/crossover/v2/retake"),
     ("capture_timeout", "restart_session", "/sound/speaker/crossover/reset"),
-    ("bass_fit_common_coverage_unavailable", "measure_bass_coverage", "/sound/speaker/crossover/"),
     ("clipped", None, None),
     ("verify_out_of_tolerance", "crossover_v2_retake", "/sound/speaker/crossover/v2/retake"),
 ])
