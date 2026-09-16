@@ -19,6 +19,7 @@ from jasper.audio_measurement.gating import SEAT_EXEMPT
 @pytest.mark.parametrize(
     ("program_id", "size", "poses", "moves", "captures"),
     [
+        ("speaker", "mark", 1, 1, 3),
         ("baseline", "full", 13, 13, 29),
         ("baseline", "express", 5, 5, 13),
         ("tournament", "full", 3, 3, 3),
@@ -44,7 +45,7 @@ def test_shipped_rows(
     assert len(row.poses) == poses
     assert row.mic_move_count == moves
     assert row.capture_count == captures
-    assert row.room_sweep is (program_id == "baseline")
+    assert row.room_sweep is (program_id in {"speaker", "baseline"})
 
 
 @pytest.mark.parametrize("purpose", ["room", "bass"])
