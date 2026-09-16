@@ -442,10 +442,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
            ("spl_target_uncapturable", "The microphone cannot measure the requested level. Use a suitable microphone."),
            ("seat_level_watchdog_expired", "Leveling timed out. Check the audio connection and try again."),
        )},
-    "bass_fit_common_coverage_unavailable": ReasonSpec(
-        "bass_fit_common_coverage_unavailable", TEMPLATE_HARD_STOP, 0, "", "The bass takes have no shared usable frequency range.",
-        next_action={"id": "measure_bass_coverage", "label": "Measure both graphs over the target band", "href": "/sound/speaker/crossover/"},
-    ),
     "bass_fit_capture_context_changed": ReasonSpec(
         "bass_fit_capture_context_changed", TEMPLATE_HARD_STOP, 0, "", "The paired bass captures used different conditions.",
         next_action={"id": "match_bass_capture", "label": "Measure both graphs at the same pose and settings", "href": "/sound/speaker/crossover/"},
@@ -465,14 +461,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     "bass_fit_pose_missing": ReasonSpec(
         "bass_fit_pose_missing", TEMPLATE_HARD_STOP, 0, "", "The bass capture has no recorded pose.",
         next_action={"id": "measure_bass_pose", "label": "Measure with a recorded microphone pose", "href": "/sound/speaker/crossover/"},
-    ),
-    "bass_target_invalid": ReasonSpec(
-        "bass_target_invalid", TEMPLATE_HARD_STOP, 0, "", "The bass target curve is invalid.",
-        next_action={"id": "correct_bass_target", "label": "Supply an ordered target curve from 20 to 200 Hz", "href": "/sound/speaker/crossover/"},
-    ),
-    "bass_table_tolerance_invalid": ReasonSpec(
-        "bass_table_tolerance_invalid", TEMPLATE_HARD_STOP, 0, "", "The bass target tolerance is invalid.",
-        next_action={"id": "correct_bass_tolerance", "label": "Supply a positive tolerance in dB", "href": "/sound/speaker/crossover/"},
     ),
     "bass_table_window_gain_missing": ReasonSpec(
         "bass_table_window_gain_missing", TEMPLATE_HARD_STOP, 0, "", "The bass capture lacks a complete resolved window gain.",

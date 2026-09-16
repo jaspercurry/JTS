@@ -10,10 +10,8 @@ from typing import Any
 import numpy as np
 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
-from jasper.bass_extension.dynamic import DynamicBassDescriptor, loudness_boost_db, validate_dynamic_bass_descriptor
 
-from .bass_comparison import bass_capture_context, common_bass_bins, compare_bass_takes
-from .candidate_bank import CandidateBankRefusal, find_banked_candidate
+from .bass_comparison import CHANGE_FIELDS, COMPARISON_FIELDS, bass_capture_context, common_bass_bins
 from .crossover_v2.measurement_context import compare_capture_basis
 from .crossover_v2.round_captures import doc_pose_key
 from .crossover_v2.refusal_copy import CrossoverV2Refused
@@ -21,11 +19,6 @@ from .measurement_bass import BASS_BANDS_HZ
 
 REFERENCE_BAND_HZ = (300.0, 1000.0)
 BASS_GRID_POINTS = 121
-
-
-class BassFitCoverageUnavailable(CrossoverV2Refused):
-    def __init__(self) -> None:
-        super().__init__(code="bass_fit_common_coverage_unavailable")
 
 
 def aligned_bass_pair(
@@ -58,98 +51,51 @@ def smooth_bass_curve(grid: np.ndarray, values: np.ndarray) -> np.ndarray:
     return values
 
 
-def smooth_bass_pair(grid: np.ndarray, curves: Sequence[np.ndarray]) -> list[np.ndarray]:
-    shared = np.isfinite(curves).all(axis=0)
-    return [smooth_bass_curve(grid, np.where(shared, curve, np.nan)) for curve in curves]
+def _median_curves(curves):
+    values = np.asarray(curves)
+    valid = np.isfinite(values).all(axis=0)
+    result = np.full(values.shape[1], np.nan)
+    result[valid] = np.median(values[:, valid], axis=0)
+    return result
 
 
 def fit_bass_shape(
     pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]], *,
-    candidate_id: str, descriptor: Mapping[str, Any] | None, target: Mapping[str, Any],
-    reference_band_hz: tuple[float, float] = REFERENCE_BAND_HZ,
+    candidate_id: str, reference_band_hz: tuple[float, float] = REFERENCE_BAND_HZ,
 ) -> dict[str, Any]:
-    settings = validate_dynamic_bass_descriptor(descriptor) if descriptor is not None else None
-    tf = np.asarray(target["freqs_hz"], dtype=float)
-    ty = np.asarray(target["magnitude_db"], dtype=float)
-    if (tf.ndim != 1 or len(tf) < 2 or ty.shape != tf.shape or not np.isfinite(tf).all()
-            or not np.isfinite(ty).all() or tf[0] < 20 or tf[-1] > 200 or not np.all(np.diff(tf) > 0)):
-        raise CrossoverV2Refused(code="bass_target_invalid")
     if not pairs or not 0 < reference_band_hz[0] < reference_band_hz[1]:
         raise CrossoverV2Refused(code="bass_fit_inputs_missing")
-    grid = np.geomspace(tf[0], tf[-1], BASS_GRID_POINTS)
-    desired = np.interp(np.log(grid), np.log(tf), ty)
-    grouped: dict[Any, list[tuple[np.ndarray, np.ndarray]]] = defaultdict(list)
+    grid = np.geomspace(BASS_BANDS_HZ[0][0], BASS_BANDS_HZ[-1][1], BASS_GRID_POINTS)
+    groups, curves, shared_curves = defaultdict(list), defaultdict(list), defaultdict(list)
     sources = []
     first = bass_capture_context(pairs[0][0])
     for before, after in pairs:
-        base_candidate_id = before["record"].get("candidate_id")
-        if not base_candidate_id or after["record"].get("candidate_id") != candidate_id:
+        if not before["record"].get("candidate_id") or after["record"].get("candidate_id") != candidate_id:
             raise CrossoverV2Refused(code="bass_fit_requires_room_baseline_and_exact_candidate")
-        try:
-            base = find_banked_candidate(base_candidate_id)
-        except CandidateBankRefusal as exc:
-            raise CrossoverV2Refused(
-                {"candidate_id": base_candidate_id}, code="bass_fit_candidate_unreadable",
-            ) from exc
-        match = compare_bass_takes(before, after, change="candidate")
         context = bass_capture_context(before)
+        match = compare_capture_basis(bass_capture_context(after), context, interventions=CHANGE_FIELDS["candidate"],
+                                      required=tuple(key for key in COMPARISON_FIELDS if key not in CHANGE_FIELDS["candidate"]))
         across = compare_capture_basis(context, first, interventions=("pose_key",),
                                        required=tuple(key for key in first if key != "pose_key"))
-        if match["context"]["incompatible_fields"] or across["incompatible_fields"]:
-            raise CrossoverV2Refused({"pair": match["context"], "across": across}, code="bass_fit_capture_context_changed")
-        reference, curves = aligned_bass_pair(before, after, grid, reference_band_hz)
-        shared = np.isfinite(curves).all(axis=0)
-        for values in curves:
-            values[~shared] = np.nan
-            values[shared] = smooth_fractional_octave(grid[shared], values[shared], fraction=3)
+        if match["incompatible_fields"] or across["incompatible_fields"]:
+            raise CrossoverV2Refused({"pair": match, "across": across}, code="bass_fit_capture_context_changed")
         pose = doc_pose_key(before["record"])
         if before["record"].get("position_deg") is None and before["record"].get("seat_offset_m") is None:
             raise CrossoverV2Refused(code="bass_fit_pose_missing")
-        grouped[pose].append((curves[0], curves[1]))
+        reference, aligned = aligned_bass_pair(before, after, grid, reference_band_hz)
+        shared = np.isfinite(aligned).all(axis=0)
+        common = [smooth_bass_curve(grid, np.where(shared, curve, np.nan)) for curve in aligned]
+        shared_curves[pose].append(common)
+        curves[pose].append([common[side] if np.array_equal(np.isfinite(curve), shared)
+                             else smooth_bass_curve(grid, curve) for side, curve in enumerate(aligned)])
+        groups[pose].append((before, after))
         sources.append({"before": before["record_path"], "after": after["record_path"],
-                        "reference_db": reference, "comparison": match["context"], "across_positions": across})
+                        "reference_db": reference, "comparison": match, "across_positions": across})
     # Equal pose weight: repeated measurements estimate variation, not more seats.
-    baseline, treated, positions = [], [], []
-    for pose, repeats in grouped.items():
-        a, b = np.asarray([row[0] for row in repeats]), np.asarray([row[1] for row in repeats])
-        valid = np.isfinite(a).all(axis=0) & np.isfinite(b).all(axis=0)
-        base_curve, trial_curve = np.full(grid.shape, np.nan), np.full(grid.shape, np.nan)
-        base_curve[valid], trial_curve[valid] = np.median(a[:, valid], axis=0), np.median(b[:, valid], axis=0)
-        baseline.append(base_curve)
-        treated.append(trial_curve)
-        positions.append({"pose": pose, "repeat_count": len(repeats), "repeat_gain_spread_db": [
-            {"band_hz": [lo, hi], "median_range_db": float(np.median(np.ptp((b-a)[:, mask], axis=0))) if mask.any() and len(repeats) > 1 else None}
-            for lo, hi in BASS_BANDS_HZ
-            for mask in [valid & (grid >= lo) & (grid < hi)]
-        ]})
-    a, b = np.asarray(baseline), np.asarray(treated)
-    valid = np.isfinite(a).all(axis=0) & np.isfinite(b).all(axis=0)
-    if valid.sum() < 2:
-        raise BassFitCoverageUnavailable()
-    delta = b[:, valid] - a[:, valid]
-    error = desired[valid] - a[:, valid]
-    energy = float(np.sum(delta ** 2))
-    fraction = float(np.clip(np.sum(delta * error) / energy, 0, 1)) if energy > 0 else 0.0
-    base_descriptor = base.candidate.bass_extension or None
-    base_boost = loudness_boost_db(first["loudness_volume_db"], DynamicBassDescriptor(**base_descriptor)) if base_descriptor else 0.0
-    base_low_boost = base_descriptor["low_boost_db"] if base_descriptor else 0.0
-    choices = []
-    for scale in sorted({0.0, fraction, 1.0} if settings is not None else {0.0}):
-        prediction = a[:, valid] + scale * delta
-        rms = np.sqrt(np.mean((prediction - desired[valid]) ** 2, axis=1))
-        fitted = base_descriptor if scale == 0 else settings
-        if 0 < scale < 1 and settings is not None:
-            fitted = {**settings, "low_boost_db": base_low_boost + scale * (settings["low_boost_db"] - base_low_boost)}
-        choices.append({"scale": scale, "descriptor": fitted,
-                        "realized_boost_db": (base_boost + scale * np.median(delta, axis=0)).tolist(),
-                        "mean_pose_rms_db": float(np.mean(rms)), "per_pose_rms_db": rms.tolist(),
-                        "max_abs_error_db": float(np.max(np.abs(prediction - desired[valid]))),
-                        "predicted_median_db": np.median(prediction, axis=0).tolist()})
-    return {"schema": "jts_bass_fit/1", "candidate_id": candidate_id, "source_descriptor": settings,
-            "sources": sources, "positions": positions, "position_count": len(positions), "take_pair_count": len(pairs),
-            "reference_band_hz": list(reference_band_hz), "target": dict(target), "smoothing_fraction": 3,
-            "freqs_hz": grid[valid].tolist(), "unqualified_hz": grid[~valid].tolist(), "choices": choices,
-            "selected_scale": fraction,
-            "limits": ["Intermediate shapes are empirical dB interpolation within the measured boost range, not an exact dynamic DSP prediction; measure before saving.",
-                       "The fit retains the tested volume and demand settings. It does not fit new taper settings or establish a driver limit.",
-                       "Reference alignment is per pose. Missing bins are not fitted. Correct Room peaks in Room before fitting extension."]}
+    responses = [_median_curves([_median_curves(np.asarray(repeats)[:, side]) for repeats in curves.values()])
+                 for side in (0, 1)]
+    delta = _median_curves([_median_curves(np.asarray(repeats)[:, 1]) - _median_curves(np.asarray(repeats)[:, 0])
+                            for repeats in shared_curves.values()])
+    return {"freqs_hz": grid, "groups": groups, "curves": curves, "sources": sources,
+            "base": responses[0], "candidate": responses[1], "delta": delta,
+            "reference_band_hz": reference_band_hz}

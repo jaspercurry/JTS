@@ -24,6 +24,9 @@ CHANGE_FIELDS = {
     "diagnostic": (),
 }
 
+COMPARISON_FIELDS = (*CAPTURE_FIELDS, *GRAPH_FIELDS,
+    "pose_key", "position_axis", "mark_distance_m", "sweep_band_hz", "sweep_duration_s", "analysis_calibration")
+
 
 def bass_capture_context(take: Mapping[str, Any]) -> dict[str, Any]:
     record = take["record"]
@@ -53,15 +56,12 @@ def common_bass_bins(a: Mapping[str, Any], b: Mapping[str, Any], value: str, qua
 
 def compare_bass_takes(before: Mapping[str, Any], after: Mapping[str, Any], *, change: str) -> dict[str, Any]:
     interventions = CHANGE_FIELDS[change]
-    required = (*CAPTURE_FIELDS, *GRAPH_FIELDS,
-        "pose_key", "position_axis", "mark_distance_m", "sweep_band_hz", "sweep_duration_s", "analysis_calibration")
     context = compare_capture_basis(bass_capture_context(after), bass_capture_context(before), interventions=interventions,
-                                    required=tuple(key for key in required if key not in interventions))
+                                    required=tuple(key for key in COMPARISON_FIELDS if key not in interventions))
     result: dict[str, Any] = {"schema": "jts_bass_comparison/1", "change": change, "context": context,
         "before": before["record_path"], "after": after["record_path"], "bands": []}
     if context["incompatible_fields"] and change != "diagnostic":
-        result.update(available=False, reason="capture_context_changed")
-        return result
+        return {**result, "available": False, "reason": "capture_context_changed"}
     f, a, b = common_bass_bins(before, after, "fundamental_db", "fundamental_qualified")
     records = (before["record"], after["record"])
     stimulus = [finite_float(record.get("stimulus_dbfs")) for record in records]
@@ -86,10 +86,9 @@ def compare_bass_takes(before: Mapping[str, Any], after: Mapping[str, Any], *, c
                 "after_relative_db": float(np.median(hb[hm])) if hm.any() else None,
                 "change_db": float(np.median((hb - ha)[hm])) if hm.any() else None}
         result["bands"].append(row)
-    result.update(available=bool(f.size), freqs_hz=f.tolist(), transfer_change_db=delta.tolist(),
-                  requested_input_change_db=input_delta,
-                  interpretation="Combined compression includes intended DSP action; it is not an isolated driver limit. Diagnostic differences do not isolate room transfer.")
-    return result
+    return {**result, "available": bool(f.size), "freqs_hz": f.tolist(), "transfer_change_db": delta.tolist(),
+            "requested_input_change_db": input_delta,
+            "interpretation": "Combined compression includes intended DSP action; it is not an isolated driver limit. Diagnostic differences do not isolate room transfer."}
 
 
 def selected_take(view: Mapping[str, Any], take_id: str) -> Mapping[str, Any]:

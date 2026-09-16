@@ -40,7 +40,6 @@ BOUND_OWNERS = {
     "quality": "jasper.audio_measurement.quality_model",
     "safety": "jasper.active_speaker.profile",
     "gating": "jasper.audio_measurement.gating",
-    "bass": "jasper.bass_extension.measurement",
 }
 
 BOUND_SOURCES = {
@@ -103,9 +102,6 @@ BOUND_SOURCES = {
         ("delta_highpass", "Hz", "contract.bass.schema.properties.delta_highpass_hz"),
         ("delta_highpass_exclusive_upper", "field", "contract.bass.bounds.delta_highpass_hz_exclusive_upper_field"),
         ("shared_headroom_layers", "layers", "contract.bass.shared_headroom.layers"),
-        ("target_band", "Hz", "bass.TARGET.freqs_hz"),
-        ("target_magnitude", "dB", "bass.TARGET.magnitude_db"),
-        ("target_tolerance", "dB", "bass.TOLERANCE_DB"),
     ),
 }
 

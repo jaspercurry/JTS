@@ -8,12 +8,11 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
 from jasper.active_speaker.bass_comparison import bass_capture_context, selected_take
 from jasper.active_speaker.bass_table import fit_bass_table, level_key
 from jasper.active_speaker.bass_fit import REFERENCE_BAND_HZ
-from jasper.bass_extension.measurement import TARGET, TOLERANCE_DB
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate, load_candidate_artifact
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
@@ -26,7 +25,7 @@ from .crossover_v2.round_inputs import SetTakes, default_out, read_run_manifest,
 
 
 def fit_bass_rounds(round_dirs: Sequence[Path], *, candidates: Sequence[Path],
-                    target: Mapping[str, Any], tolerance_db: float, reference_band_hz: tuple[float, float]) -> dict[str, Any]:
+                    reference_band_hz: tuple[float, float]) -> dict[str, Any]:
     descriptors = {}
     for path in candidates:
         candidate = load_candidate_artifact(path)
@@ -80,8 +79,7 @@ def fit_bass_rounds(round_dirs: Sequence[Path], *, candidates: Sequence[Path],
         baseline_takes = [take for rows in baseline.values() for take in rows]
         candidate_ids = {take["record"]["candidate_id"] for take in baseline_takes}
         tables = [fit_bass_table([(take, take) for take in baseline_takes if take["record"]["candidate_id"] == candidate_id],
-                                candidate_id=candidate_id, descriptor=None, target=target,
-                                tolerance_db=tolerance_db, reference_band_hz=reference_band_hz)
+                                candidate_id=candidate_id, descriptor=None, reference_band_hz=reference_band_hz)
                   for candidate_id in sorted(candidate_ids)]
         return {"schema": "jts_bass_run_table/1", "run_ids": run_ids, "tables": tables}
     if not candidate_takes:
@@ -96,8 +94,7 @@ def fit_bass_rounds(round_dirs: Sequence[Path], *, candidates: Sequence[Path],
                                      "candidate_take_ids": [row["record"]["take_id"] for rows in takes.values() for row in rows]},
                                     code="bass_fit_pairs_unavailable")
         tables.append(fit_bass_table([(baseline[key][0], rows[0]) for key, rows in takes.items()],
-                                    candidate_id=candidate_id, descriptor=descriptors[candidate_id], target=target,
-                                    tolerance_db=tolerance_db, reference_band_hz=reference_band_hz))
+                                    candidate_id=candidate_id, descriptor=descriptors[candidate_id], reference_band_hz=reference_band_hz))
     return {"schema": "jts_bass_run_table/1", "run_ids": run_ids, "tables": tables}
 
 
@@ -105,8 +102,7 @@ def join_bass_rounds(round_dirs: Sequence[Path], *, candidates: Sequence[Path]) 
     """Join the sequence after banking its views, in the last round's packet."""
     if not round_dirs:
         raise CrossoverV2Refused(code="bass_fit_inputs_missing")
-    payload = fit_bass_rounds(round_dirs, candidates=candidates, target=TARGET,
-                              tolerance_db=TOLERANCE_DB, reference_band_hz=REFERENCE_BAND_HZ)
+    payload = fit_bass_rounds(round_dirs, candidates=candidates, reference_band_hz=REFERENCE_BAND_HZ)
     directory, reason = round_artifact_dir(round_inputs(round_dirs[-1]).session_dir)
     if directory is None:
         raise CrossoverV2Refused(reason, code="bass_fit_run_mismatch")

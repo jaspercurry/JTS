@@ -7,11 +7,15 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+BASS_READOUT_FIELDS = (
+    "candidate_id", "level_key", "base_db_spl_at_mark", "candidate_db_spl_at_mark",
+    "prescribed_boost_db", "realized_boost_db", "compression_db", "base_response", "candidate_response",
+    "headroom_verdict", "headroom_rises", "snr_margin_db", "repeat_spread_db", "position_spread_db",
+)
+
 
 def bass_table_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
-    fields = ("level_key", "base_db_spl_at_mark", "candidate_db_spl_at_mark", "prescribed_boost_db",
-              "base_response", "candidate_response", "headroom_verdict", "headroom_rises", "outcome", "realized_boost_db")
-    return [{"candidate_id": table["candidate_id"], **{key: row.get(key) for key in fields}}
+    return [{key: table["candidate_id"] if key == "candidate_id" else row.get(key) for key in BASS_READOUT_FIELDS}
             for table in payload.get("tables", ()) for row in table["levels"]]
 
 
@@ -29,20 +33,22 @@ def bass_table_markdown(rows: list[dict[str, Any]]) -> str:
                           for depth in ("3", "10"))
 
     lines = ["## Bass by level", "",
-             "| Candidate | Main dB | Base / candidate dB SPL | Prescribed dB | Realized dB by Hz band | Base −3 / −10 Hz | Candidate −3 / −10 Hz | Qualified from Hz (base / candidate) | Headroom | Outcome |",
-             "|---|---:|---:|---:|---|---|---|---|---|---|"]
+             "| Candidate | Main dB | Base / candidate dB SPL | Prescribed dB | Realized dB by Hz band | Base −3 / −10 Hz | Candidate −3 / −10 Hz | Qualified from Hz (base / candidate) | Headroom |",
+             "|---|---:|---:|---:|---|---|---|---|---|"]
     for row in rows:
         realized = "; ".join(f"{band['band_hz'][0]:g}–{band['band_hz'][1]:g}: {number(band['value_db'])}"
                              for band in row["realized_boost_db"]) or "null"
         headroom = row["headroom_verdict"] or "unknown"
         for rise in row["headroom_rises"] or ():
             headroom += f"; H{rise['order']} {rise['band_hz'][0]:g}–{rise['band_hz'][1]:g} Hz: {rise['delta_db']:+.1f} dB"
+        floors = [(row[key] or {}).get("qualified_from_hz") for key in ("base_response", "candidate_response")]
+        qualified = "No qualified evidence" if all(floor is None for floor in floors) and all(
+            band["value_db"] is None for band in row["realized_boost_db"]) else " / ".join(map(number, floors))
         fields = [row["candidate_id"], number(row["level_key"]["level_db"]),
                   f"{number(row['base_db_spl_at_mark'])} / {number(row['candidate_db_spl_at_mark'])}",
                   number(row["prescribed_boost_db"]), realized,
                   corners(row["base_response"]), corners(row["candidate_response"]),
-                  " / ".join(number((row[key] or {}).get("qualified_from_hz")) for key in ("base_response", "candidate_response")),
-                  headroom, row["outcome"]]
+                  qualified, headroom]
         lines.append("| " + " | ".join(str(field).replace("|", "\\|").replace("\n", " ") for field in fields) + " |")
     lines += ["", "Bound marks the qualified floor, not a measured crossing. Prescribed minus realized includes compressor and driver action. "
               "Harmonics use repeat spread, or a 1 dB evidence floor for one repeat; this is not a hearing threshold."]

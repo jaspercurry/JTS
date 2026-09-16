@@ -9,7 +9,6 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from jasper.active_speaker.bass_fit import fit_bass_shape
 from jasper.active_speaker.bass_table import fit_bass_table
 from jasper.active_speaker.bass_table_report import bass_table_rows
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
@@ -43,8 +42,7 @@ def pair(bass_fit_pairs):
 
 
 def table(pairs, descriptor=DESCRIPTOR):
-    return fit_bass_table(pairs, candidate_id="boost", descriptor=descriptor,
-                          target={"freqs_hz": [20, 60], "magnitude_db": [0, 0]}, tolerance_db=1)
+    return fit_bass_table(pairs, candidate_id="boost", descriptor=descriptor)
 
 
 def test_second_order_corners_and_downward_slope(pair):
@@ -54,7 +52,8 @@ def test_second_order_corners_and_downward_slope(pair):
     row, = table([pair])["levels"]
     for key, f0 in (("base_response", 100), ("candidate_response", 80)):
         response = row[key]
-        assert response["corner_hz"]["3"] == pytest.approx(f0, rel=10 ** (1 / 120) - 1)
+        assert response["corner_hz"] == {str(depth): pytest.approx(
+            f0 / (10 ** (depth / 10) - 1) ** .25, rel=10 ** (1 / 120) - 1) for depth in (3, 6, 10)}
         assert response["corner_bounded"] == {"3": False, "6": False, "10": False}
         # The -3 to -10 dB interval bends toward the -12 dB/octave asymptote.
         assert response["slope_db_per_octave"] == pytest.approx(-12, abs=3.5)
@@ -70,7 +69,6 @@ def test_corner_stops_at_unqualified_region(pair, hole):
         for band in take["bands"]:
             band["fundamental_qualified"] = band["band_hz"][0] >= 100 or (hole and band["band_hz"][1] <= 63)
     row, = table([pair])["levels"]
-    assert row["fit"] is None if not hole else row["fit"] is not None
     for key in ("base_response", "candidate_response"):
         response = row[key]
         assert response["qualified_from_hz"] == (20 if hole else 100)
@@ -156,25 +154,24 @@ def test_realized_boost_uses_the_same_pose_medians_as_the_fit(pair):
             take["fundamental_db"] = [level] * len(take["freqs_hz"])
     row, = table(pairs)["levels"]
     assert [band["value_db"] for band in row["realized_boost_db"]] == pytest.approx([10] * len(BASS_BANDS_HZ))
-    assert row["fit"]["choices"][-1]["realized_boost_db"] == pytest.approx([10] * len(row["fit"]["freqs_hz"]))
 
 
-def test_fit_preserves_single_pass_smoothing_across_a_missing_bin(pair):
-    grid = np.geomspace(50, 200, 121)
+def test_realized_boost_smooths_each_qualified_run_once(pair):
+    grid = np.geomspace(20, 200, 121)
     shared = np.ones(grid.size, dtype=bool)
     shared[61] = False
     base = -6 + 5 * np.log2(grid / 100)
-    candidate = base + 6 + 4 * np.tanh(20 * np.log2(grid / 100))
+    candidate = base + 6 + 4 * np.tanh(20 * np.log2(grid / grid[61]))
     for take, curve in zip(pair, (base, candidate)):
         take.update(freqs_hz=grid.tolist(), fundamental_db=curve.tolist(), fundamental_qualified=shared.tolist())
-    baseline, treated = [smooth_fractional_octave(grid[shared], curve[shared], fraction=3) for curve in (base, candidate)]
-    delta = treated - baseline
-    scale = float(np.clip(np.sum(delta * -baseline) / np.sum(delta ** 2), 0, 1))
-    expected_errors = [float(np.max(np.abs(baseline + fraction * delta))) for fraction in sorted({0., scale, 1.})]
-    fit = fit_bass_shape([pair], candidate_id="boost", descriptor=DESCRIPTOR,
-                         target={"freqs_hz": [50, 200], "magnitude_db": [0, 0]})
-    assert fit["selected_scale"] == pytest.approx(scale)
-    assert [choice["max_abs_error_db"] for choice in fit["choices"]] == pytest.approx(expected_errors)
+    expected = np.full(grid.size, np.nan)
+    for section in (slice(0, 61), slice(62, None)):
+        baseline, treated = [smooth_fractional_octave(grid[section], curve[section], fraction=3)
+                             for curve in (base, candidate)]
+        expected[section] = treated - baseline
+    row, = table([pair])["levels"]
+    assert [band["value_db"] for band in row["realized_boost_db"]] == pytest.approx([
+        np.nanmean(expected[(grid >= lo) & (grid < hi)]) for lo, hi in BASS_BANDS_HZ])
 
 
 @pytest.mark.parametrize("calibrated", [False, True])
@@ -190,22 +187,16 @@ def test_spl_uses_each_takes_calibrated_capture_statistic(pair, calibrated):
     assert row["candidate_db_spl_at_mark"] == (pytest.approx(66) if calibrated else None)
 
 
-@pytest.mark.parametrize("gain,coverage,outcome", [
-    (6, 20, "target_met"), (3, 20, "target_not_met"), (10, 20, "measurement_required"),
-    (6, 40, "insufficient_evidence"), (6, 63, "insufficient_evidence"),
-])
-def test_all_outcomes_keep_one_row_shape(pair, gain, coverage, outcome):
-    passing, = table([pair])["levels"]
+@pytest.mark.parametrize("coverage", [20, 40, 63, 201])
+def test_partial_and_empty_coverage_keep_one_row_shape(pair, coverage):
+    complete, = table([pair])["levels"]
     for index, take in enumerate(pair):
-        take["fundamental_db"] = [-6 + index * gain] * len(take["freqs_hz"])
+        take["fundamental_db"] = [-6 + index * 10] * len(take["freqs_hz"])
         take["fundamental_qualified"] = [f >= coverage for f in take["freqs_hz"]]
     row, = table([pair])["levels"]
-    assert set(row) == set(passing)
-    assert row["outcome"] == outcome
-    assert (row["fit"] is None) == (coverage == 63)
-    assert row["code"] == ("bass_fit_common_coverage_unavailable" if coverage == 63 else None)
-    assert row["candidate_response"]["qualified_from_hz"] == coverage
-    assert row["realized_boost_db"][-1]["value_db"] == pytest.approx(gain)
+    assert set(row) == set(complete)
+    assert row["candidate_response"]["qualified_from_hz"] == (coverage if coverage < 200 else None)
+    assert row["realized_boost_db"][-1]["value_db"] == (pytest.approx(10) if coverage < 200 else None)
     json.dumps(row, allow_nan=False)
 
 
@@ -224,7 +215,7 @@ def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path,
     levels = payload["tables"][0]["levels"]
     assert [row["realized_boost_db"] for row in rows] == [level["realized_boost_db"] for level in levels]
     assert rows[0]["realized_boost_db"][3]["value_db"] == pytest.approx(0 if baseline_only else 6)
-    assert (levels[0]["fit"]["source_descriptor"] is None) is baseline_only
+    assert (levels[0]["prescribed_boost_db"] is None) is baseline_only
     packet = {"round_id": "bass", "program": "bass", "result": "complete", "reason": None, "level": None,
               "applied": {"candidate": None, "record": None, "layers": {}},
               "artifacts": {"frequency_view": None, "bass_views": []}, "limits": {},
