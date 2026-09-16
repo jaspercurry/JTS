@@ -847,6 +847,28 @@ def test_v2_research_refuses_stale_request_or_target_binding() -> None:
         )
 
 
+def test_a_research_reply_folded_into_the_form_still_saves_with_its_request() -> None:
+    """The page copies a pasted reply's values into the visible driver fields
+    before the save, so the manual settings at save time differ from the ones
+    the prompt was built from. Only the targets and models bind the request to
+    the reply; the declared limits are what the reply is allowed to change.
+    """
+
+    topology = mono_output_topology(card_id=None)
+    request = build_driver_research_request(topology, _operator_inputs(), None)
+    research = _research_result(request)
+    draft = build_design_draft(
+        topology,
+        driver_research_request=request,
+        driver_research=research,
+        manual_settings=_manual_settings(),
+        operator_inputs=_operator_inputs(),
+        created_at="2026-09-16T00:00:00Z",
+    )
+    assert draft["driver_research"]["request_fingerprint"] == request["request_fingerprint"]
+    assert draft["driver_safety_profile"]["status"] == "confirmed"
+
+
 def test_confirmed_profile_uses_visible_values_and_never_authorizes_audio() -> None:
     topology = mono_output_topology(card_id=None)
     request = build_driver_research_request(
@@ -2764,43 +2786,6 @@ def test_direct_builder_rejects_boolean_and_unknown_manual_fields() -> None:
             manual_settings=candidate_unknown,
             driver_research=None,
             saved_at="2026-07-13T12:00:00Z",
-        )
-
-
-def test_research_request_operator_context_stales_after_visible_edit() -> None:
-    topology = mono_output_topology(card_id=None)
-    manual = _manual_settings()
-    request = build_driver_research_request(topology, _operator_inputs(), manual)
-    edited = _manual_settings()
-    edited["drivers"][0]["cabinet"]["baffle_width_mm"] = 240.0
-
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="stale for the current visible inputs",
-    ):
-        build_design_draft(
-            topology,
-            driver_research_request=request,
-            manual_settings=edited,
-            operator_inputs=_operator_inputs(),
-        )
-
-
-def test_research_request_stales_when_current_context_adds_a_safety_field() -> None:
-    topology = mono_output_topology(card_id=None)
-    original = _manual_settings()
-    original["drivers"][0].pop("cabinet")
-    request = build_driver_research_request(topology, _operator_inputs(), original)
-
-    with pytest.raises(
-        DriverSafetyProfileError,
-        match="stale for the current visible inputs",
-    ):
-        validate_driver_research_request(
-            request,
-            topology,
-            _operator_inputs(),
-            _manual_settings(),
         )
 
 

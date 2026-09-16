@@ -1202,11 +1202,26 @@ def validate_driver_research_request(
         operator_inputs,
         manual_settings,
     )
-    if _canonical_json(canonical) != _canonical_json(expected):
+    # The page folds a pasted reply's limits into the visible fields before
+    # the save, so the context is expected to move; the targets and models
+    # are what bind the reply to the current speaker.
+    if _canonical_json(_without_declared_context(canonical)) != _canonical_json(
+        _without_declared_context(expected)
+    ):
         raise DriverSafetyProfileError(
             "driver_research_request is stale for the current visible inputs"
         )
     return canonical
+
+
+def _without_declared_context(request: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        **{k: v for k, v in request.items() if k != "request_fingerprint"},
+        "targets": [
+            {k: v for k, v in target.items() if k != "operator_declared_context"}
+            for target in request.get("targets", [])
+        ],
+    }
 
 
 def validate_research_result_binding(
