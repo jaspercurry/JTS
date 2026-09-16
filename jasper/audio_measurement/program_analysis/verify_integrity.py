@@ -17,7 +17,8 @@ from jasper.audio_measurement.program import (
     KIND_SUMMED_SWEEP,
     STIMULUS_KINDS,
 )
-from jasper.audio_measurement.repeated_sweep import summed_pass_refusal
+from jasper.audio_measurement.repeated_sweep import SummedPassAlignment, summed_pass_noise, summed_pass_refusal
+from jasper.audio_measurement.wired_capture import scan_zero_runs
 from jasper.log_event import log_event
 from .drift import _estimate_drift
 from .model import (
@@ -104,11 +105,12 @@ def _verify_capture_integrity(
     locations: Sequence[SegmentLocation],
     frame_ledger: FrameLedger,
     *, capture: np.ndarray | None = None, offset: int = 0,
+    repeat_locations: Sequence[SegmentLocation] | None = None,
+    alignment: SummedPassAlignment | None = None,
 ) -> CaptureIntegrity:
     """Check frame accounting, located sweeps, clipping and available repeat pairs.
 
-    Repeat checks use raw audio. Coherence must hold before scheduled-window
-    averaging; a constant acoustic delay cancels from the arrival spread.
+    Repeat checks use aligned individual passes, before their average.
     Single sweeps cannot answer repeat questions. The step fit additionally
     requires enough repeats to leave two residual degrees of freedom.
     """
@@ -161,21 +163,35 @@ def _verify_capture_integrity(
         ))
     refusal = None
     drift = None
+    repeat_content = None
     repeated = sum(segment.kind == KIND_SUMMED_SWEEP for segment in program.segments) > 1
     if repeated and capture is not None:
-        refusal = summed_pass_refusal(program, capture, offset,
-                                     {loc.segment_id: loc.located_start for loc in sweeps})
+        repeat_locations = repeat_locations if repeat_locations is not None else locations
+        repeat_confidence = min((loc.confidence for loc in repeat_locations if loc.kind == KIND_SUMMED_SWEEP), default=0.0)
+        refusal = summed_pass_refusal(program, capture, offset)
         if refusal:
             checks.append(IntegrityCheck(refusal, INTEGRITY_FAIL))
-        if (refusal in (None, "summed_pass_arrival_drift") and confidence_min is not None
-                and confidence_min >= SWEEP_LOCATE_CONFIDENCE_FLOOR):
-            drift = _estimate_drift(program, capture, sample_rate, locations)
+        if refusal is None and repeat_confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR:
+            drift = _estimate_drift(program, capture, sample_rate, repeat_locations)
+        if refusal is None:
+            repeat_content = {
+                "repeat_epsilon_ppm": drift.epsilon_ppm if drift else None,
+                "repeat_level_delta_db": drift.repeat_level_delta_db if drift else None,
+                "within_role_desync_samples": drift.max_residual_samples if drift else None,
+                "noise_consistency": summed_pass_noise(program, capture, offset),
+            }
+            zero_runs = any(scan_zero_runs(capture[loc.located_start:
+                loc.located_start + program.segment(loc.segment_id).n_samples])[0]
+                for loc in repeat_locations if loc.kind == KIND_SUMMED_SWEEP)
+            checks.append(IntegrityCheck("zero_fill_runs", INTEGRITY_FAIL if zero_runs else INTEGRITY_PASS))
     for name, input_code in (
         (INTEGRITY_CHECK_REPEAT_EPSILON, "epsilon_out_of_bound"),
         (INTEGRITY_CHECK_REPEAT_LEVEL, "repeat_level_disagree"),
         (INTEGRITY_CHECK_WITHIN_ROLE_DESYNC, "residual_desync"),
         (INTEGRITY_CHECK_DISCONTINUITY_STEP, "timeline_slip"),
     ):
+        if repeated and name != INTEGRITY_CHECK_DISCONTINUITY_STEP:
+            continue
         if drift is None:
             checks.append(IntegrityCheck(
                 name, INTEGRITY_NOT_EVALUATED,
@@ -193,6 +209,8 @@ def _verify_capture_integrity(
         locate_confidence_min=confidence_min,
         schedule_residual_ms_worst=residual_ms_worst,
         clipped_segments=clipped_segments,
+        pass_alignment=alignment,
+        repeat_content=repeat_content,
     )
     if integrity.glitched:
         # The VERIFY twin of ``program_analysis.glitch``, at the same level

@@ -91,7 +91,8 @@ def analyzed_measurements(
         )
         offset = analysis.locations[0].scheduled_start - program.segments[0].start_sample
         yield AnalyzedMeasurement(record, path, program, average_summed_capture(program, samples, offset,
-                                   {loc.segment_id: loc.located_start for loc in analysis.locations}), rate, calibration, analysis)
+                                   analysis.capture_integrity.pass_alignment if analysis.capture_integrity else None),
+                                   rate, calibration, analysis)
 
 
 def analyze_measurement_bundle(

@@ -241,7 +241,7 @@ def _estimate_drift(
             ("repeat_level_disagree", repeat_level_disagrees),
             (GLITCH_INPUT_TIMELINE_SLIP, slip_rejects_capture(slip_fit)),
         )
-        if tripped
+        if tripped and (kind == KIND_SWEEP or name == GLITCH_INPUT_TIMELINE_SLIP)
     )
     glitch = bool(glitch_inputs)
 

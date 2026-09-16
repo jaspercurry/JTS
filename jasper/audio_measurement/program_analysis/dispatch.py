@@ -15,7 +15,7 @@ import numpy as np
 
 from jasper.audio_measurement.mic_meter import classify_mic_meter
 from jasper.audio_measurement.branch_program import is_branch_program
-from jasper.audio_measurement.repeated_sweep import average_summed_capture
+from jasper.audio_measurement.repeated_sweep import align_summed_capture, average_summed_capture
 from .branches import analyze_branches
 from .alignment_pairs import estimate_adjacent_alignment
 
@@ -67,6 +67,7 @@ from .model import (
     ProgramAnalysis,
     REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     SegmentLocation,
+    SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     VERIFY_NOTCH_EXCLUSION_DB,
     VERIFY_TRACKING_SMOOTHING_FRACTION,
 )
@@ -835,9 +836,20 @@ def _analyze_verify(
 ) -> ProgramAnalysis:
     fc_hz = float(priors.crossover_fc_hz) if priors.crossover_fc_hz else None
     seg = program.segment("sweep_verify")
+    aligned, alignment = align_summed_capture(program, capture, global_offset,
+        search_samples=round(SWEEP_SCHEDULE_RESIDUAL_CEILING_MS * sample_rate / 1000))
+    averaged = average_summed_capture(program, aligned, global_offset)
+    repeat_locations = locations
+    if alignment is not None:
+        repeat_locations = [replace(loc,
+            located_start=loc.located_start - alignment.offsets_samples.get(loc.segment_id, 0),
+            residual_samples=loc.residual_samples - alignment.offsets_samples.get(loc.segment_id, 0),
+        ) for loc in locations]
+        # Averaging can hide a clipped individual pass; retain the raw clip evidence.
+        locations = [replace(loc, clipped=loc.clipped or raw.clipped) for loc, raw in zip(
+            _locate_segments(program, averaged, sample_rate, global_offset, {}), locations)]
     full_ir, _pre = _deconvolve_window(
-        average_summed_capture(program, capture, global_offset,
-                               {loc.segment_id: loc.located_start for loc in locations}),
+        averaged,
         seg, global_offset + seg.start_sample, sample_rate
     )
     n_fft = _n_fft_for(full_ir)
@@ -995,7 +1007,8 @@ def _analyze_verify(
     # Computed on EVERY verify-shaped analysis: the tracking comparison
     # above is exactly what a spliced/clipped recording invalidates.
     integrity = _verify_capture_integrity(
-        program, sample_rate, locations, frame_ledger, capture=capture, offset=global_offset,
+        program, sample_rate, locations, frame_ledger, capture=aligned, offset=global_offset,
+        repeat_locations=repeat_locations, alignment=alignment,
     )
     return ProgramAnalysis(
         phase=program.phase,

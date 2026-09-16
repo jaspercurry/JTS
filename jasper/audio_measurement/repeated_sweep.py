@@ -6,33 +6,34 @@
 from __future__ import annotations
 
 import math
-from dataclasses import replace
-from typing import Mapping
+from dataclasses import dataclass, replace
+from typing import Any
 
 import numpy as np
 
+from .alignment import correlation, parabolic_peak
 from .program import ExcitationProgram, KIND_SUMMED_SWEEP, _finalize, _silence
 
 
 # In-band repeat RMS differed by 0.06–0.24 dB on the two-microphone corpus.
-# Share its 0.3 dB budget with the maximum in-phase loss from arrival spread.
 REPEAT_LEVEL_TOLERANCE_DB = 0.3
 
 
-def summed_alignment_limit_samples(program: ExcitationProgram) -> int:
-    """Keep each pass's in-phase loss within the repeat-level budget.
+@dataclass(frozen=True)
+class SummedPassAlignment:
+    method: str
+    # Positive offsets mean later arrivals relative to pass 1.
+    offsets_samples: dict[str, int]
+    # Pass 1 defines the reference; its peak is None because it has no independent comparison.
+    correlation_peaks: dict[str, float | None]
+    residual_spread_samples: float
+    edge_peaks: tuple[str, ...]
 
-    cos(2*pi*f*dt) >= 10**(-budget/20); using the full arrival spread
-    bounds loss relative to either extreme pass, without realigning audio.
-    """
-    ceilings: list[float] = []
-    for segment in program.segments:
-        if segment.kind == KIND_SUMMED_SWEEP:
-            assert segment.f2_hz is not None
-            ceilings.append(segment.f2_hz)
-    ceiling = max(ceilings)
-    return math.floor(math.acos(10 ** (-REPEAT_LEVEL_TOLERANCE_DB / 20))
-                      * program.sample_rate_hz / (2 * math.pi * ceiling))
+    def to_dict(self) -> dict[str, Any]:
+        return {"pass_alignment": self.method, "pass_offsets_samples": self.offsets_samples,
+                "pass_correlation_peaks": self.correlation_peaks,
+                "pass_correlation_edge_peaks": list(self.edge_peaks),
+                "pass_alignment_residual_spread_samples": self.residual_spread_samples}
 
 
 def sweep_ambient_id(segment_id: str) -> str:
@@ -61,7 +62,7 @@ def repeat_summed_program(
 
 
 def summed_pass_refusal(
-    program: ExcitationProgram, capture: np.ndarray, offset: int, located_starts: Mapping[str, int],
+    program: ExcitationProgram, capture: np.ndarray, offset: int,
 ) -> str | None:
     sweeps = [s for s in program.segments if s.kind == KIND_SUMMED_SWEEP]
     if len(sweeps) < 2:
@@ -74,7 +75,6 @@ def summed_pass_refusal(
         return "summed_pass_shape_mismatch"
     if offset < 0 or offset + program.total_samples > capture.size:
         return "summed_pass_capture_incomplete"
-    arrivals = []
     for sweep in sweeps:
         ambient = segments.get(sweep_ambient_id(sweep.segment_id))
         if (ambient is None or ambient.n_samples != quiet.n_samples
@@ -84,33 +84,88 @@ def summed_pass_refusal(
             return "summed_pass_shape_mismatch"
         if offset + sweep.start_sample + sweep.n_samples + tail.n_samples > capture.size:
             return "summed_pass_capture_incomplete"
-        if sweep.segment_id not in located_starts:
-            return "summed_pass_location_missing"
-        arrivals.append(located_starts[sweep.segment_id] - sweep.start_sample)
-    if max(arrivals) - min(arrivals) > summed_alignment_limit_samples(program):
-        return "summed_pass_arrival_drift"
     return None
 
 
-def average_summed_capture(
-    program: ExcitationProgram, capture: np.ndarray, offset: int, located_starts: Mapping[str, int],
-) -> np.ndarray:
-    """Average complete, identical passes only when their arrivals remain coherent.
+def _summed_pass_windows(program: ExcitationProgram, offset: int) -> tuple[dict[str, int], int, int]:
+    sweeps = [s for s in program.segments if s.kind == KIND_SUMMED_SWEEP]
+    quiet = program.segment(sweep_ambient_id(sweeps[0].segment_id)).n_samples
+    size = quiet + sweeps[0].n_samples + program.segment("tail").n_samples
+    return {s.segment_id: offset + s.start_sample - quiet for s in sweeps}, quiet, size
 
-    Slices use the shared capture anchor and emitted sample offsets. Located
-    starts qualify coherence; they never move individual passes into alignment.
-    """
+
+def summed_pass_noise(program: ExcitationProgram, capture: np.ndarray, offset: int) -> list[dict[str, Any]]:
+    starts, quiet, size = _summed_pass_windows(program, offset)
+    sweep_stop = size - program.segment("tail").n_samples
+    first_id, first = next(iter(starts.items()))
+    reference = capture[first + quiet:first + sweep_stop]
+    reference_power = float(np.mean(capture[first:first + quiet] ** 2))
+    comparisons = []
+    for segment_id, start in list(starts.items())[1:]:
+        noise_power = float(np.mean(capture[start:start + quiet] ** 2))
+        # Independent noise gives E[(n_i - n_0)^2] = P_i + P_0; no threshold is needed.
+        expected = math.sqrt(reference_power + noise_power)
+        observed = float(np.sqrt(np.mean((capture[start + quiet:start + sweep_stop] - reference) ** 2)))
+        comparisons.append({"reference_segment_id": first_id, "segment_id": segment_id,
+                            "expected_rms": expected, "observed_rms": observed,
+                            "observed_to_expected_rms_ratio": observed / expected if expected > 0 else None})
+    return comparisons
+
+
+def align_summed_capture(
+    program: ExcitationProgram, capture: np.ndarray, offset: int, *, search_samples: int,
+) -> tuple[np.ndarray, SummedPassAlignment | None]:
+    sweeps = [s for s in program.segments if s.kind == KIND_SUMMED_SWEEP]
+    if len(sweeps) < 2 or summed_pass_refusal(program, capture, offset):
+        return capture, None
+    starts, _quiet, size = _summed_pass_windows(program, offset)
+    length = size - program.segment("tail").n_samples
+    first_id, start = next(iter(starts.items()))
+    reference = capture[start:start + length]
+    offsets, measured = {first_id: 0}, {first_id: 0.0}
+    peaks: dict[str, float | None] = {first_id: None}
+    edges = []
+    for segment_id, start in list(starts.items())[1:]:
+        lo, hi = max(-search_samples, -start), min(search_samples, capture.size - start - size)
+        # Captured copies share the speaker/room response that a clean template lacks.
+        corr = correlation(capture[start + lo:start + length + hi], reference,
+                           sample_rate=program.sample_rate_hz,
+                           max_capture_s=(length + hi - lo) / program.sample_rate_hz, matched_span=True)
+        peak = int(np.argmax(corr))
+        if peak in (0, corr.size - 1):
+            edges.append(segment_id)
+        offsets[segment_id] = lo + peak
+        measured[segment_id] = lo + parabolic_peak(corr, peak)
+        peaks[segment_id] = float(corr[peak])
+    # With equal-power copies and independent noise, rho = shared/total; require shared > unshared.
+    correlated = not edges and all(peak > 1 - peak for peak in peaks.values() if peak is not None)
+    applied = offsets if correlated else dict.fromkeys(offsets, 0)
+    residuals = [measured[key] - applied[key] for key in offsets]
+    alignment = SummedPassAlignment("correlated" if correlated else "scheduled", applied, peaks,
+                                    max(residuals) - min(residuals), tuple(edges))
+    aligned = capture.copy() if correlated else capture
+    if correlated:
+        for segment_id, start in starts.items():
+            shift = applied[segment_id]
+            aligned[start:start + size] = capture[start + shift:start + shift + size]
+    return aligned, alignment
+
+
+def average_summed_capture(
+    program: ExcitationProgram, capture: np.ndarray, offset: int,
+    alignment: SummedPassAlignment | None = None,
+) -> np.ndarray:
+    """Average complete, identical passes using their measured or scheduled offsets."""
     sweeps = [segment for segment in program.segments if segment.kind == KIND_SUMMED_SWEEP]
-    if len(sweeps) < 2 or summed_pass_refusal(program, capture, offset, located_starts):
+    if len(sweeps) < 2 or summed_pass_refusal(program, capture, offset):
         return capture
-    first = sweeps[0]
-    quiet = program.segment(sweep_ambient_id(first.segment_id)).n_samples
-    size = quiet + first.n_samples + program.segment("tail").n_samples
+    starts, _quiet, size = _summed_pass_windows(program, offset)
     mean = np.zeros(size, dtype=np.float64)
-    for sweep in sweeps:
-        start = offset + sweep.start_sample - quiet
+    for segment_id, start in starts.items():
+        if alignment is not None:
+            start += alignment.offsets_samples[segment_id]
         mean += capture[start:start + size]
     averaged = capture.copy()
-    start = offset + first.start_sample - quiet
+    start = next(iter(starts.values()))
     averaged[start:start + size] = mean / len(sweeps)
     return averaged
