@@ -217,7 +217,7 @@ def test_live_round_verdicts(tmp_path, live_round, band_lo, contains_crossover):
                 "positions_deep": count, "positions_total": 3, "cv_percent": pytest.approx(cv, abs=0.001) if cv else None,
                 "frequencies_hz": pytest.approx(frequencies, abs=0.1), "classification": "insufficient_positions",
             }
-        packet["series"].append({**fit, "stats": {"rms_100_10k_db": {"value": 2.4, "below_trusted_floor": False}}})
+        packet["series"].append({**fit, "stats": {"flatness_rms_db": {"value": 2.4}}})
     packet["series"].append({**packet["series"][0], "pose": {"kind": "seat", "deg": 0, "name": "sofa", "seat_offset_m": [0, 0, 0]}})
     index = packet_index(packet, tmp_path, [], manifest)
     assert any(line.startswith("series tweeter: pose sofa;") for line in index.splitlines())
