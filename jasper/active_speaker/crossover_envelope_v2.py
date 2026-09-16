@@ -583,7 +583,7 @@ def _failure_envelope(code: str, status: Mapping[str, Any]) -> dict[str, Any]:
         screen="finished", active_step="verify", terminal_status=None if live else CAPTURE_FAILED,
         verdict=_reason_message(code, spec, status) if spec else "Measurement failed.",
         nudges=[] if live else [{"code": "run_ended", "severity": "info", "text":
-            ROUND_LABELS["choose_program"]}],
+            ROUND_LABELS["run_ended"]}],
         next_action=action, status=status, advertise_capture=live,
     )
 

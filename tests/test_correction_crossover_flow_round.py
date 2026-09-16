@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from types import SimpleNamespace
+import json
+from unittest.mock import Mock
 import pytest
 
 from jasper.active_speaker import plan_run
@@ -11,6 +13,8 @@ from jasper.active_speaker.measurement_programs import program
 from jasper.active_speaker import commissioning_coordinator as coordinator
 from jasper.web import correction_crossover_flow as flow
 from jasper.active_speaker.measurement_programs import available_programs
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
+from jasper.web import correction_run_host
 from tests.crossover_v2_fixtures import _roles
 
 
@@ -64,8 +68,19 @@ async def test_browser_round_publishes_its_packet_or_save_failure(tmp_path, monk
             raise OSError("disk unavailable")
         return round_bank.BankedRound(tmp_path, {})
     monkeypatch.setattr(round_bank, "bank_round", bank)
+    manifest = tmp_path / "evidence/v1/artifacts/crossover_v2/run" / RUN_MANIFEST_FILENAME
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"status": "complete", "sets": []}))
+    logged = Mock()
+    monkeypatch.setattr(correction_run_host, "log_event", logged)
     gate = PositionGate()
     gate.publish({"status": "complete", "takes": 3})
     await publish_round_packet(tmp_path, gate)
     assert gate.published()["run"] == {"status": "complete", "takes": 3, "faults": [],
-        **({"packet_error": "OSError"} if failure else {"round_dir": str(tmp_path)})}
+        **({"packet_error": "packet_save_failed"} if failure else {"round_dir": str(tmp_path)})}
+    assert json.loads(manifest.read_text()) == {"status": "complete", "sets": [],
+        **({"packet_error_detail": "OSError: disk unavailable"} if failure else {})}
+    if failure:
+        assert logged.call_args.kwargs["detail"] == json.loads(manifest.read_text())["packet_error_detail"]
+    else:
+        logged.assert_not_called()

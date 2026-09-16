@@ -1114,3 +1114,19 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry):
         assert any(p.get("retake_reason") == "snr_floor" and p["level_raise_dbfs"] == -12 for p in live)
     else:
         assert all("retake_reason" not in p for p in live)
+
+
+async def test_short_prediction_still_plays_and_publishes_live_segments():
+    segments = [SimpleNamespace(role="woofer", kind="sweep", start_sample=0) for _ in range(3)]
+    program = SimpleNamespace(sample_rate_hz=1, stimulus_segments=lambda: segments)
+    progress = {"pose": 1, "pose_sweeps": [[{"repeat": 1, "repeats": 2}, {"repeat": 2, "repeats": 2}]]}
+    gate, played = AnsweredGate(), []
+    async def play():
+        played.extend(program.stimulus_segments())
+        done = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_later(0, done.set_result, len(played))
+        return await done
+    assert await plan_run.publish_sweeps(progress, gate, 0, program, play) == 3
+    assert played == segments
+    assert [(p["sweep"], p["role"], p["repeat"], p["repeats"]) for p in gate.progress] == [
+        (1, "woofer", 1, 2), (2, "woofer", 2, 2), (3, "woofer", 3, 3)]

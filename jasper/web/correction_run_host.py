@@ -230,7 +230,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
 async def publish_round_packet(bundle: Path, gate: Any) -> None:
     from jasper.active_speaker.round_bank import finish_round  # lazy: packet analysis stays outside web imports
 
-    banked, error = await asyncio.to_thread(finish_round, bundle)
+    banked, _error = await asyncio.to_thread(finish_round, bundle)
     progress = gate.published().get("run") or {}
     gate.publish({**progress, **({"round_dir": str(banked.path)} if banked else
-                                {"packet_error": getattr(error, "reason", REASON_INTERNAL_ERROR)})})
+                                {"packet_error": "packet_save_failed"})})

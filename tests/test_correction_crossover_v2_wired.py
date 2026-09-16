@@ -6,6 +6,10 @@
 from __future__ import annotations
 
 from jasper.active_speaker.crossover_v2 import refusal_copy
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+from jasper.active_speaker.crossover_v2.programs import program_for_spec
+from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
+from jasper.web.correction_run_host import compose_plan_program
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
 from jasper.web import correction_crossover_v2_volume as v2volume
@@ -1118,6 +1122,22 @@ def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anch
     if target is not None:
         assert float(events[0]["anchor_db_spl"]) == anchor + offset
         assert float(events[0]["target_capture_dbfs"]) == pytest.approx(target)
+
+
+@pytest.mark.parametrize("scope, phase", [
+    ("drivers", "check"), ("drivers", "measure"), ("timing", "entry_baseline"),
+    ("candidate", "verify"), ("candidate_branches", "lateral"),
+])
+def test_predictive_segment_count_survives_solved_gains_and_live_level(scope, phase):
+    conductor = _conductor(FlowSeams(), gain_plan_db={"woofer": -50.0, "tweeter": -57.0})
+    spec = MeasureSpec(kind="baseline", graph_scope=scope, program_phase=phase,
+                       candidate_id=None if scope == "drivers" else "fp-a")
+    predicted = program_for_spec(spec, conductor._excitation,
+        {r.role: BASE_STIMULUS_PEAK_DBFS for r in conductor._roles},
+        safety_profile={}, role_targets={})
+    for stimulus_dbfs in (None, -48.0):
+        live = compose_plan_program(conductor, spec, stimulus_dbfs, context=SimpleNamespace())
+        assert len(live.stimulus_segments()) == len(predicted.stimulus_segments())
 
 
 @pytest.mark.parametrize("target", [None, -48.0, -60.0])
