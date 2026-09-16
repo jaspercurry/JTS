@@ -33,6 +33,7 @@ from jasper.active_speaker.crossover_v2.prescription_contract import (
 from jasper.active_speaker.crossover_v2.round_inputs import contract_sources, default_out, round_inputs
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
+from jasper.active_speaker.bass_table_report import bass_table_rows
 from jasper.audio_measurement import room_limits as limits
 from jasper.bass_extension import dynamic
 from jasper.cli import crossover_prescriber as cli
@@ -53,9 +54,8 @@ def bass_packet():
                 {"band_hz": list(band), "estimated_snr_db": 30, "fundamental_qualified": True}
                 for band in BASS_BANDS_HZ]}]}],
             "bass_table": {"tables": [{"candidate_id": "candidate-1", "levels": [
-                {"level_key": {"level_db": level}, "outcome": outcome}
-                for level, outcome in zip((-30, -25, -20, -15), (
-                    "insufficient_evidence", "target_not_met", "measurement_required", "target_met"))]}]}}
+                {"level_key": {"level_db": level}, "candidate_response": {"qualified_from_hz": floor}}
+                for level, floor in zip((-30, -25, -20, -15), (None, 20, 40, 63))]}]}}
 
 
 @pytest.fixture
@@ -254,10 +254,8 @@ def test_bass_contract_reads_saved_packet_and_discloses_every_level(round_bank, 
     assert cli.main(["contract", "--round", str(bank), "--section", "bass"]) == 0
     contract = json.loads(capsys.readouterr().out)
     assert contract["evidence_status"] == "evaluated"
-    assert contract["evidence_status_detail"]["target_met_at_every_level"] is False
     assert set(contract["refusal_codes"]) == bass.BASS_PRESCRIPTION_REFUSAL_REASONS
-    assert [row["outcome"] for row in contract["evidence_status_detail"]["levels"]] == [
-        row["outcome"] for row in bass_packet["bass_table"]["tables"][0]["levels"]]
+    assert contract["evidence_status_detail"]["levels"] == bass_table_rows(bass_packet["bass_table"])
 
 
 def test_evidence_declarations_are_served_as_templates_and_cannot_be_mutated():

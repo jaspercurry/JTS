@@ -1063,6 +1063,4 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
         return
     assert packet["bass_table"].get("schema") == "jts_bass_run_table/1", packet["bass_table"]
     table, = packet["bass_table"]["tables"]
-    assert table["target"] == {"freqs_hz": [20, 60], "magnitude_db": [0, 0]}
     assert sorted(row["level_key"]["level_db"] for row in table["levels"]) == sorted(levels)
-    assert {row["outcome"] for row in table["levels"]} == {"target_met" if verb == "trial" else "target_not_met"}

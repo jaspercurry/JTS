@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from jasper.active_speaker.bass_table_report import bass_table_rows
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
 from jasper.bass_extension.dynamic import (
     DYNAMIC_BASS_REFUSAL_REASONS, DynamicBassDescriptorError, validate_dynamic_bass_descriptor,
@@ -26,14 +27,11 @@ BassPrescriptionRefused = BlendPrescriptionRefused
 
 def bass_evidence_status(evidence: Mapping[str, Any]) -> dict[str, Any]:
     table = evidence.get("bass_table") or {}
-    levels = [{"candidate_id": entry.get("candidate_id"),
-               "level_key": level.get("level_key"), "outcome": level.get("outcome")}
-              for entry in table.get("tables", []) for level in entry.get("levels", [])]
+    levels = bass_table_rows(table)
     return {
         "evidence_status": "evaluated" if evidence.get("bass") or levels else BASS_EVIDENCE_UNAVAILABLE,
         "evidence_status_detail": {
             "levels": levels,
-            "target_met_at_every_level": all(level["outcome"] == "target_met" for level in levels) if levels else None,
             **({"code": table["code"]} if "code" in table else {}),
         },
     }

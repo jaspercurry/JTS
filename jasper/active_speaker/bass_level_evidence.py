@@ -5,8 +5,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -15,17 +14,7 @@ from jasper.audio_measurement.quality_model import DRIVER
 from jasper.json_fields import finite_float
 
 from .bass_comparison import common_bass_bins
-from .bass_fit import BASS_GRID_POINTS, aligned_bass_pair, smooth_bass_curve, smooth_bass_pair
-from .crossover_v2.round_captures import doc_pose_key
 from .measurement_bass import BASS_BANDS_HZ
-
-
-def _median_curves(curves):
-    values = np.asarray(curves)
-    valid = np.isfinite(values).all(axis=0)
-    result = np.full(values.shape[1], np.nan)
-    result[valid] = np.median(values[:, valid], axis=0)
-    return result
 
 
 def _band(take, lo, hi):
@@ -117,26 +106,12 @@ def _harmonics(groups, bands):
 
 
 def bass_level_evidence(
-    pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]], *,
+    aligned: Mapping[str, Any], *,
     descriptor: Mapping[str, Any] | None, prescribed_boost_db: float | None,
-    reference_band_hz: tuple[float, float],
 ) -> dict[str, Any]:
-    grid = np.geomspace(BASS_BANDS_HZ[0][0], BASS_BANDS_HZ[-1][1], BASS_GRID_POINTS)
-    groups = defaultdict(list)
-    curves = defaultdict(list)
-    shared_curves = defaultdict(list)
-    for before, after in pairs:
-        pose = doc_pose_key(before["record"])
-        groups[pose].append((before, after))
-        _, aligned = aligned_bass_pair(before, after, grid, reference_band_hz)
-        shared_curves[pose].append(smooth_bass_pair(grid, aligned))
-        curves[pose].append([smooth_bass_curve(grid, curve) for curve in aligned])
-    per_pose = [_median_curves(np.asarray(repeats)[:, side])
-                for side in (0, 1) for repeats in curves.values()]
-    base = _median_curves(per_pose[:len(curves)])
-    candidate = _median_curves(per_pose[len(curves):])
-    delta = _median_curves([_median_curves(np.asarray(repeats)[:, 1]) - _median_curves(np.asarray(repeats)[:, 0])
-                            for repeats in shared_curves.values()])
+    grid, delta = aligned["freqs_hz"], aligned["delta"]
+    groups, curves = aligned["groups"], aligned["curves"]
+    pairs = [pair for repeats in groups.values() for pair in repeats]
     boost_band = [descriptor.get("delta_highpass_hz") or BASS_BANDS_HZ[0][0],
                   descriptor["detector_lowpass_hz"]] if descriptor else None
     boost_bands = [(max(lo, boost_band[0]), min(hi, boost_band[1])) for lo, hi in BASS_BANDS_HZ
@@ -161,9 +136,10 @@ def bass_level_evidence(
                 if boost_band:
                     valid &= (grid >= boost_band[0]) & (grid < boost_band[1])
                 spreads.extend(np.std(values[:, valid], axis=0, ddof=1).tolist())
-    return {"base_response": _response(grid, base, [pair[0] for pair in pairs], reference_band_hz[0]),
-            "candidate_response": _response(grid, candidate, [pair[1] for pair in pairs], reference_band_hz[0]),
-            "boost_band_hz": boost_band,
+    return {"base_response": _response(grid, aligned["base"], [pair[0] for pair in pairs], aligned["reference_band_hz"][0]),
+            "candidate_response": _response(grid, aligned["candidate"], [pair[1] for pair in pairs], aligned["reference_band_hz"][0]),
+            "sources": aligned["sources"], "position_count": len(groups), "take_pair_count": len(pairs),
+            "prescribed_boost_db": prescribed_boost_db, "boost_band_hz": boost_band,
             "realized_boost_db": [{"band_hz": [lo, hi], "value_db": mean_delta(lo, hi)} for lo, hi in BASS_BANDS_HZ],
             "compression_db": compression,
             "compression_includes": ["compressor", "driver"],

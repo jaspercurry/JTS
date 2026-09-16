@@ -12,7 +12,6 @@ from typing import Any
 
 from jasper.active_speaker.bass_table_report import bass_table_markdown, bass_table_rows
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
-from jasper.bass_extension.measurement import TARGET, TOLERANCE_DB
 from jasper.active_speaker.round_view_builders import bass_payload
 from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE, failed
 
@@ -22,7 +21,7 @@ from ._common import ARTIFACT_BY_VIEW, REASON_UNREADABLE, RoundSetRefused, _ROUN
 def add_parser(sub: argparse._SubParsersAction) -> None:
     for name, help_text in (("bass", "bass response, quiet-window SNR and H2/H3"),
                             ("bass-compare", "compare selected bass sets"),
-                            ("bass-fit-table", "fit candidate/level pairs across rounds")):
+                            ("bass-fit-table", "read candidate reach, drive and headroom by level")):
         parser = sub.add_parser(name, help=help_text)
         parser.add_argument("--out")
         parser.set_defaults(func=_cmd)
@@ -40,10 +39,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         else:
             parser.add_argument("round_dir", type=Path, nargs="+")
             parser.add_argument("--candidate", type=Path, action="append", required=True, help="candidate artifact or banked fingerprint; repeat for each candidate")
-            parser.add_argument("--target", type=Path, default=TARGET,
-                                help="target curve JSON: freqs_hz, magnitude_db (default: %(default)s)")
-            parser.add_argument("--tolerance-db", type=float, default=TOLERANCE_DB,
-                                help="fit tolerance in dB (default: %(default)s)")
             parser.add_argument("--reference-band-hz", type=float, nargs=2)
 
 
@@ -86,7 +81,7 @@ def _cmd(args: argparse.Namespace) -> int:
                 payload = fit_run(args)
                 levels = [row for table in payload["tables"] for row in table["levels"]]
                 summary = {"run_ids": payload["run_ids"], "level_count": len(levels),
-                           "outcomes": [row["outcome"] for row in levels], "levels": bass_table_rows(payload)}
+                           "levels": bass_table_rows(payload)}
     except CrossoverV2Refused as refusal:
         message, action = refusal_copy_for(refusal.code)
         return failed(EXIT_REFUSED, refusal.code, refusal.args[0] if refusal.args else message,

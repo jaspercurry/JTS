@@ -193,10 +193,9 @@ Read `snr_margin_db` and `repeat_spread_db`; `position_spread_db` is reserved.
 Driver, room and bass boosts spend one shared headroom budget
 (`0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md`).
 
-Grade reach, boost and harmonics per level against `TARGET` and `TOLERANCE_DB`
-in `jasper/bass_extension/measurement.py`; preserve `outcome` and missing bins
-in `fit`.
-Middle settings remain unmeasured; harmonics give no gate or hardware limit.
+The reach at each level is the corner; the drive evidence is prescribed minus
+realized; the headroom evidence is the harmonics; nothing is graded against a
+fixed band. Keep `qualified_from_hz` and null fields. Harmonics give no hardware limit.
 
 ## Five rules that hold everywhere
 
@@ -244,7 +243,7 @@ The full ADR file names appear beside their claims above:
 - ADR-0304: bass level evidence; ADR-0311 supersedes its scheduling.
 
 `tuning-methodology.md` gives the cancellation derivation. The room regime
-plan gives boost design criteria. Code owns current limits and bass targets.
+plan gives boost design criteria. Code owns current limits.
 The jts3 placement observation is from the owner brief, not published research.
 
 ## Current bounds
@@ -265,7 +264,6 @@ timing = jasper.audio_measurement.program_analysis.response
 quality = jasper.audio_measurement.quality_model
 safety = jasper.active_speaker.profile
 gating = jasper.audio_measurement.gating
-bass = jasper.bass_extension.measurement
 
 Speaker
 | Name | Value | Unit | Constant or function field |
@@ -332,8 +330,5 @@ Bass
 | delta_highpass | {"type":["number","null"],"minimum":10.0,"default":null} | Hz | contract.bass.schema.properties.delta_highpass_hz |
 | delta_highpass_exclusive_upper | "detector_lowpass_hz" | field | contract.bass.bounds.delta_highpass_hz_exclusive_upper_field |
 | shared_headroom_layers | ["driver_linearization","room","bass_extension"] | layers | contract.bass.shared_headroom.layers |
-| target_band | [20.0,60.0] | Hz | bass.TARGET.freqs_hz |
-| target_magnitude | [0.0,0.0] | dB | bass.TARGET.magnitude_db |
-| target_tolerance | 3.0 | dB | bass.TOLERANCE_DB |
 ```
 <!-- BOUNDS_END -->

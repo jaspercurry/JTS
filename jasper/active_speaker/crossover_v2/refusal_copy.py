@@ -466,14 +466,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "bass_fit_pose_missing", TEMPLATE_HARD_STOP, 0, "", "The bass capture has no recorded pose.",
         next_action={"id": "measure_bass_pose", "label": "Measure with a recorded microphone pose", "href": "/sound/speaker/crossover/"},
     ),
-    "bass_target_invalid": ReasonSpec(
-        "bass_target_invalid", TEMPLATE_HARD_STOP, 0, "", "The bass target curve is invalid.",
-        next_action={"id": "correct_bass_target", "label": "Supply an ordered target curve from 20 to 200 Hz", "href": "/sound/speaker/crossover/"},
-    ),
-    "bass_table_tolerance_invalid": ReasonSpec(
-        "bass_table_tolerance_invalid", TEMPLATE_HARD_STOP, 0, "", "The bass target tolerance is invalid.",
-        next_action={"id": "correct_bass_tolerance", "label": "Supply a positive tolerance in dB", "href": "/sound/speaker/crossover/"},
-    ),
     "bass_table_window_gain_missing": ReasonSpec(
         "bass_table_window_gain_missing", TEMPLATE_HARD_STOP, 0, "", "The bass capture lacks a complete resolved window gain.",
         next_action={"id": "measure_bass_level", "label": "Record Main, Aux1 and program identity on each take", "href": "/sound/speaker/crossover/"},
