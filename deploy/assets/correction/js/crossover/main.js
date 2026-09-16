@@ -8,6 +8,11 @@ import { positionDiagram, positionCaption } from './position-diagram.js';
 import { UNIT_IMPERIAL, UNIT_METRIC, currentUnits, formatDistances, setUnits } from './units.js';
 
 const els = {
+  roundLines: document.getElementById('crossover-round-lines'),
+  roundChoice: document.getElementById('crossover-round-choice'),
+  roundSelect: document.getElementById('crossover-round-select'),
+  roundSummary: document.getElementById('crossover-round-summary'),
+  roundStart: document.getElementById('crossover-round-start'),
   verdict: document.getElementById('crossover-verdict'),
   applied: document.getElementById('crossover-applied'),
   steps: document.getElementById('crossover-steps'),
@@ -102,6 +107,33 @@ function setStatus(message, tone = '', action = null) {
       text: action.label || 'Continue',
     }),
   );
+}
+
+function renderRoundChoice() {
+  const choice = (envelope?.round_choices || []).find(row => row.id === els.roundSelect.value);
+  els.roundSummary.replaceChildren(...(choice?.lines || []).map(text => el('p', {class: 'form-hint', text})));
+  els.roundStart.replaceChildren();
+  if (choice?.action) {
+    const button = el('button', {class: 'btn btn--primary', type: 'button', text: choice.action.label, disabled: busy});
+    button.addEventListener('click', () => runAction(choice.action, button));
+    els.roundStart.append(button);
+  }
+}
+
+function renderRound(env) {
+  els.roundLines?.replaceChildren(...(env.round_lines || []).map(text => el('p', {class: 'form-hint', text})));
+  if (!els.roundChoice) return;
+  const choices = env.round_choices || [];
+  els.roundChoice.hidden = !choices.length;
+  const key = JSON.stringify({choices, busy});
+  if (els.roundChoice.dataset.key === key) return;
+  els.roundChoice.dataset.key = key;
+  if (!choices.length) return;
+  const selected = els.roundSelect.value || choices.find(row => row.default)?.id;
+  els.roundSelect.replaceChildren(...choices.map(row => el('option', {value: row.id, text: row.label})));
+  els.roundSelect.value = selected;
+  els.roundSelect.disabled = busy;
+  renderRoundChoice();
 }
 
 function renderSteps(steps) {
@@ -373,7 +405,7 @@ function actionRowKey(primary, alternates, note, timing) {
 // One gate for every render and action completion prevents competing capture controls.
 function renderActionRow(env) {
   if (!env) return;
-  const captureActive = captureIsActive(env.capture);
+  const captureActive = captureIsActive(env.capture) || env.busy;
   // A live capture suppresses new actions unless the envelope marks them
   // show_during_capture; the same rule applies to primary and alternate actions.
   const showPrimary = !captureActive
@@ -394,10 +426,13 @@ function renderActionRow(env) {
   // `disabled` without otherwise touching primary/alternates (see
   // stopCapture/runAction's finally blocks, which rely on THIS
   // function re-rendering once busy flips back to false).
-  const key = actionRowKey(primary, shownAlternates, env.action_note, env.timing);
+  const actions = env.pending?.actions;
+  const shownPrimary = actions ? actions[0] : primary;
+  const shownActions = actions ? actions.slice(1) : shownAlternates;
+  const key = actionRowKey(shownPrimary, shownActions, env.action_note, env.timing);
   if (key === lastActionRowKey) return;
   lastActionRowKey = key;
-  renderActions(primary, shownAlternates, env.action_note, env.timing || {});
+  renderActions(shownPrimary, shownActions, env.action_note, env.timing || {});
 }
 
 // One primary control at a time: closing's Save/Record-again actions make the
@@ -409,6 +444,7 @@ function screenOwnsLiveControl(env) {
 function render(env) {
   envelope = env;
   els.verdict.textContent = env.verdict_text || '';
+  renderRound(env);
   renderApplied(env.applied);
   renderSteps(env.steps);
   renderNudges(env.nudges, env.expert_details);
@@ -422,7 +458,7 @@ function render(env) {
     suppressConnectAffordance: screenOwnsLiveControl(env),
   });
   renderActionRow(env);
-  schedulePoll(captureIsActive(env.capture) || passive ? POLL_MS : null);
+  schedulePoll(captureIsActive(env.capture) || env.busy || passive ? POLL_MS : null);
 }
 
 async function stopCapture() {
@@ -459,6 +495,7 @@ async function runAction(action, button) {
     const response = await postJSON(action.endpoint, action.body || {});
     captureStarted = captureIsActive(response && response.capture);
     if (captureStarted) {
+      if (els.roundChoice) els.roundChoice.hidden = true;
       renderCapture(response.capture);
       // The response's capture hasn't landed in `envelope` yet (that happens
       // inside refresh() below) — hide the action row immediately against
@@ -487,6 +524,7 @@ async function runAction(action, button) {
     }
   } finally {
     busy = false;
+    if (envelope && !captureStarted) renderRound(envelope);
     // If capture registration succeeded but refresh failed, keep the old action
     // hidden. Showing it beside a live phone link would permit a second run.
     // renderActionRow re-applies the capture gate against the latest known
@@ -531,7 +569,7 @@ async function runRefreshQueue() {
   do {
     refreshQueued = false;
     const epoch = renderEpoch;
-    const env = await getJSON('/sound/speaker/crossover/envelope');
+    const env = await getJSON('/sound/speaker/crossover/envelope?program=' + encodeURIComponent(els.roundSelect?.value || ''));
     if (epoch === renderEpoch) render(env);
   } while (refreshQueued);
 }
@@ -549,6 +587,11 @@ function refresh() {
 
 if (typeof document !== 'undefined') {
   els.captureStop.addEventListener('click', stopCapture);
+  els.roundSelect?.addEventListener('change', () => {
+    renderRoundChoice();
+    renderEpoch += 1;
+    refresh().catch(error => setStatus(error.message, 'bad'));
+  });
   // Page-local units preference (#3629, #1941 Q2): a static toggle, wired
   // once here like Stop above -- unlike the walk's own action
   // button, it is never rebuilt by a render pass.

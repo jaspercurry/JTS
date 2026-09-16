@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import errno
 import json
+import logging
+from contextlib import suppress
 import os
 import re
 import shutil
@@ -47,6 +49,9 @@ from typing import Any, Callable, Mapping, NamedTuple
 from jasper.attribution.session_identity import (
     ALIAS_CAPTURE_SESSION_ID, SessionIdentity, SessionIdentityError, stamp_session_identity,
 )
+
+from jasper.atomic_io import advisory_file_lock, atomic_write_json
+from jasper.log_event import log_event
 
 from .bundles import _UNFINISHED_STATES, _detect_build_sha
 
@@ -445,3 +450,30 @@ def bank_round(
         shutil.rmtree(target, ignore_errors=True)
         raise
     return BankedRound(target, provenance)
+
+
+def finish_round(bundle: Path) -> tuple[BankedRound | None, Exception | None]:
+    from .crossover_v2.refusal_copy import exception_detail  # lazy: banking-only measurement imports
+    from .crossover_v2.round_inputs import round_artifact_dir  # lazy: banking-only evidence imports
+    from .round_packet import finish_bass_packet  # lazy: packet imports this banker
+    from .run_manifest import RUN_MANIFEST_FILENAME  # lazy: banking-only evidence imports
+    from .round_bookkeeping import run_bookkeeping  # lazy: banking-only view analysis
+    from .bass_table_inputs import join_bass_rounds  # lazy: banking-only bass analysis
+
+    try:
+        # Browser completion and a concurrent CLI wait must serialize the whole packet write.
+        with advisory_file_lock(bundle / ".round-packet.lock"):
+            banked = bank_round(bundle, view_runner=run_bookkeeping)
+            manifest = banked.provenance.get("manifest")
+            if manifest and Path(manifest).is_file():
+                finish_bass_packet(banked.path, Path(manifest), join_levels=join_bass_rounds)
+            return banked, None
+    except (OSError, ValueError, RoundBankError) as exc:
+        detail = exception_detail(exc)
+        log_event(logging.getLogger(__name__), "active_speaker.round_packet_save_failed", level=logging.ERROR, detail=detail)
+        with suppress(OSError, ValueError):
+            artifacts, _ = round_artifact_dir(bundle)
+            if artifacts:
+                path = artifacts / RUN_MANIFEST_FILENAME
+                atomic_write_json(path, {**json.loads(path.read_text()), "packet_error_detail": detail})
+        return None, exc

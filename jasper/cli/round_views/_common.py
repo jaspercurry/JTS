@@ -12,26 +12,21 @@ import argparse
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 
-from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
-from jasper.active_speaker.measurement_programs import (
-    PURPOSE_BASS,
-    PURPOSE_ROOM,
-    PURPOSE_SPEAKER,
+from jasper.active_speaker.round_view_artifacts import (
+    PROG as PROG, REASON_REFUSED as REASON_REFUSED, REASON_UNREADABLE as REASON_UNREADABLE, REASON_UNWRITABLE as REASON_UNWRITABLE,
+    ARTIFACT_BY_VIEW as ARTIFACT_BY_VIEW, INVENTORY_ARTIFACT as INVENTORY_ARTIFACT,
+    VIEW_PURPOSES as VIEW_PURPOSES, ViewArtifact as ViewArtifact,
+    TAKES_THIS_ROUND as TAKES_THIS_ROUND, TAKES_THIS_BUNDLE as TAKES_THIS_BUNDLE,
+    context_artifacts as context_artifacts,
 )
-from jasper.active_speaker.frequency_view import FREQUENCY_VIEW_FILENAME
-from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
-from jasper.active_speaker.crossover_v2.harmonic_evidence import HARMONICS_ARTIFACT
-from jasper.active_speaker.crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
 from jasper.active_speaker.crossover_v2.round_inputs import (
     RoundSetRefused as RoundSetRefused, SetTakes as SetTakes, read_run_manifest as read_run_manifest,
     resolve_set as resolve_set, ROUND_INPUT_ERRORS as _ROUND_TOOL_ERRORS,
-    ROOM_ARTIFACT, RoundInputs, default_out as default_out, set_artifact_name as set_artifact_name,
+    default_out as default_out, set_artifact_name as set_artifact_name,
     round_artifact_dir as round_artifact_dir,
-    banked_round_of,
-    recent_round_sessions,
     round_inputs,
 )
 from jasper.active_speaker.crossover_v2.round_views import (
@@ -61,102 +56,12 @@ _ROUND_DIR_HELP = "a banked round directory, or a live session bundle"
 _ROUND_DIR_METAVAR = "<round-dir>"
 _BUNDLE_DIR_METAVAR = "<bundle-dir>"
 
-PROG = "jasper-round-views"
 
-TAKES_THIS_ROUND = "<this-round>"
-TAKES_THIS_BUNDLE = "<this-round's bundle>"
-TAKES_SET = (TAKES_THIS_ROUND, "--set", "<set-id>")
-TAKES_AFTER_ANOTHER = ("<other-round>", TAKES_THIS_ROUND)
-TAKES_BEFORE_ANOTHER = (TAKES_THIS_ROUND, "<other-round>")
-TAKES_FAR_AND_CLOSE = (
-    "--far-round", TAKES_THIS_ROUND, "--close-round", "<other-round>",
-    "--close-m", "<distance-m>",
-)
-
-
-class ViewArtifact(NamedTuple):
-    """One artifact, the command that makes it, and where it lands.
-
-    ``in_artifact_dir`` marks the views the evidence PACKET reads: those file
-    into the round's own artifact directory, the only path that reader looks
-    at, rather than beside the round where an operator reads the rest.
-    ``producer`` names the command for an artifact this tool does NOT write;
-    ``None`` means the key is the subcommand that writes it.
-    """
-
-    artifact: str
-    takes: tuple[str, ...] = (TAKES_THIS_ROUND,)
-    in_artifact_dir: bool = False
-    producer: str | None = None
-    purposes: tuple[str, ...] = ()
-
-#: The artifacts a round carries, declared once: the subcommands take their
-#: default output path from this table and ``inventory`` names each one's
-#: producer from the same one, so there is no second list to drift.
-#: ``repeat-floor`` is absent because it publishes to ``--install`` or
-#: ``--out`` instead of beside the round.
-ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
-    "inventory": ViewArtifact("inventory.json", TAKES_SET),
-    "run-manifest": ViewArtifact(RUN_MANIFEST_FILENAME, in_artifact_dir=True, producer="plan_run.run_plan"),
-    "dsp-replay": ViewArtifact("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--bass-reference-db", "<db>", "--out", "<render-dir>")),
-    "dsp-levels": ViewArtifact("dsp_levels.json", ("<dsp_replay.json>", "--raw", "<output.f64le>", "--window-s", "<start>", "<stop>")),
-    "bass-fit-table": ViewArtifact("bass_table.json", (TAKES_THIS_ROUND, "--candidate", "<candidate.json>", "--target", "<target.json>", "--tolerance-db", "<db>"), purposes=(PURPOSE_BASS,)),
-    "entry": ViewArtifact("entry_state_grade.json", purposes=(PURPOSE_SPEAKER,)),
-    "frozen": ViewArtifact("frozen_reference.json", TAKES_AFTER_ANOTHER, purposes=(PURPOSE_SPEAKER,)),
-    "per-seat": ViewArtifact("per_seat.json", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
-    "repeat": ViewArtifact("repeatability.json", TAKES_BEFORE_ANOTHER),
-    "candidates": ViewArtifact("candidates.json"),
-    "agreement": ViewArtifact("agreement.json", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
-    "co-metrics": ViewArtifact("audibility_co_metrics.json", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
-    "directivity": ViewArtifact("directivity.json", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
-    "cloud-binding": ViewArtifact("cloud_binding.json", purposes=(PURPOSE_SPEAKER,)),
-    "forward-model": ViewArtifact("forward_model.json", TAKES_SET, purposes=(PURPOSE_SPEAKER,)),
-    "sweep --scope verdict": ViewArtifact("spec_gate_sensitivity.json", TAKES_SET),
-    "sweep --scope round": ViewArtifact("gate_sweep.json", TAKES_SET),
-    "sweep --scope take": ViewArtifact("window_view.json", (*TAKES_SET, "--take", "<take-id>")),
-    "frequency": ViewArtifact(FREQUENCY_VIEW_FILENAME),
-    "bass": ViewArtifact("bass_view.json", TAKES_SET, purposes=(PURPOSE_BASS,)),
-    "bass-compare": ViewArtifact("bass_comparison.json", (
-        "<before-round>", TAKES_THIS_ROUND, "--before-set", "<before-set-id>",
-        "--after-set", "<set-id>", "--change", "<change>",
-    ), purposes=(PURPOSE_BASS,)),
-    "delay-landscape": ViewArtifact("delay_landscape.json", purposes=(PURPOSE_SPEAKER,)),
-    "delay-confirm": ViewArtifact("delay_confirmation.json", purposes=(PURPOSE_SPEAKER,)),
-    "close-reference": ViewArtifact("close_reference.json", TAKES_FAR_AND_CLOSE, purposes=(PURPOSE_SPEAKER,)),
-    "room": ViewArtifact(ROOM_ARTIFACT, TAKES_SET, purposes=(PURPOSE_ROOM,)),
-    # The packet owns these two names, so the rows take those constants rather
-    # than a second spelling of them.
-    "distortion": ViewArtifact(
-        HARMONICS_ARTIFACT, (TAKES_THIS_ROUND,), in_artifact_dir=True,
-        purposes=(PURPOSE_SPEAKER,),
-    ),
-    "classify-features": ViewArtifact(
-        CLASSIFICATION_ARTIFACT, (TAKES_THIS_ROUND,), in_artifact_dir=True,
-        purposes=(PURPOSE_SPEAKER,),
-    ),
-    "findings": ViewArtifact("findings.json"),
-    "room-grade": ViewArtifact("room_grade.json", TAKES_SET, purposes=(PURPOSE_ROOM,)),
-    # The banker writes this index; inventory reports its presence.
-    "position-cycle": ViewArtifact(
-        POSITION_CYCLE_FILENAME, ("--run", "<run-id>"), producer="jasper-round wait",
-    ),
-}
-
-VIEW_PURPOSES = {
-    **{name.split()[0]: spec.purposes for name, spec in ARTIFACT_BY_VIEW.items()},
-    "repeat-floor": (),
-    "speaker-fit": (PURPOSE_SPEAKER,),
-}
-
-INVENTORY_ARTIFACT = ARTIFACT_BY_VIEW["inventory"].artifact
 
 #: The named ``reason`` each failing stage publishes. The bucket is the STAGE,
 #: never the exception type — one ``RoundViewsError`` is raised both for a
 #: round that could not be read and for a view that declined one, so a
 #: type-based split answers the operator's "where do I go" wrong.
-REASON_REFUSED = "round_views_refused"
-REASON_UNREADABLE = "round_views_unreadable_round"
-REASON_UNWRITABLE = "round_views_unwritable_out"
 
 _REASON_BY_CODE = {
     EXIT_REFUSED: REASON_REFUSED,
@@ -199,26 +104,6 @@ def refused_by_name(
     return failed(code, reason, detail)
 
 
-def context_artifacts(inputs: RoundInputs, round_dir: Path) -> dict[str, Any]:
-    """Paths and sizes only; optional agent prose never becomes measurement data."""
-    bundles = recent_round_sessions(inputs.session_dir)
-    latest_note = next((
-        path
-        for bundle in bundles
-        for path in dict.fromkeys((
-            (banked_round_of(bundle) or bundle) / "agent_notes.md",
-            bundle / "agent_notes.md",
-        ))
-        if path.is_file()
-    ), None)
-    return {
-        key: {
-            "path": str(path) if path else None,
-            "present": path is not None and path.is_file(),
-            "bytes": path.stat().st_size if path and path.is_file() else None,
-        }
-        for key, path in (("latest_agent_note", latest_note),)
-    }
 
 
 def resolved_out(round_dir: Path, artifact: str, set_id: str | None = None) -> Path:
@@ -244,8 +129,6 @@ def add_set_argument(
     take: bool = False,
 ) -> None:
     parser.add_argument(name, required=required, help="set in the run manifest; optional for a one-set round")
-    if not required:
-        parser.set_defaults(optional_set_flags=(*(parser.get_default("optional_set_flags") or ()), name))
     if take:
         parser.add_argument(name.removesuffix("set") + "take", help=f"selected take within {name}; defaults to the unique on-axis take")
 

@@ -33,10 +33,10 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     summed_sweep_band_hz,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.web.correction_run_host import bind_run_door, compose_plan_program
+from jasper.web.correction_run_host import bind_run_door, compose_plan_program, publish_round_packet
 from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
 from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
-from jasper.active_speaker.plan_run import RunSignals, PlanCapture, prepare_plan_captures
+from jasper.active_speaker.plan_run import RunSignals, PlanCapture, prepare_plan_captures, preview_schedule
 from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_trials import tuning_trial_matches_candidate
@@ -767,6 +767,9 @@ def prepare_v2_session(
     )
     if not verify_only:
         evidence_store.publish_json_artifact(f"crossover_v2/{capture_session_id}/plan.json", request.to_dict())
+        schedule = preview_schedule(request, captures, context)
+        if position_gate:
+            position_gate.publish({**schedule, "pose": 1})
 
     held: v2evidence._HeldSession | None = None
 
@@ -913,7 +916,7 @@ def prepare_v2_session(
         tuning, analyze, assessor, execute = bind_run_door(
             host=host, device=device, evidence_store=evidence_store,
             manifest=manifest, production=production_play, conductor=conductor, refs=refs, provenance=capture_provenance,
-            trims=engine_level_trims, ceiling_s=ceiling_s, camilla_factory=camilla_factory,
+            trims=engine_level_trims, ceiling_s=ceiling_s, camilla_factory=camilla_factory, context=context,
             ceiling_db_spl=(commissioning_spl_ceiling_db(context.topology, preset=context.preset)
                             if verify_only else report.spl_ceiling_db_spl), verify_only=verify_only,
             level=report.plan.level, ladder=report if isinstance(report, LevelLadder) else None,
@@ -970,6 +973,8 @@ def prepare_v2_session(
                 closed = mark_state(Path(evidence_store.bundle_dir), "closed")
                 if closed is None and completed:
                     raise OSError("the measurement bundle could not be closed")
+                if closed is not None and position_gate:
+                    await publish_round_packet(Path(evidence_store.bundle_dir), position_gate)
 
     return V2PreparedSession(
         label=V2_CAPTURE_KIND_VERIFY if verify_only else V2_CAPTURE_KIND_SESSION,

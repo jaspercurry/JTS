@@ -12,8 +12,11 @@ from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.json_fields import finite_float, parse_utc_iso
 from jasper.output_topology import OutputTopology, channel_identity_report, topology_is_subless_passive_mains
 from .applied_identity import applied_identity
+from .capture_status import SESSION_ENDED_STATUSES
 from .measurement_programs import PURPOSE_BASS, PURPOSE_ROOM, PURPOSE_SPEAKER
-from .wizard_client import APPLY_PATH
+from .wizard_client import APPLY_PATH, CAPTURE_CANCEL_PATH
+from .round_copy import round_lines, packet_lines, round_verdict
+from .measurement_programs import available_programs, program
 
 COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
 VIEW_STATUS_NOT_REQUIRED = "not_required"
@@ -24,6 +27,56 @@ COMMISSIONING_STEP_PAGE_TITLES = {
     "profile": "Apply speaker profile",
 }
 _MEASURE_LABELS = {PURPOSE_SPEAKER: "Measure the baseline", PURPOSE_ROOM: "Measure the room", PURPOSE_BASS: "Measure bass"}
+
+
+def round_status(capture: Mapping[str, Any]) -> list[str]:
+    facts = capture.get("run") or {}
+    if facts.get("round_dir"):
+        lines = packet_lines(facts["round_dir"])
+        if lines:
+            return lines
+        facts = {**facts, "packet_error": "packet_unreadable"}
+    return round_lines(facts, pending=bool(capture.get("position_pending") or capture.get("join")))
+
+
+def round_capture(capture: Mapping[str, Any], verdict: str, *, advertise_capture: bool = True) -> dict[str, Any]:
+    from .crossover_v2.position_gate import retake_action  # lazy: gate imports measurement
+
+    facts = capture.get("run") or {}
+    result = {"capture": dict(capture) if advertise_capture else None, "round_lines": round_status(capture),
+              "verdict_text": round_verdict(facts, verdict)}
+    if not facts.get("pose_details"):
+        return result
+    held = capture.get("join") or capture.get("position_pending") or {}
+    live = capture.get("status") not in SESSION_ENDED_STATUSES
+    actions = [a for a in held.get("actions", ()) if a["id"] != "retake"] + [
+        retake_action(), {"id": "reset_round", "label": "Reset the round", "endpoint": CAPTURE_CANCEL_PATH, "body": {}},
+    ] if live and facts.get("mover") == "human" else []
+    return {**result, "capture": None, "pending": {"actions": actions} if live else None, "busy": live}
+
+
+def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict[str, Any]]:
+    from .angle_capture import request_for_program  # lazy: measurement planning
+    from .crossover_v2.conductor_context import resolve_conductor_context  # lazy: measurement planning
+    from .plan_run import prepare_plan_captures, preview_schedule  # lazy: measurement planning
+
+    default = program(load_commissioning_view()["next_action"].get("program") or "speaker")
+    default_id = f"{default.program_id}/{default.size}"
+    choices = []
+    for name, size in available_programs():
+        plan = program(name, size)
+        choice: dict[str, Any] = {"id": f"{name}/{size}", "label": f"{name}/{size}",
+                                  "default": f"{name}/{size}" == default_id,
+                                  "poses": plan.mic_move_count, "captures": plan.capture_count}
+        if choice["id"] == (selected_id or default_id):
+            context = resolve_conductor_context(status, require_banked_level=False)
+            request = request_for_program(plan, mover=plan.mover or "human")
+            captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
+            facts = preview_schedule(request, captures, context)
+            choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start the round",
+                          "endpoint": "/sound/speaker/crossover/v2/session", "body": {"plan": request.to_dict()}})
+        choices.append(choice)
+    return choices
 
 
 def _next_program_action(

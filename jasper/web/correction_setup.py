@@ -481,6 +481,7 @@ def _get_crossover_envelope(handler: _Handler) -> None:
         # so it promptly drains a walked-away or slow-driver session.
         correction_capture._enforce_session_volume_ceiling(v2volume)
         return correction_crossover_flow.handle_envelope(
+            selected_program=parse_qs(urlparse(handler.path).query).get("program", [""])[0],
             capture=correction_capture._get_capture_slot_for("crossover_v2:"),
         )
 

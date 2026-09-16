@@ -11,8 +11,9 @@ re-admits the rendered artifact against its protected graph.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import partial
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
@@ -23,6 +24,8 @@ from jasper.audio_measurement.program import (
     build_measure_program,
     build_verify_program,
 )
+
+from jasper.audio_measurement.branch_program import build_branch_program
 
 from .journey import (
     PHASE_CHECK,
@@ -330,3 +333,44 @@ def program_for_phase(
         # analysis and the verdict it draws — never the sound the speaker makes.
         return verify
     raise NoProgramForPhaseError(f"no program for phase {phase!r}")
+
+
+def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Mapping[str, float] | None,
+                     stimulus_dbfs: float | None = None, *, safety_profile: Mapping[str, Any],
+                     role_targets: Mapping[str, str]) -> ExcitationProgram:
+    if spec.program_phase == PHASE_CHECK:
+        program = excitation.check_program()
+        peak = max(segment.gain_db for segment in program.stimulus_segments())
+        return excitation.check_program(
+            extra_backoff_db=0.0 if stimulus_dbfs is None else peak - stimulus_dbfs)
+    if spec.graph_scope == "drivers":
+        gains = gain_plan_db
+        if not gains:
+            raise ValueError("The CHECK level solve is unavailable")
+        if stimulus_dbfs is not None and stimulus_dbfs != max(gains.values()):
+            delta = stimulus_dbfs - max(gains.values())
+            gains = {role: gain + delta for role, gain in gains.items()}
+        return excitation.measure_program(gains)
+    excitation = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)
+    backoff = 0.0 if stimulus_dbfs is None else BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs
+    if spec.stimulus is not None:
+        from ..bass_stimulus import build_bass_program  # lazy: keeps jasper.web numpy-free
+
+        program = build_bass_program(excitation, spec.stimulus, safety_profile=safety_profile,
+                                     role_targets=role_targets, extra_backoff_db=backoff,
+                                     courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase))
+    else:
+        program = (excitation.cloud_program(extra_backoff_db=backoff) if spec.program_phase == PHASE_CLOUD_VERIFY
+                   else excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s))
+    if spec.graph_scope == "candidate_branches":
+        program = build_branch_program(program, {role.role: role.channel for role in excitation.roles})
+    return program
+
+
+def predictive_program_for_spec(context: Any) -> Callable[[Any], ExcitationProgram]:
+    # Gain changes preserve segment count; preview can precede the CHECK level solve.
+    excitation = SessionExcitation(context.roles_bands, context.driver_caps_dbfs, 0.0, context.fc_hz,
+                                   context.driver_sweep_duration_limits_s)
+    return partial(program_for_spec, excitation=excitation,
+                   gain_plan_db={r.role: BASE_STIMULUS_PEAK_DBFS for r in excitation.roles},
+                   safety_profile=context.safety_profile, role_targets=context.role_targets)

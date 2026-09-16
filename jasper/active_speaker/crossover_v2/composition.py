@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 from .playback_transaction import PlaybackTransaction
 from .program_transaction import (
-    Compose,
+    Compose, playback_observer,
     ProgramForStimulus,
     ProgramPlaybackTransaction,
     StimulusCapture,
@@ -138,7 +138,9 @@ def bind_program_playback_seams(
         await confirm_graph_is_live(cam, graph_yaml)
         if before_play is not None:
             await before_play(program, artifact, phase or program.phase)
-        return await verified_program_aplay(bundle_dir, artifact, timeout_s=timeout_s)
+        play = partial(verified_program_aplay, bundle_dir, artifact, timeout_s=timeout_s)
+        observer = playback_observer.get()
+        return await observer(program, play) if observer else await play()
 
     async def _readmit() -> Any:
         # ``declared_sensitivities`` MUST match what the session composed

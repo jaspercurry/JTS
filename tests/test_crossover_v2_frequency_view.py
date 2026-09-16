@@ -1141,7 +1141,7 @@ def test_bass_fit_refuses_unusable_evidence_by_code(bass_fit_pairs, fault, code)
 def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
     descriptor = {'low_boost_db': 12, 'reference_level_db': 0,
                   'detector_lowpass_hz': 120, 'compressor_threshold_dbfs': -30}
-    monkeypatch.setattr('jasper.cli.round_views._bass_inputs.load_candidate_artifact',
+    monkeypatch.setattr('jasper.active_speaker.bass_table_inputs.load_candidate_artifact',
                         lambda _: SimpleNamespace(fingerprint='boost', bass_extension=descriptor))
     takes = []
     volumes = (-10, -30, -20)
@@ -1458,17 +1458,17 @@ def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, caps
             takes.append(extra)
         if case == 'two_candidates':
             bass_run.argv.extend(['--candidate', 'second.json'])
-            monkeypatch.setattr('jasper.cli.round_views._bass_inputs.load_candidate_artifact',
+            monkeypatch.setattr('jasper.active_speaker.bass_table_inputs.load_candidate_artifact',
                                 lambda path: SimpleNamespace(fingerprint='second' if path.stem == 'second' else 'boost',
                                                              bass_extension=bass_run.descriptor))
     elif case == 'missing_pose':
         takes[1]['record']['position_deg'] = 20
     elif case == 'fingerprint':
-        monkeypatch.setattr('jasper.cli.round_views._bass_inputs.load_candidate_artifact', lambda _: None)
-        monkeypatch.setattr('jasper.cli.round_views._bass_inputs.find_banked_candidate',
+        monkeypatch.setattr('jasper.active_speaker.bass_table_inputs.load_candidate_artifact', lambda _: None)
+        monkeypatch.setattr('jasper.active_speaker.bass_table_inputs.find_banked_candidate',
                             lambda _: SimpleNamespace(candidate=SimpleNamespace(fingerprint='boost', bass_extension=bass_run.descriptor)))
     elif case == 'candidate':
-        monkeypatch.setattr('jasper.cli.round_views._bass_inputs.load_candidate_artifact', lambda _: None)
+        monkeypatch.setattr('jasper.active_speaker.bass_table_inputs.load_candidate_artifact', lambda _: None)
     elif case == 'base_candidate':
         def missing_candidate(_):
             raise CandidateBankRefusal('not_found', 'not found')

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from dataclasses import dataclass
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Protocol
 
 from jasper.audio_measurement.playback import (
@@ -113,6 +114,9 @@ class ProgramForStimulus:
 #: Host-supplied: this stimulus, as a program plus the seams bound around it.
 #: Takes the same five facts the seam's ``run`` takes. May be sync or async.
 Compose = Callable[..., "ProgramForStimulus | Any"]
+playback_observer: ContextVar[Callable[[Any, Callable[[], Awaitable[Any]]], Awaitable[Any]] | None] = ContextVar(
+    "playback_observer", default=None,
+)
 
 
 class StimulusCaptureError(RuntimeError):

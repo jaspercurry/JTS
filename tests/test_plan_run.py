@@ -8,14 +8,16 @@ from __future__ import annotations
 import asyncio
 import json
 from copy import deepcopy
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from unittest.mock import Mock
+from types import SimpleNamespace
 
 import pytest
 
 from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
-from jasper.active_speaker.measurement_programs import pilot_floor_blocking, run_program
+from jasper.active_speaker.measurement_programs import pilot_floor_blocking, run_program, program as measurement_program
 from jasper.active_speaker.crossover_v2 import capture_dispatch, spatial
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
@@ -30,7 +32,7 @@ from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.volume_owner import ClaimKind, volume_owner
-from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor, _loc, _verify_analysis
+from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor, _loc, _verify_analysis, _roles
 from tests.crossover_v2_banked_round import bank_seat_round
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, SeamFailure, open_session
 from tests.test_preflight import ready_facts
@@ -103,12 +105,12 @@ class _Store:
         return await self.records.bank(record)
 
 
-async def _run_gated(request, *, seams=None, gate=None, analyze=_analysis, signals=None, captures=None):
+async def _run_gated(request, *, seams=None, gate=None, analyze=_analysis, signals=None, captures=None, **kwargs):
     fakes = seams or FakeSeams()
     manifest = RunManifest("run", _Store(fakes.records))
     async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (session, _):
         result = await plan_run.run_plan(request, session=session, manifest=manifest, analyze=analyze,
-                                         gate=gate, aborts=_ABORTS, signals=signals, captures=captures)
+                                         gate=gate, aborts=_ABORTS, signals=signals, captures=captures, **kwargs)
     return result, fakes
 
 
@@ -497,7 +499,7 @@ def test_run_allocates_unique_take_ids_across_engine_instances(tmp_path):
     assert not (root / "crossover_v2/run/round_receipt.json").exists()
 
 
-def test_retake_while_next_pose_waits_returns_to_previous_observation(monkeypatch):
+def test_retake_while_next_pose_waits_restarts_the_displayed_pose(monkeypatch):
     signals = plan_run.RunSignals()
 
     class RetakeGate(AnsweredGate):
@@ -512,8 +514,8 @@ def test_retake_while_next_pose_waits_returns_to_previous_observation(monkeypatc
 
     monkeypatch.setattr(plan_run, "POSITION_HOLD_POLL_S", 0)
     result, fakes = asyncio.run(_run_gated(_walk([0, 20]), gate=RetakeGate(), signals=signals))
-    assert fakes.play.bearings == [0, 0, 20]
-    assert [t["selected"] for t in _takes(result.to_dict())] == [False, True, True]
+    assert fakes.play.bearings == [0, 20]
+    assert [t["selected"] for t in _takes(result.to_dict())] == [True, True]
     assert result.status == "complete"
 
 
@@ -1080,3 +1082,52 @@ async def test_manifest_stamps_watch_levels_and_uses_accepted_medians():
         assert row["level"]["level_delta_db"] == delta
         assert row["phase"] == "measure"
     assert manifest.to_dict()["level"]["session"]["session_id"] == "leveled"
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry):
+    roles = ["summed", "woofer", "tweeter", "woofer", "tweeter", "woofer", "tweeter"]
+    segments = tuple(SimpleNamespace(role=role, kind="sweep", start_sample=0, n_samples=4) for role in roles)
+    program = SimpleNamespace(phase="measure", sample_rate_hz=1, stimulus_segments=lambda: segments)
+    gate = AnsweredGate()
+    original = FakePlay.run
+    async def play(self, **kwargs):
+        async def emitted():
+            done = asyncio.get_running_loop().create_future()
+            asyncio.get_running_loop().call_later(0, done.set_result, None)
+            await done
+            return await original(self, **kwargs)
+        return await plan_run.playback_observer.get()(program, emitted)
+    monkeypatch.setattr(FakePlay, "run", play)
+    verdicts = iter(([TakeVerdict(False, "snr_floor", next="retake_louder", next_gain_db=-12, charge="speaker")]
+                     if retry else []) + [TakeVerdict(True)] * 3)
+    monkeypatch.setattr(plan_run, "assess", lambda *a, **kw: next(verdicts))
+    door = plan_run.RunDoor(AsyncExitStack(), lambda *a: None, None, None, 90, program_for_spec=lambda spec: program)
+    result, _ = asyncio.run(_run_gated(_walk([0, -20, 20]), gate=gate, door=door))
+    live = [p for p in gate.progress if p.get("role")]
+    assert result.status == "complete"
+    assert [(p["sweep"], p["role"], p["repeat"], p["repeats"]) for p in live[:7]] == [
+        (1, "summed", 1, 1), (2, "woofer", 1, 3), (3, "tweeter", 1, 3),
+        (4, "woofer", 2, 3), (5, "tweeter", 2, 3), (6, "woofer", 3, 3), (7, "tweeter", 3, 3)]
+    assert live[0]["sweeps_per_pose"] == [7, 7, 7]
+    assert live[0]["estimated_seconds"] == 21 * 4 + 3 * plan_run.HUMAN_MOVE_ALLOWANCE_S
+    assert {p["pose"] for p in live} == {1, 2, 3}
+    if retry:
+        assert any(p.get("retake_reason") == "snr_floor" and p["level_raise_dbfs"] == -12 for p in live)
+    else:
+        assert all("retake_reason" not in p for p in live)
+
+
+@pytest.mark.parametrize("repeats, counts, timing, preparation", [(1, [15, 8, 8], 1, 12), (2, [26, 16, 16], 2, 20)])
+def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timing, preparation):
+    context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
+                              driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+    request = ac.request_for_program(measurement_program("tournament", "full"), repeats=repeats)
+    captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
+    facts = plan_run.preview_schedule(request, captures, context)
+    assert facts["sweeps_per_pose"] == counts
+    assert facts["timing_sweeps"] == timing
+    assert facts["preparation_sweeps"] == preparation
+    assert facts["sweeps"] == sum(counts)
+    timing_rows = [row for row in facts["pose_sweeps"][0] if row["kind"] == "summed_sweep"]
+    assert [(row["repeat"], row["repeats"]) for row in timing_rows] == [(n, repeats) for n in range(1, repeats + 1)]

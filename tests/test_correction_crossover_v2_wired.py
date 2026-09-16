@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 from jasper.active_speaker.crossover_v2 import refusal_copy
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+from jasper.active_speaker.crossover_v2.programs import predictive_program_for_spec
+from jasper.web.correction_run_host import compose_plan_program
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
 from jasper.web import correction_crossover_v2_volume as v2volume
@@ -920,21 +923,17 @@ async def test_plan_host_waits_for_the_gate_before_admission_and_capture(monkeyp
 
 async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monkeypatch, tmp_path, box):
     from jasper.active_speaker import plan_run
-    from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
+    from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
     from tests.test_plan_run import AnsweredGate
 
     signals = plan_run.RunSignals()
-    monkeypatch.setattr(plan_run, "POSITION_HOLD_POLL_S", 0)
-    class RetakingGate(AnsweredGate):
-        requested = False
-        def gate(self, index, attempt, entry):
-            if index == 2 and not self.requested:
-                self.requested = True
-                signals.retake.set()
-                raise CaptureBeginDeferred("awaiting_position", "placement")
-            return super().gate(index, attempt, entry)
-    gate = RetakingGate()
+    gate = AnsweredGate()
     runner, session, fakes, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box, gate=gate, signals=signals)
+    def assessed(*args, **kwargs):
+        if len(gate.grants) == 1:
+            signals.retake.set()
+        return TakeVerdict(True, next="accept")
+    monkeypatch.setattr(plan_run, "assess", assessed)
     await runner(session)
     assert manifest.status == "complete"
     assert manifest.takes_measured == 3
@@ -1122,6 +1121,23 @@ def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anch
     if target is not None:
         assert float(events[0]["anchor_db_spl"]) == anchor + offset
         assert float(events[0]["target_capture_dbfs"]) == pytest.approx(target)
+
+
+@pytest.mark.parametrize("scope, phase", [
+    ("drivers", "check"), ("drivers", "measure"), ("timing", "entry_baseline"),
+    ("candidate", "verify"), ("candidate_branches", "lateral"),
+])
+def test_predictive_segment_count_survives_solved_gains_and_live_level(scope, phase):
+    conductor = _conductor(FlowSeams(), gain_plan_db={"woofer": -50.0, "tweeter": -57.0})
+    spec = MeasureSpec(kind="baseline", graph_scope=scope, program_phase=phase,
+                       candidate_id=None if scope == "drivers" else "fp-a")
+    context = SimpleNamespace(roles_bands=conductor._roles, driver_caps_dbfs=conductor._excitation.caps_dbfs,
+                              fc_hz=conductor._excitation.fc_hz, safety_profile={}, role_targets={},
+                              driver_sweep_duration_limits_s=conductor._excitation.sweep_duration_limits_s)
+    predicted = predictive_program_for_spec(context)(spec)
+    for stimulus_dbfs in (None, -48.0):
+        live = compose_plan_program(conductor, spec, stimulus_dbfs, context=SimpleNamespace())
+        assert len(live.stimulus_segments()) == len(predicted.stimulus_segments())
 
 
 @pytest.mark.parametrize("target", [None, -48.0, -60.0])

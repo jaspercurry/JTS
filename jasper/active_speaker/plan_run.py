@@ -11,7 +11,9 @@ import sys
 import time
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import asdict, dataclass, field, replace
-from itertools import groupby
+from itertools import accumulate, groupby
+from collections import Counter
+from functools import partial
 from threading import Event, Lock
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Mapping, Sequence
@@ -19,7 +21,7 @@ from typing import Any, Awaitable, Callable, Mapping, Sequence
 from jasper.log_event import log_event
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
-from jasper.audio_measurement.program import ExcitationProgram, RoleBand
+from jasper.audio_measurement.program import ExcitationProgram, RoleBand, KIND_PILOT, KIND_SUMMED_SWEEP
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
@@ -41,7 +43,7 @@ from .crossover_v2.door import IsolationHold, OpenMeasurementDoor, MeasurementDo
 from .crossover_v2.journey import PHASE_CHECK, PHASE_ENTRY_BASELINE, PHASE_LATERAL, PHASE_MEASURE
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
-from .crossover_v2.program_transaction import StimulusCaptureStopped
+from .crossover_v2.program_transaction import StimulusCaptureStopped, playback_observer
 from .crossover_v2.refusal_copy import (
     CAPTURE_QUALITY_REFUSAL_CODES, REASON_INTERNAL_ERROR, REASON_REGISTRY, REASON_USER_STOPPED, TakeVerdict, exception_detail,
 )
@@ -50,6 +52,7 @@ from .crossover_v2.spatial import analysis_curve_records
 from .crossover_v2.planning import analysis_json
 from .restore_wait import resilient_restore
 from .measurement_programs import POSE_KIND_BEARING, PURPOSE_SPEAKER
+from .crossover_v2.programs import predictive_program_for_spec
 from .run_manifest import RunManifest
 
 from jasper.audio_measurement.calibration import resolve_mic_sensitivity
@@ -191,6 +194,7 @@ class RunDoor:
     ceiling_db_spl: float | None
     current: TuningSession | None = None
     opened: OpenMeasurementDoor | None = None
+    program_for_spec: Callable[[MeasureSpec], ExcitationProgram] | None = None
 
     @property
     def is_open(self) -> bool:
@@ -215,6 +219,69 @@ def _pose(stop: Any) -> dict[str, Any]:
 def _planned_row(index: int, repeat: int, stop: Any) -> dict[str, Any]:
     return {"index": index, "repeat": repeat, "pose": _pose(stop),
             "candidate_id": stop.candidate_id, "purpose": stop.purpose}
+
+
+# Allow a person to move the stand and confirm placement between pose batches.
+HUMAN_MOVE_ALLOWANCE_S = 30
+
+
+def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], program_for_spec: Callable[[MeasureSpec], ExcitationProgram],
+                   *, mover: str, program: str = "") -> dict[str, Any]:
+    poses, pose_sweeps, work_sweeps = [], [], []
+    for _, batch in groupby(captures, key=lambda capture: capture[0]["place"]):
+        details: list[dict[str, Any]] = []
+        keys = []
+        for pose, spec in batch:
+            if not details:
+                poses.append(dict(pose))
+            excitation = program_for_spec(spec)
+            segments = excitation.stimulus_segments()
+            work_sweeps.append(len(segments))
+            for segment in segments:
+                keys.append((spec.graph_scope, spec.candidate_id, spec.program_phase, segment.role, segment.kind))
+                details.append({"role": segment.role or "summed", "kind": segment.kind, "phase": spec.program_phase,
+                                "scope": spec.graph_scope, "seconds": segment.n_samples / excitation.sample_rate_hz})
+        totals = Counter(keys)
+        seen: Counter[tuple[str, str | None, str | None, str | None, str]] = Counter()
+        for key, row in zip(keys, details):
+            seen[key] += 1
+            row.update(repeat=seen[key], repeats=totals[key])
+        pose_sweeps.append(details)
+    rows = [row for pose_rows in pose_sweeps for row in pose_rows]
+    counts = [len(pose_rows) for pose_rows in pose_sweeps]
+    return {"program": program, "mover": mover, "poses": len(poses), "pose_details": poses,
+            "sweeps_per_pose": counts, "sweeps": len(rows), "work_sweeps": work_sweeps,
+            "timing_sweeps": sum(row["scope"] == "timing" and row["kind"] == KIND_SUMMED_SWEEP for row in rows),
+            "preparation_sweeps": sum(row["kind"] == KIND_PILOT for row in rows),
+            "estimated_seconds": sum(row["seconds"] for row in rows) +
+                                 (len(poses) * HUMAN_MOVE_ALLOWANCE_S if mover == "human" else 0),
+            "pose_sweeps": pose_sweeps}
+
+
+def preview_schedule(request: AngleCaptureRequest, captures: Sequence[PlanCapture], context: Any) -> dict[str, Any]:
+    return schedule_facts([(_pose(c.stop), c.spec) for c in captures], predictive_program_for_spec(context),
+                          mover=request.mover, program=request.program or "")
+
+
+async def publish_sweeps(progress: dict[str, Any], gate: PositionGate, before: int,
+                         program: ExcitationProgram, play: Callable[[], Awaitable[Any]]) -> Any:
+    handles = []
+    def publish(index: int) -> None:
+        try:
+            row = progress["pose_sweeps"][progress["pose"] - 1][before + index - 1]
+        except (KeyError, IndexError):
+            return
+        progress.update(sweep=before + index, role=row["role"], sweep_kind=row["kind"],
+                        repeat=row["repeat"], repeats=row["repeats"])
+        gate.publish(progress)
+    try:
+        for index, segment in enumerate(program.stimulus_segments(), 1):
+            handles.append(asyncio.get_running_loop().call_later(segment.start_sample / program.sample_rate_hz,
+                                                                 publish, index))
+        return await play()
+    finally:
+        for handle in handles:
+            handle.cancel()
 
 
 async def run_plan(
@@ -391,14 +458,16 @@ async def _run(
     ledgers = {item.pose_index: SlotAttempts(retries_per_pose=retries) for item in work}
     attempts = [0] * len(work)
     offset, grant_epoch = 0, 0
-    previous: int | None = None
-    resume: int | None = None
     retry: TakeVerdict | None = None
     retry_was_measured = False
     playing = [item.spec for item in work]
     moved: set[int] = set()
     verdict: TakeVerdict | None = None
+    schedule: dict[str, Any] = schedule_facts([(item.stop["pose"], item.spec) for item in work], door.program_for_spec,
+                              mover=manifest.asked["mover"], program=manifest.program or "") if door and door.program_for_spec else {"poses": len(ledgers)}
+    sweep_offsets = list(accumulate(schedule.get("work_sweeps", [0] * len(work)), initial=0))
     progress: dict[str, Any] = {}
+    notices: dict[str, Any] = {}
     stack = AsyncExitStack()
     hold: IsolationHold | None = None
     try:
@@ -413,10 +482,10 @@ async def _run(
                 break
             if signals.retake.is_set():
                 signals.retake.clear()
-                if previous is not None:
-                    resume, offset = max(offset, previous + 1), previous
-                    retry = TakeVerdict(True, next="fix_and_retake", charge="operator")
-                    retry_was_measured = False
+                pose = work[offset].pose_index
+                offset = next(i for i, row in enumerate(work) if row.pose_index == pose)
+                retry = TakeVerdict(True, next="fix_and_retake", charge="operator")
+                retry_was_measured = False
             item = work[offset]
             ledger = ledgers[item.pose_index]
             if retry is not None:
@@ -426,8 +495,7 @@ async def _run(
                         manifest.mark_not_measured(item.stop["index"], retry.fault)
                         retry = None
                         retry_was_measured = False
-                        offset = resume if resume is not None else offset + 1
-                        resume = None
+                        offset += 1
                         continue
                     manifest.reason = retry.fault or "retries_spent"
                     break
@@ -445,10 +513,17 @@ async def _run(
                     playing[offset] = replace(playing[offset], level_ladder_dbfs=(retry.next_gain_db,))
             spec = playing[offset]
             attempt = attempts[offset] + 1
-            progress = {"pose": item.pose_index + 1, "poses": len(ledgers),
+            before = sweep_offsets[offset] - sweep_offsets[offset - item.config + 1]
+            if retry:
+                notices.update(retake_reason=retry.fault or "operator", retake_sweep=before + 1,
+                               retake_pose=item.pose_index + 1, retake_action=retry.next,
+                               retake_sweep_end=before + sweep_offsets[offset + 1] - sweep_offsets[offset])
+                if retry.next == "retake_louder":
+                    notices["level_raise_dbfs"] = retry.next_gain_db
+            progress = {**schedule, **notices, "pose": item.pose_index + 1,
                         "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
-                        "budget": ledger.to_payload()}
+                        "budget": ledger.to_payload(), "sweep": before + 1}
             entry = item.entry
             if retry and retry.next == "fix_and_retake" and retry.fault and entry:
                 entry = SimpleNamespace(screen={**entry.screen, "body": REASON_REGISTRY[retry.fault].message})
@@ -483,7 +558,11 @@ async def _run(
                         gate.publish(progress)
                 attempts[offset] = attempt
                 manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index)
-                outcome = await measure(session, spec) if measure else await session.measure(spec)
+                token = playback_observer.set(partial(publish_sweeps, progress, gate, before) if gate else None)
+                try:
+                    outcome = await measure(session, spec) if measure else await session.measure(spec)
+                finally:
+                    playback_observer.reset(token)
                 manifest.detail = next((s.detail for s in outcome.stimuli if s.detail), "")
                 manifest.outcomes.append((outcome, str(session.graph_fingerprint)))
                 verdict = None
@@ -534,13 +613,11 @@ async def _run(
                     retry = verdict
                     retry_was_measured = outcome.complete and any(record_id for _, record_id in records)
                     continue
-                previous = offset
                 retry = None
                 retry_was_measured = False
                 if signals.retake.is_set():
                     continue
-                offset = resume if resume is not None else offset + 1
-                resume = None
+                offset += 1
             except _Control:
                 continue
             except aborting as exc:

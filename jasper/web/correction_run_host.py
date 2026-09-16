@@ -7,9 +7,11 @@ from __future__ import annotations
 from jasper.web import correction_crossover_v2_volume as v2volume
 
 from dataclasses import replace
+import asyncio
+from pathlib import Path
 from typing import Any
 
-from jasper.active_speaker.crossover_v2.programs import compose_summed_program
+from jasper.active_speaker.crossover_v2.programs import program_for_spec, predictive_program_for_spec
 from jasper.active_speaker.angle_capture import LevelPolicy
 from jasper.active_speaker.run_levels import LevelLadder, LevelRun, prepare_level_captures, run_levels
 from jasper.active_speaker.round_packet import RoundPacket
@@ -24,10 +26,9 @@ from jasper.audio_measurement.household_mic import resolved_household_sensitivit
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY, PHASE_CLOUD_VERIFY, PHASE_ENTRY_BASELINE
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, TakeVerdict, PhaseVerdict
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, TakeVerdict, PhaseVerdict, exception_detail
 from jasper.active_speaker.seat_level_reference import check_target_capture_dbfs as anchored_check_target
 from jasper.audio_measurement.program import ExcitationProgram
-from jasper.audio_measurement.branch_program import build_branch_program
 
 
 def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence: Any,
@@ -132,30 +133,16 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
 
 
 def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None, *, context: Any) -> Any:
-    excitation = conductor._excitation
+    gains = conductor._gain_plan_db if spec.graph_scope == "drivers" and spec.program_phase != PHASE_CHECK else None
+    program = program_for_spec(spec, conductor._excitation, gains, stimulus_dbfs,
+                               safety_profile=context.safety_profile if spec.stimulus is not None else {},
+                               role_targets=context.role_targets if spec.stimulus is not None else {})
     if spec.program_phase == PHASE_CHECK:
-        program = excitation.check_program()
-        peak = max(segment.gain_db for segment in program.stimulus_segments())
-        conductor._check_program = excitation.check_program(
-            extra_backoff_db=0.0 if stimulus_dbfs is None else peak - stimulus_dbfs)
-        return conductor._check_program
-    if spec.graph_scope == "drivers":
-        gains = conductor._gain_plan_db
-        if not gains:
-            raise ValueError("The CHECK level solve is unavailable")
-        if stimulus_dbfs is not None and stimulus_dbfs != max(gains.values()):
-            delta = stimulus_dbfs - max(gains.values())
-            gains = {role: gain + delta for role, gain in gains.items()}
-        return excitation.measure_program(gains)
-    program = compose_summed_program(excitation, spec, stimulus_dbfs,
-        safety_profile=context.safety_profile if spec.stimulus is not None else {},
-        role_targets=context.role_targets if spec.stimulus is not None else {})
-    if spec.program_phase == PHASE_VERIFY:
+        conductor._check_program = program
+    elif spec.program_phase == PHASE_VERIFY:
         conductor._verify_program = program
     elif spec.program_phase == PHASE_CLOUD_VERIFY:
         conductor._cloud_program = program
-    if spec.graph_scope == "candidate_branches":
-        program = build_branch_program(program, {role.role: role.channel for role in excitation.roles})
     return program
 
 
@@ -164,7 +151,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                   trims: Any, ceiling_s: float, ceiling_db_spl: float | None,
                   camilla_factory: Any, verify_only: bool, provenance: Any = None,
                   level: LevelPolicy = LevelPolicy(), ladder: LevelLadder | None = None,
-                  capture_indexes: tuple[int, ...] = ()) -> tuple[RunDoor, Any, Any, Any]:
+                  capture_indexes: tuple[int, ...] = (), context: Any = None) -> tuple[RunDoor, Any, Any, Any]:
     if ladder is not None:
         ceiling_s *= len(ladder.admissible)
     sensitivity = resolved_household_sensitivity(device)
@@ -194,6 +181,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
         isolation_hold(graph=production.graph, camilla_factory=camilla_factory,
                        action="measuring", plan=v2volume.session_volume_plan(), wall_clock_ceiling_s=ceiling_s),
         build, sensitivity, device, ceiling_db_spl,
+        program_for_spec=predictive_program_for_spec(context) if context else None,
     )
     if ladder is None or ladder.plan.levels is None:
         return door, analyze, assessor, None
@@ -211,7 +199,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                 host=host, device=device, evidence_store=evidence_store, manifest=child,
                 production=production, conductor=conductor, refs=refs, trims=trims,
                 ceiling_s=ceiling_s, ceiling_db_spl=ceiling_db_spl, camilla_factory=camilla_factory,
-                verify_only=False, provenance=provenance, level=plan.level,
+                verify_only=False, provenance=provenance, level=plan.level, context=context,
                 capture_indexes=tuple(captures.index(capture) + 1 for capture in selected),
             )
             bound = LevelRun(child, child_door, child_analyze, child_assessor, selected)
@@ -225,6 +213,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
             return replace(results[-1], reason=packet.to_dict()["reason"]) if results and not manifest.reason else manifest
         except BaseException as exc:  # noqa: BLE001 - preserve the partial packet before host failure publication
             manifest.reason = getattr(exc, "code", None) or REASON_INTERNAL_ERROR
+            manifest.detail = exception_detail(exc)
             raise
         finally:
             door.opened = bound.door.opened if bound else None
@@ -234,3 +223,11 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                          {"manifest": manifest.path})
 
     return door, analyze, assessor, execute
+
+
+async def publish_round_packet(bundle: Path, gate: Any) -> None:
+    from jasper.active_speaker.round_bank import finish_round  # lazy: packet analysis
+
+    progress = gate.published().get("run") or {}
+    banked, _ = await asyncio.to_thread(finish_round, bundle)
+    gate.publish({**progress, **({"round_dir": str(banked.path)} if banked else {"packet_error": "packet_save_failed"})})

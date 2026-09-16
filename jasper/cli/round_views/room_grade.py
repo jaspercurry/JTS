@@ -11,20 +11,15 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.active_speaker.crossover_v2.room_grade import (
-    bundle_graph_scopes,
-    grade_room_median,
-    read_room_median,
-)
 from jasper.active_speaker.crossover_v2.room_prescription import (
     RoomPrescriptionRefused,
 )
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
-from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs
-from jasper.cli._refusal import EXIT_UNREADABLE, StageFailed, read_json_source, stage
+from jasper.active_speaker.round_view_builders import room_grade_payload
+from jasper.cli._refusal import EXIT_UNREADABLE, StageFailed, stage
 
 from ._common import (
-    ARTIFACT_BY_VIEW,
+    ARTIFACT_BY_VIEW, RoundSetRefused,
     _ROUND_DIR_HELP,
     _ROUND_DIR_METAVAR,
     _ROUND_TOOL_ERRORS,
@@ -32,21 +27,8 @@ from ._common import (
     add_set_argument, answer,
     default_out,
     refused_by_name,
-    resolve_set, round_inputs,
+    round_inputs,
 )
-from .room import write_room
-
-
-def _document(
-    inputs: RoundInputs, directory: Path, set_id: str | None, calibration_root: Path | None,
-) -> tuple[dict, Path]:
-    if calibration_root is not None:
-        return write_room(inputs, directory, set_id, calibration_root=calibration_root)
-    path = default_out(inputs, directory, ARTIFACT_BY_VIEW["room"].artifact, set_id)
-    document = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_json_source, str(path))
-    if not isinstance(document, dict) or not isinstance(document.get("incumbent") or {}, dict):
-        raise StageFailed(EXIT_UNREADABLE, TypeError("room_document_malformed"))
-    return document, path
 
 
 def _band_line(band: Mapping[str, Any]) -> str:
@@ -65,39 +47,19 @@ def _band_line(band: Mapping[str, Any]) -> str:
 def _cmd_room_grade(args: argparse.Namespace) -> int:
     directory = Path(args.round_dir)
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, directory)
-    selected = resolve_set(inputs, args.set)
     try:
-        candidate, candidate_path = _document(inputs, directory, args.set, args.calibration_root)
-        incumbent_id = args.incumbent or (candidate.get("incumbent") or {}).get("set_id")
-        if incumbent_id == selected.set_id:
-            incumbent_id = None  # the incumbent's own measurement grades against nothing
-        incumbent_doc = None
-        if incumbent_id is not None:
-            resolve_set(inputs, incumbent_id)
-            incumbent_doc = _document(inputs, directory, incumbent_id, args.calibration_root)[0]
-        median = read_room_median(candidate.get("median", {}))
-        incumbent = None if incumbent_doc is None else read_room_median(incumbent_doc.get("median", {}))
-        grade = grade_room_median(median, incumbent=incumbent)
+        artifact = room_grade_payload(inputs, directory, args.set,
+                         incumbent_id=args.incumbent, calibration_root=args.calibration_root)
+    except RoundSetRefused:
+        raise
     except RoundCapturesRefused as exc:
         return refused_by_name(exc.reason, exc.detail)
     except RoomPrescriptionRefused as exc:
-        # A document that will not read into a median is the INPUT failing, not
-        # this view declining a round it read.
+        # A document that will not read into a median is an input failure.
         return refused_by_name(exc.reason, exc.detail, code=EXIT_UNREADABLE)
-
-    scope = (median.evidence or {}).get("basis", {}).get("graph_scope")
-    artifact = {
-        **grade.to_dict(),
-        "room": str(candidate_path),
-        "set_id": selected.set_id, "incumbent_set_id": incumbent_id,
-        "incumbent_reason": "" if incumbent_id else (
-            candidate.get("incumbent_reason") or "room_incumbent_set_unavailable"),
-        "evidence": median.evidence,
-        "incumbent_evidence": None if incumbent is None else incumbent.evidence,
-        "graph_scopes": ([scope] if scope else []) if median.evidence is not None
-                        else bundle_graph_scopes(inputs.session_dir),
-        "graph_scopes_source": "selected_median" if median.evidence is not None else "round",
-    }
+    except _ROUND_TOOL_ERRORS as exc:
+        raise StageFailed(EXIT_UNREADABLE, exc) from exc
+    incumbent_id = artifact["incumbent_set_id"]
     # A grade survives an artifact write failure.
     for band in artifact["bands"]:
         print(_band_line(band), file=sys.stderr)
@@ -115,18 +77,18 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
         )
     )
     return answer(
-        args.command, out=written, set_id=selected.set_id, incumbent_set_id=incumbent_id,
-        incumbent_reason=artifact["incumbent_reason"], ceiling_hz=grade.ceiling_hz,
-        ceiling_source=grade.ceiling_source, n_positions=grade.n_positions,
+        args.command, out=written, set_id=artifact["set_id"], incumbent_set_id=incumbent_id,
+        incumbent_reason=artifact["incumbent_reason"], ceiling_hz=artifact["ceiling_hz"],
+        ceiling_source=artifact["ceiling_source"], n_positions=artifact["n_positions"],
         spatial_support=artifact["spatial_support"],
         bands=artifact["bands"], regressed_bands=regressed,
         incumbent=artifact["incumbent"], graph_scopes=artifact["graph_scopes"],
         comparison=artifact["comparison"],
-        evidence=median.evidence, incumbent_evidence=artifact["incumbent_evidence"],
+        evidence=artifact["evidence"], incumbent_evidence=artifact["incumbent_evidence"],
         graph_scopes_source=artifact["graph_scopes_source"],
         line=(
-            f"room-grade: {len(grade.bands)} band(s) to "
-            f"{grade.ceiling_hz:g} Hz ({grade.ceiling_source}); regressed: "
+            f"room-grade: {len(artifact['bands'])} band(s) to "
+            f"{artifact['ceiling_hz']:g} Hz ({artifact['ceiling_source']}); regressed: "
             + comparison_result
             + (f" -> {written}" if written else "")
         ),

@@ -251,6 +251,7 @@ def wait_for_round(
     poll_s: float = 5.0,
     now: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    on_progress: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     deadline = now() + timeout_s
     previous: dict[str, Any] | None = None
@@ -260,6 +261,8 @@ def wait_for_round(
         if http != 200:
             return {**result, "status": "lost" if http == 0 else "failed",
                     "reason": result.get("code") or REASON_ANSWER_LOST}
+        if on_progress and result != previous:
+            on_progress(result)
         if result["status"] in SESSION_ENDED_STATUSES:
             return {**result, "status": "terminal"}
         if now() >= deadline:
