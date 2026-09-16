@@ -2296,8 +2296,11 @@ async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
   const initialHtml = harness.elements.get("view-body").innerHTML;
-  if (!initialHtml.includes("swaps with Main speaker · Tweeter")) {
-    fail("two-output selector should allow swapping with the peer channel", { initialHtml });
+  if (/<option[^>]* disabled/.test(initialHtml.match(/<select data-output-channel[^]*?<\/select>/g)?.join("") || "")) {
+    fail("no DAC output option should ever be disabled", { initialHtml });
+  }
+  if (!initialHtml.includes(" — used by Main speaker · Tweeter")) {
+    fail("the used-by hint should still appear for an output taken by another driver", { initialHtml });
   }
 
   harness.dispatchChange({

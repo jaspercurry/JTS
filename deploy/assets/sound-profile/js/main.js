@@ -2033,25 +2033,14 @@ import {
         var disabled = outputTopology.dirty || busy ||
           channel.physical_output_index == null;
         var otherAssigned = outputAssignedToOtherMap(topology, group.id || '', channel.role || '', channel.output_variant);
-        var allowPeerSwap = Array.isArray(group.channels) && group.channels.length === 2;
-        var peerOutputIndexes = {};
-        if (allowPeerSwap) {
-          group.channels.forEach(function(peer) {
-            if (peer === channel || peer.physical_output_index == null) return;
-            peerOutputIndexes[String(peer.physical_output_index)] = true;
-          });
-        }
         var selectOptions = ['<option value="">Choose output</option>'].concat(
           outputs.map(function(output) {
             var value = String(output.index);
             var usedByOther = otherAssigned[value];
-            var usedByPeerSwap = allowPeerSwap && peerOutputIndexes[value];
-            var disableUsed = usedByOther && value !== selected && !usedByPeerSwap;
             return '<option value="' + escapeHtml(value) + '"' +
-              (value === selected ? ' selected' : '') +
-              (disableUsed ? ' disabled' : '') + '>' +
+              (value === selected ? ' selected' : '') + '>' +
               escapeHtml(output.label + (usedByOther && value !== selected ?
-                (usedByPeerSwap ? ' — swaps with ' : ' — used by ') + usedByOther : '')) +
+                ' — used by ' + usedByOther : '')) +
               '</option>';
           })
         ).join('');
