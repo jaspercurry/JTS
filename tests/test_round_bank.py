@@ -38,8 +38,10 @@ from jasper.active_speaker.crossover_v2.harmonic_evidence import _bind_measure_c
 from jasper.active_speaker.crossover_v2.evidence_packet import round_program_dir
 from jasper.attribution.session_identity import read_session_identity
 from jasper.active_speaker.round_packet import INDEX_FILENAME
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_frequency_view import summed_capture_bundle  # noqa: F401
+from jasper.active_speaker import measurement_programs
 from jasper.active_speaker.measurement_programs import bookkeeping_views
 
 from jasper.active_speaker.round_bank import (
@@ -371,12 +373,10 @@ def test_banking_discloses_captures_missing_from_the_ring(tmp_path, fault, reaso
 
 @pytest.mark.parametrize("view,reason", [("unregistered-view", "verb_not_registered"), ("bass-compare", "inputs_required")])
 def test_bookkeeping_unavailable_does_not_fail_the_bank(tmp_path, monkeypatch, view, reason):
-    from jasper.active_speaker import measurement_programs
-    from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
     session, state = _live_session(tmp_path)
     artifacts, _ = round_artifact_dir(session)
     (artifacts / RUN_MANIFEST_FILENAME).write_text(json.dumps({"program": "bass/cloud", "run_id": session.name}))
-    monkeypatch.setattr(measurement_programs, "bookkeeping_views", lambda program: ((view, False, False),))
+    monkeypatch.setattr(measurement_programs, "bookkeeping_views", lambda program, **kwargs: ((view, False, False),))
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, view_runner=run_bookkeeping)
     assert banked.provenance["views"] == [{"view": view, "status": "unavailable", "reason": reason}]
     assert Path(banked.provenance["manifest"]).is_file()

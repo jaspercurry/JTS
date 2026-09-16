@@ -658,6 +658,22 @@ async def test_run_door_requires_a_resolved_ceiling_and_watch(tmp_path, box, cei
     assert not graph.installs
 
 
+@pytest.mark.parametrize("layout,poses", [("baseline/express", 5), ("baseline/full", 13)])
+def test_baseline_pairs_driver_and_room_reads_and_keeps_timing_at_entry(layout, poses):
+    program = run_program("speaker", layout)
+    request = ac.request_for_program(program, repeats=2)
+    captures = plan_run.prepare_plan_captures(request)
+    timing = [capture for capture in captures if capture.spec.graph_scope == "timing"]
+    assert [(capture.stop.angle_deg, capture.repeat) for capture in timing] == [(0, 1), (0, 2)]
+    room = [capture for capture in captures if capture.stop.purpose == "room"]
+    assert len(room) == poses * 2
+    assert {capture.stop.place for capture in room} == {pose.place for pose in program.poses}
+    assert {(capture.spec.program_phase, capture.spec.graph_scope) for capture in room} == {("lateral", "candidate")}
+    assert all(capture.resolved(request).prompt.purpose == "room" for capture in room)
+    assert [capture.stop.place for capture in captures if capture.spec.program_phase == "measure"] == [
+        pose.place for pose in program.poses for _ in range(pose.repeats * 2)]
+
+
 @pytest.mark.parametrize(("regime", "candidate", "purpose", "phases", "scope"), [
     ("per_driver", "base", "speaker", ("check", "entry_baseline", "measure"), "timing"),
     ("summed", "base", "speaker", ("entry_baseline", "lateral"), "timing"),

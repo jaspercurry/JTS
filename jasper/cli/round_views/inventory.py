@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
-from jasper.active_speaker.measurement_programs import bookkeeping_views
+from jasper.active_speaker.measurement_programs import bookkeeping_views, run_purpose
+from jasper.active_speaker.run_manifest import room_sets
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, round_inputs
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
@@ -71,11 +72,11 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
     sets = [resolve_set(inputs, args.set, manifest=manifest)] if args.set else [
         resolve_set(inputs, row["set_id"], manifest=manifest) for row in manifest["sets"]
     ]
-    program = manifest["program"]
+    program = run_purpose(manifest["program"])
     artifact_dir, _ = round_artifact_dir(inputs.session_dir)
     artifacts: list[dict[str, Any]] = []
     order = dict.fromkeys((
-        *(name for name, _, _ in bookkeeping_views(program)),
+        *(name for name, _, _ in bookkeeping_views(program, has_room=bool(room_sets(manifest)))),
         *(name for name, spec in ARTIFACT_BY_VIEW.items()
           if not spec.purposes or program in spec.purposes),
     ))

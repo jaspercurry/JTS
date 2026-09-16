@@ -11,13 +11,14 @@ from jasper.active_speaker import bundles
 from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds
 
 
+@pytest.mark.parametrize("has_room", [False, True])
 @pytest.mark.parametrize("programs,limit,hits,applied_at", [
     (("speaker", "room", "bass"), 32, {"speaker": 36, "room": 37, "bass": 35}, None),
     (("speaker",), 32, {"speaker": 37}, None),
     (("speaker", "room", "bass"), 2, {}, None),
     (("speaker",), 32, {"speaker": 39}, "1970-01-01T00:00:37Z"),
 ])
-def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp_path, programs, limit, hits, applied_at):
+def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp_path, programs, limit, hits, applied_at, has_room):
     identity = {"candidate": "saved-speaker", "record": "abcdef012345", "applied_at": applied_at}
     alignment = {"saved": {"delay_us": 22}, "verification": {"residual_rms_db": .4, "repeat_noise_db": .2}}
     next_action = {"id": "continue"}
@@ -32,6 +33,7 @@ def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp
         (directory / "packet.json").write_text(json.dumps({
             "applied": banked_identity, "program": f"{programs[index % len(programs)]}/full", "result": "partial",
             "alignment_verdict": alignment, "next_action": next_action,
+            "room": [{"median": {"n_positions": 3}}] if has_room else [],
         }))
         if applied_at is not None:
             os.utime(directory, (index, index))
@@ -46,6 +48,7 @@ def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp
     monkeypatch.setattr(Path, "open", counted_open)
     session_dir = root / "39" / "bundle" / "39" if limit == 2 else None
     found = latest_banked_rounds(identity, session_dir=session_dir, limit=limit)
+    hits = {**hits, **({"room": max(hits.values())} if has_room and hits else {})}
     assert found == {name: {"round_dir": str(root / f"{index:02}"),
                             "started_at": (root / f"{index:02}").stat().st_mtime,
                             **({"alignment_verdict": alignment, "next_action": next_action}

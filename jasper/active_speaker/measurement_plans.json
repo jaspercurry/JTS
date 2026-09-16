@@ -70,8 +70,8 @@
   },
   "programs": [
     {"id": "speaker", "size": "mark", "layout": "speaker_mark", "purpose": "speaker", "regime": "per_driver"},
-    {"id": "baseline", "size": "full", "layout": "baseline_full", "purpose": "speaker", "regime": "per_driver"},
-    {"id": "baseline", "size": "express", "layout": "baseline_express", "purpose": "speaker", "regime": "per_driver"},
+    {"id": "baseline", "size": "full", "layout": "baseline_full", "purpose": "speaker", "regime": "per_driver", "room_sweep": true},
+    {"id": "baseline", "size": "express", "layout": "baseline_express", "purpose": "speaker", "regime": "per_driver", "room_sweep": true},
     {"id": "tournament", "size": "full", "layout": "tournament_full", "purpose": "speaker", "regime": "per_driver"},
     {"id": "tournament", "size": "express", "layout": "tournament_express", "purpose": "speaker", "regime": "per_driver"},
     {"id": "branches", "size": "express", "layout": "tournament_express", "purpose": "speaker", "regime": "branches"},

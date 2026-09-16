@@ -27,7 +27,7 @@ from jasper.audio_measurement.measurement_geometry import (
     boundary_prior, load_declared_geometry,
 )
 from jasper.audio_measurement.room_limits import cloud_trusted_floor_hz, spatial_support
-from jasper.active_speaker.run_manifest import view_sets
+from jasper.active_speaker.run_manifest import room_sets, view_sets
 
 from .evidence_packet import applied_profile_source
 from .prescription_contract import room_analysis_bounds
@@ -299,7 +299,7 @@ def incumbent_room(
     snapshot = profile.get("recomposition_snapshot") or {}
     correction = snapshot.get("room_correction", profile.get("room_correction")) or {}
     basis = correction.get("basis") or {}
-    matches = [row["set_id"] for row in view_sets(manifest) if row.get("base")]
+    matches = [row["set_id"] for row in (room_sets(manifest) or view_sets(manifest)) if row.get("base")]
     if len(matches) != 1:
         return None, "room_incumbent_set_ambiguous" if matches else "room_incumbent_set_unavailable"
     return {

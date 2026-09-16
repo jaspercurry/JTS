@@ -837,13 +837,16 @@ def test_a_program_becomes_its_own_walk_in_table_order(
     assert len({(s.angle_deg, s.elevation_deg) for s in request.stops}) == (
         program.mic_move_count
     )
-    assert all(stop.regime == ac.REGIME_PER_DRIVER for stop in request.stops)
+    assert [stop.regime for stop in request.stops] == [
+        regime for pose in program.poses
+        for regime in ([ac.REGIME_PER_DRIVER] * pose.repeats + ([ac.REGIME_SUMMED] if program.room_sweep else []))
+    ]
     # Table order, with each pose's repeats ADJACENT: the microphone moves once
     # per distinct pose, so a repeat that drifted apart would be a second trip.
     assert [(s.angle_deg, s.elevation_deg) for s in request.stops] == [
         (pose.azimuth_deg, pose.elevation_deg)
         for pose in program.poses
-        for _ in range(pose.repeats)
+        for _ in range(pose.repeats + program.room_sweep)
     ]
     assert request.program == (
         "spot" if program.program_id == "spot"
@@ -888,9 +891,11 @@ def test_candidates_expand_pose_major_candidate_minor(
     request = ac.request_for_program(program, candidates=candidates)
     cycle = candidates or ("base",)
 
-    assert len(request.stops) == program.capture_count * len(cycle)
+    assert {stop.purpose for stop in request.stops} == {program.purpose}
+    captures = sum(pose.repeats for pose in program.poses)
+    assert len(request.stops) == captures * len(cycle)
     # Candidate-minor: the cycle repeats intact under every capture.
-    assert [s["candidate_id"] for s in request.to_dict()["stops"]] == list(cycle) * program.capture_count
+    assert [s["candidate_id"] for s in request.to_dict()["stops"]] == list(cycle) * captures
     # Pose-major: one contiguous run per table row, so nothing walks twice.
     assert len(request.stops) > 0
     runs = [
@@ -1149,7 +1154,7 @@ _GOLDEN_BASELINE_EXPRESS = (
     ("candidates", "regime", "phase", "price"),
     [
         ((), ac.REGIME_PER_DRIVER, PHASE_MEASURE,
-         {"mic_moves": 5, "captures": 8, "ceiling_min": 46,
+         {"mic_moves": 5, "captures": 13, "ceiling_min": 56,
           "stimulus_s": None}),
         (("base", "fpA"), ac.REGIME_SUMMED, PHASE_CLOUD_VERIFY,
          {"mic_moves": 5, "captures": 16, "ceiling_min": 60,
@@ -1170,7 +1175,7 @@ def test_the_shipped_programs_resolve_exactly_as_before(
     request = ac.request_for_program(
         mp.program("baseline", "express"), candidates=candidates,
     )
-    stops = ac.resolve_request(request)
+    stops = tuple(stop for stop in ac.resolve_request(request) if candidates or stop.regime == ac.REGIME_PER_DRIVER)
     geometries = [flow.position_geometry(stop.prompt) for stop in stops]
 
     assert [
