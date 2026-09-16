@@ -230,6 +230,16 @@ def test_rung_requires_margin_facts(missing):
     assert issue.evidence["unavailable"] == missing
 
 
+@pytest.mark.parametrize("missing", ["max_window_db_spl", "loudest_half_second_db_spl", "ceiling_db_spl"])
+def test_later_rung_requires_its_previous_capture_spl(missing):
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="bass"),), level=LevelPolicy(level_db=-14.46))
+    spl = {"max_window_db_spl": 80.53, "loudest_half_second_db_spl": 76.04, "ceiling_db_spl": 85}
+    spl.pop(missing)
+    report = preflight(plan, ready_facts(plan), previous_rung=[{"level_db": -21.46, "spl": spl}])
+    assert report.blocking
+    assert [issue.code for issue in report.issues] == ["walk_level_policy_invalid"]
+
+
 @pytest.mark.parametrize("descriptor", [None, {}, BASS_EXTENSION])
 def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tuning_profile, descriptor):
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="bass"),))

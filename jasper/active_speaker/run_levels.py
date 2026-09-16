@@ -6,17 +6,20 @@
 from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager, nullcontext
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from itertools import groupby
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Sequence, cast
 
 from jasper.audio_measurement.program import RoleBand
+from jasper.audio_measurement.program_analysis import ProgramAnalysis
+from jasper.json_fields import finite_float
 
 from .angle_capture import AngleCaptureRequest, LateralWalkRefused, resolve_request
 from .crossover_v2.capture_plan import position_screen_keys
 from .crossover_v2.door import IsolationHold
 from .crossover_v2.journey import PHASE_ENTRY_BASELINE
+from .crossover_v2.measurement_context import capture_basis
 from .crossover_v2.position_gate import PositionGate
 from .plan_run import Analyze, PlanCapture, RunDoor, RunSignals, _Control, _grant, prepare_plan_captures, run_plan
 from .preflight import PreflightFacts, PreflightIssue, PreflightReport, preflight
@@ -28,6 +31,8 @@ LEVEL_OFFSETS_DB = (0.0, -5.0, -10.0, -15.0)
 @dataclass(frozen=True)
 class LevelLadder:
     levels: tuple[PreflightReport, ...]
+    facts: PreflightFacts
+    admissions: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def plan(self) -> AngleCaptureRequest:
@@ -62,6 +67,11 @@ class LevelLadder:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "anchor_stimulus": self.facts.anchor.record.get("stimulus"),
+            "requested_stimulus": {"program": self.plan.program, "template": self.plan.template.to_dict(),
+                                   "stops": [{"regime": stop.regime, "stimulus": stop.stimulus}
+                                             for stop in self.plan.stops]},
+            "admissions": self.admissions,
             "issues": [asdict(issue) for issue in self.issues],
             "levels": [{"offset_db": report.plan.level.offset_db if report.plan.level.resolved else None,
                         "level_db": report.plan.level.volume_db,
@@ -76,11 +86,16 @@ def level_ladder(plan: AngleCaptureRequest, facts: PreflightFacts) -> LevelLadde
     plan = replace(plan, levels=None)
     anchor_report = preflight(replace(plan, level=replace(plan.level, level_db=None)), facts)
     anchor = anchor_report.plan.level.resolved
-    return LevelLadder((anchor_report, *(
-        preflight(replace(plan, level=replace(plan.level,
-                  level_db=anchor.reference_volume_db + offset if anchor else None)), facts)
-        for offset in LEVEL_OFFSETS_DB[1:]
-    )))
+    return _ladder(tuple(replace(plan, level=replace(plan.level,
+                        level_db=anchor.reference_volume_db + offset if anchor else None))
+                         for offset in sorted(LEVEL_OFFSETS_DB)), facts)
+
+
+def _ladder(plans: Sequence[AngleCaptureRequest], facts: PreflightFacts) -> LevelLadder:
+    reports: list[PreflightReport] = []
+    for plan in plans:
+        reports.append(preflight(plan, facts, defer_rung=any(not report.blocking for report in reports)))
+    return LevelLadder(tuple(reports), facts)
 
 
 def _comma_floats(text: str) -> tuple[float, ...]:
@@ -106,8 +121,8 @@ def preflight_levels(plan: AngleCaptureRequest, facts: PreflightFacts,
         plan = replace(plan, levels=_comma_floats(levels))
     if plan.levels is None:
         return preflight(plan, facts)
-    return LevelLadder(tuple(preflight(replace(plan, levels=None, level=replace(plan.level, level_db=value)), facts)
-                             for value in plan.levels))
+    return _ladder(tuple(replace(plan, levels=None, level=replace(plan.level, level_db=value))
+                         for value in plan.levels), facts)
 
 
 def prepare_level_captures(plan: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> tuple[PlanCapture, ...]:
@@ -147,22 +162,52 @@ async def run_levels(
                     await _grant(gate, pose_index, pose_index, entry, signals)
                 except _Control:
                     return tuple(results)
+                previous: list[dict[str, Any]] | None = None
                 for level_index, report in enumerate(admitted):
                     request = replace(report.plan, stops=stops)
+                    report = preflight(request, ladder.facts, previous_rung=previous)
+                    if report.blocking:
+                        issue = next(issue for issue in report.issues if issue.blocking)
+                        raise LateralWalkRefused(issue.code, issue.detail)
+                    request = report.plan
+                    observations: list[dict[str, Any]] = []
+                    admission = {"pose_index": pose_index, "level_index": level_index + 1,
+                                 "requested_db_spl": request.level.predicted_db_spl,
+                                 "admitted_db_spl": request.level.predicted_db_spl,
+                                 "level_db": request.level.volume_db, **report.rung_admission,
+                                 "observations": observations}
+                    ladder.admissions.append(admission)
                     gate.publish({"status": "running", "pose": pose_index,
                                   "level": {"session": request.level.resolved.session() if request.level.resolved else None,
                                             "run": {"level_db": request.level.volume_db}},
                                   "level_index": level_index + 1, "levels": len(admitted)})
                     bound = prepare(request)
+                    def analyze(record: Mapping[str, Any], record_id: str) -> ProgramAnalysis:
+                        basis = capture_basis(record)
+                        spl = (record.get("capture_integrity") or {}).get("spl") or {}
+                        measured = finite_float(spl.get("loudest_half_second_db_spl"))
+                        predicted = request.level.predicted_db_spl
+                        anchor_stimulus = ladder.facts.anchor.record.get("stimulus") or {}
+                        observations.append({"record_id": record_id, "level_db": basis["level_db"], "spl": spl,
+                            "run_stimulus": {"program_id": basis["program_id"],
+                                             "wav_sha256": basis["stimulus_wav_sha256"],
+                                             "peak_dbfs": basis["stimulus_peak_dbfs"]},
+                            "stimulus_mismatch": (anchor_stimulus["program_id"] != basis["program_id"]
+                                if anchor_stimulus.get("program_id") and basis["program_id"] else None),
+                            "measured_offset_db": measured - predicted
+                                if measured is not None and predicted is not None else None})
+                        return bound.analyze(record, record_id)
+
                     bound.door.hold = nullcontext(held)
                     if level_index == 0:
                         bound.manifest.mic_moves = 1
                     result = await run_plan(
                         request, manifest=bound.manifest, door=bound.door,
-                        analyze=bound.analyze, assessor=bound.assessor, captures=bound.captures,
+                        analyze=analyze, assessor=bound.assessor, captures=bound.captures,
                         aborts=aborts, signals=signals,
                     )
                     results.append(result)
+                    previous = observations
                     if result.cancelled or result.stopped_at or any(take.get("next") == "stop" for take in result.takes):
                         signals.request_stop(result.reason or "take_stopped")
                     if signals.complete.is_set() or signals.stop.is_set():

@@ -13,7 +13,7 @@ import os
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.audio_measurement.ramp import CEILING_MARGIN_DB, MAX_STEP_DB
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db, loudness_boost_db
@@ -64,6 +64,31 @@ def rung_lift_bound_db(candidate: Mapping[str, Any], applied: Mapping[str, Any],
         return dynamic_bass_gain_reserve_db(replace(descriptor, low_boost_db=boost)) if boost > 0 else 0.0
 
     return max(0.0, reserve(candidate) - reserve(applied))
+
+
+def measured_rung_admission(
+    fader_db: float, observations: Sequence[Mapping[str, Any]], *, ceiling_db_spl: float, tolerance_db: float,
+) -> dict[str, Any]:
+    bounds = []
+    for observation in observations:
+        spl = observation.get("spl") or {}
+        values = [finite_float(value) for value in (observation.get("level_db"), spl.get("max_window_db_spl"),
+                  spl.get("loudest_half_second_db_spl"), spl.get("ceiling_db_spl"))]
+        if any(value is None for value in values):
+            raise SeatLevelTargetError("The previous rung needs measured SPL windows and its fader")
+        previous, window, half_second, stop = (float(value) for value in values if value is not None)
+        bound = min(ceiling_db_spl, stop) - tolerance_db
+        bounds.append((previous + (bound - window), previous, window, half_second, bound))
+    if not bounds:
+        raise SeatLevelTargetError("The previous rung has no measured SPL windows")
+    cap, previous, window, half_second, bound = min(bounds)
+    admitted = min(fader_db, cap)
+    return {"requested_level_db": fader_db, "level_db": admitted,
+            "previous_level_db": previous, "max_window_db_spl": window,
+            "loudest_half_second_db_spl": half_second, "window_crest_db": window - half_second,
+            "predicted_max_window_db_spl": window + (admitted - previous),
+            "bound_db_spl": bound, "anchor_tolerance_db": tolerance_db,
+            "bound_by": "measured_window_crest" if admitted < fader_db else None}
 
 
 @dataclass(frozen=True)

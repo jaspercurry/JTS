@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.program_analysis.check import _ambient_rows_in_band, _snr_floor_ok
 from jasper.audio_measurement.quality_model import DRIVER
@@ -28,7 +28,7 @@ from .measured_crossover_candidate import (
 from .measurement_programs import PURPOSE_BASS, pilot_floor_blocking
 from .seat_level_reference import (
     AnchorFacts, LevelUnresolved, SeatLevelTargetError, check_target_capture_dbfs, resolve_anchor_level,
-    rung_lift_bound_db, validate_commissioning_spl,
+    measured_rung_admission, rung_lift_bound_db, validate_commissioning_spl,
 )
 
 # Rechecked at participation; a dry run reserves none of these resources.
@@ -86,6 +86,7 @@ class PreflightReport:
     schedule: tuple[ScheduledCapture, ...]
     price: Mapping[str, int | float | None]
     spl_ceiling_db_spl: float | None
+    rung_admission: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def blocking(self) -> bool:
@@ -105,11 +106,14 @@ class PreflightReport:
                       "predicted_db_spl": self.plan.level.predicted_db_spl,
                       **{key: value for key, value in self.plan.level.to_dict().items() if key != "mode"}},
             "live_admission": list(LIVE_ADMISSION),
+            "rung_admission": dict(self.rung_admission),
         }
 
 
-def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightReport:
+def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: bool = False,
+              previous_rung: Sequence[Mapping[str, Any]] | None = None) -> PreflightReport:
     issues = list(facts.issues)
+    admission: dict[str, Any] = {"basis": "pending_measurement" if defer_rung else "anchor"}
 
     def add(code: str, detail: str, *, blocking: bool = True) -> None:
         issues.append(PreflightIssue.from_code(code, detail, blocking=blocking))
@@ -178,7 +182,17 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
                     issues.append(replace(PreflightIssue.from_code(WALK_LEVEL_POLICY_INVALID,
                                           f"Cannot derive the rung margin: {unavailable}"),
                                           evidence={"unavailable": unavailable, "level_db": fader}))
-                elif facts.applied_bass_extension is not None and tolerance is not None:
+                elif previous_rung is not None and tolerance is not None:
+                    try:
+                        admission = {"basis": "measured_window", **measured_rung_admission(
+                            fader, previous_rung, ceiling_db_spl=stop, tolerance_db=tolerance)}
+                        plan = replace(plan, level=replace(level, level_db=admission["level_db"]))
+                        predicted = anchor.db_spl_at(admission["level_db"])
+                        admission.update(requested_db_spl=anchor.db_spl_at(fader), admitted_db_spl=predicted)
+                        fader = admission["level_db"]
+                    except SeatLevelTargetError as exc:
+                        add(WALK_LEVEL_POLICY_INVALID, str(exc))
+                elif not defer_rung and facts.applied_bass_extension is not None and tolerance is not None:
                     for name, descriptor in bass_extensions.items():
                         try:
                             lift = rung_lift_bound_db(descriptor, facts.applied_bass_extension, fader)
@@ -228,4 +242,4 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
         )
     ) if valid_shape else ()
     price = walk_price(plan) if valid_shape else {}
-    return PreflightReport(plan, tuple(issues), schedule, price, ceiling)
+    return PreflightReport(plan, tuple(issues), schedule, price, ceiling, admission)
