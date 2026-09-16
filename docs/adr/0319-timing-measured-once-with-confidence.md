@@ -53,3 +53,5 @@ The LLM leaves alignment out of documents unless the user asks for a new read
 or an explicit value. Geometry changes can justify a reset; other changes do
 not trigger one. Fixed thresholds and flat-sum fallback were rejected because
 they hide the read's own uncertainty.
+
+Timing verification also requires residual RMS above a 0.5 dB floor, the fallback chosen because the repo predictor yields only 0.0104 dB RMS for a 10 µs error on an ideal 2.5 kHz LR4 sum and no room-independent floor can be derived from that ideal model.

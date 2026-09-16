@@ -7718,5 +7718,6 @@ def test_saved_timing_is_held_until_the_record_is_removed(monkeypatch, saved, po
     if saved and pose == (0, 0):
         assert candidate.timing_verification["residual_rms_db"] > 0
         assert (candidate.timing_verification["repeat_noise_db"] > 0) == (summed_repeats > 1)
+        assert candidate.timing_verification["residual_floor_db"] == .5
     else:
         assert candidate.timing_verification is None
