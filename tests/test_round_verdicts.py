@@ -99,9 +99,12 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap):
     manifest = {"sets": groups}
     sources = live_round["sources"]
     sources["applied_profile"]["recomposition_snapshot"]["preset"]["crossover_regions"][0]["fc_hz"] = 2400
-    stats = series_stats({"freqs_hz": [100, 1000, 10000], "deviation_db": [-2, 0, 2],
-                          "rms_db": (8 / 3) ** 0.5,
-                          "band_means": [{"band_hz": [80, 120], "mean_db": -2}]}, 500)
+    plot = {"freqs_hz": [100, 1000, 10000], "deviation_db": [-2, 0, 2],
+            "rms_db": (8 / 3) ** 0.5,
+            "band_means": [{"band_hz": [80, 120], "mean_db": -2}]}
+    stats = series_stats({"freqs_hz": plot["freqs_hz"], "display": {
+        "deviation_db": plot["deviation_db"],
+    }}, plot, 500)
     identity = {"set_id": "woofer", "take_id": "woofer", "role": "woofer", "pose": pose}
     packet = {
         "round_id": "fixture",

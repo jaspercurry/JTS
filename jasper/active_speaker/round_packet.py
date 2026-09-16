@@ -126,7 +126,7 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
                     continue
                 fit = proposal["fit"]
                 fits.append({"set_id": group["set_id"], "take_id": take_id, "pose": take["pose"], "role": role,
-                             **{key: proposal.get(key) for key in ("boost_evidence", "per_filter_boost_cap_db", "composed_boost_cap_db")},
+                             **{key: proposal.get(key) for key in ("boost_evidence", "per_filter_boost_cap_db", "composed_boost_cap_db", "handover_level_shift_db")},
                              **{key: fit.get(key) for key in ("mic_tier", "budget", "filters", "residual_rms_db",
                                                             "residual_max_db", "reason_summary", "position_spread_db", "class_prior_hz")}})
     return fits

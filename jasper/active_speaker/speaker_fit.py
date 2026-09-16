@@ -23,7 +23,7 @@ from jasper.active_speaker.crossover_v2.round_views import response_from_banked_
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve, ladder_smooth
 from jasper.active_speaker.linearization_budget import fit_budgets_by_role, normalise_fit_budget
-from jasper.active_speaker.linearization_fit import FitVocabulary, linearization_filters_by_role
+from jasper.active_speaker.linearization_fit import FitVocabulary, complex_correction_response, linearization_filters_by_role
 from jasper.active_speaker.measured_crossover_candidate import room_peqs_from_correction
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, REGIME_SUMMED
 from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
@@ -34,6 +34,7 @@ from jasper.audio_measurement.spatial_combine import _band_spread, octave_bands_
 from jasper.output_topology import OutputTopology
 
 from .crossover_v2.round_inputs import resolve_set
+from .flat_spec import _power_mean_db
 
 
 class SpeakerFitUnreadable(RoundViewsError):
@@ -203,6 +204,8 @@ def speaker_fit(
     clouds = {group["capture_basis"].get("role") or "": clouds_by_set[group["set_id"]]
               for group in manifest["sets"] if group["set_id"] in clouds_by_set
               and any(t["selected"] and t["take_id"] == take_id for t in group["takes"])}
+    sections = sections_by_role(CrossoverRegion.from_mapping(region)
+                                for region in candidate["source_preset"].get("crossover_regions") or ())
     vocabularies = _fit_vocabularies(candidate, {role: {**budgets.get(role, {}), **overrides} for role in bands})
     curves = {curve["role"]: curve for curve in curves_for_take(record, manifest)}
     drivers = []
@@ -212,10 +215,18 @@ def speaker_fit(
             raise RoundViewsError(f"fit inputs are not banked for {role}")
         drivers.append(DriverEvidence(role, response[0], band, classes.get(role, "unknown")))
     branches = fit_branches(
-        drivers, source_preset=candidate["source_preset"], mic_tiers={driver.role: tier for driver in drivers},
+        drivers, sections=sections, mic_tiers={driver.role: tier for driver in drivers},
         vocabulary=vocabularies,
         cloud={role: clouds[role] for role in bands if role in clouds},
     )
+    handover_shifts = {}
+    for role, fit in branches.fits.items():
+        grid = np.unique(np.concatenate([
+            np.geomspace(section.fc_hz / 2, section.fc_hz * 2, 49)
+            for section in sections.get(role, ())
+        ])) if sections.get(role) else np.array([])
+        correction_db = 20 * np.log10(np.maximum(np.abs(complex_correction_response(fit.filters, grid)), 1e-12))
+        handover_shifts[role] = _power_mean_db(correction_db) if grid.size else None
     linearization = {driver.role: {
         "boost_evidence": {"design_poses": clouds[driver.role].n_positions,
                   "band_spread": [asdict(band) for band in clouds[driver.role].band_spread]}
@@ -224,6 +235,7 @@ def speaker_fit(
         "composed_boost_cap_db": vocabularies[driver.role].composed_boost_cap_db,
         "excited_band_hz": list(driver.excited_band_hz),
         "envelope": _envelope_answer(branches.envelopes[driver.role]),
+        "handover_level_shift_db": handover_shifts[driver.role],
         "fit": branches.fits[driver.role].to_dict(),
     } for driver in drivers}
     selected_fit = linearization.get(selected.capture_basis.get("role") or drivers[0].role, linearization[drivers[0].role])
