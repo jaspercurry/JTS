@@ -7,16 +7,20 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, fields
 from typing import Any
 
+from jasper.camilla_config_contract import SHELF_Q, FilterSpec
 from jasper.json_fields import finite_float
+from jasper.sound.profile import _filter_response_complex, _freq_trig
 
 
 # CamillaDSP v4.1.3 Loudness parameter range; not a driver capability estimate.
 # https://github.com/HEnquist/camilladsp/blob/v4.1.3/README.md#loudness
 NATIVE_LOUDNESS_BOOST_MAX_DB = 20.0
+# CamillaDSP's native Loudness low-shelf corner used by the proof model.
+NATIVE_LOUDNESS_CORNER_HZ = 70.0
 LOUDNESS_TAPER_DB = 20.0
 REFERENCE_LEVEL_DB_MIN = -100.0
 REFERENCE_LEVEL_DB_MAX = 0.0
@@ -126,6 +130,21 @@ def loudness_boost_db(canonical_volume_db: float, descriptor: DynamicBassDescrip
     level = _finite(canonical_volume_db, "canonical_volume_db")
     fraction = max(0.0, min(1.0, (descriptor.reference_level_db - level) / LOUDNESS_TAPER_DB))
     return descriptor.low_boost_db * fraction
+
+
+def expected_boost_db(
+    descriptor: DynamicBassDescriptor, fader_db: float, freqs_hz: Iterable[float],
+) -> list[float]:
+    """Model CamillaDSP's uncompressed slope-12 shelf with a delta high-pass."""
+    frequencies = list(freqs_hz)
+    trig = _freq_trig(frequencies)
+    shelf = _filter_response_complex(
+        FilterSpec("native_low", "Lowshelf", NATIVE_LOUDNESS_CORNER_HZ, loudness_boost_db(fader_db, descriptor)), frequencies, trig,
+    )
+    highpass = _filter_response_complex(
+        FilterSpec("delta_highpass", "Highpass", descriptor.delta_highpass_hz, 0.0, SHELF_Q), frequencies, trig,
+    ) if descriptor.delta_highpass_hz is not None else [1.0] * len(frequencies)
+    return [20.0 * math.log10(abs(1.0 + (low - 1.0) * hp)) for low, hp in zip(shelf, highpass)]
 
 
 def dynamic_bass_gain_reserve_db(descriptor: DynamicBassDescriptor) -> float:

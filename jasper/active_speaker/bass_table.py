@@ -73,7 +73,7 @@ def fit_bass_table(
         aligned = fit_bass_shape(group, candidate_id=candidate_id, reference_band_hz=reference_band_hz)
         ladder.append(aligned["groups"])
         levels.append({"level_key": dict(zip(LEVEL_FIELDS, key)),
-                       **bass_level_evidence(aligned, descriptor=descriptor, prescribed_boost_db=prescribed)})
+                       **bass_level_evidence(aligned, descriptor=settings, prescribed_boost_db=prescribed)})
     bass_ladder_evidence(levels, ladder)
     return {"schema": "jts_bass_table/1", "candidate_id": candidate_id,
             "reference_band_hz": list(reference_band_hz), "smoothing_fraction": 3,
@@ -81,7 +81,7 @@ def fit_bass_table(
             "stimulus_dbfs": first["stimulus_dbfs"], "capture_context": contexts, "levels": levels,
             "limits": ["This table reads the recorded stimulus and bass-reference settings; it is not a runtime schedule.",
                        "No extrapolation beyond measured boost or resolved window gains. Harmonics describe measured headroom, not a hardware limit.",
-                       "Compression is prescribed minus realized boost, including both compressor and driver action.",
+                       "Compression is prescribed minus realized boost.",
                        "The single-repeat harmonic evidence floor is 1 dB, not a hearing threshold; repeats combine base and candidate band standard deviations in quadrature at each pose. Decreases are not rises.",
                        "Curves use medians within each pose, then across poses. SPL uses the same pose weighting on each take's calibrated loudest half-second statistic.",
                        "Repeat spread is the RMS of fundamental standard deviations within repeated poses and both arms. Position spread is not yet estimated.",

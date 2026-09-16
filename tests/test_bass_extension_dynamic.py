@@ -3,11 +3,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from jasper.camilla_config_contract import FilterSpec
+from jasper.camilla_config_contract import SHELF_Q, FilterSpec
 from jasper.sound.profile import _filter_response_complex
 
 from jasper.bass_extension.dynamic import (
     DynamicBassDescriptor,
+    NATIVE_LOUDNESS_CORNER_HZ,
+    expected_boost_db,
     loudness_boost_db,
     dynamic_bass_gain_reserve_db,
     validate_dynamic_bass_descriptor,
@@ -45,11 +47,27 @@ def test_gain_reserve_covers_native_shelf_delta_phase(boost_db: float) -> None:
     descriptor = _descriptor(low_boost_db=boost_db)
     frequencies = np.geomspace(0.01, 23000.0, 4096)
     shelf = np.asarray(_filter_response_complex(
-        FilterSpec("native_low", "Lowshelf", 70.0, boost_db), frequencies,
+        FilterSpec("native_low", "Lowshelf", NATIVE_LOUDNESS_CORNER_HZ, boost_db), frequencies,
     ))
     gain_envelope = 1.0 + np.abs(shelf - 1.0)
 
     assert np.max(gain_envelope) <= 10.0 ** (dynamic_bass_gain_reserve_db(descriptor) / 20.0)
+
+
+@pytest.mark.parametrize("boost_db", [0.1, 6.0, 12.0, 20.0])
+@pytest.mark.parametrize("fader_db", [-30.0, -16.5, -6.0, 0.0])
+@pytest.mark.parametrize("highpass_hz", [None, 25.0])
+def test_expected_boost_matches_native_shelf_delta_proof(boost_db, fader_db, highpass_hz):
+    descriptor = _descriptor(low_boost_db=boost_db, delta_highpass_hz=highpass_hz)
+    frequencies = np.geomspace(0.01, 23000.0, 4096)
+    shelf = np.asarray(_filter_response_complex(
+        FilterSpec("native_low", "Lowshelf", NATIVE_LOUDNESS_CORNER_HZ, loudness_boost_db(fader_db, descriptor)), frequencies,
+    ))
+    highpass = np.asarray(_filter_response_complex(
+        FilterSpec("delta_highpass", "Highpass", highpass_hz, 0.0, SHELF_Q), frequencies,
+    )) if highpass_hz is not None else 1.0
+    proof = 20 * np.log10(np.abs(1 + (shelf - 1) * highpass))
+    assert expected_boost_db(descriptor, fader_db, iter(frequencies)) == pytest.approx(proof, abs=1e-9)
 
 
 @pytest.mark.parametrize(
