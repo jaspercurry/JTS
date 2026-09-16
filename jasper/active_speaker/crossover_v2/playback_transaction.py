@@ -87,6 +87,7 @@ class PlaybackOutcome:
     incident: str = ""
     wav_path: str = ""
     playback: PlaybackObservation = field(default_factory=PlaybackObservation)
+    detail: str = ""
 
     def __post_init__(self) -> None:
         if self.stage_reached not in _STAGE_RANK:

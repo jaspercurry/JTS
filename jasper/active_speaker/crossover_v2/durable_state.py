@@ -886,6 +886,7 @@ def build_conductor_state(
     failure_code: str | None,
     evidence: Mapping[str, Any] | None = None,
     failure_refusals: Sequence[str] = (),
+    failure_detail: str = "",
 ) -> ConductorState:
     """The whole document one persist writes, over the one it is replacing.
 
@@ -1090,6 +1091,7 @@ def build_conductor_state(
         "failure": (
             {
                 "code": failure_code,
+                **({"detail": failure_detail} if failure_detail else {}),
                 # WHEN this failure happened (#1942), so the envelope can tell
                 # a live failure from one a previous day's session left behind.
                 # The file-level ``updated_at`` cannot answer it — that is

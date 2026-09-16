@@ -33,7 +33,7 @@ from jasper.active_speaker.crossover_v2.wired_stimulus import (
 )
 from jasper.log_event import log_event
 from jasper.active_speaker import plan_run
-from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_REGISTRY
+from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_REGISTRY, exception_detail
 from jasper.web._common import refusal_envelope
 
 logger = logging.getLogger(__name__)
@@ -127,7 +127,7 @@ def build_v2_wired_run_and_consume(
 
         def publish_failure(exc: BaseException) -> str:
             envelope = refusal_envelope(exc)
-            code = envelope["code"] or "internal_error"
+            code = envelope["code"] if envelope["code"] in REASON_REGISTRY else "internal_error"
             if isinstance(exc, (asyncio.CancelledError, CaptureStopped)):
                 code = signals.stop_reason
             envelope = refusal_envelope(code=code)
@@ -137,6 +137,7 @@ def build_v2_wired_run_and_consume(
                                        "next_action": envelope["next_action"]})
             return str(code)
 
+        result = None
         try:
             try:
                 result = await (execute or plan_run.run_plan)(
@@ -152,10 +153,12 @@ def build_v2_wired_run_and_consume(
                 if result.reason == signals.stop_reason or result.cancelled:
                     raise CaptureStopped("capture stopped")
                 code = result.reason if result.reason in REASON_REGISTRY else "internal_error"
-                raise CrossoverV2Refused(result.detail if code == result.reason else f"{result.reason}: {result.detail}", code=code)
+                detail = result.detail or REASON_REGISTRY[code].message
+                raise CrossoverV2Refused(detail if code == result.reason else f"{result.reason}: {detail}", code=code)
         except BaseException as exc:  # noqa: BLE001 - persist every terminal arm
             code = publish_failure(exc)
-            v2state._persist_terminal_failure(conductor, code)
+            detail = result.detail if result is not None else ""
+            v2state._persist_terminal_failure(conductor, code, detail=detail or exception_detail(exc))
             raise
         else:
             try:

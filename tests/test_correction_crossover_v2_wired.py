@@ -24,6 +24,10 @@ import numpy as np
 from jasper.active_speaker.angle_capture import LevelPolicy, ResolvedLevel
 from jasper.active_speaker.arm_walk import CAPTURE_CANCEL_PATH, LoopbackSession
 from jasper.active_speaker.plan_run import RunSignals
+from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
+from jasper.active_speaker.run_manifest import RunManifest
+from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
+from jasper.active_speaker.crossover_v2.program_transaction import ProgramPlaybackTransaction
 from jasper.active_speaker import plan_run
 from tests.test_active_speaker_measurement_door import box as box
 from tests.test_cli_measure import HOUSEHOLD_DB
@@ -57,12 +61,13 @@ from jasper.active_speaker.crossover_v2 import wired_stimulus as core_capture
 from jasper.active_speaker.crossover_v2 import summed_alignment
 
 from tests.test_wired_capture import UMIK2_USB_ID, _Sensitivity, _make_card
-from tests.test_plan_run import AnsweredGate, _walk
+from tests.test_plan_run import AnsweredGate, _Store, _walk
+from tests.engine_twin import FakeSeams as EngineSeams
 from jasper.web._common import refusal_envelope
 from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
 from tests.crossover_v2_banked_round import bank_executor_take
-from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor
+from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _check_analysis, _conductor
 from tests.test_audio_measurement_program_analysis import _roles, _synthesize
 
 RATE = 48_000
@@ -734,13 +739,99 @@ def test_plan_host_preserves_refusal_reason(monkeypatch, tmp_path, box, reason, 
     manifest.reason, manifest.detail = reason, detail
     monkeypatch.setattr(plan_run, "run_plan", AsyncMock(return_value=manifest))
     failures = []
-    monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda conductor, code: failures.append(code))
+    monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda conductor, code, **kw: failures.append(code))
     with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
         asyncio.run(runner(session))
     envelope = refusal_envelope(caught.value)
     assert envelope["code"] == code
-    assert envelope["error"] == (detail if code == reason else f"{reason}: {detail}")
+    copy = detail or refusal_copy.REASON_REGISTRY[code].message
+    assert envelope["error"] == (copy if code == reason else f"{reason}: {copy}")
     assert failures == [code]
+
+
+@pytest.mark.parametrize("step,code", [("capture", "internal_error"), ("compose", "program_not_composed"),
+                                      ("analysis", "internal_error")])
+async def test_capture_failure_keeps_exception_detail_in_the_round(monkeypatch, tmp_path, box, step, code):
+    persist, terminal = v2state.persist_conductor_state, v2state._persist_terminal_failure
+    runner, session, fakes, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box)
+    monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "state.json")
+    monkeypatch.setattr(v2state, "persist_conductor_state", persist)
+    monkeypatch.setattr(v2state, "_persist_terminal_failure", terminal)
+    failure = Mock(side_effect=ValueError("x"))
+    if step == "compose":
+        monkeypatch.setattr(fakes.play, "run", ProgramPlaybackTransaction(compose=failure, session_volume_plan=None).run)
+    elif step == "analysis":
+        monkeypatch.setattr(plan_run, "assess", failure)
+    else:
+        monkeypatch.setattr(fakes.play, "run", AsyncMock(side_effect=ValueError("x")))
+    with pytest.raises((ValueError, refusal_copy.CrossoverV2Refused)):
+        await runner(session)
+    saved = v2state.load_v2_state()["failure"]
+    assert saved["code"] == manifest.reason == code
+    assert saved["detail"] == manifest.detail == "ValueError: x"
+    assert fakes.graph.restores == 1
+
+
+async def test_run_failure_without_result_keeps_detail_and_restore(monkeypatch, tmp_path):
+    monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "state.json")
+    conductor = _conductor(FlowSeams())
+    v2state.save_v2_state({"session_id": conductor.session_id, "execution": {"volume_restore": "stale"}})
+    door = SimpleNamespace(opened=None)
+
+    async def execute(*args, **kwargs):
+        try:
+            raise RuntimeError("x")
+        finally:
+            door.opened = SimpleNamespace(restore_result=SessionVolumeRestoreResult.EXACT_RESTORED)
+
+    runner = v2wired.build_v2_wired_run_and_consume(
+        conductor, door=door, signals=RunSignals(), ceiling_s=30,
+        manifest=None, request=None, captures=None, analyze=None, assessor=None, execute=execute,
+    )
+    with pytest.raises(RuntimeError):
+        await runner(SimpleNamespace(session_id=conductor.session_id))
+    state = v2state.load_v2_state()
+    assert state["failure"]["code"] == "internal_error"
+    assert state["failure"]["detail"] == "RuntimeError: x"
+    assert state["execution"]["volume_restore"] == "exact_restored"
+
+
+@pytest.mark.parametrize("repeats", [1, 3])
+@pytest.mark.parametrize("check_passes", [False, True])
+async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path, box, caplog, repeats, check_passes):
+    checks = iter([False, False, False, check_passes])
+    flow = FlowSeams(check=lambda program: _check_analysis(program, snr_floor_ok=next(checks)))
+    fakes = EngineSeams()
+    request = AngleCaptureRequest(stops=(AngleStop(0, "per_driver"),), repeats=repeats,
+                                  level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
+    captures = plan_run.prepare_plan_captures(request)
+    conductor = _conductor(flow, index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)})
+    manifest = RunManifest("check-exhaustion", _Store(fakes.records))
+    programs, play = [], fakes.play.run
+
+    async def compose_and_play(**kwargs):
+        programs.append(correction_run_host.compose_plan_program(
+            conductor, kwargs["spec"], kwargs["stimulus_dbfs"], context=SimpleNamespace()))
+        return await play(**kwargs)
+
+    monkeypatch.setattr(fakes.play, "run", compose_and_play)
+    records = core_capture.CapturedRecordStore(manifest, SimpleNamespace(
+        take_answer=lambda: WiredCaptureAnswer(wav=b"", program=programs[-1].to_dict())))
+    analyze, assessor = correction_run_host.bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
+    door = _run_door(tmp_path, box, fakes, manifest, records)
+    with caplog.at_level(logging.INFO):
+        await plan_run.run_plan(request, door=door, manifest=manifest, captures=captures,
+            analyze=analyze, assessor=assessor, gate=AnsweredGate(), aborts={},
+            admit=lambda i, a, e, ledger: conductor.authorize_begin(i, a, e, executor_ledger=ledger))
+    assert manifest.reason == ("" if check_passes else "snr_floor")
+    assert bool(conductor._gain_plan_db) is check_passes
+    events = event_field_maps(caplog, "correction.crossover_v2_authorized")
+    expected = [("check", a, a - 1) for a in range(1, 5)]
+    if check_passes:
+        expected += [(phase, 1, 3) for phase in ["entry_baseline"] * repeats + ["measure"] * repeats]
+    assert [(e["phase"], int(e["attempt"]), int(e["extra_used"])) for e in events] == expected
+    assert len(programs) == manifest.takes_measured == len(expected)
+    assert fakes.graph.restores == 1
 
 
 async def test_host_retake_after_budget_exhaustion_keeps_its_code(monkeypatch, tmp_path, box):
@@ -798,7 +889,7 @@ def test_capture_cancel_reason_reaches_the_executor_manifest(monkeypatch, tmp_pa
     })
     monkeypatch.setattr(correction_capture, "_capture_stop_request", signals.request_stop)
     failures = []
-    monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda conductor, code: failures.append(code))
+    monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda conductor, code, **kw: failures.append(code))
     with pytest.raises(CaptureStopped):
         asyncio.run(runner(session))
     assert manifest.records.snapshots[-1]["reason"] == code
