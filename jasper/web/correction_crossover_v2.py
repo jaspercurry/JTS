@@ -24,7 +24,10 @@ from pathlib import Path
 from jasper.active_speaker import preflight, preflight_live
 from typing import Any, Callable, Mapping
 
-from jasper.active_speaker.angle_capture import BASE_CANDIDATE, AngleCaptureRequest, AngleStop, LateralWalkRefused, REGIME_SUMMED
+from jasper.active_speaker.angle_capture import (
+    BASE_CANDIDATE, AngleCaptureRequest, AngleStop, LateralWalkRefused,
+    REGIME_SUMMED, default_run_level,
+)
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.linearization_budget import fit_budgets_by_role
@@ -660,6 +663,9 @@ def prepare_v2_session(
             raise CrossoverV2Refused(exc.detail, code=exc.reason) from exc
         except (ValueError, TypeError, CrossoverV2FlowError) as exc:
             raise CrossoverV2Refused(str(exc), code="program_plan_shape_invalid") from exc
+        level, level_source = default_run_level(request)
+        if request.level_source == "program_default":
+            request = dataclasses.replace(request, level=level, level_source=level_source)
         plan_shape = None
         if v2volume.session_volume_plan().needs_recovery:
             raise CrossoverV2Refused(
@@ -689,6 +695,10 @@ def prepare_v2_session(
     wired_device = _resolve_prepare_wired_mic() if verify_only else None
     if verify_only:
         session_plan = AngleCaptureRequest(stops=(AngleStop(0, REGIME_SUMMED),))
+        level, level_source = default_run_level(session_plan)
+        session_plan = dataclasses.replace(
+            session_plan, level=level, level_source=level_source,
+        )
         report = preflight.preflight(session_plan, preflight_live.read_preflight_facts(
             session_plan, context=context, device=wired_device))
         if report.blocking:
