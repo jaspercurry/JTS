@@ -147,7 +147,9 @@ class ProviderTurn(Protocol):
         ...
 
     async def end_input(self) -> None:
-        """Mark end-of-user-speech for this turn (sends `activity_end`).
+        """Mark the end of user speech for this turn.
+
+        A continuous adapter may only record the moment.
 
         Idempotent — calling twice is a no-op."""
         ...
@@ -185,8 +187,7 @@ class LiveTurn(ProviderTurn, Protocol):
     # the host must never issue its own barge-in flush for this turn: the
     # local detector scores the assistant's echo as well as the user, and
     # flushing the fan-in lane on that chops the reply mid-word. The host
-    # still forwards mic audio and still honours conversation end. Such a
-    # turn is deliberately not `Interruptible`.
+    # still forwards mic audio. Such a turn is deliberately not `Interruptible`.
     owns_interruption: bool
     # True when the adapter streams the microphone for the whole
     # conversation instead of one endpointed utterance per turn. Must

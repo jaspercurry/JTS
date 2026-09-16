@@ -137,7 +137,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0168](0168-voice-model-rates-are-entered-by-hand-never-fetched.md) | Voice-model rates are entered by hand, never fetched | accepted |
 | [0215](0215-a-broken-cloud-connection-is-announced-once-and-only-when-a-human-must-act.md) | A broken cloud connection is announced once, and only when a human must act | accepted |
 | [0238](0238-the-first-provider-connect-is-one-attempt-and-every-retry-is-the-supervisors.md) | The first provider connect is one attempt, and every retry is the supervisor's | accepted |
-| [0290](0290-followup-windows-belong-to-the-voice-host.md) | Follow-up windows belong to the voice host | amended by 0292 |
+| [0290](0290-followup-windows-belong-to-the-voice-host.md) | Follow-up windows belong to the voice host | amended by 0292, 0320 |
 | [0291](0291-research-feature-deleted.md) | The background research feature is deleted — the provider model answers, and searches natively | accepted |
 | [0292](0292-followup-windows-are-provider-owned.md) | Follow-up windows are provider-owned | accepted |
 | [0293](0293-the-no-provider-park-is-owned-by-the-voice-daemon.md) | The no-provider park is owned by the voice daemon — jasper-aec-reconcile no longer disables jasper-voice on that axis | accepted |
@@ -294,5 +294,5 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0317](0317-wall-placement-starts-at-the-cabinet-back.md) | Wall placement starts at the cabinet back | accepted |
 | [0318](0318-rear-calibration-separates-acoustic-targets-from-electrical-settings.md) | Rear calibration separates acoustic targets from electrical settings | accepted |
 | [0319](0319-timing-measured-once-with-confidence.md) | Timing is measured once with confidence | accepted |
-| [0320](0320-live-hangup-is-one-silence-window.md) | Live hang-up is one silence window | accepted |
+| [0320](0320-live-hangup-is-one-silence-window.md) | Live hang-up is one silence window | amended by 0321 |
 | [0321](0321-live-first-answer-wait-is-separate-from-followup.md) | Live first-answer wait is separate from follow-up | accepted |

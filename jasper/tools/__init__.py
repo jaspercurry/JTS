@@ -819,7 +819,6 @@ async def dispatch_tool(
         )
         return {"error": f"unknown tool {name}"}
 
-    name = tool.name
     try:
         observer = registry.dispatch_observer() if registry.dispatch_observer else None
     except Exception as exc:  # noqa: BLE001

@@ -22,7 +22,7 @@ NO_SPEECH_ABORT_SEC = 5.0
 # The frontend needs time to voice a completed backend answer.
 BACKEND_ANSWER_GRACE_SEC = 8.0
 ACKNOWLEDGED_BACKEND_SEC = 30.0
-# Measured 2026-09-16: 0–1.4 s plus a >2 s tail; 5 s covers it and keeps dismissal within a breath.
+# See ADR-0321.
 FIRST_ANSWER_SEC = 5.0
 
 
@@ -77,22 +77,21 @@ async def continuous_watchdog(
         if lost:
             return "connection_lost"
         if accepted_at < speech_started and turn.backend_completed_at < speech_started:
-            if now - last_speech >= FIRST_ANSWER_SEC:
-                return _resolved(
-                    "followup_timeout", now, last_speech, accepted_at,
-                    drain_at, pending, turn, last_speech + FIRST_ANSWER_SEC,
+            deadline = last_speech + FIRST_ANSWER_SEC
+        else:
+            deadline = followup_seconds + max(last_speech, accepted_at, drain_at)
+            if (
+                speech_started <= turn.backend_completed_at
+                and accepted_at < turn.backend_completed_at
+            ):
+                # Backend completion alone is not proof that its answer reached playout.
+                deadline = max(
+                    deadline, turn.backend_completed_at + followup_seconds,
+                    min(
+                        turn.backend_completed_at + BACKEND_ANSWER_GRACE_SEC,
+                        last_speech + ACKNOWLEDGED_BACKEND_SEC,
+                    ),
                 )
-            continue
-        deadline = followup_seconds + max(last_speech, accepted_at, drain_at)
-        if speech_started <= turn.backend_completed_at and accepted_at < turn.backend_completed_at:
-            # Backend completion alone is not proof that its answer reached playout.
-            deadline = max(
-                deadline, turn.backend_completed_at + followup_seconds,
-                min(
-                    turn.backend_completed_at + BACKEND_ANSWER_GRACE_SEC,
-                    last_speech + ACKNOWLEDGED_BACKEND_SEC,
-                ),
-            )
         if now >= deadline:
             return _resolved(
                 "followup_timeout", now, last_speech, accepted_at,
@@ -104,7 +103,7 @@ def _resolved(
     reason, now, last_speech, accepted_at, drain_at, pending, turn, deadline,
     writing_since=0.0,
 ):
-    """Disambiguate normal close from an unheard answer in the turn timeline.
+    """Disambiguate a follow-up close from a playout stall in the turn timeline.
 
     Zero anchors mean absent; negative ages mean scheduled future playout.
     """

@@ -632,7 +632,6 @@ class TurnLifecycle:
             if reason not in NO_ANSWER_CUE_SUPPRESSED_REASONS:
                 reason = self.background_end_reason() or reason
             self.bg_tasks.clear()
-            play_no_answer_cue = reason in FAILED_END_REASONS
             play_no_answer_cue = await self._record_and_release_turn(reason, episode)
         finally:
             try:
