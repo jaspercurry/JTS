@@ -32,6 +32,7 @@ from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 
 __all__ = [
     "ROOM_FLOOR_HZ",
+    "ROOM_FLOOR_COVERAGE_LIMIT_HZ",
     "ROOM_BOOST_DEPTH_AGREEMENT_DB",
     "ROOM_BOOST_MAX_DIP_DB",
     "ROOM_BOOST_MIN_DIP_DB",
@@ -60,6 +61,8 @@ __all__ = [
 
 #: The strategy's own cut floor, dB, which the spread scales per frequency.
 ROOM_MAX_CUT_DB: float = -10.0
+
+ROOM_FLOOR_COVERAGE_LIMIT_HZ: float = ROOM_FLOOR_HZ * 2.0 ** (1.0 / 12.0)
 
 # A spatial spread needs at least two position samples.
 ROOM_SPREAD_MIN_POSITIONS: int = 2
@@ -124,7 +127,15 @@ def cloud_trusted_floor_hz(validity_floor_hz: float | None) -> float | None:
     return TRUSTED_FLOOR_MULTIPLIER * floor
 
 
-def spatial_support(n_positions: int) -> dict[str, Any]:
+def spatial_support(
+    n_positions: int, *, coverage_floor_hz: float = ROOM_FLOOR_HZ,
+) -> dict[str, Any]:
+    if coverage_floor_hz > ROOM_FLOOR_COVERAGE_LIMIT_HZ:
+        return {
+            "n_positions": n_positions,
+            "sufficient": False,
+            "reason": "coverage_short",
+        }
     sufficient = n_positions >= ROOM_SPREAD_MIN_POSITIONS
     return {
         "n_positions": n_positions,
