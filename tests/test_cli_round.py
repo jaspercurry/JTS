@@ -36,6 +36,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import CrossoverEvidence
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
 from jasper.active_speaker.measurement_programs import run_program
 from jasper.active_speaker.movers import MOVERS
+from jasper.active_speaker.round_copy import round_lines
 from jasper.cli import _run_request, round as cli
 from jasper.cli._refusal import STATUS_BY_CODE
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
@@ -559,6 +560,15 @@ def test_status_reads_progress_once(monkeypatch, capsys):
     assert [body[key] for key in ("pose", "config", "attempt", "code")] == [2, 1, 3, "capture_clipped"]
     assert body["faults"] == progress["faults"]
     assert len(opener.requests) == 1
+
+
+def test_status_prints_composed_sweep_lines(capsys):
+    progress = {"pose": 2, "poses": 3, "sweep": 4, "sweep_total": 7, "role": "tweeter", "repeat": 2, "repeats": 3}
+    client = SimpleNamespace(run_status=lambda run_id: (200, progress))
+    assert cli._cmd_status(client, SimpleNamespace(run="run-1")) == 0
+    output = capsys.readouterr()
+    assert output.err.splitlines() == round_lines(progress)
+    assert json.loads(output.out) == progress
 
 
 @pytest.mark.parametrize("verb", ["status", "placed", "stop", "wait"])

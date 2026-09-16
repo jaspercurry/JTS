@@ -920,21 +920,17 @@ async def test_plan_host_waits_for_the_gate_before_admission_and_capture(monkeyp
 
 async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monkeypatch, tmp_path, box):
     from jasper.active_speaker import plan_run
-    from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
+    from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
     from tests.test_plan_run import AnsweredGate
 
     signals = plan_run.RunSignals()
-    monkeypatch.setattr(plan_run, "POSITION_HOLD_POLL_S", 0)
-    class RetakingGate(AnsweredGate):
-        requested = False
-        def gate(self, index, attempt, entry):
-            if index == 2 and not self.requested:
-                self.requested = True
-                signals.retake.set()
-                raise CaptureBeginDeferred("awaiting_position", "placement")
-            return super().gate(index, attempt, entry)
-    gate = RetakingGate()
+    gate = AnsweredGate()
     runner, session, fakes, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box, gate=gate, signals=signals)
+    def assessed(*args, **kwargs):
+        if len(gate.grants) == 1:
+            signals.retake.set()
+        return TakeVerdict(True, next="accept")
+    monkeypatch.setattr(plan_run, "assess", assessed)
     await runner(session)
     assert manifest.status == "complete"
     assert manifest.takes_measured == 3

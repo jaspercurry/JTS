@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlsplit
@@ -16,6 +17,7 @@ from jasper.net.http_security import _is_loopback_name
 from jasper.json_fields import age_seconds, parse_utc_iso
 
 from jasper.active_speaker.movers import MOVERS
+from jasper.active_speaker.round_copy import round_lines, packet_lines
 from jasper.active_speaker.wizard_client import (
     CSRF_PAGE_PATH, STATUS_PATH, REASON_ANSWER_LOST,
     WizardClient, apply_by_fingerprint, error_of, wait_for_round,
@@ -152,6 +154,9 @@ def _cmd_status(client: WizardClient, args: argparse.Namespace) -> int:
                                "status_unavailable", {"http": http}, payload)
     session = (payload.get("level") or {}).get("session")
     stamp = parse_utc_iso(session["leveled_at"]) if session else None
+    for line in (packet_lines(payload["round_dir"]) if payload.get("round_dir") else
+                 round_lines(payload, pending=bool(payload.get("pending")))):
+        print(line, file=sys.stderr)
     return answered(payload, (f"session level {session['leveled_db_spl']:.1f} dB SPL at gain {session['gain_db']:.1f} dB, "
                               f"leveled {age_seconds(stamp) / 3600:.1f}h ago, reused") if session and stamp is not None else "")
 
@@ -164,7 +169,14 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
     from .round_views._bass_inputs import join_bass_rounds  # lazy: wait-only bass analysis
     from jasper.active_speaker.round_packet import finish_bass_packet, wait_answer  # lazy: wait-only packet assembly
 
-    result = wait_for_round(client, run_id=args.run, timeout_s=args.timeout)
+    previous_lines: list[str] = []
+    def show_progress(progress):
+        nonlocal previous_lines
+        lines = round_lines(progress, pending=bool(progress.get("pending")))
+        if lines != previous_lines:
+            print("\n".join(lines), file=sys.stderr)
+            previous_lines = lines
+    result = wait_for_round(client, run_id=args.run, timeout_s=args.timeout, on_progress=show_progress)
     if result["status"] != "terminal":
         return failed(EXIT_REFUSED if result["status"] == "failed" else EXIT_UNREADABLE,
                       str(result["reason"]), result)
@@ -183,7 +195,7 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
     except OSError as exc:
         return failed(EXIT_WRITE_FAILED, "write_failed", str(exc))
     return answered(wait_answer(banked, result, verbose=args.verbose),
-                    f"Run banked at {banked.path}", sort_keys=False)
+                    "\n".join([f"Run banked at {banked.path}", *packet_lines(str(banked.path))]), sort_keys=False)
 
 
 def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:

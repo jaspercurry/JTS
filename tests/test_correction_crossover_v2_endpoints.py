@@ -6229,7 +6229,9 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch
     assert result["session_id"] == prepared.session_id
     assert correction_capture._get_capture_slot_for("crossover_v2:")["status"] == "awaiting_join"
     assert correction_capture._get_capture_slot() is None
-    assert prepared.position_gate.published() == {"pending": None, "current": None}
+    published = prepared.position_gate.published()
+    assert {key: published[key] for key in ("pending", "current")} == {"pending": None, "current": None}
+    assert published["run"]["poses"] == len(published["run"]["sweeps_per_pose"])
     assert not v2volume.session_measurement_pause_held()
     plan = store.reopen_json_artifact(store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
     assert plan["stops"] == _inline_body()["plan"]["stops"]

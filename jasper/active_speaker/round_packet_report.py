@@ -21,6 +21,7 @@ from .crossover_v2.frequency_view import position_label
 from .crossover_v2.round_inputs import SetTakes
 from .flat_spec import _power_mean_db
 from .measurement_programs import POSE_KIND_BEARING
+from .round_copy import coverage_lines
 
 PACKET_FILENAME = "packet.json"
 PICTURE_FILENAME = "frequency.png"
@@ -205,6 +206,7 @@ def packet_index(
                      f"takes {', '.join(row['take_ids'])}")
     if bass_rows := bass_table_rows(packet.get("bass_table", {})):
         lines.append(bass_table_markdown(bass_rows))
+    lines += coverage_lines(packet, manifest)
     lines += ["## Artifacts", f"{json.dumps(packet['artifacts'], separators=(',', ':'))}; packet: {PACKET_FILENAME}",
               "## Tools", "\n".join(f"- `{cmd}`" for cmd in dict.fromkeys(commands)),
               f"Fingerprint: {packet['packet_fingerprint']}"]

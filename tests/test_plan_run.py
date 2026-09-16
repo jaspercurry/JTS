@@ -10,6 +10,7 @@ import json
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from unittest.mock import Mock
+from types import SimpleNamespace
 
 import pytest
 
@@ -103,12 +104,12 @@ class _Store:
         return await self.records.bank(record)
 
 
-async def _run_gated(request, *, seams=None, gate=None, analyze=_analysis, signals=None, captures=None):
+async def _run_gated(request, *, seams=None, gate=None, analyze=_analysis, signals=None, captures=None, **kwargs):
     fakes = seams or FakeSeams()
     manifest = RunManifest("run", _Store(fakes.records))
     async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (session, _):
         result = await plan_run.run_plan(request, session=session, manifest=manifest, analyze=analyze,
-                                         gate=gate, aborts=_ABORTS, signals=signals, captures=captures)
+                                         gate=gate, aborts=_ABORTS, signals=signals, captures=captures, **kwargs)
     return result, fakes
 
 
@@ -497,7 +498,7 @@ def test_run_allocates_unique_take_ids_across_engine_instances(tmp_path):
     assert not (root / "crossover_v2/run/round_receipt.json").exists()
 
 
-def test_retake_while_next_pose_waits_returns_to_previous_observation(monkeypatch):
+def test_retake_while_next_pose_waits_restarts_the_displayed_pose(monkeypatch):
     signals = plan_run.RunSignals()
 
     class RetakeGate(AnsweredGate):
@@ -512,8 +513,8 @@ def test_retake_while_next_pose_waits_returns_to_previous_observation(monkeypatc
 
     monkeypatch.setattr(plan_run, "POSITION_HOLD_POLL_S", 0)
     result, fakes = asyncio.run(_run_gated(_walk([0, 20]), gate=RetakeGate(), signals=signals))
-    assert fakes.play.bearings == [0, 0, 20]
-    assert [t["selected"] for t in _takes(result.to_dict())] == [False, True, True]
+    assert fakes.play.bearings == [0, 20]
+    assert [t["selected"] for t in _takes(result.to_dict())] == [True, True]
     assert result.status == "complete"
 
 
@@ -1080,3 +1081,36 @@ async def test_manifest_stamps_watch_levels_and_uses_accepted_medians():
         assert row["level"]["level_delta_db"] == delta
         assert row["phase"] == "measure"
     assert manifest.to_dict()["level"]["session"]["session_id"] == "leveled"
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry):
+    roles = ["summed", "woofer", "tweeter", "woofer", "tweeter", "woofer", "tweeter"]
+    segments = tuple(SimpleNamespace(role=role, kind="sweep", start_sample=0, n_samples=4) for role in roles)
+    program = SimpleNamespace(phase="measure", sample_rate_hz=1, stimulus_segments=lambda: segments)
+    gate = AnsweredGate()
+    original = FakePlay.run
+    async def play(self, **kwargs):
+        async def emitted():
+            done = asyncio.get_running_loop().create_future()
+            asyncio.get_running_loop().call_later(0, done.set_result, None)
+            await done
+            return await original(self, **kwargs)
+        return await plan_run.playback_observer.get()(program, emitted)
+    monkeypatch.setattr(FakePlay, "run", play)
+    verdicts = iter(([TakeVerdict(False, "snr_floor", next="retake_louder", next_gain_db=-12, charge="speaker")]
+                     if retry else []) + [TakeVerdict(True)] * 3)
+    monkeypatch.setattr(plan_run, "assess", lambda *a, **kw: next(verdicts))
+    result, _ = asyncio.run(_run_gated(_walk([0, -20, 20]), gate=gate, program_for_spec=lambda spec: program))
+    live = [p for p in gate.progress if p.get("role")]
+    assert result.status == "complete"
+    assert [(p["sweep"], p["role"], p["repeat"], p["repeats"]) for p in live[:7]] == [
+        (1, "summed", 1, 1), (2, "woofer", 1, 3), (3, "tweeter", 1, 3),
+        (4, "woofer", 2, 3), (5, "tweeter", 2, 3), (6, "woofer", 3, 3), (7, "tweeter", 3, 3)]
+    assert live[0]["sweeps_per_pose"] == [7, 7, 7]
+    assert live[0]["estimated_seconds"] == 21 * 4 + 3 * plan_run.HUMAN_MOVE_ALLOWANCE_S
+    assert {p["pose"] for p in live} == {1, 2, 3}
+    if retry:
+        assert any(p.get("retake_reason") == "snr_floor" and p["level_raise_dbfs"] == -12 for p in live)
+    else:
+        assert all("retake_reason" not in p for p in live)
