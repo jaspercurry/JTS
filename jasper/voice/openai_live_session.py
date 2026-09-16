@@ -15,6 +15,7 @@ import base64
 import json
 import logging
 import time
+from collections import deque
 from typing import Any, AsyncIterator
 
 from ..backoff import reconnect_delay
@@ -109,7 +110,10 @@ class OpenAILiveTurn(BaseLiveTurn):
         super().__init__(conn, started_at)
         self._conn: OpenAILiveConnection = conn
         self._resample_state = None
-        self._input_q = asyncio.Queue(maxsize=16)
+        self._input_q: asyncio.Queue[tuple[bytes, float]] = asyncio.Queue(maxsize=16)
+        # Connect backlog puts the provider 1.2–2.0 s behind the mic on hardware;
+        # the follow-up window counts from the wire.
+        self._wire_marks: deque[tuple[float, float]] = deque(maxlen=128)
         self._input_admitted = True
         self._input_caught_up = 0.0
         self._sender = None
@@ -140,8 +144,11 @@ class OpenAILiveTurn(BaseLiveTurn):
         if self._released or self._turn_lost:
             return
         if self._input_admitted:
-            await self._input_q.put(pcm_16khz_int16)
+            await self._input_q.put((pcm_16khz_int16, time.monotonic()))
             self._bytes_sent += len(pcm_16khz_int16)
+
+    def wire_time_for(self, captured_at: float) -> float | None:
+        return next((sent for captured, sent in self._wire_marks if captured >= captured_at), None)
 
     def discard_input(self) -> None:
         self._input_admitted = False
@@ -161,21 +168,22 @@ class OpenAILiveTurn(BaseLiveTurn):
         jitter_grace = 0.02
         silence_at = loop.time() + jitter_grace
         while not self._released and not self._turn_lost:
-            captured = True
+            captured_at = None
             try:
-                pcm = self._input_q.get_nowait()
+                pcm, captured_at = self._input_q.get_nowait()
             except asyncio.QueueEmpty:
                 try:
                     async with asyncio.timeout_at(silence_at):
-                        pcm = await self._input_q.get()
+                        pcm, captured_at = await self._input_q.get()
                 except TimeoutError:
                     pcm = bytes(2560)  # 80 ms at 16 kHz, including button-release silence
-                    captured = False
-            if captured and not self._input_q.empty():
+            if captured_at is not None and not self._input_q.empty():
                 self._input_caught_up += len(pcm) / 32000
             # Allow capture jitter before substituting silence, without holding real PCM.
-            silence_at = loop.time() + len(pcm) / 32000 + (jitter_grace if captured else 0.0)
+            silence_at = loop.time() + len(pcm) / 32000 + (jitter_grace if captured_at is not None else 0.0)
             await self._send_input(pcm)
+            if captured_at is not None:
+                self._wire_marks.append((captured_at, time.monotonic()))
 
     async def send_text_context(self, text: str) -> None:
         await self._conn._send({"type": "session.instructions.append", "content": text, "delegation_id": None})

@@ -53,7 +53,7 @@ async def continuous_watchdog(
             if now - writing_since >= stall_seconds:
                 return _resolved(
                     "playout_stalled", now, last_speech, accepted_at,
-                    tts.expected_drain_at(), turn.audio_chunks_pending(), turn, None,
+                    tts.expected_drain_at(), turn.audio_chunks_pending(), turn, None, None,
                     writing_since,
                 )
             continue
@@ -69,12 +69,17 @@ async def continuous_watchdog(
             if now - progressed_at >= stall_seconds:
                 return _resolved(
                     "playout_stalled", now, last_speech, accepted_at,
-                    drain_at, pending, turn, None,
+                    drain_at, pending, turn, None, None,
                 )
             continue
         if lost:
             return "connection_lost"
-        deadline = followup_seconds + max(last_speech, accepted_at, drain_at)
+        speech_sent_at = turn.wire_time_for(last_speech)
+        if speech_sent_at is None:
+            if now - last_speech >= ACKNOWLEDGED_BACKEND_SEC:
+                return "response_stalled"
+            continue
+        deadline = followup_seconds + max(speech_sent_at, accepted_at, drain_at)
         if speech_started <= turn.backend_completed_at and accepted_at < turn.backend_completed_at:
             # Backend completion alone is not proof that its answer reached playout.
             deadline = max(
@@ -87,12 +92,12 @@ async def continuous_watchdog(
         if now >= deadline:
             return _resolved(
                 "followup_timeout", now, last_speech, accepted_at,
-                drain_at, pending, turn, deadline,
+                drain_at, pending, turn, deadline, speech_sent_at,
             )
 
 
 def _resolved(
-    reason, now, last_speech, accepted_at, drain_at, pending, turn, deadline,
+    reason, now, last_speech, accepted_at, drain_at, pending, turn, deadline, speech_sent_at,
     writing_since=0.0,
 ):
     """Disambiguate normal close from an unheard answer in the turn timeline.
@@ -102,6 +107,9 @@ def _resolved(
     log_event(
         logger, "voice.turn_deadline", reason=reason,
         last_speech_age_ms=int((now - last_speech) * 1000),
+        wire_lag_ms=(
+            int((speech_sent_at - last_speech) * 1000) if speech_sent_at is not None and last_speech else None
+        ),
         accepted_age_ms=int((now - accepted_at) * 1000) if accepted_at else None,
         drain_age_ms=int((now - drain_at) * 1000) if drain_at else None,
         overdue_ms=None if deadline is None else int((now - deadline) * 1000),
