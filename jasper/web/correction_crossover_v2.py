@@ -924,11 +924,15 @@ def prepare_v2_session(
         run_request = None if verify_only else request
         run_captures = None if verify_only else captures
         if verify_only:
-            run_request = AngleCaptureRequest(level=report.plan.level, stops=tuple(
-                AngleStop(int(entry.screen.get(POSITION_DEG_KEY, 0)), REGIME_SUMMED,
-                          elevation_deg=int(entry.screen.get(POSITION_VERTICAL_DEG_KEY, 0)), purpose="room")
-                for entry in spec.capture_plan.entries
-            ))
+            run_request = AngleCaptureRequest(
+                level=report.plan.level,
+                level_source=report.plan.level_source,
+                stops=tuple(
+                    AngleStop(int(entry.screen.get(POSITION_DEG_KEY, 0)), REGIME_SUMMED,
+                              elevation_deg=int(entry.screen.get(POSITION_VERTICAL_DEG_KEY, 0)), purpose="room")
+                    for entry in spec.capture_plan.entries
+                ),
+            )
             run_captures = tuple(PlanCapture(stop, MeasureSpec(
                 kind="verify", graph_scope="candidate", candidate_id=BASE_CANDIDATE, positions=(stop.angle_deg,),
                 vertical_deg=stop.elevation_deg, program_phase=opening.plan.index_phase_map[index],

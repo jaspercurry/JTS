@@ -14,7 +14,9 @@ from jasper.active_speaker.measurement_programs import run_program
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels
 from jasper.active_speaker.preflight import PreflightReport
 from jasper.active_speaker.preflight_live import read_preflight_facts
-from jasper.active_speaker.seat_level_reference import seat_level_reference_state_path
+from jasper.active_speaker.seat_level_reference import (
+    seat_level_reference_state_path, seat_level_reference_volume_db,
+)
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.audio_measurement.household_mic import household_mic_path
 from jasper.output_topology import topology_path
@@ -48,10 +50,16 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
     candidates = tuple(value.strip() for value in args.candidates.split(",")) if args.candidates is not None else ()
     if any(not value for value in candidates):
         raise ValueError("candidates must name a fingerprint or base")
+    operator_level = any(value is not None for value in (args.level_db, args.levels, args.spl))
     request = request_for_program(
         program, candidates=candidates, level=LevelPolicy(level_db=args.level_db),
+        level_source="operator" if operator_level else "program_default",
         mover=args.mover or program.mover or "human",
     )
     facts = read_preflight_facts(request)
+    reference = seat_level_reference_volume_db(state_path=seat_level_reference_state_path())
+    if not operator_level and program.levels is None and reference is not None:
+        request = replace(request, level=replace(request.level, level_db=reference),
+                          level_source="seat_reference")
     levels = args.levels if args.levels is not None else (program.levels if args.level_db is None and args.spl is None else None)
     return preflight_levels(request, facts, levels, spl=args.spl)

@@ -728,8 +728,10 @@ def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, pu
                for capture in captures[-repeats:])
 
 
-@pytest.mark.parametrize("requested,level", [(None, -15), (-25, -25), (0, 0)])
-async def test_check_plays_at_the_session_level(tmp_path, box, requested, level):
+@pytest.mark.parametrize(("requested", "level", "source"), [
+    (None, -15, "seat_reference"), (-25, -25, "operator"), (0, 0, "operator"),
+])
+async def test_check_plays_at_the_session_level(tmp_path, box, requested, level, source):
     from tests.test_correction_crossover_v2_wired import _run_door
 
     fakes = FakeSeams()
@@ -737,6 +739,7 @@ async def test_check_plays_at_the_session_level(tmp_path, box, requested, level)
     request = ac.AngleCaptureRequest(
         stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),),
         level=ac.LevelPolicy(level_db=requested, resolved=ac.ResolvedLevel(75, -15, "1234")),
+        level_source=source,
     )
     door = _run_door(tmp_path, box, fakes, manifest)
     door.build_session = Mock(wraps=door.build_session)
@@ -754,10 +757,19 @@ async def test_check_plays_at_the_session_level(tmp_path, box, requested, level)
     door.build_session.assert_called_once()
     assert result.status == "complete"
     assert manifest.to_dict()["level"] == {"session": request.level.resolved.session(),
-                                          "run": {"level_db": level, "offset_db": level + 15}}
+                                          "run": {"level_db": level, "offset_db": level + 15,
+                                                  "level_source": source}}
     assert {row["capture_basis"]["level_db"] for row in manifest.to_dict()["sets"]} == {level}
     assert [(call["spec"].program_phase, call["level_db"]) for call in fakes.play.calls] == [
         (phase, level) for phase in ("check", "entry_baseline", "measure")]
+
+
+async def test_manifest_discloses_program_default_without_a_seat_reference():
+    result, _ = await _run_gated(_walk([0]))
+
+    assert result.to_dict()["level"]["run"] == {
+        "level_db": -20.0, "offset_db": None, "level_source": "program_default",
+    }
 
 
 @pytest.mark.parametrize("level", [-20, -25])
