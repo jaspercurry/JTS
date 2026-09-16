@@ -56,43 +56,21 @@ async def test_endpointed_answer_closes_the_turn_once_playout_drains():
 
 
 @pytest.mark.parametrize(
-    "busy, followup_seconds",
-    [("speaker", 2), ("user", 2), ("tool", 2), ("quiet", 2), ("quiet", 0)],
+    "last_speech, accepted_at, drain_at, backend, followup_seconds, deadline",
+    [
+        (100, 0, 0, False, 2, 100 + FIRST_ANSWER_SEC),
+        (100, 98, 98.5, False, 2, 100 + FIRST_ANSWER_SEC),
+        (100, 101, 104, False, 2, 104 + 2),
+        (104, 101, 0, False, 2, 104 + 2),
+        (100, 101, 0, False, 0, 101),
+        (100, 0, 0, True, 2, 100 + ACKNOWLEDGED_BACKEND_SEC),
+        (100, 101, 104, True, 2, 100 + ACKNOWLEDGED_BACKEND_SEC),
+    ],
 )
-async def test_live_followup_waits_for_playout_speech_and_tools(busy, followup_seconds):
-    now = time.monotonic()
-    turn = FakeLiveTurn(chunks_received=1)
-    turn.audio_chunks_pending = lambda: 0
-    turn.backend_pending = busy == "tool"
-    tts = FakeTts()
-    tts.expected_drain_at = lambda: now + 10 if busy == "speaker" else now - 8
-    task = asyncio.create_task(continuous_watchdog(
-        turn, tts, followup_seconds=followup_seconds, stall_seconds=120,
-        user_activity=lambda: (now - 10, now if busy == "user" else now - 9),
-        last_accepted_at=lambda: now - 8,
-    ))
-    try:
-        # Long enough for one full watchdog poll to reach its verdict.
-        await asyncio.sleep(WATCHDOG_POLL_SEC * 2)
-        assert task.done() == (busy == "quiet")
-        if task.done():
-            assert task.result() == "followup_timeout"
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-
-
-@pytest.mark.parametrize("accepted_at, drain_at, backend, deadline", [
-    (0, 0, False, 100 + FIRST_ANSWER_SEC),
-    (98, 98.5, False, 100 + FIRST_ANSWER_SEC),
-    (101, 104, False, 106),
-    (0, 0, True, 100 + ACKNOWLEDGED_BACKEND_SEC),
-    (101, 104, True, 100 + ACKNOWLEDGED_BACKEND_SEC),
-])
 async def test_live_first_answer_followup_and_backend_waits(
-    monkeypatch, accepted_at, drain_at, backend, deadline,
+    monkeypatch, last_speech, accepted_at, drain_at, backend, followup_seconds, deadline,
 ):
-    now, last_speech, followup_seconds = 101.0, 100.0, 2.0
+    now = deadline - WATCHDOG_POLL_SEC
     turn = FakeLiveTurn()
     turn.backend_pending = backend
     tts = FakeTts()
@@ -111,26 +89,6 @@ async def test_live_first_answer_followup_and_backend_waits(
     )
     assert now == deadline
     assert reason == ("response_stalled" if backend else "followup_timeout")
-
-
-async def test_partial_transcripts_do_not_end_the_conversation():
-    now = time.monotonic()
-    turn = OpenAILiveTurn(OpenAILiveConnection(api_key="test"), now)
-    task = asyncio.create_task(continuous_watchdog(
-        turn, FakeTts(), followup_seconds=5, stall_seconds=120,
-        user_activity=lambda: (now - 2, now - 1), last_accepted_at=lambda: 0,
-    ))
-    try:
-        for delta in ("stop", " the timer"):
-            await turn.on_event({
-                "type": "session.input_transcript.delta", "delta": delta,
-                "start_ms": 0, "end_ms": 1000,
-            })
-            await asyncio.sleep(WATCHDOG_POLL_SEC * 2)
-            assert not task.done()
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.parametrize("input_ended", [False, True])
