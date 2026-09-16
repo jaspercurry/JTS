@@ -399,9 +399,11 @@ fn run_alsa(
     // The final edge is open and its format is readback-verified: STATUS
     // `dac.format` stops echoing the declaration and reports what is running.
     state.set_dac_format(sink.dac_format());
+    if let RuntimeAlsaSink::Single(backend) = &sink {
+        state.set_dac_channels(backend.dac_channels);
+    }
     sink.mark_runtime_status(state);
-    // Content/DAC width is carried as data (coherent single DAC of any width);
-    // the published reference is always stereo (a wide sink folds to L == R).
+    // The published reference is always stereo (a wide lane folds to L == R).
     let content_channels = sink.content_channels() as usize;
     let content_period_samples = (config.period_frames as usize) * content_channels;
     // The program spine: one i32 period, ingested wide and written wide, with

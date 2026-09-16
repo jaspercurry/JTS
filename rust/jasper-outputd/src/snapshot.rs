@@ -392,6 +392,10 @@ impl OutputdState {
                 .copied()
                 .unwrap_or(self.declared_dac_format.as_str()),
         );
+        if let Some(&channels) = self.negotiated_dac_channels.get() {
+            buf.push(',');
+            push_kv_u64(buf, "channels", u64::from(channels));
+        }
         buf.push(',');
         push_kv_u64(buf, "sample_rate", sample_rate);
         buf.push(',');
