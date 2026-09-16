@@ -815,17 +815,18 @@ async def test_pilot_floor_policy_keeps_take_and_packet_evidence(tmp_path, monke
                            lateral_consumer="forward_model_evidence",
                            index_phase_map={1: "lateral", 2: "cloud_verify", 3: "cloud_verify", 4: "entry_baseline"})
     conductor._measure_program = program
-    lateral_name = "lateral_pose_screens" if blocking else "lateral_recording_screens"
-    lateral_screen = Mock(wraps=getattr(spatial, lateral_name))
+    lateral_screen = Mock(wraps=spatial.lateral_pose_screens)
     cloud_screen = Mock(wraps=spatial.cloud_position_screens)
-    monkeypatch.setattr(spatial, lateral_name, lateral_screen)
+    monkeypatch.setattr(spatial, "lateral_pose_screens", lateral_screen)
     monkeypatch.setattr(spatial, "cloud_position_screens", cloud_screen)
     pose = conductor._consume_lateral_pose(1, 1, analysis, None)
     assert (pose.accepted, pose.code) == (not blocking, kind)
     assert lateral_screen.call_args.args[0].pilot_snr_ok is False
+    assert lateral_screen.call_args.args[0].purpose == purpose
     cloud = conductor._cloud_position_verdict("cloud_verify", 2, 1, analysis, None)
     assert (cloud.accepted, cloud.code) == (not blocking, kind)
     assert cloud_screen.call_args.args[0].pilot_snr_ok is False
+    assert cloud_screen.call_args.args[0].purpose == purpose
     baseline, _ = conductor._entry_baseline_verdict(analysis)
     assert (baseline.accepted, baseline.code) == (not blocking, kind)
     result, _ = await _run_gated(request, analyze=lambda *_args: analysis)

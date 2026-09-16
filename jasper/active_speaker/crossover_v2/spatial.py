@@ -93,6 +93,7 @@ __all__ = [
     "SCREEN_CLIPPED",
     "SCREEN_KINDS",
     "CaptureScreens",
+    "PurposeCaptureScreens",
     "EntryBaselineScreen",
     "GeometryRetake",
     "BoostExclusion",
@@ -109,7 +110,6 @@ __all__ = [
     "cloud_geometry_verdict",
     "cloud_position_screens",
     "lateral_pose_screens",
-    "lateral_recording_screens",
     "lateral_curves_sufficient",
     "lateral_evidence_grid_hz",
     "entry_baseline_screens",
@@ -201,13 +201,18 @@ class CaptureScreens:
     any_sweep_clipped: bool
 
 
+@dataclass(frozen=True)
+class PurposeCaptureScreens(CaptureScreens):
+    purpose: str | None
+
+
 # --------------------------------------------------------------------------- #
 # the three ladders
 # --------------------------------------------------------------------------- #
 
 
 def cloud_position_screens(
-    screens: CaptureScreens, *, has_summed_response: bool, purpose: str | None = None,
+    screens: CaptureScreens, *, has_summed_response: bool,
 ) -> str | None:
     """One prompted cloud position: the light per-capture QC, or a refusal kind.
 
@@ -229,7 +234,9 @@ def cloud_position_screens(
     """
     if not screens.stimulus_located:
         return SCREEN_LOCATE_FAILED
-    if screens.pilot_snr_ok is False and pilot_floor_blocking(purpose):
+    if screens.pilot_snr_ok is False and pilot_floor_blocking(
+        screens.purpose if isinstance(screens, PurposeCaptureScreens) else None
+    ):
         # The room/level discriminator runs before the linearity branch so a
         # collapsed pilot pair is never reported as the phone's fault (#1810).
         return SCREEN_PILOT_LEVEL_COLLAPSE
@@ -256,14 +263,12 @@ def lateral_pose_screens(screens: CaptureScreens) -> str | None:
 
     The walk's last rung is :func:`lateral_curves_sufficient`.
     """
-    if screens.stimulus_located and screens.pilot_snr_ok is False:
-        return SCREEN_PILOT_LEVEL_COLLAPSE
-    return lateral_recording_screens(screens)
-
-
-def lateral_recording_screens(screens: CaptureScreens) -> str | None:
     if not screens.stimulus_located:
         return SCREEN_LOCATE_FAILED
+    if screens.pilot_snr_ok is False and pilot_floor_blocking(
+        screens.purpose if isinstance(screens, PurposeCaptureScreens) else None
+    ):
+        return SCREEN_PILOT_LEVEL_COLLAPSE
     if not screens.sweep_locate_confidence_ok:
         return SCREEN_LOCATE_FAILED
     if screens.glitch_detected:

@@ -264,7 +264,7 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import (
 
 from jasper.audio_measurement import measurement_geometry as _measurement_geometry
 
-from .measurement_programs import gate_exemption, pilot_floor_blocking, resolved_measurement_purpose
+from .measurement_programs import gate_exemption, resolved_measurement_purpose
 
 DECLARED_GEOMETRY_PATH = _measurement_geometry.DEFAULT_PATH
 
@@ -2211,10 +2211,9 @@ class CrossoverV2Session:
         re-arm MEASURE with a level backoff, or its curve stops being comparable.
         """
         program = self.program_for_phase(PHASE_LATERAL)
-        screen = (_spatial.lateral_pose_screens if pilot_floor_blocking(self._capture_purpose(PHASE_LATERAL, index))
-                  else _spatial.lateral_recording_screens)
-        kind = screen(
-            _spatial.CaptureScreens(
+        kind = _spatial.lateral_pose_screens(
+            _spatial.PurposeCaptureScreens(
+                purpose=self._capture_purpose(PHASE_LATERAL, index),
                 stimulus_located=_stimulus_locate_ok(analysis),
                 pilot_snr_ok=analysis.pilot_snr_ok,
                 linearity_ok=analysis.linearity_ok,
@@ -2366,7 +2365,8 @@ class CrossoverV2Session:
         # All SEVEN screens are stated though this ladder reads three: a fact about the
         # capture is the caller's to state, and two are vacuous for a cloud position.
         kind = _spatial.cloud_position_screens(
-            _spatial.CaptureScreens(
+            _spatial.PurposeCaptureScreens(
+                purpose=self._capture_purpose(phase, index),
                 stimulus_located=_stimulus_locate_ok(analysis),
                 pilot_snr_ok=analysis.pilot_snr_ok,
                 linearity_ok=analysis.linearity_ok,
@@ -2378,7 +2378,6 @@ class CrossoverV2Session:
                 any_sweep_clipped=_any_sweep_clipped(analysis),
             ),
             has_summed_response=response is not None,
-            purpose=self._capture_purpose(phase, index),
         )
         if kind is not None:
             return PhaseVerdict(False, _screen_refusal_code(kind))
