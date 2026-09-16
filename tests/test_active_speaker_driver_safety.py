@@ -1628,6 +1628,32 @@ _PRE_2870_REQUEST_FIXTURE = (
 )
 
 
+def test_a_request_built_from_a_manual_highpass_validates_on_save() -> None:
+    """The validator must accept every key the builder's own normaliser emits.
+
+    ``build_driver_research_request`` normalises each driver's manual settings
+    into ``operator_declared_context``; since #2682 that carries the operator's
+    recommended high-pass pair. ``validate_driver_research_request`` re-checks
+    the stored request on every save, so a missing allow-list entry makes any
+    driver with a manual high-pass unsaveable.
+    """
+
+    manual = deepcopy(_manual_settings())
+    manual["drivers"][1]["recommended_highpass_hz"] = 2500.0
+    manual["drivers"][1]["recommended_highpass_slope_db_per_octave"] = 24.0
+    manual["drivers"][1]["fit_budget"] = {"max_gain_db": 6.0}
+    manual = normalise_manual_settings(manual)
+    assert manual is not None
+    topology = mono_output_topology(card_id=None)
+    inputs = _operator_inputs()
+    request = build_driver_research_request(topology, inputs, manual)
+    validated = validate_driver_research_request(request, topology, inputs, manual)
+    context = validated["targets"][1]["operator_declared_context"]
+    assert context["recommended_highpass_hz"] == 2500.0
+    assert context["recommended_highpass_slope_db_per_octave"] == 24.0
+    assert context["fit_budget"]["max_gain_db"] == 6.0
+
+
 def test_a_research_request_fingerprinted_before_the_cut_still_validates() -> None:
     """#2870's migration, one line deeper than the allowlist.
 

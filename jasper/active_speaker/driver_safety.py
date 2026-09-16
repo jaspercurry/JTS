@@ -1115,17 +1115,12 @@ def validate_driver_research_request(
             # carries that build's normaliser output and is re-validated on
             # EVERY save, so refusing here would make an old draft unsaveable.
             # The normaliser below drops it. See LEGACY_DROPPED_DRIVER_FIELDS.
+            # The context is the normaliser's projection of one manual driver,
+            # so its vocabulary is MANUAL_DRIVER_FIELDS, not a second list.
             _reject_unknown_keys(
                 context_raw,
                 f"{field_name}.operator_declared_context",
-                {
-                    "hard_excitation_band_hz",
-                    "required_protection_filters",
-                    "measurement_band_hz",
-                    "cabinet",
-                    "level_duration_limits",
-                    "operator_notes",
-                } | LEGACY_DROPPED_DRIVER_FIELDS,
+                MANUAL_DRIVER_FIELDS | {"operator_notes"} | LEGACY_DROPPED_DRIVER_FIELDS,
             )
             context = normalise_driver_safety_fields(
                 context_raw,
