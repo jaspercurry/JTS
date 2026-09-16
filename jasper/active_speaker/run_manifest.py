@@ -224,6 +224,7 @@ class RunManifest:
                              "loudest_half_second_db_spl": level_observation.get("loudest_half_second_db_spl"),
                              "level_delta_db": level_observation.get("level_delta_db")},
                    "analysis": record.get("analysis"), "curve": curve or None, "alignment": alignment,
+                   "screens": verdict.screens,
                    "quality": {"status": status,
                                "evidence": verdict.evidence, "capabilities": verdict.capabilities,
                                "usable_band_hz": band},

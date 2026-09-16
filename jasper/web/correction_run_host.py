@@ -229,7 +229,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
             results = await run_levels(ladder, hold=door.hold, prepare=prepare, gate=gate, signals=signals, aborts={})
             if signals.stop.is_set() or signals.complete.is_set():
                 manifest.reason = signals.stop_reason if signals.stop.is_set() else "complete_requested"
-            return results[-1] if results and not manifest.reason else manifest
+            return replace(results[-1], reason=packet.to_dict()["reason"]) if results and not manifest.reason else manifest
         except BaseException as exc:  # noqa: BLE001 - preserve the partial packet before host failure publication
             manifest.reason = getattr(exc, "code", None) or REASON_INTERNAL_ERROR
             raise

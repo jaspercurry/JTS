@@ -46,7 +46,7 @@ from .pose_curve import (
     LATERAL_EVIDENCE_BAND_HZ, LATERAL_EVIDENCE_POINTS_PER_OCTAVE,
     LateralPoseCurve, lateral_evidence_grid_hz, lateral_pose_curve, pose_curve_record,
 )
-from ..measurement_programs import POSE_KIND_BEARING, validated_pose
+from ..measurement_programs import POSE_KIND_BEARING, pilot_floor_blocking, validated_pose
 from .contracts import (
     DESIGN_AXIS_DEG,
     POSITION_AXES,
@@ -93,6 +93,7 @@ __all__ = [
     "SCREEN_CLIPPED",
     "SCREEN_KINDS",
     "CaptureScreens",
+    "PurposeCaptureScreens",
     "EntryBaselineScreen",
     "GeometryRetake",
     "BoostExclusion",
@@ -200,6 +201,11 @@ class CaptureScreens:
     any_sweep_clipped: bool
 
 
+@dataclass(frozen=True)
+class PurposeCaptureScreens(CaptureScreens):
+    purpose: str | None
+
+
 # --------------------------------------------------------------------------- #
 # the three ladders
 # --------------------------------------------------------------------------- #
@@ -228,7 +234,9 @@ def cloud_position_screens(
     """
     if not screens.stimulus_located:
         return SCREEN_LOCATE_FAILED
-    if screens.pilot_snr_ok is False:
+    if screens.pilot_snr_ok is False and pilot_floor_blocking(
+        screens.purpose if isinstance(screens, PurposeCaptureScreens) else None
+    ):
         # The room/level discriminator runs before the linearity branch so a
         # collapsed pilot pair is never reported as the phone's fault (#1810).
         return SCREEN_PILOT_LEVEL_COLLAPSE
@@ -257,7 +265,9 @@ def lateral_pose_screens(screens: CaptureScreens) -> str | None:
     """
     if not screens.stimulus_located:
         return SCREEN_LOCATE_FAILED
-    if screens.pilot_snr_ok is False:
+    if screens.pilot_snr_ok is False and pilot_floor_blocking(
+        screens.purpose if isinstance(screens, PurposeCaptureScreens) else None
+    ):
         return SCREEN_PILOT_LEVEL_COLLAPSE
     if not screens.sweep_locate_confidence_ok:
         return SCREEN_LOCATE_FAILED
@@ -307,6 +317,7 @@ def entry_baseline_screens(
     *,
     stimulus_located: bool,
     reference_mark: str,
+    purpose: str | None = None,
 ) -> EntryBaselineScreen:
     """The "before" capture: screen it, and reduce it when it passes.
 
@@ -334,7 +345,7 @@ def entry_baseline_screens(
     """
     if not stimulus_located:
         return EntryBaselineScreen(SCREEN_LOCATE_FAILED)
-    if analysis.pilot_snr_ok is False:
+    if analysis.pilot_snr_ok is False and pilot_floor_blocking(purpose):
         return EntryBaselineScreen(SCREEN_PILOT_LEVEL_COLLAPSE)
     integrity = analysis.capture_integrity
     validity = evaluate_capture_validity(integrity)

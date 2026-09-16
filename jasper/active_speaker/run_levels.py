@@ -129,11 +129,7 @@ async def run_levels(
     prepare: Callable[[AngleCaptureRequest], LevelRun], gate: PositionGate,
     aborts: Mapping[type[BaseException], str], signals: RunSignals | None = None,
 ) -> tuple[RunManifest, ...]:
-    """The host supplies each round's record/session bindings under one mic hold.
-
-    One placement starts all levels at that pose. A take needing human recovery
-    ends the sequence with its partial manifest; it cannot start a new placement.
-    """
+    """Finish admissible levels at each pose under one mic hold."""
     admitted = ladder.admissible
     if not admitted:
         issue = next(issue for issue in ladder.levels[0].issues if issue.blocking)
@@ -167,7 +163,9 @@ async def run_levels(
                         aborts=aborts, signals=signals,
                     )
                     results.append(result)
-                    if result.status != "complete" or signals.complete.is_set() or signals.stop.is_set():
+                    if result.cancelled or result.stopped_at or any(take.get("next") == "stop" for take in result.takes):
+                        signals.request_stop(result.reason or "take_stopped")
+                    if signals.complete.is_set() or signals.stop.is_set():
                         return tuple(results)
         return tuple(results)
     finally:
