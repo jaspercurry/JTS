@@ -99,9 +99,12 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap):
     manifest = {"sets": groups}
     sources = live_round["sources"]
     sources["applied_profile"]["recomposition_snapshot"]["preset"]["crossover_regions"][0]["fc_hz"] = 2400
-    stats = series_stats({"freqs_hz": [100, 1000, 10000], "deviation_db": [-2, 0, 2],
-                          "rms_db": (8 / 3) ** 0.5,
-                          "band_means": [{"band_hz": [80, 120], "mean_db": -2}]}, 500)
+    plot = {"freqs_hz": [100, 1000, 10000], "deviation_db": [-2, 0, 2],
+            "rms_db": (8 / 3) ** 0.5,
+            "band_means": [{"band_hz": [80, 120], "mean_db": -2}]}
+    stats = series_stats({"freqs_hz": plot["freqs_hz"], "display": {
+        "deviation_db": plot["deviation_db"],
+    }}, plot, 500)
     identity = {"set_id": "woofer", "take_id": "woofer", "role": "woofer", "pose": pose}
     packet = {
         "round_id": "fixture",
@@ -217,7 +220,7 @@ def test_live_round_verdicts(tmp_path, live_round, band_lo, contains_crossover):
                 "positions_deep": count, "positions_total": 3, "cv_percent": pytest.approx(cv, abs=0.001) if cv else None,
                 "frequencies_hz": pytest.approx(frequencies, abs=0.1), "classification": "insufficient_positions",
             }
-        packet["series"].append({**fit, "stats": {"rms_100_10k_db": {"value": 2.4, "below_trusted_floor": False}}})
+        packet["series"].append({**fit, "stats": {"flatness_rms_db": {"value": 2.4}}})
     packet["series"].append({**packet["series"][0], "pose": {"kind": "seat", "deg": 0, "name": "sofa", "seat_offset_m": [0, 0, 0]}})
     index = packet_index(packet, tmp_path, [], manifest)
     assert any(line.startswith("series tweeter: pose sofa;") for line in index.splitlines())

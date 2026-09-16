@@ -126,7 +126,7 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
                     continue
                 fit = proposal["fit"]
                 fits.append({"set_id": group["set_id"], "take_id": take_id, "pose": take["pose"], "role": role,
-                             **{key: proposal.get(key) for key in ("boost_evidence", "per_filter_boost_cap_db", "composed_boost_cap_db")},
+                             **{key: proposal.get(key) for key in ("boost_evidence", "per_filter_boost_cap_db", "composed_boost_cap_db", "handover_level_shift_db")},
                              **{key: fit.get(key) for key in ("mic_tier", "budget", "filters", "residual_rms_db",
                                                             "residual_max_db", "reason_summary", "position_spread_db", "class_prior_hz")}})
     return fits
@@ -159,7 +159,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                                         and (not curve.get("role") or t.get("role") in (None, curve["role"]))), ({}, {}))
                     series.append({"set_id": curve.get("set_id", group.get("set_id")), "take_id": curve.get("take_id"),
                                    "pose": take.get("pose", curve.get("position")), "role": curve.get("role", take.get("role")),
-                                   "stats": series_stats(plot, gate_fields(take)["trusted_floor_hz"])})
+                                   "stats": series_stats(curve, plot, gate_fields(take)["trusted_floor_hz"])})
             atomic_write_json(view_path, view)
             artifacts["frequency_view"] = str(view_path)
             if purpose == PURPOSE_SPEAKER:

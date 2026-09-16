@@ -547,7 +547,7 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
     assert len(packet["series"]) == (7 if purpose == "room" else 1)
     for series in packet["series"]:
         assert series["set_id"] in packet["limits"]
-        assert series["stats"]["rms_100_10k_db"]["value"] < 0.5
+        assert series["stats"]["flatness_rms_db"]["value"] < 0.5
         assert abs(series["stats"]["tilt_db_per_decade"]["value"]) < 0.5
         assert series["stats"]["band_means_db"] and series["stats"]["low_end_means_db"]
         if purpose == "room":
@@ -585,8 +585,8 @@ def test_packet_skips_unreadable_written_room_artifact(tmp_path, contents):
     assert {**pointer, "set_id": manifest["sets"][0]["set_id"]} in packet["artifacts"]["room_views"]
 
 
-@pytest.mark.parametrize("level,slope", [(0, 0), (2, 3)])
-def test_packet_stats_use_the_saved_series_reference(tmp_path, level, slope):
+@pytest.mark.parametrize("level,ripple,expected", [(7, [0, 0, 0, 0], 0), (-3, [-1, 1, -1, 1], 1)])
+def test_packet_stats_measure_flatness_about_the_series_mean(tmp_path, level, ripple, expected):
 
     session, state = _live_session(tmp_path)
     group = {"set_id": "set", "base": True, "capture_basis": {"candidate_id": "base"},
@@ -605,8 +605,8 @@ def test_packet_stats_use_the_saved_series_reference(tmp_path, level, slope):
     def views(view, target, **kwargs):
         if view == "frequency":
             series = frequency_series(series_id="series", label="seat", kind="measured", role="summed",
-                                      take_id="take", freqs_hz=[100, 1000, 10000],
-                                      magnitude_db=[level - slope, level, level + slope],
+                                      take_id="take", freqs_hz=[400, 1000, 4000, 10000],
+                                      magnitude_db=[level + value for value in ripple],
                                       reference_db=0, smoothing_fractional_octave=6)
             (target / "frequency_view.json").write_text(json.dumps(build_frequency_view(FrequencyRun(
                 id="run", measurement_family="room", series=(series,)))))
@@ -615,9 +615,10 @@ def test_packet_stats_use_the_saved_series_reference(tmp_path, level, slope):
     banked = bank_round(session, campaign_root=tmp_path / "bank", state_path=state, view_runner=views, **paths)
     packet = json.loads((banked.path / "packet.json").read_text())
     stats = packet["series"][0]["stats"]
-    assert stats["rms_100_10k_db"]["value"] == pytest.approx((level ** 2 + 2 * slope ** 2 / 3) ** 0.5)
-    assert stats["tilt_db_per_decade"]["value"] == pytest.approx(slope)
-    assert stats["low_end_means_db"]["80_120"]["value"] == pytest.approx(level - slope)
+    assert stats["flatness_rms_db"] == {
+        "value": pytest.approx(expected, abs=0.01),
+        "band_hz": [400.0, 10000],
+    }
     assert stats["low_end_means_db"]["20_30"]["value"] is None
     assert packet["applied"] == {
         "candidate": "a123456789bc" + "0" * 52, "record": "123456789abc", "config_path": "/config.yml",

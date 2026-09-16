@@ -17,7 +17,7 @@ from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
 from jasper.active_speaker.branch_target import branch_target
-from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, compose_sigma_db, decide_trim
+from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, compose_sigma_db, decide_trim, fit_branches
 from jasper.active_speaker.crossover_v2.driver_prescription import _check_composed
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
@@ -166,6 +166,31 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
             assert len(value) <= 16
             pending.extend(value)
     assert before == {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize("fc_hz", [2400, 200])
+def test_speaker_fit_discloses_handover_level_shift(speaker_round, monkeypatch, fc_hz):
+    root, _, _, _, _, _ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    manifest = json.loads((directory / "run_manifest.json").read_text())
+    candidate_path = directory / "candidate.json"
+    candidate = json.loads(candidate_path.read_text())
+    candidate["source_preset"]["crossover_regions"][0]["fc_hz"] = fc_hz
+    candidate_path.write_text(json.dumps(candidate))
+    original = fit_branches
+
+    def one_wide_cut(*args, **kwargs):
+        branches = original(*args, **kwargs)
+        fit = branches.fits["woofer"]
+        return replace(branches, fits={
+            **branches.fits,
+            "woofer": replace(fit, filters=(LinearizationFilter("Peaking", fc_hz, 0.1, -6),)),
+        })
+
+    monkeypatch.setattr("jasper.active_speaker.speaker_fit.fit_branches", one_wide_cut)
+    result = speaker_fit(inputs, manifest, "speaker-set")
+    assert result["linearization"]["woofer"]["handover_level_shift_db"] == pytest.approx(-6, abs=0.5)
 
 
 @pytest.mark.parametrize("changes", [
@@ -680,6 +705,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
     expected = {(g["set_id"], t["take_id"], t["pose"]["deg"], t["role"])
                 for g in manifest["sets"] for t in g["takes"] if t["selected"]}
     assert len(packet["fits"]) == len(expected) == 2 * (pose_count + candidate_count)
+    assert all(fit["handover_level_shift_db"] is not None for fit in packet["fits"])
     assert len(packet["verdicts"]) == pose_count + candidate_count
     for fit in packet["fits"]:
         features = [feature["position_variance"] for feature in fit["filters"]]
@@ -696,7 +722,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
         assert fit["boost_evidence"]["design_poses"] == count
         assert fit["composed_boost_cap_db"] == 40.0
     assert len(packet["series"]) == len(expected)
-    assert all(s["stats"]["rms_100_10k_db"]["value"] is not None for s in packet["series"])
+    assert all(s["stats"]["flatness_rms_db"]["value"] is not None for s in packet["series"])
     assert packet["result"] == "complete" and set(packet["limits"]) == {g["set_id"] for g in groups}
     assert Path(packet["artifacts"]["frequency_png"]).read_bytes().startswith(b"\x89PNG")
     index = (banked.path / INDEX_FILENAME).read_text().splitlines()
@@ -721,7 +747,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
             assert stats["band_means_db"]["250"]["below_trusted_floor"] is True
             assert stats["band_means_db"]["500"]["below_trusted_floor"] is True
         assert stats["band_means_db"]["1000"]["below_trusted_floor"] is False
-        assert stats["rms_100_10k_db"]["below_trusted_floor"] is True
+        assert stats["flatness_rms_db"]["band_hz"] == [f_trusted_floor_hz(.007), 10000]
         assert stats["tilt_db_per_decade"]["below_trusted_floor"] is True
         assert all(row["below_trusted_floor"] == (row["value"] is not None) for row in stats["low_end_means_db"].values())
     assert crossover_prescriber.main(["status", str(banked.path)]) == 0
