@@ -206,16 +206,16 @@ def bass_ladder_evidence(levels: list[dict[str, Any]], groups: list[Mapping[str,
 
 def bass_level_evidence(
     aligned: Mapping[str, Any], *,
-    descriptor: Mapping[str, Any] | None, prescribed_boost_db: float | None,
+    descriptor: DynamicBassDescriptor | None, prescribed_boost_db: float | None,
 ) -> dict[str, Any]:
     grid, delta = aligned["freqs_hz"], aligned["delta"]
     groups, curves = aligned["groups"], aligned["curves"]
     pairs = [pair for repeats in groups.values() for pair in repeats]
     prescribed = np.asarray(expected_boost_db(
-        DynamicBassDescriptor(**descriptor), pairs[0][1]["record"]["loudness_volume_db"], grid,
+        descriptor, pairs[0][1]["record"]["loudness_volume_db"], grid,
     )) if descriptor else np.full(grid.shape, np.nan)
-    boost_band = [descriptor.get("delta_highpass_hz") or BASS_BANDS_HZ[0][0],
-                  descriptor["detector_lowpass_hz"]] if descriptor else None
+    boost_band = [descriptor.delta_highpass_hz or BASS_BANDS_HZ[0][0],
+                  descriptor.detector_lowpass_hz] if descriptor else None
     boost_bands = [(max(lo, boost_band[0]), min(hi, boost_band[1])) for lo, hi in BASS_BANDS_HZ
                    if boost_band and lo < boost_band[1] and hi > boost_band[0]]
 
@@ -246,7 +246,7 @@ def bass_level_evidence(
             "realized_boost_db": [{"band_hz": [lo, hi], "value_db": band_mean(delta, lo, hi),
                                    "prescribed_boost_db": band_mean(prescribed, lo, hi)} for lo, hi in BASS_BANDS_HZ],
             "compression_db": compression,
-            "compression_includes": ["compressor", "driver"],
+            "compression_includes": ["compressor", "driver", "shelf_model_error"],
             **_harmonics(groups, boost_bands),
             "base_db_spl_at_mark": _level_spl(groups, 0), "candidate_db_spl_at_mark": _level_spl(groups, 1),
             "snr_margin_db": min(snr) - DRIVER.snr_warn_db if snr else None,

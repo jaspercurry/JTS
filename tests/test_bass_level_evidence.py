@@ -119,7 +119,7 @@ def test_prescribed_realized_and_partial_boost_band(pair, fraction, fader_db):
         assert band["value_db"] == pytest.approx(mean * (1 - fraction), abs=.15)
     assert row["compression_db"][0]["band_hz"] == [25, 30]
     assert row["compression_db"][-1]["band_hz"] == [80, 90]
-    assert row["compression_includes"] == ["compressor", "driver"]
+    assert row["compression_includes"] == ["compressor", "driver", "shelf_model_error"]
 
 
 def test_live_boost_readings_follow_the_prescribed_shape(pair):
@@ -129,7 +129,7 @@ def test_live_boost_readings_follow_the_prescribed_shape(pair):
     aligned = fit_bass_shape([pair], candidate_id="boost")
     for (lo, hi), realized in zip(BASS_BANDS_HZ[3:7], (8.8, 6.0, 3.9, 2.8)):
         aligned["delta"][(aligned["freqs_hz"] >= lo) & (aligned["freqs_hz"] < hi)] = realized
-    row = bass_level_evidence(aligned, descriptor=descriptor, prescribed_boost_db=9.9)
+    row = bass_level_evidence(aligned, descriptor=DynamicBassDescriptor(**descriptor), prescribed_boost_db=9.9)
     bands = [band for band in row["realized_boost_db"] if 50 <= band["band_hz"][0] <= 100]
     assert [band["prescribed_boost_db"] for band in bands] == pytest.approx([7.938, 6.167, 4.254, 2.694], abs=.001)
     compression = [band["value_db"] for band in row["compression_db"] if band["band_hz"][0] >= 50]
@@ -392,6 +392,7 @@ def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path,
     levels = payload["tables"][0]["levels"]
     assert [row["realized_boost_db"] for row in rows] == [level["realized_boost_db"] for level in levels]
     assert [row["headroom"] for row in rows] == [level["headroom"] for level in levels]
+    assert [row["compression_includes"] for row in rows] == [level["compression_includes"] for level in levels]
     assert rows[0]["realized_boost_db"][3]["value_db"] == pytest.approx(0 if baseline_only else 6)
     assert (levels[0]["prescribed_boost_db"] is None) is baseline_only
     assert all((band["prescribed_boost_db"] is None) is (baseline_only or band["value_db"] is None)

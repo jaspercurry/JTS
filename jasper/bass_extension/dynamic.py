@@ -19,6 +19,8 @@ from jasper.sound.profile import _filter_response_complex, _freq_trig
 # CamillaDSP v4.1.3 Loudness parameter range; not a driver capability estimate.
 # https://github.com/HEnquist/camilladsp/blob/v4.1.3/README.md#loudness
 NATIVE_LOUDNESS_BOOST_MAX_DB = 20.0
+# CamillaDSP's native Loudness low-shelf corner used by the proof model.
+NATIVE_LOUDNESS_CORNER_HZ = 70.0
 LOUDNESS_TAPER_DB = 20.0
 REFERENCE_LEVEL_DB_MIN = -100.0
 REFERENCE_LEVEL_DB_MAX = 0.0
@@ -133,11 +135,11 @@ def loudness_boost_db(canonical_volume_db: float, descriptor: DynamicBassDescrip
 def expected_boost_db(
     descriptor: DynamicBassDescriptor, fader_db: float, freqs_hz: Iterable[float],
 ) -> list[float]:
-    """Model CamillaDSP's uncompressed 70 Hz, slope-12 shelf with a delta high-pass."""
+    """Model CamillaDSP's uncompressed slope-12 shelf with a delta high-pass."""
     frequencies = list(freqs_hz)
     trig = _freq_trig(frequencies)
     shelf = _filter_response_complex(
-        FilterSpec("native_low", "Lowshelf", 70.0, loudness_boost_db(fader_db, descriptor)), frequencies, trig,
+        FilterSpec("native_low", "Lowshelf", NATIVE_LOUDNESS_CORNER_HZ, loudness_boost_db(fader_db, descriptor)), frequencies, trig,
     )
     highpass = _filter_response_complex(
         FilterSpec("delta_highpass", "Highpass", descriptor.delta_highpass_hz, 0.0, SHELF_Q), frequencies, trig,
