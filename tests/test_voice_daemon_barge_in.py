@@ -323,23 +323,6 @@ def test_unreferenced_speech_reaches_a_turn_that_owns_interruption(
     assert sent == (frame.tobytes() if owns_interruption else bytes(frame.nbytes))
 
 
-def test_owning_interruption_does_not_outlive_conversation_end(monkeypatch):
-    """The exemption covers the host's own barge-in flush and nothing else:
-    a requested conversation end still ends the turn."""
-    wl = _continuous_loop(owns_interruption=True)
-    wl._turns.conversation_end_requested = True
-    ended: list[str] = []
-
-    async def _spy(reason: str = "ended") -> None:
-        ended.append(reason)
-
-    monkeypatch.setattr(wl._turns, "end", _spy)
-    asyncio.run(wl._handle_session_frame(silent_frame()))
-
-    assert ended == ["conversation_ended"]
-    assert wl._turns.turn.send_audio_calls == 0
-
-
 # --- Self-interrupt-loop guard -----------------------------------------
 
 

@@ -44,21 +44,11 @@ class FakeLiveTurn:
         self.end_input_calls = 0
         self.release_calls = 0
         self.send_audio_calls = 0
-        self.nudge_backend_calls: list[int] = []
-        self.nudge_backend_result = False
-        self.user_transcript_at = 0.0
         self._user_text = user_text
         self._assistant_text = assistant_text
         self._metadata = metadata
         self._bytes_sent = bytes_sent
         self._chunks_received = chunks_received
-
-    async def nudge_backend(self, *, silence_ms: int) -> bool:
-        self.nudge_backend_calls.append(silence_ms)
-        return self.nudge_backend_result
-
-    def last_user_transcript_at(self) -> float:
-        return self.user_transcript_at
 
     def last_chunk_at(self) -> float:
         return 0.0

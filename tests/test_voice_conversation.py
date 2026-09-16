@@ -10,11 +10,10 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from jasper.tools import ToolRegistry, dispatch_tool
 from jasper.voice.conversation import (
+    ACKNOWLEDGED_BACKEND_SEC,
     WATCHDOG_POLL_SEC,
     continuous_watchdog,
-    register_conversation_tools,
 )
 from jasper.voice.openai_live_session import OpenAILiveConnection, OpenAILiveTurn
 from jasper.voice.turn_lifecycle import State
@@ -55,64 +54,15 @@ async def test_endpointed_answer_closes_the_turn_once_playout_drains():
     await loop._cancel_fire_and_forget_tasks()
 
 
-async def test_end_conversation_tool_closes_even_without_more_mic_frames():
-    written, draining, drained = (asyncio.Event() for _ in range(3))
-
-    async def hold_write():
-        written.set()
-        await asyncio.Event().wait()
-
-    async def drain():
-        draining.set()
-        await drained.wait()
-
-    tts = FakeTts(on_drain=drain)
-    loop = answered_loop(tts=tts)
-    turn = OpenAILiveTurn(OpenAILiveConnection(api_key="test"), time.monotonic())
-    goodbye = b"\x00\x40" * 120
-    turn._reserve_playout = False
-    turn._enqueue_audio(AudioOutChunk(goodbye))
-    turn._enqueue_audio(AudioOutChunk(b"\x00\x20" * 120))
-    loop._turns.turn = turn
-    loop._wake_telemetry.outcome = AsyncMock()
-    loop._turns.output_episode = await loop._assistant_output.begin_turn_episode(None)
-    playback = asyncio.create_task(play_responses(turn, tts, on_first_write=hold_write))
-    loop._turns.bg_tasks = {playback}
-    registry = ToolRegistry()
-    register_conversation_tools(registry, loop._turns.request_conversation_end)
-    try:
-        await wait_signalled(written, "goodbye accepted", producer=playback)
-        result = await dispatch_tool(registry, "end_conversation", {})
-        await wait_signalled(draining, "goodbye and chirp drain")
-        assert tts.flush_calls == 0
-        assert tts.end_segment_calls == 1
-        assert tts.writes == [goodbye, loop._assistant_output._chirp_off_pcm]
-        assert tts.calls[-3:] == ["end_segment", "write_segment", "wait_drained"]
-        assert playback.done()
-        assert loop._turns.state is State.SESSION
-        loop._wake_telemetry.outcome.assert_awaited_once_with("completed", "conversation_ended")
-        drained.set()
-        await wait_until(lambda: loop._turns.state is State.WAKE)
-        assert result == {"status": "conversation_ended"}
-        assert loop._usage_store.close_calls == 1
-    finally:
-        drained.set()
-        playback.cancel()
-        await asyncio.gather(playback, return_exceptions=True)
-        await loop._cancel_fire_and_forget_tasks()
-
-
 @pytest.mark.parametrize(
     "busy, followup_seconds",
-    [("speaker", 5), ("user", 5), ("tool", 5), ("quiet", 5), ("quiet", 0)],
+    [("speaker", 2), ("user", 2), ("tool", 2), ("quiet", 2), ("quiet", 0)],
 )
 async def test_live_followup_waits_for_playout_speech_and_tools(busy, followup_seconds):
     now = time.monotonic()
     turn = FakeLiveTurn(chunks_received=1)
-    turn.last_chunk_at = lambda: now - 8
     turn.audio_chunks_pending = lambda: 0
     turn.backend_pending = busy == "tool"
-    turn.last_activity_at = lambda: now if busy == "tool" else now - 8
     tts = FakeTts()
     tts.expected_drain_at = lambda: now + 10 if busy == "speaker" else now - 8
     task = asyncio.create_task(continuous_watchdog(
@@ -131,33 +81,31 @@ async def test_live_followup_waits_for_playout_speech_and_tools(busy, followup_s
         await asyncio.gather(task, return_exceptions=True)
 
 
-@pytest.mark.parametrize("acknowledged, backend, elapsed, ended", [
-    (False, False, 7, False),
-    (False, False, 9, True),
-    (False, True, 9, True),
-    (True, True, 9, False),
-    (True, True, 31, True),
-    (True, False, 9, True),
-])
-async def test_live_deadlines_ignore_provider_chatter(acknowledged, backend, elapsed, ended):
-    now = time.monotonic()
-    turn = FakeLiveTurn(chunks_received=1)
+@pytest.mark.parametrize("acknowledged", [False, True])
+@pytest.mark.parametrize("backend", [False, True])
+async def test_live_deadlines_ignore_provider_chatter(monkeypatch, acknowledged, backend):
+    now, last_speech, followup_seconds = 101.0, 100.0, 2.0
+    accepted_at = now if acknowledged else 0
+    deadline = (
+        last_speech + ACKNOWLEDGED_BACKEND_SEC if backend
+        else max(last_speech, accepted_at) + followup_seconds
+    )
+    turn = FakeLiveTurn()
     turn.backend_pending = backend
-    turn.last_chunk_at = lambda: now
-    turn.last_activity_at = lambda: time.monotonic()
-    task = asyncio.create_task(continuous_watchdog(
-        turn, FakeTts(), followup_seconds=5, stall_seconds=120,
-        user_activity=lambda: (now - elapsed - 1, now - elapsed),
-        last_accepted_at=lambda: now - elapsed + 1 if acknowledged else 0,
-    ))
-    try:
-        await asyncio.sleep(WATCHDOG_POLL_SEC * 2)
-        assert task.done() is ended
-        if ended:
-            assert task.result() == ("response_stalled" if backend or not acknowledged else "followup_timeout")
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+
+    async def tick(seconds):
+        nonlocal now
+        now += seconds
+        assert now <= deadline
+
+    monkeypatch.setattr(conversation, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(conversation, "asyncio", SimpleNamespace(sleep=tick))
+    reason = await continuous_watchdog(
+        turn, FakeTts(), followup_seconds=followup_seconds, stall_seconds=120,
+        user_activity=lambda: (99.0, last_speech), last_accepted_at=lambda: accepted_at,
+    )
+    assert now == deadline
+    assert reason == ("response_stalled" if backend else "followup_timeout")
 
 
 async def test_partial_transcripts_do_not_end_the_conversation():
@@ -180,88 +128,8 @@ async def test_partial_transcripts_do_not_end_the_conversation():
         await asyncio.gather(task, return_exceptions=True)
 
 
-@pytest.mark.parametrize("second_utterance", [False, True])
-@pytest.mark.parametrize("nudge_result", [False, True])
-async def test_unanswered_speech_gets_one_nudge_per_utterance(monkeypatch, second_utterance, nudge_result):
-    now = 100.0
-    speech_started = now
-    turn = FakeLiveTurn()
-    turn.nudge_backend_result = nudge_result
-
-    async def tick(seconds):
-        nonlocal now, speech_started
-        now += seconds
-        if second_utterance and now == 104:
-            speech_started = now
-
-    monkeypatch.setattr(conversation, "time", SimpleNamespace(monotonic=lambda: now))
-    monkeypatch.setattr(conversation, "asyncio", SimpleNamespace(sleep=tick))
-    reason = await continuous_watchdog(
-        turn, FakeTts(), followup_seconds=5, stall_seconds=120,
-        user_activity=lambda: (speech_started, speech_started), last_accepted_at=lambda: 0,
-    )
-    assert reason == "response_stalled"
-    assert now == (112 if second_utterance else 108)
-    expected = (
-        [2000] * (2 if second_utterance else 1) if nudge_result else
-        (list(range(2000, 4000, 250)) if second_utterance else []) + list(range(2000, 8001, 250))
-    )
-    assert turn.nudge_backend_calls == expected
-
-
-@pytest.mark.parametrize("last_chunk_at", [0.0, 100.0, 101.0])
-@pytest.mark.parametrize("transcript_at, pending, lost, expected", [
-    (100.0, False, False, "unanswered_utterance"),
-    (0.0, False, False, "response_stalled"),
-    (99.0, False, False, "response_stalled"),
-    (100.0, True, False, "response_stalled"),
-    (100.0, False, True, "connection_lost"),
-])
-async def test_unanswered_verdict_requires_this_utterance_transcribed_and_backend_idle(
-    monkeypatch, transcript_at, pending, lost, expected, last_chunk_at,
-):
-    now = 107.75
-    turn = FakeLiveTurn()
-    turn.user_transcript_at = transcript_at
-    turn.backend_pending = pending
-    turn.turn_lost = lambda: lost
-    turn.last_chunk_at = lambda: last_chunk_at
-
-    async def tick(seconds):
-        nonlocal now
-        now += seconds
-        assert now == 108
-
-    monkeypatch.setattr(conversation, "time", SimpleNamespace(monotonic=lambda: now))
-    monkeypatch.setattr(conversation, "asyncio", SimpleNamespace(sleep=tick))
-    assert await continuous_watchdog(
-        turn, FakeTts(), followup_seconds=5, stall_seconds=120,
-        user_activity=lambda: (100, 100), last_accepted_at=lambda: 0,
-    ) == expected
-    assert turn.nudge_backend_calls == ([] if lost or last_chunk_at >= 100 else [8000])
-
-
 @pytest.mark.parametrize("input_ended", [False, True])
-async def test_unanswered_utterance_ends_with_chirp_and_complete_outcome(input_ended):
-    tts = FakeTts()
-    loop = answered_loop(tts=tts)
-    loop._turns.turn = FakeLiveTurn(bytes_sent=3200)
-    loop._turns.playback_report.accepted_audio = False
-    loop._turns.input_ended = input_ended
-    loop._turns._timeline.anchor_at()
-    cue = AsyncMock()
-    loop._turns._play_cue = cue
-    loop._turns.output_episode = await loop._assistant_output.begin_turn_episode(None)
-    await loop._turns.end("unanswered_utterance")
-    assert tts.writes == [loop._assistant_output._chirp_off_pcm]
-    cue.assert_not_awaited()
-    assert loop._turns._timeline.last_turn_ms["outcome"] == "complete"
-    assert loop._turns.silent_responses_session == 0
-    await loop._cancel_fire_and_forget_tasks()
-
-
-@pytest.mark.parametrize("reason", ["followup_timeout", "conversation_ended"])
-async def test_the_hang_up_chirp_is_written_ahead_of_the_teardown_behind_it(reason):
+async def test_the_hang_up_chirp_is_written_ahead_of_the_teardown_behind_it(input_ended):
     """The teardown runs behind the cue, not in front of it."""
     order: list[str] = []
     chirped = asyncio.Event()
@@ -286,12 +154,18 @@ async def test_the_hang_up_chirp_is_written_ahead_of_the_teardown_behind_it(reas
 
     tts = FakeTts(on_call=note)
     loop = answered_loop(tts=tts)
+    loop._turns.turn = FakeLiveTurn(bytes_sent=3200)
+    loop._turns.playback_report.accepted_audio = False
+    loop._turns.input_ended = input_ended
+    loop._turns._play_cue = AsyncMock()
     loop._peering.session_ended = teardown
     loop._turns.turn.release = release
     loop._assistant_output.ducker.restore = restore
     loop._turns.output_episode = await loop._assistant_output.begin_turn_episode(None)
-    await loop._turns.end(reason)
+    await loop._turns.end("followup_timeout")
     assert tts.writes == [loop._assistant_output._chirp_off_pcm]
+    loop._turns._play_cue.assert_not_awaited()
+    assert loop._turns.silent_responses_session == 0
     assert "still_silent" not in order
     chirp = order.index("write_segment")
     assert chirp < order.index("release")
@@ -310,14 +184,14 @@ async def test_playout_acceptance_updates_after_the_first_answer():
 
 
 @pytest.mark.parametrize("completion, answer, followup, correction, acknowledged, expected", [
-    (10.0, 11.0, 5, False, True, 17.0),
+    (10.0, 11.0, 2, False, True, 14.0),
     (10.0, 11.0, 0, False, True, 12.0),
     (10.0, 10.0, 0, False, True, 11.0),
-    (10.0, 9.0, 5, False, True, 18.0),
-    (10.0, None, 5, False, True, 18.0),
-    (28.0, None, 5, False, True, 31.0),
-    (10.0, None, 5, True, True, 35.0),
-    (10.0, None, 5, False, False, 9.0),
+    (10.0, 9.0, 2, False, True, 18.0),
+    (10.0, None, 2, False, True, 18.0),
+    (30.0, None, 2, False, True, 32.0),
+    (10.0, None, 2, True, True, 35.0),
+    (10.0, None, 2, False, False, 18.0),
 ])
 async def test_live_backend_handoff_has_a_bounded_grace(
     monkeypatch, completion, answer, followup, correction, acknowledged, expected,
@@ -361,7 +235,7 @@ async def test_live_backend_handoff_has_a_bounded_grace(
         user_activity=lambda: (speech_started, last_speech), last_accepted_at=lambda: accepted,
     )
     assert now == expected
-    assert reason == ("response_stalled" if correction or not accepted else "followup_timeout")
+    assert reason == ("response_stalled" if correction else "followup_timeout")
 
 
 @pytest.mark.parametrize("accepted, drain, accepted_age, drain_age", [

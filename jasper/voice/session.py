@@ -199,13 +199,6 @@ class LiveTurn(ProviderTurn, Protocol):
     # this is not a frontend speech-completion event. Zero before completion.
     backend_completed_at: float
 
-    async def nudge_backend(self, *, silence_ms: int) -> bool:
-        ...
-
-    def last_user_transcript_at(self) -> float:
-        """Monotonic time of the last user transcript delta; zero before any."""
-        ...
-
     def discard_input(self) -> None:
         """Synchronously revoke microphone audio accepted for this turn but
         not yet on the wire. Idempotent; a turn that buffers none no-ops."""

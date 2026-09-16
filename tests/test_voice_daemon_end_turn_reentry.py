@@ -390,7 +390,7 @@ async def test_closure_completes_without_waiting_for_the_provider_release():
     wl._ducker.restore = restore
     wl._assistant_output.listening_chirp = chirp
 
-    teardown = asyncio.create_task(wl._turns.end("conversation_ended"))
+    teardown = asyncio.create_task(wl._turns.end())
     try:
         await asyncio.wait_for(teardown, timeout=10.0)
         assert order == ["chirp_False", "duck_restore"]
@@ -417,7 +417,7 @@ async def test_shutdown_waits_out_a_pending_provider_release():
 
     wl._turns.turn.release = release
 
-    await wl._turns.end("conversation_ended")
+    await wl._turns.end()
     pending = wl._turns.pending_release
     assert pending is not None
 

@@ -113,10 +113,9 @@ def test_teardown_calls_end_segment_once():
 
 @pytest.mark.parametrize(
     "reason, flushes",
-    [("ended", 0), ("playback_failed", 1), ("conversation_ended", 0)],
+    [("ended", 0), ("playback_failed", 1)],
 )
 def test_teardown_drops_the_queued_tail_only_when_it_must_not_be_heard(reason, flushes):
-    """A dismissal preserves the goodbye; failed output drops the tail."""
     tts = FakeTts()
     wl = _make_wakeloop(tts)
 

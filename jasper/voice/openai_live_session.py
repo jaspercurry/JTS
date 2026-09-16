@@ -22,7 +22,6 @@ from ..log_event import log_event
 from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn, ToolCall, upsample_16k_to_24k
 from ._supervisor import is_transient, openai_error_is_terminal
 from ._tasks import await_cleanup_owned
-from .prompt import DISMISSAL_PHRASES_TEXT
 from .session import AudioOutChunk, ConnectionState, TurnCapture, TurnUsage
 
 logger = logging.getLogger(__name__)
@@ -32,11 +31,6 @@ FRONTEND_INSTRUCTIONS = (
     "Keep listening while the user pauses to think or finishes a thought. A bare wake "
     "word, a half-finished phrase, background noise, music, or nearby conversation is "
     "not a request: stay silent and keep listening. "
-    f"A standalone {DISMISSAL_PHRASES_TEXT} ends the "
-    "conversation: delegate it at once so the backend can end_conversation. "
-    "After you have answered, a short reply from the user that is not a question — "
-    "an acknowledgement, a thanks, a goodbye — is for the backend: delegate it rather "
-    "than answering it yourself. "
     "Speak only once the user has asked you something, and never greet the user or "
     "announce that you are ready. "
     "Accept follow-up questions without asking for a wake word. Let the user interrupt "
@@ -44,7 +38,6 @@ FRONTEND_INSTRUCTIONS = (
     "current facts, actions, or deeper reasoning to the backend. The backend has the "
     "speaker's local tools for transit, timers, music and other functions; use those "
     "instead of guessing or pretending an action succeeded. "
-    "Cancel my timer and stop music are tool requests, not requests to end the conversation. "
     "Do not invite another question after every answer."
 )
 
@@ -142,20 +135,6 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._calls = {}
         self._counted_responses = set()
         self.backend_pending = False
-
-    async def nudge_backend(self, *, silence_ms: int) -> bool:
-        if self.backend_pending or self.turn_lost():
-            return False
-        try:
-            await self._conn._send({"type": "response.create"})
-        except Exception as e:  # noqa: BLE001
-            self._on_send_failed(e, operation="nudge")
-            return False
-        log_event(
-            logger, "provider.backend_nudged", provider=self._conn.PROVIDER_NAME,
-            silence_ms=silence_ms,
-        )
-        return True
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
         if self._released or self._turn_lost:

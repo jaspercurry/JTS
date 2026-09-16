@@ -513,9 +513,6 @@ class WakeLoop:
     def close_conversation_store(self) -> None:
         self._conversation_capture.close()
 
-    def request_conversation_end(self) -> None:
-        self._turns.request_conversation_end()
-
     async def _play_dynamic_text(self, text: str) -> bool:
         return await self._assistant_output.play_dynamic_text(text)
 
@@ -1205,9 +1202,6 @@ class WakeLoop:
             return
         if captured_at is not None:
             self._note_input_age(captured_at)
-        if self._turns.conversation_end_requested:
-            await self._turns.end("conversation_ended")
-            return
         if reason := self._turns.background_end_reason():
             await self._turns.finish_response(reason)
             return

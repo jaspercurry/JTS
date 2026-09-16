@@ -209,9 +209,6 @@ class ToolDefinition:
     providers: frozenset[str] | None = None
     # Queue and execution wait budget, in seconds.
     timeout: float = DEFAULT_TOOL_TIMEOUT_SEC
-    # `end_conversation` sets this: a dismissal must not be lost to
-    # cancellation.
-    survives_cancellation: bool = False
     # Whether INFO-level tool dispatch logs may include a repr preview
     # of the returned payload. Content-bearing tools opt out so
     # journald keeps timing/shape diagnostics without message bodies.
@@ -350,10 +347,6 @@ class Tool:
     @property
     def timeout(self) -> float:
         return self.definition.timeout
-
-    @property
-    def survives_cancellation(self) -> bool:
-        return self.definition.survives_cancellation
 
     @property
     def log_payload(self) -> bool:
@@ -589,7 +582,6 @@ def tool(
     *,
     providers: Iterable[str] | None = None,
     timeout: float | None = None,
-    survives_cancellation: bool = False,
     llm_description: str | None = None,
     labels: Iterable[str] | None = None,
     log_payload: bool = True,
@@ -606,12 +598,6 @@ def tool(
 
     `timeout` bounds queue and execution wait in the shared registry, in
     seconds. None keeps `DEFAULT_TOOL_TIMEOUT_SEC`.
-
-    `survives_cancellation=True` declares that a caller's cancellation never
-    abandons this tool once dispatched — `dispatch_tool` shields the whole
-    dispatch, though the tool's own `timeout` still applies while it waits
-    for the execution slot. Use it for a tool whose effect a later request
-    must not make obsolete, not to paper over a slow one.
 
     `llm_description` overrides the MODEL-FACING description only. None
     (default) sends the model the full docstring `description`. Set it to
@@ -642,7 +628,6 @@ def tool(
             fn.__jasper_tool_providers__ = frozenset(providers)  # type: ignore[attr-defined]
         if timeout is not None:
             fn.__jasper_tool_timeout__ = timeout  # type: ignore[attr-defined]
-        fn.__jasper_tool_survives_cancellation__ = survives_cancellation  # type: ignore[attr-defined]
         if llm_description is not None:
             fn.__jasper_tool_llm_description__ = llm_description  # type: ignore[attr-defined]
         if labels:
@@ -675,7 +660,6 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
     params = _params_schema(fn)
     decl_providers = getattr(fn, "__jasper_tool_providers__", None)
     decl_timeout = getattr(fn, "__jasper_tool_timeout__", DEFAULT_TOOL_TIMEOUT_SEC)
-    decl_survives_cancellation = getattr(fn, "__jasper_tool_survives_cancellation__", False)
     decl_llm_desc = getattr(fn, "__jasper_tool_llm_description__", None)
     decl_labels = getattr(fn, "__jasper_tool_labels__", ())
     decl_log_payload = getattr(fn, "__jasper_tool_log_payload__", True)
@@ -704,7 +688,6 @@ def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
         parameters=params,
         providers=decl_providers,
         timeout=decl_timeout,
-        survives_cancellation=decl_survives_cancellation,
         log_payload=decl_log_payload,
         log_args=decl_log_args,
         llm_description=decl_llm_desc,
@@ -818,7 +801,6 @@ async def dispatch_tool(
                           ``called`` then ``completed``; observer failure
                           never changes the model-visible payload, and
                           unknown names are not reported as registered
-      * ``survives_cancellation`` -> see ``tool()``
     plus the ``tool.dispatch_start`` / ``tool.dispatch_done`` structured
     events (and plain ``TIMED OUT`` / ``RAISED`` lines on failure)
     journalctl shows for every call — identical across providers.
@@ -837,17 +819,6 @@ async def dispatch_tool(
         )
         return {"error": f"unknown tool {name}"}
 
-    dispatch = _dispatch(registry, tool, args)
-    return await (asyncio.shield(dispatch) if tool.survives_cancellation else dispatch)
-
-
-async def _dispatch(
-    registry: ToolRegistry, tool: Tool, args: dict[str, Any],
-) -> dict[str, Any]:
-    """One dispatch start to finish: observer notify, execution, bookkeeping.
-
-    Split out so `survives_cancellation` (see `tool()`) can shield all of it.
-    """
     name = tool.name
     try:
         observer = registry.dispatch_observer() if registry.dispatch_observer else None
