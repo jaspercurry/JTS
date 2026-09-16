@@ -14,7 +14,7 @@ from jasper.json_fields import finite_float
 
 from .bass_comparison import CHANGE_FIELDS, bass_capture_context
 from .bass_fit import REFERENCE_BAND_HZ, fit_bass_shape
-from .bass_level_evidence import bass_level_evidence
+from .bass_level_evidence import bass_ladder_evidence, bass_level_evidence
 from .crossover_v2.measurement_context import compare_capture_basis
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 
@@ -67,12 +67,14 @@ def fit_bass_table(
             raise CrossoverV2Refused(comparison, code="bass_table_capture_context_changed")
         groups[key].append((before, after))
         contexts.append(comparison)
-    levels = []
+    levels, ladder = [], []
     for key, group in sorted(groups.items()):
         prescribed = loudness_boost_db(key[1], settings) if settings else None
         aligned = fit_bass_shape(group, candidate_id=candidate_id, reference_band_hz=reference_band_hz)
+        ladder.append(aligned["groups"])
         levels.append({"level_key": dict(zip(LEVEL_FIELDS, key)),
                        **bass_level_evidence(aligned, descriptor=descriptor, prescribed_boost_db=prescribed)})
+    bass_ladder_evidence(levels, ladder)
     return {"schema": "jts_bass_table/1", "candidate_id": candidate_id,
             "reference_band_hz": list(reference_band_hz), "smoothing_fraction": 3,
             "tested_volume_range_db": [min(key[0] for key in groups), max(key[0] for key in groups)],
@@ -83,4 +85,5 @@ def fit_bass_table(
                        "The single-repeat harmonic evidence floor is 1 dB, not a hearing threshold; repeats combine base and candidate band standard deviations in quadrature at each pose. Decreases are not rises.",
                        "Curves use medians within each pose, then across poses. SPL uses the same pose weighting on each take's calibrated loudest half-second statistic.",
                        "Repeat spread is the RMS of fundamental standard deviations within repeated poses and both arms. Position spread is not yet estimated.",
+                       "Ladder growth uses common qualified bins within each stack and pose; harmonic growth adds the fundamental to the relative harmonic reading. Knee allowances use repeat spread or summed level uncertainty from the worst fundamental and harmonic SNR at both rungs, divided by the fader step. An unreached knee is bounded above the top measurable rung, with evidence gaps listed; headroom subtracts each row's measured SPL from the last clean rung and is extrapolated when the knee is unreached.",
                        "Missing frequency bins remain unproven."]}

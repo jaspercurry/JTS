@@ -200,6 +200,148 @@ def test_partial_and_empty_coverage_keep_one_row_shape(pair, coverage):
     json.dumps(row, allow_nan=False)
 
 
+@pytest.fixture
+def ladder(pair):
+    def build(*, knee=True, repeats=2, spread=0., snr=21):
+        pairs = []
+        for spl in (72, 75, 78, 81):
+            for repeat in range(repeats):
+                rung = copy.deepcopy(pair)
+                for side, take in enumerate(rung):
+                    take["record"].update(level_db=spl - 100, loudness_volume_db=spl - 100,
+                                          capture_integrity={"spl": {"loudest_half_second_db_spl": spl + side - 1}})
+                    take["frequency_curve"]["magnitude_db"] = [spl - 100] * 3
+                    take["fundamental_db"] = [spl - 100 + side] * len(take["freqs_hz"])
+                    for band in take["bands"]:
+                        band["estimated_snr_db"] = snr
+                    take["harmonics"]["3"]["relative_db"] = [
+                        -40 + (2 * max(0, spl - 75) if knee and side and 40 <= f < 50 else 0)
+                        + (spread if repeat else -spread) for f in take["freqs_hz"]]
+                    for harmonic in take["harmonics"].values():
+                        harmonic["floor_relative_db"] = [value - snr for value in harmonic["relative_db"]]
+                pairs.append(rung)
+        return pairs
+    return build
+
+
+@pytest.mark.parametrize("knee,repeats,spread,snr,expected_knee,allowance", [
+    (True, 2, .25, 32, 78, 1 / 6),
+    (False, 2, .25, 32, None, 1 / 6),
+    (True, 2, 3., 32, None, 2.),
+])
+def test_ladder_knee_and_measured_headroom(ladder, knee, repeats, spread, snr, expected_knee, allowance):
+    result = table(ladder(knee=knee, repeats=repeats, spread=spread, snr=snr))
+    levels = result["levels"]
+    bands = [row["headroom"]["candidate"][2] for row in levels]
+    assert bands[0]["growth_db_per_db"] == {"fundamental": None, "2": None, "3": None}
+    for band, h3 in zip(bands[1:], (1, 3 if knee else 1, 3 if knee else 1)):
+        assert band["growth_db_per_db"] == pytest.approx({"fundamental": 1, "2": 1, "3": h3})
+        assert band["allowance_db_per_db"]["3"] == pytest.approx(allowance)
+        assert band["allowance_basis"]["3"] == "repeat_spread_db"
+    for spl, band in zip((72, 75, 78, 81), bands):
+        assert band["band_hz"] == [40, 50]
+        assert band["knee_level_db_spl"] == expected_knee
+        assert band["knee_bounded"] == ("above_top_rung" if expected_knee is None else None)
+        assert band["top_clean_level_db_spl"] == (81 if expected_knee is None else 75)
+        assert band["headroom_remaining_db"] == (81 if expected_knee is None else 75) - spl
+        assert band["extrapolated"] is (expected_knee is None)
+        assert "basis" not in band
+    for row in levels:
+        assert all(band["knee_level_db_spl"] is None for band in row["headroom"]["base"])
+        assert row["headroom"]["candidate"][0]["knee_bounded"] == "above_top_rung"
+    assert bass_table_rows({"tables": [result]})[0]["headroom"] == levels[0]["headroom"]
+    json.dumps(result, allow_nan=False)
+
+
+@pytest.mark.parametrize("weak_reading,rung,snr,expected_knee", [
+    ("fundamental", 1, 80, 78), ("fundamental", 1, 20, None), ("fundamental", 2, 20, None),
+    ("3", 1, 20, None), ("3", 2, 20, None),
+])
+def test_single_repeat_knee_uses_worst_reading_noise(ladder, weak_reading, rung, snr, expected_knee):
+    pairs = ladder(repeats=1, knee=False, snr=80)
+    for i, (_, take) in enumerate(pairs):
+        take["harmonics"]["3"]["relative_db"] = [-40 + (1 if i >= 2 and 40 <= f < 50 else 0)
+                                                    for f in take["freqs_hz"]]
+    take = pairs[rung][1]
+    if weak_reading == "fundamental":
+        take["bands"][2]["estimated_snr_db"] = snr
+    else:
+        harmonic = take["harmonics"][weak_reading]
+        harmonic["floor_relative_db"] = [value - snr for value in harmonic["relative_db"]]
+    band = table(pairs)["levels"][2]["headroom"]["candidate"][2]
+    assert band["growth_db_per_db"] == pytest.approx({"fundamental": 1, "2": 1, "3": 4 / 3})
+    assert band["allowance_db_per_db"]["3"] == pytest.approx(80 * np.log10(1 + 10 ** (-snr / 20)) / 3)
+    assert band["allowance_basis"]["3"] == "snr_uncertainty_db"
+    assert band["knee_level_db_spl"] == expected_knee
+
+
+@pytest.mark.parametrize("gap,top,unmeasured", [(0, 81, [1]), (1, 81, [1, 2]), (3, 78, [3])])
+def test_ladder_bound_uses_top_measurable_rung_and_lists_gaps(ladder, gap, top, unmeasured):
+    pairs = ladder(repeats=1, knee=False)
+    for harmonic in pairs[gap][1]["harmonics"].values():
+        harmonic["qualified"] = [False] * len(harmonic["freqs_hz"])
+    levels = table(pairs)["levels"]
+    for row in levels:
+        band = row["headroom"]["candidate"][2]
+        assert band["knee_level_db_spl"] is None
+        assert band["knee_bounded"] == "above_top_rung"
+        assert band["top_clean_level_db_spl"] == top
+        assert band["headroom_remaining_db"] == top - row["candidate_db_spl_at_mark"]
+        assert band["unmeasured_level_keys"] == [levels[i]["level_key"] for i in unmeasured]
+        assert band["extrapolated"] is True
+
+
+def test_ladder_h2_knee_uses_fader_steps_and_stops_at_the_first_knee(ladder):
+    pairs = ladder()
+    for pair in pairs:
+        for take in pair:
+            take["record"]["level_db"] *= 2
+            take["record"]["loudness_volume_db"] *= 2
+            take["harmonics"]["2"], take["harmonics"]["3"] = take["harmonics"]["3"], take["harmonics"]["2"]
+            if take["record"]["level_db"] == -38:
+                take["harmonics"]["2"]["relative_db"] = [-40.] * len(take["freqs_hz"])
+    levels = table(pairs)["levels"]
+    knee = levels[2]["headroom"]["candidate"][2]
+    assert knee["growth_db_per_db"] == pytest.approx({"fundamental": .5, "2": 1.5, "3": .5})
+    assert knee["knee_orders"] == [2]
+    assert levels[-1]["headroom"]["candidate"][2]["knee_level_db_spl"] == 78
+    assert levels[-1]["headroom"]["candidate"][2]["top_clean_level_db_spl"] == 75
+
+
+@pytest.mark.parametrize("fault", ["harmonics", "fundamental", "pose", "spl", "snr", "harmonic_snr", "coverage"])
+def test_ladder_missing_evidence_does_not_create_a_knee_or_headroom(ladder, fault):
+    pairs = ladder(repeats=1, knee=fault != "coverage")
+    for i, pair in enumerate(pairs):
+        for take in pair:
+            if fault == "harmonics":
+                for harmonic in take["harmonics"].values():
+                    harmonic["qualified"] = [False] * len(harmonic["freqs_hz"])
+            elif fault == "fundamental":
+                take["fundamental_qualified"] = [False] * len(take["freqs_hz"])
+            elif fault == "pose":
+                take["record"]["position_deg"] = i * 10
+            elif fault == "spl":
+                del take["record"]["capture_integrity"]
+            elif fault == "snr":
+                for band in take["bands"]:
+                    del band["estimated_snr_db"]
+            elif fault == "harmonic_snr":
+                for harmonic in take["harmonics"].values():
+                    del harmonic["floor_relative_db"]
+            else:
+                for harmonic in take["harmonics"].values():
+                    harmonic["qualified"] = [f < 45 if i % 2 else f >= 45 for f in harmonic["freqs_hz"]]
+    levels = table(pairs)["levels"]
+    for row in levels:
+        band = row["headroom"]["candidate"][2]
+        assert band["knee_level_db_spl"] is None
+        assert band["knee_bounded"] is None
+        assert band["headroom_remaining_db"] is None
+        if fault in {"harmonics", "fundamental", "pose", "coverage"}:
+            assert band["growth_db_per_db"]["2"] is band["growth_db_per_db"]["3"] is None
+    json.dumps(levels, allow_nan=False)
+
+
 @pytest.mark.parametrize("baseline_only", [False, True])
 def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path, monkeypatch, baseline_only):
     bass_run.write(takes=bass_run.takes[::2] if baseline_only else bass_run.takes)
@@ -214,6 +356,7 @@ def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path,
     assert len(rows) == 3
     levels = payload["tables"][0]["levels"]
     assert [row["realized_boost_db"] for row in rows] == [level["realized_boost_db"] for level in levels]
+    assert [row["headroom"] for row in rows] == [level["headroom"] for level in levels]
     assert rows[0]["realized_boost_db"][3]["value_db"] == pytest.approx(0 if baseline_only else 6)
     assert (levels[0]["prescribed_boost_db"] is None) is baseline_only
     packet = {"round_id": "bass", "program": "bass", "result": "complete", "reason": None, "level": None,
@@ -228,4 +371,5 @@ def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path,
     assert render.call_args.args[0] == rows
     cells = [line.strip("|").split("|") for line in (tmp_path / INDEX_FILENAME).read_text().splitlines() if line.startswith("|")][2:]
     assert [float(cells[1]) for cells in cells] == [row["level_key"]["level_db"] for row in rows]
+    assert all(len(row) == 11 for row in cells)
     assert json.loads((tmp_path / "packet.json").read_text())["bass_table"] == payload

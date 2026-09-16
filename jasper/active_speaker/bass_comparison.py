@@ -39,19 +39,25 @@ def bass_capture_context(take: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def common_bass_bins(a: Mapping[str, Any], b: Mapping[str, Any], value: str, quality: str) -> tuple[np.ndarray, ...]:
-    def arrays(item: Mapping[str, Any]) -> tuple[np.ndarray, ...]:
-        f, y, q = (np.asarray(item[key], dtype=float) for key in ("freqs_hz", value, quality))
-        if (f.ndim != 1 or len(f) < 2 or f.shape != y.shape or f.shape != q.shape
-                or not np.isfinite(f).all() or f[0] <= 0 or not np.all(np.diff(f) > 0)):
-            raise ValueError("bass_comparison_curve_invalid")
-        return f, y, (q == 1) & np.isfinite(y)
-    af, ay, aq = arrays(a)
-    bf, by, bq = arrays(b)
+def bass_curve_on_grid(grid: np.ndarray, item: Mapping[str, Any], value: str, quality: str) -> tuple[np.ndarray, ...]:
+    f, y, q = (np.asarray(item[key], dtype=float) for key in ("freqs_hz", value, quality))
+    if (f.ndim != 1 or len(f) < 2 or f.shape != y.shape or f.shape != q.shape
+            or not np.isfinite(f).all() or f[0] <= 0 or not np.all(np.diff(f) > 0)):
+        raise ValueError("bass_comparison_curve_invalid")
+    qualified = (q == 1) & np.isfinite(y)
+    if np.array_equal(grid, f):
+        return y, qualified
     # Interpolate the full mask, including holes: both bracketing bins must qualify.
-    mask = aq & (np.interp(np.log(af), np.log(bf), bq.astype(float), left=0, right=0) >= 1 - 1e-12)
-    f = af[mask]
-    return f, ay[mask], np.interp(np.log(f), np.log(bf), by)
+    mask = np.interp(np.log(grid), np.log(f), qualified.astype(float), left=0, right=0) >= 1 - 1e-12
+    return np.interp(np.log(grid), np.log(f), y), mask
+
+
+def common_bass_bins(a: Mapping[str, Any], b: Mapping[str, Any], value: str, quality: str) -> tuple[np.ndarray, ...]:
+    grid = np.asarray(a["freqs_hz"], dtype=float)
+    ay, aq = bass_curve_on_grid(grid, a, value, quality)
+    by, bq = bass_curve_on_grid(grid, b, value, quality)
+    mask = aq & bq
+    return grid[mask], ay[mask], by[mask]
 
 
 def compare_bass_takes(before: Mapping[str, Any], after: Mapping[str, Any], *, change: str) -> dict[str, Any]:
