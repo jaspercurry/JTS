@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-from dataclasses import replace
+from dataclasses import asdict, replace
+import json
 import math
 from types import SimpleNamespace
 
@@ -19,14 +20,14 @@ from jasper.active_speaker.crossover_v2.capture_plan import build_inline_session
 from jasper.active_speaker.measurement_analysis import analyzed_measurements
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ, bass_take
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
-from jasper.active_speaker.measurement_programs import load_programs, program, run_program, validated_capture_purpose
+from jasper.active_speaker.measurement_programs import gate_exemption, load_programs, program, run_program, validated_capture_purpose
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import ProgramAdmissionRefusal, readmit_summed_program_from_wav
 from jasper.audio_measurement.distortion import required_pre_guard_s, segment_sweep_meta
 from jasper.audio_measurement.program import KIND_SUMMED_SWEEP, _finalize, render_program_pcm, write_program_wav
-from jasper.audio_measurement.program_analysis import analyze_program_capture
-from jasper.audio_measurement.repeated_sweep import average_summed_capture, repeat_summed_program, summed_alignment_limit_samples, sweep_ambient_id
+from jasper.audio_measurement.program_analysis import MeasurementGeometry, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, analyze_program_capture
+from jasper.audio_measurement.repeated_sweep import average_summed_capture, repeat_summed_program, sweep_ambient_id
 from jasper.audio_measurement.sweep_levels import sweep_band_levels
 from jasper.web.correction_run_host import compose_plan_program
 from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
@@ -145,8 +146,7 @@ def test_coherent_noise_gain_and_replayed_fundamental(bass_fixture, passes, tmp_
     raw = np.pad(pcm.astype(np.float64) * 0.1, (delay, rate))
     raw += np.random.default_rng(19).normal(0, 0.015, raw.size)
     original = raw.copy()
-    averaged = average_summed_capture(bass, raw, delay,
-                                     {s.segment_id: delay + s.start_sample for s in bass.segments})
+    averaged = average_summed_capture(bass, raw, delay)
     assert np.array_equal(raw, original)
     sweep = bass.segment("sweep_verify")
     quiet = bass.segment(sweep_ambient_id(sweep.segment_id))
@@ -165,8 +165,6 @@ def test_coherent_noise_gain_and_replayed_fundamental(bass_fixture, passes, tmp_
     take, = analyzed_measurements(tmp_path, paths=["capture"])
     result = bass_take(take)
     assert len(result["passes"]) == passes
-    residuals = [loc.located_start - loc.scheduled_start for loc in take.analysis.locations if loc.kind == KIND_SUMMED_SWEEP]
-    assert max(residuals) - min(residuals) <= 1
     frequencies = np.array(result["frequency_curve"]["freqs_hz"])
     reference = (frequencies >= 300) & (frequencies <= 1000)
     assert np.median(np.array(result["frequency_curve"]["magnitude_db"])[reference]) == pytest.approx(-20, abs=0.3)
@@ -204,7 +202,6 @@ def test_bass_admission_keeps_each_role_cap(bass_fixture, tmp_path, fault, refus
 
 
 @pytest.mark.parametrize("fault,code", [
-    ("drift", "summed_pass_arrival_drift"),
     ("truncated", "summed_pass_capture_incomplete"),
     ("mismatch", "summed_pass_shape_mismatch"),
 ])
@@ -218,13 +215,7 @@ def test_unusable_passes_reach_capture_integrity(bass_fixture, tmp_path, monkeyp
     rate, delay = bass.sample_rate_hz, 800
     pcm = render_program_pcm(bass)[:, 0].astype(np.float64) * 0.1
     raw = np.pad(pcm, (delay, rate))
-    if fault == "drift":
-        for index, sweep in enumerate(s for s in bass.segments if s.kind == KIND_SUMMED_SWEEP):
-            start = delay + sweep.start_sample
-            raw[start:start + sweep.n_samples] = 0
-            start += index * round(0.0005 * rate)
-            raw[start:start + sweep.n_samples] = pcm[sweep.start_sample:sweep.start_sample + sweep.n_samples]
-    elif fault == "truncated":
+    if fault == "truncated":
         raw = raw[:delay + bass.total_samples - rate // 10]
     wav = tmp_path / "capture.wav"
     wavfile.write(wav, rate, raw.astype(np.float32))
@@ -233,24 +224,95 @@ def test_unusable_passes_reach_capture_integrity(bass_fixture, tmp_path, monkeyp
     take, = analyzed_measurements(tmp_path, paths=["capture"])
     assert code in take.analysis.capture_integrity.failed
     assert np.array_equal(take.samples, raw.astype(np.float32))
-    located = {loc.segment_id: loc.located_start for loc in take.analysis.locations}
-    assert average_summed_capture(bass, raw, delay, located) is raw
+    assert average_summed_capture(bass, raw, delay) is raw
     assert not any(bass_take(take)["fundamental_qualified"])
-    if fault == "drift":
-        checks = {c.name: c.status for c in take.analysis.capture_integrity.checks}
-        assert checks["repeat_epsilon"] == "pass"
-        assert checks["repeat_level_agreement"] == "pass"
-        assert checks["within_role_desync"] == "pass"
 
 
-@pytest.mark.parametrize("spread,averaged", [(0, True), (1, True), (2, False)])
-def test_coherence_bound_comes_from_the_ceiling(bass_fixture, spread, averaged):
+@pytest.mark.parametrize("drift_us", [-500, 500])
+def test_pass_alignment_preserves_the_fundamental(bass_fixture, tmp_path, monkeypatch, drift_us):
     bass = _bass(bass_fixture)
-    assert summed_alignment_limit_samples(bass) == 1
-    raw = render_program_pcm(bass)[:, 0]
-    located = {s.segment_id: s.start_sample for s in bass.segments}
-    located["sweep_verify_repeat_2"] += spread
-    assert (average_summed_capture(bass, raw, 0, located) is not raw) == averaged
+    rate, delay = bass.sample_rate_hz, 800
+    pcm = render_program_pcm(bass)[:, 0].astype(np.float64) * 0.1
+    clean = np.pad(pcm, (delay, rate))
+    raw = clean.copy()
+    offsets = {}
+    for index, sweep in enumerate(s for s in bass.segments if s.kind == KIND_SUMMED_SWEEP):
+        start = delay + sweep.start_sample
+        raw[start:start + sweep.n_samples] = 0
+        offsets[sweep.segment_id] = index * round(drift_us * 1e-6 * rate)
+        start += offsets[sweep.segment_id]
+        raw[start:start + sweep.n_samples] = pcm[sweep.start_sample:sweep.start_sample + sweep.n_samples]
+    wav = tmp_path / "capture.wav"
+    wavfile.write(wav, rate, raw.astype(np.float32))
+    record = {"program": bass.to_dict(), "graph_scope": "candidate", "candidate_id": "trial"}
+    monkeypatch.setattr("jasper.active_speaker.measurement_analysis.reopen_measurement_capture", lambda *_: (record, wav.read_bytes()))
+    take, = analyzed_measurements(tmp_path, paths=["capture"])
+    integrity = take.analysis.capture_integrity
+    evidence = integrity.to_dict()
+    assert evidence["pass_alignment"] == "correlated"
+    assert evidence["pass_offsets_samples"] == offsets
+    assert evidence["pass_alignment_residual_spread_samples"] == pytest.approx(0, abs=0.01)
+    assert integrity.failed == ()
+    view = bass_take(take)
+    assert all(view["diagnostics"][key] == value for key, value in integrity.pass_alignment.to_dict().items())
+    assert {row["segment_id"]: row["offset_samples"] for row in view["passes"]} == offsets
+    assert all(row["pass_alignment"] == "correlated" and row["residual_spread_samples"] < 0.01 for row in view["passes"])
+    baseline = analyze_program_capture(bass, clean, rate).summed_response
+    reference = (baseline.freqs_hz >= 300) & (baseline.freqs_hz <= 1000)
+    assert np.median(take.analysis.summed_response.magnitude_db[reference]) == pytest.approx(
+        np.median(baseline.magnitude_db[reference]), abs=0.2)
+    assert take.samples == pytest.approx(average_summed_capture(bass, raw.astype(np.float32), delay, integrity.pass_alignment))
+
+
+def test_noisy_passes_still_average_at_the_schedule(bass_fixture, tmp_path, monkeypatch):
+    bass = _bass(bass_fixture)
+    rate, delay = bass.sample_rate_hz, 800
+    raw = np.pad(render_program_pcm(bass)[:, 0].astype(np.float64) * 0.01, (delay, rate))
+    quiet = bass.segment(sweep_ambient_id("sweep_verify"))
+    noise = np.random.default_rng(19).normal(0, 0.11, raw.size)
+    noise[:delay + quiet.start_sample] = 0
+    raw += noise
+    wav = tmp_path / "capture.wav"
+    wavfile.write(wav, rate, raw.astype(np.float32))
+    record = {"program": bass.to_dict(), "graph_scope": "candidate", "candidate_id": "trial"}
+    monkeypatch.setattr("jasper.active_speaker.measurement_analysis.reopen_measurement_capture", lambda *_: (record, wav.read_bytes()))
+    take, = analyzed_measurements(tmp_path, paths=["capture"])
+    integrity = take.analysis.capture_integrity
+    assert integrity.locate_confidence_min == pytest.approx(0.5, abs=0.05)
+    evidence = integrity.to_dict()
+    assert evidence["pass_alignment"] == "scheduled"
+    assert set(evidence["pass_offsets_samples"].values()) == {0}
+    assert all(peak < 1 - peak for peak in evidence["pass_correlation_peaks"].values())
+    assert evidence["pass_alignment_residual_spread_samples"] > 1
+    sweeps = [s for s in bass.segments if s.kind == KIND_SUMMED_SWEEP]
+    offset = take.analysis.locations[0].scheduled_start
+    size = quiet.n_samples + sweeps[0].n_samples + bass.segment("tail").n_samples
+    starts = [offset + s.start_sample - quiet.n_samples for s in sweeps]
+    expected = np.mean([raw.astype(np.float32)[start:start + size].astype(np.float64) for start in starts], axis=0)
+    assert np.array_equal(take.samples[starts[0]:starts[0] + size], expected)
+    view = bass_take(take)
+    assert all(row["pass_alignment"] == "scheduled" for row in view["passes"])
+    assert view["diagnostics"]["pass_correlation_peaks"] == evidence["pass_correlation_peaks"]
+
+
+@pytest.mark.parametrize("purpose", ["room", "speaker"])
+def test_single_sweep_analysis_is_byte_identical(bass_fixture, monkeypatch, purpose):
+    spec = MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="trial",
+                       program_phase="cloud_verify" if purpose == "room" else "verify")
+    stimulus = compose_plan_program(SimpleNamespace(_excitation=bass_fixture[3]), spec, None, context=None)
+    raw = np.pad(render_program_pcm(stimulus)[:, 0].astype(np.float64) * 0.1, (800, 48000))
+    raw += np.random.default_rng(19).normal(0, 0.001, raw.size)
+    assert sum(s.kind == KIND_SUMMED_SWEEP for s in stimulus.segments) == 1
+    assert average_summed_capture(stimulus, raw, 800) is raw
+    geometry = MeasurementGeometry(gate_exempt_reason=gate_exemption(purpose))
+    result = analyze_program_capture(stimulus, raw, stimulus.sample_rate_hz, geometry=geometry)
+    monkeypatch.setattr("jasper.audio_measurement.program_analysis.dispatch.align_summed_capture",
+                        lambda _program, capture, _offset, **kw: (capture, None))
+    monkeypatch.setattr("jasper.audio_measurement.program_analysis.dispatch.average_summed_capture",
+                        lambda _program, capture, _offset: capture)
+    baseline = analyze_program_capture(stimulus, raw, stimulus.sample_rate_hz, geometry=geometry)
+    assert json.dumps(asdict(result), default=lambda array: array.tobytes().hex(), sort_keys=True) == json.dumps(
+        asdict(baseline), default=lambda array: array.tobytes().hex(), sort_keys=True)
 
 
 @pytest.mark.parametrize("scope,expected", [("drivers", ("near_field_splice_not_implemented",)), ("candidate", ())])
@@ -264,10 +326,12 @@ def test_nearfield_splice_stub_only_applies_to_driver_captures(scope, expected):
     (3, None, "repeat_epsilon", "pass"),
     (3, "epsilon", "repeat_epsilon", "fail"),
     (3, "level", "repeat_level_agreement", "fail"),
-    (3, "step", "within_role_desync", "fail"),
+    (3, "step", "within_role_desync", "pass"),
+    (3, "large_step", "within_role_desync", "fail"),
     (3, None, "discontinuity_step", "not_evaluated"),
     (5, None, "discontinuity_step", "pass"),
-    (5, "step", "discontinuity_step", "fail"),
+    (5, "step", "discontinuity_step", "pass"),
+    (5, "large_step", "discontinuity_step", "fail"),
 ])
 def test_verify_repeat_checks_use_the_captured_passes(bass_fixture, passes, fault, check, status):
     excitation = replace(bass_fixture[3], summed_sweep_band_hz=(20, 1100))
@@ -282,6 +346,8 @@ def test_verify_repeat_checks_use_the_captured_passes(bass_fixture, passes, faul
             start += index * round(0.006 * rate)
         elif fault == "step" and index >= passes // 2:
             start += round(0.0005 * rate)
+        elif fault == "large_step" and index >= passes // 2:
+            start += round(2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS * rate / 1000)
         gain = 10 ** (1 / 20) if fault == "level" and index == passes - 1 else 1
         raw[start:start + sweep.n_samples] = gain * pcm[sweep.start_sample:sweep.start_sample + sweep.n_samples]
     analysis = analyze_program_capture(bass, raw, rate)

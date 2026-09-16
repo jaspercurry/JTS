@@ -61,6 +61,7 @@ def _qualified(freqs: np.ndarray, bands: list[dict[str, Any]]) -> np.ndarray:
 
 def bass_take(take: AnalyzedMeasurement) -> dict[str, Any]:
     program, analysis = take.program, take.analysis
+    alignment = analysis.capture_integrity.pass_alignment if analysis.capture_integrity else None
     document = take.document()
     segment = program.segment("sweep_verify")
     anchor = next(loc.scheduled_start for loc in analysis.locations if loc.segment_id == segment.segment_id)
@@ -105,7 +106,11 @@ def bass_take(take: AnalyzedMeasurement) -> dict[str, Any]:
         "sweep_band_hz": [segment.f1_hz, segment.f2_hz],
         "sweep_duration_s": segment.n_samples / take.sample_rate,
         "passes": [{"segment_id": s.segment_id, "start_sample": s.start_sample, "n_samples": s.n_samples,
-                    "ambient_segment_id": sweep_ambient_id(s.segment_id)}
+                    "ambient_segment_id": sweep_ambient_id(s.segment_id),
+                    **({"pass_alignment": alignment.method,
+                        "offset_samples": alignment.offsets_samples[s.segment_id],
+                        "correlation_peak": alignment.correlation_peaks.get(s.segment_id),
+                        "residual_spread_samples": alignment.residual_spread_samples} if alignment else {})}
                    for s in program.segments if sweep_ambient_id(s.segment_id) in {p.segment_id for p in program.segments}],
         "calibration": document["calibration"],
         "frequency_curve": curve,

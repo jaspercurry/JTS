@@ -38,6 +38,7 @@ from jasper.audio_measurement.program import (
     render_program_pcm,
 )
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
+from jasper.audio_measurement.repeated_sweep import repeat_summed_program
 from jasper.audio_measurement.program_analysis import (
     AMBIENT_MIN_USABLE_FRACTION,
     INTEGRITY_CHECK_CLIPPED_RUN,
@@ -816,8 +817,11 @@ def test_verify_splice_fails_the_schedule_check_and_flips_glitch_detected():
     assert integrity.schedule_residual_ms_worst > SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
 
 
-def test_verify_clip_fails_the_clipped_run_check():
+@pytest.mark.parametrize("passes", [1, 3])
+def test_verify_clip_fails_the_clipped_run_check(passes):
     prog = _verify_pilot_program()
+    if passes > 1:
+        prog = repeat_summed_program(prog, passes=passes, quiet_samples=SR, cooldown_s=2)
     cap = _synthesize(prog)
     sweep = prog.segment("sweep_verify")
     clipped = cap.copy()

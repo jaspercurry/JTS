@@ -17,6 +17,7 @@ from jasper.audio_measurement.frame_ledger import FrameLedger, LOST_AT_CAPTURE_O
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.repeated_sweep import REPEAT_LEVEL_TOLERANCE_DB as REPEAT_LEVEL_TOLERANCE_DB
+from jasper.audio_measurement.repeated_sweep import SummedPassAlignment
 
 
 # ``__package__``, not ``__name__``: every submodule logs under the one
@@ -526,6 +527,7 @@ class CaptureIntegrity:
     # SIGNED: positive means the sweep arrived LATE (the insertion shape).
     schedule_residual_ms_worst: float | None = None
     clipped_segments: tuple[str, ...] = ()
+    pass_alignment: SummedPassAlignment | None = None
 
     @property
     def failed(self) -> tuple[str, ...]:
@@ -564,6 +566,7 @@ class CaptureIntegrity:
             "locate_confidence_min": self.locate_confidence_min,
             "schedule_residual_ms_worst": self.schedule_residual_ms_worst,
             "clipped_segments": list(self.clipped_segments),
+            **(self.pass_alignment.to_dict() if self.pass_alignment is not None else {}),
         }
 
 

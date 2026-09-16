@@ -239,6 +239,9 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
         out["integrity_clipped_segments"] = ",".join(
             getattr(integrity, "clipped_segments", ()) or ()
         )
+        alignment = getattr(integrity, "pass_alignment", None)
+        if alignment is not None:
+            out.update(alignment.to_dict())
 
     ledger = getattr(analysis, "frame_ledger", None)
     if ledger is not None:
