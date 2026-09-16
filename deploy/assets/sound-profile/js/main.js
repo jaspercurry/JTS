@@ -3995,6 +3995,19 @@ import {
         commissionBusy: '',
         commissionError: ''
       });
+      // The server deleted the draft; a dirty form would otherwise keep the
+      // old driver values and ship them back on the next save.
+      driverResearch.dirty = false;
+      driverResearch.safetyDirty = false;
+      try {
+        ingestDesignDraft(await getJSON('./active-speaker/design-draft'), {force: true});
+      } catch (draftError) {
+        driverResearch.designDraft = {
+          status: 'unreadable',
+          summary: {},
+          issues: [{message: draftError.message}]
+        };
+      }
       outputPage.stepOverride = 'layout';
       var resetStatus = payload && payload.reset || {};
       if (resetStatus.status === 'needs_attention') {
