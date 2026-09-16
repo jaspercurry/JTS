@@ -200,14 +200,11 @@ class ProgramPlaybackTransaction:
             ))
         except asyncio.CancelledError as exc:
             raise PlaybackInterrupted(PlaybackObservation(emission="not_started")) from exc
-        except (OSError, ValueError):
-            # The two ways composing genuinely fails on a working wiring: the
-            # rendered stimulus could not be written, or the parameters do not
-            # describe a program. Anything else is a mis-bound host, which the
-            # seam keeps raising for.
+        except (OSError, ValueError) as exc:
             return PlaybackOutcome(
                 stage_reached=STAGE_READY, incident=STIMULUS_NOT_COMPOSED,
                 playback=PlaybackObservation(emission="not_started"),
+                detail=f"{type(exc).__name__}: {exc}",
             )
 
         played = False

@@ -421,7 +421,8 @@ async def _run(
             ledger = ledgers[item.pose_index]
             if retry is not None:
                 if not ledger.can_retry(retry.charge):
-                    if retry_was_measured and retry.fault in CAPTURE_QUALITY_REFUSAL_CODES:
+                    if (retry_was_measured and retry.fault in CAPTURE_QUALITY_REFUSAL_CODES
+                            and item.spec.program_phase != PHASE_CHECK):
                         manifest.mark_not_measured(item.stop["index"], retry.fault)
                         retry = None
                         retry_was_measured = False
@@ -483,6 +484,7 @@ async def _run(
                 attempts[offset] = attempt
                 manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index)
                 outcome = await measure(session, spec) if measure else await session.measure(spec)
+                manifest.detail = next((s.detail for s in outcome.stimuli if s.detail), "")
                 manifest.outcomes.append((outcome, str(session.graph_fingerprint)))
                 verdict = None
                 records = attempt_records()
@@ -500,6 +502,7 @@ async def _run(
                                 record = {**record, "curves": analysis_curve_records(analysis, program),
                                           "analysis": analysis_json(analysis)}
                         except (ValueError, KeyError, OSError) as exc:
+                            manifest.detail = f"{type(exc).__name__}: {exc}"
                             assessed = TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop",
                                                    evidence={"error_type": type(exc).__name__})
                     else:
@@ -569,8 +572,9 @@ async def _run(
     except (MeasurementDoorRefused, LateralWalkRefused) as exc:
         if not manifest.reason:
             manifest.reason, manifest.detail = exc.reason, exc.detail
-    except BaseException:  # noqa: BLE001 - finalize failure evidence, then propagate unchanged
+    except BaseException as exc:  # noqa: BLE001 - finalize failure evidence, then propagate unchanged
         manifest.reason = manifest.reason or REASON_INTERNAL_ERROR
+        manifest.detail = manifest.detail or f"{type(exc).__name__}: {exc}"
         raise
     finally:
         try:
@@ -579,8 +583,9 @@ async def _run(
             except MeasurementDoorRefused as exc:
                 if not manifest.reason:
                     manifest.reason, manifest.detail = exc.reason, exc.detail
-            except BaseException:  # noqa: BLE001 - preserve cleanup failures after finalizing
+            except BaseException as exc:  # noqa: BLE001 - preserve cleanup failures after finalizing
                 manifest.reason = manifest.reason or REASON_INTERNAL_ERROR
+                manifest.detail = manifest.detail or f"{type(exc).__name__}: {exc}"
                 raise
         finally:
             manifest.finalized = True
