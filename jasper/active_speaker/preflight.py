@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Resolve a measurement plan from supplied facts, without opening resources."""
+"""Resolve plans without opening resources."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
+from itertools import product
 from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.program_analysis.check import _ambient_rows_in_band, _snr_floor_ok
@@ -28,7 +29,7 @@ from .measurement_programs import PURPOSE_BASS
 from .profile import SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
 from .seat_level_reference import (
     AnchorFacts, LevelUnresolved, RungMeasurementUnavailable, SeatLevelTargetError, check_target_capture_dbfs, resolve_anchor_level,
-    measured_rung_admission, rung_lift_bound_db, validate_commissioning_spl,
+    measured_rung_admission, rung_lift_bound_db, stimulus_mismatch, validate_commissioning_spl,
 )
 
 # Rechecked at participation; a dry run reserves none of these resources.
@@ -94,6 +95,10 @@ class PreflightReport:
         return any(issue.blocking for issue in self.issues)
 
     @property
+    def blocking_issue(self) -> PreflightIssue:
+        return next(issue for issue in self.issues if issue.blocking)
+
+    @property
     def mic_moves(self) -> int:
         return int(self.price.get("mic_moves") or 0)
 
@@ -145,9 +150,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
             add("not_found", name)
             continue
         try:
-            graph = compile_candidate_config(
-                candidate, playback_device="null", room_peqs=candidate_room_peqs(candidate),
-            )
+            graph = compile_candidate_config(candidate, playback_device="null", room_peqs=candidate_room_peqs(candidate))
             prove_candidate_config(candidate, graph)
             scopes[name] = "candidate"
             bass_extensions[name] = candidate.bass_extension
@@ -201,14 +204,13 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                     margin = max(tolerance, SPL_RAISE_MARGIN_DB)
                     admission.update(bound_db_spl=spl_raise_bound_db_spl(stop, margin_db=margin),
                                      margin_db=margin, quantity="max_window_db_spl", ceiling_db_spl=stop)
-                elif not defer_rung and facts.applied_bass_extension is not None and tolerance is not None:
+                elif facts.applied_bass_extension is not None and tolerance is not None:
                     try:
                         program_ids = facts.program_ids_for(plan) if facts.program_ids_for else ()
                     except (ValueError, KeyError):
                         program_ids = ()
                     anchor_program_id = (facts.anchor.record.get("stimulus") or {}).get("program_id")
-                    same_stimulus = bool(anchor_program_id and program_ids and all(
-                        program_id == anchor_program_id for program_id in program_ids))
+                    same_stimulus = bool(program_ids) and all(stimulus_mismatch(anchor_program_id, pid) is False for pid in program_ids)
                     admission.update(anchor_program_id=anchor_program_id, run_program_ids=program_ids,
                                      stimulus_mismatch=not same_stimulus)
                     if not same_stimulus:
@@ -256,10 +258,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                          ("candidate_branches" if pose.regime == REGIME_BRANCHES else
                           scopes.get(pose.candidate_id) if pose.candidate_id else
                           "candidate" if pose.plays_summed else "drivers"), pose.regime)
-        for index, (pose, repeat) in enumerate(
-            (pose, repeat) for pose in plan.stops
-            for repeat in range(1, plan.repeats + 1)
-        )
+        for index, (pose, repeat) in enumerate(product(plan.stops, range(1, plan.repeats + 1)))
     ) if valid_shape else ()
     price = walk_price(plan) if valid_shape else {}
     return PreflightReport(plan, tuple(issues), schedule, price, ceiling, admission)

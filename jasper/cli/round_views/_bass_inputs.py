@@ -9,4 +9,4 @@ from jasper.active_speaker.bass_table_inputs import fit_bass_rounds, join_bass_r
 
 def fit_run(args) -> dict[str, Any]:
     return fit_bass_rounds(args.round_dir, candidates=args.candidate,
-                          reference_band_hz=(args.reference_band_hz[0], args.reference_band_hz[1]))
+                          reference_band_hz=tuple(args.reference_band_hz))
