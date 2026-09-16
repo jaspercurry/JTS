@@ -467,7 +467,6 @@ async def _run(
                               mover=manifest.asked["mover"], program=manifest.program or "") if door and door.program_for_spec else {"poses": len(ledgers)}
     sweep_offsets = list(accumulate(schedule.get("work_sweeps", [0] * len(work)), initial=0))
     progress: dict[str, Any] = {}
-    notices: dict[str, Any] = {}
     stack = AsyncExitStack()
     hold: IsolationHold | None = None
     try:
@@ -514,12 +513,13 @@ async def _run(
             spec = playing[offset]
             attempt = attempts[offset] + 1
             before = sweep_offsets[offset] - sweep_offsets[offset - item.config + 1]
+            notices = {}
             if retry:
-                notices.update(retake_reason=retry.fault or "operator", retake_sweep=before + 1,
-                               retake_pose=item.pose_index + 1, retake_action=retry.next,
-                               retake_sweep_end=before + sweep_offsets[offset + 1] - sweep_offsets[offset])
-                if retry.next == "retake_louder":
-                    notices["level_raise_dbfs"] = retry.next_gain_db
+                reason = retry.fault or ("operator" if retry.next == "fix_and_retake" and retry.charge == "operator" else None)
+                notices = dict(retake_sweep=before + 1, retake_pose=item.pose_index + 1, retake_action=retry.next,
+                               retake_sweep_end=before + sweep_offsets[offset + 1] - sweep_offsets[offset],
+                               **({"retake_reason": reason} if reason else {}),
+                               **({"level_raise_dbfs": retry.next_gain_db} if retry.next == "retake_louder" else {}))
             progress = {**schedule, **notices, "pose": item.pose_index + 1,
                         "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,

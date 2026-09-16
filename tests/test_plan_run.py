@@ -1124,7 +1124,7 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry):
     assert live[0]["estimated_seconds"] == 21 * 4 + 3 * plan_run.HUMAN_MOVE_ALLOWANCE_S
     assert {p["pose"] for p in live} == {1, 2, 3}
     if retry:
-        assert any(p.get("retake_reason") == "snr_floor" and p["level_raise_dbfs"] == -12 for p in live)
+        assert any(p.get("retake_reason") == "snr_floor" and p["level_raise_dbfs"] == -12 for p in live) and all("retake_reason" not in p for p in live if p["pose"] > 1)
     else:
         assert all("retake_reason" not in p for p in live)
 
