@@ -30,7 +30,7 @@ from .angle_capture import (
     WALK_COMMISSIONING_STOP_UNSET, WALK_NOTHING_PLAYABLE,
     WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED, WALK_LEVEL_POLICY_INVALID,
     AngleCaptureRequest, AngleStop, ResolvedStop, LateralWalkRefused,
-    candidate_identity, design_axis_spec, resolve_request, stop_specs,
+    design_axis_spec, resolve_request, stop_specs,
 )
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import (
@@ -159,12 +159,12 @@ def prepare_plan_captures(
             AngleStop(0, REGIME_PER_DRIVER),
             replace(design_axis_spec(request), program_phase=PHASE_CHECK),
         ))
-    if any(candidate_identity(stop.candidate_id) == BASE_CANDIDATE for stop in request.stops):
-        base_stop = next(stop for stop in request.stops if candidate_identity(stop.candidate_id) == BASE_CANDIDATE)
+    if any(stop.is_base for stop in request.stops):
+        base_stop = next(stop for stop in request.stops if stop.is_base)
         base_request = replace(request, stops=(replace(base_stop, angle_deg=0, elevation_deg=0,
             kind=POSE_KIND_BEARING, distance_m=None, seat_offset_m=None,
             headline="", detail="", regime=REGIME_SUMMED),),
-                               candidates=(), repeats=1)
+                               candidates=(base_stop.candidate_id,) if base_stop.candidate_id else (), repeats=1)
         base_spec, = stop_specs(base_request,
                                 prompts=(resolve_request(base_request)[0].prompt,), baseline_id=BASE_CANDIDATE,
                                 roles_bands=roles_bands)
@@ -218,7 +218,8 @@ def _pose(stop: Any) -> dict[str, Any]:
 
 def _planned_row(index: int, repeat: int, stop: Any) -> dict[str, Any]:
     return {"index": index, "repeat": repeat, "pose": _pose(stop),
-            "candidate_id": stop.candidate_id, "purpose": stop.purpose}
+            "candidate_id": stop.candidate_id, "purpose": stop.purpose,
+            **({"base": True} if getattr(stop, "base", False) else {})}
 
 
 # Allow a person to move the stand and confirm placement between pose batches.

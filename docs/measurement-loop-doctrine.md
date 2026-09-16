@@ -29,8 +29,8 @@ summed, cloud, on-axis, and off-axis.
   Previous linearization, blend, room correction, and preference EQ are absent.
   A candidate adds only the corrective filters, trims, and alignment changes
   being tested.
-- **Bass extension:** play through the applied speaker layer and applied room
-  correction, with bass off for the base and on for the candidate (see
+- **Bass extension:** play through the applied speaker layer with room off,
+  with bass off for the base and on for the candidate (see
   [ADR-0259](adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md)).
 - **Room correction:** play through the applied speaker layer and applied bass
   extension so the room fit absorbs what the bass shelf leaves above its band.

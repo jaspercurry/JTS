@@ -34,6 +34,7 @@ from jasper.audio_measurement.program import ExcitationProgram, RoleBand
 from jasper.audio_measurement.branch_program import build_branch_program
 
 from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH
+from .candidate_bank import CandidateBankRefusal, find_banked_candidate, publish_authored_candidate
 from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
 from .seat_level_reference import ResolvedLevel
 from .volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
@@ -49,7 +50,7 @@ from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS, MeasureSpec
 from .crossover_v2.programs import program_for_phase
 from .measurement_programs import (
-    POSE_KIND_BEARING, PURPOSE_ROOM,
+    POSE_KIND_BEARING, PURPOSE_BASS, PURPOSE_ROOM,
     MeasurementProgram,
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
@@ -249,8 +250,11 @@ class AngleStop:
     headline: str = ""
     detail: str = ""
     stimulus: Mapping[str, Any] | None = None
+    base: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.base, bool):
+            raise CrossoverV2FlowError("base must be a boolean")
         # Normalized back onto the field, so an ``np.int64`` a caller passed
         # never reaches a record or an equality check as a numpy scalar.
         object.__setattr__(self, "candidate_id", candidate_identity(self.candidate_id, for_spec=True))
@@ -265,6 +269,10 @@ class AngleStop:
             raise CrossoverV2FlowError(str(exc)) from None
         object.__setattr__(self, "seat_offset_m", offset)
         object.__setattr__(self, "distance_m", distance)
+
+    @property
+    def is_base(self) -> bool:
+        return self.base or not self.candidate_id
 
     @property
     def plays_summed(self) -> bool:
@@ -686,7 +694,7 @@ def stop_specs(
             continue
         placed.append(replace(
             request.template,
-            kind=MEASURE_KIND_CANDIDATE if stop.candidate_id else MEASURE_KIND_VERIFY,
+            kind=MEASURE_KIND_VERIFY if stop.is_base else MEASURE_KIND_CANDIDATE,
             positions=(stop.angle_deg,),
             sweep_band_hz=() if stop.stimulus else request.template.sweep_band_hz or (
                 room_sweep_band_hz(roles_bands, (prompt,)) if roles_bands else None
@@ -759,11 +767,28 @@ def request_for_program(
         raise LateralWalkRefused(REASON_WALK_MOVER_MISMATCH, f"{program.program_id}/{program.size} requires mover={program.mover}")
     if program.regime == REGIME_BRANCHES and (len(candidates) != 1 or candidate_identity(candidates[0]) == BASE_CANDIDATE):
         raise CrossoverV2FlowError("branches needs one saved complete candidate fingerprint")
+    base_id = ""
+    if program.purpose == PURPOSE_BASS:
+        from .candidate_parts import baseline_candidate_id, compose_candidate  # lazy: composition loads DSP analysis
+
+        try:
+            names = tuple(candidate_identity(name) for name in candidates) or (BASE_CANDIDATE,)
+            composed = {
+                name: publish_authored_candidate(compose_candidate(
+                    find_banked_candidate(baseline_candidate_id() if name == BASE_CANDIDATE else name),
+                    sections={"room": None},
+                )).fingerprint
+                for name in dict.fromkeys(names)
+            }
+            candidates = tuple(composed[name] for name in names)
+            base_id = composed.get(BASE_CANDIDATE, "")
+        except CandidateBankRefusal as exc:
+            raise LateralWalkRefused(exc.code, exc.detail) from exc
     room_sweep = program.room_sweep and not candidates
     return AngleCaptureRequest(
         stops=tuple(
             replace(
-                stop, elevation_deg=pose.elevation_deg, candidate_id=candidate,
+                stop, elevation_deg=pose.elevation_deg, candidate_id=candidate, base=candidate == base_id,
                 kind=pose.kind,
                 distance_m=pose.distance_m,
                 seat_offset_m=pose.seat_offset_m,

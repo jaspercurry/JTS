@@ -11,6 +11,7 @@ import pytest
 from pathlib import Path
 
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
+from jasper.active_speaker.candidate_bank import publish_authored_candidate
 from jasper.active_speaker.measurement import (
     record_driver_measurement,
     record_summed_test_artifact,
@@ -481,6 +482,13 @@ def declare_applied_fixture(monkeypatch, topology, applied, *, live_endpoint=Fal
 @pytest.fixture
 def isolated_candidate_bank(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
+
+
+@pytest.fixture
+def banked_declared_candidate(isolated_candidate_bank):
+    topology = mono_output_topology()
+    _, candidate = declared_graph_fixture(topology, standard_design_draft(topology))
+    return publish_authored_candidate(candidate)
 
 
 def declared_profile_fixture(topology, *, design_draft, measurements, config_path, write=False):

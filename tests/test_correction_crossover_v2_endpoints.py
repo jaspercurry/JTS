@@ -25,6 +25,9 @@ from jasper.web import correction_crossover_v2_state as v2state
 from jasper.web import correction_crossover_v2_volume as v2volume
 
 from tests.engine_twin import retained_take_writer
+from tests.active_speaker_fixtures import banked_declared_candidate as banked_declared_candidate
+from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
+from jasper.active_speaker.candidate_bank import find_banked_candidate
 
 import asyncio
 import contextlib
@@ -6171,7 +6174,9 @@ def test_session_duplicate_levels_returns_shared_bad_request(monkeypatch):
 def _ready_inline(monkeypatch):
     from jasper.active_speaker import preflight_live
     from tests.test_preflight import ready_facts
-    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kwargs: ready_facts(plan))
+    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kwargs: ready_facts(plan, candidates={
+        name: find_banked_candidate(name).candidate for name in plan.candidates if name != "base"
+    }))
 
 
 def _inline_context() -> V2ConductorContext:
@@ -6243,7 +6248,7 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch
     ((-18, -23), ("lateral",)),
     ((-8, -18), ("lateral",)),
 ])
-def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, tmp_path, levels, phases):
+def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, tmp_path, banked_declared_candidate, levels, phases):
     from jasper.web import correction_crossover_v2_wired as wired
     from tests.test_correction_crossover_v2_wired import _device
     from tests.test_preflight import ready_facts
@@ -6251,6 +6256,7 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(monkeypatch, t
     from jasper.active_speaker.measurement_programs import program
 
     selected = program("bass")
+    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_id", lambda: banked_declared_candidate.fingerprint)
     body = {"plan": request_for_program(selected, mover=selected.mover or "human", levels=levels).to_dict()} if levels else _inline_body()
     prepared, store = _inline_prepared(monkeypatch, tmp_path, body)
     _own_the_fader(monkeypatch, _FakeVolCam(-30))
