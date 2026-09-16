@@ -78,6 +78,10 @@ class RoundPacket:
         self.finalized = True
         self.manifest.path = await self.manifest.records.bank(self.to_dict())
 
+    async def update_schedule(self, schedule: Mapping[str, Any]) -> None:
+        self.schedule = dict(schedule)
+        self.manifest.path = await self.manifest.records.bank(self.to_dict())
+
 
 def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Callable[..., Path]) -> Path:
     destination = round_dir / PACKET_FILENAME

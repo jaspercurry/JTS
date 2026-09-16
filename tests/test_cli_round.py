@@ -806,9 +806,9 @@ def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsy
 
 
 @pytest.mark.parametrize("program,requested,noise_dbfs,levels", [
-    ("bass", None, -60, [-18, -23, -28, -33]), ("bass", None, -100, [-18, -23, -28, -33]),
-    ("bass", None, -20, [-18, -23, -28, -33]),
-    ("room", "-10,-20", -100, [-10, -20]), ("bass", "auto", None, []),
+    ("bass", None, -60, [-33, -28, -23, -18]), ("bass", None, -100, [-33, -28, -23, -18]),
+    ("bass", None, -20, [-33, -28, -23, -18]),
+    ("room", "-10,-20", -100, [-20, -10]), ("bass", "auto", None, []),
 ])
 def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, requested, noise_dbfs, levels):
     def facts(plan):
@@ -825,7 +825,7 @@ def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, requested
     assert code == (0 if levels else 1)
     assert body["dry_run"] is True
     assert body["admissible_levels_db"] == levels
-    expected = [None] * 4 if noise_dbfs is None else [-10, -20] if requested == "-10,-20" else [-18, -23, -28, -33]
+    expected = [None] * 4 if noise_dbfs is None else levels
     assert [row["offset_db"] for row in body["levels"]] == [level + 18 if level is not None else None for level in expected]
     assert [row["level_db"] for row in body["levels"]] == expected
     assert not opener.requests
@@ -861,16 +861,40 @@ def test_run_spl_resolves_banked_anchor(monkeypatch, capsys, dry_run, spl, fader
 
 
 @pytest.mark.parametrize("flag,values", [("--spl", "65,85,75"), ("--levels", "-28,-8,-18")])
-def test_partial_ladder_discloses_the_dropped_rung(preflight_ready, monkeypatch, capsys, flag, values):
+def test_ladder_defers_later_rungs_until_measurement(preflight_ready, monkeypatch, capsys, flag, values):
     opener = _opener(session=json.dumps({"capture": {"session_id": "run-1"}}))
     code, body = _run(["run", "--program", "bass", f"{flag}={values}"], opener, monkeypatch, capsys)
     assert code == 0
-    issue, = body["schedule"]["issues"]
-    assert issue["blocking"] is False and issue["code"] == "walk_level_policy_invalid"
-    assert issue["evidence"]["dropped"] is True
-    assert issue["evidence"]["predicted_db_spl"] == 85
+    assert body["schedule"]["issues"] == []
+    assert [row["rung_admission"]["basis"] for row in body["schedule"]["levels"]] == [
+        "anchor", "pending_measurement", "pending_measurement"]
+    assert [(row["rung_admission"]["bound_db_spl"], row["rung_admission"]["quantity"])
+            for row in body["schedule"]["levels"][1:]] == [(82, "max_window_db_spl")] * 2
     plan = json.loads(opener.posts()[0].data)["plan"]
-    assert plan["levels"] == [-28, -18]
+    assert plan["levels"] == [-28, -18, -8]
+
+
+@pytest.mark.parametrize("identity,requested,admitted", [
+    ("other", 84, 74.23), ("other", 65, 65), (None, 84, 74.23), ("anchor", 84, 84),
+])
+def test_dry_run_caps_only_the_unmeasured_stimulus_opener(monkeypatch, capsys, identity, requested, admitted):
+    def facts(plan):
+        ready = ready_facts(plan, program_ids_for=lambda _: (identity,) if identity else ())
+        return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record,
+            "measured_db_spl": 74.23, "reference_volume_db": -22.23, "stimulus": {"program_id": "anchor"}}))
+
+    monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
+    opener = _opener()
+    code, body = _run(["run", "--program", "bass", "--dry-run", "--spl", f"{requested},85"],
+                      opener, monkeypatch, capsys)
+    assert code == 0 and not opener.requests
+    first, later = body["levels"]
+    assert first["predicted_db_spl"] == pytest.approx(admitted)
+    admission = first["rung_admission"]
+    assert (admission["requested_db_spl"], admission["admitted_db_spl"]) == pytest.approx((requested, admitted))
+    assert admission.get("bound_by") == ("unmeasured_stimulus_opener" if admitted < requested else None)
+    assert later["rung_admission"]["basis"] == "pending_measurement"
+    assert later["rung_admission"]["bound_db_spl"] == 82
 
 
 def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, capsys):
@@ -954,7 +978,9 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     def engine(**kw):
         async def capture_record(record):
             return await kw["records"].inner.bank({**record, "program_id": "sweep", "stimulus_dbfs": -20,
-                "loudness_volume_db": record["level_db"], "phase": record["program_phase"]})
+                "loudness_volume_db": record["level_db"], "phase": record["program_phase"],
+                "capture_integrity": {"spl": {"loudest_half_second_db_spl": 93 + record["level_db"],
+                    "max_window_db_spl": 93 + record["level_db"], "ceiling_db_spl": 85}}})
         return replace(fakes, graph=kw["session_graph"], volume=kw["volume_claim"],
                        records=SimpleNamespace(bank=capture_record)).seams()
 
@@ -1013,7 +1039,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     argv = ["trial", candidate.fingerprint] if verb == "trial" else ["run", "--program", "bass", "--layout", "bass_axis"]
     code, body = _run([*argv, *flags, "--wait"], opener, monkeypatch, capsys)
     assert code == 0, body
-    expected = [(level, "lateral") for level in levels for _ in range(2 if verb == "trial" else 1)]
+    expected = [(level, "lateral") for level in sorted(levels) for _ in range(2 if verb == "trial" else 1)]
     if len(levels) == 1:
         expected.insert(0, (levels[0], "entry_baseline"))
     assert [(call["level_db"], call["spec"].program_phase) for call in fakes.play.calls] == expected

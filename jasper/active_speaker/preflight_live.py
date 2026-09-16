@@ -5,9 +5,11 @@
 """Read current facts for preflight. Live admission remains with resource owners."""
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
+from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.program import KIND_PILOT
 from jasper.audio_measurement.wired_capture import WiredCaptureError, require_wired_mic
 
@@ -17,10 +19,11 @@ from .baseline_profile import load_applied_baseline_profile_state
 from .candidate_parts import candidate_from_applied_profile
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.conductor_context import conductor_status, resolve_conductor_context
-from .crossover_v2.programs import SessionExcitation
+from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 from .measured_crossover_candidate import MeasuredCrossoverCandidate
 from .preflight import PreflightFacts, PreflightIssue
+from .run_levels import prepare_level_captures
 from .seat_level_reference import AnchorFacts, load_seat_level_reference
 
 
@@ -70,10 +73,31 @@ def read_preflight_facts(
         pilot = next(segment for segment in program.stimulus_segments() if segment.kind == KIND_PILOT)
         if pilot.f1_hz is not None and pilot.f2_hz is not None:
             pilot_band = (pilot.f1_hz, pilot.f2_hz)
+    def program_ids(request: AngleCaptureRequest) -> tuple[str, ...]:
+        if context is None or request.level.volume_db is None or not hasattr(context, "roles_bands"):
+            return ()
+        excitation = SessionExcitation(
+            roles=context.roles_bands, caps_dbfs=context.driver_caps_dbfs,
+            session_volume_db=request.level.volume_db, fc_hz=context.fc_hz,
+            sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
+        )
+        captures = prepare_level_captures(replace(request, repeats=1), roles_bands=context.roles_bands)
+        if any(capture.spec.graph_scope == "drivers" for capture in captures):
+            return ()
+        programs = []
+        for capture in captures:
+            program = compose_summed_program(excitation, capture.spec,
+                safety_profile=getattr(context, "safety_profile", {}), role_targets=getattr(context, "role_targets", {}))
+            if capture.spec.graph_scope == "candidate_branches":
+                program = build_branch_program(program, {role.role: role.channel for role in excitation.roles})
+            programs.append(program.program_id)
+        return tuple(programs)
+
     return PreflightFacts(
         candidates=candidates, mic_present=device is not None,
         mic_identified=bool(device is not None and device.model_key),
         anchor=anchor, summed_pilot_band_hz=pilot_band,
         commissioning_stop_db_spl=stop, mover=plan.mover, issues=tuple(issues),
         applied_bass_extension=applied_bass_extension,
+        program_ids_for=program_ids,
     )

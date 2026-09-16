@@ -9,7 +9,7 @@ from jasper.web import correction_crossover_v2_volume as v2volume
 from dataclasses import replace
 from typing import Any
 
-from jasper.active_speaker.crossover_v2.programs import courtesy_prelude_for_phase
+from jasper.active_speaker.crossover_v2.programs import compose_summed_program
 from jasper.active_speaker.angle_capture import LevelPolicy
 from jasper.active_speaker.run_levels import LevelLadder, LevelRun, prepare_level_captures, run_levels
 from jasper.active_speaker.round_packet import RoundPacket
@@ -26,7 +26,7 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY, PHASE_CLOUD_VERIFY, PHASE_ENTRY_BASELINE
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, TakeVerdict, PhaseVerdict
 from jasper.active_speaker.seat_level_reference import check_target_capture_dbfs as anchored_check_target
-from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS, ExcitationProgram
+from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.branch_program import build_branch_program
 
 
@@ -147,17 +147,9 @@ def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None,
             delta = stimulus_dbfs - max(gains.values())
             gains = {role: gain + delta for role, gain in gains.items()}
         return excitation.measure_program(gains)
-    excitation = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)
-    backoff = 0.0 if stimulus_dbfs is None else BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs
-    if spec.stimulus is not None:
-        from jasper.active_speaker.bass_stimulus import build_bass_program  # lazy: keeps jasper.web numpy-free
-
-        program = build_bass_program(excitation, spec.stimulus, safety_profile=context.safety_profile,
-                                     role_targets=context.role_targets, extra_backoff_db=backoff,
-                                     courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase))
-    else:
-        program = (excitation.cloud_program(extra_backoff_db=backoff) if spec.program_phase == PHASE_CLOUD_VERIFY
-                   else excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s))
+    program = compose_summed_program(excitation, spec, stimulus_dbfs,
+        safety_profile=context.safety_profile if spec.stimulus is not None else {},
+        role_targets=context.role_targets if spec.stimulus is not None else {})
     if spec.program_phase == PHASE_VERIFY:
         conductor._verify_program = program
     elif spec.program_phase == PHASE_CLOUD_VERIFY:
@@ -226,7 +218,8 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
             return bound
 
         try:
-            results = await run_levels(ladder, hold=door.hold, prepare=prepare, gate=gate, signals=signals, aborts={})
+            results = await run_levels(ladder, hold=door.hold, prepare=prepare, gate=gate, signals=signals,
+                                       aborts={}, save_ladder=packet.update_schedule)
             if signals.stop.is_set() or signals.complete.is_set():
                 manifest.reason = signals.stop_reason if signals.stop.is_set() else "complete_requested"
             return replace(results[-1], reason=packet.to_dict()["reason"]) if results and not manifest.reason else manifest

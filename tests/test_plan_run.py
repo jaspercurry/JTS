@@ -757,8 +757,26 @@ async def test_bass_levels_refuse_when_no_level_is_admissible():
     assert not hold.mock_calls and not prepare.mock_calls
 
 
+@pytest.fixture
+def rung_spl(monkeypatch):
+    measurements = {}
+    bank = _Store.bank
+
+    async def measured_bank(self, record):
+        if "level_db" in record:
+            level = record["level_db"]
+            record["capture_integrity"] = {"spl": measurements.get(round(level, 2), {
+                "loudest_half_second_db_spl": 93 + level, "max_window_db_spl": 93 + level,
+                "ceiling_db_spl": 85})}
+            record["program_id"] = "bass-sweep"
+        return await bank(self, record)
+
+    monkeypatch.setattr(_Store, "bank", measured_bank)
+    return measurements
+
+
 @pytest.mark.parametrize("partial", [False, True, "last", "all", "stop"])
-async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, partial):
+async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, partial, rung_spl):
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     request = _walk([0, 20], candidates=("base",))
@@ -872,12 +890,125 @@ async def test_pilot_floor_policy_keeps_take_and_packet_evidence(tmp_path, monke
     assert evidence["ambient_report"] == analysis.ambient_report
 
 
-async def test_room_plan_levels_keep_pose_order(tmp_path, box, tuning_profile):
+@pytest.mark.parametrize("stop,tolerance,fader,admitted,window", [
+    (85, 1, -19.99, 76.47, 82), (90.53, 1, -14.46, 82, 87.53),
+    (85, 0.5, -19.99, 76.47, 82), (87, 4, -18.99, 77.47, 83),
+])
+async def test_ladder_caps_from_previous_measured_window(tmp_path, box, rung_spl, stop, tolerance, fader, admitted, window):
+    from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
+
+    request = ac.AngleCaptureRequest((ac.AngleStop(0, ac.REGIME_SUMMED, purpose="bass"),))
+    facts = ready_facts(request, commissioning_stop_db_spl=stop, program_ids_for=lambda _: ("bass-sweep",))
+    anchor_stimulus = {"program_id": "broadband-sweep", "wav_sha256": "anchor-wav"}
+    facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record,
+        "reference_volume_db": -22.23, "measured_db_spl": 74.23,
+        "target": {"target_db_spl": 75, "tolerance_db": tolerance},
+        "stimulus": anchor_stimulus}))
+    rung_spl.update({level: {"loudest_half_second_db_spl": half, "max_window_db_spl": peak,
+                            "ceiling_db_spl": stop}
+                    for level, half, peak in ((-31.46, 66.22, 71.11), (-21.46, 76.04, 80.53))})
+    ladder = preflight_levels(request, facts, spl="82,65,75")
+    fakes, gate = FakeSeams(), AnsweredGate()
+    packet = RoundPacket(RunManifest("ladder", _Store(fakes.records)), json.loads(json.dumps(ladder.to_dict())))
+
+    def prepare(plan):
+        manifest = RunManifest(f"run-{len(packet.runs)}", packet)
+        return LevelRun(manifest, _run_door(tmp_path, box, fakes, manifest), _analysis,
+                        lambda *_args, **_kwargs: TakeVerdict(True))
+
+    hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
+    results = await run_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS,
+                               save_ladder=packet.update_schedule)
+    await packet.finish()
+    assert [call["level_db"] for call in fakes.play.calls] == pytest.approx([-31.46, -21.46, fader])
+    assert all(result.status == "complete" for result in results)
+    schedule = packet.manifest.records.snapshots[-1]["schedule"]
+    assert schedule["anchor_stimulus"] == anchor_stimulus
+    first, second, third = schedule["admissions"]
+    assert [row["requested_db_spl"] for row in (first, second, third)] == [65, 75, 82]
+    assert first["basis"] == "unmeasured_stimulus_opener"
+    observation, = first["observations"]
+    assert observation["run_stimulus"]["program_id"] == "bass-sweep"
+    assert observation["stimulus_mismatch"] is True
+    assert observation["measured_offset_db"] == pytest.approx(1.22)
+    assert second["basis"] == third["basis"] == "measured_window"
+    assert third["admitted_db_spl"] == pytest.approx(admitted)
+    assert third["level_db"] == pytest.approx(fader)
+    assert third["previous_level_db"] == pytest.approx(-21.46)
+    assert third["max_window_db_spl"] == 80.53
+    assert third["predicted_max_window_db_spl"] == pytest.approx(window)
+    assert third["margin_db"] == max(tolerance, 3)
+    assert third["bound_by"] == ("measured_window_crest" if admitted < 82 else None)
+
+
+async def test_opener_cap_survives_plan_serialization_at_each_pose(tmp_path, box, rung_spl):
+    from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
+
+    request = ac.AngleCaptureRequest(tuple(ac.AngleStop(angle, ac.REGIME_SUMMED, purpose="bass") for angle in (0, 20)))
+    facts = ready_facts(request, program_ids_for=lambda _: ("bass-sweep",))
+    facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record,
+        "reference_volume_db": -22.23, "measured_db_spl": 74.23}))
+    rung_spl[-22.23] = {"loudest_half_second_db_spl": 75, "max_window_db_spl": 80, "ceiling_db_spl": 85}
+    preview = preflight_levels(request, facts, spl="84,85")
+    received = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(preview.plan.to_dict())))
+    ladder = preflight_levels(received, facts)
+    fakes, gate = FakeSeams(), AnsweredGate()
+    packet = RoundPacket(RunManifest("ladder", _Store(fakes.records)), json.loads(json.dumps(ladder.to_dict())))
+
+    def prepare(plan):
+        manifest = RunManifest(f"run-{len(packet.runs)}", packet)
+        return LevelRun(manifest, _run_door(tmp_path, box, fakes, manifest), _analysis,
+                        lambda *_args, **_kwargs: TakeVerdict(True))
+
+    hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
+    await run_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS, save_ladder=packet.update_schedule)
+    assert [call["level_db"] for call in fakes.play.calls] == pytest.approx([-22.23, -20.23] * 2)
+    admissions = packet.manifest.records.snapshots[-1]["schedule"]["admissions"]
+    assert [row["pose_index"] for row in admissions] == [1, 1, 2, 2]
+    for opener in admissions[::2]:
+        assert opener["requested_db_spl"] == 84
+        assert opener["admitted_db_spl"] == pytest.approx(74.23)
+        assert opener["bound_by"] == "unmeasured_stimulus_opener"
+
+
+@pytest.mark.parametrize("window", [None, float("nan"), float("inf"), float("-inf"), True, "80.53", "empty"])
+async def test_blocked_rung_persists_its_measurement_failure(tmp_path, box, rung_spl, monkeypatch, window):
+    from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
+
+    request = ac.AngleCaptureRequest((ac.AngleStop(0, ac.REGIME_SUMMED, purpose="bass"),))
+    ladder = preflight_levels(request, ready_facts(request), spl="65,75")
+    rung_spl[-28] = {"loudest_half_second_db_spl": 66.22, "max_window_db_spl": window, "ceiling_db_spl": 85}
+    fakes, gate = FakeSeams(), AnsweredGate()
+    packet = RoundPacket(RunManifest("ladder", _Store(fakes.records)), json.loads(json.dumps(ladder.to_dict())))
+    if window == "empty":
+        async def without_records(_request, *, manifest, **_kwargs):
+            return manifest
+        monkeypatch.setattr("jasper.active_speaker.run_levels.run_plan", without_records)
+
+    def prepare(plan):
+        manifest = RunManifest(f"run-{len(packet.runs)}", packet)
+        return LevelRun(manifest, _run_door(tmp_path, box, fakes, manifest), _analysis,
+                        lambda *_args, **_kwargs: TakeVerdict(True))
+
+    hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
+    with pytest.raises(ac.LateralWalkRefused) as refused:
+        await run_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS,
+                         save_ladder=packet.update_schedule)
+    assert refused.value.reason == "walk_level_policy_invalid"
+    assert [call["level_db"] for call in fakes.play.calls] == ([] if window == "empty" else [-28])
+    blocked = packet.manifest.records.snapshots[-1]["schedule"]["admissions"][-1]
+    assert (blocked["pose_index"], blocked["level_index"], blocked["requested_db_spl"]) == (1, 2, 75)
+    assert blocked["status"] == "blocked" and blocked["admitted_db_spl"] is None
+    assert blocked["unavailable"] == (["previous_rung"] if window == "empty" else ["max_window_db_spl"])
+
+
+async def test_room_plan_levels_keep_pose_order(tmp_path, box, tuning_profile, rung_spl):
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     candidate = _room_candidate(tuning_profile)
     program = run_program("room")
     levels = (-10.0, -20.0)
+    rung_spl[-20] = {"loudest_half_second_db_spl": 73, "max_window_db_spl": 73, "ceiling_db_spl": 95}
     request = ac.request_for_program(program, candidates=("base", candidate.fingerprint), levels=levels)
     report = preflight_levels(request, ready_facts(request, candidates={candidate.fingerprint: candidate}, commissioning_stop_db_spl=95))
     assert not report.blocking
@@ -893,7 +1024,7 @@ async def test_room_plan_levels_keep_pose_order(tmp_path, box, tuning_profile):
     hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
     results = await run_levels(report, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS)
     expected = [(pose.seat_offset_m, level, cid) for pose in program.poses
-                for level in levels for cid in ("banked-base", candidate.fingerprint)]
+                for level in sorted(levels) for cid in ("banked-base", candidate.fingerprint)]
     assert [(row["seat_offset_m"], row["level_db"], row["candidate_id"]) for row in fakes.records.banked] == expected
     assert len(fakes.play.calls) == len(expected)
     assert len(gate.grants) == 3 and fakes.graph.restores == 1

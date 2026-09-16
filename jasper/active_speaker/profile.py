@@ -547,6 +547,11 @@ class LocalSubwoofer:
 SPL_RAISE_MARGIN_DB = 3.0
 
 
+def spl_raise_bound_db_spl(stop_db_spl: float, *, measured_stop_db_spl: float | None = None,
+                         margin_db: float = SPL_RAISE_MARGIN_DB) -> float:
+    return min(stop_db_spl, measured_stop_db_spl if measured_stop_db_spl is not None else stop_db_spl) - margin_db
+
+
 @dataclass(frozen=True)
 class SafetyEnvelope:
     """Commissioning bounds that keep hardware bring-up conservative."""

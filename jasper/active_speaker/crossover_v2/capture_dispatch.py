@@ -22,7 +22,7 @@ from jasper.audio_measurement.program_analysis.model import (
     DRIVER_SNR_ALIGNMENT_KEY, GAIN_MAX_DIGITAL_PEAK_DBFS, PILOT_MIN_SNR_DB, MeasurementPriors, ProgramAnalysis,
 )
 from jasper.audio_measurement.program_analysis.summary import driver_alignment_snr_verdict, driver_snr_verdict
-from jasper.active_speaker.profile import SPL_RAISE_MARGIN_DB
+from jasper.active_speaker.profile import spl_raise_bound_db_spl
 from jasper.active_speaker.measurement_programs import pilot_floor_blocking
 from .sweep_spec import REQUIRED_SAMPLE_RATE_HZ
 from jasper.json_fields import finite_float
@@ -256,7 +256,7 @@ def _assess_recording(
     spl = spl or {}
     peak_spl = finite_float(spl.get("max_window_db_spl"))
     stop = finite_float(spl.get("ceiling_db_spl"))
-    headroom = (max(0.0, min(stop, spl_stop_db_spl) - peak_spl - SPL_RAISE_MARGIN_DB)
+    headroom = (max(0.0, spl_raise_bound_db_spl(spl_stop_db_spl, measured_stop_db_spl=stop) - peak_spl)
                 if peak_spl is not None and stop is not None and spl_stop_db_spl is not None else None)
     alignment_only = phase == "measure" and capabilities["magnitude"]
     alignment_ceiling_db = (capped_gain_ceilings(caps_dbfs, session_volume_db,
