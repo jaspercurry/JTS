@@ -1568,17 +1568,16 @@ def test_measure_without_anchor_evidence_has_no_anchor_rung():
 
 
 @pytest.mark.parametrize("passes,displacement_ms,buried", [
-    (1, 0, False), (2, 0, False), (3, 0, False), (3, 0, True),
+    (2, 0, False), (3, 0, False), (3, 0, True),
     (2, 2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, False),
     (2, 2 * SEGMENT_SEARCH_S * 1000, False),
     (3, -2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, False),
     (3, 2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, False),
     (3, 2 * SEGMENT_SEARCH_S * 1000, False),
 ])
-def test_repeated_summed_anchor_uses_sweep_spacing(monkeypatch, passes, displacement_ms, buried):
-    program = _verify_program(sweep_band_hz=(20.0, 1100.0))
-    if passes > 1:
-        program = repeat_summed_program(program, passes=passes, quiet_samples=SR, cooldown_s=2)
+def test_repeated_summed_anchor_uses_sweep_spacing(passes, displacement_ms, buried):
+    program = _verify_program(with_pilots=False, sweep_band_hz=(20.0, 1100.0))
+    program = repeat_summed_program(program, passes=passes, quiet_samples=SR, cooldown_s=2)
     capture = _pristine(program, noise=1e-6)
     if displacement_ms or buried:
         second = program.segment("sweep_verify_repeat_1")
@@ -1591,42 +1590,10 @@ def test_repeated_summed_anchor_uses_sweep_spacing(monkeypatch, passes, displace
             samples = np.random.default_rng(19).normal(0, 0.01, samples.size) + samples * 1e-6
         capture[start + shift:stop + shift] = samples
 
-    locate = locate_mod._locate_in_window
-    first_sweep = program.segment("sweep_verify")
-    pilot = program.segment("pilot_summed_lo")
-    pilot_stimulus = segment_stimulus(pilot)
-    arrival = _earliest_strong_peak(capture, pilot_stimulus,
-        sample_rate=SR, band_hz=(pilot.f1_hz, pilot.f2_hz))
-    scheduled = arrival - pilot.start_sample + first_sweep.start_sample
-    pilot_scores = {scheduled: (0.5498, 0.385),
-                    scheduled - _pilot_spacing(program): (0.3351, 0.011)}
-
-    def field_pilot_scores(capture, stim, scheduled, n, *, sample_rate, band_hz=None, search_samples=None):
-        located, confidence, presence = locate(
-            capture, stim, scheduled, n, sample_rate=sample_rate, band_hz=band_hz, search_samples=search_samples,
-        )
-        if n == first_sweep.n_samples and band_hz is None:
-            for at, scores in pilot_scores.items():
-                if abs(scheduled - at) < SEGMENT_SEARCH_S * SR:
-                    confidence, presence = scores
-        return located, confidence, presence
-
-    monkeypatch.setattr(locate_mod, "_locate_in_window", field_pilot_scores)
-    _, _, pilot_anchor = locate_mod._resolve_anchor(
-        program, capture, SR, arrival, pilot, {pilot.segment_id: pilot_stimulus},
-    )
-    assert pilot_anchor.ambiguous is True
-    assert pilot_anchor.presence == 0.385
-    assert pilot_anchor.confidence == 0.5498
-
     analysis = analyze_program_capture(program, capture, SR)
-    verdict = cd.assess(analysis, phase="verify", purpose="bass" if passes > 1 else "room", program=program)
-    if passes == 1:
-        assert analysis.anchor == pilot_anchor
-        assert verdict.fault == "anchor_ambiguous"
-        return
+    verdict = cd.assess(analysis, phase="verify", program=program)
     anchor = analysis.anchor
-    assert anchor.anchor == first_sweep.segment_id
+    assert anchor.anchor == "sweep_verify"
     assert anchor.witness == program.segment("sweep_verify_repeat_1").segment_id
     assert anchor.shift_ms == pytest.approx((GLOBAL_OFFSET + 200) / SR * 1000, abs=0.5)
     assert anchor.corroborated is (not displacement_ms and not buried)

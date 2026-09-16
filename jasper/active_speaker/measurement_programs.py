@@ -93,10 +93,6 @@ def gate_exemption(purpose: str | None) -> str | None:
     return SEAT_EXEMPT if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_BASS) else None
 
 
-def pilot_floor_blocking(purpose: str | None) -> bool:
-    return _validated_purpose(purpose) != PURPOSE_BASS
-
-
 def validated_pose(
     kind: str,
     seat_offset_m: Sequence[float] | None,

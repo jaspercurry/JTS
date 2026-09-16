@@ -13,10 +13,12 @@ from scipy.io import wavfile
 from jasper.active_speaker.angle_capture import request_for_program
 from jasper.active_speaker.bass_stimulus import build_bass_program
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
+from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec, stubbed_capabilities
 from jasper.cli.measure import _bind_compose
-from jasper.active_speaker.crossover_v2.capture_plan import build_inline_session_spec
+from jasper.active_speaker.crossover_v2.capture_plan import CAPTURE_ENTRY_MARGIN_MS, build_inline_session_spec
+from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.measurement_analysis import analyzed_measurements
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ, bass_take
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
@@ -25,7 +27,7 @@ from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import ProgramAdmissionRefusal, readmit_summed_program_from_wav
 from jasper.audio_measurement.distortion import required_pre_guard_s, segment_sweep_meta
-from jasper.audio_measurement.program import KIND_SUMMED_SWEEP, _finalize, render_program_pcm, write_program_wav
+from jasper.audio_measurement.program import KIND_PILOT, KIND_SUMMED_SWEEP, _finalize, render_program_pcm, write_program_wav
 from jasper.audio_measurement.program_analysis import MeasurementGeometry, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, analyze_program_capture
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.repeated_sweep import align_summed_capture, average_summed_capture, repeat_summed_program, sweep_ambient_id
@@ -55,6 +57,14 @@ def _bass(fixture, **kwargs):
     _, safety, targets, excitation = fixture
     return build_bass_program(excitation, program("bass").stimulus,
                               safety_profile=safety, role_targets=targets, **kwargs)
+
+
+def _replay(bass, raw, tmp_path, monkeypatch):
+    wav = tmp_path / "capture.wav"
+    wavfile.write(wav, bass.sample_rate_hz, raw.astype(np.float32))
+    record = {"program": bass.to_dict(), "graph_scope": "candidate", "candidate_id": "trial"}
+    monkeypatch.setattr("jasper.active_speaker.measurement_analysis.reopen_measurement_capture", lambda *_: (record, wav.read_bytes()))
+    return next(analyzed_measurements(tmp_path, paths=["capture"]))
 
 
 def test_registry_stimulus_reaches_the_capture_spec():
@@ -88,7 +98,7 @@ def test_bass_schedule_fits_caps_and_noise_windows(bass_fixture, floor):
     bass = _bass(bass_fixture)
     pcm = render_program_pcm(bass)[:, 0]
     sweeps = [s for s in bass.segments if s.kind == KIND_SUMMED_SWEEP]
-    assert len(sweeps) == 3
+    assert (len(sweeps), sum(s.kind == KIND_PILOT for s in bass.segments)) == (3, 0)
     for index, sweep in enumerate(sweeps):
         assert 0 < sweep.n_samples / bass.sample_rate_hz <= 4
         assert (sweep.f1_hz, sweep.f2_hz) == (floor, 1100)
@@ -133,7 +143,7 @@ def test_bass_capture_program_agrees_across_surfaces(bass_fixture, monkeypatch, 
         acknowledgement_binding="a" * 32, retries_per_pose=0,
     ).capture_plan
     assert plan.capture_target == 1
-    assert plan.entries[0].duration_ms >= played.total_samples * 1000 / played.sample_rate_hz
+    assert plan.entries[0].duration_ms == 20199 + CAPTURE_ENTRY_MARGIN_MS
 
 
 @pytest.mark.parametrize("passes", [2, 3])
@@ -160,11 +170,12 @@ def test_coherent_noise_gain_and_replayed_fundamental(bass_fixture, passes, tmp_
                              segment_sweep_meta(sweep), start, BASS_BANDS_HZ) for samples in (raw, averaged)]
     gain = np.median([b["estimated_snr_db"] - a["estimated_snr_db"] for a, b in zip(*rows)])
     assert gain == pytest.approx(10 * math.log10(passes), abs=1.5)
-    wav = tmp_path / "capture.wav"
-    wavfile.write(wav, rate, raw.astype(np.float32))
-    record = {"program": bass.to_dict(), "graph_scope": "candidate", "candidate_id": "trial"}
-    monkeypatch.setattr("jasper.active_speaker.measurement_analysis.reopen_measurement_capture", lambda *_: (record, wav.read_bytes()))
-    take, = analyzed_measurements(tmp_path, paths=["capture"])
+    take = _replay(bass, raw, tmp_path, monkeypatch)
+    anchor = take.analysis.anchor
+    assert (anchor.anchor, anchor.witness) == ("sweep_verify", "sweep_verify_repeat_1")
+    assert anchor.shift_ms == pytest.approx(delay / rate * 1000, abs=0.5)
+    assert (anchor.corroborated, anchor.ambiguous, take.analysis.pilots, take.analysis.pilot_snr_ok) == (True, False, (), None)
+    assert assess(take.analysis, phase="verify", program=bass).screens == []
     result = bass_take(take)
     assert len(result["passes"]) == passes
     frequencies = np.array(result["frequency_curve"]["freqs_hz"])
@@ -177,13 +188,18 @@ def test_coherent_noise_gain_and_replayed_fundamental(bass_fixture, passes, tmp_
     ("repeats", ProgramAdmissionRefusal.REPEAT_COUNT_OVER_CAP),
     ("cooldown", ProgramAdmissionRefusal.COOLDOWN_BELOW_MINIMUM),
 ])
-def test_bass_admission_keeps_each_role_cap(bass_fixture, tmp_path, fault, refusal):
-    topology, safety, targets, excitation = bass_fixture
+def test_bass_admission_keeps_jts3_role_caps(bass_fixture, tmp_path, fault, refusal):
+    topology, safety, targets = _profile_and_targets(
+        woofer_floor=20, woofer_upper=4000, woofer_peak=-8, tweeter_peak=-65,
+        max_sweep_duration_s=4, minimum_cooldown_s=2)
+    declared = {"woofer": 83.3, "tweeter": 108.5}
+    excitation = replace(bass_fixture[3], caps_dbfs={r: resolve_driver_excitation_ceilings(
+        safety, t, program_admission=True, declared_sensitivities=declared)[1] for r, t in targets.items()})
     applied = _applied_profile(topology)
     preset = ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"])
     graph = compile_tuning_graph(MeasurementGraphProfile(preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM),
                                  candidate=candidate_from_applied_profile(topology, applied))
-    programs = [excitation.verify_program(), _bass(bass_fixture)]
+    programs = [excitation.verify_program(), _bass((topology, safety, targets, excitation))]
     if fault == "duration":
         programs[-1] = replace(excitation, summed_sweep_band_hz=(20, 1100), sweep_duration_limits_s={}).verify_program(sweep_s=5)
     elif fault in ("repeats", "cooldown"):
@@ -195,11 +211,10 @@ def test_bass_admission_keeps_each_role_cap(bass_fixture, tmp_path, fault, refus
         write_program_wav(wav, stimulus)
         admission = readmit_summed_program_from_wav(stimulus, wav, graph_yaml=graph, topology=topology,
                                                    safety_profile=safety, role_targets=targets,
-                                                   session_volume_db=excitation.session_volume_db)
+                                                   session_volume_db=excitation.session_volume_db, declared_sensitivities=declared)
         assert admission.allowed is not (fault is not None and index == 1), admission.to_dict()
-        if fault is not None and index == 1:
-            assert admission.refusals == (refusal,)
-        else:
+        assert admission.refusals == ((refusal,) if fault is not None and index == 1 else ())
+        if admission.allowed:
             assert all(segment.execution_allowed for segment in admission.segments if segment.role == "tweeter")
 
 
@@ -219,11 +234,7 @@ def test_unusable_passes_reach_capture_integrity(bass_fixture, tmp_path, monkeyp
     raw = np.pad(pcm, (delay, rate))
     if fault == "truncated":
         raw = raw[:delay + bass.total_samples - rate // 10]
-    wav = tmp_path / "capture.wav"
-    wavfile.write(wav, rate, raw.astype(np.float32))
-    record = {"program": bass.to_dict(), "graph_scope": "candidate", "candidate_id": "trial"}
-    monkeypatch.setattr("jasper.active_speaker.measurement_analysis.reopen_measurement_capture", lambda *_: (record, wav.read_bytes()))
-    take, = analyzed_measurements(tmp_path, paths=["capture"])
+    take = _replay(bass, raw, tmp_path, monkeypatch)
     assert code in take.analysis.capture_integrity.failed
     assert np.array_equal(take.samples, raw.astype(np.float32))
     assert average_summed_capture(bass, raw, delay) is raw
@@ -244,17 +255,13 @@ def test_pass_alignment_preserves_the_fundamental(bass_fixture, tmp_path, monkey
         offsets[sweep.segment_id] = index * round(drift_us * 1e-6 * rate)
         start += offsets[sweep.segment_id]
         raw[start:start + sweep.n_samples] = pcm[sweep.start_sample:sweep.start_sample + sweep.n_samples]
-    wav = tmp_path / "capture.wav"
-    wavfile.write(wav, rate, raw.astype(np.float32))
-    record = {"program": bass.to_dict(), "graph_scope": "candidate", "candidate_id": "trial"}
-    monkeypatch.setattr("jasper.active_speaker.measurement_analysis.reopen_measurement_capture", lambda *_: (record, wav.read_bytes()))
-    take, = analyzed_measurements(tmp_path, paths=["capture"])
+    take = _replay(bass, raw, tmp_path, monkeypatch)
     integrity = take.analysis.capture_integrity
     evidence = integrity.to_dict()
     assert evidence["pass_alignment"] == "correlated"
     assert evidence["pass_offsets_samples"] == offsets
     assert evidence["pass_alignment_residual_spread_samples"] == pytest.approx(0, abs=0.01)
-    assert integrity.failed == ()
+    assert not integrity.failed
     view = bass_take(take)
     assert all(view["diagnostics"][key] == value for key, value in integrity.pass_alignment.to_dict().items())
     assert {row["segment_id"]: row["offset_samples"] for row in view["passes"]} == offsets
@@ -278,18 +285,12 @@ def test_noisy_passes_still_average_at_the_schedule(bass_fixture, tmp_path, monk
     if dropout:
         at = delay + bass.segment("sweep_verify_repeat_1").start_sample + rate
         raw[at:at + ZERO_RUN_MIN_SAMPLES] = 0
-    wav = tmp_path / "capture.wav"
-    wavfile.write(wav, rate, raw.astype(np.float32))
-    record = {"program": bass.to_dict(), "graph_scope": "candidate", "candidate_id": "trial"}
-    monkeypatch.setattr("jasper.active_speaker.measurement_analysis.reopen_measurement_capture", lambda *_: (record, wav.read_bytes()))
-    take, = analyzed_measurements(tmp_path, paths=["capture"])
+    take = _replay(bass, raw, tmp_path, monkeypatch)
     integrity = take.analysis.capture_integrity
-    assert integrity.failed == (("zero_fill_runs",) if dropout else ())
-    assert take.analysis.glitch_detected is dropout
+    assert (integrity.failed, take.analysis.glitch_detected) == (("zero_fill_runs",) if dropout else (), dropout)
     if noise_rms == 0.11:
         assert integrity.locate_confidence_min == pytest.approx(0.5, abs=0.05)
-        assert take.analysis.anchor.corroborated is True
-        assert take.analysis.anchor.ambiguous is False
+        assert (take.analysis.anchor.corroborated, take.analysis.anchor.ambiguous) == (True, False)
     evidence = integrity.to_dict()
     assert evidence["pass_alignment"] == "scheduled"
     assert set(evidence["pass_offsets_samples"].values()) == {0}
@@ -316,7 +317,7 @@ def test_noisy_passes_still_average_at_the_schedule(bass_fixture, tmp_path, monk
         assert band["fundamental_qualified"] == (not dropout and snr is not None and snr >= DRIVER.snr_warn_db)
         if band["fundamental_qualified"]:
             qualified.append(tuple(band["band_hz"]))
-    assert qualified == (list(BASS_BANDS_HZ[:4]) if noise_rms == 0.01 and not dropout else [])
+    assert qualified == ([BASS_BANDS_HZ[i] for i in (0, 1, 3, 4)] if noise_rms == 0.01 and not dropout else [])
     frequencies = np.array(view["freqs_hz"])
     assert np.array_equal(view["fundamental_qualified"],
         np.any([(frequencies >= lo) & (frequencies < hi) for lo, hi in qualified], axis=0)
@@ -324,7 +325,7 @@ def test_noisy_passes_still_average_at_the_schedule(bass_fixture, tmp_path, monk
 
 
 @pytest.mark.parametrize("edge", [-1, 0, 1])
-def test_pass_alignment_normalizes_the_matched_span_and_discloses_edge_peaks(bass_fixture, edge):
+def test_pass_alignment_peaks_and_edges(bass_fixture, edge):
     bass = _bass(bass_fixture)
     rate, delay = bass.sample_rate_hz, 800
     search = round(SWEEP_SCHEDULE_RESIDUAL_CEILING_MS * rate / 1000)
@@ -341,8 +342,7 @@ def test_pass_alignment_normalizes_the_matched_span_and_discloses_edge_peaks(bas
     _, alignment = align_summed_capture(bass, raw, delay, search_samples=search)
     assert alignment.method == ("scheduled" if edge else "correlated")
     assert alignment.edge_peaks == (tuple(s.segment_id for s in sweeps[1:]) if edge else ())
-    assert alignment.correlation_peaks[sweeps[0].segment_id] is None
-    assert all(alignment.correlation_peaks[s.segment_id] == pytest.approx(1, abs=1e-9) for s in sweeps[1:])
+    assert list(alignment.correlation_peaks.values()) == [None, *([pytest.approx(1, abs=1e-9)] * (len(sweeps) - 1))]
     assert set(alignment.offsets_samples.values()) == {0}
 
 
@@ -355,15 +355,15 @@ def test_single_sweep_analysis_is_byte_identical(bass_fixture, monkeypatch, purp
     raw += np.random.default_rng(19).normal(0, 0.001, raw.size)
     assert sum(s.kind == KIND_SUMMED_SWEEP for s in stimulus.segments) == 1
     assert average_summed_capture(stimulus, raw, 800) is raw
-    geometry = MeasurementGeometry(gate_exempt_reason=gate_exemption(purpose))
-    result = analyze_program_capture(stimulus, raw, stimulus.sample_rate_hz, geometry=geometry)
+    analyze = lambda: analyze_program_capture(stimulus, raw, stimulus.sample_rate_hz,
+                        geometry=MeasurementGeometry(gate_exempt_reason=gate_exemption(purpose)))
+    result = analyze()
     monkeypatch.setattr("jasper.audio_measurement.program_analysis.dispatch.align_summed_capture",
                         lambda _program, capture, _offset, **kw: (capture, None))
     monkeypatch.setattr("jasper.audio_measurement.program_analysis.dispatch.average_summed_capture",
                         lambda _program, capture, _offset: capture)
-    baseline = analyze_program_capture(stimulus, raw, stimulus.sample_rate_hz, geometry=geometry)
-    assert json.dumps(asdict(result), default=lambda array: array.tobytes().hex(), sort_keys=True) == json.dumps(
-        asdict(baseline), default=lambda array: array.tobytes().hex(), sort_keys=True)
+    assert len({json.dumps(asdict(a), default=lambda array: array.tobytes().hex(), sort_keys=True)
+                for a in (result, analyze())}) == 1
 
 
 @pytest.mark.parametrize("scope,expected", [("drivers", ("near_field_splice_not_implemented",)), ("candidate", ())])
@@ -408,8 +408,7 @@ def test_verify_repeat_content_is_disclosed_and_discontinuities_are_checked(bass
         assert math.isfinite(integrity.repeat_content[check])
         if fault == "level":
             assert integrity.repeat_content[check] == pytest.approx(1, abs=0.01)
-            assert integrity.failed == ()
-            assert analysis.glitch_detected is False
+            assert (integrity.failed, analysis.glitch_detected) == ((), False)
     else:
         assert next(c.status for c in integrity.checks if c.name == check) == status
         if status == "fail":

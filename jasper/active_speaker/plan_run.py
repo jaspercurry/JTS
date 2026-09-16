@@ -574,7 +574,6 @@ async def _run(
                             analysis = await asyncio.to_thread(analyze, record, record_id)
                             program = ExcitationProgram.from_dict(record["program"]) if record.get("program") else None
                             assessed = await asyncio.to_thread(assessor or assess, analysis, phase=program.phase if program else spec.program_phase or "verify",
-                                              purpose=record.get("measurement_purpose"),
                                               spl=(record.get("capture_integrity") or {}).get("spl"),
                                               program=program, gain_ceiling_db=gain_ceiling_db, level_verdict=level_verdict)
                             if program is not None:
