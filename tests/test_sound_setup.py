@@ -2452,6 +2452,31 @@ def _no_lane_topology_payload(*, active: bool, subwoofer: bool = False) -> dict:
     return payload
 
 
+def test_two_drivers_on_the_same_dac_output_are_refused(
+    monkeypatch, tmp_path: Path,
+):
+    """The channel selector never disables an already-used output (a 3+
+    channel group could not otherwise swap two drivers without parking one
+    on a spare channel first), so save-time is the only gate against two
+    channels landing on the same physical_output_index."""
+    topo_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
+    payload = _passive_left_topology_payload()
+    payload["speaker_groups"].append({
+        "id": "right",
+        "label": "Right speaker",
+        "kind": "right",
+        "mode": "full_range_passive",
+        "channels": [{"role": "full_range", "physical_output_index": 0}],
+    })
+    payload["routing"]["main_right_group_id"] = "right"
+
+    with pytest.raises(OutputTopologyError):
+        sound_setup._save_output_topology_payload(payload)
+
+    assert not topo_path.exists()
+
+
 @pytest.mark.parametrize(
     ("shape", "named_in_refusal"),
     [

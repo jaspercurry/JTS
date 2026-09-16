@@ -40,6 +40,7 @@ from jasper.platform import wire
 from jasper.output_topology import (
     OutputHardware,
     OutputTopology,
+    OutputTopologyError,
     channel_identity_report,
     clock_domain_report,
     composite_serial_repin_plan,
@@ -283,6 +284,24 @@ def _refuse_undrivable_layout(topology: OutputTopology) -> None:
     )
 
 
+def _refuse_duplicate_physical_outputs(topology: OutputTopology) -> None:
+    """Refuse a save that puts two drivers on the same DAC channel.
+
+    The channel selector never disables an already-used output (a 3+
+    channel group could not otherwise swap two drivers without parking one
+    on a spare channel first), so this is the only gate against two
+    channels sharing a physical_output_index. Reuses evaluate_output_topology's
+    existing duplicate_physical_output blocker instead of re-deriving it.
+    """
+
+    duplicates = [
+        issue for issue in topology.evaluation()["blockers"]
+        if issue["code"] == "duplicate_physical_output"
+    ]
+    if duplicates:
+        raise OutputTopologyError(duplicates[0]["message"])
+
+
 def _save_output_topology_payload(
     raw: dict[str, Any],
     *,
@@ -311,6 +330,7 @@ def _save_output_topology_payload(
         raw_topology = raw.get("output_topology", raw)
         topology = OutputTopology.from_mapping(raw_topology)
         _refuse_undrivable_layout(topology)
+        _refuse_duplicate_physical_outputs(topology)
         topology, guards_changed = _request_missing_software_guards(topology)
         summed_stop = _active_speaker_stop_summed_test_tone(
             reason="output_topology_save"
