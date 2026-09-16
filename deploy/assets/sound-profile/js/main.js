@@ -3996,11 +3996,11 @@ import {
         commissionError: ''
       });
       // The server deleted the draft; a dirty form would otherwise keep the
-      // old driver values and ship them back on the next save.
-      driverResearch.dirty = false;
-      driverResearch.safetyDirty = false;
+      // old driver values and ship them back on the next save. Empty the form
+      // before the fetch so a failed fetch cannot leave it stale either.
+      ingestDesignDraft({status: 'not_saved', revision: 0}, {force: true});
       try {
-        ingestDesignDraft(await getJSON('./active-speaker/design-draft'), {force: true});
+        await fetchDesignDraft();
       } catch (draftError) {
         driverResearch.designDraft = {
           status: 'unreadable',
