@@ -119,8 +119,9 @@ _KEY_VALUE_RE = re.compile(
 # *inside* the token (`'don'\''t'`). `wpa-psk` is a key-mgmt value, not
 # a secret. This branch IS guarded against a value already reading
 # `<redacted>` as a whole token (end, whitespace, or a quote next) —
-# mirroring `_AUTHORIZATION_RE`: re-matching the placeholder
-# `_redacted_argv` leaves on an nmcli PSK would swallow a trailing quote off
+# mirroring `_AUTHORIZATION_RE`: re-matching the placeholder the literal
+# pass above already leaves on an echoed nmcli PSK (see
+# wifi_setup._readable_nmcli_error) would swallow a trailing quote off
 # the end of it. A secret merely glued onto the placeholder still redacts,
 # since only a token-ending `<redacted>` is skipped. An unmatched group
 # renders empty, so one template serves both shapes.
