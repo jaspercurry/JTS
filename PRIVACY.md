@@ -16,7 +16,7 @@ speech-to-speech turn.
 
 Endpointed adapters close the conversation as soon as playback drains. GPT-Live
 streams the admitted microphone during the active conversation, including pauses
-and assistant speech, and holds it open for a follow-up (five seconds by default;
+and assistant speech, and holds it open for a follow-up (two seconds by default;
 `JASPER_FOLLOWUP_TIMEOUT_SEC=0` closes immediately); its session closes when JTS
 ends that conversation. The closing chirp marks listening ending.
 

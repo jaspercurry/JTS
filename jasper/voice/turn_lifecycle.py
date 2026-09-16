@@ -61,6 +61,7 @@ NO_ANSWER_CUE_SUPPRESSED_REASONS = frozenset({
     "stopping",
     "barge_in",
     "measurement_active",
+    "followup_timeout",
 })
 
 

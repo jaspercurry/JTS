@@ -77,10 +77,13 @@ async def continuous_watchdog(
         deadline = followup_seconds + max(last_speech, accepted_at, drain_at)
         if speech_started <= turn.backend_completed_at and accepted_at < turn.backend_completed_at:
             # Backend completion alone is not proof that its answer reached playout.
-            deadline = max(deadline, min(
-                turn.backend_completed_at + BACKEND_ANSWER_GRACE_SEC,
-                last_speech + ACKNOWLEDGED_BACKEND_SEC,
-            ))
+            deadline = max(
+                deadline, turn.backend_completed_at + followup_seconds,
+                min(
+                    turn.backend_completed_at + BACKEND_ANSWER_GRACE_SEC,
+                    last_speech + ACKNOWLEDGED_BACKEND_SEC,
+                ),
+            )
         if now >= deadline:
             return _resolved(
                 "followup_timeout", now, last_speech, accepted_at,

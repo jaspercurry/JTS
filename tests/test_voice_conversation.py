@@ -61,10 +61,8 @@ async def test_endpointed_answer_closes_the_turn_once_playout_drains():
 async def test_live_followup_waits_for_playout_speech_and_tools(busy, followup_seconds):
     now = time.monotonic()
     turn = FakeLiveTurn(chunks_received=1)
-    turn.last_chunk_at = lambda: now - 8
     turn.audio_chunks_pending = lambda: 0
     turn.backend_pending = busy == "tool"
-    turn.last_activity_at = lambda: now if busy == "tool" else now - 8
     tts = FakeTts()
     tts.expected_drain_at = lambda: now + 10 if busy == "speaker" else now - 8
     task = asyncio.create_task(continuous_watchdog(
@@ -94,8 +92,6 @@ async def test_live_deadlines_ignore_provider_chatter(monkeypatch, acknowledged,
     )
     turn = FakeLiveTurn()
     turn.backend_pending = backend
-    turn.last_chunk_at = lambda: now
-    turn.last_activity_at = lambda: now
 
     async def tick(seconds):
         nonlocal now
@@ -132,7 +128,8 @@ async def test_partial_transcripts_do_not_end_the_conversation():
         await asyncio.gather(task, return_exceptions=True)
 
 
-async def test_the_hang_up_chirp_is_written_ahead_of_the_teardown_behind_it():
+@pytest.mark.parametrize("input_ended", [False, True])
+async def test_the_hang_up_chirp_is_written_ahead_of_the_teardown_behind_it(input_ended):
     """The teardown runs behind the cue, not in front of it."""
     order: list[str] = []
     chirped = asyncio.Event()
@@ -159,6 +156,7 @@ async def test_the_hang_up_chirp_is_written_ahead_of_the_teardown_behind_it():
     loop = answered_loop(tts=tts)
     loop._turns.turn = FakeLiveTurn(bytes_sent=3200)
     loop._turns.playback_report.accepted_audio = False
+    loop._turns.input_ended = input_ended
     loop._turns._play_cue = AsyncMock()
     loop._peering.session_ended = teardown
     loop._turns.turn.release = release
@@ -167,6 +165,7 @@ async def test_the_hang_up_chirp_is_written_ahead_of_the_teardown_behind_it():
     await loop._turns.end("followup_timeout")
     assert tts.writes == [loop._assistant_output._chirp_off_pcm]
     loop._turns._play_cue.assert_not_awaited()
+    assert loop._turns.silent_responses_session == 0
     assert "still_silent" not in order
     chirp = order.index("write_segment")
     assert chirp < order.index("release")
@@ -190,7 +189,7 @@ async def test_playout_acceptance_updates_after_the_first_answer():
     (10.0, 10.0, 0, False, True, 11.0),
     (10.0, 9.0, 2, False, True, 18.0),
     (10.0, None, 2, False, True, 18.0),
-    (28.0, None, 2, False, True, 31.0),
+    (30.0, None, 2, False, True, 32.0),
     (10.0, None, 2, True, True, 35.0),
     (10.0, None, 2, False, False, 18.0),
 ])

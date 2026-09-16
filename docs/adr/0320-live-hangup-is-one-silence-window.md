@@ -26,3 +26,7 @@
   the owner accepts this tradeoff: less is more. On chip-AEC boxes, residual
   echo can extend the silence window. This is accepted and must be checked
   by ear.
+  The client treats playout drain as the end of the answer, so a pause longer
+  than `SILENCE_BRIDGE_SEC` + the window (about 2.8 s) inside the frontend's
+  own answer ends the call mid-answer with a chirp; accepted for snappiness,
+  verify by ear.
