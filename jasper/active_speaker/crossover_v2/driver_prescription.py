@@ -1111,7 +1111,7 @@ def read_driver_prescription(
     passbands = dict(passbands_hz or {})
     prescription_class = _check_bounds(filters, passbands)
     for role, _ in pinned_trim_db:
-        if role not in passbands and role not in branch_context:
+        if role not in passbands and not (not filters and role in branch_context):
             _refuse(ROLE_UNKNOWN, "unknown speaker role", role=role,
                     speaker_roles=sorted(set(passbands) | set(branch_context)))
     context = {**{role: ((), 0.0) for role in passbands}, **branch_context}
