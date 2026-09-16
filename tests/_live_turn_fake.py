@@ -31,6 +31,7 @@ class FakeLiveTurn:
     continuous_input = False
     backend_pending = False
     backend_completed_at = 0.0
+    wire_lag: float | None = 0.0
 
     def __init__(
         self,
@@ -64,6 +65,9 @@ class FakeLiveTurn:
 
     def discard_input(self) -> None:
         return None
+
+    def wire_time_for(self, captured_at: float) -> float | None:
+        return captured_at + self.wire_lag if self.wire_lag is not None else None
 
     async def end_input(self) -> None:
         self.end_input_calls += 1
