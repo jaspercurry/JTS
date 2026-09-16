@@ -406,7 +406,7 @@ def run_program(purpose: str, poses: str | None = None) -> MeasurementProgram:
         if poses in (row.layout, f"{row.program_id}_{row.size}", f"{row.program_id}/{row.size}"):
             return replace(row, program_id=purpose, purpose=purpose,
                            regime=row.regime if row.purpose == purpose else selected.regime,
-                           room_sweep=row.room_sweep and purpose == PURPOSE_SPEAKER,
+                           room_sweep=selected.room_sweep and purpose == PURPOSE_SPEAKER,
                            levels=selected.levels, stimulus=row.stimulus if row.purpose == purpose else selected.stimulus)
     return replace(selected, size="custom", layout="", poses=tuple(
         ProgramPose(int(value.strip()), 0) for value in poses.split(",")

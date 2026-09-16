@@ -676,6 +676,20 @@ def test_baseline_pairs_driver_and_room_reads_and_keeps_timing_at_entry(layout, 
         pose.place for pose in program.poses for _ in range(pose.repeats * 2)]
 
 
+def test_speaker_room_layout_pairs_driver_and_summed_stops_with_entry_timing():
+    program = run_program("speaker", "room_quick")
+    request = ac.request_for_program(program, mover=ac.MOVER_ARM)
+
+    assert [(stop.regime, stop.purpose) for stop in request.stops] == [
+        pair for _pose in program.poses
+        for pair in [(ac.REGIME_PER_DRIVER, "speaker"), (ac.REGIME_SUMMED, "room")]
+    ]
+    timing = [capture for capture in plan_run.prepare_plan_captures(request)
+              if capture.spec.graph_scope == "timing"]
+    assert [(capture.stop.angle_deg, capture.spec.program_phase) for capture in timing] == [
+        (0, "entry_baseline")]
+
+
 @pytest.mark.parametrize(("regime", "candidate", "purpose", "phases", "scope"), [
     ("per_driver", "base", "speaker", ("check", "entry_baseline", "measure"), "timing"),
     ("summed", "base", "speaker", ("entry_baseline", "lateral"), "timing"),

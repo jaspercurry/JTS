@@ -403,7 +403,8 @@ def test_declared_trial_uses_the_design_mark_speaker_experiment(isolated_candida
     assert code == 0, body
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
     assert plan.program == "speaker/mark" and plan.mover == mover
-    assert {(stop.angle_deg, stop.elevation_deg, stop.regime) for stop in plan.stops} == {(0, 0, "per_driver")}
+    assert {(stop.angle_deg, stop.elevation_deg, stop.regime) for stop in plan.stops} == {
+        (0, 0, "per_driver"), (0, 0, "summed")}
     assert plan.candidates == () and body["shape"] == "measure"
 
 
