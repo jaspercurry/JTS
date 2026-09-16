@@ -295,3 +295,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0318](0318-rear-calibration-separates-acoustic-targets-from-electrical-settings.md) | Rear calibration separates acoustic targets from electrical settings | accepted |
 | [0319](0319-timing-measured-once-with-confidence.md) | Timing is measured once with confidence | accepted |
 | [0320](0320-live-hangup-is-one-silence-window.md) | Live hang-up is one silence window | accepted |
+| [0321](0321-live-first-answer-wait-is-separate-from-followup.md) | Live first-answer wait is separate from follow-up | accepted |

@@ -12,6 +12,7 @@ import pytest
 
 from jasper.voice.conversation import (
     ACKNOWLEDGED_BACKEND_SEC,
+    FIRST_ANSWER_SEC,
     WATCHDOG_POLL_SEC,
     continuous_watchdog,
 )
@@ -81,17 +82,21 @@ async def test_live_followup_waits_for_playout_speech_and_tools(busy, followup_s
         await asyncio.gather(task, return_exceptions=True)
 
 
-@pytest.mark.parametrize("acknowledged", [False, True])
-@pytest.mark.parametrize("backend", [False, True])
-async def test_live_deadlines_ignore_provider_chatter(monkeypatch, acknowledged, backend):
+@pytest.mark.parametrize("accepted_at, drain_at, backend, deadline", [
+    (0, 0, False, 100 + FIRST_ANSWER_SEC),
+    (98, 98.5, False, 100 + FIRST_ANSWER_SEC),
+    (101, 104, False, 106),
+    (0, 0, True, 100 + ACKNOWLEDGED_BACKEND_SEC),
+    (101, 104, True, 100 + ACKNOWLEDGED_BACKEND_SEC),
+])
+async def test_live_first_answer_followup_and_backend_waits(
+    monkeypatch, accepted_at, drain_at, backend, deadline,
+):
     now, last_speech, followup_seconds = 101.0, 100.0, 2.0
-    accepted_at = now if acknowledged else 0
-    deadline = (
-        last_speech + ACKNOWLEDGED_BACKEND_SEC if backend
-        else max(last_speech, accepted_at) + followup_seconds
-    )
     turn = FakeLiveTurn()
     turn.backend_pending = backend
+    tts = FakeTts()
+    tts.expected_drain_at = lambda: drain_at
 
     async def tick(seconds):
         nonlocal now
@@ -101,43 +106,16 @@ async def test_live_deadlines_ignore_provider_chatter(monkeypatch, acknowledged,
     monkeypatch.setattr(conversation, "time", SimpleNamespace(monotonic=lambda: now))
     monkeypatch.setattr(conversation, "asyncio", SimpleNamespace(sleep=tick))
     reason = await continuous_watchdog(
-        turn, FakeTts(), followup_seconds=followup_seconds, stall_seconds=120,
+        turn, tts, followup_seconds=followup_seconds, stall_seconds=120,
         user_activity=lambda: (99.0, last_speech), last_accepted_at=lambda: accepted_at,
     )
     assert now == deadline
     assert reason == ("response_stalled" if backend else "followup_timeout")
 
 
-@pytest.mark.parametrize("wire_lag", [1.5, None])
-async def test_live_followup_counts_from_sent_speech_and_bounds_a_stuck_sender(monkeypatch, wire_lag):
-    now, last_speech, followup_seconds = 101.0, 100.0, 2.0
-    deadline = last_speech + (wire_lag + followup_seconds if wire_lag is not None else ACKNOWLEDGED_BACKEND_SEC)
-    turn = FakeLiveTurn()
-    turn.wire_lag = wire_lag
-    emitted = Mock()
-
-    async def tick(seconds):
-        nonlocal now
-        now += seconds
-        assert now <= deadline
-
-    monkeypatch.setattr(conversation, "time", SimpleNamespace(monotonic=lambda: now))
-    monkeypatch.setattr(conversation, "asyncio", SimpleNamespace(sleep=tick))
-    monkeypatch.setattr(conversation, "log_event", emitted)
-    reason = await continuous_watchdog(
-        turn, FakeTts(), followup_seconds=followup_seconds, stall_seconds=120,
-        user_activity=lambda: (99.0, last_speech), last_accepted_at=lambda: 0,
-    )
-    assert now == deadline
-    assert reason == ("followup_timeout" if wire_lag is not None else "response_stalled")
-    if wire_lag is not None:
-        assert emitted.call_args.kwargs["wire_lag_ms"] == 1500
-
-
-async def test_partial_transcripts_do_not_end_the_conversation(monkeypatch):
+async def test_partial_transcripts_do_not_end_the_conversation():
     now = time.monotonic()
     turn = OpenAILiveTurn(OpenAILiveConnection(api_key="test"), now)
-    monkeypatch.setattr(turn, "wire_time_for", lambda captured_at: captured_at)
     task = asyncio.create_task(continuous_watchdog(
         turn, FakeTts(), followup_seconds=5, stall_seconds=120,
         user_activity=lambda: (now - 2, now - 1), last_accepted_at=lambda: 0,
@@ -235,7 +213,6 @@ async def test_live_backend_handoff_has_a_bounded_grace(
         await turn.on_event({"type": "session.delegation.created", "delegation": {"id": identity}})
 
     await delegate("original")
-    monkeypatch.setattr(turn, "wire_time_for", lambda captured_at: captured_at)
 
     async def tick(seconds):
         nonlocal now, accepted, speech_started, last_speech
@@ -278,12 +255,11 @@ def test_deadline_ages_distinguish_absent_anchors_and_future_playout(
     emitted = Mock()
     monkeypatch.setattr(conversation, "log_event", emitted)
     assert conversation._resolved(
-        "playout_stalled", 100, 98, accepted, drain, 0, FakeLiveTurn(), None, None,
+        "playout_stalled", 100, 98, accepted, drain, 0, FakeLiveTurn(), None,
     ) == "playout_stalled"
     fields = emitted.call_args.kwargs
     assert fields["accepted_age_ms"] == accepted_age
     assert fields["drain_age_ms"] == drain_age
-    assert fields["wire_lag_ms"] is None
 
 
 @pytest.mark.parametrize("finish_write", [True, False])
@@ -296,7 +272,6 @@ async def test_live_first_and_later_writes_survive_response_deadlines_but_are_bo
     monkeypatch.setattr(conversation, "time", clock)
     monkeypatch.setattr(turn_playback, "time", clock)
     turn = OpenAILiveTurn(OpenAILiveConnection(api_key="test"), now)
-    monkeypatch.setattr(turn, "wire_time_for", lambda captured_at: captured_at)
     turn._enqueue_audio(AudioOutChunk(b"\x00\x40" * 120))
     report = PlaybackReport(accepted_audio=acknowledged, last_accepted_at=96 if acknowledged else 0)
     entered, unblock = asyncio.Event(), asyncio.Event()

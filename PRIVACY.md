@@ -16,9 +16,10 @@ speech-to-speech turn.
 
 Endpointed adapters close the conversation as soon as playback drains. GPT-Live
 streams the admitted microphone during the active conversation, including pauses
-and assistant speech, and holds it open for a follow-up (two seconds by default;
-`JASPER_FOLLOWUP_TIMEOUT_SEC=0` closes immediately); its session closes when JTS
-ends that conversation. The closing chirp marks listening ending.
+and assistant speech, waits up to five seconds for an answer to start after each
+user utterance, and holds it open for a follow-up after playback drains (two
+seconds by default; `JASPER_FOLLOWUP_TIMEOUT_SEC=0` skips this follow-up wait);
+its session closes when JTS ends that conversation. The closing chirp marks listening ending.
 
 Voice tools may also send tool results back to that same voice provider so it
 can answer the question. For example, Gmail and Calendar tools are read-only
