@@ -10,10 +10,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from jasper.atomic_io import atomic_write_json
+from jasper.audio_measurement.timing_verification import timing_next_action
 
 from .applied_identity import applied_identity
 from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED, TIMING_NEEDS_MEASUREMENT
-from .alignment_evidence import commissioning_alignment, round_alignment, timing_next_action
+from .alignment_evidence import commissioning_alignment, round_alignment
 from .baseline_profile import profile_linearization
 from .candidate_bank import CandidateBankRefusal
 from .commissioning_experiment import bank_commissioning_experiment

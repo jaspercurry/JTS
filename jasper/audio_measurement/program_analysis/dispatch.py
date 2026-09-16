@@ -16,6 +16,7 @@ import numpy as np
 from jasper.audio_measurement.mic_meter import classify_mic_meter
 from jasper.audio_measurement.branch_program import is_branch_program
 from jasper.audio_measurement.repeated_sweep import align_summed_capture, average_summed_capture
+from jasper.audio_measurement.timing_verification import TIMING_RESIDUAL_FLOOR_DB
 from .branches import analyze_branches
 from .alignment_pairs import estimate_adjacent_alignment
 
@@ -577,7 +578,8 @@ def _build_candidate(
             repeats=tuple((w.complex_tf, t.complex_tf) for w, t in repeats), saved=applied_alignment,
         )
         if applied_alignment is not None:
-            verification = {"residual_rms_db": selection.residual_rms_db, "repeat_noise_db": selection.repeat_noise_db}
+            verification = {"residual_rms_db": selection.residual_rms_db, "repeat_noise_db": selection.repeat_noise_db,
+                            "residual_floor_db": TIMING_RESIDUAL_FLOOR_DB}
         elif explicit_alignment_delay_us is None:
             alignment_objective = selection.objective
             if alignment_objective == ALIGNMENT_COMMITTED_SUMMED_FIT:

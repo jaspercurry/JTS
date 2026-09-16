@@ -34,6 +34,7 @@ from jasper.active_speaker.profile import CrossoverRegion
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.gating import FLOOR_SEARCH_BOUND, f_trusted_floor_hz
 from jasper.audio_measurement.program import RoleBand, build_measure_program
+from jasper.audio_measurement.timing_verification import TIMING_RESIDUAL_FLOOR_DB
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK, ALIGNMENT_ESTIMATED_FLAT_SUM, ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     AlignmentEstimate, CrossoverCandidate, DriverResponse, ProgramAnalysis, RealizedLevelMatch,
@@ -926,7 +927,10 @@ def test_fit_budget_excludes_replaced_role_but_charges_other_branches(speaker_ro
 
 
 @pytest.mark.parametrize("verdict,residual,noise,action", [
-    ("saved", .6, .2, None), ("saved", .61, .2, "reset_timing"), ("saved", 2, None, None),
+    ("saved", .15, .01, None),
+    ("saved", TIMING_RESIDUAL_FLOOR_DB + .1, .01, "reset_timing"),
+    ("saved", TIMING_RESIDUAL_FLOOR_DB + .1, TIMING_RESIDUAL_FLOOR_DB, None),
+    ("saved", 2, None, None),
     ("measured", None, None, "apply_timing"), ("needs_measurement", None, None, "measure_timing"),
 ])
 def test_packet_timing_verification_and_next_action(speaker_round, verdict, residual, noise, action):
@@ -935,7 +939,8 @@ def test_packet_timing_verification_and_next_action(speaker_round, verdict, resi
     directory, _ = round_artifact_dir(inputs.session_dir)
     path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
     timing = {"delay_us": 22.0, "polarity": "normal", "provenance": "measured", "measured": {"take_id": "original"}} if residual is not None else None
-    verification = {"residual_rms_db": residual, "repeat_noise_db": noise} if timing else None
+    verification = {"residual_rms_db": residual, "repeat_noise_db": noise,
+                    "residual_floor_db": TIMING_RESIDUAL_FLOOR_DB} if timing else None
     profile_path = root / "applied-profile.json"
     profile = {"kind": BASELINE_PROFILE_KIND, "artifact_schema_version": SCHEMA_VERSION, "status": "applied"}
     profile_path.write_text(json.dumps({**profile, **({"timing": timing} if timing else {})}))

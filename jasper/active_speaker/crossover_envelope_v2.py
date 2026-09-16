@@ -11,7 +11,7 @@ from typing import Any, Mapping
 from ..json_fields import finite_float as _finite
 from ..log_event import log_event
 from jasper.audio_measurement.program_analysis.model import TIMING_NEEDS_MEASUREMENT
-from .alignment_evidence import timing_next_action
+from jasper.audio_measurement.timing_verification import timing_next_action
 from .commissioning_coordinator import round_capture
 from .round_copy import CHOOSE_PROGRAM, RUN_ENDED
 from .frequency_display import prepare_frequency_curve

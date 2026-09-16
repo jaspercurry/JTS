@@ -5,8 +5,6 @@
 
 from typing import Any, Mapping, Sequence
 
-from jasper.json_fields import finite_float
-
 from .applied_identity import applied_identity
 from .run_manifest import capture_alignment_levels
 from .baseline_profile import profile_driver_corrections
@@ -72,15 +70,3 @@ def commissioning_alignment(rows: Sequence[Mapping[str, Any]], candidate_id: str
     return max((row for row in rows if (candidate_id is None or row["base"] or row["candidate_id"] in (None, candidate_id))
                 and row["pose"].get("deg") == 0 and row["pose"].get("elevation_deg") == 0),
                key=take_order, default=None)
-
-def timing_next_action(timing: Mapping[str, Any], *, measured: bool = False, needs_measurement: bool = False) -> dict[str, str] | None:
-    verification = timing.get("verification") or {}
-    residual, noise = (finite_float(verification.get(key)) for key in ("residual_rms_db", "repeat_noise_db"))
-    if timing.get("saved") is not None:
-        if residual is not None and noise is not None and residual > 3 * noise:
-            return {"id": "reset_timing", "label": "the saved timing no longer explains the sum: re-measure timing (reset timing)"}
-    elif measured:
-        return {"id": "apply_timing", "label": "timing measured; apply a document to save it"}
-    elif needs_measurement:
-        return {"id": "measure_timing", "label": "measure timing again: louder, quieter room"}
-    return None
