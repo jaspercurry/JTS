@@ -42,6 +42,8 @@ For later rounds, retained timing supersedes the timing commissioning step in
 No ADR at this base states the 1.5 margin gate or flat-sum precedence; this
 replaces those code and playbook rules.
 
+Composition carries the base candidate's measured commissioning alignment and measured resolution only while its delay, role and polarity still match the committed measurement.
+
 ## Consequences
 
 Timing keeps one value and one provenance record until reset. Per-pose timing
