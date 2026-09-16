@@ -47,10 +47,15 @@ REASON_UNREADABLE = "evidence_unreadable"
 REASON_UNWRITABLE = "output_unwritable"
 
 
-def reset_prescription_document(*, keep_timing: bool) -> dict[str, Any]:
+def reset_prescription_document(
+    *, keep_timing: bool, trims_db: Mapping[str, float] | None,
+) -> dict[str, Any]:
     sections: dict[str, dict[str, Any]] = {
         name: {} for name in ("driver", "blend", "alignment", "room", "bass")
     }
+    sections["driver"] = {"filters": []}
+    if trims_db:
+        sections["driver"]["pinned_trim_db"] = dict(trims_db)
     if keep_timing:
         sections.pop("alignment")
     return {"kind": "jts_prescription", "schema": 1, "base": "saved",
