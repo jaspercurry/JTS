@@ -5,6 +5,7 @@ import json
 import shlex
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -21,8 +22,8 @@ from jasper.active_speaker.crossover_v2.driver_prescription import _check_compos
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
-from jasper.active_speaker.crossover_v2.round_inputs import prescription_sources, round_artifact_dir, round_inputs
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, exception_detail
+from jasper.active_speaker.crossover_v2.round_inputs import RoundViewsError, prescription_sources, round_artifact_dir, round_inputs
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands, analysis_curve_records
 from jasper.active_speaker.linearization_envelope import compose_envelope
@@ -42,6 +43,7 @@ from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_rou
 from jasper.active_speaker.round_packet import INDEX_FILENAME, _fits, write_round_packet
 from jasper.active_speaker.speaker_fit import _fit_vocabularies, design_clouds, fit_feature_curves, speaker_fit
 from jasper.active_speaker.candidate_bank import find_banked_candidate
+from jasper.active_speaker import candidate_parts
 from jasper.active_speaker.candidate_parts import baseline_candidate_id, candidate_from_design_draft
 from jasper.active_speaker.commissioning_experiment import commissioning_candidate
 from jasper.active_speaker.crossover_v2.alignment_prescription import PRESCRIPTION_OUTSIDE_DECLARED_WINDOW, PRESCRIPTION_OUT_OF_LOBE
@@ -335,33 +337,58 @@ def test_speaker_fit_reads_curves_the_run_banked_on_the_manifest_rows(speaker_ro
     assert set(answer["linearization"]) == {"woofer", "tweeter"}
 
 
-def test_speaker_fit_falls_back_to_the_rounds_banked_base(speaker_round, capsys, monkeypatch):
-    from types import SimpleNamespace
-    from jasper.active_speaker import candidate_bank
-    from jasper.cli.round_views import speaker_fit as view
-
-    root, record, program, *_ = speaker_round
+@pytest.mark.parametrize("trial", [False, True])
+def test_speaker_fit_reads_the_rounds_candidate_or_applied_profile(speaker_round, capsys, monkeypatch, trial):
+    root, record, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
     stored = json.loads((directory / "candidate.json").read_text())
-    (directory / "candidate.json").unlink()
-    manifest = json.loads((root / "run_manifest.json").read_text()) if (root / "run_manifest.json").is_file() else None
+    if not trial:
+        (directory / "candidate.json").unlink()
+    draft_path = root / "design-draft.json"
+    draft_path.write_text(json.dumps({**json.loads(draft_path.read_text()), "topology": mono_output_topology().to_dict()}))
+    (root / "applied-profile.json").write_text(json.dumps({
+        "kind": BASELINE_PROFILE_KIND, "artifact_schema_version": SCHEMA_VERSION, "status": "applied",
+        "source": {"measured_candidate_fingerprint": "base-fp"},
+    }))
     row_path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
     measured = manifest_set([(row_path, record)], set_id="speaker-set")
-    measured["capture_basis"].update(role="woofer")
+    measured["capture_basis"].update(role="woofer", graph_scope="drivers")
+    measured["takes"][0].update(role="woofer", analysis=stored["analysis"])
     base = manifest_set([(row_path, record)], set_id="base-set")
-    base["capture_basis"].update(graph_scope="candidate", candidate_id="base-fp")
-    write_manifest(root, groups=[base, measured])
+    base["capture_basis"].update(graph_scope="timing", candidate_id="projected-timing-fp")
+    base["takes"][0].update(phase="entry_baseline", role="summed")
+    manifest = write_manifest(root, groups=[base, measured])
     looked_up = []
 
     def find(fingerprint):
         looked_up.append(fingerprint)
         return SimpleNamespace(candidate=SimpleNamespace(to_dict=lambda: stored))
 
-    monkeypatch.setattr(candidate_bank, "find_banked_candidate", find)
+    monkeypatch.setattr(candidate_parts, "find_banked_candidate", find)
     assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == 0
-    assert looked_up == ["base-fp"]
-    del manifest, view
+    assert looked_up == ([] if trial else ["base-fp"])
+    proposal = json.loads(capsys.readouterr().out)["linearization"]["woofer"]["fit"]
+    fit, = _fits(round_inputs(root), manifest, prescription_sources(round_inputs(root)), {})
+    assert fit["filters"] == proposal["filters"] and fit["filters"]
+    assert fit["residual_rms_db"] == proposal["residual_rms_db"] is not None
+
+
+def test_packet_preserves_missing_round_base_error(speaker_round):
+    root, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    (directory / "candidate.json").unlink()
+    (root / "applied-profile.json").unlink(missing_ok=True)
+    path = directory / "run_manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["sets"][0]["takes"][0]["role"] = "woofer"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(RoundViewsError) as exc:
+        speaker_fit(round_inputs(root), manifest, "speaker-set")
+    fit, = write_round_packet(root, str(path), [])["fits"]
+    assert fit["reason_summary"] == {"unavailable": exception_detail(exc.value)}
+    assert fit["filters"] is fit["residual_rms_db"] is None
 
 
 def test_unknown_set_uses_registry_refusal(speaker_round, capsys):

@@ -419,8 +419,8 @@ def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(speak
             take.update(role=role, analysis=analysis,
                         curve=next(curve for curve in record["curves"] if curve["role"] == role))
         groups.append(group)
-    groups.append({**groups[-1], "set_id": "timing", "capture_basis": {
-        **groups[-1]["capture_basis"], "graph_scope": "timing"}})
+    groups.append({**groups[-1], "set_id": "timing", "takes": [{**groups[-1]["takes"][0], "phase": "entry_baseline"}],
+                   "capture_basis": {**groups[-1]["capture_basis"], "graph_scope": "timing", "candidate_id": "projected-timing"}})
     write_manifest(root, program=f"{purpose}/express", groups=groups)
     manifest_path, views = _bookkeeping(root, inputs.session_dir, round_views.run_bookkeeping)
     packet = write_round_packet(root, manifest_path, views)

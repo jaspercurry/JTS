@@ -14,6 +14,7 @@ import numpy as np
 
 from jasper.active_speaker.branch_chain import sections_by_role, boost_headroom_by_role
 from jasper.active_speaker.alignment_evidence import alignment_evidence
+from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, fit_branches
 from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, take_artifact_path
@@ -30,6 +31,7 @@ from jasper.audio_measurement.bundles import relative_artifact_path
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.spatial_combine import _band_spread, octave_bands_hz
+from jasper.output_topology import OutputTopology
 
 from .crossover_v2.round_inputs import resolve_set
 
@@ -60,18 +62,13 @@ def _read_candidate(path: Path) -> dict[str, Any]:
     return candidate
 
 
-def _round_candidate(directory: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
+def _round_candidate(directory: Path, sources: Mapping[str, Any]) -> dict[str, Any]:
     path = directory / "candidate.json"
     if path.is_file():
         return _read_candidate(path)
-    from jasper.active_speaker.candidate_bank import find_banked_candidate  # lazy: bank scan cost
-
-    base = next((group["capture_basis"].get("candidate_id") for group in manifest["sets"]
-                 if group["capture_basis"].get("graph_scope") == "candidate"
-                 and group["capture_basis"].get("candidate_id")), None)
-    if not base:
-        raise RoundViewsError("speaker-fit requires the round's candidate or a banked base")
-    return find_banked_candidate(base).candidate.to_dict()
+    if applied := sources.get("applied_profile"):
+        return candidate_from_applied_profile(OutputTopology.from_mapping(sources["draft"]["topology"]), applied).to_dict()
+    raise RoundViewsError("speaker-fit requires the round's candidate or a banked base")
 
 
 def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str, CloudFitTerms]:
@@ -173,8 +170,9 @@ def speaker_fit(
         raise RoundViewsError("selected take does not match its manifest")
     directory, _ = round_artifact_dir(inputs.session_dir)
     assert directory is not None
+    sources = prescription_sources(inputs) if sources is None else sources
     try:
-        candidate = _round_candidate(directory, manifest)
+        candidate = _round_candidate(directory, sources)
     except (OSError, ValueError, TypeError, LookupError) as exc:
         raise SpeakerFitUnreadable(str(exc)) from exc
     analysis = take.get("analysis") or candidate["analysis"]
@@ -187,7 +185,6 @@ def speaker_fit(
         raise RoundViewsError("banked analysis cannot distinguish the selected program's takes")
     if not inputs.banked or inputs.design_draft_path is None:
         raise RoundViewsError("speaker-fit requires the banked driver declaration")
-    sources = prescription_sources(inputs) if sources is None else sources
     draft = sources.get("draft") or {}
     classes = _resolve_driver_class_by_role(draft)
     budgets = fit_budgets_by_role(draft.get("driver_safety_profile") or {})

@@ -31,7 +31,7 @@ from .round_packet_report import (
     INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, gate_fields, packet_index, series_stats,
 )
 from .run_manifest import RUN_MANIFEST_KIND, RunManifest, room_sets
-from .crossover_v2.refusal_copy import CrossoverV2Refused
+from .crossover_v2.refusal_copy import CrossoverV2Refused, exception_detail
 
 
 class RoundPacket:
@@ -119,7 +119,7 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
                                                 clouds_by_set=clouds, sources=sources)["linearization"]
                 except ROUND_INPUT_ERRORS as exc:
                     computed[take_id] = {take["role"]: {"fit": {"reason_summary": {
-                        "unavailable": getattr(exc, "reason", None) or getattr(exc, "code", None) or "speaker_fit_unavailable",
+                        "unavailable": getattr(exc, "reason", None) or getattr(exc, "code", None) or exception_detail(exc),
                     }}}}
             for role, proposal in computed[take_id].items():
                 if role != take["role"]:
