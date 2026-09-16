@@ -5494,6 +5494,93 @@ async function testResetPartialCleanupSurfacesWarning() {
   return { resetPartialCleanupSurfacesWarning: true };
 }
 
+// #driver-research-reset-stale: the server deletes the design draft on
+// reset, but a dirty in-memory driverResearch form used to survive the
+// reset untouched (ingestDesignDraft refuses to overwrite a dirty form
+// without {force: true}). The next save then shipped the old driver
+// bands/level limits/high-pass right back to the server, re-creating the
+// draft the reset just deleted. Dirty the form with an edit that never
+// touches driver state (driver spacing) so a stale form -- not a fresh
+// edit -- is what's under test.
+async function testResetReloadsDesignDraftPastAStaleDirtyForm() {
+  const savedDraft = {
+    status: "ready_for_review",
+    revision: 3,
+    summary: { manual_driver_count: 1 },
+    operator_inputs: {
+      target_models: { "main:woofer": "Old Woofer" },
+    },
+    manual_settings: {
+      drivers: [{
+        target_id: "main:woofer",
+        role: "woofer",
+        model: "Old Woofer",
+        hard_excitation_band_hz: [30, 5000],
+        recommended_highpass_hz: 60,
+      }],
+      crossover_candidates: [],
+    },
+    driver_research_request: null,
+    driver_research: null,
+  };
+  const emptyDraft = {
+    status: "not_saved",
+    revision: 0,
+    manual_settings: null,
+    operator_inputs: {},
+    driver_research: null,
+    driver_research_request: null,
+    summary: {},
+    issues: [],
+  };
+  let draftDeleted = false;
+  const designPosts = [];
+  const resetPosts = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        designPosts.push(JSON.parse(options.body || "{}"));
+      }
+      return Promise.resolve(response(draftDeleted ? emptyDraft : savedDraft));
+    },
+    "./output-topology/reset": (_path, options = {}) => {
+      resetPosts.push(JSON.parse(options.body || "{}"));
+      draftDeleted = true;
+      return Promise.resolve(response({
+        output_topology: activeTwoWayTopologyPayload(),
+        topology_revision: "sha256:reset",
+        reset: { status: "reset", message: "Speaker setup was reset." },
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchInput({ "data-driver-spacing": "" }, "180");
+  await harness.flush();
+
+  globalThis.__jtsConfirm = async () => true;
+  harness.dispatchClick({ "data-act": "reset-output-topology" });
+  await harness.flush(); await harness.flush(); await harness.flush(); await harness.flush();
+
+  if (resetPosts.length !== 1) fail("reset should post to the topology reset endpoint once", { resetPosts });
+
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+
+  if (designPosts.length !== 1) fail("save should post to the design draft once after reset", { designPosts });
+  const saved = designPosts[0];
+  const staleDrivers = (saved.manual_settings && saved.manual_settings.drivers) || [];
+  const staleTargetModels = (saved.operator_inputs && saved.operator_inputs.target_models) || {};
+  if (staleDrivers.length || Object.keys(staleTargetModels).length) {
+    fail("a reset must clear the stale driver form before the next save ships it back", {
+      saved,
+    });
+  }
+  return { resetReloadsDesignDraftPastAStaleDirtyForm: true };
+}
+
 async function testFailedResetPreservesCommissioningPanels() {
   for (const failureStatus of [409, 502]) {
     const topology = activeTwoWayTopologyPayload();
@@ -6897,6 +6984,7 @@ results.push(await testRepinOfferDisclosesWhatIsKeptAndWhatMustBeRedone());
 results.push(await testUnconfirmingAnOutputWarnsThatTheSpeakerGoesSilent());
 results.push(await testRepinDeclinedOrFailedClearsTheBusyFlag());
 results.push(await testResetPartialCleanupSurfacesWarning());
+results.push(await testResetReloadsDesignDraftPastAStaleDirtyForm());
 results.push(await testFailedResetPreservesCommissioningPanels());
 results.push(await testSavedTopologyReconcileFailureNeedsAttention());
 results.push(await testFollowerModeRendersLocalDriverUi());
