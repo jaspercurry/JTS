@@ -11,40 +11,28 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from jasper.active_speaker.crossover_v2.room_views import room_document
-from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
-from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, round_inputs
-from jasper.cli._refusal import EXIT_UNREADABLE, stage
+from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundSetRefused, round_inputs
+from jasper.active_speaker.round_view_builders import room_payload, REFUSE_NO_SEAT_TAKES as REFUSE_NO_SEAT_TAKES
+from jasper.cli._refusal import EXIT_UNREADABLE, StageFailed, stage
 
 from ._common import (
     ARTIFACT_BY_VIEW, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, _ROUND_TOOL_ERRORS,
-    _write, add_set_argument, answer, default_out, read_run_manifest, refused_by_name, resolve_set,
+    _write, add_set_argument, answer, default_out, refused_by_name,
 )
-
-REFUSE_NO_SEAT_TAKES = "room_no_seat_takes"
 
 
 def write_room(
     inputs: RoundInputs, directory: Path, set_id: str | None, *,
     calibration_root: Path | None = None,
 ) -> tuple[dict[str, Any], Path]:
-    selected = resolve_set(inputs, set_id)
-    selection = stage(
-        EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, select_seat_takes, inputs.session_dir,
-        take_ids=selected.selected_ids, basis=selected.capture_basis, calibration_root=calibration_root,
-    )
-    if not selection.takes:
-        raise RoundCapturesRefused(REFUSE_NO_SEAT_TAKES, {"set_id": selected.set_id,
-                                                        "evidence": selection.evidence})
-    payload = stage(
-        EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, room_document, selection.takes, set_id=selected.set_id, evidence=selection.evidence,
-        applied_profile_path=inputs.applied_profile_path, geometry_path=inputs.declared_geometry_path,
-        manifest=read_run_manifest(inputs),
-    )
-    return payload, _write(payload, None, default_out(
-        inputs, directory, ARTIFACT_BY_VIEW["room"].artifact, set_id,
-    ))
+    try:
+        payload = room_payload(inputs, set_id, calibration_root=calibration_root)
+    except RoundSetRefused:
+        raise
+    except _ROUND_TOOL_ERRORS as exc:
+        raise StageFailed(EXIT_UNREADABLE, exc) from exc
+    return payload, _write(payload, None, default_out(inputs, directory, ARTIFACT_BY_VIEW["room"].artifact, set_id))
 
 
 def _cmd_room(args: argparse.Namespace) -> int:

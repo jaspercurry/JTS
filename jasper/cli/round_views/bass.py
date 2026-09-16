@@ -13,6 +13,7 @@ from typing import Any
 from jasper.active_speaker.bass_table_report import bass_table_markdown, bass_table_rows
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
 from jasper.bass_extension.measurement import TARGET, TOLERANCE_DB
+from jasper.active_speaker.round_view_builders import bass_payload
 from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE, failed
 
 from ._common import ARTIFACT_BY_VIEW, REASON_UNREADABLE, RoundSetRefused, _ROUND_TOOL_ERRORS, _write, add_set_argument, answer, default_out, read_run_manifest, resolve_set, round_inputs
@@ -76,10 +77,7 @@ def _cmd(args: argparse.Namespace) -> int:
             destination = default_out(inputs, root, ARTIFACT_BY_VIEW[args.command].artifact,
                                       args.set if args.command == "bass" else None)
             if args.command == "bass":
-                from jasper.active_speaker.measurement_bass import bass_view  # lazy: laptop FFT analysis
-                selected = resolve_set(inputs, args.set)
-                payload = bass_view(inputs.session_dir, take_ids=selected.selected_ids, calibration_root=args.calibration_root)
-                payload.update(set_id=selected.set_id, candidate_id=selected.capture_basis.get("candidate_id"))
+                payload = bass_payload(inputs, args.set, calibration_root=args.calibration_root)
                 summary = {"takes": len(payload["takes"])}
             else:
                 from jasper.active_speaker.bass_fit import REFERENCE_BAND_HZ  # lazy: laptop array analysis

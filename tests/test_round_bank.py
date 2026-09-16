@@ -24,7 +24,7 @@ import pytest
 from jasper.active_speaker import baseline_profile as bp
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.frequency_view import FrequencyRun, build_frequency_view, frequency_series
-from jasper.cli.round_views import run_bookkeeping
+from jasper.active_speaker.round_bookkeeping import run_bookkeeping
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_CYCLE_FILENAME,

@@ -939,8 +939,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
     from jasper.active_speaker.run_manifest import RunManifest
     from jasper.audio_measurement.calibration import MicSensitivity
-    from jasper.cli import round_views
-    from jasper.cli.round_views import _bass_inputs
+    from jasper.active_speaker import round_bookkeeping, bass_table_inputs
     from jasper.web import correction_run_host as host, correction_crossover_v2_wired as wired
     from tests.active_speaker_fixtures import mono_output_topology
     from tests.engine_twin import FakeSeams
@@ -950,8 +949,8 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
 
     candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION,
                         analysis={"resolution": {"bass": "document"}, "measurement_status": "unmeasured"})
-    join = Mock(wraps=_bass_inputs.join_bass_rounds)
-    monkeypatch.setattr(_bass_inputs, "join_bass_rounds", join)
+    join = Mock(wraps=bass_table_inputs.join_bass_rounds)
+    monkeypatch.setattr(bass_table_inputs, "join_bass_rounds", join)
     publish_authored_candidate(candidate)
     def facts(plan):
         ready = ready_facts(plan, candidates={candidate.fingerprint: candidate})
@@ -1030,7 +1029,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
         path = default_out(inputs, target, "bass_view.json", set_id)
         path.write_text(json.dumps({"schema": "jts_bass_view/1", "takes": takes}))
         return {"view": view, "status": "written", "out": str(path)}
-    monkeypatch.setattr(round_views, "run_bookkeeping", view)
+    monkeypatch.setattr(round_bookkeeping, "run_bookkeeping", view)
     bank = round_bank.bank_round
     monkeypatch.setattr(round_bank, "bank_round", lambda path, **kw: bank(path, campaign_root=tmp_path / "campaigns", **kw))
     monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")

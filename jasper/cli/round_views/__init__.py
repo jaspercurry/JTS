@@ -7,12 +7,8 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import redirect_stderr, redirect_stdout
-import io
-import json
-from pathlib import Path
 import sys
-from typing import Any, Sequence
+from typing import Sequence
 
 from jasper.active_speaker.crossover_v2.harmonic_evidence import (
     HarmonicEvidenceRefused,
@@ -62,6 +58,7 @@ from ._common import (
     refused_by_name,
 )
 from .forward_model import ACCEPTANCE_RUNS
+from jasper.active_speaker.round_bookkeeping import run_bookkeeping as run_bookkeeping
 
 __all__ = [
     "ACCEPTANCE_RUNS",
@@ -144,9 +141,6 @@ def build_parser() -> argparse.ArgumentParser:
         for action in child._actions:
             if "--out" in action.option_strings:
                 action.type = output_path
-    sub.choices["inventory"].set_defaults(set_flags_by_view={
-        name: child.get_default("optional_set_flags") or () for name, child in sub.choices.items()
-    })
     return parser
 
 
@@ -167,28 +161,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         # What no stage claimed: the round READ, and the view then declined to
         # grade it. That is the refusal exit, not an unreadable one.
         return failed(EXIT_REFUSED, REASON_REFUSED, str(exc))
-
-
-def run_bookkeeping(
-    view: str, target: Path, *, set_id: str | None = None, incumbent: str | None = None,
-) -> dict[str, Any]:
-    flags = ["--set", set_id] if set_id is not None else []
-    if incumbent is not None:
-        flags += ["--incumbent", incumbent]
-    if view == "frequency":
-        flags += ["--analyze-wavs", "--image", str(target / "frequency.png"), "--low-end"]
-    parser = build_parser()
-    verbs = next(action.choices for action in parser._actions if isinstance(action, argparse._SubParsersAction))
-    if view not in verbs:
-        return {"view": view, "status": "unavailable", "reason": "verb_not_registered"}
-    output = io.StringIO()
-    with redirect_stdout(output), redirect_stderr(io.StringIO()):
-        try:
-            code = main([view, str(target), *flags])
-        except SystemExit:
-            return {"view": view, "status": "unavailable", "reason": "inputs_required"}
-    answer = json.loads(output.getvalue())
-    return {**answer, "view": view, "status": "written" if code == 0 else "unavailable"}
 
 
 if __name__ == "__main__":

@@ -13,18 +13,18 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import replace
 from pathlib import Path
 
-from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStoreError
 from jasper.active_speaker.crossover_v2.frequency_view import frequency_run
-from jasper.active_speaker.frequency_view import FrequencyRun, build_frequency_view, frequency_series
-from jasper.active_speaker.frequency_plot import DEFAULT_REF_BAND_HZ, prepare_plot_curve, render_frequency_view
+from jasper.active_speaker.frequency_view import FrequencyRun, frequency_series
+from jasper.active_speaker.frequency_plot import DEFAULT_REF_BAND_HZ
 from jasper.active_speaker.measurement_archive import (
     ArchivedMeasurement,
     load_measurement,
 )
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
+from jasper.active_speaker.round_view_builders import analyzed_frequency_run, frequency_payload, frequency_image
+from jasper.active_speaker.crossover_v2.round_inputs import banked_round_of
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
@@ -33,8 +33,6 @@ from ._common import (
     _load_round,
     _write,
     answer,
-    banked_round_of,
-    read_run_manifest, RoundSetRefused, round_inputs,
 )
 
 def _frequency_default_out(source: Path) -> Path:
@@ -62,24 +60,7 @@ def _frequency_source(
     """One round, bundle, or JSON document as a neutral frequency run."""
 
     if analyze_wavs:
-        from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused, analyze_measurement_bundle  # lazy: laptop FFT analysis
-        try:
-            inputs = round_inputs(path)
-            run = analyze_measurement_bundle(
-                inputs.session_dir, calibration_root=calibration_root, run_reference_db=run_reference_db,
-            )
-        except CommissioningEvidenceStoreError as exc:
-            raise MeasurementAnalysisRefused(exc.code.value) from exc
-        try:
-            manifest = read_run_manifest(inputs)
-        except RoundSetRefused as exc:
-            if exc.reason not in {"round_manifest_missing", "round_manifest_unfinalized"}:
-                raise
-            return run
-        bases = {take["take_id"] for group in manifest["sets"] if group.get("base") for take in group["takes"]}
-        return replace(run, series=tuple(replace(curve, details={
-            **curve.details, "base": curve.details.get("take_id") in bases,
-        }) for curve in run.series))
+        return analyzed_frequency_run(path, calibration_root=calibration_root, run_reference_db=run_reference_db)
     if run_reference_db is not None:
         raise ValueError("--reference-db requires --analyze-wavs")
     if path.is_file():
@@ -143,16 +124,7 @@ def _cmd_frequency(args: argparse.Namespace) -> int:
         if args.source_b
         else None
     )
-    payload = build_frequency_view(run_a, run_b)
-    series = []
-    for run in payload["runs"]:
-        for curve in run["series"]:
-            curve["plot"] = prepare_plot_curve(curve, run.get("metadata"), ref_band_hz=args.ref_band_hz, normalize=args.normalize)
-            series.append({
-                "slot": run["slot"], "id": curve["id"], "candidate_id": curve.get("candidate_id"),
-                "position": curve.get("position"),
-                **{key: curve["plot"][key] for key in ("display", "rms_db", "peak_to_peak_db", "band_means")},
-            })
+    payload, series = frequency_payload(run_a, run_b, ref_band_hz=args.ref_band_hz, normalize=args.normalize)
     written = _write(payload, args.out, _frequency_default_out(source_a))
     return answer(
         args.command, out=written, **render_image(args, payload),
@@ -176,16 +148,8 @@ def add_image_args(parser: argparse.ArgumentParser) -> None:
 
 
 def render_image(args: argparse.Namespace, payload: dict) -> dict:
-    if args.image is None:
-        return {"image": None}
-    try:
-        render_frequency_view(payload, args.image, selected=args.series, band_hz=args.plot_band_hz,
-                              ref_band_hz=args.ref_band_hz, low_end=args.low_end, normalize=args.normalize)
-    except ImportError as exc:
-        if not (exc.name or "").startswith("matplotlib"):
-            raise
-        return {"image": None, "reason": "plots_extra_missing"}
-    return {"image": str(args.image)}
+    return frequency_image(payload, args.image, series=args.series, plot_band_hz=args.plot_band_hz,
+                           ref_band_hz=args.ref_band_hz, low_end=args.low_end, normalize=args.normalize)
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:

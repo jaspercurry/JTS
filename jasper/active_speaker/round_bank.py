@@ -457,8 +457,8 @@ def finish_round(bundle: Path) -> tuple[BankedRound | None, Exception | None]:
     from .crossover_v2.round_inputs import round_artifact_dir  # lazy: banking-only evidence imports
     from .round_packet import finish_bass_packet  # lazy: packet imports this banker
     from .run_manifest import RUN_MANIFEST_FILENAME  # lazy: banking-only evidence imports
-    from jasper.cli.round_views import run_bookkeeping  # lazy: banking-only view dispatch
-    from jasper.cli.round_views._bass_inputs import join_bass_rounds  # lazy: banking-only bass analysis
+    from .round_bookkeeping import run_bookkeeping  # lazy: banking-only view analysis
+    from .bass_table_inputs import join_bass_rounds  # lazy: banking-only bass analysis
 
     try:
         # Browser completion and a concurrent CLI wait must serialize the whole packet write.
