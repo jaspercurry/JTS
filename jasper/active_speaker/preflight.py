@@ -10,7 +10,6 @@ from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.program_analysis.check import _ambient_rows_in_band, _snr_floor_ok
 from jasper.audio_measurement.quality_model import DRIVER
-from jasper.bass_extension.measurement import target_band_hz
 from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.json_fields import finite_float
 
@@ -25,7 +24,7 @@ from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs,
     compile_candidate_config, prove_candidate_config,
 )
-from .measurement_programs import PURPOSE_BASS, pilot_floor_blocking
+from .measurement_programs import PURPOSE_BASS
 from .profile import SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
 from .seat_level_reference import (
     AnchorFacts, LevelUnresolved, RungMeasurementUnavailable, SeatLevelTargetError, check_target_capture_dbfs, resolve_anchor_level,
@@ -234,24 +233,20 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                                 "candidate_id": name, "anchor_tolerance_db": tolerance, "lift_bound_db": lift,
                                 "margin_db": margin, "bound_db_spl": stop - margin,
                             }))
-                ambient = facts.anchor.record.get("ambient_report")
-                if isinstance(ambient, Mapping):
+                ambient, band = facts.anchor.record.get("ambient_report"), facts.summed_pilot_band_hz
+                if (isinstance(ambient, Mapping) and band is not None
+                        and any(pose.plays_summed and pose.purpose != PURPOSE_BASS for pose in plan.stops)):
                     pilot_dbfs = check_target_capture_dbfs(facts.anchor.sensitivity, predicted)
-                    for purpose in dict.fromkeys(pose.purpose for pose in plan.stops if pose.plays_summed):
-                        band = target_band_hz() if purpose == PURPOSE_BASS else facts.summed_pilot_band_hz
-                        if band is None:
-                            continue
-                        rows = _ambient_rows_in_band(band, ambient.get("bands") or ())
-                        # Remove when measured programs no longer require pilot SNR admission.
-                        if rows and not _snr_floor_ok(ambient, pilot_dbfs, [band]):
-                            lo, hi, noise_dbfs = max(rows, key=lambda row: row[2])
-                            code = REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT
-                            issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message,
-                                                  blocking=pilot_floor_blocking(purpose)), evidence={
-                                "level_db": fader, "predicted_pilot_capture_dbfs": pilot_dbfs,
-                                "pilot_band_hz": band, "ambient_row": {"band_hz": (lo, hi), "level_dbfs": noise_dbfs},
-                                "floor_dbfs": noise_dbfs + DRIVER.snr_ok_db,
-                            }))
+                    rows = _ambient_rows_in_band(band, ambient.get("bands") or ())
+                    # Remove when measured programs no longer require pilot SNR admission.
+                    if rows and not _snr_floor_ok(ambient, pilot_dbfs, [band]):
+                        lo, hi, noise_dbfs = max(rows, key=lambda row: row[2])
+                        code = REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT
+                        issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence={
+                            "level_db": fader, "predicted_pilot_capture_dbfs": pilot_dbfs,
+                            "pilot_band_hz": band, "ambient_row": {"band_hz": (lo, hi), "level_dbfs": noise_dbfs},
+                            "floor_dbfs": noise_dbfs + DRIVER.snr_ok_db,
+                        }))
             except (LevelUnresolved, LateralWalkRefused) as exc:
                 add(exc.reason, exc.detail)
 

@@ -51,7 +51,8 @@ def build_bass_program(
             or ceiling > float(woofer["hard_excitation_band_hz"][1])):
         raise BassStimulusRefused("bass_stimulus_band_outside_limits")
     single = replace(excitation, summed_sweep_band_hz=(floor, ceiling), sweep_duration_limits_s=durations).verify_program(
-        sweep_s=min(durations.values()), extra_backoff_db=extra_backoff_db, courtesy_prelude=courtesy_prelude,
+        sweep_s=min(durations.values()), extra_backoff_db=extra_backoff_db,
+        courtesy_prelude=courtesy_prelude, leading_pilots=False,
     )
     sweep = segment_sweep_meta(single.segment("sweep_verify"))
     ranges = sweep_band_sample_ranges(sweep, single.sample_rate_hz, BASS_BANDS_HZ)

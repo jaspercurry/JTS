@@ -1658,7 +1658,7 @@ class CrossoverV2Session:
             pilot_heard=analysis.pilot_snr_ok,
             reflection_measured=reflection_measured,
             payload={**verdict.payload, "screens": _dispatch.pilot_screens(
-                analysis, purpose=self._capture_purpose(phase, index), program=program)},
+                analysis, program=program)},
         )
         ledger = self._slot_attempts.get(slot)
         if ledger is not None:
@@ -2212,8 +2212,7 @@ class CrossoverV2Session:
         """
         program = self.program_for_phase(PHASE_LATERAL)
         kind = _spatial.lateral_pose_screens(
-            _spatial.PurposeCaptureScreens(
-                purpose=self._capture_purpose(PHASE_LATERAL, index),
+            _spatial.CaptureScreens(
                 stimulus_located=_stimulus_locate_ok(analysis),
                 pilot_snr_ok=analysis.pilot_snr_ok,
                 linearity_ok=analysis.linearity_ok,
@@ -2303,7 +2302,7 @@ class CrossoverV2Session:
                     bool((summed.gating or {}).get("applied")) if summed is not None else None
                 ),
                 **self._capture_stamp(result),
-            ), "screens": _dispatch.pilot_screens(analysis, purpose=self._capture_purpose(PHASE_LATERAL, pose.index),
+            ), "screens": _dispatch.pilot_screens(analysis,
                                                   program=self.program_for_phase(PHASE_LATERAL)),
              **({"branch_diagnostic": analysis.branch_diagnostic, "regime": "branches"} if analysis.branch_diagnostic else {})},
         )
@@ -2365,8 +2364,7 @@ class CrossoverV2Session:
         # All SEVEN screens are stated though this ladder reads three: a fact about the
         # capture is the caller's to state, and two are vacuous for a cloud position.
         kind = _spatial.cloud_position_screens(
-            _spatial.PurposeCaptureScreens(
-                purpose=self._capture_purpose(phase, index),
+            _spatial.CaptureScreens(
                 stimulus_located=_stimulus_locate_ok(analysis),
                 pilot_snr_ok=analysis.pilot_snr_ok,
                 linearity_ok=analysis.linearity_ok,
@@ -2463,7 +2461,7 @@ class CrossoverV2Session:
             curves=self._banked_curves(phase, analysis),
         )
         metadata["screens"] = _dispatch.pilot_screens(
-            analysis, purpose=self._capture_purpose(phase, position.index), program=self.program_for_phase(phase))
+            analysis, program=self.program_for_phase(phase))
         self._group_position_meta.setdefault(phase, {})[
             position.position_id
         ] = metadata
@@ -2987,7 +2985,6 @@ class CrossoverV2Session:
             analysis,
             stimulus_located=_stimulus_locate_ok(analysis),
             reference_mark=_REFERENCE_MARK_DESIGN_AXIS,
-            purpose=self._capture_purpose(PHASE_ENTRY_BASELINE, 1),
         )
         if screen.kind is not None:
             return (
@@ -3034,7 +3031,7 @@ class CrossoverV2Session:
             curves=self._banked_curves(PHASE_ENTRY_BASELINE, analysis),
         )
         metadata["screens"] = _dispatch.pilot_screens(
-            analysis, purpose=self._capture_purpose(PHASE_ENTRY_BASELINE, index),
+            analysis,
             program=self.program_for_phase(PHASE_ENTRY_BASELINE))
         # The TAKE id, not the store's record id: ``read_entry_baseline_take``
         # answers a banked take's ``take_id`` under this name.

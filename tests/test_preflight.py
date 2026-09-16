@@ -326,7 +326,7 @@ def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambie
 
 @pytest.mark.parametrize("level_db,disclosed", [(-18, False), (-38, True)])
 @pytest.mark.parametrize("purposes", [("bass",), ("room",), ("bass", "room")])
-def test_pilot_floor_discloses_bass_and_blocks_room(level_db, disclosed, purposes):
+def test_pilot_floor_only_checks_programs_with_pilots(level_db, disclosed, purposes):
     plan = AngleCaptureRequest(tuple(AngleStop(0, REGIME_SUMMED, purpose=purpose) for purpose in purposes),
                                level=LevelPolicy(level_db=level_db))
     facts = ready_facts(plan, summed_pilot_band_hz=(200, 800))
@@ -335,13 +335,12 @@ def test_pilot_floor_discloses_bass_and_blocks_room(level_db, disclosed, purpose
                                        {"band_hz": [200, 800], "level_dbfs": -60}]}}))
     report = preflight(plan, facts)
     assert report.blocking is (disclosed and "room" in purposes)
-    assert len(report.issues) == (len(purposes) if disclosed else 0)
-    for purpose, issue in zip(purposes, report.issues):
-        assert issue.code == "run_level_pilots_under_ambient"
-        assert issue.blocking is (purpose != "bass")
+    assert len(report.issues) == int(disclosed and "room" in purposes)
+    for issue in report.issues:
+        assert (issue.code, issue.blocking) == ("run_level_pilots_under_ambient", True)
         assert issue.evidence == {
             "level_db": -38, "predicted_pilot_capture_dbfs": pytest.approx(-47.9897, abs=0.01),
-            "pilot_band_hz": (20, 60) if purpose == "bass" else (200, 800),
-            "ambient_row": {"band_hz": (20, 80) if purpose == "bass" else (200, 800), "level_dbfs": -60},
+            "pilot_band_hz": (200, 800),
+            "ambient_row": {"band_hz": (200, 800), "level_dbfs": -60},
             "floor_dbfs": -35,
         }
