@@ -528,6 +528,7 @@ class CaptureIntegrity:
     schedule_residual_ms_worst: float | None = None
     clipped_segments: tuple[str, ...] = ()
     pass_alignment: SummedPassAlignment | None = None
+    repeat_content: dict[str, Any] | None = None
 
     @property
     def failed(self) -> tuple[str, ...]:
@@ -567,6 +568,7 @@ class CaptureIntegrity:
             "schedule_residual_ms_worst": self.schedule_residual_ms_worst,
             "clipped_segments": list(self.clipped_segments),
             **(self.pass_alignment.to_dict() if self.pass_alignment is not None else {}),
+            **({"repeat_content": self.repeat_content} if self.repeat_content is not None else {}),
         }
 
 

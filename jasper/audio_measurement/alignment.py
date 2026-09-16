@@ -78,10 +78,12 @@ def correlation(
     *,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     max_capture_s: float = DEFAULT_MAX_CAPTURE_S,
+    matched_span: bool = False,
 ) -> np.ndarray:
     """Normalized |cross-correlation|: index ``i`` is the 0..1 similarity of
     ``stimulus`` placed at lag ``i`` in ``captured``. Empty when the capture
-    cannot contain the stimulus."""
+    cannot contain the stimulus. ``matched_span`` normalizes each candidate
+    span independently, excluding search padding from its variance."""
     cap_input = np.asarray(captured)
     stim_input = np.asarray(stimulus)
     if cap_input.size == 0 or stim_input.size == 0:
@@ -101,7 +103,16 @@ def correlation(
     stim = _normalize(stim_input)
     if cap.size < stim.size:
         return np.empty(0)
-    return np.abs(scipy_signal.correlate(cap, stim, mode="valid", method="fft"))
+    corr = np.abs(scipy_signal.correlate(cap, stim, mode="valid", method="fft"))
+    if matched_span:
+        sums = np.concatenate(([0.0], np.cumsum(cap)))
+        squares = np.concatenate(([0.0], np.cumsum(cap * cap)))
+        n = stim.size
+        variance = squares[n:] - squares[:-n] - (sums[n:] - sums[:-n]) ** 2 / n
+        norms = np.sqrt(np.maximum(variance, 0.0))
+        corr = np.divide(corr, norms, out=np.zeros_like(corr), where=norms > 0)
+        corr = np.clip(corr, 0.0, 1.0)
+    return corr
 
 
 def alignment_at(

@@ -17,7 +17,8 @@ from jasper.audio_measurement.program import (
     KIND_SUMMED_SWEEP,
     STIMULUS_KINDS,
 )
-from jasper.audio_measurement.repeated_sweep import SummedPassAlignment, summed_pass_refusal
+from jasper.audio_measurement.repeated_sweep import SummedPassAlignment, summed_pass_noise, summed_pass_refusal
+from jasper.audio_measurement.wired_capture import scan_zero_runs
 from jasper.log_event import log_event
 from .drift import _estimate_drift
 from .model import (
@@ -162,6 +163,7 @@ def _verify_capture_integrity(
         ))
     refusal = None
     drift = None
+    repeat_content = None
     repeated = sum(segment.kind == KIND_SUMMED_SWEEP for segment in program.segments) > 1
     if repeated and capture is not None:
         repeat_locations = repeat_locations if repeat_locations is not None else locations
@@ -171,12 +173,25 @@ def _verify_capture_integrity(
             checks.append(IntegrityCheck(refusal, INTEGRITY_FAIL))
         if refusal is None and repeat_confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR:
             drift = _estimate_drift(program, capture, sample_rate, repeat_locations)
+        if refusal is None:
+            repeat_content = {
+                "repeat_epsilon_ppm": drift.epsilon_ppm if drift else None,
+                "repeat_level_delta_db": drift.repeat_level_delta_db if drift else None,
+                "within_role_desync_samples": drift.max_residual_samples if drift else None,
+                "noise_consistency": summed_pass_noise(program, capture, offset),
+            }
+            zero_runs = any(scan_zero_runs(capture[loc.located_start:
+                loc.located_start + program.segment(loc.segment_id).n_samples])[0]
+                for loc in repeat_locations if loc.kind == KIND_SUMMED_SWEEP)
+            checks.append(IntegrityCheck("zero_fill_runs", INTEGRITY_FAIL if zero_runs else INTEGRITY_PASS))
     for name, input_code in (
         (INTEGRITY_CHECK_REPEAT_EPSILON, "epsilon_out_of_bound"),
         (INTEGRITY_CHECK_REPEAT_LEVEL, "repeat_level_disagree"),
         (INTEGRITY_CHECK_WITHIN_ROLE_DESYNC, "residual_desync"),
         (INTEGRITY_CHECK_DISCONTINUITY_STEP, "timeline_slip"),
     ):
+        if repeated and name != INTEGRITY_CHECK_DISCONTINUITY_STEP:
+            continue
         if drift is None:
             checks.append(IntegrityCheck(
                 name, INTEGRITY_NOT_EVALUATED,
@@ -195,6 +210,7 @@ def _verify_capture_integrity(
         schedule_residual_ms_worst=residual_ms_worst,
         clipped_segments=clipped_segments,
         pass_alignment=alignment,
+        repeat_content=repeat_content,
     )
     if integrity.glitched:
         # The VERIFY twin of ``program_analysis.glitch``, at the same level

@@ -109,7 +109,8 @@ def bass_take(take: AnalyzedMeasurement) -> dict[str, Any]:
                     "ambient_segment_id": sweep_ambient_id(s.segment_id),
                     **({"pass_alignment": alignment.method,
                         "offset_samples": alignment.offsets_samples[s.segment_id],
-                        "correlation_peak": alignment.correlation_peaks.get(s.segment_id),
+                        "correlation_peak": alignment.correlation_peaks[s.segment_id],
+                        "correlation_peak_at_edge": s.segment_id in alignment.edge_peaks,
                         "residual_spread_samples": alignment.residual_spread_samples} if alignment else {})}
                    for s in program.segments if sweep_ambient_id(s.segment_id) in {p.segment_id for p in program.segments}],
         "calibration": document["calibration"],

@@ -242,6 +242,9 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
         alignment = getattr(integrity, "pass_alignment", None)
         if alignment is not None:
             out.update(alignment.to_dict())
+        repeat_content = getattr(integrity, "repeat_content", None)
+        if repeat_content is not None:
+            out["repeat_content"] = repeat_content
 
     ledger = getattr(analysis, "frame_ledger", None)
     if ledger is not None:
