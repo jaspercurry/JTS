@@ -21,9 +21,13 @@ from pathlib import Path
 
 import pytest
 
+from jasper.audio_measurement.gating import f_trusted_floor_hz
+from jasper.audio_measurement.program_analysis import analyze_program_capture
 from jasper.active_speaker import baseline_profile as bp
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.frequency_view import FrequencyRun, build_frequency_view, frequency_series
+from jasper.active_speaker.measurement_analysis import analyze_measurement_bundle
+from jasper.active_speaker.crossover_v2 import gate_sweep
 from jasper.active_speaker.round_bookkeeping import run_bookkeeping
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
 from jasper.active_speaker.crossover_v2.position_cycle import (
@@ -492,7 +496,7 @@ def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, reque
         else:
             assert Path(answer["image"]) == target / "frequency.png"
             assert Path(answer["image"]).read_bytes().startswith(b"\x89PNG")
-        assert len(answer["series"]) == (7 if purpose == "room" else 1)
+        assert len(answer["series"]) == (14 if purpose == "room" else 1)
 
 
 @pytest.mark.parametrize("purpose", ["room", "bass"])
@@ -544,7 +548,7 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
             assert len(take["bands"]) == len(saved["bands"]) > 0
             assert [band["fundamental_qualified"] for band in take["bands"]] == [
                 band["fundamental_qualified"] for band in saved["bands"]]
-    assert len(packet["series"]) == (7 if purpose == "room" else 1)
+    assert len(packet["series"]) == (14 if purpose == "room" else 1)
     for series in packet["series"]:
         assert series["set_id"] in packet["limits"]
         assert series["stats"]["flatness_rms_db"]["value"] < 0.5
@@ -585,8 +589,11 @@ def test_packet_skips_unreadable_written_room_artifact(tmp_path, contents):
     assert {**pointer, "set_id": manifest["sets"][0]["set_id"]} in packet["artifacts"]["room_views"]
 
 
-@pytest.mark.parametrize("level,ripple,expected", [(7, [0, 0, 0, 0], 0), (-3, [-1, 1, -1, 1], 1)])
-def test_packet_stats_measure_flatness_about_the_series_mean(tmp_path, level, ripple, expected):
+@pytest.mark.parametrize("window,level,ripple,expected", [
+    (None, 7, [0, 0, 0, 0], 0), (None, -3, [-1, 1, -1, 1], 1),
+    (7.0, 7, [0, 0, 0, 0], 0), (7.0, -3, [-1, 1, -1, 1], 1),
+])
+def test_packet_stats_measure_flatness_about_the_series_mean(tmp_path, window, level, ripple, expected):
 
     session, state = _live_session(tmp_path)
     group = {"set_id": "set", "base": True, "capture_basis": {"candidate_id": "base"},
@@ -605,8 +612,9 @@ def test_packet_stats_measure_flatness_about_the_series_mean(tmp_path, level, ri
     def views(view, target, **kwargs):
         if view == "frequency":
             series = frequency_series(series_id="series", label="seat", kind="measured", role="summed",
-                                      take_id="take", freqs_hz=[400, 1000, 4000, 10000],
-                                      magnitude_db=[level + value for value in ripple],
+                                      take_id="take", freqs_hz=[100, 200, 400, 1000, 4000, 10000],
+                                      magnitude_db=[100, -100, *[level + value for value in ripple]],
+                                      gate_window_ms=window,
                                       reference_db=0, smoothing_fractional_octave=6)
             (target / "frequency_view.json").write_text(json.dumps(build_frequency_view(FrequencyRun(
                 id="run", measurement_family="room", series=(series,)))))
@@ -617,8 +625,11 @@ def test_packet_stats_measure_flatness_about_the_series_mean(tmp_path, level, ri
     stats = packet["series"][0]["stats"]
     assert stats["flatness_rms_db"] == {
         "value": pytest.approx(expected, abs=0.01),
-        "band_hz": [400.0, 10000],
+        "band_hz": [f_trusted_floor_hz(window / 1000) if window else 400.0, 10000],
     }
+    if window:
+        assert abs(stats["tilt_db_per_decade"]["value"]) < 1
+        assert stats["tilt_db_per_decade"]["below_trusted_floor"] is False
     assert stats["low_end_means_db"]["20_30"]["value"] is None
     assert packet["applied"] == {
         "candidate": "a123456789bc" + "0" * 52, "record": "123456789abc", "config_path": "/config.yml",
@@ -631,6 +642,62 @@ def test_packet_stats_measure_flatness_about_the_series_mean(tmp_path, level, ri
     assert match.groups()[:2] == (packet["applied"]["candidate"][:12], packet["applied"]["record"])
     assert len(packet["applied"]["candidate"]) == 64
     assert json.loads(match[3]) == packet["applied"]["layers"]
+
+
+@pytest.mark.parametrize("purpose", ["room", "speaker"], ids=["trial", "speaker-room-sweep"])
+def test_banked_candidate_has_gated_and_ungated_sum(request, tmp_path, monkeypatch, purpose):
+    bundle, _, program, bank = request.getfixturevalue("summed_capture_bundle")
+    record_id = asyncio.run(bank("candidate-take", candidate="trial-fp", gating_applied=False,
+                                measurement_purpose="room", vertical_deg=0, mark_distance_m=1.0))
+    _, wav = gate_sweep.reopen_measurement_capture(
+        bundle, gate_sweep.take_artifact_path(bundle, record_id))
+    samples, rate = gate_sweep.decode_wav_to_mono(wav)
+    reference = analyze_program_capture(program, samples, rate).summed_response
+    assert reference is not None and reference.gating["applied"]
+    original, = analyze_measurement_bundle(bundle).series
+    manifest = write_manifest(bundle, program=purpose)
+    group, = manifest["sets"]
+    take, = group["takes"]
+    take.update(role="summed", curve={key: original.to_dict()[key] for key in (
+        "freqs_hz", "magnitude_db", "gate_window_ms", "validity_floor_hz", "smoothing_fractional_octave",
+    )})
+    write_manifest(bundle, program=purpose, groups=[group])
+    mark_state(bundle, "applied")
+    before = {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
+    deconvolve = Mock(wraps=gate_sweep._deconvolve_window)
+    monkeypatch.setattr(gate_sweep, "_deconvolve_window", deconvolve)
+    banked = bank_round(bundle, campaign_root=tmp_path / "bank", view_runner=run_bookkeeping,
+                        **_ssot(tmp_path, present=False))
+    assert deconvolve.call_count == 1
+    view = json.loads((banked.path / "frequency_view.json").read_text())
+    ungated, gated = view["runs"][0]["series"]
+    packet = json.loads((banked.path / "packet.json").read_text())
+    assert len(packet["series"]) == 2
+    for curves in ((ungated, gated), packet["series"]):
+        assert [row["window"] for row in curves] == ["ungated", "gated"]
+        assert {row["set_id"] for row in curves} == {group["set_id"]}
+        assert {row["take_id"] for row in curves} == {"candidate-take"}
+        assert {row["role"] for row in curves} == {"summed"}
+        assert curves[0]["gate_window_ms"] is curves[0]["trusted_floor_hz"] is None
+        assert curves[1]["gate_window_ms"] == reference.gating["window_ms"]
+        assert curves[1]["trusted_floor_hz"] == reference.gating["f_trusted_hz"]
+        assert curves[1]["floor_source"] == reference.gating["floor_source"]
+    assert ungated["position"] == gated["position"]
+    assert [row["pose"] for row in packet["series"]] == [take["pose"], take["pose"]]
+    assert ungated["freqs_hz"] == list(original.freqs_hz)
+    assert ungated["magnitude_db"] == list(original.magnitude_db)
+    hz, db = np.asarray(gated["freqs_hz"]), np.asarray(gated["magnitude_db"])
+    keep = (reference.freqs_hz >= gate_sweep.GRID_LO_HZ * 0.7) & (
+        reference.freqs_hz <= gate_sweep.GRID_HI_HZ * 1.3)
+    expected_db = np.interp(hz, reference.freqs_hz[keep], gate_sweep.smooth_fractional_octave(
+        reference.freqs_hz[keep], reference.magnitude_db[keep], gated["smoothing_fractional_octave"]))
+    np.testing.assert_array_equal(db, expected_db)
+    band = db[(hz >= gated["trusted_floor_hz"]) & (hz <= 10000)]
+    assert packet["series"][1]["stats"]["flatness_rms_db"] == {
+        "band_hz": [gated["trusted_floor_hz"], 10000],
+        "value": pytest.approx(float(np.std(band))),
+    }
+    assert all(p.read_bytes() == content for p, content in before.items())
 
 
 @pytest.mark.parametrize("failure", [False, True])

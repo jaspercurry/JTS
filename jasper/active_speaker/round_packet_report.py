@@ -44,7 +44,8 @@ def series_stats(
     freqs = np.asarray(plot["freqs_hz"], dtype=float)
     values = np.asarray(plot["deviation_db"], dtype=float)
     valid = np.isfinite(values) & (freqs > 0)
-    measured = valid & (freqs >= 100) & (freqs <= 10000)
+    tilt_lo_hz = max(100.0, trusted_floor_hz or 100.0)
+    measured = valid & (freqs >= tilt_lo_hz) & (freqs <= 10000)
     raw_freqs = np.asarray(curve["freqs_hz"], dtype=float)
     raw = np.asarray(curve["display"]["deviation_db"], dtype=float)
     flatness_lo_hz = trusted_floor_hz if trusted_floor_hz is not None else 400.0
@@ -56,7 +57,7 @@ def series_stats(
         bands[f"{center:g}"] = number(_power_mean_db(band) if band.size else None, lo)
     return {
         "tilt_db_per_decade": number(float(np.polyfit(np.log10(freqs[measured]), values[measured], 1)[0])
-                                     if np.unique(freqs[measured]).size >= 2 else None, 100),
+                                     if np.unique(freqs[measured]).size >= 2 else None, tilt_lo_hz),
         "flatness_rms_db": {
             "value": float(np.sqrt(np.mean(centered ** 2))) if centered.size else None,
             "band_hz": [flatness_lo_hz, 10000],
@@ -183,14 +184,14 @@ def packet_index(
                 ("trusted floor Hz", "trusted_floor_hz"), ("source", "floor_source")))
             + f" ({len(rows)} takes)")
     for series in packet["series"]:
-        take = takes.get((series["set_id"], series["take_id"], series["role"]), {})
         stats = []
         for name, rows in series["stats"].items():
             for label, row in ([(name, rows)] if "value" in rows else [(f"{name}[{key}]", value) for key, value in rows.items()]):
-                mark = f" (below trusted floor {take.get('trusted_floor_hz')} Hz)" if row.get("below_trusted_floor") else ""
+                mark = f" (below trusted floor {series.get('trusted_floor_hz')} Hz)" if row.get("below_trusted_floor") else ""
                 stats.append(f"{label}={json.dumps(row['value'])}{mark}")
         lines.append(f"series {series['role']}: pose {_pose_token(series['pose'])}; " + "; ".join(stats)
-                     + f"; set {series['set_id']}; take {series['take_id']}")
+                     + f"; set {series['set_id']}; take {series['take_id']}"
+                     + (f"; window {series['window']}" if series.get("window") else ""))
     lines += [f"crossover_band_spread=null; reason={reason}" for reason in dict.fromkeys(
         fit.get("crossover_band_spread_reason") for fit in packet["fits"]
     ) if reason]

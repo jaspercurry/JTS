@@ -748,7 +748,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
             assert stats["band_means_db"]["500"]["below_trusted_floor"] is True
         assert stats["band_means_db"]["1000"]["below_trusted_floor"] is False
         assert stats["flatness_rms_db"]["band_hz"] == [f_trusted_floor_hz(.007), 10000]
-        assert stats["tilt_db_per_decade"]["below_trusted_floor"] is True
+        assert stats["tilt_db_per_decade"]["below_trusted_floor"] is False
         assert all(row["below_trusted_floor"] == (row["value"] is not None) for row in stats["low_end_means_db"].values())
     assert crossover_prescriber.main(["status", str(banked.path)]) == 0
     assert packet["packet_fingerprint"] == json.loads(capsys.readouterr().out)["packet_fingerprint"]

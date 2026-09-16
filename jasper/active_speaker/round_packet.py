@@ -22,7 +22,8 @@ from .crossover_v2.intervention import CloudFitTerms
 from .crossover_v2.prescription_contract import prescription_contracts
 from .crossover_v2.round_inputs import RoundInputs, round_inputs, prescription_sources, ROUND_INPUT_ERRORS
 from .frequency_plot import prepare_plot_curve, render_frequency_view
-from .frequency_view import build_frequency_view, manifest_frequency_run, FREQUENCY_VIEW_FILENAME
+from .frequency_view import build_frequency_view, FREQUENCY_VIEW_FILENAME
+from .round_view_builders import analyzed_frequency_run
 from .speaker_fit import design_clouds, speaker_fit
 from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose
 from .round_bank import BankedRound
@@ -143,7 +144,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     view_path = target / FREQUENCY_VIEW_FILENAME
     try:
         if purpose == PURPOSE_SPEAKER:
-            run = manifest_frequency_run(manifest)
+            run = analyzed_frequency_run(target)
             if run.series:
                 atomic_write_json(view_path, build_frequency_view(run))
         if view_path.is_file():
@@ -157,9 +158,11 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                     group, take = next(((g, t) for g, t in rows if t["take_id"] == curve.get("take_id")
                                         and (not curve.get("set_id") or g["set_id"] == curve["set_id"])
                                         and (not curve.get("role") or t.get("role") in (None, curve["role"]))), ({}, {}))
+                    gates = gate_fields({"curve": {**(take.get("curve") or {}), **curve}})
                     series.append({"set_id": curve.get("set_id", group.get("set_id")), "take_id": curve.get("take_id"),
                                    "pose": take.get("pose", curve.get("position")), "role": curve.get("role", take.get("role")),
-                                   "stats": series_stats(curve, plot, gate_fields(take)["trusted_floor_hz"])})
+                                   "window": curve.get("window", "gated" if gates["gate_window_ms"] else "ungated"),
+                                   **gates, "stats": series_stats(curve, plot, gates["trusted_floor_hz"])})
             atomic_write_json(view_path, view)
             artifacts["frequency_view"] = str(view_path)
             if purpose == PURPOSE_SPEAKER:
