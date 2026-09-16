@@ -43,7 +43,7 @@ from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped
 from .crossover_v2.refusal_copy import (
-    CAPTURE_QUALITY_REFUSAL_CODES, REASON_INTERNAL_ERROR, REASON_REGISTRY, REASON_USER_STOPPED, TakeVerdict,
+    CAPTURE_QUALITY_REFUSAL_CODES, REASON_INTERNAL_ERROR, REASON_REGISTRY, REASON_USER_STOPPED, TakeVerdict, exception_detail,
 )
 from .crossover_v2.session import TuningSession
 from .crossover_v2.spatial import analysis_curve_records
@@ -502,7 +502,7 @@ async def _run(
                                 record = {**record, "curves": analysis_curve_records(analysis, program),
                                           "analysis": analysis_json(analysis)}
                         except (ValueError, KeyError, OSError) as exc:
-                            manifest.detail = f"{type(exc).__name__}: {exc}"
+                            manifest.detail = exception_detail(exc)
                             assessed = TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop",
                                                    evidence={"error_type": type(exc).__name__})
                     else:
@@ -548,7 +548,7 @@ async def _run(
                                    (isinstance(exc, asyncio.CancelledError) and signals.stop.is_set()) else
                                    str(exc.code) if isinstance(exc, _OWN_CODE) else
                                    next((code for cls, code in aborts.items() if isinstance(exc, cls)), "cancelled"))
-                manifest.detail = str(exc) or type(exc).__name__
+                manifest.detail = exception_detail(exc)
                 manifest.cancelled = isinstance(exc, asyncio.CancelledError)
                 manifest.stopped_at = {"pose_index": item.pose_index, "index": item.stop["index"]}
                 if attempts[offset] != attempt:
@@ -574,7 +574,7 @@ async def _run(
             manifest.reason, manifest.detail = exc.reason, exc.detail
     except BaseException as exc:  # noqa: BLE001 - finalize failure evidence, then propagate unchanged
         manifest.reason = manifest.reason or REASON_INTERNAL_ERROR
-        manifest.detail = manifest.detail or f"{type(exc).__name__}: {exc}"
+        manifest.detail = manifest.detail or exception_detail(exc)
         raise
     finally:
         try:
@@ -585,7 +585,7 @@ async def _run(
                     manifest.reason, manifest.detail = exc.reason, exc.detail
             except BaseException as exc:  # noqa: BLE001 - preserve cleanup failures after finalizing
                 manifest.reason = manifest.reason or REASON_INTERNAL_ERROR
-                manifest.detail = manifest.detail or f"{type(exc).__name__}: {exc}"
+                manifest.detail = manifest.detail or exception_detail(exc)
                 raise
         finally:
             manifest.finalized = True

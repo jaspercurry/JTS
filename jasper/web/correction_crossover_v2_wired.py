@@ -33,7 +33,7 @@ from jasper.active_speaker.crossover_v2.wired_stimulus import (
 )
 from jasper.log_event import log_event
 from jasper.active_speaker import plan_run
-from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_REGISTRY
+from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_REGISTRY, exception_detail
 from jasper.web._common import refusal_envelope
 
 logger = logging.getLogger(__name__)
@@ -156,7 +156,7 @@ def build_v2_wired_run_and_consume(
                 raise CrossoverV2Refused(detail if code == result.reason else f"{result.reason}: {detail}", code=code)
         except BaseException as exc:  # noqa: BLE001 - persist every terminal arm
             code = publish_failure(exc)
-            v2state._persist_terminal_failure(conductor, code, detail=manifest.detail or f"{type(exc).__name__}: {exc}")
+            v2state._persist_terminal_failure(conductor, code, detail=manifest.detail or exception_detail(exc))
             raise
         else:
             try:

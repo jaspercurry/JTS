@@ -30,6 +30,7 @@ from ..program_playback import (
     play_program,
 )
 from ..session_volume_plan import SessionVolumePlanError
+from .refusal_copy import exception_detail
 from .playback_transaction import (
     STAGE_LOCK,
     STAGE_READY,
@@ -204,7 +205,7 @@ class ProgramPlaybackTransaction:
             return PlaybackOutcome(
                 stage_reached=STAGE_READY, incident=STIMULUS_NOT_COMPOSED,
                 playback=PlaybackObservation(emission="not_started"),
-                detail=f"{type(exc).__name__}: {exc}",
+                detail=exception_detail(exc),
             )
 
         played = False

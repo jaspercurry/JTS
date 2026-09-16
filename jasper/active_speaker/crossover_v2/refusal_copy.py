@@ -1141,6 +1141,10 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
 }
 
 
+def exception_detail(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
 def refusal_copy_for(code: str | None) -> tuple[str, dict[str, Any] | None]:
     """Household copy and an action; unknown codes use internal-error copy."""
     fallback = REASON_REGISTRY[REASON_INTERNAL_ERROR]
