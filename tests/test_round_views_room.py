@@ -14,13 +14,16 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import room_views
+from jasper.active_speaker.round_bank import _bookkeeping
+from jasper.active_speaker.round_packet import write_round_packet
+from tests.test_round_views_speaker_fit import speaker_round as speaker_round
 from jasper.active_speaker.crossover_v2.prescription_contract import prescription_contracts
 from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused
 from tests.run_manifest_fixture import manifest_set, write_manifest
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir, round_inputs
 from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
 from jasper.audio_measurement.room_boundary import (
     ROOM_BOUNDARY_DEFAULT_HZ,
@@ -386,3 +389,51 @@ def test_retired_room_verbs(verb):
     with pytest.raises(SystemExit) as exc:
         round_views.build_parser().parse_args([verb, "round"])
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("purpose", ["speaker", "room"])
+def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(speaker_round, tmp_path, purpose):
+    root, driver, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    analysis = json.loads((directory / "candidate.json").read_text())["analysis"]
+    seat_root = bank_seat_round(tmp_path / "room", magnitudes_db=_cube()[:3])
+    summed = [record for _, record in measurement_documents(round_inputs(seat_root).session_dir)]
+    groups = []
+    for role in ("woofer", "tweeter", "summed"):
+        rows = []
+        for index, degrees in enumerate((0, -20, 20)):
+            source = summed[index] if role == "summed" else driver
+            record = {**source, "take_id": f"{role}-{index}", "pose_kind": "bearing",
+                      "position_deg": degrees, "vertical_deg": 0, "mark_distance_m": 1.0,
+                      "gating_applied": role != "summed", "graph_scope": "candidate" if role == "summed" else "drivers",
+                      "measurement_purpose": "room" if role == "summed" else "speaker"}
+            record.pop("seat_offset_m", None)
+            path = directory / "positions" / f"{record['take_id']}.json"
+            path.write_text(json.dumps(record))
+            rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), record))
+        group = manifest_set(rows, set_id=role)
+        group.update(base=True)
+        group["capture_basis"]["role"] = role
+        for take, (_, record) in zip(group["takes"], rows):
+            take.update(role=role, analysis=analysis,
+                        curve=next(curve for curve in record["curves"] if curve["role"] == role))
+        groups.append(group)
+    groups.append({**groups[-1], "set_id": "timing", "capture_basis": {
+        **groups[-1]["capture_basis"], "graph_scope": "timing"}})
+    write_manifest(root, program=f"{purpose}/express", groups=groups)
+    manifest_path, views = _bookkeeping(root, inputs.session_dir, round_views.run_bookkeeping)
+    packet = write_round_packet(root, manifest_path, views)
+    assert {(fit["pose"]["deg"], fit["role"]) for fit in packet["fits"]} == {
+        (degrees, role) for degrees in (0, -20, 20) for role in ("woofer", "tweeter")}
+    assert all(isinstance(fit["filters"], list) and fit["residual_rms_db"] is not None for fit in packet["fits"])
+    room, = packet["room"]
+    assert room["set_id"] == room["incumbent"]["set_id"] == "summed"
+    assert room["median"]["n_positions"] == room["persistence"]["spatial_support"]["n_positions"] == 3
+    assert room["median"]["window"] == "ungated"
+    assert set(room) == {"ceiling", "median", "persistence", "incumbent", "boundary", "boundary_reason",
+                         "incumbent_reason", "room_median_sha256", "admit_boost", "out", "set_id"}
+    assert packet["limits"]["summed"]["bounds"]["admit_boost"] == room["admit_boost"]
+    assert {row["set_id"] for row in views if row["view"] == "room" and row["status"] == "written"} == {"summed"}
+    inventories = [json.loads(Path(row["out"]).read_text()) for row in views if row["view"] == "inventory"]
+    assert any(row["view"] == "room" and row["present"] for inventory in inventories for row in inventory["artifacts"])

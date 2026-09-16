@@ -19,8 +19,8 @@ from jasper.audio_measurement.gating import SEAT_EXEMPT
 @pytest.mark.parametrize(
     ("program_id", "size", "poses", "moves", "captures"),
     [
-        ("baseline", "full", 13, 13, 16),
-        ("baseline", "express", 5, 5, 8),
+        ("baseline", "full", 13, 13, 29),
+        ("baseline", "express", 5, 5, 13),
         ("tournament", "full", 3, 3, 3),
         ("tournament", "express", 1, 1, 1),
         ("seat", "cloud", 11, 11, 11),
@@ -44,11 +44,17 @@ def test_shipped_rows(
     assert len(row.poses) == poses
     assert row.mic_move_count == moves
     assert row.capture_count == captures
+    assert row.room_sweep is (program_id == "baseline")
 
 
 @pytest.mark.parametrize("purpose", ["room", "bass"])
 def test_summed_bookkeeping_includes_one_frequency_image(purpose):
     assert ("frequency", False, False) in mp.bookkeeping_views(purpose)
+
+
+def test_speaker_bookkeeping_uses_room_views_when_the_round_holds_room_sweeps():
+    assert mp.bookkeeping_views("speaker", has_room=True) == tuple(
+        row for row in mp.bookkeeping_views("room") if row[0] != "frequency")
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -281,7 +287,7 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("broken", ["empty", "repeats", "purpose", "regime", "mode", "layout_key", "mover"])
+@pytest.mark.parametrize("broken", ["empty", "repeats", "purpose", "regime", "mode", "layout_key", "mover", "room_sweep", "room_sweep_mode"])
 def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     config = _bundled_config()
     if broken == "empty":
@@ -292,6 +298,10 @@ def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
         config["layouts"]["room_quick"]["moverr"] = "arm"  # type: ignore[index]
     elif broken == "mover":
         config["layouts"]["room_quick"]["mover"] = []  # type: ignore[index]
+    elif broken == "room_sweep":
+        config["programs"][0]["room_sweep"] = "yes"
+    elif broken == "room_sweep_mode":
+        config["programs"][0].update(purpose="room", regime="summed", room_sweep=True)
     elif broken == "purpose":
         config["programs"][0]["purpose"] = "other"  # type: ignore[index]
     elif broken == "regime":

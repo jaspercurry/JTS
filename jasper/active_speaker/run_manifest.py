@@ -31,6 +31,11 @@ def view_sets(manifest: Mapping[str, Any]) -> list[Mapping[str, Any]]:
             and isinstance(row.get("set_id"), str) and row.get("capture_basis", {}).get("graph_scope") != "timing"]
 
 
+def room_sets(manifest: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    return [row for row in view_sets(manifest) if row["capture_basis"].get("gating_applied") is False
+            and row["capture_basis"].get("role") in (None, "summed")]
+
+
 def capture_alignment_levels(
     evidence: Mapping[str, Any], previous: Mapping[str, Any],
 ) -> dict[str, Any]:

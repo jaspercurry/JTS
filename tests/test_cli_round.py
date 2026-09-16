@@ -9,6 +9,7 @@ import io
 import errno
 import json
 import asyncio
+from collections import Counter
 from copy import deepcopy
 from types import SimpleNamespace
 import subprocess
@@ -355,31 +356,34 @@ def preflight_ready(monkeypatch):
 
 @pytest.fixture
 def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
+    candidates = {}
     def bank(resolution):
         candidate = replace(_room_candidate(tuning_profile), analysis={
             "measurement_status": "unmeasured", "resolution": resolution,
         })
         publish_authored_candidate(candidate)
+        candidates[candidate.fingerprint] = candidate
         monkeypatch.setattr(_run_request, "read_preflight_facts",
-                            lambda plan: ready_facts(plan, candidates={candidate.fingerprint: candidate}))
+                            lambda plan: ready_facts(plan, candidates=candidates))
         return candidate.fingerprint
     return bank
 
 
 @pytest.mark.parametrize("mover", [None, "arm", "human"])
-@pytest.mark.parametrize("section,program,layout,default_mover", [
-    ("driver", "room", "room_quick", "arm"),
-    ("blend", "room", "room_quick", "arm"),
-    ("alignment", "room", "room_quick", "arm"),
-    ("topology", "room", "room_quick", "arm"),
-    ("room", "room", "seat_express", "human"),
-    ("bass", "bass", "bass_axis", "arm"),
+@pytest.mark.parametrize("sections,program,layout,default_mover", [
+    (("driver",), "room", "room_quick", "arm"),
+    (("blend",), "room", "room_quick", "arm"),
+    (("alignment",), "room", "room_quick", "arm"),
+    (("topology",), "room", "room_quick", "arm"),
+    (("room",), "room", "seat_express", "human"),
+    (("bass",), "bass", "bass_axis", "arm"),
+    (("driver", "room"), "room", "seat_express", "human"),
 ])
 def test_trial_uses_authored_section_and_keeps_candidates_at_each_pose(
-    bank_trial, monkeypatch, capsys, section, program, layout, default_mover, mover,
+    bank_trial, monkeypatch, capsys, sections, program, layout, default_mover, mover,
 ):
     resolution = dict.fromkeys(("driver", "blend", "alignment", "topology", "room", "bass"), "base")
-    fingerprint = bank_trial({**resolution, section: "document"})
+    fingerprint = bank_trial({**resolution, **dict.fromkeys(sections, "document")})
     opener = _opener(session='{"session_id": "trial-1"}')
     argv = ["trial", fingerprint, *(["--mover", mover] if mover else [])]
     code, body = _run(argv, opener, monkeypatch, capsys)
@@ -388,7 +392,7 @@ def test_trial_uses_authored_section_and_keeps_candidates_at_each_pose(
         return
     assert code == 0 and body["verb"] == "trial" and body["shape"] == "trial"
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
-    expected = run_program(program, "room_quick" if section == "room" and mover == "arm" else layout)
+    expected = run_program(program, "room_quick" if "room" in sections and mover == "arm" else layout)
     assert plan.program == f"{program}/{expected.size}"
     assert plan.mover == (mover or default_mover)
     assert plan.candidates == ("base", fingerprint)
@@ -414,14 +418,27 @@ def test_declared_trial_uses_the_design_mark_speaker_experiment(isolated_candida
     assert plan.candidates == () and body["shape"] == "measure"
 
 
-@pytest.mark.parametrize("sections", [(), ("driver", "blend"), ("driver", "room", "bass")])
-def test_trial_refuses_ambiguous_sections_without_opening_a_run(bank_trial, monkeypatch, capsys, sections):
+@pytest.mark.parametrize("sections,program", [
+    ((), "room/arm"), (("driver", "blend"), "room/arm"),
+    (("driver", "room", "bass"), "bass/axis"),
+])
+def test_trial_selects_program_by_section_precedence(bank_trial, monkeypatch, capsys, sections, program):
     fingerprint = bank_trial(dict.fromkeys(sections, "document"))
-    opener = _opener()
+    opener = _opener(session='{"session_id": "whole-document"}')
     code, body = _run(["trial", fingerprint], opener, monkeypatch, capsys)
-    assert code == 1 and body["code"] == "trial_sections_ambiguous"
-    assert body["detail"]["sections"] == sorted(sections)
-    assert not opener.requests
+    assert code == 0 and body["shape"] == "trial"
+    assert json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]["program"] == program
+
+
+def test_trial_posts_explicit_candidates(bank_trial, monkeypatch, capsys):
+    first = bank_trial({"driver": "document"})
+    second = bank_trial({"driver": "document", "blend": "document"})
+    opener = _opener(session='{"session_id": "variants"}')
+    code, _ = _run(["trial", first, "--candidates", f"{second},base,{first}"], opener, monkeypatch, capsys)
+    assert code == 0
+    plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
+    assert plan.candidates == (second, "base", first)
+    assert [stop.candidate_id for stop in plan.stops] == [second, "", first] * 3
 
 
 def test_room_default_uses_the_human_seat_set(preflight_ready, monkeypatch, capsys):
@@ -491,8 +508,6 @@ def test_run_refuses_local_state_permission_fault(path_owner, dry_run, monkeypat
 
 @pytest.mark.parametrize("repeats", [None, 1, 2])
 def test_run_repeats_replace_each_pose_count(preflight_ready, monkeypatch, capsys, repeats):
-    from collections import Counter
-
     opener = _opener(session=json.dumps({"capture": {"session_id": "run-1"}}))
     argv = ["run", "--program", "speaker", "--poses", "baseline_express"]
     if repeats is not None:
@@ -502,7 +517,7 @@ def test_run_repeats_replace_each_pose_count(preflight_ready, monkeypatch, capsy
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
     assert plan.repeats == 1
     assert Counter(stop.place for stop in plan.stops) == {
-        pose.place: pose.repeats if repeats is None else repeats
+        pose.place: (pose.repeats if repeats is None else repeats) + 1
         for pose in run_program("speaker", "baseline_express").poses
     }
 

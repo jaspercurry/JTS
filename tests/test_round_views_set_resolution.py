@@ -115,7 +115,7 @@ def test_finalized_one_set_needs_no_selector(tmp_path, capsys, status):
 
 
 @pytest.mark.parametrize("program,first", [
-    ("speaker", ("inventory",)),
+    ("speaker", ("room", "room-grade")),
     ("room", ("room", "room-grade")),
     ("bass", ("bass",)),
 ])
@@ -130,7 +130,7 @@ def test_inventory_groups_and_orders_the_program(tmp_path, capsys, program, firs
 
 
 @pytest.mark.parametrize("program,excluded", [
-    ("speaker", {"room", "room-grade", "bass", "bass-compare", "bass-fit-table"}),
+    ("speaker", {"bass", "bass-compare", "bass-fit-table"}),
     ("room", {"entry", "frozen", "cloud-binding", "forward-model", "delay-landscape",
               "delay-confirm", "close-reference", "distortion", "classify-features",
               "bass", "bass-compare", "bass-fit-table"}),

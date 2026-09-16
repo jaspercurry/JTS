@@ -20,7 +20,7 @@ from .bass_table_report import bass_table_markdown, bass_table_rows
 from .crossover_v2.frequency_view import position_label
 from .crossover_v2.round_inputs import SetTakes
 from .flat_spec import _power_mean_db
-from .measurement_programs import POSE_KIND_BEARING, PURPOSE_SPEAKER, run_purpose
+from .measurement_programs import POSE_KIND_BEARING
 
 PACKET_FILENAME = "packet.json"
 PICTURE_FILENAME = "frequency.png"
@@ -116,7 +116,7 @@ def packet_index(
     for set_id, limits in packet["limits"].items():
         if limits.get("status") == "unavailable":
             decisions.setdefault("unavailable", {}).setdefault(limits["reason"], []).append(set_id)
-        sections = limits if packet["program"] and run_purpose(packet["program"]) == PURPOSE_SPEAKER else {"decision": limits}
+        sections = {"decision": limits} if "schema" in limits else limits
         for name, contract in sections.items():
             if isinstance(contract, Mapping) and "schema" in contract:
                 decisions.setdefault(name, {}).setdefault(_decision(contract), []).append(set_id)

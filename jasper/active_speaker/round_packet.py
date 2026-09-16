@@ -24,13 +24,13 @@ from .crossover_v2.round_inputs import RoundInputs, round_inputs, prescription_s
 from .frequency_plot import prepare_plot_curve, render_frequency_view
 from .frequency_view import build_frequency_view, manifest_frequency_run, FREQUENCY_VIEW_FILENAME
 from .speaker_fit import design_clouds, speaker_fit
-from .measurement_programs import PURPOSE_SPEAKER, run_purpose
+from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose
 from .round_bank import BankedRound
 from .round_verdicts import round_verdicts
 from .round_packet_report import (
     INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, gate_fields, packet_index, series_stats,
 )
-from .run_manifest import RUN_MANIFEST_KIND, RunManifest
+from .run_manifest import RUN_MANIFEST_KIND, RunManifest, room_sets
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 
 
@@ -99,6 +99,8 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
     computed: dict[str, Any] = {}
     fits = []
     for group in manifest.get("sets", ()):
+        if group["capture_basis"].get("gating_applied") is False:
+            continue
         for take in group["takes"]:
             if not take["selected"] or take.get("role") in (None, "summed"):
                 continue
@@ -165,14 +167,14 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
         if row["view"].startswith(("room", "bass")):
             artifacts["room_views" if row["view"].startswith("room") else "bass_views"].append(
                 {key: row[key] for key in ("view", "set_id", "out", "status", "reason") if key in row})
-        if row["view"] == purpose and purpose in analysis and row["status"] == "written" and row.get("out"):
+        if row["view"] in analysis and row["status"] == "written" and row.get("out"):
             try:
                 document = json.loads(Path(row["out"]).read_text())
             except (OSError, ValueError):
                 continue
-            if purpose == "room":
+            if row["view"] == "room":
                 document.pop("limits", None)
-            analysis[purpose].append({**document, "out": row["out"],
+            analysis[row["view"]].append({**document, "out": row["out"],
                                      "set_id": row.get("set_id") or manifest["sets"][0]["set_id"]})
     try:
         sources = prescription_sources(inputs)
@@ -181,11 +183,13 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     profile = sources.get("applied_profile") or {}
     snapshot = profile.get("recomposition_snapshot") or {}
     limits = {}
+    rooms = room_sets(manifest)
     for group in manifest.get("sets", ()):
         try:
             contracts = prescription_contracts(**prescription_sources(inputs, set_id=group["set_id"] if len(manifest["sets"]) > 1 else None))
-            if purpose in contracts:
-                limits[group["set_id"]] = {key: value for key, value in contracts[purpose].items()
+            section = PURPOSE_ROOM if purpose == PURPOSE_SPEAKER and group in rooms else purpose
+            if section in contracts:
+                limits[group["set_id"]] = {key: value for key, value in contracts[section].items()
                                            if key != "evidence_declarations"}
         except ROUND_INPUT_ERRORS as exc:
             limits[group["set_id"]] = {"status": "unavailable", "reason": getattr(exc, "reason", "evidence_unreadable")}
@@ -198,7 +202,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     except ROUND_INPUT_ERRORS as exc:
         fingerprint = None
         errors.append({"artifact": "packet_fingerprint", "reason": getattr(exc, "reason", "evidence_unavailable")})
-    clouds = design_clouds(inputs, manifest) if purpose == PURPOSE_SPEAKER else {}
+    clouds = design_clouds(inputs, manifest)
     alignments, alignment_verdict = round_alignment(
         {**manifest, "round_id": target.name}, sources,
     ) if purpose == PURPOSE_SPEAKER else ([], None)
@@ -216,7 +220,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                         "takes": [{**{key: t.get(key) for key in ("take_id", "pose", "role", "selected", "alignment")},
                                    "fault": t.get("fault") or (t.get("quality") or {}).get("fault"), **gate_fields(t)} for t in g["takes"]]}
                        for g in manifest.get("sets", ())], "series": series,
-              "fits": _fits(inputs, manifest, sources, clouds) if purpose == PURPOSE_SPEAKER else [],
+              "fits": _fits(inputs, manifest, sources, clouds),
               **analysis,
               "alignment": alignments, "alignment_verdict": alignment_verdict,
               "next_action": timing_next_action(alignment_verdict or {},
@@ -228,6 +232,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
             packet["commissioning"] = bank_commissioning_experiment(target, manifest, sources, packet["alignment"])
         except ROUND_INPUT_ERRORS + (CandidateBankRefusal,) as exc:
             packet["commissioning"] = {"status": "unavailable", "reason": getattr(exc, "code", "commissioning_candidate_unavailable")}
+    if packet["fits"] or purpose == PURPOSE_SPEAKER:
         packet["verdicts"] = round_verdicts(packet, inputs, manifest=manifest, clouds=clouds, sources=sources)
     atomic_write_json(target / PACKET_FILENAME, packet)
     (target / INDEX_FILENAME).write_text(packet_index(packet, target, views, manifest))

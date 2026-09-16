@@ -265,6 +265,8 @@ def latest_banked_rounds(
                     "next_action": packet.get("next_action")}
                    if purpose == PURPOSE_SPEAKER else {}),
             }
+        if packet.get("room") and PURPOSE_ROOM not in found:
+            found[PURPOSE_ROOM] = {"round_dir": str(directory), "started_at": modified_at}
         if len(found) == 3:
             break
     return found

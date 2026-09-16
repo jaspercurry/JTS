@@ -88,8 +88,20 @@ Read `gate_window_ms`, `validity_floor_hz`, `trusted_floor_hz` and `floor_source
 per role. Nothing below the trusted floor, 2.5 divided by gate length in
 seconds, supports a speaker claim
 (`docs/research/2026-08-31-tuning-methodology-deep-research/03-gating-windowing-and-low-frequency-truth.md`).
-Write one document. `jasper-crossover-prescriber contract --round <dir> --section speaker`
-prints the schema. A refusal names the crossed bound; correct that field.
+
+### Document
+
+`jasper-round run --program speaker --poses baseline/express` collects driver
+fits, timing and room evidence in one round; `baseline/full` adds poses.
+Write one document with every section the evidence supports.
+`jasper-crossover-prescriber contract --round <dir> --section speaker` prints
+the schema. Normally omit `alignment`: saved timing carries forward. See Timing
+below for when to include it. A refusal names the crossed bound; correct that field.
+
+Trial the whole document with two or three candidates: the fitted totals and
+one or two variants. Use `jasper-round trial <FP> --candidates <FP>,<variant-FP>`;
+`base` is also allowed. Compare them in one trial and apply the winner.
+The trial's packet is the verification; no separate verify round is needed.
 
 ## Timing
 

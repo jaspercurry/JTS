@@ -123,13 +123,9 @@ def _cmd_trial(client: WizardClient, args: argparse.Namespace) -> int:
     sections = sorted(name for name, source in banked.candidate.analysis.get("resolution", {}).items()
                       if source == "document")
     declared = banked.candidate.program_id == DECLARED_CROSSOVER_PROGRAM_ID
-    if declared:
-        sections = ["driver"]
-    if len(sections) != 1:
-        return failed(EXIT_REFUSED, "trial_sections_ambiguous", {"sections": sections}, code="trial_sections_ambiguous")
-    selected = run_program("speaker") if declared else trial_program(sections[0], args.mover)
+    selected = run_program("speaker") if declared else trial_program(sections, args.mover)
     args.program, args.poses, args.mover = selected.program_id, selected.layout, args.mover or selected.mover
-    args.candidates = None if declared else f"base,{banked.fingerprint}"
+    args.candidates = args.candidates or (None if declared else f"base,{banked.fingerprint}")
     return _cmd_run(client, args)
 
 
@@ -284,6 +280,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_args = _RoundSubparser(add_help=False, parents=[timeout_args])
     _connection_args(run_args)
     run_args.add_argument("--wait", action="store_true", help="wait for completion and bank the round with its packet")
+    run_args.add_argument("--candidates", help="comma-separated fingerprints (or base); supplied means trial")
     levels = run_args.add_mutually_exclusive_group()
     levels.add_argument("--levels", help="auto uses admissible session offsets; or absolute dB levels, e.g. --levels=-10,-20")
     levels.add_argument("--spl", help="dB SPL at the mark, mapped through the banked anchor, e.g. --spl 65,75,82")
@@ -293,7 +290,6 @@ def build_parser() -> argparse.ArgumentParser:
     poses = run.add_mutually_exclusive_group()
     poses.add_argument("--poses", help="named pose set or comma-separated bearings in degrees")
     poses.add_argument("--layout", dest="poses", help="named layout from the program registry")
-    run.add_argument("--candidates", help="comma-separated fingerprints (or base); supplied means trial")
     run.add_argument("--repeats", type=int, help="takes per pose and configuration")
     run.add_argument("--mover", choices=MOVERS)
     run.add_argument("--plan", help="v5 plan document; used without plan-building flags")

@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from importlib import resources
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 POSE_KIND_BEARING = "bearing"
 POSE_KIND_SEAT = "seat"
@@ -70,14 +70,15 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
     return resolved
 
 
-def bookkeeping_views(purpose: str) -> tuple[tuple[str, bool, bool], ...]:
+def bookkeeping_views(purpose: str, *, has_room: bool = False) -> tuple[tuple[str, bool, bool], ...]:
     """View name, per-set scope, and whether it grades against the base."""
-    return {
+    views = {
         PURPOSE_SPEAKER: (("inventory", True, False),),
         PURPOSE_ROOM: (("room", True, False), ("room-grade", True, True), ("frequency", False, False),
                        ("inventory", True, False)),
         PURPOSE_BASS: (("bass", True, False), ("frequency", False, False), ("inventory", True, False)),
-    }.get(purpose, ())
+    }.get(PURPOSE_ROOM if purpose == PURPOSE_SPEAKER and has_room else purpose, ())
+    return tuple(row for row in views if purpose != PURPOSE_SPEAKER or row[0] != "frequency")
 
 
 def run_purpose(run_program: str | None) -> str:
@@ -183,11 +184,15 @@ class MeasurementProgram:
     layout: str = ""
     levels: str | None = None
     stimulus: Mapping[str, Any] | None = None
+    room_sweep: bool = False
 
     def __post_init__(self) -> None:
         if not self.poses:
             raise ValueError("a measurement program must contain at least one pose")
         validated_capture_purpose(self.purpose, POSE_KIND_BEARING, self.regime)
+        if not isinstance(self.room_sweep, bool) or (self.room_sweep and
+                (self.purpose != PURPOSE_SPEAKER or self.regime != REGIME_PER_DRIVER)):
+            raise ValueError("room_sweep requires a boolean and a per-driver speaker program")
 
     @property
     def mic_move_count(self) -> int:
@@ -197,7 +202,7 @@ class MeasurementProgram:
 
     @property
     def capture_count(self) -> int:
-        return sum(p.repeats for p in self.poses)
+        return sum(p.repeats + self.room_sweep for p in self.poses)
 
 
 class UnknownProgramError(ValueError):
@@ -293,7 +298,7 @@ def _load_programs(
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise ValueError(f"program {index} must be an object")
-        unknown = set(row) - {"id", "size", "layout", "purpose", "regime", "levels", "stimulus"}
+        unknown = set(row) - {"id", "size", "layout", "purpose", "regime", "levels", "stimulus", "room_sweep"}
         if unknown:
             raise ValueError(f"program {index} has unknown fields: {sorted(unknown)}")
         try:
@@ -321,6 +326,7 @@ def _load_programs(
             mover=movers.get(layout),
             layout=layout, levels=row.get("levels"),
             stimulus=stimuli[stimulus] if stimulus is not None else None,
+            room_sweep=row.get("room_sweep", False),
         )
 
     defaults_raw = raw.get("default_sizes")
@@ -348,14 +354,10 @@ def load_programs(
 
 _PROGRAMS, _DEFAULT_SIZES = _load_programs()
 
-# Driver changes are judged through the summed design poses.
 _TRIAL_PROGRAMS = {
-    "driver": (PURPOSE_ROOM, "room_quick", None),
-    "blend": (PURPOSE_ROOM, "room_quick", None),
-    "alignment": (PURPOSE_ROOM, "room_quick", None),
-    "topology": (PURPOSE_ROOM, "room_quick", None),
-    "room": (PURPOSE_ROOM, "seat_express", "room_quick"),
     "bass": (PURPOSE_BASS, "bass_axis", None),
+    "room": (PURPOSE_ROOM, "seat_express", "room_quick"),
+    None: (PURPOSE_ROOM, "room_quick", None),
 }
 
 # Compatibility values derived from the config, which remains their owner.
@@ -404,14 +406,16 @@ def run_program(purpose: str, poses: str | None = None) -> MeasurementProgram:
         if poses in (row.layout, f"{row.program_id}_{row.size}", f"{row.program_id}/{row.size}"):
             return replace(row, program_id=purpose, purpose=purpose,
                            regime=row.regime if row.purpose == purpose else selected.regime,
+                           room_sweep=row.room_sweep and purpose == PURPOSE_SPEAKER,
                            levels=selected.levels, stimulus=row.stimulus if row.purpose == purpose else selected.stimulus)
     return replace(selected, size="custom", layout="", poses=tuple(
         ProgramPose(int(value.strip()), 0) for value in poses.split(",")
     ))
 
 
-def trial_program(section: str, mover: str | None = None) -> MeasurementProgram:
-    """Choose the experiment for one authored candidate section."""
-    purpose, layout, arm_layout = _TRIAL_PROGRAMS[section]
+def trial_program(sections: Collection[str], mover: str | None = None) -> MeasurementProgram:
+    """Bass precedes room, then driver/alignment/blend/topology or a carried document."""
+    purpose, layout, arm_layout = next(value for section, value in _TRIAL_PROGRAMS.items()
+                                     if section is None or section in sections)
     selected = run_program(purpose, arm_layout if mover == "arm" and arm_layout else layout)
     return replace(selected, mover=mover or selected.mover)

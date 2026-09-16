@@ -276,8 +276,8 @@ def _bank_capture_ring(bundle: Path, session_id: str, calibration_id: str) -> di
 def _bookkeeping(
     target: Path, bundle: Path, view_runner: Callable[..., dict[str, Any]] | None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
-    from .measurement_programs import bookkeeping_views, run_purpose  # lazy: bank-only program registry
-    from .run_manifest import RUN_MANIFEST_FILENAME, view_sets  # lazy: measurement types
+    from .measurement_programs import PURPOSE_SPEAKER, bookkeeping_views, run_purpose  # lazy: bank-only program registry
+    from .run_manifest import RUN_MANIFEST_FILENAME, room_sets, view_sets  # lazy: measurement types
     from .crossover_v2.round_inputs import round_artifact_dir  # lazy: reader imports this banker
 
     artifacts, _ = round_artifact_dir(bundle)
@@ -286,7 +286,8 @@ def _bookkeeping(
         return None, []
     document = json.loads(manifest.read_text())
     purpose = run_purpose(document.get("program"))
-    views = bookkeeping_views(purpose)
+    room_groups = room_sets(document)
+    views = bookkeeping_views(purpose, has_room=bool(room_groups))
     sets = view_sets(document)
     multiple_bases = sum(bool(row.get("base")) for row in sets) > 1
 
@@ -296,6 +297,8 @@ def _bookkeeping(
     results = []
     for view, per_set, grades_against_base in views:
         targets = sets if per_set and len(sets) > 1 else [None]
+        if purpose == PURPOSE_SPEAKER and view.startswith("room"):
+            targets = room_groups
         for row in targets:
             set_id = row["set_id"] if row else None
             incumbent_id = None

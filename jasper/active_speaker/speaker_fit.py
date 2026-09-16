@@ -24,7 +24,7 @@ from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_H
 from jasper.active_speaker.linearization_budget import fit_budgets_by_role, normalise_fit_budget
 from jasper.active_speaker.linearization_fit import FitVocabulary, linearization_filters_by_role
 from jasper.active_speaker.measured_crossover_candidate import room_peqs_from_correction
-from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_SPEAKER, REGIME_SUMMED, run_purpose
+from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, REGIME_SUMMED
 from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
 from jasper.audio_measurement.bundles import relative_artifact_path
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
@@ -167,7 +167,7 @@ def speaker_fit(
     relative_artifact_path(inputs.session_dir, path)
     record = json.loads(path.read_text())
     program = ExcitationProgram.from_dict(record["program"])
-    if run_purpose(manifest["program"]) != PURPOSE_SPEAKER or program.phase != "measure":
+    if program.phase != "measure":
         raise RoundViewsError("speaker-fit requires a Speaker MEASURE take")
     if program.program_id != selected.capture_basis["program_id"] or record["take_id"] != take_id:
         raise RoundViewsError("selected take does not match its manifest")

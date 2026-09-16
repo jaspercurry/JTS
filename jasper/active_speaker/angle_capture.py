@@ -49,7 +49,7 @@ from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS, MeasureSpec
 from .crossover_v2.programs import program_for_phase
 from .measurement_programs import (
-    POSE_KIND_BEARING,
+    POSE_KIND_BEARING, PURPOSE_ROOM,
     MeasurementProgram,
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
@@ -754,30 +754,28 @@ def request_for_program(
     repeats: int = 1,
     retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION,
 ) -> AngleCaptureRequest:
-    """Expand a plan position-first, with adjacent repeats and candidate trials.
-
-    ONE program per request, so one ``template``: a campaign wanting a second
-    stimulus calls this again for that program.
-    """
+    """Expand poses with adjacent driver repeats, room sweeps and candidate trials."""
     if program.mover is not None and program.mover != mover:
         raise LateralWalkRefused(REASON_WALK_MOVER_MISMATCH, f"{program.program_id}/{program.size} requires mover={program.mover}")
     if program.regime == REGIME_BRANCHES and (len(candidates) != 1 or candidate_identity(candidates[0]) == BASE_CANDIDATE):
         raise CrossoverV2FlowError("branches needs one saved complete candidate fingerprint")
+    room_sweep = program.room_sweep and not candidates
     return AngleCaptureRequest(
         stops=tuple(
-            AngleStop(
-                pose.azimuth_deg,
-                REGIME_SUMMED if candidates and program.regime == REGIME_PER_DRIVER else program.regime,
-                pose.elevation_deg,
-                candidate,
+            replace(
+                stop, elevation_deg=pose.elevation_deg, candidate_id=candidate,
                 kind=pose.kind,
                 distance_m=pose.distance_m,
                 seat_offset_m=pose.seat_offset_m,
-                purpose=program.purpose, headline=pose.headline, detail=pose.detail,
+                purpose=PURPOSE_ROOM if room_sweep and stop.plays_summed else program.purpose,
+                headline=pose.headline, detail=pose.detail,
                 stimulus=program.stimulus,
             )
             for pose in program.poses
-            for _ in range(pose.repeats)
+            for stop in (both_at((pose.azimuth_deg,), mover=mover).stops if room_sweep else (
+                AngleStop(pose.azimuth_deg, REGIME_SUMMED if candidates and program.regime == REGIME_PER_DRIVER else program.regime,
+                          purpose=program.purpose),))
+            for _ in range(1 if room_sweep and stop.plays_summed else pose.repeats)
             for candidate in (candidates or (BASE_CANDIDATE,))
         ),
         mover=mover,
