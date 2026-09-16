@@ -3,7 +3,7 @@
 
 import json
 import shlex
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -128,7 +128,7 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
     before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
     assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == 0
     result = json.loads(capsys.readouterr().out)
-    assert {"linearization", "alignment", "trim"} <= result.keys()
+    assert {"linearization", "alignment", "trim_decision"} <= result.keys()
     assert result["boost_evidence"]["design_poses"] == 1
     bands = _primary_sweep_bands(program)
     responses = {curve["role"]: response_from_banked_curve(curve)[0] for curve in record["curves"]}
@@ -156,7 +156,7 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
     assert alignment["seed"] == {"delay_us": 120, "polarity": "normal"}
     assert alignment["polarity_agrees_with_sum"] is False
     assert alignment["gcc_delay_us"] == -205
-    assert result["trim"] == json.loads(json.dumps({**asdict(trim), "outcome": trim.outcome, "committed_side": trim.committed_side}))
+    assert set(result["trim_decision"]["committed_db"]) == set(bands)
     pending = [result]
     while pending:
         value = pending.pop()
@@ -191,6 +191,48 @@ def test_speaker_fit_discloses_handover_level_shift(speaker_round, monkeypatch, 
     monkeypatch.setattr("jasper.active_speaker.speaker_fit.fit_branches", one_wide_cut)
     result = speaker_fit(inputs, manifest, "speaker-set")
     assert result["linearization"]["woofer"]["handover_level_shift_db"] == pytest.approx(-6, abs=0.5)
+    if fc_hz == 200:
+        assert result["trim_decision"] == {"status": "unavailable", "reason": "handover_band_unmeasured"}
+
+
+@pytest.mark.parametrize("cut_db", [0, 3, 6, 12])
+def test_fit_resolves_trim_after_tweeter_cut(speaker_round, monkeypatch, cut_db):
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    manifest = json.loads((directory / "run_manifest.json").read_text())
+    path = take_artifact_path(inputs.session_dir, manifest["sets"][0]["takes"][0]["artifacts"]["record_id"])
+    for curve in record["curves"]:
+        response = response_from_banked_curve(curve)[0]
+        level = 10 if curve["role"] == "tweeter" else 0
+        curve.update(magnitude_db=np.full_like(response.freqs_hz, level).tolist())
+    raw_trim = {"woofer": 0, "tweeter": -10}
+    banked_trim = {"woofer": min(0, 10 - cut_db), "tweeter": min(0, -10 + cut_db)}
+    candidate_path = directory / "candidate.json"
+    candidate = json.loads(candidate_path.read_text())
+    candidate["analysis"]["trim_decision"]["committed_db"] = banked_trim
+    candidate["analysis"]["trim_db"] = banked_trim
+    candidate_path.write_text(json.dumps(candidate))
+    manifest["sets"][0]["capture_basis"]["gating_applied"] = True
+    manifest["sets"][0]["takes"][0]["role"] = "tweeter"
+    original = fit_branches
+
+    def controlled_fit(drivers, **kwargs):
+        branches = original(drivers, **kwargs)
+        return replace(branches, fits={role: replace(fit, filters=(
+            (LinearizationFilter("Peaking", 2400, 0.01, -cut_db),)
+            if role == "tweeter" and cut_db else ())) for role, fit in branches.fits.items()})
+
+    path.write_text(json.dumps(record))
+    monkeypatch.setattr("jasper.active_speaker.speaker_fit.fit_branches", controlled_fit)
+    rows = _fits(inputs, manifest, prescription_sources(inputs), {})
+    assert rows
+    trims = rows[0]["resolved_trim_db"]
+    assert trims["tweeter"] - trims["woofer"] == pytest.approx(raw_trim["tweeter"] + cut_db, abs=0.3)
+    assert max(trims.values()) == 0
+    if cut_db == 0:
+        assert trims == pytest.approx(raw_trim)
+    assert "prescriptions" not in rows[0]
 
 
 @pytest.mark.parametrize("changes", [

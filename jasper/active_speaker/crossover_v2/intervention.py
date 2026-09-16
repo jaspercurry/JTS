@@ -85,6 +85,7 @@ __all__ = [
     "PlannerInputError",
     "SIGMA_TOLERABLE_DB",
     "anchor_trims",
+    "resolve_trims_after_fit",
     "compare_level_definitions",
     "compose_sigma_db",
     "decide_trim",
@@ -675,6 +676,33 @@ def anchor_trims(
     }
     shift = max(0.0, max(unnormalized.values()))
     return {r: v - shift for r, v in unnormalized.items()}, shift
+
+
+def resolve_trims_after_fit(
+    drivers: Sequence[DriverEvidence], fits: Mapping[str, LinearizationFit],
+    regions: Sequence[CrossoverRegion],
+) -> dict[str, float]:
+    """Resolve fitted trims from raw measurements on one shared frequency grid."""
+    by_role = {driver.role: driver for driver in drivers}
+    region = next(region for region in regions
+                  if {region.lower_driver, region.upper_driver} == by_role.keys())
+    roles = (region.lower_driver, region.upper_driver)
+    pair = [by_role[role] for role in roles]
+    grid = pair[0].response.freqs_hz
+    raw = [driver.response.complex_tf for driver in pair]
+    corrected = [response * complex_correction_response(fits[driver.role].filters, grid)
+                 for driver, response in zip(pair, raw)]
+    spans = [(max(driver.excited_band_hz[0], driver.response.fit_floor_hz or 0.0),
+              driver.excited_band_hz[1]) for driver in pair]
+    before, after = [solve_branch_trims(
+        grid, responses[0], responses[1], region.fc_hz,
+        woofer_span_hz=spans[0], tweeter_span_hz=spans[1],
+    ) for responses in (raw, corrected)]
+    trims, _ = anchor_trims(
+        roles=roles, anchor_base_db=dict(zip(roles, before[:2])),
+        giveback_db=dict(zip(roles, (before[2] - after[2], before[3] - after[3]))),
+    )
+    return trims
 
 
 # --------------------------------------------------------------------------- #
