@@ -116,8 +116,10 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
             take_id = take["take_id"]
             if take_id not in computed or take["role"] not in computed[take_id]:
                 try:
-                    computed[take_id] = speaker_fit(inputs, manifest, group["set_id"], take_id,
-                                                clouds_by_set=clouds, sources=sources)["linearization"]
+                    result = speaker_fit(inputs, manifest, group["set_id"], take_id,
+                                         clouds_by_set=clouds, sources=sources)
+                    computed[take_id] = {role: {**proposal, "trim_decision": result["trim_decision"]}
+                                         for role, proposal in result["linearization"].items()}
                 except ROUND_INPUT_ERRORS as exc:
                     computed[take_id] = {take["role"]: {"fit": {"reason_summary": {
                         "unavailable": getattr(exc, "reason", None) or getattr(exc, "code", None) or exception_detail(exc),
@@ -126,7 +128,9 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
                 if role != take["role"]:
                     continue
                 fit = proposal["fit"]
+                trims = (proposal.get("trim_decision") or {}).get("committed_db", {})
                 fits.append({"set_id": group["set_id"], "take_id": take_id, "pose": take["pose"], "role": role,
+                             "resolved_trim_db": trims,
                              **{key: proposal.get(key) for key in ("boost_evidence", "per_filter_boost_cap_db", "composed_boost_cap_db", "handover_level_shift_db")},
                              **{key: fit.get(key) for key in ("mic_tier", "budget", "filters", "residual_rms_db",
                                                             "residual_max_db", "reason_summary", "position_spread_db", "class_prior_hz")}})

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""Speaker fit proposals and the engine's banked alignment and trim evidence."""
+"""Speaker fit proposals, resolved trims, and banked alignment evidence."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from jasper.active_speaker.branch_chain import sections_by_role, boost_headroom_
 from jasper.active_speaker.alignment_evidence import alignment_evidence
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
-from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, fit_branches
+from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, fit_branches, resolve_trims_after_fit
 from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, take_artifact_path
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, round_artifact_dir
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
@@ -204,8 +204,9 @@ def speaker_fit(
     clouds = {group["capture_basis"].get("role") or "": clouds_by_set[group["set_id"]]
               for group in manifest["sets"] if group["set_id"] in clouds_by_set
               and any(t["selected"] and t["take_id"] == take_id for t in group["takes"])}
-    sections = sections_by_role(CrossoverRegion.from_mapping(region)
-                                for region in candidate["source_preset"].get("crossover_regions") or ())
+    regions = [CrossoverRegion.from_mapping(region)
+               for region in candidate["source_preset"].get("crossover_regions") or ()]
+    sections = sections_by_role(regions)
     vocabularies = _fit_vocabularies(candidate, {role: {**budgets.get(role, {}), **overrides} for role in bands})
     curves = {curve["role"]: curve for curve in curves_for_take(record, manifest)}
     drivers = []
@@ -219,6 +220,12 @@ def speaker_fit(
         vocabulary=vocabularies,
         cloud={role: clouds[role] for role in bands if role in clouds},
     )
+    trim_decision: dict[str, Any] | None = None
+    if len(drivers) == 2:
+        try:
+            trim_decision = {"committed_db": resolve_trims_after_fit(drivers, branches.fits, regions)}
+        except ValueError:
+            trim_decision = {"status": "unavailable", "reason": "handover_band_unmeasured"}
     handover_shifts = {}
     for role, fit in branches.fits.items():
         grid = np.unique(np.concatenate([
@@ -243,5 +250,5 @@ def speaker_fit(
         set_id=selected.set_id, take_id=take_id,
         boost_evidence=selected_fit["boost_evidence"], linearization=linearization,
         alignment=alignment_evidence({**take, "analysis": analysis}, sources),
-        trim=analysis.get("trim_decision"),
+        trim_decision=trim_decision,
     )
