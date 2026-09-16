@@ -458,7 +458,7 @@ class AngleCaptureRequest:
             # LevelPolicy owns the fader range check for each requested level.
             for value in self.levels:
                 replace(self.level, level_db=value)
-            levels = tuple(sorted(float(value) for value in self.levels))
+            levels = tuple(float(value) for value in self.levels)
             if len(set(levels)) != len(levels):
                 raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "levels must be distinct")
             if len(levels) == 1:

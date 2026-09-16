@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager, nullcontext
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from itertools import groupby
 from types import SimpleNamespace
-from typing import Any, Callable, Mapping, Sequence, cast
+from typing import Any, Awaitable, Callable, Mapping, Sequence, cast
 
 from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
@@ -40,7 +41,8 @@ class LevelLadder:
         if not admitted:
             return self.levels[0].plan
         return replace(admitted[0].plan, level=replace(admitted[0].plan.level, level_db=None),
-                       levels=tuple(cast(float, report.plan.level.volume_db) for report in admitted))
+                       levels=tuple(cast(float, report.rung_admission.get("requested_level_db", report.plan.level.volume_db))
+                                    for report in admitted))
 
     @property
     def admissible(self) -> tuple[PreflightReport, ...]:
@@ -71,7 +73,7 @@ class LevelLadder:
             "requested_stimulus": {"program": self.plan.program, "template": self.plan.template.to_dict(),
                                    "stops": [{"regime": stop.regime, "stimulus": stop.stimulus}
                                              for stop in self.plan.stops]},
-            "admissions": self.admissions,
+            "admissions": deepcopy(self.admissions),
             "issues": [asdict(issue) for issue in self.issues],
             "levels": [{"offset_db": report.plan.level.offset_db if report.plan.level.resolved else None,
                         "level_db": report.plan.level.volume_db,
@@ -93,7 +95,7 @@ def level_ladder(plan: AngleCaptureRequest, facts: PreflightFacts) -> LevelLadde
 
 def _ladder(plans: Sequence[AngleCaptureRequest], facts: PreflightFacts) -> LevelLadder:
     reports: list[PreflightReport] = []
-    for plan in plans:
+    for plan in sorted(plans, key=lambda plan: plan.level.volume_db or 0.0):
         reports.append(preflight(plan, facts, defer_rung=any(not report.blocking for report in reports)))
     return LevelLadder(tuple(reports), facts)
 
@@ -143,6 +145,7 @@ async def run_levels(
     ladder: LevelLadder, *, hold: AbstractAsyncContextManager[IsolationHold],
     prepare: Callable[[AngleCaptureRequest], LevelRun], gate: PositionGate,
     aborts: Mapping[type[BaseException], str], signals: RunSignals | None = None,
+    save_ladder: Callable[[Mapping[str, Any]], Awaitable[None]] | None = None,
 ) -> tuple[RunManifest, ...]:
     """Finish admissible levels at each pose under one mic hold."""
     admitted = ladder.admissible
@@ -163,12 +166,10 @@ async def run_levels(
                 except _Control:
                     return tuple(results)
                 previous: list[dict[str, Any]] | None = None
-                for level_index, report in enumerate(admitted):
-                    request = replace(report.plan, stops=stops)
+                for level_index, planned in enumerate(admitted):
+                    request = replace(planned.plan, stops=stops, level=replace(planned.plan.level,
+                        level_db=planned.rung_admission.get("requested_level_db", planned.plan.level.volume_db)))
                     report = preflight(request, ladder.facts, previous_rung=previous)
-                    if report.blocking:
-                        issue = next(issue for issue in report.issues if issue.blocking)
-                        raise LateralWalkRefused(issue.code, issue.detail)
                     request = report.plan
                     observations: list[dict[str, Any]] = []
                     admission = {"pose_index": pose_index, "level_index": level_index + 1,
@@ -177,6 +178,11 @@ async def run_levels(
                                  "level_db": request.level.volume_db, **report.rung_admission,
                                  "observations": observations}
                     ladder.admissions.append(admission)
+                    if save_ladder:
+                        await save_ladder(ladder.to_dict())
+                    if report.blocking:
+                        issue = next(issue for issue in report.issues if issue.blocking)
+                        raise LateralWalkRefused(issue.code, issue.detail)
                     gate.publish({"status": "running", "pose": pose_index,
                                   "level": {"session": request.level.resolved.session() if request.level.resolved else None,
                                             "run": {"level_db": request.level.volume_db}},
@@ -184,11 +190,13 @@ async def run_levels(
                     bound = prepare(request)
                     def analyze(record: Mapping[str, Any], record_id: str) -> ProgramAnalysis:
                         basis = capture_basis(record)
-                        spl = (record.get("capture_integrity") or {}).get("spl") or {}
-                        measured = finite_float(spl.get("loudest_half_second_db_spl"))
+                        raw_spl = (record.get("capture_integrity") or {}).get("spl") or {}
+                        spl = {key: finite_float(raw_spl.get(key)) for key in (
+                            "loudest_half_second_db_spl", "max_window_db_spl", "ceiling_db_spl")}
+                        measured = spl["loudest_half_second_db_spl"]
                         predicted = request.level.predicted_db_spl
                         anchor_stimulus = ladder.facts.anchor.record.get("stimulus") or {}
-                        observations.append({"record_id": record_id, "level_db": basis["level_db"], "spl": spl,
+                        observations.append({"record_id": record_id, "level_db": finite_float(basis["level_db"]), "spl": spl,
                             "run_stimulus": {"program_id": basis["program_id"],
                                              "wav_sha256": basis["stimulus_wav_sha256"],
                                              "peak_dbfs": basis["stimulus_peak_dbfs"]},
@@ -207,6 +215,8 @@ async def run_levels(
                         aborts=aborts, signals=signals,
                     )
                     results.append(result)
+                    if save_ladder:
+                        await save_ladder(ladder.to_dict())
                     previous = observations
                     if result.cancelled or result.stopped_at or any(take.get("next") == "stop" for take in result.takes):
                         signals.request_stop(result.reason or "take_stopped")

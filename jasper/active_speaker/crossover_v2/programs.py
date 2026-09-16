@@ -10,9 +10,9 @@ re-admits the rendered artifact against its protected graph.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
@@ -107,6 +107,22 @@ GROUP_SUMMED_SWEEP_PHASES = frozenset({PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY})
 
 class NoProgramForPhaseError(RuntimeError):
     """This session composes no excitation for that phase."""
+
+
+def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_dbfs: float | None = None, *,
+                           safety_profile: Mapping[str, Any], role_targets: Mapping[str, str]) -> ExcitationProgram:
+    excitation = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)
+    backoff = 0.0 if stimulus_dbfs is None else BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs
+    if spec.stimulus is not None:
+        from ..bass_stimulus import build_bass_program  # lazy: keeps jasper.web numpy-free
+
+        program = build_bass_program(excitation, spec.stimulus, safety_profile=safety_profile,
+                                     role_targets=role_targets, extra_backoff_db=backoff,
+                                     courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase))
+    else:
+        program = (excitation.cloud_program(extra_backoff_db=backoff) if spec.program_phase == PHASE_CLOUD_VERIFY
+                   else excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s))
+    return program
 
 
 # --------------------------------------------------------------------------- #

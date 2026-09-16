@@ -868,8 +868,33 @@ def test_ladder_defers_later_rungs_until_measurement(preflight_ready, monkeypatc
     assert body["schedule"]["issues"] == []
     assert [row["rung_admission"]["basis"] for row in body["schedule"]["levels"]] == [
         "anchor", "pending_measurement", "pending_measurement"]
+    assert [(row["rung_admission"]["bound_db_spl"], row["rung_admission"]["quantity"])
+            for row in body["schedule"]["levels"][1:]] == [(82, "max_window_db_spl")] * 2
     plan = json.loads(opener.posts()[0].data)["plan"]
     assert plan["levels"] == [-28, -18, -8]
+
+
+@pytest.mark.parametrize("identity,requested,admitted", [
+    ("other", 84, 74.23), ("other", 65, 65), (None, 84, 74.23), ("anchor", 84, 84),
+])
+def test_dry_run_caps_only_the_unmeasured_stimulus_opener(monkeypatch, capsys, identity, requested, admitted):
+    def facts(plan):
+        ready = ready_facts(plan, program_ids_for=lambda _: (identity,) if identity else ())
+        return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record,
+            "measured_db_spl": 74.23, "reference_volume_db": -22.23, "stimulus": {"program_id": "anchor"}}))
+
+    monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
+    opener = _opener()
+    code, body = _run(["run", "--program", "bass", "--dry-run", "--spl", f"{requested},85"],
+                      opener, monkeypatch, capsys)
+    assert code == 0 and not opener.requests
+    first, later = body["levels"]
+    assert first["predicted_db_spl"] == pytest.approx(admitted)
+    admission = first["rung_admission"]
+    assert (admission["requested_db_spl"], admission["admitted_db_spl"]) == pytest.approx((requested, admitted))
+    assert admission.get("bound_by") == ("unmeasured_stimulus_opener" if admitted < requested else None)
+    assert later["rung_admission"]["basis"] == "pending_measurement"
+    assert later["rung_admission"]["bound_db_spl"] == 82
 
 
 def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, capsys):

@@ -18,10 +18,11 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 from jasper.audio_measurement.ramp import CEILING_MARGIN_DB, MAX_STEP_DB
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db, loudness_boost_db
 from jasper.atomic_io import atomic_write_json
-from jasper.json_fields import utc_now_iso as _utc_now
+from jasper.json_fields import finite_float as strict_finite_float, utc_now_iso as _utc_now
 from jasper.log_event import log_event
 
 from ._common import finite_float
+from .profile import SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
 
 logger = logging.getLogger(__name__)
 from .volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
@@ -66,28 +67,38 @@ def rung_lift_bound_db(candidate: Mapping[str, Any], applied: Mapping[str, Any],
     return max(0.0, reserve(candidate) - reserve(applied))
 
 
+class RungMeasurementUnavailable(SeatLevelTargetError):
+    def __init__(self, fields: Sequence[str], observation_index: int | None = None) -> None:
+        self.evidence = {"unavailable": list(fields), "observation_index": observation_index}
+        super().__init__("The previous rung has no usable SPL window measurement")
+
+
 def measured_rung_admission(
     fader_db: float, observations: Sequence[Mapping[str, Any]], *, ceiling_db_spl: float, tolerance_db: float,
 ) -> dict[str, Any]:
     bounds = []
-    for observation in observations:
+    margin = max(tolerance_db, SPL_RAISE_MARGIN_DB)
+    for index, observation in enumerate(observations, 1):
         spl = observation.get("spl") or {}
-        values = [finite_float(value) for value in (observation.get("level_db"), spl.get("max_window_db_spl"),
-                  spl.get("loudest_half_second_db_spl"), spl.get("ceiling_db_spl"))]
-        if any(value is None for value in values):
-            raise SeatLevelTargetError("The previous rung needs measured SPL windows and its fader")
-        previous, window, half_second, stop = (float(value) for value in values if value is not None)
-        bound = min(ceiling_db_spl, stop) - tolerance_db
+        previous = strict_finite_float(observation.get("level_db"))
+        window = strict_finite_float(spl.get("max_window_db_spl"))
+        half_second = strict_finite_float(spl.get("loudest_half_second_db_spl"))
+        stop = strict_finite_float(spl.get("ceiling_db_spl"))
+        if previous is None or window is None or half_second is None or stop is None:
+            raise RungMeasurementUnavailable([name for name, value in (
+                ("level_db", previous), ("max_window_db_spl", window),
+                ("loudest_half_second_db_spl", half_second), ("ceiling_db_spl", stop)) if value is None], index)
+        bound = spl_raise_bound_db_spl(ceiling_db_spl, measured_stop_db_spl=stop, margin_db=margin)
         bounds.append((previous + (bound - window), previous, window, half_second, bound))
     if not bounds:
-        raise SeatLevelTargetError("The previous rung has no measured SPL windows")
+        raise RungMeasurementUnavailable(["previous_rung"])
     cap, previous, window, half_second, bound = min(bounds)
     admitted = min(fader_db, cap)
     return {"requested_level_db": fader_db, "level_db": admitted,
             "previous_level_db": previous, "max_window_db_spl": window,
             "loudest_half_second_db_spl": half_second, "window_crest_db": window - half_second,
             "predicted_max_window_db_spl": window + (admitted - previous),
-            "bound_db_spl": bound, "anchor_tolerance_db": tolerance_db,
+            "bound_db_spl": bound, "anchor_tolerance_db": tolerance_db, "margin_db": margin,
             "bound_by": "measured_window_crest" if admitted < fader_db else None}
 
 

@@ -24,9 +24,11 @@ def ready_facts(plan, **changes):
         candidates={}, mic_present=True, mic_identified=True,
         anchor=AnchorFacts({"artifact_schema_version": 2, "session_id": "session", "leveled_at": "2026-09-12T00:00:00Z",
                             "target": {"target_db_spl": 75.0, "tolerance_db": 1.0}, "measured_db_spl": 75.0, "reference_volume_db": -18.0,
+                            "stimulus": {"program_id": "fixture-sweep"},
                             "mic_sensitivity": {"sens_factor_db": -12.0, "serial": "1234"}},
                            MicSensitivity(-12.0, 18.0, "1234")),
         commissioning_stop_db_spl=85.0, mover=plan.mover, applied_bass_extension={},
+        program_ids_for=lambda _plan: ("fixture-sweep",),
     ), **changes)
 
 
@@ -238,6 +240,29 @@ def test_later_rung_requires_its_previous_capture_spl(missing):
     report = preflight(plan, ready_facts(plan), previous_rung=[{"level_db": -21.46, "spl": spl}])
     assert report.blocking
     assert [issue.code for issue in report.issues] == ["walk_level_policy_invalid"]
+    assert report.issues[0].evidence["unavailable"] == [missing]
+    assert report.issues[0].evidence["requested_level_db"] == -14.46
+
+
+@pytest.mark.parametrize("same", [True, False])
+def test_live_opener_compares_the_composed_program_identity(monkeypatch, same):
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), level=LevelPolicy(level_db=-12.46))
+    anchor = ready_facts(plan).anchor
+    record = {**anchor.record, "measured_db_spl": 74.23, "reference_volume_db": -22.23}
+    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: record)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: anchor.sensitivity)
+    monkeypatch.setattr(preflight_live, "candidate_from_applied_profile", lambda *a, **kw: SimpleNamespace(bass_extension={}))
+    context = SimpleNamespace(topology=None, preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)),
+        roles_bands=(RoleBand("woofer", 0, FrequencyBand(20, 20000)),), fc_hz=None,
+        driver_caps_dbfs={"woofer": -8}, session_volume_db=-22.23, driver_sweep_duration_limits_s={})
+    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    ids = facts.program_ids_for(plan)
+    assert ids and len(set(ids)) == 1
+    record["stimulus"] = {"program_id": ids[0] if same else "different"}
+    report = preflight(plan, facts)
+    assert not report.blocking
+    assert report.plan.level.predicted_db_spl == pytest.approx(84 if same else 74.23)
+    assert report.rung_admission["stimulus_mismatch"] is (not same)
 
 
 @pytest.mark.parametrize("descriptor", [None, {}, BASS_EXTENSION])

@@ -1491,7 +1491,7 @@ def test_request_levels_round_trip_and_single_level_bytes(levels):
         assert document == json.dumps(scalar.to_dict()).encode()
         assert "levels" not in request.to_dict()
     else:
-        assert json.loads(document)["levels"] == sorted(levels)
+        assert json.loads(document)["levels"] == list(levels)
 
 
 @pytest.mark.parametrize("fields", [
