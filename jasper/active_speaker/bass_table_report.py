@@ -10,7 +10,7 @@ from typing import Any, Mapping
 BASS_READOUT_FIELDS = (
     "candidate_id", "level_key", "base_db_spl_at_mark", "candidate_db_spl_at_mark",
     "prescribed_boost_db", "realized_boost_db", "compression_db", "base_response", "candidate_response",
-    "headroom_verdict", "headroom_rises", "snr_margin_db", "repeat_spread_db", "position_spread_db",
+    "headroom_verdict", "headroom_rises", "headroom", "snr_margin_db", "repeat_spread_db", "position_spread_db",
 )
 
 
@@ -32,9 +32,21 @@ def bass_table_markdown(rows: list[dict[str, Any]]) -> str:
         return " / ".join(number(response["corner_hz"][depth]) + (" (bound)" if response["corner_bounded"][depth] else "")
                           for depth in ("3", "10"))
 
+    def ladder(row, key):
+        fields = []
+        for stack, bands in (row.get("headroom") or {}).items():
+            for band in bands:
+                value = number(band[key])
+                if key == "knee_level_db_spl" and band["knee_bounded"]:
+                    value += " (above top rung)"
+                if key == "headroom_remaining_db" and band[key] is not None:
+                    value += " (measured; extrapolated)" if band["extrapolated"] else " (measured)"
+                fields.append(f"{stack} {band['band_hz'][0]:g}–{band['band_hz'][1]:g}: {value}")
+        return "; ".join(fields) or "null"
+
     lines = ["## Bass by level", "",
-             "| Candidate | Main dB | Base / candidate dB SPL | Prescribed dB | Realized dB by Hz band | Base −3 / −10 Hz | Candidate −3 / −10 Hz | Qualified from Hz (base / candidate) | Headroom |",
-             "|---|---:|---:|---:|---|---|---|---|---|"]
+             "| Candidate | Main dB | Base / candidate dB SPL | Prescribed dB | Realized dB by Hz band | Base −3 / −10 Hz | Candidate −3 / −10 Hz | Qualified from Hz (base / candidate) | Headroom | Knee dB SPL by Hz band | Headroom remaining dB by Hz band |",
+             "|---|---:|---:|---:|---|---|---|---|---|---|---|"]
     for row in rows:
         realized = "; ".join(f"{band['band_hz'][0]:g}–{band['band_hz'][1]:g}: {number(band['value_db'])}"
                              for band in row["realized_boost_db"]) or "null"
@@ -48,8 +60,9 @@ def bass_table_markdown(rows: list[dict[str, Any]]) -> str:
                   f"{number(row['base_db_spl_at_mark'])} / {number(row['candidate_db_spl_at_mark'])}",
                   number(row["prescribed_boost_db"]), realized,
                   corners(row["base_response"]), corners(row["candidate_response"]),
-                  qualified, headroom]
+                  qualified, headroom, ladder(row, "knee_level_db_spl"), ladder(row, "headroom_remaining_db")]
         lines.append("| " + " | ".join(str(field).replace("|", "\\|").replace("\n", " ") for field in fields) + " |")
     lines += ["", "Bound marks the qualified floor, not a measured crossing. Prescribed minus realized includes compressor and driver action. "
-              "Harmonics use repeat spread, or a 1 dB evidence floor for one repeat; this is not a hearing threshold."]
+              "Within-level harmonic deltas use repeat spread, or a 1 dB evidence floor for one repeat; this is not a hearing threshold. "
+              "Across-level knees use repeat spread or the per-band SNR margin; headroom uses measured SPL and marks an unreached knee as extrapolated."]
     return "\n".join(lines)

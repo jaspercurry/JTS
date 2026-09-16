@@ -189,6 +189,7 @@ H2/H3 show `harmonics_flat`, `harmonics_rose` with band and delta, or `unknown`.
 Compare with repeat spread, or a 1 dB evidence floor with one repeat.
 This is not a hearing threshold.
 Read `snr_margin_db` and `repeat_spread_db`; `position_spread_db` is reserved.
+The harmonic knee across levels is the measured headroom edge; a knee above the top rung is extrapolated and the headroom row says so.
 
 Driver, room and bass boosts spend one shared headroom budget
 (`0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md`).
