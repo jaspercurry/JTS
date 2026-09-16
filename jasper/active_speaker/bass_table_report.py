@@ -38,7 +38,9 @@ def bass_table_markdown(rows: list[dict[str, Any]]) -> str:
             for band in bands:
                 value = number(band[key])
                 if key == "knee_level_db_spl" and band["knee_bounded"]:
-                    value += " (above top rung)"
+                    value += f" (above top measurable rung: {number(band['top_clean_level_db_spl'])} dB SPL)"
+                if key == "knee_level_db_spl" and band.get("unmeasured_level_keys"):
+                    value += "; unmeasured Main dB: " + ", ".join(number(level["level_db"]) for level in band["unmeasured_level_keys"])
                 if key == "headroom_remaining_db" and band[key] is not None:
                     value += " (measured; extrapolated)" if band["extrapolated"] else " (measured)"
                 fields.append(f"{stack} {band['band_hz'][0]:g}–{band['band_hz'][1]:g}: {value}")
@@ -64,5 +66,5 @@ def bass_table_markdown(rows: list[dict[str, Any]]) -> str:
         lines.append("| " + " | ".join(str(field).replace("|", "\\|").replace("\n", " ") for field in fields) + " |")
     lines += ["", "Bound marks the qualified floor, not a measured crossing. Prescribed minus realized includes compressor and driver action. "
               "Within-level harmonic deltas use repeat spread, or a 1 dB evidence floor for one repeat; this is not a hearing threshold. "
-              "Across-level knees use repeat spread or the per-band SNR margin; headroom uses measured SPL and marks an unreached knee as extrapolated."]
+              "Across-level knees use repeat spread or level uncertainty from the worst SNR; headroom uses measured SPL and marks an unreached knee as extrapolated."]
     return "\n".join(lines)

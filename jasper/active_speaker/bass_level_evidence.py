@@ -13,7 +13,7 @@ import numpy as np
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.json_fields import finite_float
 
-from .bass_comparison import common_bass_bins
+from .bass_comparison import bass_curve_on_grid, common_bass_bins
 from .measurement_bass import BASS_BANDS_HZ
 
 
@@ -114,52 +114,66 @@ def _growth_readings(takes, lo, hi, order):
             return None
         curves += [(take["harmonics"][order], "relative_db", "qualified") for take in takes]
     grid = np.asarray(takes[0]["freqs_hz"])
-    qualified = np.ones(grid.size, dtype=bool)
-    for curve, value, quality in curves:
-        probe = {"freqs_hz": grid, value: np.zeros(grid.size), quality: qualified}
-        shared, _, _ = common_bass_bins(probe, curve, value, quality)
-        qualified = np.isin(grid, shared)
-    grid = grid[qualified & (grid >= lo) & (grid < hi)]
-    if not grid.size:
+    values, masks = zip(*(bass_curve_on_grid(grid, *curve) for curve in curves))
+    shared = np.logical_and.reduce(masks) & (grid >= lo) & (grid < hi)
+    if not shared.any():
         return None
-    readings = np.array([np.mean(np.interp(np.log(grid), np.log(curve["freqs_hz"]), curve[value]))
-                         for curve, value, _ in curves])
+    values = np.asarray(values)[:, shared]
+    readings = np.mean(values, axis=1)
     fundamental = readings[:len(takes)]
     relative = readings[len(takes):] if order != "fundamental" else np.zeros(len(takes))
-    return fundamental, relative
+    snr = [finite_float(_band(take, lo, hi).get("estimated_snr_db")) for take in takes]
+    if order != "fundamental":
+        for i, take in enumerate(takes):
+            harmonic = take["harmonics"][order]
+            if "floor_relative_db" not in harmonic:
+                snr.append(None)
+                continue
+            floor, qualified = bass_curve_on_grid(grid, harmonic, "floor_relative_db", "qualified")
+            snr.append(float(np.min(values[len(takes) + i] - floor[shared])) if qualified[shared].all() else None)
+    return fundamental, relative, snr
+
+
+def _order_growth(before, after, side, lo, hi, order):
+    changes, excesses, readings = [], [], []
+    for pose, repeats in before.items():
+        takes = [pair[side] for pair in (*repeats, *after[pose])]
+        values = _growth_readings(takes, lo, hi, order)
+        if values is None:
+            return None
+        fundamental, relative, snr = values
+        n = len(repeats)
+        absolute = fundamental + relative
+        changes.append(float(np.median(absolute[n:]) - np.median(absolute[:n])))
+        excesses.append(changes[-1] - float(np.median(fundamental[n:]) - np.median(fundamental[:n])))
+        readings.append((relative[:n], relative[n:], snr))
+    return {"growth_db": float(np.median(changes)), "excess_db": float(np.median(excesses)), "readings": readings}
+
+
+def _growth_allowance(growth):
+    if growth is None:
+        return None, None
+    readings = growth["readings"]
+    if all(len(before) > 1 and len(after) > 1 for before, after, _ in readings):
+        spread = max(float(np.sqrt(np.var(before, ddof=1) + np.var(after, ddof=1))) for before, after, _ in readings)
+        return spread, "repeat_spread_db"
+    snr = [value for _, _, values in readings for value in values]
+    if any(value is None for value in snr):
+        return None, None
+    # H_after - F_after - H_before + F_before sums four level errors, each 20*log10(1 + 10**(-SNR/20)) at the worst SNR.
+    return float(4 * 20 * np.log10(1 + 10 ** (-min(snr) / 20))), "snr_uncertainty_db"
 
 
 def _band_growth(before, after, side, lo, hi, step):
-    growth, allowances, bases, rises = {}, {}, {}, []
-    for order in ("fundamental", "2", "3"):
-        changes, excesses, spreads, margins = [], [], [], []
-        if step > 0 and before.keys() == after.keys():
-            for pose, repeats in before.items():
-                takes = [pair[side] for pair in (*repeats, *after[pose])]
-                readings = _growth_readings(takes, lo, hi, order)
-                if readings is None:
-                    break
-                fundamental, relative = readings
-                n = len(repeats)
-                absolute = fundamental + relative
-                changes.append(float(np.median(absolute[n:]) - np.median(absolute[:n])))
-                excesses.append(changes[-1] - float(np.median(fundamental[n:]) - np.median(fundamental[:n])))
-                spreads.append(float(np.sqrt(np.var(relative[:n], ddof=1) + np.var(relative[n:], ddof=1)))
-                               if n > 1 and len(after[pose]) > 1 else None)
-                snr = [finite_float(_band(take, lo, hi).get("estimated_snr_db")) for take in takes]
-                margins.append(max(snr) - DRIVER.snr_warn_db if all(s is not None for s in snr) else None)
-        complete = len(changes) == len(before) and bool(changes)
-        growth[order] = float(np.median(changes)) / step if complete else None
-        if order == "fundamental":
-            continue
-        repeated = complete and all(spread is not None for spread in spreads)
-        allowance = max(spreads) if repeated else max(margins) if complete and all(m is not None for m in margins) else None
-        allowances[order] = allowance / step if allowance is not None else None
-        bases[order] = ("repeat_spread_db" if repeated else "snr_margin_db") if allowance is not None else None
-        if allowance is not None and float(np.median(excesses)) > allowance:
-            rises.append(int(order))
-    return {"band_hz": [lo, hi], "growth_db_per_db": growth,
-            "allowance_db_per_db": allowances, "allowance_basis": bases, "knee_orders": rises}
+    readings = {order: _order_growth(before, after, side, lo, hi, order)
+                if step > 0 and before and before.keys() == after.keys() else None for order in ("fundamental", "2", "3")}
+    allowances = {order: _growth_allowance(readings[order]) for order in ("2", "3")}
+    rises = [int(order) for order, (allowance, _) in allowances.items()
+             if allowance is not None and readings[order]["excess_db"] > allowance]
+    return {"band_hz": [lo, hi],
+            "growth_db_per_db": {order: reading["growth_db"] / step if reading is not None else None for order, reading in readings.items()},
+            "allowance_db_per_db": {order: value / step if value is not None else None for order, (value, _) in allowances.items()},
+            "allowance_basis": {order: basis for order, (_, basis) in allowances.items()}, "knee_orders": rises}
 
 
 def bass_ladder_evidence(levels: list[dict[str, Any]], groups: list[Mapping[str, Any]]) -> None:
@@ -174,15 +188,18 @@ def bass_ladder_evidence(levels: list[dict[str, Any]], groups: list[Mapping[str,
             clean = [i for i, row in enumerate(rows) if i and (knee is None or i < knee)
                      and all(value is not None for value in row["allowance_db_per_db"].values())]
             top = clean[-1] if clean else 0 if knee == 1 else None
+            unmeasured = [levels[i]["level_key"] for i, row in enumerate(rows) if i
+                          and any(value is None for value in row["allowance_db_per_db"].values())]
             spl_key = f"{stack}_db_spl_at_mark"
             top_spl = levels[top][spl_key] if top is not None else None
             for level, row in zip(levels, rows):
                 current_spl = level[spl_key]
                 row.update(knee_level_db_spl=levels[knee][spl_key] if knee is not None else None,
-                           knee_bounded="above_top_rung" if knee is None and len(clean) == len(rows) - 1 and clean else None,
+                           knee_bounded="above_top_rung" if knee is None and clean else None,
+                           unmeasured_level_keys=unmeasured,
                            top_clean_level_db_spl=top_spl,
                            headroom_remaining_db=top_spl - current_spl if top_spl is not None and current_spl is not None else None,
-                           basis="measured", extrapolated=knee is None)
+                           extrapolated=knee is None)
                 level["headroom"][stack].append(row)
 
 

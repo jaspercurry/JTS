@@ -217,6 +217,8 @@ def ladder(pair):
                     take["harmonics"]["3"]["relative_db"] = [
                         -40 + (2 * max(0, spl - 75) if knee and side and 40 <= f < 50 else 0)
                         + (spread if repeat else -spread) for f in take["freqs_hz"]]
+                    for harmonic in take["harmonics"].values():
+                        harmonic["floor_relative_db"] = [value - snr for value in harmonic["relative_db"]]
                 pairs.append(rung)
         return pairs
     return build
@@ -226,8 +228,6 @@ def ladder(pair):
     (True, 2, .25, 32, 78, 1 / 6),
     (False, 2, .25, 32, None, 1 / 6),
     (True, 2, 3., 32, None, 2.),
-    (True, 1, 0., 21, 78, 1 / 3),
-    (True, 1, 0., 32, None, 4.),
 ])
 def test_ladder_knee_and_measured_headroom(ladder, knee, repeats, spread, snr, expected_knee, allowance):
     result = table(ladder(knee=knee, repeats=repeats, spread=spread, snr=snr))
@@ -237,7 +237,7 @@ def test_ladder_knee_and_measured_headroom(ladder, knee, repeats, spread, snr, e
     for band, h3 in zip(bands[1:], (1, 3 if knee else 1, 3 if knee else 1)):
         assert band["growth_db_per_db"] == pytest.approx({"fundamental": 1, "2": 1, "3": h3})
         assert band["allowance_db_per_db"]["3"] == pytest.approx(allowance)
-        assert band["allowance_basis"]["3"] == ("repeat_spread_db" if repeats > 1 else "snr_margin_db")
+        assert band["allowance_basis"]["3"] == "repeat_spread_db"
     for spl, band in zip((72, 75, 78, 81), bands):
         assert band["band_hz"] == [40, 50]
         assert band["knee_level_db_spl"] == expected_knee
@@ -245,12 +245,50 @@ def test_ladder_knee_and_measured_headroom(ladder, knee, repeats, spread, snr, e
         assert band["top_clean_level_db_spl"] == (81 if expected_knee is None else 75)
         assert band["headroom_remaining_db"] == (81 if expected_knee is None else 75) - spl
         assert band["extrapolated"] is (expected_knee is None)
-        assert band["basis"] == "measured"
+        assert "basis" not in band
     for row in levels:
         assert all(band["knee_level_db_spl"] is None for band in row["headroom"]["base"])
         assert row["headroom"]["candidate"][0]["knee_bounded"] == "above_top_rung"
     assert bass_table_rows({"tables": [result]})[0]["headroom"] == levels[0]["headroom"]
     json.dumps(result, allow_nan=False)
+
+
+@pytest.mark.parametrize("weak_reading,rung,snr,expected_knee", [
+    ("fundamental", 1, 80, 78), ("fundamental", 1, 20, None), ("fundamental", 2, 20, None),
+    ("3", 1, 20, None), ("3", 2, 20, None),
+])
+def test_single_repeat_knee_uses_worst_reading_noise(ladder, weak_reading, rung, snr, expected_knee):
+    pairs = ladder(repeats=1, knee=False, snr=80)
+    for i, (_, take) in enumerate(pairs):
+        take["harmonics"]["3"]["relative_db"] = [-40 + (1 if i >= 2 and 40 <= f < 50 else 0)
+                                                    for f in take["freqs_hz"]]
+    take = pairs[rung][1]
+    if weak_reading == "fundamental":
+        take["bands"][2]["estimated_snr_db"] = snr
+    else:
+        harmonic = take["harmonics"][weak_reading]
+        harmonic["floor_relative_db"] = [value - snr for value in harmonic["relative_db"]]
+    band = table(pairs)["levels"][2]["headroom"]["candidate"][2]
+    assert band["growth_db_per_db"] == pytest.approx({"fundamental": 1, "2": 1, "3": 4 / 3})
+    assert band["allowance_db_per_db"]["3"] == pytest.approx(80 * np.log10(1 + 10 ** (-snr / 20)) / 3)
+    assert band["allowance_basis"]["3"] == "snr_uncertainty_db"
+    assert band["knee_level_db_spl"] == expected_knee
+
+
+@pytest.mark.parametrize("gap,top,unmeasured", [(0, 81, [1]), (1, 81, [1, 2]), (3, 78, [3])])
+def test_ladder_bound_uses_top_measurable_rung_and_lists_gaps(ladder, gap, top, unmeasured):
+    pairs = ladder(repeats=1, knee=False)
+    for harmonic in pairs[gap][1]["harmonics"].values():
+        harmonic["qualified"] = [False] * len(harmonic["freqs_hz"])
+    levels = table(pairs)["levels"]
+    for row in levels:
+        band = row["headroom"]["candidate"][2]
+        assert band["knee_level_db_spl"] is None
+        assert band["knee_bounded"] == "above_top_rung"
+        assert band["top_clean_level_db_spl"] == top
+        assert band["headroom_remaining_db"] == top - row["candidate_db_spl_at_mark"]
+        assert band["unmeasured_level_keys"] == [levels[i]["level_key"] for i in unmeasured]
+        assert band["extrapolated"] is True
 
 
 def test_ladder_h2_knee_uses_fader_steps_and_stops_at_the_first_knee(ladder):
@@ -270,7 +308,7 @@ def test_ladder_h2_knee_uses_fader_steps_and_stops_at_the_first_knee(ladder):
     assert levels[-1]["headroom"]["candidate"][2]["top_clean_level_db_spl"] == 75
 
 
-@pytest.mark.parametrize("fault", ["harmonics", "fundamental", "pose", "spl", "snr", "coverage"])
+@pytest.mark.parametrize("fault", ["harmonics", "fundamental", "pose", "spl", "snr", "harmonic_snr", "coverage"])
 def test_ladder_missing_evidence_does_not_create_a_knee_or_headroom(ladder, fault):
     pairs = ladder(repeats=1, knee=fault != "coverage")
     for i, pair in enumerate(pairs):
@@ -287,6 +325,9 @@ def test_ladder_missing_evidence_does_not_create_a_knee_or_headroom(ladder, faul
             elif fault == "snr":
                 for band in take["bands"]:
                     del band["estimated_snr_db"]
+            elif fault == "harmonic_snr":
+                for harmonic in take["harmonics"].values():
+                    del harmonic["floor_relative_db"]
             else:
                 for harmonic in take["harmonics"].values():
                     harmonic["qualified"] = [f < 45 if i % 2 else f >= 45 for f in harmonic["freqs_hz"]]
