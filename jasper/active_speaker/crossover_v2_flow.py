@@ -73,7 +73,9 @@ from jasper.active_speaker.crossover_v2.intervention import (
     plan_linearization,
 )
 from jasper.active_speaker.crossover_v2.plan_assembly import JournalRecord, LinearizationPlan
-from jasper.active_speaker.crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS, MeasureSpec
+from jasper.active_speaker.crossover_v2.measure_spec import (
+    GRAPH_SCOPE_DRIVERS, MeasureSpec, branch_channels_for,
+)
 from jasper.active_speaker.crossover_v2.journey import (
     GROUP_PHASES,
     LATERAL_CONSUMER_FC_SELECTOR,
@@ -824,11 +826,12 @@ class CrossoverV2Session:
         self._verify_program = self._excitation.verify_program()
         # The position groups' twin: same sweep, same clamp, no courtesy prelude.
         self._cloud_program = self._excitation.cloud_program()
+        branch_spec = next((spec for spec in self._measure_specs_by_index.values()
+                            if spec.graph_scope == "candidate_branches"), None)
         self._branch_program = (
-            build_branch_program(self._cloud_program, {r.role: r.channel for r in self._roles},
+            build_branch_program(self._cloud_program, branch_channels_for(branch_spec),
                                  cooldown_s=self._minimum_cooldown_s)
-            if any(s.graph_scope == "candidate_branches" for s in self._measure_specs_by_index.values())
-            else None
+            if branch_spec is not None else None
         )
 
         # Per-SLOT attempt bookkeeping: the phase for a single-capture phase,

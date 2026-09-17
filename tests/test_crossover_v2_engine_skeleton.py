@@ -91,7 +91,7 @@ class _Graph:
     level_trims: list = field(default_factory=list)
     scopes: list = field(default_factory=list)
 
-    def select_scope(self, scope, candidate_id=""):
+    def select_scope(self, scope, candidate_id="", branch_channels=None):
         self.scopes.append((scope, candidate_id))
 
     async def install(

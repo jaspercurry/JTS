@@ -221,6 +221,7 @@ def _bind_candidate_take(
     document = json.loads(path.read_text())
     config = yaml.safe_load(compile_tuning_graph(
         profile, scope="candidate_branches", candidate=candidate,
+        branch_channels=profile.role_channels,
     ))
     document["candidate_id"] = candidate.fingerprint
     document["provenance"]["graph"] = {

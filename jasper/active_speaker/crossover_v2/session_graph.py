@@ -32,11 +32,14 @@ __all__ = ["MeasurementSessionGraph", "SessionGraphError", "temporary_graph_anch
 EmitYaml = Callable[
     [tuple[str, ...], Mapping[str, float], Mapping[str, float]], str
 ]
-EmitScopedYaml = Callable[[str, str], str]
-#: ``(inverted_roles, delays, level trims)`` — what makes one graph variant
-#: distinct from another, and therefore what the emit cache is keyed by.
+EmitScopedYaml = Callable[[str, str, Mapping[str, int]], str]
+#: ``(scope, candidate, branch pair, inverted_roles, delays, level trims)`` —
+#: what makes one graph variant distinct from another, and therefore what the
+#: emit cache is keyed by. The branch pair belongs here: two takes of one
+#: session can excite different target pairs through the same candidate.
 _VariantKey = tuple[
-    str, str, tuple[str, ...], tuple[tuple[str, float], ...], tuple[tuple[str, float], ...]
+    str, str, tuple[tuple[str, int], ...], tuple[str, ...],
+    tuple[tuple[str, float], ...], tuple[tuple[str, float], ...],
 ]
 CamFactory = Callable[[], Any]
 WriterLock = Callable[[], AbstractAsyncContextManager]
@@ -112,6 +115,7 @@ class MeasurementSessionGraph:
         self._emit_scoped = emit_scoped
         self._scope = GRAPH_SCOPE_DRIVERS
         self._candidate_id = ""
+        self._branch_channels: dict[str, int] = {}
         self._cam_factory = cam_factory
         self._writer_lock = writer_lock
         self._confirm_live = confirm_live
@@ -148,15 +152,25 @@ class MeasurementSessionGraph:
         """
         return self._comparability_boundary
 
-    def select_scope(self, scope: str, candidate_id: str = "") -> None:
+    def select_scope(
+        self, scope: str, candidate_id: str = "",
+        branch_channels: Mapping[str, int] | None = None,
+    ) -> None:
         if scope not in GRAPH_SCOPES:
             raise SessionGraphError(f"unknown graph scope: {scope}")
         if scope in CANDIDATE_SCOPES and not candidate_id.strip():
             raise SessionGraphError(f"{scope} scope requires candidate_id")
         if scope != GRAPH_SCOPE_DRIVERS and self._emit_scoped is None:
             raise SessionGraphError("no scoped graph emitter is bound")
+        channels = dict(branch_channels or {})
+        if (len(channels) == 2) != (scope == "candidate_branches"):
+            raise SessionGraphError(
+                f"exactly a candidate_branches scope names two branch channels, got "
+                f"{scope} with {sorted(channels)}"
+            )
         self._scope = scope
         self._candidate_id = candidate_id if scope in CANDIDATE_SCOPES else ""
+        self._branch_channels = channels
 
     def graph_yaml(
         self,
@@ -171,6 +185,7 @@ class MeasurementSessionGraph:
             raise SessionGraphError("graph overlays require drivers scope")
         key = (
             self._scope, self._candidate_id,
+            tuple(sorted(self._branch_channels.items())),
             inverted_roles,
             tuple(sorted(delays.items())),
             tuple(sorted(trims.items())),
@@ -181,7 +196,7 @@ class MeasurementSessionGraph:
                 cached = self._emit(inverted_roles, delays, trims)
             else:
                 assert self._emit_scoped is not None
-                cached = self._emit_scoped(self._scope, self._candidate_id)
+                cached = self._emit_scoped(self._scope, self._candidate_id, self._branch_channels)
             self._yaml[key] = cached
         return cached
 

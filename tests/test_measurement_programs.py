@@ -79,6 +79,17 @@ def test_the_view_table_answers_every_automatic_view(purpose, has_room, expected
         assert callable(getattr(import_module(f".{module}", "jasper.active_speaker"), builder))
 
 
+@pytest.mark.parametrize("poses,pair", [
+    ("branches/express", "drivers"), ("front_rear/express", "front_rear"),
+])
+def test_a_branch_row_is_reachable_as_a_speaker_run_and_keeps_its_pair(poses, pair):
+    """A branches regime plays no room sweep, so the speaker default's sweep must
+    not be inherited onto it: that combination refused both rows outright."""
+    row = mp.run_program("speaker", poses)
+
+    assert (row.regime, row.branch_pair, row.room_sweep) == (mp.REGIME_BRANCHES, pair, False)
+
+
 @pytest.mark.parametrize("reverse", [False, True])
 def test_run_layout_prefers_its_program_regardless_of_registry_order(monkeypatch, reverse):
     monkeypatch.setattr(mp, "_PROGRAMS", dict(sorted(mp._PROGRAMS.items(), reverse=reverse)))
@@ -139,6 +150,11 @@ def test_available_programs_is_the_sorted_registry() -> None:
     )
     rows = [mp.program(program_id, size) for program_id, size in choices]
     assert tuple((row.program_id, row.size) for row in rows) == choices
+    # Two branch rows, and only their ids tell them apart to the session.
+    assert {(row.program_id, row.branch_pair) for row in rows
+            if row.regime == mp.REGIME_BRANCHES} == {
+        ("branches", mp.BRANCH_PAIR_DRIVERS), ("front_rear", mp.BRANCH_PAIR_FRONT_REAR),
+    }
 
 
 def _seat(right_m: float, forward_m: float, up_m: float, repeats: int = 1):
@@ -354,10 +370,16 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("broken", ["empty", "repeats", "purpose", "regime", "mode", "layout_key", "mover", "room_sweep", "room_sweep_mode"])
+@pytest.mark.parametrize("broken", ["empty", "repeats", "purpose", "regime", "mode", "layout_key",
+                                    "mover", "room_sweep", "room_sweep_mode",
+                                    "branch_pair", "branch_pair_regime"])
 def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     config = _bundled_config()
-    if broken == "empty":
+    if broken == "branch_pair":
+        config["programs"][0].update(regime="branches", room_sweep=False, branch_pair="both")
+    elif broken == "branch_pair_regime":
+        config["programs"][0]["branch_pair"] = "front_rear"
+    elif broken == "empty":
         config["layouts"]["room_quick"] = []  # type: ignore[index]
     elif broken == "repeats":
         config["layouts"]["room_quick"]["poses"][0]["repeats"] = 0  # type: ignore[index]

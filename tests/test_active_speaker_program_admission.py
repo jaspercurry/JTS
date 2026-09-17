@@ -730,6 +730,7 @@ def test_summed_scopes_preserve_declared_protection_before_admission(tmp_path, s
     )
     text = compile_tuning_graph(
         measurement, scope=scope, candidate=_trial_candidate(measurement),
+        branch_channels=measurement.role_channels if scope == "candidate_branches" else None,
     )
     graph = yaml.safe_load(text)
     highpasses = {
@@ -785,7 +786,10 @@ def test_summed_scopes_preserve_declared_protection_before_admission(tmp_path, s
         FakeCam(entry_path=_entry(tmp_path)), tmp_path=tmp_path,
         emit_scoped=lambda *_: text,
     )
-    session_graph.select_scope(scope, "trial" if scope in {"candidate", "candidate_branches"} else "")
+    session_graph.select_scope(
+        scope, "trial" if scope in {"candidate", "candidate_branches"} else "",
+        measurement.role_channels if scope == "candidate_branches" else None,
+    )
     asyncio.run(session_graph.install())
     submitted = session_graph.installed_graph_yaml()
     submitted_graph = yaml.safe_load(submitted)
@@ -819,10 +823,10 @@ def test_branch_admission_checks_both_input_routes_and_actual_channels(tmp_path,
     topology, safety, targets = _profile_and_targets(woofer_floor=40, woofer_highpass=40, max_sweep_duration_s=4)
     applied = _applied_profile(topology)
     preset = ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"])
-    profile = MeasurementGraphProfile(preset, topology,
-        {"woofer": 1, "tweeter": 0} if damage == "swapped_inputs" else {"woofer": 0, "tweeter": 1},
-        ACTIVE_PCM, protection_sections_by_role=confirmed_protection_sections(safety, targets), )
-    graph = compile_tuning_graph(profile, scope="candidate_branches", candidate=_trial_candidate(profile))
+    profile = MeasurementGraphProfile(preset, topology, {}, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets))
+    graph = compile_tuning_graph(profile, scope="candidate_branches", candidate=_trial_candidate(profile),
+        branch_channels={"woofer": 1, "tweeter": 0} if damage == "swapped_inputs" else CROSSOVER_TAKE)
     program = build_branch_program(SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65}, session_volume_db=-20,
         fc_hz=1600, sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
@@ -893,7 +897,8 @@ def test_summed_admission_proves_the_candidate_rear_stage(tmp_path, evidence_cha
     )
     candidate = replace(_trial_candidate(profile), bass_extension=BASS_EXTENSION,
                         rear_calibration=_rear_document())
-    graph = compile_tuning_graph(profile, scope=scope, candidate=candidate)
+    graph = compile_tuning_graph(profile, scope=scope, candidate=candidate,
+                                 branch_channels=channels if scope == "candidate_branches" else None)
     evidence = measurement_graph_evidence(scope=scope, candidate=candidate)
     if evidence_change == "missing":
         evidence.pop("rear_calibration")
@@ -957,12 +962,15 @@ def _rear_take_inputs(branch_channels, *, layout="mono", **limits):
         **limits,
     )
     preset = _rear_pair(layout)[0]
+    # ``role_channels`` is empty on purpose: a branch take's pair reaches the
+    # emitter as the take's own argument, never from the box's acoustic roles.
     graph_profile = MeasurementGraphProfile(
-        preset, topology, branch_channels, ACTIVE_PCM,
+        preset, topology, {}, ACTIVE_PCM,
         protection_sections_by_role=confirmed_protection_sections(safety, targets),
     )
     graph = compile_tuning_graph(
         graph_profile, scope="candidate_branches", candidate=_trial_candidate(graph_profile),
+        branch_channels=branch_channels,
     )
     return topology, safety, targets, graph
 

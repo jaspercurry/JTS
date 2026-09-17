@@ -1479,6 +1479,25 @@ def test_request_round_trip_and_capture_schedule(repeats, candidates):
     assert ac.walk_price(request)["mic_moves"] == 3
 
 
+@pytest.mark.parametrize("row, pair", [("branches", ("woofer", "tweeter")),
+                                       ("front_rear", ("woofer", "woofer:rear"))])
+def test_a_branch_row_names_its_pair_through_the_round_trip_and_onto_the_spec(row, pair):
+    """The registry row, not the box's acoustic roles, decides which two targets
+    a branch take excites, and the pair survives the plan document the CLI posts
+    to the wizard."""
+    request = ac.request_for_program(mp.program(row), candidates=("trial",))
+    assert {stop.branch_pair for stop in request.stops} == {mp.program(row).branch_pair}
+    assert ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(request.to_dict()))) == request
+    specs = ac.stop_specs(request, baseline_id="banked-base", roles_bands=_ROLES_BANDS,
+                          prompts=[stop.prompt for stop in ac.resolve_request(request)])
+    assert {spec.branch_target_ids for spec in specs} == {pair}
+
+
+def test_only_a_branches_stop_may_name_a_branch_pair():
+    with pytest.raises(flow.CrossoverV2FlowError):
+        ac.AngleStop(0, ac.REGIME_SUMMED, branch_pair=mp.BRANCH_PAIR_FRONT_REAR)
+
+
 @pytest.mark.parametrize("levels", [None, (-10.0,), (-10.0, -20.0)])
 def test_request_levels_round_trip_and_single_level_bytes(levels):
     program = mp.program("room")

@@ -26,6 +26,7 @@ from ..restore_wait import resilient_restore
 from .contracts import DESIGN_AXIS_DEG, POSITION_AXIS_VERTICAL
 from .measure_spec import (
     MeasureSpec,
+    branch_channels_for,
     inverted_roles_for,
     level_trims_for,
     measurement_delays_for,
@@ -472,7 +473,9 @@ class TuningSession:
     ) -> StimulusOutcome:
         """Prove this take's graph and level, then play and bank one stimulus."""
         self.last_playback = PlaybackObservation(emission="not_started")
-        self.seams.graph.select_scope(spec.graph_scope, spec.candidate_id)
+        self.seams.graph.select_scope(
+            spec.graph_scope, spec.candidate_id, branch_channels_for(spec),
+        )
         self._graph_fingerprint = await self.seams.graph.install(
             inverted_roles_for(spec),
             measurement_delays_for(spec),

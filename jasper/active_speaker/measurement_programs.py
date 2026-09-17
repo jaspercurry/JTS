@@ -38,6 +38,14 @@ REGIME_BRANCHES = "branches"
 REGIME_NEAR_FIELD = "near_field"
 REGIMES = (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES, REGIME_NEAR_FIELD)
 
+#: WHICH two measurement targets a :data:`REGIME_BRANCHES` take excites: the
+#: declared driver roles, or the front and rear woofer of a cardioid cabinet
+#: (ADR-0316). Resolved to target ids by
+#: :func:`~.crossover_v2.measure_spec.branch_target_ids_for`.
+BRANCH_PAIR_DRIVERS = "drivers"
+BRANCH_PAIR_FRONT_REAR = "front_rear"
+BRANCH_PAIRS = (BRANCH_PAIR_DRIVERS, BRANCH_PAIR_FRONT_REAR)
+
 _LEGACY_PURPOSE_BY_KIND = {
     POSE_KIND_BEARING: PURPOSE_SPEAKER,
     POSE_KIND_SEAT: PURPOSE_ROOM,
@@ -74,6 +82,15 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
     elif resolved != PURPOSE_SPEAKER and regime != REGIME_SUMMED:
         raise ValueError(f"{resolved} measurements require the summed regime")
     return resolved
+
+
+def validated_branch_pair(branch_pair: str, regime: str) -> str:
+    """The branch pair a take names, judged against the regime that plays it."""
+    if branch_pair not in BRANCH_PAIRS:
+        raise ValueError(f"a branch pair must be one of {BRANCH_PAIRS}, got {branch_pair!r}")
+    if branch_pair != BRANCH_PAIR_DRIVERS and regime != REGIME_BRANCHES:
+        raise ValueError(f"branch_pair {branch_pair!r} requires the {REGIME_BRANCHES} regime")
+    return branch_pair
 
 
 def bookkeeping_views(purpose: str, *, has_room: bool = False) -> tuple[tuple[str, bool, bool], ...]:
@@ -187,11 +204,13 @@ class MeasurementProgram:
     levels: str | None = None
     stimulus: Mapping[str, Any] | None = None
     room_sweep: bool = False
+    branch_pair: str = BRANCH_PAIR_DRIVERS
 
     def __post_init__(self) -> None:
         if not self.poses:
             raise ValueError("a measurement program must contain at least one pose")
         validated_capture_purpose(self.purpose, POSE_KIND_BEARING, self.regime)
+        validated_branch_pair(self.branch_pair, self.regime)
         if not isinstance(self.room_sweep, bool) or (self.room_sweep and
                 (self.purpose != PURPOSE_SPEAKER or self.regime != REGIME_PER_DRIVER)):
             raise ValueError("room_sweep requires a boolean and a per-driver speaker program")
@@ -300,7 +319,8 @@ def _load_programs(
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise ValueError(f"program {index} must be an object")
-        unknown = set(row) - {"id", "size", "layout", "purpose", "regime", "levels", "stimulus", "room_sweep"}
+        unknown = set(row) - {"id", "size", "layout", "purpose", "regime", "levels", "stimulus",
+                              "room_sweep", "branch_pair"}
         if unknown:
             raise ValueError(f"program {index} has unknown fields: {sorted(unknown)}")
         try:
@@ -329,6 +349,7 @@ def _load_programs(
             layout=layout, levels=row.get("levels"),
             stimulus=stimuli[stimulus] if stimulus is not None else None,
             room_sweep=row.get("room_sweep", False),
+            branch_pair=row.get("branch_pair", BRANCH_PAIR_DRIVERS),
         )
 
     defaults_raw = raw.get("default_sizes")
@@ -407,10 +428,13 @@ def run_program(purpose: str, poses: str | None = None) -> MeasurementProgram:
         return selected
     for row in sorted(_PROGRAMS.values(), key=lambda row: row.program_id != purpose):
         if poses in (row.layout, f"{row.program_id}_{row.size}", f"{row.program_id}/{row.size}"):
-            return replace(row, program_id=purpose, purpose=purpose,
-                           regime=row.regime if row.purpose == purpose else selected.regime,
-                           room_sweep=selected.room_sweep and purpose == PURPOSE_SPEAKER,
-                           levels=selected.levels, stimulus=row.stimulus if row.purpose == purpose else selected.stimulus)
+            own = row.purpose == purpose
+            regime = row.regime if own else selected.regime
+            return replace(row, program_id=purpose, purpose=purpose, regime=regime,
+                           branch_pair=row.branch_pair if own else selected.branch_pair,
+                           room_sweep=(selected.room_sweep and purpose == PURPOSE_SPEAKER
+                                       and regime == REGIME_PER_DRIVER),
+                           levels=selected.levels, stimulus=row.stimulus if own else selected.stimulus)
     return replace(selected, size="custom", layout="", poses=tuple(
         ProgramPose(int(value.strip()), 0) for value in poses.split(",")
     ))

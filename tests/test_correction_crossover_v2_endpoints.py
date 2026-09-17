@@ -6174,6 +6174,22 @@ def _store_seat_reference(reference):
     )
 
 
+def test_a_branch_pair_this_box_never_declared_refuses_by_name(monkeypatch, tmp_path):
+    """The one place that holds both the plan and the box. A front/rear take on a
+    speaker with no rear output is refused before the microphone is placed;
+    admission stays the independent tripwire behind it."""
+    from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
+    from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
+    from jasper.active_speaker.measurement_programs import BRANCH_PAIR_FRONT_REAR, REGIME_BRANCHES
+
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_BRANCHES, branch_pair=BRANCH_PAIR_FRONT_REAR),))
+    assert "woofer:rear" not in _inline_context().role_targets
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as exc:
+        _inline_prepared(monkeypatch, tmp_path, {"plan": plan.to_dict()})
+    assert exc.value.code == "walk_branch_pair_undeclared"
+    assert refusal_copy_for(exc.value.code)[1]
+
+
 @pytest.mark.parametrize("prior_capture", [None, {"status": "complete", "kind": "crossover_v2:session"}])
 @pytest.mark.parametrize(("reference", "level_source"), [(-18.0, "seat_reference"), (None, "program_default")])
 def test_inline_session_creation_persists_the_plan_and_holds_nothing(

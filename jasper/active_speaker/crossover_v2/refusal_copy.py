@@ -145,6 +145,7 @@ REASON_WALK_POLARITY_NOT_ACCEPTED = "walk_polarity_not_accepted"
 REASON_WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
 REASON_WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 REASON_WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
+REASON_WALK_BRANCH_PAIR_UNDECLARED = "walk_branch_pair_undeclared"
 REASON_WALK_NOTHING_PLAYABLE = "walk_nothing_playable"
 
 # Any OTHER host-side fault the session runner's catch-all cleanup arm caught.
@@ -898,6 +899,13 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         'level or alignment overrides.',
         next_action={"id": 'remove_trial_overrides', "label": "Use the tuning's own settings",
                      "href": '/sound/speaker/crossover/'},
+    ),
+    REASON_WALK_BRANCH_PAIR_UNDECLARED: ReasonSpec(
+        REASON_WALK_BRANCH_PAIR_UNDECLARED, TEMPLATE_HARD_STOP, 0, "",
+        'This measurement plays a driver output this speaker does not declare. Check the outputs '
+        'in speaker setup, then measure again.',
+        next_action={"id": 'speaker_setup', "label": 'Open speaker setup',
+                     "href": '/sound/speaker/'},
     ),
     REASON_WALK_NOTHING_PLAYABLE: ReasonSpec(
         REASON_WALK_NOTHING_PLAYABLE, TEMPLATE_HARD_STOP, 0, "",

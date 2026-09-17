@@ -1130,7 +1130,8 @@ def test_host_binds_session_level_only_to_check_priors(monkeypatch, caplog, anch
 def test_predictive_segment_count_survives_solved_gains_and_live_level(scope, phase):
     conductor = _conductor(FlowSeams(), gain_plan_db={"woofer": -50.0, "tweeter": -57.0})
     spec = MeasureSpec(kind="baseline", graph_scope=scope, program_phase=phase,
-                       candidate_id=None if scope == "drivers" else "fp-a")
+                       candidate_id=None if scope == "drivers" else "fp-a",
+                       branch_target_ids=("woofer", "tweeter") if scope == "candidate_branches" else ())
     # Preview and played program read ONE declaration: a branch take is padded
     # by the declared cooldown, so a preview off a blank profile would announce
     # a schedule the session never plays.

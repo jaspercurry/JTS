@@ -384,9 +384,10 @@ def test_candidate_compile_refuses_unrenderable_identity(tuning_profile, problem
 @pytest.mark.parametrize("scope", sorted(CANDIDATE_SCOPES))
 def test_candidate_scopes_require_a_named_candidate(scope):
     assert set(GRAPH_SCOPES) == {"drivers", "candidate", "candidate_branches", "timing"}
+    pair = {"branch_target_ids": ("woofer", "tweeter")} if scope == "candidate_branches" else {}
     with pytest.raises(ValueError):
-        MeasureSpec(kind="baseline", graph_scope=scope)
-    assert MeasureSpec(kind="baseline", graph_scope=scope, candidate_id="fp-a").candidate_id == "fp-a"
+        MeasureSpec(kind="baseline", graph_scope=scope, **pair)
+    assert MeasureSpec(kind="baseline", graph_scope=scope, candidate_id="fp-a", **pair).candidate_id == "fp-a"
 
 
 def _room_candidate(tuning_profile, *, linearization_gain: float | None = None):
@@ -450,7 +451,9 @@ def test_an_unprovable_composed_graph_refuses_before_play(tuning_profile, monkey
             entry["parameters"]["type"] = entry["parameters"]["type"].replace("Highpass", "Lowpass")
     monkeypatch.setattr(measurement_emit, "compile_candidate_config", lambda *a, **kw: yaml.safe_dump(graph))
     with pytest.raises(MeasuredCrossoverCandidateError) as exc:
-        compile_tuning_graph(tuning_profile, scope=scope, candidate=candidate)
+        compile_tuning_graph(tuning_profile, scope=scope, candidate=candidate,
+                             branch_channels=tuning_profile.role_channels
+                             if scope == "candidate_branches" else None)
     assert exc.value.code == "tweeter_unprotected"
 
 
@@ -460,7 +463,8 @@ def test_branch_routing_preserves_every_candidate_filter_and_output_chain(tuning
     candidate = replace(candidate, room_correction={} if layers == "speaker" else _room_correction(),
                         bass_extension=BASS_EXTENSION if layers == "bass" else {})
     original = yaml.safe_load(compile_tuning_graph(tuning_profile, candidate=candidate))
-    split = yaml.safe_load(compile_tuning_graph(tuning_profile, scope="candidate_branches", candidate=candidate))
+    split = yaml.safe_load(compile_tuning_graph(tuning_profile, scope="candidate_branches", candidate=candidate,
+                                                branch_channels=tuning_profile.role_channels))
     assert split["filters"] == original["filters"]
     assert split["pipeline"] == original["pipeline"]
     assert split["devices"] == original["devices"]
