@@ -147,7 +147,7 @@ def _stub_non_topology_inputs(monkeypatch):
     # resolve_capture_preset above) keeps this file focused on the ONE seam
     # under test; the ensure step itself is covered in
     # tests/test_correction_crossover_v2_endpoints.py.
-    monkeypatch.setattr(v2ctx, "ensure_crossover_preview_ready", lambda: None)
+    monkeypatch.setattr(v2ctx, "ensure_crossover_preview_ready", lambda design_draft=None: None)
     # Same rule as the other stubs: this module tests the topology/playback-
     # device seam, not the driver-safety contract. The session-open confirmation
     # gate (issue #1821) is covered against the REAL evaluator in
@@ -225,7 +225,7 @@ def test_a_subless_passive_speaker_opens_a_session(monkeypatch, _passive_topolog
     # session it can serve.
     monkeypatch.setattr(
         v2ctx, "ensure_crossover_preview_ready",
-        lambda: pytest.fail("a passive topology must not need a crossover preview"),
+        lambda design_draft=None: pytest.fail("a passive topology must not need a crossover preview"),
     )
 
     context = v2ctx.resolve_conductor_context(_passive_status(_passive_topology))
@@ -280,7 +280,7 @@ def test_resolves_real_playback_device_from_a_verified_topology(monkeypatch):
              "driver_research": preview_research()}
     draft["driver_research"]["crossover_candidates"][0]["frequency_hz"] = 3200
     preview = build_crossover_preview(draft)
-    monkeypatch.setattr(v2ctx, "ensure_crossover_preview_ready", lambda: preview)
+    monkeypatch.setattr(v2ctx, "ensure_crossover_preview_ready", lambda design_draft=None: preview)
 
     context = v2ctx.resolve_conductor_context(_status())
 

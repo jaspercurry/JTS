@@ -332,6 +332,7 @@ def rear_calibration_issues(candidate: MeasuredCrossoverCandidate) -> list[dict[
 def compile_commissioning_profile(
     *, topology: OutputTopology | None = None,
     design_draft: Mapping[str, Any] | None = None, write: bool = False,
+    crossover_preview: Mapping[str, Any] | None = None,
     find_candidate: Callable[[str], BankedCandidate] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Review the applied candidate, or bootstrap from the declared crossover."""
@@ -360,7 +361,7 @@ def compile_commissioning_profile(
         target = baseline_candidate_config_path(text)
         profile.update(prepare_applied_baseline_profile(
             candidate, declaration=declaration, design_draft=draft, measurements=load_measurement_state(topology),
-            config_path=target, config_sha256=sha, find_candidate=find_candidate,
+            config_path=target, config_sha256=sha, find_candidate=find_candidate, crossover_preview=crossover_preview,
         ))
         profile["issues"] = [*(candidate.analysis.get("issues") or []), *rear_calibration_issues(candidate)]
         profile["candidate_fingerprint"] = baseline_candidate_fingerprint(profile)
@@ -515,16 +516,9 @@ def _source_payload(
         if isinstance(measurements.get("summary"), Mapping)
         else {}
     )
-    # The baseline config cache invalidates whenever this source fingerprint
-    # changes, so nothing spurious may ride the topology fingerprint — what it
-    # covers and why is `topology_config_fingerprint`'s own docstring.
     source = {
         "topology_id": topology.topology_id,
         "topology_fingerprint": topology_config_fingerprint(topology),
-        "design_draft_content_fingerprint": _fingerprint({
-            key: design_draft.get(key)
-            for key in ("manual_settings", "operator_inputs", "driver_research")
-        }),
         # Banked driver trims must match the declaration they measured.
         "crossover_preview_fingerprint": crossover_preview_fingerprint(
             crossover_preview, design_draft
@@ -1657,6 +1651,7 @@ def prepare_applied_baseline_profile(
     design_draft: Mapping[str, Any],
     measurements: Mapping[str, Any],
     config_path: str | Path | None = None,
+    crossover_preview: Mapping[str, Any] | None = None,
     config_sha256: str | None = None,
     applied_at: str | None = None,
     provenance: Mapping[str, Any] | None = None,
@@ -1670,8 +1665,10 @@ def prepare_applied_baseline_profile(
             raise
         banked = publish_authored_candidate(candidate)
     protection = _protection_projection(design_draft.get("driver_safety_profile"))
+    if crossover_preview is None:
+        crossover_preview = build_crossover_preview(design_draft)
     source = _source_payload(
-        declaration.topology, design_draft, build_crossover_preview(design_draft), measurements,
+        declaration.topology, design_draft, crossover_preview, measurements,
         measured_candidate_fingerprint=candidate.fingerprint, driver_protection=protection,
     )
     source = {**source, **((provenance or {}).get("source") or {}),

@@ -343,7 +343,7 @@ def session_open(monkeypatch, tmp_path, banked_session_level):
     monkeypatch.setattr(
         commission_wiring, "resolve_capture_preset", lambda topo: preset
     )
-    monkeypatch.setattr(v2ctx, "ensure_crossover_preview_ready", lambda: None)
+    monkeypatch.setattr(v2ctx, "ensure_crossover_preview_ready", lambda design_draft=None: None)
 
     calls: dict[str, list[Any]] = {"evidence_store": [], "open_capture": []}
 

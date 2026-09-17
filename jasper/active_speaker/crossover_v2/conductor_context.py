@@ -2,16 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The inputs a crossover-v2 conductor session opens with, and the gate that
-resolves them.
-
-:func:`resolve_conductor_context` is the fail-closed session-open predicate:
-ONE derivation of the preset, the per-role bands/caps/duration limits, the
-measurement targets, the session volume and the playback device, from live
-status plus the declared topology. Its front ends — the
-``/sound/speaker/crossover/`` wizard, the null door and the measurement CLI — consume it rather than
-re-deriving any of it, which is why it sits here rather than in the wizard.
-"""
+"""Resolve crossover session inputs before capture starts."""
 
 from __future__ import annotations
 
@@ -146,13 +137,12 @@ def measurement_role_channels(preset: Any) -> dict[str, int]:
     return {role: channel for channel, role in enumerate(required_driver_roles(preset.way_count))}
 
 
-def ensure_crossover_preview_ready() -> dict[str, Any]:
+def ensure_crossover_preview_ready(design_draft: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Refuse incomplete declarations before capture preset resolution."""
-    from jasper.active_speaker.crossover_preview import current_crossover_preview
+    from jasper.active_speaker.crossover_preview import build_crossover_preview  # lazy: preview imports baseline readers
+    from jasper.active_speaker.design_draft import load_design_draft  # lazy: reader boundary is patched by conductor tests
 
-    # A blocked declaration is repaired by Save values on /sound/, never by a
-    # measurement session: session start writes nothing.
-    preview = current_crossover_preview()
+    preview = build_crossover_preview(load_design_draft() if design_draft is None else design_draft)
     if preview.get("status") != "ready_for_protected_staging":
         messages = [
             str(issue.get("message") or issue.get("code"))
@@ -263,10 +253,7 @@ def resolve_conductor_context(
     """
     from jasper.active_speaker.commission_wiring import resolve_capture_preset, resolve_commission_preset
     from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
-    from jasper.active_speaker.design_draft import (
-        declared_effective_driver_sensitivities,
-        load_design_draft,
-    )
+    from jasper.active_speaker.design_draft import declared_effective_driver_sensitivities, load_design_draft  # lazy: reader boundary is patched by conductor tests
     from jasper.active_speaker.excitation_safety_plan import (
         ExcitationSafetyPlanError,
         require_driver_measurement_inputs,
@@ -288,6 +275,7 @@ def resolve_conductor_context(
     # A subless passive main has no active crossover, so the gates below — all
     # asking whether an ACTIVE one is commissioned — are not questions about it.
     passive_mains = topology_is_subless_passive_mains(topology)
+    draft = load_design_draft(topology=topology)
     preview = None
     if not passive_mains:
         if not status.get("active"):
@@ -306,7 +294,7 @@ def resolve_conductor_context(
                 level=logging.WARNING,
                 code=BASELINE_TOPOLOGY_CHANGED,
             )
-        preview = ensure_crossover_preview_ready()
+        preview = ensure_crossover_preview_ready(draft)
     preset = (resolve_commission_preset(topology, crossover_preview=preview)
               if preview is not None else resolve_capture_preset(topology))
     if preset.way_count not in (1, 2):
@@ -315,7 +303,6 @@ def resolve_conductor_context(
             code=REASON_SPEAKER_SHAPE_UNSUPPORTED,
         )
     roles = required_driver_roles(preset.way_count)
-    draft = load_design_draft(topology=topology)
     safety_profile = draft.get("driver_safety_profile")
     try:
         require_driver_measurement_inputs(safety_profile or {})
