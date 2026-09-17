@@ -13,6 +13,7 @@ import pytest
 
 
 import jasper.control.airplay_health as airplay_health
+from jasper import service_units
 from jasper.control.airplay_health import (
     AirPlayHealthSampler,
     classify_journal_line,
@@ -714,7 +715,7 @@ def test_default_journal_reader_uses_since_and_until(monkeypatch) -> None:
             "not json",
         ]) + "\n")
 
-    monkeypatch.setattr(airplay_health.subprocess, "run", fake_run)
+    monkeypatch.setattr(service_units.subprocess, "run", fake_run)
 
     lines = AirPlayHealthSampler._read_journal_lines(
         ("shairport-sync", "librespot"),

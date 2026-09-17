@@ -8,6 +8,7 @@ import json
 
 import pytest
 
+from jasper import service_units
 from jasper.cli import system_soak
 
 
@@ -48,7 +49,7 @@ def test_journal_summary_counts_without_storing_messages(monkeypatch) -> None:
         ])
 
     monkeypatch.setattr(
-        system_soak.subprocess,
+        service_units.subprocess,
         "run",
         lambda *a, **kw: FakeCompletedProcess(),
     )

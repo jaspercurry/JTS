@@ -6,6 +6,7 @@
 record predicates (ADR-0233 rule 1 — one parser, one roster)."""
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 from types import SimpleNamespace
@@ -164,3 +165,36 @@ def test_unit_uptime_sec_reads_the_monotonic_clock_shared_with_systemd():
     )
 
     assert uptime == pytest.approx(90.0, abs=1.0)
+
+
+def test_run_journalctl_json_builds_argv_and_parses_rows(monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="\n".join([
+                json.dumps({"_SYSTEMD_UNIT": "a.service", "MESSAGE": "one"}),
+                "not json",
+                json.dumps(["not", "a", "dict"]),
+            ]),
+            stderr="",
+        )
+
+    monkeypatch.setattr(service_units.subprocess, "run", fake_run)
+
+    rows = service_units.run_journalctl_json(
+        ("a", "b"),
+        since="@1.000",
+        until="@2.000",
+        output_fields=("_SYSTEMD_UNIT", "MESSAGE"),
+    )
+
+    assert rows == [{"_SYSTEMD_UNIT": "a.service", "MESSAGE": "one"}]
+    assert calls == [[
+        "journalctl", "-u", "a", "-u", "b",
+        "--since", "@1.000", "--until", "@2.000",
+        "--no-pager", "-o", "json",
+        "--output-fields=_SYSTEMD_UNIT,MESSAGE",
+    ]]

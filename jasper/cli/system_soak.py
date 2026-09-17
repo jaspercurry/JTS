@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -30,6 +29,7 @@ from jasper.control.system_metrics import (
     JASPER_SERVICE_GROUPS,
     SystemSampler,
 )
+from jasper.service_units import JournalctlUnavailable, run_journalctl_json
 
 DEFAULT_OUTPUT_DIR = "/var/lib/jasper/diagnostics/system-soak"
 DEFAULT_DURATION_SEC = 10 * 60
@@ -303,32 +303,21 @@ def _sample_status_sockets() -> dict[str, Any]:
 
 
 def _summarize_journal(since: str, until: str, units: list[str]) -> dict[str, Any]:
-    cmd = [
-        "journalctl", "--since", since, "--until", until, "-o", "json",
-        "--output-fields=__REALTIME_TIMESTAMP,_SYSTEMD_UNIT,PRIORITY,MESSAGE",
-        "--no-pager",
-    ]
-    for unit in units:
-        cmd.extend(["-u", unit])
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=20,
+        rows = run_journalctl_json(
+            units,
+            since=since,
+            until=until,
+            output_fields=(
+                "__REALTIME_TIMESTAMP", "_SYSTEMD_UNIT", "PRIORITY", "MESSAGE",
+            ),
+            timeout=20,
         )
-    except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
+    except JournalctlUnavailable as e:
         return {"available": False, "error": str(e)}
-    if proc.returncode not in (0, 1):
-        return {
-            "available": False,
-            "returncode": proc.returncode,
-            "error": proc.stderr[:300],
-        }
     by_unit: dict[str, dict[str, Any]] = {}
     total = 0
-    for raw in proc.stdout.splitlines():
-        try:
-            entry = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
+    for entry in rows:
         unit = entry.get("_SYSTEMD_UNIT") or "unknown"
         priority = str(entry.get("PRIORITY") or "unknown")
         message = entry.get("MESSAGE", "")

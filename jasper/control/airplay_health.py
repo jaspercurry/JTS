@@ -21,12 +21,10 @@ from __future__ import annotations
 import asyncio
 import copy
 import datetime
-import json
 import logging
 import math
 import os
 import re
-import subprocess
 import threading
 import time
 from collections import deque
@@ -48,7 +46,12 @@ from jasper.fanin.status import fanin_inputs_by_label
 from jasper.install_profile import BUILD_MANIFEST_FILE
 from jasper.log_event import log_event
 from jasper.music_sources import MUSIC_SOURCE_SPECS
-from jasper.service_units import read_unit_states, unit_uptime_sec
+from jasper.service_units import (
+    JournalctlUnavailable,
+    read_unit_states,
+    run_journalctl_json,
+    unit_uptime_sec,
+)
 from jasper.platform.status_socket import (
     FANIN_STATUS_SOCKET,
     read_status_socket_or_none,
@@ -1712,37 +1715,19 @@ class AirPlayHealthSampler:
         which unit emitted each line; one fork per scan instead of one per unit
         keeps this 30 s cadence off the Pi's process budget (ADR-0226).
         """
-        argv = ["journalctl"]
-        for unit in units:
-            argv += ["-u", unit]
-        argv += [
-            "--since", f"@{since:.3f}",
-            "--until", f"@{now:.3f}",
-            "--no-pager",
-            "-o", "json",
-            "--output-fields=_SYSTEMD_UNIT,MESSAGE",
-        ]
         try:
-            proc = subprocess.run(
-                argv,
-                capture_output=True,
-                text=True,
+            rows = run_journalctl_json(
+                units,
+                since=f"@{since:.3f}",
+                until=f"@{now:.3f}",
+                output_fields=("_SYSTEMD_UNIT", "MESSAGE"),
                 timeout=SUBPROCESS_TIMEOUT_SEC,
-                check=False,
             )
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-            return []
-        if proc.returncode not in (0, 1):
+        except JournalctlUnavailable:
             return []
         by_unit_id = {f"{unit}.service": unit for unit in units}
         entries: list[tuple[str, str]] = []
-        for raw in proc.stdout.splitlines():
-            try:
-                record = json.loads(raw)
-            except ValueError:
-                continue
-            if not isinstance(record, dict):
-                continue
+        for record in rows:
             unit = by_unit_id.get(record.get("_SYSTEMD_UNIT"))
             message = record.get("MESSAGE")
             # journald renders a non-UTF-8 MESSAGE as a list of byte values;
