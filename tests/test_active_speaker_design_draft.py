@@ -236,11 +236,9 @@ def test_driver_research_notes_remain_bounded():
     raw = _research()
     raw["drivers"][1]["notes"] = "x" * 2049
 
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="driver.notes must be <= 2048 chars",
-    ):
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(_topology(), driver_research=raw)
+    assert caught.value.code == "invalid_design_draft"
 
 
 def test_manual_driver_notes_use_same_bound():
@@ -256,11 +254,9 @@ def test_manual_driver_notes_use_same_bound():
     assert len(payload["manual_settings"]["drivers"][0]["notes"]) == 2048
 
     manual_settings["drivers"][0]["notes"] = "x" * 2049
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="manual_settings.driver.notes must be <= 2048 chars",
-    ):
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(_topology(), manual_settings=manual_settings)
+    assert caught.value.code == "invalid_design_draft"
 
 
 def test_research_and_manual_drivers_share_field_normalisation() -> None:
@@ -301,11 +297,9 @@ def test_research_and_manual_drivers_share_field_normalisation() -> None:
 def test_research_requires_model_while_manual_driver_does_not() -> None:
     research = _research()
     research["drivers"][0].pop("model")
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match=r"^driver\.model is required$",
-    ):
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(_topology(), driver_research=research)
+    assert caught.value.code == "invalid_design_draft"
 
     payload = build_design_draft(
         _topology(),
@@ -523,11 +517,9 @@ def test_duplicate_manual_target_and_boolean_numeric_value_are_rejected() -> Non
         ],
         "crossover_candidates": [],
     }
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="manual_settings.drivers contains duplicate target_id",
-    ):
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(_topology(), manual_settings=duplicate)
+    assert caught.value.code == "duplicate_target_id"
 
     boolean_numeric = {
         "drivers": [
@@ -540,11 +532,9 @@ def test_duplicate_manual_target_and_boolean_numeric_value_are_rejected() -> Non
         ],
         "crossover_candidates": [],
     }
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="nominal_impedance_ohm must be numeric",
-    ):
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(_topology(), manual_settings=boolean_numeric)
+    assert caught.value.code == "invalid_design_draft"
 
 
 @pytest.mark.parametrize("inputs", [
@@ -627,23 +617,21 @@ def test_normalise_candidate_accepts_a_household_spelling_the_compiler_reads():
     assert out["filter_type"] == "LR"
 
 
-def test_normalise_candidate_rejects_a_filter_the_compiler_cannot_build():
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="crossover_candidate.filter_type must be one of: Linkwitz-Riley",
-    ):
-        _normalise_candidate(_candidate(filter_type="Butterworth"))
-
-
-def test_normalise_candidate_rejects_a_slope_no_supported_order_builds():
+@pytest.mark.parametrize("overrides,code", [
+    ({"filter_type": "Butterworth"}, "unsupported_filter_type"),
     # 18 dB/octave is an ordinary number and a third-order filter; no supported
     # Linkwitz-Riley order compiles to it.
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match=r"crossover_candidate.slope_db_per_octave must be one of: "
-        r"12, 24, 48 dB/octave",
-    ):
-        _normalise_candidate(_candidate(slope_db_per_octave=18))
+    ({"slope_db_per_octave": 18}, "unsupported_slope"),
+    ({"lower_polarity": "reversed"}, "unsupported_polarity"),
+    ({"delay_ms": 25.0, "delay_target_role": "woofer"}, "delay_out_of_range"),
+    ({"delay_ms": -1.0, "delay_target_role": "woofer"}, "delay_out_of_range"),
+    ({"delay_ms": 0.2, "delay_target_role": "mid"}, "delay_target_role_invalid"),
+    ({"delay_ms": 0.2}, "delay_target_role_required"),
+])
+def test_normalise_candidate_refuses_values_outside_the_vocabulary(overrides, code):
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
+        _normalise_candidate(_candidate(**overrides))
+    assert caught.value.code == code
 
 
 def test_normalise_candidate_leaves_an_undeclared_filter_and_slope_absent():
@@ -662,49 +650,9 @@ def test_driver_research_crossover_vocabulary_is_refused_at_the_same_door():
     research = _research()
     research["crossover_candidates"][0]["slope_db_per_octave"] = 18
 
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="crossover_candidate.slope_db_per_octave must be one of",
-    ):
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(_topology(), driver_research=research)
-
-
-def test_normalise_candidate_rejects_unsupported_polarity():
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="lower_polarity must be one of",
-    ):
-        _normalise_candidate(_candidate(lower_polarity="reversed"))
-
-
-def test_normalise_candidate_rejects_delay_ms_out_of_range():
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="delay_ms must be between 0 and 20 ms",
-    ):
-        _normalise_candidate(_candidate(delay_ms=25.0, delay_target_role="woofer"))
-
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="delay_ms must be between 0 and 20 ms",
-    ):
-        _normalise_candidate(_candidate(delay_ms=-1.0, delay_target_role="woofer"))
-
-
-def test_normalise_candidate_delay_target_role_must_be_in_between_roles():
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="delay_target_role must be one of between_roles",
-    ):
-        _normalise_candidate(_candidate(delay_ms=0.2, delay_target_role="mid"))
-
-
-def test_normalise_candidate_delay_ms_requires_delay_target_role():
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="delay_target_role is required when delay_ms is set",
-    ):
-        _normalise_candidate(_candidate(delay_ms=0.2))
+    assert caught.value.code == "unsupported_slope"
 
 
 def test_manual_crossover_settings_carry_polarity_and_delay_through_draft():
@@ -855,11 +803,9 @@ def test_declared_driver_spacing_m_fails_soft_on_absent_or_malformed():
 
 
 def test_declared_driver_spacing_mm_must_be_positive():
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match=r"driver_spacing_mm must be > 0",
-    ):
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(_topology(), manual_settings={"driver_spacing_mm": 0})
+    assert caught.value.code == "invalid_design_draft"
 
 
 def test_declared_driver_spacing_m_survives_the_normalised_persisted_draft():
@@ -905,10 +851,7 @@ def test_build_design_draft_does_not_raise_with_driver_class_set():
 
 
 def test_driver_class_rejects_unsupported_value():
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match=r"driver\.driver_class must be one of",
-    ):
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(
             _topology(),
             manual_settings={
@@ -916,6 +859,7 @@ def test_driver_class_rejects_unsupported_value():
                 "crossover_candidates": [],
             },
         )
+    assert caught.value.code == "unsupported_driver_class"
 
 
 def test_driver_class_accepts_every_hoisted_value():
@@ -1042,10 +986,7 @@ def test_extra_manual_keys_are_ignored(tmp_path):
 
 
 def test_radiating_diameter_mm_must_be_positive():
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match=r"radiating_diameter_mm must be > 0",
-    ):
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(
             _topology(),
             manual_settings={
@@ -1055,16 +996,15 @@ def test_radiating_diameter_mm_must_be_positive():
                 "crossover_candidates": [],
             },
         )
+    assert caught.value.code == "invalid_design_draft"
 
 
 def test_pad_error_surfaces_as_design_draft_error():
     # driver_pad.DriverPadError is caught and re-raised as
     # ActiveSpeakerDesignDraftError -- the same pattern as
     # DriverSafetyProfileError, so callers only need to catch one exception.
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match=r"requires nominal_impedance_ohm",
-    ):
+    # DriverPadError carries no code of its own, so the wrap lands the default.
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(
             _topology(),
             manual_settings={
@@ -1078,6 +1018,7 @@ def test_pad_error_surfaces_as_design_draft_error():
                 "crossover_candidates": [],
             },
         )
+    assert caught.value.code == "invalid_design_draft"
 
 
 def test_regenerate_crossover_preview_path_re_normalises_a_saved_pad_without_raising():

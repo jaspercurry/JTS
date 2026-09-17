@@ -13,7 +13,14 @@ from typing import Any, Mapping, Sequence
 
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
-from ._common import DriverFields, MANUAL_CANDIDATE_FIELDS, MANUAL_DRIVER_FIELDS, blocker_issue, issue
+from ._common import (
+    CodedFieldError,
+    DriverFields,
+    MANUAL_CANDIDATE_FIELDS,
+    MANUAL_DRIVER_FIELDS,
+    blocker_issue,
+    issue,
+)
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
     LOW_LIMIT_DECLARED,
@@ -54,8 +61,10 @@ MAX_PROVENANCE_SOURCES = 8
 MAX_PROVENANCE_SOURCE_CHARS = 320
 
 
-class DriverSafetyProfileError(ValueError):
+class DriverSafetyProfileError(CodedFieldError):
     """Raised when research or safety-profile input is malformed."""
+
+    code = "invalid_driver_safety_profile"
 
 
 _fields = DriverFields(DriverSafetyProfileError, length_limit_separator=" ")
@@ -278,7 +287,8 @@ def _normalise_protection_filters(value: Any, field_name: str) -> list[dict[str,
             raise DriverSafetyProfileError(
                 f"{prefix} requires cutoff_hz and minimum_slope_db_per_octave; "
                 "a required filter whose numbers are unpublished takes a "
-                "best engineering estimate, not null"
+                "best engineering estimate, not null",
+                code="protection_filter_numbers_missing",
             )
         if slope > 96:
             raise DriverSafetyProfileError(
@@ -758,7 +768,8 @@ def validate_research_low_limit_plausibility(
             f"driver_research {target_id} recommended_highpass_hz is not "
             f"believable for its driver type: {diagnosis}. Ask again with the "
             "datasheet page for this driver, or enter the figure by hand under "
-            "Advanced if you have read it yourself."
+            "Advanced if you have read it yourself.",
+            code="research_low_limit_implausible",
         )
 
 
@@ -827,21 +838,25 @@ def validate_manual_target_bindings(
             target = by_id.get(target_id)
             if target is None:
                 raise DriverSafetyProfileError(
-                    f"manual_settings.drivers[{index}].target_id is not a current physical target"
+                    f"manual_settings.drivers[{index}].target_id is not a current physical target",
+                    code="manual_target_unknown",
                 )
             if role != target.get("role"):
                 raise DriverSafetyProfileError(
-                    f"manual_settings.drivers[{index}] role does not match target_id"
+                    f"manual_settings.drivers[{index}] role does not match target_id",
+                    code="manual_target_role_mismatch",
                 )
             if target_id in resolved_targets:
                 raise DriverSafetyProfileError(
-                    f"manual_settings.drivers resolves target {target_id} more than once"
+                    f"manual_settings.drivers resolves target {target_id} more than once",
+                    code="manual_target_bound_twice",
                 )
             resolved_targets.add(target_id)
             continue
         if role in legacy_roles:
             raise DriverSafetyProfileError(
-                f"manual_settings.drivers contains duplicate legacy role {role}"
+                f"manual_settings.drivers contains duplicate legacy role {role}",
+                code="manual_duplicate_legacy_role",
             )
         legacy_roles.add(str(role))
         matches = by_role.get(str(role), [])
@@ -853,7 +868,8 @@ def validate_manual_target_bindings(
             resolved = matches[0]
             if resolved in resolved_targets:
                 raise DriverSafetyProfileError(
-                    f"manual_settings.drivers resolves target {resolved} more than once"
+                    f"manual_settings.drivers resolves target {resolved} more than once",
+                    code="manual_target_bound_twice",
                 )
             resolved_targets.add(resolved)
 

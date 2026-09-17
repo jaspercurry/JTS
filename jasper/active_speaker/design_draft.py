@@ -28,8 +28,10 @@ from ._common import (
     LEGACY_DROPPED_DRIVER_FIELDS,
     MANUAL_CANDIDATE_FIELDS,
     DRIVER_RESEARCH_FIELDS,
+    CodedFieldError,
     DriverFields,
     issue as _issue,
+    raised_code,
 )
 from .driver_pad import DriverPadError, effective_sensitivity_db, normalise_pad
 from .driver_safety import (
@@ -71,7 +73,7 @@ _MAX_SOURCES = 8
 MAX_DRIVER_NOTE_CHARS = 2048
 
 
-class ActiveSpeakerDesignDraftError(ValueError):
+class ActiveSpeakerDesignDraftError(CodedFieldError):
     """Raised when a design draft or research packet has an unsupported shape."""
 
     code = "invalid_design_draft"
@@ -113,7 +115,9 @@ def _polarity(raw: Any, field_name: str) -> str | None:
     value = _text(raw, field_name, max_chars=20)
     if value not in SUPPORTED_POLARITY:
         supported = ", ".join(sorted(SUPPORTED_POLARITY))
-        raise ActiveSpeakerDesignDraftError(f"{field_name} must be one of: {supported}")
+        raise ActiveSpeakerDesignDraftError(
+            f"{field_name} must be one of: {supported}", code="unsupported_polarity",
+        )
     return value
 
 
@@ -145,7 +149,9 @@ def _crossover_filter_type(raw: Any, field_name: str) -> str | None:
         return None
     if not declared_filter_type_compiles(value):
         supported = ", ".join(supported_declaration_filter_types())
-        raise ActiveSpeakerDesignDraftError(f"{field_name} must be one of: {supported}")
+        raise ActiveSpeakerDesignDraftError(
+            f"{field_name} must be one of: {supported}", code="unsupported_filter_type",
+        )
     return value
 
 
@@ -170,7 +176,8 @@ def _crossover_slope_db_per_octave(raw: Any, field_name: str) -> float | None:
             f"{slope:g}" for slope in supported_declaration_slopes_db_per_octave()
         )
         raise ActiveSpeakerDesignDraftError(
-            f"{field_name} must be one of: {supported} dB/octave"
+            f"{field_name} must be one of: {supported} dB/octave",
+            code="unsupported_slope",
         )
     return value
 
@@ -178,7 +185,9 @@ def _crossover_slope_db_per_octave(raw: Any, field_name: str) -> float | None:
 def _delay_ms(raw: Any, field_name: str) -> float | None:
     out = _finite_float(raw, field_name)
     if out is not None and not 0.0 <= out <= 20.0:
-        raise ActiveSpeakerDesignDraftError(f"{field_name} must be between 0 and 20 ms")
+        raise ActiveSpeakerDesignDraftError(
+            f"{field_name} must be between 0 and 20 ms", code="delay_out_of_range",
+        )
     return out
 
 
@@ -219,7 +228,8 @@ def _driver_class(raw: Any, field_name: str) -> str | None:
         return None
     if value not in DRIVER_CLASSES:
         raise ActiveSpeakerDesignDraftError(
-            f"{field_name} must be one of: {', '.join(DRIVER_CLASSES)}"
+            f"{field_name} must be one of: {', '.join(DRIVER_CLASSES)}",
+            code="unsupported_driver_class",
         )
     return value
 
@@ -320,9 +330,7 @@ def _normalise_driver_common(
             field_name=f"{prefix}.pad",
         )
     except (DriverSafetyProfileError, DriverPadError) as exc:
-        error = ActiveSpeakerDesignDraftError(str(exc))
-        error.code = getattr(exc, "code", error.code)
-        raise error from exc
+        raise ActiveSpeakerDesignDraftError(str(exc), code=raised_code(exc)) from exc
     return {key: value for key, value in driver.items() if value not in (None, [])}
 
 
@@ -405,11 +413,13 @@ def _normalise_candidate(raw: Any) -> dict[str, Any]:
         )
         if delay_target_role not in roles:
             raise ActiveSpeakerDesignDraftError(
-                "crossover_candidate.delay_target_role must be one of between_roles"
+                "crossover_candidate.delay_target_role must be one of between_roles",
+                code="delay_target_role_invalid",
             )
     if delay_ms is not None and delay_target_role is None:
         raise ActiveSpeakerDesignDraftError(
-            "crossover_candidate.delay_target_role is required when delay_ms is set"
+            "crossover_candidate.delay_target_role is required when delay_ms is set",
+            code="delay_target_role_required",
         )
     candidate: dict[str, Any] = {
         "between_roles": roles,
@@ -500,7 +510,8 @@ def normalise_driver_research(
     ]
     if len(target_ids) != len(set(target_ids)):
         raise ActiveSpeakerDesignDraftError(
-            "driver_research.drivers contains duplicate target_id"
+            "driver_research.drivers contains duplicate target_id",
+            code="duplicate_target_id",
         )
     if not drivers:
         raise ActiveSpeakerDesignDraftError("driver_research.drivers is required")
@@ -517,7 +528,7 @@ def normalise_driver_research(
             try:
                 _reject_bool_tree(item, f"driver_research.crossover_candidates[{index}]")
             except DriverSafetyProfileError as exc:
-                raise ActiveSpeakerDesignDraftError(str(exc)) from exc
+                raise ActiveSpeakerDesignDraftError(str(exc), code=raised_code(exc)) from exc
         candidates.append(_normalise_candidate(item))
     result: dict[str, Any] = {
         "artifact_schema_version": research_schema_version,
@@ -553,7 +564,8 @@ def normalise_manual_settings(raw: Any) -> dict[str, Any] | None:
     ]
     if len(target_ids) != len(set(target_ids)):
         raise ActiveSpeakerDesignDraftError(
-            "manual_settings.drivers contains duplicate target_id"
+            "manual_settings.drivers contains duplicate target_id",
+            code="duplicate_target_id",
         )
     candidates = [
         _normalise_candidate(item)
@@ -945,7 +957,7 @@ def build_design_draft(
     try:
         validate_manual_target_bindings(topology, manual)
     except DriverSafetyProfileError as exc:
-        raise ActiveSpeakerDesignDraftError(str(exc)) from exc
+        raise ActiveSpeakerDesignDraftError(str(exc), code=raised_code(exc)) from exc
     research = normalise_driver_research(driver_research)
     if research and research["artifact_schema_version"] == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:
         try:
@@ -953,7 +965,7 @@ def build_design_draft(
                 research, build_driver_research_context(topology, inputs),
             )
         except DriverSafetyProfileError as exc:
-            raise ActiveSpeakerDesignDraftError(str(exc)) from exc
+            raise ActiveSpeakerDesignDraftError(str(exc), code=raised_code(exc)) from exc
     evaluation = topology.evaluation()
     summary = _summary(topology, research, manual)
     issues: list[dict[str, str]] = []
