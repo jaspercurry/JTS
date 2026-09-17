@@ -23,7 +23,9 @@ if TYPE_CHECKING:
 
 from jasper.active_speaker import commissioning_coordinator, design_draft as design_draft_store
 from jasper.active_speaker.installation import installation_view
+from jasper.active_speaker.rear_calibration import RearCalibrationError, diagnostic_seed, read_rear_calibration
 from jasper.active_speaker.tuning_handoff import PROGRAM_ENTRIES, build_tuning_handoff
+from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 
 from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
 from jasper.audio_hardware.hat_eeprom import DEFAULT_HAT_DIR
@@ -69,7 +71,7 @@ from jasper.active_speaker.web_commissioning import (
     request_missing_software_guards as _request_missing_software_guards,
 )
 
-from ._common import terminate_process
+from ._common import refusal_envelope, terminate_process
 from .sound_profile_apply import _sound_state_write_lock
 
 logger = logging.getLogger(__name__)
@@ -1798,3 +1800,96 @@ async def _active_speaker_finish_commissioning_payload(
         issue_count=len(payload.get("issues") or []),
     )
     return payload
+
+
+# --- rear calibration (cardioid) wizard panel -------------------------------
+#
+# ADR-0318: a `jts_rear_calibration` document is authored data, not a form.
+# These three routes seed a diagnostic starting document, validate a pasted
+# document against the reader alone, and bank a candidate that carries it as
+# a `jts_prescription` document's `rear_calibration` section on the applied
+# baseline. None of the three apply anything — the page's existing apply flow
+# adopts a banked fingerprint.
+
+
+def _active_speaker_rear_calibration_seed_payload() -> dict[str, Any]:
+    """Return the explicitly untuned, muted rear-calibration diagnostic seed."""
+
+    return {"ok": True, "calibration": diagnostic_seed(DEFAULT_SAMPLE_RATE)}
+
+
+def _rear_calibration_summary(document: Mapping[str, Any]) -> str:
+    """One line describing a validated document, for the panel's status text."""
+
+    if document["case"] == "acoustic_targets":
+        return "acoustic targets, pending electrical fitting"
+    return ("muted" if document["rear_muted"] else "unmuted") + " electrical rear stage"
+
+
+def _active_speaker_rear_calibration_validate_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Validate a pasted rear-calibration document; never applies or banks it."""
+
+    if not isinstance(raw, dict):
+        return refusal_envelope(code="rear_calibration_invalid", message="calibration request must be an object")
+    try:
+        document = read_rear_calibration(raw, sample_rate=DEFAULT_SAMPLE_RATE)
+    except RearCalibrationError as exc:
+        return refusal_envelope(code="rear_calibration_invalid", message=str(exc))
+    return {"ok": True, "case": document["case"], "summary": _rear_calibration_summary(document)}
+
+
+def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Bank a candidate carrying a pasted rear-calibration document on the applied
+    baseline (``--base saved``); never applies it. Mirrors
+    ``jasper-crossover-prescriber compose`` in-process, never shelling out."""
+
+    from jasper.active_speaker.baseline_profile import (  # lazy: graph compilation imports NumPy
+        _rear_calibration_issues,
+        load_applied_baseline_profile_state,
+    )
+    from jasper.active_speaker.candidate_bank import (  # lazy: graph compilation imports NumPy
+        BankedCandidate,
+        CandidateBankRefusal,
+        publish_authored_candidate,
+    )
+    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: graph compilation imports NumPy
+    from jasper.active_speaker.crossover_v2.prescription_document import (  # lazy: graph compilation imports NumPy
+        PrescriptionDocumentRefused,
+        judge_prescription_document,
+    )
+    from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError  # lazy: graph compilation imports NumPy
+    from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError  # lazy: graph compilation imports NumPy
+    from jasper.active_speaker.state_paths import baseline_profile_state_path  # lazy: graph compilation imports NumPy
+    from jasper.output_topology import load_output_topology_strict  # lazy: graph compilation imports NumPy
+
+    document = {
+        "kind": "jts_prescription", "schema": 1, "base": "saved",
+        "sections": {"rear_calibration": raw if isinstance(raw, dict) else {}},
+        "rationale": "Bank a cardioid rear calibration edited in the wizard.",
+    }
+    try:
+        saved = candidate_from_applied_profile(
+            load_output_topology_strict(), load_applied_baseline_profile_state() or {},
+        )
+        base = BankedCandidate(saved, "", "", baseline_profile_state_path())
+        candidate = judge_prescription_document(document, base=base)
+        published = publish_authored_candidate(candidate)
+    except PrescriptionDocumentRefused as exc:
+        return exc.to_dict()
+    except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
+        return PrescriptionDocumentRefused(exc.code, None, exc.detail).to_dict()
+    except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
+        # Mirrors jasper-crossover-prescriber's --base saved block: a corrupt or
+        # unreadable on-disk topology/applied-profile file fails closed as a
+        # typed refusal instead of an unhandled exception reaching the client.
+        return PrescriptionDocumentRefused("evidence_unreadable", None, str(exc)).to_dict()
+    log_event(
+        logger,
+        "sound.active_speaker_rear_calibration_bank",
+        candidate_fingerprint=published.fingerprint,
+    )
+    return {
+        "ok": True,
+        "candidate_fingerprint": published.fingerprint,
+        "issues": _rear_calibration_issues(published.candidate),
+    }

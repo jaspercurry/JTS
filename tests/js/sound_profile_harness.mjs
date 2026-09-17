@@ -32,7 +32,7 @@ const runner = buildFunction(
     ...[
       "eq-math.js", "active-speaker-ui.js", "state.js", "format.js",
       "eq-curve.js", "topology.js", "driver-model.js", "installation.js", "driver-fields.js",
-      "seat-level.js",
+      "seat-level.js", "rear-calibration.js",
     ].map((name) => ({ path: join(siblingDir, name) })),
     { path: modulePath, rewrite: [JTSCONFIRM_STUB] },
   ],
@@ -254,6 +254,24 @@ function activeTwoWayWithSubwooferTopologyPayload() {
       protection_required: false,
       protection_status: "not_required",
     }],
+  });
+  return topology;
+}
+
+// ADR-0318: a cardioid mono pair with a rear woofer output alongside the
+// front woofer/tweeter — the shape the rear-calibration panel gates on.
+function cardioidTwoWayTopologyPayload() {
+  const topology = activeTwoWayTopologyPayload();
+  topology.hardware.physical_output_count = 3;
+  topology.hardware.outputs.push({ index: 2, human_label: "DAC output 3" });
+  topology.speaker_groups[0].channels.push({
+    role: "woofer",
+    output_variant: "rear",
+    physical_output_index: 2,
+    identity_verified: false,
+    startup_muted: true,
+    protection_required: false,
+    protection_status: "not_required",
   });
   return topology;
 }
@@ -6389,6 +6407,31 @@ async function testSeatLevelSurvivesStepRenders() {
   return {seatLevelSurvivesStepRenders: true};
 }
 
+// ADR-0318 / #5161: the panel is authored data (Seed / Validate / Bank), not
+// a form, and it only makes sense once the saved topology actually declares a
+// rear output — a primary-only speaker has nothing to calibrate.
+async function testCardioidRearCalibrationPanelGatedOnSavedRearOutput() {
+  const primaryOnly = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+  }));
+  await loadAndSetActiveState(primaryOnly);
+  const primaryHtml = primaryOnly.elements.get("view-body").innerHTML;
+  if (primaryHtml.includes("data-rear-calibration")) {
+    fail("a primary-only topology must not render the rear-calibration panel", { primaryHtml });
+  }
+
+  const cardioid = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(cardioidTwoWayTopologyPayload())),
+  }));
+  await loadAndSetActiveState(cardioid);
+  const cardioidHtml = cardioid.elements.get("view-body").innerHTML;
+  if (!cardioidHtml.includes("data-rear-calibration") ||
+      !cardioidHtml.includes("data-rear-calibration-text")) {
+    fail("a saved rear output must render the rear-calibration document panel", { cardioidHtml });
+  }
+  return { cardioidRearCalibrationPanelGatedOnSavedRearOutput: true };
+}
+
 // #2883: the handoff card appears only once a baseline is playing, mints its
 // prompt server-side on the copy, and the copy goes STALE — visibly — when the
 // declarations move past the revision it was minted against.
@@ -7007,6 +7050,7 @@ results.push(await testCrossChildSpeakerGroupIsDisclosedInTheMapStep());
 results.push(await testIssueListEscapesUntrustedVerdictMessages());
 results.push(await testNextActionOwnsTheSpeakerPage());
 results.push(await testSeatLevelSurvivesStepRenders());
+results.push(await testCardioidRearCalibrationPanelGatedOnSavedRearOutput());
 results.push(await testTuningHandoffCardMintsAndGoesStale());
 results.push(await testDriverSpacingUsesTheExistingDraftSaveAndReload());
 results.push(await testInstallationUsesTheExistingDraftSaveAndReload());
