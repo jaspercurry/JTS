@@ -179,6 +179,29 @@ quote_args() {
     printf '%s' "$out"
 }
 
+# cleanup_remote_capture PATTERN REMOTE_DIR
+# Remove REMOTE_DIR on PI_HOST via `sudo rm -rf --`, but only when it
+# matches PATTERN (a path-shape glob such as "/tmp/wake-rate-*") — the
+# allowlist a corrupted or empty REMOTE_DIR must never bypass. Capture
+# scripts trap this on EXIT so a scratch capture directory is removed
+# even after Ctrl-C or an earlier failure.
+cleanup_remote_capture() {
+    local pattern="$1" remote_dir="$2"
+    # shellcheck disable=SC2254 # pattern is a caller-chosen glob, not a literal
+    case "$remote_dir" in
+        $pattern) ;;
+        *)
+            echo "WARN: refusing to clean unexpected remote path: $remote_dir" >&2
+            return
+            ;;
+    esac
+    local remote_capture_q
+    printf -v remote_capture_q '%q' "$remote_dir"
+    ssh "${PI_USER}@${PI_HOST}" "sudo rm -rf -- ${remote_capture_q}" \
+        >/dev/null 2>&1 \
+        || echo "WARN: could not remove remote capture directory $remote_dir" >&2
+}
+
 JASPER_VOICE_JOURNAL_NOISE_RE='GetGpuDevices|device_discovery'
 
 # restart_voice_and_verify_cmd
