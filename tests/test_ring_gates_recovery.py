@@ -210,7 +210,7 @@ def _migrate(tmp_path, monkeypatch, *, fanin_text: str):
         return real_log_event(logger, event, **kw)
 
     monkeypatch.setattr(cr, "log_event", _capture)
-    snapshot = cr._read_snapshot(path)
+    snapshot = cr.read_snapshot(path)
     result, _healed = cr._migrate_stale_fanin_ring_slots(snapshot, "t")
     return result.text, records
 
@@ -301,7 +301,7 @@ def test_slot_migration_declines_on_a_sheared_channel_count(tmp_path, monkeypatc
             )
         ),
     )
-    out, healed = cr._migrate_stale_fanin_ring_slots(cr._read_snapshot(path), "t")
+    out, healed = cr._migrate_stale_fanin_ring_slots(cr.read_snapshot(path), "t")
     assert "stale_ring_slots_override_declined" in records
     assert healed is False
     assert f"{RING_SLOTS_ENV_VAR}=8" in out.text

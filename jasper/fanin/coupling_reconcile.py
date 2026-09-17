@@ -81,8 +81,8 @@ from jasper import env_load, fanin_coupling, ring_assets
 
 from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_readiness import (
-    _EnvSnapshot,
-    _read_snapshot,
+    EnvSnapshot,
+    read_snapshot,
     resolve_effective_fanin_ring_slots,
     resolve_effective_fanin_wire_format,
     ring_endpoint_anchor_converged,
@@ -771,8 +771,8 @@ def _converge_ring(
             return reconcile_camilla()
         return _reconcile_camilla(reason=reason, force=force)
 
-    fanin_snapshot = _read_snapshot(env_path)
-    outputd_snapshot = _read_snapshot(outputd_env_path)
+    fanin_snapshot = read_snapshot(env_path)
+    outputd_snapshot = read_snapshot(outputd_env_path)
 
     fanin_new_text, fanin_changed = _apply_action(
         fanin_snapshot.text,
@@ -1008,7 +1008,7 @@ def reconcile_auto(
     Every ``DaemonOp`` argument plus ``gadget_present`` / ``usb_intent_enabled``
     is injectable for tests.
     """
-    fanin_snapshot = _read_snapshot(env_path)
+    fanin_snapshot = read_snapshot(env_path)
     gadget = (
         read_usb_gadget_available() if gadget_present is None else gadget_present
     )
@@ -1221,8 +1221,8 @@ CAMILLA_ANCHOR_CONVERGED_DETAIL = "converged_anchor"
 
 
 def _migrate_stale_fanin_ring_slots(
-    fanin_snapshot: _EnvSnapshot, reason: str
-) -> tuple[_EnvSnapshot, bool]:
+    fanin_snapshot: EnvSnapshot, reason: str
+) -> tuple[EnvSnapshot, bool]:
     """Override a stale, shear-prone ``JASPER_FANIN_RING_SLOTS`` into fanin.env.
 
     ``JASPER_FANIN_RING_SLOTS`` is operator-tunable (range 2..16), so a value
@@ -1251,7 +1251,7 @@ def _migrate_stale_fanin_ring_slots(
     into the CURRENT content — writing the stale snapshot back would reinstate
     the lines the sweep just removed.
     """
-    current = _read_snapshot(fanin_snapshot.path)
+    current = read_snapshot(fanin_snapshot.path)
 
     # The axes this function does NOT own, read before it writes the one it does.
     conf_format = ring_assets.ring_conf_format(ring_assets.RING_A_CONF_PCM)
@@ -1337,7 +1337,7 @@ def _migrate_stale_fanin_ring_slots(
         stale_source=resolution.source,
         conf_n_slots=conf_a,
     )
-    return _EnvSnapshot(current.path, new_text), True
+    return EnvSnapshot(current.path, new_text), True
 
 
 def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
