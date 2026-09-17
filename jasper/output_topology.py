@@ -110,7 +110,7 @@ PROTECTION_STATUSES = {
     "software_guard_requested",
     "unknown",
 }
-OUTPUT_STATES = {"unused", "assigned", "verified", "blocked"}
+OUTPUT_STATES = {"unused", "assigned", "blocked"}
 # Pure-data pairing intent recorded at commission time: "is this box meant to
 # run solo, become a wireless follower, or host one?" It seeds later reconciler
 # defaults and carries NO behavior in this layer — nothing here reads it,

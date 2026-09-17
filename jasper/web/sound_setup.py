@@ -75,8 +75,6 @@ from .sound_seat_level import (
 from .sound_active_speaker import (
     OutputHardwareRequestConflict,
     OutputTopologyRevisionConflict,
-    _active_speaker_commission_ramp_abort_payload,
-    _active_speaker_commission_state_payload,
     _active_speaker_commissioning_view_payload,
     _active_speaker_crossover_preview_save_payload,
     _active_speaker_design_draft_save_payload,
@@ -320,7 +318,6 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
 _GET_ROUTES = {
     "/": None,
     "/state": None,
-    "/active-speaker/commission-state": None,
     "/active-speaker/commissioning-view": None,
     "/output-topology": ("_output_topology_payload", "sound.output_topology"),
     "/active-speaker/design-draft": (
@@ -483,21 +480,6 @@ def _make_handler(
                         self._send_json, e, logger=logger, event=event,
                     )
                 return
-            if path == "/active-speaker/commission-state":
-                try:
-                    self._send_json(
-                        asyncio.run(
-                            _active_speaker_commission_state_payload(
-                                camilla_factory=camilla_factory,
-                            )
-                        )
-                    )
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_commission",
-                    )
-                return
             if path == "/active-speaker/commissioning-view":
                 try:
                     self._send_json(
@@ -544,7 +526,6 @@ def _make_handler(
                         payload["error"] = str(error or "hardware apply failed")
                     self._send_json(payload, status=200 if result.get("ok") else 502)
                     return
-                    return
                 if path == "/active-speaker/design-draft":
                     try:
                         self._send_json(_active_speaker_design_draft_save_payload(raw))
@@ -590,15 +571,6 @@ def _make_handler(
                                     raw.get("expected_candidate_fingerprint") or ""
                                 ),
                                 camilla_factory=camilla_factory,
-                            )
-                        )
-                    )
-                    return
-                if path == "/active-speaker/commission-ramp-abort":
-                    self._send_json(
-                        asyncio.run(
-                            _active_speaker_commission_ramp_abort_payload(
-                                camilla_factory=camilla_factory
                             )
                         )
                     )
@@ -946,7 +918,6 @@ def _make_handler(
         "/active-speaker/rear-calibration/bank": Handler._dispatch_post_route,
         "/active-speaker/seat-level/start": Handler._dispatch_post_route,
         "/active-speaker/seat-level/stop": Handler._dispatch_post_route,
-        "/active-speaker/commission-ramp-abort": Handler._dispatch_post_route,
         "/active-speaker/baseline-profile/restore": Handler._dispatch_post_route,
         "/active-speaker/baseline-profile/save-and-apply": Handler._dispatch_post_route,
         "/output-topology": Handler._dispatch_post_route,

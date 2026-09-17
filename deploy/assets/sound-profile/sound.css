@@ -881,7 +881,7 @@
     margin-top: 10px;
   }
   .output-role {
-    display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(11rem, 0.8fr) auto;
+    display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(11rem, 0.8fr);
     gap: 8px; align-items: center; padding: 8px 0;
     border-top: 1px solid var(--border);
   }
@@ -977,9 +977,6 @@
     color: var(--muted-foreground);
   }
   .commission-status__v { font-size: 13px; color: var(--foreground); }
-  .commission-card__error {
-    margin: 0; font-size: 12px; color: var(--status-danger, #c0392b);
-  }
   .commission-card__message { min-height: 18px; }
   .commission-card__actions {
     flex-wrap: wrap; gap: 8px; min-height: 42px; align-items: stretch;

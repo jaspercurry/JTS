@@ -202,18 +202,16 @@ import {
   var liveTimer = null, liveSeq = 0, liveInFlight = false, livePending = false;
   var statusText = '', statusErr = false;
   var activeSpeaker = {
-    loading: false, action: '', session: null,
+    loading: false, action: '',
     calibrationLevel: null, measurements: null,
     baselineProfile: null, error: '', levelDbfs: null,
-    commission: null, commissioningView: null,
-    commissionBusy: '', commissionError: ''
+    commissioningView: null,
+    commissionBusy: ''
   };
   // The handoff card's copy state. `copiedRevision` is the declaration
   // revision the copied prompt was MINTED against (server-stamped), so a
   // later declaration edit turns the copy stale instead of drifting silently.
   var tuningHandoff = {prompt: '', copied: false, selected: false, copiedRevision: null};
-  var COMMISSION_RAMP_LISTEN_MS = 900;
-  var COMMISSION_RAMP_NEXT_PULSE_MS = 80;
   // Issue #1820 defect 3 / #1821: the DOM id the measurement wizard's
   // profile-not-confirmed hard stop deep-links to
   // (crossover_v2_flow.REASON_PROGRAM_PROFILE_NOT_CONFIRMED's next_action href
@@ -1968,14 +1966,11 @@ import {
       '</div>';
     }
     var outputs = physicalOutputOptions(topology);
-    var commissionError = activeSpeaker.commissionError ?
-      '<p class="commission-card__error">' + escapeHtml(activeSpeaker.commissionError) + '</p>' : '';
     return '<div class="output-card output-card--groups">' +
       '<div class="output-card__head"><div><p class="output-card__title">DAC output assignments</p>' +
         '<p class="setting-row__hint">Assign each driver to one DAC channel.</p></div>' +
         '<span class="status-pill' + (outputTopology.dirty ? '' : ' status-pill--ready') + '">' +
           escapeHtml(outputTopology.dirty ? 'draft' : 'saved') + '</span></div>' +
-      commissionError +
       '<div class="output-roles output-roles--flat">' + assignments.map(function(item) {
         var group = item.group;
         var channel = item.channel;
@@ -3146,20 +3141,12 @@ import {
       } catch (profileError) {
         patchActiveSpeaker({baselineProfile: activeSpeaker.baselineProfile || null});
       }
-      await refreshCommissionState();
       await refreshCommissioningView();
     } catch (e) {
       outputTopology.loading = false;
       outputTopology.error = e.message;
     }
     render();
-  }
-  async function refreshCommissionState() {
-    try {
-      patchActiveSpeaker({commission: await getJSON('./active-speaker/commission-state')});
-    } catch (commissionError) {
-      patchActiveSpeaker({commission: activeSpeaker.commission || null});
-    }
   }
   async function refreshCommissioningView() {
     try {
@@ -3171,49 +3158,6 @@ import {
       patchActiveSpeaker({commissioningView: view});
     } catch (viewError) {
       patchActiveSpeaker({commissioningView: activeSpeaker.commissioningView || null});
-    }
-  }
-  async function postCommission(url, body, busyLabel) {
-    var showBusy = !!busyLabel;
-    if (showBusy) {
-      patchActiveSpeaker({commissionBusy: busyLabel, commissionError: ''});
-      render();
-    } else if (activeSpeaker.commissionError) {
-      patchActiveSpeaker({commissionError: ''});
-      render();
-    }
-    try {
-      var payload = await postJSON(url, body || {});
-      var failure = commissionPayloadFailure(payload);
-      if (failure) {
-        // The request was accepted (HTTP 200) but a guard refused/blocked it.
-        // Show why instead of silently re-rendering the unchanged state — the
-        // "flicker then nothing" bug. Refresh first so the card reflects the
-        // persisted (still-unarmed) state alongside the reason.
-        await refreshCommissionState();
-        patchActiveSpeaker({commissionBusy: '', commissionError: failure});
-        render();
-        return {ok: false, payload: payload, error: failure};
-      }
-      // Success path is inside the try so a throw from the refresh/render calls
-      // is handled like any other postCommission error instead of rejecting the
-      // un-awaited runCommissionAutoRamp promise (which would wedge the
-      // single-flight flag — the symmetric half of the C3a-7 fix).
-      if (payload && payload.measurements) {
-        patchActiveSpeaker({measurements: payload.measurements});
-      }
-      if (payload && payload.output_topology) {
-        ingestOutputTopology(payload);
-      }
-      await refreshCommissionState();
-      await refreshCommissioningView();
-      if (showBusy) patchActiveSpeaker({commissionBusy: ''});
-      render();
-      return {ok: true, payload: payload};
-    } catch (e) {
-      patchActiveSpeaker({commissionBusy: '', commissionError: String(e.message || e)});
-      render();
-      return {ok: false, error: String(e.message || e)};
     }
   }
   async function runActiveSpeakerAction(options, operation) {
@@ -3890,13 +3834,11 @@ import {
       });
       ingestOutputTopology(payload);
       patchActiveSpeaker({
-        commission: null,
         commissioningView: null,
         measurements: null,
         baselineProfile: null,
         error: '',
-        commissionBusy: '',
-        commissionError: ''
+        commissionBusy: ''
       });
       // The server deleted the draft; a dirty form would otherwise keep the
       // old driver values and ship them back on the next save. Empty the form
@@ -4028,13 +3970,26 @@ import {
     render();
   }
   async function restoreBaselineProfile() {
-    var result = await postCommission('./active-speaker/baseline-profile/restore', {}, 'Restoring previous tune');
-    var applied = result.ok && result.payload.status === 'applied';
-    status(applied ? 'Previous tune restored.' : (result.error || 'Previous tune was not restored.'), !applied);
-    if (applied) await runActiveSpeakerAction({}, async function() {
-      patchActiveSpeaker({baselineProfile: await fetchActiveSpeakerBaselineProfile()});
+    patchActiveSpeaker({commissionBusy: 'Restoring previous tune'});
+    render();
+    try {
+      var payload = await postJSON('./active-speaker/baseline-profile/restore', {});
+      var failure = commissionPayloadFailure(payload);
+      if (failure) throw new Error(failure);
+      if (payload.measurements) patchActiveSpeaker({measurements: payload.measurements});
+      if (payload.output_topology) ingestOutputTopology(payload);
+      await refreshCommissioningView();
+      var applied = payload.status === 'applied';
+      status(applied ? 'Previous tune restored.' : 'Previous tune was not restored.', !applied);
+      if (applied) await runActiveSpeakerAction({}, async function() {
+        patchActiveSpeaker({baselineProfile: await fetchActiveSpeakerBaselineProfile()});
+      });
+    } catch (e) {
+      status(String(e.message || e), true);
+    } finally {
+      patchActiveSpeaker({commissionBusy: ''});
       render();
-    });
+    }
   }
   async function fetchActiveSpeakerMeasurements() {
     return await getJSON('./active-speaker/measurements');

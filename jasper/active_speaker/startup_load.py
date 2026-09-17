@@ -227,7 +227,7 @@ def _staged_config_path(staged_config: dict[str, Any]) -> Path | None:
     return Path(raw) if isinstance(raw, str) and raw.strip() else None
 
 
-def _staged_topology_payload(
+def staged_topology_match_status(
     topology: OutputTopology,
     staged_config: dict[str, Any],
 ) -> dict[str, Any]:
@@ -284,18 +284,6 @@ def _staged_topology_payload(
         "checks": checks,
         "issues": issues,
     }
-
-
-def staged_topology_match_status(
-    topology: OutputTopology,
-    staged_config: dict[str, Any],
-) -> dict[str, Any]:
-    """Return whether staged startup metadata still matches saved topology."""
-
-    return _staged_topology_payload(
-        topology,
-        staged_config,
-    )
 
 
 def _candidate_payload(
@@ -463,7 +451,7 @@ def build_startup_load_preflight(
     )
     staged_path = _staged_config_path(staged)
     candidate = _candidate_payload(staged_path, validate=validate)
-    staged_topology = _staged_topology_payload(
+    staged_topology = staged_topology_match_status(
         topology,
         staged,
     )

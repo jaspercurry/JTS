@@ -40,6 +40,7 @@ from jasper.audio_hardware.i2s_hat import (
 )
 from jasper.log_event import log_event
 from jasper.platform import wire
+from jasper.platform.uds import mux_socket_command
 from jasper.output_topology import (
     OutputHardware,
     OutputTopology,
@@ -64,7 +65,6 @@ from jasper.active_speaker.commission_wiring import (
 )
 
 from jasper.active_speaker.web_commissioning import (
-    _commission_tone_mux_command,
     ensure_missing_software_guards,
     request_missing_software_guards as _request_missing_software_guards,
 )
@@ -901,11 +901,11 @@ def _active_speaker_crossover_preview_save_payload() -> dict[str, Any]:
     return payload
 
 
-def _active_speaker_restore_auto_source(*, reason: str) -> dict[str, Any]:
+async def _active_speaker_restore_auto_source(*, reason: str) -> dict[str, Any]:
     """Best-effort return from setup-only routing to normal latest-source-wins."""
 
     try:
-        payload = _commission_tone_mux_command(wire.MUX_AUTO)
+        payload = await mux_socket_command(wire.MUX_AUTO)
     except (OSError, RuntimeError, UnicodeError, json.JSONDecodeError) as exc:
         log_event(
             logger,
@@ -974,10 +974,9 @@ async def _active_speaker_commission_state_payload(
     *,
     camilla_factory: Callable[[], Any],
 ) -> dict[str, Any]:
-    """Read-only commission-load + ramp + per-driver floor state for the card.
+    """Read commission-load, ramp and floor state for the commissioning view.
 
-    Deliberately calls NO preflight (which would emit the candidate YAML) — a
-    pure read. The arm/step that run the preflight are POST-only.
+    Skip preflight because it writes candidate YAML.
     """
 
     from jasper.active_speaker.commission_ramp import (
@@ -1152,7 +1151,7 @@ async def _active_speaker_baseline_profile_apply_payload(
         on_candidate_verified=on_candidate_verified,
     )
     if payload.get("status") == "applied":
-        payload["source_selection_restore"] = _active_speaker_restore_auto_source(
+        payload["source_selection_restore"] = await _active_speaker_restore_auto_source(
             reason="baseline_apply",
         )
     log_event(

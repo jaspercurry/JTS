@@ -124,7 +124,6 @@ def build_commissioning_view(
 
     draft, preview, review = design_draft or {}, crossover_preview or {}, baseline_profile or {}
     summary = (measurements or {}).get("summary") or {}
-    assigned = topology.evaluation()["assigned_output_count"]
     passive = topology_is_subless_passive_mains(topology)
     has_layout = bool(topology.speaker_groups)
     design_ready = passive or draft.get("status") == "ready_for_review"
@@ -202,8 +201,6 @@ def build_commissioning_view(
                    "status": review.get("status"), "issues": list(review.get("issues") or [])},
         "driver_values": {"complete": values_ready, "design_ready": design_ready,
                           "preview_ready": preview_ready, "safety_profile_confirmed": safety_ready},
-        "driver_target_proof": {**checks, "complete": checks_complete and assigned > 0,
-                                "driver_checks_complete": checks_complete},
         "driver_spacing_mm": (draft.get("manual_settings") or {}).get("driver_spacing_mm"),
         "driver_checks": checks,
         "summed_validation": {"complete": bool(summary.get("summed_validation_complete")),

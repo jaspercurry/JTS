@@ -378,7 +378,7 @@ def commissioning_box(tmp_path, monkeypatch):
     (tmp_path / "design_draft.json").write_text(json.dumps(draft))
     (tmp_path / "crossover_preview.json").unlink()
     monkeypatch.setattr("jasper.sound.settings.saved_sound_layers", lambda: ([], 0.0))
-    monkeypatch.setattr("jasper.web.sound_active_speaker._active_speaker_restore_auto_source", lambda **kw: {"status": "ok"})
+    monkeypatch.setattr("jasper.web.sound_active_speaker.mux_socket_command", AsyncMock(return_value={}))
     return topology, _FakeApplyCam()
 
 
