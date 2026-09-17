@@ -38,18 +38,15 @@ def test_high_frequency_protection_requires_highpass_band_limit() -> None:
     missing = driver_protection_payload(
         "tweeter",
         driver_style="ribbon_tweeter",
-        protection_status="software_guard_requested",
     )
     blocked = driver_protection_payload(
         "tweeter",
         driver_style="ribbon_tweeter",
-        protection_status="software_guard_requested",
         band_limit={"type": "highpass", "highpass_hz": 3000},
     )
     allowed = driver_protection_payload(
         "tweeter",
         driver_style="ribbon_tweeter",
-        protection_status="software_guard_requested",
         band_limit={"type": "highpass", "highpass_hz": 5000},
     )
 
@@ -299,7 +296,6 @@ def test_the_tone_gate_anchors_on_the_declared_low_limit_not_the_class_default(
     at_the_declared_floor = driver_protection_payload(
         "tweeter",
         driver_style="compression_driver",
-        protection_status="present",
         band_limit={"type": "highpass", "highpass_hz": DE250_LOW_LIMIT_HZ},
         declared_low_limit_hz=DE250_LOW_LIMIT_HZ,
     )
@@ -315,7 +311,6 @@ def test_the_tone_gate_anchors_on_the_declared_low_limit_not_the_class_default(
     below = driver_protection_payload(
         "tweeter",
         driver_style="compression_driver",
-        protection_status="present",
         band_limit={"type": "highpass", "highpass_hz": 1500.0},
         declared_low_limit_hz=DE250_LOW_LIMIT_HZ,
     )
@@ -339,7 +334,6 @@ def test_the_class_default_still_gates_a_tone_for_an_undeclared_driver() -> None
     payload = driver_protection_payload(
         "tweeter",
         driver_style="compression_driver",
-        protection_status="present",
         band_limit={"type": "highpass", "highpass_hz": 1900.0},
     )
 
@@ -367,7 +361,6 @@ def test_the_payload_never_prints_the_class_figure_beside_a_declared_one() -> No
     declared = driver_protection_payload(
         "tweeter",
         driver_style="compression_driver",
-        protection_status="present",
         band_limit={"type": "highpass", "highpass_hz": DE250_LOW_LIMIT_HZ},
         declared_low_limit_hz=DE250_LOW_LIMIT_HZ,
     )
@@ -377,7 +370,6 @@ def test_the_payload_never_prints_the_class_figure_beside_a_declared_one() -> No
     undeclared = driver_protection_payload(
         "tweeter",
         driver_style="compression_driver",
-        protection_status="present",
     )
     assert undeclared["low_limit_hz"] == (
         driver_protection_profile(
@@ -425,7 +417,6 @@ def test_a_declared_low_limit_above_the_class_default_still_tightens() -> None:
     payload = driver_protection_payload(
         "tweeter",
         driver_style="supertweeter",
-        protection_status="present",
         band_limit={"type": "highpass", "highpass_hz": 9000.0},
         declared_low_limit_hz=10000.0,
     )

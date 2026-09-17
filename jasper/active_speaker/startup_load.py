@@ -36,6 +36,7 @@ from .environment import (
     read_camilla_statefile_config_path,
 )
 from .path_safety import (
+    _topology_blockers,
     evaluate_path_safety_evidence,
     software_guard_ready_for_startup,
     staged_target_signature,
@@ -204,19 +205,6 @@ def _calibration_at_floor(calibration_level: dict[str, Any]) -> bool:
     )
     floor = _level_value(calibration_level, "min_level_dbfs", MIN_TEST_LEVEL_DBFS)
     return requested <= floor + 1e-6
-
-
-def _topology_blockers(
-    topology: OutputTopology,
-    *,
-    software_guard_ready: bool,
-) -> list[dict[str, str]]:
-    ignored = {"tweeter_software_guard_requested"} if software_guard_ready else set()
-    return [
-        _normalise_issue(issue)
-        for issue in topology.evaluation().get("blockers", [])
-        if isinstance(issue, dict) and str(issue.get("code")) not in ignored
-    ]
 
 
 def _staged_config_path(staged_config: dict[str, Any]) -> Path | None:
@@ -476,10 +464,7 @@ def build_startup_load_preflight(
     if path_safety_ok and not path_safety_bound:
         path_safety_load_gate = "evidence_stale"
     software_guard_ready = software_guard_ready_for_startup(topology, staged)
-    topology_blockers = _topology_blockers(
-        topology,
-        software_guard_ready=software_guard_ready,
-    )
+    topology_blockers = _topology_blockers(topology)
     level_at_floor = _calibration_at_floor(level)
     playback_idle = _tone_playback_idle(session)
     candidate_blockers = [

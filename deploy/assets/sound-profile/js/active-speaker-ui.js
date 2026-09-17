@@ -310,13 +310,6 @@ function commissionIssueReason(codes) {
   ) {
     return 'JTS loaded the quiet driver setup but could not play the test tone, so it re-muted the driver. Try again after checking the speaker audio path.';
   }
-  if (
-    codes.indexOf('tweeter_protection_unverified') >= 0 ||
-    codes.indexOf('tweeter_protection_required') >= 0 ||
-    codes.indexOf('high_frequency_protection_missing') >= 0
-  ) {
-    return 'The tweeter guard still needs to be set up before driver tests can start.';
-  }
   if (codes.indexOf('commission_active_graph_not_staged') >= 0) {
     return 'JTS needs to load the silent active-speaker setup before this driver ' +
       'can be tested. Start the tone again; no sound will play until the test opens.';
@@ -350,7 +343,7 @@ export function commissionGateReason(gateId) {
       'JTS couldn’t prepare this driver’s quiet test — re-check the crossover settings ' +
       'and DAC outputs above, then try again.',
     commissioning_protection_while_audible:
-      'This driver isn’t ready to test yet — confirm the tweeter’s protection above first.',
+      'Protection filters must stay in place while this driver is audible.',
     commissioning_candidate_present:
       'JTS couldn’t build this driver’s test setup — refresh the page and try again.',
     commissioning_transport_supported:

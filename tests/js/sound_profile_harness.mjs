@@ -148,7 +148,7 @@ function topologyPayload() {
         physical_output_index: 0,
         startup_muted: true,
         protection_required: false,
-        protection_status: "not_required",
+        protection_status: "absent",
       }],
     }],
   };
@@ -179,14 +179,14 @@ function activeTwoWayTopologyPayload() {
           physical_output_index: 0,
           startup_muted: true,
           protection_required: false,
-          protection_status: "not_required",
+          protection_status: "absent",
         },
         {
           role: "tweeter",
           physical_output_index: 1,
           startup_muted: true,
           protection_required: true,
-          protection_status: "software_guard_requested",
+          protection_status: "absent",
         },
       ],
     }],
@@ -221,14 +221,14 @@ function activeStereoTwoWayTopologyPayload() {
         physical_output_index: group.outputBase,
         startup_muted: true,
         protection_required: false,
-        protection_status: "not_required",
+        protection_status: "absent",
       },
       {
         role: "tweeter",
         physical_output_index: group.outputBase + 1,
         startup_muted: true,
         protection_required: true,
-        protection_status: "software_guard_requested",
+        protection_status: "absent",
       },
     ],
   }));
@@ -251,7 +251,7 @@ function activeTwoWayWithSubwooferTopologyPayload() {
       physical_output_index: 2,
       startup_muted: true,
       protection_required: false,
-      protection_status: "not_required",
+      protection_status: "absent",
     }],
   });
   return topology;
@@ -270,7 +270,7 @@ function cardioidTwoWayTopologyPayload() {
     identity_verified: false,
     startup_muted: true,
     protection_required: false,
-    protection_status: "not_required",
+    protection_status: "absent",
   });
   return topology;
 }
@@ -294,7 +294,7 @@ function passiveWithSubwooferTopologyPayload() {
       physical_output_index: 1,
       startup_muted: true,
       protection_required: false,
-      protection_status: "not_required",
+      protection_status: "absent",
     }],
   });
   return topology;
@@ -326,21 +326,21 @@ function activeThreeWayTopologyPayload() {
           physical_output_index: 0,
           startup_muted: true,
           protection_required: false,
-          protection_status: "not_required",
+          protection_status: "absent",
         },
         {
           role: "mid",
           physical_output_index: 1,
           startup_muted: true,
           protection_required: false,
-          protection_status: "not_required",
+          protection_status: "absent",
         },
         {
           role: "tweeter",
           physical_output_index: 2,
           startup_muted: true,
           protection_required: true,
-          protection_status: "software_guard_requested",
+          protection_status: "absent",
         },
       ],
     }],
@@ -393,7 +393,7 @@ function dongleMonoTopologyPayload() {
         physical_output_index: 0,
         startup_muted: true,
         protection_required: false,
-        protection_status: "not_required",
+        protection_status: "absent",
       }],
     }],
   };
@@ -1951,19 +1951,19 @@ async function testThreeWayRendersEveryPhysicalComponentChoice() {
       role: "woofer",
       physical_output_index: 0,
       protection_required: false,
-      protection_status: "not_required",
+      protection_status: "absent",
     },
     {
       role: "mid",
       physical_output_index: 1,
       protection_required: false,
-      protection_status: "not_required",
+      protection_status: "absent",
     },
     {
       role: "tweeter",
       physical_output_index: 2,
       protection_required: true,
-      protection_status: "software_guard_requested",
+      protection_status: "absent",
     },
   ];
   const harness = setupHarness(baseFetch({

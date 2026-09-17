@@ -14,9 +14,10 @@ from jasper.active_speaker import (
     build_crossover_preview,
 )
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
+from jasper.active_speaker.crossover_preview import crossover_preview_fingerprint
 from jasper.active_speaker.crossover_v2.conductor_context import ensure_crossover_preview_ready
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
-from jasper.output_topology import OutputTopology
+from jasper.output_topology import OutputTopology, topology_config_fingerprint
 from tests.active_speaker_fixtures import mono_output_topology
 
 
@@ -73,6 +74,17 @@ def _draft(
         driver_research=_research() if research is _DEFAULT_RESEARCH else research,
         created_at="2026-06-10T12:00:00Z",
     )
+
+
+def test_protection_status_does_not_change_dsp_fingerprints() -> None:
+    topologies = [mono_output_topology(protection_status=status) for status in ("absent", "present")]
+    drafts = [_draft(topology=topology) for topology in topologies]
+    previews = [build_crossover_preview(draft) for draft in drafts]
+
+    assert topology_config_fingerprint(topologies[0]) == topology_config_fingerprint(topologies[1])
+    assert crossover_preview_fingerprint(previews[0], drafts[0]) == crossover_preview_fingerprint(previews[1], drafts[1])
+    assert [draft["topology"]["speaker_groups"][0]["channels"][1]["protection_status"]
+            for draft in drafts] == ["absent", "present"]
 
 
 def test_crossover_preview_builds_no_audio_filter_intent() -> None:
@@ -620,12 +632,10 @@ def test_session_start_refuses_a_blocked_declaration_without_writes(tmp_path, mo
     topology_path = tmp_path / "topology.json"
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(draft_path))
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    draft = _draft(
-        topology=mono_output_topology(identity_verified=False, protection_status="unknown"),
-        research=_research(),
-    )
+    topology = mono_output_topology(tweeter_output=0)
+    draft = _draft(topology=topology, research=_research())
     draft_path.write_text(json.dumps(draft))
-    topology_path.write_text(json.dumps(mono_output_topology(protection_status="unknown").to_dict()))
+    topology_path.write_text(json.dumps(topology.to_dict()))
     before = {path: path.read_bytes() for path in tmp_path.iterdir()}
     assert build_crossover_preview(draft)["status"] == "blocked"
     with pytest.raises(CrossoverV2Refused):

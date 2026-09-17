@@ -300,7 +300,7 @@ def software_guard_evidence(
         "tweeter_pipeline_guarded": tweeter_pipeline_guarded,
     }
     return {
-        "mode": "software_guard_requested",
+        "mode": "software",
         "no_load": True,
         "no_playback": True,
         "protective_highpass_hz": protective_hp_hz,

@@ -112,9 +112,6 @@ def test_a_path_match_with_a_stale_topology_is_not_already_loaded(monkeypatch):
         return {"status": "blocked"}
 
     monkeypatch.setattr(web, "_stage_startup_config", _spy_stage)
-    monkeypatch.setattr(
-        web, "ensure_missing_software_guards", lambda: (topology, False)
-    )
 
     def _run(staged_config):
         staged_calls.clear()
@@ -220,11 +217,6 @@ def test_startup_anchor_stages_the_callers_resolved_source(monkeypatch):
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
     monkeypatch.setattr(
         web,
-        "ensure_missing_software_guards",
-        lambda: (topology, False),
-    )
-    monkeypatch.setattr(
-        web,
         "_stage_startup_config",
         lambda current, **kwargs: (
             stage_call.update(topology=current, **kwargs)
@@ -262,9 +254,6 @@ def test_startup_anchor_forwards_the_specific_stage_failure_code(monkeypatch):
     """
     topology = _topology()
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
-    monkeypatch.setattr(
-        web, "ensure_missing_software_guards", lambda: (topology, False),
-    )
     specific_issue = {
         "severity": "blocker",
         "code": "active_playback_device_required",
@@ -297,9 +286,6 @@ def test_startup_anchor_forwards_every_stage_blocker_not_only_the_first(monkeypa
     rather than dropping the rest on the floor."""
     topology = _topology()
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
-    monkeypatch.setattr(
-        web, "ensure_missing_software_guards", lambda: (topology, False),
-    )
     first_issue = {
         "severity": "blocker",
         "code": "active_playback_device_required",
@@ -344,9 +330,6 @@ def test_startup_anchor_falls_back_to_the_generic_code_with_no_stage_issue(
     fabricated cause."""
     topology = _topology()
     monkeypatch.setattr(web, "load_output_topology", lambda: topology)
-    monkeypatch.setattr(
-        web, "ensure_missing_software_guards", lambda: (topology, False),
-    )
     monkeypatch.setattr(
         web, "_stage_startup_config", lambda *a, **kw: {"status": "blocked"},
     )

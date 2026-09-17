@@ -21,7 +21,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, cast
+from typing import Any, Iterable, Mapping, cast
 
 from .atomic_io import advisory_file_lock, atomic_write_text
 from .json_fields import JsonFields
@@ -103,12 +103,10 @@ REQUIRED_ROLES_BY_MODE = {
 SUPPORTED_ROLES = {
     role for roles in REQUIRED_ROLES_BY_MODE.values() for role in roles
 }
-PROTECTION_STATUSES = {
-    "not_required",
-    "required_missing",
-    "present",
-    "software_guard_requested",
-    "unknown",
+PROTECTION_STATUSES = {"present", "absent"}
+# Legacy spellings on disk load as absent; remove once every box has re-saved its topology.
+_STORED_PROTECTION_STATUSES = PROTECTION_STATUSES | {
+    "required_missing", "software_guard_requested", "not_required", "unknown",
 }
 OUTPUT_STATES = {"unused", "assigned", "blocked"}
 # Pure-data pairing intent recorded at commission time: "is this box meant to
@@ -522,13 +520,11 @@ class SpeakerChannel:
             role == "tweeter",
         )
         protection_status = _enum(
-            raw.get(
-                "protection_status",
-                "required_missing" if protection_required else "not_required",
-            ),
+            raw.get("protection_status", "absent"),
             "speaker_groups[].channels[].protection_status",
-            PROTECTION_STATUSES,
+            _STORED_PROTECTION_STATUSES,
         )
+        protection_status = "present" if protection_status == "present" else "absent"
         return cls(
             role=role,
             output_variant=_enum(raw.get("output_variant", "primary"), "output_variant", SUPPORTED_OUTPUT_VARIANTS),
@@ -787,6 +783,15 @@ def canonical_fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def dsp_topology_projection(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: dsp_topology_projection(item) for key, item in value.items()
+                if key != "protection_status"}
+    if isinstance(value, list):
+        return [dsp_topology_projection(item) for item in value]
+    return value
+
+
 def topology_config_fingerprint(topology: OutputTopology) -> str:
     """Fingerprint only topology fields that determine emitted DSP config.
 
@@ -805,11 +810,11 @@ def topology_config_fingerprint(topology: OutputTopology) -> str:
     at CamillaDSP start costs one parse.
     """
 
-    return canonical_fingerprint({
+    return canonical_fingerprint(dsp_topology_projection({
         "hardware": topology.hardware.to_dict(),
         "speaker_groups": [group.to_dict() for group in topology.speaker_groups],
         "routing": topology.routing.to_dict(),
-    })
+    }))
 
 
 def _legacy_topology_config_fingerprint(topology: OutputTopology) -> str:
@@ -820,11 +825,11 @@ def _legacy_topology_config_fingerprint(topology: OutputTopology) -> str:
     holds it (baseline profile, bass-extension profile, commissioning plan).
     """
 
-    return canonical_fingerprint({
+    return canonical_fingerprint(dsp_topology_projection({
         key: value
         for key, value in topology.to_dict().items()
         if key != "pairing_intent"
-    })
+    }))
 
 
 def topology_fingerprint_matches(recorded: Any, topology: OutputTopology) -> bool:
@@ -1052,26 +1057,6 @@ def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
                             "blocker",
                             "tweeter_protection_not_required",
                             f"{group.label} tweeter must require protection",
-                        )
-                    )
-                if channel.protection_status == "software_guard_requested":
-                    warnings.append(
-                        _issue(
-                            "warning",
-                            "tweeter_software_guard_requested",
-                            (
-                                f"{group.label} tweeter software guard is requested; "
-                                "protected startup DSP, floor confirmation, and "
-                                "driver-aware level caps are required before playback"
-                            ),
-                        )
-                    )
-                elif channel.protection_status != "present":
-                    blockers.append(
-                        _issue(
-                            "blocker",
-                            "tweeter_protection_unverified",
-                            f"{group.label} tweeter protection must be marked present",
                         )
                     )
 
@@ -1539,77 +1524,6 @@ def resolve_output_layout(
         playback_device_source=MISSING_SOURCE,
         transport_channel_count=0,
         subwoofer_supported=False,
-    )
-
-
-def _update_speaker_channel(
-    topology: OutputTopology,
-    *,
-    group_id: str,
-    role: str,
-    output_variant: str = "primary",
-    ambiguity_subject: str,
-    update: Callable[[SpeakerChannel], SpeakerChannel],
-) -> OutputTopology:
-    """Return a topology with one unambiguous speaker channel transformed."""
-
-    matches = [
-        channel
-        for group in topology.speaker_groups
-        for channel in group.channels
-        if group.id == group_id and channel.role == role and channel.output_variant == output_variant
-    ]
-    if not matches:
-        raise OutputTopologyError("speaker channel not found")
-    if len(matches) > 1:
-        raise OutputTopologyError(
-            f"speaker channel {ambiguity_subject} is ambiguous"
-        )
-
-    groups = tuple(
-        replace(
-            group,
-            channels=tuple(
-                update(channel) if channel.role == role and channel.output_variant == output_variant else channel
-                for channel in group.channels
-            ),
-        )
-        if group.id == group_id
-        else group
-        for group in topology.speaker_groups
-    )
-    return replace(topology, speaker_groups=groups)
-
-
-def set_channel_protection_status(
-    topology: OutputTopology,
-    *,
-    speaker_group_id: str,
-    role: str,
-    protection_status: str,
-) -> OutputTopology:
-    """Return a copy with one channel's protection evidence updated."""
-
-    group_id = _require_id(speaker_group_id, "speaker_group_id")
-    role_id = _enum(role, "role", SUPPORTED_ROLES)
-    status = _enum(protection_status, "protection_status", PROTECTION_STATUSES)
-    if role_id != "tweeter" and status != "not_required":
-        raise OutputTopologyError("only tweeter channels can require protection")
-
-    def update(channel: SpeakerChannel) -> SpeakerChannel:
-        return replace(
-            channel,
-            startup_muted=True if role_id == "tweeter" else channel.startup_muted,
-            protection_required=channel.protection_required or role_id == "tweeter",
-            protection_status=status,
-        )
-
-    return _update_speaker_channel(
-        topology,
-        group_id=group_id,
-        role=role_id,
-        ambiguity_subject="protection",
-        update=update,
     )
 
 

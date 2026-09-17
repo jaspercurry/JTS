@@ -1845,7 +1845,6 @@ def test_active_speaker_setup_copy_has_no_backend_jargon():
 
     # The pure vocabulary module owns the no-sound fallbacks and stays actionable.
     assert "Start the tone again so JTS can open the quiet driver test first." in helper_js
-    assert "The tweeter guard still needs to be set up" in helper_js
     assert "did not complete" not in helper_js
 
 
@@ -2566,7 +2565,7 @@ def test_topology_save_parks_before_replacing_saved_layout(
 @pytest.mark.parametrize("applied", [False, True])
 def test_topology_resave_converges_without_parking(monkeypatch, tmp_path, caplog, applied):
     raw = _active_speaker_mono_topology_payload(
-        protection_status="software_guard_requested",
+        protection_status="absent",
     )
     save_output_topology(OutputTopology.from_mapping(raw))
     prior_path = str(tmp_path / "baseline.yml")
@@ -2860,27 +2859,27 @@ def test_driver_research_prompt_refuses_a_target_without_a_model(monkeypatch, mo
         })
 
 
-def test_active_speaker_crossover_preview_refreshes_current_output_topology(
+def test_draft_and_preview_preserve_unprotected_topology(
     monkeypatch,
     tmp_path: Path,
 ):
-    _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
 
     sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(protection_status="required_missing")
+        _active_speaker_mono_topology_payload(protection_status="absent")
     )
+    path = paths["JASPER_OUTPUT_TOPOLOGY_PATH"]
+    before = path.read_bytes(), path.stat().st_mtime_ns
     refreshed = _save_active_speaker_design_and_preview()
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
 
     assert refreshed["status"] == "ready_for_protected_staging"
-    assert "tweeter_protection_unverified" not in {
-        issue["code"] for issue in refreshed["issues"]
-    }
     filters = refreshed["groups"][0]["crossovers"][0]["filters"]
     tweeter_filter = next(
         item for item in filters
         if item["role"] == "tweeter"
     )
-    assert tweeter_filter["channel"]["protection_status"] == "software_guard_requested"
+    assert tweeter_filter["channel"]["protection_status"] == "absent"
 
 
 def _record_dac8x() -> None:
@@ -2999,7 +2998,7 @@ def test_active_speaker_design_draft_route_persists_saved_topology_research(
     draft_path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
     sound_setup._save_output_topology_payload(
         _active_speaker_mono_topology_payload(
-            protection_status="software_guard_requested",
+            protection_status="absent",
             card_id=None,
             identity_verified=True,
         )
@@ -3065,7 +3064,7 @@ def test_active_speaker_design_draft_route_persists_saved_topology_research(
 def test_driver_spacing_draft_save_reaches_geometry_and_handoff(monkeypatch, tmp_path, spacing):
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     topology = mono_output_topology(card_id=None)
-    monkeypatch.setattr(sound_active_speaker, "ensure_missing_software_guards", lambda: (topology, False))
+    monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     saved = sound_setup._active_speaker_design_draft_save_payload({
         "manual_settings": {"drivers": [{"role": "woofer", "model": "Test woofer"}], **spacing},
     })
@@ -3091,7 +3090,7 @@ def test_design_draft_save_without_expected_revision_succeeds(monkeypatch, tmp_p
 
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     topology = mono_output_topology(card_id=None)
-    monkeypatch.setattr(sound_active_speaker, "ensure_missing_software_guards", lambda: (topology, False))
+    monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     saved = sound_setup._active_speaker_design_draft_save_payload({"operator_inputs": {"notes": "current"}})
     assert saved["revision"] == 1
     assert json.loads(paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"].read_text())["operator_inputs"] == {"notes": "current"}
@@ -4277,7 +4276,7 @@ def test_active_speaker_crossover_preview_get_tracks_draft_without_preview_file(
 ):
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     sound_setup._save_output_topology_payload(_active_speaker_mono_topology_payload(
-        protection_status="software_guard_requested", card_id=None, identity_verified=True,
+        protection_status="absent", card_id=None, identity_verified=True,
     ))
     _save_active_speaker_design_and_preview()
     handler_cls = sound_setup._make_handler(
@@ -6751,7 +6750,6 @@ def test_design_draft_get_computes_profile_from_current_values(monkeypatch, tmp_
 
     topology = mono_output_topology(card_id=None)
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    monkeypatch.setattr(sound_active_speaker, "ensure_missing_software_guards", lambda: (topology, False))
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
     saved = sound_setup._active_speaker_design_draft_save_payload({"manual_settings": _manual_settings()})

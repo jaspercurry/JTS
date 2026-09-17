@@ -239,7 +239,7 @@ def _stereo_topology() -> OutputTopology:
                     "identity_verified": True,
                     "startup_muted": True,
                     "protection_required": True,
-                    "protection_status": "software_guard_requested",
+                    "protection_status": "absent",
                 },
             ],
         }

@@ -482,10 +482,6 @@ def driver_test_signal_plan_from_edges(
     driver_protection = driver_protection_payload(
         role_id,
         driver_style=driver_style,
-        protection_status=(
-            "software_guard_requested"
-            if profile.role_class == "high_frequency" else None
-        ),
         band_limit=band_limit if band_type != "unknown" else None,
         declared_low_limit_hz=declared_low_limit_hz,
         declared_floor_hz=excitation_floor_hz,

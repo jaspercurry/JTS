@@ -334,16 +334,11 @@ def load_staged_startup_config(
     }
 
 
-def _software_guard_requested(group: SpeakerGroup | None) -> bool:
+def _software_guard_needed(groups: list[SpeakerGroup]) -> bool:
     return any(
-        channel.role == "tweeter"
-        and channel.protection_status == "software_guard_requested"
-        for channel in (group.channels if group else ())
+        channel.role == "tweeter" and channel.protection_status == "absent"
+        for group in groups for channel in group.channels
     )
-
-
-def _software_guard_requested_any(groups: list[SpeakerGroup]) -> bool:
-    return any(_software_guard_requested(group) for group in groups)
 
 
 def _active_mode_for_way(way_count: int) -> str:
@@ -1028,16 +1023,7 @@ def _bind_preset_to_topology(
     issues.extend(group_issues)
     gates.extend(group_gates)
 
-    software_guard_requested = _software_guard_requested_any(active_groups)
-    evaluation = topology.evaluation()
-    topology_blockers = [
-        issue for issue in evaluation.get("blockers", [])
-        if not (
-            software_guard_requested
-            and isinstance(issue, dict)
-            and issue.get("code") == "tweeter_software_guard_requested"
-        )
-    ]
+    topology_blockers = topology.evaluation().get("blockers", [])
     topology_valid = not topology_blockers
     gates.append(_gate(
         "topology_valid",
@@ -1196,50 +1182,6 @@ def _bind_preset_to_topology(
             "blocker",
             "active_outputs_must_match_role_order",
             f"first protected staging slice requires {expected_role_order}",
-        ))
-
-    tweeter_channels = [
-        channel
-        for (side, role, variant), channel in channels_by_slot.items()
-        if role == "tweeter" and (side, role, variant) in required_slots
-    ]
-    tweeter_guard_declared = bool(tweeter_channels) and all(
-        channel.startup_muted
-        and channel.protection_required
-        and channel.protection_status in {"present", "software_guard_requested"}
-        for channel in tweeter_channels
-    )
-    physical_guard_present = bool(tweeter_channels) and all(
-        channel.protection_status == "present" for channel in tweeter_channels
-    )
-    gates.append(_gate(
-        "tweeter_guard_declared",
-        label="High-frequency guard mode is explicit",
-        passed=tweeter_guard_declared,
-        message=(
-            "High-frequency protection is present"
-            if physical_guard_present
-            else (
-                "Software-only high-frequency guard was requested"
-                if software_guard_requested
-                else "Choose physical protection or software-guarded bring-up before staging"
-            )
-        ),
-    ))
-    if not tweeter_guard_declared:
-        issues.append(_issue(
-            "blocker",
-            "tweeter_protection_required",
-            "compression-driver guard mode must be explicit before staging",
-        ))
-    elif software_guard_requested:
-        issues.append(_issue(
-            "warning",
-            "software_tweeter_guard_requested",
-            (
-                "software-only compression-driver guard requested; staging may "
-                "write a no-load candidate but cannot authorize playback"
-            ),
         ))
 
     if issues:
@@ -1636,7 +1578,7 @@ def _stage_protected_startup_config_locked(
     validation: dict[str, Any] = {"status": "skipped", "reason": "not_generated"}
     classification: dict[str, Any] = {}
     software_guard: dict[str, Any] = {}
-    software_guard_requested = _software_guard_requested_any(active_groups)
+    software_guard_needed = _software_guard_needed(active_groups)
     blocker_count = sum(1 for issue in issues if issue.get("severity") == "blocker")
 
     devices = None
@@ -1715,7 +1657,7 @@ def _stage_protected_startup_config_locked(
                     "staged active-speaker boot config must start with every "
                     "output muted",
                 ))
-            if software_guard_requested:
+            if software_guard_needed:
                 software_guard = _software_guard_evidence(
                     emitted_config, preset=bound_preset
                 )

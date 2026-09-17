@@ -212,7 +212,7 @@ def _active_group(kind: str, mode: str, start: int) -> dict:
             channel.update({
                 "startup_muted": True,
                 "protection_required": True,
-                "protection_status": "software_guard_requested",
+                "protection_status": "absent",
             })
         channels.append(channel)
     return {
@@ -3962,7 +3962,7 @@ def _innomaker_active_2way() -> OutputTopology:
                     "identity_verified": True,
                     "startup_muted": True,
                     "protection_required": True,
-                    "protection_status": "software_guard_requested",
+                    "protection_status": "absent",
                 },
             ],
         }],
@@ -4527,13 +4527,7 @@ def test_parked_materialise_is_a_noop_when_the_bytes_already_match(
     assert not list(tmp_path.glob(".*check*"))
 
 
-def _topology_with_unprotected_tweeter() -> OutputTopology:
-    """A roleful topology carrying a topology-level blocker.
-
-    ``protection_status="required_missing"`` makes ``classify_output_contract``
-    itself report a blocker, without touching the CamillaDSP graph text.
-    """
-
+def _topology_with_unmuted_tweeter() -> OutputTopology:
     topology = _active_topology("mono", "active_2_way")
     return replace(
         topology,
@@ -4541,7 +4535,7 @@ def _topology_with_unprotected_tweeter() -> OutputTopology:
             replace(
                 group,
                 channels=tuple(
-                    replace(channel, protection_status="required_missing")
+                    replace(channel, startup_muted=False)
                     if channel.role == "tweeter"
                     else channel
                     for channel in group.channels
@@ -4564,7 +4558,7 @@ def test_parked_path_reports_each_topology_issue_exactly_once(
     the count was asserted there. Now the structurally-safe parked graph is
     allowed, the box parks, and the decision reports the same blocker once.
     """
-    broken = _topology_with_unprotected_tweeter()
+    broken = _topology_with_unmuted_tweeter()
     decision = safe_graph_for_current_topology(
         broken,
         statefile_path=tmp_path / "outputd-statefile.yml",
@@ -4575,7 +4569,7 @@ def test_parked_path_reports_each_topology_issue_exactly_once(
     assert decision.status == PARKED_MUTED_STATUS
     codes = collections.Counter(issue["code"] for issue in decision.issues)
     # Reported, because parking past a blocker must not be silent...
-    assert codes["tweeter_protection_unverified"] == 1
+    assert codes["tweeter_must_start_muted"] == 1
     # ...and reported ONCE: the parked verifier re-runs `classify_camilla_graph`,
     # which re-prepends the identical `contract.issues`, so a naive union would
     # print the blocker twice in the install transcript.
@@ -4613,7 +4607,7 @@ def test_blocked_path_still_dedupes_topology_issues_when_parking_fails(
         camilla_yaml, "emit_active_speaker_parked_config", _too_narrow
     )
 
-    broken = _topology_with_unprotected_tweeter()
+    broken = _topology_with_unmuted_tweeter()
     decision = safe_graph_for_current_topology(
         broken,
         statefile_path=tmp_path / "outputd-statefile.yml",
@@ -4626,7 +4620,7 @@ def test_blocked_path_still_dedupes_topology_issues_when_parking_fails(
     # An unsafe parked graph is refused by its own structural blocker...
     assert codes["parked_graph_width_too_narrow"] == 1
     # ...and the topology blocker it carries alongside is still printed ONCE.
-    assert codes["tweeter_protection_unverified"] == 1
+    assert codes["tweeter_must_start_muted"] == 1
     assert codes["active_startup_graph_missing"] == 1
     assert not (tmp_path / "active_speaker_parked.yml").exists()
 
@@ -4699,12 +4693,12 @@ def test_parked_exemption_is_scoped_to_the_parked_verdict(tmp_path: Path) -> Non
     both DAC-driving, so a half-assigned topology can genuinely make them unsafe
     — they keep the blanket refusal.
     """
-    broken = _topology_with_unprotected_tweeter()
+    broken = _topology_with_unmuted_tweeter()
 
     flat = classify_camilla_graph(topology=broken, text=_flat_yaml())
     assert flat.classification != GRAPH_PARKED_ALL_MUTED
     assert flat.allowed is False
-    assert "tweeter_protection_unverified" in {
+    assert "tweeter_must_start_muted" in {
         issue["code"] for issue in flat.issues
     }
 
@@ -4747,7 +4741,7 @@ def test_parked_exemption_still_refuses_the_graphs_own_blockers(
 
     # Blocker-bearing topology: still refused — the exemption never reaches it.
     graph = classify_camilla_graph(
-        topology=_topology_with_unprotected_tweeter(), text=tampered
+        topology=_topology_with_unmuted_tweeter(), text=tampered
     )
     assert graph.allowed is False
     assert "volume_limit_positive" in {issue["code"] for issue in graph.issues}
@@ -4778,7 +4772,7 @@ def test_parked_graph_claiming_the_marker_but_failing_its_proof_is_refused(
     assert "emit_active_speaker_parked_config" in tampered
 
     graph = classify_camilla_graph(
-        topology=_topology_with_unprotected_tweeter(), text=tampered
+        topology=_topology_with_unmuted_tweeter(), text=tampered
     )
 
     # It still CLAIMS to be parked...
@@ -4802,7 +4796,7 @@ def test_blocker_bearing_box_actually_writes_the_parked_statefile(
     """
     import logging
 
-    draft = _topology_with_unprotected_tweeter()
+    draft = _topology_with_unmuted_tweeter()
     statefile = tmp_path / "outputd-statefile.yml"
     parked_path = tmp_path / "active_speaker_parked.yml"
 

@@ -20,7 +20,6 @@ var outputTopology = {
   hardwareAdoption: null,
   hardwareMismatch: null,
   hardwareRepin: null,
-  protectionSaving: '',
   error: '', dirty: false, touched: false
 };
 

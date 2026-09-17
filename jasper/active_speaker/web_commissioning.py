@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared startup anchors, software guards and commission status."""
+"""Shared startup anchors and commission status."""
 
 from __future__ import annotations
 
@@ -40,8 +40,6 @@ from jasper.log_event import log_event
 from jasper.output_topology import (
     OutputTopology,
     load_output_topology,
-    output_topology_mutation,
-    set_channel_protection_status,
 )
 
 from ._common import blocker_issue as _issue
@@ -94,42 +92,6 @@ def _dict_items(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict)]
-
-
-def request_missing_software_guards(
-    topology: OutputTopology,
-) -> tuple[OutputTopology, bool]:
-    """Return intent with commissioning's required guard requests applied."""
-
-    updated = topology
-    changed = False
-    for group in topology.speaker_groups:
-        if not str(group.mode or "").startswith("active_"):
-            continue
-        for channel in group.channels:
-            if not channel.protection_required:
-                continue
-            if channel.protection_status in {"present", "software_guard_requested"}:
-                continue
-            updated = set_channel_protection_status(
-                updated,
-                speaker_group_id=group.id,
-                role=channel.role,
-                protection_status="software_guard_requested",
-            )
-            changed = True
-    return updated, changed
-
-
-def ensure_missing_software_guards() -> tuple[OutputTopology, bool]:
-    """Fresh-read missing protection requests and persist them transactionally."""
-
-    with output_topology_mutation() as mutation:
-        topology = mutation.snapshot().topology
-        updated, changed = request_missing_software_guards(topology)
-        if changed:
-            mutation.save(updated)
-        return updated, changed
 
 
 def _stage_startup_config(
@@ -261,7 +223,6 @@ async def _ensure_commission_startup_anchor(
             reason="staged_topology_mismatch",
         )
 
-    topology, _guards_changed = ensure_missing_software_guards()
     stage = _stage_startup_config(
         topology,
         preset=preset,
