@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .atomic_io import advisory_file_lock, atomic_write_text, read_json_mapping
+from .env_file import parse_env_mapping
 from .install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
@@ -276,19 +277,10 @@ def parse_target_manifest(
 
     path = source_root / TARGET_MANIFEST_NAME
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise EnhancedAecError(f"missing enhanced-AEC source manifest: {path}") from exc
-    values: dict[str, str] = {}
-    for raw in lines:
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip().strip("'\"")
-        if key:
-            values[key] = value
+    values = parse_env_mapping(text)
     missing = sorted(key for key in _REQUIRED_TARGET_KEYS if not values.get(key))
     if missing:
         raise EnhancedAecError(
