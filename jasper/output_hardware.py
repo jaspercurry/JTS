@@ -22,7 +22,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .atomic_io import atomic_write_json
+from .atomic_io import atomic_write_json, read_json_mapping
 from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE,
     APPLE_USB_C_DONGLE_ID,
@@ -898,11 +898,8 @@ def probe_system_cards(
 
 
 def load_state(path: str | Path | None = None) -> OutputHardwareState | None:
-    try:
-        raw = json.loads(state_path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(raw, Mapping):
+    raw = read_json_mapping(state_path(path))
+    if raw is None:
         return None
     if raw.get("artifact_schema_version") != SCHEMA_VERSION:
         return None

@@ -23,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
-import json
 import logging
 import math
 import os
@@ -42,6 +41,7 @@ from jasper.atomic_io import (
     advisory_file_lock_async,
     atomic_write_json,
     atomic_write_text,
+    read_json_mapping,
 )
 from jasper.camilla_config_contract import (
     VolumeLimitViolation,
@@ -327,11 +327,7 @@ def last_dsp_apply_state(
     path = resolve_state_path(
         state_path, "JASPER_DSP_APPLY_STATE_PATH", DEFAULT_DSP_APPLY_STATE_PATH
     )
-    try:
-        blob = json.loads(path.read_text())
-    except (OSError, ValueError, json.JSONDecodeError):
-        return None
-    return blob if isinstance(blob, dict) else None
+    return read_json_mapping(path)
 
 
 def dsp_write_epoch_from_state(state: dict[str, Any] | None) -> str:
