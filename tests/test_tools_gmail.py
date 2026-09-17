@@ -428,8 +428,10 @@ async def test_read_thread_dispatch_redacts_message_content_from_info_logs(
     assert event_fields(caplog, "tool.dispatch_done")["payload"].startswith(
         "<redacted len="
     )
-    assert "Dentist appointment" not in caplog.text
-    assert "Your appointment is Tuesday" not in caplog.text
+    assert not any("Dentist appointment" in r.getMessage() for r in caplog.records)
+    assert not any(
+        "Your appointment is Tuesday" in r.getMessage() for r in caplog.records
+    )
 
 
 async def test_read_thread_caps_at_10_messages(monkeypatch):

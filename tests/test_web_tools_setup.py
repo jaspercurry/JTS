@@ -40,6 +40,7 @@ from jasper.tool_state import (
 )
 from jasper.web import tools_setup
 from jasper.web._common import RestartOutcome
+from tests._log_events import event_records
 from tests._web_test_helpers import assert_canonical_page, make_real_handler
 
 
@@ -496,7 +497,7 @@ def test_post_toggle_pack_no_op_does_not_rewrite_or_log(
 
     assert h.status == 200
     assert writes == []
-    assert "event=tools.toggle_pack" not in caplog.text
+    assert event_records(caplog, "tools.toggle_pack") == []
 
 
 def test_post_toggle_singleton_pack_writes_child_tool_state(tmp_path, monkeypatch):

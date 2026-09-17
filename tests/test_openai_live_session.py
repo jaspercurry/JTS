@@ -165,7 +165,7 @@ async def test_sdk_prepares_before_wake_without_dialling_and_retries_preparation
         if failure_stage:
             assert conn._state is ConnectionState.FAILED
             assert conn.last_failure_detail() and key not in conn.last_failure_detail()
-            assert key not in caplog.text
+            assert not any(key in r.getMessage() for r in caplog.records)
             assert conn.wake_cue() == CANT_CONNECT_CUE_SLUG
         await asyncio.sleep(0)
         assert cues == []
@@ -1258,7 +1258,9 @@ async def test_startup_rejection_preserves_retry_and_cue(code, transient, caplog
         assert all(socket.closed for socket in sockets)
         assert "private-test-credential" not in str(failure.value)
         assert "private-test-credential" not in conn.last_failure_detail()
-        assert "private-test-credential" not in caplog.text
+        assert not any(
+            "private-test-credential" in r.getMessage() for r in caplog.records
+        )
     finally:
         await conn.stop()
 

@@ -578,7 +578,7 @@ def test_oauth_callback_exchange_failure_flash_is_redacted(monkeypatch, caplog):
     ]
     assert len(flashes) == 1
     assert leaked not in flashes[0]
-    assert leaked not in caplog.text
+    assert not any(leaked in r.getMessage() for r in caplog.records)
 
 
 def test_oauth_callback_with_error_redirects_without_exchange(monkeypatch):

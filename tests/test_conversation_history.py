@@ -124,7 +124,10 @@ def test_store_chmod_is_quiet_when_foreign_owner_file_is_group_writable(
 
     history_module._chmod_store(str(db_path))
 
-    assert "conversation history store chmod failed" not in caplog.text
+    assert not any(
+        "conversation history store chmod failed" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 def test_recent_orders_newest_first_with_limit_and_since_filter(tmp_path):
@@ -205,7 +208,7 @@ def test_read_only_store_can_suppress_query_warnings(tmp_path, caplog):
     finally:
         reader.close()
 
-    assert caplog.text == ""
+    assert caplog.records == []
 
 
 def test_read_settings_merges_process_env_and_fresh_wizard_file(tmp_path):

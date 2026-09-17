@@ -538,7 +538,9 @@ async def test_setup_acknowledgement_controls_readiness(conn_cls, outcome, monke
             assert conn.is_paused()
             assert conn.last_failure_detail()
             assert "plainvalue123" not in conn.last_failure_detail()
-            assert "plainvalue123" not in caplog.text
+            assert not any(
+                "plainvalue123" in r.getMessage() for r in caplog.records
+            )
             assert wire.closed
     finally:
         await conn.stop()
@@ -607,7 +609,7 @@ async def test_typed_setup_error_preserves_retry_and_cue(error_type, code, trans
     assert "plainvalue123" not in str(failure.value)
     await run_reconnect_with_backoff(conn)
     assert conn._state is ConnectionState.FAILED
-    assert "plainvalue123" not in caplog.text
+    assert not any("plainvalue123" in r.getMessage() for r in caplog.records)
     assert "plainvalue123" not in conn.last_failure_detail()
     await conn.stop()
 
