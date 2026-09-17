@@ -12,7 +12,7 @@ from typing import Any, Mapping, Sequence
 
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
-from ._common import LEGACY_DROPPED_DRIVER_FIELDS, MANUAL_DRIVER_FIELDS, MANUAL_SETTINGS_FIELDS
+from ._common import LEGACY_DROPPED_DRIVER_FIELDS, MANUAL_DRIVER_FIELDS, MANUAL_SETTINGS_FIELDS, blocker_issue, issue
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
     LOW_LIMIT_DECLARED,
@@ -1246,21 +1246,19 @@ def _target_issues(target: Mapping[str, Any]) -> list[str]:
 
 
 def _target_low_limit_warnings(target: Mapping[str, Any]) -> list[dict[str, str]]:
-    """Disclose an implausible declared low limit without blocking it."""
+    """Disclose an implausible declared low limit."""
 
     role = str(target.get("role") or "")
     style = target.get("driver_style")
     low_limit = resolve_driver_low_limit(target, role=role, driver_style=style)
     if low_limit is None:
         return []
-    diagnosis = _low_limit_implausibility_diagnosis(
-        role=role,
-        driver_style=style,
-        frequency_hz=low_limit.frequency_hz,
-    )
-    if diagnosis is None:
+    if _low_limit_implausibility_diagnosis(
+        role=role, driver_style=style, frequency_hz=low_limit.frequency_hz,
+    ) is None:
         return []
-    return [{"severity": "warning", "code": f"{role}:low_limit_implausible_for_style"}]
+    return [issue("warning", f"{role}:low_limit_implausible_for_style",
+                  f"{target['target_id']}: " + _ISSUE_MESSAGES["low_limit_implausible_for_style"])]
 
 
 _ISSUE_MESSAGES = {
@@ -1469,12 +1467,11 @@ def compute_driver_safety_profile(
                 "field_provenance",
             }
         }
-        target_issues = [{"severity": "blocker", "code": code} for code in _target_issues(entry)]
+        target_issues = [blocker_issue(
+            code, f"{target_id}: " + _ISSUE_MESSAGES[code.rsplit(":", 1)[-1]].format(role=role),
+        ) for code in _target_issues(entry)]
         target_issues.extend(_target_low_limit_warnings(entry))
-        issues.extend({
-            "target_id": target_id, **issue,
-            "message": f"{target_id}: " + _ISSUE_MESSAGES[issue["code"].rsplit(":", 1)[-1]].format(role=role),
-        } for issue in target_issues)
+        issues.extend({"target_id": target_id, **item} for item in target_issues)
         targets.append(entry)
     return {
         "artifact_schema_version": DRIVER_SAFETY_PROFILE_SCHEMA_VERSION,

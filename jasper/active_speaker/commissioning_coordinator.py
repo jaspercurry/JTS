@@ -214,14 +214,10 @@ def load_commissioning_view(
     *,
     commission: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """THE commissioning view of this speaker — load state, then compose.
+    """Share commissioning inputs between /sound/ and the crossover envelope.
 
-    The single source of truth for feeding the pure composer above: a caller
-    that omits one of its inputs silently degrades the view, so both the
-    ``/sound/`` payload and the ``/sound/speaker/crossover/envelope`` builder come
-    through here. ``commission`` is the one caller-supplied input, a
-    runtime-only view needing an async CamillaDSP probe only ``/sound/`` owns;
-    ``None`` composes identical steps.
+    A caller that omits ``commission`` silently degrades the view; ``None``
+    composes identical steps.
     """
     from jasper.active_speaker.baseline_profile import (
         compile_commissioning_profile, load_applied_baseline_profile_state,
@@ -241,7 +237,9 @@ def load_commissioning_view(
     preview = build_crossover_preview(design_draft)
     measurements = load_measurement_state(topology)
     calibration_level = load_calibration_level_state()
-    _, baseline = compile_commissioning_profile(topology=topology, design_draft=design_draft)
+    _, baseline = compile_commissioning_profile(
+        topology=topology, design_draft=design_draft, crossover_preview=preview,
+    )
     applied = load_applied_baseline_profile_state()
     experiment = {}
     if applied is None:

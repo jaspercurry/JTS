@@ -835,7 +835,6 @@ function previewStatusClass(value) {
   if (value === 'preview ready' || value === 'ready_for_protected_staging') {
     return ' status-pill--ready';
   }
-  if (value === 'stale' || value === 'unreadable') return ' status-pill--blocked';
   return '';
 }
 function crossoverPreviewReadyCount(payload) {

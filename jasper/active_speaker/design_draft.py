@@ -52,6 +52,9 @@ DRIVER_RESEARCH_KIND = "jts_active_crossover_driver_research"
 DEFAULT_DESIGN_DRAFT_PATH = Path("/var/lib/jasper/active_speaker_design_draft.json")
 DESIGN_DRAFT_PATH_ENV = "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"
 _DESIGN_DRAFT_WRITE_LOCK = threading.RLock()
+_COMPUTED_DRAFT_FIELDS = frozenset({
+    "driver_safety_profile", "driver_safety_profile_evaluation", "driver_protection_policy_view",
+})
 
 _SUPPORTED_RESEARCH_ROLES = {"full_range", "woofer", "mid", "tweeter", "subwoofer"}
 _SUPPORTED_CONFIDENCE = {"low", "medium", "high", "unknown"}
@@ -1131,8 +1134,7 @@ def design_draft_view(
 ) -> dict[str, Any]:
     """Add computed driver data to a live or banked declaration (ADR-0323 §2)."""
     out = {key: value for key, value in draft.items()
-           if key not in {"driver_safety_profile", "driver_safety_profile_evaluation",
-                          "driver_protection_policy_view"}}
+           if key not in _COMPUTED_DRAFT_FIELDS}
     if topology is None and draft.get("topology"):
         try:
             topology = OutputTopology.from_mapping(draft["topology"])
@@ -1154,110 +1156,9 @@ def load_design_draft(
     topology: OutputTopology | None = None,
 ) -> dict[str, Any]:
     """Load declared values and compute the safety profile for the supplied topology."""
-
-    target = _design_draft_path(path)
-    try:
-        raw = json.loads(target.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": DESIGN_DRAFT_KIND,
-            "status": "not_saved",
-            "revision": 0,
-            "path": str(target),
-            "driver_research": None,
-            "manual_settings": None,
-            "operator_inputs": {},
-            "summary": {},
-            "issues": [],
-            "next_step": "Save a speaker design draft from /sound/.",
-        }
-    except (OSError, json.JSONDecodeError) as exc:
-        return {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": DESIGN_DRAFT_KIND,
-            "status": "unreadable",
-            "revision": 0,
-            "path": str(target),
-            "driver_research": None,
-            "manual_settings": None,
-            "operator_inputs": {},
-            "summary": {},
-            "issues": [
-                _issue(
-                    "blocker",
-                    "design_draft_unreadable",
-                    f"could not read active-speaker design draft: {type(exc).__name__}",
-                )
-            ],
-            "next_step": "Save a fresh speaker design draft.",
-        }
-    if not isinstance(raw, dict):
-        return {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": DESIGN_DRAFT_KIND,
-            "status": "unreadable",
-            "revision": 0,
-            "path": str(target),
-            "driver_research": None,
-            "manual_settings": None,
-            "operator_inputs": {},
-            "summary": {},
-            "issues": [
-                _issue(
-                    "blocker",
-                    "design_draft_not_object",
-                    "active-speaker design draft is not a JSON object",
-                )
-            ],
-            "next_step": "Save a fresh speaker design draft.",
-        }
-    if (
-        type(raw.get("artifact_schema_version")) is not int  # noqa: E721
-        or raw.get("artifact_schema_version") != SCHEMA_VERSION
-        or raw.get("kind") != DESIGN_DRAFT_KIND
-    ):
-        return {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": DESIGN_DRAFT_KIND,
-            "status": "unreadable",
-            "revision": 0,
-            "path": str(target),
-            "driver_research": None,
-            "manual_settings": None,
-            "operator_inputs": {},
-            "summary": {},
-            "issues": [
-                _issue(
-                    "blocker",
-                    "design_draft_unsupported_schema",
-                    "active-speaker design draft has an unsupported schema",
-                )
-            ],
-            "next_step": "Save a fresh speaker design draft.",
-        }
-    raw.pop("driver_safety_profile", None)
-    raw.pop("driver_safety_profile_evaluation", None)
-    raw.pop("driver_protection_policy_view", None)
-    revision = raw.get("revision", 0)
-    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
-        out = dict(raw)
-        out.update(
-            {
-                "status": "unreadable",
-                "revision": 0,
-                "issues": [
-                    _issue(
-                        "blocker",
-                        "design_draft_revision_invalid",
-                        "active-speaker design draft revision is invalid",
-                    )
-                ],
-                "next_step": "Save a fresh speaker design draft.",
-            }
-        )
-        return out
-    raw["revision"] = revision
+    raw = _read_design_draft(_design_draft_path(path))
+    if raw["status"] in ("not_saved", "unreadable"):
+        return raw
     raw.pop("driver_research_request", None)
     research = raw.get("driver_research")
     if isinstance(research, dict):
@@ -1267,6 +1168,59 @@ def load_design_draft(
             if isinstance(driver, dict):
                 driver.pop("target_fingerprint", None)
     return design_draft_view(raw, topology=topology)
+
+
+def _read_design_draft(target: Path) -> dict[str, Any]:
+    """The stored declaration, or a `not_saved`/`unreadable` placeholder."""
+    out = {
+        "artifact_schema_version": SCHEMA_VERSION,
+        "kind": DESIGN_DRAFT_KIND,
+        "status": "unreadable",
+        "revision": 0,
+        "path": str(target),
+        "driver_research": None,
+        "manual_settings": None,
+        "operator_inputs": {},
+        "summary": {},
+        "issues": [],
+        "next_step": "Save a fresh speaker design draft.",
+    }
+    try:
+        raw = json.loads(target.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        out.update(status="not_saved", next_step="Save a speaker design draft from /sound/.")
+        return out
+    except (OSError, json.JSONDecodeError) as exc:
+        out["issues"] = [_issue(
+            "blocker", "design_draft_unreadable",
+            f"could not read active-speaker design draft: {type(exc).__name__}",
+        )]
+        return out
+    if not isinstance(raw, dict):
+        out["issues"] = [_issue(
+            "blocker", "design_draft_not_object", "active-speaker design draft is not a JSON object",
+        )]
+        return out
+    if (
+        type(raw.get("artifact_schema_version")) is not int  # noqa: E721
+        or raw.get("artifact_schema_version") != SCHEMA_VERSION
+        or raw.get("kind") != DESIGN_DRAFT_KIND
+    ):
+        out["issues"] = [_issue(
+            "blocker", "design_draft_unsupported_schema", "active-speaker design draft has an unsupported schema",
+        )]
+        return out
+    for key in _COMPUTED_DRAFT_FIELDS:
+        raw.pop(key, None)
+    revision = raw.get("revision", 0)
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        raw.update(
+            status="unreadable", revision=0, next_step=out["next_step"],
+            issues=[_issue("blocker", "design_draft_revision_invalid", "active-speaker design draft revision is invalid")],
+        )
+        return raw
+    raw["revision"] = revision
+    return raw
 
 
 def save_design_draft(
@@ -1290,7 +1244,7 @@ def save_design_draft(
 
     target = _design_draft_path(path)
     with _DESIGN_DRAFT_WRITE_LOCK:
-        prior = load_design_draft(target)
+        prior = _read_design_draft(target)
         event_at = created_at or _utc_now()
         current_revision = prior.get("revision", 0)
         draft = build_design_draft(
@@ -1317,7 +1271,7 @@ def save_design_draft(
             # allow_nan=False: fail at the writer that produced the non-finite
             # value, not at the evidence packet hours later (#2839).
             json.dumps({key: value for key, value in draft.items()
-                        if key not in {"driver_safety_profile", "driver_protection_policy_view"}},
+                        if key not in _COMPUTED_DRAFT_FIELDS},
                        allow_nan=False, indent=2, sort_keys=True) + "\n",
             mode=0o640,
             durable=durable,

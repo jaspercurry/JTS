@@ -340,7 +340,7 @@ def _production_host_seams(monkeypatch, tmp_path):
                 continue
             if getattr(_module, _symbol, None) is _original:
                 monkeypatch.setattr(_module, _symbol, _fake)
-    monkeypatch.setattr(v2ctx, "ensure_crossover_preview_ready", lambda: None)
+    monkeypatch.setattr(v2ctx, "ensure_crossover_preview_ready", lambda design_draft=None: None)
     # The conductor context reads the per-role sweep-duration ceiling off the
     # same confirmed target as the caps above (#2921). These suites carry a
     # fixture profile with no ``level_duration_limits`` on it, so the real
