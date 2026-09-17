@@ -91,7 +91,7 @@ def _assert_camilla_restart_stays_after_dsp_reconcile(function_name: str):
     assert "restart_core_camilla_after_dsp_reconcile" not in vulnerable_window
 
 
-def test_camilla_restart_stays_after_dsp_reconcile_in_systemd_units():
+def test_camilla_restart_stays_after_dsp_reconcile_in_the_shared_tail():
     """Camilla must not restart in the fan-in-restart to DSP-reconcile window.
 
     With stale ring files deleted early, fan-in creates fresh 4-slot rings. If
@@ -101,8 +101,4 @@ def test_camilla_restart_stays_after_dsp_reconcile_in_systemd_units():
     existing core-audio bounce contract instead of a second geometry race.
     """
 
-    _assert_camilla_restart_stays_after_dsp_reconcile("install_systemd_units")
-
-
-def test_camilla_restart_stays_after_dsp_reconcile_in_streambox_units():
-    _assert_camilla_restart_stays_after_dsp_reconcile("start_streambox_runtime_units")
+    _assert_camilla_restart_stays_after_dsp_reconcile("_start_core_graph_units")

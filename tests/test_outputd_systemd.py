@@ -122,20 +122,16 @@ def test_install_builds_installs_and_enables_outputd():
     assert "ERROR: jasper-outputd source missing" in install_sh
     assert "/opt/jasper/bin/jasper-outputd" in install_sh
     assert "deploy/systemd/jasper-outputd.service" in install_sh
-    enable_block = install_sh.split(
-        "systemctl enable jasper-camilla.service jasper-fanin.service",
-        1,
-    )[1].split("park_audio_clients_for_core_graph_restart", 1)[0]
-    assert "jasper-outputd.service" in enable_block
-    assert "jasper-audio-hardware-reconcile.service" in enable_block
     assert "systemctl restart jasper-outputd.service" in install_sh
-    assert "require_outputd_ready" in install_sh
     assert "jasper-outputd STATUS probe failed" in install_sh
-    assert "park_audio_clients_for_core_graph_restart" in install_sh
-    restart_block = install_sh.rsplit(
-        "systemctl enable jasper-camilla.service jasper-fanin.service",
-        1,
-    )[1].split("systemctl enable jasper-wifi-guardian.service", 1)[0]
+    for profile in ("install_systemd_units", "start_streambox_runtime_units"):
+        body = install_sh.split(f"{profile}() {{", 1)[1].split("\n}", 1)[0]
+        enable_block = body.split("_start_core_graph_units", 1)[1]
+        assert "jasper-outputd.service" in enable_block, profile
+        assert "jasper-audio-hardware-reconcile.service" in enable_block, profile
+    restart_block = install_sh.split("_start_core_graph_units() {", 1)[1].split(
+        "\n}", 1
+    )[0]
     assert restart_block.index(
         "park_audio_clients_for_core_graph_restart"
     ) < restart_block.index(
@@ -147,9 +143,8 @@ def test_install_builds_installs_and_enables_outputd():
     assert restart_block.index("require_outputd_ready") < restart_block.index(
         "reconcile_sound_dsp_state"
     )
-    assert restart_block.index("reconcile_sound_dsp_state") < restart_block.index(
-        "reconcile_aec_state"
-    )
+    full = install_sh.split("install_systemd_units() {", 1)[1].split("\n}", 1)[0]
+    assert full.index("_start_core_graph_units") < full.index("reconcile_aec_state")
 
 
 def test_install_reloads_audio_udev_rules_without_synthetic_hotplug():

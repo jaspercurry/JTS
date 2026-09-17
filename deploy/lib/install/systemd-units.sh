@@ -1348,15 +1348,20 @@ restart_jasper_control_and_input() {
     systemctl restart jasper-input.service 2>/dev/null || true
 }
 
-start_streambox_runtime_units() {
-    local unit
-    systemctl enable jasper-camilla.service jasper-fanin.service \
-        jasper-outputd.service jasper-audio-hardware-reconcile.service \
-        jasper-control.service jasper-source-intent-reconcile.service \
-        jasper-accessory-reconcile.service jasper-input.service
+# Enable the profile's core units ("$@") and run the core-graph restart tail
+# both install profiles share. Each caller owns the profile-specific steps
+# before and after it.
+_start_core_graph_units() {
+    systemctl enable "$@"
     # --now: enable alone only arms the watcher for the NEXT boot, and every
     # accessory refresh requested before then would be dropped on the floor.
     systemctl enable --now jasper-accessory-reconcile.path
+    # Stop currently-running audio clients before outputd/Camilla claim the
+    # direct DAC and fan-in graph. On outputd deploys, old voice/renderers may
+    # still hold legacy or current graph endpoints; if the core graph starts
+    # first, DAC or Camilla ownership can fail with "device busy". The AEC,
+    # grouping, and renderer restart steps the callers run afterwards restore
+    # the appropriate runtime state once the graph is coherent.
     park_audio_clients_for_core_graph_restart
     reset_failed_core_graph_restart_targets
     install_run_bounded 55 -- /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || {
@@ -1364,14 +1369,32 @@ start_streambox_runtime_units() {
         JASPER_CORE_GRAPH_TAIL_DEGRADED=1
     }
     systemctl restart jasper-fanin.service 2>/dev/null || true
+    # outputd owns the final DAC loop. If it is not active and answering
+    # STATUS, the voice daemon's outputd TTS socket points at a silent path.
+    # Surface that LOUDLY, but do NOT abort the install: nginx, TLS, cues, and
+    # the doctor summary are the operator's recovery surface and must always be
+    # set up. A transient 3 s STATUS-probe miss or a slow service settle on a
+    # loaded 1 GB Pi must not strand the box with no web UI to diagnose it
+    # through. The systemd Wants=/After=jasper-outputd dependency is the real
+    # runtime guard, and run_doctor_summary re-checks outputd
+    # (check_outputd_service) at the end of the install. Mirrors the non-fatal
+    # jasper-audio-hardware-reconcile handling a few lines above.
     require_outputd_ready || {
-        echo "  WARN: jasper-outputd is not ready. Check http://${JASPER_HOSTNAME:-jts.local}/system/ and 'journalctl -u jasper-outputd'. Continuing so the web UI and doctor remain available."
+        echo "  WARN: jasper-outputd is not ready (see the STATUS-probe error above). Voice TTS may be silent until outputd recovers; check http://${JASPER_HOSTNAME:-jts.local}/system/ and 'journalctl -u jasper-outputd'. Continuing install so the web UI and doctor remain available."
         JASPER_CORE_GRAPH_TAIL_DEGRADED=1
     }
     ensure_outputd_camilla_statefile
     reconcile_sound_dsp_state
     restart_core_camilla_after_dsp_reconcile
     restart_headphone_monitor_after_deploy
+}
+
+start_streambox_runtime_units() {
+    local unit
+    _start_core_graph_units jasper-camilla.service jasper-fanin.service \
+        jasper-outputd.service jasper-audio-hardware-reconcile.service \
+        jasper-control.service jasper-source-intent-reconcile.service \
+        jasper-accessory-reconcile.service jasper-input.service
 
     # Hardware-gated USB management network (composite gadget +
     # device-activated DHCP). Skips cleanly when the resolved role cannot
@@ -1584,17 +1607,6 @@ install_systemd_units() {
         systemctl restart "${unit}.socket" 2>/dev/null || true
     done
 
-    systemctl enable jasper-camilla.service jasper-fanin.service \
-        jasper-outputd.service \
-        jasper-audio-hardware-reconcile.service \
-        jasper-source-intent-reconcile.service \
-        jasper-accessory-reconcile.service \
-        jasper-voice.service \
-        jasper-control.service \
-        jasper-input.service
-    # --now: enable alone only arms the watcher for the NEXT boot, and every
-    # accessory refresh requested before then would be dropped on the floor.
-    systemctl enable --now jasper-accessory-reconcile.path
     # Boot retries durable opt-in once. The path unit handles later successful
     # deploys asynchronously after build.txt is published; neither is awaited
     # by install.sh, so an enhancement failure cannot fail the core deploy.
@@ -1605,38 +1617,14 @@ install_systemd_units() {
         >/dev/null 2>&1 || \
         echo "  WARN: enhanced-AEC deploy reconcile path could not start"
 
-    # Stop currently-running audio clients before outputd/Camilla claim the
-    # direct DAC and fan-in graph. On outputd deploys, old voice/renderers may
-    # still hold legacy or current graph endpoints; if the core graph starts
-    # first, DAC or Camilla ownership can fail with "device busy". The AEC,
-    # grouping, and renderer restart steps below restore the appropriate
-    # runtime state once the graph is coherent.
-    park_audio_clients_for_core_graph_restart
-    reset_failed_core_graph_restart_targets
-    install_run_bounded 55 -- /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || {
-        echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
-        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
-    }
-
-    systemctl restart jasper-fanin.service 2>/dev/null || true
-    # outputd owns the final DAC loop on current main. If it is not active
-    # and answering STATUS, the voice daemon's outputd TTS socket points at a
-    # silent path. Surface that LOUDLY, but do NOT abort the install: nginx,
-    # TLS, cues, and the doctor summary are the operator's recovery surface
-    # and must always be set up. A transient 3 s STATUS-probe miss or a slow
-    # service settle on a loaded 1 GB Pi must not strand the box with no web
-    # UI to diagnose it through. The systemd Wants=/After=jasper-outputd
-    # dependency is the real runtime guard, and run_doctor_summary re-checks
-    # outputd (check_outputd_service) at the end of the install. Mirrors the
-    # non-fatal jasper-audio-hardware-reconcile handling a few lines above.
-    require_outputd_ready || {
-        echo "  WARN: jasper-outputd is not ready (see the STATUS-probe error above). Voice TTS may be silent until outputd recovers; check http://${JASPER_HOSTNAME:-jts.local}/system/ and 'journalctl -u jasper-outputd'. Continuing install so the web UI and doctor remain available."
-        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
-    }
-    ensure_outputd_camilla_statefile
-    reconcile_sound_dsp_state
-    restart_core_camilla_after_dsp_reconcile
-    restart_headphone_monitor_after_deploy
+    _start_core_graph_units jasper-camilla.service jasper-fanin.service \
+        jasper-outputd.service \
+        jasper-audio-hardware-reconcile.service \
+        jasper-source-intent-reconcile.service \
+        jasper-accessory-reconcile.service \
+        jasper-voice.service \
+        jasper-control.service \
+        jasper-input.service
 
     # Mux is core arbitration infrastructure, not a selectable source. Start it
     # on a fresh install as well as enabling boot; its role ExecCondition skips
