@@ -141,7 +141,6 @@ function topologyPayload() {
       channels: [{
         role: "full_range",
         physical_output_index: 0,
-        identity_verified: true,
         startup_muted: true,
         protection_required: false,
         protection_status: "not_required",
@@ -173,7 +172,6 @@ function activeTwoWayTopologyPayload() {
         {
           role: "woofer",
           physical_output_index: 0,
-          identity_verified: true,
           startup_muted: true,
           protection_required: false,
           protection_status: "not_required",
@@ -181,7 +179,6 @@ function activeTwoWayTopologyPayload() {
         {
           role: "tweeter",
           physical_output_index: 1,
-          identity_verified: true,
           startup_muted: true,
           protection_required: true,
           protection_status: "software_guard_requested",
@@ -217,7 +214,6 @@ function activeStereoTwoWayTopologyPayload() {
       {
         role: "woofer",
         physical_output_index: group.outputBase,
-        identity_verified: true,
         startup_muted: true,
         protection_required: false,
         protection_status: "not_required",
@@ -225,7 +221,6 @@ function activeStereoTwoWayTopologyPayload() {
       {
         role: "tweeter",
         physical_output_index: group.outputBase + 1,
-        identity_verified: true,
         startup_muted: true,
         protection_required: true,
         protection_status: "software_guard_requested",
@@ -249,7 +244,6 @@ function activeTwoWayWithSubwooferTopologyPayload() {
     channels: [{
       role: "subwoofer",
       physical_output_index: 2,
-      identity_verified: true,
       startup_muted: true,
       protection_required: false,
       protection_status: "not_required",
@@ -293,7 +287,6 @@ function passiveWithSubwooferTopologyPayload() {
     channels: [{
       role: "subwoofer",
       physical_output_index: 1,
-      identity_verified: true,
       startup_muted: true,
       protection_required: false,
       protection_status: "not_required",
@@ -326,7 +319,6 @@ function activeThreeWayTopologyPayload() {
         {
           role: "woofer",
           physical_output_index: 0,
-          identity_verified: true,
           startup_muted: true,
           protection_required: false,
           protection_status: "not_required",
@@ -334,7 +326,6 @@ function activeThreeWayTopologyPayload() {
         {
           role: "mid",
           physical_output_index: 1,
-          identity_verified: true,
           startup_muted: true,
           protection_required: false,
           protection_status: "not_required",
@@ -342,7 +333,6 @@ function activeThreeWayTopologyPayload() {
         {
           role: "tweeter",
           physical_output_index: 2,
-          identity_verified: true,
           startup_muted: true,
           protection_required: true,
           protection_status: "software_guard_requested",
@@ -396,7 +386,6 @@ function dongleMonoTopologyPayload() {
       channels: [{
         role: "full_range",
         physical_output_index: 0,
-        identity_verified: true,
         startup_muted: true,
         protection_required: false,
         protection_status: "not_required",
@@ -534,7 +523,6 @@ function commissioningViewPayload(overrides = {}) {
       missing_crossover_candidate_pairs: [],
       message: "Driver and crossover values are saved.",
     },
-    output_identity: { assigned_channel_count: 2, unverified_channel_count: 0, complete: true },
     driver_checks: { complete: true, captured: 2, required: 2 },
     summed_validation: { complete: false, validated: 0, required: 1 },
     revalidation: {},
@@ -544,38 +532,6 @@ function commissioningViewPayload(overrides = {}) {
   };
   delete overrides.stepStatuses;
   return { ...payload, ...overrides, steps };
-}
-
-function confirmedActiveTwoWayTopology() {
-  const topology = activeTwoWayTopologyPayload();
-  topology.channel_identity = {
-    kind: "jts_output_channel_identity_report",
-    status: "verified",
-    assigned_channel_count: 2,
-    verified_channel_count: 2,
-    unverified_channel_count: 0,
-    targets: [
-      {
-        id: "main:woofer",
-        speaker_group_id: "main",
-        speaker_label: "Main speaker",
-        role: "woofer",
-        assigned: true,
-        identity_verified: true,
-        physical_output_index: 0,
-      },
-      {
-        id: "main:tweeter",
-        speaker_group_id: "main",
-        speaker_label: "Main speaker",
-        role: "tweeter",
-        assigned: true,
-        identity_verified: true,
-        physical_output_index: 1,
-      },
-    ],
-  };
-  return topology;
 }
 
 function profileCommissioningView(overrides = {}) {
@@ -855,7 +811,6 @@ function baseFetch(overrides = {}) {
           missing_crossover_candidate_pairs: [],
           message: "Save driver and crossover values.",
         },
-        output_identity: { assigned_channel_count: 0, unverified_channel_count: 0, complete: false },
         driver_checks: { complete: false, captured: 0, required: 0 },
       })));
     }
@@ -2128,21 +2083,18 @@ async function testThreeWayRendersEveryPhysicalComponentChoice() {
     {
       role: "woofer",
       physical_output_index: 0,
-      identity_verified: true,
       protection_required: false,
       protection_status: "not_required",
     },
     {
       role: "mid",
       physical_output_index: 1,
-      identity_verified: true,
       protection_required: false,
       protection_status: "not_required",
     },
     {
       role: "tweeter",
       physical_output_index: 2,
-      identity_verified: true,
       protection_required: true,
       protection_status: "software_guard_requested",
     },
@@ -2216,7 +2168,7 @@ async function testActiveRouteLimitsRenderedTemplates() {
 }
 
 
-async function testSpeakerLayoutMatrixAndRearIdentity() {
+async function testSpeakerLayoutMatrixAndRearAssignment() {
   for (const layout of ['mono', 'stereo']) {
     for (const speakerMode of ['passive', 'active_2way', 'active_3way', 'cardioid']) {
       const topology = speakerMode === 'cardioid'
@@ -2225,7 +2177,7 @@ async function testSpeakerLayoutMatrixAndRearIdentity() {
       topology.hardware.physical_output_count = 8;
       const originalChannels = structuredClone(topology.speaker_groups);
       topology.hardware.outputs = Array.from({length: 8}, (_, index) => ({index}));
-      const saves = [], identities = [];
+      const saves = [];
       const harness = setupHarness(baseFetch({
         './output-topology': (_path, options = {}) => {
           if (options.method === 'POST') saves.push(JSON.parse(options.body).output_topology);
@@ -2234,10 +2186,6 @@ async function testSpeakerLayoutMatrixAndRearIdentity() {
             topology_revision: 'saved',
             active_playback_route: activeRoutePayload({transport_channel_count: 8}),
           }));
-        },
-        './active-speaker/channel-identity': (_path, options) => {
-          identities.push(JSON.parse(options.body));
-          return Promise.resolve(response({output_topology: saves.at(-1)}));
         },
       }));
       await harness.flush(); await harness.flush(); await harness.flush();
@@ -2279,13 +2227,10 @@ async function testSpeakerLayoutMatrixAndRearIdentity() {
       await harness.flush(); await harness.flush(); await harness.flush();
       assert.equal(saves.at(-1).speaker_groups[0].channels[0].physical_output_index, frontIndex);
       assert.equal(saves.at(-1).speaker_groups[0].channels.at(-1).physical_output_index, 7);
-      harness.dispatchClick({'data-act': 'mark-output-identity', 'data-group-id': group.id,
-        'data-role': 'woofer', 'data-output-variant': 'rear', 'data-verified': 'true'});
-      await harness.flush(); await harness.flush(); await harness.flush();
-      assert.equal(identities.at(-1).output_variant, 'rear');
+
     }
   }
-  return {speakerLayoutMatrixAndRearIdentity: true};
+  return {speakerLayoutMatrixAndRearAssignment: true};
 }
 
 async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
@@ -2339,10 +2284,7 @@ async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
       byRole.tweeter.physical_output_index !== 0) {
     fail("two-output selector should auto-assign the peer to the remaining channel", { channels });
   }
-  if (byRole.woofer.identity_verified !== false ||
-      byRole.tweeter.identity_verified !== false) {
-    fail("changing channel assignment should clear identity verification", { channels });
-  }
+
   if ("human_output_label" in byRole.woofer || "human_output_label" in byRole.tweeter) {
     fail("changing channel assignment should clear stale human labels", { channels });
   }
@@ -2494,7 +2436,7 @@ async function testDesignDraftSaveRefusalShowsServerErrorNotSavedToast() {
   return { designDraftSaveRefusalShowsServerErrorNotSavedToast: true };
 }
 
-async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
+async function testChannelSelectorKeepsLayoutOpenWhenDraftDirty() {
   const topology = activeTwoWayTopologyPayload();
   const fetchHandler = baseFetch({
     "./output-topology": () => Promise.resolve(response({
@@ -2512,7 +2454,7 @@ async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
       issues: [],
     })),
     "./active-speaker/commissioning-view": () => Promise.resolve(response(commissioningViewPayload({
-      status: "needs_output_confirmation",
+      status: "needs_layout",
       current_step: "layout",
       stepStatuses: {
         layout: "active",
@@ -2521,7 +2463,6 @@ async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
         experiment: "todo",
         profile: "todo",
       },
-      output_identity: { assigned_channel_count: 2, unverified_channel_count: 2, complete: false },
       driver_checks: { complete: false, captured: 0, required: 2 },
     }))),
   });
@@ -2530,7 +2471,7 @@ async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
 
   const initialHtml = harness.elements.get("view-body").innerHTML;
   if (!initialHtml.includes('data-output-step="layout" open')) {
-    fail("unconfirmed active outputs should start on the Confirm outputs card", { initialHtml });
+    fail("active outputs should start on the Speaker layout card", { initialHtml });
   }
 
   harness.dispatchChange({
@@ -2544,102 +2485,21 @@ async function testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty() {
 
   const dirtyHtml = harness.elements.get("view-body").innerHTML;
   if (!dirtyHtml.includes('data-output-step="layout" open')) {
-    fail("changing a DAC assignment should keep Confirm outputs open for saving", { dirtyHtml });
+    fail("changing a DAC assignment should keep Speaker layout open for saving", { dirtyHtml });
   }
   if (!dirtyHtml.includes('data-act="save-output-topology"') || !dirtyHtml.includes(">Save</button>")) {
-    fail("dirty channel assignment should expose the save action in Confirm outputs", { dirtyHtml });
+    fail("dirty channel assignment should expose the save action in Speaker layout", { dirtyHtml });
   }
   const reopened = harness.dispatchToggle({
     "data-output-step": "layout",
     open: true,
   });
   if (!reopened.open) {
-    fail("dirty Confirm outputs should remain reopenable until the draft is saved", { dirtyHtml });
+    fail("dirty Speaker layout should remain reopenable until the draft is saved", { dirtyHtml });
   }
-  return { channelSelectorKeepsConfirmOutputsOpenWhenDraftDirty: true };
+  return { channelSelectorKeepsLayoutOpenWhenDraftDirty: true };
 }
 
-
-async function testConfirmOutputAbortsPendingAuditionWithoutAutoRamp() {
-  const topology = activeTwoWayTopologyPayload();
-  topology.speaker_groups[0].channels.forEach((channel) => {
-    channel.identity_verified = false;
-  });
-  let commissionState = {
-    commission_load: {
-      status: "loaded",
-      target: { speaker_group_id: "main", role: "tweeter", audible_gain_db: -80 },
-      rollback_available: true,
-    },
-    ramp: {
-      confirmed_roles: [],
-      pending: { role: "tweeter", gain_db: -80, frequency_hz: 120 },
-    },
-    floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
-  };
-  const posts = [];
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: topology,
-    })),
-    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
-    "./active-speaker/commission-ramp-abort": (p, o) => {
-      const body = JSON.parse(o.body || "{}");
-      posts.push({ path: p, body });
-      commissionState = {
-        commission_load: {
-          status: "rolled_back",
-          target: {},
-          rollback_available: false,
-        },
-        ramp: { confirmed_roles: [], pending: null },
-        floor: { status: "floor_required", floor_audio_confirmed: false },
-      };
-      return Promise.resolve(response({ status: "rolled_back" }));
-    },
-    "./active-speaker/channel-identity": (p, o) => {
-      const body = JSON.parse(o.body || "{}");
-      posts.push({ path: p, body });
-      topology.speaker_groups[0].channels.forEach((channel) => {
-        if (channel.role === body.role) {
-          channel.identity_verified = !!body.identity_verified;
-        }
-      });
-      return Promise.resolve(response({ output_topology: topology }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  globalThis.__jtsConfirm = async () => {
-    posts.push({ path: "dialog-confirm" });
-    return true;
-  };
-
-  harness.dispatchClick({
-    "data-act": "mark-output-identity",
-    "data-group-id": "main",
-    "data-role": "tweeter",
-    "data-label": "Main speaker Tweeter on DAC output 2",
-  });
-  await harness.flush(); await harness.flush(); await harness.flush();
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  const abortIndex = posts.findIndex((x) => x.path === "./active-speaker/commission-ramp-abort");
-  const confirmIndex = posts.findIndex((x) => x.path === "dialog-confirm");
-  const identityIndex = posts.findIndex((x) => x.path === "./active-speaker/channel-identity");
-  if (abortIndex < 0 || confirmIndex < 0 || identityIndex < 0 ||
-      abortIndex > confirmIndex || confirmIndex > identityIndex) {
-    fail("Confirming output with a pending audition should remute before dialog and identity save", { posts });
-  }
-  const afterConfirmHtml = harness.elements.get("view-body").innerHTML;
-  if (afterConfirmHtml.includes('data-role="woofer" disabled')) {
-    fail("Confirming output should clear the pending audition and re-enable siblings", {
-      afterConfirmHtml,
-    });
-  }
-  return { confirmOutputAbortsPendingAuditionWithoutAutoRamp: true };
-}
 
 async function testThreeOutputChannelSelectorDoesNotAutoAssignPeers() {
   const topology = activeThreeWayTopologyPayload();
@@ -2660,6 +2520,13 @@ async function testThreeOutputChannelSelectorDoesNotAutoAssignPeers() {
   });
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
+  const rowHints = Array.from(
+    harness.elements.get("view-body").innerHTML.matchAll(/<div class="output-role__text">([^]*?)<\/div>/g),
+    (match) => match[1].match(/<small>([^]*?)<\/small>/)?.[1] || "",
+  );
+  if (JSON.stringify(rowHints) !== JSON.stringify(["Assign a DAC output.", "", ""])) {
+    fail("only an unassigned DAC row should show an assignment hint", { rowHints });
+  }
 
   harness.dispatchChange({
     value: "0",
@@ -2680,20 +2547,15 @@ async function testThreeOutputChannelSelectorDoesNotAutoAssignPeers() {
       byRole.tweeter.physical_output_index !== 2) {
     fail("three-output selector should only update the selected driver", { channels });
   }
-  if (byRole.woofer.identity_verified !== false ||
-      byRole.mid.identity_verified !== true ||
-      byRole.tweeter.identity_verified !== true) {
-    fail("three-output selector should not clear peer identity verification", { channels });
-  }
+
   return { threeOutputChannelSelectorDoesNotAutoAssignPeers: true };
 }
 
 async function testCompiledProfileApplyBlockStaysUnderstandable() {
-  const confirmedTopology = confirmedActiveTwoWayTopology();
+  const confirmedTopology = activeTwoWayTopologyPayload();
   const fetchHandler = baseFetch({
     "./output-topology": () => Promise.resolve(response({
       output_topology: confirmedTopology,
-      channel_identity: confirmedTopology.channel_identity,
     })),
     "./active-speaker/measurements": () => Promise.resolve(response({
       status: "ready_for_baseline",
@@ -2740,7 +2602,7 @@ async function testCompiledProfileApplyBlockStaysUnderstandable() {
 }
 
 async function testAppliedProfileCardUsesCommissioningRecord() {
-  const confirmedTopology = confirmedActiveTwoWayTopology();
+  const confirmedTopology = activeTwoWayTopologyPayload();
   const applied = {
     exists: true, stands: true, candidate_fingerprint: "0123456789abcdef".repeat(4), applied_at: "2026-09-13T12:00:00Z",
     config_path: "/var/lib/camilladsp/applied.yml", record: "7edfa758981e", disclosures: [],
@@ -2764,7 +2626,6 @@ async function testAppliedProfileCardUsesCommissioningRecord() {
       },
       "./output-topology": () => Promise.resolve(response({
         output_topology: confirmedTopology,
-        channel_identity: confirmedTopology.channel_identity,
       })),
       "./active-speaker/commissioning-view": () => Promise.resolve(response(
         profileCommissioningView({
@@ -4721,7 +4582,7 @@ async function testPreparePreviewUpdatesWorkingSetupFirst() {
       return Promise.resolve(response(commissioningViewPayload(
         commissioningViewFetches > 1
           ? {
-              status: "needs_output_confirmation",
+              status: "needs_layout",
               current_step: "layout",
               stepStatuses: {
                 layout: "active",
@@ -4812,7 +4673,7 @@ async function testPreparePreviewUpdatesWorkingSetupFirst() {
   }
   const html = harness.elements.get("view-body").innerHTML;
   if (!/data-output-step="layout"[^>]* open/.test(html)) {
-    fail("Preview completion should open Confirm outputs without a page reload", {
+    fail("Preview completion should open Speaker layout without a page reload", {
       html,
     });
   }
@@ -5158,64 +5019,12 @@ async function testSaveAndApplyUsesSingleFinishEndpoint() {
 // "Preparing" state forever.
 //
 // We inject the throw via the status className setter, gated to fire on the
-// SECOND render where the merged Confirm outputs row shows the playing controls
+// SECOND render where the merged Speaker layout row shows the playing controls
 // ("Stop" + "I hear woofer") — the first is postCommission's post-success render
 // (now inside its try/catch after fix #2), the second is the loop's own render()
 // at line ~4285. Targeting the second isolates the loop finally: with the loop
 // finally removed, the card stays wedged and the test fails; with it present,
 // running resets and a fresh click re-runs the flow.
-
-async function testConfirmedOutputKeepsResetPreconditions() {
-  const initialTopology = activeTwoWayTopologyPayload();
-  initialTopology.speaker_groups[0].channels[0].identity_verified = false;
-  const confirmedTopology = JSON.parse(JSON.stringify(initialTopology));
-  confirmedTopology.speaker_groups[0].channels[0].identity_verified = true;
-  const resetPosts = [];
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: initialTopology,
-      topology_revision: "sha256:loaded",
-      hardware_adoption: { allowed: true, identity: "sha256:hardware-loaded" },
-    })),
-    "./active-speaker/channel-identity": (_path, options = {}) =>
-      Promise.resolve(response({
-        output_topology: confirmedTopology,
-        topology_revision: "sha256:confirmed",
-        hardware_adoption: { allowed: true, identity: "sha256:hardware-confirmed" },
-      })),
-    "./output-topology/reset": (_path, options = {}) => {
-      resetPosts.push(JSON.parse(options.body || "{}"));
-      return Promise.resolve(response({
-        output_topology: emptyTopologyPayload(),
-        topology_revision: "sha256:reset",
-        hardware_adoption: { allowed: true, identity: "sha256:hardware-confirmed" },
-        reset: { status: "reset", message: "Speaker setup was reset." },
-      }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-  globalThis.__jtsConfirm = async () => true;
-
-  harness.dispatchClick({
-    "data-act": "mark-output-identity",
-    "data-group-id": "main",
-    "data-role": "woofer",
-    "data-verified": "true",
-    "data-label": "Main speaker woofer on DAC output 1",
-  });
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  harness.dispatchClick({ "data-act": "reset-output-topology" });
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  if (resetPosts.length !== 1 ||
-      resetPosts[0].topology_revision !== "sha256:confirmed" ||
-      resetPosts[0].detected_hardware_identity !== "sha256:hardware-confirmed") {
-    fail("confirming an output must retain fresh reset preconditions", { resetPosts });
-  }
-  return { confirmedOutputKeepsResetPreconditions: true };
-}
 
 // --- #2814: the same-shape composite re-pin offer ---------------------------
 
@@ -5226,8 +5035,6 @@ async function testConfirmedOutputKeepsResetPreconditions() {
 const REPIN_PLAN = {
   child_count: 2,
   replaced_child_count: 1,
-  reverify_output_indexes: [2, 3],
-  reverify_output_labels: ["Apple DAC B left", "Apple DAC B right"],
 };
 
 // #2812 B1: the mismatch card (and everything nested inside it, including
@@ -5285,7 +5092,7 @@ async function testRepinOfferDisclosesWhatIsKeptAndWhatMustBeRedone() {
         hardware_repin: null,
         repin: {
           status: "repinned",
-          message: "Pinned the new DAC and kept your speaker setup. Confirm these outputs again: Apple DAC B left, Apple DAC B right. Then re-run the drift measurement.",
+          message: "Pinned the new DAC and kept your speaker setup. Re-run the drift measurement, then Apply the baseline to resume audio.",
         },
       }));
     },
@@ -5300,9 +5107,8 @@ async function testRepinOfferDisclosesWhatIsKeptAndWhatMustBeRedone() {
   for (const expected of [
     "Same speakers, one new DAC",
     "keep your speaker layout, driver roles, output assignment and tuning",
-    "Apple DAC B left and Apple DAC B right",
-    "audio stays off until you do and the speaker re-arms",
-    "re-run the 15-minute drift measurement",
+    "Apply the baseline to resume audio",
+    "Re-run the 15-minute drift measurement",
     "Keep setup, pin the new DAC",
   ]) {
     if (!offer.includes(expected)) {
@@ -5325,11 +5131,10 @@ async function testRepinOfferDisclosesWhatIsKeptAndWhatMustBeRedone() {
   await harness.flush(); await harness.flush(); await harness.flush();
 
   if (!confirmation ||
-      !confirmation.message.includes("Apple DAC B left and Apple DAC B right") ||
-      !confirmation.message.includes("audio stays off until you do and the speaker re-arms") ||
+      !confirmation.message.includes("Apply the baseline to resume audio") ||
       confirmation.options.confirmLabel !== "Pin the new DAC" ||
       confirmation.options.danger !== true) {
-    fail("the re-pin confirm must be danger-styled and name the outputs to redo", {
+    fail("the re-pin confirm must be danger-styled and explain how to resume audio", {
       confirmation,
     });
   }
@@ -5342,65 +5147,14 @@ async function testRepinOfferDisclosesWhatIsKeptAndWhatMustBeRedone() {
 
   const status = harness.elements.get("status").textContent;
   if (!status.includes("kept your speaker setup") ||
-      !status.includes("Apple DAC B left, Apple DAC B right")) {
-    fail("a successful re-pin should name the outputs still to confirm", { status });
+      !status.includes("Apply the baseline to resume audio")) {
+    fail("a successful re-pin should explain how to resume audio", { status });
   }
   const after = harness.elements.get("view-body").innerHTML;
   if (after.includes("Keep setup, pin the new DAC") || after.includes(">Pinning<")) {
     fail("a spent re-pin offer must clear, and the busy flag with it", { after });
   }
   return { repinOfferDisclosesWhatIsKeptAndWhatMustBeRedone: true };
-}
-
-async function testUnconfirmingAnOutputWarnsThatTheSpeakerGoesSilent() {
-  // #2814/A2: the server parks the speaker on this write, so the dialog has to
-  // say so and read as destructive. Confirming keeps its plain, non-danger copy.
-  const topology = activeTwoWayTopologyPayload();
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: topology,
-      topology_revision: "sha256:armed",
-    })),
-    "./active-speaker/channel-identity": () => Promise.resolve(response({
-      output_topology: topology,
-      topology_revision: "sha256:unconfirmed",
-    })),
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-  const seen = [];
-  globalThis.__jtsConfirm = async (message, options) => {
-    seen.push({ message, options });
-    return false;
-  };
-
-  for (const verified of ["false", "true"]) {
-    harness.dispatchClick({
-      "data-act": "mark-output-identity",
-      "data-group-id": "main",
-      "data-role": "woofer",
-      "data-verified": verified,
-      "data-label": "Main speaker woofer on DAC output 1",
-    });
-    await harness.flush(); await harness.flush(); await harness.flush();
-  }
-
-  const [unconfirm, confirm] = seen;
-  if (!unconfirm ||
-      !unconfirm.message.includes("goes silent until you confirm it again and the speaker re-arms") ||
-      unconfirm.options.danger !== true) {
-    fail("un-confirming a lane must warn that the speaker goes silent", {
-      unconfirm,
-    });
-  }
-  if (!confirm ||
-      confirm.message.includes("goes silent") ||
-      confirm.options.danger !== false) {
-    fail("confirming a lane must stay the plain, non-destructive dialog", {
-      confirm,
-    });
-  }
-  return { unconfirmingAnOutputWarnsThatTheSpeakerGoesSilent: true };
 }
 
 async function testRepinDeclinedOrFailedClearsTheBusyFlag() {
@@ -5625,7 +5379,7 @@ async function testFailedResetPreservesCommissioningPanels() {
       "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
       "./active-speaker/commissioning-view": () => Promise.resolve(response(
         commissioningViewPayload({
-          status: "needs_output_confirmation",
+          status: "needs_layout",
           current_step: "layout",
           stepStatuses: {
             layout: "active", research: "done",
@@ -6243,7 +5997,7 @@ async function testCrossChildSpeakerGroupIsDisclosedInTheMapStep() {
     )
   ));
   if (!disclosed || !disclosed.includes("One speaker is split across two DACs")) {
-    fail("cross-child verdict should be disclosed in the Confirm outputs step",
+    fail("cross-child verdict should be disclosed in the Speaker layout step",
       { disclosed });
   }
   if (!disclosed.includes("Left cabinet is split across DACs left_dac")) {
@@ -6980,13 +6734,12 @@ results.push(await testDirectCrossoverEditRefreshesProposalAndFooter());
 results.push(await testTweeterTypeChangeInvalidatesCopiedResearchBinding());
 results.push(await testThreeWayRendersEveryPhysicalComponentChoice());
 results.push(await testActiveRouteLimitsRenderedTemplates());
-results.push(await testSpeakerLayoutMatrixAndRearIdentity());
+results.push(await testSpeakerLayoutMatrixAndRearAssignment());
 results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
 results.push(await testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview());
 results.push(await testUnknownDriverStyleRendersWithoutGuessedFloor());
 results.push(await testDesignDraftSaveRefusalShowsServerErrorNotSavedToast());
-results.push(await testChannelSelectorKeepsConfirmOutputsOpenWhenDraftDirty());
-results.push(await testConfirmOutputAbortsPendingAuditionWithoutAutoRamp());
+results.push(await testChannelSelectorKeepsLayoutOpenWhenDraftDirty());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testAppliedProfileCardUsesCommissioningRecord());
@@ -7025,9 +6778,7 @@ results.push(await testPreparePreviewWaitsForInFlightWorkingSetupUpdate());
 results.push(await testPartialThreeWayWorkingSetupSummaryReadsCleanly());
 results.push(await testDriverMicCaptureIsRemovedFromSoundFlow());
 results.push(await testSaveAndApplyUsesSingleFinishEndpoint());
-results.push(await testConfirmedOutputKeepsResetPreconditions());
 results.push(await testRepinOfferDisclosesWhatIsKeptAndWhatMustBeRedone());
-results.push(await testUnconfirmingAnOutputWarnsThatTheSpeakerGoesSilent());
 results.push(await testRepinDeclinedOrFailedClearsTheBusyFlag());
 results.push(await testResetPartialCleanupSurfacesWarning());
 results.push(await testResetReloadsDesignDraftPastAStaleDirtyForm());

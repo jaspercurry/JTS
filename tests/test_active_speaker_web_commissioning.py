@@ -62,7 +62,6 @@ def _staged_anchor_for(topology, staged_path):
                 "speaker_group_id": group.id,
                 "role": channel.role,
                 "physical_output_index": channel.physical_output_index,
-                "identity_verified": bool(channel.identity_verified),
                 "startup_muted": bool(channel.startup_muted),
                 "protection_required": bool(channel.protection_required),
                 "protection_status": channel.protection_status,

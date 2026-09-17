@@ -211,7 +211,7 @@ all-muted anchor mid-commission and is refused by default, because that anchor
 is what `commission-rollback` and `ack --outcome too_loud` reload.
 
 The `/sound/active-speaker/…` web surface exposes read-only status GETs plus
-CSRF-protected POSTs for design-draft, stop, channel-identity, calibration-level,
+CSRF-protected POSTs for design-draft, stop, calibration-level,
 the `commission-*` verbs, summed validation and baseline apply. **No endpoint
 changes normal listening volume**, and product outputd/CamillaDSP lanes are
 forbidden as direct test writers — the banned list is

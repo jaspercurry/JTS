@@ -22,7 +22,6 @@ from jasper.output_hardware import (
 )
 from jasper.output_topology import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
-    CHANNEL_IDENTITY_REPORT_KIND,
     CLOCK_DOMAIN_REPORT_KIND,
     DEFAULT_PAIRING_INTENT,
     DUAL_APPLE_ACTIVE_DEVICE_ID,
@@ -34,7 +33,6 @@ from jasper.output_topology import (
     OutputTopologyError,
     SpeakerChannel,
     bass_management_corner_hz,
-    channel_identity_report,
     clock_domain_report,
     composite_serial_repin_plan,
     declared_hardware_mismatch,
@@ -45,7 +43,6 @@ from jasper.output_topology import (
     new_topology_draft,
     repin_composite_child_serials,
     save_output_topology,
-    set_channel_identity_verified,
     set_channel_protection_status,
     clear_topology_fingerprint_stamp,
     read_topology_fingerprint_stamp,
@@ -331,7 +328,7 @@ def test_persisted_status_hint_cannot_override_derived_status() -> None:
         "kind": OUTPUT_TOPOLOGY_KIND,
         "topology_id": "living_room",
         "name": "Living room",
-        "status": "verified",
+        "status": "valid",
         "hardware": _base_hardware(),
         "speaker_groups": [],
         "routing": {},
@@ -339,79 +336,6 @@ def test_persisted_status_hint_cannot_override_derived_status() -> None:
 
     assert topology.status == "draft"
     assert topology.to_dict()["status"] == "draft"
-
-
-def test_passive_stereo_topology_can_be_valid_before_identity_verified() -> None:
-    topology = _topology(
-        groups=[
-            {
-                "id": "left",
-                "label": "Left speaker",
-                "kind": "left",
-                "mode": "full_range_passive",
-                "position": {"x": -0.5, "y": 1.0},
-                "channels": [{"role": "full_range", "physical_output_index": 0}],
-            },
-            {
-                "id": "right",
-                "label": "Right speaker",
-                "kind": "right",
-                "mode": "full_range_passive",
-                "position": {"x": 0.5, "y": 1.0},
-                "channels": [{"role": "full_range", "physical_output_index": 1}],
-            },
-        ],
-        routing={"main_left_group_id": "left", "main_right_group_id": "right"},
-    )
-    evaluation = topology.evaluation()
-    payload = topology.to_dict()
-
-    assert evaluation["status"] == "valid"
-    assert evaluation["assigned_output_count"] == 2
-    assert evaluation["unused_output_count"] == 6
-    assert {issue["code"] for issue in evaluation["warnings"]} == {
-        "identity_unverified"
-    }
-    assert "Verify physical output identity" in evaluation["safety"]["next_step"]
-    assert payload["speaker_groups"][0]["channels"][0]["human_output_label"] == (
-        "DAC output 1"
-    )
-    assert payload["safety"]["sound_tests_allowed"] is False
-
-
-def test_channel_identity_report_tracks_assigned_verification_progress() -> None:
-    topology = _topology(
-        groups=[
-            {
-                "id": "left",
-                "label": "Left speaker",
-                "kind": "left",
-                "mode": "full_range_passive",
-                "channels": [{"role": "full_range", "physical_output_index": 0}],
-            },
-            {
-                "id": "right",
-                "label": "Right speaker",
-                "kind": "right",
-                "mode": "full_range_passive",
-                "channels": [{
-                    "role": "full_range",
-                    "physical_output_index": 1,
-                    "identity_verified": True,
-                }],
-            },
-        ],
-        routing={"main_left_group_id": "left", "main_right_group_id": "right"},
-    )
-
-    report = channel_identity_report(topology)
-
-    assert report["kind"] == CHANNEL_IDENTITY_REPORT_KIND
-    assert report["status"] == "needs_verification"
-    assert report["assigned_channel_count"] == 2
-    assert report["verified_channel_count"] == 1
-    assert report["unverified_channel_count"] == 1
-    assert report["sound_tests_allowed"] is False
 
 
 def test_tweeter_protection_status_can_be_marked_present() -> None:
@@ -444,7 +368,6 @@ def test_tweeter_protection_status_can_be_marked_present() -> None:
         role="tweeter",
         protection_status="present",
     )
-    report = channel_identity_report(updated)
 
     assert "tweeter_protection_unverified" in {
         issue["code"] for issue in blocked["blockers"]
@@ -454,13 +377,8 @@ def test_tweeter_protection_status_can_be_marked_present() -> None:
     assert tweeter.protection_status == "present"
     assert tweeter.startup_muted is True
     assert "tweeter_protection_unverified" not in {
-        code
-        for target in report["targets"]
-        for code in target["sound_test_blockers"]
+        issue["code"] for issue in updated.evaluation()["blockers"]
     }
-    targets = {target["id"]: target for target in report["targets"]}
-    assert targets["mono:woofer"]["sound_test_blockers"] == ["identity_unverified"]
-    assert targets["mono:tweeter"]["sound_test_blockers"] == ["identity_unverified"]
 
 
 def test_software_guard_request_is_warning_not_topology_blocker() -> None:
@@ -487,15 +405,14 @@ def test_software_guard_request_is_warning_not_topology_blocker() -> None:
     )
 
     evaluation = topology.evaluation()
-    report = channel_identity_report(topology)
-    tweeter = next(target for target in report["targets"] if target["role"] == "tweeter")
 
     assert evaluation["status"] == "valid"
     assert "tweeter_software_guard_requested" in {
         issue["code"] for issue in evaluation["warnings"]
     }
-    assert "tweeter_software_guard_requested" not in tweeter["sound_test_blockers"]
-    assert report["sound_tests_allowed"] is False
+    assert "tweeter_software_guard_requested" not in {
+        issue["code"] for issue in evaluation["blockers"]
+    }
 
 
 def test_clock_domain_report_records_single_device_boundary() -> None:
@@ -680,7 +597,7 @@ def test_cross_child_speaker_group_is_named_and_disclosed_not_blocked() -> None:
     assert "one DAC" in verdict["message"]
     # Disclose + recommend, never block.
     assert evaluation["blockers"] == []
-    assert evaluation["status"] == "verified"
+    assert evaluation["status"] == "valid"
     # The standalone reader returns the same verdicts the evaluation carries,
     # so a later consumer never re-derives the child boundary.
     assert output_topology_mod.cross_child_group_verdicts(topology) == verdicts
@@ -704,7 +621,7 @@ def test_one_child_dac_per_speaker_has_no_cross_child_verdict() -> None:
     assert output_topology_mod.CROSS_CHILD_GROUP_CODE not in {
         issue["code"] for issue in evaluation["warnings"]
     }
-    assert evaluation["status"] == "verified"
+    assert evaluation["status"] == "valid"
 
 
 def test_subwoofer_group_inside_one_child_has_no_cross_child_verdict() -> None:
@@ -745,7 +662,7 @@ def test_single_child_hardware_never_reports_a_cross_child_verdict() -> None:
     )
     assert dac8x.hardware.child_devices == ()
     assert output_topology_mod.cross_child_group_verdicts(dac8x) == []
-    assert dac8x.evaluation()["status"] == "verified"
+    assert dac8x.evaluation()["status"] == "valid"
 
     single_child_hardware = _base_hardware()
     single_child_hardware["child_devices"] = [
@@ -780,41 +697,6 @@ def test_clock_domain_report_flags_unknown_output_clocking() -> None:
     assert report["status"] == "unknown_device_clock"
     assert report["coherent_physical_output_count"] == 0
     assert report["issues"][0]["code"] == "unknown_clock_domain"
-
-
-def test_set_channel_identity_verified_updates_one_channel_only() -> None:
-    topology = _topology(groups=[
-        {
-            "id": "left",
-            "label": "Left speaker",
-            "kind": "left",
-            "mode": "active_2_way",
-            "channels": [
-                {"role": "woofer", "physical_output_index": 0},
-                {
-                    "role": "tweeter",
-                    "physical_output_index": 1,
-                    "protection_required": True,
-                    "protection_status": "required_missing",
-                },
-            ],
-        }
-    ])
-
-    updated = set_channel_identity_verified(
-        topology,
-        speaker_group_id="left",
-        role="woofer",
-        identity_verified=True,
-    )
-    group = updated.to_dict()["speaker_groups"][0]
-
-    assert group["channels"][0]["identity_verified"] is True
-    assert group["channels"][1]["identity_verified"] is False
-    assert updated.evaluation()["status"] == "blocked"
-    assert "tweeter_protection_unverified" in {
-        issue["code"] for issue in updated.evaluation()["blockers"]
-    }
 
 
 def test_posted_human_output_label_is_rederived_from_hardware() -> None:
@@ -872,40 +754,6 @@ def test_active_two_way_topology_requires_tweeter_protection() -> None:
     assert "tweeter_protection_unverified" in {
         issue["code"] for issue in evaluation["blockers"]
     }
-
-
-def test_active_two_way_topology_can_be_verified_when_all_guards_pass() -> None:
-    topology = _topology(groups=[
-        {
-            "id": "left",
-            "label": "Left active speaker",
-            "kind": "left",
-            "mode": "active_2_way",
-            "channels": [
-                {
-                    "role": "woofer",
-                    "physical_output_index": 0,
-                    "identity_verified": True,
-                },
-                {
-                    "role": "tweeter",
-                    "physical_output_index": 1,
-                    "identity_verified": True,
-                    "startup_muted": True,
-                    "protection_required": True,
-                    "protection_status": "present",
-                },
-            ],
-        }
-    ])
-
-    evaluation = topology.evaluation()
-
-    assert evaluation["status"] == "verified"
-    assert evaluation["blockers"] == []
-    assert evaluation["warnings"] == []
-    assert evaluation["safety"]["sound_tests_allowed"] is False
-    assert "separate safe session" in evaluation["safety"]["next_step"]
 
 
 def test_stereo_plus_subwoofer_topology_tracks_sub_routes() -> None:
@@ -1359,128 +1207,19 @@ def test_mutation_save_returns_revision_without_post_write_read(
     assert json.loads(data)["name"] == "Published once"
 
 
-@pytest.mark.parametrize(
-    ("recorded", "claimed_group", "claimed_index", "claimed", "stored"),
-    [
-        (False, "mono", 0, True, False),
-        (True, "mono", 0, True, True),
-        (True, "mono", 0, False, False),
-        # The audition names one lane: neither re-pinning it to another output
-        # nor renaming its group carries the proof over.
-        (True, "mono", 1, True, False),
-        (True, "renamed", 0, True, False),
-    ],
-)
-def test_saved_channel_identity_is_server_owned(
-    tmp_path: Path,
-    recorded: bool,
-    claimed_group: str,
-    claimed_index: int,
-    claimed: bool,
-    stored: bool,
+@pytest.mark.parametrize("legacy_verified", [True, False])
+def test_stored_topology_drops_legacy_channel_identity(
+    tmp_path: Path, legacy_verified: bool,
 ) -> None:
-    """A save payload may clear a lane's audition, never claim one."""
-
+    raw = _topology(groups=[_passive_main("mono", "mono", 0)]).to_dict()
+    raw["speaker_groups"][0]["channels"][0]["identity_verified"] = legacy_verified
     path = tmp_path / "output_topology.json"
-    save_output_topology(_topology(groups=[_passive_main("mono", "mono", 0)]), path)
-    if recorded:
-        with output_topology_mod.output_topology_mutation(path) as mutation:
-            mutation.save(
-                set_channel_identity_verified(
-                    mutation.snapshot().topology,
-                    speaker_group_id="mono",
-                    role="full_range",
-                    identity_verified=True,
-                )
-            )
+    path.write_text(json.dumps(raw), encoding="utf-8")
 
-    with output_topology_mod.output_topology_mutation(path) as mutation:
-        mutation.save(
-            _topology(
-                groups=[
-                    _passive_main(
-                        claimed_group,
-                        "mono",
-                        claimed_index,
-                        identity_verified=claimed,
-                    )
-                ]
-            )
-        )
+    loaded = load_output_topology_strict(path)
 
-    assert [
-        channel.identity_verified
-        for group in load_output_topology_snapshot(path).topology.speaker_groups
-        for channel in group.channels
-    ] == [stored]
-
-
-@pytest.mark.parametrize(
-    ("claimed_device_id", "stored"),
-    [
-        ("hifiberry_dac8x", True),
-        # The audition named the OLD device on this lane: a same-key save
-        # under a DIFFERENT declared device is a different device wearing the
-        # old key, not the same lane resaved.
-        ("other_dac", False),
-    ],
-)
-def test_saved_channel_identity_dies_with_a_changed_hardware_device(
-    tmp_path: Path,
-    claimed_device_id: str,
-    stored: bool,
-) -> None:
-    """#3109: a same-key save carries the audition forward only onto the same device."""
-
-    path = tmp_path / "output_topology.json"
-    save_output_topology(_topology(groups=[_passive_main("mono", "mono", 0)]), path)
-    with output_topology_mod.output_topology_mutation(path) as mutation:
-        mutation.save(
-            set_channel_identity_verified(
-                mutation.snapshot().topology,
-                speaker_group_id="mono",
-                role="full_range",
-                identity_verified=True,
-            )
-        )
-
-    with output_topology_mod.output_topology_mutation(path) as mutation:
-        mutation.save(
-            _topology(
-                groups=[_passive_main("mono", "mono", 0, identity_verified=True)],
-                hardware={
-                    "device_id": claimed_device_id,
-                    "device_label": "Claimed hardware",
-                    "physical_output_count": 8,
-                },
-            )
-        )
-
-    assert [
-        channel.identity_verified
-        for group in load_output_topology_snapshot(path).topology.speaker_groups
-        for channel in group.channels
-    ] == [stored]
-
-
-def test_channel_identity_authorization_cannot_arrive_in_a_payload() -> None:
-    """Only the server can mark a lane's audition, so no payload may say it."""
-
-    topology = _topology(groups=[{
-        "id": "mono",
-        "label": "Mono",
-        "kind": "mono",
-        "mode": "full_range_passive",
-        "channels": [{
-            "role": "full_range",
-            "physical_output_index": 0,
-            "identity_verified": True,
-            "identity_verified_authorized": True,
-        }],
-    }])
-    channel = topology.speaker_groups[0].channels[0]
-
-    assert channel.identity_verified_authorized is False
+    del raw["speaker_groups"][0]["channels"][0]["identity_verified"]
+    assert loaded.to_dict() == OutputTopology.from_mapping(raw).to_dict()
 
 
 def test_topology_publication_uses_durable_atomic_write(
@@ -1677,8 +1416,7 @@ def test_composite_repin_keeps_the_design_and_repins_only_the_swapped_child() ->
     The opposite of ``new_topology_draft``'s wipe: speaker groups, roles,
     driver styles, physical-output assignment, protection status, routing and
     the declaration-owned child fields all survive. Only the replaced unit's
-    observed identity is rewritten, and only ITS lanes lose identity
-    confirmation.
+    observed identity is rewritten.
     """
 
     before = _dual_apple_active_topology()
@@ -1686,10 +1424,7 @@ def test_composite_repin_keeps_the_design_and_repins_only_the_swapped_child() ->
 
     plan = composite_serial_repin_plan(before, observed)
     assert plan is not None
-    # Exactly one of the two was replaced, and the lanes name WHICH: 2-3 belong
-    # to the second child, so the untouched child's lanes stay out of it.
     assert (plan.child_count, plan.replaced_child_count) == (2, 1)
-    assert plan.reverify_output_indexes == (2, 3)
 
     after = repin_composite_child_serials(before, observed)
 
@@ -1719,18 +1454,6 @@ def test_composite_repin_keeps_the_design_and_repins_only_the_swapped_child() ->
         for group in before.speaker_groups
         for channel in group.channels
     ]
-    # Identity is cleared for the REPLACED child's lanes only.
-    assert {
-        (group.id, channel.role): channel.identity_verified
-        for group in after.speaker_groups
-        for channel in group.channels
-    } == {
-        ("left", "woofer"): True,
-        ("left", "tweeter"): True,
-        ("right", "woofer"): False,
-        ("right", "tweeter"): False,
-    }
-    assert channel_identity_report(after)["unverified_channel_count"] == 2
     # A re-pin is not a second offer: the same hardware now matches the save.
     assert composite_serial_repin_plan(after, observed) is None
 

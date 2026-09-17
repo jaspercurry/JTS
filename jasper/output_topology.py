@@ -5,7 +5,7 @@
 """Versioned speaker output topology contract.
 
 The boundary between physical DAC lanes and speaker/driver roles: speaker
-groups, active/passive modes, subwoofers, and verified physical output
+groups, active/passive modes, subwoofers, and assigned physical output
 ownership. It has NO audio side effects — no playback, no CamillaDSP reload,
 no hardware mutation.
 """
@@ -60,7 +60,6 @@ OUTPUT_VARIANT_SCHEMA_VERSION = 2
 SUPPORTED_OUTPUT_VARIANTS = {"primary", "rear"}
 
 OUTPUT_TOPOLOGY_KIND = "jts_output_topology"
-CHANNEL_IDENTITY_REPORT_KIND = "jts_output_channel_identity_report"
 CLOCK_DOMAIN_REPORT_KIND = "jts_output_clock_domain_report"
 OUTPUT_TOPOLOGY_LOCK_TIMEOUT_SEC = 15.0
 
@@ -469,7 +468,6 @@ class SpeakerChannel:
     driver_style: str | None = None
     physical_output_index: int | None = None
     human_output_label: str | None = None
-    identity_verified: bool = False
     startup_muted: bool = True
     # The user-settable bass-management corner for a ``subwoofer`` channel: the
     # LR4 low-pass on the sub (and the complementary high-pass on the mains) are
@@ -477,14 +475,6 @@ class SpeakerChannel:
     # builder falls back to ``DEFAULT_SUB_CROSSOVER_HZ``. Only meaningful on a
     # subwoofer channel; ``evaluate_output_topology`` range-checks it when set.
     crossover_fc_hz: float | None = None
-    # Provenance for ``identity_verified``, never serialized and never
-    # compared: True only on a channel :func:`set_channel_identity_verified`
-    # itself wrote. ``from_mapping`` cannot forge it, which is what lets
-    # :func:`_with_server_owned_identity` tell a real audition from a save
-    # payload that merely claims one.
-    identity_verified_authorized: bool = field(
-        default=False, compare=False, repr=False
-    )
     output_variant: str = "primary"
 
     @classmethod
@@ -519,7 +509,6 @@ class SpeakerChannel:
             # A client-provided label is a stale UI hint, never persisted truth
             # about physical wiring.
             human_output_label=None,
-            identity_verified=_bool(raw.get("identity_verified"), False),
             startup_muted=_bool(raw.get("startup_muted"), True),
             protection_required=protection_required,
             protection_status=protection_status,
@@ -541,7 +530,6 @@ class SpeakerChannel:
         out: dict[str, Any] = {
             "role": self.role,
             "physical_output_index": self.physical_output_index,
-            "identity_verified": self.identity_verified,
             "startup_muted": self.startup_muted,
             "protection_required": self.protection_required,
             "protection_status": self.protection_status,
@@ -654,7 +642,7 @@ class TopologyRouting:
 
 @dataclass(frozen=True)
 class OutputTopology:
-    """Persisted speaker topology draft or verified configuration."""
+    """Persisted speaker topology."""
 
     topology_id: str
     name: str
@@ -1017,14 +1005,6 @@ def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
                 )
             else:
                 assigned[output_index] = (group.id, channel.role)
-            if not channel.identity_verified:
-                warnings.append(
-                    _issue(
-                        "warning",
-                        "identity_unverified",
-                        f"{group.label} {channel.role} output identity is not verified",
-                    )
-                )
             if channel.role == "tweeter":
                 if not channel.startup_muted:
                     blockers.append(
@@ -1081,21 +1061,13 @@ def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
                 )
             )
 
-    verified = bool(topology.speaker_groups) and not blockers and all(
-        channel.identity_verified
-        for group in topology.speaker_groups
-        for channel in group.channels
-    )
-    status = "blocked" if blockers else ("verified" if verified else "valid")
+    status = "blocked" if blockers else "valid"
     if not topology.speaker_groups:
         status = "draft"
-    warning_codes = {issue["code"] for issue in warnings}
     if status == "draft":
-        next_step = "Create speaker groups and verify physical output identity."
+        next_step = "Create speaker groups and assign physical outputs."
     elif blockers:
         next_step = "Resolve blockers before any sound test can be prepared."
-    elif "identity_unverified" in warning_codes:
-        next_step = "Verify physical output identity before preparing sound tests."
     else:
         next_step = "Topology is saved; sound tests still require a separate safe session."
 
@@ -1110,7 +1082,6 @@ def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
         "warnings": warnings,
         "safety": {
             "sound_tests_allowed": False,
-            "requires_identity_verification": True,
             "requires_tweeter_protection": any(
                 channel.role == "tweeter"
                 for group in topology.speaker_groups
@@ -1194,91 +1165,6 @@ def topology_is_subless_passive_mains(topology: OutputTopology) -> bool:
     return topology_is_passive_mains(topology) and not subwoofer_speaker_groups(
         topology
     )
-
-
-def channel_identity_report(topology: OutputTopology) -> dict[str, Any]:
-    """Return user-confirmed physical channel identity progress.
-
-    Deliberately narrower than ``evaluate_output_topology``: it answers "which
-    assigned DAC lane does the operator still need to physically verify?" It
-    does not authorize playback, and confirmed identity never implies tweeter
-    protection is safe.
-    """
-
-    targets: list[dict[str, Any]] = []
-    verified_count = 0
-    assigned_count = 0
-    for group in topology.speaker_groups:
-        for channel in group.channels:
-            assigned = channel.physical_output_index is not None
-            if assigned:
-                assigned_count += 1
-            if assigned and channel.identity_verified:
-                verified_count += 1
-            protection_blocker = None
-            if channel.protection_required and channel.protection_status != "present":
-                if channel.protection_status != "software_guard_requested":
-                    protection_blocker = "tweeter_protection_unverified"
-            targets.append({
-                "id": channel.target_id(group.id),
-                **({"output_variant": channel.output_variant} if channel.output_variant != "primary" else {}),
-                "speaker_group_id": group.id,
-                "speaker_label": group.label,
-                "speaker_kind": group.kind,
-                "speaker_mode": group.mode,
-                "role": channel.role,
-                "driver_style": channel.driver_style,
-                "physical_output_index": channel.physical_output_index,
-                "human_output_label": channel.human_output_label,
-                "assigned": assigned,
-                "identity_verified": channel.identity_verified,
-                "startup_muted": channel.startup_muted,
-                "protection_required": channel.protection_required,
-                "protection_status": channel.protection_status,
-                "sound_test_blockers": [
-                    code for code, blocked in (
-                        ("physical_output_unassigned", not assigned),
-                        ("identity_unverified", not channel.identity_verified),
-                        (protection_blocker, protection_blocker is not None),
-                        (
-                            "tweeter_must_start_muted",
-                            channel.role == "tweeter" and not channel.startup_muted,
-                        ),
-                    )
-                    if blocked
-                ],
-            })
-
-    evaluation = topology.evaluation()
-    unverified_count = sum(
-        1 for target in targets
-        if target["assigned"] and not target["identity_verified"]
-    )
-    if not topology.speaker_groups:
-        status = "draft"
-        next_step = "Create a speaker map before verifying physical outputs."
-    elif evaluation["blockers"]:
-        status = "blocked"
-        next_step = "Resolve topology blockers before channel identity can be trusted."
-    elif unverified_count:
-        status = "needs_verification"
-        next_step = "Verify each assigned physical output before sound tests."
-    else:
-        status = "verified"
-        next_step = "Channel identity is verified; path safety still gates playback."
-
-    return {
-        "artifact_schema_version": topology.schema_version,
-        "kind": CHANNEL_IDENTITY_REPORT_KIND,
-        "status": status,
-        "topology_status": evaluation["status"],
-        "assigned_channel_count": assigned_count,
-        "verified_channel_count": verified_count,
-        "unverified_channel_count": unverified_count,
-        "sound_tests_allowed": False,
-        "targets": targets,
-        "next_step": next_step,
-    }
 
 
 def _dual_apple_clock_issues(
@@ -1663,42 +1549,6 @@ def _update_speaker_channel(
     return replace(topology, speaker_groups=groups)
 
 
-def set_channel_identity_verified(
-    topology: OutputTopology,
-    *,
-    speaker_group_id: str,
-    role: str,
-    identity_verified: bool,
-    output_variant: str = "primary",
-) -> OutputTopology:
-    """Return a copy with one channel's physical identity evidence updated.
-
-    The sole writer of ``identity_verified``: only what this function marks
-    survives :func:`_with_server_owned_identity` on the way to disk.
-    """
-
-    group_id = _require_id(speaker_group_id, "speaker_group_id")
-    role_id = _enum(role, "role", SUPPORTED_ROLES)
-
-    def update(channel: SpeakerChannel) -> SpeakerChannel:
-        if channel.physical_output_index is None and identity_verified:
-            raise OutputTopologyError("cannot verify an unassigned physical output")
-        return replace(
-            channel,
-            identity_verified=bool(identity_verified),
-            identity_verified_authorized=bool(identity_verified),
-        )
-
-    return _update_speaker_channel(
-        topology,
-        group_id=group_id,
-        role=role_id,
-        output_variant=_enum(output_variant, "output_variant", SUPPORTED_OUTPUT_VARIANTS),
-        ambiguity_subject="identity",
-        update=update,
-    )
-
-
 def set_channel_protection_status(
     topology: OutputTopology,
     *,
@@ -1733,19 +1583,15 @@ def set_channel_protection_status(
 
 @dataclass(frozen=True)
 class CompositeRepinPlan:
-    """What a same-shape composite re-pin reuses, and what it re-verifies."""
+    """The number of composite children replaced by a same-shape re-pin."""
 
     child_count: int
     replaced_child_count: int
-    reverify_output_indexes: tuple[int, ...]
-    reverify_output_labels: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "child_count": self.child_count,
             "replaced_child_count": self.replaced_child_count,
-            "reverify_output_indexes": list(self.reverify_output_indexes),
-            "reverify_output_labels": list(self.reverify_output_labels),
         }
 
 
@@ -1817,7 +1663,6 @@ def _composite_repin_pairs(
 
 
 def _composite_repin_plan(
-    topology: OutputTopology,
     pairs: tuple[tuple[str, OutputChildDevice, OutputCardFact], ...],
 ) -> CompositeRepinPlan | None:
     """Project paired children into a plan, or ``None`` when nothing changed."""
@@ -1827,17 +1672,9 @@ def _composite_repin_plan(
     ]
     if not replaced:
         return None
-    indexes = tuple(sorted({
-        index for child in replaced for index in child.physical_output_indexes
-    }))
     return CompositeRepinPlan(
         child_count=len(pairs),
         replaced_child_count=len(replaced),
-        reverify_output_indexes=indexes,
-        reverify_output_labels=tuple(
-            topology.hardware.output_label(index) or f"Output {index + 1}"
-            for index in indexes
-        ),
     )
 
 
@@ -1854,7 +1691,7 @@ def composite_serial_repin_plan(
     pairs = _composite_repin_pairs(topology, observed)
     if pairs is None:
         return None
-    return _composite_repin_plan(topology, pairs)
+    return _composite_repin_plan(pairs)
 
 
 _OBSERVED_HARDWARE_CLOCK_ISSUE_CODES = frozenset({
@@ -1964,44 +1801,18 @@ def repin_composite_child_serials(
     swapped dongle cannot invalidate survives, and only each child's observed
     physical identity is rewritten.
 
-    ``identity_verified`` is the one thing it must NOT carry over — it is
-    cleared for every channel on a REPLACED child's lanes, and only the
-    per-lane tone check (:func:`channel_identity_report`) re-establishes it.
-    The clear RE-ARMS real refusals: ``startup_load``'s
-    ``physical_identity_verified`` and ``staged_topology_matches_current``
-    gates, and ``path_safety``'s ``route_verified`` / evidence-binding checks
-    all fail until the household re-confirms, so a re-pinned speaker cannot
-    ARM on trust.
-
-    Those gates guard the next arm, not the graph a box is ALREADY playing, so
-    an armed box would otherwise keep playing through unconfirmed DACs — on a
-    roleful topology, the full-range-into-a-tweeter hazard class. Silencing
-    that takes TWO halves, neither sufficient alone, and BOTH belong to this
-    function's callers (it is pure — it only clears the evidence):
-
-    1. Immediate, same request:
-       ``runtime_convergence.park_and_commit_topology(stay_parked=True)`` skips
-       graph selection and makes the park durable.
-    2. Durable, every later pass:
-       ``runtime_contract.roleful_identity_confirmed`` gates the two
-       approved-active-runtime rungs of the graph selector. Without it the park
-       is LIVE-ONLY: the reconcile fired by the same request re-selects the
-       applied baseline, and audio returns at the next ``jasper-camilla``
-       bounce, which every deploy and reboot performs.
-
     Raises ``OutputTopologyError`` when the attached hardware is not a
     same-shape re-pin — callers offer this only after
     :func:`composite_serial_repin_plan` returns a plan.
     """
 
     pairs = _composite_repin_pairs(topology, observed)
-    plan = _composite_repin_plan(topology, pairs) if pairs is not None else None
+    plan = _composite_repin_plan(pairs) if pairs is not None else None
     if pairs is None or plan is None:
         raise OutputTopologyError(
             "attached output hardware is not a same-shape re-pin of the saved "
             "speaker setup"
         )
-    reverify = set(plan.reverify_output_indexes)
     composed = replace(
         topology.hardware,
         child_devices=tuple(
@@ -2020,22 +1831,7 @@ def repin_composite_child_serials(
     # bypasses every check `from_mapping` owns (id shape, length caps, lane
     # coverage).
     hardware = OutputHardware.from_mapping(composed.to_dict())
-    return replace(
-        topology,
-        hardware=hardware,
-        speaker_groups=tuple(
-            replace(
-                group,
-                channels=tuple(
-                    replace(channel, identity_verified=False)
-                    if channel.physical_output_index in reverify
-                    else channel
-                    for channel in group.channels
-                ),
-            )
-            for group in topology.speaker_groups
-        ),
-    )
+    return replace(topology, hardware=hardware)
 
 
 def topology_path(path: str | Path | None = None) -> Path:
@@ -2233,72 +2029,6 @@ def load_output_topology_snapshot(
     return OutputTopologySnapshot(topology, revision)
 
 
-def _with_server_owned_identity(
-    topology: OutputTopology, recorded: OutputTopology, target: Path
-) -> OutputTopology:
-    """Return `topology` carrying only identity evidence the server holds.
-
-    ``identity_verified`` says a household member heard the right driver on
-    that lane, so a writer that is not :func:`set_channel_identity_verified`
-    may only carry the persisted record forward: its ``True`` survives where
-    ``recorded`` already holds one for the same group, role, physical output,
-    AND declared hardware device. Re-pinning a lane, or swapping the declared
-    device under an unchanged group/role/output key, retires the audition that
-    named it, because the audition named that hardware, not the key. Clearing
-    stays open to every writer.
-    """
-
-    verified = {
-        (
-            group.id,
-            channel.role,
-            channel.output_variant,
-            channel.physical_output_index,
-            recorded.hardware.device_id,
-        )
-        for group in recorded.speaker_groups
-        for channel in group.channels
-        if channel.identity_verified
-    }
-    refused = 0
-
-    def admit(group_id: str, channel: SpeakerChannel) -> SpeakerChannel:
-        nonlocal refused
-        if not channel.identity_verified or channel.identity_verified_authorized:
-            return channel
-        key = (
-            group_id,
-            channel.role,
-            channel.output_variant,
-            channel.physical_output_index,
-            topology.hardware.device_id,
-        )
-        if key in verified:
-            return channel
-        refused += 1
-        return replace(channel, identity_verified=False)
-
-    admitted = replace(
-        topology,
-        speaker_groups=tuple(
-            replace(
-                group,
-                channels=tuple(
-                    admit(group.id, channel) for channel in group.channels
-                ),
-            )
-            for group in topology.speaker_groups
-        ),
-    )
-    if refused:
-        logger.warning(
-            "event=output_topology.identity_claim_refused path=%s lanes=%d",
-            target,
-            refused,
-        )
-    return admitted
-
-
 class OutputTopologyMutation:
     """One admitted read-modify-write transaction for saved topology intent."""
 
@@ -2313,19 +2043,7 @@ class OutputTopologyMutation:
     def save(self, topology: OutputTopology) -> str:
         """Publish one topology and return its precomputed byte revision."""
 
-        return save_output_topology(
-            _with_server_owned_identity(topology, self._recorded(), self.target),
-            self.target,
-        )
-
-    def _recorded(self) -> OutputTopology:
-        """The identity evidence this transaction may still carry forward."""
-
-        try:
-            return load_output_topology_strict(self.target)
-        except OutputTopologyError:
-            # Unreadable bytes prove no audition; the empty draft holds none.
-            return new_topology_draft()
+        return save_output_topology(topology, self.target)
 
 
 @contextmanager

@@ -578,7 +578,6 @@ class SafetyEnvelope:
     # ``tests/test_active_speaker_safety_envelope_ssot.py`` is the tripwire.
     max_commissioning_level_db_spl: float = 85.0
     require_physical_tweeter_protection: bool = True
-    require_channel_identity_before_drivers: bool = True
     emergency_stop_required: bool = True
 
     @classmethod
@@ -601,10 +600,6 @@ class SafetyEnvelope:
                 raw.get("require_physical_tweeter_protection", True),
                 "require_physical_tweeter_protection",
             ),
-            require_channel_identity_before_drivers=_bool(
-                raw.get("require_channel_identity_before_drivers", True),
-                "require_channel_identity_before_drivers",
-            ),
             emergency_stop_required=_bool(
                 raw.get("emergency_stop_required", True),
                 "emergency_stop_required",
@@ -618,10 +613,6 @@ class SafetyEnvelope:
             )
         if not self.emergency_stop_required:
             raise ActiveSpeakerConfigError("emergency stop must be required")
-        if not self.require_channel_identity_before_drivers:
-            raise ActiveSpeakerConfigError(
-                "channel identity must be proven before drivers are connected"
-            )
         if not self.require_physical_tweeter_protection:
             raise ActiveSpeakerConfigError(
                 "physical tweeter protection is required for the first active-speaker substrate"
@@ -632,9 +623,6 @@ class SafetyEnvelope:
             "max_commissioning_level_db_spl": self.max_commissioning_level_db_spl,
             "require_physical_tweeter_protection": (
                 self.require_physical_tweeter_protection
-            ),
-            "require_channel_identity_before_drivers": (
-                self.require_channel_identity_before_drivers
             ),
             "emergency_stop_required": self.emergency_stop_required,
         }
@@ -797,7 +785,6 @@ def crossover_edges_for_role(
 class BaselineVerification:
     """Acceptance evidence for a speaker baseline profile."""
 
-    channel_identity_verified: bool = False
     all_paths_protected: bool = False
     per_driver_measurements_captured: bool = False
     crossover_nulls_captured: bool = False
@@ -810,10 +797,6 @@ class BaselineVerification:
         if not isinstance(raw, dict):
             raise ActiveSpeakerConfigError("verification must be an object")
         return cls(
-            channel_identity_verified=_bool(
-                raw.get("channel_identity_verified", False),
-                "channel_identity_verified",
-            ),
             all_paths_protected=_bool(
                 raw.get("all_paths_protected", False), "all_paths_protected"
             ),
@@ -832,7 +815,6 @@ class BaselineVerification:
 
     def commissioned_ready(self) -> bool:
         return all((
-            self.channel_identity_verified,
             self.all_paths_protected,
             self.per_driver_measurements_captured,
             self.crossover_nulls_captured,
@@ -841,7 +823,6 @@ class BaselineVerification:
 
     def to_dict(self) -> dict[str, bool]:
         return {
-            "channel_identity_verified": self.channel_identity_verified,
             "all_paths_protected": self.all_paths_protected,
             "per_driver_measurements_captured": self.per_driver_measurements_captured,
             "crossover_nulls_captured": self.crossover_nulls_captured,

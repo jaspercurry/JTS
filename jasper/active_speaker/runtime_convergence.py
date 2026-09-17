@@ -246,15 +246,6 @@ async def _converge_committed_topology(
     parked_reason: str | None = None,
 ) -> RuntimeConvergenceResult:
     if stay_parked:
-        # The committing caller says this topology change invalidated evidence
-        # the graph selector cannot see. ``safe_graph_for_current_topology`` is
-        # deliberately identity-blind — it proves a graph legal for the saved
-        # SHAPE, and every rung that could fire here (preserve_current on an
-        # approved active runtime, select_active_baseline, select_flat) would
-        # resume audio. So skip selection entirely and make the pre-commit park
-        # durable: silence is the only state that is honest about evidence the
-        # box no longer has. The household's route back is the arm ladder,
-        # whose gates own the missing evidence.
         decision = parked_safe_graph_decision(
             topology,
             reason=parked_reason or (
@@ -331,18 +322,10 @@ def park_and_commit_topology(
 ) -> TopologyRuntimeMutationResult:
     """Park, durably commit topology, then converge under one graph lock.
 
-    ``stay_parked`` keeps the speaker silent after the commit instead of
-    converging onto a graph. Pass it when the committed change invalidated
-    evidence the graph selector cannot see; per-lane channel identity is one
-    such kind — see
-    :func:`jasper.output_topology.repin_composite_child_serials`.
-
-    This is only the IMMEDIATE half of that promise. A later reconcile, deploy,
-    or reboot re-decides from scratch, so whatever fact made the park necessary
-    must ALSO be visible to the selector — for identity that is
-    :func:`jasper.active_speaker.runtime_contract.roleful_identity_confirmed`.
-    Passing ``stay_parked`` without a matching durable half buys silence only
-    until the next ``jasper-camilla`` bounce.
+    ``stay_parked`` keeps the speaker silent after a composite re-pin.
+    Apply re-proves the graph's volume limit and declared floors, runs
+    ``camilladsp --check``, and rewrites the applied record before playback
+    resumes. It does not verify wiring.
     """
 
     return asyncio.run(

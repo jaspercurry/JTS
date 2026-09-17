@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from jasper.output_topology import OutputTopology, channel_identity_report
+from jasper.output_topology import OutputTopology
 
 from ._common import gate as _gate, issue as _issue
 from .calibration_level import MIN_TEST_LEVEL_DBFS
@@ -216,7 +216,6 @@ def build_bringup_preflight(
     """Return the read-only bring-up preflight packet."""
 
     evaluation = topology.evaluation()
-    identity = channel_identity_report(topology)
     guard = _guard_summary(topology, staged_config=staged_config)
     microphone = _microphone_summary(
         calibration_level,
@@ -235,8 +234,6 @@ def build_bringup_preflight(
         issue for issue in raw_blockers
         if str(issue.get("code")) not in ignored_codes
     ]
-    assigned = int(identity.get("assigned_channel_count") or 0)
-    unverified = int(identity.get("unverified_channel_count") or 0)
     level_at_floor = _level_at_floor(calibration_level)
     protected_config_staged = staged_config.get("status") == "staged"
     environment_ready = bool(environment_report.get("ok_to_load_active_config"))
@@ -274,16 +271,6 @@ def build_bringup_preflight(
                 "Active-speaker environment load gate is ready"
                 if environment_ready
                 else f"Resolve active-speaker environment load gate: {environment_load_gate}"
-            ),
-        ),
-        _gate(
-            "physical_identity_verified",
-            label="Assigned physical outputs are verified",
-            passed=assigned > 0 and unverified == 0,
-            message=(
-                "Physical output identity is verified"
-                if assigned > 0 and unverified == 0
-                else "Verify assigned DAC outputs before connecting drivers"
             ),
         ),
         _gate(

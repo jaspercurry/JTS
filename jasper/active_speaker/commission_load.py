@@ -391,7 +391,6 @@ def build_driver_commission_load_preflight(
     current_config_path: str | Path | None = None,
     config_dir: str | Path | None = None,
     config_path: str | Path | None = None,
-    require_physical_identity: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -401,7 +400,7 @@ def build_driver_commission_load_preflight(
     Two independent proofs must both hold: (a) the speaker is ready to load an
     active config and the all-muted staged config is a valid rollback anchor —
     reuses :func:`build_startup_load_preflight` (path-safety, calibration floor,
-    physical identity, no active tone playback); (b) the per-driver candidate is
+    no active tone playback); (b) the per-driver candidate is
     safe — re-runs :func:`prepare_driver_commissioning_config` so the evidence is
     fresh, never persisted or browser-supplied (S2).
     """
@@ -417,7 +416,6 @@ def build_driver_commission_load_preflight(
         calibration_level=calibration_level,
         path_safety_evidence_path=path_safety_evidence_path,
         current_config_path=current_config_path,
-        require_physical_identity=require_physical_identity,
         validate=validate,
     )
     prepare = prepare_driver_commissioning_config(
@@ -641,7 +639,6 @@ async def load_driver_commissioning_config(
     statefile_path: str | Path | None = None,
     state_path: str | Path | None = None,
     reconcile_output_hardware: bool = True,
-    require_physical_identity: bool = True,
     validate: Callable[[str | Path], CamillaConfigValidationResult] = (
         validate_camilla_config
     ),
@@ -709,7 +706,6 @@ async def load_driver_commissioning_config(
         current_config_path=prior_config_path,
         config_dir=config_dir,
         config_path=config_path,
-        require_physical_identity=require_physical_identity,
         validate=validate,
     )
     target = preflight.get("target") or {}

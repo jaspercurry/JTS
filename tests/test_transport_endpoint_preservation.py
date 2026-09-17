@@ -650,7 +650,6 @@ def _ring_load_preflight(topology, preset, out_dir, device=RING_ACTIVE_PLAYBACK_
         preset=preset,
         playback_device=device,
         config_dir=out_dir,
-        require_physical_identity=False,
     )
 
 

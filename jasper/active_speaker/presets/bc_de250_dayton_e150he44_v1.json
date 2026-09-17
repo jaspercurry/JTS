@@ -57,7 +57,6 @@
   "safety": {
     "max_commissioning_level_db_spl": 85,
     "require_physical_tweeter_protection": true,
-    "require_channel_identity_before_drivers": true,
     "emergency_stop_required": true
   },
   "notes": "Worked example only. Final EQ, trims, limiter thresholds, and delay require the actual horn, baffle, enclosure, amplifier gain, and measurements."

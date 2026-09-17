@@ -57,7 +57,6 @@
   "safety": {
     "max_commissioning_level_db_spl": 85,
     "require_physical_tweeter_protection": true,
-    "require_channel_identity_before_drivers": true,
     "emergency_stop_required": true
   },
   "notes": "Safe bring-up preset for a mono 2-way cabinet. The 2.5 kHz LR4 target is intentionally conservative for first power-up; final crossover frequency, polarity, delay, gain trim, limiter thresholds, and EQ require measurement with the actual horn, baffle, enclosure, amplifier gain, and microphone."

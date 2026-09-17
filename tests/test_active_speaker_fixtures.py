@@ -33,18 +33,8 @@ def test_mono_output_topology_pins_guarded_two_way_defaults() -> None:
     assert tweeter["protection_status"] == "software_guard_requested"
 
 
-def test_mono_output_topology_preserves_identity_and_hardware_variants() -> None:
-    unverified_channels = (
-        mono_output_topology(identity_verified=False).speaker_groups[0].channels
-    )
-    assert [channel.identity_verified for channel in unverified_channels] == [
-        False,
-        False,
-    ]
-
+def test_mono_output_topology_preserves_hardware_variants() -> None:
     topology = mono_output_topology(
-        identity_verified=False,
-        tweeter_verified=True,
         tweeter_output=2,
         protection_status="required_missing",
         topology_name="Bench mono",
@@ -55,7 +45,7 @@ def test_mono_output_topology_preserves_identity_and_hardware_variants() -> None
         card_id=None,
     )
     raw = topology.to_dict()
-    woofer, tweeter = raw["speaker_groups"][0]["channels"]
+    _, tweeter = raw["speaker_groups"][0]["channels"]
 
     assert raw["name"] == "Bench mono"
     assert raw["speaker_groups"][0]["label"] == "Mono speaker"
@@ -63,8 +53,6 @@ def test_mono_output_topology_preserves_identity_and_hardware_variants() -> None
     assert raw["hardware"]["physical_output_count"] == 4
     assert "card_id" not in raw["hardware"]
     assert raw["hardware"]["clock_domain_id"] == "device:unregistered_lab_dac"
-    assert woofer["identity_verified"] is False
-    assert tweeter["identity_verified"] is True
     assert tweeter["physical_output_index"] == 2
     assert tweeter["protection_status"] == "required_missing"
 
@@ -99,8 +87,7 @@ def test_mono_output_topology_preserves_optional_subwoofer_shape() -> None:
         {
             "role": "subwoofer",
             "physical_output_index": 2,
-            "identity_verified": True,
-            "startup_muted": True,
+                "startup_muted": True,
             "protection_required": False,
             "protection_status": "not_required",
             "human_output_label": "DAC output 3",

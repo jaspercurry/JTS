@@ -456,7 +456,6 @@ async def ramp_audible_step(
     auto_retry_pending: bool = False,
     confirmed_roles: Iterable[str] | None = None,
     role_order_confirmed_roles: Iterable[str] | None = None,
-    require_physical_identity: bool = True,
 ) -> dict[str, Any]:
     """Raise one driver's per-output gain by one bounded, gated audible step.
 
@@ -697,7 +696,6 @@ async def ramp_audible_step(
         statefile_path=statefile_path,
         state_path=commission_load_state_path,
         reconcile_output_hardware=False,
-        require_physical_identity=require_physical_identity,
         **load_kwargs,
     )
     if (load_payload.get("load") or {}).get("status") != "loaded":

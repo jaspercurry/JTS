@@ -774,49 +774,6 @@ import {
       '</details>' +
     '</section>';
   }
-  function identityReportFromTopology(topology) {
-    var targets = [];
-    outputGroups(topology).forEach(function(group) {
-      (Array.isArray(group.channels) ? group.channels : []).forEach(function(channel) {
-        if (!channel || !channel.role) return;
-        var assigned = channel.physical_output_index != null;
-        targets.push({
-          id: physicalTargetId(group.id || '', channel.role, channel.output_variant),
-          output_variant: channel.output_variant || 'primary',
-          speaker_group_id: group.id || '',
-          speaker_label: group.label || group.id || '',
-          role: channel.role,
-          assigned: assigned,
-          identity_verified: !!channel.identity_verified,
-          physical_output_index: assigned ? channel.physical_output_index : null
-        });
-      });
-    });
-    if (!targets.length) return null;
-    var assignedCount = targets.filter(function(target) { return target.assigned; }).length;
-    var verifiedCount = targets.filter(function(target) {
-      return target.assigned && target.identity_verified;
-    }).length;
-    return {
-      kind: 'jts_output_channel_identity_report',
-      status: assignedCount && verifiedCount === assignedCount ? 'verified' : 'needs_confirmation',
-      assigned_channel_count: assignedCount,
-      verified_channel_count: verifiedCount,
-      unverified_channel_count: assignedCount - verifiedCount,
-      targets: targets
-    };
-  }
-  function outputIdentityReport() {
-    return outputTopology.identity || identityReportFromTopology(currentOutputTopology());
-  }
-  function identityTargetFor(groupId, role, variant) {
-    var report = outputIdentityReport();
-    var targets = report && Array.isArray(report.targets) ? report.targets : [];
-    return targets.find(function(target) {
-      return target.speaker_group_id === groupId && target.role === role &&
-        (target.output_variant || 'primary') === (variant || 'primary');
-    }) || null;
-  }
   function addSubwooferToTopology(topology) {
     var next = baseOutputDraft(topology);
     if (!next || outputHasSubwoofer(next)) return next;
@@ -1240,10 +1197,6 @@ import {
     var payload = await getJSON('./active-speaker/crossover-preview');
     ingestCrossoverPreview(payload);
     return payload;
-  }
-  function outputRoleStatusText(group, channel) {
-    if (channel.physical_output_index == null) return 'Assign a DAC output.';
-    return channel.identity_verified ? 'Wire label confirmed.' : 'Confirm the wire label.';
   }
   function renderOutputTopologySetup() {
     return '<div class="setting-row setting-row--stack output-setup">' +
@@ -1955,8 +1908,6 @@ import {
     var plan = outputTopology.hardwareRepin;
     if (!plan) return '';
     var replaced = Number(plan.replaced_child_count) || 0;
-    var labels = Array.isArray(plan.reverify_output_labels) ?
-      plan.reverify_output_labels : [];
     return '<div class="output-repin">' +
       '<p class="output-repin__title">' + escapeHtml(
         replaced === 1
@@ -1969,10 +1920,7 @@ import {
         ' in place of the old.'
       ) + '</p>' +
       '<p class="setting-row__hint">' + escapeHtml(
-        'You still confirm ' +
-        (labels.length ? labels.join(' and ') : 'the affected outputs') +
-        ' against the wire labels — audio stays off until you do and the speaker re-arms — and ' +
-        're-run the 15-minute drift measurement for the new pair.'
+        'Re-run the 15-minute drift measurement for the new pair, then Apply the baseline to resume audio.'
       ) + '</p>' +
       '<button type="button" class="btn btn--primary" data-act="repin-output-topology"' +
         (outputHardwareActionBusy() ? ' disabled' : '') + '>' +
@@ -2009,7 +1957,7 @@ import {
     if (!assignments.length) {
       return '<div class="output-card output-card--groups">' +
         '<p class="output-card__title">DAC output assignments</p>' +
-        '<p class="setting-row__hint">Choose a speaker layout first. JTS keeps it as a draft until you confirm the wires.</p>' +
+        '<p class="setting-row__hint">Choose a speaker layout first.</p>' +
       '</div>';
     }
     var outputs = physicalOutputOptions(topology);
@@ -2017,7 +1965,7 @@ import {
       '<p class="commission-card__error">' + escapeHtml(activeSpeaker.commissionError) + '</p>' : '';
     return '<div class="output-card output-card--groups">' +
       '<div class="output-card__head"><div><p class="output-card__title">DAC output assignments</p>' +
-        '<p class="setting-row__hint">Assign each driver to one DAC channel and confirm the wire labels.</p></div>' +
+        '<p class="setting-row__hint">Assign each driver to one DAC channel.</p></div>' +
         '<span class="status-pill' + (outputTopology.dirty ? '' : ' status-pill--ready') + '">' +
           escapeHtml(outputTopology.dirty ? 'draft' : 'saved') + '</span></div>' +
       commissionError +
@@ -2028,11 +1976,6 @@ import {
         var label = channel.human_output_label ||
           (channel.physical_output_index == null ? 'No output assigned' :
             physicalOutputLabel(topology, channel.physical_output_index));
-        var target = identityTargetFor(group.id, channel.role, channel.output_variant) || {};
-        var targetId = target.id || physicalTargetId(group.id, channel.role, channel.output_variant);
-        var busy = outputTopology.identitySaving === targetId;
-        var disabled = outputTopology.dirty || busy ||
-          channel.physical_output_index == null;
         var otherAssigned = outputAssignedToOtherMap(topology, group.id || '', channel.role || '', channel.output_variant);
         var selectOptions = ['<option value="">Choose output</option>'].concat(
           outputs.map(function(output) {
@@ -2046,7 +1989,7 @@ import {
           })
         ).join('');
         var model = targetModel({
-          target_id: targetId,
+          target_id: physicalTargetId(group.id, channel.role, channel.output_variant),
           role: String(channel.role || '')
         }, topology);
         var hardwareLabel = (group.label || group.id) + ' · ' + outputChannelLabel(group, channel) +
@@ -2055,7 +1998,7 @@ import {
           '<div class="output-role__text">' +
             '<span>' + escapeHtml(label) + '</span>' +
             '<strong>' + escapeHtml(hardwareLabel) + '</strong>' +
-            '<small>' + escapeHtml(outputRoleStatusText(group, channel)) + '</small>' +
+            (channel.physical_output_index == null ? '<small>Assign a DAC output.</small>' : '') +
           '</div>' +
           '<label class="output-role__select">' +
             '<span>DAC channel</span>' +
@@ -2065,25 +2008,9 @@ import {
               selectOptions +
             '</select>' +
           '</label>' +
-          '<div class="output-role__actions">' +
-            '<button type="button" class="btn btn--ghost output-role__action" ' +
-              'data-act="mark-output-identity" ' +
-              'data-group-id="' + escapeHtml(group.id) + '" ' +
-              'data-role="' + escapeHtml(channel.role) + '" ' +
-              'data-output-variant="' + escapeHtml(channel.output_variant || 'primary') + '" ' +
-              'data-verified="' + (channel.identity_verified ? 'false' : 'true') + '" ' +
-              'data-label="' + escapeHtml((group.label || group.id) + ' ' + outputChannelLabel(group, channel) + ' on ' + label) + '"' +
-              (disabled ? ' disabled' : '') + '>' +
-              escapeHtml(busy ? 'Saving' : (channel.identity_verified ? 'Change' : 'Confirm output')) + '</button>' +
-          '</div>' +
         '</div>';
       }).join('') + '</div>' +
     '</div>';
-  }
-  function commissionPendingStep() {
-    var commission = activeSpeaker.commission || {};
-    var ramp = commission.ramp || {};
-    return ramp.pending || null;
   }
   function renderStepNotRequiredCard(step, fallback) {
     return '<div class="output-card output-card--not-required">' +
@@ -2092,7 +2019,7 @@ import {
         '<p class="setting-row__hint">' + escapeHtml(outputStepHint(step, fallback)) +
         '</p></div>' +
         '<span class="status-pill">not needed</span></div>' +
-      '<p class="setting-row__hint">Speaker setup is complete once every output is confirmed.</p>' +
+      '<p class="setting-row__hint">Apply the baseline to complete speaker setup.</p>' +
     '</div>';
   }
   function baselineProfileApplyBlocked(profile) {
@@ -2185,7 +2112,7 @@ import {
     }
     return '<div class="output-card output-card--baseline-profile">' +
       '<div class="output-card__head"><div><p class="output-card__title">Active speaker profile</p>' +
-        '<p class="setting-row__hint">Your active speaker profile, built from the checked crossover and confirmed outputs.</p></div>' +
+        '<p class="setting-row__hint">Your active speaker profile, built from the checked crossover and assigned outputs.</p></div>' +
         '<span class="status-pill' + (applied || readyToApply ? ' status-pill--ready' : '') + '">' +
           escapeHtml(applied ? 'active' : (appliedRecord || readyToApply ? 'saved' : (applyBlocked ? 'blocked' : (revalidating ? 'recheck' : 'not saved')))) + '</span></div>' +
       body +
@@ -2779,7 +2706,6 @@ import {
     else if (act === 'parse-driver-research') { parseDriverResearchImport(); }
     else if (act === 'save-driver-design') { saveDriverResearchDraft(); }
     else if (act === 'prepare-crossover-preview') { prepareCrossoverPreview(); }
-    else if (act === 'mark-output-identity') { updateOutputChannelIdentity(t); }
     else if (act === 'save-apply-baseline-profile') { saveAndApplyBaselineProfile(); }
     else if (act === 'restore-baseline-profile') { restoreBaselineProfile(); }
     else if (act === 'copy-tuning-handoff') { copyTuningHandoffPrompt(t.getAttribute('data-program')); }
@@ -3150,7 +3076,6 @@ import {
     var topology = payload && (payload.output_topology || payload);
     outputTopology.payload = topology || null;
     outputTopology.draft = topology ? clone(topology) : null;
-    outputTopology.identity = payload && payload.channel_identity || topology && topology.channel_identity || null;
     outputTopology.clockDomain = payload && payload.clock_domain || topology && topology.clock_domain || null;
     outputTopology.activeRoute = payload && payload.active_playback_route || null;
     outputTopology.observedHardware = payload && payload.output_hardware || null;
@@ -3165,7 +3090,6 @@ import {
     outputTopology.resetting = false;
     outputTopology.repinning = false;
     outputTopology.loading = false;
-    outputTopology.identitySaving = '';
     outputTopology.protectionSaving = '';
     if (outputGroups(topology).length) resetOutputTemplateDraft();
   }
@@ -3378,7 +3302,6 @@ import {
     }
     function applyChannel(channel, index) {
       channel.physical_output_index = index;
-      channel.identity_verified = false;
       delete channel.human_output_label;
     }
     var previousSelected = targetChannel.physical_output_index == null ?
@@ -3397,7 +3320,7 @@ import {
     if (swapPeer) applyChannel(swapPeer, previousSelected);
     outputPage.stepOverride = 'layout';
     setOutputDraft(next);
-    status('Channel assignment updated. Save before confirming the wiring.');
+    status('Channel assignment updated. Save the speaker layout.');
   }
   // Sets the safety-relevant driver_style on a topology channel (the same
   // single writer as physical_output_index — see setOutputChannelAssignment
@@ -3745,8 +3668,8 @@ import {
     if (!driverResearch.dirty && driverResearchStepSatisfied() && options.nextStep) {
       outputPage.stepOverride = options.nextStep;
       status(driverResearchCanPreparePreview() ?
-        'Working setup is already current. Preview crossover before confirming outputs.' :
-        'Save driver names and crossover points before confirming outputs.');
+        'Working setup is already current. Preview crossover.' :
+        'Save driver names and crossover points first.');
       render();
       return true;
     }
@@ -4026,14 +3949,10 @@ import {
     if (outputTopology.repinning) return;
     var plan = outputTopology.hardwareRepin;
     if (!plan) return;
-    var labels = Array.isArray(plan.reverify_output_labels) ?
-      plan.reverify_output_labels : [];
     var ok = await jtsConfirm(
       'JTS keeps your speaker layout, driver roles, output assignment and ' +
-      'tuning, and pins the DAC attached now. You then confirm ' +
-      (labels.length ? labels.join(' and ') : 'the affected outputs') +
-      ' against the wire labels — audio stays off until you do and the speaker re-arms — and ' +
-      're-run the drift measurement for the new pair.',
+      'tuning, and pins the DAC attached now. Re-run the drift measurement, ' +
+      'then Apply the baseline to resume audio.',
       // danger: the speaker goes silent immediately and the pair's drift
       // measurement is dropped, so a stray Enter must not land on confirm.
       {title: 'Pin the new DAC?', confirmLabel: 'Pin the new DAC', danger: true}
@@ -4050,8 +3969,6 @@ import {
       });
       ingestOutputTopology(payload);
       await refreshCommissioningView();
-      // Let the backend's own current step win: identity is now unverified for
-      // the replaced lanes, so the derived default lands on the right rung.
       outputPage.stepOverride = '';
       var repinStatus = payload && payload.repin || {};
       if (repinStatus.status === 'needs_attention') {
@@ -4067,58 +3984,6 @@ import {
       )) return;
       outputTopology.repinning = false;
       status('Could not pin the new DAC: ' + e.message, true);
-    }
-    render();
-  }
-  async function updateOutputChannelIdentity(button) {
-    if (outputTopology.dirty) {
-      status('Save the speaker layout before confirming outputs.', true);
-      return;
-    }
-    var groupId = button.getAttribute('data-group-id') || '';
-    var role = button.getAttribute('data-role') || '';
-    var variant = button.getAttribute('data-output-variant') || 'primary';
-    var verified = button.getAttribute('data-verified') !== 'false';
-    var label = button.getAttribute('data-label') || (groupId + ' ' + role);
-    var message = verified
-      ? 'Confirm that "' + label + '" is wired to the driver shown here?'
-      // Un-confirming a driver lane silences the speaker at the click (the
-      // server parks it), so the dialog says so and reads as destructive.
-      : 'Mark "' + label + '" as not confirmed? The speaker goes silent until ' +
-        'you confirm it again and the speaker re-arms.';
-    if (commissionPendingStep()) {
-      var abortResult = await postCommission('./active-speaker/commission-ramp-abort', {}, 'Re-muting');
-      if (!abortResult || !abortResult.ok) return;
-    }
-    if (!await jtsConfirm(message, {danger: !verified})) {
-      status('Stopped the test tone. Output confirmation was not changed.');
-      return;
-    }
-    outputTopology.identitySaving = physicalTargetId(groupId, role, variant);
-    outputTopology.error = '';
-    outputTopology.touched = true;
-    render();
-    try {
-      var payload = await postJSON('./active-speaker/channel-identity', {
-        speaker_group_id: groupId,
-        role: role,
-        output_variant: variant,
-        identity_verified: verified
-      });
-      ingestOutputTopology(payload);
-      await refreshCommissioningView();
-      // When the server had to silence the speaker for this write, its own
-      // sentence wins: only it knows whether the immediate park landed.
-      var park = payload && payload.identity_park;
-      if (park && park.message) {
-        status(park.message, !park.parked);
-      } else {
-        status((verified ? 'Confirmed output: ' : 'Cleared output confirmation: ') + label + '.');
-      }
-    } catch (e) {
-      outputTopology.identitySaving = '';
-      outputTopology.error = e.message;
-      status('Could not update channel identity: ' + e.message, true);
     }
     render();
   }

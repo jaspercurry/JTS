@@ -10,7 +10,7 @@ from typing import Any, Mapping
 
 from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.json_fields import finite_float, parse_utc_iso
-from jasper.output_topology import OutputTopology, channel_identity_report, topology_is_subless_passive_mains
+from jasper.output_topology import OutputTopology, topology_is_subless_passive_mains
 from .applied_identity import applied_identity
 from .capture_status import SESSION_ENDED_STATUSES
 from .measurement_programs import PURPOSE_BASS, PURPOSE_ROOM, PURPOSE_SPEAKER
@@ -124,9 +124,7 @@ def build_commissioning_view(
 
     draft, preview, review = design_draft or {}, crossover_preview or {}, baseline_profile or {}
     summary = (measurements or {}).get("summary") or {}
-    identity = channel_identity_report(topology)
-    assigned = int(identity.get("assigned_channel_count") or 0)
-    unverified = int(identity.get("unverified_channel_count") or 0)
+    assigned = topology.evaluation()["assigned_output_count"]
     passive = topology_is_subless_passive_mains(topology)
     has_layout = bool(topology.speaker_groups)
     design_ready = passive or draft.get("status") == "ready_for_review"
@@ -204,10 +202,7 @@ def build_commissioning_view(
                    "status": review.get("status"), "issues": list(review.get("issues") or [])},
         "driver_values": {"complete": values_ready, "design_ready": design_ready,
                           "preview_ready": preview_ready, "safety_profile_confirmed": safety_ready},
-        "output_identity": {"assigned_channel_count": assigned, "unverified_channel_count": unverified,
-                            "complete": assigned > 0 and unverified == 0},
-        "driver_target_proof": {**checks, "complete": checks_complete and assigned > 0 and unverified == 0,
-                                "output_identity_complete": assigned > 0 and unverified == 0,
+        "driver_target_proof": {**checks, "complete": checks_complete and assigned > 0,
                                 "driver_checks_complete": checks_complete},
         "driver_spacing_mm": (draft.get("manual_settings") or {}).get("driver_spacing_mm"),
         "driver_checks": checks,

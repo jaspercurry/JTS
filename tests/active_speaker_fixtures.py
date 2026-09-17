@@ -24,7 +24,6 @@ from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
-    set_channel_identity_verified,
 )
 
 
@@ -159,18 +158,6 @@ def mono_output_topology(
             "routing": routing,
         }
     )
-    # A parsed mapping cannot carry an audition: `identity_verified` survives a
-    # save only where `set_channel_identity_verified` recorded it, so a bench
-    # box whose lanes are confirmed is built the way a real one is.
-    for group in topology.speaker_groups:
-        for channel in group.channels:
-            if channel.identity_verified:
-                topology = set_channel_identity_verified(
-                    topology,
-                    speaker_group_id=group.id,
-                    role=channel.role,
-                    identity_verified=True,
-                )
     return topology
 
 

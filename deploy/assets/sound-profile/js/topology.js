@@ -350,7 +350,6 @@ function outputChannel(role, index) {
   return {
     role: role,
     physical_output_index: index,
-    identity_verified: false,
     startup_muted: true,
     protection_required: tweeter,
     protection_status: tweeter ? 'required_missing' : 'not_required'

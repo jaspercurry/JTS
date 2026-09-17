@@ -110,7 +110,6 @@ from .environment import (
 from .path_safety import (
     software_guard_ready_for_startup,
     staged_target_signature,
-    target_assignment_signature,
     topology_target_signature,
 )
 from .profile import (
@@ -292,7 +291,6 @@ class OutputAssignment:
     speaker_mode: str
     role: str
     physical_output_index: int | None
-    identity_verified: bool
     startup_muted: bool
     protection_required: bool
     protection_status: str
@@ -321,7 +319,6 @@ class OutputAssignment:
             "role": self.role,
             **({"output_variant": self.output_variant} if self.output_variant != "primary" else {}),
             "physical_output_index": self.physical_output_index,
-            "identity_verified": self.identity_verified,
             "startup_muted": self.startup_muted,
             "protection_required": self.protection_required,
             "protection_status": self.protection_status,
@@ -488,7 +485,6 @@ def _assignment(group: SpeakerGroup, channel: SpeakerChannel) -> OutputAssignmen
         role=channel.role,
         output_variant=channel.output_variant,
         physical_output_index=channel.physical_output_index,
-        identity_verified=bool(channel.identity_verified),
         startup_muted=bool(channel.startup_muted),
         protection_required=bool(channel.protection_required),
         protection_status=channel.protection_status,
@@ -600,33 +596,6 @@ def topology_allows_flat_dac_graph(contract: OutputContract) -> bool:
 
 def active_topology_requires_roleful_graph(topology: OutputTopology) -> bool:
     return classify_output_contract(topology).requires_roleful_graph
-
-
-def roleful_identity_confirmed(
-    topology: OutputTopology,
-    contract: OutputContract | None = None,
-) -> bool:
-    """Whether every ASSIGNED lane of a ROLEFUL topology is confirmed by ear.
-
-    Stated once because two owners need the same answer:
-    :func:`safe_graph_for_current_topology` and the ``/sound/speaker/`` identity
-    endpoint. It reads the topology directly, so there is no marker file to
-    drift. Scope is narrow on purpose: a passive full-range topology carries no
-    crossover, so an unconfirmed lane there is a channel-swap annoyance rather
-    than a driver hazard and answers True; an unassigned channel has no physical
-    output to confirm and is already a topology blocker of its own. Only the two
-    approved-active-runtime rungs consult this.
-    """
-
-    contract = contract or classify_output_contract(topology)
-    if not contract.requires_roleful_graph:
-        return True
-    return all(
-        channel.identity_verified
-        for group in topology.speaker_groups
-        for channel in group.channels
-        if channel.physical_output_index is not None
-    )
 
 
 def topology_sink_is_composite(topology: OutputTopology) -> bool:
@@ -3412,8 +3381,8 @@ def _staged_matches_topology(
         staged_hardware.get("physical_output_count")
         == topology.hardware.physical_output_count,
         staged_hardware.get("clock_domain_id") == topology.hardware.clock_domain_id,
-        target_assignment_signature(staged_target_signature(staged_config))
-        == target_assignment_signature(topology_target_signature(topology)),
+        staged_target_signature(staged_config)
+        == topology_target_signature(topology),
     ))
 
 
@@ -4624,16 +4593,10 @@ def safe_graph_for_current_topology(
             current_graph=current_graph,
             preferred_graph=preferred_graph,
         )
-    # An approved active runtime graph drives roleful lanes at program level, so
-    # it is only legal while the household still vouches for WHICH driver hangs
-    # on each lane. Unconfirmed, both rungs below fall through to the staged
-    # all-muted / parked selection; confirming every assigned lane releases them.
-    identity_confirmed = roleful_identity_confirmed(topology, contract)
     if (
         current_graph
         and current_graph.allowed
         and current_graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
-        and identity_confirmed
     ):
         return SafeGraphDecision(
             status="preserve_current",
@@ -4650,8 +4613,6 @@ def safe_graph_for_current_topology(
     # commission-load's pre-audio gate then refuses. So the anchor-preserve is
     # hoisted ABOVE the baseline-restore rung, but ONLY while the hold is in
     # flight — the marker is ephemeral (/run), so a normal boot never sees it.
-    # Preserving an all-muted anchor is the safe direction, so this needs no
-    # identity gate of its own.
     if (
         current_graph
         and current_graph.allowed
@@ -4673,7 +4634,6 @@ def safe_graph_for_current_topology(
         preferred_graph
         and preferred_graph.allowed
         and preferred_graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
-        and identity_confirmed
     ):
         return SafeGraphDecision(
             status="select_active_baseline",

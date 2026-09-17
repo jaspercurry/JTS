@@ -199,49 +199,6 @@ def test_startup_load_path_probe_passes_with_protected_rollback(
     assert report["load_gate"] == "ready"
 
 
-def test_startup_load_path_probe_has_explicit_identity_audition_mode(
-    tmp_path: Path,
-) -> None:
-    topology = _topology(identity_verified=False)
-    staged = stage_protected_startup_config(
-        topology,
-        config_path=tmp_path / "active_staged.yml",
-        metadata_path=tmp_path / "active_staged.json",
-        validate=_valid_config,
-        created_at="2026-06-04T12:00:00Z",
-    )
-
-    strict = build_startup_load_path_safety_evidence(
-        topology,
-        staged_config=staged,
-        calibration_level=calibration_level_payload(),
-        current_config_path=staged["config"]["path"],
-        generated_at="2026-06-04T12:00:00Z",
-    )
-    strict_report = evaluate_path_safety_evidence(strict)
-
-    assert strict_report["load_gate"] == "requirements_blocked"
-    assert "physical_identity_unverified" in {
-        issue["code"] for issue in strict["observed_issues"]
-    }
-
-    audition = build_startup_load_path_safety_evidence(
-        topology,
-        staged_config=staged,
-        calibration_level=calibration_level_payload(),
-        current_config_path=staged["config"]["path"],
-        generated_at="2026-06-04T12:00:00Z",
-        require_physical_identity=False,
-    )
-    audition_report = evaluate_path_safety_evidence(audition)
-
-    assert audition["evidence_mode"] == "identity_audition_startup_load"
-    assert audition["scope"] == "identity_audition_load_only_no_audio"
-    assert audition["provenance"]["physical_identity_required"] is False
-    assert audition_report["ok_to_load_active_config"] is True
-    assert audition_report["load_gate"] == "ready"
-
-
 def test_startup_load_path_probe_allows_bounded_normal_rollback_target(
     tmp_path: Path,
 ) -> None:
