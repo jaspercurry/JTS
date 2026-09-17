@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 import math
+from functools import partial
 from typing import Any, Mapping, Sequence
 
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
-from ._common import LEGACY_DROPPED_DRIVER_FIELDS, MANUAL_DRIVER_FIELDS, MANUAL_SETTINGS_FIELDS, blocker_issue, issue
+from ._common import DriverFields, MANUAL_CANDIDATE_FIELDS, MANUAL_DRIVER_FIELDS, blocker_issue, issue
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
     LOW_LIMIT_DECLARED,
@@ -52,24 +53,26 @@ MAX_PROVENANCE_SOURCES = 8
 #: datasheet URL and any URL the list accepts must be promotable here verbatim.
 MAX_PROVENANCE_SOURCE_CHARS = 320
 
-_MANUAL_CANDIDATE_FIELDS = {
-    "between_roles",
-    "frequency_hz",
-    "filter_type",
-    "slope_db_per_octave",
-    "confidence",
-    "rationale",
-    "warnings",
-    "lower_polarity",
-    "upper_polarity",
-    "delay_ms",
-    "delay_target_role",
-    "source",
-}
-
 
 class DriverSafetyProfileError(ValueError):
     """Raised when research or safety-profile input is malformed."""
+
+
+_fields = DriverFields(DriverSafetyProfileError, length_limit_separator=" ")
+_text = partial(_fields._text, max_chars=320)
+_finite_float = _fields._finite_float
+_positive_float = _fields._positive_float
+_sequence = _fields._sequence
+_reject_unknown_keys = _fields._reject_unknown_keys
+
+
+DRIVER_SAFETY_FIELDS = tuple(key for key in (
+    "hard_excitation_band_hz",
+    "required_protection_filters",
+    "measurement_band_hz",
+    "level_duration_limits",
+    "cabinet",
+) if key in MANUAL_DRIVER_FIELDS)
 
 
 def _canonical_json(value: Any) -> str:
@@ -201,50 +204,6 @@ def _topology_driver_style(topology: OutputTopology, target_id: str) -> str | No
     return None
 
 
-def _text(
-    value: Any,
-    field_name: str,
-    *,
-    required: bool = False,
-    max_chars: int = 320,
-) -> str | None:
-    if value in (None, ""):
-        if required:
-            raise DriverSafetyProfileError(f"{field_name} is required")
-        return None
-    if not isinstance(value, str):
-        raise DriverSafetyProfileError(f"{field_name} must be a string")
-    out = " ".join(value.split())
-    if not out:
-        if required:
-            raise DriverSafetyProfileError(f"{field_name} is required")
-        return None
-    if len(out) > max_chars:
-        raise DriverSafetyProfileError(f"{field_name} must be <= {max_chars} chars")
-    return out
-
-
-def _finite_float(value: Any, field_name: str) -> float | None:
-    if value in (None, ""):
-        return None
-    if isinstance(value, bool):
-        raise DriverSafetyProfileError(f"{field_name} must be numeric")
-    try:
-        out = float(value)
-    except (TypeError, ValueError) as exc:
-        raise DriverSafetyProfileError(f"{field_name} must be numeric") from exc
-    if not math.isfinite(out):
-        raise DriverSafetyProfileError(f"{field_name} must be finite")
-    return out
-
-
-def _positive_float(value: Any, field_name: str) -> float | None:
-    out = _finite_float(value, field_name)
-    if out is not None and out <= 0:
-        raise DriverSafetyProfileError(f"{field_name} must be > 0")
-    return out
-
-
 def _bounded_int(
     value: Any,
     field_name: str,
@@ -269,33 +228,6 @@ def _bounded_int(
     return out
 
 
-def _sequence(
-    value: Any,
-    field_name: str,
-    *,
-    maximum: int,
-) -> list[Any]:
-    if value is None:
-        return []
-    if not isinstance(value, list):
-        raise DriverSafetyProfileError(f"{field_name} must be a list")
-    if len(value) > maximum:
-        raise DriverSafetyProfileError(f"{field_name} must contain <= {maximum} items")
-    return value
-
-
-def _reject_unknown_keys(
-    value: Mapping[str, Any],
-    field_name: str,
-    allowed: set[str],
-) -> None:
-    unknown = sorted(str(key) for key in value if key not in allowed)
-    if unknown:
-        raise DriverSafetyProfileError(
-            f"{field_name} has unknown fields: {', '.join(unknown)}"
-        )
-
-
 def _reject_bool_tree(value: Any, field_name: str) -> None:
     if isinstance(value, bool):
         raise DriverSafetyProfileError(f"{field_name} must not be boolean")
@@ -310,7 +242,7 @@ def _reject_bool_tree(value: Any, field_name: str) -> None:
 def _frequency_band(value: Any, field_name: str) -> list[float] | None:
     if value is None:
         return None
-    items = _sequence(value, field_name, maximum=2)
+    items = _sequence(value, field_name, limit=2)
     if len(items) != 2:
         raise DriverSafetyProfileError(f"{field_name} must contain two values")
     low = _positive_float(items[0], f"{field_name}[0]")
@@ -323,20 +255,10 @@ def _frequency_band(value: Any, field_name: str) -> list[float] | None:
 def _normalise_protection_filters(value: Any, field_name: str) -> list[dict[str, Any]]:
     filters: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for index, raw in enumerate(_sequence(value, field_name, maximum=2)):
+    for index, raw in enumerate(_sequence(value, field_name, limit=2)):
         prefix = f"{field_name}[{index}]"
         if not isinstance(raw, Mapping):
             raise DriverSafetyProfileError(f"{prefix} must be an object")
-        _reject_unknown_keys(
-            raw,
-            prefix,
-            {
-                "kind",
-                "cutoff_hz",
-                "minimum_slope_db_per_octave",
-                "family_or_equivalent",
-            },
-        )
         kind = _text(raw.get("kind"), f"{prefix}.kind", required=True, max_chars=20)
         if kind not in SUPPORTED_PROTECTION_KINDS:
             raise DriverSafetyProfileError(f"{prefix}.kind must be highpass or lowpass")
@@ -389,17 +311,6 @@ def _normalise_cabinet(value: Any, field_name: str) -> dict[str, Any] | None:
         return None
     if not isinstance(value, Mapping):
         raise DriverSafetyProfileError(f"{field_name} must be an object")
-    _reject_unknown_keys(
-        value,
-        field_name,
-        {
-            "enclosure_kind",
-            "radiator_count",
-            "effective_radiating_diameter_mm",
-            "baffle_width_mm",
-            "lf_reconstruction_capability",
-        },
-    )
     enclosure = (
         _text(
             value.get("enclosure_kind") or "unknown",
@@ -462,16 +373,6 @@ def _normalise_level_duration_limits(
         return None
     if not isinstance(value, Mapping):
         raise DriverSafetyProfileError(f"{field_name} must be an object")
-    _reject_unknown_keys(
-        value,
-        field_name,
-        {
-            "max_effective_peak_dbfs",
-            "max_sweep_duration_s",
-            "max_repeat_count",
-            "minimum_cooldown_s",
-        },
-    )
     peak = _finite_float(
         value.get("max_effective_peak_dbfs"),
         f"{field_name}.max_effective_peak_dbfs",
@@ -507,7 +408,7 @@ def _normalise_level_duration_limits(
 
 def _normalise_unknowns(value: Any, field_name: str) -> list[str]:
     unknowns: list[str] = []
-    for index, raw in enumerate(_sequence(value, field_name, maximum=MAX_UNKNOWNS)):
+    for index, raw in enumerate(_sequence(value, field_name, limit=MAX_UNKNOWNS)):
         item = _text(raw, f"{field_name}[{index}]", required=True, max_chars=160)
         if item and item not in unknowns:
             unknowns.append(item)
@@ -542,9 +443,7 @@ def _normalise_field_provenance(value: Any, field_name: str) -> dict[str, Any]:
         if not isinstance(raw_assertion, Mapping):
             raise DriverSafetyProfileError(f"{field_name}.{key} must be an object")
         _reject_unknown_keys(
-            raw_assertion,
-            f"{field_name}.{key}",
-            {"confidence", "basis", "source", "sources"},
+            raw_assertion, f"{field_name}.{key}", {"confidence", "basis", "source", "sources"},
         )
         confidence = (
             _text(
@@ -577,7 +476,7 @@ def _normalise_field_provenance(value: Any, field_name: str) -> dict[str, Any]:
             _sequence(
                 raw_assertion.get("sources"),
                 f"{field_name}.{key}.sources",
-                maximum=MAX_PROVENANCE_SOURCES,
+                limit=MAX_PROVENANCE_SOURCES,
             )
         ):
             source = _text(
@@ -677,74 +576,11 @@ def normalise_driver_safety_fields(
     return out
 
 
-_V2_RESEARCH_TOP_LEVEL_FIELDS = {
-    "artifact_schema_version",
-    "kind",
-    "request_fingerprint",
-    "result_fingerprint",
-    "drivers",
-    "crossover_candidates",
-    "human_review",
-}
-_V2_RESEARCH_DRIVER_FIELDS = {
-    "target_id",
-    "target_fingerprint",
-    "role",
-    "model",
-    "manufacturer",
-    "nominal_impedance_ohm",
-    "sensitivity_db_2v83_1m",
-    "usable_frequency_range_hz",
-    "recommended_highpass_hz",
-    "recommended_highpass_slope_db_per_octave",
-    "recommended_lowpass_hz",
-    "do_not_test_below_hz",
-    "hard_excitation_band_hz",
-    "required_protection_filters",
-    "measurement_band_hz",
-    "level_duration_limits",
-    "cabinet",
-    "unknowns",
-    "field_provenance",
-    "gain_offset_db",
-    "gain_offset_db_provenance",
-    "notes",
-    "sources",
-    # #1665 component entry: build_driver_research_prompt asks for
-    # driver_class and radiating_diameter_mm. pad is not prompted
-    # (operator-only fact) but is accepted here too for structural parity
-    # with the shared _normalise_driver_common schema -- a v2 result never
-    # legitimately carries it, but rejecting it here would just be a second,
-    # redundant place that gate could drift.
-    "driver_class",
-    "radiating_diameter_mm",
-    "pad",
-}
-_V2_RESEARCH_CANDIDATE_FIELDS = {
-    "between_roles",
-    "frequency_hz",
-    "filter_type",
-    "slope_db_per_octave",
-    "confidence",
-    "rationale",
-    "warnings",
-    "lower_polarity",
-    "upper_polarity",
-    "delay_ms",
-    "delay_target_role",
-}
-
-
 def validate_driver_research_result_shape(raw: Any) -> None:
-    """Reject ambiguous or extension-by-typo fields in the v2 result schema."""
+    """Check the version and container shapes of a research result."""
 
     if not isinstance(raw, Mapping):
         raise DriverSafetyProfileError("driver_research must be an object")
-    _reject_unknown_keys(
-        raw,
-        "driver_research",
-        _V2_RESEARCH_TOP_LEVEL_FIELDS,
-    )
     if type(raw.get("artifact_schema_version")) is not int:  # noqa: E721
         raise DriverSafetyProfileError(
             "driver_research.artifact_schema_version must be integer 2"
@@ -758,39 +594,25 @@ def validate_driver_research_result_shape(raw: Any) -> None:
             f"driver_research.kind must be {DRIVER_RESEARCH_KIND}"
         )
     for index, driver in enumerate(
-        _sequence(raw.get("drivers"), "driver_research.drivers", maximum=16)
+        _sequence(raw.get("drivers"), "driver_research.drivers", limit=16)
     ):
         if not isinstance(driver, Mapping):
             raise DriverSafetyProfileError(
                 f"driver_research.drivers[{index}] must be an object"
             )
-        _reject_unknown_keys(
-            driver,
-            f"driver_research.drivers[{index}]",
-            # Tolerated, never stored: a persisted v2 result from an older
-            # build (or a chat that still volunteers the key) passes this gate
-            # and is dropped by _normalise_driver_common's explicit output.
-            _V2_RESEARCH_DRIVER_FIELDS | LEGACY_DROPPED_DRIVER_FIELDS,
-        )
-        _reject_bool_tree(driver, f"driver_research.drivers[{index}]")
     for index, candidate in enumerate(
         _sequence(
             raw.get("crossover_candidates"),
             "driver_research.crossover_candidates",
-            maximum=8,
+            limit=8,
         )
     ):
         if not isinstance(candidate, Mapping):
             raise DriverSafetyProfileError(
                 f"driver_research.crossover_candidates[{index}] must be an object"
             )
-        _reject_unknown_keys(
-            candidate,
-            f"driver_research.crossover_candidates[{index}]",
-            _V2_RESEARCH_CANDIDATE_FIELDS,
-        )
         _reject_bool_tree(
-            candidate,
+            {key: value for key, value in candidate.items() if key in MANUAL_CANDIDATE_FIELDS},
             f"driver_research.crossover_candidates[{index}]",
         )
 
@@ -1089,30 +911,17 @@ def _normalise_profile_manual_settings(
         return None
     if not isinstance(manual_settings, Mapping):
         raise DriverSafetyProfileError("manual_settings must be an object")
-    _reject_unknown_keys(
-        manual_settings,
-        "manual_settings",
-        MANUAL_SETTINGS_FIELDS,
-    )
     drivers: list[dict[str, Any]] = []
     for index, raw in enumerate(
         _sequence(
             manual_settings.get("drivers"),
             "manual_settings.drivers",
-            maximum=16,
+            limit=16,
         )
     ):
         field_name = f"manual_settings.drivers[{index}]"
         if not isinstance(raw, Mapping):
             raise DriverSafetyProfileError(f"{field_name} must be an object")
-        # Tolerated, never stored: same legacy-key contract as design_draft's
-        # own manual-driver gate, which re-validates this record.
-        _reject_unknown_keys(
-            raw,
-            field_name,
-            MANUAL_DRIVER_FIELDS | LEGACY_DROPPED_DRIVER_FIELDS,
-        )
-        _reject_bool_tree(raw, field_name)
         driver: dict[str, Any] = {
             "role": _text(
                 raw.get("role"),
@@ -1137,20 +946,14 @@ def _normalise_profile_manual_settings(
         _sequence(
             manual_settings.get("crossover_candidates"),
             "manual_settings.crossover_candidates",
-            maximum=16,
+            limit=16,
         )
     ):
         field_name = f"manual_settings.crossover_candidates[{index}]"
         if not isinstance(raw_candidate, Mapping):
             raise DriverSafetyProfileError(f"{field_name} must be an object")
-        _reject_unknown_keys(
-            raw_candidate,
-            field_name,
-            _MANUAL_CANDIDATE_FIELDS,
-        )
+        _reject_unknown_keys(raw_candidate, field_name, MANUAL_CANDIDATE_FIELDS)
         _reject_bool_tree(raw_candidate, field_name)
-    # driver_spacing_mm is allowlisted above but not a safety-builder input:
-    # this function only canonicalizes drivers/crossover_candidates.
     normalised = {"drivers": drivers, "crossover_candidates": []}
     validate_manual_target_bindings(topology, normalised)
     return normalised
@@ -1313,20 +1116,14 @@ def compute_driver_safety_profile(
             role_counts=role_counts,
         )
         research = research_by_target.get(target_id, {})
-        safety_field_names = (
-            "hard_excitation_band_hz",
-            "required_protection_filters",
-            "measurement_band_hz",
-            "level_duration_limits",
-            "cabinet",
-        )
+
         provenance: dict[str, Any] = {}
         unknowns = list(research.get("unknowns", []))
         research_provenance = research.get("field_provenance", {})
         research_provenance = (
             research_provenance if isinstance(research_provenance, Mapping) else {}
         )
-        for field in safety_field_names:
+        for field in DRIVER_SAFETY_FIELDS:
             if field not in visible:
                 continue
             if (

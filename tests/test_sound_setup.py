@@ -26,6 +26,9 @@ from unittest.mock import Mock, call
 import numpy as np
 import pytest
 
+from jasper.active_speaker._common import MANUAL_DRIVER_FIELDS
+from jasper.active_speaker.driver_safety import DRIVER_SAFETY_FIELDS
+from jasper.active_speaker.driver_safety_prompt import _PROMPT_PROVENANCE_KEYS
 from jasper.active_speaker.calibration_level import (
     load_calibration_level_state,
     update_calibration_level_state,
@@ -910,10 +913,24 @@ def test_the_page_mode_header_picks_the_page(tmp_path: Path, header, title):
     assert f'class="app-header__title">{title}' in html
 
 
-def _island_payload(html: str) -> dict:
-    marker = 'id="sound-page-data"'
+def _island_payload(html: str, element_id="sound-page-data") -> dict:
+    marker = f'id="{element_id}"'
     start = html.index(">", html.index(marker)) + 1
     return json.loads(html[start : html.index("</script>", start)])
+
+
+@pytest.mark.parametrize("follower", [False, True])
+def test_sound_page_serves_driver_vocabulary(monkeypatch, follower):
+    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: follower)
+    vocabulary = _island_payload(
+        sound_setup._index_html(page_mode="setup").decode(), "jts-driver-fields",
+    )
+    echo_fields = set(_PROMPT_PROVENANCE_KEYS) | set(DRIVER_SAFETY_FIELDS)
+    assert vocabulary == {
+        "driver_fields": list(MANUAL_DRIVER_FIELDS),
+        "driver_echo_back_fields": [field for field in MANUAL_DRIVER_FIELDS if field in echo_fields],
+    }
+    assert set(vocabulary["driver_echo_back_fields"]) == echo_fields
 
 
 @pytest.mark.parametrize("follower", [False, True])

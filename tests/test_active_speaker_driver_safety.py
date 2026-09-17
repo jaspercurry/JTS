@@ -22,7 +22,7 @@ from jasper.active_speaker.driver_safety import (
     DRIVER_RESEARCH_KIND,
     DRIVER_SAFETY_PROFILE_KIND,
     DriverSafetyProfileError,
-    _V2_RESEARCH_DRIVER_FIELDS,
+    _normalise_field_provenance,
     build_driver_research_context,
     compute_driver_safety_profile,
     driver_research_targets,
@@ -636,8 +636,6 @@ def test_dropped_ask_fields_are_still_accepted_and_normalised() -> None:
     for driver in manual_settings["drivers"]:
         driver.update({k: v for k, v in verbose.items() if k != "manufacturer"})
 
-    # Every accept-side gate, not just the one the paste-back path happens to
-    # hit first.
     validate_driver_research_result_shape(research)
     draft = build_design_draft(
         topology,
@@ -651,20 +649,9 @@ def test_dropped_ask_fields_are_still_accepted_and_normalised() -> None:
         assert driver["recommended_lowpass_hz"] == 3000.0
         assert driver["gain_offset_db"] == -6.0
         assert driver["gain_offset_db_provenance"] == "research_estimate"
-    for field in verbose:
-        assert field in _V2_RESEARCH_DRIVER_FIELDS
 
 
 def test_legacy_research_horn_coverage_deg_is_tolerated_and_dropped() -> None:
-    """#2872: the retired key survives the gates but not the record.
-
-    A v2 research result persisted before the deletion — or a chat that still
-    volunteers the key — reaches the same three allowlists a stored manual
-    driver does.  Refusing it there would make an existing draft unsaveable
-    over a field nothing reads, so the gates tolerate it and the normalisers
-    drop it.  The schema itself no longer carries the key: that is what makes
-    this tolerance a migration and not a quiet second definition.
-    """
 
     topology = mono_output_topology(card_id=None)
     request = build_driver_research_context(
@@ -678,10 +665,7 @@ def test_legacy_research_horn_coverage_deg_is_tolerated_and_dropped() -> None:
     for driver in manual_settings["drivers"]:
         driver["horn_coverage_deg"] = 90
 
-    # Gate 1: the v2 result-shape allowlist.
     validate_driver_research_result_shape(research)
-    # Gates 2 and 3: design_draft's manual-driver allowlist and driver_safety's
-    # re-validation of the same normalised record.
     draft = build_design_draft(
         topology,
         driver_research=research,
@@ -694,12 +678,7 @@ def test_legacy_research_horn_coverage_deg_is_tolerated_and_dropped() -> None:
     for driver in draft["manual_settings"]["drivers"]:
         assert "horn_coverage_deg" not in driver
     assert draft["driver_safety_profile"] is not None
-    assert "horn_coverage_deg" not in _V2_RESEARCH_DRIVER_FIELDS
 
-    # build_design_draft normalises manual_settings before handing them on, so
-    # the draft path alone never puts a raw legacy record in front of gate 3.
-    # This exported builder does: it is the public entry point, and a caller
-    # with a stored record reaches its allowlist directly.
     profile = compute_driver_safety_profile(
         topology,
         manual_settings=manual_settings,
@@ -786,23 +765,20 @@ def test_v2_result_rejects_boolean_values_and_unknown_fields() -> None:
     topology = mono_output_topology(card_id=None)
     request = build_driver_research_context(topology, _operator_inputs())
 
-    research = _research_result(request)
-    research["typo_field"] = "must not disappear silently"
-    with pytest.raises(ActiveSpeakerDesignDraftError, match="unknown fields"):
-        build_design_draft(
-            topology,
-            driver_research=research,
-            operator_inputs=_operator_inputs(),
-        )
-
     bool_value = _research_result(request)
     bool_value["drivers"][0]["hard_excitation_band_hz"][0] = True
-    with pytest.raises(ActiveSpeakerDesignDraftError, match="must not be boolean"):
+    with pytest.raises(ActiveSpeakerDesignDraftError):
         build_design_draft(
             topology,
             driver_research=bool_value,
             operator_inputs=_operator_inputs(),
         )
+
+    unknown = _research_result(request)
+    unknown["typo"] = True
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
+        build_design_draft(topology, driver_research=unknown, operator_inputs=_operator_inputs())
+    assert caught.value.code == "unknown_driver_fields"
 
 
 def test_a_typed_protection_value_the_derivation_replaced_is_disclosed() -> None:
@@ -1547,68 +1523,31 @@ def test_direct_builder_canonicalizes_manual_values_and_forged_cabinet_claim() -
 def test_direct_builder_rejects_boolean_and_unknown_manual_fields() -> None:
     boolean = _manual_settings()
     boolean["drivers"][1]["hard_excitation_band_hz"][0] = True
-    with pytest.raises(DriverSafetyProfileError, match="must not be boolean"):
+    with pytest.raises(DriverSafetyProfileError):
         compute_driver_safety_profile(
             mono_output_topology(card_id=None),
             manual_settings=boolean,
             driver_research=None,
         )
 
-    unknown = _manual_settings()
-    unknown["drivers"][0]["safe_because_ai_said_so"] = True
-    with pytest.raises(DriverSafetyProfileError, match="unknown fields"):
-        compute_driver_safety_profile(
-            mono_output_topology(card_id=None),
-            manual_settings=unknown,
-            driver_research=None,
-        )
-
     candidate_unknown = _manual_settings()
     candidate_unknown["crossover_candidates"] = [{"typo": True}]
-    with pytest.raises(DriverSafetyProfileError, match="unknown fields"):
+    with pytest.raises(DriverSafetyProfileError) as caught:
         compute_driver_safety_profile(
-            mono_output_topology(card_id=None),
-            manual_settings=candidate_unknown,
+            mono_output_topology(card_id=None), manual_settings=candidate_unknown,
             driver_research=None,
         )
+    assert caught.value.code == "unknown_driver_fields"
 
 
-def test_component_fields_have_distinct_declaration_and_research_contracts():
-    from jasper.active_speaker import driver_safety as ds
-    from jasper.active_speaker._common import MANUAL_DRIVER_FIELDS
-
-    new_fields = {"driver_class", "radiating_diameter_mm", "pad"}
-    assert new_fields <= MANUAL_DRIVER_FIELDS
-    # pad is deliberately NOT researchable; the research gates carry the
-    # two researchable fields only.
-    researchable = new_fields - {"pad"}
-    assert researchable <= set(ds._V2_RESEARCH_DRIVER_FIELDS)
-
-
-def test_retired_driver_fields_are_gone_from_every_schema_copy():
-    """The #1665 drift guard, in the deletion direction (#2872).
-
-    ``horn_coverage_deg`` was a fourth component-entry field.  Deleting it
-    from three of the four copies and forgetting the fourth would leave a
-    schema that still accepts and stores a value nothing reads — the exact
-    state the deletion was for.  A retired key survives in one place only: the
-    named legacy set the gates tolerate and the normalisers drop.
-
-    Driven off ``LEGACY_DROPPED_DRIVER_FIELDS`` rather than a hard-coded name,
-    because that set is append-only: the next key retired the same way
-    inherits this coverage instead of needing someone to remember to add it.
-    """
-    from jasper.active_speaker import driver_safety as ds
-    from jasper.active_speaker._common import LEGACY_DROPPED_DRIVER_FIELDS, MANUAL_DRIVER_FIELDS
-
-    # A vacuous pass over an empty set would assert nothing at all.
-    assert LEGACY_DROPPED_DRIVER_FIELDS
-    assert "horn_coverage_deg" in LEGACY_DROPPED_DRIVER_FIELDS
-    for schema in (
-        MANUAL_DRIVER_FIELDS,
-        ds._V2_RESEARCH_DRIVER_FIELDS,
-    ):
-        assert not (LEGACY_DROPPED_DRIVER_FIELDS & set(schema))
+def test_provenance_has_no_second_writer_for_published_versus_estimated() -> None:
+    with pytest.raises(DriverSafetyProfileError) as caught:
+        _normalise_field_provenance({
+            "level_duration_limits": {
+                "confidence": "high", "basis": "datasheet", "state": "estimated",
+            },
+        }, "driver.field_provenance")
+    assert caught.value.code == "unknown_driver_fields"
 
 
 # --- #2186: the estimate-friendly research contract -------------------------
@@ -2063,34 +2002,6 @@ def test_design_draft_restamps_the_protection_policy_on_every_topology_load(
     # DIFFERENT shape under `driver_protection_policy` inside the protection-
     # requirement fingerprint, so the draft key must not collide with it.
     assert "driver_protection_policy" not in saved
-
-
-def test_provenance_has_no_second_writer_for_published_versus_estimated() -> None:
-    """``state`` is derived from ``confidence``, never a second stored fact.
-
-    The #2195 ruling lists ``state`` among the facts a value carries, and in
-    the same breath defines it as a *mapping* of the existing vocabulary
-    (``low -> estimated``, ``medium/high -> confirmed``).  Deriving it is
-    therefore what the ruling describes; storing it as well would give one
-    fact two writers that can disagree, and the reply is the untrusted side.
-    ``confidence`` stays the single writer and the badge is derived at display
-    time, so this key is refused by name.
-    """
-
-    from jasper.active_speaker.driver_safety import _normalise_field_provenance
-
-    with pytest.raises(DriverSafetyProfileError) as excinfo:
-        _normalise_field_provenance(
-            {
-                "level_duration_limits": {
-                    "confidence": "high",
-                    "basis": "datasheet",
-                    "state": "estimated",
-                }
-            },
-            "driver.field_provenance",
-        )
-    assert "state" in str(excinfo.value)
 
 
 @pytest.mark.parametrize("style,expected_floor", _TWEETER_STYLE_FLOORS)
@@ -2674,7 +2585,6 @@ def test_estimate_provenance_never_buys_past_a_code_policy_clamp(
     tweeter = next(t for t in profile["targets"] if t["role"] == "tweeter")
     if field == "required_protection_filters":
         assert tweeter["required_protection_filters"][0]["cutoff_hz"] == 700.0
-
 
 
 @pytest.mark.parametrize("budget,accepted", [

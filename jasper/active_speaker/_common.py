@@ -2,28 +2,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared diagnostics vocabulary and coercions for the active-speaker package.
-
-The one issue/gate vocabulary (plain dicts the web, `/state`, and doctor
-surfaces already serialize), the shared nullable coercions, and the constant
-vocabularies two sides must agree on without importing each other.
-
-Stdlib only: the package's IO-free, import-light contract depends on it.
-"""
+"""Shared driver fields and diagnostics."""
 
 from __future__ import annotations
 
 import math
 import re
-from typing import Any
+from typing import Any, Collection, Mapping
+
+from jasper.json_fields import JsonFields
 
 
 # Float round-trip noise only; must never bridge a real crossover setting change.
 REGION_FC_MATCH_TOLERANCE_HZ = 1e-6
 
 
-# The saved topology no longer hashes to what the applied baseline was minted
-# against. A DISCLOSURE, not a blocker (ADR-0019).
+# See ADR-0019: a changed topology is a disclosure.
 BASELINE_TOPOLOGY_CHANGED = "active_baseline_topology_changed"
 
 
@@ -41,42 +35,40 @@ DRIVER_CLASSES: tuple[str, ...] = (
     "unknown",
 )
 
-# Per-driver keys retired from the component-entry schema that an older saved
-# record can still carry: every gate TOLERATES them, every normaliser DROPS
-# them. Append-only.
-# Computed profiles use the current fields after normalization.
+# Tolerate retired fields in older research packets.
 LEGACY_DROPPED_DRIVER_FIELDS: frozenset[str] = frozenset({
     "horn_coverage_deg",
     "crossover_search_band_hz",
 })
 
-MANUAL_SETTINGS_FIELDS = {"drivers", "crossover_candidates", "driver_spacing_mm"}
-MANUAL_DRIVER_FIELDS = {
-    "target_id",
-    "role",
-    "model",
-    "manufacturer",
-    "nominal_impedance_ohm",
+MANUAL_DRIVER_FIELDS = (
+    "target_id", "role", "model", "manufacturer",
     "sensitivity_db_2v83_1m",
-    "usable_frequency_range_hz",
-    "recommended_highpass_hz",
-    "recommended_highpass_slope_db_per_octave",
-    "recommended_lowpass_hz",
+    "nominal_impedance_ohm",
+    "driver_class",
+    "radiating_diameter_mm",
     "do_not_test_below_hz",
     "gain_offset_db",
     "gain_offset_db_provenance",
-    "notes",
+    "recommended_highpass_hz",
+    "recommended_highpass_slope_db_per_octave",
     "hard_excitation_band_hz",
-    "required_protection_filters",
     "measurement_band_hz",
-    "fit_budget",
+    "required_protection_filters",
     "level_duration_limits",
     "cabinet",
-    "source",
-    "driver_class",
-    "radiating_diameter_mm",
-    "pad",
-    "installation",
+    "usable_frequency_range_hz",
+    "recommended_lowpass_hz",
+    "fit_budget",
+    "notes", "pad", "installation", "source",
+)
+DRIVER_RESEARCH_FIELDS = frozenset(MANUAL_DRIVER_FIELDS) | {
+    "sources", "unknowns", "field_provenance", "target_fingerprint",
+}
+MANUAL_CANDIDATE_FIELDS = {
+    "between_roles", "frequency_hz", "filter_type", "slope_db_per_octave",
+    "confidence", "rationale", "warnings", "lower_polarity", "upper_polarity",
+    "delay_ms", "delay_target_role", "source",
 }
 _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -105,13 +97,7 @@ def gate(gate_id: str, *, label: str, passed: bool, message: str) -> dict[str, A
 
 
 def finite_float(value: Any) -> float | None:
-    """Return ``value`` as a finite float, or ``None`` when unusable.
-
-    The COERCING reader: unlike :func:`jasper.json_fields.finite_float` it
-    accepts a numeric string and a ``bool``. ``OverflowError`` is caught because
-    an arbitrary-precision ``int`` is legal JSON and raises rather than
-    returning ``inf``.
-    """
+    """Accept numeric strings and booleans."""
 
     try:
         out = float(value)
@@ -160,3 +146,42 @@ def region_key(lower_role: str, upper_role: str) -> str:
     """
 
     return f"{lower_role}:{upper_role}"
+
+
+class DriverFields(JsonFields):
+    def _text(
+        self, raw: Any, field_name: str, *, required: bool = False, max_chars: int = 240,
+    ) -> str | None:
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            if required:
+                raise self.error_type(f"{field_name} is required")
+            return None
+        if not isinstance(raw, str):
+            raise self.error_type(f"{field_name} must be a string")
+        return super().text(raw, field_name, max_length=max_chars)
+
+    def _finite_float(self, raw: Any, field_name: str) -> float | None:
+        if isinstance(raw, bool):
+            raise self.error_type(f"{field_name} must be numeric")
+        return self.optional_number(raw, field_name)
+
+    def _positive_float(self, raw: Any, field_name: str) -> float | None:
+        out = self._finite_float(raw, field_name)
+        if out is not None and out <= 0:
+            raise self.error_type(f"{field_name} must be > 0")
+        return out
+
+    def _sequence(self, raw: Any, field_name: str, *, limit: int | None = None) -> list[Any]:
+        out = [] if raw is None else super().sequence(raw, field_name)
+        if limit is not None and len(out) > limit:
+            raise self.error_type(f"{field_name} must contain <= {limit} items")
+        return out
+
+    def _reject_unknown_keys(
+        self, raw: Mapping[str, Any], field_name: str, allowed: Collection[str],
+    ) -> None:
+        unknown = sorted(str(key) for key in raw if key not in allowed)
+        if unknown:
+            error = self.error_type(f"{field_name} has unknown fields: {', '.join(unknown)}")
+            setattr(error, "code", "unknown_driver_fields")
+            raise error

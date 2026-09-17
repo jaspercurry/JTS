@@ -9,10 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
-# The crossover vocabulary the KEY GUIDE states is READ from the compiler,
-# never spelled here: the reply is refused against exactly these sets when
-# it is saved, so asking for a vocabulary the saver rejects is an invisible
-# deadlock.
+from ._common import MANUAL_DRIVER_FIELDS
 from .declaration_vocabulary import (
     supported_declaration_filter_types,
     supported_declaration_slopes_db_per_octave,
@@ -21,7 +18,7 @@ from .driver_protection import (
     driver_low_limit_plausibility_band_hz,
     driver_protection_profile,
 )
-from .driver_safety import DRIVER_RESEARCH_KIND
+from .driver_safety import DRIVER_RESEARCH_KIND, DRIVER_SAFETY_FIELDS
 from .test_signal_plan import DEFAULT_DRIVER_SWEEP_DURATION_S, DRIVER_SWEEP_DURATIONS_S
 
 
@@ -35,13 +32,21 @@ _PROMPT_TARGET_KEYS = (
 # Keys whose value directly bounds what the speaker is allowed to excite. Only
 # these carry per-field provenance in the ask; the rest are advisory prefill an
 # operator reviews anyway.
-_PROMPT_PROVENANCE_KEYS = (
+_PROMPT_PROVENANCE_KEYS = tuple(key for key in (
     "hard_excitation_band_hz",
     "recommended_highpass_hz",
     "required_protection_filters",
     "level_duration_limits",
     "sensitivity_db_2v83_1m",
-)
+) if key in MANUAL_DRIVER_FIELDS)
+
+
+def driver_field_vocabulary() -> dict[str, list[str]]:
+    echo_fields = set(_PROMPT_PROVENANCE_KEYS) | set(DRIVER_SAFETY_FIELDS)
+    return {
+        "driver_fields": list(MANUAL_DRIVER_FIELDS),
+        "driver_echo_back_fields": [field for field in MANUAL_DRIVER_FIELDS if field in echo_fields],
+    }
 
 
 def _driver_research_prompt_targets(request: Mapping[str, Any]) -> str:
