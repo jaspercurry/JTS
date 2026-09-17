@@ -25,7 +25,6 @@ from jasper.active_speaker.crossover_v2.record_index import measurement_document
 from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir, round_inputs
-from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
 from jasper.audio_measurement.room_boundary import (
     ROOM_BOUNDARY_DEFAULT_HZ,
     ROOM_BOUNDARY_MAX_HZ,
@@ -114,7 +113,7 @@ def test_room_coverage_support_is_tolerant_disclosed_and_enforced(
     round_dir = bank_seat_round(tmp_path, magnitudes_db=_cube()[:3])
     selected = select_seat_takes(round_inputs(round_dir).session_dir)
     takes = tuple(replace(take, band_hz=(floor_hz, take.band_hz[1])) for take in selected.takes)
-    ceiling = room_views.room_ceiling(None)
+    ceiling = room_views.room_ceiling(round_inputs(round_dir).session_dir)
 
     document = room_views.room_median(takes, ceiling)
     persistence = room_views.room_persistence(takes, ceiling)
@@ -162,37 +161,56 @@ def test_the_ceiling_is_the_trusted_floor_clamped(trusted_floor_hz, ceiling_hz) 
     assert room_ceiling_hz(trusted_floor_hz) == ceiling_hz
 
 
-def test_the_ceiling_reads_the_banked_floor_as_the_raw_one(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``validity_floor_hz`` is the cloud's ``1/T`` floor; the trusted floor
-    is ``TRUSTED_FLOOR_MULTIPLIER`` times it, and that is what is clamped."""
-    monkeypatch.setattr(
-        room_views, "applied_profile_source",
-        lambda path: ({"exclusion_evidence": {"validity_floor_hz": 130.0}}, ""),
-    )
+def _add_gated_take(round_dir: Path, *, take_id: str, floor_hz: float) -> None:
+    bundle = round_inputs(round_dir).session_dir
+    row, record = next(iter(measurement_documents(bundle)))
+    gated = {
+        **record,
+        "take_id": take_id,
+        "position_id": take_id,
+        "phase": "measure",
+        "measurement_purpose": "speaker",
+        "gating_applied": True,
+        "curves": [{**record["curves"][0], "trusted_floor_hz": floor_hz}],
+    }
+    take_artifact_path(bundle, row.path).with_name(f"{take_id}.json").write_text(json.dumps(gated))
 
-    ceiling = room_views.room_ceiling(Path("applied-profile.json"))
 
-    assert (ceiling.ceiling_hz, ceiling.source) == (
-        130.0 * TRUSTED_FLOOR_MULTIPLIER, room_views.CEILING_SOURCE_APPLIED,
-    )
-    assert (ceiling.raw_floor_hz, ceiling.reason) == (130.0, "")
+def test_the_ceiling_uses_the_highest_round_gate_and_discloses_its_take(tmp_path, capsys) -> None:
+    round_dir = bank_seat_round(tmp_path)
+    _add_gated_take(round_dir, take_id="gate-low", floor_hz=350.0)
+    _add_gated_take(round_dir, take_id="gate-source", floor_hz=357.1428571428571)
+
+    _run(capsys, ["room", str(round_dir)])
+    ceiling = json.loads((round_dir / "room.json").read_text())["ceiling"]
+
+    assert ceiling["hz"] == pytest.approx(357.1428571428571)
+    assert ceiling["provenance"] == {
+        "ceiling_hz": pytest.approx(357.1428571428571),
+        "ceiling_source": "round_gate",
+        "trusted_floor_hz": pytest.approx(357.1428571428571),
+        "source_take_id": "gate-source",
+        "source_curve_role": "summed",
+        "clamp_hz": [ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ],
+        "reason": "",
+    }
 
 
-@pytest.mark.parametrize("source", [
-        lambda path: (None, "unreadable"),
-        lambda path: ({"exclusion_evidence": {"validity_floor_hz": None}}, ""),
-        lambda path: ({}, ""),
-], ids=["no-profile", "no-floor", "no-evidence"])
-def test_a_missing_floor_falls_back_and_says_so(monkeypatch: pytest.MonkeyPatch, source) -> None:
-    monkeypatch.setattr(room_views, "applied_profile_source", source)
+def test_a_pure_room_round_uses_the_fixed_ceiling(tmp_path, capsys) -> None:
+    round_dir = bank_seat_round(tmp_path)
 
-    ceiling = room_views.room_ceiling(None)
+    _run(capsys, ["room", str(round_dir)])
+    ceiling = json.loads((round_dir / "room.json").read_text())["ceiling"]
 
-    assert (ceiling.ceiling_hz, ceiling.source) == (
-        ROOM_BOUNDARY_DEFAULT_HZ, room_views.CEILING_SOURCE_FALLBACK,
-    )
-    assert ceiling.trusted_floor_hz is None
-    assert isinstance(ceiling.reason, str) and ceiling.reason
+    assert ceiling == {"hz": ROOM_BOUNDARY_DEFAULT_HZ, "provenance": {
+        "ceiling_hz": ROOM_BOUNDARY_DEFAULT_HZ,
+        "ceiling_source": "fallback",
+        "trusted_floor_hz": None,
+        "source_take_id": None,
+        "source_curve_role": None,
+        "clamp_hz": [ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ],
+        "reason": "the round has no gated summed or driver take",
+    }}
 
 
 def test_room_views_accept_explicit_arm_positions_and_exclude_speaker_takes(tmp_path, capsys):
@@ -290,7 +308,7 @@ def test_room_document_sections_and_owners(room_round, capsys, geometry, walls, 
     median = document["median"]
     selection = select_seat_takes(inputs.session_dir, take_ids=selected.selected_ids,
                                   basis=selected.capture_basis)
-    assert median == {**room_views.room_median(selection.takes, room_views.room_ceiling(inputs.applied_profile_path)),
+    assert median == {**room_views.room_median(selection.takes, room_views.room_ceiling(inputs.session_dir)),
                       "set_id": selected.set_id, "evidence": selection.evidence}
     value = read_room_median(median)
     assert document["limits"] == {
@@ -331,6 +349,7 @@ def test_room_without_an_incumbent_discloses_null_and_reason(room_round, capsys,
     selection = select_seat_takes(inputs.session_dir)
     document = room_views.room_document(
         selection.takes, set_id="candidate", evidence=selection.evidence,
+        bundle_dir=inputs.session_dir,
         applied_profile_path=inputs.applied_profile_path, geometry_path=None, manifest={"sets": groups},
     )
     assert document["incumbent"] is document["boundary"] is None
@@ -361,6 +380,7 @@ def test_room_grade_never_grades_a_set_against_itself(room_round, capsys):
     selection = select_seat_takes(inputs.session_dir)
     document = room_views.room_document(
         selection.takes, set_id=own, evidence=selection.evidence,
+        bundle_dir=inputs.session_dir,
         applied_profile_path=inputs.applied_profile_path, geometry_path=None,
         manifest={"sets": [{"set_id": own, "base": True, "capture_basis": {}, "takes": []}]},
     )

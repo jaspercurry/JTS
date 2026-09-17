@@ -15,8 +15,8 @@ import numpy as np
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.room_boundary import (
-    CEILING_SOURCE_APPLIED,
     CEILING_SOURCE_FALLBACK,
+    CEILING_SOURCE_ROUND_GATE,
     ROOM_BOUNDARY_MAX_HZ,
     ROOM_BOUNDARY_MIN_HZ,
     ROOM_FLOOR_HZ,
@@ -26,13 +26,15 @@ from jasper.audio_measurement.room_boundary import (
 from jasper.audio_measurement.measurement_geometry import (
     boundary_prior, load_declared_geometry,
 )
-from jasper.audio_measurement.room_limits import cloud_trusted_floor_hz, spatial_support
+from jasper.audio_measurement.room_limits import spatial_support
+from jasper.json_fields import finite_float
 from jasper.active_speaker.run_manifest import room_sets, view_sets
 
 from .evidence_packet import applied_profile_source
 from .prescription_contract import room_analysis_bounds
 from .room_prescription import ROOM_MEDIAN_FIELD, read_room_median
 from .room_selection import SeatTake
+from .record_index import measurement_documents
 from .round_views import RoundViewsError, local_features
 
 #: A feature is a local excursion at least this deep against the local level,
@@ -79,8 +81,8 @@ class Ceiling:
     ceiling_hz: float
     source: str
     trusted_floor_hz: float | None
-    raw_floor_hz: float | None
-    profile_path: str | None
+    source_take_id: str | None
+    source_curve_role: str | None
     reason: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -88,41 +90,42 @@ class Ceiling:
             "ceiling_hz": self.ceiling_hz,
             "ceiling_source": self.source,
             "trusted_floor_hz": self.trusted_floor_hz,
-            "raw_floor_hz": self.raw_floor_hz,
+            "source_take_id": self.source_take_id,
+            "source_curve_role": self.source_curve_role,
             "clamp_hz": [ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ],
-            "profile_path": self.profile_path,
             "reason": self.reason,
         }
 
 
-def room_ceiling(applied_profile_path: Path | None) -> Ceiling:
-    """The applied candidate's trusted floor, clamped (ADR-0256 rule 1).
-
-    ``exclusion_evidence.validity_floor_hz`` is the cloud's ``1/T`` floor, so
-    the trusted floor is :func:`cloud_trusted_floor_hz`'s ``2.5/T`` of it. A
-    profile that is missing, unreadable, or carries no floor falls back to the
-    default and says why.
-    """
-    return _profile_ceiling(*applied_profile_source(applied_profile_path), applied_profile_path)
-
-
-def _profile_ceiling(
-    profile: Mapping[str, Any] | None, reason: str, applied_profile_path: Path | None,
-) -> Ceiling:
-    evidence = (profile or {}).get("exclusion_evidence")
-    raw = evidence.get("validity_floor_hz") if isinstance(evidence, Mapping) else None
-    raw_hz = float(raw) if isinstance(raw, (int, float)) and math.isfinite(raw) else None
-    trusted = cloud_trusted_floor_hz(raw_hz)
+def room_ceiling(bundle_dir: Path) -> Ceiling:
+    """The highest trusted floor disclosed by a gated take in this round."""
+    floors = []
+    for row, record in measurement_documents(bundle_dir):
+        gating_applied = record.get("gating_applied")
+        if gating_applied is False:
+            continue
+        take_id = str(record.get("take_id") or row.path)
+        for curve in record.get("curves") or ():
+            if not isinstance(curve, Mapping):
+                continue
+            gate_window_ms = finite_float(curve.get("gate_window_ms"))
+            if gating_applied is not True and not (gate_window_ms is not None and gate_window_ms > 0):
+                continue
+            role = curve.get("role")
+            if not isinstance(role, str) or not role:
+                continue
+            trusted = finite_float(curve.get("trusted_floor_hz"))
+            if trusted is not None and trusted > 0:
+                floors.append((trusted, take_id, role))
+    source = max(floors, default=None)
+    trusted = source[0] if source is not None else None
     return Ceiling(
         ceiling_hz=room_ceiling_hz(trusted),
-        source=CEILING_SOURCE_FALLBACK if trusted is None else CEILING_SOURCE_APPLIED,
+        source=CEILING_SOURCE_FALLBACK if source is None else CEILING_SOURCE_ROUND_GATE,
         trusted_floor_hz=trusted,
-        raw_floor_hz=raw_hz,
-        profile_path=str(applied_profile_path) if applied_profile_path is not None else None,
-        reason=(
-            (reason or "the applied profile discloses no trusted floor")
-            if trusted is None else ""
-        ),
+        source_take_id=source[1] if source is not None else None,
+        source_curve_role=source[2] if source is not None else None,
+        reason="the round has no gated summed or driver take" if source is None else "",
     )
 
 
@@ -320,11 +323,11 @@ def room_median_sha256(median: Mapping[str, Any]) -> str:
 
 def room_document(
     takes: Sequence[SeatTake], *, set_id: str, evidence: Mapping[str, Any],
-    applied_profile_path: Path | None, geometry_path: Path | None,
+    bundle_dir: Path, applied_profile_path: Path | None, geometry_path: Path | None,
     manifest: Mapping[str, Any],
 ) -> dict[str, Any]:
-    profile, reason = applied_profile_source(applied_profile_path)
-    ceiling = _profile_ceiling(profile, reason, applied_profile_path)
+    profile, _ = applied_profile_source(applied_profile_path)
+    ceiling = room_ceiling(bundle_dir)
     median = {**room_median(takes, ceiling), "set_id": set_id, "evidence": dict(evidence)}
     value = read_room_median(median)
     persistence = room_persistence(takes, ceiling)

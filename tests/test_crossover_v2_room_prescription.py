@@ -448,7 +448,8 @@ def test_document_room_section_uses_selected_median_and_keeps_basis(tmp_path, ca
 ])
 def test_the_producers_spatial_support_bounds_room_cuts(tmp_path, n_positions, gain, count, legacy, reason):
     round_dir = bank_seat_round(tmp_path, magnitudes_db=[np.full(SEAT_GRID_HZ.shape, -30.0)] * n_positions)
-    document = room_median(select_seat_takes(round_inputs(round_dir).session_dir).takes, room_ceiling(None))
+    bundle_dir = round_inputs(round_dir).session_dir
+    document = room_median(select_seat_takes(bundle_dir).takes, room_ceiling(bundle_dir))
     if legacy:
         document.pop("spatial_support", None)
         document["spread_db"] = [0.0] * len(document["freqs_hz"])

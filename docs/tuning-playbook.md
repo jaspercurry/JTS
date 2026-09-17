@@ -132,8 +132,9 @@ Do not infer an incumbent from a file name when the entry says the set is
 ambiguous.
 
 Room correction ends at the printed ceiling. Above it, the speaker owns the
-curve. The ceiling follows the applied tune's trusted floor, with its source
-and any fallback disclosed
+curve. The ceiling follows the highest trusted floor from the round's gated
+summed or driver takes, with its source take and any pure-room fallback
+disclosed. The clamp and room/speaker ownership remain defined in ADR-0256
 (`0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md`).
 Seats are ungated by design: room reflections are part of the response being
 measured. A short speaker gate would remove that evidence.

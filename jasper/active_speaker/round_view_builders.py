@@ -121,6 +121,7 @@ def room_payload(inputs: RoundInputs, set_id: str | None, *, calibration_root: P
                                                         "evidence": selection.evidence})
     payload = room_document(
         selection.takes, set_id=selected.set_id, evidence=selection.evidence,
+        bundle_dir=inputs.session_dir,
         applied_profile_path=inputs.applied_profile_path, geometry_path=inputs.declared_geometry_path,
         manifest=read_run_manifest(inputs),
     )
