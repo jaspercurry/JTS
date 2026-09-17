@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generic, Literal, Mapping, TypeVar, overload
 
 from jasper.log_event import log_event
+from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.profile import required_driver_roles
 from jasper.active_speaker.design_draft import declared_driver_spacing_m
 from jasper.output_topology import measurement_target_id
@@ -139,7 +140,6 @@ def measurement_role_channels(preset: Any) -> dict[str, int]:
 
 def ensure_crossover_preview_ready(design_draft: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Refuse incomplete declarations before capture preset resolution."""
-    from jasper.active_speaker.crossover_preview import build_crossover_preview  # lazy: preview imports baseline readers
     from jasper.active_speaker.design_draft import load_design_draft  # lazy: reader boundary is patched by conductor tests
 
     preview = build_crossover_preview(load_design_draft() if design_draft is None else design_draft)
@@ -275,7 +275,7 @@ def resolve_conductor_context(
     # A subless passive main has no active crossover, so the gates below — all
     # asking whether an ACTIVE one is commissioned — are not questions about it.
     passive_mains = topology_is_subless_passive_mains(topology)
-    draft = load_design_draft(topology=topology)
+    draft = None
     preview = None
     if not passive_mains:
         if not status.get("active"):
@@ -294,6 +294,7 @@ def resolve_conductor_context(
                 level=logging.WARNING,
                 code=BASELINE_TOPOLOGY_CHANGED,
             )
+        draft = load_design_draft(topology=topology)
         preview = ensure_crossover_preview_ready(draft)
     preset = (resolve_commission_preset(topology, crossover_preview=preview)
               if preview is not None else resolve_capture_preset(topology))
@@ -303,6 +304,8 @@ def resolve_conductor_context(
             code=REASON_SPEAKER_SHAPE_UNSUPPORTED,
         )
     roles = required_driver_roles(preset.way_count)
+    if draft is None:
+        draft = load_design_draft(topology=topology)
     safety_profile = draft.get("driver_safety_profile")
     try:
         require_driver_measurement_inputs(safety_profile or {})

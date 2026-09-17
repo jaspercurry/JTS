@@ -1156,8 +1156,8 @@ def load_design_draft(
     topology: OutputTopology | None = None,
 ) -> dict[str, Any]:
     """Load declared values and compute the safety profile for the supplied topology."""
-    raw, valid = _read_design_draft(_design_draft_path(path))
-    if not valid:
+    raw = _read_design_draft(_design_draft_path(path))
+    if raw["status"] in ("not_saved", "unreadable"):
         return raw
     raw.pop("driver_research_request", None)
     research = raw.get("driver_research")
@@ -1170,7 +1170,8 @@ def load_design_draft(
     return design_draft_view(raw, topology=topology)
 
 
-def _read_design_draft(target: Path) -> tuple[dict[str, Any], bool]:
+def _read_design_draft(target: Path) -> dict[str, Any]:
+    """The stored declaration, or a `not_saved`/`unreadable` placeholder."""
     out = {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": DESIGN_DRAFT_KIND,
@@ -1188,18 +1189,18 @@ def _read_design_draft(target: Path) -> tuple[dict[str, Any], bool]:
         raw = json.loads(target.read_text(encoding="utf-8"))
     except FileNotFoundError:
         out.update(status="not_saved", next_step="Save a speaker design draft from /sound/.")
-        return out, False
+        return out
     except (OSError, json.JSONDecodeError) as exc:
         out["issues"] = [_issue(
             "blocker", "design_draft_unreadable",
             f"could not read active-speaker design draft: {type(exc).__name__}",
         )]
-        return out, False
+        return out
     if not isinstance(raw, dict):
         out["issues"] = [_issue(
             "blocker", "design_draft_not_object", "active-speaker design draft is not a JSON object",
         )]
-        return out, False
+        return out
     if (
         type(raw.get("artifact_schema_version")) is not int  # noqa: E721
         or raw.get("artifact_schema_version") != SCHEMA_VERSION
@@ -1208,18 +1209,18 @@ def _read_design_draft(target: Path) -> tuple[dict[str, Any], bool]:
         out["issues"] = [_issue(
             "blocker", "design_draft_unsupported_schema", "active-speaker design draft has an unsupported schema",
         )]
-        return out, False
+        return out
     for key in _COMPUTED_DRAFT_FIELDS:
         raw.pop(key, None)
     revision = raw.get("revision", 0)
     if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
         raw.update(
-            status="unreadable", revision=0, next_step="Save a fresh speaker design draft.",
+            status="unreadable", revision=0, next_step=out["next_step"],
             issues=[_issue("blocker", "design_draft_revision_invalid", "active-speaker design draft revision is invalid")],
         )
-        return raw, False
+        return raw
     raw["revision"] = revision
-    return raw, True
+    return raw
 
 
 def save_design_draft(
@@ -1243,7 +1244,7 @@ def save_design_draft(
 
     target = _design_draft_path(path)
     with _DESIGN_DRAFT_WRITE_LOCK:
-        prior, _ = _read_design_draft(target)
+        prior = _read_design_draft(target)
         event_at = created_at or _utc_now()
         current_revision = prior.get("revision", 0)
         draft = build_design_draft(

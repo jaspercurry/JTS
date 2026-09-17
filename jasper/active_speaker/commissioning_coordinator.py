@@ -214,7 +214,11 @@ def load_commissioning_view(
     *,
     commission: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Share commissioning inputs between /sound/ and the crossover envelope."""
+    """Share commissioning inputs between /sound/ and the crossover envelope.
+
+    A caller that omits ``commission`` silently degrades the view; ``None``
+    composes identical steps.
+    """
     from jasper.active_speaker.baseline_profile import (
         compile_commissioning_profile, load_applied_baseline_profile_state,
     )
