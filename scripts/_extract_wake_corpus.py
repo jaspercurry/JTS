@@ -107,6 +107,11 @@ def _safe_to_remove_output(path: Path, *, corpus_dir: Path) -> bool:
     corpus is commonly a ``latest`` symlink.  A denylist is not sufficient
     for recursive deletion: the output must also prove ownership through the
     exact artifact shape this extractor writes.
+
+    Same name as _export_wake_corpus_bundle.py's _safe_to_remove_output,
+    deliberately not converged onto shared _wake_pipeline_common ownership
+    logic: this extractor proves ownership via its own manifest.csv/
+    summary.txt shape, not the marker-JSON scheme the exporter uses.
     """
     lexical = Path(os.path.abspath(path.expanduser()))
     corpus_lexical = Path(os.path.abspath(corpus_dir.expanduser()))
