@@ -636,10 +636,10 @@ def box_outputd_period_frames() -> int | None:
 
     :func:`jasper.audio_runtime_plan.outputd_period_frames_as_loaded`, never the
     plan's policy resolver: the slot gate has to match the value outputd's own
-    ``env_u32`` reads off its three EnvironmentFile= layers, and the two differ
-    exactly where guessing is fatal (a DAC floor of 128 with a stale 1024 still
-    in ``outputd.env``; an operator ``jasper.env`` value the reconciler has not
-    applied).
+    ``env_u32_positive_or_bail`` reads off its three EnvironmentFile= layers,
+    and the two differ exactly where guessing is fatal (a DAC floor of 128 with
+    a stale 1024 still in ``outputd.env``; an operator ``jasper.env`` value the
+    reconciler has not applied).
 
     Fail-soft to ``None``, which
     :func:`~jasper.multiroom.dac_content_ring.dac_content_ring_servable` reads

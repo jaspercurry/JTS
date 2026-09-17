@@ -3004,8 +3004,8 @@ def test_the_period_gate_reads_what_outputd_loads_not_what_policy_intends(
 
     The plan resolves a POLICY period (lab override > jasper.env > DAC floor >
     packaged default, with outputd.env feeding only warnings). outputd resolves
-    a LOADED one: `env_u32` over jasper.env, then outputd.env, then
-    grouping-outputd.env, later wins. Where they disagree the slot gate must
+    a LOADED one: `env_u32_positive_or_bail` over jasper.env, then outputd.env,
+    then grouping-outputd.env, later wins. Where they disagree the slot gate must
     follow the daemon, or it arms a box that bails EX_CONFIG (Case A) or refuses
     one that plays (Case B).
     """
