@@ -28,8 +28,8 @@ Type=simple
 TimeoutStartSec=30s
 TimeoutStopSec=5s
 # Render /etc/shairport-sync.conf from the template every time the
-# service starts, picking up the current value of
-# /var/lib/jasper/airplay_mode.env. The leading `+` lets the
+# service starts, picking up the current speaker name and derived
+# latency offset. The leading `+` lets the
 # pre-start helper run as root so it can write /etc; ExecStart drops
 # back to the unprivileged shairport-sync user. The renderer is
 # idempotent; each render also does a config template substitution, up to

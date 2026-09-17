@@ -1,12 +1,9 @@
 // JTS shairport-sync config TEMPLATE — AirPlay 2 receiver into its
 // private snd-aloop fan-in lane. Rendered to /etc/shairport-sync.conf
 // by `jasper-apply-airplay-mode` (script installed to /usr/local/sbin/).
-// The renderer substitutes `__DISABLE_SYNCHRONIZATION__` based on
-// `JASPER_AIRPLAY_FREE_RUNNING` in /var/lib/jasper/airplay_mode.env,
-// and `__RENDERER_DEVICE__` (see the alsa block below).
-// Default = no (synced). Toggle via http://jts.local/airplay/ or
-// `jasper-airplay-mode set [free-running|synced]`. See
-// jasper/web/airplay_setup.py for the toggle UX.
+// The renderer substitutes `__AIRPLAY_NAME__`,
+// `__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__` and `__RENDERER_DEVICE__`
+// (see the alsa block below).
 //
 // LANE GEOMETRY — every seconds-valued sync knob below is sized against
 // it. snd-aloop locks the writer's buffer to the capture side jasper-fanin
@@ -18,9 +15,6 @@
 // A knob that does not clear that 5.333 ms grain servos on quantization
 // noise, and a target above the lane's 85.333 ms depth can never be
 // reached.
-// These targets are only actively held in synced mode — free-running
-// (__DISABLE_SYNCHRONIZATION__ = "yes") skips the corrector entirely.
-//
 // Requires source-built shairport-sync with --with-airplay-2 plus
 // nqptp.service running (UDP 319/320). The Debian Trixie apt package
 // is AP1-only — install.sh source-builds the AP2 variant.
@@ -175,11 +169,10 @@ alsa = {
     // keeps the 4.3.7 stereo-only behaviour this lane's geometry assumes.
     output_channels = 2;
     use_mmap_if_available = "no";
-    // Templated — see file header. Free-running ("yes") is the fallback
-    // that stops chasing the sender clock entirely: it trades A/V sync
-    // for video AirPlay and inter-speaker sync for multi-room. JTS
-    // defaults to "no" (synced).
-    disable_synchronization = "__DISABLE_SYNCHRONIZATION__";
+    // Chase the sender clock: video A/V sync and multi-room AirPlay both
+    // need it, and the resync_threshold_in_seconds above keeps the
+    // correction on its continuous, inaudible path.
+    disable_synchronization = "no";
 };
 
 metadata = {

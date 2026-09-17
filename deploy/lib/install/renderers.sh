@@ -160,14 +160,12 @@ install_renderers() {
 
     # shairport-sync config is templated: deploy/shairport-sync.conf.template
     # has placeholders substituted by /usr/local/sbin/jasper-apply-airplay-mode:
-    #   - __DISABLE_SYNCHRONIZATION__ from /var/lib/jasper/airplay_mode.env
     #   - __AIRPLAY_NAME__ from /var/lib/jasper/speaker_name.env
     #   - __AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__ from the active CamillaDSP
     #     samplerate/chunksize/target_level.
     # shairport-sync.service's ExecStartPre re-renders on every active-only
-    # try-restart, so toggling the mode (via /airplay/ web UI or
-    # jasper-airplay-mode CLI) is an env-file write + try-restart. A household
-    # Off source stays stopped.
+    # try-restart, so a renamed speaker or a retuned graph lands on the next
+    # restart. A household Off source stays stopped.
     install -m 0644 \
         "${REPO_DIR}/deploy/shairport-sync.conf.template" \
         /etc/shairport-sync.conf.template
@@ -186,11 +184,6 @@ install_renderers() {
     rm -f /usr/local/sbin/jasper-audio-topology
     rm -rf /etc/jasper/audio-topology
     rm -f /usr/local/sbin/jasper-derive-device-name
-    # Synced preserves video A/V and multi-room AirPlay timing; /airplay/ owns
-    # the preference after this seed.
-    ensure_state_dir
-    jasper_env_file_seed_absent "${STATE_DIR}/airplay_mode.env" 0644 0770 \
-        JASPER_AIRPLAY_FREE_RUNNING=no
     # Seed the first-start config with the repo script and its matching lib.
     bash "${REPO_DIR}/deploy/bin/jasper-apply-airplay-mode"
 

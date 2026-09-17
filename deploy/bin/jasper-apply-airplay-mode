@@ -6,7 +6,6 @@
 
 # jasper-apply-airplay-mode — render /etc/shairport-sync.conf from the
 # template at /etc/shairport-sync.conf.template, substituting:
-#   - disable_synchronization based on /var/lib/jasper/airplay_mode.env
 #   - AirPlay device name based on JASPER_SPEAKER_NAME (in
 #     /var/lib/jasper/speaker_name.env)
 #   - audio_backend_latency_offset_in_seconds derived from the active
@@ -25,15 +24,12 @@
 #   - output_device: shairport_substream, AirPlay's private snd-aloop
 #     fan-in lane (deploy/alsa/asoundrc.jasper).
 #
-# Invoked from three places:
+# Invoked from two places:
 #   1. shairport-sync.service ExecStartPre (so every restart picks up
-#      the current mode).
+#      the current name and offset).
 #   2. install.sh (so a fresh install lands with the conf rendered).
-#   3. jasper-airplay-mode CLI and the /airplay/ web UI, after they
-#      update the env file and before they try-restart shairport if active.
 #
 # Env input:
-#   JASPER_AIRPLAY_FREE_RUNNING — "yes" / "no". Default: "no".
 #   JASPER_SPEAKER_NAME         — display name shown in renderer pickers.
 #                                 Default: JTS.
 #   JASPER_CAMILLA_STATEFILE    — CamillaDSP statefile path.
@@ -77,7 +73,6 @@ set -euo pipefail
 
 TEMPLATE="${JASPER_SHAIRPORT_TEMPLATE:-/etc/shairport-sync.conf.template}"
 TARGET="${JASPER_SHAIRPORT_CONF:-/etc/shairport-sync.conf}"
-ENV_FILE="${JASPER_AIRPLAY_MODE_ENV:-/var/lib/jasper/airplay_mode.env}"
 JASPER_ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
 SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
@@ -631,38 +626,17 @@ derive_audio_backend_latency_offset() {
 # AirPlay's private snd-aloop fan-in lane (deploy/alsa/asoundrc.jasper).
 renderer_device="shairport_substream"
 
-# Mode and display name, layered lowest-precedence first: inherited
-# environment (install.sh and the CLI can pass one), then airplay_mode.env,
-# then jasper.env, then speaker_name.env. A file that DEFINES the key wins
-# even when empty; the `:-` defaults below turn that empty into the fallback.
-mode="${JASPER_AIRPLAY_FREE_RUNNING:-}"
+# Display name, layered lowest-precedence first: inherited environment
+# (install.sh can pass one), then jasper.env, then speaker_name.env. A file
+# that DEFINES the key wins even when empty; the `:-` default below turns
+# that empty into the fallback.
 airplay_name="${JASPER_SPEAKER_NAME:-}"
-for env_layer in "$ENV_FILE" "$JASPER_ENV_FILE" "$SPEAKER_NAME_FILE"; do
-    if layer_value="$(jasper_env_file_get "$env_layer" JASPER_AIRPLAY_FREE_RUNNING)"; then
-        mode="$layer_value"
-    fi
+for env_layer in "$JASPER_ENV_FILE" "$SPEAKER_NAME_FILE"; do
     if layer_value="$(jasper_env_file_get "$env_layer" JASPER_SPEAKER_NAME)"; then
         airplay_name="$layer_value"
     fi
 done
-mode="${mode:-no}"
 airplay_name="${airplay_name:-JTS}"
-
-case "$mode" in
-    yes|YES|true|TRUE|1)
-        disable_sync="yes"
-        human="free-running (music-only, no A/V or multi-room sync)"
-        ;;
-    no|NO|false|FALSE|0)
-        disable_sync="no"
-        human="synced (matches AirPlay sender clock; needed for video A/V sync or multi-room)"
-        ;;
-    *)
-        echo "jasper-apply-airplay-mode: invalid JASPER_AIRPLAY_FREE_RUNNING='$mode'; defaulting to no" >&2
-        disable_sync="no"
-        human="synced (defaulted from invalid value)"
-        ;;
-esac
 
 latency_offset="$(derive_audio_backend_latency_offset)"
 # Name and renderer device both land inside a libconfig quoted string, so \
@@ -678,8 +652,7 @@ renderer_device_sed="$(printf '%s' "$renderer_device" | sed -e 's/[\/&]/\\&/g')"
 tmp="${TARGET}.tmp.$$"
 trap 'rm -f "$tmp"' EXIT
 
-sed -e "s/__DISABLE_SYNCHRONIZATION__/${disable_sync}/g" \
-    -e "s/__AIRPLAY_NAME__/${airplay_name_sed}/g" \
+sed -e "s/__AIRPLAY_NAME__/${airplay_name_sed}/g" \
     -e "s/__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__/${latency_offset}/g" \
     -e "s/__RENDERER_DEVICE__/${renderer_device_sed}/g" \
     "$TEMPLATE" > "$tmp"
@@ -688,7 +661,7 @@ sed -e "s/__DISABLE_SYNCHRONIZATION__/${disable_sync}/g" \
 # conf that still contains a placeholder (something went wrong with
 # the template or the sed). shairport would otherwise fail to parse it
 # and crash-loop.
-if grep -qE "__DISABLE_SYNCHRONIZATION__|__AIRPLAY_NAME__|__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__|__RENDERER_DEVICE__" "$tmp"; then
+if grep -qE "__AIRPLAY_NAME__|__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__|__RENDERER_DEVICE__" "$tmp"; then
     echo "jasper-apply-airplay-mode: placeholder still present in rendered conf — refusing to install" >&2
     exit 2
 fi
@@ -697,4 +670,4 @@ chmod 0644 "$tmp"
 mv -f "$tmp" "$TARGET"
 trap - EXIT
 
-echo "jasper-apply-airplay-mode: $TARGET rendered for mode $human, name '$airplay_name', renderer device '$renderer_device', latency offset ${latency_offset}s" >&2
+echo "jasper-apply-airplay-mode: $TARGET rendered for name '$airplay_name', renderer device '$renderer_device', latency offset ${latency_offset}s" >&2

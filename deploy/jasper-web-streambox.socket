@@ -10,7 +10,6 @@ Description=Jasper streambox web setup wizards (renderer/DSP + assistant) — so
 ListenStream=127.0.0.1:8765
 ListenStream=127.0.0.1:8767
 ListenStream=127.0.0.1:8768
-ListenStream=127.0.0.1:8771
 ListenStream=127.0.0.1:8773
 ListenStream=127.0.0.1:8775
 ListenStream=127.0.0.1:8777

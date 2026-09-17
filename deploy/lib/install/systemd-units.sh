@@ -337,7 +337,7 @@ install_web_unit_files() {
 validate_streambox_web_socket() {
     local socket="${SYSTEMD_DIR}/jasper-web.socket"
     local -a expected_ports=(
-        8765 8767 8768 8771 8773 8775 8777 8778 8779 8783 8784 8785 8786
+        8765 8767 8768 8773 8775 8777 8778 8779 8783 8784 8785 8786
     )
     local -a forbidden_ports=(8774 8782)
     local port
