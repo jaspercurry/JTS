@@ -26,7 +26,7 @@ from ._common import (
     ACTIVE_CROSSOVER_ROLE_PAIRS,
     DRIVER_CLASSES,
     LEGACY_DROPPED_DRIVER_FIELDS,
-    MANUAL_DRIVER_FIELDS,
+    MANUAL_CANDIDATE_FIELDS,
     DRIVER_RESEARCH_FIELDS,
     DriverFields,
     issue as _issue,
@@ -35,6 +35,7 @@ from .driver_pad import DriverPadError, effective_sensitivity_db, normalise_pad
 from .driver_safety import (
     DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
     DriverSafetyProfileError,
+    _normalise_field_provenance,
     compute_driver_safety_profile,
     driver_protection_policy_view,
     driver_research_targets,
@@ -54,7 +55,7 @@ DEFAULT_DESIGN_DRAFT_PATH = Path("/var/lib/jasper/active_speaker_design_draft.js
 DESIGN_DRAFT_PATH_ENV = "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"
 _DESIGN_DRAFT_WRITE_LOCK = threading.RLock()
 _COMPUTED_DRAFT_FIELDS = frozenset({
-    "driver_safety_profile", "driver_safety_profile_evaluation", "driver_protection_policy_view", "driver_fields",
+    "driver_safety_profile", "driver_safety_profile_evaluation", "driver_protection_policy_view",
 })
 
 _SUPPORTED_RESEARCH_ROLES = {"full_range", "woofer", "mid", "tweeter", "subwoofer"}
@@ -82,26 +83,13 @@ _finite_float = _fields._finite_float
 _positive_float = _fields._positive_float
 _sequence = _fields._sequence
 _mapping = _fields.mapping
+_reject_unknown_keys = _fields._reject_unknown_keys
 
 
 def _design_draft_path(path: str | Path | None = None) -> Path:
     return Path(
         path or os.environ.get(DESIGN_DRAFT_PATH_ENV) or DEFAULT_DESIGN_DRAFT_PATH
     )
-
-
-def _reject_unknown_keys(
-    raw: Mapping[str, Any],
-    field_name: str,
-    allowed: set[str],
-) -> None:
-    unknown = sorted(str(key) for key in raw if key not in allowed)
-    if unknown:
-        error = ActiveSpeakerDesignDraftError(
-            f"{field_name} has unknown fields: {', '.join(unknown)}"
-        )
-        error.code = "unknown_driver_fields"
-        raise error
 
 
 def _gain_offset_provenance(
@@ -312,6 +300,10 @@ def _normalise_driver_common(
     if include_sources:
         driver["sources"] = _string_list(raw.get("sources"), f"{prefix}.sources")
     try:
+        if include_sources and not include_research_safety_evidence:
+            _normalise_field_provenance(
+                raw.get("field_provenance"), f"{prefix}.field_provenance",
+            )
         driver.update(
             normalise_driver_safety_fields(
                 raw,
@@ -328,7 +320,9 @@ def _normalise_driver_common(
             field_name=f"{prefix}.pad",
         )
     except (DriverSafetyProfileError, DriverPadError) as exc:
-        raise ActiveSpeakerDesignDraftError(str(exc)) from exc
+        error = ActiveSpeakerDesignDraftError(str(exc))
+        error.code = getattr(exc, "code", error.code)
+        raise error from exc
     return {key: value for key, value in driver.items() if value not in (None, [])}
 
 
@@ -466,6 +460,10 @@ def normalise_driver_research(
     if raw is None or raw == "":
         return None
     raw = _mapping(raw, "driver_research")
+    _reject_unknown_keys(raw, "driver_research", {
+        "artifact_schema_version", "kind", "drivers", "crossover_candidates",
+        "human_review", "request_fingerprint", "result_fingerprint",
+    })
     research_schema_version = raw.get("artifact_schema_version")
     if type(research_schema_version) is not int:  # noqa: E721
         raise ActiveSpeakerDesignDraftError(
@@ -511,14 +509,15 @@ def normalise_driver_research(
         )
     if not drivers:
         raise ActiveSpeakerDesignDraftError("driver_research.drivers is required")
-    candidates = [
-        _normalise_candidate(item)
-        for item in _sequence(
-            raw.get("crossover_candidates"),
-            "driver_research.crossover_candidates",
-            limit=_MAX_CANDIDATES,
+    candidates = []
+    for index, item in enumerate(_sequence(
+        raw.get("crossover_candidates"), "driver_research.crossover_candidates", limit=_MAX_CANDIDATES,
+    )):
+        _reject_unknown_keys(
+            _mapping(item, f"driver_research.crossover_candidates[{index}]"),
+            f"driver_research.crossover_candidates[{index}]", MANUAL_CANDIDATE_FIELDS,
         )
-    ]
+        candidates.append(_normalise_candidate(item))
     result: dict[str, Any] = {
         "artifact_schema_version": research_schema_version,
         "kind": DRIVER_RESEARCH_KIND,
@@ -1052,7 +1051,6 @@ def design_draft_view(
     """Add computed driver data to a live or banked declaration (ADR-0323 §2)."""
     out = {key: value for key, value in draft.items()
            if key not in _COMPUTED_DRAFT_FIELDS}
-    out["driver_fields"] = sorted(MANUAL_DRIVER_FIELDS)
     if topology is None and draft.get("topology"):
         try:
             topology = OutputTopology.from_mapping(draft["topology"])
@@ -1076,7 +1074,7 @@ def load_design_draft(
     """Load declared values and compute the safety profile for the supplied topology."""
     raw = _read_design_draft(_design_draft_path(path))
     if raw["status"] in ("not_saved", "unreadable"):
-        return design_draft_view(raw)
+        return raw
     raw.pop("driver_research_request", None)
     research = raw.get("driver_research")
     if isinstance(research, dict):

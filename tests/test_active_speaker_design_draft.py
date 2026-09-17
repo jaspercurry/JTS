@@ -18,7 +18,6 @@ from jasper.active_speaker import (
     load_design_draft,
     save_design_draft,
 )
-from jasper.active_speaker._common import MANUAL_DRIVER_FIELDS
 from jasper.active_speaker.design_draft import (
     normalise_driver_research,
     _normalise_candidate,
@@ -481,8 +480,9 @@ def test_design_draft_revision_is_informational(
     assert load_design_draft(path)["operator_inputs"]["notes"] == "second"
 
 
-def test_legacy_draft_loads_as_revision_zero_and_boolean_revision_fails_soft(
-    tmp_path: Path,
+@pytest.mark.parametrize("revision", [True, "3"])
+def test_legacy_draft_loads_as_revision_zero_and_invalid_revision_fails_soft(
+    tmp_path: Path, revision,
 ) -> None:
     path = tmp_path / "active_speaker_design_draft.json"
     path.write_text(
@@ -503,14 +503,17 @@ def test_legacy_draft_loads_as_revision_zero_and_boolean_revision_fails_soft(
                 "artifact_schema_version": 1,
                 "kind": DESIGN_DRAFT_KIND,
                 "status": "ready_for_review",
-                "revision": True,
+                "revision": revision,
+                "topology": _topology().to_dict(),
+                "manual_settings": {"drivers": "nope"},
             }
         ),
         encoding="utf-8",
     )
-    invalid = load_design_draft(path)
+    invalid = load_design_draft(path, topology=_topology())
     assert invalid["status"] == "unreadable"
     assert invalid["issues"][0]["code"] == "design_draft_revision_invalid"
+    assert "driver_safety_profile" not in invalid
 
 
 def test_duplicate_manual_target_and_boolean_numeric_value_are_rejected() -> None:
@@ -1001,19 +1004,29 @@ def test_legacy_horn_coverage_deg_draft_still_saves_and_drops_the_key(
 
 
 @pytest.mark.parametrize("version", [1, 2])
-def test_pasted_research_refuses_unknown_driver_fields(version):
-    research = {
-        "artifact_schema_version": version,
-        "kind": "jts_active_crossover_driver_research",
-        "drivers": [{"role": "tweeter", "model": "B", "typo": True}],
-    }
+@pytest.mark.parametrize("shape", ["document", "driver", "candidate", "provenance"])
+def test_pasted_research_refuses_unknown_fields(version, shape):
+    research = _research()
+    research["artifact_schema_version"] = version
+    if version == 2:
+        for item in research["drivers"]:
+            item["target_id"] = f"mono:{item['role']}"
+    driver = research["drivers"][0]
+    driver["field_provenance"] = {"sensitivity_db_2v83_1m": {
+        "confidence": "high", "basis": "datasheet",
+    }}
+    node = {
+        "document": research, "driver": driver,
+        "candidate": research["crossover_candidates"][0],
+        "provenance": driver["field_provenance"]["sensitivity_db_2v83_1m"],
+    }[shape]
+    node["typo"] = True
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         normalise_driver_research(research)
     assert caught.value.code == "unknown_driver_fields"
 
 
-def test_extra_keys_are_ignored_and_driver_fields_are_served(tmp_path):
-    assert load_design_draft(tmp_path / "draft.json")["driver_fields"] == sorted(MANUAL_DRIVER_FIELDS)
+def test_extra_manual_keys_are_ignored(tmp_path):
     manual = {
         "typo": True,
         "drivers": [{"role": "woofer", "model": "A", "typo": True,
@@ -1025,12 +1038,7 @@ def test_extra_keys_are_ignored_and_driver_fields_are_served(tmp_path):
     saved = save_design_draft(_topology(), manual_settings=manual,
                               operator_inputs={"woofer": "A", "typo": True},
                               path=tmp_path / "draft.json")
-    assert saved["driver_fields"] == sorted(MANUAL_DRIVER_FIELDS)
-    on_disk = json.loads((tmp_path / "draft.json").read_text())
-    assert "driver_fields" not in on_disk
-    on_disk["driver_fields"] = ["stale_field"]
-    (tmp_path / "draft.json").write_text(json.dumps(on_disk))
-    assert load_design_draft(tmp_path / "draft.json")["driver_fields"] == sorted(MANUAL_DRIVER_FIELDS)
+    assert "driver_fields" not in saved
     assert saved["operator_inputs"] == {"woofer": "A"}
     assert saved["manual_settings"]["drivers"][0]["cabinet"] == {
         "enclosure_kind": "sealed", "lf_reconstruction_capability": "refused_single_radiator_contract_not_proven",

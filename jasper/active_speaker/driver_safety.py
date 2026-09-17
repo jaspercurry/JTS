@@ -63,6 +63,16 @@ _text = partial(_fields._text, max_chars=320)
 _finite_float = _fields._finite_float
 _positive_float = _fields._positive_float
 _sequence = _fields._sequence
+_reject_unknown_keys = _fields._reject_unknown_keys
+
+
+DRIVER_SAFETY_FIELDS = tuple(key for key in (
+    "hard_excitation_band_hz",
+    "required_protection_filters",
+    "measurement_band_hz",
+    "level_duration_limits",
+    "cabinet",
+) if key in MANUAL_DRIVER_FIELDS)
 
 
 def _canonical_json(value: Any) -> str:
@@ -432,6 +442,9 @@ def _normalise_field_provenance(value: Any, field_name: str) -> dict[str, Any]:
         key = _text(raw_key, f"{field_name} key", required=True, max_chars=80)
         if not isinstance(raw_assertion, Mapping):
             raise DriverSafetyProfileError(f"{field_name}.{key} must be an object")
+        _reject_unknown_keys(
+            raw_assertion, f"{field_name}.{key}", {"confidence", "basis", "source", "sources"},
+        )
         confidence = (
             _text(
                 raw_assertion.get("confidence") or "unknown",
@@ -939,10 +952,8 @@ def _normalise_profile_manual_settings(
         field_name = f"manual_settings.crossover_candidates[{index}]"
         if not isinstance(raw_candidate, Mapping):
             raise DriverSafetyProfileError(f"{field_name} must be an object")
-        _reject_bool_tree(
-            {key: value for key, value in raw_candidate.items() if key in MANUAL_CANDIDATE_FIELDS},
-            field_name,
-        )
+        _reject_unknown_keys(raw_candidate, field_name, MANUAL_CANDIDATE_FIELDS)
+        _reject_bool_tree(raw_candidate, field_name)
     normalised = {"drivers": drivers, "crossover_candidates": []}
     validate_manual_target_bindings(topology, normalised)
     return normalised
@@ -1105,20 +1116,14 @@ def compute_driver_safety_profile(
             role_counts=role_counts,
         )
         research = research_by_target.get(target_id, {})
-        safety_field_names = tuple(key for key in (
-            "hard_excitation_band_hz",
-            "required_protection_filters",
-            "measurement_band_hz",
-            "level_duration_limits",
-            "cabinet",
-        ) if key in MANUAL_DRIVER_FIELDS)
+
         provenance: dict[str, Any] = {}
         unknowns = list(research.get("unknowns", []))
         research_provenance = research.get("field_provenance", {})
         research_provenance = (
             research_provenance if isinstance(research_provenance, Mapping) else {}
         )
-        for field in safety_field_names:
+        for field in DRIVER_SAFETY_FIELDS:
             if field not in visible:
                 continue
             if (

@@ -12,8 +12,8 @@ import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { buildFunction, repoPath } from "./_loader.mjs";
 
-const driverFieldsFixture = JSON.parse(execFileSync(process.env.PYTHON || "python3", [
-  "-c", "import json; from jasper.active_speaker._common import MANUAL_DRIVER_FIELDS; print(json.dumps(sorted(MANUAL_DRIVER_FIELDS)))",
+const driverVocabularyFixture = JSON.parse(execFileSync(process.env.PYTHON || "python3", [
+  "-c", "import json; from jasper.active_speaker.driver_safety_prompt import driver_field_vocabulary; print(json.dumps(driver_field_vocabulary()))",
 ], {cwd: repoPath("."), encoding: "utf8"}));
 
 const modulePath = process.argv[2] || "deploy/assets/sound-profile/js/main.js";
@@ -568,6 +568,9 @@ function setupHarness(fetchHandler, options = {}) {
         },
     });
   elements.set("sound-page-data", island);
+  const driverIsland = makeEl('jts-driver-fields');
+  driverIsland.textContent = JSON.stringify(options.driverVocabulary || driverVocabularyFixture);
+  elements.set('jts-driver-fields', driverIsland);
   if (pageMode !== "eq" || options.follower) {
     // The hardware and follower pages omit the content-EQ chrome. Making those
     // ids resolve to null exercises the module's mode guards as the browser does.
@@ -659,14 +662,7 @@ function setupHarness(fetchHandler, options = {}) {
     configurable: true,
   });
   delete globalThis.__jtsConfirm;
-  globalThis.fetch = async (path, options) => {
-    const result = await fetchHandler(path, options);
-    if (path === './active-speaker/design-draft' && result.ok) {
-      const payload = await result.json();
-      return response({driver_fields: driverFieldsFixture, ...payload});
-    }
-    return result;
-  };
+  globalThis.fetch = fetchHandler;
 
   runner(globalThis.document, globalThis.window, globalThis, console, setTimeout, clearTimeout);
 
@@ -1653,10 +1649,7 @@ async function testComponentFirstResearchFlowIsOrderedAndAdvancedIsFlat() {
   if (!html.includes("Required high-pass cutoff (derived)")) {
     fail("a derived protection field must be labelled derived", { html });
   }
-  // Typing is deliberately not a repaint here (only driver_class/pad_kind
-  // re-render), so the round trip is asserted where it is observable: the
-  // field reaches the same payload the echo-back contract already requires it
-  // to render back, pinned in tests/test_sound_profile_echo_back_contract.py.
+  // Served vocabulary: tests/test_sound_setup.py:test_sound_page_serves_driver_vocabulary.
   return { componentFirstResearchFlowIsOrderedAndAdvancedIsFlat: true };
 }
 
@@ -2827,6 +2820,81 @@ async function testCrossoverPickersOfferOnlyTheServedVocabulary() {
   return { crossoverPickersOfferOnlyTheServedVocabulary: true };
 }
 
+async function testStoredUnsupportedCrossoverSlopeBlocksSaveClientSide() {
+  const designSaves = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        designSaves.push(JSON.parse(options.body || "{}"));
+        return Promise.resolve(response({ status: "ready_for_review", summary: {}, operator_inputs: {} }));
+      }
+      return Promise.resolve(response({
+        status: "ready_for_review",
+        summary: {},
+        operator_inputs: { woofer: "Manual Woofer", tweeter: "Manual Tweeter" },
+        manual_settings: {
+          drivers: [],
+          crossover_candidates: [{
+            between_roles: ["woofer", "tweeter"],
+            frequency_hz: 2000,
+            filter_type: "Linkwitz-Riley",
+            slope_db_per_octave: 18,
+            confidence: "medium",
+          }],
+        },
+      }));
+    },
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  const html = harness.elements.get("view-body").innerHTML;
+  assert.match(html, /<option value="18" selected>/);
+  if (html.includes('<option value="24" selected>')) {
+    fail("an unsupported stored slope must not be coerced onto a neighbour", { html });
+  }
+
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  if (designSaves.length !== 0) {
+    fail("a crossover the compiler cannot build must block the save client-side", { designSaves });
+  }
+  return { storedUnsupportedCrossoverSlopeBlocksSaveClientSide: true };
+}
+
+async function testAPassiveLayoutSavesWithNoCrossoverVocabularyServed() {
+  const designSaves = [];
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(
+      passiveWithSubwooferTopologyPayload()
+    )),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        designSaves.push(JSON.parse(options.body || "{}"));
+        return Promise.resolve(response({ status: "ready_for_review", summary: {}, operator_inputs: {} }));
+      }
+      return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
+    },
+  });
+  const harness = setupHarness(fetchHandler, { crossoverVocabulary: {} });
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchInput({ "data-driver-target": "main:full_range" }, "Example FR8");
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  await harness.flush();
+
+  if (designSaves.length !== 1) {
+    fail("a passive layout must save without a crossover vocabulary", { designSaves });
+  }
+  return { aPassiveLayoutSavesWithNoCrossoverVocabularyServed: true };
+}
+
 async function testManualCrossoverAlignmentIsAlwaysVisibleOnSavedDelay() {
   const fetchHandler = baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
@@ -3648,13 +3716,46 @@ function echoDraft({ research, policy } = {}) {
   return draft;
 }
 
-async function echoHarness(draft) {
+async function echoHarness(draft, options) {
   const harness = setupHarness(baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
     "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
-  }));
+  }), options);
   await loadAndSetActiveState(harness);
   return harness.elements.get("view-body").innerHTML;
+}
+
+async function testFailedDraftFetchPreservesEveryDeclaredDriverOnSave() {
+  const draft = echoDraft();
+  const saves = [];
+  let reads = 0;
+  const harness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") {
+        saves.push(JSON.parse(options.body));
+        return Promise.resolve(response(draft));
+      }
+      if (reads++) return Promise.reject(new Error("draft unavailable"));
+      return Promise.resolve(response(draft));
+    },
+  }));
+  await loadAndSetActiveState(harness);
+  harness.dispatchClick({"data-act": "refresh-output-topology"});
+  await harness.flush();
+  await harness.flush();
+  assert.equal(reads, 2);
+  harness.dispatchClick({"data-act": "save-driver-design"});
+  await harness.flush();
+  await harness.flush();
+  assert.equal(saves.length, 1);
+  const values = drivers => drivers.map(driver => ({
+    target_id: driver.target_id, role: driver.role, model: driver.model,
+    sensitivity_db_2v83_1m: driver.sensitivity_db_2v83_1m,
+    recommended_highpass_hz: driver.recommended_highpass_hz,
+  }));
+  assert.deepEqual(values(saves[0].manual_settings.drivers), values(draft.manual_settings.drivers));
+  return {failedDraftFetchPreservesEveryDeclaredDriverOnSave: true};
 }
 
 function echoPanel(html) {
@@ -3664,9 +3765,19 @@ function echoPanel(html) {
 }
 
 async function testResearchEchoBackNamesEveryValueWithBadgeAndSource() {
+  for (const fields of [driverVocabularyFixture.driver_fields, [...driverVocabularyFixture.driver_fields].reverse()]) {
+    const html = await echoHarness(echoDraft(), {driverVocabulary: {
+      ...driverVocabularyFixture, driver_fields: fields,
+    }});
+    const rendered = fields.filter(field => ["sensitivity_db_2v83_1m", "nominal_impedance_ohm"].includes(field));
+    assert.ok(html.indexOf('data-manual-field="' + rendered[0] + '"') <
+      html.indexOf('data-manual-field="' + rendered[1] + '"'));
+  }
   const subset = echoDraft();
-  subset.driver_fields = driverFieldsFixture.filter(field => field !== 'sensitivity_db_2v83_1m');
-  const subsetHtml = await echoHarness(subset);
+  const subsetHtml = await echoHarness(subset, {driverVocabulary: {
+    driver_fields: driverVocabularyFixture.driver_fields.filter(field => field !== 'sensitivity_db_2v83_1m'),
+    driver_echo_back_fields: driverVocabularyFixture.driver_echo_back_fields.filter(field => field !== 'sensitivity_db_2v83_1m')
+  }});
   assert.ok(!echoPanel(subsetHtml).includes('<dt>Sensitivity</dt>'));
   assert.ok(!subsetHtml.includes('data-manual-field="sensitivity_db_2v83_1m"'));
   const panel = echoPanel(await echoHarness(echoDraft()));
@@ -5670,6 +5781,8 @@ results.push(await testManualCrossoverPayloadOmitsPolarityAndDelayWhenDefault())
 results.push(await testManualCrossoverPayloadEmitsPolarityAndZeroDelay());
 results.push(await testManualCrossoverDelayWithoutTargetBlocksSaveClientSide());
 results.push(await testCrossoverPickersOfferOnlyTheServedVocabulary());
+results.push(await testStoredUnsupportedCrossoverSlopeBlocksSaveClientSide());
+results.push(await testAPassiveLayoutSavesWithNoCrossoverVocabularyServed());
 results.push(await testManualCrossoverAlignmentIsAlwaysVisibleOnSavedDelay());
 results.push(await testDriverResearchImportCopiesPolarityAndDelayIntoManualSettings());
 results.push(await testDriverResearchImportToleratesFencesAndProse());
@@ -5680,6 +5793,7 @@ results.push(await testDriverResearchNullProtectionNumbersAreRefusedNotDropped()
 results.push(await testRejectedImportReasonSurvivesTheSaveInThePanel());
 results.push(await testRejectedPasteAndReasonSurviveDraftIngest());
 results.push(await testResearchEchoBackNamesEveryValueWithBadgeAndSource());
+results.push(await testFailedDraftFetchPreservesEveryDeclaredDriverOnSave());
 results.push(await testResearchEchoBackDisclosesTheDelegation());
 results.push(await testResearchEchoBackEscapesUntrustedSources());
 results.push(await testResearchEchoBackFollowsTheSameCurrencyRulesAsTheEvidence());

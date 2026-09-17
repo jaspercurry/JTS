@@ -22,6 +22,7 @@ from jasper.active_speaker.driver_safety import (
     DRIVER_RESEARCH_KIND,
     DRIVER_SAFETY_PROFILE_KIND,
     DriverSafetyProfileError,
+    _normalise_field_provenance,
     build_driver_research_context,
     compute_driver_safety_profile,
     driver_research_targets,
@@ -760,7 +761,7 @@ def test_missing_floor_and_duration_are_computed_issues() -> None:
         "max_sweep_duration_s_missing" in issue["code"] for issue in partial["issues"]
     )
 
-def test_v2_result_rejects_boolean_values() -> None:
+def test_v2_result_rejects_boolean_values_and_unknown_fields() -> None:
     topology = mono_output_topology(card_id=None)
     request = build_driver_research_context(topology, _operator_inputs())
 
@@ -772,6 +773,12 @@ def test_v2_result_rejects_boolean_values() -> None:
             driver_research=bool_value,
             operator_inputs=_operator_inputs(),
         )
+
+    unknown = _research_result(request)
+    unknown["typo"] = True
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
+        build_design_draft(topology, driver_research=unknown, operator_inputs=_operator_inputs())
+    assert caught.value.code == "unknown_driver_fields"
 
 
 def test_a_typed_protection_value_the_derivation_replaced_is_disclosed() -> None:
@@ -1513,7 +1520,7 @@ def test_direct_builder_canonicalizes_manual_values_and_forged_cabinet_claim() -
     )
 
 
-def test_direct_builder_rejects_boolean_manual_fields() -> None:
+def test_direct_builder_rejects_boolean_and_unknown_manual_fields() -> None:
     boolean = _manual_settings()
     boolean["drivers"][1]["hard_excitation_band_hz"][0] = True
     with pytest.raises(DriverSafetyProfileError):
@@ -1522,6 +1529,25 @@ def test_direct_builder_rejects_boolean_manual_fields() -> None:
             manual_settings=boolean,
             driver_research=None,
         )
+
+    candidate_unknown = _manual_settings()
+    candidate_unknown["crossover_candidates"] = [{"typo": True}]
+    with pytest.raises(DriverSafetyProfileError) as caught:
+        compute_driver_safety_profile(
+            mono_output_topology(card_id=None), manual_settings=candidate_unknown,
+            driver_research=None,
+        )
+    assert caught.value.code == "unknown_driver_fields"
+
+
+def test_provenance_has_no_second_writer_for_published_versus_estimated() -> None:
+    with pytest.raises(DriverSafetyProfileError) as caught:
+        _normalise_field_provenance({
+            "level_duration_limits": {
+                "confidence": "high", "basis": "datasheet", "state": "estimated",
+            },
+        }, "driver.field_provenance")
+    assert caught.value.code == "unknown_driver_fields"
 
 
 # --- #2186: the estimate-friendly research contract -------------------------

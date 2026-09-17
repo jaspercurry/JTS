@@ -76,6 +76,7 @@ import {
   ingestCrossoverPreview,
   levelDurationLimitsFromSetting,
   manualCrossoverDelayValidationError,
+  manualCrossoverVocabularyValidationError,
   driverFields,
   driverNumberFields,
   padFromSetting,
@@ -3509,7 +3510,8 @@ import {
       return false;
     }
     var manualTopology = currentOutputTopology();
-    var manualError = manualCrossoverDelayValidationError(manualTopology);
+    var manualError = manualCrossoverDelayValidationError(manualTopology) ||
+      manualCrossoverVocabularyValidationError(manualTopology);
     if (manualError) {
       driverResearch.error = manualError;
       status(manualError, true);

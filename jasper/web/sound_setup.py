@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
+from jasper.active_speaker.driver_safety_prompt import driver_field_vocabulary
 from jasper.log_event import log_event
 from jasper.sound.profile import (
     PROFILE_LIBRARY_PATH,
@@ -196,7 +197,7 @@ def _sound_page_island(*, page_mode: str, follower: bool) -> str:
                 "default_slope_db_per_octave": DEFAULT_SLOPE_DB_PER_OCTAVE,
             },
         },
-    )
+    ) + json_island("jts-driver-fields", driver_field_vocabulary())
 
 
 def _follower_sound_html(

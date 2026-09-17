@@ -17,6 +17,7 @@ import {
   driverClassHasRadiatingDiameter,
   driverClasses,
   driverEchoBackFields,
+  driverEchoBackField,
   driverFields,
   driverEchoDelegationText,
   driverEvidenceForTarget,
@@ -390,11 +391,11 @@ function renderAdvancedDriverSettings(topology) {
           '<p class="setting-row__title">Driver specifications</p>' +
           '<div class="driver-research__fields">' +
             driverFields().map(function(field) {
+              if (field === 'driver_class') return driverClassFieldHtml(targetId, setting);
+              if (field === 'radiating_diameter_mm') return driverClassGeometryFieldHtml(targetId, setting);
               var spec = specs[field];
               return spec ? driverSafetyNumberField(targetId, setting, field, spec[0], spec[1]) : '';
             }).join('') +
-            (driverFields().includes('driver_class') ? driverClassFieldHtml(targetId, setting) : '') +
-            (driverFields().includes('radiating_diameter_mm') ? driverClassGeometryFieldHtml(targetId, setting) : '') +
           '</div>' +
         '</div>' +
         renderDriverSafetyLimits(targetId, setting,
@@ -567,11 +568,11 @@ function driverEchoBackRowsHtml(targetId, driver) {
   var setting = driverSetting(targetId);
   var provenance = (driver && driver.field_provenance) || {};
   var rows = driverEchoBackFields().map(function(field) {
-    if (!driver || driver[field.key] == null) return '';
-    var value = field.read(setting);
-    var entry = provenance[field.key];
+    if (!driver || driver[field] == null) return '';
+    var [label, value] = driverEchoBackField(field, setting);
+    var entry = provenance[field];
     return '<div class="driver-echo__row">' +
-      '<dt>' + escapeHtml(field.label) + '</dt>' +
+      '<dt>' + escapeHtml(label) + '</dt>' +
       '<dd>' +
         '<span class="driver-echo__value">' +
           escapeHtml(value || 'not set') + '</span>' +

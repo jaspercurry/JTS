@@ -23,6 +23,7 @@ import {
 } from "/assets/sound-profile/js/format.js";
 import {
   crossoverPreview,
+  crossoverVocabulary,
   driverResearch,
   outputTopology
 } from "/assets/sound-profile/js/state.js";
@@ -40,6 +41,7 @@ import {
 } from "/assets/sound-profile/js/topology.js";
 
 var DRIVER_RESEARCH_NOTE_MAX_CHARS = 2048;
+const DRIVER_VOCABULARY = JSON.parse(document.getElementById('jts-driver-fields').textContent);
 
 function driverResearchRoles(topology) {
   var pairs = activeCrossoverPairs(topology);
@@ -374,6 +376,35 @@ function manualCrossoverDelayValidationError(topology) {
   return 'Pick which driver is delayed for ' +
     humanRole(pair[0]) + ' / ' + humanRole(pair[1]) + ' before saving.';
 }
+function manualCrossoverVocabularyValidationError(topology) {
+  // Layout first: a passive layout has no crossover to author, so a damaged
+  // island must not block its save over a vocabulary it never uses.
+  var pairs = activeCrossoverPairs(topology);
+  if (!pairs.length) return '';
+  if (!crossoverVocabulary.filterTypes.length || !crossoverVocabulary.slopes.length) {
+    return 'The crossover filter and slope options could not be read. Reload this page before saving.';
+  }
+  var offending = '';
+  pairs.forEach(function(pair) {
+    if (offending) return;
+    var setting = crossoverSetting(pair);
+    if (manualNumberValue(setting.frequency_hz) == null) return;
+    var name = humanRole(pair[0]) + ' / ' + humanRole(pair[1]);
+    var filterType = String(setting.filter_type || crossoverVocabulary.defaultFilterType);
+    if (crossoverVocabulary.filterTypes.indexOf(filterType) < 0) {
+      offending = 'JTS cannot build a ' + filterType + ' crossover for ' + name +
+        '. Pick one of: ' + crossoverVocabulary.filterTypes.join(', ') + '.';
+      return;
+    }
+    var slope = manualNumberValue(setting.slope_db_per_octave);
+    if (slope == null) slope = crossoverVocabulary.defaultSlope;
+    if (crossoverVocabulary.slopes.indexOf(slope) < 0) {
+      offending = 'JTS cannot build a ' + String(slope) + ' dB/oct crossover for ' +
+        name + '. Pick one of: ' + crossoverVocabulary.slopes.join(', ') + ' dB/oct.';
+    }
+  });
+  return offending;
+}
 function safetyBandFromSetting(setting, prefix) {
   var low = manualNumberValue(setting[prefix + '_min_hz']);
   var high = manualNumberValue(setting[prefix + '_max_hz']);
@@ -688,7 +719,7 @@ function echoLevelText(setting) {
   return parts.join(', ');
 }
 function driverFields() {
-  return (driverResearch.designDraft || {}).driver_fields || [];
+  return DRIVER_VOCABULARY.driver_fields;
 }
 function driverNumberFields() {
   return driverFields().filter(function(key) {
@@ -697,49 +728,27 @@ function driverNumberFields() {
   });
 }
 function driverEchoBackFields() {
-  var details = {
-    hard_excitation_band_hz: {
-      label: 'Never test outside',
-      read: function(setting) { return echoBandText(setting, 'hard_excitation'); }
-    },
-    recommended_highpass_hz: {
-      label: 'Minimum crossover',
-      read: function(setting) {
-        var value = manualNumberValue(setting.recommended_highpass_hz);
-        if (value == null) return '';
-        var slope = manualNumberValue(
-          setting.recommended_highpass_slope_db_per_octave
-        );
-        return fmtFreq(value) +
-          (slope == null ? '' : ', ' + slope + ' dB/oct or steeper');
-      }
-    },
-    required_protection_filters: {
-      label: 'Protection filter',
-      read: echoFilterText
-    },
-    measurement_band_hz: {
-      label: 'Measure inside',
-      read: function(setting) { return echoBandText(setting, 'measurement'); }
-    },
-    level_duration_limits: {
-      label: 'Test level and duration',
-      read: echoLevelText
-    },
-    sensitivity_db_2v83_1m: {
-      label: 'Sensitivity',
-      read: function(setting) {
-        var value = manualNumberValue(setting.sensitivity_db_2v83_1m);
-        return value == null ? '' : fmtDb(value) + ' dB';
-      }
-    },
-    cabinet: {
-      label: 'Cabinet geometry',
-      read: echoCabinetText
+  return DRIVER_VOCABULARY.driver_echo_back_fields;
+}
+function driverEchoBackField(field, setting) {
+  switch (field) {
+    case 'hard_excitation_band_hz': return ['Never test outside', echoBandText(setting, 'hard_excitation')];
+    case 'measurement_band_hz': return ['Measure inside', echoBandText(setting, 'measurement')];
+    case 'required_protection_filters': return ['Protection filter', echoFilterText(setting)];
+    case 'level_duration_limits': return ['Test level and duration', echoLevelText(setting)];
+    case 'cabinet': return ['Cabinet geometry', echoCabinetText(setting)];
+    case 'sensitivity_db_2v83_1m': {
+      var sensitivity = manualNumberValue(setting[field]);
+      return ['Sensitivity', sensitivity == null ? '' : fmtDb(sensitivity) + ' dB'];
     }
-  };
-  return driverFields().filter(function(key) { return details[key]; })
-    .map(function(key) { return Object.assign({key: key}, details[key]); });
+    case 'recommended_highpass_hz': {
+      var value = manualNumberValue(setting[field]);
+      var slope = manualNumberValue(setting.recommended_highpass_slope_db_per_octave);
+      return ['Minimum crossover', value == null ? '' : fmtFreq(value) +
+        (slope == null ? '' : ', ' + slope + ' dB/oct or steeper')];
+    }
+    default: return [field.replace(/_/g, ' '), setting[field] == null ? '' : JSON.stringify(setting[field])];
+  }
 }
 // The delegation, disclosed (#2192, folded into #2195). A high-frequency
 // target that declares NO level limit is read by
@@ -865,6 +874,8 @@ function extractDriverResearchJson(text) {
 
 export {
   driverFields,
+  driverEchoBackField,
+  manualCrossoverVocabularyValidationError,
   driverNumberFields,
   applySafetyBandToSetting,
   cabinetFromSetting,

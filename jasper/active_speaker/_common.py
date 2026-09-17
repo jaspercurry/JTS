@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any
+from typing import Any, Collection, Mapping
 
 from jasper.json_fields import JsonFields
 
@@ -41,30 +41,28 @@ LEGACY_DROPPED_DRIVER_FIELDS: frozenset[str] = frozenset({
     "crossover_search_band_hz",
 })
 
-MANUAL_DRIVER_FIELDS = {
+MANUAL_DRIVER_FIELDS = (
     "target_id", "role", "model", "manufacturer",
-    "nominal_impedance_ohm",
     "sensitivity_db_2v83_1m",
-    "usable_frequency_range_hz",
-    "recommended_highpass_hz",
-    "recommended_highpass_slope_db_per_octave",
-    "recommended_lowpass_hz",
+    "nominal_impedance_ohm",
+    "driver_class",
+    "radiating_diameter_mm",
     "do_not_test_below_hz",
     "gain_offset_db",
     "gain_offset_db_provenance",
-    "notes",
+    "recommended_highpass_hz",
+    "recommended_highpass_slope_db_per_octave",
     "hard_excitation_band_hz",
-    "required_protection_filters",
     "measurement_band_hz",
-    "fit_budget",
+    "required_protection_filters",
     "level_duration_limits",
     "cabinet",
-    "source",
-    "driver_class",
-    "radiating_diameter_mm",
-    "pad", "installation",
-}
-DRIVER_RESEARCH_FIELDS = MANUAL_DRIVER_FIELDS | {
+    "usable_frequency_range_hz",
+    "recommended_lowpass_hz",
+    "fit_budget",
+    "notes", "pad", "installation", "source",
+)
+DRIVER_RESEARCH_FIELDS = frozenset(MANUAL_DRIVER_FIELDS) | {
     "sources", "unknowns", "field_provenance", "target_fingerprint",
 }
 MANUAL_CANDIDATE_FIELDS = {
@@ -76,14 +74,20 @@ _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def issue(severity: str, code: str, message: str) -> dict[str, str]:
+    """A severity-tagged diagnostic record (`blocker`/`warning`/…)."""
+
     return {"severity": severity, "code": code, "message": message}
 
 
 def blocker_issue(code: str, message: str) -> dict[str, str]:
+    """A blocker diagnostic for fail-closed operator paths."""
+
     return issue("blocker", code, message)
 
 
 def gate(gate_id: str, *, label: str, passed: bool, message: str) -> dict[str, Any]:
+    """A named pass/fail readiness gate with an operator-facing label."""
+
     return {
         "id": gate_id,
         "label": label,
@@ -103,6 +107,8 @@ def finite_float(value: Any) -> float | None:
 
 
 def bounded_int(value: Any, *, default: int, lo: int, hi: int) -> int:
+    """Coerce an integer and clamp it to the inclusive ``lo``/``hi`` range."""
+
     try:
         out = int(value)
     except (TypeError, ValueError):
@@ -117,6 +123,12 @@ def require_sha256_hex(
     *,
     message: str | None = None,
 ) -> str:
+    """Return ``value`` if it is a 64-character lowercase-hex SHA-256 digest.
+
+    Otherwise raises ``exc_type(message)``; ``message`` defaults to the wording
+    most call sites use, and a call site needing different wording passes it.
+    """
+
     if isinstance(value, str) and _SHA256_HEX_RE.fullmatch(value) is not None:
         return value
     raise exc_type(
@@ -127,6 +139,12 @@ def require_sha256_hex(
 
 
 def region_key(lower_role: str, upper_role: str) -> str:
+    """The join key one crossover region's paired evidence is grouped under.
+
+    ``measurement.py`` writes ``latest_summed_pairs_by_group`` keyed by this and
+    ``commissioning_capture.py`` reads it back; the format must match exactly.
+    """
+
     return f"{lower_role}:{upper_role}"
 
 
@@ -158,3 +176,12 @@ class DriverFields(JsonFields):
         if limit is not None and len(out) > limit:
             raise self.error_type(f"{field_name} must contain <= {limit} items")
         return out
+
+    def _reject_unknown_keys(
+        self, raw: Mapping[str, Any], field_name: str, allowed: Collection[str],
+    ) -> None:
+        unknown = sorted(str(key) for key in raw if key not in allowed)
+        if unknown:
+            error = self.error_type(f"{field_name} has unknown fields: {', '.join(unknown)}")
+            setattr(error, "code", "unknown_driver_fields")
+            raise error
