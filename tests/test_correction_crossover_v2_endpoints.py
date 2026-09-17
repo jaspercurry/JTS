@@ -6162,14 +6162,30 @@ def _inline_prepared(monkeypatch, tmp_path, body=None):
     return v2host.prepare_v2_session(body or _inline_body(), status={}, run_async=_bg_run_async, camilla_factory=None), store
 
 
+def _store_seat_reference(reference):
+    if reference is None:
+        return
+    from jasper.active_speaker.seat_level_reference import SeatLevelTarget, write_seat_level_reference
+    write_seat_level_reference(
+        reference_volume_db=reference, measured_db_spl=75.0,
+        target=SeatLevelTarget(75.0, 1.0),
+        sensitivity={"serial": "1234", "sens_factor_db": -12.0},
+        max_main_volume_db=0.0,
+    )
+
+
 @pytest.mark.parametrize("prior_capture", [None, {"status": "complete", "kind": "crossover_v2:session"}])
-def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch, tmp_path, prior_capture):
+@pytest.mark.parametrize(("reference", "level_source"), [(-18.0, "seat_reference"), (None, "program_default")])
+def test_inline_session_creation_persists_the_plan_and_holds_nothing(
+    monkeypatch, tmp_path, prior_capture, reference, level_source,
+):
     from jasper.web import correction_capture
 
     monkeypatch.setattr(correction_capture, "_capture_slot", prior_capture)
     monkeypatch.setattr(correction_capture, "_pending_capture", None)
     monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", lambda: pytest.fail("live mic admission before join"))
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.door._measurement_claim", lambda: pytest.fail("claim before join"))
+    _store_seat_reference(reference)
     before = v2state.load_v2_state()
     prepared, store = _inline_prepared(monkeypatch, tmp_path)
     kind = correction_capture.CaptureKind(
@@ -6188,7 +6204,36 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch
     assert not v2volume.session_measurement_pause_held()
     plan = store.reopen_json_artifact(store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
     assert plan["stops"] == _inline_body()["plan"]["stops"]
+    assert plan["level"]["level_db"] == reference
+    assert plan["level_source"] == level_source
     assert v2state.load_v2_state() == before
+
+
+@pytest.mark.parametrize(("reference", "level_source"), [(-18.0, "seat_reference"), (None, "program_default")])
+def test_verify_round_defaults_its_structured_level(monkeypatch, reference, level_source):
+    class PlanRead(Exception):
+        pass
+
+    captured = {}
+    _store_seat_reference(reference)
+    v2state.save_v2_state({"applied": True})
+    v2volume.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: object())
+    monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", lambda: object())
+    monkeypatch.setattr(v2host.preflight_live, "read_preflight_facts", lambda *args, **kwargs: object())
+
+    def read_plan(plan, _facts):
+        captured.update(plan.to_dict())
+        raise PlanRead
+
+    monkeypatch.setattr(v2host.preflight, "preflight", read_plan)
+    with pytest.raises(PlanRead):
+        v2host.prepare_v2_session(
+            {}, status={}, run_async=None, camilla_factory=None, verify_only=True,
+        )
+
+    assert captured["level"]["level_db"] == reference
+    assert captured["level_source"] == level_source
 
 
 @pytest.mark.parametrize("levels,phases", [

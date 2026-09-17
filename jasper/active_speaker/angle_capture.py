@@ -26,6 +26,7 @@ import math
 from collections import Counter
 from itertools import groupby
 from dataclasses import asdict, dataclass, fields, replace
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
@@ -35,7 +36,7 @@ from jasper.audio_measurement.branch_program import build_branch_program
 
 from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH
 from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
-from .seat_level_reference import ResolvedLevel
+from .seat_level_reference import ResolvedLevel, seat_level_reference_volume_db
 from .volume_latch import EMERGENCY_MEASUREMENT_VOLUME_DB
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .crossover_v2.capture_plan import V2PlanShape, room_sweep_band_hz, stage1_base_entries
@@ -114,6 +115,7 @@ __all__ = [
     "walk_template",
     "design_axis_spec",
     "stop_specs",
+    "default_run_level",
     "request_for_program",
     "walk_price",
     "per_driver_at",
@@ -751,6 +753,18 @@ def both_at(
         stops.append(AngleStop(angle, REGIME_PER_DRIVER))
         stops.append(AngleStop(angle, REGIME_SUMMED))
     return AngleCaptureRequest(stops=tuple(stops), mover=mover)
+
+
+def default_run_level(
+    program: MeasurementProgram | AngleCaptureRequest,
+    *,
+    state_path: str | Path | None = None,
+) -> tuple[LevelPolicy, str]:
+    """Choose the scalar default only when the run has no level ladder."""
+    reference_volume_db = seat_level_reference_volume_db(state_path=state_path)
+    if program.levels is None and reference_volume_db is not None:
+        return LevelPolicy(level_db=reference_volume_db), "seat_reference"
+    return LevelPolicy(), "program_default"
 
 
 def request_for_program(
