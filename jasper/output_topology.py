@@ -21,7 +21,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, cast
+from typing import Any, Iterable, Mapping, cast
 
 from .atomic_io import advisory_file_lock, atomic_write_text
 from .json_fields import JsonFields
@@ -104,6 +104,10 @@ SUPPORTED_ROLES = {
     role for roles in REQUIRED_ROLES_BY_MODE.values() for role in roles
 }
 PROTECTION_STATUSES = {"present", "absent"}
+# Legacy spellings on disk load as absent; remove once every box has re-saved its topology.
+_STORED_PROTECTION_STATUSES = PROTECTION_STATUSES | {
+    "required_missing", "software_guard_requested", "not_required", "unknown",
+}
 OUTPUT_STATES = {"unused", "assigned", "blocked"}
 # Pure-data pairing intent recorded at commission time: "is this box meant to
 # run solo, become a wireless follower, or host one?" It seeds later reconciler
@@ -518,7 +522,7 @@ class SpeakerChannel:
         protection_status = _enum(
             raw.get("protection_status", "absent"),
             "speaker_groups[].channels[].protection_status",
-            PROTECTION_STATUSES | {"required_missing", "software_guard_requested", "not_required", "unknown"},
+            _STORED_PROTECTION_STATUSES,
         )
         protection_status = "present" if protection_status == "present" else "absent"
         return cls(
@@ -779,6 +783,15 @@ def canonical_fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def dsp_topology_projection(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: dsp_topology_projection(item) for key, item in value.items()
+                if key != "protection_status"}
+    if isinstance(value, list):
+        return [dsp_topology_projection(item) for item in value]
+    return value
+
+
 def topology_config_fingerprint(topology: OutputTopology) -> str:
     """Fingerprint only topology fields that determine emitted DSP config.
 
@@ -797,11 +810,11 @@ def topology_config_fingerprint(topology: OutputTopology) -> str:
     at CamillaDSP start costs one parse.
     """
 
-    return canonical_fingerprint({
+    return canonical_fingerprint(dsp_topology_projection({
         "hardware": topology.hardware.to_dict(),
         "speaker_groups": [group.to_dict() for group in topology.speaker_groups],
         "routing": topology.routing.to_dict(),
-    })
+    }))
 
 
 def _legacy_topology_config_fingerprint(topology: OutputTopology) -> str:
@@ -812,11 +825,11 @@ def _legacy_topology_config_fingerprint(topology: OutputTopology) -> str:
     holds it (baseline profile, bass-extension profile, commissioning plan).
     """
 
-    return canonical_fingerprint({
+    return canonical_fingerprint(dsp_topology_projection({
         key: value
         for key, value in topology.to_dict().items()
         if key != "pairing_intent"
-    })
+    }))
 
 
 def topology_fingerprint_matches(recorded: Any, topology: OutputTopology) -> bool:
@@ -1512,45 +1525,6 @@ def resolve_output_layout(
         transport_channel_count=0,
         subwoofer_supported=False,
     )
-
-
-def _update_speaker_channel(
-    topology: OutputTopology,
-    *,
-    group_id: str,
-    role: str,
-    output_variant: str = "primary",
-    ambiguity_subject: str,
-    update: Callable[[SpeakerChannel], SpeakerChannel],
-) -> OutputTopology:
-    """Return a topology with one unambiguous speaker channel transformed."""
-
-    matches = [
-        channel
-        for group in topology.speaker_groups
-        for channel in group.channels
-        if group.id == group_id and channel.role == role and channel.output_variant == output_variant
-    ]
-    if not matches:
-        raise OutputTopologyError("speaker channel not found")
-    if len(matches) > 1:
-        raise OutputTopologyError(
-            f"speaker channel {ambiguity_subject} is ambiguous"
-        )
-
-    groups = tuple(
-        replace(
-            group,
-            channels=tuple(
-                update(channel) if channel.role == role and channel.output_variant == output_variant else channel
-                for channel in group.channels
-            ),
-        )
-        if group.id == group_id
-        else group
-        for group in topology.speaker_groups
-    )
-    return replace(topology, speaker_groups=groups)
 
 
 @dataclass(frozen=True)

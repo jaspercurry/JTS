@@ -343,7 +343,7 @@ export function commissionGateReason(gateId) {
       'JTS couldn’t prepare this driver’s quiet test — re-check the crossover settings ' +
       'and DAC outputs above, then try again.',
     commissioning_protection_while_audible:
-      'This driver isn’t ready to test yet — confirm the tweeter’s protection above first.',
+      'Protection filters must stay in place while this driver is audible.',
     commissioning_candidate_present:
       'JTS couldn’t build this driver’s test setup — refresh the page and try again.',
     commissioning_transport_supported:

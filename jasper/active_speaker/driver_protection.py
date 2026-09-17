@@ -674,7 +674,6 @@ def driver_protection_payload(
     role: Any,
     *,
     driver_style: Any = None,
-    protection_status: Any = None,
     band_limit: Any = None,
     declared_low_limit_hz: Any = None,
     declared_floor_hz: Any = None,
@@ -701,7 +700,6 @@ def driver_protection_payload(
     )
     staged_highpass_hz = _band_highpass_hz(band_limit)
     highpass_ok = _highpass_satisfied(low_limit=low_limit, band_limit=band_limit)
-    status = str(protection_status or "").strip().lower()
     issues: list[dict[str, str]] = []
     if profile.role_class == "unsupported":
         issues.append(_issue(
@@ -763,7 +761,6 @@ def driver_protection_payload(
         "low_limit_summary": (
             format_low_limit(low_limit) if low_limit is not None else None
         ),
-        "protection_status": status or None,
         "band_limit_highpass_ok": highpass_ok,
         "audio_allowed": not issues and profile.role_class in {
             "low_frequency",

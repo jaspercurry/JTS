@@ -110,7 +110,7 @@ def _stereo_topology(
                 | (
                     {
                         "protection_required": True,
-                        "protection_status": "software_guard_requested",
+                        "protection_status": "absent",
                     }
                     if role == "tweeter"
                     else {}

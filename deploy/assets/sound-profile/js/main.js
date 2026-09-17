@@ -3004,7 +3004,6 @@ import {
     outputTopology.resetting = false;
     outputTopology.repinning = false;
     outputTopology.loading = false;
-    outputTopology.protectionSaving = '';
     if (outputGroups(topology).length) resetOutputTemplateDraft();
   }
   // The Output page renders the HAT picker and the sound settings, nothing

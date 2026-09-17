@@ -37,7 +37,6 @@ def test_tweeter_requires_explicit_driver_protection() -> None:
     protected = driver_protection_payload(
         "tweeter",
         driver_style="dome_tweeter",
-        protection_status="present",
         band_limit={"type": "highpass", "highpass_hz": 3000},
     )
     assert protected["audio_allowed"] is True

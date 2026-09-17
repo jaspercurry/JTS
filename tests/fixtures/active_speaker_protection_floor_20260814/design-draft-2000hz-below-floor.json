@@ -740,7 +740,7 @@
       "identity_verified": true,
       "physical_output_index": 0,
       "protection_required": false,
-      "protection_status": "not_required",
+      "protection_status": "absent",
       "role": "woofer",
       "startup_muted": true
      },
@@ -749,7 +749,7 @@
       "identity_verified": true,
       "physical_output_index": 1,
       "protection_required": true,
-      "protection_status": "software_guard_requested",
+      "protection_status": "absent",
       "role": "tweeter",
       "startup_muted": true
      }
@@ -771,7 +771,7 @@
       "identity_verified": true,
       "physical_output_index": 2,
       "protection_required": false,
-      "protection_status": "not_required",
+      "protection_status": "absent",
       "role": "woofer",
       "startup_muted": true
      },
@@ -780,7 +780,7 @@
       "identity_verified": true,
       "physical_output_index": 3,
       "protection_required": true,
-      "protection_status": "software_guard_requested",
+      "protection_status": "absent",
       "role": "tweeter",
       "startup_muted": true
      }

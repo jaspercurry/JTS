@@ -491,11 +491,6 @@ def _driver_protection_for_plan(plan: dict[str, Any]) -> dict[str, Any]:
     return driver_protection_payload(
         driver_role,
         driver_style=driver_style,
-        protection_status=(
-            matching_plan_protection.get("protection_status")
-            if matching_plan_protection
-            else None
-        ),
         band_limit=_tone_band_limit(plan),
         declared_low_limit_hz=_plan_declared_low_limit_hz(matching_plan_protection),
     )
@@ -510,7 +505,7 @@ def _plan_declared_low_limit_hz(protection: dict[str, Any] | None) -> float | No
     default and refuse a plan whose producer had already passed it at the
     manufacturer's published figure -- one plan failing one gate and passing
     another (#2874). Same trust boundary the sibling reads already extend to
-    ``protection_status`` and ``driver_style``: plans are built by this server
+    ``driver_style``: plans are built by this server
     from its own compiled preset, never accepted from a client.
 
     A ``style_default`` block carries no declaration, so ``None`` comes back

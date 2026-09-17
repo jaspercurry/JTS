@@ -302,7 +302,7 @@ def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):
     preview = build_crossover_preview(draft)
     topology = OutputTopology.from_mapping(draft["topology"])
     source = baseline_profile_mod._source_payload(topology, draft, preview, {})
-    fingerprint = "8f7a5f3298b042a1ac764eacff37e48c8b11c31b56b51dbb784d9497382b040f"
+    fingerprint = "454e1ff39d79c6d63e033d47deca34331f7bddbb637fe57a7cf7c3a5637f73e5"
     assert source["crossover_preview_fingerprint"] == fingerprint
     monkeypatch.setattr(driver_base_trim, "load_base_trim", lambda **kw: {
         "declaration_fingerprint": fingerprint,

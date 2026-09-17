@@ -74,7 +74,7 @@ def _active_group(kind: str, start: int) -> dict:
             channel.update({
                 "startup_muted": True,
                 "protection_required": True,
-                "protection_status": "software_guard_requested",
+                "protection_status": "absent",
             })
         channels.append(channel)
     return {
@@ -220,7 +220,7 @@ def test_composite_still_refuses_non_contiguous_indices():
                 "identity_verified": True,
                 "startup_muted": True,
                 "protection_required": True,
-                "protection_status": "software_guard_requested",
+                "protection_status": "absent",
             },
         ],
     }

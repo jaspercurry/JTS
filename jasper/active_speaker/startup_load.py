@@ -36,6 +36,7 @@ from .environment import (
     read_camilla_statefile_config_path,
 )
 from .path_safety import (
+    _topology_blockers,
     evaluate_path_safety_evidence,
     software_guard_ready_for_startup,
     staged_target_signature,
@@ -204,16 +205,6 @@ def _calibration_at_floor(calibration_level: dict[str, Any]) -> bool:
     )
     floor = _level_value(calibration_level, "min_level_dbfs", MIN_TEST_LEVEL_DBFS)
     return requested <= floor + 1e-6
-
-
-def _topology_blockers(
-    topology: OutputTopology,
-) -> list[dict[str, str]]:
-    return [
-        _normalise_issue(issue)
-        for issue in topology.evaluation().get("blockers", [])
-        if isinstance(issue, dict)
-    ]
 
 
 def _staged_config_path(staged_config: dict[str, Any]) -> Path | None:
