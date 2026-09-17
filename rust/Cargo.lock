@@ -187,7 +187,6 @@ name = "jasper-env"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "log",
 ]
 
 [[package]]

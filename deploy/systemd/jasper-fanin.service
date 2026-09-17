@@ -33,12 +33,15 @@ RestartSec=5
 
 # CONFIG-class failures exit 78 (EX_CONFIG) and must NOT climb the restart
 # ladder above, which would reboot the speaker every few minutes over something
-# no restart can fix. The daemon uses 78 for the Ring A geometry declaration
-# only, in two shapes that need DIFFERENT fixes:
+# no restart can fix. This fence is what keeps a config fault out of the burst
+# entirely: systemd never schedules the automatic retry, so only a deliberate
+# `systemctl start/restart` counts toward StartLimitBurst. Two shapes reach 78,
+# and they need DIFFERENT fixes:
 #
-#   1. A bad ENV DECLARATION — a rejected JASPER_FANIN_RING_WIRE_FORMAT /
-#      _RING_SLOTS / slot-shearing period. Identical on every restart AND across
-#      a reboot, because it is re-read from the env file each start.
+#   1. ANY rejected JASPER_FANIN_* value — the whole Config::from_env parse is
+#      config-class, from a non-positive sample rate or period through the Ring
+#      A geometry declarations. Identical on every restart AND across a reboot,
+#      because it is re-read from the env file each start.
 #      Fix: correct the env, then `systemctl restart jasper-fanin`.
 #   2. A STALE RING FILE whose header geometry differs from the one the daemon
 #      builds. /dev/shm is tmpfs, so this one DOES clear on a reboot — but not
@@ -48,8 +51,8 @@ RestartSec=5
 # Transient faults are NOT this class and keep the ordinary Restart=on-failure
 # retry: a de-enumerated USB DAC, an absent snd-aloop substream, and — at the
 # ring open — a .open.lock still held by the outgoing process or a tmpfs
-# permission systemd-tmpfiles has not applied yet. The daemon gates the park on
-# io::ErrorKind::{InvalidInput, InvalidData} so those self-heal.
+# permission systemd-tmpfiles has not applied yet. The ring open gates its park
+# on io::ErrorKind::{InvalidInput, InvalidData} so those self-heal.
 #
 # No SuccessExitStatus: an exit-78 park leaves the unit `failed` on purpose, so
 # /state and jasper-doctor show it rather than a silently-inactive daemon.
