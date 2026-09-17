@@ -1285,18 +1285,23 @@ struct PcmGeometry {
     buffer_frames: u32,
 }
 
-fn first_accepted_dac_channels(
+fn first_accepted_dac_channels<T>(
     lane_channels: u32,
     max_channels: u32,
-    mut accepts: impl FnMut(u32) -> bool,
-) -> Result<u32> {
+    mut accepts: impl FnMut(u32) -> Result<T>,
+) -> Result<T> {
     // DACs that only open wider than the ring maximum are out of scope and fail closed.
     let max_channels = max_channels.min(jasper_ring::MAX_RING_CHANNELS);
-    (lane_channels..=max_channels)
-        .find(|&width| accepts(width))
-        .with_context(|| {
-            format!("no DAC channel count accepted in {lane_channels}..={max_channels}")
-        })
+    let mut result = Err(anyhow::anyhow!("no DAC channel count attempted"));
+    for width in lane_channels..=max_channels {
+        result = accepts(width);
+        if result.is_ok() {
+            return result;
+        }
+    }
+    result.with_context(|| {
+        format!("no DAC channel count installed in {lane_channels}..={max_channels}")
+    })
 }
 
 fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
@@ -1315,38 +1320,39 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
     let requested_format = alsa_format(format);
     let negotiated;
     {
-        let hwp = HwParams::any(pcm).context("creating HwParams::any")?;
-        if !negotiate_channels {
-            hwp.set_channels(channels as u32)
-                .with_context(|| format!("set_channels({})", channels))?;
-        }
-        hwp.set_rate(sample_rate, ValueOr::Nearest)
-            .with_context(|| format!("set_rate({})", sample_rate))?;
-        hwp.set_format(requested_format)
-            .with_context(|| format!("set_format({:?})", requested_format))?;
-        hwp.set_access(Access::RWInterleaved)
-            .context("set_access(RWInterleaved)")?;
-        hwp.set_period_size(period_frames as i64, ValueOr::Nearest)
-            .with_context(|| format!("set_period_size({})", period_frames))?;
-        hwp.set_buffer_size(buffer_frames as i64)
-            .with_context(|| format!("set_buffer_size({})", buffer_frames))?;
-        if negotiate_channels {
-            // Channel support can depend on the format, rate and period geometry.
-            let channels = first_accepted_dac_channels(
-                u32::from(channels),
-                hwp.get_channels_max().context("get_channels_max")?,
-                |width| hwp.test_channels(width).is_ok(),
-            )?;
+        let install = |channels| -> Result<HwParams<'_>> {
+            let hwp = HwParams::any(pcm).context("creating HwParams::any")?;
             hwp.set_channels(channels)
                 .with_context(|| format!("set_channels({})", channels))?;
-        }
+            hwp.set_rate(sample_rate, ValueOr::Nearest)
+                .with_context(|| format!("set_rate({})", sample_rate))?;
+            hwp.set_format(requested_format)
+                .with_context(|| format!("set_format({:?})", requested_format))?;
+            hwp.set_access(Access::RWInterleaved)
+                .context("set_access(RWInterleaved)")?;
+            hwp.set_period_size(period_frames as i64, ValueOr::Nearest)
+                .with_context(|| format!("set_period_size({})", period_frames))?;
+            hwp.set_buffer_size(buffer_frames as i64)
+                .with_context(|| format!("set_buffer_size({})", buffer_frames))?;
+            pcm.hw_params(&hwp).context("installing HwParams")?;
+            Ok(hwp)
+        };
+        let hwp = if negotiate_channels {
+            // ASoC hw_params callbacks, not constraint intervals, define the accept-set; failed installs leave OPEN, so retries are safe.
+            first_accepted_dac_channels(
+                u32::from(channels),
+                jasper_ring::MAX_RING_CHANNELS,
+                install,
+            )?
+        } else {
+            install(u32::from(channels))?
+        };
         negotiated = NegotiatedPcm {
             sample_rate: hwp.get_rate().context("get_rate")?,
             channels: hwp.get_channels().context("get_channels")?,
             period_frames: hwp.get_period_size().context("get_period_size")? as u32,
             buffer_frames: hwp.get_buffer_size().context("get_buffer_size")? as u32,
         };
-        pcm.hw_params(&hwp).context("installing HwParams")?;
     }
     if is_final_edge_role(role) {
         // Prove what OUTPUTD'S OWN CLIENT EDGE ended up at, and fail closed if
@@ -1889,7 +1895,10 @@ mod tests {
             (3, 8, vec![], None),
             (8, 16, vec![16], None),
         ] {
-            let result = first_accepted_dac_channels(lane, max, |width| accepted.contains(&width));
+            let result = first_accepted_dac_channels(lane, max, |width| {
+                anyhow::ensure!(accepted.contains(&width), "unsupported channel count");
+                Ok(width)
+            });
             assert_eq!(result.ok(), expected);
         }
     }
