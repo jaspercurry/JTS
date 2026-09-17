@@ -1230,7 +1230,7 @@ class Pass:
                 "OUTPUT_DAC_ID": self.output_dac_id,
                 "OUTPUT_DAC_RECOGNIZED": "1" if self.output_dac_recognized else "0",
             },
-        )
+        )  # unbounded: bounded only by the unit's own TimeoutStartSec=50s
         if rendered.returncode != 0 or os.path.getsize(tmp) == 0:
             os.unlink(tmp)
             self.log(
@@ -1251,7 +1251,7 @@ class Pass:
                 [self.render_asound_conf],
                 check=False,
                 env={**os.environ, "JASPER_ASOUND_TEMPLATE": tmp},
-            ).returncode
+            ).returncode  # unbounded: same gap as the render_asound_conf call above
         except OSError:
             # An absent or non-executable renderer is the shell's own 127, and
             # it refuses for the same reason a nonzero one does. Uncaught it

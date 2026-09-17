@@ -646,7 +646,7 @@ class SystemIO:
                 ["systemctl", "is-active", "jasper-aec-reconcile.service"],
                 capture_output=True,
                 text=True,
-            )
+            )  # unbounded: operator-present CLI; a wedged systemd hangs past the 30s poll deadline
             if result.stdout.strip() in {"inactive", "failed", "unknown"}:
                 self.env = merged_env_files()
                 return
@@ -779,7 +779,7 @@ class SystemIO:
         # that makes "no capture plays over the household" true per capture
         # rather than per phase.
         lease.check()
-        recorder = subprocess.Popen(
+        recorder = subprocess.Popen(  # unbounded: bounded below by recorder.wait(timeout=5) + finally terminate()
             [
                 "arecord", "-q", "-D", f"hw:CARD={hardware.card},DEV=0",
                 "-d", str(CAPTURE_SECONDS), "-f", "S16_LE", "-r", "16000",
