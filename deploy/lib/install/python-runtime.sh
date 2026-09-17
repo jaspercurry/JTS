@@ -103,26 +103,6 @@ retire_esp32_accessory_python_packages() {
         "${retired_packages[@]}" >/dev/null 2>&1
 }
 
-# Pre-PR .env.example seeded this exact value uncommented; jasper.env is a
-# frozen first-install seed (never re-synced — see the comment above its
-# creation), so every existing Pi would keep the retired 1 GiB cap forever,
-# and the doctor's new smaller warn threshold would warn on it permanently.
-# Anchored on the full stale line so a deliberate non-default override
-# (any other value) survives untouched.
-migrate_wake_events_cap_seed() {
-    sed_inplace "${ENV_DIR}/jasper.env" \
-        '/^JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824$/d'
-}
-
-# A seeded value outranks the mic registry; only the two shapes
-# .env.example shipped are removed — an operator's own bare `=Array`
-# is indistinguishable from the seed and goes too.
-migrate_mic_device_candidates_seed() {
-    sed_inplace "${ENV_DIR}/jasper.env" \
-        -e '/^JASPER_MIC_DEVICE_CANDIDATES=Array$/d' \
-        -e '/^JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch$/d'
-}
-
 # Renames each staged top-level entry into place, one at a time. See ADR-0252.
 publish_staged_install_tree() {
     # The glob never matches a dotfile, so .deps.txt — and any dot-name the
@@ -440,14 +420,6 @@ PY
         echo "starting jasper-voice — there is no default."
         echo
     fi
-    sed_inplace "${ENV_DIR}/jasper.env" \
-        -e '/^SPOTIFY_CLIENT_ID=/d' \
-        -e '/^SPOTIFY_OAUTH_MODE=/d' \
-        -e '/^SPOTIFY_REDIRECT_URI=/d' \
-        -e '/^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=/d' \
-        -e '/^JASPER_RESEARCH_/d'
-    migrate_wake_events_cap_seed
-    migrate_mic_device_candidates_seed
     if [[ -n "${OUTPUT_DAC_ID:-}" ]]; then
         jasper_env_file_set "${ENV_DIR}/jasper.env" \
             JASPER_AUDIO_DAC_ID "${OUTPUT_DAC_ID}" 0640 0750
@@ -552,9 +524,4 @@ EOF
             JASPER_INSTALL_PROFILE streambox 0640 0750
         echo "  streambox env: refreshed streambox defaults"
     fi
-    # Streambox writes its own env rather than seeding from .env.example, so it
-    # never reaches the full profile's retirement list, and the retired capture
-    # relay's token line can hold a real self-hosted secret.
-    sed_inplace "${ENV_DIR}/jasper.env" \
-        '/^JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=/d'
 }
