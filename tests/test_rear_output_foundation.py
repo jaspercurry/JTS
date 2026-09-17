@@ -453,3 +453,35 @@ def test_program_take_routes_by_physical_target_and_parks_the_rest(
     assert any(payload["filters"][name]["type"] == "Limiter" for name in protection["names"])
     assert any(payload["filters"][name].get("parameters", {}).get("type")
                == "LinkwitzRileyLowpass" for name in protection["names"])
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"excited_target_ids": ()}, {"excited_target_ids": ("tweeter",)}])
+def test_a_baseline_with_no_document_and_no_take_still_mutes_the_rear(kwargs):
+    """The household path cannot drift: naming no target, or naming one that is
+    not a rear, emits the same bytes as before the take existed, and the
+    undocumented rear stays terminally muted (ADR-0316/ADR-0318)."""
+    preset, _ = _rear_pair("mono")
+    text = emit.emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, **kwargs,
+    )
+    assert text == emit.emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+    payload = yaml.safe_load(text)
+    assert gs.output_terminally_muted(
+        payload, gs.view_from_yaml_dict(payload), 2,
+        mute_name="as_out2_rear_pending_mute", mute_gain_db=-120.0,
+    )
+
+
+def test_a_take_that_names_the_rear_lifts_only_its_mute():
+    """Naming the rear removes its pending mute and nothing else: every other
+    filter and pipeline step is the household graph's."""
+    preset, _ = _rear_pair("mono")
+    household = yaml.safe_load(emit.emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM))
+    take = yaml.safe_load(emit.emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, excited_target_ids=("woofer", "woofer:rear")))
+    assert set(household["filters"]) - set(take["filters"]) == {"as_out2_rear_pending_mute"}
+    assert {name: value for name, value in household["filters"].items()
+            if name in take["filters"]} == take["filters"]
+    assert [step for step in household["pipeline"]
+            if "as_out2_rear_pending_mute" not in (step.get("names") or [])] == take["pipeline"]

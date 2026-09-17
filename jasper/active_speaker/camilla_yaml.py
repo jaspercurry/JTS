@@ -3512,6 +3512,7 @@ def emit_active_speaker_baseline_config(
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     blend_correction: Sequence[Mapping[str, Any]] | None = None,
     rear_calibration: Mapping[str, Any] | None = None,
+    excited_target_ids: Collection[str] = (),
 ) -> str:
     """Build an accepted active-speaker baseline candidate.
 
@@ -3678,11 +3679,15 @@ pipeline:
 
     yaml = _with_dynamic_bass(yaml, preset, bass_extension)
     # The rear output plays only behind its own fitted stage; without one it stays
-    # terminally muted (ADR-0318, issue #5161).
+    # terminally muted (ADR-0318, issue #5161) — unless a measurement take names
+    # it as an excited target, which is how the stage's own transfer gets
+    # measured in the first place. Empty for every household graph.
     yaml = (
         _with_rear_calibration(yaml, preset, safe_rear_calibration)
         if safe_rear_calibration
-        else _mute_unfitted_rear_outputs(yaml, preset)
+        else _mute_unfitted_rear_outputs(
+            yaml, preset, excited_target_ids=excited_target_ids,
+        )
     )
 
     # L0 emit gates (fail-closed), on the FINAL graph so every decoration is

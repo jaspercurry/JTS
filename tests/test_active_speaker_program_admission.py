@@ -16,6 +16,7 @@ pytestmark = pytest.mark.usefixtures("banked_session_level", "isolated_candidate
 import yaml
 from scipy.io import wavfile
 
+from jasper.active_speaker import camilla_yaml
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.active_speaker.crossover_v2.conductor_context import measurement_target_id
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
@@ -30,10 +31,7 @@ from jasper.active_speaker.program_admission import (
     readmit_program_from_wav,
     readmit_summed_program_from_wav,
 )
-from jasper.active_speaker.runtime_contract import (
-    GRAPH_APPROVED_ACTIVE_RUNTIME,
-    classify_bass_extension_graph,
-)
+from jasper.active_speaker.runtime_contract import classify_bass_extension_graph
 from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
 from jasper.camilla_emit import emit_gain_filter, emit_linkwitz_riley
@@ -930,18 +928,6 @@ def _rear_take_inputs(branch_channels, *, layout="mono"):
     return topology, safety, targets, graph
 
 
-def _without_rear_mute(text, index=2):
-    """The graph an emitter produces once the take's rear owns a channel."""
-    header = "\n".join(line for line in text.splitlines() if line.startswith("#"))
-    payload = yaml.safe_load(text)
-    name = f"as_out{index}_rear_pending_mute"
-    assert name in payload["filters"]
-    payload["filters"].pop(name)
-    payload["pipeline"] = [step for step in payload["pipeline"]
-                           if name not in (step.get("names") or [])]
-    return header + "\n" + yaml.safe_dump(payload, sort_keys=False)
-
-
 def _rear_take_program(branch_channels):
     from jasper.audio_measurement.branch_program import build_branch_program
 
@@ -982,20 +968,14 @@ def test_rear_declared_topology_is_admitted_with_the_rear_parked(tmp_path):
     ]
 
 
-@pytest.mark.parametrize("damage", [None, "parked_target_fed"])
-def test_a_graph_that_disagrees_with_the_take_is_refused(tmp_path, damage):
-    """Both halves of the routing contract fail closed. An excited output must
-    not end in a terminal mute — a routed-but-muted branch records silence as
-    if it were a measurement, which is how a cardioid take reads on the
-    candidate emitter until the rear mute is lifted. A parked dest must carry
-    no source, so a graph cannot quietly excite a driver the take parked."""
-    graph = None
-    if damage == "parked_target_fed":
-        graph = _rear_take_inputs(CARDIOID_TAKE)[3].replace(
-            "      - dest: 1\n        sources: []\n",
-            "      - dest: 1\n        sources:\n"
-            "          - { channel: 0, gain: 0.0000, inverted: false }\n",
-        )
+def test_a_graph_that_feeds_a_parked_target_is_refused(tmp_path):
+    """The other half of the routing contract: a parked dest must carry no
+    source, so a graph cannot quietly excite a driver the take parked."""
+    graph = _rear_take_inputs(CARDIOID_TAKE)[3].replace(
+        "      - dest: 1\n        sources: []\n",
+        "      - dest: 1\n        sources:\n"
+        "          - { channel: 0, gain: 0.0000, inverted: false }\n",
+    )
     _targets, _program, admission = _admit_rear_take(tmp_path, CARDIOID_TAKE, graph=graph)
     assert ProgramAdmissionRefusal.GRAPH_NOT_PROVEN in admission.refusals
 
@@ -1015,15 +995,20 @@ def test_a_stereo_cabinet_pair_cannot_be_admitted_through_one_group_map(tmp_path
     assert ProgramAdmissionRefusal.TARGET_NOT_MAPPED in admission.refusals
 
 
-def test_a_rear_the_take_excites_is_admitted_without_its_pending_mute(tmp_path):
-    """The third arm of the rear proof. A take measuring the rear drives it on
-    its own program channel, so ADR-0316's terminal mute would record silence,
-    and there is no document yet — the take exists to author one. What replaces
-    the mute is the role's own grouped protection chain at that index, unlocked
-    only by the take's in-memory evidence: the SAME graph without that evidence
-    still refuses."""
-    topology, safety, targets, emitted = _rear_take_inputs(CARDIOID_TAKE)
-    graph = _without_rear_mute(emitted)
+@pytest.mark.parametrize("names_the_rear", [True, False])
+def test_a_rear_the_take_excites_is_emitted_and_admitted_un_muted(tmp_path, names_the_rear):
+    """End to end on the REAL emitter path. A take measuring the rear drives it
+    on its own program channel, so ADR-0316's terminal mute would record
+    silence, and there is no document yet — the take exists to author one. The
+    emitter leaves it un-muted only because the take named it; the same graph
+    with the mute back is refused, because a routed-but-muted branch measures
+    nothing."""
+    topology, safety, targets, graph = _rear_take_inputs(CARDIOID_TAKE)
+    assert "as_out2_rear_pending_mute" not in yaml.safe_load(graph)["filters"]
+    if not names_the_rear:
+        # What the same emitter produces for a take that does not name the rear.
+        graph = camilla_yaml._mute_unfitted_rear_outputs(graph, _rear_pair("mono")[0])
+        assert "as_out2_rear_pending_mute" in yaml.safe_load(graph)["filters"]
     program = _rear_take_program(CARDIOID_TAKE)
     wav = tmp_path / "branches.wav"
     write_program_wav(wav, program)
@@ -1031,19 +1016,17 @@ def test_a_rear_the_take_excites_is_admitted_without_its_pending_mute(tmp_path):
         program, wav, graph_yaml=graph, topology=topology, safety_profile=safety,
         role_targets=targets, session_volume_db=-20,
     )
+    if not names_the_rear:
+        assert ProgramAdmissionRefusal.GRAPH_NOT_PROVEN in admission.refusals
+        return
     assert admission.allowed, admission.to_dict()
     assert {segment.role for segment in admission.segments} == set(CARDIOID_TAKE)
+    # The door unlocks on the take's own evidence, never on the graph alone.
     unclaimed = classify_bass_extension_graph(
         topology, evidence_source="desired", graph_text=graph,
         applied_baseline_state={"recomposition_snapshot": {"bass_extension": {}}},
     )
     assert "rear_output_not_muted" in {issue["code"] for issue in unclaimed.issues}
-    claimed = classify_bass_extension_graph(
-        topology, evidence_source="desired", graph_text=graph,
-        applied_baseline_state={"recomposition_snapshot": {"bass_extension": {}}},
-        excited_target_ids=frozenset(CARDIOID_TAKE),
-    )
-    assert claimed.allowed and claimed.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
 
 
 def test_an_excited_rear_outside_its_role_chain_is_still_refused(tmp_path):
@@ -1051,7 +1034,7 @@ def test_an_excited_rear_outside_its_role_chain_is_still_refused(tmp_path):
     no longer groups with its role's primary output is refused even when the
     take names it."""
     topology, _safety, _targets, emitted = _rear_take_inputs(CARDIOID_TAKE)
-    payload = yaml.safe_load(_without_rear_mute(emitted))
+    payload = yaml.safe_load(emitted)
     step = next(s for s in payload["pipeline"]
                 if s.get("type") == "Filter" and s.get("channels") == [0, 2])
     step["channels"] = [0]
