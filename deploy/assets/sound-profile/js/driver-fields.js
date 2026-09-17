@@ -666,8 +666,7 @@ function renderDriverSafetyIssues() {
     '<h3 class="setting-row__title">Driver limits</h3>' +
     issues.map(function(issue) {
       return '<p class="setting-row__hint" data-safety-target="' +
-        escapeHtml(String(issue.target_id || '')) + '"><code>' +
-        escapeHtml(String(issue.code)) + '</code>: ' +
+        escapeHtml(String(issue.target_id || '')) + '">' +
         escapeHtml(String(issue.message)) + '</p>';
     }).join('') + '</div>';
 }

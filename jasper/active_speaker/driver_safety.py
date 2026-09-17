@@ -22,7 +22,6 @@ from .driver_protection import (
     driver_low_limit_plausibility_band_hz,
     driver_low_limit_plausible,
     driver_protection_profile,
-    driver_style_is_registered,
     format_low_limit,
     resolve_driver_low_limit,
 )
@@ -1261,30 +1260,25 @@ def _target_low_limit_warnings(target: Mapping[str, Any]) -> list[dict[str, str]
     )
     if diagnosis is None:
         return []
-    # A style the table does not describe is judged against the cautious
-    # unknown-tweeter default, so a published 800 Hz on a large-format horn
-    # reads as implausible on a box whose type nobody set; naming the picker
-    # first keeps that from reading as an accusation about the datasheet.
-    #
-    # The question is REGISTERED, not empty: ``compute_driver_safety_profile`` stamps
-    # ``"unspecified"``, so a test against emptiness would be dead — and asking
-    # the table also catches a typo'd or newer-build style that looks declared.
-    check_the_type = (
-        "and set the driver type above -- unknown types get a cautious default."
-        if not driver_style_is_registered(style)
-        else "and that the driver type above is right."
-    )
-    message = (
-        f"{target['target_id']}: {diagnosis}. JTS is using it as declared -- confirm it is "
-        f"the datasheet figure and not a transposed digit, {check_the_type}"
-    )
-    return [
-        {
-            "severity": "warning",
-            "code": f"{role}:low_limit_implausible_for_style",
-            "message": message,
-        }
-    ]
+    return [{"severity": "warning", "code": f"{role}:low_limit_implausible_for_style"}]
+
+
+_ISSUE_MESSAGES = {
+    "target_specific_values_missing": "Enter the driver values for this output.",
+    "model_missing": "Enter the driver's model.",
+    "hard_excitation_band_missing": "Set the driver's hard excitation frequency range.",
+    "measurement_band_missing": "Set the driver's measurement frequency range.",
+    "level_duration_limits_missing": "Set the driver's sweep duration, repeat count and cooldown.",
+    "max_sweep_duration_s_missing": "Set the driver's maximum sweep duration.",
+    "max_repeat_count_missing": "Set the driver's maximum repeat count.",
+    "minimum_cooldown_s_missing": "Set the driver's minimum cooldown time.",
+    "measurement_band_outside_hard_band": "Keep the measurement range inside the hard excitation range.",
+    "required_highpass_missing": "Declare the {role}'s minimum crossover frequency.",
+    "required_lowpass_missing": "Declare the {role}'s protective low-pass frequency.",
+    "highpass_cutoff_outside_hard_band": "Keep the high-pass frequency inside the hard excitation range.",
+    "lowpass_cutoff_outside_hard_band": "Keep the low-pass frequency inside the hard excitation range.",
+    "low_limit_implausible_for_style": "Check the minimum crossover frequency and driver type against the datasheet.",
+}
 
 
 def compute_driver_safety_profile(
@@ -1475,14 +1469,12 @@ def compute_driver_safety_profile(
                 "field_provenance",
             }
         }
+        target_issues = [{"severity": "blocker", "code": code} for code in _target_issues(entry)]
+        target_issues.extend(_target_low_limit_warnings(entry))
         issues.extend({
-            "target_id": target_id,
-            "severity": "blocker",
-            "code": code,
-            "message": f"{target_id}: {code.split(':')[-1].replace('_', ' ')}",
-        } for code in _target_issues(entry))
-        issues.extend({"target_id": target_id, **warning}
-                      for warning in _target_low_limit_warnings(entry))
+            "target_id": target_id, **issue,
+            "message": f"{target_id}: " + _ISSUE_MESSAGES[issue["code"].rsplit(":", 1)[-1]].format(role=role),
+        } for issue in target_issues)
         targets.append(entry)
     return {
         "artifact_schema_version": DRIVER_SAFETY_PROFILE_SCHEMA_VERSION,
@@ -1539,7 +1531,7 @@ def _superseded_typed_highpass(
 
 
 def driver_floor_issues(profile: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """The declaration issues that prevent Apply (ADR-0323 §2)."""
+    """Apply needs only driver floors; measurement needs every input (ADR-0323 §2)."""
     return [issue for issue in profile.get("issues", []) if issue["code"] in {
         "tweeter:required_highpass_missing", "mid:required_highpass_missing",
         "mid:required_lowpass_missing",

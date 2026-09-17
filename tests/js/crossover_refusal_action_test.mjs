@@ -105,15 +105,14 @@ function refusal(message, body) {
   return err;
 }
 
-// The real copy + action the server sends for this refusal.
-const CONFIRM_COPY =
-  "JTS could not use this speaker's saved safety limits, so it did not play " +
-  "the measurement signal. Review the limits in speaker setup and save them " +
-  "again, then measure.";
-const CONFIRM_ACTION = {
+// Measurement-input refusal from refusal_copy.py.
+const MEASUREMENT_COPY =
+  "The driver limits needed for measurement are missing or do not fit. " +
+  "Check the listed driver issues in speaker setup before measuring.";
+const MEASUREMENT_ACTION = {
   id: "review_safety_limits",
-  label: "Review safety limits",
-  href: "/sound/#confirm-safety-limits",
+  label: "Review driver limits",
+  href: "/sound/speaker/#driver-safety-issues",
 };
 
 const START_SESSION = {
@@ -125,20 +124,20 @@ const START_SESSION = {
 
 // --- 1/2/3: a coded refusal renders its control, and it survives the refresh
 render({ ...baseEnvelope });
-postRejection = refusal(CONFIRM_COPY, {
-  ok: false, error: CONFIRM_COPY, next_action: CONFIRM_ACTION,
+postRejection = refusal(MEASUREMENT_COPY, {
+  ok: false, error: MEASUREMENT_COPY, next_action: MEASUREMENT_ACTION,
 });
 await runAction(START_SESSION, element("btn"));
 
 assert.equal(statusEl.dataset.tone, "bad", "a refusal paints the bad tone");
 assert.ok(
-  statusText().includes("Review the limits in speaker setup"),
+  statusText().includes("Check the listed driver issues in speaker setup"),
   `the refusal copy must be shown, got: ${statusText()}`,
 );
 const link = statusLink();
 assert.ok(link, "the refusal's resolution control must render as a link");
-assert.equal(link.href, CONFIRM_ACTION.href, "the link points at the control");
-assert.equal(link.textContent, CONFIRM_ACTION.label, "the link is labelled");
+assert.equal(link.href, MEASUREMENT_ACTION.href, "the link points at the control");
+assert.equal(link.textContent, MEASUREMENT_ACTION.label, "the link is labelled");
 assert.ok(
   /btn/.test(link.className),
   `the control should look like a button, got class: ${link.className}`,
@@ -163,8 +162,8 @@ assert.ok(
 );
 
 // --- 4b: a later plain status clears a stale control ------------------------
-postRejection = refusal(CONFIRM_COPY, {
-  ok: false, error: CONFIRM_COPY, next_action: CONFIRM_ACTION,
+postRejection = refusal(MEASUREMENT_COPY, {
+  ok: false, error: MEASUREMENT_COPY, next_action: MEASUREMENT_ACTION,
 });
 await runAction(START_SESSION, element("btn"));
 assert.ok(statusLink(), "control is present before the plain status");

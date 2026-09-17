@@ -7108,10 +7108,10 @@ def test_design_draft_get_computes_profile_from_current_values(monkeypatch, tmp_
     path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
     saved = sound_setup._active_speaker_design_draft_save_payload({"manual_settings": _manual_settings()})
     stored = json.loads(path.read_text())
-    assert {"driver_safety_profile", "driver_safety_profile_evaluation"}.isdisjoint(stored)
+    assert {"driver_safety_profile", "driver_safety_profile_evaluation", "driver_protection_policy_view"}.isdisjoint(stored)
     if legacy_profile:
         stored.update(driver_safety_profile={"targets": "obsolete"},
-                      driver_safety_profile_evaluation={"status": "malformed"})
+                      driver_safety_profile_evaluation={"status": "malformed"}, driver_protection_policy_view={"obsolete": True})
     stored["manual_settings"]["drivers"][1]["recommended_highpass_hz"] = 6000
     path.write_text(json.dumps(stored))
     before = path.read_bytes()
@@ -7124,4 +7124,5 @@ def test_design_draft_get_computes_profile_from_current_values(monkeypatch, tmp_
     assert tweeter["hard_excitation_band_hz"][0] == 6000
     assert tweeter["required_protection_filters"][0]["cutoff_hz"] == 6000
     assert profile != saved["driver_safety_profile"]
+    assert "obsolete" not in loaded["driver_protection_policy_view"]
     assert path.read_bytes() == before

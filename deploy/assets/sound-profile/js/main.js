@@ -73,6 +73,7 @@ import {
   driverResearchStepSatisfied,
   driverResearchTargets,
   driverSafetyNoteRoles,
+  driverSafetyIssues,
   extractDriverResearchJson,
   ingestCrossoverPreview,
   levelDurationLimitsFromSetting,
@@ -824,6 +825,9 @@ import {
     if (footer) footer.innerHTML = driverResearchStepFooterButtonHtml();
     var echo = el('view-body').querySelector('[data-driver-echo]');
     if (echo) echo.innerHTML = renderDriverEchoBack(topology);
+    var issues = el('driver-safety-issues');
+    if (issues && driverResearch.safetyDirty) issues.innerHTML = '';
+    updateDriverResearchImportSummary();
   }
   function manualSettingsPayload(topology) {
     var drivers = driverResearchTargets(topology).map(function(target) {
@@ -1529,6 +1533,7 @@ import {
         (safetyRoles.length ? '<p class="setting-row__hint">' + escapeHtml(
           'Driver safety notes captured for ' + roleSentenceText(safetyRoles) + '.'
         ) + '</p>' : '') +
+        (driverResearch.safetyDirty ? '<p class="setting-row__hint">Driver issue list: save your current edits to update it.</p>' : '') +
       '</div>';
     if (driverResearch.error) {
       return savedHtml +
@@ -1600,7 +1605,7 @@ import {
     '</section>';
   }
   function applySafetyLimitsDeepLink() {
-    if (window.location.hash !== '#driver-safety-issues') return;
+    if (window.location.hash !== '#driver-safety-issues' || !driverSafetyIssues().length) return;
     outputPage.stepOverride = 'research';
     render();
     var node = document.getElementById('driver-safety-issues');

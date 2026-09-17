@@ -345,7 +345,7 @@ def resolve_conductor_context(
         log_event(
             logger, "correction.crossover_v2_measurement_inputs_invalid",
             level=logging.WARNING, gate="session_open", code=code,
-            issues=(safety_profile or {}).get("issues", []),
+            issues=",".join(issue["code"] for issue in (safety_profile or {}).get("issues", [])),
         )
         raise CrossoverV2Refused(REASON_REGISTRY[code].message, code=code) from exc
     assert isinstance(safety_profile, Mapping)

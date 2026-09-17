@@ -44,9 +44,7 @@ DRIVER_CLASSES: tuple[str, ...] = (
 # Per-driver keys retired from the component-entry schema that an older saved
 # record can still carry: every gate TOLERATES them, every normaliser DROPS
 # them. Append-only.
-#
-# ``driver_safety._RETIRED_TARGET_FIELDS`` separately names profiles that
-# must be rebuilt because they still store a retired field.
+# Computed profiles use the current fields after normalization.
 LEGACY_DROPPED_DRIVER_FIELDS: frozenset[str] = frozenset({
     "horn_coverage_deg",
     "crossover_search_band_hz",

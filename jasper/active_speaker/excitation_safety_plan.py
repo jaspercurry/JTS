@@ -56,6 +56,11 @@ logger = logging.getLogger(__name__)
 class ExcitationSafetyPlanError(ValueError):
     """The requested target/profile/plan cannot form a bounded preparation."""
 
+    def __init__(self, code: str, *, detail: Mapping[str, Any] | None = None):
+        super().__init__(code)
+        self.code = code
+        self.detail = dict(detail or {})
+
 
 class ExcitationSafetyPlanRefusal(str, Enum):
     MEASUREMENT_INPUTS_INVALID = "active_excitation_measurement_inputs_invalid"
@@ -531,11 +536,11 @@ def declared_level_ceiling_dbfs(target: Mapping[str, Any]) -> tuple[float, str]:
 
 def require_driver_measurement_inputs(safety_profile: Mapping[str, Any]) -> None:
     """Require the computed measurement inputs before a sweep (ADR-0323 §2)."""
-    if not safety_profile.get("targets") or any(
-        issue["severity"] == "blocker" for issue in safety_profile.get("issues", [])
-    ):
+    blocker = next((issue for issue in safety_profile.get("issues", [])
+                    if issue["severity"] == "blocker"), None)
+    if not safety_profile.get("targets") or blocker is not None:
         raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
+            ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value, detail=blocker,
         )
 
 

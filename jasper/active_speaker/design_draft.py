@@ -1131,9 +1131,13 @@ def design_draft_view(
 ) -> dict[str, Any]:
     """Add computed driver data to a live or banked declaration (ADR-0323 §2)."""
     out = {key: value for key, value in draft.items()
-           if key not in {"driver_safety_profile", "driver_safety_profile_evaluation"}}
+           if key not in {"driver_safety_profile", "driver_safety_profile_evaluation",
+                          "driver_protection_policy_view"}}
     if topology is None and draft.get("topology"):
-        topology = OutputTopology.from_mapping(draft["topology"])
+        try:
+            topology = OutputTopology.from_mapping(draft["topology"])
+        except ValueError:
+            return out
     if topology is not None:
         out["driver_safety_profile"] = compute_driver_safety_profile(
             topology, draft.get("manual_settings"), draft.get("driver_research"),
@@ -1234,6 +1238,7 @@ def load_design_draft(
         }
     raw.pop("driver_safety_profile", None)
     raw.pop("driver_safety_profile_evaluation", None)
+    raw.pop("driver_protection_policy_view", None)
     revision = raw.get("revision", 0)
     if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
         out = dict(raw)
@@ -1312,7 +1317,7 @@ def save_design_draft(
             # allow_nan=False: fail at the writer that produced the non-finite
             # value, not at the evidence packet hours later (#2839).
             json.dumps({key: value for key, value in draft.items()
-                        if key != "driver_safety_profile"},
+                        if key not in {"driver_safety_profile", "driver_protection_policy_view"}},
                        allow_nan=False, indent=2, sort_keys=True) + "\n",
             mode=0o640,
             durable=durable,

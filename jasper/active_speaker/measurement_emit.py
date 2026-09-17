@@ -72,14 +72,13 @@ def load_tuning_declaration(
 ) -> MeasurementGraphProfile:
     from .commission_wiring import resolve_commission_preset  # lazy: commissioning consumes measurement graphs
     from .crossover_preview import build_crossover_preview  # lazy: declaration compilation imports baseline readers
-    from .design_draft import load_design_draft  # lazy: declaration compilation imports baseline readers
-    from .driver_safety import compute_driver_safety_profile, driver_floor_issues  # lazy: declaration compilation imports baseline readers
+    from .design_draft import design_draft_view, load_design_draft  # lazy: declaration compilation imports baseline readers
+    from .driver_safety import driver_floor_issues  # lazy: declaration compilation imports baseline readers
 
     topology = topology if topology is not None else load_output_topology_strict()
-    draft = design_draft if design_draft is not None else load_design_draft(topology=topology)
-    safety = compute_driver_safety_profile(
-        topology, draft.get("manual_settings"), draft.get("driver_research"),
-    )
+    draft = (design_draft_view(design_draft, topology=topology) if design_draft is not None
+             else load_design_draft(topology=topology))
+    safety = draft.get("driver_safety_profile", {})
     issues = driver_floor_issues(safety)
     if issues:
         raise MeasurementGraphRefused(issues[0]["code"], issues[0])

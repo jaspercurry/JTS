@@ -20,6 +20,7 @@ from jasper.active_speaker import (
 )
 from jasper.active_speaker.design_draft import (
     _normalise_candidate,
+    design_draft_view,
     declared_driver_sensitivities,
     declared_driver_spacing_m,
     declared_effective_driver_sensitivities,
@@ -1287,3 +1288,9 @@ def test_declared_effective_driver_sensitivities_survives_the_normalised_persist
         "woofer": 83.3,
         "tweeter": pytest.approx(93.6),
     }
+
+
+def test_a_draft_without_topology_drops_derived_fields():
+    view = design_draft_view({"topology": None, "driver_safety_profile": {"obsolete": True},
+                              "driver_protection_policy_view": {"obsolete": True}})
+    assert {"driver_safety_profile", "driver_protection_policy_view"}.isdisjoint(view)

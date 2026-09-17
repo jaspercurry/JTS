@@ -795,8 +795,8 @@ def _active_speaker_design_draft_save_payload(
         manual_candidate_count=str(
             (payload.get("summary") or {}).get("manual_crossover_candidate_count")
         ),
-        safety_profile_issues=[issue["code"] for issue in
-                              (payload.get("driver_safety_profile") or {}).get("issues", [])],
+        safety_profile_issues=",".join(issue["code"] for issue in
+                                     (payload.get("driver_safety_profile") or {}).get("issues", [])),
         issues=len(payload.get("issues") or []),
     )
     return installation_view(payload)

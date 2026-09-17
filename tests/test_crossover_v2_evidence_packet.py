@@ -751,3 +751,13 @@ def test_explicit_state_only_supplies_claims_for_its_capture(tmp_path, capture_i
     assert packet["verify"]["available"] is (capture_id == "cap_TESTONLY")
     assert bool(packet["identity"]["calibration"]) is (capture_id == "cap_TESTONLY")
     assert packet["positions"]["available"] is True
+
+
+def test_a_banked_draft_with_garbage_topology_keeps_the_packet_readable(tmp_path):
+    session, _ = _bundle(tmp_path)
+    draft = tmp_path / "design-draft.json"
+    draft.write_text(json.dumps({"topology": {"artifact_schema_version": -1},
+                                "driver_safety_profile": {"targets": ["obsolete"]}}))
+    packet = build_crossover_evidence_packet(session, driver_draft_path=draft)
+    assert packet["drivers"] == {"available": False, "status": "not_evaluated",
+                                 "reason": "field_null", "field": "driver_safety_profile.targets"}

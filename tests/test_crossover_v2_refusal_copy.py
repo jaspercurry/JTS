@@ -315,3 +315,11 @@ def test_refusal_copy_lookup_returns_fallback_copy_and_an_independent_action(cod
 @pytest.mark.parametrize("layer", ["base", "tune", "room"])
 def test_upstream_mismatch_reasons_are_retired(layer):
     assert f"measurement_candidate_{layer}_mismatch" not in refusal_copy.REASON_REGISTRY
+
+
+def test_driver_issue_deep_link_matches_the_page_handler_and_panel():
+    spec = refusal_copy.REASON_REGISTRY[refusal_copy.REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID]
+    anchor = spec.next_action["href"].split("#", 1)[1]
+    root = pathlib.Path(__file__).resolve().parents[1] / "deploy/assets/sound-profile/js"
+    assert f"'#{anchor}'" in (root / "main.js").read_text()
+    assert f'id="{anchor}"' in (root / "driver-fields.js").read_text()

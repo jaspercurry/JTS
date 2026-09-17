@@ -6047,10 +6047,13 @@ async function testComputedSafetyIssuesRenderByTarget() {
   await loadAndSetActiveState(harness);
   const html = harness.elements.get("view-body").innerHTML;
   if (!html.includes('data-safety-target="mono:tweeter"') ||
-      !html.includes('<code>tweeter:required_highpass_missing</code>') ||
+      html.includes('<code>tweeter:required_highpass_missing</code>') ||
       !html.includes('Driver &lt;floor&gt; missing')) {
-    fail("Computed issues must render the server target, code and escaped message", {html});
+    fail("Computed issues must render the server target and escaped message", {html});
   }
+  harness.dispatchInput({"data-manual-driver": "main:tweeter", "data-manual-field": "driver_class"}, "compression_driver");
+  const edited = harness.elements.get("view-body").innerHTML;
+  assert.ok(!edited.includes('data-safety-target=') && edited.includes("save your current edits to update it"));
   return {computedSafetyIssuesRenderByTarget: true};
 }
 

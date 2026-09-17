@@ -847,6 +847,7 @@ function driverEchoDelegationText(targetId, setting) {
 }
 
 function driverSafetyIssues() {
+  if (driverResearch.safetyDirty) return [];
   var profile = (driverResearch.designDraft || {}).driver_safety_profile || {};
   return Array.isArray(profile.issues) ? profile.issues : [];
 }
