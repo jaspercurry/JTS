@@ -69,14 +69,12 @@ def _subwoofer_groups(topology: OutputTopology) -> list[SpeakerGroup]:
     ]
 
 
-def _highest_assigned_output(groups: list[SpeakerGroup]) -> int | None:
-    indexes = [
-        channel.physical_output_index
-        for group in groups
-        for channel in group.channels
-        if channel.physical_output_index is not None
-    ]
-    return max(indexes) if indexes else None
+def _required_active_output_count(groups: list[SpeakerGroup]) -> int:
+    channels = [channel for group in groups for channel in group.channels]
+    return max(len(channels), max(
+        (channel.physical_output_index for channel in channels
+         if channel.physical_output_index is not None), default=-1,
+    ) + 1)
 
 
 @dataclass(frozen=True)
@@ -213,10 +211,7 @@ def active_playback_route_capability(
 ) -> ActivePlaybackRouteCapability:
     """Return the active-speaker runtime route capacity.
 
-    Thin reader: route half (device, source, transport width, subwoofer
-    support) comes from the resolved ``OutputLayout``; this adds speaker-group
-    demand accounting and route-fit issues. Transport width is
-    profile-declared, not the DAC's analog output count.
+    Transport width is profile-declared, not the DAC's analog output count.
     """
 
     layout: OutputLayout = resolve_output_layout(
@@ -225,9 +220,9 @@ def active_playback_route_capability(
     )
     active_groups = _active_main_groups(topology)
     subwoofer_groups = _subwoofer_groups(topology)
-    required_groups = active_groups + subwoofer_groups
-    highest = _highest_assigned_output(required_groups)
-    required_outputs = (highest + 1) if highest is not None else 0
+    required_outputs = _required_active_output_count(
+        list(topology.speaker_groups) if active_groups or subwoofer_groups else [],
+    )
 
     resolved_device = layout.playback_device
     transport_channels = layout.transport_channel_count
@@ -251,7 +246,7 @@ def active_playback_route_capability(
             "active_playback_route_too_narrow",
             (
                 f"This install can drive {transport_channels} active output "
-                f"lanes, but this layout uses DAC output {required_outputs}."
+                f"lanes, but this layout needs {required_outputs}."
             ),
         ))
 

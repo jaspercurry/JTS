@@ -27,8 +27,8 @@ export function humanRole(role) {
   }[role] || role || 'Channel';
 }
 
-export var SENSITIVITY_TRIM_EPS_DB = 0.05;   // _SENSITIVITY_TRIM_EPS_DB
-export var MAX_DRIVER_ATTENUATION_DB = -60.0;  // _MAX_ATTENUATION_DB
+var SENSITIVITY_TRIM_EPS_DB = 0.05;   // _SENSITIVITY_TRIM_EPS_DB
+var MAX_DRIVER_ATTENUATION_DB = -60.0;  // _MAX_ATTENUATION_DB
 
 // Round to one decimal place. Driver sensitivities are datasheet values quoted
 // to one decimal, so the gap between two of them is already a multiple of 0.1 and
@@ -334,7 +334,7 @@ function commissionIssueReason(codes) {
 // The per-driver commissioning gates are a closed set; map each to consumer copy.
 // Never surface the raw gate.message / issue codes — they carry snake_case tokens
 // (e.g. route_verified) that don’t belong in a household-facing wizard.
-export function commissionGateReason(gateId) {
+function commissionGateReason(gateId) {
   return {
     speaker_ready_for_active_load:
       'The speaker isn’t fully set up for driver tests yet — finish the earlier steps ' +
@@ -365,7 +365,7 @@ export function commissionGateReason(gateId) {
 // Placement geometry is OWNED by jasper/active_speaker/capture_geometry.py and
 // rendered by the measurement page for the capture kind in play. Do NOT
 // restate a distance or an aim instruction here.
-export const NEARFIELD_LEVEL_MATCH_GUIDANCE =
+const NEARFIELD_LEVEL_MATCH_GUIDANCE =
   'Run the speaker experiment from jts.local/sound/speaker/crossover, the ' +
   'Active speaker page. Apply the candidate named in its packet to save the ' +
   'measured driver levels, delay and polarity.';

@@ -66,8 +66,6 @@ import {
   crossoverPreviewReviewIssues,
   driverResearchFlowComplete,
   driverResearchHasPreviewInputs,
-  driverResearchPrompt,
-  driverResearchPromptReady,
   driverResearchStepSatisfied,
   driverResearchTargets,
   driverSafetyNoteRoles,
@@ -75,7 +73,6 @@ import {
   extractDriverResearchJson,
   ingestCrossoverPreview,
   levelDurationLimitsFromSetting,
-  manualCrossoverDelayValidationError,
   manualCrossoverVocabularyValidationError,
   driverFields,
   driverNumberFields,
@@ -85,7 +82,6 @@ import {
   protectionFiltersFromSetting,
   safetyBandFromSetting,
   setManualCrossoverField,
-  summarizeDriverResearchPayload,
   targetModel,
   workingSetupSummary
 } from "/assets/sound-profile/js/driver-model.js";
@@ -157,7 +153,6 @@ import {
   outputTemplateDefinition,
   outputTemplateGroups,
   outputTemplateKindFromAxes,
-  outputTemplateUnavailableReason,
   pairRoleKey,
   physicalTargetId,
   physicalOutputLabel,
@@ -809,16 +804,10 @@ import {
     if (field.startsWith('installation_')) return;
     driverResearch.safetyDirty = true;
     driverResearch.editedDriverTargets[targetId] = true;
-    // driver_class/pad_kind each gate which OTHER fields this row shows
-    // (a radiating diameter or nothing; resistor inputs vs the direct-dB
-    // input) -- unlike every other manual-driver field above, a selection
-    // here must re-render immediately or the newly-relevant field stays
-    // hidden until some unrelated action repaints the page. Mirrors
-    // setOutputChannelDriverStyle's existing full-repaint-on-select pattern.
     if (field === 'driver_class' || field === 'pad_kind' || field === 'enclosure_kind') render();
   }
   function refreshDriverResearchDerivedUi() {
-    var topology = currentOutputTopology();
+    var topology = outputTopology.payload;
     var proposal = el('view-body').querySelector('[data-driver-proposal]');
     if (proposal) proposal.innerHTML = renderCrossoverPreviewCardBody(topology);
     var footer = el('view-body').querySelector('[data-driver-research-footer]');
@@ -892,12 +881,8 @@ import {
       if (setting.upper_polarity === 'inverted') candidate.upper_polarity = 'inverted';
       var delayMs = manualNumberValue(setting.delay_ms);
       var delayTarget = String(setting.delay_target_role || '').trim();
-      // delayMs !== null (never truthiness) — 0.0 ms is a legitimate, server-
-      // pinned value, not "no delay entered". Guarded by
-      // manualCrossoverDelayValidationError before this ever runs, but stay
-      // defensive here too: never emit a delay without a driver it targets.
-      if (delayMs != null && (delayTarget === pair[0] || delayTarget === pair[1])) {
-        candidate.delay_ms = Math.max(0, Math.min(20, delayMs));
+      if (delayMs != null) {
+        candidate.delay_ms = delayMs;
         candidate.delay_target_role = delayTarget;
       }
       return candidate;
@@ -987,7 +972,7 @@ import {
   }
   function applyDriverResearchToManualSettings(payload) {
     if (!payload || typeof payload !== 'object') return;
-    var topology = currentOutputTopology();
+    var topology = outputTopology.payload;
     var targets = driverResearchTargets(topology);
     var driversByRole = {};
     (Array.isArray(payload.drivers) ? payload.drivers : []).forEach(function(driver) {
@@ -1057,14 +1042,14 @@ import {
   }
   function driverResearchWorkingStatusLabel(status) {
     if (driverResearch.dirty) return 'editing';
-    if (driverResearchPreviewInputsReady(currentOutputTopology())) return 'ready to preview';
+    if (driverResearchPreviewInputsReady(outputTopology.payload)) return 'ready to preview';
     if (status === 'blocked') return 'needs speaker layout';
     if (status === 'unreadable') return 'needs review';
     if (status === 'needs_research') return 'needs crossover info';
     return 'working setup';
   }
   function driverResearchWorkingStatusClass(status) {
-    if (!driverResearch.dirty && driverResearchPreviewInputsReady(currentOutputTopology())) {
+    if (!driverResearch.dirty && driverResearchPreviewInputsReady(outputTopology.payload)) {
       return ' status-pill--ready';
     }
     if (status === 'blocked' || status === 'unreadable') return ' status-pill--blocked';
@@ -1090,7 +1075,7 @@ import {
       var role = String(driver.role);
       var targetId = String(driver.target_id || '');
       if (!targetId) {
-        var roleTargets = driverResearchTargets(currentOutputTopology()).filter(function(item) {
+        var roleTargets = driverResearchTargets(outputTopology.payload).filter(function(item) {
           return item.role === role;
         });
         if (roleTargets.length === 1) targetId = roleTargets[0].target_id;
@@ -1123,21 +1108,12 @@ import {
       });
     if (payload.driver_research) {
       driverResearch.importText = JSON.stringify(payload.driver_research, null, 2);
-      try {
-        driverResearch.parsed = summarizeDriverResearchPayload(payload.driver_research);
-        driverResearch.importedPayload = payload.driver_research;
-        driverResearch.error = '';
-      } catch (e) {
-        driverResearch.parsed = null;
-        driverResearch.importedPayload = null;
-        driverResearch.error = e.message;
-      }
+      driverResearch.importedPayload = payload.driver_research;
     } else {
       driverResearch.importText = '';
-      driverResearch.parsed = null;
       driverResearch.importedPayload = null;
-      driverResearch.error = '';
     }
+    driverResearch.error = '';
     driverResearch.dirty = false;
     driverResearch.safetyDirty = false;
     driverResearch.editedDriverTargets = {};
@@ -1191,20 +1167,12 @@ import {
     var record = baselineProfileAppliedRecord();
     return record !== null && record.stands === true;
   }
-  function baselineProfileRevalidation() {
-    var profile = activeSpeaker.baselineProfile || {};
-    return profile.revalidation && typeof profile.revalidation === 'object' ?
-      profile.revalidation : {};
-  }
-  function baselineProfileNeedsRevalidation() {
-    return baselineProfileRevalidation().required === true;
-  }
   function outputStepContext(topology) {
     return {
       hasLayout: outputGroups(topology).length > 0,
       dirty: outputTopology.dirty,
       hardwareMatchesSaved: !outputHardwareMismatch(topology),
-      driverResearchSatisfied: driverResearchFlowComplete(topology),
+      driverResearchSatisfied: driverResearchFlowComplete(outputTopology.payload),
       steps: (activeSpeaker.commissioningView || {}).steps,
       currentStep: (activeSpeaker.commissioningView || {}).current_step
     };
@@ -1298,7 +1266,7 @@ import {
   }
   function driverResearchStepFooterButtonHtml() {
     return '<button type="button" class="btn btn--ghost" data-act="save-driver-design"' +
-      (outputTopology.dirty || driverResearch.saving ? ' disabled' : '') + '>' +
+      (driverResearch.saving ? ' disabled' : '') + '>' +
       (driverResearch.saving ? 'Saving' : 'Save values') + '</button>';
   }
   function renderDriverResearchStepFooter() {
@@ -1330,36 +1298,12 @@ import {
     var cardioid = mainGroups.some(function(group) {
       return (group.channels || []).some(function(channel) { return channel.output_variant === 'rear'; });
     });
-    return {layout: layout, speakerMode: cardioid ? 'active_3way' : speakerMode, cardioid: cardioid};
+    return {layout: layout, speakerMode: speakerMode, cardioid: cardioid};
   }
-  function outputTemplateChoiceDisabled(count, axis, value, axes) {
-    count = Number(count) || 0;
-    var topology = currentOutputTopology();
-    var hasSub = outputHasSubwoofer(topology);
-    var layout = axis === 'layout' ? value : axes.layout;
-    var speakerMode = axis === 'speaker-mode' ? value : axes.speakerMode;
-    if (layout && speakerMode) {
-      var template = outputTemplateDefinition(outputTemplateKindFromAxes(layout, speakerMode, axes.cardioid));
-      return outputTemplateUnavailableReason(template, topology, hasSub);
-    }
-    if (axis === 'layout') {
-      return ['passive', 'active_2way', 'active_3way'].every(function(mode) {
-        var template = outputTemplateDefinition(outputTemplateKindFromAxes(value, mode));
-        return !!outputTemplateUnavailableReason(template, topology, hasSub);
-      }) ? 'No available speaker type fits this install for ' + value + '.' : '';
-    }
-    var mono = outputTemplateDefinition(outputTemplateKindFromAxes('mono', value));
-    var stereo = outputTemplateDefinition(outputTemplateKindFromAxes('stereo', value));
-    return [mono, stereo].every(function(template) {
-      return !!outputTemplateUnavailableReason(template, topology, hasSub);
-    }) ? 'No available speaker count fits this install for ' + value + '.' : '';
-  }
-  function outputTemplateAxisButton(axis, value, label, hint, selected, disabled) {
-    var disabledReason = disabled ? String(disabled) : '';
+  function outputTemplateAxisButton(axis, value, label, hint, selected) {
     return '<button type="button" class="output-template-option" data-act="output-template-axis" ' +
       'data-axis="' + escapeHtml(axis) + '" data-value="' + escapeHtml(value) + '" ' +
-      'aria-pressed="' + (selected ? 'true' : 'false') + '"' +
-      (disabledReason ? ' disabled title="' + escapeHtml(disabledReason) + '"' : '') + '>' +
+      'aria-pressed="' + (selected ? 'true' : 'false') + '">' +
         '<strong>' + escapeHtml(label) + '</strong>' +
         '<span>' + escapeHtml(hint) + '</span>' +
       '</button>';
@@ -1380,19 +1324,14 @@ import {
     var outputCount = selectedTemplate
       ? selectedTemplate.minOutputs + (hasSub ? 1 : 0)
       : 0;
-    var selectedIssue = selectedTemplate ? outputTemplateUnavailableReason(
-      selectedTemplate,
-      topology,
-      hasSub
-    ) : '';
     var layoutChoices = [
       {value: 'mono', label: 'Mono', hint: 'One speaker or cabinet'},
       {value: 'stereo', label: 'Stereo', hint: 'Left and right speakers'}
     ];
     var speakerChoices = [
       {value: 'passive', label: 'Passive', hint: 'Full-range output per speaker'},
-      {value: 'active_2way', label: 'Active 2-way', hint: 'Woofer + tweeter'},
-      {value: 'active_3way', label: 'Active 3-way', hint: 'Three independently driven outputs'}
+      {value: 'active_2way', label: axes.cardioid ? 'Active 2-way with rear woofer (cardioid)' : 'Active 2-way', hint: 'Woofer + tweeter'},
+      {value: 'active_3way', label: 'Active 3-way', hint: 'Woofer + mid + tweeter'}
     ];
     return '<div class="output-card output-card--templates">' +
       '<div class="output-card__head"><div><p class="output-card__title">Main speakers</p>' +
@@ -1407,8 +1346,7 @@ import {
                 choice.value,
                 choice.label,
                 choice.hint,
-                axes.layout === choice.value,
-                outputTemplateChoiceDisabled(count, 'layout', choice.value, axes)
+                axes.layout === choice.value
               );
             }).join('') +
           '</div>' +
@@ -1422,14 +1360,13 @@ import {
                 choice.value,
                 choice.label,
                 choice.hint,
-                axes.speakerMode === choice.value,
-                outputTemplateChoiceDisabled(count, 'speaker-mode', choice.value, axes)
+                axes.speakerMode === choice.value
               );
             }).join('') +
           '</div>' +
         '</div>' +
       '</div>' +
-      (axes.speakerMode === 'active_3way'
+      (axes.speakerMode === 'active_2way'
         ? '<label class="setting-row"><span><strong>Cardioid</strong>' +
           '<span class="setting-row__hint">Front woofer, rear woofer and tweeter. Rear starts muted for tuning.</span></span>' +
           '<input type="checkbox" data-output-cardioid' + (axes.cardioid ? ' checked' : '') + '></label>'
@@ -1440,21 +1377,13 @@ import {
           outputCount ? String(outputCount) + ' of ' + String(count || 0) + ' available' : 'Choose a setup'
         ) + '</dd></div>' +
       '</dl>' +
-      (selectedIssue
-        ? '<p class="setting-row__hint output-template-warning">' + escapeHtml(selectedIssue) + '</p>'
-        : '') +
     '</div>';
   }
   function renderOutputSubwooferCard(topology) {
     var hasLayout = outputGroups(topology).length > 0;
     var hasSub = outputHasSubwoofer(topology);
     var nextOutput = firstUnusedOutputIndex(topology);
-    var axes = outputTemplateAxesForTopology(topology);
-    var selectedTemplate = outputTemplateDefinition(
-      outputTemplateKindFromAxes(axes.layout, axes.speakerMode, axes.cardioid)
-    );
-    var addIssue = outputTemplateUnavailableReason(selectedTemplate, topology, true);
-    var disabled = !hasLayout || (!hasSub && (nextOutput == null || addIssue));
+    var disabled = !hasLayout || (!hasSub && nextOutput == null);
     var nextOutputLabel = null;
     var outputs = outputHardware(topology) && Array.isArray(outputHardware(topology).outputs)
       ? outputHardware(topology).outputs : [];
@@ -1467,7 +1396,7 @@ import {
         ? 'Choose a speaker layout first, then add a subwoofer if you have a spare amplifier channel.'
         : (nextOutput == null
         ? 'No unused physical output is available for a subwoofer in this layout.'
-        : (addIssue || 'Adds one subwoofer group on ' + (nextOutputLabel || ('DAC output ' + (Number(nextOutput) + 1))))));
+        : ('Adds one subwoofer group on ' + (nextOutputLabel || ('DAC output ' + (Number(nextOutput) + 1))))));
     return '<div class="output-card output-card--subwoofer">' +
       '<div class="output-card__head"><div><p class="output-card__title">Subwoofer add-on</p>' +
         '<p class="setting-row__hint">Optional local sub output.</p></div>' +
@@ -1481,11 +1410,10 @@ import {
       '</div>' +
     '</div>';
   }
-  function renderDriverResearchSummary(options) {
-    options = options || {};
+  function renderDriverResearchSummary() {
     var saved = driverResearch.designDraft || {};
     var savedStatus = saved.status || '';
-    var topology = currentOutputTopology();
+    var topology = outputTopology.payload;
     var safetyRoles = driverSafetyNoteRoles(topology);
     var savedHtml =
       '<div class="driver-research__summary driver-research__summary--saved">' +
@@ -1502,31 +1430,9 @@ import {
         '<p class="setting-row__hint driver-research__error">' +
         escapeHtml(driverResearch.error) + '</p>';
     }
-    if (options.savedOnly) return savedHtml;
-    if (!driverResearch.parsed) {
-      return savedHtml +
-        '<p class="setting-row__hint">Paste the JSON code block the assistant returns to sanity-check the shape. JTS will not apply it automatically.</p>';
-    }
-    var summary = driverResearch.parsed;
-    return savedHtml + '<div class="driver-research__summary">' +
-      '<span class="status-pill status-pill--ready">import ready</span>' +
-      '<p class="setting-row__hint">' + escapeHtml(
-        'Imported driver notes for ' + roleSentenceText(summary.roles) +
-        '. Review them before updating the working setup.'
-      ) + '</p>' +
-      (summary.schemaVersion === 2 ? '<p class="setting-row__hint">' + escapeHtml(
-        'Target-bound research includes ' + summary.provenanceFieldCount +
-        ' sourced field assertions and ' + summary.unknownCount + ' explicit unknowns.'
-      ) + '</p>' : '<p class="setting-row__hint">Legacy research is advisory. Review the visible driver values.</p>') +
-      (summary.warnings.length ? '<div class="driver-research__notes">' +
-        '<p class="setting-row__title">Review notes</p>' +
-        '<ul>' + summary.warnings.map(function(warning) {
-          return '<li>' + escapeHtml(String(warning)) + '</li>';
-        }).join('') + '</ul></div>' : '') +
-    '</div>';
+    return savedHtml;
   }
   function renderDriverResearchAiHelper(topology) {
-    var promptReady = driverResearchPromptReady(topology);
     return '<section class="driver-research__section driver-research__ai">' +
       '<div><h3 class="setting-row__title">Research your components</h3>' +
         '<p class="setting-row__hint">Copy the populated prompt, use it with the research assistant of your choice, then paste the JSON response here.</p></div>' +
@@ -1534,15 +1440,13 @@ import {
         '<div class="driver-research__panel">' +
           '<div class="row-between active-speaker-level__head">' +
             '<div><p class="setting-row__title">1. Copy the prompt</p>' +
-              '<p class="setting-row__hint">The button unlocks after every component has a model and its enclosure or tweeter type is selected. Build notes are optional.</p></div>' +
-            '<button type="button" class="btn btn--ghost" data-act="copy-driver-research-prompt"' +
-              (promptReady ? '' : ' disabled') + '>' +
-              'Copy prompt</button>' +
+              '<p class="setting-row__hint">Add the component models, enclosure and tweeter type. Build notes are optional.</p></div>' +
+            '<button type="button" class="btn btn--ghost" data-act="copy-driver-research-prompt">Copy prompt</button>' +
           '</div>' +
           '<textarea id="driver-research-prompt" class="driver-research__textarea driver-research__textarea--' +
             (driverResearch.prompt ? 'compact' : 'hidden') + '" readonly ' +
             'aria-label="Driver research prompt">' +
-            escapeHtml(driverResearch.prompt || driverResearchPrompt(topology)) + '</textarea>' +
+            escapeHtml(driverResearch.prompt) + '</textarea>' +
         '</div>' +
         '<div class="driver-research__panel">' +
           '<div class="row-between active-speaker-level__head">' +
@@ -1558,11 +1462,6 @@ import {
           '<div id="driver-research-import-summary">' + renderDriverResearchSummary() + '</div>' +
         '</div>' +
       '</div>' +
-      // Stable container so a manual edit can repaint just this panel. A
-      // number input's own keystrokes must not trigger a full render (focus
-      // loss), but leaving the echo showing a value the operator has already
-      // changed is the exact dishonesty this panel exists to end -- so it gets
-      // the same targeted refresh [data-driver-proposal] has.
       '<div data-driver-echo>' + renderDriverEchoBack(topology) + '</div>' +
     '</section>';
   }
@@ -1573,10 +1472,12 @@ import {
     var node = document.getElementById('driver-safety-issues');
     if (node && typeof node.scrollIntoView === 'function') node.scrollIntoView({block: 'center'});
   }
-  function renderDriverResearchCard(topology) {
+  function renderDriverResearchCard() {
+    var topology = outputTopology.payload;
     return '<div class="output-card output-card--driver-research">' +
       '<div class="output-card__head"><div><p class="output-card__title">Component setup</p>' +
         '<p class="setting-row__hint">Start with what is physically installed. JTS uses these choices as authoritative context, not facts for AI to guess.</p></div></div>' +
+      (outputTopology.dirty ? '<p class="setting-row__hint" data-saved-layout-values>These values and research prompts use the saved speaker layout.</p>' : '') +
       renderDriverSafetyIssues() +
       '<div class="driver-research__section">' +
         '<h3 class="setting-row__title">Your components</h3>' +
@@ -1681,7 +1582,7 @@ import {
         'Driver values',
         outputStepHint('research', 'Describe each installed driver, then research a starting crossover.'),
         topology,
-        renderDriverResearchCard(topology),
+        renderDriverResearchCard(),
         renderDriverResearchStepFooter()
       ) +
       renderOutputStepCard(
@@ -1912,18 +1813,14 @@ import {
   }
   function baselineProfileApplyBlocked(profile) {
     var issues = Array.isArray(profile && profile.issues) ? profile.issues : [];
-    return (profile && profile.status) === 'compiled_apply_blocked' ||
-      issues.some(function(issue) {
-        return issue && issue.code === 'baseline_output_handoff_not_supported';
-      });
+    return issues.some(function(issue) {
+      return issue && issue.code === 'baseline_output_handoff_not_supported';
+    });
   }
   function baselineProfileIssueMessage(issue) {
     if (!issue) return 'Profile is not ready yet.';
     if (issue.code === 'baseline_output_handoff_not_supported') {
       return 'This output hardware can save the active profile, but JTS cannot switch normal playback to it from here yet.';
-    }
-    if (issue.code === 'baseline_subwoofer_not_supported') {
-      return 'Subwoofer groups are not included in the active profile compiler yet.';
     }
     return 'The active profile is not ready yet.';
   }
@@ -1960,7 +1857,6 @@ import {
     var readyToApply = permissions.may_apply === true;
     var mayCompile = ((activeSpeaker.commissioningView || {}).review || {}).may_apply === true;
     var applyBlocked = baselineProfileApplyBlocked(profile);
-    var revalidating = baselineProfileNeedsRevalidation();
     var busy = activeSpeaker.action === 'Finishing active profile';
     var canFinish = !applyBlocked && (mayCompile || readyToApply);
     var issues = Array.isArray(profile.issues) ? profile.issues : [];
@@ -1980,13 +1876,9 @@ import {
         '<p class="setting-row__hint">This profile cannot be made active from this page yet. Review the setup issue below.</p>' :
       (readyToApply ?
         '<p class="setting-row__hint">Your active speaker profile is saved. Finish applying it to start using it.</p>' :
-      (revalidating ?
-        '<p class="setting-row__hint">' + escapeHtml(mayCompile ?
-          'Revalidation is saved. Save and apply a fresh active profile.' :
-          'The speaker setup changed. Run the speaker experiment to measure the new setup.') + '</p>' :
         '<p class="setting-row__hint">' + escapeHtml(mayCompile ?
           'Save the checked crossover as your active speaker profile. JTS validates and applies it in one step; no sound plays.' :
-          'Apply the candidate named in the speaker experiment packet.') + '</p>')));
+          'Apply the candidate named in the speaker experiment packet.') + '</p>'));
     var actionLabel = busy ?
       'Saving and applying' :
       'Save and apply';
@@ -2002,7 +1894,7 @@ import {
       '<div class="output-card__head"><div><p class="output-card__title">Active speaker profile</p>' +
         '<p class="setting-row__hint">Your active speaker profile, built from the checked crossover and assigned outputs.</p></div>' +
         '<span class="status-pill' + (applied || readyToApply ? ' status-pill--ready' : '') + '">' +
-          escapeHtml(applied ? 'active' : (appliedRecord || readyToApply ? 'saved' : (applyBlocked ? 'blocked' : (revalidating ? 'recheck' : 'not saved')))) + '</span></div>' +
+          escapeHtml(applied ? 'active' : (appliedRecord || readyToApply ? 'saved' : (applyBlocked ? 'blocked' : 'not saved'))) + '</span></div>' +
       body +
       (timing ? '<p class="setting-row__hint">' + escapeHtml(timing) + '</p>' : '') +
       (timingVerification ? '<p class="setting-row__hint">' + escapeHtml(timingVerification) + '</p>' : '') +
@@ -2646,7 +2538,6 @@ import {
       driverResearch.safetyDirty = true;
       driverResearch.editedDriverTargets[driverTarget] = true;
       updateDriverResearchPromptPreview();
-      updateDriverResearchPromptButton();
       refreshDriverResearchDerivedUi();
       return;
     }
@@ -2657,14 +2548,12 @@ import {
       driverResearch.dirty = true;
       driverResearch.safetyDirty = true;
       updateDriverResearchPromptPreview();
-      updateDriverResearchPromptButton();
       refreshDriverResearchDerivedUi();
       return;
     }
     if (ev.target.hasAttribute && ev.target.hasAttribute('data-driver-import')) {
       driverResearch.importText = ev.target.value;
       driverResearch.error = '';
-      driverResearch.parsed = null;
       driverResearch.importedPayload = null;
       driverResearch.dirty = true;
       updateDriverResearchImportSummary();
@@ -2689,7 +2578,6 @@ import {
         ev.target.value
       );
       updateDriverResearchPromptPreview();
-      updateDriverResearchPromptButton();
       refreshDriverResearchDerivedUi();
       return;
     }
@@ -2708,7 +2596,7 @@ import {
         );
         if (noteEl) {
           noteEl.innerHTML = kaBeamingNoteHtml(
-            crossoverKey.split(':'), ev.target.value, currentOutputTopology()
+            crossoverKey.split(':'), ev.target.value, outputTopology.payload
           );
         }
       }
@@ -2805,14 +2693,11 @@ import {
       return;
     }
     if (ev.target.hasAttribute && ev.target.hasAttribute('data-driver-style')) {
-      var saveDriverStyle = ev.target.hasAttribute('data-save-driver-style');
-      if (saveDriverStyle) outputPage.stepOverride = 'research';
       setOutputChannelDriverStyle(
         ev.target.getAttribute('data-group-id') || '',
         ev.target.getAttribute('data-role') || '',
         ev.target.value
       );
-      if (saveDriverStyle) saveOutputTopology({nextStep: 'research'});
       return;
     }
     if (ev.target.hasAttribute && ev.target.hasAttribute('data-sub-crossover-fc')) {
@@ -2962,7 +2847,6 @@ import {
     outputTopology.payload = topology || null;
     outputTopology.draft = topology ? clone(topology) : null;
     outputTopology.clockDomain = payload && payload.clock_domain || topology && topology.clock_domain || null;
-    outputTopology.activeRoute = payload && payload.active_playback_route || null;
     outputTopology.observedHardware = payload && payload.output_hardware || null;
     outputTopology.hardwareAdoption = payload && payload.hardware_adoption || null;
     outputTopology.hardwareMismatch = payload && payload.hardware_mismatch || null;
@@ -2990,9 +2874,7 @@ import {
   async function refreshOutputTopology(options) {
     options = options || {};
     if (!options.silent && outputTopology.dirty &&
-        !await jtsConfirm('Refresh hardware and lose the unsaved speaker layout draft?')) {
-      return;
-    }
+        !await jtsConfirm('Refresh hardware and lose the unsaved speaker layout draft?')) return;
     if (!options.silent) outputTopology.touched = true;
     outputTopology.loading = true;
     outputTopology.error = '';
@@ -3066,14 +2948,11 @@ import {
     }
   }
   function setOutputDraft(next) {
-    driverResearch.prompt = '';
     outputTopology.draft = next;
     if (outputGroups(next).length) resetOutputTemplateDraft();
     outputTopology.dirty = true;
     outputTopology.touched = true;
     outputTopology.error = '';
-    driverResearch.dirty = true;
-    driverResearch.safetyDirty = true;
     render();
   }
   // Persist the user-entered bass-management corner onto the draft local-sub
@@ -3115,98 +2994,53 @@ import {
       status('Choose one of the available DAC channels.', true);
       return;
     }
-    var targetGroup = null;
     var targetChannel = null;
     outputGroups(next).forEach(function(group) {
       if ((group.id || '') !== groupId) return;
       (group.channels || []).forEach(function(channel) {
         if ((channel.role || '') === role && (channel.output_variant || 'primary') === (variant || 'primary')) {
-          targetGroup = group;
           targetChannel = channel;
         }
-      });
-    });
-    if (!targetGroup || !targetChannel) {
-      status('Could not find that driver in the speaker layout.', true);
-      return;
-    }
-    function applyChannel(channel, index) {
-      channel.physical_output_index = index;
-      delete channel.human_output_label;
-    }
-    var previousSelected = targetChannel.physical_output_index == null ?
-      null : Number(targetChannel.physical_output_index);
-    var swapPeer = null;
-    if (selected !== null && Array.isArray(targetGroup.channels) &&
-        targetGroup.channels.length === 2) {
-      targetGroup.channels.forEach(function(channel) {
-        if (channel !== targetChannel &&
-            Number(channel.physical_output_index) === selected) {
-          swapPeer = channel;
-        }
-      });
-    }
-    applyChannel(targetChannel, selected);
-    if (swapPeer) applyChannel(swapPeer, previousSelected);
-    outputPage.stepOverride = 'layout';
-    setOutputDraft(next);
-    status('Channel assignment updated. Save the speaker layout.');
-  }
-  function setOutputChannelDriverStyle(groupId, role, rawValue) {
-    var topology = currentOutputTopology();
-    if (!topology) return;
-    var next = baseOutputDraft(topology);
-    if (!next) return;
-    var targetChannel = null;
-    outputGroups(next).forEach(function(group) {
-      if ((group.id || '') !== groupId) return;
-      (group.channels || []).forEach(function(channel) {
-        if ((channel.role || '') === role) targetChannel = channel;
       });
     });
     if (!targetChannel) {
       status('Could not find that driver in the speaker layout.', true);
       return;
     }
-    var value = String(rawValue || '').trim();
-    if (value) targetChannel.driver_style = value;
-    else delete targetChannel.driver_style;
+    targetChannel.physical_output_index = selected;
+    delete targetChannel.human_output_label;
+    outputPage.stepOverride = 'layout';
     setOutputDraft(next);
-    status('Tweeter style updated.');
+    status('Channel assignment updated. Save the speaker layout.');
   }
-  async function setOutputTemplate(kind, options) {
-    options = options || {};
-    if (outputTopology.dirty && !options.skipDirtyConfirm &&
-        !await jtsConfirm('Replace the unsaved speaker layout draft?')) {
-      return;
+  function setOutputChannelDriverStyle(groupId, role, rawValue) {
+    var next = baseOutputDraft(outputTopology.payload);
+    var value = String(rawValue || '').trim();
+    function update(topology) {
+      var group = outputGroups(topology).find(function(item) { return item.id === groupId; });
+      var channel = group && group.channels.find(function(item) { return item.role === role; });
+      if (!channel) return false;
+      if (value) channel.driver_style = value;
+      else delete channel.driver_style;
+      return true;
     }
+    if (!next || !update(next)) return;
+    update(outputTopology.draft);
+    saveOutputTopology({nextStep: 'research', topology: next});
+  }
+  async function setOutputTemplate(kind) {
     var next = baseOutputDraft();
     if (!next || !next.hardware) {
       status('Load output hardware before creating a speaker layout.', true);
       return;
     }
     var keepSubwoofer = outputHasSubwoofer(next);
-    var count = Number(next.hardware.physical_output_count) || 0;
     var template = outputTemplateDefinition(kind);
     if (!template) {
       status('Choose a supported speaker layout template.', true);
       return;
     }
     resetOutputTemplateDraft();
-    if (count < template.minOutputs) {
-      status(template.name + ' needs at least ' + template.minOutputs +
-        ' physical output' + (template.minOutputs === 1 ? '.' : 's.'), true);
-      return;
-    }
-    var unavailableReason = outputTemplateUnavailableReason(
-      template,
-      next,
-      keepSubwoofer
-    );
-    if (unavailableReason) {
-      status(unavailableReason, true);
-      return;
-    }
     next.name = template.name;
     next.speaker_groups = outputTemplateGroups(template, next);
     next.artifact_schema_version = kind.endsWith('_cardioid') ? 2 : 1;
@@ -3248,7 +3082,7 @@ import {
       status('Choose a supported speaker layout option.', true);
       return;
     }
-    await setOutputTemplate(kind, {skipDirtyConfirm: true});
+    await setOutputTemplate(kind);
   }
   function toggleOutputSubwoofer(modeValue) {
     var topology = currentOutputTopology();
@@ -3267,17 +3101,6 @@ import {
       status('No unused physical output is available for a subwoofer.', true);
       return;
     }
-    if (modeValue !== 'remove') {
-      var axes = outputTemplateAxesForTopology(next);
-      var template = outputTemplateDefinition(
-        outputTemplateKindFromAxes(axes.layout, axes.speakerMode, axes.cardioid)
-      );
-      var unavailableReason = outputTemplateUnavailableReason(template, next, true);
-      if (unavailableReason) {
-        status(unavailableReason, true);
-        return;
-      }
-    }
     setOutputDraft(next);
     status(modeValue === 'remove' ?
       'Removed subwoofer from the speaker layout draft.' :
@@ -3286,14 +3109,7 @@ import {
   function updateDriverResearchPromptPreview() {
     driverResearch.prompt = '';
     var prompt = el('driver-research-prompt');
-    if (prompt) prompt.value = driverResearchPrompt(currentOutputTopology());
-  }
-  function updateDriverResearchPromptButton() {
-    var button = document.querySelector('[data-act="copy-driver-research-prompt"]');
-    if (!button) return;
-    var ready = driverResearchPromptReady(currentOutputTopology());
-    button.disabled = !ready;
-    button.textContent = 'Copy prompt';
+    if (prompt) prompt.value = '';
   }
   function updateDriverResearchImportSummary() {
     var summary = el('driver-research-import-summary');
@@ -3427,10 +3243,6 @@ import {
   async function copyDriverResearchPrompt(button) {
     var prompt = el('driver-research-prompt');
     if (!prompt) return;
-    if (!driverResearchPromptReady(currentOutputTopology())) {
-      status('Add each model and choose its enclosure or tweeter type before copying the research prompt.', true);
-      return;
-    }
     try {
       var payload = await postJSON('./active-speaker/driver-research-request', {
         operator_inputs: driverResearch.inputs
@@ -3476,7 +3288,7 @@ import {
   function parseDriverResearchImport() {
     try {
       var payload = extractDriverResearchJson(driverResearch.importText);
-      driverResearch.parsed = summarizeDriverResearchPayload(payload);
+      if (!payload) throw new Error('Paste a driver research document.');
       driverResearch.importedPayload = payload;
       applyDriverResearchToManualSettings(payload);
       driverResearch.error = '';
@@ -3485,7 +3297,6 @@ import {
       driverResearch.editedDriverTargets = {};
       status('Imported driver research. Review the visible values before updating the working setup.');
     } catch (e) {
-      driverResearch.parsed = null;
       driverResearch.importedPayload = null;
       driverResearch.error = e.message;
       status('Imported JSON needs review: ' + e.message, true);
@@ -3500,33 +3311,27 @@ import {
       render();
       return true;
     }
-    if (outputTopology.dirty) {
-      status('Save the speaker layout before updating the working setup.', true);
-      return false;
-    }
-    if (!currentOutputTopology()) {
+    if (!outputTopology.payload) {
       status('Load output hardware before updating the working setup.', true);
       return false;
     }
-    var manualTopology = currentOutputTopology();
-    var manualError = manualCrossoverDelayValidationError(manualTopology) ||
-      manualCrossoverVocabularyValidationError(manualTopology);
+    var manualTopology = outputTopology.payload;
+    var manualError = manualCrossoverVocabularyValidationError(manualTopology);
     if (manualError) {
       driverResearch.error = manualError;
       status(manualError, true);
       render();
       return false;
     }
-    var manualPayload = manualSettingsPayload(currentOutputTopology());
+    var manualPayload = manualSettingsPayload(outputTopology.payload);
     var researchPayload = null;
     var importWarning = '';
     if ((driverResearch.importText || '').trim()) {
       try {
         researchPayload = extractDriverResearchJson(driverResearch.importText);
-        driverResearch.parsed = summarizeDriverResearchPayload(researchPayload);
+        if (!researchPayload) throw new Error('Paste a driver research document.');
         driverResearch.importedPayload = researchPayload;
       } catch (e) {
-        driverResearch.parsed = null;
         driverResearch.importedPayload = null;
         researchPayload = null;
         importWarning = e.message;
@@ -3541,10 +3346,6 @@ import {
       }
     }
     driverResearch.saving = true;
-    // An import rejection recorded just above is the operator's only account of
-    // why the pasted packet was dropped. Clearing it unconditionally erased
-    // that reason before the first render, which is what made the drop read as
-    // silent (#2186). Keep it whenever something actually was rejected.
     if (!importWarning) driverResearch.error = '';
     render();
     try {
@@ -3553,10 +3354,6 @@ import {
         manual_settings: manualPayload,
         driver_research: researchPayload
       });
-      // The saved draft carries no driver_research when this save dropped the
-      // packet, so ingestDesignDraft would blank both the paste box and the
-      // rejection reason -- leaving an explanation with nothing to act on.
-      // Hand the operator back what they pasted and why it was refused (#2186).
       var rejectedImport = importWarning
         ? {text: driverResearch.importText, error: driverResearch.error}
         : null;
@@ -3586,17 +3383,21 @@ import {
   async function saveOutputTopology(options) {
     options = options || {};
     if (!outputTopology.draft) return;
+    var pendingDraft = options.topology && outputTopology.dirty ? outputTopology.draft : null;
     outputTopology.saving = true;
     outputTopology.touched = true;
     outputTopology.error = '';
     render();
     try {
       var payload = await postJSON('./output-topology', {
-        output_topology: outputTopology.draft
+        output_topology: options.topology || outputTopology.draft
       });
       ingestOutputTopology(payload);
-      // The refusal card names the carrier this save just replaced, so a fixed
-      // layout drops it at the render below instead of outliving its cause.
+      if (pendingDraft) {
+        outputTopology.draft = pendingDraft;
+        outputTopology.dirty = true;
+      }
+      updateDriverResearchPromptPreview();
       outputPage.blocked = false;
       try {
         await fetchDesignDraft();
@@ -3712,30 +3513,6 @@ import {
   }
   async function saveAndApplyBaselineProfile() {
     var profile = activeSpeaker.baselineProfile || {};
-    var config = profile.config || {};
-    var readyToApply = (profile.permissions || {}).may_apply === true;
-    var mayCompile = ((activeSpeaker.commissioningView || {}).review || {}).may_apply === true;
-    var applyBlocked = baselineProfileApplyBlocked(profile);
-    var configName = config.basename || 'active speaker baseline';
-    if (applyBlocked) {
-      status('This active profile cannot be made active from here yet. Review the issue in this card.', true);
-      return;
-    }
-    if (!readyToApply && !mayCompile) {
-      status('Check the driver issues and run the speaker experiment before applying.', true);
-      return;
-    }
-    if (!await jtsConfirm(
-      'Save and apply the active speaker profile "' + configName + '"?' +
-        ' This makes it your normal speaker profile.',
-      {danger: true}
-    )) {
-      return;
-    }
-    if (!readyToApply && !mayCompile) {
-      status('Check the driver issues and run the speaker experiment before applying.', true);
-      return;
-    }
     patchActiveSpeaker({
       loading: false, action: 'Finishing active profile',
       error: ''

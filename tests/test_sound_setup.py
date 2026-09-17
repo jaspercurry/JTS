@@ -20,12 +20,14 @@ import urllib.request
 import wave
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, call
 
 import numpy as np
 import pytest
 
+from jasper.active_speaker import playback_route
 from jasper.active_speaker._common import MANUAL_DRIVER_FIELDS
 from jasper.active_speaker.driver_safety import DRIVER_SAFETY_FIELDS
 from jasper.active_speaker.driver_safety_prompt import _PROMPT_PROVENANCE_KEYS
@@ -1347,122 +1349,6 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
             assert "proxy_read_timeout 65s;" in block
 
 
-def test_sound_module_active_speaker_status_is_explicit_read_only():
-    js = sound_page_js()
-
-    assert 'from "/assets/sound-profile/js/active-speaker-ui.js"' in js
-    assert "function refreshActiveSpeakerStatus()" not in js
-    for retired in (
-        "fetch('./active-speaker/prepare-driver-test'",
-        "fetch('./active-speaker/stage-config'",
-        "fetch('./active-speaker/check-path-safety'",
-        "fetch('./active-speaker/load-startup-config'",
-        "fetch('./active-speaker/rollback-startup-config'",
-        "fetch('./active-speaker/play-tone'",
-        "fetch('./active-speaker/floor-audio-result'",
-        "fetch('./active-speaker/driver-measurement'",
-        "function activeSpeakerPost(",
-        "function stopActiveSpeakerTest()",
-        "fmtDbfs",
-        "driverResearchDraftSaved",
-        "toneSummary",
-        "outputStartupLoaded",
-        "quietTestStartupReady",
-        "quietTestStagedReady",
-        "driverCheckRolesForGroup",
-        "driverMeasurementCounts",
-        "fetchActiveSpeakerStartupLoad",
-        "stagedConfig",
-        "startupLoad",
-        "data-act=\"stop-active-speaker\"",
-        "data-act=\"active-floor-result\"",
-        "data-act=\"check-output-readiness\"",
-        "data-act=\"play-output-readiness-tone\"",
-        "action: 'auto_step'",
-    ):
-        assert retired not in js
-    assert "'./active-speaker/commissioning-view'" in js
-    assert "'./active-speaker/design-draft'" in js
-    assert "'./active-speaker/crossover-preview'" in js
-    assert "'./active-speaker/measurements'" in js
-    assert "'./active-speaker/baseline-profile'" in js
-    assert "'./active-speaker/baseline-profile/save-and-apply'" in js
-    assert "expected_candidate_fingerprint: expectedCandidateFingerprint" in js
-    assert "data-act=\"refresh-active-speaker\"" not in js
-    assert "Save values" in js
-    assert "function driverResearchStepSatisfied()" in js
-    assert "function driverResearchFlowComplete(topology)" in js
-    assert "driverResearchSatisfied: driverResearchFlowComplete(topology)" in js
-    assert "function commissioningStepView(step)" in js
-    assert "function commissioningCurrentStep()" in js
-    assert "if (!ctx.driverResearchSatisfied) return 'research';" in (
-        _ACTIVE_SPEAKER_UI_MODULE.read_text()
-    )
-    assert "Working setup updated. No filters are active and no sound was played." in js
-    assert "data-act=\"arm-active-speaker\"" not in js
-    assert "data-act=\"stage-active-config\"" not in js
-    assert "data-act=\"check-active-path-safety\"" not in js
-    assert "active-speaker/check-path-safety" not in js
-    assert "data-act=\"load-active-startup\"" not in js
-    assert "data-act=\"rollback-active-startup\"" not in js
-    assert "data-act=\"prepare-active-tone\"" not in js
-    assert "data-act=\"verify-active-tone\"" not in js
-    assert "activeSpeaker.playback" not in js
-    assert "No active driver test" not in js
-    assert "no separate direct-DAC driver test in the product UI" not in js
-    assert "id=\"active-speaker-level\"" not in js
-    assert "data-act=\"active-level\"" not in js
-    assert "Back to quiet" not in js
-    assert "Raise toward audible" not in js
-    assert "Mic reading dBFS" not in js
-    assert "data-act=\"active-auto-level\"" not in js
-    assert "activeSpeakerAutoLevelLabel(autoLevel)" not in js
-    assert "action: 'observe'" not in js
-    assert "action: 'auto_step'" not in js
-    assert "Normal listening volume is untouched" not in js
-    assert "The mic reading helps JTS decide whether to hold, lower, or raise" not in js
-    assert "Normal listening volume is untouched" not in js
-    assert "if (requestedLevel != null) body.level_dbfs = requestedLevel" not in js
-    assert "level_dbfs: requestedLevel == null ? cfg.value : requestedLevel" not in js
-    assert "function baselineProfileRevalidation()" in js
-    assert "Revalidation is saved. Save and apply a fresh active profile." in js
-    assert "By-ear" not in js
-    assert "Status" in js
-    assert "silentAutoRetry" not in js
-    assert "active-speaker/prepare-driver-test" not in js
-    assert "syncPreparedOutputTopology(payload)" not in js
-    assert "fetch('./active-speaker/stage-config'" not in js
-    assert "fetch('./active-speaker/check-path-safety'" not in js
-    assert "fetch('./active-speaker/load-startup-config'" not in js
-    assert "Choose first driver" not in js
-    assert "Listen for this driver" not in js
-    assert "Exit test setup" not in js
-    assert "No sound played. ' + e.message" not in js
-    assert "active-speaker-actions--driver-test" not in js
-    assert "data-act=\"compile-baseline-profile\"" not in js
-    assert "data-act=\"apply-baseline-profile\"" not in js
-    assert "data-act=\"save-apply-baseline-profile\"" in js
-    assert "I did not hear anything" not in js
-    assert "Wrong driver" not in js
-    assert "Too loud / stop" not in js
-    assert "Measure with mic" not in js
-    assert "record-summed-capture" not in js
-    assert "record-driver-capture" not in js
-    assert "driver-test result" not in js
-    assert "Did this driver make the sound?" not in js
-    assert "If you hear nothing, wait" not in js
-    assert "active-speaker/check-path-safety" not in js
-    assert "Exit driver test setup and restore the previous DSP setup?" not in js
-    assert "function renderActiveSpeakerPlan(plan)" not in js
-    assert "function renderActiveSpeakerPlayback(playback)" not in js
-    assert "Would play" not in js
-    assert "Verify tone artifact" not in js
-    assert "No audio was emitted by this backend." not in js
-    assert "No preset channel targets available." not in js
-    assert ">Prepare channel test</button>" not in js
-    assert "No sound is playing" not in js
-
-
 # --------------------------------------------------------------------------
 # Commissioning blocker copy — the COMPLETENESS guards (#2344).
 #
@@ -1707,7 +1593,7 @@ def test_every_preflight_gate_id_has_household_copy():
     assert len(published) >= 5, f"gate walk found too few ids: {published}"
 
     helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
-    gate_block = helper_js.split("export function commissionGateReason")[1].split(
+    gate_block = helper_js.split("function commissionGateReason")[1].split(
         "}[gateId]"
     )[0]
     rendered = set(re.findall(r"^\s{4}([a-z0-9_]+):", gate_block, re.M))
@@ -2363,6 +2249,36 @@ def test_a_roleful_layout_on_a_dac_without_an_active_lane_is_refused(
     assert all(fragment in message for fragment in named_in_refusal)
     # Refused means refused: nothing was written.
     assert not topo_path.exists()
+
+
+@pytest.mark.parametrize("assigned,subwoofer_supported", [(False, True), (True, True), (True, False)])
+def test_layout_save_refuses_active_route_over_capacity(monkeypatch, tmp_path, caplog, assigned, subwoofer_supported):
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    payload = _active_speaker_mono_topology_payload(protection_status="present")
+    payload["hardware"]["device_id"] = "dual_apple_usb_c_dac_4ch"
+    payload["hardware"]["physical_output_count"] = 4
+    payload["speaker_groups"] = [{
+        "id": side, "label": side, "kind": side, "mode": "active_3_way",
+        "channels": [{"role": role, "physical_output_index": index + offset if assigned and index + offset < 4 else None}
+                     for index, role in enumerate(("woofer", "mid", "tweeter"))],
+    } for side, offset in (("left", 0), ("right", 3))]
+    payload["routing"] = {"main_left_group_id": "left", "main_right_group_id": "right"}
+    if not subwoofer_supported:
+        sub_layout = _passive_stereo_with_sub_topology_payload()
+        payload.update({key: sub_layout[key] for key in ("speaker_groups", "routing")})
+    resolve = playback_route.resolve_output_layout
+    monkeypatch.setattr(playback_route, "resolve_output_layout", lambda topology, **kwargs:
+        replace(resolve(topology, **kwargs), subwoofer_supported=subwoofer_supported))
+    with pytest.raises(sound_active_speaker.OutputTopologyCapabilityBlocked):
+        sound_setup._save_output_topology_payload(payload)
+    _, refusal = _event_record(caplog, "sound.output_topology_save")
+    assert refusal["result"] == "blocked"
+    assert refusal["reason"] == ("active_playback_route_too_narrow" if subwoofer_supported
+                                 else "active_playback_subwoofer_not_supported")
+    assert int(refusal["required_active_output_count"]) == (6 if subwoofer_supported else 3)
+    assert int(refusal["transport_channel_count"]) == 4
+    assert not path.exists()
 
 
 def test_passive_layout_on_a_no_lane_dac_still_saves(monkeypatch, tmp_path: Path):

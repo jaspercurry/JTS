@@ -15,7 +15,7 @@ var ACTIVE_GAIN_EPSILON_DB = 0.05;
 var outputTopology = {
   loading: false, saving: false, resetting: false, repinning: false,
   payload: null, draft: null,
-  clockDomain: null, activeRoute: null,
+  clockDomain: null,
   observedHardware: null,
   hardwareAdoption: null,
   hardwareMismatch: null,
@@ -32,7 +32,6 @@ var driverResearch = {
   prompt: '',
   importText: '',
   importedPayload: null,
-  parsed: null,
   designDraft: null,
   error: '',
   dirty: false,

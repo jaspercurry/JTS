@@ -14,14 +14,6 @@ import {
   outputTopology
 } from "/assets/sound-profile/js/state.js";
 
-function activeCommissionRoles(group) {
-  var seen = {};
-  var order = ['woofer', 'mid', 'tweeter'];
-  (group && Array.isArray(group.channels) ? group.channels : []).forEach(function(ch) {
-    if (ch && ch.role) seen[ch.role] = true;
-  });
-  return order.filter(function(r) { return seen[r]; });
-}
 function currentOutputTopology() {
   return outputTopology.draft || outputTopology.payload || null;
 }
@@ -84,10 +76,6 @@ function outputEvaluation(topology) {
 function outputClockDomainReport() {
   return outputTopology.clockDomain || null;
 }
-function outputActiveRoute() {
-  return outputTopology.activeRoute || null;
-}
-
 function physicalTargetId(groupId, role, variant) {
   return groupId + ':' + role + (variant && variant !== 'primary' ? ':' + variant : '');
 }
@@ -216,20 +204,10 @@ function pairRoleKey(pair) {
   return (pair || []).map(String).sort().join(':');
 }
 
-function activeOutputGroups(topology) {
-  return outputGroups(topology).filter(function(group) {
-    return group && (group.mode === 'active_2_way' || group.mode === 'active_3_way');
-  });
-}
-
 function outputTemplateKindFromAxes(layout, speakerMode, cardioid) {
-  if (layout !== 'mono' && layout !== 'stereo') return '';
-  if (speakerMode !== 'passive' &&
-      speakerMode !== 'active_2way' &&
-      speakerMode !== 'active_3way') {
-    return '';
-  }
-  return layout + '_' + (speakerMode === 'active_3way' && cardioid ? 'active_cardioid' : speakerMode);
+  if (['mono', 'stereo'].indexOf(layout) < 0 ||
+      ['passive', 'active_2way', 'active_3way'].indexOf(speakerMode) < 0) return '';
+  return layout + '_' + (speakerMode === 'active_2way' && cardioid ? 'active_cardioid' : speakerMode);
 }
 function outputTemplateDefinition(kind) {
   var match = /^(mono|stereo)_(passive|active_2way|active_3way|active_cardioid)$/.exec(kind);
@@ -290,40 +268,6 @@ function outputTemplateGroups(template, topology) {
   });
   return groups;
 }
-function outputTemplateIsActive(template) {
-  return !!(template && template.id && template.id.indexOf('_active_') >= 0);
-}
-function outputTemplateActiveOutputNeed(template, hasSubwoofer) {
-  return outputTemplateIsActive(template)
-    ? Number(template.minOutputs || 0) + (hasSubwoofer ? 1 : 0)
-    : 0;
-}
-function outputTemplateUnavailableReason(template, topology, hasSubwoofer) {
-  if (!template) return 'Choose a supported speaker layout.';
-  var mismatch = outputHardwareMismatch(topology);
-  if (mismatch) {
-    return mismatch.message + ' Reconnect the saved hardware or refresh after the attached hardware is stable.';
-  }
-  var hardware = outputHardware(topology);
-  var physicalCount = Number(hardware && hardware.physical_output_count) || 0;
-  if (physicalCount < template.minOutputs) {
-    return template.label + ' needs at least ' + template.minOutputs +
-      ' physical output' + (template.minOutputs === 1 ? '.' : 's.');
-  }
-  if (!outputTemplateIsActive(template)) return '';
-  var route = outputActiveRoute() || {};
-  var routeCount = Number(route.transport_channel_count) || 0;
-  var needed = outputTemplateActiveOutputNeed(template, hasSubwoofer);
-  if (routeCount > 0 && needed > routeCount) {
-    return 'This install can test and apply up to ' + routeCount +
-      ' active outputs right now; ' + template.label + ' needs ' + needed + '.';
-  }
-  if (hasSubwoofer && route.subwoofer_supported !== true) {
-    return 'Subwoofer active profiles are not available on this install yet.';
-  }
-  return '';
-}
-
 // One speaker's drivers landing on two different child DACs of a composite
 // output device. The backend names it — output_topology.CROSS_CHILD_GROUP_CODE
 // / cross_child_group_verdicts — at WARNING severity, never as a blocker: the
@@ -359,9 +303,7 @@ function baseOutputDraft(source) {
 }
 
 export {
-  activeCommissionRoles,
   activeCrossoverPairs,
-  activeOutputGroups,
   baseOutputDraft,
   crossChildGroupVerdicts,
   crossoverSetting,
@@ -384,7 +326,6 @@ export {
   outputTemplateDefinition,
   outputTemplateGroups,
   outputTemplateKindFromAxes,
-  outputTemplateUnavailableReason,
   pairRoleKey,
   physicalTargetId,
   physicalOutputLabel,
