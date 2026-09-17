@@ -445,6 +445,7 @@ def test_declared_trial_uses_the_design_mark_speaker_experiment(isolated_candida
 @pytest.mark.parametrize("sections,program", [
     ((), "room/arm"), (("driver", "blend"), "room/arm"),
     (("driver", "room", "bass"), "bass/axis"),
+    (("rear_calibration", "bass", "room"), "rear/express"),
 ])
 def test_trial_selects_program_by_section_precedence(bank_trial, monkeypatch, capsys, sections, program):
     fingerprint = bank_trial(dict.fromkeys(sections, "document"))
@@ -734,6 +735,11 @@ def test_spl_excludes_fader_flags(flag, value):
     with pytest.raises(SystemExit) as exc:
         cli.build_parser().parse_args(["run", "--spl", "75", flag, value])
     assert exc.value.code == 2
+
+
+def test_program_choices_include_rear():
+    args = cli.build_parser().parse_args(["run", "--program", "rear"])
+    assert args.program == "rear"
 
 
 @pytest.mark.parametrize("state", ["awaiting_join", "starting", "awaiting_capture", "stopping"])

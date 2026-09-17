@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from jasper.net.http_security import _is_loopback_name
 from jasper.json_fields import age_seconds, parse_utc_iso
 
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines, packet_lines
 from jasper.active_speaker.wizard_client import (
@@ -287,7 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
     levels.add_argument("--spl", help="dB SPL at the mark, mapped through the banked anchor, e.g. --spl 65,75,82")
     levels.add_argument("--level-db", type=float, help="one absolute run fader level in dB; overrides the program's level default")
     run = sub.add_parser("run", parents=[run_args], help="run a plan, with auto or explicit levels; optionally wait and bank its packet")
-    run.add_argument("--program", choices=("speaker", "room", "bass"))
+    run.add_argument("--program", choices=RUNNABLE_PROGRAMS)
     poses = run.add_mutually_exclusive_group()
     poses.add_argument("--poses", help="named pose set or comma-separated bearings in degrees")
     poses.add_argument("--layout", dest="poses", help="named layout from the program registry")

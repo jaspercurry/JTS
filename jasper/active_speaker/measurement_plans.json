@@ -66,6 +66,18 @@
       {"azimuth_deg": -20, "elevation_deg": 0},
       {"azimuth_deg": 20, "elevation_deg": 0}
     ]},
+    "rear_express": [
+      {"azimuth_deg": 0, "elevation_deg": 0, "repeats": 2},
+      {"azimuth_deg": -20, "elevation_deg": 0},
+      {"azimuth_deg": 20, "elevation_deg": 0}
+    ],
+    "rear_wide": [
+      {"azimuth_deg": 0, "elevation_deg": 0, "repeats": 2},
+      {"azimuth_deg": -20, "elevation_deg": 0},
+      {"azimuth_deg": 20, "elevation_deg": 0},
+      {"azimuth_deg": -45, "elevation_deg": 0},
+      {"azimuth_deg": 45, "elevation_deg": 0}
+    ],
     "close_spot": [{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3}]
   },
   "programs": [
@@ -76,6 +88,8 @@
     {"id": "tournament", "size": "express", "layout": "tournament_express", "purpose": "speaker", "regime": "per_driver"},
     {"id": "branches", "size": "express", "layout": "tournament_express", "purpose": "speaker", "regime": "branches"},
     {"id": "front_rear", "size": "express", "layout": "tournament_express", "purpose": "speaker", "regime": "branches"},
+    {"id": "rear", "size": "express", "layout": "rear_express", "purpose": "rear", "regime": "summed"},
+    {"id": "rear", "size": "wide", "layout": "rear_wide", "purpose": "rear", "regime": "summed"},
     {"id": "seat", "size": "cloud", "layout": "seat_cloud", "purpose": "room", "regime": "summed"},
     {"id": "seat", "size": "cube", "layout": "seat_cube", "purpose": "room", "regime": "summed"},
     {"id": "seat", "size": "express", "layout": "seat_express", "purpose": "room", "regime": "summed"},
@@ -94,6 +108,7 @@
     "tournament": "express",
     "branches": "express",
     "front_rear": "express",
+    "rear": "express",
     "seat": "cloud",
     "room": "seat",
     "bass": "axis",
