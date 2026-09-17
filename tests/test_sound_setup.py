@@ -2909,6 +2909,7 @@ def test_sound_output_topology_save_accepts_a_cross_child_speaker_group(
 
     # Accepted, not refused: it persisted and it is not blocked.
     assert path.exists()
+    assert topology["status"] == "valid"
     assert topology["safety"]["blockers"] == []
 
 

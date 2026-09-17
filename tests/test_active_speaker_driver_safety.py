@@ -1806,6 +1806,16 @@ def test_provenance_source_is_additive_and_old_entries_are_byte_identical() -> N
     assert entry["source"] == "Dayton CX120-8 datasheet, p.2"
 
     # Length-capped, and the cap names the field so an operator can find it.
+    at_max = {
+        "level_duration_limits": {
+            "confidence": "low",
+            "basis": "estimated",
+            "source": "x" * MAX_PROVENANCE_SOURCE_CHARS,
+        }
+    }
+    accepted = _normalise_field_provenance(at_max, "driver.field_provenance")
+    assert len(accepted["level_duration_limits"]["source"]) == MAX_PROVENANCE_SOURCE_CHARS
+
     too_long = {
         "level_duration_limits": {
             "confidence": "low",

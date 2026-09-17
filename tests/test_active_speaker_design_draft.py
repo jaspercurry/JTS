@@ -234,8 +234,11 @@ def test_driver_research_notes_allow_detailed_safety_summary():
 
 def test_driver_research_notes_remain_bounded():
     raw = _research()
-    raw["drivers"][1]["notes"] = "x" * 2049
+    raw["drivers"][1]["notes"] = "x" * 2048
+    payload = build_design_draft(_topology(), driver_research=raw)
+    assert len(payload["driver_research"]["drivers"][1]["notes"]) == 2048
 
+    raw["drivers"][1]["notes"] = "x" * 2049
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(_topology(), driver_research=raw)
     assert caught.value.code == "invalid_design_draft"
@@ -523,19 +526,23 @@ def test_two_manual_rows_for_one_target_are_rejected() -> None:
 
 
 def test_boolean_in_a_numeric_driver_field_is_rejected() -> None:
-    boolean_numeric = {
+    manual_settings = {
         "drivers": [
             {
                 "target_id": "mono:woofer",
                 "role": "woofer",
                 "model": "A",
-                "nominal_impedance_ohm": True,
+                "nominal_impedance_ohm": 8,
             }
         ],
         "crossover_candidates": [],
     }
+    payload = build_design_draft(_topology(), manual_settings=manual_settings)
+    assert payload["manual_settings"]["drivers"][0]["nominal_impedance_ohm"] == 8
+
+    manual_settings["drivers"][0]["nominal_impedance_ohm"] = True
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
-        build_design_draft(_topology(), manual_settings=boolean_numeric)
+        build_design_draft(_topology(), manual_settings=manual_settings)
     assert caught.value.code == "invalid_design_draft"
 
 
@@ -805,6 +812,11 @@ def test_declared_driver_spacing_m_fails_soft_on_absent_or_malformed():
 
 
 def test_declared_driver_spacing_mm_must_be_positive():
+    payload = build_design_draft(
+        _topology(), manual_settings={"driver_spacing_mm": 150},
+    )
+    assert declared_driver_spacing_m(payload) == pytest.approx(0.15)
+
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(_topology(), manual_settings={"driver_spacing_mm": 0})
     assert caught.value.code == "invalid_design_draft"
@@ -988,6 +1000,17 @@ def test_extra_manual_keys_are_ignored(tmp_path):
 
 
 def test_radiating_diameter_mm_must_be_positive():
+    payload = build_design_draft(
+        _topology(),
+        manual_settings={
+            "drivers": [
+                {"role": "woofer", "model": "A", "radiating_diameter_mm": 114}
+            ],
+            "crossover_candidates": [],
+        },
+    )
+    assert payload["manual_settings"]["drivers"][0]["radiating_diameter_mm"] == 114
+
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(
             _topology(),
@@ -1002,19 +1025,21 @@ def test_radiating_diameter_mm_must_be_positive():
 
 
 def test_pad_error_surfaces_as_design_draft_error():
+    driver = {
+        "role": "tweeter",
+        "model": "B",
+        "nominal_impedance_ohm": 8,
+        "pad": {"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2.0},
+    }
+    payload = build_design_draft(
+        _topology(), manual_settings={"drivers": [driver], "crossover_candidates": []},
+    )
+    assert payload["manual_settings"]["drivers"][0]["pad"]["attenuation_db"] == -14.4
+
+    del driver["nominal_impedance_ohm"]
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(
-            _topology(),
-            manual_settings={
-                "drivers": [
-                    {
-                        "role": "tweeter",
-                        "model": "B",
-                        "pad": {"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2.0},
-                    }
-                ],
-                "crossover_candidates": [],
-            },
+            _topology(), manual_settings={"drivers": [driver], "crossover_candidates": []},
         )
     assert caught.value.code == "invalid_design_draft"
 
