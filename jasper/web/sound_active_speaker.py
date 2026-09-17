@@ -736,7 +736,6 @@ def _active_speaker_driver_research_request_payload(
         operator_inputs,
     )
     payload = {
-        "targets": request["targets"],
         "prompt": build_driver_research_prompt(request),
     }
     log_event(

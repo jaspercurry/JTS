@@ -889,7 +889,7 @@ def build_driver_research_context(
             "role": role,
             "driver_style": channel.driver_style or "unspecified",
             "manufacturer_and_model": _text(
-                model, f"operator_inputs.target_models.{target_id}", max_chars=160,
+                model, f"operator_inputs.target_models.{target_id}", required=True, max_chars=160,
             ),
         })
     return {
@@ -904,18 +904,34 @@ def validate_research_result_binding(
     result: Mapping[str, Any],
     context: Mapping[str, Any],
 ) -> None:
-    """Refuse a reply naming an unknown target or a different model."""
+    """Require every current target with its model, ignoring case and spacing."""
 
     expected = {
         target["target_id"]: target["manufacturer_and_model"]
         for target in context["targets"]
     }
+    seen = set()
     for driver in result.get("drivers", []):
         target_id = driver.get("target_id")
-        if target_id not in expected or driver.get("model") != expected[target_id]:
+        if target_id not in expected:
             raise DriverSafetyProfileError(
-                "driver_research targets or models do not match the current speaker"
+                f"driver_research names unknown target_id {target_id!r}"
             )
+        models = [
+            " ".join(model.split()).casefold()
+            for model in (driver["model"], expected[target_id])
+        ]
+        if models[0] != models[1]:
+            raise DriverSafetyProfileError(
+                f"driver_research target {target_id!r} has model {driver['model']!r}; "
+                f"the current model is {expected[target_id]!r}"
+            )
+        seen.add(target_id)
+    missing = expected.keys() - seen
+    if missing:
+        raise DriverSafetyProfileError(
+            "driver_research is missing target_ids: " + ", ".join(sorted(missing))
+        )
 
 
 # --- One implausible low limit, two authors, two answers ---------------------
@@ -1756,6 +1772,7 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
     _reject_unknown_keys(
         research,
         "driver_safety_profile.research",
+        # Legacy digest tolerance only; delete when #5277 computes the profile on read.
         {"request_fingerprint", "result_fingerprint", "advisory_only"},
     )
     if research.get("advisory_only") is not True:

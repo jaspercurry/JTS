@@ -2840,12 +2840,23 @@ def test_driver_research_prompt_payload_uses_unsaved_models_and_notes(monkeypatc
     payload = sound_setup._active_speaker_driver_research_request_payload({
         "operator_inputs": {"woofer": "Example W6", "tweeter": "Example T1", "notes": "sealed cabinet"},
     })
-    assert set(payload) == {"prompt", "targets"}
-    assert [target["target_id"] for target in payload["targets"]] == ["mono:woofer", "mono:tweeter"]
-    assert all(target["manufacturer_and_model"] in payload["prompt"] for target in payload["targets"])
+    assert set(payload) == {"prompt"}
+    assert all(model in payload["prompt"] for model in ("Example W6", "Example T1"))
     assert "sealed cabinet" in payload["prompt"]
     with pytest.raises(ValueError):
         sound_setup._active_speaker_driver_research_request_payload({"typo": "unknown"})
+
+
+@pytest.mark.parametrize("model", [None, "", " \t "])
+def test_driver_research_prompt_refuses_a_target_without_a_model(monkeypatch, model) -> None:
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    topology = mono_output_topology(card_id=None)
+    monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
+    with pytest.raises(ValueError):
+        sound_setup._active_speaker_driver_research_request_payload({
+            "operator_inputs": {"woofer": "Example W6", "tweeter": model},
+        })
 
 
 def test_active_speaker_crossover_preview_refreshes_current_output_topology(

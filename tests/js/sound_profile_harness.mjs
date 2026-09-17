@@ -3847,6 +3847,19 @@ async function testResearchEchoBackNamesEveryValueWithBadgeAndSource() {
   return { researchEchoBackNamesEveryValueWithBadgeAndSource: true };
 }
 
+async function testDeclaredEnclosureKeepsResearchCitations() {
+  const draft = echoDraft();
+  draft.driver_research.drivers[0].cabinet.enclosure_kind = 'unknown';
+  draft.manual_settings.drivers[0].cabinet = {
+    ...draft.driver_research.drivers[0].cabinet,
+    enclosure_kind: 'sealed',
+    lf_reconstruction_capability: 'sealed_single_radiator_supported',
+  };
+  const panel = echoPanel(await echoHarness(draft));
+  assert.ok(panel.includes('href="https://example.test/w6-datasheet.pdf"'));
+  return { declaredEnclosureKeepsResearchCitations: true };
+}
+
 async function testResearchEchoBackDisclosesTheDelegation() {
   // A tweeter that declares NO level limit has DELEGATED the level, and
   // protection derives it. Saying nothing would leave the household with a
@@ -4263,6 +4276,11 @@ async function testDriverResearchPromptCopyBlockedSelectsPrompt() {
       prompt.selectionStart !== 0 || prompt.selectionEnd !== prompt.value.length) {
     fail("blocked copy should show and select the returned prompt", { prompt });
   }
+  harness.dispatchClick({ "data-act": "open-output-layout" });
+  const rendered = harness.elements.get('view-body').innerHTML.match(
+    /<textarea id="driver-research-prompt"[^>]*>([^<]*)<\/textarea>/,
+  );
+  assert.equal(rendered?.[1], "Target-bound prompt for Manual Woofer and Manual Tweeter");
   return { driverResearchPromptCopyBlockedSelectsPrompt: true };
 }
 
@@ -6421,6 +6439,7 @@ results.push(await testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy());
 results.push(await testStereoDriverValuesStayTargetSpecific());
 results.push(await testResearchReloadAndBooleanNumbersDrop());
 results.push(await testPasteEditSaveKeepsReplyAndVisibleValues());
+results.push(await testDeclaredEnclosureKeepsResearchCitations());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
 results.push(await testManualCrossoverPayloadOmitsPolarityAndDelayWhenDefault());
 results.push(await testManualCrossoverPayloadEmitsPolarityAndZeroDelay());

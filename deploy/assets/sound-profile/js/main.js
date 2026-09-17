@@ -68,7 +68,6 @@ import {
   driverResearchFlowComplete,
   driverResearchHasPreviewInputs,
   driverResearchMissingPreviewMessage,
-  driverEchoBackFields,
   driverResearchPrompt,
   driverResearchPromptReady,
   driverResearchStepSatisfied,
@@ -990,6 +989,41 @@ import {
       }
     }
   }
+  function applyDriverResearchToSetting(driver, targetSetting) {
+    [
+      'sensitivity_db_2v83_1m',
+      'nominal_impedance_ohm',
+      'recommended_highpass_hz',
+      // #2603: the low limit's slope condition travels with the frequency it
+      // conditions. Dropping it here would leave the owner half-declared.
+      'recommended_highpass_slope_db_per_octave',
+      'recommended_lowpass_hz',
+      'do_not_test_below_hz',
+      'gain_offset_db'
+    ].forEach(function(field) {
+      if (driver[field] != null) targetSetting[field] = driver[field];
+    });
+    if (driver.gain_offset_db != null) {
+      targetSetting.gain_offset_db_provenance =
+        driver.gain_offset_db_provenance || 'research_estimate';
+    }
+    // Physical installation choices belong to the operator. Research can
+    // fill product geometry, but it cannot change the declared enclosure,
+    // an explicitly chosen driver/loading class, or a resistor pad. Strip
+    // those fields at this untrusted-import boundary; the shared apply
+    // helper also handles trusted persisted records during reload.
+    var researchDriver = Object.assign({}, driver);
+    if (researchDriver.cabinet && typeof researchDriver.cabinet === 'object') {
+      researchDriver.cabinet = Object.assign({}, researchDriver.cabinet);
+      delete researchDriver.cabinet.enclosure_kind;
+    }
+    if (targetSetting.driver_class &&
+        targetSetting.driver_class !== 'unknown') {
+      delete researchDriver.driver_class;
+    }
+    delete researchDriver.pad;
+    applyDriverSafetyToSetting(researchDriver, targetSetting);
+  }
   function applyDriverResearchToManualSettings(payload) {
     if (!payload || typeof payload !== 'object') return;
     var topology = currentOutputTopology();
@@ -1013,41 +1047,9 @@ import {
       }
       if (driver.model && !(driverResearch.inputs.target_models || {})[target.target_id]) {
         driverResearch.inputs.target_models[target.target_id] = String(driver.model);
+        driverResearch.prompt = '';
       }
-      var targetSetting = driverSetting(target.target_id);
-      [
-        'sensitivity_db_2v83_1m',
-        'nominal_impedance_ohm',
-        'recommended_highpass_hz',
-        // #2603: the low limit's slope condition travels with the frequency it
-        // conditions. Dropping it here would leave the owner half-declared.
-        'recommended_highpass_slope_db_per_octave',
-        'recommended_lowpass_hz',
-        'do_not_test_below_hz',
-        'gain_offset_db'
-      ].forEach(function(field) {
-        if (driver[field] != null) targetSetting[field] = driver[field];
-      });
-      if (driver.gain_offset_db != null) {
-        targetSetting.gain_offset_db_provenance =
-          driver.gain_offset_db_provenance || 'research_estimate';
-      }
-      // Physical installation choices belong to the operator. Research can
-      // fill product geometry, but it cannot change the declared enclosure,
-      // an explicitly chosen driver/loading class, or a resistor pad. Strip
-      // those fields at this untrusted-import boundary; the shared apply
-      // helper also handles trusted persisted records during reload.
-      var researchDriver = Object.assign({}, driver);
-      if (researchDriver.cabinet && typeof researchDriver.cabinet === 'object') {
-        researchDriver.cabinet = Object.assign({}, researchDriver.cabinet);
-        delete researchDriver.cabinet.enclosure_kind;
-      }
-      if (targetSetting.driver_class &&
-          targetSetting.driver_class !== 'unknown') {
-        delete researchDriver.driver_class;
-      }
-      delete researchDriver.pad;
-      applyDriverSafetyToSetting(researchDriver, targetSetting);
+      applyDriverResearchToSetting(driver, driverSetting(target.target_id));
     });
     // Pick ONE crossover per role-pair: the highest-confidence candidate with a
     // usable frequency (ties keep the first listed). The old code applied every
@@ -1119,6 +1121,7 @@ import {
     driverResearch.designDraft = payload;
     driverResearch.saving = false;
     if (!options.force && driverResearch.dirty) return;
+    driverResearch.prompt = '';
     var inputs = payload.operator_inputs || {};
     ['full_range', 'woofer', 'mid', 'tweeter', 'subwoofer', 'notes'].forEach(function(key) {
       driverResearch.inputs[key] = inputs[key] || '';
@@ -1187,12 +1190,12 @@ import {
       var visible = (manual.drivers || []).find(function(row) {
         return row.target_id === driver.target_id;
       });
-      if (visible && driverEchoBackFields().some(function(field) {
-        return driver[field.key] != null &&
-          (JSON.stringify(visible[field.key]) !== JSON.stringify(driver[field.key]) ||
-            (field.key === 'recommended_highpass_hz' &&
-              visible.recommended_highpass_slope_db_per_octave !==
-                driver.recommended_highpass_slope_db_per_octave));
+      if (!visible) return;
+      var setting = driverSetting(driver.target_id);
+      var projected = Object.assign({}, setting);
+      applyDriverResearchToSetting(driver, projected);
+      if (Object.keys(projected).some(function(field) {
+        return projected[field] !== setting[field];
       })) driverResearch.editedDriverTargets[driver.target_id] = true;
     });
   }
@@ -1595,9 +1598,10 @@ import {
               (promptReady ? '' : ' disabled') + '>' +
               'Copy prompt</button>' +
           '</div>' +
-          '<textarea id="driver-research-prompt" class="driver-research__textarea driver-research__textarea--hidden" readonly ' +
+          '<textarea id="driver-research-prompt" class="driver-research__textarea driver-research__textarea--' +
+            (driverResearch.prompt ? 'compact' : 'hidden') + '" readonly ' +
             'aria-label="Driver research prompt">' +
-            escapeHtml(driverResearchPrompt(topology)) + '</textarea>' +
+            escapeHtml(driverResearch.prompt || driverResearchPrompt(topology)) + '</textarea>' +
         '</div>' +
         '<div class="driver-research__panel">' +
           '<div class="row-between active-speaker-level__head">' +
@@ -3235,6 +3239,7 @@ import {
     }
   }
   function setOutputDraft(next) {
+    driverResearch.prompt = '';
     outputTopology.draft = next;
     if (outputGroups(next).length) resetOutputTemplateDraft();
     outputTopology.dirty = true;
@@ -3462,6 +3467,7 @@ import {
       'Added subwoofer to the speaker layout draft. Save before verification.');
   }
   function updateDriverResearchPromptPreview() {
+    driverResearch.prompt = '';
     var prompt = el('driver-research-prompt');
     if (prompt) prompt.value = driverResearchPrompt(currentOutputTopology());
   }
@@ -3612,7 +3618,8 @@ import {
       var payload = await postJSON('./active-speaker/driver-research-request', {
         operator_inputs: driverResearch.inputs
       });
-      prompt.value = String(payload.prompt || '');
+      driverResearch.prompt = String(payload.prompt || '');
+      prompt.value = driverResearch.prompt;
     } catch (e) {
       status('Could not prepare the target-bound research prompt: ' + e.message, true);
       return;
@@ -3703,7 +3710,6 @@ import {
         researchPayload = extractDriverResearchJson(driverResearch.importText);
         driverResearch.parsed = summarizeDriverResearchPayload(researchPayload);
         driverResearch.importedPayload = researchPayload;
-        driverResearch.error = importWarning;
       } catch (e) {
         driverResearch.parsed = null;
         driverResearch.importedPayload = null;

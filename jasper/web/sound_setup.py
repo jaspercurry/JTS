@@ -79,7 +79,6 @@ from .sound_active_speaker import (
     _active_speaker_commission_state_payload,
     _active_speaker_commissioning_view_payload,
     _active_speaker_crossover_preview_save_payload,
-    _active_speaker_design_draft_payload as _active_speaker_design_draft_payload,
     _active_speaker_design_draft_save_payload,
     _active_speaker_driver_research_request_payload,
     _active_speaker_finish_commissioning_payload,
@@ -96,6 +95,7 @@ from .sound_active_speaker import (
 from .sound_active_speaker import (  # noqa: F401 - resolved by name
     _active_speaker_baseline_profile_payload,
     _active_speaker_crossover_preview_payload,
+    _active_speaker_design_draft_payload,
     _active_speaker_measurements_payload,
     _active_speaker_rear_calibration_seed_payload,
     _active_speaker_tuning_handoff_payload,

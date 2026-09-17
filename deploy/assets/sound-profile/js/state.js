@@ -31,6 +31,7 @@ var driverResearch = {
     target_models: {}
   },
   settings: {drivers: {}, crossovers: {}},
+  prompt: '',
   importText: '',
   importedPayload: null,
   parsed: null,

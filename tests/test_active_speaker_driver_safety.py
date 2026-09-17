@@ -1711,13 +1711,35 @@ def test_stereo_research_request_uses_exact_target_models() -> None:
 )
 def test_v2_research_refuses_unknown_target_or_model_mismatch(field: str, value: str) -> None:
     topology = mono_output_topology(card_id=None)
-    research = _research_result(build_driver_research_context(topology, _operator_inputs()))
+    inputs = {**_operator_inputs(), "tweeter": "  EXAMPLE   T1  "}
+    research = _research_result(build_driver_research_context(topology, inputs))
     research["drivers"][1][field] = value
     with pytest.raises(ActiveSpeakerDesignDraftError):
         build_design_draft(
             topology, driver_research=research, manual_settings=_manual_settings(),
-            operator_inputs=_operator_inputs(),
+            operator_inputs=inputs,
         )
+
+
+def test_v2_research_accepts_model_case_and_spacing() -> None:
+    topology = mono_output_topology(card_id=None)
+    inputs = {**_operator_inputs(), "tweeter": "  EXAMPLE   T1  "}
+    research = _research_result(build_driver_research_context(topology, inputs))
+    research["drivers"][1]["model"] = "example\t t1"
+    draft = build_design_draft(
+        topology, driver_research=research, manual_settings=_manual_settings(),
+        operator_inputs=inputs,
+    )
+    assert draft["driver_research"]["drivers"][1]["model"] == "example t1"
+
+
+def test_v2_research_refuses_a_missing_target() -> None:
+    topology = mono_output_topology(mode="active_3_way", card_id=None)
+    inputs = {**_operator_inputs(), "mid": "Example M3"}
+    research = _research_result(build_driver_research_context(topology, inputs))
+    research["drivers"] = [driver for driver in research["drivers"] if driver["role"] != "mid"]
+    with pytest.raises(ActiveSpeakerDesignDraftError):
+        build_design_draft(topology, driver_research=research, operator_inputs=inputs)
 
 
 def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:

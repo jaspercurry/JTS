@@ -298,9 +298,10 @@ def test_each_carrier_reports_the_cap_its_source_actually_applies():
     assert CARRIERS["drivers[].notes"]["max_chars"] == design_draft_module.MAX_DRIVER_NOTE_CHARS
     topology = mono_output_topology(card_id=None)
     notes = "x" * CARRIERS["build_notes"]["max_chars"]
-    assert build_driver_research_context(topology, {"notes": notes})["build_notes"] == notes
+    inputs = {"woofer": "Example W6", "tweeter": "Example T1", "notes": notes}
+    assert build_driver_research_context(topology, inputs)["build_notes"] == notes
     with pytest.raises(DriverSafetyProfileError):
-        build_driver_research_context(topology, {"notes": notes + "x"})
+        build_driver_research_context(topology, {**inputs, "notes": notes + "x"})
     assert CARRIERS["declared_context[].operator_notes"]["max_chars"] == 2048
 
 
