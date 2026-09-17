@@ -1266,7 +1266,8 @@ def _cloud_entry_screen(
 
 
 def summed_sweep_band_hz(roles: Sequence[RoleBand]) -> tuple[float, float]:
-    return SUMMED_SWEEP_BAND_HZ[0], min(SUMMED_SWEEP_BAND_HZ[1], measurement_band_hz(roles)[1])
+    low, high = measurement_band_hz(roles)
+    return max(SUMMED_SWEEP_BAND_HZ[0], low), min(SUMMED_SWEEP_BAND_HZ[1], high)
 
 
 def room_sweep_band_hz(

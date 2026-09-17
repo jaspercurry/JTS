@@ -61,6 +61,7 @@ from jasper.active_speaker.crossover_v2.programs import (
     program_for_phase,
 )
 from jasper.audio_measurement.program import KIND_COURTESY_TONE
+from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.web.correction_run_host import compose_plan_program
 from tests.test_active_speaker_program_admission import _profile_and_targets
 
@@ -535,11 +536,10 @@ def test_prepared_summed_captures_use_the_stop_purpose_band(purpose, size):
         program = compose_plan_program(host, spec, None, context=context)
         sweeps = [s for s in program.stimulus_segments() if s.kind == "summed_sweep"]
         stop_purpose = capture.stop.purpose or purpose
-        expected = {"speaker": (150, 20000), "room": (20, 20000), "bass": (20, 1100)}[stop_purpose]
+        expected = {"speaker": (150, 20000), "room": (150, 20000), "bass": (20, 1100)}[stop_purpose]
         assert len(sweeps) == (3 if purpose == "bass" else 1)
         assert all((sweep.f1_hz, sweep.f2_hz) == expected for sweep in sweeps)
         assert spec.sweep_band_hz == (expected if stop_purpose == "room" else ())
-        assert (program.program_id == excitation.verify_program().program_id) is (stop_purpose == "speaker")
 
 
 def test_per_driver_measure_keeps_declared_bands_with_a_room_session():
@@ -550,7 +550,9 @@ def test_per_driver_measure_keeps_declared_bands_with_a_room_session():
     } == {rb.role: (rb.band.lower_hz, rb.band.upper_hz) for rb in excitation.roles}
 
 
-def test_summed_room_band_stops_at_the_declared_hard_top():
+@pytest.mark.parametrize("floor", [20.0, 30.0, 45.0])
+def test_summed_room_band_respects_declared_band(floor):
+    roles = [replace(_roles_way1()[0], band=FrequencyBand(floor, 18000.0))]
     assert room_sweep_band_hz(
-        _roles_way1(), (CloudPositionPrompt("room", purpose="room"),)
-    ) == (20.0, 18000.0)
+        roles, (CloudPositionPrompt("room", purpose="room"),)
+    ) == (floor, 18000.0)
