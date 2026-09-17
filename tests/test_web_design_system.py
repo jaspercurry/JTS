@@ -395,7 +395,6 @@ def test_pages_do_not_invent_their_own_text_tiers():
 # table and any new stray fails.
 OFF_LADDER_HELD: dict[str, set[str]] = {
     "deploy/index.html": {"0.86rem", "0.88rem", "0.92rem"},
-    "deploy/assets/airplay/airplay.css": {"10px"},
     "deploy/assets/bluetooth/bluetooth.css": {"0.7rem", "0.85rem", "0.95rem"},
     "deploy/assets/correction/crossover.css": {
         "0.8125rem", "0.82rem", "0.95rem", "0.9rem", "1.05rem",

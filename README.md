@@ -153,7 +153,7 @@ is the authoritative route list; it covers the assistant
 `/assistant/google/`, `/assistant/ha/`), sound (`/sound/eq/`,
 `/sound/speaker/`, `/sound/output/`, `/sound/pair/`,
 `/sound/speaker/crossover/`, `/sound/bass/`), sources (`/sources/`,
-`/spotify/`, `/bluetooth/`, `/airplay/`) and the system pages
+`/spotify/`, `/bluetooth/`) and the system pages
 (`/system/`, `/wifi/`, `/speaker/`).
 
 ---

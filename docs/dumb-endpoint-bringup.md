@@ -549,7 +549,7 @@ a place the work will otherwise drift or wedge:
   its renderer units are intentionally absent. Streambox exposes the same
   shared landing page and the combined `jasper-web` bundle filtered by
   install role:
-  `/spotify/`, `/airplay/`, `/sources/`, `/sound/`, `/speaker/`, `/wifi/`,
+  `/spotify/`, `/sources/`, `/sound/`, `/speaker/`, `/wifi/`,
   and `/sound/pair/` are live; voice/wake/assistant-only cards are
   hidden by the shared `system_capabilities` payload and their nginx
   routes are absent. Pair-management is also capability-gated: streambox

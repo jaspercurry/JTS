@@ -150,7 +150,6 @@ def _run_install_helper(
     ("reconcile_aec_state", "usb_mic.env", {
         "JASPER_USB_MIC": "disabled", "JASPER_USB_MIC_LEG": "primary",
     }),
-    ("install_renderers", "airplay_mode.env", {"JASPER_AIRPLAY_FREE_RUNNING": "no"}),
 ])
 @pytest.mark.parametrize("existing", [False, True])
 def test_install_env_seeds_preserve_saved_values(tmp_path, helper, filename, defaults, existing):

@@ -112,7 +112,7 @@ _ASSISTANT_PATHS = frozenset({
 })
 _WAKE_PATHS = frozenset({"/wake", "/wake-corpus"})
 _EVERY_TIER_PATHS = frozenset({
-    "/spotify", "/airplay", "/sources", "/wifi", "/speaker", "/sound", "/rooms",
+    "/spotify", "/sources", "/wifi", "/speaker", "/sound", "/rooms",
 })
 
 
