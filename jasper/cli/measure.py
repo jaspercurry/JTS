@@ -199,8 +199,7 @@ def read_box_declaration() -> BoxDeclaration:
 
     """
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
-    from jasper.active_speaker.crossover_preview import build_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.crossover_preview import current_crossover_preview
     from jasper.active_speaker.crossover_v2.conductor_context import (
         conductor_status,
         resolve_conductor_context,
@@ -216,7 +215,7 @@ def read_box_declaration() -> BoxDeclaration:
             REFUSE_BOX_NOT_READY,
             "this box has no active crossover to measure",
         )
-    preview = build_crossover_preview(load_design_draft())
+    preview = current_crossover_preview()
     if preview.get("status") != "ready_for_protected_staging":
         raise BoxNotMeasurable(
             REFUSE_BOX_NOT_READY,
@@ -469,10 +468,12 @@ def _level_match_trims(box: BoxDeclaration) -> dict[str, float]:
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
 
+    draft = load_design_draft()
     trims, _meta = measured_level_trims(
         box.preset,
         load_measurement_state(box.topology) or {},
-        build_crossover_preview(load_design_draft()),
+        build_crossover_preview(draft),
+        design_draft=draft,
     )
     return {str(role): float(db) for role, db in trims.items()}
 

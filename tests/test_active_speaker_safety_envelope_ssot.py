@@ -151,7 +151,7 @@ def test_preview_compiled_preset_rides_the_ruled_stop() -> None:
     """Arm 2 of the resolve chain: a compiled crossover preview."""
     topology = mono_output_topology()
     preview = build_crossover_preview(
-        standard_design_draft(topology), created_at="2026-08-23T12:00:00Z"
+        standard_design_draft(topology)
     )
 
     preset, issues, _gates = staging.compile_preset_from_crossover_preview(

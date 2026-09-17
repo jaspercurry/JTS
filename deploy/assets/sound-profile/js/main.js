@@ -66,7 +66,6 @@ import {
   crossoverPreviewReviewIssues,
   driverResearchFlowComplete,
   driverResearchHasPreviewInputs,
-  driverResearchMissingPreviewMessage,
   driverResearchPrompt,
   driverResearchPromptReady,
   driverResearchStepSatisfied,
@@ -1637,7 +1636,7 @@ import {
   }
   function renderCrossoverPreviewCardBody(topology) {
     var payload = crossoverPreview.payload || {};
-    var hasPreviewGroups = Array.isArray(payload.groups) && payload.groups.length;
+    var hasPreviewGroups = !driverResearch.dirty && Array.isArray(payload.groups) && payload.groups.length;
     var displayPayload = hasPreviewGroups ? payload : {};
     var summary = displayPayload.summary || {};
     var readyCount = crossoverPreviewReadyCount(displayPayload);

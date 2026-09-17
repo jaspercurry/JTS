@@ -16,7 +16,6 @@ import json
 import math
 from typing import Any, Mapping
 
-from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.output_topology import OutputTopology, OutputTopologyError
 from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, issue as _issue
 from .driver_protection import (
@@ -87,6 +86,7 @@ def crossover_preview_fingerprint(
         },
         "drivers": preview.get("drivers"),
         "groups": preview.get("groups"),
+        # This constant projection keeps existing banked driver-trim identities stable.
         "permissions": {
             "may_explain": True,
             "may_prepare_protected_startup_config": preview.get("status") == "ready_for_protected_staging",
@@ -481,12 +481,9 @@ def _build_crossover(
 
 def build_crossover_preview(
     design_draft: Mapping[str, Any],
-    *,
-    created_at: str | None = None,
 ) -> dict[str, Any]:
     """Return a versioned crossover preview without hardware side effects."""
 
-    now = created_at or _utc_now()
     issues: list[dict[str, str]] = []
     topology: OutputTopology | None = None
     topology_raw = _as_mapping(design_draft.get("topology"))
@@ -619,8 +616,6 @@ def build_crossover_preview(
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": CROSSOVER_PREVIEW_KIND,
         "status": status,
-        "created_at": now,
-        "updated_at": now,
         "source": {
             "design_draft_status": draft_status,
             "topology_id": topology.topology_id if topology else None,
@@ -661,3 +656,9 @@ def build_crossover_preview(
         ),
     }
     return preview
+
+
+def current_crossover_preview() -> dict[str, Any]:
+    from .design_draft import load_design_draft  # lazy: design draft imports baseline readers
+
+    return build_crossover_preview(load_design_draft())

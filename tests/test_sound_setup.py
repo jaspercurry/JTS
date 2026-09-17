@@ -4537,15 +4537,10 @@ async def test_active_speaker_finish_commissioning_clears_pending_ramp(
     assert load_ramp_state()["pending"] is None
 
 
-@pytest.mark.parametrize("old_preview", [None, "{"])
 def test_active_speaker_crossover_preview_get_tracks_draft_without_preview_file(
-    monkeypatch, tmp_path: Path, old_preview,
+    monkeypatch, tmp_path: Path,
 ):
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    preview_path = tmp_path / "active_speaker_crossover_preview.json"
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE", str(preview_path))
-    if old_preview is not None:
-        preview_path.write_text(old_preview)
     sound_setup._save_output_topology_payload(_active_speaker_mono_topology_payload(
         protection_status="software_guard_requested", card_id=None, identity_verified=True,
     ))
@@ -4576,7 +4571,6 @@ def test_active_speaker_crossover_preview_get_tracks_draft_without_preview_file(
         assert payload["safety"]["emits_camilla_yaml"] is False
         assert "design_draft_fingerprint" not in payload["source"]
         assert "preview_fingerprint" not in payload["source"]
-    assert (preview_path.read_text() if preview_path.exists() else None) == old_preview
 
 
 def test_sound_module_treats_saved_tab_as_live_lane_with_flat_fallback():

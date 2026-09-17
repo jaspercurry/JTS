@@ -176,7 +176,7 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
 
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
 
@@ -231,7 +231,7 @@ def test_leader_bake_captures_ring_a_and_keeps_the_snapfifo_sink(
 
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
 
@@ -257,7 +257,7 @@ def test_precheck_fails_closed_on_a_corrupt_topology(monkeypatch, tmp_path) -> N
 
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
 
@@ -282,7 +282,7 @@ def test_precheck_threads_pair_trim_into_leader_crossover(
     """The leader plays through camilla#2, so pair trim belongs in that graph."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(tmp_path / "baseline.json"))
@@ -398,7 +398,7 @@ def test_precheck_refuses_unprovable_crossover_graph(monkeypatch, tmp_path) -> N
     bond (no full-range emit) — the bake re-prove is never reached."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
     import jasper.active_speaker.camilla_yaml as camilla_yaml
@@ -432,7 +432,7 @@ def test_precheck_emit_gate_refusal_surfaces_as_leader_error(
 
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
     # Provoke the L0 gate: strip the tweeter high-pass from the baseline chain the
@@ -456,7 +456,7 @@ def test_precheck_refuses_unprovable_bake_graph(monkeypatch, tmp_path) -> None:
     """A refused program bake prevents the leader from bonding."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
 
@@ -485,7 +485,7 @@ def test_precheck_fails_closed_on_unreadable_topology(monkeypatch, tmp_path) -> 
     graph would re-prove allowed and reach the tweeter."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
 
@@ -505,7 +505,7 @@ def test_precheck_bad_channel_fails_closed_as_leader_error(monkeypatch, tmp_path
     that the leader arm re-raises as ActiveLeaderError (reason preserved)."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
 
@@ -523,7 +523,7 @@ def test_precheck_fails_closed_when_snapcast_missing(monkeypatch, tmp_path) -> N
     budget. Refuse the bond UP FRONT (stay solo-active)."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
     # snapserver absent (snapclient present) — either-absent must fail closed.

@@ -341,24 +341,6 @@ function driverResearchHasPreviewInputs(topology) {
   return rolesReady && crossoversReady;
 }
 
-function driverResearchMissingPreviewMessage(topology) {
-  if (!topology || !outputGroups(topology).length) {
-    return 'Choose and save a speaker layout before previewing the active crossover.';
-  }
-  if (!activeCrossoverPairs(topology).length) {
-    return 'This one-driver layout does not need an active crossover.';
-  }
-  var missingDrivers = driverResearchTargets(topology).filter(function(target) {
-    return !driverForTarget(target, topology).model;
-  });
-  if (missingDrivers.length) {
-    return 'Add driver info for ' + missingDrivers.map(function(target) {
-      return target.group_label + ' ' + activeRoleLabel(target.role);
-    }).join(', ') +
-      ' before previewing the active crossover.';
-  }
-  return 'Add crossover points before previewing the active crossover.';
-}
 function driverResearchPromptReady(topology) {
   if (!topology || !outputGroups(topology).length ||
       outputTopology.dirty || outputTopology.saving) return false;
@@ -956,7 +938,6 @@ export {
   driverProvenanceState,
   driverResearchFlowComplete,
   driverResearchHasPreviewInputs,
-  driverResearchMissingPreviewMessage,
   driverResearchPrompt,
   driverResearchPromptReady,
   driverResearchRoleLabel,

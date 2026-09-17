@@ -36,7 +36,8 @@ from jasper.active_speaker.baseline_profile import (
 from jasper.active_speaker.crossover_preview import (
     build_crossover_preview,
 )
-from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
+from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft, save_design_draft
+from jasper.active_speaker.crossover_contract import legacy_manual_preservation_state
 from jasper.active_speaker.measurement import (
     record_driver_measurement,
     record_summed_validation,
@@ -267,8 +268,32 @@ def test_baseline_source_binds_exact_normalized_preview_candidate(
     assert first["fingerprint"] != changed["fingerprint"]
 
 
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_noop_draft_save_preserves_manual_profile_identity(tmp_path, changed):
+    topology = _dual_apple_topology()
+    path = tmp_path / "draft.json"
+    sources = []
+    for index in range(2):
+        draft = save_design_draft(
+            topology, path=path, driver_research=_research(),
+            operator_inputs={"notes": "edited" if changed and index else "same"},
+            created_at=f"2026-06-14T12:0{index}:00Z",
+        )
+        sources.append(baseline_profile_mod._source_payload(
+            topology, draft, build_crossover_preview(draft), {},
+        ))
+    first, second = sources
+    assert first["design_draft_updated_at"] != second["design_draft_updated_at"]
+    state = legacy_manual_preservation_state(
+        {"status": "applied", "source": first},
+        current_source_fingerprint=second["fingerprint"],
+    )
+    assert state["ready"] is not changed
+    assert state["reason"] == ("manual_crossover_source_changed" if changed else None)
+
+
 def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):
-    from jasper.active_speaker import design_draft as draft_module
     from jasper.active_speaker import driver_base_trim
     from jasper.active_speaker.commission_wiring import resolve_commission_preset
     from tests.test_active_speaker_crossover_preview import _draft as preview_draft
@@ -279,14 +304,13 @@ def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):
     source = baseline_profile_mod._source_payload(topology, draft, preview, {})
     old_fingerprint = "5faa7123f06913da9dc9f497bfa595b8659b8d050a34dc3e80a3a2a7abed15e9"
     assert source["crossover_preview_fingerprint"] == old_fingerprint
-    monkeypatch.setattr(draft_module, "load_design_draft", lambda: draft)
     monkeypatch.setattr(driver_base_trim, "load_base_trim", lambda **kw: {
         "declaration_fingerprint": old_fingerprint,
         "trims_db": {"woofer": 0.0, "tweeter": -6.0},
         "speaker_group_ids": ["main"], "trim_source": "strict_measured_candidate",
     })
     preset = resolve_commission_preset(topology, crossover_preview=preview)
-    trims, meta = baseline_profile_mod.measured_level_trims(preset, {}, preview)
+    trims, meta = baseline_profile_mod.measured_level_trims(preset, {}, preview, design_draft=draft)
     assert trims == {"woofer": 0.0, "tweeter": -6.0}
     assert meta["base_trim"]["status"] == driver_base_trim.STATUS_APPLIED
 

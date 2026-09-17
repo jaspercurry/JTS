@@ -6,12 +6,16 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 
 from jasper.active_speaker import (
     CROSSOVER_PREVIEW_KIND,
     build_crossover_preview,
 )
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
+from jasper.active_speaker.crossover_v2.conductor_context import ensure_crossover_preview_ready
+from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
 
@@ -74,7 +78,6 @@ def _draft(
 def test_crossover_preview_builds_no_audio_filter_intent() -> None:
     payload = build_crossover_preview(
         _draft(),
-        created_at="2026-06-10T12:30:00Z",
     )
     crossover = payload["groups"][0]["crossovers"][0]
 
@@ -98,7 +101,6 @@ def test_crossover_preview_does_not_require_optional_subwoofer_research() -> Non
 
     payload = build_crossover_preview(
         draft,
-        created_at="2026-06-10T12:30:00Z",
     )
 
     assert draft["status"] == "ready_for_review"
@@ -111,7 +113,6 @@ def test_crossover_preview_does_not_require_optional_subwoofer_research() -> Non
 def test_crossover_preview_blocks_missing_research() -> None:
     payload = build_crossover_preview(
         _draft(research=None),
-        created_at="2026-06-10T12:30:00Z",
     )
 
     assert payload["status"] == "blocked"
@@ -139,7 +140,6 @@ def test_crossover_preview_carries_polarity_and_delay_from_candidate() -> None:
             },
             created_at="2026-06-10T12:00:00Z",
         ),
-        created_at="2026-06-10T12:30:00Z",
     )
     crossover = payload["groups"][0]["crossovers"][0]
 
@@ -173,7 +173,6 @@ def test_crossover_preview_reversed_candidate_between_roles_realigns_polarity() 
             },
             created_at="2026-06-10T12:00:00Z",
         ),
-        created_at="2026-06-10T12:30:00Z",
     )
     crossover = payload["groups"][0]["crossovers"][0]
 
@@ -185,7 +184,7 @@ def test_crossover_preview_reversed_candidate_between_roles_realigns_polarity() 
 
 
 def test_crossover_preview_omits_polarity_and_delay_when_candidate_lacks_them() -> None:
-    payload = build_crossover_preview(_draft(), created_at="2026-06-10T12:30:00Z")
+    payload = build_crossover_preview(_draft())
     crossover = payload["groups"][0]["crossovers"][0]
 
     assert "lower_polarity" not in crossover
@@ -214,7 +213,6 @@ def test_crossover_preview_no_audio_invariant_holds_with_polarity_and_delay() ->
             },
             created_at="2026-06-10T12:00:00Z",
         ),
-        created_at="2026-06-10T12:30:00Z",
     )
 
     assert payload["safety"]["no_audio"] is True
@@ -250,7 +248,6 @@ def test_crossover_preview_prefers_manual_settings_over_imported_research() -> N
             },
             created_at="2026-06-10T12:00:00Z",
         ),
-        created_at="2026-06-10T12:30:00Z",
     )
     crossover = payload["groups"][0]["crossovers"][0]
 
@@ -277,7 +274,6 @@ def test_crossover_preview_warns_below_the_declared_driver_floor() -> None:
 
     payload = build_crossover_preview(
         _draft(research=research),
-        created_at="2026-06-10T12:30:00Z",
     )
     crossover = payload["groups"][0]["crossovers"][0]
 
@@ -299,7 +295,6 @@ def test_crossover_preview_prefers_usable_candidate_over_missing_frequency() -> 
 
     payload = build_crossover_preview(
         _draft(research=research),
-        created_at="2026-06-10T12:30:00Z",
     )
     crossover = payload["groups"][0]["crossovers"][0]
 
@@ -320,7 +315,6 @@ def test_crossover_preview_blocks_incomplete_active_three_way() -> None:
 
     payload = build_crossover_preview(
         _draft(topology=_topology(mode="active_3_way"), research=research),
-        created_at="2026-06-10T12:30:00Z",
     )
 
     assert payload["status"] == "blocked"
@@ -338,7 +332,6 @@ def test_crossover_preview_is_not_applicable_to_passive_full_range() -> None:
 
     payload = build_crossover_preview(
         _draft(topology=_topology(mode="full_range_passive"), research=research),
-        created_at="2026-06-10T12:30:00Z",
     )
 
     assert payload["status"] == "not_applicable"
@@ -428,7 +421,6 @@ def test_crossover_above_the_declared_low_limit_is_kept_and_emits_filters() -> N
             driver_research=_de250_research(candidate_hz=1800),
             created_at="2026-06-19T12:00:00Z",
         ),
-        created_at="2026-06-19T12:30:00Z",
     )
     crossover = _crossover(payload)
 
@@ -456,7 +448,6 @@ def test_a_corner_exactly_at_the_declared_low_limit_is_legal() -> None:
             driver_research=_de250_research(candidate_hz=1600),
             created_at="2026-06-19T12:00:00Z",
         ),
-        created_at="2026-06-19T12:30:00Z",
     )
     crossover = _crossover(payload)
 
@@ -488,7 +479,7 @@ def test_a_stored_do_not_test_below_hz_changes_nothing() -> None:
         )
 
     def preview(source: dict) -> dict:
-        return build_crossover_preview(source, created_at="2026-06-19T12:30:00Z")
+        return build_crossover_preview(source)
 
     legacy_draft = draft(do_not_test_below_hz=1800)
     # Positive control. Without this the test passes just as happily if the key
@@ -525,7 +516,6 @@ def test_a_corner_below_the_declared_low_limit_is_disclosed_here_and_refused_at_
             driver_research=_de250_research(candidate_hz=1400),
             created_at="2026-06-19T12:00:00Z",
         ),
-        created_at="2026-06-19T12:30:00Z",
     )
     crossover = _crossover(payload)
 
@@ -547,7 +537,6 @@ def test_an_undeclared_low_limit_neither_blocks_nor_invents_a_floor() -> None:
             ),
             created_at="2026-06-19T12:00:00Z",
         ),
-        created_at="2026-06-19T12:30:00Z",
     )
     crossover = _crossover(payload)
 
@@ -599,7 +588,6 @@ def test_crossover_persisted_low_value_blocks_instead_of_overriding() -> None:
             },
             created_at="2026-06-19T12:00:00Z",
         ),
-        created_at="2026-06-19T12:30:00Z",
     )
     crossover = _crossover(payload)
 
@@ -625,3 +613,27 @@ def test_crossover_above_lower_driver_range_is_a_warning() -> None:
     assert preview["summary"]["blocker_count"] == 0
     assert next(issue["severity"] for issue in preview["issues"]
                 if issue["code"] == "crossover_frequency_above_lower_driver_range") == "warning"
+
+
+@pytest.mark.parametrize("has_research", [True, False])
+def test_session_preview_repairs_against_live_topology_without_writes(tmp_path, monkeypatch, has_research):
+    draft_path = tmp_path / "draft.json"
+    topology_path = tmp_path / "topology.json"
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(draft_path))
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    draft = _draft(
+        topology=mono_output_topology(identity_verified=False, protection_status="unknown"),
+        research=_research() if has_research else None,
+    )
+    draft_path.write_text(json.dumps(draft))
+    topology_path.write_text(json.dumps(mono_output_topology(protection_status="unknown").to_dict()))
+    before = {path: path.read_bytes() for path in tmp_path.iterdir()}
+    assert build_crossover_preview(draft)["status"] == "blocked"
+    if has_research:
+        preview = ensure_crossover_preview_ready()
+        assert preview["status"] == "ready_for_protected_staging"
+        assert preview["summary"]["blocker_count"] == 0
+    else:
+        with pytest.raises(CrossoverV2Refused):
+            ensure_crossover_preview_ready()
+    assert {path: path.read_bytes() for path in tmp_path.iterdir()} == before

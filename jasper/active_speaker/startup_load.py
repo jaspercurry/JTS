@@ -1076,8 +1076,7 @@ def reemit_staged_startup_anchor(
 
     # Deferred: commission_load imports this module at module scope.
     from jasper.active_speaker.commission_load import load_commission_load_state
-    from jasper.active_speaker.crossover_preview import build_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.crossover_preview import current_crossover_preview
     from jasper.active_speaker.runtime_contract import write_camilla_statefile
     from jasper.active_speaker.staging import (
         StagedAnchorLockContended,
@@ -1098,8 +1097,7 @@ def reemit_staged_startup_anchor(
             candidate_config_path=existing.get("candidate_config_path"),
         )
 
-    design_draft = load_design_draft()
-    crossover_preview = build_crossover_preview(design_draft)
+    crossover_preview = current_crossover_preview()
 
     with tempfile.TemporaryDirectory(prefix="jts-reemit-anchor-") as tmp:
         proof_dir = Path(tmp)

@@ -144,7 +144,7 @@ def build_commissioning_view(
             disclosures = [{**refusal["issues"][-1], "severity": "warning", "status": "disclosed_stale"}]
     messages = {
         "layout": "Declare the speaker layout and assign each driver to its output.",
-        "research": "Save the driver values and preview the crossover.",
+        "research": "Save the driver values and crossover settings.",
         "experiment": "Place the microphone at the design mark and run the speaker program.",
         "profile": "Apply the candidate named in the experiment packet to finish commissioning.",
     }

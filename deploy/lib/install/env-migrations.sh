@@ -60,6 +60,8 @@ ensure_state_dir() {
 # known group-shared, multi-writer state is touched. Fresh installs no-op (the
 # files don't exist until a daemon first creates them).
 heal_shared_state_modes() {
+    # An old build could revive this stale preview after a rollback.
+    rm -f "${STATE_DIR}/active_speaker_crossover_preview.json"
     local group_line jasper_gid base sidecar web_uid
     group_line="$(getent group jasper 2>/dev/null || true)"
     [[ -n "${group_line}" ]] || return 0

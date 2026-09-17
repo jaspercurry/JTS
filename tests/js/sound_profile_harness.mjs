@@ -1916,10 +1916,13 @@ async function testDirectCrossoverEditRefreshesProposalAndFooter() {
 
   const proposal = harness.elements.get("driver-proposal-control").innerHTML;
   const footer = harness.elements.get("driver-research-footer-control").innerHTML;
-  if (!proposal.includes("1.8 kHz") ||
-      !proposal.includes("preview ready") ||
+  if (!proposal.includes("2.4 kHz") ||
+      !proposal.includes("working proposal") ||
+      proposal.includes("1.8 kHz") ||
+      proposal.includes("preview ready") ||
+      !proposal.includes("Save changes to update it.") ||
       !footer.includes("Save values")) {
-    fail("unsaved edits must keep the server preview visible", {
+    fail("direct edits must immediately replace the saved proposal", {
       proposal,
       footer,
     });
@@ -3190,6 +3193,99 @@ async function testDriverResearchImportPreservesOperatorInstalledConfiguration()
 // The crossover-preview candidate echo (renderCrossoverPreviewRows) must show
 // an inverted/delayed region as a read-only annotation once a preview exists
 // -- kept distinct from the applied-profile corrections card (never merged).
+async function testLoadedResearchReplacesSavedPreview() {
+  const topology = activeTwoWayTopologyPayload();
+  topology.speaker_groups[0].channels[1].driver_style = "compression_driver";
+  const draft = {
+    status: "ready_for_review",
+    summary: {},
+    operator_inputs: {
+      target_models: {
+        "main:woofer": "Manual Woofer",
+        "main:tweeter": "Manual Tweeter",
+      },
+    },
+    manual_settings: {
+      drivers: [
+        {
+          target_id: "main:woofer",
+          role: "woofer",
+          model: "Manual Woofer",
+          cabinet: { enclosure_kind: "sealed" },
+        },
+        {
+          target_id: "main:tweeter",
+          role: "tweeter",
+          model: "Manual Tweeter",
+        },
+      ],
+      crossover_candidates: [{
+        between_roles: ["woofer", "tweeter"],
+        frequency_hz: 1800,
+        filter_type: "Linkwitz-Riley",
+        slope_db_per_octave: 24,
+      }],
+    },
+  };
+  const oldPreview = {
+    kind: "jts_active_speaker_crossover_preview",
+    status: "ready_for_protected_staging",
+    summary: { ready_crossover_count: 1, blocker_count: 0 },
+    groups: [{
+      group_id: "main",
+      label: "Main speaker",
+      crossovers: [{
+        status: "ready_for_review",
+        between_roles: ["woofer", "tweeter"],
+        proposed_frequency_hz: 1800,
+        filters: [{ filter_type: "Linkwitz-Riley", slope_db_per_octave: 24 }],
+      }],
+    }],
+    issues: [],
+  };
+  const importedResearch = {
+    artifact_schema_version: 1,
+    kind: "jts_active_crossover_driver_research",
+    drivers: [
+      { target_id: "main:woofer", role: "woofer", model: "Manual Woofer" },
+      { target_id: "main:tweeter", role: "tweeter", model: "Manual Tweeter" },
+    ],
+    crossover_candidates: [{
+      between_roles: ["woofer", "tweeter"],
+      frequency_hz: 2400,
+      filter_type: "Linkwitz-Riley",
+      slope_db_per_octave: 24,
+      confidence: "high",
+    }],
+  };
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response(topology)),
+    "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
+    "./active-speaker/crossover-preview": () => Promise.resolve(response(oldPreview)),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+
+  harness.dispatchInput({ "data-driver-import": "" }, JSON.stringify(importedResearch));
+  harness.dispatchClick({ "data-act": "parse-driver-research" });
+  await harness.flush();
+
+  const html = harness.elements.get("view-body").innerHTML;
+  const proposal = html.slice(
+    html.indexOf("Proposed starting crossover"),
+    html.indexOf("data-driver-advanced")
+  );
+  if (!proposal.includes("2.4 kHz") ||
+      !proposal.includes("working proposal") ||
+      proposal.includes("1.8 kHz") ||
+      proposal.includes("preview ready")) {
+    fail("loaded working values should replace the saved preview immediately", {
+      proposal,
+    });
+  }
+  return { loadedResearchReplacesSavedPreview: true };
+}
+
 async function testCrossoverPreviewRowsShowInversionAndDelay() {
   const fetchHandler = baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
@@ -5687,6 +5783,7 @@ results.push(await testDriverResearchImportCopiesPolarityAndDelayIntoManualSetti
 results.push(await testDriverResearchImportToleratesFencesAndProse());
 results.push(await testDriverResearchImportPreservesOperatorInstalledConfiguration());
 results.push(await testCrossoverPreviewRowsShowInversionAndDelay());
+results.push(await testLoadedResearchReplacesSavedPreview());
 results.push(await testDriverResearchNullProtectionNumbersAreRefusedNotDropped());
 results.push(await testRejectedImportReasonSurvivesTheSaveInThePanel());
 results.push(await testRejectedPasteAndReasonSurviveDraftIngest());

@@ -121,8 +121,11 @@ def request_missing_software_guards(
     return updated, changed
 
 
-def ensure_missing_software_guards() -> tuple[OutputTopology, bool]:
-    """Fresh-read and persist missing protection requests transactionally."""
+def ensure_missing_software_guards(*, persist: bool = True) -> tuple[OutputTopology, bool]:
+    """Fresh-read missing protection requests; persist them transactionally if requested."""
+
+    if not persist:
+        return request_missing_software_guards(load_output_topology())
 
     with output_topology_mutation() as mutation:
         topology = mutation.snapshot().topology
@@ -139,11 +142,9 @@ def _stage_startup_config(
     crossover_preview: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if preset is None and crossover_preview is None:
-        from jasper.active_speaker.crossover_preview import build_crossover_preview
-        from jasper.active_speaker.design_draft import load_design_draft
+        from jasper.active_speaker.crossover_preview import current_crossover_preview
 
-        design_draft = load_design_draft()
-        crossover_preview = build_crossover_preview(design_draft)
+        crossover_preview = current_crossover_preview()
     return stage_protected_startup_config(
         topology,
         preset=preset,

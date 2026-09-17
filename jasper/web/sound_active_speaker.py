@@ -838,10 +838,9 @@ def apply_measured_crossover_geometry(
 def _active_speaker_crossover_preview_payload() -> dict[str, Any]:
     """Compute the no-audio crossover preview from the current design draft."""
 
-    from jasper.active_speaker.crossover_preview import build_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.crossover_preview import current_crossover_preview
 
-    payload = build_crossover_preview(load_design_draft())
+    payload = current_crossover_preview()
     log_event(
         logger,
         "sound.active_speaker_crossover_preview",

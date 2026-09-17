@@ -521,7 +521,10 @@ def _source_payload(
     source = {
         "topology_id": topology.topology_id,
         "topology_fingerprint": topology_config_fingerprint(topology),
-        "design_draft_updated_at": design_draft.get("updated_at"),
+        "design_draft_content_fingerprint": _fingerprint({
+            key: design_draft.get(key)
+            for key in ("manual_settings", "operator_inputs", "driver_research")
+        }),
         # Banked driver trims must match the declaration they measured.
         "crossover_preview_fingerprint": crossover_preview_fingerprint(
             crossover_preview, design_draft
@@ -539,7 +542,8 @@ def _source_payload(
             if key != "measured_candidate_fingerprint"
         }
         source["candidate_graph_context_fingerprint"] = _fingerprint(device_context)
-    return {**source, "fingerprint": _fingerprint(source)}
+    return {**source, "fingerprint": _fingerprint(source),
+            "design_draft_updated_at": design_draft.get("updated_at")}
 
 
 def _overlap_level_at(
@@ -592,6 +596,8 @@ def measured_level_trims(
     preset: ActiveSpeakerPreset,
     measurements: Mapping[str, Any],
     crossover_preview: Mapping[str, Any] | None = None,
+    *,
+    design_draft: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, float], dict[str, Any]]:
     """The public door onto :func:`_measured_level_trims`, for callers outside
     the profile build.
@@ -608,24 +614,24 @@ def measured_level_trims(
     an empty mapping means neither did, and no caller may substitute an
     estimate for it.
     """
-    return _measured_level_trims(preset, measurements, crossover_preview)
+    return _measured_level_trims(preset, measurements, crossover_preview, design_draft=design_draft)
 
 
 def _measured_level_trims(
     preset: ActiveSpeakerPreset,
     measurements: Mapping[str, Any],
     crossover_preview: Mapping[str, Any] | None = None,
+    *,
+    design_draft: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, float], dict[str, Any]]:
     from .capture_geometry import (
         DRIVER_PLACEMENT_POLICY_ID,
         capture_proof_valid,
     )
 
-    from .design_draft import load_design_draft  # lazy: design draft imports baseline readers
-
     roles = required_driver_roles(preset.way_count)
     declaration_fingerprint = (
-        crossover_preview_fingerprint(crossover_preview, load_design_draft())
+        crossover_preview_fingerprint(crossover_preview, design_draft)
         if isinstance(crossover_preview, Mapping) and crossover_preview
         else None
     )

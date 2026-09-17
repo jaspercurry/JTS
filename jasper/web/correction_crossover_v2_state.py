@@ -396,10 +396,12 @@ def _resolve_measurement_level_trims(
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
 
+    draft = load_design_draft()
     trims, meta = measured_level_trims(
         preset,
         load_measurement_state(topology) or {},
-        build_crossover_preview(load_design_draft()),
+        build_crossover_preview(draft),
+        design_draft=draft,
     )
     return (
         {str(role): float(db) for role, db in trims.items()},

@@ -83,10 +83,9 @@ def resolve_commission_inputs(preset: Any = None) -> tuple[Any, dict[str, Any] |
     """
     if preset is not None:
         return preset, None
-    from jasper.active_speaker.crossover_preview import build_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.crossover_preview import current_crossover_preview
 
-    preview = build_crossover_preview(load_design_draft())
+    preview = current_crossover_preview()
     if preview.get("status") == "ready_for_protected_staging":
         return None, preview
     return None, None

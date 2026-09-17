@@ -1309,8 +1309,6 @@ def _build_active_commissioning_context(
         source = {
             "mode": "crossover_preview",
             "preview_status": crossover_preview.get("status"),
-            "preview_created_at": crossover_preview.get("created_at"),
-            "preview_updated_at": crossover_preview.get("updated_at"),
             "design_draft_updated_at": source_preview.get("design_draft_updated_at"),
         }
     else:
