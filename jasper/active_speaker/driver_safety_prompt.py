@@ -9,10 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
-# The crossover vocabulary the KEY GUIDE states is READ from the compiler,
-# never spelled here: the reply is refused against exactly these sets when
-# it is saved, so asking for a vocabulary the saver rejects is an invisible
-# deadlock.
+from ._common import MANUAL_DRIVER_FIELDS
 from .declaration_vocabulary import (
     supported_declaration_filter_types,
     supported_declaration_slopes_db_per_octave,
@@ -35,13 +32,13 @@ _PROMPT_TARGET_KEYS = (
 # Keys whose value directly bounds what the speaker is allowed to excite. Only
 # these carry per-field provenance in the ask; the rest are advisory prefill an
 # operator reviews anyway.
-_PROMPT_PROVENANCE_KEYS = (
+_PROMPT_PROVENANCE_KEYS = tuple(key for key in (
     "hard_excitation_band_hz",
     "recommended_highpass_hz",
     "required_protection_filters",
     "level_duration_limits",
     "sensitivity_db_2v83_1m",
-)
+) if key in MANUAL_DRIVER_FIELDS)
 
 
 def _driver_research_prompt_targets(request: Mapping[str, Any]) -> str:
@@ -131,31 +128,7 @@ def _driver_research_prompt_limits(request: Mapping[str, Any]) -> list[str]:
 
 
 def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
-    """Return the copyable v2 research prompt for the current drivers.
-
-    The contract with the assistant is exactly one fenced ``json`` block back,
-    so the browser's paste box can recover the object from an ordinary chat reply.
-
-    **The estimate contract.** The ask orders the answer: published value first,
-    then the researcher's best reality-grounded engineering estimate tagged
-    ``confidence: "low"`` with its derivation in ``basis``, and null only for
-    the genuinely unknowable. Fields like ``hard_excitation_band_hz`` appear in
-    essentially no consumer datasheet while ``_target_issues`` requires them, so
-    forbidding estimates deadlocked most real drivers. Safety never lived in a
-    number's timidity: it lives in ``_target_issues``, the per-style
-    plausibility screen on the reply, and the quiet-start ramp, and /sound/
-    echoes every consumed value back with its badge and source before a save.
-
-    ``max_effective_peak_dbfs`` is asked for as a published fact or not at all:
-    naming a class-default ceiling and reading the echo back as a declaration
-    pinned a 75 dB SPL seat target at 68.3 dB with ~30 dB of headroom unused.
-    The level a measurement runs at comes from the sensitivity derivation
-    (:func:`jasper.active_speaker.driver_protection.derive_hf_measurement_ceiling_dbfs`).
-
-    Protection itself is unmoved: a reply outside code policy is refused by name
-    rather than silently clamped, by ``_target_issues`` and by
-    :func:`validate_research_low_limit_plausibility`.
-    """
+    """Build the research request. See ADR-0227 for declared limits."""
 
     # The result shape is fenced because a chat UI's copy button copies the
     # code block's contents, not the prose around it.

@@ -18,7 +18,9 @@ from jasper.active_speaker import (
     load_design_draft,
     save_design_draft,
 )
+from jasper.active_speaker._common import MANUAL_DRIVER_FIELDS
 from jasper.active_speaker.design_draft import (
+    normalise_driver_research,
     _normalise_candidate,
     design_draft_view,
     declared_driver_sensitivities,
@@ -543,56 +545,13 @@ def test_duplicate_manual_target_and_boolean_numeric_value_are_rejected() -> Non
         build_design_draft(_topology(), manual_settings=boolean_numeric)
 
 
-@pytest.mark.parametrize(
-    "kwargs,match",
-    [
-        (
-            {"manual_settings": {"drivers": [], "crossover_candidates": [], "typo": 1}},
-            "manual_settings has unknown fields: typo",
-        ),
-        (
-            {
-                "manual_settings": {
-                    "drivers": [{"role": "woofer", "model": "A", "typo": 1}],
-                    "crossover_candidates": [],
-                }
-            },
-            "manual_settings.driver has unknown fields: typo",
-        ),
-        (
-            {
-                "manual_settings": {
-                    "drivers": [],
-                    "crossover_candidates": [{
-                        "between_roles": ["woofer", "tweeter"],
-                        "frequency_hz": 2500,
-                        "typo": 1,
-                    }],
-                }
-            },
-            "crossover_candidate has unknown fields: typo",
-        ),
-        (
-            {"operator_inputs": {"woofer": "A", "typo": "ignored before"}},
-            "operator_inputs has unknown fields: typo",
-        ),
-        (
-            {"operator_inputs": {"target_models": {"missing:woofer": "A"}}},
-            "unknown physical targets: missing:woofer",
-        ),
-        (
-            {
-                "operator_inputs": {
-                    "target_models": {"mono:woofer": "A", " mono:woofer ": "B"}
-                }
-            },
-            "duplicate target mono:woofer",
-        ),
-    ],
-)
-def test_nested_design_inputs_reject_unknown_fields(kwargs, match: str) -> None:
-    with pytest.raises(ActiveSpeakerDesignDraftError, match=match):
-        build_design_draft(_topology(), **kwargs)
+@pytest.mark.parametrize("inputs", [
+    {"target_models": {"missing:woofer": "A"}},
+    {"target_models": {"mono:woofer": "A", " mono:woofer ": "B"}},
+])
+def test_operator_target_bindings_are_checked(inputs) -> None:
+    with pytest.raises(ActiveSpeakerDesignDraftError):
+        build_design_draft(_topology(), operator_inputs=inputs)
 
 
 # --- Persisted working-crossover values (Slice 0): polarity/delay on a
@@ -1023,8 +982,6 @@ def test_legacy_horn_coverage_deg_draft_still_saves_and_drops_the_key(
     loaded = load_design_draft(path)
     assert loaded["manual_settings"]["drivers"][0]["horn_coverage_deg"] == 90
 
-    # The re-save the browser performs on the next visit: no refusal, and the
-    # retired key is gone from what lands on disk.
     saved = save_design_draft(
         _topology(),
         manual_settings=loaded["manual_settings"],
@@ -1040,31 +997,47 @@ def test_legacy_horn_coverage_deg_draft_still_saves_and_drops_the_key(
         "horn_coverage_deg" not in driver
         for driver in on_disk["manual_settings"]["drivers"]
     )
-    # ...and the safety profile built from the same record survived its own
-    # re-validation, which is the second allowlist the key has to clear.
     assert saved["driver_safety_profile"] is not None
 
 
-def test_unknown_driver_field_is_still_refused():
-    """The legacy tolerance is one named key, not an open door.
+@pytest.mark.parametrize("version", [1, 2])
+def test_pasted_research_refuses_unknown_driver_fields(version):
+    research = {
+        "artifact_schema_version": version,
+        "kind": "jts_active_crossover_driver_research",
+        "drivers": [{"role": "tweeter", "model": "B", "typo": True}],
+    }
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
+        normalise_driver_research(research)
+    assert caught.value.code == "unknown_driver_fields"
 
-    ``_reject_unknown_keys`` is what catches an extension-by-typo before it
-    silently becomes a value nothing reads -- exactly the defect #2872 deleted.
-    """
 
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match=r"manual_settings\.driver has unknown fields: horn_coverage_degrees",
-    ):
-        build_design_draft(
-            _topology(),
-            manual_settings={
-                "drivers": [
-                    {"role": "tweeter", "model": "B", "horn_coverage_degrees": 90}
-                ],
-                "crossover_candidates": [],
-            },
-        )
+def test_extra_keys_are_ignored_and_driver_fields_are_served(tmp_path):
+    assert load_design_draft(tmp_path / "draft.json")["driver_fields"] == sorted(MANUAL_DRIVER_FIELDS)
+    manual = {
+        "typo": True,
+        "drivers": [{"role": "woofer", "model": "A", "typo": True,
+                     "cabinet": {"enclosure_kind": "sealed", "typo": True},
+                     "level_duration_limits": {"max_sweep_duration_s": 4, "typo": True}}],
+        "crossover_candidates": [{"between_roles": ["woofer", "tweeter"],
+                                  "frequency_hz": 2500, "typo": True}],
+    }
+    saved = save_design_draft(_topology(), manual_settings=manual,
+                              operator_inputs={"woofer": "A", "typo": True},
+                              path=tmp_path / "draft.json")
+    assert saved["driver_fields"] == sorted(MANUAL_DRIVER_FIELDS)
+    on_disk = json.loads((tmp_path / "draft.json").read_text())
+    assert "driver_fields" not in on_disk
+    on_disk["driver_fields"] = ["stale_field"]
+    (tmp_path / "draft.json").write_text(json.dumps(on_disk))
+    assert load_design_draft(tmp_path / "draft.json")["driver_fields"] == sorted(MANUAL_DRIVER_FIELDS)
+    assert saved["operator_inputs"] == {"woofer": "A"}
+    assert saved["manual_settings"]["drivers"][0]["cabinet"] == {
+        "enclosure_kind": "sealed", "lf_reconstruction_capability": "refused_single_radiator_contract_not_proven",
+    }
+    assert "typo" not in saved["manual_settings"]
+    assert "typo" not in saved["manual_settings"]["drivers"][0]
+    assert "typo" not in saved["manual_settings"]["crossover_candidates"][0]
 
 
 def test_radiating_diameter_mm_must_be_positive():

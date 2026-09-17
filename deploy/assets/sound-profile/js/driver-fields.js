@@ -2,11 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Sound profile — driver and crossover setting field markup.
-//
-// The HTML builders behind the driver-research panels: safety limits, pads,
-// enclosure and class fields, manual crossover rows and the echo-back panel.
-
 import { escapeHtml } from "/assets/shared/js/escape.js";
 import { renderInstallation } from "/assets/sound-profile/js/installation.js";
 import {
@@ -22,6 +17,7 @@ import {
   driverClassHasRadiatingDiameter,
   driverClasses,
   driverEchoBackFields,
+  driverFields,
   driverEchoDelegationText,
   driverEvidenceForTarget,
   driverProvenanceState,
@@ -198,43 +194,41 @@ function tweeterProtectionHintHtml(target) {
   '</p>';
 }
 function renderDriverSafetyLimits(targetId, setting, evidence) {
-  return '<section class="driver-research__advanced-group">' +
-    '<div><h5 class="setting-row__title">Protection and measurement limits</h5>' +
-    '<p class="setting-row__hint">Hard limits are never-test-beyond edges. The measurement range must sit inside them. Filter cutoff and slope are separate because a crossover still passes some energy beyond its cutoff.</p>' +
-    '<p class="setting-row__hint">Minimum crossover is the one number to enter for a driver’s bottom end — the figure its datasheet publishes. The required high-pass, the never-test-below edge and the measure-from edge are all derived from it, so a value you type into those is replaced on the next save.</p>' +
-    '</div>' +
-    '<div class="driver-research__fields">' +
-      // #2603 decision 8: the driver's low limit is entered ONCE, here, as
-      // the manufacturer's minimum recommended crossover. Until this input
-      // existed the operator's only routes were pasting research or typing
-      // the high-pass cutoff below — which the derivation then overwrote,
-      // so a deliberate edit could vanish with no way to express it. It
-      // leads the panel because everything under it derives from it.
-      driverSafetyNumberField(targetId, setting, 'recommended_highpass_hz', 'Minimum crossover (datasheet)', {min: 1, placeholder: 'Hz'}) +
-      driverSafetyNumberField(targetId, setting, 'recommended_highpass_slope_db_per_octave', 'Slope the datasheet states', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}) +
-      driverSafetyNumberField(targetId, setting, 'hard_excitation_min_hz', 'Never test below', {min: 1, placeholder: 'Hz'}) +
-      driverSafetyNumberField(targetId, setting, 'hard_excitation_max_hz', 'Never test above', {min: 1, placeholder: 'Hz'}) +
-      driverSafetyNumberField(targetId, setting, 'measurement_min_hz', 'Measure from', {min: 1, placeholder: 'Hz'}) +
-      driverSafetyNumberField(targetId, setting, 'measurement_max_hz', 'Measure through', {min: 1, placeholder: 'Hz'}) +
-      driverSafetyNumberField(targetId, setting, 'required_highpass_cutoff_hz', 'Required high-pass cutoff (derived)', {min: 1, placeholder: 'Hz'}) +
+  var limits = {
+    recommended_highpass_hz: driverSafetyNumberField(targetId, setting, 'recommended_highpass_hz', 'Minimum crossover (datasheet)', {min: 1, placeholder: 'Hz'}),
+    recommended_highpass_slope_db_per_octave: driverSafetyNumberField(targetId, setting, 'recommended_highpass_slope_db_per_octave', 'Slope the datasheet states', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}),
+    hard_excitation_band_hz: driverSafetyNumberField(targetId, setting, 'hard_excitation_min_hz', 'Never test below', {min: 1, placeholder: 'Hz'}) +
+      driverSafetyNumberField(targetId, setting, 'hard_excitation_max_hz', 'Never test above', {min: 1, placeholder: 'Hz'}),
+    measurement_band_hz: driverSafetyNumberField(targetId, setting, 'measurement_min_hz', 'Measure from', {min: 1, placeholder: 'Hz'}) +
+      driverSafetyNumberField(targetId, setting, 'measurement_max_hz', 'Measure through', {min: 1, placeholder: 'Hz'}),
+    required_protection_filters: driverSafetyNumberField(targetId, setting, 'required_highpass_cutoff_hz', 'Required high-pass cutoff (derived)', {min: 1, placeholder: 'Hz'}) +
       driverSafetyNumberField(targetId, setting, 'required_highpass_min_slope_db_per_octave', 'Minimum high-pass slope (derived)', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}) +
       '<label class="driver-research__field"><span>High-pass family / equivalent</span>' +
         '<input type="text" data-manual-driver="' + escapeHtml(targetId) + '" data-manual-field="required_highpass_family_or_equivalent" value="' + escapeHtml(setting.required_highpass_family_or_equivalent || '') + '" placeholder="equivalent or steeper"></label>' +
       driverSafetyNumberField(targetId, setting, 'required_lowpass_cutoff_hz', 'Required low-pass cutoff', {min: 1, placeholder: 'Hz'}) +
       driverSafetyNumberField(targetId, setting, 'required_lowpass_min_slope_db_per_octave', 'Minimum low-pass slope', {min: 1, max: 96, step: 6, placeholder: 'dB/oct'}) +
       '<label class="driver-research__field"><span>Low-pass family / equivalent</span>' +
-        '<input type="text" data-manual-driver="' + escapeHtml(targetId) + '" data-manual-field="required_lowpass_family_or_equivalent" value="' + escapeHtml(setting.required_lowpass_family_or_equivalent || '') + '" placeholder="equivalent or steeper"></label>' +
-      driverSafetyNumberField(targetId, setting, 'max_effective_peak_dbfs', 'Profile peak ceiling', {max: 0, placeholder: 'dBFS'}) +
+        '<input type="text" data-manual-driver="' + escapeHtml(targetId) + '" data-manual-field="required_lowpass_family_or_equivalent" value="' + escapeHtml(setting.required_lowpass_family_or_equivalent || '') + '" placeholder="equivalent or steeper"></label>',
+    level_duration_limits: driverSafetyNumberField(targetId, setting, 'max_effective_peak_dbfs', 'Profile peak ceiling', {max: 0, placeholder: 'dBFS'}) +
       driverSafetyNumberField(targetId, setting, 'max_sweep_duration_s', 'Longest sweep', {min: 0.1, placeholder: 'seconds'}) +
       driverSafetyNumberField(targetId, setting, 'max_repeat_count', 'Most repeats', {min: 1, max: 16, step: 1, placeholder: 'count'}) +
-      driverSafetyNumberField(targetId, setting, 'minimum_cooldown_s', 'Minimum cooldown', {min: 0, placeholder: 'seconds'}) +
+      driverSafetyNumberField(targetId, setting, 'minimum_cooldown_s', 'Minimum cooldown', {min: 0, placeholder: 'seconds'})
+  };
+  return '<section class="driver-research__advanced-group">' +
+    '<div><h5 class="setting-row__title">Protection and measurement limits</h5>' +
+    '<p class="setting-row__hint">Hard limits are never-test-beyond edges. The measurement range must sit inside them. Filter cutoff and slope are separate because a crossover still passes some energy beyond its cutoff.</p>' +
+    '<p class="setting-row__hint">Minimum crossover is the one number to enter for a driver’s bottom end — the figure its datasheet publishes. The required high-pass, the never-test-below edge and the measure-from edge are all derived from it, so a value you type into those is replaced on the next save.</p>' +
+    '</div>' +
+    '<div class="driver-research__fields">' +
+      driverFields().map(function(field) { return limits[field] || ''; }).join('') +
     '</div>' +
     '<div><h5 class="setting-row__title">Cabinet geometry</h5>' +
       '<p class="setting-row__hint">These values refine low-frequency and directivity guidance. Unknown geometry stays explicit.</p></div>' +
     '<div class="driver-research__fields">' +
+      (driverFields().includes('cabinet') ?
       driverSafetyNumberField(targetId, setting, 'radiator_count', 'Radiator count', {min: 1, max: 16, step: 1, placeholder: '1'}) +
       driverSafetyNumberField(targetId, setting, 'effective_radiating_diameter_mm', 'Effective radiator diameter', {min: 1, placeholder: 'mm'}) +
-      driverSafetyNumberField(targetId, setting, 'baffle_width_mm', 'Baffle width', {min: 1, placeholder: 'mm'}) +
+      driverSafetyNumberField(targetId, setting, 'baffle_width_mm', 'Baffle width', {min: 1, placeholder: 'mm'}) : '') +
     '</div>' +
     '<section class="driver-research__evidence">' +
       '<h5 class="setting-row__title">Research evidence</h5>' +
@@ -377,6 +371,12 @@ function renderBuildNotes() {
   '</section>';
 }
 function renderAdvancedDriverSettings(topology) {
+  var specs = {
+    sensitivity_db_2v83_1m: ['Sensitivity', {placeholder: 'dB'}],
+    nominal_impedance_ohm: ['Nominal impedance', {min: 1, step: 0.1, placeholder: 'ohm'}],
+    do_not_test_below_hz: ['Legacy advisory floor (not enforced)', {min: 1, placeholder: 'Hz'}],
+    gain_offset_db: ['Level trim', {placeholder: 'dB'}]
+  };
   return '<div class="driver-research__advanced-drivers">' +
     driverResearchTargets(topology).map(function(target) {
       var targetId = target.target_id;
@@ -389,31 +389,12 @@ function renderAdvancedDriverSettings(topology) {
         '<div class="driver-research__advanced-group">' +
           '<p class="setting-row__title">Driver specifications</p>' +
           '<div class="driver-research__fields">' +
-            '<label class="driver-research__field">' +
-              '<span>Sensitivity</span>' +
-              '<input type="number" inputmode="decimal" data-manual-driver="' +
-                escapeHtml(targetId) + '" data-manual-field="sensitivity_db_2v83_1m" value="' +
-                escapeHtml(setting.sensitivity_db_2v83_1m == null ? '' :
-                  String(setting.sensitivity_db_2v83_1m)) + '" placeholder="dB">' +
-            '</label>' +
-            driverSafetyNumberField(targetId, setting, 'nominal_impedance_ohm',
-              'Nominal impedance', {min: 1, step: 0.1, placeholder: 'ohm'}) +
-            driverClassFieldHtml(targetId, setting) +
-            driverClassGeometryFieldHtml(targetId, setting) +
-            '<label class="driver-research__field">' +
-              '<span>Legacy advisory floor (not enforced)</span>' +
-              '<input type="number" inputmode="numeric" min="1" data-manual-driver="' +
-                escapeHtml(targetId) + '" data-manual-field="do_not_test_below_hz" value="' +
-                escapeHtml(setting.do_not_test_below_hz == null ? '' :
-                  String(setting.do_not_test_below_hz)) + '" placeholder="Hz">' +
-            '</label>' +
-            '<label class="driver-research__field">' +
-              '<span>Level trim</span>' +
-              '<input type="number" inputmode="decimal" data-manual-driver="' +
-                escapeHtml(targetId) + '" data-manual-field="gain_offset_db" value="' +
-                escapeHtml(setting.gain_offset_db == null ? '' :
-                  String(setting.gain_offset_db)) + '" placeholder="dB">' +
-            '</label>' +
+            driverFields().map(function(field) {
+              var spec = specs[field];
+              return spec ? driverSafetyNumberField(targetId, setting, field, spec[0], spec[1]) : '';
+            }).join('') +
+            (driverFields().includes('driver_class') ? driverClassFieldHtml(targetId, setting) : '') +
+            (driverFields().includes('radiating_diameter_mm') ? driverClassGeometryFieldHtml(targetId, setting) : '') +
           '</div>' +
         '</div>' +
         renderDriverSafetyLimits(targetId, setting,
@@ -494,14 +475,6 @@ function kaBeamingNoteHtml(pair, fcRaw, topology) {
       ' — EQ cannot fix that, only geometry (a smaller or horn-loaded driver) can.';
   return '<p class="setting-row__hint">' + escapeHtml(text) + '</p>';
 }
-// One picker builder for both crossover-vocabulary selects. A stored value
-// outside the offer gets its own clearly-labelled option, the same way
-// tweeterStyleFieldHtml carries an off-list driver style: without it the
-// control would DISPLAY the first offered value while the model still held
-// the stored one, so no control on the page would contain what is actually
-// set — and re-picking the value already shown fires no change event, which
-// leaves the operator no way to clear it. Nothing is coerced;
-// manualCrossoverVocabularyValidationError still refuses the save.
 function crossoverOptionsHtml(values, selected, labelFor) {
   var chosen = selected == null ? '' : String(selected);
   var offered = values.map(String);

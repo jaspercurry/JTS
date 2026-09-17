@@ -23,7 +23,6 @@ import {
 } from "/assets/sound-profile/js/format.js";
 import {
   crossoverPreview,
-  crossoverVocabulary,
   driverResearch,
   outputTopology
 } from "/assets/sound-profile/js/state.js";
@@ -375,43 +374,6 @@ function manualCrossoverDelayValidationError(topology) {
   return 'Pick which driver is delayed for ' +
     humanRole(pair[0]) + ' / ' + humanRole(pair[1]) + ' before saving.';
 }
-// The pickers only ever offer what the compiler builds, so an operator
-// cannot author a refused crossover. A value can still arrive from outside
-// the pickers — a draft saved before the vocabulary narrowed, or an imported
-// research packet — and design_draft.py refuses that at the door. Name it
-// here, with the pair and the offer, instead of letting the operator meet it
-// as a server error or (before entry-time validation) as a staging blocker
-// three screens later. Only pairs that will actually be saved are checked:
-// manualSettingsPayload omits a pair with no frequency.
-function manualCrossoverVocabularyValidationError(topology) {
-  // Layout first: a passive layout has no crossover to author, so a damaged
-  // island must not block its save over a vocabulary it never uses.
-  var pairs = activeCrossoverPairs(topology);
-  if (!pairs.length) return '';
-  if (!crossoverVocabulary.filterTypes.length || !crossoverVocabulary.slopes.length) {
-    return 'The crossover filter and slope options could not be read. Reload this page before saving.';
-  }
-  var offending = '';
-  pairs.forEach(function(pair) {
-    if (offending) return;
-    var setting = crossoverSetting(pair);
-    if (manualNumberValue(setting.frequency_hz) == null) return;
-    var name = humanRole(pair[0]) + ' / ' + humanRole(pair[1]);
-    var filterType = String(setting.filter_type || crossoverVocabulary.defaultFilterType);
-    if (crossoverVocabulary.filterTypes.indexOf(filterType) < 0) {
-      offending = 'JTS cannot build a ' + filterType + ' crossover for ' + name +
-        '. Pick one of: ' + crossoverVocabulary.filterTypes.join(', ') + '.';
-      return;
-    }
-    var slope = manualNumberValue(setting.slope_db_per_octave);
-    if (slope == null) slope = crossoverVocabulary.defaultSlope;
-    if (crossoverVocabulary.slopes.indexOf(slope) < 0) {
-      offending = 'JTS cannot build a ' + String(slope) + ' dB/oct crossover for ' +
-        name + '. Pick one of: ' + crossoverVocabulary.slopes.join(', ') + ' dB/oct.';
-    }
-  });
-  return offending;
-}
 function safetyBandFromSetting(setting, prefix) {
   var low = manualNumberValue(setting[prefix + '_min_hz']);
   var high = manualNumberValue(setting[prefix + '_max_hz']);
@@ -725,36 +687,22 @@ function echoLevelText(setting) {
   if (cooldown != null) parts.push(cooldown + ' s cooldown');
   return parts.join(', ');
 }
-// Exactly the union of two server-owned sets, in the order they matter to a
-// household reading the panel:
-//   * the five keys the research ask requires a source for
-//     (driver_safety_prompt._PROMPT_PROVENANCE_KEYS), and
-//   * the five fields compute_driver_safety_profile derives from the driver values
-//     (its `safety_field_names`).
-// Seven keys, because three overlap. The panel headline states that union as
-// its completeness claim, so the two must not drift apart: the tripwire is
-// tests/test_sound_profile_echo_back_contract.py.
-//
-// Each entry reads the value JTS is actually RUNNING WITH out of the working
-// setting, not the number in the reply — those are the same until the
-// operator edits one, and the setting is what gets saved.
+function driverFields() {
+  return (driverResearch.designDraft || {}).driver_fields || [];
+}
+function driverNumberFields() {
+  return driverFields().filter(function(key) {
+    return /(?:_ohm|_mm|_db|_db_2v83_1m|_hz|_db_per_octave)$/.test(key) &&
+      !/(?:_band|_range)_hz$/.test(key);
+  });
+}
 function driverEchoBackFields() {
-  return [
-    {
-      key: 'hard_excitation_band_hz',
+  var details = {
+    hard_excitation_band_hz: {
       label: 'Never test outside',
       read: function(setting) { return echoBandText(setting, 'hard_excitation'); }
     },
-    {
-      // #2603: this row used to echo do_not_test_below_hz, which is retired.
-      // What replaced it is the low limit's OWNER -- the manufacturer's
-      // minimum recommended crossover frequency -- and the slope condition
-      // the manufacturer attaches to it. Both render, because the operator
-      // entered both and a half-echoed declaration is exactly the round-trip
-      // gap this panel exists to close. The commissioning margin JTS derives
-      // from them is deliberately NOT shown: the panel echoes what the reply
-      // said, never what the server computed on top of it.
-      key: 'recommended_highpass_hz',
+    recommended_highpass_hz: {
       label: 'Minimum crossover',
       read: function(setting) {
         var value = manualNumberValue(setting.recommended_highpass_hz);
@@ -766,35 +714,32 @@ function driverEchoBackFields() {
           (slope == null ? '' : ', ' + slope + ' dB/oct or steeper');
       }
     },
-    {
-      key: 'required_protection_filters',
+    required_protection_filters: {
       label: 'Protection filter',
       read: echoFilterText
     },
-    {
-      key: 'measurement_band_hz',
+    measurement_band_hz: {
       label: 'Measure inside',
       read: function(setting) { return echoBandText(setting, 'measurement'); }
     },
-    {
-      key: 'level_duration_limits',
+    level_duration_limits: {
       label: 'Test level and duration',
       read: echoLevelText
     },
-    {
-      key: 'sensitivity_db_2v83_1m',
+    sensitivity_db_2v83_1m: {
       label: 'Sensitivity',
       read: function(setting) {
         var value = manualNumberValue(setting.sensitivity_db_2v83_1m);
         return value == null ? '' : fmtDb(value) + ' dB';
       }
     },
-    {
-      key: 'cabinet',
+    cabinet: {
       label: 'Cabinet geometry',
       read: echoCabinetText
     }
-  ];
+  };
+  return driverFields().filter(function(key) { return details[key]; })
+    .map(function(key) { return Object.assign({key: key}, details[key]); });
 }
 // The delegation, disclosed (#2192, folded into #2195). A high-frequency
 // target that declares NO level limit is read by
@@ -919,6 +864,8 @@ function extractDriverResearchJson(text) {
 }
 
 export {
+  driverFields,
+  driverNumberFields,
   applySafetyBandToSetting,
   cabinetFromSetting,
   candidateConfidenceRank,
@@ -952,7 +899,6 @@ export {
   kaBeamingOnsetHz,
   levelDurationLimitsFromSetting,
   manualCrossoverDelayValidationError,
-  manualCrossoverVocabularyValidationError,
   padFromSetting,
   padKinds,
   previewStatusClass,

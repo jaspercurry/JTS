@@ -76,7 +76,8 @@ import {
   ingestCrossoverPreview,
   levelDurationLimitsFromSetting,
   manualCrossoverDelayValidationError,
-  manualCrossoverVocabularyValidationError,
+  driverFields,
+  driverNumberFields,
   padFromSetting,
   previewStatusClass,
   proposeSensitivityTrims,
@@ -836,18 +837,7 @@ import {
         role: role,
         model: targetModel(target, topology)
       };
-      [
-        'sensitivity_db_2v83_1m',
-        'nominal_impedance_ohm',
-        'recommended_highpass_hz',
-        // #2603: the low limit's slope condition travels with the frequency it
-        // conditions. Dropping it here would leave the owner half-declared.
-        'recommended_highpass_slope_db_per_octave',
-        'recommended_lowpass_hz',
-        'do_not_test_below_hz',
-        'gain_offset_db',
-        'radiating_diameter_mm'
-      ].forEach(function(field) {
+      driverNumberFields().forEach(function(field) {
         var value = manualNumberValue(setting[field]);
         if (value != null) out[field] = value;
       });
@@ -876,22 +866,11 @@ import {
       if (Object.keys(limits).length) out.level_duration_limits = limits;
       return out;
     }).filter(function(driver) {
-      return driver.model ||
-        driver.sensitivity_db_2v83_1m != null ||
-        driver.nominal_impedance_ohm != null ||
-        driver.recommended_highpass_hz != null ||
-        driver.recommended_lowpass_hz != null ||
-        driver.do_not_test_below_hz != null ||
-        driver.gain_offset_db != null ||
-        driver.radiating_diameter_mm != null ||
-        driver.driver_class ||
-        driver.cabinet ||
-        driver.installation ||
-        driver.pad ||
-        driver.hard_excitation_band_hz ||
-        driver.measurement_band_hz ||
-        driver.required_protection_filters.length ||
-        driver.notes;
+      return driverFields().some(function(field) {
+        if (field === 'role' || field === 'target_id') return false;
+        var value = driver[field];
+        return Array.isArray(value) ? value.length > 0 : value != null && value !== '';
+      });
     });
     var candidates = activeCrossoverPairs(topology).map(function(pair) {
       var setting = crossoverSetting(pair);
@@ -981,17 +960,7 @@ import {
     }
   }
   function applyDriverResearchToSetting(driver, targetSetting) {
-    [
-      'sensitivity_db_2v83_1m',
-      'nominal_impedance_ohm',
-      'recommended_highpass_hz',
-      // #2603: the low limit's slope condition travels with the frequency it
-      // conditions. Dropping it here would leave the owner half-declared.
-      'recommended_highpass_slope_db_per_octave',
-      'recommended_lowpass_hz',
-      'do_not_test_below_hz',
-      'gain_offset_db'
-    ].forEach(function(field) {
+    driverNumberFields().forEach(function(field) {
       if (driver[field] != null) targetSetting[field] = driver[field];
     });
     if (driver.gain_offset_db != null) {
@@ -3540,8 +3509,7 @@ import {
       return false;
     }
     var manualTopology = currentOutputTopology();
-    var manualError = manualCrossoverDelayValidationError(manualTopology) ||
-      manualCrossoverVocabularyValidationError(manualTopology);
+    var manualError = manualCrossoverDelayValidationError(manualTopology);
     if (manualError) {
       driverResearch.error = manualError;
       status(manualError, true);
