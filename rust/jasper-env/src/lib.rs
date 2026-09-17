@@ -9,10 +9,9 @@
 //! default when unset or blank, numeric parse failures name the key and raw
 //! value, and floating-point values must be finite.
 //!
-//! The daemons disagree about a configured `0` on a value they later divide by,
-//! so that policy is not one function with a hidden branch — it is two named
-//! ones, [`env_u32_positive_or_default`] and [`env_u32_positive_or_bail`], and
-//! the call site says which it takes. Vocabulary that is genuinely one daemon's
+//! A configured `0` on a value a daemon later divides by is a config fault in
+//! both of them: [`env_u32_positive_or_bail`] fails the parse, and the caller
+//! classes that as EX_CONFIG. Vocabulary that is genuinely one daemon's
 //! (fan-in's `enabled`-only feature gate, outputd's boolean accept-set, the
 //! list and optional-string shapes) stays with that daemon.
 
@@ -45,8 +44,8 @@ where
 
 /// Parse a `u32`, treating an unset or blank variable as `default`.
 ///
-/// A configured `0` parses. Callers that divide by the value take one of the
-/// two positive-dimension helpers below instead.
+/// A configured `0` parses. Callers that divide by the value take
+/// [`env_u32_positive_or_bail`] instead.
 pub fn env_u32(name: &str, default: u32) -> Result<u32> {
     env_parse(name, default, "a non-negative integer")
 }
@@ -71,34 +70,13 @@ pub fn env_u32_fallback(name: &str, fallback_name: &str, default: u32) -> Result
     }
 }
 
-/// A strictly-positive dimension whose configured `0` falls back to `default`
-/// with a WARN — fan-in's `sample_rate` and `period_frames`.
+/// A strictly-positive dimension whose configured `0` fails the parse — both
+/// daemons' rates and frame counts, which each caller classes as EX_CONFIG.
 ///
-/// A parsed `0` is a legal `u32` yet a nonsensical dimension: fan-in's
-/// per-period math divides by both, unguarded, and release builds compile out
-/// the `debug_assert!`s. With `panic = "abort"` and the unit's
-/// `Restart=on-failure`, a divide-by-zero panic is an endless crash-restart
-/// loop that takes all audio down, the audible-cue path with it. Bailing would
-/// be its own config-parse restart loop, so the speaker keeps playing on the
-/// documented default instead. A non-numeric or negative value still fails
-/// loud; only a valid-but-zero dimension is recovered.
-///
-/// Unifying both daemons on [`env_u32_positive_or_bail`] is the owner's ruling;
-/// it waits on the #5267 escalation fix, so that a config fault cannot count
-/// toward the reboot escalation first. Delete this arm when that lands.
-pub fn env_u32_positive_or_default(name: &str, default: u32) -> Result<u32> {
-    let parsed = env_u32(name, default)?;
-    if parsed == 0 {
-        log::warn!(
-            "event=env.config_ignored key={name} value=0 reason=dimension_must_be_positive default={default}"
-        );
-        return Ok(default);
-    }
-    Ok(parsed)
-}
-
-/// A strictly-positive dimension whose configured `0` fails the parse —
-/// outputd's rates and frame counts, which the caller classes as EX_CONFIG.
+/// A parsed `0` is a legal `u32` yet a nonsensical dimension: the per-period
+/// math divides by it, unguarded, and release builds compile out the
+/// `debug_assert!`s. Failing the parse parks the unit on the config fault
+/// instead of dividing by zero.
 pub fn env_u32_positive_or_bail(name: &str, default: u32) -> Result<u32> {
     let parsed = env_parse(name, default, "a positive integer")?;
     if parsed == 0 {
@@ -209,32 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_dimension_falls_back_to_the_default_under_the_or_default_policy() {
-        for raw in ["0", " 0 ", "00"] {
-            with_env("JTS_ENVCRATE_TEST_DIM", Some(raw), || {
-                assert_eq!(
-                    env_u32_positive_or_default("JTS_ENVCRATE_TEST_DIM", 256).unwrap(),
-                    256,
-                    "raw={raw:?}"
-                );
-            });
-        }
-        for (raw, expected) in [(None, 256_u32), (Some("48000"), 48_000)] {
-            with_env("JTS_ENVCRATE_TEST_DIM", raw, || {
-                assert_eq!(
-                    env_u32_positive_or_default("JTS_ENVCRATE_TEST_DIM", 256).unwrap(),
-                    expected,
-                    "raw={raw:?}"
-                );
-            });
-        }
-        with_env("JTS_ENVCRATE_TEST_DIM", Some("-1"), || {
-            assert!(env_u32_positive_or_default("JTS_ENVCRATE_TEST_DIM", 256).is_err());
-        });
-    }
-
-    #[test]
-    fn a_zero_dimension_fails_the_parse_under_the_or_bail_policy() {
+    fn a_zero_dimension_fails_the_parse() {
         for raw in ["0", " 0 ", "00"] {
             with_env("JTS_ENVCRATE_TEST_DIM", Some(raw), || {
                 assert!(

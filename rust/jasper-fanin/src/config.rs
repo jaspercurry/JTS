@@ -16,7 +16,7 @@
 
 use anyhow::Result;
 use jasper_env::{
-    env_f32, env_f32_fallback, env_str, env_u32, env_u32_fallback, env_u32_positive_or_default,
+    env_f32, env_f32_fallback, env_str, env_u32, env_u32_fallback, env_u32_positive_or_bail,
     env_u64,
 };
 
@@ -48,7 +48,7 @@ pub(crate) const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 /// sub-period interval still ticks. The crate's ONE ms→periods conversion:
 /// every period-counted cadence states its wall-clock intent and derives the
 /// count here rather than shipping a hand-multiplied literal. `sample_rate` is
-/// the caller's guarantee (`env_u32_positive_or_default` refuses 0);
+/// the caller's guarantee (`env_u32_positive_or_bail` refuses 0);
 /// `period_frames` is guarded here because the constants call this before that
 /// parse runs.
 pub(crate) const fn periods_for_ms(ms: u64, period_frames: u32, sample_rate: u32) -> u64 {
@@ -375,9 +375,9 @@ impl Config {
         }
 
         let sample_rate =
-            env_u32_positive_or_default("JASPER_FANIN_SAMPLE_RATE", DEFAULT_SAMPLE_RATE)?;
+            env_u32_positive_or_bail("JASPER_FANIN_SAMPLE_RATE", DEFAULT_SAMPLE_RATE)?;
         let period_frames =
-            env_u32_positive_or_default("JASPER_FANIN_PERIOD_FRAMES", DEFAULT_PERIOD_FRAMES)?;
+            env_u32_positive_or_bail("JASPER_FANIN_PERIOD_FRAMES", DEFAULT_PERIOD_FRAMES)?;
         let input_buffer_frames = env_u32_fallback(
             "JASPER_FANIN_INPUT_BUFFER_FRAMES",
             "JASPER_FANIN_BUFFER_FRAMES",
