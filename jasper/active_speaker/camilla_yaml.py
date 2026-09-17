@@ -2642,10 +2642,11 @@ def _emit_commissioning_pipeline(
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
     measurement_delay_roles: frozenset[str] = frozenset(),
+    capture_channels: int = 2,
 ) -> str:
     lines = [
         "  - type: Filter",
-        "    channels: [0, 1]",
+        f"    channels: [{', '.join(str(ch) for ch in range(capture_channels))}]",
         "    names: [active_startup_headroom]",
         "  - type: Mixer",
         f"    name: split_active_{preset.way_count}way",
@@ -3464,6 +3465,7 @@ def emit_active_speaker_program_config(
         filter_mode=filter_mode,
         protection_sections_by_role=protection_sections_by_role,
         measurement_delay_roles=frozenset(measurement_delays_us or ()),
+        capture_channels=program_channels,
     )
     metadata_comments = [
         f"# preset_id={preset.preset_id}",
