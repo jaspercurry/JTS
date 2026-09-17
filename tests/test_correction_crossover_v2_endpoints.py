@@ -6622,12 +6622,14 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
             v2apply.handle_v2_apply(raw, _bg_run_async, lambda: cam)
         assert refused.value.code == code
         if fault == "graph":
+            from jasper.active_speaker import runtime_contract
             from jasper.web._common import refusal_envelope
 
             # The refusal names WHICH door refused: a bare code sent the
             # operator to read the graph by hand.
             envelope = refusal_envelope(refused.value)
             assert envelope["code"] == code
+            assert envelope["error"] != runtime_contract.GRAPH_APPROVED_ACTIVE_RUNTIME
             assert [(issue["severity"], issue["code"]) for issue in envelope["issues"]] == [
                 ("blocker", "volume_limit_positive")]
     fields = event_fields(caplog, "correction.crossover_v2_apply")
