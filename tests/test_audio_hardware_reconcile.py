@@ -1523,31 +1523,6 @@ def test_reconcile_names_why_it_stayed_passive_and_stays_passive(
     assert "JASPER_OUTPUTD_ACTIVE_LANE=\n" in outputd_env
 
 
-@pytest.mark.parametrize(
-    "stale",
-    [
-        "JASPER_OUTPUTD_CONTENT_PCM=''\n",
-        "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture\n",
-    ],
-)
-def test_reconcile_removes_a_stale_content_pcm_line(tmp_path: Path, stale: str):
-    """A box that reconciled before ADR-0100 carries the retired key; ONE
-    reconcile must drop the LINE, not merely stop restating it.
-
-    set_env_file_var_if_changed is a per-key upsert, so without an active
-    removal the leftover outlives the lane forever. Present-but-EMPTY is
-    the shape that bites: audio_runtime_plan's retired-route describer
-    defaults on an ABSENT key, so an empty one reports a post-DSP route
-    disconnection no later reconcile could clear.
-    """
-    result = _run_reconcile(
-        tmp_path, APPLE_LISTING, "--reason", "test", initial_outputd_env=stale
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "JASPER_OUTPUTD_CONTENT_PCM" not in _outputd_env(tmp_path)
-
-
 def _stage_candidate_debris(tmp_path: Path) -> list[str]:
     return sorted(
         name
@@ -1561,9 +1536,7 @@ def test_outputd_env_stage_waits_out_a_concurrent_whole_file_writer(
 ) -> None:
     """The stage→validate→rename sequence must be serialized, not just atomic."""
     outputd_env = tmp_path / "outputd.env"
-    outputd_env.write_text(
-        "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture\n", encoding="utf-8"
-    )
+    outputd_env.write_text("", encoding="utf-8")
 
     # Longer than a whole unblocked pass, so the reconciler is provably still
     # at its first stage when the write-back lands.
@@ -1576,8 +1549,6 @@ def test_outputd_env_stage_waits_out_a_concurrent_whole_file_writer(
     committed = _outputd_env(tmp_path)
     assert _outputd_env_key_present(committed, "JASPER_OUTPUTD_HOLDER")
     assert _outputd_env_key_present(committed, "JASPER_OUTPUTD_BACKEND")
-    # Staged from the holder's file, not from the pre-holder snapshot.
-    assert not _outputd_env_key_present(committed, "JASPER_OUTPUTD_CONTENT_PCM")
     # Each pass mktemps a new candidate name, and the single-key writer locks
     # beside it: an unswept sibling per changing pass would accumulate forever.
     assert _stage_candidate_debris(tmp_path) == []

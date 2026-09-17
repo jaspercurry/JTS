@@ -37,12 +37,12 @@ logger = logging.getLogger(__name__)
 async def apply_candidate(
     candidate: MeasuredCrossoverCandidate | str | None = None, *,
     camilla_factory: Callable[[], Any],
-    expected_candidate_fingerprint: str | None = None,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
     previous: bool = False,
 ) -> dict[str, Any]:
     from jasper.active_speaker.linearization_fit import HEADROOM_COST_BASIS_UNKNOWN  # lazy: NumPy is needed only when applying
 
+    from_saved_draft = candidate is None and not previous
     expected = candidate if isinstance(candidate, str) else ""
     prepared: dict[str, Any] = {}
     measurements: Mapping[str, Any] = {}
@@ -87,12 +87,7 @@ async def apply_candidate(
                 measurements=measurements, config_path=target, config_sha256=sha)
             prepared.update(issues=list(selected.analysis.get("issues") or []),
                             candidate_fingerprint=baseline_profile.baseline_candidate_fingerprint(prepared))
-            if expected_candidate_fingerprint is not None:
-                refusal = baseline_profile.reviewed_candidate_refusal(prepared, expected_candidate_fingerprint)
-                if refusal:
-                    await baseline_profile._record_apply_outcome_into_bundle(measurements, candidate=refusal["profile"], apply_state=None, rollback_target=None)
-                    return refusal
-            if expected_candidate_fingerprint is not None or on_candidate_verified is not None:
+            if from_saved_draft or on_candidate_verified is not None:
                 atomic_write_text(target, text, mode=CONFIG_FILE_MODE)
                 if not baseline_profile.validate_camilla_config(target).ok_to_apply:
                     raise CrossoverV2Refused("invalid configuration", code="baseline_config_validation_failed")
@@ -129,7 +124,7 @@ async def apply_candidate(
             log_event(logger, "correction.crossover_v2_apply", status="blocked", code=code, candidate_fingerprint=expected)
             baseline_profile._commissioning_refusal(prepared, exc)
             await baseline_profile._record_apply_outcome_into_bundle(measurements, candidate=prepared, apply_state=None, rollback_target=None)
-            if expected_candidate_fingerprint is None:
+            if not from_saved_draft:
                 raise CrossoverV2Refused(str(exc), code=code, issues=getattr(exc, "issues", ())) from exc
             return {"status": "blocked", "profile": prepared, "apply": None, "issues": prepared["issues"]}
         except DspApplyError as exc:

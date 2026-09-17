@@ -609,7 +609,6 @@ def read_active_speaker_setup_status(
             "source_fingerprint": source.get("fingerprint"),
             "candidate_fingerprint": profile.get("candidate_fingerprint"),
             "provisional": bool(profile.get("provisional")),
-            "revalidation": {"required": False, "status": "not_required"},
             "issues": profile_issues,
             "role": "staging_candidate",
             "live_answer_key": "protected_profile",
@@ -741,7 +740,6 @@ def read_active_speaker_setup_status(
         expected_topology_fingerprint=str(
             current_source.get("topology_fingerprint") or ""
         ) or None,
-        topology=topology,
     )
     layer_a_binding = _applied_layer_a_binding(
         topology,

@@ -72,7 +72,7 @@ def installation_evidence(draft: Mapping[str, Any]) -> dict[str, Any]:
             "inputs": facts, "amplifier_estimate": estimate,
             "acoustic_limit": {"status": "not_estimated", "reason": "Cabinet and radiator inputs guide microphone trials; they do not establish excursion or clean-output limits."}})
     return {"source": "design_draft.manual_settings.drivers[].installation",
-        "provenance": "operator_entered", "authorizes_playback": False, "drivers": rows}
+        "provenance": "operator_entered", "drivers": rows}
 
 
 def installation_view(draft: Mapping[str, Any]) -> dict[str, Any]:

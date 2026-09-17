@@ -66,8 +66,8 @@ _DOOR_REFUSAL = {
     "issues": [
         {
             "severity": "blocker",
-            "code": cli.FINGERPRINT_MISMATCH_CODE,
-            "message": "the crossover candidate changed after review",
+            "code": "baseline_config_validation_failed",
+            "message": "the config could not be validated",
         }
     ],
 }
@@ -158,9 +158,7 @@ def test_review_reports_the_fingerprint_and_that_nothing_is_carried(capsys):
         "delay_ms": 0.35,
         "inverted": True,
     }
-    assert payload["next"] == (
-        f"jasper-basic-profile apply --expected-fingerprint {_FINGERPRINT}"
-    )
+    assert payload["next"] == "jasper-basic-profile apply"
     # A pure read: the route's POST arm COMPILES, rewriting the baseline YAML
     # the CamillaDSP statefile may still select. Review must never send one.
     assert opener.posts() == []
@@ -190,7 +188,6 @@ def test_the_door_is_reached_at_its_own_daemons_paths_with_that_daemons_token():
 
     mints = [url for url in opener.paths() if url.endswith(cli.CSRF_PAGE_PATH)]
     assert mints == ["http://127.0.0.1" + cli.CSRF_PAGE_PATH]
-    # The apply is the ONE write: the review is read over the same daemon's GET.
     posts = opener.posts()
     assert [request.full_url for request in posts] == [
         "http://127.0.0.1" + cli.SAVE_AND_APPLY_PATH
@@ -200,7 +197,7 @@ def test_the_door_is_reached_at_its_own_daemons_paths_with_that_daemons_token():
     assert posts[0].get_header("X-csrf-token") == "tok-abcdefgh12345678"
 
 
-def test_apply_pins_the_fingerprint_it_just_reviewed_and_proves_the_result(
+def test_apply_reports_the_fingerprint_from_the_applied_record(
     capsys, applied_state
 ):
     disclosure = {
@@ -215,15 +212,21 @@ def test_apply_pins_the_fingerprint_it_just_reviewed_and_proves_the_result(
     assert _run(["apply"], opener) == cli.EXIT_OK
 
     sent = opener.posted_to(cli.SAVE_AND_APPLY_PATH)
-    assert [json.loads(request.data.decode()) for request in sent] == [
-        {"expected_candidate_fingerprint": _FINGERPRINT}
-    ]
-    payload = _stdout_json(capsys)
+    assert [json.loads(request.data.decode()) for request in sent] == [{}]
+    assert "http://127.0.0.1" + cli.REVIEW_PATH not in opener.paths()
+    streams = capsys.readouterr()
+    payload = json.loads(streams.out)
+    fingerprint = baseline_candidate_fingerprint(_APPLIED_STATE)
+    headline = next(
+        line.split() for line in streams.err.splitlines()
+        if line.lstrip().startswith("fingerprint ")
+    )
+    assert headline == ["fingerprint", fingerprint]
     assert payload["status"] == "applied"
-    assert payload["candidate_fingerprint"] == _FINGERPRINT
+    assert payload["candidate_fingerprint"] == fingerprint
     assert payload["issues"] == [disclosure]
     assert payload["proof"] == {
-        "candidate_fingerprint": baseline_candidate_fingerprint(_APPLIED_STATE),
+        "candidate_fingerprint": fingerprint,
         "applied_at": "2026-09-01T12:00:00Z",
         "tuning_owner": "manual",
         "linearization_roles": [],
@@ -232,32 +235,10 @@ def test_apply_pins_the_fingerprint_it_just_reviewed_and_proves_the_result(
     }
 
 
-@pytest.mark.parametrize("named", ["b" * 64, ""])
-def test_a_fingerprint_that_is_not_the_live_one_sends_nothing(capsys, named):
-    """Refused on the speaker's own shell, before any request leaves it."""
-    opener = _opener(
-        review=json.dumps({**_CANDIDATE, "candidate_fingerprint": named})
-        if not named
-        else json.dumps(_CANDIDATE)
-    )
-    argv = ["apply"] + (["--expected-fingerprint", named] if named else [])
-
-    assert _run(argv, opener) == cli.EXIT_REFUSED
-
-    payload = _stdout_json(capsys)
-    assert payload["status"] == STATUS_BY_CODE[cli.EXIT_REFUSED]
-    assert payload["reason"] == cli.FINGERPRINT_MISMATCH_CODE
-    assert payload["detail"]["refused_by"] == "client"
-    assert [issue["code"] for issue in payload["detail"]["issues"]] == [
-        cli.FINGERPRINT_MISMATCH_CODE
-    ]
-    assert opener.posts() == []
-
-
 @pytest.mark.parametrize(
     "answer, reason",
     [
-        (_DOOR_REFUSAL, cli.FINGERPRINT_MISMATCH_CODE),
+        (_DOOR_REFUSAL, "baseline_config_validation_failed"),
         ({"status": "blocked", "issues": []}, "blocked"),
         ({}, cli.DOOR_REFUSED),
     ],
@@ -314,4 +295,6 @@ def test_apply_still_reports_success_when_the_proof_cannot_be_read(
     opener = _opener(save_and_apply=json.dumps({"status": "applied"}))
 
     assert _run(["apply"], opener) == cli.EXIT_OK
-    assert _stdout_json(capsys)["proof"] is None
+    payload = _stdout_json(capsys)
+    assert payload["proof"] is None
+    assert payload["candidate_fingerprint"] == ""

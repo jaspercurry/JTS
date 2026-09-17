@@ -45,7 +45,7 @@ _ASYNCIO_WAIT_FOR_FUNC = "asyncio.wait_for"
 # site is not bounded today. Every entry is a call this round's AST walk
 # actually found unbounded at HEAD -- re-verify before adding or removing one.
 ALLOWLIST: dict[str, str] = {
-    "jasper/audio_hardware/reconcile.py:1216": (
+    "jasper/audio_hardware/reconcile.py:1207": (
         "renders asound.conf via a sourced bash lib with no timeout=; a hang "
         "here is bounded only by the unit's own TimeoutStartSec=50s "
         "(jasper-audio-hardware-reconcile.service). Adding a bare timeout= "
@@ -53,7 +53,7 @@ ALLOWLIST: dict[str, str] = {
         "catch three lines below this call for the shape a real fix needs) "
         "-- a design-judgment fix, not a one-line addition."
     ),
-    "jasper/audio_hardware/reconcile.py:1250": (
+    "jasper/audio_hardware/reconcile.py:1241": (
         "same gap as line 1216 (render_asound_conf, no timeout=); the "
         "adjacent OSError catch (rc=127) shows the shape a bounded version "
         "needs, but does not itself bound a hang."

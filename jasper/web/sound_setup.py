@@ -554,9 +554,6 @@ def _make_handler(
                     self._send_json(
                         asyncio.run(
                             _active_speaker_finish_commissioning_payload(
-                                expected_candidate_fingerprint=str(
-                                    raw.get("expected_candidate_fingerprint") or ""
-                                ),
                                 camilla_factory=camilla_factory,
                             )
                         )

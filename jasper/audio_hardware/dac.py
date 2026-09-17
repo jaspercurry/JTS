@@ -35,8 +35,6 @@ DUAL_APPLE_USB_C_DAC_4CH_ID = "dual_apple_usb_c_dac_4ch"
 # together by test_dac_profiles.py::test_apple_dongle_usb_id_matches_udev_rules.
 APPLE_DONGLE_USB_ID = "05ac:110a"
 
-DAC8X_OUTPUTD_STABILITY_PROFILE = "hifiberry_dac8x_outputd_stability"
-
 DacKind = Literal["single", "composite"]
 DacConnection = Literal["usb", "i2s"]
 ClockDomainContract = Literal[
@@ -128,27 +126,6 @@ class LatencyFloor:
 
 
 @dataclass(frozen=True)
-class ChannelMapEntry:
-    """One CamillaDSP-output → physical-DAC-channel routing hop for the active lane.
-
-    Pure routing: "CamillaDSP active-output channel ``camilla_out_index`` drives
-    physical DAC channel ``physical_dac_channel``." It carries **no gain** —
-    CamillaDSP owns the gain stage — so a `dac_channel_map` is a permutation, not
-    a mixer. This keeps lane→pin assignment as declarative data the transport
-    reads rather than a per-DAC code branch.
-    """
-
-    camilla_out_index: int
-    physical_dac_channel: int
-
-    def __post_init__(self) -> None:
-        if self.camilla_out_index < 0:
-            raise ValueError("camilla_out_index must be >= 0")
-        if self.physical_dac_channel < 0:
-            raise ValueError("physical_dac_channel must be >= 0")
-
-
-@dataclass(frozen=True)
 class DacProfile:
     """One supported final-output DAC shape.
 
@@ -188,10 +165,7 @@ class DacProfile:
     requires_same_usb_bus: bool = False
     supports_active_outputd_lane: bool = False
     active_outputd_lane_channels: int | None = None
-    supports_active_crossover_commissioning: bool = False
-    dac_channel_map: tuple[ChannelMapEntry, ...] | None = None
     mixer_controls: tuple[MixerControl, ...] = ()
-    validation_profile: str | None = None
     chip_aec_qualification: ChipAecQualification = "needs_calibration"
     chip_aec_detail: str = ""
     dtoverlay: str | None = None
@@ -334,46 +308,6 @@ class DacProfile:
                 f"{self.id}: active_outputd_lane_channels requires "
                 "supports_active_outputd_lane"
             )
-        if self.supports_active_crossover_commissioning and not (
-            self.is_coherent_single() and self.supports_active_outputd_lane
-        ):
-            raise ValueError(
-                f"{self.id}: active crossover commissioning requires one "
-                "coherent active-output device"
-            )
-        if self.dac_channel_map is not None:
-            # The channel map routes the active lane; it only means something
-            # for a DAC that has one. Validate it is a clean permutation of the
-            # transport width onto distinct, in-range physical channels — a
-            # malformed map is fail-closed at import, before any deploy.
-            if not self.supports_active_outputd_lane:
-                raise ValueError(
-                    f"{self.id}: dac_channel_map requires supports_active_outputd_lane"
-                )
-            width = self.active_outputd_lane_channels
-            if len(self.dac_channel_map) != width:
-                raise ValueError(
-                    f"{self.id}: dac_channel_map needs one entry per active-lane "
-                    f"channel ({width}), got {len(self.dac_channel_map)}"
-                )
-            camilla_indexes = sorted(e.camilla_out_index for e in self.dac_channel_map)
-            if camilla_indexes != list(range(width)):
-                raise ValueError(
-                    f"{self.id}: dac_channel_map camilla_out_index values must be "
-                    f"exactly 0..{width - 1} with no gaps or duplicates"
-                )
-            physical = [e.physical_dac_channel for e in self.dac_channel_map]
-            if len(set(physical)) != len(physical):
-                raise ValueError(
-                    f"{self.id}: dac_channel_map maps two lanes to the same "
-                    "physical_dac_channel"
-                )
-            for channel in physical:
-                if channel >= self.physical_output_count:
-                    raise ValueError(
-                        f"{self.id}: dac_channel_map physical_dac_channel {channel} "
-                        f"exceeds physical_output_count {self.physical_output_count}"
-                    )
 
     def is_coherent_single(self) -> bool:
         """True when this is one device on a single coherent clock domain.
@@ -485,15 +419,8 @@ HIFIBERRY_DAC8X = DacProfile(
     # literal removes the whole fuzzy-family class rather than adding a
     # second lookahead to it.
     supported_card_matches=(r"\bsnd_rpi_hifiberry_dac8x\b",),
-    # The DAC-agnostic active-output transport (Stage 1) can now carry a
-    # coherent single DAC of any width, so the 8-channel DAC8x rides the
-    # active-crossover lane end-to-end. The transport builds an identity
-    # channel map when dac_channel_map is None (one coherent clock domain,
-    # no permutation needed). Width is DATA, not a per-DAC code branch.
     supports_active_outputd_lane=True,
     active_outputd_lane_channels=8,
-    supports_active_crossover_commissioning=True,
-    validation_profile=DAC8X_OUTPUTD_STABILITY_PROFILE,
     chip_aec_qualification="approved",
     chip_aec_detail=(
         "HiFiBerry DAC8x is a measured chip-AEC profile: jts3, Studio "
@@ -615,12 +542,8 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     # EEPROM it stays unroutable and the speaker parks (#2258).
     eeprom_gated_card_matches=(r"^(?!.*pro).*hifiberry.*studio.*soundcard",),
     hat_products=("StudioDAC8x",),
-    # Same active-lane shape as the base DAC8x: a coherent 8-channel single
-    # device on the DAC-agnostic transport (Stage 1). dac_channel_map None =>
-    # identity map.
     supports_active_outputd_lane=True,
     active_outputd_lane_channels=8,
-    validation_profile=DAC8X_OUTPUTD_STABILITY_PROFILE,
     chip_aec_detail=(
         "HiFiBerry DAC8x Studio needs per-profile chip-AEC timing "
         "calibration before arming production chip AEC"

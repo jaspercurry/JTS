@@ -1277,7 +1277,6 @@ def compute_driver_safety_profile(
         "targets": targets,
         "issues": issues,
         "authority": "operator_visible_values",
-        "authorizes_playback": False,
     }
 
 
