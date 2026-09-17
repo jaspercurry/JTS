@@ -1,0 +1,60 @@
+{
+  "kind": "jts_rear_calibration",
+  "schema": 1,
+  "case": "electrical_dsp",
+  "sample_rate_hz": 48000,
+  "phase_convention": "positive_delay_has_negative_phase",
+  "geometry": {
+    "cabinet_back_wall_m": 0.2032,
+    "sources": {
+      "front": null,
+      "rear": null
+    },
+    "details": null
+  },
+  "reference": {
+    "quantity": "electrical_filter_transfer",
+    "units": "linear output/input",
+    "level": null
+  },
+  "conditions": {},
+  "valid_band_hz": null,
+  "assumptions": [
+    "Untuned diagnostic seed: the acoustic 200 Hz ratio is not an electrical calibration.",
+    "Band-limiting filters remain to be fitted from the full saved dataset, including their phase."
+  ],
+  "included_stages": {
+    "front": [],
+    "rear": []
+  },
+  "common_delay_ms": 0.0,
+  "rear_muted": true,
+  "front": {
+    "gain_db": 0.0,
+    "inverted": false,
+    "delay_ms": 0.0,
+    "muted": false,
+    "filters": []
+  },
+  "boundary": {
+    "front": [],
+    "rear": []
+  },
+  "rear": {
+    "mode": "branches",
+    "bass": {
+      "gain_db": 0.0,
+      "inverted": false,
+      "delay_ms": 0.0,
+      "muted": false,
+      "filters": []
+    },
+    "cancellation": {
+      "gain_db": -0.84,
+      "inverted": true,
+      "delay_ms": 1.14,
+      "muted": false,
+      "filters": []
+    }
+  }
+}
