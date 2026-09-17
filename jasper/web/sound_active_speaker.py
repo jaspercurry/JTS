@@ -55,7 +55,6 @@ from jasper.output_topology import (
     repin_composite_child_serials,
 )
 from jasper.output_hardware import (
-    OutputHardwareState,
     detected_hardware_adoption_precondition,
     load_state as load_output_hardware_state,
     topology_hardware_from_state,
@@ -79,22 +78,13 @@ I2S_HAT_REBOOT_REQUIRED_PATH = "/run/jasper-output-hardware/i2s-hat-reboot-requi
 I2S_HAT_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 
 
-class OutputTopologyRevisionConflict(ValueError):
-    """Raised when a browser posts a topology based on stale saved state."""
-
-
 class OutputHardwareRequestConflict(ValueError):
-    """A detected-hardware action no longer names the state it was offered for.
-
-    Raised by both hardware-mismatch actions — the full reset and the
-    same-shape re-pin — when the saved topology or the reconciler-owned
-    hardware observation moved between rendering the offer and clicking it.
-    """
+    """The attached hardware cannot be re-pinned."""
 
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(
-            "Speaker setup or detected hardware changed. Review it and try again."
+            "No matching hardware to re-pin. Refresh the hardware view and review."
         )
 
 
@@ -224,14 +214,12 @@ def _save_i2s_hat_payload(
 
 
 def _output_topology_payload() -> dict[str, Any]:
-    snapshot = load_output_topology_snapshot()
-    topology = snapshot.topology
+    topology = load_output_topology_snapshot().topology
     observed_hardware = load_output_hardware_state()
     repin = composite_serial_repin_plan(topology, observed_hardware)
 
     return {
         "output_topology": topology.to_dict(include_evaluation=True),
-        "topology_revision": snapshot.revision,
         "output_hardware": (
             observed_hardware.to_dict() if observed_hardware is not None else None
         ),
@@ -301,31 +289,14 @@ def _refuse_duplicate_physical_outputs(topology: OutputTopology) -> None:
         raise OutputTopologyError(duplicates[0]["message"])
 
 
-def _save_output_topology_payload(
-    raw: dict[str, Any],
-    *,
-    require_revision: bool = False,
-) -> dict[str, Any]:
-    """Replace saved speaker intent only after audio is proven parked."""
+def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Save speaker intent, parking audio when the layout changes."""
 
     from jasper.active_speaker.runtime_convergence import park_and_commit_topology
     from jasper.output_topology_runtime import RECONCILE_UNIT, trigger_reconcile
 
-    def verify_revision(revision: str) -> None:
-        if not require_revision:
-            return
-        expected_revision = str(raw.get("topology_revision") or "")
-        if not expected_revision or expected_revision != revision:
-            raise OutputTopologyRevisionConflict(
-                "speaker layout changed in another session; refresh hardware before saving"
-            )
-
-    # One domain-owned transaction covers stale validation, park, durable
-    # commit, and the synchronous reconcile request. A competing writer cannot
-    # pass validation on the same revision or resurrect pre-reset state.
     with output_topology_mutation() as mutation:
         snapshot = mutation.snapshot()
-        verify_revision(snapshot.revision)
         raw_topology = raw.get("output_topology", raw)
         topology = OutputTopology.from_mapping(raw_topology)
         _refuse_undrivable_layout(topology)
@@ -336,7 +307,9 @@ def _save_output_topology_payload(
             mutation.save(topology)
             return topology
 
-        runtime = park_and_commit_topology(snapshot.topology, commit_topology)
+        runtime = park_and_commit_topology(
+            snapshot.topology, commit_topology, replacement=topology,
+        )
         reconcile = trigger_reconcile(reason="output_topology_save")
         if not reconcile.get("ok"):
             log_event(
@@ -360,6 +333,8 @@ def _save_output_topology_payload(
         warnings=len(evaluation["warnings"]),
         software_guards_requested=str(guards_changed),
         runtime_convergence_ok=runtime.convergence.ok,
+        live_applied=runtime.convergence.live_applied,
+        parked=runtime.parked.live_applied,
         reconcile_ok=reconcile.get("ok"),
         reconcile_converging=reconcile.get("converging"),
         safe_stop=str(safe_stop.get("status")),
@@ -395,45 +370,6 @@ def _save_output_topology_payload(
     }
 
 
-def _verified_detected_hardware(
-    raw: Mapping[str, Any], *, revision: str
-) -> OutputHardwareState | None:
-    """Validate the browser's topology and detected-hardware snapshot.
-
-    The reconciler owns the observed hardware file, so callers re-run this
-    check after parking, before they commit. Returns the reconciler's
-    observation whatever its adoption verdict; each action decides what it can
-    do with it.
-    """
-
-    expected_revision = raw.get("topology_revision")
-    expected_identity = raw.get("detected_hardware_identity")
-    if not isinstance(expected_revision, str) or not expected_revision:
-        raise ValueError("topology_revision is required")
-    if not isinstance(expected_identity, str) or not expected_identity:
-        raise ValueError("detected_hardware_identity is required")
-    if expected_revision != revision:
-        raise OutputHardwareRequestConflict("topology_changed")
-    observed = load_output_hardware_state()
-    adoption = detected_hardware_adoption_precondition(observed)
-    if expected_identity != adoption["identity"]:
-        raise OutputHardwareRequestConflict("detected_hardware_changed")
-    return observed
-
-
-def _reset_request_hardware(
-    raw: Mapping[str, Any], *, revision: str
-) -> OutputHardware | None:
-    """Return the detected hardware a reset may adopt, or ``None``."""
-
-    observed = _verified_detected_hardware(raw, revision=revision)
-    if observed is None:
-        return None
-    if not detected_hardware_adoption_precondition(observed)["allowed"]:
-        return None
-    return OutputHardware.from_mapping(topology_hardware_from_state(observed))
-
-
 def _reset_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
     """Clear speaker setup to a silent unconfigured topology.
 
@@ -452,18 +388,19 @@ def _reset_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
 
     with output_topology_mutation() as mutation:
         snapshot = mutation.snapshot()
-        _reset_request_hardware(raw, revision=snapshot.revision)
         safe_stop = _active_speaker_stop_payload()
         setup_reset: dict[str, Any]
         saved_revision: str
 
         def commit_unconfigured() -> OutputTopology:
             nonlocal saved_revision, setup_reset
-            detected_hardware = _reset_request_hardware(
-                raw, revision=snapshot.revision
-            )
-            if detected_hardware is not None:
-                after = new_topology_draft(hardware=detected_hardware)
+            observed = load_output_hardware_state()
+            if observed is not None and detected_hardware_adoption_precondition(
+                observed
+            )["allowed"]:
+                after = new_topology_draft(hardware=OutputHardware.from_mapping(
+                    topology_hardware_from_state(observed)
+                ))
             else:
                 # Recovery remains possible without attached hardware. Preserve
                 # the last known DAC description only as topology metadata;
@@ -554,7 +491,7 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
 
     with output_topology_mutation() as mutation:
         snapshot = mutation.snapshot()
-        observed = _verified_detected_hardware(raw, revision=snapshot.revision)
+        observed = load_output_hardware_state()
         plan = composite_serial_repin_plan(snapshot.topology, observed)
         if plan is None:
             raise OutputHardwareRequestConflict("repin_unavailable")
@@ -562,11 +499,8 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
         saved_revision = ""
 
         def commit_repin() -> OutputTopology:
-            # Re-read the reconciler's observation after parking: a dongle can
-            # leave between the offer and the commit, and its identity token is
-            # what proves this re-pin still names attached hardware.
             nonlocal saved_revision
-            current = _verified_detected_hardware(raw, revision=snapshot.revision)
+            current = load_output_hardware_state()
             after = repin_composite_child_serials(snapshot.topology, current)
             saved_revision = mutation.save(after)
             return after

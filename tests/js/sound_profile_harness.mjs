@@ -1507,7 +1507,6 @@ async function testComponentFirstResearchFlowIsOrderedAndAdvancedIsFlat() {
         topologySaves.push(body.output_topology);
         return Promise.resolve(response({
           output_topology: body.output_topology,
-          topology_revision: "component-style-1",
         }));
       }
       return Promise.resolve(response(activeTwoWayTopologyPayload()));
@@ -2046,7 +2045,6 @@ async function testSpeakerLayoutMatrixAndRearAssignment() {
           if (options.method === 'POST') saves.push(JSON.parse(options.body).output_topology);
           return Promise.resolve(response({
             output_topology: saves.at(-1) || topology,
-            topology_revision: 'saved',
             active_playback_route: activeRoutePayload({transport_channel_count: 8}),
           }));
         },
@@ -2113,7 +2111,6 @@ async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
         saves.push(body.output_topology);
         return Promise.resolve(response({
           output_topology: body.output_topology,
-          topology_revision: "saved-1",
         }));
       }
       return Promise.resolve(response(topology));
@@ -2171,7 +2168,6 @@ async function testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview() {
         saves.push(body.output_topology);
         return Promise.resolve(response({
           output_topology: body.output_topology,
-          topology_revision: "saved-1",
         }));
       }
       return Promise.resolve(response(topology));
@@ -2375,7 +2371,6 @@ async function testThreeOutputChannelSelectorDoesNotAutoAssignPeers() {
         saves.push(body.output_topology);
         return Promise.resolve(response({
           output_topology: body.output_topology,
-          topology_revision: "saved-1",
         }));
       }
       return Promise.resolve(response(topology));
@@ -4588,8 +4583,7 @@ const SWAPPED_DONGLE_MISMATCH = {
 function swappedDonglePayload(overrides = {}) {
   return {
     output_topology: activeTwoWayTopologyPayload(),
-    topology_revision: "sha256:saved",
-    hardware_adoption: { allowed: true, identity: "sha256:hardware-swapped" },
+    hardware_adoption: { allowed: true },
     hardware_mismatch: SWAPPED_DONGLE_MISMATCH,
     hardware_repin: REPIN_PLAN,
     clock_domain: {
@@ -4612,8 +4606,7 @@ async function testRepinOfferDisclosesWhatIsKeptAndWhatMustBeRedone() {
       posts.push({ path, body: JSON.parse(options.body || "{}") });
       return Promise.resolve(response({
         output_topology: activeTwoWayTopologyPayload(),
-        topology_revision: "sha256:repinned",
-        hardware_adoption: { allowed: true, identity: "sha256:hardware-swapped" },
+        hardware_adoption: { allowed: true },
         hardware_repin: null,
         repin: {
           status: "repinned",
@@ -4665,9 +4658,8 @@ async function testRepinOfferDisclosesWhatIsKeptAndWhatMustBeRedone() {
   }
   if (posts.length !== 1 ||
       posts[0].path !== "./output-topology/repin" ||
-      posts[0].body.topology_revision !== "sha256:saved" ||
-      posts[0].body.detected_hardware_identity !== "sha256:hardware-swapped") {
-    fail("the re-pin must post the preconditions it was offered against", { posts });
+      Object.keys(posts[0].body).length !== 0) {
+    fail("the re-pin must post to its endpoint", { posts });
   }
 
   const status = harness.elements.get("status").textContent;
@@ -4688,16 +4680,9 @@ async function testRepinDeclinedOrFailedClearsTheBusyFlag() {
   // worst moment to require one.
   const cases = [
     { name: "declined", confirm: false },
-    { name: "conflict", confirm: true, status: 409, body: {
-      error: "Speaker setup or detected hardware changed. Review it and try again.",
-      output_topology: activeTwoWayTopologyPayload(),
-      topology_revision: "sha256:moved",
-      hardware_adoption: { allowed: true, identity: "sha256:hardware-moved" },
-      hardware_mismatch: swappedDonglePayload().hardware_mismatch,
-      hardware_repin: REPIN_PLAN,
-      clock_domain: swappedDonglePayload().clock_domain,
-      conflict: "detected_hardware_changed",
-    } },
+    { name: "unavailable", confirm: true, status: 409, body: swappedDonglePayload({
+      error: "repin_unavailable", conflict: "repin_unavailable", hardware_repin: null,
+    }) },
     { name: "server error", confirm: true, status: 502, body: {
       error: "JTS could not confirm whether the new DAC was pinned.",
     } },
@@ -4714,6 +4699,10 @@ async function testRepinDeclinedOrFailedClearsTheBusyFlag() {
     const harness = setupHarness(fetchHandler);
     await loadAndSetActiveState(harness);
     globalThis.__jtsConfirm = async () => scenario.confirm;
+    const offerSelector = 'data-act="repin-output-topology"';
+    if (!harness.elements.get("view-body").innerHTML.includes(offerSelector)) {
+      fail("fixture must offer a re-pin", { scenario: scenario.name });
+    }
 
     harness.dispatchClick({ "data-act": "repin-output-topology" });
     await harness.flush(); await harness.flush(); await harness.flush();
@@ -4727,18 +4716,10 @@ async function testRepinDeclinedOrFailedClearsTheBusyFlag() {
         scenario: scenario.name, html,
       });
     }
-    if (!html.includes("Keep setup, pin the new DAC")) {
-      fail("the offer must remain clickable after a declined or failed re-pin", {
+    if (html.includes(offerSelector) !== (scenario.status !== 409)) {
+      fail("an unavailable re-pin must clear the offer; other failures keep it", {
         scenario: scenario.name, html,
       });
-    }
-    if (scenario.name === "conflict") {
-      const status = harness.elements.get("status").textContent;
-      if (!status.includes("Review it and try again")) {
-        fail("a 409 must surface the conflict rather than a generic failure", {
-          status,
-        });
-      }
     }
   }
   return { repinDeclinedOrFailedClearsTheBusyFlag: true };
@@ -4847,7 +4828,6 @@ async function testResetReloadsDesignDraftPastAStaleDirtyForm() {
       draftDeleted = true;
       return Promise.resolve(response({
         output_topology: activeTwoWayTopologyPayload(),
-        topology_revision: "sha256:reset",
         reset: { status: "reset", message: "Speaker setup was reset." },
       }));
     },
@@ -4880,46 +4860,42 @@ async function testResetReloadsDesignDraftPastAStaleDirtyForm() {
 }
 
 async function testFailedResetPreservesCommissioningPanels() {
-  for (const failureStatus of [409, 502]) {
-    const topology = activeTwoWayTopologyPayload();
-    const fetchHandler = baseFetch({
-      "./output-topology": () => Promise.resolve(response({
-        output_topology: topology,
-        topology_revision: "sha256:current",
-      })),
-      "./active-speaker/commissioning-view": () => Promise.resolve(response(
-        commissioningViewPayload({
-          status: "needs_layout",
-          current_step: "layout",
-          stepStatuses: {
-            layout: "active", research: "done",
-            experiment: "todo", profile: "todo",
-          },
-        })
-      )),
-      "./output-topology/reset": () => Promise.resolve(response({
-        error: "reset refused",
-        output_topology: topology,
-        topology_revision: "sha256:current",
-      }, false, failureStatus)),
+  const topology = activeTwoWayTopologyPayload();
+  const fetchHandler = baseFetch({
+    "./output-topology": () => Promise.resolve(response({
+      output_topology: topology,
+    })),
+    "./active-speaker/commissioning-view": () => Promise.resolve(response(
+      commissioningViewPayload({
+        status: "needs_layout",
+        current_step: "layout",
+        stepStatuses: {
+          layout: "active", research: "done",
+          experiment: "todo", profile: "todo",
+        },
+      })
+    )),
+    "./output-topology/reset": () => Promise.resolve(response({
+      error: "reset refused",
+      output_topology: topology,
+    }, false, 502)),
+  });
+  const harness = setupHarness(fetchHandler);
+  await loadAndSetActiveState(harness);
+  const before = harness.elements.get("view-body").innerHTML;
+  if (!before.includes('data-output-step="experiment"')) {
+    fail("fixture must start with the commissioning controls visible", {
+      before,
     });
-    const harness = setupHarness(fetchHandler);
-    await loadAndSetActiveState(harness);
-    const before = harness.elements.get("view-body").innerHTML;
-    if (!before.includes('data-output-step="experiment"')) {
-      fail("fixture must start with the commissioning controls visible", {
-        failureStatus, before,
-      });
-    }
-    globalThis.__jtsConfirm = async () => true;
-    harness.dispatchClick({ "data-act": "reset-output-topology" });
-    await harness.flush(); await harness.flush(); await harness.flush();
-    const after = harness.elements.get("view-body").innerHTML;
-    if (!after.includes('data-output-step="experiment"')) {
-      fail("a failed reset must preserve commissioning panels", {
-        failureStatus, after,
-      });
-    }
+  }
+  globalThis.__jtsConfirm = async () => true;
+  harness.dispatchClick({ "data-act": "reset-output-topology" });
+  await harness.flush(); await harness.flush(); await harness.flush();
+  const after = harness.elements.get("view-body").innerHTML;
+  if (!after.includes('data-output-step="experiment"')) {
+    fail("a failed reset must preserve commissioning panels", {
+      after,
+    });
   }
   return { failedResetPreservesCommissioningPanels: true };
 }
@@ -4930,7 +4906,6 @@ async function testSavedTopologyReconcileFailureNeedsAttention() {
       if ((options.method || "GET") === "POST") {
         return Promise.resolve(response({
           output_topology: topologyPayload(),
-          topology_revision: "sha256:saved",
           save: {
             status: "needs_attention",
             message: "Speaker layout was saved, but audio remains off. Open Status before continuing.",

@@ -44,7 +44,7 @@ from .audio_hardware.usb_port_role import (
     UsbPortRoleState,
     resolve_system_usb_port_role,
 )
-from .json_fields import json_fingerprint, utc_now_iso
+from .json_fields import utc_now_iso
 from .json_fields import issue as _issue
 from .paths import (
     OUTPUT_HARDWARE_STATE_PATH as DEFAULT_STATE_PATH,
@@ -341,50 +341,6 @@ class OutputHardwareState:
         return out
 
 
-def detected_hardware_identity(state: OutputHardwareState | None) -> str:
-    """Return a stable opaque concurrency token for detected output hardware.
-
-    This is deliberately a snapshot *identity*, not a second hardware record.
-    The output-hardware reconciler remains the only writer of observed facts;
-    callers merely echo this token when an action must prove it still applies.
-    ALSA card indexes and ``observed_at`` are volatile, so neither participates.
-    """
-
-    if state is None:
-        payload: dict[str, Any] = {"status": "missing"}
-    else:
-        children = sorted(
-            [
-                {
-                    "device_id": child.device_id,
-                    "vendor_id": child.vendor_id,
-                    "product_id": child.product_id,
-                    "serial": child.serial,
-                    "stable_path": child.stable_path,
-                    "usb_path": child.usb_path,
-                    "controller": child.controller,
-                    "busnum": child.busnum,
-                    "devpath": child.devpath,
-                    "endpoint_sync": child.endpoint_sync,
-                    "has_playback": child.has_playback,
-                }
-                for child in state.child_devices
-            ],
-            key=lambda child: json.dumps(child, sort_keys=True, separators=(",", ":")),
-        )
-        payload = {
-            "profile_id": state.profile_id,
-            "status": state.status,
-            "physical_output_count": state.physical_output_count,
-            "children": children,
-            "issues": sorted(
-                (str(issue.get("severity") or ""), str(issue.get("code") or ""))
-                for issue in state.issues
-            ),
-        }
-    return "sha256:" + json_fingerprint(payload)
-
-
 def detected_hardware_adoption_precondition(
     state: OutputHardwareState | None,
 ) -> dict[str, Any]:
@@ -409,7 +365,6 @@ def detected_hardware_adoption_precondition(
     )
     return {
         "allowed": allowed,
-        "identity": detected_hardware_identity(state),
     }
 
 

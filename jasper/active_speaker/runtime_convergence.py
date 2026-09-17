@@ -2,14 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Park, commit, and live-converge output topology through CamillaDSP.
-
-``runtime_contract`` owns which graph is safe. This module owns the effectful
-topology transaction after that proof. It deliberately does not render DAC
-configs, reconcile hardware, or write outputd state; those belong to the root
-audio-hardware reconciler. It only stops outputd before topology publication so
-an already-armed direct DAC lane cannot bypass the parked CamillaDSP graph.
-"""
+"""Park, commit, and live-converge output topology through CamillaDSP."""
 
 from __future__ import annotations
 
@@ -33,6 +26,7 @@ from jasper.output_topology import (
     OutputTopology,
     load_output_topology_strict,
     stamp_statefile_convergence,
+    topology_config_fingerprint,
 )
 from jasper.service_units import OUTPUTD_SERVICE
 
@@ -41,37 +35,34 @@ OUTPUTD_UNIT = OUTPUTD_SERVICE
 
 @dataclass(frozen=True)
 class RuntimeConvergenceResult:
-    """One attempted live-graph convergence."""
-
-    decision: SafeGraphDecision
+    decision: SafeGraphDecision | None
     live_applied: bool
     error: str | None = None
 
     @property
     def ok(self) -> bool:
-        return self.decision.ok and self.live_applied
+        return self.error is None and self.decision is not None and self.decision.ok and self.live_applied
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ok": self.ok,
-            "decision": self.decision.to_dict(),
+            "decision": self.decision.to_dict() if self.decision else None,
             "live_applied": self.live_applied,
             "error": self.error,
         }
 
 
+PARK_SKIPPED = RuntimeConvergenceResult(None, False)
+
+
 @dataclass(frozen=True)
 class TopologyRuntimeMutationResult:
-    """Runtime outcome around one committed topology replacement."""
-
     parked: RuntimeConvergenceResult
     convergence: RuntimeConvergenceResult
 
 
 @dataclass(frozen=True)
 class StatefileConvergenceResult:
-    """One boot-statefile seeding pass: the decision and what it wrote."""
-
     decision: SafeGraphDecision
     topology: OutputTopology
     statefile_written: bool
@@ -314,24 +305,21 @@ def park_and_commit_topology(
     topology: OutputTopology,
     commit: Callable[[], OutputTopology],
     *,
+    replacement: OutputTopology | None = None,
     controller_factory: Callable[[], Any] | None = None,
     profile_path: str | Path | None = None,
     config_dir: str | Path | None = None,
     stay_parked: bool = False,
     parked_reason: str | None = None,
 ) -> TopologyRuntimeMutationResult:
-    """Park, durably commit topology, then converge under one graph lock.
-
-    ``stay_parked`` keeps the speaker silent after a composite re-pin.
-    Apply re-proves the graph's volume limit and declared floors, runs
-    ``camilladsp --check``, and rewrites the applied record before playback
-    resumes. It does not verify wiring.
-    """
+    """Park changed intent before commit; re-pins stay parked until Apply."""
 
     return asyncio.run(
         _park_and_commit_topology(
             topology,
             commit,
+            park=(replacement is None or topology_config_fingerprint(replacement)
+                  != topology_config_fingerprint(topology)),
             controller_factory=controller_factory,
             profile_path=profile_path,
             config_dir=config_dir,
@@ -345,6 +333,7 @@ async def _park_and_commit_topology(
     topology: OutputTopology,
     commit: Callable[[], OutputTopology],
     *,
+    park: bool,
     controller_factory: Callable[[], Any] | None,
     profile_path: str | Path | None,
     config_dir: str | Path | None,
@@ -365,26 +354,29 @@ async def _park_and_commit_topology(
         source="output_topology.replace",
         lock_path=lock_path,
     ):
-        outputd_stop = manage_units(
-            OUTPUTD_UNIT,
-            verb="stop",
-            reason="output topology replace",
-            no_block=False,
-            timeout=15.0,
-        )
-        if not outputd_stop.get("ok"):
-            raise RuntimeError(
-                str(outputd_stop.get("error") or "could not stop outputd safely")
+        if park:
+            outputd_stop = manage_units(
+                OUTPUTD_UNIT,
+                verb="stop",
+                reason="output topology replace",
+                no_block=False,
+                timeout=15.0,
             )
+            if not outputd_stop.get("ok"):
+                raise RuntimeError(
+                    str(outputd_stop.get("error") or "could not stop outputd safely")
+                )
         try:
             prior_path = await controller.get_config_file_path(best_effort=True)
         except (OSError, RuntimeError, ValueError, TypeError, AttributeError):
             prior_path = None
-        parked = await _park_locked(topology, controller)
-        if not parked.ok:
-            raise RuntimeError(
-                parked.error or "could not safely park audio before changing topology"
-            )
+        parked = PARK_SKIPPED
+        if park:
+            parked = await _park_locked(topology, controller)
+            if not parked.ok:
+                raise RuntimeError(
+                    parked.error or "could not safely park audio before changing topology"
+                )
         # A durable atomic write still raises on a pre-publish content-fsync
         # failure (nothing published, safe to propagate and stay parked). A
         # post-publish directory-fsync failure is fail-soft in atomic_io: the
@@ -400,10 +392,7 @@ async def _park_and_commit_topology(
             stay_parked=stay_parked,
             parked_reason=parked_reason,
         )
-        return TopologyRuntimeMutationResult(
-            parked=parked,
-            convergence=convergence,
-        )
+        return TopologyRuntimeMutationResult(parked, convergence)
 
 
 __all__ = [
