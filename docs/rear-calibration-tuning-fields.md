@@ -21,6 +21,10 @@ baseline-profile apply (`jasper-round apply <fingerprint>`) is the only
 path that carries a banked candidate onto the box, and the wizard's
 editing panel calls that same judge/compose/apply path in-process rather
 than writing around it. See [ADR-0322](adr/0322-rear-calibration-is-a-candidate-section.md).
+The branch filters themselves can be fitted from a target table, or re-fitted
+from measured front-alone and rear-alone responses, with
+[`scripts/fit-rear-branches.py`](../scripts/fit-rear-branches.py) — its
+`--help` carries the input shapes and the phase/sign conventions.
 
 ## Document header (both cases)
 
@@ -69,7 +73,7 @@ Use it for measurement setup notes (mic distance, ambient noise, dataset id).
 
 | Field | Type / range |
 |---|---|
-| `gain_db` | number, CamillaDSP's own `-150..150` dB range (runtime adoption further clamps rear branches to `<= 0` dB, ADR-0322) |
+| `gain_db` | number, an attenuation: `MIN_CHAIN_GAIN_DB` (`-150`) to `0` dB, for the front chain and both rear branches. Realize a rear branch the fit wants above unity by attenuating the other two chains equally — a common shift leaves every rear/front ratio unchanged |
 | `inverted` | bool |
 | `delay_ms` | any finite number. `front.delay_ms` is relative to the stage input; branch `delay_ms` is relative to the front reference. The compiler refuses a branch whose `common_delay_ms + front.delay_ms + branch.delay_ms` is negative — realize a negative relative rear delay by raising `common_delay_ms` instead |
 | `muted` | bool |
