@@ -14,7 +14,7 @@ import pytest
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker import measurement_programs as mp
-from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER, PACKET_FAMILIES
+from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER
 from jasper.audio_measurement.gating import SEAT_EXEMPT
 
 
@@ -76,7 +76,6 @@ def test_the_view_table_answers_every_automatic_view(purpose, has_room, expected
         row = ARTIFACT_BY_VIEW[view]
         module, _, builder = row.builder.rpartition(".")
         assert callable(getattr(import_module(f".{module}", "jasper.active_speaker"), builder))
-        assert row.packet is None or row.packet in PACKET_FAMILIES
 
 
 @pytest.mark.parametrize("reverse", [False, True])

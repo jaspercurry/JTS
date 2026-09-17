@@ -72,7 +72,7 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
 
 def bookkeeping_views(purpose: str, *, has_room: bool = False) -> tuple[tuple[str, bool, bool], ...]:
     """View name, per-set scope, and whether it grades against the base."""
-    from .round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER  # lazy: the view table reads this module
+    from .round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER  # lazy: cycle — round_view_artifacts imports this module at module level
 
     wanted = PURPOSE_ROOM if purpose == PURPOSE_SPEAKER and has_room else purpose
     rows = ((name, ARTIFACT_BY_VIEW[name]) for name in BOOKKEEPING_ORDER)
