@@ -218,6 +218,45 @@ async def _control(mux, command: str) -> dict:
     return json.loads(writer.body)
 
 
+@pytest.mark.parametrize(
+    ("command", "method", "args"),
+    [
+        ("STATUS", "_control_status", ()),
+        ("AUTO", "auto_select", ()),
+        ("NOTIFY spotify", "_control_notify", ("spotify",)),
+        ("PREEMPT airplay", "_control_preempt", ("airplay",)),
+        ("SELECT spotify", "_control_select", ("spotify",)),
+        ("TEST_SELECT correction owner", "select_test_fanin_label",
+         ("correction", "owner")),
+        ("TEST_RELEASE owner", "release_test_fanin_label", ("owner",)),
+        # Lines no verb's shape accepts: too many, too few, none at all.
+        ("STATUS now", None, None),
+        ("NOTIFY", None, None),
+        ("TEST_SELECT correction", None, None),
+        ("TEST_RELEASE a b", None, None),
+        ("NOPE", None, None),
+    ],
+)
+async def test_control_verb_table_parses_each_shape(mux, command, method, args):
+    """One parse for the whole vocabulary: a line either reaches its verb's
+    method with that verb's arguments, or reaches none and is refused."""
+    handlers = {
+        verb.method: AsyncMock(return_value={"routed": verb.method})
+        for verb in mux_module._CONTROL_VERBS.values()
+    }
+    for name, handler in handlers.items():
+        setattr(mux, name, handler)
+
+    payload = await _control(mux, command)
+
+    if method is None:
+        assert "error" in payload
+        assert not any(h.await_count for h in handlers.values())
+    else:
+        assert payload == {"routed": method}
+        handlers[method].assert_awaited_once_with(*args)
+
+
 async def test_preempt_control_command_runs_the_one_preempt_path(mux):
     """The socket verb is a thin front door onto ``_pause`` — the same
     escalation a lost arbitration runs, so no caller needs its own weaker
