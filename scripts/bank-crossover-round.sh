@@ -86,8 +86,10 @@ remote "sudo cat /var/lib/jasper/active_speaker_crossover_v2_state.json 2>/dev/n
 state_status="unavailable"
 python_bin="${PYTHON:-$REPO_ROOT/.venv/bin/python}"
 [[ -x "$python_bin" ]] || python_bin=python3
-if resolved="$(PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$python_bin" - "$DEST" "$BUNDLE" <<'PYTHON'
-import json
+# Not a here-document: bash feeds one to the child through a pipe it writes
+# before exec, from the process that will read it, and under heavy load on
+# macOS that write has been seen to block forever. An argv string has no pipe.
+match_state_py='import json
 import shutil
 import sys
 from pathlib import Path
@@ -105,8 +107,8 @@ record["missing"] = [] if state is not None else ["state.json"]
 record["state_reason"] = reason
 provenance.write_text(json.dumps(record, indent=2) + "\n")
 print("ok" if state is not None else reason or "source_absent")
-PYTHON
-)"; then
+'
+if resolved="$(PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$python_bin" -c "$match_state_py" "$DEST" "$BUNDLE")"; then
     state_status="$resolved"
 fi
 rm -f "$DEST/.current-state.json"

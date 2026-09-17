@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import json
+import signal
 import sys
 import tarfile
 import pytest
@@ -22,13 +23,23 @@ def _run(
     *args: str, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     # A named invalid host satisfies _lib.sh without selecting a real speaker.
-    return subprocess.run(
+    # Own session: a timeout kills the script's whole tree, not only the
+    # outer bash.
+    proc = subprocess.Popen(
         ["bash", str(SCRIPT), *args],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=30,
+        start_new_session=True,
         env=env if env is not None else {**os.environ, "PI_HOST": "jts9.invalid"},
     )
+    try:
+        out, err = proc.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        raise
+    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
 
 def test_syntax_is_valid():
