@@ -16,7 +16,9 @@ from jasper.active_speaker.branch_peak import stimulus_branch_peaks_dbfs
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.path_safety import staged_target_signature, topology_target_signature
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, SpeakerBaselineProfile
-from jasper.active_speaker.rear_calibration import diagnostic_seed, rear_stage_mixer_names
+from jasper.active_speaker.rear_calibration import (
+    MAX_ALLPASS_Q, diagnostic_seed, rear_stage_mixer_names,
+)
 from jasper.active_speaker.runtime_contract import active_ring_channels_for_topology
 from jasper.active_speaker.safe_playback import playback_target_signature
 from jasper.bass_extension.dynamic_graph import validated_base_graph
@@ -535,3 +537,52 @@ def test_the_emitted_baseline_absorbs_exactly_the_stages_peak():
         pytest.approx(-emit.rear_branch_sum_headroom_db(_rear_document()), abs=0.001)
     muted = yaml.safe_load(_cardioid_baseline(_rear_document(rear_muted=True))[2])
     assert muted["filters"]["active_baseline_headroom"]["parameters"]["gain"] == 0.0
+
+
+def _muted_rear_front(*filters: dict) -> dict:
+    """A document whose only audible chain is the front one."""
+    return _branches(rear_muted=True, front=_chain(filters=list(filters)))
+
+
+# A shelf CamillaDSP realises at the q the graph carries: at the document's
+# q ceiling its corner overshoots the passband, and the overshoots cascade.
+_RESONANT_LOWSHELF = _biquad("Lowshelf", freq=200.0, q=1.0, gain=-12.0)
+
+# An all-pass at the document's q ceiling: unity magnitude, but its phase
+# rotation is what steers the branch sum, and it is the narrowest rotation the
+# vocabulary admits.
+_NARROW_ALLPASS = _biquad("Allpass", freq=200.0, q=MAX_ALLPASS_Q)
+
+
+@pytest.mark.parametrize("document,expected", [
+    pytest.param(_muted_rear_front(deepcopy(_RESONANT_LOWSHELF)), 0.782, id="a_resonant_shelf_overshoots"),
+    pytest.param(_muted_rear_front(*[deepcopy(_RESONANT_LOWSHELF) for _ in range(16)]),
+                 12.512, id="sixteen_shelves_cascade"),
+    pytest.param(
+        _rear_document(rear={"mode": "fir", "coefficients": [1.0], "sample_rate_hz": 48000,
+                             "normalization": "as_supplied", "added_latency_ms": 0.0, "sha256": ""},
+                       front=_chain(filters=[deepcopy(_RESONANT_HIGHPASS)])),
+        1.2493, id="a_fir_rear_still_charges_the_front_chain",
+    ),
+])
+def test_the_charge_bounds_every_term_the_graph_can_raise(document, expected):
+    """An upper bound, so a term is evaluated rather than argued away: shelf
+    steepness the graph carries verbatim, and the front chain in every rear mode.
+    """
+    assert emit.rear_branch_sum_headroom_db(document) == pytest.approx(expected, abs=0.005)
+
+
+def test_a_narrow_allpass_peak_cannot_hide_between_grid_points():
+    """An all-pass rotates one branch past the other; at the vocabulary's q
+    ceiling the summed peak is narrow enough that the background grid alone
+    missed it. Truth here is a 400k-point reference, not another grid.
+    """
+    document = _branches(cancellation=_chain(inverted=True, filters=[deepcopy(_NARROW_ALLPASS)]))
+    dense = np.geomspace(1.0, 23995.2, 400_000)
+    summed = sum(
+        emit._rear_stage_chain_response(document["rear"][branch], dense, delay_ms=0.0)
+        for branch in ("bass", "cancellation")
+    )
+    truth = 20.0 * np.log10(np.max(np.abs(summed)))
+    assert truth > 5.0
+    assert emit.rear_branch_sum_headroom_db(document) == pytest.approx(truth, abs=0.05)

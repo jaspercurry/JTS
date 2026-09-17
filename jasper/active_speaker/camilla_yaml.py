@@ -590,7 +590,7 @@ def _rear_stage_chain_response(
     """
     import numpy as np  # lazy: the cardioid charge is the only emit path needing NumPy
 
-    from .branch_chain import camilla_filter_response
+    from .branch_chain import camilla_filter_response  # lazy: cycle with branch_chain
 
     if chain["muted"]:
         return np.zeros(freqs.shape, dtype=np.complex128)
@@ -613,36 +613,48 @@ def rear_branch_sum_headroom_db(document: Mapping[str, Any] | None) -> float:
     cardioid graph can exceed the program it was handed. The charge is the
     stage's REALISED peak — every chain evaluated as the complex response of its
     gain, polarity, delay and filters, the two rear branches summed as complex
-    numbers, and the louder of that sum and the front chain taken across the
-    domain. The branches never see one band at full gain (the bass branch
-    low-passes; the cancellation branch high-passes AND inverts), so charging
-    the in-phase sum of their gains charged 5.372 dB on jts3's own fitted
-    document against a realised +0.194 dB. A STEADY-TONE bound: overshoot
+    numbers, and the louder of that sum and the front chain taken across
+    :func:`~.branch_chain.camilla_evaluation_grid`. The branches never see one
+    band at full gain (the bass branch low-passes; the cancellation branch
+    high-passes AND inverts), so charging the in-phase sum of their gains cost
+    5.372 dB on jts3's own fitted document against a realised +0.194 dB.
+
+    An UPPER BOUND on what the emitted graph can do, so every term that can put
+    the stage above unity is evaluated, not argued away: shelf and high/low-pass
+    resonance, all-pass phase rotation (bounded at
+    ``rear_calibration.MAX_ALLPASS_Q`` so the grid resolves it), and the front
+    chain in EVERY rear mode. The one thing not modelled is a ``fir`` rear's
+    taps, which cannot reach the runtime: the candidate boundary refuses
+    ``rear.mode == "fir"`` in v1 (ADR-0322). A STEADY-TONE bound: overshoot
     between grid points stays backstopped by the per-output soft-clip limiter.
     See ADR-0324.
     """
-    rear = (document or {}).get("rear") or {}
-    if not document or rear.get("mode") != "branches":
+    # An acoustic-targets document carries no electrical chains at all; the
+    # splice refuses it outright a few steps later (``_rear_calibration_graph``).
+    if not document or document["case"] != "electrical_dsp":
         return 0.0
     import numpy as np  # lazy: the cardioid charge is the only emit path needing NumPy
 
-    from .branch_chain import CHAIN_GRID_HZ, camilla_filter_response
+    from .branch_chain import (  # lazy: cycle with branch_chain
+        camilla_evaluation_grid, camilla_filter_response,
+    )
 
-    freqs = CHAIN_GRID_HZ
+    rear = document["rear"]
+    branches = [rear[branch] for branch in ("bass", "cancellation")] if rear["mode"] == "branches" else []
     boundary = document["boundary"]
+    freqs = camilla_evaluation_grid([
+        *document["front"]["filters"], *boundary["front"], *boundary["rear"],
+        *(item for branch in branches for item in branch["filters"]),
+    ])
     # Both branches and the front carry the common and front delays; only the
     # branches' own delays steer the sum, but the shared term costs nothing.
     shared_delay_ms = float(document["common_delay_ms"]) + float(document["front"]["delay_ms"])
-    if document["rear_muted"]:
-        summed = np.zeros(freqs.shape, dtype=np.complex128)
-    else:
-        summed = sum(
-            _rear_stage_chain_response(
-                rear[branch], freqs,
-                delay_ms=shared_delay_ms + float(rear[branch]["delay_ms"]),
+    summed = np.zeros(freqs.shape, dtype=np.complex128)
+    if branches and not document["rear_muted"]:
+        for branch in branches:
+            summed = summed + _rear_stage_chain_response(
+                branch, freqs, delay_ms=shared_delay_ms + float(branch["delay_ms"]),
             )
-            for branch in ("bass", "cancellation")
-        )
         if boundary["rear"]:
             summed = summed * camilla_filter_response(boundary["rear"], freqs)
     front = _rear_stage_chain_response(

@@ -30,6 +30,12 @@ MAX_FILTERS_PER_CHAIN = 16
 # CamillaDSP's own Gain floor; a chain at it is silent.
 MIN_CHAIN_GAIN_DB = -150.0
 MAX_RESONANT_Q = 1.0
+# An all-pass passes every magnitude but steers the branch SUM through its phase
+# rotation, and the headroom charge reads that sum on a finite grid
+# (``branch_chain.camilla_evaluation_grid``). Past this Q the rotation is
+# narrower than the grid resolves, so a peak could hide between two samples.
+# Cabinet-scale boundary correction needs nothing near it.
+MAX_ALLPASS_Q = 10.0
 MAX_COMBO_ORDER = 8
 
 
@@ -76,6 +82,8 @@ def _filters(raw: Any, sample_rate: int, field: str) -> None:
                 raise RearCalibrationError(f"{name}.q must be positive")
             if kind not in {"Peaking", "Allpass"} and q > MAX_RESONANT_Q:
                 raise RearCalibrationError(f"{name}.q must not exceed {MAX_RESONANT_Q} and resonate")
+            if kind == "Allpass" and q > MAX_ALLPASS_Q:
+                raise RearCalibrationError(f"{name}.q must not exceed {MAX_ALLPASS_Q:g} and outrun the headroom grid")
         elif entry["type"] == "BiquadCombo" and kind in COMBOS:
             keys = {"type", "freq", "order"}
             order = params.get("order")

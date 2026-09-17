@@ -208,16 +208,18 @@ FILTER_EPSILON_DB = 0.05
 # end; Notch is a surgical gain-less cut.
 GAINLESS_BIQUAD_TYPES = frozenset({"Highpass", "Lowpass", "Notch"})
 
-# The ONE steepness every Lowshelf/Highshelf in this codebase is both MODELLED
-# at and EMITTED at: the Butterworth (non-resonant, no-overshoot) shelf Q.
+# The ONE steepness every preference-EQ and linearization Lowshelf/Highshelf is
+# both MODELLED at and EMITTED at: the Butterworth (non-resonant, no-overshoot)
+# shelf Q.
 #
-# It is a single constant on purpose. Every evaluator that draws or scores a
-# shelf hardcodes this Q -- jasper.sound.profile._biquad_coeffs (the /sound/
-# preview), deploy/assets/sound-profile/js/eq-math.js (its browser twin), and
-# jasper.active_speaker.linearization_fit (the fit engine's residual/realization
-# gate). None of them reads a per-band steepness, so a per-band steepness is not
-# expressible: a shelf emitted at any other Q would be a filter no evaluator in
-# this system can see, which is exactly the PR-L2 defect (2026-07-27).
+# It is a single constant on purpose. No band in those domains carries a
+# steepness field (FilterSpec.q is None for a shelf), so none is expressible
+# there: a shelf emitted at any other Q would be a filter their evaluators
+# cannot see, which is exactly the PR-L2 defect (2026-07-27). The shared
+# evaluator jasper.sound.profile._biquad_coeffs applies this Q to any shelf
+# that declares no q, and honours one that does -- the rear calibration
+# document (ADR-0318) is the one place that declares a shelf q, and ADR-0324's
+# headroom charge must read it as CamillaDSP will.
 #
 # CamillaDSP's ``slope: 6.0`` is NOT Butterworth, despite reading like the
 # familiar 6 dB/octave figure. CamillaDSP's advanced shelf takes S = slope/12
