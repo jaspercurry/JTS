@@ -62,8 +62,9 @@ def reset_prescription_document(
 def compose_prescription_document(
     document: Mapping[str, Any], *, base: BankedCandidate,
     evidence: PrescriptionEvidence | None = None,
+    base_profile: Mapping[str, Any] | None = None,
 ) -> MeasuredCrossoverCandidate:
-    return judge_prescription_document(document, base=base, evidence=evidence)
+    return judge_prescription_document(document, base=base, evidence=evidence, base_profile=base_profile)
 
 def _cmd_rear_calibration(args: argparse.Namespace) -> int:
     try:
@@ -121,12 +122,16 @@ def _cmd_document(args: argparse.Namespace) -> int:
         if args.base is not None and args.base != document["base"]:
             raise PrescriptionDocumentRefused("composition_base_mismatch", None, "--base and document.base differ")
         root = Path(args.root) if args.root else None
-        base = (saved_base() if document["base"] == "saved"
-                else find_banked_candidate(document["base"], root=root))
+        base_profile = None
+        if document["base"] == "saved":
+            base, base_profile = saved_base()
+        else:
+            base = find_banked_candidate(document["base"], root=root)
         evidence = _document_evidence(args, document)
         if args.command == "judge" and args.preview:
             return answered(preview_room_document(document, base=base, evidence=evidence))
-        candidate = compose_prescription_document(document, base=base, evidence=evidence)
+        candidate = compose_prescription_document(document, base=base, evidence=evidence,
+                                                  base_profile=base_profile)
     except PrescriptionDocumentRefused as exc:
         print(json.dumps(exc.to_dict(), sort_keys=True))
         return EXIT_UNREADABLE if exc.code == REASON_UNREADABLE else EXIT_REFUSED

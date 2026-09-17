@@ -4,7 +4,7 @@
 """Acoustic-task handoff and a CamillaDSP stage; no devices, storage or apply."""
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from copy import deepcopy
 import hashlib
 import struct
@@ -207,28 +207,6 @@ def diagnostic_seed(sample_rate: int) -> dict[str, Any]:
             "front": deepcopy(chain), "boundary": {"front": [], "rear": []},
             "rear": {"mode": "branches", "bass": deepcopy(chain),
                      "cancellation": {**deepcopy(chain), "gain_db": -0.84, "inverted": True, "delay_ms": 1.14}}}
-
-
-def cardioid_cabinet_channels(
-    outputs: Iterable[tuple[str, str, int]],
-) -> tuple[int, int, int] | None:
-    """``(front woofer, rear woofer, tweeter)`` channel indexes of the one
-    cabinet a rear calibration document describes, or ``None``.
-
-    ADR-0318: exactly one rear output, one front output of the rear's role, and
-    one output of the other role, over ``(role, variant, index)`` triples. The
-    caller owns what else its own topology must satisfy.
-    """
-    items = list(outputs)
-    rear = [item for item in items if item[1] == "rear"]
-    if len(rear) != 1:
-        return None
-    role = rear[0][0]
-    front = [item for item in items if item[1] != "rear" and item[0] == role]
-    tweeter = [item for item in items if item[0] != role]
-    if len(front) != 1 or len(tweeter) != 1:
-        return None
-    return front[0][2], rear[0][2], tweeter[0][2]
 
 
 def rear_stage_mixer_names(rear_channel: int) -> tuple[str, str]:

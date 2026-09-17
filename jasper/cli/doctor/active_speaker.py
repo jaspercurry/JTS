@@ -68,11 +68,18 @@ _SPEAKER_SETUP_URL = "http://<speaker>/sound/speaker/"
 
 
 def _blocker_summary(contract) -> str:
-    """``blockers=<codes>: <messages>`` for a contract, empty when it is clean."""
+    """``blockers=<codes>: <messages>`` for a contract, empty when it is clean.
+
+    An issue's ``detail`` is a code too — WHICH condition of its ``code`` the
+    door hit — so it rides beside the code it qualifies.
+    """
 
     if not contract.issues:
         return ""
-    codes = ",".join(str(issue.get("code") or "") for issue in contract.issues)
+    codes = ",".join(
+        str(issue.get("code") or "") + (f"({issue['detail']})" if issue.get("detail") else "")
+        for issue in contract.issues
+    )
     messages = "; ".join(
         str(issue.get("message") or "")
         for issue in contract.issues

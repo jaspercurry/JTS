@@ -51,7 +51,7 @@ from jasper.camilla_emit import (
 )
 from jasper.camilla_stereo_prefix import emit_filter_spec
 from jasper.log_event import log_event
-from jasper.output_topology import measurement_target_id
+from jasper.output_topology import cardioid_cabinet_channels, measurement_target_id
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
@@ -81,12 +81,7 @@ from .profile import (
     lowest_driver_role,
     required_driver_roles,
 )
-from .rear_calibration import (
-    RearCalibrationError,
-    cardioid_cabinet_channels,
-    compile_rear_stage,
-    read_rear_calibration,
-)
+from .rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
 from .test_signal_plan import (
     declared_protection_floor_hz,
     protective_tweeter_highpass_frequency_hz,
@@ -635,17 +630,6 @@ def _rear_calibration_graph(
         raise ActiveSpeakerConfigError("rear calibration needs exactly one active split mixer to follow")
     base["pipeline"][split[0] + 1 : split[0] + 1] = stage["pipeline"]
     return base
-
-
-def _decorated_graph(
-    text: str, preset: ActiveSpeakerPreset, *,
-    bass_extension: Mapping[str, Any] | None, document: Mapping[str, Any],
-) -> dict[str, Any]:
-    """The emitted baseline read ONCE, carrying every decoration it asked for."""
-    graph = yaml.safe_load(text)
-    if bass_extension:
-        graph = _dynamic_bass_graph(graph, preset, bass_extension)
-    return _rear_calibration_graph(graph, preset, document)
 
 
 def _assert_tweeter_crossover_honours_declared_floor(
@@ -3722,9 +3706,13 @@ pipeline:
     # protective high-pass, and that the pipeline the baseline assembled from
     # independent helper calls references nothing undefined.
     if safe_rear_calibration:
-        graph = _decorated_graph(
-            yaml, preset, bass_extension=bass_extension, document=safe_rear_calibration,
-        )
+        import yaml as yaml_lib  # lazy: the local `yaml` here is the emitted text
+
+        # Read ONCE, decorated in place, dumped once below.
+        graph = yaml_lib.safe_load(yaml)
+        if bass_extension:
+            graph = _dynamic_bass_graph(graph, preset, bass_extension)
+        graph = _rear_calibration_graph(graph, preset, safe_rear_calibration)
         _assert_view_tweeters_protected(view_from_yaml_dict(graph), preset)
         _assert_graph_references_closed(graph, preset)
         yaml = _reserialize_keeping_header(yaml, graph)

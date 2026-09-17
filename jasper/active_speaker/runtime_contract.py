@@ -49,6 +49,7 @@ from jasper.output_topology import (
     OutputTopologyError,
     SpeakerChannel,
     SpeakerGroup,
+    cardioid_cabinet_channels,
     load_output_topology_strict,
     measurement_target_id,
     stamp_statefile_topology,
@@ -61,6 +62,7 @@ from .camilla_yaml import (
     BASELINE_LIMITER_CLIP_LIMIT_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
+    _reserialize_keeping_header,
     baseline_protection_name,
 )
 from .graph_evidence import (
@@ -118,12 +120,7 @@ from .profile import (
     SUB_CROSSOVER_ORDER,
     SUPPORTED_LR_ORDERS,
 )
-from .rear_calibration import (
-    RearCalibrationError,
-    cardioid_cabinet_channels,
-    compile_rear_stage,
-    read_rear_calibration,
-)
+from .rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
 
 logger = logging.getLogger(__name__)
 
@@ -3934,9 +3931,9 @@ def _classify_bass_extension_snapshot(
             # Startup/parked graphs have their own proof and contain no extension.
             source = str(classify_camilla_config_text(graph_text).get("source") or "")
             if source in (ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE):
-                base = validated_base_graph(yaml.safe_load(graph_text), descriptor, channels)
-                header = "\n".join(line for line in graph_text.splitlines() if line.startswith("#"))
-                graph_text = header + "\n" + yaml.safe_dump(base, sort_keys=False)
+                graph_text = _reserialize_keeping_header(graph_text, validated_base_graph(
+                    yaml.safe_load(graph_text), descriptor, channels,
+                ))
         except (AttributeError, KeyError, TypeError, ValueError, yaml.YAMLError):
             return _unsafe_boundary("bass_extension_block_invalid", "bass graph differs from the saved tune")
     graph = classify_camilla_graph(

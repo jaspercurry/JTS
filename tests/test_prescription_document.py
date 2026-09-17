@@ -561,6 +561,20 @@ def test_saved_base_preview_migrates_once_and_invalid_composition_banks_no_child
     assert len(banked_candidates(root=bank)) == 1
 
 
+def test_a_saved_base_judge_reads_the_applied_profile_state_once(saved_tune, monkeypatch):
+    """The base candidate and the composition both need that state; one read
+    serves both, so a judge cannot see two different files."""
+    topology, applied = saved_tune
+    reads = []
+    monkeypatch.setattr("jasper.output_topology.load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state",
+                        lambda: (reads.append(1), applied)[1])
+
+    prescription_document_mod.bank_section("driver", None, rationale="Read the state once.")
+
+    assert len(reads) == 1
+
+
 @pytest.mark.parametrize("explicit_envelope", [False, True])
 def test_room_digest_names_judged_envelope_and_inheritance_drops_stale_match(base, bank, evidence, explicit_envelope):
     section = room_document()

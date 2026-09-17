@@ -13,6 +13,7 @@
 
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
+import { issueDetailHtml } from "/assets/sound-profile/js/driver-fields.js";
 import { el, outputTopology } from "/assets/sound-profile/js/state.js";
 import { outputGroups } from "/assets/sound-profile/js/topology.js";
 
@@ -62,7 +63,8 @@ function resultHtml() {
       ) + '</p>' +
       (issues.length ? '<div class="driver-research__notes"><ul>' +
         issues.map(function(issue) {
-          return '<li>' + escapeHtml(String(issue.message || issue.code || issue)) + '</li>';
+          return '<li>' + escapeHtml(String(issue.message || issue.code || issue)) +
+            issueDetailHtml(issue) + '</li>';
         }).join('') + '</ul></div>' : '') +
     '</div>';
   }

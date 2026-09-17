@@ -86,7 +86,7 @@ def emit_gain_filter(
     ]
 
 
-def emit_delay_filter(name: str, *, delay_ms: float, subsample: bool = False) -> list[str]:
+def emit_delay_filter(name: str, *, delay_ms: float) -> list[str]:
     """A CamillaDSP ``Delay`` filter in milliseconds.
 
     This primitive is deliberately gainless: callers own the policy of
@@ -99,7 +99,6 @@ def emit_delay_filter(name: str, *, delay_ms: float, subsample: bool = False) ->
         "    parameters:",
         f"      delay: {fmt(delay_ms)}",
         "      unit: ms",
-        *(["      subsample: true"] if subsample else []),
     ]
 
 

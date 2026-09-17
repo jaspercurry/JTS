@@ -195,12 +195,13 @@ def _refused_section(code: str) -> str | None:
     return "rear_calibration" if code.startswith("rear_calibration_") else None
 
 
-def saved_base() -> BankedCandidate:
-    """The applied baseline as a composition base (a document's ``base: saved``)."""
-    saved = candidate_from_applied_profile(
-        output_topology.load_output_topology_strict(), load_applied_baseline_profile_state() or {},
-    )
-    return BankedCandidate(saved, "", "", baseline_profile_state_path())
+def saved_base() -> tuple[BankedCandidate, Mapping[str, Any]]:
+    """The applied baseline as a composition base (a document's ``base: saved``),
+    with the profile state it was read from: composing that base needs the same
+    state, and this is the one read of it."""
+    state = load_applied_baseline_profile_state() or {}
+    saved = candidate_from_applied_profile(output_topology.load_output_topology_strict(), state)
+    return BankedCandidate(saved, "", "", baseline_profile_state_path()), state
 
 
 def bank_section(name: str, section: Any, *, rationale: str) -> MeasuredCrossoverCandidate:
@@ -208,16 +209,18 @@ def bank_section(name: str, section: Any, *, rationale: str) -> MeasuredCrossove
 
     The candidate is composed and returned, never banked and never applied.
     """
+    base, base_profile = saved_base()
     return judge_prescription_document(
         {"kind": DOCUMENT_KIND, "schema": 1, "base": "saved",
          "sections": {name: section if isinstance(section, dict) else {}},
          "rationale": rationale},
-        base=saved_base(),
+        base=base, base_profile=base_profile,
     )
 
 
 def judge_prescription_document(raw: Any, *, base: BankedCandidate,
-                               evidence: PrescriptionEvidence | None = None) -> MeasuredCrossoverCandidate:
+                               evidence: PrescriptionEvidence | None = None,
+                               base_profile: Mapping[str, Any] | None = None) -> MeasuredCrossoverCandidate:
     document = read_prescription_document(raw)
     if document["base"] != "saved" and document["base"] != base.fingerprint:
         raise PrescriptionDocumentRefused("composition_base_mismatch", None, "document and resolved base differ")
@@ -251,10 +254,14 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
         rows, _ = round_alignment({**(evidence.sources.get("manifest") or {}), "round_id": evidence.round_id},
                                  evidence.sources) if evidence.round_id else ([], {})
         read = commissioning_alignment(rows, base.fingerprint)
+        if evidence.round_id and document["base"] != "saved":
+            base_profile = evidence.sources.get("applied_profile")
+        elif base_profile is None:
+            # Not resolved with the base (:func:`saved_base` hands its state over).
+            base_profile = load_applied_baseline_profile_state()
         return compose_candidate(
             base, sections=selected, rationale=document["rationale"],
-            base_profile=(evidence.sources.get("applied_profile") if evidence.round_id and document["base"] != "saved"
-                          else load_applied_baseline_profile_state()),
+            base_profile=base_profile,
             room_prescription_sha256=(blend.prescription_sha256(contract_json(judged["room"]).encode())
                                       if selected.get("room") else ""),
             room_measured_basis=judged.get("room", {}).get("measured_basis"),
