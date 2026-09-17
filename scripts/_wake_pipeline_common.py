@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared destructive-output guard for standalone wake pipeline tools."""
+"""Shared helpers for standalone wake-corpus pipeline tools: a destructive-
+output ownership guard, and the recorder-metadata JSON/WAV-path resolution
+used by the analyze/audit/export scripts.
+"""
 from __future__ import annotations
 
 import json
@@ -67,3 +70,35 @@ def is_safe_wake_pipeline_output(
         return Path(output_dir).expanduser().resolve() == candidate
     except Exception:  # noqa: BLE001 - ownership validation must fail closed.
         return False
+
+
+def read_wake_corpus_json(path: Path) -> dict[str, Any]:
+    """Read one recorder-metadata JSON file, failing closed as ``ValueError``."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        raise ValueError(f"{path}: failed to read JSON: {e}") from e
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} does not contain a JSON object")
+    return data
+
+
+def resolve_wav_path(corpus_dir: Path, path_str: str) -> Path:
+    """Resolve a recorder-metadata WAV path against a local corpus copy.
+
+    Production metadata stores absolute Pi paths such as
+    `/var/lib/jasper/enrollment_positives/aec_on_nomusic/foo.wav`. After
+    rsync, those same WAVs live under the caller's local `corpus_dir`, so
+    map any path below `enrollment_positives/` back onto the local root
+    before falling back to the literal path.
+    """
+    raw = Path(path_str)
+    marker = "enrollment_positives"
+    if marker in raw.parts:
+        idx = raw.parts.index(marker)
+        rel_parts = raw.parts[idx + 1:]
+        if rel_parts:
+            return corpus_dir.joinpath(*rel_parts)
+    if raw.is_absolute():
+        return raw
+    return corpus_dir / raw
