@@ -52,7 +52,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.measurement_emit import (
     MeasurementGraphProfile,
     MeasurementGraphRefused,
-    compile_tuning_graph, measurement_bass_extension, timing_candidate,
+    compile_tuning_graph, measurement_graph_evidence, timing_candidate,
 )
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
@@ -464,6 +464,9 @@ def test_branch_routing_preserves_every_candidate_filter_and_output_chain(tuning
     assert split["filters"] == original["filters"]
     assert split["pipeline"] == original["pipeline"]
     assert split["devices"] == original["devices"]
+    assert {k: v for k, v in split["mixers"].items() if not k.startswith("split_active_")} == {
+        k: v for k, v in original["mixers"].items() if not k.startswith("split_active_")
+    }
     mapping = next(iter(split["mixers"].values()))["mapping"]
     for output in tuning_profile.preset.channel_map.outputs:
         entry, = [row for row in mapping if row["dest"] == output.index]
@@ -484,7 +487,7 @@ BASS_EXTENSION = {
 @pytest.mark.parametrize("scope", sorted(CANDIDATE_SCOPES))
 def test_peak_admission_uses_the_composed_bass_layer(tuning_profile, scope):
     candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION)
-    assert measurement_bass_extension(scope=scope, candidate=candidate) == ({} if scope == "timing" else candidate.bass_extension)
+    assert measurement_graph_evidence(scope=scope, candidate=candidate)["bass_extension"] == ({} if scope == "timing" else candidate.bass_extension)
 
 
 def test_program_base_is_banked_and_reopens_by_its_fingerprint(tuning_profile, tmp_path):
@@ -543,7 +546,7 @@ def test_timing_projection_keeps_only_declared_alignment_and_trims(tuning_profil
     assert projected.fingerprint != candidate.fingerprint
     assert effective_preset(projected) == effective_preset(candidate)
     assert candidate.to_dict() == before
-    assert measurement_bass_extension(scope="timing", candidate=candidate) == {}
+    assert measurement_graph_evidence(scope="timing", candidate=candidate)["bass_extension"] == {}
 
 
 @pytest.mark.parametrize("scope", ["timing", "candidate"])

@@ -29,6 +29,9 @@ from jasper.audio_measurement.program import FrequencyBand, RoleBand, KIND_COURT
 from jasper.audio_measurement.wired_capture import WiredCaptureError, WiredRecording, WiredSplCeilingExceeded
 from jasper.cli import seat_level
 from tests._log_events import event_fields
+from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
+from tests.test_rear_output_foundation import _rear_document, _rear_pair
 
 CAL_WITH_SENS = '"Sens Factor =-12.07dB, AGain =18dB, SERNO: 8108494"\n10.0\t-6.6\n'
 CAL_CURVE_ONLY = "10.0\t-6.6\n10.2\t-6.5\n"
@@ -138,7 +141,8 @@ def box(tmp_path, monkeypatch):
         state.events.append("restore_graph")
     graph = SimpleNamespace(installed_graph_yaml=lambda: "accepted graph",
                             install=install, restore=restore)
-    candidate = SimpleNamespace(fingerprint="accepted", bass_extension={"enabled": False})
+    candidate = _candidate(preset=_rear_pair("mono")[0], bass_extension=BASS_EXTENSION,
+                           rear_calibration=_rear_document())
     context = SimpleNamespace(topology=object(), preset=object(), role_channels={"woofer": 0, "tweeter": 1},
         role_targets={"woofer": "w", "tweeter": "t"}, safety_profile={}, declared_sensitivities={"tweeter": 94.1},
         playback_device="fake", roles_bands=(RoleBand("woofer", 0, FrequencyBand(20, 20000)),
@@ -216,7 +220,9 @@ def box(tmp_path, monkeypatch):
         assert kwargs["graph_yaml"] == "accepted graph"
         assert kwargs["session_volume_db"] == state.gain
         assert kwargs["declared_sensitivities"] == context.declared_sensitivities
-        assert kwargs["bass_extension"] == candidate.bass_extension
+        assert kwargs["graph_evidence"] == {
+            "bass_extension": candidate.bass_extension, "rear_calibration": candidate.rear_calibration,
+        }
         state.admissions.append(kwargs)
         state.programs.append(program)
         return SimpleNamespace(allowed=True, refusals=())

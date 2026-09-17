@@ -730,7 +730,7 @@ async def test_shared_composer_mints_each_take_and_proves_graph_inside_play_lock
 
     def readmit_summed(*args, **kwargs):
         assert kwargs["graph_yaml"] == graph
-        assert kwargs["bass_extension"] == {"low_boost_db": 4.0}
+        assert kwargs["graph_evidence"] == {"bass_extension": {"low_boost_db": 4.0}, "rear_calibration": {"rear_muted": False}}
         assert scope != "drivers"
         return SimpleNamespace(allowed=True)
 
@@ -746,7 +746,7 @@ async def test_shared_composer_mints_each_take_and_proves_graph_inside_play_lock
         store=Store(), capture_session_id="same-pose", cam_factory=Cam,
         config_dir=str(tmp_path), topology=None, safety_profile={}, role_targets={},
         before_play=before_play, graph_yaml=lambda: graph,
-        bass_extension_for_spec=lambda spec: {"low_boost_db": 4.0},
+        graph_evidence_for_spec=lambda spec: {"bass_extension": {"low_boost_db": 4.0}, "rear_calibration": {"rear_muted": False}},
     )
     spec = MeasureSpec(
         kind="baseline", graph_scope=scope, program_phase=phase,

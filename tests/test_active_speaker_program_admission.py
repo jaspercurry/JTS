@@ -22,7 +22,7 @@ from jasper.output_topology import measurement_target_id
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.driver_safety import compute_driver_safety_profile
 from jasper.active_speaker.measurement import active_driver_targets
-from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
+from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph, measurement_graph_evidence
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import (
@@ -49,7 +49,7 @@ from tests.active_speaker_fixtures import mono_output_topology, isolated_candida
 from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, _trial_candidate
 from tests.test_crossover_v2_session_graph import FakeCam, _entry, _graph as _session_graph
-from tests.test_rear_output_foundation import _rear_pair
+from tests.test_rear_output_foundation import _rear_document, _rear_pair
 
 
 def _profile_and_targets(
@@ -864,7 +864,7 @@ def test_dynamic_bass_admission_proves_graph_and_reserves_its_maximum_lift(tmp_p
     admission = readmit_summed_program_from_wav(
         program, wav, graph_yaml=text, topology=topology,
         safety_profile=safety, role_targets=targets, session_volume_db=-20,
-        bass_extension=None if change == "missing_descriptor" else BASS_EXTENSION,
+        graph_evidence=None if change == "missing_descriptor" else {"bass_extension": BASS_EXTENSION},
     )
     if change in {"missing_descriptor", "processor"}:
         assert admission.refusals == (ProgramAdmissionRefusal.GRAPH_NOT_PROVEN,)
@@ -877,6 +877,44 @@ def test_dynamic_bass_admission_proves_graph_and_reserves_its_maximum_lift(tmp_p
         assert admission.channels[0].cap_dbfs == pytest.approx(
             -24 - dynamic_bass_gain_reserve_db(DynamicBassDescriptor(**BASS_EXTENSION))
         )
+
+
+@pytest.mark.parametrize("evidence_change", [None, "missing", "wrong_candidate"])
+@pytest.mark.parametrize("scope", ["candidate", "candidate_branches", "timing"])
+def test_summed_admission_proves_the_candidate_rear_stage(tmp_path, evidence_change, scope):
+    topology, safety, targets = _profile_and_targets(
+        rear=True, woofer_floor=40, woofer_highpass=40, max_sweep_duration_s=4,
+    )
+    channels = {"woofer": 0, "woofer:rear": 1} if scope == "candidate_branches" else {"woofer": 0, "tweeter": 1}
+    profile = MeasurementGraphProfile(
+        _rear_pair("mono")[0], topology, channels, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets),
+    )
+    candidate = replace(_trial_candidate(profile), bass_extension=BASS_EXTENSION,
+                        rear_calibration=_rear_document())
+    graph = compile_tuning_graph(profile, scope=scope, candidate=candidate)
+    evidence = measurement_graph_evidence(scope=scope, candidate=candidate)
+    if evidence_change == "missing":
+        evidence.pop("rear_calibration")
+    elif evidence_change == "wrong_candidate":
+        evidence["rear_calibration"] = _rear_document(rear_muted=True)
+    program = SessionExcitation(
+        roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65},
+        session_volume_db=-20, fc_hz=1600,
+        sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
+    ).verify_program()
+    if scope == "candidate_branches":
+        program = _rear_take_program(channels)
+    wav = tmp_path / "rear.wav"
+    write_program_wav(wav, program)
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=graph, topology=topology, safety_profile=safety,
+        role_targets=targets, session_volume_db=-20, graph_evidence=evidence,
+    )
+    if evidence_change:
+        assert admission.refusals == (ProgramAdmissionRefusal.GRAPH_NOT_PROVEN,)
+    else:
+        assert admission.allowed, admission.to_dict()
 
 
 @pytest.mark.parametrize("low_hz", [10, 20, 40, 60])
@@ -970,12 +1008,10 @@ def test_rear_declared_topology_is_admitted_with_the_rear_parked(tmp_path):
 def test_a_graph_that_feeds_a_parked_target_is_refused(tmp_path):
     """The other half of the routing contract: a parked dest must carry no
     source, so a graph cannot quietly excite a driver the take parked."""
-    graph = _rear_take_inputs(CARDIOID_TAKE)[3].replace(
-        "      - dest: 1\n        sources: []\n",
-        "      - dest: 1\n        sources:\n"
-        "          - { channel: 0, gain: 0.0000, inverted: false }\n",
-    )
-    _targets, _program, admission = _admit_rear_take(tmp_path, CARDIOID_TAKE, graph=graph)
+    graph = yaml.safe_load(_rear_take_inputs(CARDIOID_TAKE)[3])
+    parked, = [entry for entry in graph["mixers"]["split_active_2way"]["mapping"] if entry["dest"] == 1]
+    parked["sources"] = [{"channel": 0, "gain": 0, "inverted": False}]
+    _targets, _program, admission = _admit_rear_take(tmp_path, CARDIOID_TAKE, graph=yaml.safe_dump(graph))
     assert ProgramAdmissionRefusal.GRAPH_NOT_PROVEN in admission.refusals
 
 

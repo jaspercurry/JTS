@@ -19,6 +19,7 @@ from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredSplMonit
 
 from .auto_level import reading_budget
 from .capture_provenance import stimulus_peak_dbfs
+from .measurement_emit import measurement_graph_evidence
 from .crossover_v2.composition import bind_program_composer
 from .crossover_v2.contracts import MEASURE_KIND_BASELINE
 from .crossover_v2.door import set_measurement_loudness
@@ -63,7 +64,7 @@ class SweepLevelReader:
             safety_profile=context.safety_profile, role_targets=context.role_targets,
             declared_sensitivities=context.declared_sensitivities,
             graph_yaml=graph.installed_graph_yaml,
-            bass_extension_for_spec=lambda _spec: candidate.bass_extension,
+            graph_evidence_for_spec=lambda spec: measurement_graph_evidence(scope=spec.graph_scope, candidate=candidate),
             before_play=self._before_play,
         )
 

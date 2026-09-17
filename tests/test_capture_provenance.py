@@ -504,7 +504,9 @@ def _drive_one_capture(
     monkeypatch.setattr(candidate_bank, "find_banked_candidate", lambda *_: SimpleNamespace(candidate=candidate))
     def readmit(*args, **kwargs):
         if scope != "drivers":
-            assert kwargs["bass_extension"] == candidate.bass_extension
+            assert kwargs["graph_evidence"] == {
+                "bass_extension": candidate.bass_extension, "rear_calibration": candidate.rear_calibration,
+            }
         return SimpleNamespace(allowed=True)
     for name in ("readmit_program_from_wav", "readmit_summed_program_from_wav"):
         monkeypatch.setattr(program_admission, name, readmit)

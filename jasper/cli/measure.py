@@ -484,9 +484,8 @@ def _bind_compose(
 ) -> Any:
     from jasper.active_speaker.bass_stimulus import build_bass_program  # lazy: hardware execution loads numerical analysis
     from jasper.active_speaker.crossover_v2.composition import bind_program_composer
-    from jasper.active_speaker.crossover_v2.measure_spec import CANDIDATE_SCOPES, GRAPH_SCOPE_DRIVERS
-    from jasper.active_speaker.candidate_bank import find_banked_candidate
-    from jasper.active_speaker.measurement_emit import measurement_bass_extension
+    from jasper.active_speaker.crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS
+    from jasper.active_speaker.measurement_emit import measurement_graph_evidence
     from jasper.active_speaker.crossover_v2.programs import SessionExcitation  # lazy: optional measurement runtime
     from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
     from jasper.active_speaker.program_playback import ProgramPlaybackError
@@ -519,15 +518,11 @@ def _bind_compose(
         except MeasurementFaderDrift as exc:
             raise ProgramPlaybackError(str(exc)) from exc
 
-    def bass_for_spec(spec: Any) -> Mapping[str, Any]:
+    def evidence_for_spec(spec: Any) -> Mapping[str, Any]:
         if measurement_profile is None:
             return {}
-        candidate = (
-            find_banked_candidate(spec.candidate_id).candidate
-            if spec.graph_scope in CANDIDATE_SCOPES else None
-        )
-        return measurement_bass_extension(
-            scope=spec.graph_scope, candidate=candidate,
+        return measurement_graph_evidence(
+            scope=spec.graph_scope, candidate_id=spec.candidate_id,
         )
 
     return bind_program_composer(
@@ -537,7 +532,7 @@ def _bind_compose(
         safety_profile=box.safety_profile, role_targets=box.role_targets,
         declared_sensitivities=box.declared_sensitivities,
         before_play=before_play, graph_yaml=graph.installed_graph_yaml,
-        bass_extension_for_spec=bass_for_spec,
+        graph_evidence_for_spec=evidence_for_spec,
     )
 
 

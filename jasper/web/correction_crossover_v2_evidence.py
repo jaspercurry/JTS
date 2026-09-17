@@ -1000,7 +1000,7 @@ def bind_production_play(
     from jasper.active_speaker.crossover_v2.composition import bind_program_composer
     from jasper.active_speaker.crossover_v2.door import bind_measurement_graph
     from jasper.active_speaker.crossover_v2.programs import SUMMED_SWEEP_PHASES
-    from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, measurement_bass_extension
+    from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, measurement_graph_evidence
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
 
     resolved_config_dir = config_dir or str(DEFAULT_CAMILLA_CONFIG_DIR)
@@ -1042,7 +1042,7 @@ def bind_production_play(
         safety_profile=safety_profile, role_targets=role_targets,
         declared_sensitivities=declared_sensitivities,
         before_play=_before_play, graph_yaml=session_graph.installed_graph_yaml,
-        bass_extension_for_spec=lambda spec: measurement_bass_extension(scope=spec.graph_scope, candidate_id=spec.candidate_id),
+        graph_evidence_for_spec=lambda spec: measurement_graph_evidence(scope=spec.graph_scope, candidate_id=spec.candidate_id),
     )
 
     return ProductionPlay(graph=session_graph, compose=compose)

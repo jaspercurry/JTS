@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Mapping, Sequence
 
+import yaml
+
 from jasper.camilla_config_contract import FilterSpec
 from jasper.output_topology import load_output_topology_strict
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
@@ -35,7 +37,7 @@ __all__ = [
     "compile_tuning_graph",
     "load_tuning_declaration",
     "emit_measurement_graph",
-    "measurement_bass_extension",
+    "measurement_graph_evidence",
 ]
 
 TuningGraphScope = Literal["candidate", "candidate_branches", "timing"]
@@ -103,14 +105,14 @@ def _filter_list(value: Any) -> bool:
     )
 
 
-def measurement_bass_extension(
+def measurement_graph_evidence(
     *,
     scope: str,
     candidate: MeasuredCrossoverCandidate | None = None,
     candidate_id: str = "",
 ) -> dict[str, Any]:
-    """Resolve the same optional layer for graph emission and peak admission."""
-    if scope in (GRAPH_SCOPE_DRIVERS, "timing"):
+    """Resolve the candidate layers the installed graph must prove."""
+    if scope == GRAPH_SCOPE_DRIVERS:
         return {}
     if candidate is None and candidate_id:
         candidate = candidate_bank.find_banked_candidate(candidate_id).candidate
@@ -118,7 +120,10 @@ def measurement_bass_extension(
         raise MeasurementGraphRefused("measurement_candidate_required", scope)
     if not isinstance(candidate, MeasuredCrossoverCandidate):
         raise MeasurementGraphRefused("measurement_candidate_invalid", type(candidate).__name__)
-    return dict(candidate.bass_extension)
+    return {
+        "bass_extension": {} if scope == "timing" else dict(candidate.bass_extension),
+        "rear_calibration": dict(candidate.rear_calibration),
+    }
 
 
 def require_candidate_speaker_identity(candidate: MeasuredCrossoverCandidate, preset: ActiveSpeakerPreset) -> None:
@@ -189,11 +194,12 @@ def compile_tuning_graph(
     prove_candidate_config(candidate, candidate_text)
     if scope == "candidate_branches":
         prefix, rest = candidate_text.split("\nmixers:\n", 1)
-        _, pipeline = rest.split("\npipeline:\n", 1)
-        mixer = camilla_yaml._emit_role_routed_mixer(
+        mixer_text, pipeline = rest.split("\npipeline:\n", 1)
+        mixers = yaml.safe_load(mixer_text)
+        mixers.update(yaml.safe_load(camilla_yaml._emit_role_routed_mixer(
             candidate.source_preset, dict(profile.role_channels), apply_region_polarity=False,
-        )
-        return prefix + "\nmixers:\n" + mixer + "\npipeline:\n" + pipeline
+        )))
+        return prefix + "\n" + yaml.safe_dump({"mixers": mixers}, sort_keys=False) + "\npipeline:\n" + pipeline
     return candidate_text
 
 
