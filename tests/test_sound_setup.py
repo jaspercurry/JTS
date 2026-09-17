@@ -21,7 +21,7 @@ import wave
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import numpy as np
 import pytest
@@ -37,7 +37,7 @@ from jasper.active_speaker.design_draft import declared_driver_spacing_m, load_d
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
 from jasper.audio_measurement.program_analysis.model import MeasurementGeometry
 from jasper.active_speaker.playback_route import OUTPUTD_ACTIVE_LANE_SOURCE
-from jasper.active_speaker.runtime_convergence import park_and_commit_topology
+from jasper.active_speaker.runtime_convergence import PARK_SKIPPED, park_and_commit_topology
 from jasper.active_speaker.runtime_contract import (
     FLAT_PROGRAM_GRAPH_UNCONFIGURED,
     PARKED_MUTED_STATUS,
@@ -53,8 +53,10 @@ from jasper.output_topology import (
     DUAL_APPLE_ACTIVE_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
+    OutputTopologyMutation,
     OutputTopologyError,
     load_output_topology,
+    output_topology_mutation,
     save_output_topology,
 )
 from jasper.output_hardware import (
@@ -2544,12 +2546,20 @@ def test_topology_save_parks_before_replacing_saved_layout(
     assert saved["output_topology"]["name"] != original.name
 
 
-def test_topology_resave_leaves_camilla_untouched(monkeypatch):
+@pytest.mark.parametrize("applied", [False, True])
+def test_topology_resave_converges_without_parking(monkeypatch, tmp_path, caplog, applied):
     raw = _active_speaker_mono_topology_payload(
         protection_status="software_guard_requested",
     )
     save_output_topology(OutputTopology.from_mapping(raw))
-    controller = Mock()
+    prior_path = str(tmp_path / "baseline.yml")
+    Path(prior_path).write_text(_active_baseline_yaml("mono", 2))
+    controller = Mock(spec=FakeCamilla)
+    controller._graph_mutation_lock_path = tmp_path / "graph.lock"
+    controller.get_config_file_path.return_value = prior_path
+    controller.set_config_file_path.return_value = applied
+    manage_units = Mock()
+    monkeypatch.setattr("jasper.control.restart_broker.manage_units", manage_units)
     monkeypatch.setattr("jasper.camilla.primary_controller", lambda: controller)
     monkeypatch.setattr(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
@@ -2557,13 +2567,26 @@ def test_topology_resave_leaves_camilla_untouched(monkeypatch):
     )
     _stub_audio_stops(monkeypatch)
     _stub_reconcile(monkeypatch, {"ok": True})
+    caplog.set_level(logging.INFO, logger=sound_active_speaker.logger.name)
 
     result = sound_setup._save_output_topology_payload({"output_topology": raw})
 
-    assert controller.mock_calls == []
-    assert result["save"]["status"] == "saved"
-    assert result["runtime_convergence"]["live_applied"] is False
+    assert manage_units.mock_calls == []
+    assert controller.mock_calls == [
+        call.get_config_file_path(best_effort=True),
+        call.set_config_file_path(prior_path, best_effort=True),
+    ]
+    assert PARK_SKIPPED.to_dict() == {
+        "ok": False, "decision": None, "live_applied": False, "error": None,
+    }
+    assert result["save"]["status"] == ("saved" if applied else "needs_attention")
+    assert result["runtime_convergence"]["ok"] is applied
+    assert result["runtime_convergence"]["live_applied"] is applied
+    assert result["runtime_convergence"]["decision"]["status"] == "preserve_current"
     assert load_output_topology() == OutputTopology.from_mapping(raw)
+    _, fields = _event_record(caplog, "sound.output_topology_save")
+    assert fields["parked"] == "false"
+    assert fields["live_applied"] == str(applied).lower()
 
 
 def test_topology_save_does_not_restore_old_graph_for_a_post_write_read_failure(
@@ -3620,24 +3643,51 @@ def _dac8x_detected() -> None:
 def test_reset_adopts_hardware_read_after_parking(monkeypatch):
     save_output_topology(OutputTopology.from_mapping(_passive_left_topology_payload()))
     _apple_dongle_detected()
+    read_hardware = sound_active_speaker.load_output_hardware_state
+    save = OutputTopologyMutation.save
+    events = []
+
+    def assert_transaction_held():
+        with pytest.raises(TimeoutError):
+            with output_topology_mutation(timeout_sec=0):
+                pass
+
+    def checked_read():
+        assert_transaction_held()
+        events.append("read")
+        return read_hardware()
+
+    def checked_save(self, topology):
+        assert_transaction_held()
+        assert topology.speaker_groups == ()
+        events.append("write")
+        return save(self, topology)
+
+    def checked_clear():
+        assert_transaction_held()
+        events.append("clear")
+        return {"status": "cleared"}
 
     def park_and_commit(_topology, commit, **_kwargs):
         _dac8x_detected()
-        return _RuntimeMutation(commit())
+        with monkeypatch.context() as patch:
+            patch.setattr(sound_active_speaker, "load_output_hardware_state", checked_read)
+            return _RuntimeMutation(commit())
 
+    monkeypatch.setattr(OutputTopologyMutation, "save", checked_save)
     monkeypatch.setattr(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
         park_and_commit,
     )
     _stub_audio_stops(monkeypatch)
     monkeypatch.setattr(
-        "jasper.active_speaker.reset.clear_active_speaker_setup_state",
-        lambda: {"status": "cleared"},
+        "jasper.active_speaker.reset.clear_active_speaker_setup_state", checked_clear,
     )
     _stub_reconcile(monkeypatch, {"ok": True})
 
     result = sound_setup._reset_output_topology_payload({})
 
+    assert events == ["read", "write", "clear"]
     assert result["reset"]["status"] == "reset"
     assert load_output_topology().hardware.device_id == "hifiberry_dac8x"
     assert load_output_topology().speaker_groups == ()

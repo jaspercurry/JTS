@@ -41,9 +41,7 @@ class RuntimeConvergenceResult:
 
     @property
     def ok(self) -> bool:
-        return self.error is None and (
-            self.decision is None or (self.decision.ok and self.live_applied)
-        )
+        return self.error is None and self.decision is not None and self.decision.ok and self.live_applied
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -52,6 +50,9 @@ class RuntimeConvergenceResult:
             "live_applied": self.live_applied,
             "error": self.error,
         }
+
+
+PARK_SKIPPED = RuntimeConvergenceResult(None, False)
 
 
 @dataclass(frozen=True)
@@ -313,17 +314,12 @@ def park_and_commit_topology(
 ) -> TopologyRuntimeMutationResult:
     """Park changed intent before commit; re-pins stay parked until Apply."""
 
-    if replacement is not None and (
-        topology_config_fingerprint(replacement) == topology_config_fingerprint(topology)
-    ):
-        commit()
-        unchanged = RuntimeConvergenceResult(None, False)
-        return TopologyRuntimeMutationResult(unchanged, unchanged)
-
     return asyncio.run(
         _park_and_commit_topology(
             topology,
             commit,
+            park=(replacement is None or topology_config_fingerprint(replacement)
+                  != topology_config_fingerprint(topology)),
             controller_factory=controller_factory,
             profile_path=profile_path,
             config_dir=config_dir,
@@ -337,6 +333,7 @@ async def _park_and_commit_topology(
     topology: OutputTopology,
     commit: Callable[[], OutputTopology],
     *,
+    park: bool,
     controller_factory: Callable[[], Any] | None,
     profile_path: str | Path | None,
     config_dir: str | Path | None,
@@ -357,26 +354,29 @@ async def _park_and_commit_topology(
         source="output_topology.replace",
         lock_path=lock_path,
     ):
-        outputd_stop = manage_units(
-            OUTPUTD_UNIT,
-            verb="stop",
-            reason="output topology replace",
-            no_block=False,
-            timeout=15.0,
-        )
-        if not outputd_stop.get("ok"):
-            raise RuntimeError(
-                str(outputd_stop.get("error") or "could not stop outputd safely")
+        if park:
+            outputd_stop = manage_units(
+                OUTPUTD_UNIT,
+                verb="stop",
+                reason="output topology replace",
+                no_block=False,
+                timeout=15.0,
             )
+            if not outputd_stop.get("ok"):
+                raise RuntimeError(
+                    str(outputd_stop.get("error") or "could not stop outputd safely")
+                )
         try:
             prior_path = await controller.get_config_file_path(best_effort=True)
         except (OSError, RuntimeError, ValueError, TypeError, AttributeError):
             prior_path = None
-        parked = await _park_locked(topology, controller)
-        if not parked.ok:
-            raise RuntimeError(
-                parked.error or "could not safely park audio before changing topology"
-            )
+        parked = PARK_SKIPPED
+        if park:
+            parked = await _park_locked(topology, controller)
+            if not parked.ok:
+                raise RuntimeError(
+                    parked.error or "could not safely park audio before changing topology"
+                )
         # A durable atomic write still raises on a pre-publish content-fsync
         # failure (nothing published, safe to propagate and stay parked). A
         # post-publish directory-fsync failure is fail-soft in atomic_io: the
@@ -392,10 +392,7 @@ async def _park_and_commit_topology(
             stay_parked=stay_parked,
             parked_reason=parked_reason,
         )
-        return TopologyRuntimeMutationResult(
-            parked=parked,
-            convergence=convergence,
-        )
+        return TopologyRuntimeMutationResult(parked, convergence)
 
 
 __all__ = [

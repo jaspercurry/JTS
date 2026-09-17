@@ -3708,8 +3708,7 @@ import {
   }
   async function repinOutputTopology() {
     if (outputTopology.repinning) return;
-    var plan = outputTopology.hardwareRepin;
-    if (!plan) return;
+    if (!outputTopology.hardwareRepin) return;
     var ok = await jtsConfirm(
       'JTS keeps your speaker layout, driver roles, output assignment and ' +
       'tuning, and pins the DAC attached now. Re-run the drift measurement, ' +
@@ -3736,6 +3735,7 @@ import {
         status(repinStatus.message || 'Pinned the new DAC and kept your speaker setup.');
       }
     } catch (e) {
+      if (e.status === 409 && e.body && e.body.output_topology) ingestOutputTopology(e.body);
       outputTopology.repinning = false;
       status('Could not pin the new DAC: ' + e.message, true);
     }

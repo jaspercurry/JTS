@@ -84,7 +84,7 @@ class OutputHardwareRequestConflict(ValueError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(
-            "Speaker setup or detected hardware changed. Review it and try again."
+            "No matching hardware to re-pin. Refresh the hardware view and review."
         )
 
 
@@ -289,9 +289,7 @@ def _refuse_duplicate_physical_outputs(topology: OutputTopology) -> None:
         raise OutputTopologyError(duplicates[0]["message"])
 
 
-def _save_output_topology_payload(
-    raw: dict[str, Any],
-) -> dict[str, Any]:
+def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
     """Save speaker intent, parking audio when the layout changes."""
 
     from jasper.active_speaker.runtime_convergence import park_and_commit_topology
@@ -335,6 +333,8 @@ def _save_output_topology_payload(
         warnings=len(evaluation["warnings"]),
         software_guards_requested=str(guards_changed),
         runtime_convergence_ok=runtime.convergence.ok,
+        live_applied=runtime.convergence.live_applied,
+        parked=runtime.parked.live_applied,
         reconcile_ok=reconcile.get("ok"),
         reconcile_converging=reconcile.get("converging"),
         safe_stop=str(safe_stop.get("status")),

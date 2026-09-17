@@ -4680,6 +4680,9 @@ async function testRepinDeclinedOrFailedClearsTheBusyFlag() {
   // worst moment to require one.
   const cases = [
     { name: "declined", confirm: false },
+    { name: "unavailable", confirm: true, status: 409, body: swappedDonglePayload({
+      error: "repin_unavailable", conflict: "repin_unavailable", hardware_repin: null,
+    }) },
     { name: "server error", confirm: true, status: 502, body: {
       error: "JTS could not confirm whether the new DAC was pinned.",
     } },
@@ -4696,6 +4699,10 @@ async function testRepinDeclinedOrFailedClearsTheBusyFlag() {
     const harness = setupHarness(fetchHandler);
     await loadAndSetActiveState(harness);
     globalThis.__jtsConfirm = async () => scenario.confirm;
+    const offerSelector = 'data-act="repin-output-topology"';
+    if (!harness.elements.get("view-body").innerHTML.includes(offerSelector)) {
+      fail("fixture must offer a re-pin", { scenario: scenario.name });
+    }
 
     harness.dispatchClick({ "data-act": "repin-output-topology" });
     await harness.flush(); await harness.flush(); await harness.flush();
@@ -4709,8 +4716,8 @@ async function testRepinDeclinedOrFailedClearsTheBusyFlag() {
         scenario: scenario.name, html,
       });
     }
-    if (!html.includes("Keep setup, pin the new DAC")) {
-      fail("the offer must remain clickable after a declined or failed re-pin", {
+    if (html.includes(offerSelector) !== (scenario.status !== 409)) {
+      fail("an unavailable re-pin must clear the offer; other failures keep it", {
         scenario: scenario.name, html,
       });
     }
