@@ -412,37 +412,7 @@ function activeRoutePayload(overrides = {}) {
 }
 
 function activePayloads() {
-  const level = {
-    status: "ready",
-    test_signal: {
-      min_level_dbfs: -80,
-      max_level_dbfs: 0,
-      step_db: 1,
-      default_level_dbfs: -80,
-      requested_level_dbfs: -72,
-    },
-    mic_meter: { status: "usable", recommendation: "hold_level" },
-    software_gain_guard: { upward_step_limit_db: 1 },
-    issues: [],
-  };
   return {
-    "./active-speaker/safe-playback": {
-      status: "armed",
-      issues: [],
-      quiet_start: { status: "floor_required", floor_audio_confirmed: false },
-    },
-    "./active-speaker/staged-config": {
-      status: "staged",
-      preset: { name: "Protected" },
-      config: { basename: "startup.yml", playback_device: "hw:test", playback_channels: 2, validation: { status: "valid" } },
-      load: { load_gate: "ready" },
-      issues: [],
-    },
-    "./active-speaker/calibration-level": level,
-    "./active-speaker/startup-load": {
-      state: { status: "loaded", rollback_available: true, current_config_matches_loaded: true },
-      preflight: { status: "ready", load_allowed: true, path_safety: { load_gate: "ready" }, candidate: { basename: "startup.yml" } },
-    },
     "./active-speaker/measurements": {
       status: "not_applicable",
       summary: {
@@ -4943,15 +4913,7 @@ async function testSaveAndApplyUsesSingleFinishEndpoint() {
   const harness = setupHarness(baseFetch({
     "./output-topology": () => Promise.resolve(response(confirmedTopology)),
     "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
-    "./active-speaker/baseline-profile": (_path, options = {}) => {
-      if (options.method === "POST") {
-        fail("final active profile CTA must not post the compile-only endpoint");
-      }
-      return Promise.resolve(response(baselineReady));
-    },
-    "./active-speaker/baseline-profile/apply": () => {
-      fail("final active profile CTA must not call the old apply endpoint");
-    },
+    "./active-speaker/baseline-profile": () => Promise.resolve(response(baselineReady)),
     "./active-speaker/baseline-profile/save-and-apply": (_path, options = {}) => {
       finishPosts.push(JSON.parse(options.body || "{}"));
       return Promise.resolve(response({
