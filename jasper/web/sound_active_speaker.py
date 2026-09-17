@@ -187,6 +187,8 @@ def _save_i2s_hat_payload(
                 verb="start",
                 reason="sound i2s hat setting",
                 no_block=False,
+                # Over the unit's TimeoutStartSec=50s, under the 65s
+                # proxy_read_timeout on /sound/speaker/ and /sound/output/.
                 timeout=55.0,
             )
         except (OSError, RuntimeError) as exc:

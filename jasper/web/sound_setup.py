@@ -361,6 +361,14 @@ def _requested_page_mode(headers: Any) -> str:
     return _coerce_page_mode(headers.get("X-JTS-Sound-Page", "eq"))
 
 
+def _error_body(exc: BaseException) -> dict[str, Any]:
+    """One refusal body: the prose, plus the raise site's code when it named one."""
+    body: dict[str, Any] = {"error": str(exc)}
+    if (code := getattr(exc, "code", None)) is not None:
+        body["code"] = code
+    return body
+
+
 def _eq_carrier_block(
     profile: SoundProfile,
     *,
@@ -466,7 +474,7 @@ def _make_handler(
                         self._send_json(_active_speaker_tuning_handoff_payload(
                             query.get("program", ["speaker"])[0]))
                     except ValueError as e:
-                        self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+                        self._send_json(_error_body(e), status=HTTPStatus.BAD_REQUEST)
                     except Exception as e:  # noqa: BLE001
                         send_route_failure(
                             self._send_json, e, logger=logger, event=event,
@@ -515,10 +523,10 @@ def _make_handler(
                     try:
                         payload, result = _save_i2s_hat_payload(profile_id)
                     except ValueError as e:
-                        self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+                        self._send_json(_error_body(e), status=HTTPStatus.BAD_REQUEST)
                         return
                     except (OSError, RuntimeError) as e:
-                        self._send_json({"error": str(e)}, status=502)
+                        self._send_json(_error_body(e), status=502)
                         return
                     if not result.get("ok"):
                         error = result.get("error") or result.get("stderr")
@@ -587,7 +595,7 @@ def _make_handler(
                     try:
                         self._send_json(_reset_output_topology_payload(raw))
                     except ValueError as e:
-                        self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+                        self._send_json(_error_body(e), status=HTTPStatus.BAD_REQUEST)
                     except (OSError, RuntimeError) as e:
                         log_event(
                             logger,
@@ -621,7 +629,7 @@ def _make_handler(
                         payload["conflict"] = e.code
                         self._send_json(payload, status=HTTPStatus.CONFLICT)
                     except ValueError as e:
-                        self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+                        self._send_json(_error_body(e), status=HTTPStatus.BAD_REQUEST)
                     except (OSError, RuntimeError) as e:
                         log_event(
                             logger,
@@ -659,7 +667,7 @@ def _make_handler(
                         )
                     except OSError as e:
                         logger.exception("sound settings save failed")
-                        self._send_json({"error": str(e)}, status=502)
+                        self._send_json(_error_body(e), status=502)
                         return
                     self._send_json(payload)
                     return
@@ -675,7 +683,7 @@ def _make_handler(
                         )
                     except (OSError, RuntimeError, ValueError, TypeError) as e:
                         logger.exception("volume floor audition failed")
-                        self._send_json({"error": str(e)}, status=502)
+                        self._send_json(_error_body(e), status=502)
                     return
                 if path == "/volume-floor/stop":
                     try:
@@ -689,7 +697,7 @@ def _make_handler(
                         )
                     except (OSError, RuntimeError, ValueError, TypeError) as e:
                         logger.exception("volume floor tone stop failed")
-                        self._send_json({"error": str(e)}, status=502)
+                        self._send_json(_error_body(e), status=502)
                     return
                 if path.startswith("/profiles/"):
                     try:
@@ -753,7 +761,7 @@ def _make_handler(
                             payload["deleted_profile_id"] = deleted_id
                     except OSError as e:
                         logger.exception("sound profile library update failed")
-                        self._send_json({"error": str(e)}, status=502)
+                        self._send_json(_error_body(e), status=502)
                         return
                     self._send_json(payload)
                     return
@@ -763,7 +771,7 @@ def _make_handler(
                     raw_profile = raw
                 profile = SoundProfile.from_mapping(raw_profile)
             except (JsonBodyError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
-                self._send_json({"error": str(e)}, status=400)
+                self._send_json(_error_body(e), status=400)
                 return
             except (OSError, RuntimeError) as e:
                 if self._json_response_started:
@@ -776,7 +784,7 @@ def _make_handler(
                     level=logging.ERROR,
                     exc_info=True,
                 )
-                self._send_json({"error": str(e)}, status=502)
+                self._send_json(_error_body(e), status=502)
                 return
             if path == "/preview":
                 self._send_json(_state_payload(profile))
@@ -842,7 +850,7 @@ def _make_handler(
                     self._send_json(refusal.to_payload())
                     return
                 logger.exception("sound profile apply failed")
-                self._send_json({"error": str(e)}, status=502)
+                self._send_json(_error_body(e), status=502)
                 return
             self._send_json(payload)
 

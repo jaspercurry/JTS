@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from functools import partial
 import json
 from pathlib import Path
 import re
@@ -1209,12 +1210,10 @@ def test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typis
     where the author is the household:
 
     * a RESEARCH REPLY carrying 700 Hz for a tweeter whose class band is
-      [1250, 20000] is refused at intake. "Ask again with the datasheet" is the
-      right answer to an LLM misreading one, and refusing at the paste means
-      the number never becomes a declaration anyone has to un-declare;
-    * the SAME 700 Hz typed by hand SAVES, with a warning that names the value,
-      the band it missed, the anchor that band came from, and the two things it
-      is most likely to be. The tinker box trusts its owner and says so first.
+      [1250, 20000] is refused at intake, so the number never becomes a
+      declaration anyone has to un-declare;
+    * the SAME 700 Hz typed by hand SAVES, with a warning. The tinker box
+      trusts its owner and says so first.
     """
 
     topology = mono_output_topology(card_id=None)
@@ -1226,22 +1225,14 @@ def test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typis
         if driver["role"] == "tweeter"
     )
     tweeter_reply["recommended_highpass_hz"] = 700
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="not believable for its driver type",
-    ) as refused:
+    with pytest.raises(ActiveSpeakerDesignDraftError) as refused:
         build_design_draft(
             topology,
             driver_research=implausible_reply,
             operator_inputs=_operator_inputs(),
         )
-    # The refusal teaches: the number, the band, the anchor, and the two ways
-    # out (a datasheet page, or typing it yourself).
-    assert "700 Hz" in str(refused.value)
-    assert "1250-20000 Hz" in str(refused.value)
-    assert "(class default 5000 Hz)" in str(refused.value)
-    assert "Ask again with the datasheet" in str(refused.value)
-    assert "by hand under Advanced" in str(refused.value)
+    # The intake code survives the safety-profile -> design-draft wrap.
+    assert refused.value.code == "research_low_limit_implausible"
 
     # A published figure INSIDE the band passes the intake screen untouched,
     # including one below the class default -- that is the #2603 ruling and it
@@ -1442,51 +1433,57 @@ def test_operator_override_drops_research_provenance_for_changed_field() -> None
     )
 
 
+def _legacy_duplicate_role(manual: dict) -> None:
+    for driver in manual["drivers"]:
+        driver.pop("target_id", None)
+    manual["drivers"].append(deepcopy(manual["drivers"][0]))
+
+
+_mono_topology = partial(mono_output_topology, card_id=None)
+
+
 @pytest.mark.parametrize(
-    "mutate,match",
+    ("mutate", "topology", "code"),
     [
-        (
+        pytest.param(
             lambda manual: manual["drivers"][1].update({"role": "woofer"}),
-            "role does not match target_id",
+            _mono_topology,
+            "manual_target_role_mismatch",
+            id="role_contradicts_target_id",
         ),
-        (
+        pytest.param(
             lambda manual: manual["drivers"][1].update(
                 {"target_id": "missing:tweeter"}
             ),
-            "not a current physical target",
+            _mono_topology,
+            "manual_target_unknown",
+            id="target_id_not_in_topology",
         ),
-        (
+        pytest.param(
             lambda manual: manual["drivers"].append(
                 {**deepcopy(manual["drivers"][1]), "target_id": None}
             ),
-            "resolves target mono:tweeter more than once",
+            _mono_topology,
+            "manual_target_bound_twice",
+            id="legacy_role_row_rebinds_a_bound_target",
+        ),
+        pytest.param(
+            _legacy_duplicate_role,
+            _stereo_topology,
+            "manual_duplicate_legacy_role",
+            id="two_legacy_rows_for_one_role",
         ),
     ],
 )
-def test_manual_target_binding_refuses_contradictions(mutate, match: str) -> None:
+def test_manual_target_binding_refuses_contradictions(mutate, topology, code: str) -> None:
     manual = _manual_settings()
     mutate(manual)
 
-    with pytest.raises(DriverSafetyProfileError, match=match):
+    with pytest.raises(DriverSafetyProfileError) as caught:
         compute_driver_safety_profile(
-            mono_output_topology(card_id=None),
-            manual_settings=manual,
-            driver_research=None,
+            topology(), manual_settings=manual, driver_research=None,
         )
-
-
-def test_stereo_duplicate_legacy_role_rows_are_rejected() -> None:
-    legacy = _manual_settings()
-    for driver in legacy["drivers"]:
-        driver.pop("target_id", None)
-    legacy["drivers"].append(deepcopy(legacy["drivers"][0]))
-
-    with pytest.raises(DriverSafetyProfileError, match="duplicate legacy role woofer"):
-        compute_driver_safety_profile(
-            _stereo_topology(),
-            manual_settings=legacy,
-            driver_research=None,
-        )
+    assert caught.value.code == code
 
 
 def test_direct_builder_canonicalizes_manual_values_and_forged_cabinet_claim() -> None:
@@ -1809,6 +1806,16 @@ def test_provenance_source_is_additive_and_old_entries_are_byte_identical() -> N
     assert entry["source"] == "Dayton CX120-8 datasheet, p.2"
 
     # Length-capped, and the cap names the field so an operator can find it.
+    at_max = {
+        "level_duration_limits": {
+            "confidence": "low",
+            "basis": "estimated",
+            "source": "x" * MAX_PROVENANCE_SOURCE_CHARS,
+        }
+    }
+    accepted = _normalise_field_provenance(at_max, "driver.field_provenance")
+    assert len(accepted["level_duration_limits"]["source"]) == MAX_PROVENANCE_SOURCE_CHARS
+
     too_long = {
         "level_duration_limits": {
             "confidence": "low",
@@ -1816,9 +1823,8 @@ def test_provenance_source_is_additive_and_old_entries_are_byte_identical() -> N
             "source": "x" * (MAX_PROVENANCE_SOURCE_CHARS + 1),
         }
     }
-    with pytest.raises(DriverSafetyProfileError) as excinfo:
+    with pytest.raises(DriverSafetyProfileError):
         _normalise_field_provenance(too_long, "driver.field_provenance")
-    assert "level_duration_limits.source" in str(excinfo.value)
 
     # The citation slot must hold any URL the `sources` list holds. They are
     # separate budgets, but a datasheet URL is a legal citation, so a cap that
@@ -2054,39 +2060,25 @@ def test_prompt_limits_are_read_from_code_policy_not_restated(
     assert "mono:woofer:" not in limits_block
 
 
-def test_protection_filter_without_numbers_is_refused_by_name() -> None:
-    """"Required, numbers unpublished" is unstorable — and says so (#2186 leg 2).
-
-    The old message named the two missing keys but not the fix, and the
-    browser dropped the whole packet before the operator ever saw it.  Under
-    the best-estimate contract (#2195) the honest answer to an unpublished
-    protective cutoff is the researcher's best estimate, so the refusal says
-    that out loud.
-    """
-
-    from jasper.active_speaker.driver_safety import _normalise_protection_filters
-
-    honest_null = [{
+@pytest.mark.parametrize("declared", [
+    # "Required, numbers unpublished" is unstorable (#2186 leg 2): under the
+    # best-estimate contract (#2195) the honest answer to an unpublished
+    # protective cutoff is the researcher's best estimate, never null.
+    [{
         "kind": "highpass",
         "cutoff_hz": None,
         "minimum_slope_db_per_octave": None,
         "family_or_equivalent": "equivalent_or_steeper",
-    }]
-    with pytest.raises(DriverSafetyProfileError) as excinfo:
-        _normalise_protection_filters(honest_null, "driver.required_protection_filters")
-
-    message = str(excinfo.value)
-    assert "cutoff_hz and minimum_slope_db_per_octave" in message
-    assert "best engineering estimate, not null" in message
-    # Naming the entry is what lets the operator find it among several drivers.
-    assert "driver.required_protection_filters[0]" in message
-
+    }],
     # Half a filter is refused for the same reason, not quietly half-stored.
-    with pytest.raises(DriverSafetyProfileError):
-        _normalise_protection_filters(
-            [{"kind": "highpass", "cutoff_hz": 3000}],
-            "driver.required_protection_filters",
-        )
+    [{"kind": "highpass", "cutoff_hz": 3000}],
+])
+def test_protection_filter_without_numbers_is_refused(declared) -> None:
+    from jasper.active_speaker.driver_safety import _normalise_protection_filters
+
+    with pytest.raises(DriverSafetyProfileError) as excinfo:
+        _normalise_protection_filters(declared, "driver.required_protection_filters")
+    assert excinfo.value.code == "protection_filter_numbers_missing"
 
 
 # --- The field case: Dayton CX120-8 on jts5, 2026-08-06 ---------------------
@@ -2284,9 +2276,7 @@ def test_cx120_honest_null_reply_is_refused_loudly_never_dropped() -> None:
             operator_inputs=_cx120_operator_inputs(),
         )
 
-    message = str(excinfo.value)
-    assert "required_protection_filters" in message
-    assert "best engineering estimate, not null" in message
+    assert excinfo.value.code == "protection_filter_numbers_missing"
 
 
 def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:

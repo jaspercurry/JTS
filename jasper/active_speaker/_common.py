@@ -75,6 +75,21 @@ MANUAL_CANDIDATE_FIELDS = {
 _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 
+class CodedFieldError(ValueError):
+    """A field refusal whose ``code`` a caller can branch on.
+
+    A subclass sets the class attribute as its default; ``None`` means neither
+    the subclass nor the raise site named a code.
+    """
+
+    code: str | None = None
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+
+
 def software_guard_needed(groups: Sequence[SpeakerGroup]) -> bool:
     return any(
         channel.role == "tweeter" and channel.protection_status == "absent"
@@ -148,6 +163,8 @@ def region_key(lower_role: str, upper_role: str) -> str:
 
 
 class DriverFields(JsonFields):
+    error_type: type[CodedFieldError]
+
     def _text(
         self, raw: Any, field_name: str, *, required: bool = False, max_chars: int = 240,
     ) -> str | None:
@@ -181,6 +198,7 @@ class DriverFields(JsonFields):
     ) -> None:
         unknown = sorted(str(key) for key in raw if key not in allowed)
         if unknown:
-            error = self.error_type(f"{field_name} has unknown fields: {', '.join(unknown)}")
-            setattr(error, "code", "unknown_driver_fields")
-            raise error
+            raise self.error_type(
+                f"{field_name} has unknown fields: {', '.join(unknown)}",
+                code="unknown_driver_fields",
+            )
