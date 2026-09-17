@@ -13,7 +13,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
-from ..identity.speaker_name import runtime_name as speaker_runtime_name
 from ..platform import wire
 from ..platform.uds import voice_socket_command
 from ..spotify_oauth import (
@@ -152,34 +151,22 @@ async def _with_coordinator(
     `_make_duck_active_probe` for the wire details."""
     # lazy: import cost — see module header
     from .. import librespot_state
-    from ..assistant_volume import volume_context_publisher_for_runtime
     from ..camilla import CamillaController
     from ..renderer import RendererClient
-    from ..volume_coordinator import VolumeCoordinator
+    from ..volume_coordinator import build_volume_coordinator
 
-    camilla = CamillaController(host=camilla_host, port=camilla_port)
-    persistence = VolumePersistence(volume_state_path())
-    backend = RendererClient(
-        librespot_state_path=librespot_state.configured_path(),
-    )
-    # Build a Spotify router per-request so accessory volume can dispatch
-    # to Spotify via Web API (librespot 0.8.0 has no local HTTP).
-    # Best-effort: if env vars aren't set or no accounts authorized,
-    # router is None and Spotify dispatch becomes a no-op.
-    spotify_router = _build_spotify_router_or_none()
-    coord = VolumeCoordinator(
-        camilla=camilla,
-        persistence=persistence,
-        backend=backend,
-        spotify_router=spotify_router,
-        spotify_device_name=speaker_runtime_name(),
+    coord = build_volume_coordinator(
+        camilla=CamillaController(host=camilla_host, port=camilla_port),
+        backend=RendererClient(
+            librespot_state_path=librespot_state.configured_path(),
+        ),
+        # Web API because librespot 0.8.0 has no local HTTP control; None
+        # (no client id / no authorized account) makes Spotify a no-op.
+        spotify_router=_build_spotify_router_or_none(),
         duck_active_probe=duck_active_probe,
-        volume_context_publisher=volume_context_publisher_for_runtime(os.environ),
     )
-    coord.load_persisted_level()
-    # Nothing here owns a closable resource: RendererClient is a stateless
-    # probe wrapper, and CamillaController's websocket reconnects on next
-    # use — GC reclaims both once `coord` drops out of scope.
+    # Nothing here is closable: RendererClient is a stateless probe wrapper
+    # and CamillaController's websocket reconnects on next use.
     return await op(coord)
 
 
