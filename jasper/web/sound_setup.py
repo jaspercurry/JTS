@@ -94,6 +94,7 @@ from .sound_active_speaker import (
 
 # Builders are resolved by name so route calls use the current module binding.
 from .sound_active_speaker import (  # noqa: F401 - resolved by name
+    _active_speaker_baseline_profile_payload,
     _active_speaker_crossover_preview_payload,
     _active_speaker_measurements_payload,
     _active_speaker_rear_calibration_seed_payload,
