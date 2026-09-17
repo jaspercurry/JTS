@@ -24,7 +24,9 @@ from jasper.active_speaker.crossover_v2.topology_prescription import candidate_t
 from jasper.active_speaker.measured_crossover_candidate import compile_candidate_config, prove_candidate_config
 from jasper.active_speaker.branch_chain import beaming_onset_hz
 from jasper.active_speaker import candidate_parts
-from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
+from jasper.active_speaker.measured_crossover_candidate import (
+    MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError,
+)
 from jasper.active_speaker.crossover_v2.blend_prescription import prescription_sha256
 from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
 import yaml
@@ -43,7 +45,10 @@ from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossover
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.cli import crossover_prescriber
 from tests.active_speaker_fixtures import mono_output_topology
-from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
+from tests.test_active_speaker_measured_crossover_candidate import (
+    _acoustic_rear_document, _candidate, _rear_document, _room_correction,
+)
+from tests.test_rear_output_foundation import _rear_pair
 from tests.test_crossover_v2_candidate_republish import _publish
 from tests.test_crossover_v2_driver_prescription import _draft, _document as driver_document
 from tests.test_crossover_v2_room_prescription import _room_median, _document as room_document, MEDIAN_SHA256, NULL_HZ
@@ -598,3 +603,58 @@ def test_driver_door_prices_the_resolved_program(base, bank, evidence, gain, tri
     assert child.linearization["tweeter"]["filters"][0]["gain"] == gain
     spent = -yaml.safe_load(text)["filters"]["active_baseline_headroom"]["parameters"]["gain"]
     assert spent == pytest.approx(expected_spend, abs=0.01)
+
+
+@pytest.fixture
+def rear_base(bank):
+    return publish_authored_candidate(replace(
+        _candidate(preset=_rear_pair("mono")[0], trims={"woofer": 0.0, "tweeter": -3.5}),
+        analysis={"measurement_status": "unmeasured"},
+    ), root=bank)
+
+
+def test_a_rear_calibration_section_composes_into_the_banked_candidate(rear_base):
+    section = _rear_document()
+
+    fitted = judge_prescription_document(
+        document(rear_base.fingerprint, {"rear_calibration": section}), base=rear_base)
+    inherited = judge_prescription_document(document(rear_base.fingerprint), base=rear_base)
+
+    assert fitted.rear_calibration == section
+    assert fitted.analysis["resolution"]["rear_calibration"] == "document"
+    assert fitted.analysis["evidence"]["prescriptions"]["rear_calibration"] == section
+    assert fitted.fingerprint != inherited.fingerprint
+    assert not inherited.rear_calibration
+    assert "rear_calibration" not in inherited.analysis["resolution"]
+
+
+@pytest.mark.parametrize("empty", [None, {}])
+def test_clearing_the_rear_calibration_restores_the_base_absence(bank, rear_base, empty):
+    fitted = publish_authored_candidate(judge_prescription_document(
+        document(rear_base.fingerprint, {"rear_calibration": _rear_document()}), base=rear_base), root=bank)
+
+    cleared = judge_prescription_document(
+        document(fitted.fingerprint, {"rear_calibration": empty}), base=fitted)
+    kept = judge_prescription_document(document(fitted.fingerprint), base=fitted)
+
+    assert not cleared.rear_calibration
+    assert cleared.analysis["resolution"]["rear_calibration"] == "cleared"
+    assert kept.rear_calibration == fitted.candidate.rear_calibration
+    assert cleared.fingerprint != kept.fingerprint
+    # The cleared core is the pre-field shape, so the absence hashes as it did
+    # before the section existed.
+    assert MeasuredCrossoverCandidate.from_mapping(
+        {key: value for key, value in cleared.to_dict().items() if key != "rear_calibration"}
+    ).fingerprint == cleared.fingerprint
+
+
+@pytest.mark.parametrize("section,code", [
+    (_acoustic_rear_document, "rear_calibration_case_unsupported"),
+    (lambda: {**_rear_document(), "sample_rate_hz": 44100}, "rear_calibration_invalid"),
+])
+def test_a_refused_rear_calibration_names_its_section(rear_base, section, code):
+    with pytest.raises(PrescriptionDocumentRefused) as caught:
+        judge_prescription_document(
+            document(rear_base.fingerprint, {"rear_calibration": section()}), base=rear_base)
+
+    assert (caught.value.code, caught.value.section) == (code, "rear_calibration")

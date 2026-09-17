@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from copy import deepcopy
 from dataclasses import asdict, replace
@@ -14,8 +15,8 @@ import pytest
 import yaml as yaml_lib
 
 from jasper.active_speaker import driver_base_trim as dbt
-from jasper.active_speaker.candidate_bank import publish_authored_candidate
-from jasper.active_speaker.candidate_parts import compose_candidate
+from jasper.active_speaker.candidate_bank import CandidateBankRefusal, publish_authored_candidate
+from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
 from jasper.active_speaker.crossover_v2.planning import applied_profile_timing
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
 from jasper.active_speaker import (
@@ -26,6 +27,8 @@ from jasper.active_speaker.baseline_profile import (
     PROVENANCE_MANUAL,
     PROVENANCE_MEASURED,
     PROVENANCE_RECOMMENDED_START,
+    REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING,
+    REAR_CALIBRATION_WALL_GAP_MISMATCH,
     _GAIN_SOURCE_TO_PROVENANCE,
     active_layer_a_fingerprint,
     baseline_candidate_fingerprint,
@@ -42,8 +45,14 @@ from jasper.active_speaker.measurement import (
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
+    compile_candidate_config,
 )
+from jasper.active_speaker.measurement_emit import compile_tuning_graph
 from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.active_speaker.runtime_contract import (
+    GRAPH_APPROVED_ACTIVE_RUNTIME, classify_bass_extension_graph,
+)
+from jasper.audio_measurement import measurement_geometry
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import (
@@ -52,7 +61,8 @@ from tests.active_speaker_fixtures import (
     valid_camilla_config as _valid_config,  # noqa: F401 - shared fixture export
 )
 from tests.test_active_speaker_profile import _two_way_preset
-from tests.test_active_speaker_measured_crossover_candidate import _room_correction
+from tests.test_active_speaker_measured_crossover_candidate import _rear_document, _room_correction
+from tests.test_rear_output_foundation import _rear_pair
 from tests._log_events import event_field_maps
 
 
@@ -953,3 +963,106 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source,
 ])
 def test_timing_reader_returns_none_for_invalid_record(record):
     assert applied_profile_timing({"timing": record}) is None
+
+
+def _fitted_rear_document() -> dict[str, Any]:
+    """The seed with one cut on the cancellation branch, inside ADR-0318's bounds."""
+    document = _rear_document()
+    rear = document["rear"]
+    return {**document, "rear": {**rear, "cancellation": {
+        **rear["cancellation"],
+        "filters": [{"type": "Biquad", "parameters": {
+            "type": "Peaking", "freq": 120.0, "q": 0.7, "gain": -3.0}}],
+    }}}
+
+
+def test_the_runtime_door_proves_the_cardioid_graph_against_the_saved_section(tmp_path, monkeypatch):
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
+    topology = _rear_pair("mono")[1]
+    draft = standard_design_draft(topology)
+    declaration, declared = declared_graph_fixture(topology, draft)
+    document = _fitted_rear_document()
+    candidate = compose_candidate(publish_authored_candidate(declared),
+                                  sections={"rear_calibration": document})
+    text = compile_tuning_graph(declaration, candidate=candidate)
+
+    applied = baseline_profile_mod.prepare_applied_baseline_profile(
+        candidate, declaration=declaration, design_draft=draft, measurements={},
+        config_path=tmp_path / "baseline.yml",
+        config_sha256=hashlib.sha256(text.encode()).hexdigest(),
+    )
+    # The door reads this exact key out of the snapshot this writer wrote.
+    assert applied["recomposition_snapshot"]["rear_calibration"] == document
+
+    def classify(state: dict[str, Any]) -> Any:
+        return classify_bass_extension_graph(
+            topology, evidence_source="desired", graph_text=text, applied_baseline_state=state)
+
+    proof = classify(applied)
+    assert (proof.allowed, proof.classification) == (True, GRAPH_APPROVED_ACTIVE_RUNTIME)
+    assert not proof.issues
+
+    without = classify({**applied, "recomposition_snapshot": {
+        **applied["recomposition_snapshot"], "rear_calibration": {}}})
+    assert not without.allowed
+    assert "rear_output_not_muted" in {issue["code"] for issue in without.issues}
+
+
+def _rear_candidate(gap_m: Any, front_delay_ms: float, alignment: str) -> MeasuredCrossoverCandidate:
+    document = _rear_document()
+    rear = {} if gap_m == "absent" else {
+        **document,
+        "geometry": {**document["geometry"], "cabinet_back_wall_m": gap_m},
+        "front": {**document["front"], "delay_ms": front_delay_ms},
+    }
+    candidate = _v2_candidate(_rear_pair("mono")[0], rear_calibration=rear)
+    return replace(candidate, analysis={**candidate.analysis, "resolution": {"alignment": alignment}})
+
+
+def test_rear_calibration_rides_the_recomposition_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
+    topology = _rear_pair("mono")[1]
+    draft = standard_design_draft(topology)
+    declaration, declared = declared_graph_fixture(topology, draft)
+    candidate = replace(declared, rear_calibration=_rear_document())
+
+    prepared = baseline_profile_mod.prepare_applied_baseline_profile(
+        candidate, declaration=declaration, design_draft=draft, measurements={},
+        config_path=None, config_sha256="",
+    )
+
+    assert prepared["recomposition_snapshot"]["rear_calibration"] == candidate.rear_calibration
+
+    def unbanked(fingerprint: str, root: Any = None) -> Any:
+        raise CandidateBankRefusal("not_found", fingerprint)
+
+    restored = candidate_from_applied_profile(topology, {**prepared, "status": "applied"}, find_candidate=unbanked)
+    assert compile_candidate_config(restored, playback_device="null") == compile_candidate_config(
+        candidate, playback_device="null")
+
+
+@pytest.mark.parametrize("gap_m,front_delay_ms,alignment,declared_m,codes", [
+    (0.2032, 0.0, "measured", 0.35, [REAR_CALIBRATION_WALL_GAP_MISMATCH]),
+    (0.2032, 0.0, "measured", 0.2032, []),
+    (0.2032, 0.0, "measured", 0.2035, []),
+    (0.2032, 0.0, "measured", 0.2052, [REAR_CALIBRATION_WALL_GAP_MISMATCH]),
+    (0.2032, 0.0, "measured", None, []),
+    (None, 0.0, "measured", 0.35, []),
+    ("absent", 0.0, "measured", 0.35, []),
+    (0.2032, 1.5, "measured", 0.2032, [REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING]),
+    (0.2032, 1.5, "base", 0.2032, []),
+    (0.2032, 1.5, "measured", 0.35,
+     [REAR_CALIBRATION_WALL_GAP_MISMATCH, REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING]),
+])
+def test_a_rear_calibration_discloses_what_it_cannot_prove(
+    monkeypatch, gap_m, front_delay_ms, alignment, declared_m, codes,
+):
+    geometry = None if declared_m is None else measurement_geometry.DeclaredGeometry(
+        speaker_height_m=1.0, mic_height_m=1.0, distance_m=1.0, cabinet_back_wall_m=declared_m)
+    monkeypatch.setattr(measurement_geometry, "load_declared_geometry", lambda *a, **kw: geometry)
+
+    issues = baseline_profile_mod._rear_calibration_issues(
+        _rear_candidate(gap_m, front_delay_ms, alignment))
+
+    assert [issue["code"] for issue in issues] == codes
+    assert {issue["severity"] for issue in issues} <= {"warning"}

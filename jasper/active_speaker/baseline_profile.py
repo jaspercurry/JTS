@@ -89,6 +89,12 @@ BASELINE_PROFILE_KIND = "jts_active_speaker_baseline_profile_candidate"
 DEFAULT_CONFIG_PATH = Path("/var/lib/camilladsp/configs/active_speaker_baseline.yml")
 CONFIG_PATH_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH"
 
+REAR_CALIBRATION_WALL_GAP_MISMATCH = "rear_calibration_wall_gap_differs"
+REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING = "rear_calibration_front_delay_shifts_timing"
+# The wizard declares the wall gap in millimetres while a document carries an
+# inch-derived value (0.2032 m), so only a millimetre-scale difference is real.
+REAR_CALIBRATION_WALL_GAP_TOLERANCE_M = 0.001
+
 # How far the MEASURED level match and the pad-folded DATASHEET sensitivity gap
 # may disagree about the same pair of drivers before the measured value is
 # refused (linearization-integrity PR-L4 item 3). Two independent frames for one
@@ -288,6 +294,35 @@ def _commissioning_refusal(profile: dict[str, Any], exc: Exception) -> None:
     )]
 
 
+def _rear_calibration_issues(candidate: MeasuredCrossoverCandidate) -> list[dict[str, str]]:
+    """Disclose what a cardioid document assumes but cannot prove (ADR-0101)."""
+    from jasper.audio_measurement.measurement_geometry import load_declared_geometry  # lazy: geometry pulls NumPy in
+
+    document = candidate.rear_calibration
+    if not document:
+        return []
+    issues: list[dict[str, str]] = []
+    fitted_m = (document.get("geometry") or {}).get("cabinet_back_wall_m")
+    geometry = load_declared_geometry()
+    declared_m = None if geometry is None else geometry.cabinet_back_wall_m
+    if fitted_m is not None and declared_m is not None and (
+        abs(fitted_m - declared_m) > REAR_CALIBRATION_WALL_GAP_TOLERANCE_M
+    ):
+        issues.append(_issue(
+            "warning", REAR_CALIBRATION_WALL_GAP_MISMATCH,
+            f"the rear calibration was fitted {fitted_m:g} m from the wall behind the cabinet, "
+            f"but the declared rig geometry says {declared_m:g} m",
+        ))
+    front_delay_ms = (document.get("front") or {}).get("delay_ms")
+    if front_delay_ms and (candidate.analysis.get("resolution") or {}).get("alignment") == "measured":
+        issues.append(_issue(
+            "warning", REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING,
+            f"the rear calibration delays the front woofer by {front_delay_ms:g} ms, which moves it "
+            "away from the measured woofer/tweeter arrival difference",
+        ))
+    return issues
+
+
 def compile_commissioning_profile(
     *, topology: OutputTopology | None = None,
     design_draft: Mapping[str, Any] | None = None, write: bool = False,
@@ -321,7 +356,7 @@ def compile_commissioning_profile(
             candidate, declaration=declaration, design_draft=draft, measurements=load_measurement_state(topology),
             config_path=target, config_sha256=sha, find_candidate=find_candidate,
         ))
-        profile["issues"] = list(candidate.analysis.get("issues") or [])
+        profile["issues"] = [*(candidate.analysis.get("issues") or []), *_rear_calibration_issues(candidate)]
         profile["candidate_fingerprint"] = baseline_candidate_fingerprint(profile)
         profile["config"]["exists"] = target.exists()
         proof = classify_bass_extension_graph(topology, evidence_source="desired", graph_text=text, applied_baseline_state=profile)
@@ -1623,6 +1658,7 @@ def prepare_applied_baseline_profile(
         "preset": effective_preset(candidate_on_declaration(projected, declaration.preset)).to_dict(), "corrections": corrections,
         "linearization": linearization, "blend_correction": list(candidate.blend_correction),
         "room_correction": dict(candidate.room_correction), "bass_extension": dict(candidate.bass_extension),
+        "rear_calibration": dict(candidate.rear_calibration),
         "driver_protection": protection, "playback_device": declaration.playback_device,
         "measured_candidate_fingerprint": candidate.fingerprint,
     }
