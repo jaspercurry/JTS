@@ -49,14 +49,17 @@ overridable via ``JASPER_CONTROL_TOKEN_FILE`` (codified in
 The module reads :data:`TOKEN_FILE` fresh on every call — the enable /
 disable CLI mutates the file out-of-band, and ``jasper-control`` is not
 restarted on an enable, so a cached value would go stale.
+
+The read/write/verify mechanics are shared with
+:mod:`jasper.control.household_credential` via
+:mod:`jasper.control._secret_file`; only the path and this docstring's trust
+domain differ.
 """
 from __future__ import annotations
 
-import hmac
 import os
-import secrets
 
-from jasper.atomic_io import atomic_write_text
+from jasper.control import _secret_file
 
 # The token file. Seeded from the env var at import; callers read the
 # module attribute (not the env var) so tests can monkeypatch this single
@@ -68,19 +71,8 @@ TOKEN_FILE = os.environ.get(
 
 
 def _stored_token() -> str:
-    """The stripped token on disk, or "" when absent/empty/unreadable.
-
-    Trailing newline (and surrounding whitespace) is stripped so a token
-    written with ``echo`` and one written atomically by the CLI compare
-    equal. Any read error (missing file, permission denied) resolves to
-    "" — i.e. "gate not configured", never a raise: a control request
-    must not 500 because the optional token file couldn't be read.
-    """
-    try:
-        with open(TOKEN_FILE, encoding="utf-8") as f:
-            return f.read().strip()
-    except OSError:
-        return ""
+    """The stripped token on disk, or "" when absent/empty/unreadable."""
+    return _secret_file.read(TOKEN_FILE)
 
 
 def token_enforced() -> bool:
@@ -89,7 +81,7 @@ def token_enforced() -> bool:
     An absent or empty file means default-off: a missing file can never
     enable the gate.
     """
-    return bool(_stored_token())
+    return _secret_file.is_set(TOKEN_FILE)
 
 
 def current_token() -> str:
@@ -101,7 +93,7 @@ def current_token() -> str:
     :func:`verify`, so the embedded value and the verified value never
     disagree.
     """
-    return _stored_token()
+    return _secret_file.read(TOKEN_FILE)
 
 
 def ensure_token() -> str:
@@ -117,21 +109,12 @@ def ensure_token() -> str:
     ``jasper-voice`` rather than jasper-control, and it is read cross-user —
     jasper-web embeds it via ``canonical_page()``. An owner-only 0600 token
     would therefore be unreadable by the non-root jasper-control and
-    jasper-web, and because :func:`_stored_token` fails safe to "" (gate OFF)
+    jasper-web, and because the stored-token read fails safe to "" (gate OFF)
     on EACCES, that would SILENTLY DISABLE the gate. The token is CSRF-grade
     defense-in-depth, not a hard boundary, and its readers are sibling daemons
     already in the trust domain.
     """
-    existing = _stored_token()
-    if existing:
-        return existing
-    token = secrets.token_urlsafe(32)
-    # chmod-before-rename at 0640 so the secret is never even briefly
-    # world-readable while staying group-`jasper` readable (see docstring).
-    # The parent directory's group is used because install.sh may mint this as
-    # root before the daemon starts.
-    atomic_write_text(TOKEN_FILE, token + "\n", mode=0o640)
-    return token
+    return _secret_file.ensure(TOKEN_FILE)
 
 
 def verify(provided: str | None) -> bool:
@@ -143,7 +126,4 @@ def verify(provided: str | None) -> bool:
     :func:`hmac.compare_digest`; a missing header (``None``) compares as
     the empty string and fails.
     """
-    stored = _stored_token()
-    if not stored:
-        return True
-    return hmac.compare_digest(provided or "", stored)
+    return _secret_file.verify(TOKEN_FILE, provided)
