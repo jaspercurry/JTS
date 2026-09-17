@@ -858,28 +858,37 @@ EVALUABLE_Q_MAX = 1e6
 
 
 def _biquad_coeffs(
-    biquad_type: str, freq: float, gain_db: float, q: float
+    biquad_type: str, freq: float, gain_db: float, q: float | None
 ) -> tuple[float, float, float, float, float, float]:
     """RBJ Audio EQ Cookbook biquad coefficients (un-normalised).
 
     https://www.w3.org/TR/audio-eq-cookbook/ — the same digital biquad
     family CamillaDSP realises, so the magnitude we draw matches the
-    speaker's actual output for the Q-parameterised types (Peaking,
-    Highpass, Lowpass, Notch). Shelves ignore the caller's ``q`` and use the
-    fixed Butterworth ``_SHELF_Q``, which is the Q the emitter spells into
-    CamillaDSP's shelf ``q`` field — so shelves match exactly too. (Before
-    2026-07-27 the emitter wrote ``slope: 6.0``, whose realised Q is
-    gain-dependent and NOT Butterworth; Butterworth is ``slope: 12``.)
+    speaker's actual output for every Q-parameterised type.
+
+    ``q`` is the width the SPEC declares. ``None`` means it declares none, and
+    the shape then falls back to the width the emitter writes for it: the fixed
+    Butterworth ``_SHELF_Q`` for a shelf, 1.0 elsewhere. (Before 2026-07-27 the
+    emitter wrote ``slope: 6.0``, whose realised Q is gain-dependent and NOT
+    Butterworth; Butterworth is ``slope: 12``.) A shelf that DOES declare a q is
+    evaluated at it, because CamillaDSP honours the ``q`` field the graph
+    carries — ``active_speaker.rear_calibration`` admits shelves up to q 1.0 and
+    emits them verbatim, and reading one of those at ``_SHELF_Q`` under-reports
+    its corner peak by up to 0.78 dB per shelf.
 
     This MUST stay byte-for-byte equivalent to biquadCoeffs() in
-    deploy/assets/sound-profile/js/eq-math.js. Both are checked against
+    deploy/assets/sound-profile/js/eq-math.js for every input the /sound/ UI can
+    produce. That UI has no shelf-steepness control (``FilterSpec.q`` is None
+    for a shelf), so the explicit-shelf-q branch is unreachable from it and the
+    JS twin does not carry it. Both are checked against
     tests/fixtures/peq_response_fixture.json.
     """
     w0 = 2.0 * math.pi * max(freq, 1e-6) / RESPONSE_SAMPLE_RATE_HZ
     cw = math.cos(w0)
     sw = math.sin(w0)
-    eff_q = _SHELF_Q if biquad_type in ("Lowshelf", "Highshelf") else max(q, EVALUABLE_Q_MIN)
-    alpha = sw / (2.0 * eff_q)
+    if q is None:
+        q = _SHELF_Q if biquad_type in ("Lowshelf", "Highshelf") else 1.0
+    alpha = sw / (2.0 * max(q, EVALUABLE_Q_MIN))
     if biquad_type == "Lowpass":
         return ((1 - cw) / 2, 1 - cw, (1 - cw) / 2, 1 + alpha, -2 * cw, 1 - alpha)
     if biquad_type == "Highpass":
@@ -945,7 +954,7 @@ def _filter_response_db(
     per-frequency trig once per band in a multi-band sum.
     """
     b0, b1, b2, a0, a1, a2 = _biquad_coeffs(
-        spec.biquad_type, spec.freq, spec.gain, spec.q or 1.0
+        spec.biquad_type, spec.freq, spec.gain, spec.q
     )
     if trig is None:
         trig = _freq_trig(freqs)
@@ -990,7 +999,7 @@ def _filter_response_complex(
     never produces, and flooring a complex value would break the phase.)
     """
     b0, b1, b2, a0, a1, a2 = _biquad_coeffs(
-        spec.biquad_type, spec.freq, spec.gain, spec.q or 1.0
+        spec.biquad_type, spec.freq, spec.gain, spec.q
     )
     if trig is None:
         trig = _freq_trig(freqs)

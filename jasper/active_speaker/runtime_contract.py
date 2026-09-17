@@ -1795,10 +1795,10 @@ def _linearization_boost_allowance_db(payload: dict[str, Any]) -> float:
     it.
 
     **Residual slack, stated rather than hidden**: ``output_trim_db`` and the
-    rear calibration branch sum (``camilla_yaml.rear_branch_sum_headroom_db``,
-    at most 6.02 dB) are folded into the same gain and are NOT recoverable, so
-    with preference EQ or a cardioid stage present this allowance is generous by
-    at most those terms — never tight. The emitter
+    cardioid stage's evaluated peak
+    (``camilla_yaml.rear_branch_sum_headroom_db``) are folded into the same gain
+    and are NOT recoverable, so with preference EQ or a cardioid stage present
+    this allowance is generous by at most those terms — never tight. The emitter
     also adds a caller-supplied ``baseline_headroom_db`` while this subtracts
     the module default; they agree only because every production path takes the
     default 0.0, which a test pins.

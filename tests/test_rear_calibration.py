@@ -7,7 +7,8 @@ import json
 import pytest
 
 from jasper.active_speaker.rear_calibration import (
-    RearCalibrationError, coefficient_sha256, compile_rear_stage, diagnostic_seed, read_rear_calibration,
+    MAX_ALLPASS_Q, RearCalibrationError, coefficient_sha256, compile_rear_stage, diagnostic_seed,
+    read_rear_calibration,
 )
 from jasper.cli.crossover_prescriber import main
 
@@ -118,3 +119,19 @@ def test_cli_seed_and_stage_are_read_only_and_rate_bound(tmp_path, capsys):
     assert result["stage"]["filters"]["rear_out6_output_gain"]["parameters"]["mute"] is True
     assert main([*args, "--sample-rate", "44100"]) != 0
     assert json.loads(capsys.readouterr().out)["reason"] == "rear_calibration_invalid"
+
+
+@pytest.mark.parametrize("q,accepted", [(MAX_ALLPASS_Q, True), (MAX_ALLPASS_Q + 1.0, False)])
+def test_an_allpass_q_past_the_ceiling_is_refused(q, accepted):
+    """An all-pass narrower than this rotates the branch sum faster than the
+    headroom grid resolves, so the charge could miss a peak it must bound.
+    """
+    data = diagnostic_seed(48000)
+    data["rear"]["cancellation"]["filters"] = [
+        {"type": "Biquad", "parameters": {"type": "Allpass", "freq": 200, "q": q}}
+    ]
+    if accepted:
+        assert read_rear_calibration(data, sample_rate=48000) == data
+        return
+    with pytest.raises(RearCalibrationError):
+        read_rear_calibration(data, sample_rate=48000)

@@ -16,7 +16,9 @@ from jasper.active_speaker.branch_peak import stimulus_branch_peaks_dbfs
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.path_safety import staged_target_signature, topology_target_signature
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, SpeakerBaselineProfile
-from jasper.active_speaker.rear_calibration import diagnostic_seed, rear_stage_mixer_names
+from jasper.active_speaker.rear_calibration import (
+    MAX_ALLPASS_Q, diagnostic_seed, rear_stage_mixer_names,
+)
 from jasper.active_speaker.runtime_contract import active_ring_channels_for_topology
 from jasper.active_speaker.safe_playback import playback_target_signature
 from jasper.bass_extension.dynamic_graph import validated_base_graph
@@ -458,3 +460,129 @@ def test_a_take_that_names_the_rear_lifts_only_its_mute():
             if name in take["filters"]} == take["filters"]
     assert [step for step in household["pipeline"]
             if "as_out2_rear_pending_mute" not in (step.get("names") or [])] == take["pipeline"]
+
+
+def _chain(**overrides) -> dict:
+    """An open, flat, undelayed calibration chain."""
+    return {"gain_db": 0.0, "inverted": False, "delay_ms": 0.0, "muted": False,
+            "filters": [], **overrides}
+
+
+def _biquad(kind: str, **parameters) -> dict:
+    return {"type": "Biquad", "parameters": {"type": kind, **parameters}}
+
+
+def _combo(kind: str, freq: float, order: int) -> dict:
+    return {"type": "BiquadCombo", "parameters": {"type": kind, "freq": freq, "order": order}}
+
+
+def _branches(bass: dict | None = None, cancellation: dict | None = None, **document) -> dict:
+    return _rear_document(
+        rear={"mode": "branches", "bass": bass or _chain(),
+              "cancellation": cancellation or _chain()},
+        **document,
+    )
+
+
+# A resonant high-pass at the document's own Q ceiling: the one shape the
+# vocabulary admits that puts a chain above unity on its own.
+_RESONANT_HIGHPASS = _biquad("Highpass", freq=100.0, q=1.0)
+
+
+def _jts3_document() -> dict:
+    """jts3's fitted cardioid document: a low-passed bass branch against an
+    inverted, delayed, band-limited cancellation branch. Charging the in-phase
+    sum of the two branch gains cost 5.372 dB of program here.
+    """
+    peaking = _biquad("Peaking", freq=190.0, q=0.996, gain=-6.36)
+    return _branches(
+        bass=_chain(filters=[_combo("ButterworthLowpass", 58.41, 3)]),
+        cancellation=_chain(gain_db=-1.35, inverted=True, delay_ms=2.426, filters=[
+            _combo("ButterworthHighpass", 73.81, 4),
+            _combo("ButterworthLowpass", 343.61, 8),
+            _biquad("Allpass", freq=85.53, q=0.616),
+            deepcopy(peaking),
+        ]),
+        common_delay_ms=6.82,
+        front=_chain(gain_db=-0.51, filters=[deepcopy(peaking)]),
+    )
+
+
+@pytest.mark.parametrize("document,expected", [
+    pytest.param(_branches(), 6.0206, id="two_open_branches_sum_in_phase"),
+    pytest.param(_branches(cancellation=_chain(inverted=True)), 0.0, id="an_inverted_twin_cancels"),
+    pytest.param(_branches(rear_muted=True), 0.0, id="a_muted_rear_charges_nothing"),
+    pytest.param(
+        _branches(bass=_chain(muted=True),
+                  cancellation=_chain(filters=[deepcopy(_RESONANT_HIGHPASS)])),
+        1.2493, id="one_muted_branch_leaves_the_others_peak",
+    ),
+    pytest.param(
+        _branches(cancellation=_chain(inverted=True),
+                  front=_chain(filters=[deepcopy(_RESONANT_HIGHPASS)])),
+        1.2493, id="the_front_chain_is_charged_too",
+    ),
+    pytest.param(_jts3_document(), 0.1939, id="the_fitted_jts3_document"),
+])
+def test_the_rear_charge_is_the_compiled_stages_realised_peak(document, expected):
+    """The charge is what the stage actually puts above unity, not what two
+    branches would sum to if their filters let them both run wide open.
+    """
+    assert emit.rear_branch_sum_headroom_db(document) == pytest.approx(expected, abs=0.005)
+
+
+def test_the_emitted_baseline_absorbs_exactly_the_stages_peak():
+    audible = yaml.safe_load(_cardioid_baseline()[2])
+    assert audible["filters"]["active_baseline_headroom"]["parameters"]["gain"] == \
+        pytest.approx(-emit.rear_branch_sum_headroom_db(_rear_document()), abs=0.001)
+    muted = yaml.safe_load(_cardioid_baseline(_rear_document(rear_muted=True))[2])
+    assert muted["filters"]["active_baseline_headroom"]["parameters"]["gain"] == 0.0
+
+
+def _muted_rear_front(*filters: dict) -> dict:
+    """A document whose only audible chain is the front one."""
+    return _branches(rear_muted=True, front=_chain(filters=list(filters)))
+
+
+# A shelf CamillaDSP realises at the q the graph carries: at the document's
+# q ceiling its corner overshoots the passband, and the overshoots cascade.
+_RESONANT_LOWSHELF = _biquad("Lowshelf", freq=200.0, q=1.0, gain=-12.0)
+
+# An all-pass at the document's q ceiling: unity magnitude, but its phase
+# rotation is what steers the branch sum, and it is the narrowest rotation the
+# vocabulary admits.
+_NARROW_ALLPASS = _biquad("Allpass", freq=200.0, q=MAX_ALLPASS_Q)
+
+
+@pytest.mark.parametrize("document,expected", [
+    pytest.param(_muted_rear_front(deepcopy(_RESONANT_LOWSHELF)), 0.782, id="a_resonant_shelf_overshoots"),
+    pytest.param(_muted_rear_front(*[deepcopy(_RESONANT_LOWSHELF) for _ in range(16)]),
+                 12.512, id="sixteen_shelves_cascade"),
+    pytest.param(
+        _rear_document(rear={"mode": "fir", "coefficients": [1.0], "sample_rate_hz": 48000,
+                             "normalization": "as_supplied", "added_latency_ms": 0.0, "sha256": ""},
+                       front=_chain(filters=[deepcopy(_RESONANT_HIGHPASS)])),
+        1.2493, id="a_fir_rear_still_charges_the_front_chain",
+    ),
+])
+def test_the_charge_bounds_every_term_the_graph_can_raise(document, expected):
+    """An upper bound, so a term is evaluated rather than argued away: shelf
+    steepness the graph carries verbatim, and the front chain in every rear mode.
+    """
+    assert emit.rear_branch_sum_headroom_db(document) == pytest.approx(expected, abs=0.005)
+
+
+def test_a_narrow_allpass_peak_cannot_hide_between_grid_points():
+    """An all-pass rotates one branch past the other; at the vocabulary's q
+    ceiling the summed peak is narrow enough that the background grid alone
+    missed it. Truth here is a 400k-point reference, not another grid.
+    """
+    document = _branches(cancellation=_chain(inverted=True, filters=[deepcopy(_NARROW_ALLPASS)]))
+    dense = np.geomspace(1.0, 23995.2, 400_000)
+    summed = sum(
+        emit._rear_stage_chain_response(document["rear"][branch], dense, delay_ms=0.0)
+        for branch in ("bass", "cancellation")
+    )
+    truth = 20.0 * np.log10(np.max(np.abs(summed)))
+    assert truth > 5.0
+    assert emit.rear_branch_sum_headroom_db(document) == pytest.approx(truth, abs=0.05)

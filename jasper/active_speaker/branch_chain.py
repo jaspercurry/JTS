@@ -279,23 +279,43 @@ def crossover_response_complex(
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     total = np.ones(freqs.shape, dtype=np.complex128)
     for section in sections:
-        fc_hz = max(float(section.fc_hz), 1e-9)
         # Butterworth order per pass; the pass runs twice, hence the doubling.
-        butterworth_order = max(int(section.order), 1) // 2 or 1
-        biquads = [
-            {
-                "biquad_type": "Highpass" if section.highpass else "Lowpass",
-                "freq": fc_hz, "q": q, "gain": 0.0,
-            }
-            for q in _butterworth_qs(butterworth_order)
-        ]
-        pass_response = chain_response(biquads, freqs)
-        if butterworth_order % 2:
-            pass_response = pass_response * _first_order_response(
-                freqs, fc_hz=fc_hz, highpass=section.highpass
-            )
+        pass_response = butterworth_response(
+            freqs,
+            fc_hz=section.fc_hz,
+            order=max(int(section.order), 1) // 2 or 1,
+            highpass=section.highpass,
+        )
         total = total * pass_response * pass_response
     return total
+
+
+def butterworth_response(
+    freqs_hz: np.ndarray, *, fc_hz: float, order: int, highpass: bool,
+) -> np.ndarray:
+    """Exact complex response of ONE digital Butterworth pass of ``order``.
+
+    The sections CamillaDSP's ``ButterworthHighpass``/``ButterworthLowpass``
+    combos realise: ``order // 2`` biquads at the Butterworth pole Qs, plus the
+    leftover real pole when ``order`` is odd. A Linkwitz-Riley section is two of
+    these cascaded, so both spellings evaluate through one implementation.
+    """
+    fc = max(float(fc_hz), 1e-9)
+    response = chain_response(
+        [
+            {
+                "biquad_type": "Highpass" if highpass else "Lowpass",
+                "freq": fc, "q": q, "gain": 0.0,
+            }
+            for q in _butterworth_qs(order)
+        ],
+        freqs_hz,
+    )
+    if order % 2:
+        response = response * _first_order_response(
+            freqs_hz, fc_hz=fc, highpass=highpass
+        )
+    return response
 
 
 def _butterworth_qs(order: int) -> list[float]:
@@ -466,20 +486,134 @@ def chain_response(
     """The COMPLEX response a cascade of emitted biquads applies at ``freqs_hz``. ``filters``
     are plain ``{biquad_type, freq, q, gain}`` records, the shape the emitter, runtime
     contract and ``LinearizationFilter.to_dict`` all speak. Every entry goes through the
-    one shared biquad evaluator.
+    one shared biquad evaluator. A record carrying no ``q`` declares no width, so the
+    evaluator applies the width the emitter writes for that shape.
     """
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     trig = _freq_trig(freqs)
     total = np.ones(freqs.shape, dtype=np.complex128)
     for entry in filters:
+        q = entry.get("q")
+        biquad_type = str(entry.get("biquad_type") or "Peaking")
         spec = FilterSpec(
             name="chain",
-            biquad_type=str(entry.get("biquad_type") or "Peaking"),
+            biquad_type=biquad_type,
             freq=float(entry.get("freq") or 0.0),
             gain=float(entry.get("gain") or 0.0),
-            q=float(entry.get("q") or 0.0),
+            # ``emit_filter_spec`` DROPS a record's shelf q and writes SHELF_Q,
+            # so a stray one must not be evaluated -- the shelf that reaches the
+            # speaker is the emitted one.
+            q=None if biquad_type in _SHELF_BIQUAD_TYPES or not q else float(q),
         )
         total = total * np.array(_filter_response_complex(spec, freqs, trig))
+    return total
+
+
+#: CamillaDSP ``BiquadCombo`` shapes, mapped to whether the pass is a high-pass.
+_COMBO_HIGHPASS: dict[str, bool] = {
+    "ButterworthHighpass": True,
+    "ButterworthLowpass": False,
+    "LinkwitzRileyHighpass": True,
+    "LinkwitzRileyLowpass": False,
+}
+
+#: ``Biquad`` shapes the shared RBJ evaluator spells directly.
+_RBJ_BIQUAD_TYPES: frozenset[str] = frozenset(
+    {"Lowpass", "Highpass", "Notch", "Peaking", "Lowshelf", "Highshelf"}
+)
+
+
+#: Extra samples placed either side of every filter centre, in octave fractions.
+#: The background grid steps 1/48 octave, which resolves a filter's own peak but
+#: not an extremum of a SUM of branches: a narrow all-pass rotates one branch
+#: through 360 degrees across a span of order ``fc / q``, and the summed peak
+#: lands beside the centre, not on it. Sampling out to 1/12 octave either side
+#: holds an all-pass at the document's q ceiling to within 0.05 dB of a
+#: 400k-point reference.
+_CENTRE_NEIGHBOUR_OCTAVES: tuple[float, ...] = (1.0 / 48.0, 1.0 / 24.0, 1.0 / 12.0)
+
+
+def camilla_evaluation_grid(filters: Sequence[Mapping[str, Any]]) -> np.ndarray:
+    """:data:`CHAIN_GRID_HZ` unioned with what ``filters`` put between its points.
+
+    :func:`_evaluation_grid`'s centres, adjacent-pair midpoints, shelf asymptotes
+    and domain edges, plus :data:`_CENTRE_NEIGHBOUR_OCTAVES` either side of each
+    centre. Pass EVERY filter of every chain that will be summed: one grid for
+    all of them, because the sum's extremum can sit at any one chain's feature.
+    """
+    records = [
+        {
+            "biquad_type": str(spec["parameters"]["type"]),
+            "freq": float(spec["parameters"]["freq"]),
+        }
+        for spec in filters
+    ]
+    neighbours: list[float] = []
+    for record in records:
+        for octaves in _CENTRE_NEIGHBOUR_OCTAVES:
+            for ratio in (2.0 ** octaves, 2.0 ** -octaves):
+                freq = record["freq"] * ratio
+                if 0.0 < freq <= _NYQUIST_HZ:
+                    neighbours.append(freq)
+    grid = _evaluation_grid(records, None)
+    if not neighbours:
+        return grid
+    return np.unique(
+        np.concatenate([grid, np.asarray(neighbours, dtype=np.float64)])
+    )
+
+
+def camilla_filter_response(
+    filters: Sequence[Mapping[str, Any]], freqs_hz: np.ndarray,
+) -> np.ndarray:
+    """Complex response of an emitted ``Biquad``/``BiquadCombo`` filter list.
+
+    ``filters`` are CamillaDSP definitions (``{"type", "parameters"}``), the
+    shape the rear calibration document carries and ``compile_rear_stage``
+    copies verbatim into the graph. Every shape lands on the one shared RBJ
+    evaluator, so a filter is modelled here exactly as the graph realises it. An
+    unmodelled type raises rather than evaluating as unity: a silently skipped
+    filter would UNDER-report a peak.
+
+    Not via :func:`chain_response`, deliberately: that speaks the LINEARIZATION
+    record, whose shelf ``q`` the emitter drops in favour of ``SHELF_Q``. These
+    definitions are copied into the graph byte for byte, so a shelf's declared
+    ``q`` is the one CamillaDSP runs and the one charged.
+
+    ``Allpass`` has no coefficient set of its own: over the shared RBJ
+    denominator ``2*Notch - 1`` is the allpass numerator term for term.
+    """
+    freqs = np.asarray(freqs_hz, dtype=np.float64)
+    trig = _freq_trig(freqs)
+    total = np.ones(freqs.shape, dtype=np.complex128)
+
+    def biquad(shape: str, freq: float, q: float, gain: float = 0.0) -> np.ndarray:
+        return np.array(
+            _filter_response_complex(FilterSpec("chain", shape, freq, gain, q), freqs, trig)
+        )
+
+    for spec in filters:
+        params = spec["parameters"]
+        shape = str(params["type"])
+        freq = float(params["freq"])
+        if str(spec["type"]) == "BiquadCombo":
+            highpass = _COMBO_HIGHPASS[shape]
+            order = max(int(params["order"]), 1)
+            total = total * (
+                crossover_response_complex(
+                    freqs, (CrossoverSection(fc_hz=freq, order=order, highpass=highpass),),
+                )
+                if shape.startswith("LinkwitzRiley")
+                else butterworth_response(freqs, fc_hz=freq, order=order, highpass=highpass)
+            )
+            continue
+        q = float(params["q"])
+        if shape == "Allpass":
+            total = total * (2.0 * biquad("Notch", freq, q) - 1.0)
+            continue
+        if shape not in _RBJ_BIQUAD_TYPES:
+            raise ValueError(f"{shape} is not a modelled biquad")
+        total = total * biquad(shape, freq, q, float(params.get("gain") or 0.0))
     return total
 
 
