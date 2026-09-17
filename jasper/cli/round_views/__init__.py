@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from importlib import import_module
 from typing import Sequence
 
 from jasper.active_speaker.crossover_v2.harmonic_evidence import (
@@ -23,25 +24,6 @@ from jasper.cli._refusal import (
     failed,
 )
 
-from . import (
-    bass,
-    candidates,
-    classify_features,
-    close_reference,
-    cloud_binding,
-    delay,
-    distortion,
-    dsp_replay,
-    findings,
-    forward_model,
-    frequency,
-    grades,
-    inventory,
-    repeat,
-    room,
-    room_grade,
-    seats, speaker_fit, sweeps,
-)
 from ._common import (
     ARTIFACT_BY_VIEW,
     AUTHORITY_TIER,
@@ -78,12 +60,13 @@ __all__ = [
     "main",
 ]
 
-#: The view families, in the order their subcommands are offered.
-_FAMILIES = (
-    grades, repeat, candidates, seats, cloud_binding, forward_model, sweeps,
-    frequency, distortion, dsp_replay, classify_features, findings, close_reference,
-    delay, room, room_grade, bass, inventory, speaker_fit,
-)
+#: The view families, in the order their subcommands are offered; the runbook's
+#: generated tool menu renders that order (ADR-0204).
+_FAMILIES = tuple(import_module(f".{name}", __name__) for name in (
+    "grades", "repeat", "candidates", "seats", "cloud_binding", "forward_model", "sweeps",
+    "frequency", "distortion", "dsp_replay", "classify_features", "findings", "close_reference",
+    "delay", "room", "room_grade", "bass", "inventory", "speaker_fit",
+))
 
 
 def build_parser() -> argparse.ArgumentParser:

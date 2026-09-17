@@ -8,7 +8,7 @@ The same tree ``scripts/bank-crossover-round.sh`` assembles on a laptop, built
 on the box itself so a round outlives session retention (#3498, #2882). It is
 the tree
 :func:`~jasper.active_speaker.crossover_v2.round_views.load_banked_round`
-reads, plus the bookkeeping views declared by ``measurement_programs``::
+reads, plus the bookkeeping views the round-view table declares::
 
     <campaign-root>/<round-id>/
       bundle/<session-id>/...    the live session bundle, hard-linked
