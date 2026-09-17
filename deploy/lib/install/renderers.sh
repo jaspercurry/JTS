@@ -177,13 +177,6 @@ install_renderers() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-airplay-volume" \
         /usr/local/sbin/jasper-airplay-volume
-    # The old dmix/fanin topology switcher was retired when fan-in
-    # became the only supported renderer path. Remove stale installed
-    # copies so operators do not accidentally reintroduce split-brain
-    # audio state after an upgrade.
-    rm -f /usr/local/sbin/jasper-audio-topology
-    rm -rf /etc/jasper/audio-topology
-    rm -f /usr/local/sbin/jasper-derive-device-name
     # Seed the first-start config with the repo script and its matching lib.
     bash "${REPO_DIR}/deploy/bin/jasper-apply-airplay-mode"
 
