@@ -46,7 +46,6 @@ from jasper.output_topology import (
     clear_topology_fingerprint_stamp,
     read_topology_fingerprint_stamp,
     topology_config_fingerprint,
-    topology_fingerprint_matches,
     write_topology_fingerprint_stamp,
     topology_is_passive_mains,
     topology_is_subless_passive_mains,
@@ -1630,14 +1629,6 @@ def test_the_config_fingerprint_moves_for_config_and_nothing_else(
     changed = topology_config_fingerprint(mutate(topology))
 
     assert (changed != topology_config_fingerprint(topology)) is moves
-
-
-def test_topology_anchor_matches_only_the_current_fingerprint() -> None:
-    topology = _fingerprint_topology()
-    assert topology_fingerprint_matches(topology_config_fingerprint(topology), topology)
-    assert not topology_fingerprint_matches("a" * 64, topology)
-    assert not topology_fingerprint_matches(None, topology)
-    assert not topology_fingerprint_matches("", topology)
 
 
 def test_a_stamp_nobody_could_write_or_retire_says_so(

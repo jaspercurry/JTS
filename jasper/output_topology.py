@@ -817,14 +817,6 @@ def topology_config_fingerprint(topology: OutputTopology) -> str:
     }))
 
 
-def topology_fingerprint_matches(recorded: Any, topology: OutputTopology) -> bool:
-    """Whether a persisted anchor names this topology."""
-
-    if not isinstance(recorded, str) or not recorded:
-        return False
-    return recorded == topology_config_fingerprint(topology)
-
-
 def default_physical_outputs(count: int) -> tuple[PhysicalOutput, ...]:
     return tuple(
         PhysicalOutput(

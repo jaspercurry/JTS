@@ -231,7 +231,6 @@ def test_crossover_preview_no_audio_invariant_holds_with_polarity_and_delay() ->
     assert payload["safety"]["loads_camilla"] is False
     assert payload["safety"]["applies_filters"] is False
     assert payload["safety"]["emits_camilla_yaml"] is False
-    assert payload["safety"]["authorizes_playback"] is False
 
 
 def test_crossover_preview_prefers_manual_settings_over_imported_research() -> None:

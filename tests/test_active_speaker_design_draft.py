@@ -54,7 +54,6 @@ def test_installation_round_trips_without_changing_driver_authority(tmp_path):
     assert saved['driver_safety_profile'] == before['driver_safety_profile']
     assert saved['permissions'] == before['permissions']
     evidence = installation_evidence(loaded)
-    assert evidence['authorizes_playback'] is False
     assert evidence['drivers'][0]['amplifier_estimate']['ideal_btl_rms_voltage_ceiling_v'] == pytest.approx(25.4558, abs=.0001)
     assert evidence['drivers'][0]['acoustic_limit']['status'] == 'not_estimated'
     assert 'installation' not in json.loads(path.read_text())

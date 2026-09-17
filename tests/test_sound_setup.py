@@ -1277,6 +1277,25 @@ def test_i2s_hat_payload_offers_only_the_undetectable_hats(monkeypatch, tmp_path
     assert unsupported["detected_label"] == ""
 
 
+def test_i2s_hat_payload_surfaces_a_boot_config_collision(monkeypatch, tmp_path):
+    intent = tmp_path / "i2s_hat.env"
+    boot = tmp_path / "config.txt"
+    boot.write_text("[all]\ndtoverlay=merus-amp\n", encoding="utf-8")
+    sound_active_speaker.write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
+    monkeypatch.setattr(
+        sound_active_speaker, "_output_hardware_dict",
+        lambda: {"usb_data_role": {"board_topology": "shared_otg_port"}},
+    )
+
+    payload = sound_active_speaker._i2s_hat_payload(
+        intent_path=intent, boot_config_path=boot, hat_dir=tmp_path / "hat"
+    )
+
+    assert payload["desired_profile_id"] == "innomaker_hifi_amp_pro"
+    assert len(payload["warnings"]) == 1
+    assert isinstance(payload["warnings"][0], str)
+
+
 def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
     from jasper.control import restart_broker
 
@@ -1284,7 +1303,8 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
     monkeypatch.setattr(
         sound_active_speaker,
         "_i2s_hat_payload",
-        lambda: {"available": True, "reason": "", "restart_required": True},
+        lambda: {"available": True, "reason": "", "restart_required": True,
+                 "warnings": ["collision"]},
     )
     monkeypatch.setattr(
         sound_active_speaker,
@@ -1300,6 +1320,8 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
 
     payload, result = sound_setup._save_i2s_hat_payload("innomaker_hifi_amp_pro")
 
+    assert result == {"ok": True}
+    assert payload["warnings"] == ["collision"]
     assert calls[0] == ("write", "innomaker_hifi_amp_pro")
     unit, options = calls[1]
     assert unit == "jasper-audio-hardware-reconcile.service"
@@ -1313,6 +1335,7 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
     monkeypatch.setattr(restart_broker, "manage_units", fail_apply)
     refreshed, failed = sound_setup._save_i2s_hat_payload(None)
     assert refreshed["restart_required"] is True
+    assert refreshed["warnings"] == ["collision"]
     assert failed == {"ok": False, "error": "broker unavailable"}
 
     repo = Path(__file__).resolve().parents[1]
@@ -3116,8 +3139,6 @@ def test_measured_fc_saves_the_declaration_and_leaves_the_loop_open(
     assert saved["driver_safety_profile"]["issues"] == []
     reloaded = load_design_draft(topology=sound_active_speaker.load_output_topology())
     assert reloaded["driver_safety_profile"] == profile
-    # And it is still not an audio authorization.
-    assert profile["authorizes_playback"] is False
 
 
 @pytest.mark.parametrize(

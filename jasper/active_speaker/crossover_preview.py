@@ -635,7 +635,6 @@ def build_crossover_preview(
             "loads_camilla": False,
             "applies_filters": False,
             "emits_camilla_yaml": False,
-            "authorizes_playback": False,
             "requires_human_review": True,
             "requires_measurement_before_final": True,
         },

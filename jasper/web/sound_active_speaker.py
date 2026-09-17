@@ -28,11 +28,13 @@ from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.tuning_handoff import PROGRAM_ENTRIES, build_tuning_handoff
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 
+from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
 from jasper.audio_hardware.hat_eeprom import DEFAULT_HAT_DIR
 from jasper.audio_hardware.i2s_hat import (
     DEFAULT_I2S_HAT_INTENT_PATH,
     detected_i2s_hat_profile,
     read_i2s_hat_intent,
+    render_i2s_hat_boot_config,
     selectable_i2s_hat_profiles,
     write_i2s_hat_intent,
 )
@@ -107,6 +109,7 @@ def _output_hardware_dict() -> dict[str, Any] | None:
 def _i2s_hat_payload(
     *,
     intent_path: str | Path = DEFAULT_I2S_HAT_INTENT_PATH,
+    boot_config_path: str | Path = DEFAULT_BOOT_CONFIG_PATH,
     hat_dir: str | Path = DEFAULT_HAT_DIR,
 ) -> dict[str, Any]:
     profiles = selectable_i2s_hat_profiles()
@@ -128,6 +131,23 @@ def _i2s_hat_payload(
     # choosing anything, so the wizard reports it instead of offering it. On a
     # board the reconciler will not manage, it reports nothing.
     detected = detected_i2s_hat_profile(hat_dir) if available else None
+    resolved_id = detected.id if detected is not None else desired_profile_id
+    warnings = []
+    if available and resolved_id is not None:
+        try:
+            _, _, collision = render_i2s_hat_boot_config(
+                Path(boot_config_path).read_text(encoding="utf-8"), resolved_id
+            )
+        except (OSError, ValueError):
+            collision = None
+        if collision is not None:
+            remedy = "deploy or reboot" if detected is not None else "save again"
+            warnings = [
+                f"A hand-written dtoverlay={overlay} line blocks the "
+                f"{collision.managed_overlay} boot line. "
+                f"Remove the hand-written line from config.txt, then {remedy}."
+                for overlay in collision.colliding_overlays
+            ]
     return {
         "visibility": "visible",
         "available": available,
@@ -138,6 +158,7 @@ def _i2s_hat_payload(
         "desired_profile_id": desired_profile_id,
         "detected_profile_id": detected.id if detected is not None else None,
         "detected_label": detected.label if detected is not None else "",
+        "warnings": warnings,
         "restart_required": Path(I2S_HAT_REBOOT_REQUIRED_PATH).is_file(),
     }
 

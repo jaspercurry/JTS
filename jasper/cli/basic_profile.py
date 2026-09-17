@@ -5,7 +5,7 @@
 """Review and apply the commissioning profile through the wizard API.
 
 The composer retains the banked tune or starts from the declared crossover.
-Apply binds the reviewed fingerprint and runs under the DSP writer lock.
+Apply runs under the DSP writer lock.
 See ADR-0312.
 """
 
@@ -40,11 +40,6 @@ SAVE_AND_APPLY_PATH = REVIEW_PATH + "/save-and-apply"
 #: page happens to validate here too -- but only while both daemons keep one
 #: scheme, which nothing enforces.
 CSRF_PAGE_PATH = "/sound/speaker/"
-
-#: The door's own word for "the candidate moved under you", reused verbatim for
-#: the pre-flight refusal below so one condition has one name whichever side
-#: catches it (jasper/web/sound_active_speaker.py's finish-commissioning payload).
-FINGERPRINT_MISMATCH_CODE = "baseline_candidate_fingerprint_mismatch"
 
 #: The door refused and named neither a blocker nor a status of its own.
 DOOR_REFUSED = "door_refused"
@@ -202,58 +197,19 @@ def _cmd_review(wizard: WizardClient, args: argparse.Namespace) -> int:
     profile = _door(wizard, REVIEW_PATH)
     summary = _summary(profile)
     issues = _issues(profile)
-    apply_line = (
-        "jasper-basic-profile apply --expected-fingerprint "
-        f"{summary['candidate_fingerprint'] or '<fingerprint>'}"
-    )
+    apply_line = "jasper-basic-profile apply"
     _say("basic profile candidate")
     _print_facts(summary)
     for issue in issues:
         _say(_issue_line(issue))
     _say(
-        "\nNothing was applied. To put THIS candidate on the speaker:\n"
+        "\nNothing was applied. To apply the saved setup:\n"
         f"  {apply_line}"
     )
     return answered({**summary, "issues": issues, "next": apply_line})
 
 
-def _refuse_stale(named: str, live: str) -> int:
-    """The door's own refusal, produced here so nothing is POSTed.
-
-    The door runs the same comparison and would refuse the same request. What
-    this adds is that a stale or mistyped fingerprint ends on the speaker's
-    shell instead of becoming a state-changing request against the live graph.
-    """
-    message = (
-        "the review published no candidate fingerprint to pin"
-        if not live
-        else "the crossover candidate changed after review; review it again "
-        "before applying"
-    )
-    return failed(
-        EXIT_REFUSED,
-        FINGERPRINT_MISMATCH_CODE,
-        {
-            "refused_by": "client",
-            "expected_candidate_fingerprint": named,
-            "candidate_fingerprint": live,
-            "issues": [
-                {
-                    "severity": "blocker",
-                    "code": FINGERPRINT_MISMATCH_CODE,
-                    "message": message,
-                }
-            ],
-        },
-    )
-
-
 def _door_refusal_reason(payload: Mapping[str, Any]) -> str:
-    """The door's OWN name for what it refused: its first blocker's code.
-
-    :data:`FINGERPRINT_MISMATCH_CODE`'s rule, generalized: one condition, one
-    name, whichever side of the round trip caught it.
-    """
     for issue in _issues(payload):
         if issue["severity"] == "blocker" and issue["code"]:
             return issue["code"]
@@ -277,21 +233,12 @@ def _proof() -> dict[str, Any] | None:
 
 
 def _cmd_apply(wizard: WizardClient, args: argparse.Namespace) -> int:
-    # The read, not the compile: save-and-apply re-reviews and compiles inside
-    # its own transaction, so the fingerprint off the GET is all it needs.
-    reviewed = _summary(_door(wizard, REVIEW_PATH))
-    live = reviewed["candidate_fingerprint"]
-    named = args.expected_fingerprint or live
-    if not live or named != live:
-        return _refuse_stale(named, live)
-
-    applied = _door(
-        wizard, SAVE_AND_APPLY_PATH, {"expected_candidate_fingerprint": named}
-    )
+    applied = _door(wizard, SAVE_AND_APPLY_PATH, {})
     if str(applied.get("status") or "") != "applied":
         return failed(EXIT_REFUSED, _door_refusal_reason(applied), applied)
 
     proof = _proof()
+    fingerprint = proof["candidate_fingerprint"] if proof is not None else ""
     state_path = baseline_profile_state_path()
     # The trim this compiled is measured where a measurement backs it and
     # derived from the sensitivity gap where none does; the door says which as
@@ -301,7 +248,7 @@ def _cmd_apply(wizard: WizardClient, args: argparse.Namespace) -> int:
     _say("applied.")
     for issue in issues:
         _say(_issue_line(issue))
-    _say(f"  {'fingerprint':<22}{named}")
+    _say(f"  {'fingerprint':<22}{fingerprint or '(unknown)'}")
     if proof is None:
         _say(f"  the applied record at {state_path} could not be read")
     else:
@@ -323,7 +270,7 @@ def _cmd_apply(wizard: WizardClient, args: argparse.Namespace) -> int:
     return answered(
         {
             "status": "applied",
-            "candidate_fingerprint": named,
+            "candidate_fingerprint": fingerprint,
             "proof": proof,
             "issues": issues,
         }
@@ -382,8 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  0  the door answered; `review` printed the candidate, or\n"
             "     `apply` put it on the speaker\n"
             "  1  EXIT_REFUSED -- {status, reason, detail} on stdout: the\n"
-            "     reason is the door's own blocker code (or this tool's\n"
-            "     pre-flight fingerprint refusal, which uses the same one)\n"
+            "     reason is the door's own blocker code\n"
             "     and the detail carries the payload. Nothing was applied\n"
             "  2  EXIT_UNREADABLE -- reason `answer_lost`: there was no\n"
             "     answer to read (wrong --hostname, the daemon is down, a\n"
@@ -404,18 +350,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     apply_ = sub.add_parser(
         "apply",
-        help="review, then make the basic profile the speaker's live graph",
+        help="make the saved setup the speaker's live graph",
     )
     _add_connection_args(apply_)
-    apply_.add_argument(
-        "--expected-fingerprint",
-        default=None,
-        help=(
-            "apply the candidate with THIS fingerprint and no other. Refused "
-            "here, before anything is sent, when it is not the one the review "
-            "just returned (default: whatever that review returned)"
-        ),
-    )
     apply_.set_defaults(func=_cmd_apply)
     return parser
 

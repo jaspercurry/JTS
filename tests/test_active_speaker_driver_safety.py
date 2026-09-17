@@ -725,13 +725,11 @@ def test_computed_profile_uses_visible_values_and_never_authorizes_audio() -> No
     assert profile["kind"] == DRIVER_SAFETY_PROFILE_KIND
     assert not any(i["severity"] == "blocker" for i in profile["issues"])
     assert profile["authority"] == "operator_visible_values"
-    assert profile["authorizes_playback"] is False
     assert profile["targets"][1]["hard_excitation_band_hz"] == [5000.0, 22000.0]
     assert profile["targets"][1]["unknowns"] == [
         "thermal compression limit not published"
     ]
     assert draft["permissions"]["may_not_emit_audio"] is True
-    assert draft["safety"]["driver_safety_profile_authorizes_playback"] is False
 
 
 def test_missing_floor_and_duration_are_computed_issues() -> None:
@@ -1001,7 +999,6 @@ def test_cabinet_reconstruction_is_explicit_and_fail_closed() -> None:
     assert woofer["cabinet"]["lf_reconstruction_capability"] == (
         "refused_multi_radiator_contract_missing"
     )
-    assert profile["authorizes_playback"] is False
 
 
 def test_legacy_research_remains_readable_but_advisory() -> None:
@@ -2316,8 +2313,6 @@ def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:
     profile = draft["driver_safety_profile"]
     assert profile["issues"] == []
     assert not any(i["severity"] == "blocker" for i in profile["issues"])
-    # Advice never becomes permission, whatever its provenance.
-    assert profile["authorizes_playback"] is False
     assert profile["authority"] == "operator_visible_values"
 
     tweeter = next(t for t in profile["targets"] if t["role"] == "tweeter")

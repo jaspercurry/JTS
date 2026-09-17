@@ -1029,10 +1029,8 @@ def build_design_draft(
             "no_audio": True,
             "loads_camilla": False,
             "applies_filters": False,
-            "authorizes_playback": False,
             "requires_human_review": True,
             "research_is_advisory": True,
-            "driver_safety_profile_authorizes_playback": False,
         },
         "issues": issues,
         "next_step": (
