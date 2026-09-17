@@ -34,7 +34,10 @@ def build_bass_program(
     extra_backoff_db: float = 0.0, courtesy_prelude: bool = True,
 ) -> ExcitationProgram:
     targets = {target["target_fingerprint"]: target for target in safety_profile.get("targets", ())}
-    if "woofer" not in role_targets or {role.role for role in excitation.roles} != set(role_targets):
+    # role_targets keys are measurement target ids (ADR-0316): a rear variant
+    # is a second physical target of the SAME acoustic role, not a third one.
+    target_roles = {target_id.split(":", 1)[0] for target_id in role_targets}
+    if "woofer" not in role_targets or {role.role for role in excitation.roles} != target_roles:
         raise BassStimulusRefused("bass_stimulus_targets_missing")
     try:
         driven = [targets[fingerprint] for fingerprint in role_targets.values()]

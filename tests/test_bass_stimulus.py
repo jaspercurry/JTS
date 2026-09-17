@@ -120,6 +120,33 @@ def test_bass_schedule_fits_caps_and_noise_windows(bass_fixture, floor):
         assert quiet.n_samples >= math.ceil(required_pre_guard_s(meta) * bass.sample_rate_hz)
 
 
+def test_bass_program_charges_rear_target_caps():
+    """A rear-declared box builds the bass program, and the rear target's
+    declared repeat and cooldown caps bind the schedule."""
+    topology, safety, targets = _profile_and_targets(
+        rear=True, woofer_floor=20, woofer_upper=4000, woofer_peak=-8, tweeter_peak=-8,
+        max_sweep_duration_s=4, minimum_cooldown_s=2,
+    )
+    assert set(targets) == {"woofer", "tweeter", "woofer:rear"}
+    rear_limits = next(
+        t for t in safety["targets"] if t["target_fingerprint"] == targets["woofer:rear"]
+    )["level_duration_limits"]
+    rear_limits["max_repeat_count"] = 2
+    rear_limits["minimum_cooldown_s"] = 5
+    excitation = SessionExcitation(tuple(_roles((20, 4000), (1600, 20000))),
+                                   {"woofer": -8, "tweeter": -8}, -20, 1600,
+                                   {"woofer": 4, "tweeter": 4}, (20, 20000))
+    bass = _bass((topology, safety, targets, excitation))
+    sweeps = [s for s in bass.segments if s.kind == KIND_SUMMED_SWEEP]
+    # min(builder max 3, front 3, front 3, rear 2) == 2.
+    assert len(sweeps) == 2
+    for previous, sweep in zip(sweeps, sweeps[1:]):
+        gap = sweep.start_sample - previous.start_sample - previous.n_samples
+        quiet = bass.segment(sweep_ambient_id(sweep.segment_id))
+        # rear cooldown (5) > front (2).
+        assert gap >= max(5 * bass.sample_rate_hz, quiet.n_samples)
+
+
 @pytest.mark.parametrize("size", ["axis", "nearfield"])
 def test_bass_capture_program_agrees_across_surfaces(bass_fixture, monkeypatch, size):
     topology, safety, targets, excitation = bass_fixture
