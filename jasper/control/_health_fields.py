@@ -70,17 +70,9 @@ _mapping = as_mapping
 
 
 def _as_int(value: Any, default: int = 0) -> int:
-    """``value`` as an ``int``, or ``default`` when it is not one.
-
-    ``bool`` is an ``int`` in Python, so it is rejected here too — a stray
-    ``True``/``False`` in untyped JSON must not silently become 1 or 0.
-    """
-    if isinstance(value, bool):
-        return default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
+    """``value`` as an ``int``, or ``default`` when it is not one."""
+    parsed = _as_int_or_none(value)
+    return default if parsed is None else parsed
 
 
 def _as_float(value: Any) -> float | None:
@@ -92,10 +84,14 @@ def _as_float(value: Any) -> float | None:
 
 
 def _as_int_or_none(value: Any) -> int | None:
-    """Like ``_as_int``, but a missing/unparseable value stays ``None``, not
-    ``0`` -- ``0`` would misread as "confirmed zero" rather than "couldn't
-    tell".
+    """``value`` as an ``int``, or ``None`` when it is not one — ``0`` would
+    misread as "confirmed zero" rather than "couldn't tell".
+
+    ``bool`` is an ``int`` in Python, so it is rejected here too — a stray
+    ``True``/``False`` in untyped JSON must not silently become 1 or 0.
     """
+    if isinstance(value, bool):
+        return None
     try:
         return int(value)
     except (TypeError, ValueError):

@@ -70,7 +70,7 @@ from pathlib import Path
 from .. import atomic_io
 from ..dsp_apply import CANONICAL_CAMILLA_CONFIG_DIR
 from ..log_event import log_event
-from . import follower_config
+from . import _stash, follower_config
 from .config import GroupingConfig
 from .follower_config import program_channel_for
 
@@ -122,13 +122,6 @@ def crossover_statefile_path() -> str:
     """camilla#2's statefile path (``JASPER_CAMILLA2_STATEFILE``), read at CALL
     time so an env override / test redirect is honoured."""
     return os.environ.get("JASPER_CAMILLA2_STATEFILE", _DEFAULT_CROSSOVER_STATEFILE)
-
-
-def _camilla():
-    """Return camilla#1 without coupling this oneshot to a web module."""
-    from jasper.camilla import primary_controller
-
-    return primary_controller()
 
 
 # ---------- the fail-closed GATE: build + re-prove BOTH instances ----------
@@ -319,7 +312,7 @@ async def precheck_active_leader(
 
 # ---------- late applies (after snapserver + snapclient are up) ----------
 
-async def apply_active_leader_bake(*, camilla_factory=_camilla) -> str:
+async def apply_active_leader_bake(*, camilla_factory=_stash.camilla) -> str:
     """Swap camilla#1 to the pre-checked program bake (the wire feed) + stash the
     prior solo-active config for the unwind. Call ONLY after
     :func:`precheck_active_leader` has built + re-proven it, and after snapserver
@@ -422,7 +415,7 @@ def seed_crossover_statefile(
 
 # ---------- unbond restore (camilla#1 config; the reconciler disables the unit) ----------
 
-async def restore_active_leader_solo(*, camilla_factory=_camilla) -> str | None:
+async def restore_active_leader_solo(*, camilla_factory=_stash.camilla) -> str | None:
     """Unwind an active leader's camilla#1 back to its solo-active baseline.
 
     Thin wrapper over
