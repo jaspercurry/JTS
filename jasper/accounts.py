@@ -59,6 +59,7 @@ import os
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Self
 
 from .atomic_io import atomic_write_text
 
@@ -132,51 +133,65 @@ class Account:
     playlists: dict[str, str] = field(default_factory=dict)
 
 
-@dataclass
 class Registry:
-    accounts: list[Account]
+    """On-disk registry of per-household-member records, keyed by
+    `name`. Generic over the record dataclass and its file path so a
+    second per-service registry — `google_creds.GoogleRegistry`, the
+    Calendar/Gmail credential store — can subclass it, overriding only
+    `record_cls`, `path_field`, `default_path`, `_record_from_dict`
+    and `_merge_extra`."""
+
+    record_cls: type = Account
+    path_field: str = "cache_path"
+    default_path: str = DEFAULT_REGISTRY_PATH
+    file_mode: int = SPOTIFY_CACHE_FILE_MODE
+
+    accounts: list
     default_name: str
     path: str
 
     def __init__(
         self,
-        accounts: list[Account] | None = None,
+        accounts: list | None = None,
         default_name: str = "",
-        path: str = DEFAULT_REGISTRY_PATH,
+        path: str | None = None,
     ) -> None:
         self.accounts = accounts if accounts is not None else []
         self.default_name = default_name
-        self.path = path
+        self.path = path if path is not None else self.default_path
 
     @classmethod
-    def load(cls, path: str = DEFAULT_REGISTRY_PATH) -> "Registry":
+    def _record_from_dict(cls, a: dict):
+        raw_playlists = a.get("playlists") or {}
+        # Defensive: only keep entries that are str→str. Tolerant of
+        # hand-edited JSON or older files that don't have this field.
+        playlists = {
+            str(uri): str(name)
+            for uri, name in raw_playlists.items()
+            if isinstance(uri, str) and isinstance(name, str)
+        }
+        return cls.record_cls(
+            name=a["name"],
+            cache_path=a.get("cache_path", ""),
+            playlists=playlists,
+        )
+
+    @classmethod
+    def load(cls, path: str | None = None) -> Self:
         """Load from disk, or return an empty registry if the file is
         missing. Empty is a valid state — it means no accounts have been
         configured yet (e.g., fresh install before anyone has run the
         web setup)."""
+        path = path if path is not None else cls.default_path
         try:
             with open(path) as f:
                 data = json.load(f)
         except FileNotFoundError:
             return cls(path=path)
         except (OSError, json.JSONDecodeError) as e:
-            logger.warning("accounts registry %s unreadable (%s); starting empty", path, e)
+            logger.warning("%s %s unreadable (%s); starting empty", cls.__name__, path, e)
             return cls(path=path)
-        accounts = []
-        for a in data.get("accounts", []):
-            raw_playlists = a.get("playlists") or {}
-            # Defensive: only keep entries that are str→str. Tolerant of
-            # hand-edited JSON or older files that don't have this field.
-            playlists = {
-                str(uri): str(name)
-                for uri, name in raw_playlists.items()
-                if isinstance(uri, str) and isinstance(name, str)
-            }
-            accounts.append(Account(
-                name=a["name"],
-                cache_path=a.get("cache_path", ""),
-                playlists=playlists,
-            ))
+        accounts = [cls._record_from_dict(a) for a in data.get("accounts", [])]
         return cls(accounts=accounts, default_name=data.get("default", ""), path=path)
 
     def save(self) -> None:
@@ -188,35 +203,42 @@ class Registry:
         atomic_write_text(
             self.path,
             json.dumps(payload, indent=2),
-            mode=SPOTIFY_CACHE_FILE_MODE,
+            mode=self.file_mode,
         )
 
-    def get(self, name: str) -> Account | None:
+    def get(self, name: str):
         for a in self.accounts:
             if a.name == name:
                 return a
         return None
 
-    def default(self) -> Account | None:
+    def default(self):
         if self.default_name:
             d = self.get(self.default_name)
             if d is not None:
                 return d
         return self.accounts[0] if self.accounts else None
 
-    def add_or_update(self, account: Account, *, make_default: bool = False) -> None:
+    def _merge_extra(self, existing, incoming) -> None:
+        # Don't clobber existing playlists with an empty default-factory
+        # dict from a freshly-constructed Account passed in by the
+        # OAuth flow — only overwrite if the caller provided real data.
+        if incoming.playlists:
+            existing.playlists = incoming.playlists
+
+    def _default_path_for(self, name: str) -> str:
+        return default_cache_path_for(name)
+
+    def add_or_update(self, account, *, make_default: bool = False) -> None:
         existing = self.get(account.name)
         if existing is not None:
-            if account.cache_path:
-                existing.cache_path = account.cache_path
-            # Don't clobber existing playlists with an empty default-factory
-            # dict from a freshly-constructed Account passed in by the
-            # OAuth flow — only overwrite if the caller provided real data.
-            if account.playlists:
-                existing.playlists = account.playlists
+            incoming_path = getattr(account, self.path_field)
+            if incoming_path:
+                setattr(existing, self.path_field, incoming_path)
+            self._merge_extra(existing, account)
         else:
-            if not account.cache_path:
-                account.cache_path = default_cache_path_for(account.name)
+            if not getattr(account, self.path_field):
+                setattr(account, self.path_field, self._default_path_for(account.name))
             self.accounts.append(account)
         if make_default or not self.default_name:
             self.default_name = account.name

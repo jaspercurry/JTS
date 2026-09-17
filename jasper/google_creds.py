@@ -55,10 +55,11 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .atomic_io import atomic_write_json, atomic_write_text
+from .accounts import Registry
+from .atomic_io import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -105,108 +106,45 @@ class GoogleAccount:
     display_name: str = ""
 
 
-@dataclass
-class GoogleRegistry:
-    accounts: list[GoogleAccount]
-    default_name: str
-    path: str
+class GoogleRegistry(Registry):
+    """Mirrors `jasper.accounts.Registry` (the Spotify multi-user
+    registry) via subclassing, for the per-household-member Calendar +
+    Gmail credential store. Only the record shape, on-disk path, and
+    the pre-write mkdir (accounts.json's directory may not exist yet
+    before the first OAuth link) differ."""
 
-    def __init__(
-        self,
-        accounts: list[GoogleAccount] | None = None,
-        default_name: str = "",
-        path: str = DEFAULT_REGISTRY_PATH,
-    ) -> None:
-        self.accounts = accounts if accounts is not None else []
-        self.default_name = default_name
-        self.path = path
+    record_cls = GoogleAccount
+    path_field = "token_path"
+    default_path = DEFAULT_REGISTRY_PATH
+    file_mode = 0o640
 
     @classmethod
-    def load(cls, path: str = DEFAULT_REGISTRY_PATH) -> "GoogleRegistry":
-        try:
-            with open(path) as f:
-                data = json.load(f)
-        except FileNotFoundError:
-            return cls(path=path)
-        except (OSError, json.JSONDecodeError) as e:
-            logger.warning(
-                "google accounts registry %s unreadable (%s); starting empty",
-                path, e,
-            )
-            return cls(path=path)
-        accounts: list[GoogleAccount] = []
-        for a in data.get("accounts", []):
-            accounts.append(GoogleAccount(
-                name=a["name"],
-                token_path=a.get("token_path", ""),
-                email=a.get("email", ""),
-                display_name=a.get("display_name", ""),
-            ))
-        return cls(
-            accounts=accounts,
-            default_name=data.get("default", ""),
-            path=path,
+    def _record_from_dict(cls, a: dict) -> GoogleAccount:
+        return cls.record_cls(
+            name=a["name"],
+            token_path=a.get("token_path", ""),
+            email=a.get("email", ""),
+            display_name=a.get("display_name", ""),
         )
 
     def save(self) -> None:
         os.makedirs(os.path.dirname(self.path), mode=0o750, exist_ok=True)
-        payload = {
-            "version": 1,
-            "default": self.default_name,
-            "accounts": [asdict(a) for a in self.accounts],
-        }
         # 0o640 group read — accounts.json holds the linked members' Gmail addresses
         # (PII-adjacent). The file lives in the setgid `jasper-secrets` dir, so the atomic
         # tempfile inherits group `jasper-secrets`; 0o640 lets jasper-voice read a token
         # jasper-web's OAuth flow wrote (and vice versa) while keeping it off the broad
         # `jasper` group and away from every other daemon. No world read. Token files use the
         # same mode (save_token below).
-        atomic_write_text(
-            self.path,
-            json.dumps(payload, indent=2),
-            mode=0o640,
-        )
+        super().save()
 
-    def get(self, name: str) -> GoogleAccount | None:
-        for a in self.accounts:
-            if a.name == name:
-                return a
-        return None
+    def _merge_extra(self, existing: GoogleAccount, incoming: GoogleAccount) -> None:
+        if incoming.email:
+            existing.email = incoming.email
+        if incoming.display_name:
+            existing.display_name = incoming.display_name
 
-    def default(self) -> GoogleAccount | None:
-        if self.default_name:
-            d = self.get(self.default_name)
-            if d is not None:
-                return d
-        return self.accounts[0] if self.accounts else None
-
-    def add_or_update(
-        self,
-        account: GoogleAccount,
-        *,
-        make_default: bool = False,
-    ) -> None:
-        existing = self.get(account.name)
-        if existing is not None:
-            if account.token_path:
-                existing.token_path = account.token_path
-            if account.email:
-                existing.email = account.email
-            if account.display_name:
-                existing.display_name = account.display_name
-        else:
-            if not account.token_path:
-                account.token_path = default_token_path_for(account.name)
-            self.accounts.append(account)
-        if make_default or not self.default_name:
-            self.default_name = account.name
-
-    def remove(self, name: str) -> bool:
-        before = len(self.accounts)
-        self.accounts = [a for a in self.accounts if a.name != name]
-        if self.default_name == name:
-            self.default_name = self.accounts[0].name if self.accounts else ""
-        return len(self.accounts) < before
+    def _default_path_for(self, name: str) -> str:
+        return default_token_path_for(name)
 
 
 def default_token_path_for(name: str) -> str:
