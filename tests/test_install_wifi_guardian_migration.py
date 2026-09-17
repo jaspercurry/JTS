@@ -10,7 +10,7 @@ case where the operator brought up WiFi via raspi-config or `nmcli`
 directly before ever opening the /wifi/ wizard.
 
 We exercise it by extracting the helper from its installer lib
-(deploy/lib/install/retirements.sh) under bash with a fake nmcli on
+(deploy/lib/install/state-and-secrets.sh) under bash with a fake nmcli on
 PATH and JTS env vars (STATE_DIR, etc.) pointing at tmp_path.
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RETIREMENTS_LIB = ROOT / "deploy" / "lib" / "install" / "retirements.sh"
+MIGRATIONS_LIB = ROOT / "deploy" / "lib" / "install" / "state-and-secrets.sh"
 
 
 def _write_fake_nmcli(
@@ -106,11 +106,11 @@ def _run_migrate(
     # statements). We extract the function body via sed.
     helper = subprocess.run(
         ["bash", "-c",
-         rf"sed -n '/^migrate_wifi_guardian()/,/^}}/p' '{RETIREMENTS_LIB}'"],
+         rf"sed -n '/^migrate_wifi_guardian()/,/^}}/p' '{MIGRATIONS_LIB}'"],
         capture_output=True, text=True, check=True,
     ).stdout
     assert "migrate_wifi_guardian()" in helper, (
-        "couldn't extract helper from retirements.sh — has the "
+        "couldn't extract helper from state-and-secrets.sh — has the "
         "function been renamed or restructured?"
     )
     helper = 'ensure_state_dir() { install -d -m 0750 "${STATE_DIR}"; }\n' + helper
