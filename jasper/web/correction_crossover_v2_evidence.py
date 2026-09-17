@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence, TypeVar
 
 from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE, PHASE_CLOUD_MEASURE
 from jasper.active_speaker.capture_provenance import CaptureProvenanceRecorder, record_capture_provenance
-from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.audio_measurement.calibration import configured_calibration_root
 from jasper.audio_measurement.household_mic import (
     household_mic_path,
@@ -1018,8 +1017,6 @@ def bind_production_play(
         if stimulus_dbfs is not None:
             raise ValueError("The round's program owns its stimulus level.")
         phase = spec.program_phase
-        if spec.graph_scope == "candidate_branches":
-            return program_for_phase(PHASE_LATERAL)
         if spec.graph_scope != "drivers" and phase not in SUMMED_SWEEP_PHASES:
             phase = PHASE_CLOUD_MEASURE
         return program_for_phase(phase)

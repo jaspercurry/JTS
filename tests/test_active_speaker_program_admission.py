@@ -64,6 +64,7 @@ def _profile_and_targets(
     woofer_highpass: float | None = None,
     woofer_upper: float = 20_000,
     minimum_cooldown_s: float = 0,
+    max_repeat_count: int = 3,
 ):
     """Asymmetric caps by default (woofer 0.0, tweeter -65): the realistic
     2-way shape whose ~65 dB spread is exactly what the (fixed) session-volume
@@ -74,7 +75,7 @@ def _profile_and_targets(
         return {
             "max_effective_peak_dbfs": peak,
             "max_sweep_duration_s": max_sweep_duration_s,
-            "max_repeat_count": 3,
+            "max_repeat_count": max_repeat_count,
             "minimum_cooldown_s": minimum_cooldown_s,
         }
 
@@ -950,9 +951,10 @@ CARDIOID_TAKE = {"woofer": 0, "woofer:rear": 1}
 CROSSOVER_TAKE = {"woofer": 0, "tweeter": 1}
 
 
-def _rear_take_inputs(branch_channels, *, layout="mono"):
+def _rear_take_inputs(branch_channels, *, layout="mono", **limits):
     topology, safety, targets = _profile_and_targets(
         rear=True, layout=layout, woofer_floor=40, woofer_highpass=40, max_sweep_duration_s=4,
+        **limits,
     )
     preset = _rear_pair(layout)[0]
     graph_profile = MeasurementGraphProfile(
@@ -965,18 +967,23 @@ def _rear_take_inputs(branch_channels, *, layout="mono"):
     return topology, safety, targets, graph
 
 
-def _rear_take_program(branch_channels):
+def _rear_take_program(branch_channels, *, cooldown_s=0.0):
     from jasper.audio_measurement.branch_program import build_branch_program
 
     return build_branch_program(SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65}, session_volume_db=-20,
         fc_hz=1600, sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
-    ).cloud_program(), branch_channels)
+    ).cloud_program(), branch_channels, cooldown_s=cooldown_s)
 
 
-def _admit_rear_take(tmp_path, branch_channels, *, graph=None, layout="mono"):
-    topology, safety, targets, emitted = _rear_take_inputs(branch_channels, layout=layout)
-    program = _rear_take_program(branch_channels)
+def _admit_rear_take(tmp_path, branch_channels, *, graph=None, layout="mono",
+                     spaced=False, **limits):
+    topology, safety, targets, emitted = _rear_take_inputs(
+        branch_channels, layout=layout, **limits,
+    )
+    program = _rear_take_program(
+        branch_channels, cooldown_s=limits.get("minimum_cooldown_s", 0) if spaced else 0.0,
+    )
     wav = tmp_path / "branches.wav"
     write_program_wav(wav, program)
     return targets, program, readmit_summed_program_from_wav(
@@ -1003,6 +1010,33 @@ def test_rear_declared_topology_is_admitted_with_the_rear_parked(tmp_path):
         ("sweep_w_rep", "woofer", 0), ("sweep_t_rep", "tweeter", 1),
         ("sweep_verify", None, 0), ("sum_companion", None, 1),
     ]
+
+
+@pytest.mark.parametrize("branch_channels", [CROSSOVER_TAKE, CARDIOID_TAKE])
+@pytest.mark.parametrize("repeats, cooldown_s, spaced, refusal", [
+    (3, 0, False, None),
+    (2, 0, False, ProgramAdmissionRefusal.REPEAT_COUNT_OVER_CAP),
+    (3, 2, False, ProgramAdmissionRefusal.COOLDOWN_BELOW_MINIMUM),
+    (3, 2, True, None),
+    (3, 5, True, None),
+])
+def test_declared_repeat_and_cooldown_caps_grade_every_branch_excitation(
+    tmp_path, branch_channels, repeats, cooldown_s, spaced, refusal,
+):
+    """Both caps count the SOLO sweeps too (#5286): a branch take loads each
+    target three times, so a declared two is over cap, and the 0.5 s tail
+    between the second branch's repeat and the summed verify is under a
+    declared 2 s cooldown until the builder inserts it. The 5 s row keeps the
+    door's OTHER cooldown leg honest: it reads the rendered PCM for the whole
+    declared window before each sweep, which a longer declaration reaches
+    further back into."""
+    _targets, _program, admission = _admit_rear_take(
+        tmp_path, branch_channels, spaced=spaced,
+        max_repeat_count=repeats, minimum_cooldown_s=cooldown_s,
+    )
+    assert admission.allowed is (refusal is None), admission.to_dict()
+    if refusal is not None:
+        assert refusal in admission.refusals
 
 
 def test_a_graph_that_feeds_a_parked_target_is_refused(tmp_path):

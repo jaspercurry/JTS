@@ -296,6 +296,10 @@ def _production_host_seams(monkeypatch, tmp_path):
                 {
                     "role": role,
                     "target_fingerprint": f"fp-{role}",
+                    # A real profile always carries this: a missing field is a
+                    # blocker issue that refuses the session at open, so the
+                    # conductor the preparers build can rely on it.
+                    "level_duration_limits": {"minimum_cooldown_s": 2.0},
                     "required_protection_filters": [{
                         "kind": kind,
                         "cutoff_hz": cutoff,

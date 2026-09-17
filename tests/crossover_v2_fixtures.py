@@ -23,6 +23,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -90,6 +91,24 @@ SESSION_VOLUME_DB = -20.0
 
 
 CAPS = {"woofer": 0.0, "tweeter": -65.0}
+
+
+def plan_context(cooldown_s: float = 2.0) -> SimpleNamespace:
+    """What ``compose_plan_program`` needs off a conductor context.
+
+    It resolves the declared per-driver cooldown off this profile, so a context
+    without one cannot compose a branch take at all — the blank that let a
+    stage-1 branch round compose unpadded and then be refused at admission.
+    """
+    targets = {role: f"fp-{role}" for role in CAPS}
+    return SimpleNamespace(
+        safety_profile={"targets": [
+            {"target_fingerprint": fingerprint, "role": role,
+             "level_duration_limits": {"minimum_cooldown_s": cooldown_s}}
+            for role, fingerprint in targets.items()
+        ]},
+        role_targets=targets,
+    )
 
 
 def _roles() -> list[RoleBand]:

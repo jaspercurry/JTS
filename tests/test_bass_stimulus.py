@@ -34,6 +34,7 @@ from jasper.audio_measurement.repeated_sweep import align_summed_capture, averag
 from jasper.audio_measurement.sweep_levels import sweep_band_levels
 from jasper.audio_measurement.wired_capture import ZERO_RUN_MIN_SAMPLES
 from jasper.web.correction_run_host import compose_plan_program
+from tests.crossover_v2_fixtures import plan_context
 from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
 from tests.test_active_speaker_program_admission import _profile_and_targets, _roles
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
@@ -57,6 +58,24 @@ def _bass(fixture, **kwargs):
     _, safety, targets, excitation = fixture
     return build_bass_program(excitation, program("bass").stimulus,
                               safety_profile=safety, role_targets=targets, **kwargs)
+
+
+def test_an_undeclared_cooldown_refuses_the_bass_stimulus(bass_fixture):
+    """The cooldown comes from the shared resolver, which refuses rather than
+    returning a zero. That refusal has to keep arriving as this builder's own
+    code, not as the resolver's."""
+    from copy import deepcopy
+
+    from jasper.active_speaker.bass_stimulus import BassStimulusRefused
+
+    _topology, safety, targets, excitation = bass_fixture
+    broken = deepcopy(safety)
+    for target in broken["targets"]:
+        target["level_duration_limits"].pop("minimum_cooldown_s")
+    with pytest.raises(BassStimulusRefused) as refused:
+        build_bass_program(excitation, program("bass").stimulus,
+                           safety_profile=broken, role_targets=targets)
+    assert refused.value.code == "bass_stimulus_caps_missing"
 
 
 def _replay(bass, raw, tmp_path, monkeypatch):
@@ -377,7 +396,7 @@ def test_pass_alignment_peaks_and_edges(bass_fixture, edge):
 def test_single_sweep_analysis_is_byte_identical(bass_fixture, monkeypatch, purpose):
     spec = MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="trial",
                        program_phase="cloud_verify" if purpose == "room" else "verify")
-    stimulus = compose_plan_program(SimpleNamespace(_excitation=bass_fixture[3]), spec, None, context=None)
+    stimulus = compose_plan_program(SimpleNamespace(_excitation=bass_fixture[3]), spec, None, context=plan_context())
     raw = np.pad(render_program_pcm(stimulus)[:, 0].astype(np.float64) * 0.1, (800, 48000))
     raw += np.random.default_rng(19).normal(0, 0.001, raw.size)
     assert sum(s.kind == KIND_SUMMED_SWEEP for s in stimulus.segments) == 1

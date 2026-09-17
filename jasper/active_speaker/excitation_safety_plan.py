@@ -392,6 +392,36 @@ def effective_sweep_duration_limit_s(
     )
 
 
+def declared_minimum_cooldown_s(
+    safety_profile: Mapping[str, Any], role_targets: Mapping[str, str],
+) -> float:
+    """The silence a builder must leave between two sweeps of the SAME driver.
+
+    The MAX over the take's targets, because one program reaches every target it
+    names and the strictest declaration binds. Every path that composes repeated
+    excitation reads the number here rather than deriving its own.
+
+    Refuses ``MEASUREMENT_INPUTS_INVALID`` for no targets or an undeclared
+    cooldown: a zero stands in for no padding at all, which
+    :func:`~jasper.active_speaker.program_admission.readmit_summed_program_from_wav`
+    then refuses far from the caller that blanked it.
+    """
+    if not role_targets:
+        raise ExcitationSafetyPlanError(
+            ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
+        )
+    cooldowns = []
+    for fingerprint in role_targets.values():
+        limits = _target_for_request(safety_profile, fingerprint).get("level_duration_limits")
+        declared = limits.get("minimum_cooldown_s") if isinstance(limits, Mapping) else None
+        if isinstance(declared, bool) or not isinstance(declared, (int, float)):
+            raise ExcitationSafetyPlanError(
+                ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
+            )
+        cooldowns.append(float(declared))
+    return max(cooldowns)
+
+
 def _declared_sensitivity(
     declared_sensitivities: Mapping[str, Any] | None,
     role: str,

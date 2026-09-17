@@ -542,6 +542,65 @@ def test_prepared_summed_captures_use_the_stop_purpose_band(purpose, size):
         assert spec.sweep_band_hz == (expected if stop_purpose == "room" else ())
 
 
+def test_a_branch_take_the_plan_host_composes_is_padded_and_admitted(tmp_path):
+    """The PRODUCTION composer, not the builder. ``compose_plan_program`` is what
+    ``bind_production_play`` plays, so it has to resolve the declared cooldown
+    off the session context: a blank profile composes a take whose second
+    branch sits 0.5 s from the summed verify, and the same session's admission
+    then refuses it. The capture window is sized independently and must never
+    end before the program it records.
+    """
+    from jasper.active_speaker.crossover_v2.capture_plan import (
+        CAPTURE_ENTRY_MARGIN_MS, _program_duration_ms, build_inline_session_spec,
+    )
+    from jasper.active_speaker.program_admission import readmit_summed_program_from_wav
+    from jasper.audio_measurement.program import (
+        KIND_SUMMED_SWEEP, KIND_SWEEP, write_program_wav,
+    )
+    from tests.test_active_speaker_program_admission import (
+        CROSSOVER_TAKE, _rear_take_inputs, _roles as _declared_roles,
+    )
+
+    cooldown_s = 2.0
+    topology, safety, targets, graph = _rear_take_inputs(
+        CROSSOVER_TAKE, max_repeat_count=3, minimum_cooldown_s=cooldown_s)
+    roles = tuple(_declared_roles())
+    excitation = SessionExcitation(
+        roles=roles, caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB, fc_hz=FC_HZ,
+        sweep_duration_limits_s={"woofer": 4.0, "tweeter": 4.0})
+    request = request_for_program(measurement_program("branches"), candidates=("trial",))
+    captures = [capture for capture in prepare_plan_captures(request, roles_bands=roles)
+                if capture.spec.graph_scope == "candidate_branches"]
+    assert captures
+    context = SimpleNamespace(safety_profile=safety, role_targets=targets)
+    program = compose_plan_program(
+        SimpleNamespace(_excitation=excitation, _gain_plan_db=None),
+        captures[0].spec, None, context=context)
+
+    for channel in set(CROSSOVER_TAKE.values()):
+        run = sorted((s for s in program.segments if s.channel == channel
+                      and s.kind in (KIND_SWEEP, KIND_SUMMED_SWEEP)),
+                     key=lambda s: s.start_sample)
+        assert len(run) == 3
+        assert min(b.start_sample - a.start_sample - a.n_samples
+                   for a, b in zip(run, run[1:])) >= cooldown_s * program.sample_rate_hz
+
+    wav = tmp_path / "branches.wav"
+    write_program_wav(wav, program)
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=graph, topology=topology, safety_profile=safety,
+        role_targets=targets, session_volume_db=excitation.session_volume_db)
+    assert admission.allowed, admission.to_dict()
+
+    plan = build_inline_session_spec(
+        [(c.spec, c.resolved(request).prompt, "trial") for c in captures],
+        roles_bands=roles, fc_hz=excitation.fc_hz, safety_profile=safety,
+        role_targets=targets, acknowledgement_binding="a" * 32, retries_per_pose=0,
+    ).capture_plan
+    assert plan.entries[0].duration_ms >= (
+        _program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS)
+
+
 def test_per_driver_measure_keeps_declared_bands_with_a_room_session():
     excitation = replace(_excitation(CAPS), summed_sweep_band_hz=(20.0, 20000.0))
     program = excitation.measure_program(GAIN_PLAN_DB)

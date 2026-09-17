@@ -35,6 +35,7 @@ from jasper.audio_measurement.program import (
 from jasper.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.env_load import bounded_env_float
 
+from ..excitation_safety_plan import declared_minimum_cooldown_s
 from ..measurement_programs import (
     POSE_KIND_BEARING, POSE_KIND_CLOSE, POSE_KIND_SEAT,
     gate_exemption, pose_place, resolved_measurement_purpose,
@@ -76,6 +77,10 @@ def build_inline_session_spec(
     prompts = [prompt for _, prompt, _ in captures]
     batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
                                  [candidate_id for _, _, candidate_id in captures])
+    cooldown_s = (
+        declared_minimum_cooldown_s(safety_profile or {}, role_targets or {})
+        if any(spec.graph_scope == "candidate_branches" for spec, _, _ in captures) else 0.0
+    )
     entries = []
     for index, (spec, prompt, _) in enumerate(captures, 1):
         phase = spec.program_phase
@@ -96,7 +101,8 @@ def build_inline_session_spec(
                                            sweep_band_hz=spec.sweep_band_hz or None,
                                            sweep_s=spec.sweep_s or DEFAULT_VERIFY_SWEEP_S)
         if spec.graph_scope == "candidate_branches":
-            program = build_branch_program(program, {r.role: r.channel for r in roles_bands})
+            program = build_branch_program(
+                program, {r.role: r.channel for r in roles_bands}, cooldown_s=cooldown_s)
         entries.append(CapturePlanEntry(
             index=index - 1, kind_label=phase,
             duration_ms=_program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS,
@@ -1289,7 +1295,6 @@ def build_v2_capture_plan(
     include_entry_baseline: bool = False,
     lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
     lateral_candidate_ids: Sequence[str] | None = None,
-    branch_diagnostic: bool = False,
 ) -> Any:
     """The STAGE-1 (measure) CapturePlan.
 
@@ -1364,8 +1369,6 @@ def build_v2_capture_plan(
     target = len(index_phase)
     verify_ms = _program_duration_ms(verify) + CAPTURE_ENTRY_MARGIN_MS
     cloud_ms = _program_duration_ms(cloud) + CAPTURE_ENTRY_MARGIN_MS
-    if branch_diagnostic:
-        cloud_ms = _program_duration_ms(build_branch_program(cloud, {r.role: r.channel for r in roles})) + CAPTURE_ENTRY_MARGIN_MS
     measure_ms = _program_duration_ms(measure) + CAPTURE_ENTRY_MARGIN_MS
     # One policy for every entry of this plan. The first entry's value is inert:
     # the page starts round 1 from the spec's own begin button and only reads
@@ -1430,8 +1433,6 @@ def build_v2_capture_plan(
         prompt = _positioned_prompt(lateral_table[offset], shape)
         policy = _entry_policy(shape, prompt)
         batch = candidate_screens.get(capture_index, {})
-        if branch_diagnostic and not prompt.preserve_text:
-            batch = {**batch, "title": "Measure woofer, tweeter and both", "body": "Keep the mic still for all five sweeps. The repeated solo sweeps check the recording clock."}
         if int(batch.get(POSITION_BATCH_CONFIG_KEY, 1)) > 1:
             policy.update(auto_advance=AUTO_ADVANCE_COUNTDOWN,
                           countdown_s=str(AUTO_ADVANCE_COUNTDOWN_S))
@@ -1734,7 +1735,6 @@ def build_v2_session_spec(
     include_entry_baseline: bool = False,
     lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
     lateral_candidate_ids: Sequence[str] | None = None,
-    branch_diagnostic: bool = False,
     **spec_kwargs: Any,
 ) -> Any:
     """One stage-1 capture spec.
@@ -1756,7 +1756,6 @@ def build_v2_session_spec(
         include_entry_baseline=include_entry_baseline,
         lateral_prompts=lateral_prompts,
         lateral_candidate_ids=lateral_candidate_ids,
-        branch_diagnostic=branch_diagnostic,
     )
     longest_ms = max(entry.duration_ms for entry in plan.entries)
     # EITHER group makes this a walk. The entry baseline is deliberately NOT a

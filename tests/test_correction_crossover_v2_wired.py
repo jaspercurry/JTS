@@ -70,7 +70,7 @@ from jasper.web._common import refusal_envelope
 from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
 from tests.crossover_v2_banked_round import bank_executor_take
-from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _check_analysis, _conductor
+from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _check_analysis, _conductor, plan_context
 from tests.test_audio_measurement_program_analysis import _roles, _synthesize
 
 RATE = 48_000
@@ -814,7 +814,7 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
 
     async def compose_and_play(**kwargs):
         programs.append(correction_run_host.compose_plan_program(
-            conductor, kwargs["spec"], kwargs["stimulus_dbfs"], context=SimpleNamespace()))
+            conductor, kwargs["spec"], kwargs["stimulus_dbfs"], context=plan_context()))
         return await play(**kwargs)
 
     monkeypatch.setattr(fakes.play, "run", compose_and_play)
@@ -1053,7 +1053,7 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
     gain = None
     ceilings = conductor._measure_gain_ceiling_db
     for attempt in range(1, 4 if clipped_take else 2):
-        program = compose_plan_program(conductor, spec, gain, context=SimpleNamespace())
+        program = compose_plan_program(conductor, spec, gain, context=plan_context())
         peak = max(seg.gain_db for seg in program.segments if seg.kind in STIMULUS_KINDS)
         if gain is not None:
             assert peak == pytest.approx(gain)
@@ -1131,13 +1131,19 @@ def test_predictive_segment_count_survives_solved_gains_and_live_level(scope, ph
     conductor = _conductor(FlowSeams(), gain_plan_db={"woofer": -50.0, "tweeter": -57.0})
     spec = MeasureSpec(kind="baseline", graph_scope=scope, program_phase=phase,
                        candidate_id=None if scope == "drivers" else "fp-a")
+    # Preview and played program read ONE declaration: a branch take is padded
+    # by the declared cooldown, so a preview off a blank profile would announce
+    # a schedule the session never plays.
+    declaring = plan_context()
     context = SimpleNamespace(roles_bands=conductor._roles, driver_caps_dbfs=conductor._excitation.caps_dbfs,
-                              fc_hz=conductor._excitation.fc_hz, safety_profile={}, role_targets={},
+                              fc_hz=conductor._excitation.fc_hz, safety_profile=declaring.safety_profile,
+                              role_targets=declaring.role_targets,
                               driver_sweep_duration_limits_s=conductor._excitation.sweep_duration_limits_s)
     predicted = predictive_program_for_spec(context)(spec)
     for stimulus_dbfs in (None, -48.0):
-        live = compose_plan_program(conductor, spec, stimulus_dbfs, context=SimpleNamespace())
+        live = compose_plan_program(conductor, spec, stimulus_dbfs, context=declaring)
         assert len(live.stimulus_segments()) == len(predicted.stimulus_segments())
+        assert live.total_samples == predicted.total_samples
 
 
 @pytest.mark.parametrize("target", [None, -48.0, -60.0])
@@ -1147,7 +1153,7 @@ def test_driver_retry_program_preserves_the_solved_role_levels(target):
     from tests.crossover_v2_fixtures import FakeSeams, _conductor
 
     conductor = _conductor(FakeSeams(), gain_plan_db={"woofer": -50.0, "tweeter": -57.0})
-    program = compose_plan_program(conductor, MeasureSpec(kind="baseline", graph_scope="drivers"), target, context=SimpleNamespace())
+    program = compose_plan_program(conductor, MeasureSpec(kind="baseline", graph_scope="drivers"), target, context=plan_context())
     delta = 0 if target is None else target + 50.0
     assert program.segment("sweep_w").gain_db == pytest.approx(-50.0 + delta)
     assert program.segment("sweep_t").gain_db == pytest.approx(-57.0 + delta)
@@ -1161,10 +1167,10 @@ def test_summed_takes_keep_the_session_backoff_with_a_check_gain_plan(gain_plan)
 
     conductor = _conductor(FakeSeams(), gain_plan_db=gain_plan)
     spec = MeasureSpec(kind="baseline", graph_scope="candidate", candidate_id="fp-a", program_phase="verify")
-    program = compose_plan_program(conductor, spec, None, context=SimpleNamespace())
+    program = compose_plan_program(conductor, spec, None, context=plan_context())
     expected = conductor._excitation.verify_program().segment("sweep_verify").gain_db
     assert program.segment("sweep_verify").gain_db == pytest.approx(expected)
-    windowed = compose_plan_program(conductor, spec, -60.0, context=SimpleNamespace())
+    windowed = compose_plan_program(conductor, spec, -60.0, context=plan_context())
     assert windowed.segment("sweep_verify").gain_db == pytest.approx(-60.0)
 
 
@@ -1187,7 +1193,7 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     manifest = RunManifest("two-rungs", _Store(fakes.records))
     def answer():
         rung = fakes.play.calls[-1]["stimulus_dbfs"]
-        program = compose_plan_program(conductor, spec, rung, context=SimpleNamespace())
+        program = compose_plan_program(conductor, spec, rung, context=plan_context())
         return WiredCaptureAnswer(wav=b"", program=program.to_dict(), device={"rung_dbfs": rung})
     records = core_capture.CapturedRecordStore(manifest, SimpleNamespace(take_answer=answer))
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
@@ -1255,7 +1261,7 @@ async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypa
     manifest.begin({"index": 1, "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={}, verify_only=True)
-    program = compose_plan_program(conductor, MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="baseline-room", program_phase="verify"), None, context=SimpleNamespace())
+    program = compose_plan_program(conductor, MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="baseline-room", program_phase="verify"), None, context=plan_context())
     record = {"take_id": "drifting", "index": 1, "attempt": 1, "program": program.to_dict()}
     records.enrich(None, record)
     records.after_bank(record, "take")
