@@ -150,6 +150,7 @@ fn alsa_format(format: SampleFormat) -> Format {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NegotiatedPcm {
     pub sample_rate: u32,
+    pub channels: u32,
     pub period_frames: u32,
     pub buffer_frames: u32,
 }
@@ -193,11 +194,8 @@ pub struct AlsaBackend {
     pub content_negotiated: NegotiatedPcm,
     pub dac_negotiated: NegotiatedPcm,
     counters: IoCounters,
-    /// Runtime DAC/content width carried as data — a coherent single DAC reads
-    /// and writes this many channels end-to-end. The reconciler supplies it via
-    /// `JASPER_OUTPUTD_ACTIVE_CHANNELS` (DAC8x = 8). The reference/chip-ref
-    /// width stays `CHANNELS=2`: the published reference is always stereo.
-    channels: u16,
+    /// JASPER_OUTPUTD_ACTIVE_CHANNELS sets the lane width; reference/chip-ref stays stereo.
+    content_channels: u16,
     /// The format OUTPUTD'S OWN CLIENT EDGE negotiated — requested from the
     /// registry declaration and checked against the installed `hw_params` by
     /// `configure_pcm`'s final-edge readback, so this is what outputd is
@@ -205,19 +203,9 @@ pub struct AlsaBackend {
     /// edge; through a `plug` it is not (see that readback's comment). `/state`
     /// reports it as `dac.format`.
     dac_format: SampleFormat,
-    /// Reused NARROWING staging for an `S16Le` edge — allocated once, at open,
-    /// and never on the audio path. Empty (zero bytes) on an `S32Le` edge, which
-    /// takes the program spine straight through with no staging at all, and on an
-    /// `S24_3Le` edge, which stages into [`Self::dac_pack_buf`] instead.
+    /// Allocated at open, never resized on the audio path.
+    dac_channel_buf: Vec<ProgramSample>,
     dac_narrow_buf: Vec<i16>,
-    /// Reused PACKING staging for an `S24_3Le` edge: one period as packed
-    /// little-endian 24-bit BYTES, allocated once at open. Empty at every other
-    /// edge width, so exactly one of the two stagings is non-empty on any box.
-    ///
-    /// A separate field from `dac_narrow_buf` rather than one buffer
-    /// reinterpreted, because the element TYPE is what makes the two edges
-    /// different: an i16 staging can be handed to `io_i16()` and a byte staging
-    /// cannot, so an edge can only ever be handed the buffer its own arm filled.
     dac_pack_buf: Vec<u8>,
 }
 
@@ -464,6 +452,7 @@ fn final_sink_startup<T>(result: Result<T>) -> Result<T> {
 fn synthetic_content_negotiated(config: &Config) -> NegotiatedPcm {
     NegotiatedPcm {
         sample_rate: config.sample_rate,
+        channels: u32::from(config.content_channels),
         period_frames: config.period_frames,
         buffer_frames: config.period_frames,
     }
@@ -486,6 +475,7 @@ impl AlsaBackend {
                 sample_rate: config.sample_rate,
                 period_frames: config.period_frames,
                 channels: config.content_channels,
+                negotiate_channels: true,
                 // The one role that asks for the DECLARED edge rather than a
                 // constant. `configure_pcm`'s dac readback checks the installed
                 // client-side format against it before this returns.
@@ -500,10 +490,11 @@ impl AlsaBackend {
         // line names both hops. Operators and journal-grep recipes read these
         // keys; keep them stable.
         eprintln!(
-            "event=outputd.alsa.opened content_source=shm_ring content_format={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={} format={}",
+            "event=outputd.alsa.opened content_source=shm_ring content_format={} dac_pcm={} channels={} dac_channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={} format={}",
             config.content_format.as_str(),
             config.dac_pcm,
             config.content_channels,
+            dac_negotiated.channels,
             dac_negotiated.sample_rate,
             content_negotiated.period_frames,
             content_negotiated.buffer_frames,
@@ -518,28 +509,32 @@ impl AlsaBackend {
             content_negotiated,
             dac_negotiated,
             counters: IoCounters::default(),
-            channels: config.content_channels,
+            content_channels: config.content_channels,
             // `configure_pcm`'s final-edge readback checked the installed
             // client-side format against this requested one, so storing the
             // request stores what outputd is running — it never reached here
             // otherwise.
             dac_format: config.declared_dac_format,
+            dac_channel_buf: channel_pad_staging(
+                config.period_frames,
+                config.content_channels,
+                dac_negotiated.channels,
+            ),
             dac_narrow_buf: s16_staging(
                 config.declared_dac_format,
                 config.period_frames,
-                config.content_channels,
+                dac_negotiated.channels,
             ),
             dac_pack_buf: i24_packed_staging(
                 config.declared_dac_format,
                 config.period_frames,
-                config.content_channels,
+                dac_negotiated.channels,
             ),
         })
     }
 
-    /// The runtime DAC/content channel width this backend reads and writes.
-    pub fn channels(&self) -> u16 {
-        self.channels
+    pub fn content_channels(&self) -> u16 {
+        self.content_channels
     }
 
     /// The format outputd's own client edge negotiated (readback-checked at
@@ -561,7 +556,13 @@ impl AlsaBackend {
     }
 
     pub fn write_dac_period(&mut self, samples: &[ProgramSample]) -> Result<()> {
-        let channels = self.channels as usize;
+        let channels = self.dac_negotiated.channels as usize;
+        let samples = pad_dac_channels(
+            samples,
+            self.content_channels as usize,
+            channels,
+            &mut self.dac_channel_buf,
+        )?;
         let frames_total = samples.len() / channels;
         match self.dac_format {
             // The one place on the output path where resolution is deliberately
@@ -570,13 +571,6 @@ impl AlsaBackend {
             // unity gain this is bit-identical to the wide spine (see
             // `jasper_resampler::s16_widened_then_narrowed_is_bit_identical`).
             SampleFormat::S16Le => {
-                if self.dac_narrow_buf.len() != samples.len() {
-                    // Steady state never resizes: `new` sized this for the run
-                    // loop's period. A geometry that ever differs reallocates
-                    // once and then stays put — it must not silently write a
-                    // short or stale period.
-                    self.dac_narrow_buf.resize(samples.len(), 0);
-                }
                 narrow_period(samples, &mut self.dac_narrow_buf)?;
                 let io = self
                     .dac
@@ -615,14 +609,6 @@ impl AlsaBackend {
             //   Passing `channels` would advance the slice at a third of the right
             //   rate and re-send most of every period.
             SampleFormat::S24_3Le => {
-                let packed_len = samples.len() * jasper_resampler::I24_LE_BYTES_PER_SAMPLE;
-                if self.dac_pack_buf.len() != packed_len {
-                    // Steady state never resizes: `new` sized this for the run
-                    // loop's period. A geometry that ever differs reallocates
-                    // once and then stays put — it must not silently write a
-                    // short or stale period.
-                    self.dac_pack_buf.resize(packed_len, 0);
-                }
                 narrow_period_i24_le(samples, &mut self.dac_pack_buf)?;
                 let io = self.dac.io_bytes();
                 write_dac_frames(
@@ -701,6 +687,7 @@ impl PairedCompositeSink {
                 sample_rate: config.sample_rate,
                 period_frames: config.period_frames,
                 channels: CHANNELS,
+                negotiate_channels: false,
                 // BOTH children request the registry-declared edge format, the
                 // same declaration the coherent single DAC reads. Per-child
                 // divergence is deliberately not modelled: the one registered
@@ -712,9 +699,7 @@ impl PairedCompositeSink {
                 // its absence is the PER-CHILD READBACK — one child installing a
                 // width other than the requested one parks at exit 78 naming
                 // that child. NOT the `dac_a_negotiated != dac_b_negotiated`
-                // check below: `NegotiatedPcm` carries
-                // sample_rate/period_frames/buffer_frames and no format at all,
-                // so two children running different widths compare equal there.
+                // check below: `NegotiatedPcm` compares geometry, not format.
                 // The registry-side guards are
                 // tests/test_dac_profiles.py::test_a_composite_never_declares_a_width_its_transport_refuses
                 // and ::test_a_composite_may_diverge_from_its_child_only_at_that_capability_gap.
@@ -737,6 +722,7 @@ impl PairedCompositeSink {
                 sample_rate: config.sample_rate,
                 period_frames: config.period_frames,
                 channels: CHANNELS,
+                negotiate_channels: false,
                 // Same declaration as child A — see that call's comment.
                 format: config.declared_dac_format,
                 buffer_frames: config.dac_buffer_frames,
@@ -1258,6 +1244,7 @@ pub fn open_playback_pcm(
         sample_rate,
         period_frames,
         channels: CHANNELS,
+        negotiate_channels: false,
         // The chip-AEC reference leg's only caller; its native contract is
         // 16 kHz/2ch/S16_LE and `validate_chip_ref_geometry` enforces it.
         format: SampleFormat::S16Le,
@@ -1275,6 +1262,7 @@ struct PcmConfig<'a> {
     sample_rate: u32,
     period_frames: u32,
     channels: u16,
+    negotiate_channels: bool,
     /// The format to REQUEST from ALSA for this PCM. Every role that varies it
     /// reads one of TWO independent declarations: the final-edge roles
     /// ([`is_final_edge_role`] — `dac` and both composite children) take the
@@ -1297,6 +1285,20 @@ struct PcmGeometry {
     buffer_frames: u32,
 }
 
+fn first_accepted_dac_channels(
+    lane_channels: u32,
+    max_channels: u32,
+    mut accepts: impl FnMut(u32) -> bool,
+) -> Result<u32> {
+    // DACs that only open wider than the ring maximum are out of scope and fail closed.
+    let max_channels = max_channels.min(jasper_ring::MAX_RING_CHANNELS);
+    (lane_channels..=max_channels)
+        .find(|&width| accepts(width))
+        .with_context(|| {
+            format!("no DAC channel count accepted in {lane_channels}..={max_channels}")
+        })
+}
+
 fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
     let PcmConfig {
         role,
@@ -1305,6 +1307,7 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         sample_rate,
         period_frames,
         channels,
+        negotiate_channels,
         format,
         buffer_frames,
         manual_start,
@@ -1313,8 +1316,10 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
     let negotiated;
     {
         let hwp = HwParams::any(pcm).context("creating HwParams::any")?;
-        hwp.set_channels(channels as u32)
-            .with_context(|| format!("set_channels({})", channels))?;
+        if !negotiate_channels {
+            hwp.set_channels(channels as u32)
+                .with_context(|| format!("set_channels({})", channels))?;
+        }
         hwp.set_rate(sample_rate, ValueOr::Nearest)
             .with_context(|| format!("set_rate({})", sample_rate))?;
         hwp.set_format(requested_format)
@@ -1325,8 +1330,19 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
             .with_context(|| format!("set_period_size({})", period_frames))?;
         hwp.set_buffer_size(buffer_frames as i64)
             .with_context(|| format!("set_buffer_size({})", buffer_frames))?;
+        if negotiate_channels {
+            // Channel support can depend on the format, rate and period geometry.
+            let channels = first_accepted_dac_channels(
+                u32::from(channels),
+                hwp.get_channels_max().context("get_channels_max")?,
+                |width| hwp.test_channels(width).is_ok(),
+            )?;
+            hwp.set_channels(channels)
+                .with_context(|| format!("set_channels({})", channels))?;
+        }
         negotiated = NegotiatedPcm {
             sample_rate: hwp.get_rate().context("get_rate")?,
+            channels: hwp.get_channels().context("get_channels")?,
             period_frames: hwp.get_period_size().context("get_period_size")? as u32,
             buffer_frames: hwp.get_buffer_size().context("get_buffer_size")? as u32,
         };
@@ -1469,6 +1485,42 @@ fn verify_installed_format(
     Ok(())
 }
 
+fn pad_dac_channels<'a>(
+    samples: &'a [ProgramSample],
+    lane_channels: usize,
+    dac_channels: usize,
+    staging: &'a mut [ProgramSample],
+) -> Result<&'a [ProgramSample]> {
+    if lane_channels == dac_channels {
+        return Ok(samples);
+    }
+    anyhow::ensure!(
+        samples.len() % lane_channels == 0
+            && samples.len() / lane_channels * dac_channels == staging.len(),
+        "DAC channel staging does not match the lane period"
+    );
+    // Private staging starts zeroed at allocation; only each frame's lane prefix is written.
+    for (lane, dac) in samples
+        .chunks_exact(lane_channels)
+        .zip(staging.chunks_exact_mut(dac_channels))
+    {
+        dac[..lane_channels].copy_from_slice(lane);
+    }
+    Ok(staging)
+}
+
+fn channel_pad_staging(
+    period_frames: u32,
+    lane_channels: u16,
+    dac_channels: u32,
+) -> Vec<ProgramSample> {
+    if dac_channels == u32::from(lane_channels) {
+        Vec::new()
+    } else {
+        vec![0; period_frames as usize * dac_channels as usize]
+    }
+}
+
 /// The i16 staging one period needs at `format` — for BOTH directions.
 ///
 /// The program spine is i32, so only an `S16Le` hop needs an i16 staging buffer:
@@ -1478,7 +1530,7 @@ fn verify_installed_format(
 /// staging is BYTES, not i16 — [`i24_packed_staging`] owns that one.
 ///
 /// Called once per hop, at open, never on the audio path.
-fn s16_staging(format: SampleFormat, period_frames: u32, channels: u16) -> Vec<i16> {
+fn s16_staging(format: SampleFormat, period_frames: u32, channels: u32) -> Vec<i16> {
     match format {
         SampleFormat::S16Le => vec![0i16; (period_frames as usize) * (channels as usize)],
         SampleFormat::S24_3Le | SampleFormat::S32Le => Vec::new(),
@@ -1494,7 +1546,7 @@ fn s16_staging(format: SampleFormat, period_frames: u32, channels: u16) -> Vec<i
 /// The 3 comes from `jasper_resampler::I24_LE_BYTES_PER_SAMPLE`, the same
 /// constant the packing primitive's length contract reads, so the staging and the
 /// conversion cannot disagree about the stride.
-fn i24_packed_staging(format: SampleFormat, period_frames: u32, channels: u16) -> Vec<u8> {
+fn i24_packed_staging(format: SampleFormat, period_frames: u32, channels: u32) -> Vec<u8> {
     match format {
         SampleFormat::S24_3Le => vec![
             0u8;
@@ -1826,6 +1878,37 @@ mod tests {
     use super::*;
     use crate::config::DEFAULT_DUAL_MAX_DELAY_DELTA_FRAMES;
 
+    #[test]
+    fn dac_channels_choose_the_first_accepted_width_without_rounding_down() {
+        for (lane, max, accepted, expected) in [
+            (3, 8, vec![2, 4, 6, 8], Some(4)),
+            (2, 8, vec![2, 4, 6, 8], Some(2)),
+            (5, 8, vec![2, 4, 6, 8], Some(6)),
+            (3, 3, vec![2, 4], None),
+            (5, 4, vec![2, 4], None),
+            (3, 8, vec![], None),
+            (8, 16, vec![16], None),
+        ] {
+            let result = first_accepted_dac_channels(lane, max, |width| accepted.contains(&width));
+            assert_eq!(result.ok(), expected);
+        }
+    }
+
+    #[test]
+    fn dac_channel_padding_preserves_frames_and_borrows_equal_width() {
+        let samples = [w(1), w(-2), w(3), w(4), w(-5), w(6)];
+        let expected = [w(1), w(-2), w(3), 0, w(4), w(-5), w(6), 0];
+        let mut staging = channel_pad_staging(2, 3, 4);
+        let padded = pad_dac_channels(&samples, 3, 4, &mut staging).unwrap();
+        assert_eq!(padded, expected);
+        let mut s16 = s16_staging(SampleFormat::S16Le, 2, 4);
+        narrow_period(padded, &mut s16).unwrap();
+        assert_eq!(s16, [1, -2, 3, 0, 4, -5, 6, 0]);
+        let mut staging = channel_pad_staging(2, 3, 3);
+        let padded = pad_dac_channels(&samples, 3, 3, &mut staging).unwrap();
+        assert!(std::ptr::eq(padded, samples.as_slice()));
+    }
+
     /// One S16 sample at the program spine's scale.
     ///
     /// Fixtures that feed a spine-width parameter MUST go through this. A bare
@@ -1852,6 +1935,7 @@ mod tests {
     fn negotiated_pcm_accepts_exact_contract() {
         let negotiated = NegotiatedPcm {
             sample_rate: 48_000,
+            channels: 2,
             period_frames: 1024,
             buffer_frames: 3072,
         };
@@ -1863,6 +1947,7 @@ mod tests {
     fn negotiated_pcm_rejects_sample_rate_drift() {
         let negotiated = NegotiatedPcm {
             sample_rate: 44_100,
+            channels: 2,
             period_frames: 1024,
             buffer_frames: 3072,
         };
@@ -1875,6 +1960,7 @@ mod tests {
     fn negotiated_pcm_rejects_period_drift() {
         let negotiated = NegotiatedPcm {
             sample_rate: 48_000,
+            channels: 2,
             period_frames: 960,
             buffer_frames: 3072,
         };
@@ -1887,6 +1973,7 @@ mod tests {
     fn negotiated_pcm_rejects_tiny_buffer() {
         let negotiated = NegotiatedPcm {
             sample_rate: 48_000,
+            channels: 2,
             period_frames: 1024,
             buffer_frames: 1024,
         };

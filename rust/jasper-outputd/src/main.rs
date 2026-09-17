@@ -264,7 +264,7 @@ impl RuntimeAlsaSink {
 
     fn content_channels(&self) -> u16 {
         match self {
-            Self::Single(sink) => sink.channels(),
+            Self::Single(sink) => sink.content_channels(),
             Self::Composite(_) => CHANNELS * 2,
         }
     }
@@ -280,6 +280,13 @@ impl RuntimeAlsaSink {
         match self {
             Self::Single(sink) => sink.dac_negotiated,
             Self::Composite(sink) => sink.dac_negotiated,
+        }
+    }
+
+    fn dac_channels(&self) -> u32 {
+        match self {
+            Self::Single(sink) => sink.dac_negotiated.channels,
+            Self::Composite(_) => u32::from(CHANNELS * 2),
         }
     }
 
@@ -399,9 +406,9 @@ fn run_alsa(
     // The final edge is open and its format is readback-verified: STATUS
     // `dac.format` stops echoing the declaration and reports what is running.
     state.set_dac_format(sink.dac_format());
+    state.set_dac_channels(sink.dac_channels());
     sink.mark_runtime_status(state);
-    // Content/DAC width is carried as data (coherent single DAC of any width);
-    // the published reference is always stereo (a wide sink folds to L == R).
+    // The published reference is always stereo (a wide lane folds to L == R).
     let content_channels = sink.content_channels() as usize;
     let content_period_samples = (config.period_frames as usize) * content_channels;
     // The program spine: one i32 period, ingested wide and written wide, with

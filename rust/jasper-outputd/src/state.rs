@@ -184,6 +184,7 @@ pub struct OutputdState {
     /// then on — the chip-AEC alignment identity must certify against the edge
     /// outputd is running, never against a declaration it could disagree with.
     negotiated_dac_format: OnceLock<&'static str>,
+    negotiated_dac_channels: OnceLock<u32>,
     dual_dac_a_pcm: Option<String>,
     dual_dac_b_pcm: Option<String>,
     dual_linked: AtomicBool,
@@ -401,6 +402,7 @@ impl OutputdState {
             dac_pcm: config.dac_pcm.clone(),
             declared_dac_format: config.declared_dac_format.as_str().to_string(),
             negotiated_dac_format: OnceLock::new(),
+            negotiated_dac_channels: OnceLock::new(),
             dual_dac_a_pcm: config.dual_dac_a_pcm.clone(),
             dual_dac_b_pcm: config.dual_dac_b_pcm.clone(),
             dual_linked: AtomicBool::new(false),
@@ -556,6 +558,10 @@ impl OutputdState {
     /// a value that could change under a reader is worse than a stale one.
     pub fn set_dac_format(&self, format: SampleFormat) {
         let _ = self.negotiated_dac_format.set(format.as_str());
+    }
+
+    pub fn set_dac_channels(&self, channels: u32) {
+        let _ = self.negotiated_dac_channels.set(channels);
     }
 
     pub fn mark_period(&self, counters: IoCounters, reference_sequence: u64, clipped_samples: u32) {
@@ -1248,6 +1254,23 @@ mod tests {
     }
 
     #[test]
+    fn negotiated_dac_channels_leave_the_ring_at_the_lane_width() {
+        let state = OutputdState::new(&Config {
+            content_channels: 3,
+            shm_ring: Some("/dev/shm/jts-ring/active-content.ring".to_string()),
+            ..test_config()
+        });
+        let before = parse_snapshot_json(&state.snapshot_json());
+        assert_eq!(before["dac"]["channels"], 3);
+        assert_eq!(before["shm_ring"]["channels"], 3);
+        state.set_dac_channels(4);
+        state.mark_shm_ring_wire(SampleFormat::S32Le, 3);
+        let after = parse_snapshot_json(&state.snapshot_json());
+        assert_eq!(after["dac"]["channels"], 4);
+        assert_eq!(after["shm_ring"]["channels"], 3);
+    }
+
+    #[test]
     fn snapshot_json_scripted_bytes_are_stable() {
         // Raw bytes, including field order and numeric formatting. See #4806 R-063.
         let mut hash = 0xcbf29ce484222325u64;
@@ -1285,6 +1308,7 @@ mod tests {
             capture(&state);
             state.latch_sched_policy("fifo".to_string());
             state.set_dac_format(SampleFormat::S24_3Le);
+            state.set_dac_channels(4);
             state.mark_period(
                 IoCounters {
                     content_frames_read: 8192,
@@ -1386,7 +1410,7 @@ mod tests {
             capture(&state);
         }
         assert!(expected.next().is_none());
-        assert_eq!(hash, 13_254_872_796_562_678_660);
+        assert_eq!(hash, 2_334_067_162_804_135_790);
     }
 
     #[test]
@@ -1905,11 +1929,13 @@ mod tests {
         // owner).
         let synthetic = NegotiatedPcm {
             sample_rate: 48_000,
+            channels: 2,
             period_frames: 1024,
             buffer_frames: 1024,
         };
         let dac = NegotiatedPcm {
             sample_rate: 48_000,
+            channels: 2,
             period_frames: 1024,
             buffer_frames: 3072,
         };

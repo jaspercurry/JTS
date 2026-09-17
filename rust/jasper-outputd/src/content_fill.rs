@@ -106,6 +106,7 @@ mod tests {
             "shm_ring",
             NegotiatedPcm {
                 sample_rate: 48_000,
+                channels: 2,
                 period_frames: 1024,
                 buffer_frames: 4096,
             },
@@ -119,6 +120,7 @@ mod tests {
             "shm_ring",
             NegotiatedPcm {
                 sample_rate: 48_000,
+                channels: 2,
                 period_frames: 48_000,
                 buffer_frames: 96_000,
             },

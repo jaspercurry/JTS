@@ -1077,7 +1077,7 @@ class Pass:
         AND a legal active-speaker graph whose playback width fits within that
         cap is the live CamillaDSP config. We DRIVE WHAT WE USE: the gate
         returns the config's ACTUAL width W, emitted as
-        JASPER_OUTPUTD_ACTIVE_CHANNELS so outputd opens the DAC at exactly W.
+        JASPER_OUTPUTD_ACTIVE_CHANNELS so outputd opens the DAC at the first width the driver accepts at or above W and pads the rest with silence (`/state` `dac.channels` reports it).
         Fail-closed: without a confirmed in-cap active graph the DAC stays
         ordinary stereo."""
         target = self.outputd_env_target
