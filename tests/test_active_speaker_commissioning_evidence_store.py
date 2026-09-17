@@ -455,7 +455,7 @@ def test_new_artifact_inherits_the_authority_directory_group(
     sessions = tmp_path / "sessions"
     sessions.mkdir()
     os.chown(sessions, -1, shared_gid)
-    # Mirror the installer-owned parent (deploy/lib/install/env-migrations.sh
+    # Mirror the installer-owned parent (deploy/lib/install/state-and-secrets.sh
     # `d:2770`): the setgid bit is what confers the group on Linux.
     sessions.chmod(stat.S_ISGID | 0o770)
     store = _open_store(tmp_path)
