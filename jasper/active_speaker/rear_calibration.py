@@ -22,8 +22,7 @@ BIQUADS = {"Highpass", "Lowpass", "Peaking", "Lowshelf", "Highshelf", "Allpass"}
 COMBOS = {"ButterworthHighpass", "ButterworthLowpass", "LinkwitzRileyHighpass", "LinkwitzRileyLowpass"}
 SHELVING = {"Peaking", "Lowshelf", "Highshelf"}
 
-# The vocabulary bounds that keep every chain filter at |H| <= 1, so the branch
-# sum is the only gain the composer has to charge headroom for. The one
+# The vocabulary bounds that keep every chain filter at |H| <= 1. The one
 # exception is a resonant high/low-pass, which peaks by at most 1.25 dB at
 # Q = 1.0. Allpass is unity magnitude at every Q; a Peaking filter that cannot
 # boost is a cut at every Q.

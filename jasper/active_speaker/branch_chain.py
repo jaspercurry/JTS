@@ -279,23 +279,43 @@ def crossover_response_complex(
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     total = np.ones(freqs.shape, dtype=np.complex128)
     for section in sections:
-        fc_hz = max(float(section.fc_hz), 1e-9)
         # Butterworth order per pass; the pass runs twice, hence the doubling.
-        butterworth_order = max(int(section.order), 1) // 2 or 1
-        biquads = [
-            {
-                "biquad_type": "Highpass" if section.highpass else "Lowpass",
-                "freq": fc_hz, "q": q, "gain": 0.0,
-            }
-            for q in _butterworth_qs(butterworth_order)
-        ]
-        pass_response = chain_response(biquads, freqs)
-        if butterworth_order % 2:
-            pass_response = pass_response * _first_order_response(
-                freqs, fc_hz=fc_hz, highpass=section.highpass
-            )
+        pass_response = butterworth_response(
+            freqs,
+            fc_hz=section.fc_hz,
+            order=max(int(section.order), 1) // 2 or 1,
+            highpass=section.highpass,
+        )
         total = total * pass_response * pass_response
     return total
+
+
+def butterworth_response(
+    freqs_hz: np.ndarray, *, fc_hz: float, order: int, highpass: bool,
+) -> np.ndarray:
+    """Exact complex response of ONE digital Butterworth pass of ``order``.
+
+    The sections CamillaDSP's ``ButterworthHighpass``/``ButterworthLowpass``
+    combos realise: ``order // 2`` biquads at the Butterworth pole Qs, plus the
+    leftover real pole when ``order`` is odd. A Linkwitz-Riley section is two of
+    these cascaded, so both spellings evaluate through one implementation.
+    """
+    fc = max(float(fc_hz), 1e-9)
+    response = chain_response(
+        [
+            {
+                "biquad_type": "Highpass" if highpass else "Lowpass",
+                "freq": fc, "q": q, "gain": 0.0,
+            }
+            for q in _butterworth_qs(order)
+        ],
+        freqs_hz,
+    )
+    if order % 2:
+        response = response * _first_order_response(
+            freqs_hz, fc_hz=fc, highpass=highpass
+        )
+    return response
 
 
 def _butterworth_qs(order: int) -> list[float]:
@@ -480,6 +500,71 @@ def chain_response(
             q=float(entry.get("q") or 0.0),
         )
         total = total * np.array(_filter_response_complex(spec, freqs, trig))
+    return total
+
+
+#: CamillaDSP ``BiquadCombo`` shapes, mapped to whether the pass is a high-pass.
+_COMBO_HIGHPASS: dict[str, bool] = {
+    "ButterworthHighpass": True,
+    "ButterworthLowpass": False,
+    "LinkwitzRileyHighpass": True,
+    "LinkwitzRileyLowpass": False,
+}
+
+#: ``Biquad`` shapes the shared RBJ evaluator spells directly.
+_RBJ_BIQUAD_TYPES: frozenset[str] = frozenset(
+    {"Lowpass", "Highpass", "Notch", "Peaking", "Lowshelf", "Highshelf"}
+)
+
+
+def camilla_filter_response(
+    filters: Sequence[Mapping[str, Any]], freqs_hz: np.ndarray,
+) -> np.ndarray:
+    """Complex response of an emitted ``Biquad``/``BiquadCombo`` filter list.
+
+    ``filters`` are CamillaDSP definitions (``{"type", "parameters"}``), the
+    shape the rear calibration document carries and ``compile_rear_stage``
+    copies verbatim into the graph. Every shape lands on the one shared RBJ
+    evaluator :func:`chain_response` uses, so a filter is modelled here exactly
+    as the graph realises it. An unmodelled type raises rather than evaluating
+    as unity: a silently skipped filter would UNDER-report a peak.
+
+    ``Allpass`` has no coefficient set of its own: over the shared RBJ
+    denominator ``2*Notch - 1`` is the allpass numerator term for term.
+    """
+    freqs = np.asarray(freqs_hz, dtype=np.float64)
+    total = np.ones(freqs.shape, dtype=np.complex128)
+    for spec in filters:
+        params = spec["parameters"]
+        shape = str(params["type"])
+        freq = float(params["freq"])
+        if str(spec["type"]) == "BiquadCombo":
+            highpass = _COMBO_HIGHPASS[shape]
+            order = max(int(params["order"]), 1)
+            total = total * (
+                crossover_response_complex(
+                    freqs, (CrossoverSection(fc_hz=freq, order=order, highpass=highpass),),
+                )
+                if shape.startswith("LinkwitzRiley")
+                else butterworth_response(freqs, fc_hz=freq, order=order, highpass=highpass)
+            )
+            continue
+        q = float(params["q"])
+        if shape == "Allpass":
+            notch = chain_response(
+                [{"biquad_type": "Notch", "freq": freq, "q": q, "gain": 0.0}], freqs,
+            )
+            total = total * (2.0 * notch - 1.0)
+            continue
+        if shape not in _RBJ_BIQUAD_TYPES:
+            raise ValueError(f"{shape} is not a modelled biquad")
+        total = total * chain_response(
+            [{
+                "biquad_type": shape, "freq": freq, "q": q,
+                "gain": float(params.get("gain") or 0.0),
+            }],
+            freqs,
+        )
     return total
 
 

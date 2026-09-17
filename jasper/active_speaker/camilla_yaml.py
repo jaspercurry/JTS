@@ -576,24 +576,82 @@ def _validated_rear_calibration(
         raise ActiveSpeakerConfigError(f"rear calibration is invalid: {exc}") from exc
 
 
-def rear_branch_sum_headroom_db(document: Mapping[str, Any] | None) -> float:
-    """Worst case of the two unmuted rear branches summing in phase, dB.
+def _rear_stage_chain_response(
+    chain: Mapping[str, Any],
+    freqs: Any,
+    *,
+    delay_ms: float,
+    extra_filters: Sequence[Mapping[str, Any]] = (),
+) -> Any:
+    """One compiled chain's complex response: gain, polarity, delay, filters.
 
-    Charged pre-split beside the room-PEQ boost: the branch sum is the one place
-    the cardioid stage can exceed the program it was handed. Filter magnitude is
-    deliberately NOT modelled — ``rear_calibration``'s vocabulary bounds every
-    chain filter to |H| <= 1 — except a resonant high/low-pass, whose <= 1.25 dB
-    peak at the document's Q ceiling this charge does not include.
+    Mirrors the ``chain`` helper in ``rear_calibration.compile_rear_stage``,
+    which is what puts those four into one CamillaDSP Filter step.
+    """
+    import numpy as np  # lazy: the cardioid charge is the only emit path needing NumPy
+
+    from .branch_chain import camilla_filter_response
+
+    if chain["muted"]:
+        return np.zeros(freqs.shape, dtype=np.complex128)
+    scale = 10.0 ** (float(chain["gain_db"]) / 20.0)
+    response = np.full(
+        freqs.shape, -scale if chain["inverted"] else scale, dtype=np.complex128,
+    )
+    filters = [*chain["filters"], *extra_filters]
+    if filters:
+        response = response * camilla_filter_response(filters, freqs)
+    if delay_ms:
+        response = response * np.exp(-2j * np.pi * freqs * (delay_ms / 1000.0))
+    return response
+
+
+def rear_branch_sum_headroom_db(document: Mapping[str, Any] | None) -> float:
+    """Peak the compiled cardioid stage puts above unity, dB.
+
+    Charged pre-split beside the room-PEQ boost: the stage is the one place a
+    cardioid graph can exceed the program it was handed. The charge is the
+    stage's REALISED peak — every chain evaluated as the complex response of its
+    gain, polarity, delay and filters, the two rear branches summed as complex
+    numbers, and the louder of that sum and the front chain taken across the
+    domain. The branches never see one band at full gain (the bass branch
+    low-passes; the cancellation branch high-passes AND inverts), so charging
+    the in-phase sum of their gains charged 5.372 dB on jts3's own fitted
+    document against a realised +0.194 dB. A STEADY-TONE bound: overshoot
+    between grid points stays backstopped by the per-output soft-clip limiter.
+    See ADR-0324.
     """
     rear = (document or {}).get("rear") or {}
-    if not document or document.get("rear_muted") or rear.get("mode") != "branches":
+    if not document or rear.get("mode") != "branches":
         return 0.0
-    total = sum(
-        10.0 ** (float(rear[branch]["gain_db"]) / 20.0)
-        for branch in ("bass", "cancellation")
-        if not rear[branch]["muted"]
+    import numpy as np  # lazy: the cardioid charge is the only emit path needing NumPy
+
+    from .branch_chain import CHAIN_GRID_HZ, camilla_filter_response
+
+    freqs = CHAIN_GRID_HZ
+    boundary = document["boundary"]
+    # Both branches and the front carry the common and front delays; only the
+    # branches' own delays steer the sum, but the shared term costs nothing.
+    shared_delay_ms = float(document["common_delay_ms"]) + float(document["front"]["delay_ms"])
+    if document["rear_muted"]:
+        summed = np.zeros(freqs.shape, dtype=np.complex128)
+    else:
+        summed = sum(
+            _rear_stage_chain_response(
+                rear[branch], freqs,
+                delay_ms=shared_delay_ms + float(rear[branch]["delay_ms"]),
+            )
+            for branch in ("bass", "cancellation")
+        )
+        if boundary["rear"]:
+            summed = summed * camilla_filter_response(boundary["rear"], freqs)
+    front = _rear_stage_chain_response(
+        document["front"], freqs,
+        delay_ms=shared_delay_ms,
+        extra_filters=boundary["front"],
     )
-    return max(0.0, 20.0 * math.log10(total)) if total > 0.0 else 0.0
+    peak = max(float(np.max(np.abs(response))) for response in (summed, front))
+    return max(0.0, 20.0 * math.log10(peak)) if peak > 0.0 else 0.0
 
 
 def _rear_calibration_graph(
