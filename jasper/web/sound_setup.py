@@ -87,6 +87,8 @@ from .sound_active_speaker import (
     _active_speaker_design_draft_save_payload,
     _active_speaker_driver_research_request_payload,
     _active_speaker_finish_commissioning_payload,
+    _active_speaker_rear_calibration_bank_payload,
+    _active_speaker_rear_calibration_validate_payload,
     _output_topology_payload,
     _repin_output_topology_payload,
     _reset_output_topology_payload,
@@ -103,6 +105,7 @@ from .sound_active_speaker import (  # noqa: F401 - resolved by name
     _active_speaker_crossover_preview_payload,
     _active_speaker_environment_payload,
     _active_speaker_measurements_payload,
+    _active_speaker_rear_calibration_seed_payload,
     _active_speaker_safe_playback_payload,
     _active_speaker_staged_config_payload,
     _active_speaker_startup_load_payload,
@@ -381,6 +384,10 @@ _GET_JSON_ROUTES: dict[str, tuple[str, str]] = {
     "/active-speaker/channel-identity": (
         "_active_speaker_channel_identity_payload",
         "sound.active_speaker_channel_identity",
+    ),
+    "/active-speaker/rear-calibration/seed": (
+        "_active_speaker_rear_calibration_seed_payload",
+        "sound.active_speaker_rear_calibration_seed",
     ),
     "/active-speaker/seat-level/status": (
         "_seat_level_status_payload",
@@ -683,6 +690,12 @@ def _make_handler(
                             )
                         )
                     )
+                    return
+                if path == "/active-speaker/rear-calibration/validate":
+                    self._send_json(_active_speaker_rear_calibration_validate_payload(raw))
+                    return
+                if path == "/active-speaker/rear-calibration/bank":
+                    self._send_json(_active_speaker_rear_calibration_bank_payload(raw))
                     return
                 if path == "/active-speaker/seat-level/start":
                     self._send_json(_seat_level_start_payload(raw))
@@ -1024,6 +1037,7 @@ def _make_handler(
         "/active-speaker/commissioning-view": Handler._dispatch_get_route,
         "/active-speaker/staged-config": Handler._dispatch_get_route,
         "/active-speaker/channel-identity": Handler._dispatch_get_route,
+        "/active-speaker/rear-calibration/seed": Handler._dispatch_get_route,
         "/active-speaker/seat-level/status": Handler._dispatch_get_route,
     }
 
@@ -1040,6 +1054,8 @@ def _make_handler(
         "/active-speaker/crossover-preview": Handler._dispatch_post_route,
         "/active-speaker/calibration-level": Handler._dispatch_post_route,
         "/active-speaker/channel-identity": Handler._dispatch_post_route,
+        "/active-speaker/rear-calibration/validate": Handler._dispatch_post_route,
+        "/active-speaker/rear-calibration/bank": Handler._dispatch_post_route,
         "/active-speaker/seat-level/start": Handler._dispatch_post_route,
         "/active-speaker/seat-level/stop": Handler._dispatch_post_route,
         "/active-speaker/commission-ramp-abort": Handler._dispatch_post_route,

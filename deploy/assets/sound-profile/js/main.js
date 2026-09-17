@@ -26,6 +26,7 @@ import { escapeHtml } from "/assets/shared/js/escape.js";
 import { wireCopyButtons } from "/assets/shared/js/copy.js";
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { initSeatLevel, isSeatLevelRunning, renderSeatLevelCard, stopSeatLevel } from "/assets/sound-profile/js/seat-level.js";
+import { rearCalibrationBank, rearCalibrationSeed, rearCalibrationValidate, renderRearCalibrationPanel, setRearCalibrationText } from "/assets/sound-profile/js/rear-calibration.js";
 import { applyInstallationToSetting, installationFromSetting } from "/assets/sound-profile/js/installation.js";
 import {
   activeSpeakerStepState,
@@ -1729,6 +1730,7 @@ import {
       renderBuildNotes() +
       renderDriverResearchAiHelper(topology) +
       renderCrossoverPreviewCard(topology) +
+      renderRearCalibrationPanel() +
       '<details class="driver-research__advanced-editor" data-driver-advanced' +
         (driverAdvancedOpen ? ' open' : '') + '>' +
         '<summary><span>Advanced</span><small>Review and edit every research value, safety limit, and crossover detail.</small></summary>' +
@@ -2788,6 +2790,9 @@ import {
     }
     else if (act === 'save-volume-floor') { saveVolumeFloor(); }
     else if (act === 'reset-volume-floor') { resetVolumeFloor(); }
+    else if (act === 'rear-calibration-seed') { rearCalibrationSeed(); }
+    else if (act === 'rear-calibration-validate') { rearCalibrationValidate(); }
+    else if (act === 'rear-calibration-bank') { rearCalibrationBank(); }
   });
   // Mode + band-type segmented buttons (delegated).
   el('view-body').addEventListener('click', function(ev) {
@@ -2854,6 +2859,10 @@ import {
       driverResearch.dirty = true;
       updateDriverResearchImportSummary();
       refreshDriverResearchDerivedUi();
+      return;
+    }
+    if (ev.target.hasAttribute && ev.target.hasAttribute('data-rear-calibration-text')) {
+      setRearCalibrationText(ev.target.value);
       return;
     }
     if (ev.target.hasAttribute && ev.target.hasAttribute('data-driver-spacing')) {

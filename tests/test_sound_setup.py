@@ -4631,6 +4631,119 @@ def test_reset_reports_the_reconcile_verdict(
     assert payload["reset"] == verdict
 
 
+def _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path: Path) -> dict:
+    """An applied baseline on a rear-output topology, so ``--base saved``
+    resolves — the shape ``candidate_from_applied_profile`` needs."""
+    from jasper.active_speaker import baseline_profile as baseline_profile_mod
+    from jasper.output_topology import save_output_topology
+    from .active_speaker_fixtures import declared_graph_fixture, standard_design_draft
+    from .test_rear_output_foundation import _rear_pair
+
+    _set_active_speaker_state_paths(
+        monkeypatch, tmp_path, "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE",
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.bundles.sessions_dir", lambda: tmp_path / "sessions",
+    )
+    _, topology = _rear_pair("mono")
+    save_output_topology(topology, path=Path(os.environ["JASPER_OUTPUT_TOPOLOGY_PATH"]))
+    draft = standard_design_draft(topology)
+    declaration, declared = declared_graph_fixture(topology, draft)
+    prepared = baseline_profile_mod.prepare_applied_baseline_profile(
+        declared, declaration=declaration, design_draft=draft, measurements={},
+        config_path=None, config_sha256="",
+    )
+    prepared["status"] = "applied"
+    state_path = Path(os.environ["JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE"])
+    state_path.write_text(json.dumps(prepared), encoding="utf-8")
+    return prepared
+
+
+def test_rear_calibration_seed_route_returns_a_document_that_validates(
+    monkeypatch, tmp_path: Path,
+):
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json"))
+    with sound_server(tmp_path) as base:
+        seed_resp = urllib.request.urlopen(f"{base}/active-speaker/rear-calibration/seed")
+        seed_payload = json.loads(seed_resp.read().decode("utf-8"))
+        assert seed_payload["ok"] is True
+        assert seed_payload["calibration"]["kind"] == "jts_rear_calibration"
+
+        validate_resp = request_with_csrf(
+            base, "/active-speaker/rear-calibration/validate",
+            json.dumps(seed_payload["calibration"]).encode("utf-8"),
+            content_type="application/json",
+        )
+        validate_payload = json.loads(validate_resp.read().decode("utf-8"))
+
+    assert validate_payload == {
+        "ok": True, "case": "electrical_dsp", "summary": "muted electrical rear stage",
+    }
+
+
+def test_rear_calibration_validate_route_refuses_a_bad_document_with_its_code(
+    monkeypatch, tmp_path: Path,
+):
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json"))
+    with sound_server(tmp_path) as base:
+        bad_document = {**sound_active_speaker._active_speaker_rear_calibration_seed_payload()["calibration"],
+                        "sample_rate_hz": 44100}
+        resp = request_with_csrf(
+            base, "/active-speaker/rear-calibration/validate",
+            json.dumps(bad_document).encode("utf-8"),
+            content_type="application/json",
+        )
+        payload = json.loads(resp.read().decode("utf-8"))
+
+    assert payload["ok"] is False
+    assert payload["code"] == "rear_calibration_invalid"
+    assert "sample rate" in payload["error"]
+
+
+def test_rear_calibration_bank_route_banks_without_touching_the_applied_identity(
+    monkeypatch, tmp_path: Path,
+):
+    prepared = _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path)
+    base_fingerprint = prepared["source"]["measured_candidate_fingerprint"]
+    document = {
+        **sound_active_speaker._active_speaker_rear_calibration_seed_payload()["calibration"],
+        "rear_muted": False,
+    }
+    with sound_server(tmp_path) as base:
+        resp = request_with_csrf(
+            base, "/active-speaker/rear-calibration/bank",
+            json.dumps(document).encode("utf-8"),
+            content_type="application/json",
+        )
+        payload = json.loads(resp.read().decode("utf-8"))
+
+    assert payload["ok"] is True
+    assert payload["candidate_fingerprint"] != base_fingerprint
+    assert payload["issues"] == []
+    state_path = Path(os.environ["JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE"])
+    reloaded = json.loads(state_path.read_text(encoding="utf-8"))
+    assert reloaded["source"]["measured_candidate_fingerprint"] == base_fingerprint
+
+
+def test_rear_calibration_bank_route_names_the_section_on_a_refused_document(
+    monkeypatch, tmp_path: Path,
+):
+    from .test_active_speaker_measured_crossover_candidate import _acoustic_rear_document
+
+    _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path)
+    with sound_server(tmp_path) as base:
+        resp = request_with_csrf(
+            base, "/active-speaker/rear-calibration/bank",
+            json.dumps(_acoustic_rear_document()).encode("utf-8"),
+            content_type="application/json",
+        )
+        payload = json.loads(resp.read().decode("utf-8"))
+
+    assert payload["ok"] is False
+    assert payload["code"] == "rear_calibration_case_unsupported"
+    assert payload["section"] == "rear_calibration"
+
+
 def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(
     monkeypatch,
     tmp_path: Path,
@@ -5002,6 +5115,7 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes(
         "tuningHandoffCardMintsAndGoesStale",
         "nextActionOwnsTheSpeakerPage",
         "seatLevelSurvivesStepRenders",
+        "cardioidRearCalibrationPanelGatedOnSavedRearOutput",
         "activeCrossoverFirstStepRendered",
         "componentFirstResearchFlowIsOrderedAndAdvancedIsFlat",
         "passiveMainWithSubUsesResearchableMainTargetOnly",
