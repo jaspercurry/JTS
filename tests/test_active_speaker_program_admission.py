@@ -21,6 +21,7 @@ from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.output_topology import measurement_target_id
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.driver_safety import compute_driver_safety_profile
+from jasper.active_speaker.excitation_safety_plan import ACTIVE_DRIVER_MAX_REPEAT_COUNT
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph, measurement_graph_evidence
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
@@ -39,6 +40,7 @@ from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     KIND_SUMMED_SWEEP,
     KIND_SWEEP,
+    MEASURE_REPEAT_COUNT,
     RoleBand,
     build_measure_program,
     build_verify_program,
@@ -229,6 +231,11 @@ def test_declared_repeat_and_cooldown_caps_grade_every_driver_sweep(
     assert adm.allowed is (refusal is None), adm.to_dict()
     if refusal is not None:
         assert refusal in adm.refusals
+
+
+def test_measure_repeat_count_never_exceeds_the_driver_door_clamp():
+    """The driver door grades every MEASURE sweep against this clamp (#5322)."""
+    assert MEASURE_REPEAT_COUNT <= ACTIVE_DRIVER_MAX_REPEAT_COUNT
 
 
 def test_band_escape_refuses_segment():
