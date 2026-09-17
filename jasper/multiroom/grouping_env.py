@@ -2,24 +2,83 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-service env derived from a resolved ``GroupingConfig``. PURE.
+"""The lane arming rule, and the per-service env derived from a resolved
+``GroupingConfig``. PURE.
 
 Split out of ``jasper.multiroom.reconcile`` (the single writer of these env
-files); this module holds only the derivation, never the write.
+files); this module holds the derivation, never the write.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .. import tts_routing as _tts_routing
+from ..env_load import AIRPLAY_BONDED_EXTRA_DELAY_ENV
 from ..fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
 from . import config
 from .config import GroupingConfig
-from .dac_content_ring import DAC_CONTENT_LANE_ENV
+from .dac_content_ring import (
+    DAC_CONTENT_LANE_ENV,
+    OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
+    OUTPUTD_DAC_CONTENT_TRIM_ENV,
+    dac_content_ring_servable,
+)
 from .tts_route import VOICE_PARK_ENV, expected_grouping_tts_route
 
 OUTPUTD_TTS_SOCKET_ENV = _tts_routing.OUTPUTD_TTS_SOCKET_ENV
 VOICE_TTS_SOCKET_ENV = _tts_routing.VOICE_TTS_SOCKET_ENV
 TTS_MIX_STAGE_ENV = _tts_routing.TTS_MIX_STAGE_ENV
 TTS_MIX_STAGE_POST_DSP = _tts_routing.TTS_MIX_STAGE_POST_DSP
+
+#: Why a bonded member is not on the dac-content return ring. Stable tokens:
+#: they reach ``/state`` and the doctor through the follower STATUS file.
+LANE_REFUSED_ACTIVE_ENDPOINT = "active_endpoint"
+LANE_REFUSED_FLAT_OUTPUT_DENIED = "flat_output_not_allowed"
+LANE_REFUSED_PERIOD = "dac_content_ring_period_mismatch"
+
+
+@dataclass(frozen=True)
+class LaneDecision:
+    """Whether this box arms the dac-content return lane, and why not."""
+
+    armed: bool
+    #: One of the ``LANE_REFUSED_*`` tokens, or ``""`` when armed.
+    reason: str = ""
+
+
+def member_lane_decision(
+    cfg: GroupingConfig,
+    *,
+    active_endpoint: bool = False,
+    flat_output_allowed: bool = False,
+    outputd_period_frames: int | None = None,
+) -> LaneDecision:
+    """THE arming rule for the dumb-member round-trip lane. PURE.
+
+    Four conditions, spelled once and consumed by everything that needs the
+    answer — the env writer below, the reconciler's bond refusal, and the
+    doctor's channel-pick check:
+
+    - an ``is_active_member``-shaped config (enabled, no error);
+    - not an ACTIVE endpoint: CamillaDSP owns that box's channel-pick and split
+      (Layer A), so outputd runs its normal active sink and no lane;
+    - a saved topology that permits a flat final-output graph, from the
+      canonical output runtime contract;
+    - an outputd period the ring's slot can carry
+      (:func:`~jasper.multiroom.dac_content_ring.dac_content_ring_servable`).
+
+    A disabled or invalid config is not refused — it is not a member at all —
+    so it returns the same unarmed decision with no reason token.
+    """
+    if not (cfg.enabled and cfg.error is None):
+        return LaneDecision(armed=False)
+    if active_endpoint:
+        return LaneDecision(armed=False, reason=LANE_REFUSED_ACTIVE_ENDPOINT)
+    if not flat_output_allowed:
+        return LaneDecision(armed=False, reason=LANE_REFUSED_FLAT_OUTPUT_DENIED)
+    if not dac_content_ring_servable(outputd_period_frames):
+        return LaneDecision(armed=False, reason=LANE_REFUSED_PERIOD)
+    return LaneDecision(armed=True)
 
 
 def outputd_grouping_env(
@@ -31,8 +90,8 @@ def outputd_grouping_env(
 ) -> dict[str, str]:
     """The outputd round-trip lane env derived from a GroupingConfig. PURE.
 
-    Whether the lane arms is :func:`~jasper.multiroom.reconcile.member_lane_decision`'s
-    answer, never a second rule; what the lane IS is
+    Whether the lane arms is :func:`member_lane_decision`'s answer, never a
+    second rule; what the lane IS is
     :mod:`jasper.multiroom.dac_content_ring`'s module docstring.
 
     Every non-arming shape gets EMPTY strings rather than absent keys — outputd
@@ -63,13 +122,6 @@ def outputd_grouping_env(
     outputs the graph owns, which is why the route reads ``flat_output_allowed``
     from the same decision the lane does (#2380).
     """
-    # lazy: real cycle — reconcile.py imports this module's builders.
-    from .reconcile import (
-        OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
-        OUTPUTD_DAC_CONTENT_TRIM_ENV,
-        member_lane_decision,
-    )
-
     route = expected_grouping_tts_route(
         cfg,
         active_endpoint=active_endpoint,
@@ -174,9 +226,6 @@ def airplay_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
     alongside snapclient --latency. jasper-apply-airplay-mode ADDS this to the
     solo-derived offset.
     """
-    # lazy: real cycle — reconcile.py imports this module's builders.
-    from .reconcile import AIRPLAY_BONDED_EXTRA_DELAY_ENV
-
     if config.is_active_leader(cfg):
         return {AIRPLAY_BONDED_EXTRA_DELAY_ENV: f"{cfg.buffer_ms / 1000:.6f}"}
     return {}

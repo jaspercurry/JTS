@@ -1001,7 +1001,7 @@ _T5_CELLS = [
 
 def _t5_decision(cfg, active_endpoint: bool, flat_output_allowed: bool):
     from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
-    from jasper.multiroom.reconcile import member_lane_decision
+    from jasper.multiroom.grouping_env import member_lane_decision
 
     return member_lane_decision(
         cfg,
@@ -1081,7 +1081,7 @@ def test_each_unarmed_member_cell_names_which_condition_refused_it():
     """The reason token is what the reconciler's bond refusal and the doctor
     branch on, so each unarmed MEMBER cell must carry the right one — and a
     non-member (solo, invalid) carries none, because it was never refused."""
-    from jasper.multiroom.reconcile import (
+    from jasper.multiroom.grouping_env import (
         LANE_REFUSED_ACTIVE_ENDPOINT,
         LANE_REFUSED_FLAT_OUTPUT_DENIED,
         LANE_REFUSED_PERIOD,

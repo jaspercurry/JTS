@@ -34,7 +34,12 @@ from .. import atomic_io
 from .. import tts_routing as _tts_routing
 from ..camilla import CamillaUnavailable
 from ..dsp_apply import DspApplyError
-from ..env_load import OUTPUTD_GROUPING_ENV_FILE, VOICE_GROUPING_ENV_FILE
+from ..env_load import (
+    AIRPLAY_BONDED_EXTRA_DELAY_ENV,
+    AIRPLAY_GROUPING_ENV_FILE,
+    OUTPUTD_GROUPING_ENV_FILE,
+    VOICE_GROUPING_ENV_FILE,
+)
 from ..fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
@@ -49,7 +54,7 @@ from .config import SNAP_STREAM_ID, GroupingConfig
 from .dac_content_ring import (
     DAC_CONTENT_LANE_ENV,
     DAC_CONTENT_RING_PERIOD_FRAMES,
-    dac_content_ring_servable,
+    OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
 )
 from .effective_role import (
     FOLLOWER_STATUS_FILE,
@@ -59,7 +64,10 @@ from .effective_role import (
     read_effective_role_status,
 )
 from .grouping_env import (
+    LANE_REFUSED_PERIOD,
+    LaneDecision,
     airplay_grouping_env,
+    member_lane_decision,
     outputd_grouping_env,
     voice_grouping_env,
 )
@@ -170,21 +178,8 @@ _RECONCILE_SYSTEMD_TIMEOUT_SEC = (
 # snd-aloop (snapclient's snd_pcm_delay would lie, inv-2) and never the raw DAC,
 # which outputd owns.
 
-# The derived key is written as an empty string when this speaker is not an
-# active member, so a stale file can never leave the lane half-configured.
-OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
-OUTPUTD_DAC_CONTENT_TRIM_ENV = "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB"
 OUTPUTD_UNIT = OUTPUTD_SERVICE
 CAMILLA_UNIT = "jasper-camilla.service"
-
-# Reconciler-owned PERSISTENT env file the shairport-sync unit's ExecStartPre
-# (jasper-apply-airplay-mode) layers when deriving the AirPlay backend latency
-# offset. Holds the bonded-leader-only Snapcast round-trip delay; EMPTY (no keys)
-# for solo/follower so the offset stays byte-identical to the solo value.
-# Persistent (NOT /run) so a bonded leader boots with the bonded offset already
-# derived. mode 0644, no secret.
-AIRPLAY_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-airplay.env"
-AIRPLAY_BONDED_EXTRA_DELAY_ENV = "JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC"
 
 # jasper-aec-reconcile is the SINGLE owner of jasper-voice + jasper-aec-bridge
 # unit state. Role changes therefore KICK it rather than touching those units
@@ -242,57 +237,6 @@ class _PcmHandleProbeResult:
     @property
     def unknown(self) -> bool:
         return self.state == "unknown"
-
-
-#: Why a bonded member is not on the dac-content return ring. Stable tokens:
-#: they reach ``/state`` and the doctor through the follower STATUS file.
-LANE_REFUSED_ACTIVE_ENDPOINT = "active_endpoint"
-LANE_REFUSED_FLAT_OUTPUT_DENIED = "flat_output_not_allowed"
-LANE_REFUSED_PERIOD = "dac_content_ring_period_mismatch"
-
-
-@dataclass(frozen=True)
-class LaneDecision:
-    """Whether this box arms the dac-content return lane, and why not."""
-
-    armed: bool
-    #: One of the ``LANE_REFUSED_*`` tokens, or ``""`` when armed.
-    reason: str = ""
-
-
-def member_lane_decision(
-    cfg: GroupingConfig,
-    *,
-    active_endpoint: bool = False,
-    flat_output_allowed: bool = False,
-    outputd_period_frames: int | None = None,
-) -> LaneDecision:
-    """THE arming rule for the dumb-member round-trip lane. PURE.
-
-    Four conditions, spelled once and consumed by everything that needs the
-    answer — the env writer, the reconciler's bond refusal, and the doctor's
-    channel-pick check:
-
-    - an ``is_active_member``-shaped config (enabled, no error);
-    - not an ACTIVE endpoint: CamillaDSP owns that box's channel-pick and split
-      (Layer A), so outputd runs its normal active sink and no lane;
-    - a saved topology that permits a flat final-output graph, from the
-      canonical output runtime contract;
-    - an outputd period the ring's slot can carry
-      (:func:`~jasper.multiroom.dac_content_ring.dac_content_ring_servable`).
-
-    A disabled or invalid config is not refused — it is not a member at all —
-    so it returns the same unarmed decision with no reason token.
-    """
-    if not (cfg.enabled and cfg.error is None):
-        return LaneDecision(armed=False)
-    if active_endpoint:
-        return LaneDecision(armed=False, reason=LANE_REFUSED_ACTIVE_ENDPOINT)
-    if not flat_output_allowed:
-        return LaneDecision(armed=False, reason=LANE_REFUSED_FLAT_OUTPUT_DENIED)
-    if not dac_content_ring_servable(outputd_period_frames):
-        return LaneDecision(armed=False, reason=LANE_REFUSED_PERIOD)
-    return LaneDecision(armed=True)
 
 
 def desired_snapfifo_path(cfg: GroupingConfig) -> str:
