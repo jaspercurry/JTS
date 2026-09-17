@@ -142,7 +142,7 @@ def _health_prelude(
 ) -> tuple[str | None, bool, dict[str, Any], dict[str, Any]]:
     """The read-and-classify steps :func:`compose_audio_health` and the
     sampler's ``_tick`` both need before their two paths diverge: this
-    composer layers three more cause-naming overrides onto the returned
+    composer layers its cause-naming overrides onto the returned
     ``signal_path``, while the sampler passes this bare version straight to
     :func:`~jasper.control.audio_state_issues._state_issues` alongside those
     same overrides as separate arguments.
