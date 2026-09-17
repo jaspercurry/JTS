@@ -2,9 +2,9 @@
 name: web-ui
 description: |
   Load before changing the jts.local management UI — any diff touching
-  `jasper/web/`, `deploy/assets/`, `deploy/index.html`, or
-  `deploy/nginx-jasper*.conf`. Covers adding, moving, or restyling a page,
-  its CSS or ES modules, its URL, or its nginx block.
+  `jasper/web/`, `deploy/assets/`, `deploy/index.html`,
+  `deploy/nginx-jasper*.conf`, or `deploy/nginx/`. Covers adding, moving, or
+  restyling a page, its CSS or ES modules, its URL, or its nginx block.
 ---
 
 # Web UI

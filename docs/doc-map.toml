@@ -150,6 +150,7 @@ code = [
   "deploy/configure-bluez.sh",
   "deploy/nginx-jasper.conf",
   "deploy/nginx-jasper-streambox.conf",
+  "deploy/nginx/**",
   "deploy/modules-load.d/**",
   "deploy/modprobe.d/**",
   ".github/dependabot.yml",
@@ -284,6 +285,7 @@ code = [
   "jasper/cli/doctor/web.py",
   "deploy/jasper-chat-web.*",
   "deploy/nginx-jasper.conf",
+  "deploy/nginx/**",
 ]
 docs = [
   "docs/extensibility.md",
@@ -587,6 +589,7 @@ code = [
   "deploy/usbsink/jasper-usbgadget-compose.sh",
   "deploy/nginx-jasper.conf",
   "deploy/nginx-jasper-streambox.conf",
+  "deploy/nginx/**",
   "deploy/lib/install/systemd-units.sh",
   "deploy/lib/install/state-and-secrets.sh",
   "deploy/lib/install/renderers.sh",

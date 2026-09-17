@@ -5,11 +5,13 @@
 """Deploy artifact, unit and socket contracts."""
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 import pytest
 
+from . import nginx_site
 from ._shell_corpus import shell_files
 from .test_install_core_audio_graph_loop import staged_file_copies
 from .systemd_unit_helpers import value_for, values_for
@@ -36,6 +38,7 @@ _SHIPPED_GLOBS = (
     "usbsink/*",
     "*.service",
     "*.socket",
+    "nginx/*.conf",
 )
 
 # Shipped files intentionally NOT installed by install.sh. Empty today;
@@ -244,7 +247,7 @@ def test_wizard_socket_ports_match_nginx_upstreams():
     for sock in sorted(_DEPLOY.glob("*.socket")):
         for port in _LISTEN_RE.findall(sock.read_text()):
             socket_ports[int(port)] = sock.name
-    nginx_ports = {int(p) for p in _PROXY_RE.findall((_DEPLOY / "nginx-jasper.conf").read_text())}
+    nginx_ports = {int(p) for p in _PROXY_RE.findall(nginx_site.conf_text("full"))}
 
     unrouted = {
         port: socket_ports[port]
@@ -274,6 +277,40 @@ def test_wizard_socket_ports_match_nginx_upstreams():
     assert not stale, (
         f"Stale parity-allowlist entries: {stale} — the exception no longer "
         "exists; remove it so the allowlists only shrink."
+    )
+
+
+# ----------------------------------------------------------------------
+# 4b — assembled nginx route table
+# ----------------------------------------------------------------------
+
+# The route table both site confs resolved to before their shared body moved
+# into deploy/nginx/ snippets. Regenerate on a deliberate route change:
+#   python -c "import json;from tests import nginx_site as n;\
+#   print(json.dumps({p: n.canonical_routes(n.conf_text(p)) \
+#   for p in n.PROFILE_CONFS}, indent=2, ensure_ascii=False))" \
+#   > tests/fixtures/nginx_routes.json
+_NGINX_ROUTES_FIXTURE = _REPO / "tests" / "fixtures" / "nginx_routes.json"
+
+
+def test_assembled_nginx_confs_mount_the_pinned_route_table():
+    """Each site conf plus its snippets resolves to the routes pinned here.
+
+    deploy/nginx-jasper*.conf carry only their listeners and `include` lines,
+    so a mistyped include path, a snippet install.sh fails to stage, or a
+    route edited into one profile's snippet but not the shared one does not
+    fail loudly — it silently drops part of the management UI, or takes the
+    whole site down when nginx next reloads. Keyed by listener and location
+    header, valued by the block's directives, so prose and layout are free
+    to move and only what nginx acts on is pinned.
+    """
+    assembled = {
+        profile: nginx_site.canonical_routes(nginx_site.conf_text(profile))
+        for profile in nginx_site.PROFILE_CONFS
+    }
+
+    assert assembled == json.loads(
+        _NGINX_ROUTES_FIXTURE.read_text(encoding="utf-8")
     )
 
 

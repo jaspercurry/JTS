@@ -453,7 +453,7 @@ jasper/web/spotify_setup.py           jasper-web HTTP service (PKCE wizard)
 jasper/cli/spotify_auth.py            CLI bootstrap (PKCE)
 jasper/tools/transport.py             AirPlay / Spotify / Bluetooth / no-source dispatch
 jasper/tools/spotify.py               spotify_play / spotify_queue (router-aware)
-deploy/nginx-jasper.conf              /spotify/ + /assistant/voice/ proxy (HTTP only)
+deploy/nginx/jts-routes-common.conf   /spotify/ + /assistant/voice/ proxy (HTTP only)
 deploy/jasper-web.service             systemd unit for jasper-web
 ```
 

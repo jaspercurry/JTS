@@ -1483,37 +1483,50 @@ def test_install_nginx_site_conf_never_leaves_a_rejected_conf_live(
     tmp_path, nginx_t_rc, prior
 ):
     """A conf `nginx -t` rejects must not survive in sites-enabled, and
-    neither must the snippet it includes. The running nginx keeps the last
+    neither must any snippet it includes. The running nginx keeps the last
     good config in memory, so rejected files left on disk only bite on its
     next Restart=always bounce — taking the whole management surface down
-    with no web recovery path."""
+    with no web recovery path. Every deploy/nginx/ source is covered: the
+    site conf is a shell of `include`s, so a snippet left stale or missing
+    is a broken conf on that same bounce."""
     root = tmp_path / "etc" / "nginx"
     dest = root / "sites-enabled" / "jasper.conf"
-    snippet = root / "snippets" / "jts-proxy-headers.conf"
+    sources = {
+        path.name: path
+        for path in sorted((REPO_ROOT / "deploy" / "nginx").glob("*.conf"))
+    }
+    assert sources, "deploy/nginx/ holds the site conf's snippets"
+    snippets = {name: root / "snippets" / name for name in sources}
     dest.parent.mkdir(parents=True)
     if prior is not None:
         dest.write_text(prior, encoding="utf-8")
-        snippet.parent.mkdir(parents=True)
-        snippet.write_text(_PRIOR_SNIPPET, encoding="utf-8")
+        for path in snippets.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(_PRIOR_SNIPPET, encoding="utf-8")
     src = tmp_path / "site.conf"
     src.write_text(_NEW_CONF, encoding="utf-8")
 
     result = _run_install_nginx_site_conf(tmp_path, root, src, nginx_t_rc)
 
     assert result.returncode == (1 if nginx_t_rc else 0), result.stderr
+    live = {name: path for name, path in snippets.items() if path.exists()}
     if nginx_t_rc:
         assert "event=install.nginx_conf_rejected" in result.stderr
         if prior is None:
             assert not dest.exists()
-            assert not snippet.exists()
+            assert live == {}
         else:
             assert dest.read_text(encoding="utf-8") == prior
-            assert snippet.read_text(encoding="utf-8") == _PRIOR_SNIPPET
+            assert {
+                name: path.read_text(encoding="utf-8") for name, path in live.items()
+            } == dict.fromkeys(snippets, _PRIOR_SNIPPET)
     else:
         assert dest.read_text(encoding="utf-8") == _NEW_CONF
-        assert snippet.read_text(encoding="utf-8") == (
-            REPO_ROOT / "deploy" / "nginx-proxy-headers.conf"
-        ).read_text(encoding="utf-8")
+        assert {
+            name: path.read_text(encoding="utf-8") for name, path in live.items()
+        } == {
+            name: path.read_text(encoding="utf-8") for name, path in sources.items()
+        }
     assert not (root / ".jasper-site-prev").exists()
 
 

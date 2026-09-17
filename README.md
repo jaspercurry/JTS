@@ -146,8 +146,11 @@ path forwards the selected chip beam with AEC3 bypassed. Both feed
 [microphone reference](jasper/mics/README.md) for capture support and evidence limits.
 
 Management surfaces are stdlib HTTP wizards behind nginx, socket-activated
-so they cost nothing resident between admin sessions. `deploy/nginx-jasper.conf`
-is the authoritative route list; it covers the assistant
+so they cost nothing resident between admin sessions. `deploy/nginx/` is the
+authoritative route list — one shared body both profiles include, with the
+wake routes in a snippet only a full speaker mounts; the two site confs
+(`deploy/nginx-jasper.conf`, `deploy/nginx-jasper-streambox.conf`) carry
+their listeners and the includes. The routes cover the assistant
 (`/assistant/voice/`, `/assistant/wake/`, `/assistant/tools/`,
 `/assistant/chat/`, `/assistant/transit/`, `/assistant/weather/`,
 `/assistant/google/`, `/assistant/ha/`), sound (`/sound/eq/`,
