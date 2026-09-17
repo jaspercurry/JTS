@@ -194,8 +194,8 @@ def test_the_resolver_asks_the_ONE_owner_and_states_which_evidence_answered(
 
     seen: list[object] = []
 
-    def _owner(preset, measurements, crossover_preview=None):
-        seen.append((preset, measurements, crossover_preview))
+    def _owner(preset, measurements, crossover_preview=None, *, design_draft=None):
+        seen.append((preset, measurements, crossover_preview, design_draft))
         return {DRIVER_ROLE_TWEETER: -9.5}, {"source": "guided_captures"}
 
     monkeypatch.setattr(baseline_profile, "measured_level_trims", _owner)
