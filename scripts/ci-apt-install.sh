@@ -12,12 +12,12 @@
 # that kills apt mid-dpkg leaves the journal dirty and every later attempt
 # then fails identically, so `dpkg --configure -a` runs between attempts.
 #
-# Worst-case wall clock, which the caller's `timeout-minutes` must exceed:
+# Worst-case wall clock, which the caller's timeout cap must exceed:
 #   3 attempts x 2 apt commands x (30 s + 10 s kill grace) = 240 s
 #   + 2 recoveries x (20 s + 10 s)                         =  60 s
 #   + 2 sleeps x 5 s                                       =  10 s
 #   -------------------------------------------------------------
-#   = 310 s, i.e. `timeout-minutes: 6` (360 s) with room to spare.
+#   = 310 s; the composite action caps the call at 360 s.
 # Keep that arithmetic true when changing any constant below.
 #
 # Remove the retry when apt-mirror hangs stop recurring in CI.
