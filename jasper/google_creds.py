@@ -56,9 +56,9 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, ClassVar
 
-from .accounts import Registry
+from .accounts import RecordRegistry
 from .atomic_io import atomic_write_json
 
 logger = logging.getLogger(__name__)
@@ -106,21 +106,14 @@ class GoogleAccount:
     display_name: str = ""
 
 
-class GoogleRegistry(Registry):
-    """Mirrors `jasper.accounts.Registry` (the Spotify multi-user
-    registry) via subclassing, for the per-household-member Calendar +
-    Gmail credential store. Only the record shape, on-disk path, and
-    the pre-write mkdir (accounts.json's directory may not exist yet
-    before the first OAuth link) differ."""
+class GoogleRegistry(RecordRegistry[GoogleAccount]):
+    """Per-household-member Google OAuth token index."""
 
-    record_cls = GoogleAccount
-    path_field = "token_path"
-    default_path = DEFAULT_REGISTRY_PATH
-    file_mode = 0o640
+    default_path: ClassVar[str] = DEFAULT_REGISTRY_PATH
 
     @classmethod
     def _record_from_dict(cls, a: dict) -> GoogleAccount:
-        return cls.record_cls(
+        return GoogleAccount(
             name=a["name"],
             token_path=a.get("token_path", ""),
             email=a.get("email", ""),
@@ -128,23 +121,26 @@ class GoogleRegistry(Registry):
         )
 
     def save(self) -> None:
+        # accounts.json's directory may not exist yet before the first OAuth link.
         os.makedirs(os.path.dirname(self.path), mode=0o750, exist_ok=True)
-        # 0o640 group read — accounts.json holds the linked members' Gmail addresses
-        # (PII-adjacent). The file lives in the setgid `jasper-secrets` dir, so the atomic
-        # tempfile inherits group `jasper-secrets`; 0o640 lets jasper-voice read a token
-        # jasper-web's OAuth flow wrote (and vice versa) while keeping it off the broad
-        # `jasper` group and away from every other daemon. No world read. Token files use the
-        # same mode (save_token below).
         super().save()
 
-    def _merge_extra(self, existing: GoogleAccount, incoming: GoogleAccount) -> None:
-        if incoming.email:
-            existing.email = incoming.email
-        if incoming.display_name:
-            existing.display_name = incoming.display_name
-
-    def _default_path_for(self, name: str) -> str:
-        return default_token_path_for(name)
+    def add_or_update(self, account: GoogleAccount, *, make_default: bool = False) -> None:
+        existing = self.get(account.name)
+        if existing is None:
+            account.token_path = account.token_path or default_token_path_for(account.name)
+            self.accounts.append(account)
+        else:
+            # The wizard re-links with a bare GoogleAccount; blanks must not
+            # wipe metadata an earlier OAuth fetched.
+            if account.token_path:
+                existing.token_path = account.token_path
+            if account.email:
+                existing.email = account.email
+            if account.display_name:
+                existing.display_name = account.display_name
+        if make_default or not self.default_name:
+            self.default_name = account.name
 
 
 def default_token_path_for(name: str) -> str:
@@ -174,7 +170,7 @@ def save_token(token_path: str, *, refresh_token: str, scopes: list[str] | None 
     # group_from_parent (the default) republishes that group on the file
     # even when makedirs above just created a non-setgid dir; group read
     # lets jasper-voice load a token jasper-web's OAuth wrote, with no
-    # access for any other daemon. No world read. See GoogleRegistry.save.
+    # access for any other daemon. No world read.
     atomic_write_json(token_path, payload, mode=0o640)
 
 
