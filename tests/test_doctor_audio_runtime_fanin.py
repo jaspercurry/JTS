@@ -536,6 +536,7 @@ def test_check_fanin_tts_drops_skips_when_status_unreachable(monkeypatch):
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MODPROBE_CONF = _REPO_ROOT / "deploy" / "modprobe.d" / "snd-aloop.conf"
+_ASOUNDRC_TEMPLATE = _REPO_ROOT / "deploy" / "alsa" / "asoundrc.jasper"
 
 _OPEN_STATUS = (
     "state: RUNNING\n"
@@ -1247,3 +1248,36 @@ def test_check_fanin_service_status(monkeypatch, tmp_path, setup, expected_statu
     extra = extra or {}
     if "speaker_silent" in extra:
         assert r.speaker_silent is extra["speaker_silent"]
+
+
+def _asoundrc_lane_slaves() -> dict[str, str]:
+    """``{pcm alias: slave pcm}`` for every aloop lane the template declares.
+
+    The shipped template is hand-maintained (only the rate converter and the
+    DAC blocks are rendered), so this parses what install.sh actually writes to
+    /etc/asound.conf rather than trusting a second copy of the allocation.
+    """
+    text = _ASOUNDRC_TEMPLATE.read_text(encoding="utf-8")
+    found: dict[str, str] = {}
+    for alias, body in re.findall(
+        r"^pcm\.(\w+)\s*\{(.*?)^\}", text, re.MULTILINE | re.DOTALL
+    ):
+        slave = re.search(r'pcm\s+"(hw:Loopback,\d+,\d+)"', body)
+        if slave:
+            found[alias] = slave.group(1)
+    return found
+
+
+def test_doctor_asound_aliases_match_the_shipped_asoundrc():
+    """The doctor's expected renderer front ends are the template's own.
+
+    `check_fanin_asound_wiring` FAILs a box whose /etc/asound.conf disagrees
+    with its expectation, so an expectation that has drifted from the file
+    install.sh ships would red a healthy speaker.
+    """
+    assert (
+        _asoundrc_lane_slaves() == audio_runtime_fanin._ASOUND_EXPECTED_ALIASES
+    ), (
+        "jasper-doctor's expected asound lane aliases have drifted from "
+        f"{_ASOUNDRC_TEMPLATE.name}"
+    )

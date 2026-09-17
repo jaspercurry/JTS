@@ -18,6 +18,8 @@ from pathlib import Path
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from ...camilla_config_contract import devices_playback_is_pipe
 from ...fanin_coupling import RING_WIRE_FORMAT_WIDE
+from ...measurement_window import MEASUREMENT_FANIN_LABEL
+from ...music_sources import SOURCE_SPECS, Source
 from ...platform.status_socket import FANIN_STALE_MS, FANIN_STATUS_SOCKET
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -131,6 +133,10 @@ def check_fanin_binary_installed() -> CheckResult:
 
 _ASOUND_CONF_PATH = Path("/etc/asound.conf")
 
+#: The snd-aloop card id, pinned by deploy/modprobe.d/snd-aloop.conf
+#: (`id=Loopback`).
+_ALOOP_CARD_ID = "Loopback"
+
 
 def _asound_pcm_block(text: str, name: str) -> str | None:
     """Return a top-level pcm.NAME block body from an asoundrc.
@@ -148,15 +154,26 @@ def _asound_pcm_block(text: str, name: str) -> str | None:
         return tail[:match.end() - match.start() + next_def.start()]
     return tail
 
-#: The `(label, pcm)` roster fan-in's STATUS should report for its snd-aloop
-#: lanes. The USB lane is not one of them: it reads `hw:UAC2Gadget` directly, or
-#: nothing at all with direct off, so it never names an aloop substream.
+#: `(fan-in STATUS label, /etc/asound.conf alias, substream pair)` per aloop
+#: lane. The USB lane is absent: it reads `hw:UAC2Gadget` directly, or nothing
+#: at all with direct off. Owners, both pinned against this table by tests:
+#: deploy/modprobe.d/snd-aloop.conf for the pairs,
+#: rust/jasper-fanin/src/config.rs for the label<->capture-PCM roster.
+_ALOOP_LANES: tuple[tuple[str, str, int], ...] = (
+    (SOURCE_SPECS[Source.SPOTIFY].fanin_label, "librespot_substream", 0),
+    (SOURCE_SPECS[Source.AIRPLAY].fanin_label, "shairport_substream", 1),
+    (SOURCE_SPECS[Source.BLUETOOTH].fanin_label, "bluealsa_substream", 2),
+    (MEASUREMENT_FANIN_LABEL, CORRECTION_SUBSTREAM, 4),
+)
+
+# Device 1 is the capture half fan-in reads; device 0 the playback half a
+# renderer writes.
 _FANIN_EXPECTED_ALOOP_INPUTS = [
-    ("spotify", "hw:Loopback,1,0"),
-    ("airplay", "hw:Loopback,1,1"),
-    ("bluealsa", "hw:Loopback,1,2"),
-    ("correction", "hw:Loopback,1,4"),
+    (label, f"hw:{_ALOOP_CARD_ID},1,{pair}") for label, _, pair in _ALOOP_LANES
 ]
+_ASOUND_EXPECTED_ALIASES = {
+    alias: f"hw:{_ALOOP_CARD_ID},0,{pair}" for _, alias, pair in _ALOOP_LANES
+}
 
 
 # The assistant-loudness gain floor, and the only fixed bound the shared Rust
@@ -257,15 +274,6 @@ def check_fanin_asound_wiring() -> CheckResult:
             reason=REASON_ASOUND_LEGACY_RENDERER_BLOCK,
         )
 
-    # No usbsink_substream alias at all: USB audio is DIRECT-captured by
-    # jasper-fanin from hw:UAC2Gadget, so pair 3 has neither a writer nor a
-    # reader.
-    expected_aliases = {
-        "librespot_substream": "hw:Loopback,0,0",
-        "shairport_substream": "hw:Loopback,0,1",
-        "bluealsa_substream": "hw:Loopback,0,2",
-        CORRECTION_SUBSTREAM: "hw:Loopback,0,4",
-    }
     # snd-aloop pins both halves of a cable to one format, and the reader half
     # is jasper-fanin, whose capture opens are the constant
     # `mixer::pcm_open::LANE_CAPTURE_FORMAT`. So the expected lane width is the
@@ -274,7 +282,7 @@ def check_fanin_asound_wiring() -> CheckResult:
     missing: list[str] = []
     wrong: list[str] = []
     sheared: list[str] = []
-    for alias, slave in expected_aliases.items():
+    for alias, slave in _ASOUND_EXPECTED_ALIASES.items():
         block = _asound_pcm_block(active, alias)
         if block is None:
             missing.append(alias)
@@ -991,7 +999,7 @@ def check_fanin_coupling() -> CheckResult:
 # the registered set is DERIVED — never restated — from the one place that
 # still owns a pair allocation:
 #
-#   pairs 0-2, 4  `_FANIN_EXPECTED_ALOOP_INPUTS`   (above, this module)
+#   pairs 0-2, 4  `_ALOOP_LANES`                   (above, this module)
 #
 # Deriving rather than tabulating makes retirement MECHANICAL: a pair stops
 # being registered the moment its owning constant stops naming it.
@@ -1022,10 +1030,6 @@ def check_fanin_coupling() -> CheckResult:
 #: jasper/cli/xvf_profile.py use.
 _ALOOP_PROC_ROOT_ENV = "JASPER_ASOUND_ROOT"
 _ALOOP_PROC_ROOT_DEFAULT = "/proc/asound"
-
-#: The snd-aloop card id, pinned by deploy/modprobe.d/snd-aloop.conf
-#: (`id=Loopback`).
-_ALOOP_CARD_ID = "Loopback"
 
 #: snd-aloop exposes two PCM devices, each with a playback and a capture side.
 _ALOOP_PCM_DIRS = ("pcm0p", "pcm0c", "pcm1p", "pcm1c")

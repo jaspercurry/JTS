@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.cli.doctor import audio_runtime_fanin
 from jasper.fanin.coupling_reconcile import _LEGACY_FANIN_COUPLING_ENV
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
@@ -623,4 +624,49 @@ def test_every_source_to_fanin_label_entry_names_a_real_fanin_lane(source):
         f"SOURCE_TO_FANIN_LABEL[{source.value}] = {label!r} is missing from "
         f"fan-in's compiled-in default input_renderers {fanin_labels} "
         f"(scraped from {_FANIN_CONFIG_RS.name})"
+    )
+
+
+def _compiled_fanin_lane_pcms() -> list[str]:
+    """Scrape fan-in's compiled-in default ``input_pcms`` array."""
+    rs = _config_rs_text()
+    m = re.search(r'"JASPER_FANIN_INPUT_PCMS",\s*&\[(.*?)\]', rs, re.S)
+    assert m, "could not find the JASPER_FANIN_INPUT_PCMS default in config.rs"
+    # Matched per quoted literal, not split on commas: ALSA hw PCM names
+    # contain them (`hw:Loopback,1,0`).
+    return re.findall(r'"([^"]+)"', m.group(1))
+
+
+def _compiled_resampler_lane_label() -> str:
+    """Scrape the compiled-in ``JASPER_FANIN_INPUT_RESAMPLER_LANE`` default."""
+    m = re.search(
+        r'env_str\(\s*"JASPER_FANIN_INPUT_RESAMPLER_LANE",\s*"([^"]+)"',
+        _config_rs_text(),
+    )
+    assert m, "could not find the JASPER_FANIN_INPUT_RESAMPLER_LANE default"
+    return m.group(1)
+
+
+def test_doctor_aloop_roster_derives_from_the_compiled_fanin_default():
+    """config.rs owns the lane roster; the doctor's expectation mirrors it.
+
+    Rust pairs ``input_renderers`` with ``input_pcms`` positionally after
+    dropping the one label that reads no aloop substream (the USB resampler
+    lane). That pairing is the roster jasper-doctor compares live STATUS
+    against, so it is derived here rather than restated on the Python side.
+    """
+    labels = _compiled_fanin_lane_labels()
+    pcms = _compiled_fanin_lane_pcms()
+    usb_label = _compiled_resampler_lane_label()
+    aloop_labels = [label for label in labels if label != usb_label]
+    assert len(aloop_labels) == len(pcms), (
+        f"config.rs pairs {len(aloop_labels)} aloop labels with {len(pcms)} "
+        "PCMs; the positional pairing below cannot be formed"
+    )
+    assert list(zip(aloop_labels, pcms)) == list(
+        audio_runtime_fanin._FANIN_EXPECTED_ALOOP_INPUTS
+    ), (
+        "jasper-doctor's expected fan-in aloop roster has drifted from "
+        f"{_FANIN_CONFIG_RS.name}; config.rs is the authority — change it "
+        "there and let audio_runtime_fanin._ALOOP_LANES follow"
     )
