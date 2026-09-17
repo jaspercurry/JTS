@@ -986,6 +986,14 @@ def test_the_runtime_door_proves_the_cardioid_graph_against_the_saved_section(tm
     assert (proof.allowed, proof.classification) == (True, GRAPH_APPROVED_ACTIVE_RUNTIME)
     assert not proof.issues
 
+    # The pre-apply proof composes its own snapshot from the candidate; every
+    # section the persisted writer carries has to be in it, or the door reads
+    # an absent document and refuses the graph it is about to load.
+    pre_apply = baseline_profile_mod.recomposition_snapshot_for(
+        candidate, declaration=declaration, design_draft=draft)
+    assert set(pre_apply) == set(applied["recomposition_snapshot"])
+    assert classify({"recomposition_snapshot": pre_apply}).classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+
     without = classify({**applied, "recomposition_snapshot": {
         **applied["recomposition_snapshot"], "rear_calibration": {}}})
     assert not without.allowed

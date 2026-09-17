@@ -165,10 +165,17 @@ def refusal_envelope(
         if isinstance(exc, CrossoverV2Refused) or not code:
             message = str(exc)
     copy, action = refusal_copy_for(code)
-    return {
+    envelope: dict[str, Any] = {
         "ok": False, "code": code, "next_action": getattr(exc, "next_action", None) or action,
         "error": message if message is not None else copy,
     }
+    # The blockers a fail-closed proof named: a bare code cannot say WHICH
+    # door refused, and the operator reads the codes, not the prose. Other
+    # raisers carry plain strings under the same attribute name.
+    issues = [dict(issue) for issue in getattr(exc, "issues", ()) if isinstance(issue, Mapping)]
+    if issues:
+        envelope["issues"] = issues
+    return envelope
 
 
 def value_for_env(
