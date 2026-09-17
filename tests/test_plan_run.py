@@ -690,7 +690,7 @@ def test_speaker_room_layout_pairs_driver_and_summed_stops_with_entry_timing():
     room_band = ac.room_sweep_band_hz(
         roles, (room_capture.resolved(request).prompt,)
     )
-    assert room_band is not None and room_band[0] == 20.0
+    assert room_band is not None and room_band[0] == 150.0
     assert {capture.spec.sweep_band_hz for capture in captures if capture.stop.purpose == "room"} == {room_band}
     assert {capture.spec.sweep_band_hz for capture in captures if capture.stop.purpose == "speaker"} == {()}
     timing = [capture for capture in captures
