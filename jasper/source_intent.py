@@ -128,7 +128,6 @@ _MAX_STATUS_BYTES = 64 * 1024
 _REQUEST_LOCK_TIMEOUT_SEC = 2.0
 SOURCE_RECONCILE_LOCK_TIMEOUT_SECONDS = 5.0
 _MUX_UNIT = "jasper-mux.service"
-_UNIT_AVAILABLE_QUERY_TIMEOUT_SEC = 2.0
 _WORST_CASE_ORDINARY_STOP_ACTIONS = (
     ("shairport-sync.service", "stop"),
     ("nqptp.service", "stop"),
@@ -153,7 +152,6 @@ _BLUETOOTH_BLUEZ_ATTEMPTS = 3
 SystemctlRunner = Callable[[str, bool], tuple[int, str]]
 UnitRunner = Callable[[str, str], tuple[int, str]]
 UnitProbe = Callable[[str], bool | None]
-UnitAvailableProbe = Callable[[str], bool]
 IntentWriter = Callable[[str, Mapping[str, str]], None]
 ReconcileKicker = Callable[[], Mapping[str, Any]]
 StatusWriter = Callable[[str, Mapping[str, Any]], None]
@@ -192,7 +190,6 @@ class ReconcileOps:
     unit_enabled: UnitProbe
     unit_active: UnitProbe
     unit_failed: UnitProbe
-    unit_available: UnitAvailableProbe
     local_sources_allowed: Callable[[], bool]
     usb_port_role: Callable[[], UsbPortRoleState]
     usb_audio_present: Callable[[], bool]
@@ -794,21 +791,6 @@ def _unit_failed(unit: str) -> bool | None:
     return _query_unit_state("is-failed", unit)
 
 
-def _unit_available(unit: str) -> bool:
-    try:
-        process = subprocess.run(
-            ["systemctl", "show", unit, "-p", "LoadState", "--value"],
-            check=False,
-            timeout=_UNIT_AVAILABLE_QUERY_TIMEOUT_SEC,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return process.returncode == 0 and process.stdout.strip() == "loaded"
-
-
 def _local_sources_allowed() -> bool:
     from jasper.local_sources.markers import local_sources_allowed  # lazy: cycle with jasper.local_sources.markers
 
@@ -946,7 +928,6 @@ def default_reconcile_ops() -> ReconcileOps:
         unit_enabled=_unit_enabled,
         unit_active=_unit_active,
         unit_failed=_unit_failed,
-        unit_available=_unit_available,
         local_sources_allowed=_local_sources_allowed,
         usb_port_role=current_usb_data_role,
         usb_audio_present=_usb_audio_present,
