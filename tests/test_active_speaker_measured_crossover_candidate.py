@@ -18,6 +18,7 @@ from __future__ import annotations
 import pytest
 import yaml as yaml_lib
 
+from jasper.active_speaker.candidate_bank import load_candidate_artifact, publish_authored_candidate
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT, POLARITY_KEEP
 from jasper.active_speaker.measured_crossover_candidate import (
     CANDIDATE_KIND,
@@ -35,6 +36,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
     room_peqs_from_correction,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.camilla_config_contract import PeqFilter
 
@@ -300,6 +302,33 @@ def test_from_mapping_rejects_tampered_payload():
     assert excinfo.value.code == "candidate_tampered"
 
 
+@pytest.mark.parametrize("tampered", [False, True])
+def test_stored_candidate_integrity_survives_retired_preset_fields(tmp_path, tampered):
+    raw = _candidate(program_id="synthetic-legacy").to_dict()
+    raw["analysis"] = {"measurement_status": "unmeasured"}
+    raw["source_preset"]["preset_id"] = "synthetic-preset"
+    raw["source_preset"]["safety"]["require_channel_identity_before_drivers"] = True
+    raw["source_preset"]["verification"] = {"channel_identity_verified": False}
+    raw["fingerprint"] = json_fingerprint({
+        key: value for key, value in raw.items()
+        if key != "fingerprint" and (key not in _OPTIONAL_FIELD_TYPES or value)
+    })
+    if tampered:
+        raw["role_attenuations_db"]["tweeter"] -= 1.0
+        with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+            MeasuredCrossoverCandidate.from_mapping(raw)
+        assert excinfo.value.code == "candidate_tampered"
+        return
+    candidate = MeasuredCrossoverCandidate.from_mapping(raw)
+    assert candidate.fingerprint == raw["fingerprint"]
+    assert candidate.to_dict() == raw
+    banked = publish_authored_candidate(candidate, root=tmp_path)
+    reopened = load_candidate_artifact(banked.path)
+    assert reopened is not None
+    assert reopened.fingerprint == candidate.fingerprint
+    assert reopened.to_dict() == raw
+
+
 def test_from_mapping_rejects_unknown_fields():
     candidate = _candidate()
     raw = {**candidate.to_dict(), "extra_field": 1}
@@ -448,7 +477,6 @@ def test_empty_linearization_is_omitted_from_the_fingerprinted_core():
     cannot be fooled by a bug in how ``_core()`` itself decides to omit the
     key — it is the byte-for-byte compatibility guarantee, verified from
     first principles."""
-    from jasper.audio_measurement.evidence_identity import json_fingerprint
 
     candidate = _candidate()  # linearization defaults to {}
     pre_prc_core = {
@@ -572,7 +600,6 @@ def test_empty_linearization_outcome_is_omitted_from_the_fingerprinted_core():
     current code's fingerprint for a not-evaluated candidate. This never
     calls ``_core()`` or any of this module's own code, so it cannot be
     fooled by a bug in how ``_core()`` itself decides to omit the key."""
-    from jasper.audio_measurement.evidence_identity import json_fingerprint
 
     candidate = _candidate()  # linearization_outcome defaults to ""
     pre_gauge_fix_core = {
