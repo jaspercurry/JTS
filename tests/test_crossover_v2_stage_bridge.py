@@ -66,7 +66,6 @@ from jasper.web import correction_crossover_v2_volume as v2volume
 from tests._log_events import event_field_maps
 
 import asyncio
-import importlib
 import json
 import math
 import sys
@@ -242,6 +241,15 @@ def _isolated_v2_state(tmp_path):
     v2volume.set_volume_plan_for_tests(None)
 
 
+def _jasper_modules_binding(symbol: str, value: Any):
+    """Every imported ``jasper`` module whose ``symbol`` attribute IS ``value``."""
+    for module in list(sys.modules.values()):
+        if not getattr(module, "__name__", "").startswith("jasper"):
+            continue
+        if getattr(module, symbol, None) is value:
+            yield module
+
+
 @pytest.fixture(autouse=True)
 def _production_host_seams(monkeypatch, tmp_path):
     """Stand in for the hardware/IO seams both preparers open, and nothing else.
@@ -279,15 +287,6 @@ def _production_host_seams(monkeypatch, tmp_path):
         "load_design_draft": design_draft,
         "resolve_driver_excitation_ceilings": excitation_safety_plan_mod,
     }
-    # Modules that bind these names at MODULE scope and are imported lazily, so
-    # they would otherwise first appear DURING the patched window. Imported here
-    # so the sweep below can find them; see that sweep for why it matters.
-    for _late_binder in (
-        "jasper.active_speaker.program_admission",
-        "jasper.active_speaker.web_commissioning",
-        "jasper.web.sound_setup",
-    ):
-        importlib.import_module(_late_binder)
     monkeypatch.setattr(output_topology_mod, "load_output_topology", lambda *a, **k: _topology())
     monkeypatch.setattr(commission_wiring, "resolve_capture_preset", lambda topo: preset)
     monkeypatch.setattr(
@@ -319,27 +318,22 @@ def _production_host_seams(monkeypatch, tmp_path):
     )
     # Patch each name at EVERY binding, not only its home module (#2312).
     #
-    # ``web_commissioning`` and ``sound_setup`` bind these at module scope via
-    # ``from … import``. When one of them is imported for the FIRST time inside
-    # this fixture's patched window — which is exactly what a co-run with this
-    # harness does — its module-level name captures the FAKE, and monkeypatch
-    # never restores it, because monkeypatch only owns the attribute it set on
-    # the home module. The fake then answers for the rest of the PROCESS.
+    # Importers bind these at module scope via ``from … import``, and monkeypatch
+    # owns only the attribute it set on the home module, so it restores none of
+    # them. A module first imported INSIDE this patched window — which is exactly
+    # what a co-run with this harness does — captures the FAKE for the rest of the
+    # PROCESS, and so does ``jasper.active_speaker``'s caching ``__getattr__``.
     #
-    # That is the whole #2312 signature: 38 endpoints failures downstream, all
-    # ``crossover_preview_topology_mismatch``, all of them the anchor/Undo
-    # rollback guards, and green in isolation.
+    # That is the #2312 signature: failures downstream in files that are green in
+    # isolation, all of them reading a stale seam.
     #
-    # Swept by identity rather than by a hand-kept list of importers, so a new
-    # module-level ``from … import`` cannot reintroduce it silently; monkeypatch
-    # unwinds every binding together.
+    # Swept by identity in BOTH directions, so no hand-kept list of importers can
+    # go stale: forward under monkeypatch over what is already imported, and back
+    # by hand at teardown over whatever arrived late.
+    _fakes = {_symbol: getattr(_home[_symbol], _symbol) for _symbol in _originals}
     for _symbol, _original in _originals.items():
-        _fake = getattr(_home[_symbol], _symbol)
-        for _module in list(sys.modules.values()):
-            if not getattr(_module, "__name__", "").startswith("jasper"):
-                continue
-            if getattr(_module, _symbol, None) is _original:
-                monkeypatch.setattr(_module, _symbol, _fake)
+        for _module in _jasper_modules_binding(_symbol, _original):
+            monkeypatch.setattr(_module, _symbol, _fakes[_symbol])
     monkeypatch.setattr(v2ctx, "ensure_crossover_preview_ready", lambda design_draft=None: None)
     # The conductor context reads the per-role sweep-duration ceiling off the
     # same confirmed target as the caps above (#2921). These suites carry a
@@ -381,6 +375,9 @@ def _production_host_seams(monkeypatch, tmp_path):
         SessionVolumePlan(state_path=tmp_path / "session_volume.json")
     )
     yield
+    for _symbol, _original in _originals.items():
+        for _module in _jasper_modules_binding(_symbol, _fakes[_symbol]):
+            setattr(_module, _symbol, _original)
 
 
 # What the stubbed mint hands back as the session id. Both stages bind their
