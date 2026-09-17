@@ -144,8 +144,7 @@ FANIN_TEST_OWNERS = frozenset({
     "jasper-null",
     "seat-level",
 })
-# A diagnostic owner must renew before this monotonic deadline. This is long
-# enough for the commissioning tone (web_commissioning.COMMISSION_TONE_DURATION_S);
+# A diagnostic owner must renew before this monotonic deadline;
 # correction renews every measurement_window.MEASUREMENT_GATE_REFRESH_SEC. A web
 # worker crash therefore self-recovers instead of pinning household music off.
 FANIN_TEST_LEASE_SEC = 60.0

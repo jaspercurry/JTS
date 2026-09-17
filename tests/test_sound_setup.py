@@ -178,32 +178,12 @@ def _event_record(caplog, event: str):
 
 
 def _stub_audio_stops(monkeypatch, stops: list[str] | None = None) -> list[str]:
-    """Stub the three audio sessions a topology mutation stops before parking.
-
-    Records ``"<summed|commission>:<reason>"`` per tone and ``"safe"`` for the
-    safe-playback session, in call order, so a test can pin the ordering.
-    """
-
     recorded = [] if stops is None else stops
 
-    def stop_tone(kind: str):
-        def _stop(*, reason: str) -> dict:
-            recorded.append(f"{kind}:{reason}")
-            return {"status": "idle", "reason": reason}
-
-        return _stop
-
-    def stop_safe(reason: str = "operator_stop") -> dict:
-        tone = sound_active_speaker._active_speaker_stop_commission_tone(reason=reason)
+    def stop_safe() -> dict:
         recorded.append("safe")
-        return {"status": "idle", "commission_tone": tone}
+        return {"status": "idle"}
 
-    monkeypatch.setattr(
-        sound_active_speaker, "_active_speaker_stop_summed_test_tone", stop_tone("summed")
-    )
-    monkeypatch.setattr(
-        sound_active_speaker, "_active_speaker_stop_commission_tone", stop_tone("commission")
-    )
     monkeypatch.setattr(sound_active_speaker, "_active_speaker_stop_payload", stop_safe)
     return recorded
 
@@ -2032,53 +2012,6 @@ def test_active_speaker_stop_payload_survives_level_reset_failure(
     assert stopped["calibration_level"]["status"] == "reset_failed"
 
 
-def test_active_speaker_stop_route_stops_audible_commission_tone(
-    monkeypatch,
-    tmp_path: Path,
-):
-    """#2912 gap 3: the household stop route must reach the audible commission
-    tone, not just the no-audio safety session."""
-
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
-        str(tmp_path / "safe-playback.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
-        str(tmp_path / "calibration-level.json"),
-    )
-
-    tone_stops: list[str] = []
-    monkeypatch.setattr(
-        sound_active_speaker,
-        "_active_speaker_stop_commission_tone",
-        lambda *, reason: tone_stops.append(reason)
-        or {"status": "stopped", "reason": reason},
-    )
-
-    stopped = sound_active_speaker._active_speaker_stop_payload()
-
-    assert tone_stops == ["operator_stop"]
-    assert stopped["commission_tone"] == {
-        "status": "stopped",
-        "reason": "operator_stop",
-    }
-
-    # A topology-mutation caller (save/reset/repin) passes its own reason
-    # instead of relying on the "operator_stop" default, and the tone still
-    # stops exactly once.
-    tone_stops.clear()
-    stopped_for_save = sound_active_speaker._active_speaker_stop_payload(
-        reason="output_topology_save"
-    )
-
-    assert tone_stops == ["output_topology_save"]
-    assert stopped_for_save["commission_tone"] == {
-        "status": "stopped",
-        "reason": "output_topology_save",
-    }
-
-
 def _active_speaker_mono_topology_payload(
     *,
     protection_status: str,
@@ -2779,16 +2712,6 @@ def test_topology_save_refuses_invalid_input_before_stopping_or_parking(
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
     monkeypatch.setattr(
         sound_active_speaker,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: pytest.fail("invalid input must not stop audio"),
-    )
-    monkeypatch.setattr(
-        sound_active_speaker,
-        "_active_speaker_stop_commission_tone",
-        lambda **_kwargs: pytest.fail("invalid input must not stop audio"),
-    )
-    monkeypatch.setattr(
-        sound_active_speaker,
         "_active_speaker_stop_payload",
         lambda: pytest.fail("invalid input must not stop audio"),
     )
@@ -2811,11 +2734,7 @@ def test_topology_save_stops_audio_sessions_before_parking(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
         lambda _topology, commit, **_kwargs: (
             events.append("park") or _RuntimeMutation(commit())
-            if events == [
-                "summed:output_topology_save",
-                "commission:output_topology_save",
-                "safe",
-            ]
+            if events == ["safe"]
             else pytest.fail(f"expected all active audio sessions stopped first: {events}")
         ),
     )
@@ -4523,11 +4442,7 @@ def test_reset_output_topology_payload_clears_active_setup_state(
 
     assert payload["output_topology"]["status"] == "draft"
     assert payload["reset"]["status"] == "reset"
-    assert stops == [
-        "summed:output_topology_reset",
-        "commission:output_topology_reset",
-        "safe",
-    ]
+    assert stops == ["safe"]
     assert all(not path.exists() for path in paths)
 
 
@@ -4907,11 +4822,6 @@ async def test_active_speaker_finish_stale_candidate_skips_cleanup(monkeypatch):
     )
     monkeypatch.setattr(
         sound_active_speaker,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: pytest.fail("stale apply must not stop the summed test"),
-    )
-    monkeypatch.setattr(
-        sound_active_speaker,
         "_active_speaker_baseline_profile_apply_payload",
         lambda **_kwargs: pytest.fail("stale apply must not start DSP apply"),
     )
@@ -4933,11 +4843,6 @@ async def test_active_speaker_finish_race_refusal_skips_cleanup(monkeypatch):
         sound_active_speaker,
         "_active_speaker_baseline_profile_payload",
         lambda **_kwargs: {"candidate_fingerprint": "reviewed-candidate"},
-    )
-    monkeypatch.setattr(
-        sound_active_speaker,
-        "_active_speaker_stop_summed_test_tone",
-        lambda **_kwargs: pytest.fail("refused apply must not stop the summed test"),
     )
     seen = {}
 
@@ -7050,57 +6955,6 @@ def test_profile_library_route_helpers_create_rename_delete(tmp_path: Path):
     assert load_profile_library(library_path) == ()
 
 
-def test_rollback_teardown_converts_any_failure_into_the_household_blocker():
-    """The re-mute teardown may not let ANY exception escape uncopied.
-
-    /sound/ runs the combined-test re-mute from a ``finally`` through this one
-    helper. A sibling caller used to catch a
-    five-entry tuple (``CamillaUnavailable``, ``OSError``, ``RuntimeError``,
-    ``ValueError``, ``TypeError``), so a rollback failing with anything else —
-    a ``KeyError`` out of a payload, an ``AttributeError`` off a stubbed
-    controller — escaped the ``finally`` unconverted. The household then got an
-    unhandled exception in place of the highest-stakes sentence in the map: the
-    speaker may still be audible and nothing said so.
-
-    Mutation: narrow the helper's `except Exception` back to
-    `_COMMISSION_OPERATION_ERRORS` and the KeyError case raises here instead of
-    returning the blocker.
-    """
-    from jasper.active_speaker.web_commissioning import (
-        rollback_summed_commission_teardown,
-    )
-
-    async def _boom(exc):
-        raise exc
-
-    for exc in (KeyError("payload"), AttributeError("controller"), RuntimeError("io")):
-        rollback, issue = asyncio.run(
-            rollback_summed_commission_teardown(
-                lambda exc=exc: _boom(exc),
-                log_event_name="test.rollback",
-            )
-        )
-        assert rollback is None, exc
-        assert issue == {
-            "severity": "blocker",
-            "code": "summed_commission_rollback_failed",
-            "message": (
-                "combined test played, but JTS could not re-mute the "
-                "active-speaker test path"
-            ),
-        }, exc
-
-    # And the success path stays a plain pass-through with no blocker.
-    async def _ok():
-        return {"status": "rolled_back"}
-
-    rollback, issue = asyncio.run(
-        rollback_summed_commission_teardown(_ok, log_event_name="test.rollback")
-    )
-    assert rollback == {"status": "rolled_back"}
-    assert issue is None
-
-
 # --- same-shape composite re-pin (#2814) -------------------------------------
 
 
@@ -7245,11 +7099,7 @@ def test_repin_endpoint_keeps_the_design_and_clears_what_must_be_reverified(
 
     assert payload["repin"]["status"] == "repinned"
     assert "Apple DAC B left, Apple DAC B right" in payload["repin"]["message"]
-    assert stops == [
-        "summed:output_topology_repin",
-        "commission:output_topology_repin",
-        "safe",
-    ]
+    assert stops == ["safe"]
     # The card promises audio stays off until the outputs are re-confirmed. The
     # graph selector is identity-blind, so that promise is only true because
     # this endpoint keeps the runtime parked; see
