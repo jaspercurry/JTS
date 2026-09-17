@@ -739,6 +739,8 @@ docs = [
   "docs/tuning-operator-runbook.md",
   # Optional science: evidence limits, interpretation, and measurement traps.
   "docs/tuning-methodology.md",
+  # Rear calibration document field reference (ADR-0316/0317/0318/0322).
+  "docs/rear-calibration-tuning-fields.md",
   "docs/research/2026-06-19-active-crossover-calibration/README.md",
   "docs/research/2026-07-23-driver-linearization/README.md",
   "docs/research/2026-07-25-flat-linearization/README.md",
