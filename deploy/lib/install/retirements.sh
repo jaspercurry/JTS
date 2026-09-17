@@ -4,9 +4,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# One-shot retirements for deploy/install.sh: the units, files, directories and
-# env lines earlier releases left on a box that nothing in the tree writes any
-# more. One row per retired thing, applied by retire_leftovers().
+# What earlier releases left behind, for deploy/install.sh: the units, files,
+# directories and env lines nothing in the tree writes any more, plus the
+# one-shot migrations that adopt or relocate state an older install wrote
+# elsewhere. Retired things are one row per thing in the table below, applied
+# by retire_leftovers(); the migrations are separate install steps and follow
+# the table.
 #
 # Row format: "<kind>|<targets>|<what it retires>", targets space-separated.
 #   unit -> disable --now, stop, and reset-failed after the daemon-reload
@@ -184,4 +187,158 @@ retire_leftovers() {
     # tombstone; that terminal state clears only once the reload has forgotten
     # the unit file, so reset-failed runs last.
     _retire_apply unit _retire_systemctl reset-failed
+}
+
+# Operator seeds still enter jasper.env; the wizards own the compartments.
+# Never remove a broad key until the compartment holds a NON-EMPTY value for
+# it: .env.example seeds every key empty, and an empty compartment line would
+# shadow a later operator seed under EnvironmentFile= later-wins (#4442).
+_migrate_secret_keys() {
+    local keys_env="$1" jasper_env="${ENV_DIR}/jasper.env"
+    shift
+    getent group jasper-secrets >/dev/null 2>&1 || return 0
+    ensure_secrets_dir
+    local key val moved=0
+    for key in "$@"; do
+        if [[ -z "$(jasper_env_file_get "${keys_env}" "${key}")" ]]; then
+            val="$(jasper_env_file_get "${jasper_env}" "${key}")" || continue
+            [[ -n "${val}" ]] || continue
+            # seed_absent keeps any stated key, so an empty placeholder goes first.
+            # A wizard value published while the installer waits for the seed's
+            # lock survives; one raced in ahead of the unset does not.
+            jasper_env_file_unset "${keys_env}" "${key}" 0640
+            jasper_env_file_seed_absent "${keys_env}" 0640 2770 "${key}=${val}"
+            [[ -n "$(jasper_env_file_get "${keys_env}" "${key}")" ]] || return 1
+            moved=1
+        fi
+        jasper_env_file_unset "${jasper_env}" "${key}" 0640
+    done
+    if [[ "${moved}" == "1" ]]; then
+        echo "  migrated operator API keys -> ${keys_env}"
+    fi
+}
+
+migrate_voice_keys_split() {
+    _migrate_secret_keys "${SECRETS_DIR}/voice_keys.env" \
+        GEMINI_API_KEY OPENAI_API_KEY XAI_API_KEY
+}
+
+migrate_google_routes_key() {
+    _migrate_secret_keys "${SECRETS_DIR}/google_routes.env" GOOGLE_ROUTES_API_KEY
+    if [[ -f "${SECRETS_DIR}/google_routes.env" ]]; then
+        chmod 0640 "${SECRETS_DIR}/google_routes.env"
+    fi
+}
+
+# Seed /var/lib/jasper/wifi_guardian.env from the currently-active WiFi
+# profile if no stash exists yet. This migration hook for the WiFi profile
+# guardian covers the SSH-driven setup case where the
+# operator brought up WiFi via raspi-config / nmcli before ever
+# opening the /wifi/ wizard.
+#
+# Idempotent:
+#   - stash already exists       -> no-op
+#   - nmcli missing              -> no-op (no NM, nothing to recover)
+#   - no active WiFi connection  -> no-op (Ethernet-only Pi)
+#   - active profile is WPA-EAP  -> no-op (enterprise out of scope)
+#
+# PSK redaction: the stash file is mode 0600 (root-only). The PSK lands
+# in it because NM's own keyfile is also plaintext at 0600 — encrypting
+# our copy while NM's stays plaintext is theatre against a root-equiv
+# attacker. The PSK does NOT appear in any `echo` from this function.
+#
+# Remove once the /wifi/ wizard is the only way WiFi gets provisioned (no
+# Imager/raspi-config pre-set WiFi left to adopt).
+migrate_wifi_guardian() {
+    # Nested (not top-level): tests/test_install_wifi_guardian_migration.py
+    # extracts this function body with `sed '/^migrate_wifi_guardian()/,/^}/'`,
+    # which stops at the first column-0 '}' — a top-level helper defined
+    # before it would be left out of the extracted snippet.
+    #
+    # `nmcli -t` escapes a literal ':' in a value as '\:'; reverse that so a
+    # NAME/SSID containing one (e.g. "Cafe:Work") is matched rather than
+    # truncated. A literal '\' is left as-is, matching
+    # deploy/bin/jasper-wifi-guardian's nm_unescape — the canonical
+    # full-fidelity parser is jasper.web.wifi_setup._parse_terse if ever
+    # needed.
+    _migrate_wifi_unescape_nmcli() {
+        printf '%s' "${1//\\:/:}"
+    }
+
+    local stash="${STATE_DIR}/wifi_guardian.env"
+
+    # Stash already exists — wizard or a previous migrate seeded it.
+    # Nothing to do.
+    [[ -f "${stash}" ]] && return 0
+
+    # No nmcli means no NetworkManager; the guardian is a no-op on this
+    # host. Don't bother seeding.
+    command -v nmcli >/dev/null 2>&1 || return 0
+
+    # Find the active wifi profile NAME. TYPE comes first in `-f TYPE,NAME`
+    # so the first ':' is an unambiguous field boundary even when NAME
+    # contains one (TYPE never does) — same query
+    # deploy/bin/jasper-wifi-guardian's ACTIVE_NAME uses.
+    local active
+    active=$(nmcli -t -f TYPE,NAME connection show --active 2>/dev/null \
+             | awk -F: '$1 ~ /wifi|wireless/ { sub(/^[^:]*:/, ""); print; exit }')
+    active="$(_migrate_wifi_unescape_nmcli "${active}")"
+    [[ -z "${active}" ]] && return 0
+
+    # Pull SSID + PSK + key-mgmt for the active profile. `-s` is
+    # "show secrets" — requires root, which install.sh always has.
+    # We parse with a `read` loop, not awk, to keep the PSK off any
+    # intermediate process's argv (this whole helper runs without
+    # `set -x`).
+    local ssid="" psk="" key_mgmt=""
+    while IFS=: read -r key value; do
+        value="$(_migrate_wifi_unescape_nmcli "${value}")"
+        case "${key}" in
+            "802-11-wireless.ssid")              ssid="${value}" ;;
+            "802-11-wireless-security.psk")      psk="${value}" ;;
+            "802-11-wireless-security.key-mgmt") key_mgmt="${value}" ;;
+        esac
+    done < <(
+        nmcli -s -t -f \
+            802-11-wireless.ssid,\
+802-11-wireless-security.psk,\
+802-11-wireless-security.key-mgmt \
+            connection show "${active}" 2>/dev/null
+    )
+
+    [[ -z "${ssid}" ]] && return 0
+
+    # Enterprise auth is out of scope — the guardian can't recreate it
+    # (no cert/identity in our stash). Skip silently rather than write
+    # a stash that the guardian itself would refuse.
+    [[ "${key_mgmt}" == "wpa-eap" ]] && return 0
+
+    # Default key-mgmt to `none` when nmcli reported nothing (open
+    # network). Matches the wizard's behavior.
+    [[ -z "${key_mgmt}" ]] && key_mgmt="none"
+
+    # Write atomically: tempfile in same dir, chmod 0600, mv. We're
+    # in bash, not Python, so no fsync — the wizard does fsync on
+    # its own writes, and seeding from install.sh is a one-time event
+    # whose durability matters less than its idempotency.
+    ensure_state_dir
+    local tmp
+    tmp=$(mktemp "${STATE_DIR}/.wifi_guardian.XXXXXX")
+    # umask + mode dance: write the file with the PSK never visible to
+    # other processes via `ls`. The `chmod 0600` after write is the
+    # belt; `umask 077` on the tempfile creation is the suspenders.
+    (
+        umask 077
+        cat > "${tmp}" <<EOF
+JASPER_WIFI_SSID=${ssid}
+JASPER_WIFI_PSK=${psk}
+JASPER_WIFI_KEY_MGMT=${key_mgmt}
+EOF
+    )
+    chmod 0600 "${tmp}"
+    mv "${tmp}" "${stash}"
+
+    # PSK redaction: the SSID is fine to log (visible in every nmcli
+    # output) but the PSK never appears in this echo or any other.
+    echo "  migrate_wifi_guardian: seeded ${stash} from active profile (SSID=${ssid}, key-mgmt=${key_mgmt})"
 }

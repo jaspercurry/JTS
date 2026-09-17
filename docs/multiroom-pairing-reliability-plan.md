@@ -615,8 +615,8 @@ Shared rules for every work order:
 9. **Orphan cleanup (F-20).** Add removal of
    `/var/lib/jasper/active_speaker_follower_profile.json` and
    `/var/lib/jasper/active_leader_crossover_profile.json` to the install
-   migrations (`deploy/lib/install/env-migrations.sh`, alongside its
-   existing stale-file removals).
+   retirement table (`deploy/lib/install/retirements.sh`, alongside its
+   existing stale-file rows).
 10. **Docs routing (F-22): already done** — the plan doc is mapped in
     `docs/doc-map.toml`'s `multiroom-grouping` entry as of the v2 plan
     commit (the docs-impact guard test enforces it).

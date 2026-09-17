@@ -21,7 +21,7 @@ from jasper.tts_routing import (
     OUTPUTD_TTS_SOCKET,
     VOICE_TTS_SOCKET_ENV,
 )
-from tests.install_surface import installer_shell_paths, installer_text
+from tests.install_surface import installer_text
 from tests.reconcile_fixtures import fake_systemctl
 from tests.test_audio_hardware_reconcile import _dual_apple_cards
 
@@ -161,11 +161,6 @@ def test_asoundrc_declares_outputd_rendered_dac_alias_placeholder():
 
 def test_install_consumes_reconciled_output_without_reusing_dongle_mixer_card():
     install_sh = installer_text()
-    install_without_env_migrations = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in installer_shell_paths()
-        if path.name != "env-migrations.sh"
-    )
     reconcile = (REPO / "jasper" / "audio_hardware" / "reconcile.py").read_text()
     assert "select_audio_hardware_roles()" in install_sh
     assert "jasper-audio-hardware-reconcile\" --print-env" in install_sh
@@ -179,7 +174,7 @@ def test_install_consumes_reconciled_output_without_reusing_dongle_mixer_card():
     assert "asoundrc.jasper.source" in install_sh
     assert "JASPER_AUDIO_DAC_ID" in install_sh
     assert "JASPER_OUTPUT_DAC_ROUTE" not in reconcile
-    assert "OUTPUT_DAC_ROUTE" not in install_without_env_migrations
+    assert "OUTPUT_DAC_ROUTE" not in installer_text()
 
 
 def test_output_dac_route_policy_is_removed_from_renderer_and_reconciler():

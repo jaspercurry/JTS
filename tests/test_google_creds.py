@@ -168,8 +168,9 @@ def test_save_token_writes_mode_0640(tmp_path):
     assert payload["scopes"] == ["https://www.googleapis.com/auth/gmail.readonly"]
 
 
-_ENV_MIGRATIONS_SH = (
-    Path(__file__).resolve().parents[1] / "deploy/lib/install/env-migrations.sh"
+_STATE_AND_SECRETS_SH = (
+    Path(__file__).resolve().parents[1]
+    / "deploy/lib/install/state-and-secrets.sh"
 )
 
 
@@ -179,9 +180,9 @@ def test_install_creates_google_dir_setgid():
     inherit the group directly. It lives in the jasper-secrets compartment at mode 2770 group
     jasper-secrets (was the broad 2750 group jasper). Guard the setgid + group so a
     silently dropped bit can't leave a freshly linked account's tokens unreadable."""
-    sh = _ENV_MIGRATIONS_SH.read_text()
+    sh = _STATE_AND_SECRETS_SH.read_text()
     assert "install -d -m 2770 -g jasper-secrets" in sh and "google" in sh, (
-        "env-migrations.sh must create the jasper-secrets Google tree setgid + "
+        "state-and-secrets.sh must create the jasper-secrets Google tree setgid + "
         "group jasper-secrets (install -d -m 2770 -g jasper-secrets ...)"
     )
 

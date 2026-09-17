@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Test the WS1 group-writable heal for shared state —
-`heal_shared_state_modes` in deploy/lib/install/env-migrations.sh.
+`heal_shared_state_modes` in deploy/lib/install/state-and-secrets.sh.
 
 The 2026-06-19 incident: a shared SQLite DB (usage.db) created 0644 became
 unwritable by a non-owner same-group daemon after a StateDirectory re-chown,
@@ -26,7 +26,7 @@ from pathlib import Path
 from tests.install_surface import JASPER_GROUP_STUBS
 
 ROOT = Path(__file__).resolve().parents[1]
-LIB = ROOT / "deploy" / "lib" / "install" / "env-migrations.sh"
+LIB = ROOT / "deploy" / "lib" / "install" / "state-and-secrets.sh"
 MODEL_STAGING = ROOT / "deploy" / "lib" / "install" / "model-staging.sh"
 
 # getent stubbed to succeed so the `getent group jasper` guard passes; chgrp is a

@@ -51,7 +51,7 @@ source "${REPO_DIR}/deploy/lib/jasper-sed-inplace.sh"
 source "${REPO_DIR}/deploy/lib/jasper-env-file.sh"
 source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
 source "${REPO_DIR}/deploy/lib/jasper-alsa-card.sh"
-source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"
+source "${REPO_DIR}/deploy/lib/install/state-and-secrets.sh"
 source "${REPO_DIR}/deploy/lib/install/retirements.sh"
 source "${REPO_DIR}/deploy/lib/install/service-users.sh"
 source "${REPO_DIR}/deploy/lib/install/memory-resilience.sh"
@@ -622,7 +622,7 @@ install_camilladsp() {
     #
     # The active_speaker* paths below are the same capture/sweep/tone trees
     # /sound/ and the measurement daemon share; this list must stay in sync with
-    # heal_shared_state_modes's allowlist (env-migrations.sh), which re-heals
+    # heal_shared_state_modes's allowlist (state-and-secrets.sh), which re-heals
     # the same seven paths on every deploy for boxes that pre-date this line.
     install -d -m 2770 -g jasper \
         /var/lib/jasper/correction \
@@ -1472,7 +1472,7 @@ widen_jasper_web_writable_dirs() {
         # /var/lib/jasper (a group member can pre-create the name as a symlink
         # onto a root file), so it moved to heal_shared_state_modes, which pins
         # each inode with O_NOFOLLOW+fstat before touching it. See
-        # deploy/lib/install/env-migrations.sh.
+        # deploy/lib/install/state-and-secrets.sh.
         echo "  Widened /etc/bluetooth + /var/lib/camilladsp/configs to root:jasper 2775 (jasper-web writes)"
     fi
 }

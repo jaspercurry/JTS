@@ -69,9 +69,9 @@ def test_install_widens_secret_env_on_upgrade():
     """The upgrade path: install must still group-widen the broad files
     jasper-control reads directly. Secret compartment files are handled by
     their migration helpers instead."""
-    full = (ROOT / "deploy/lib/install/env-migrations.sh").read_text(encoding="utf-8")
+    full = (ROOT / "deploy/lib/install/state-and-secrets.sh").read_text(encoding="utf-8")
     assert "widen_control_secret_env_modes() {" in full, (
-        "env-migrations.sh must define widen_control_secret_env_modes"
+        "state-and-secrets.sh must define widen_control_secret_env_modes"
     )
     # Scope the checks to the widen function's body (it's the last function in
     # the file), so an unrelated reference (migrate_wifi_guardian writes the
@@ -162,7 +162,7 @@ def test_widen_control_secret_env_modes_skips_symlinks(tmp_path: Path):
     link.symlink_to(outside)
     ops_log = tmp_path / "ops.log"
 
-    lib = ROOT / "deploy/lib/install/env-migrations.sh"
+    lib = ROOT / "deploy/lib/install/state-and-secrets.sh"
     helper = subprocess.run(
         ["bash", "-c", rf"sed -n '/^widen_control_secret_env_modes()/,/^}}/p' '{lib}'"],
         capture_output=True,
@@ -205,7 +205,7 @@ def test_widen_control_secret_env_modes_fails_if_jasper_env_chgrp_fails(
     jasper_env = env_dir / "jasper.env"
     jasper_env.write_text("JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n")
 
-    lib = ROOT / "deploy/lib/install/env-migrations.sh"
+    lib = ROOT / "deploy/lib/install/state-and-secrets.sh"
     helper = subprocess.run(
         ["bash", "-c", rf"sed -n '/^widen_control_secret_env_modes()/,/^}}/p' '{lib}'"],
         capture_output=True,

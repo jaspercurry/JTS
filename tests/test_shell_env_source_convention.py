@@ -240,7 +240,7 @@ def test_classifier_catches_known_bad_shapes(bad):
         # Shell LIBRARIES are code, not env files — sourcing them is the point.
         'ENV_FILE_LIB="/usr/local/lib/jasper/jasper-env-file.sh"\n'
         'source "$ENV_FILE_LIB"\n',
-        'source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"\n',
+        'source "${REPO_DIR}/deploy/lib/install/state-and-secrets.sh"\n',
         '. "$(dirname "$0")/lib/jasper-sed-inplace.sh"\n',
         # Laptop-side state outside the JTS env trees, even under `set -a`.
         'REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"\n'
