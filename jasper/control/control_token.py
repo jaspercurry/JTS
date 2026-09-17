@@ -70,11 +70,6 @@ TOKEN_FILE = os.environ.get(
 )
 
 
-def _stored_token() -> str:
-    """The stripped token on disk, or "" when absent/empty/unreadable."""
-    return _secret_file.read(TOKEN_FILE)
-
-
 def token_enforced() -> bool:
     """True iff a non-empty token file exists (the gate is opted in).
 
