@@ -67,11 +67,9 @@ from jasper.fanin_coupling import (
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
     OUTPUTD_RING_PATH_ENV_VAR,
-    OUTPUTD_RING_SLOTS_ENV_VAR,
     RING_A_CHANNELS,
     RING_SLOTS_ENV_VAR,
     resolve_outputd_ring_path,
-    resolve_outputd_ring_slots,
 )
 from jasper.log_event import log_event
 # The single writer of ``JASPER_OUTPUTD_CONTENT_FORMAT``, which is why the
@@ -1496,7 +1494,8 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
     """The COMPLETE set of reconciler-owned outputd.env actions for the ring.
 
     Sets ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the post-DSP ring's
-    path/slots — content.ring, or active-content.ring on an armed roleful box.
+    path — content.ring, or active-content.ring on an armed roleful box. The
+    ring's slot count is outputd's own compiled-in constant, not env-set here.
     The two rings move together: fan-in's Ring A capture (fanin.env) and
     outputd's post-DSP ring bridge (here) are ONE coupling, and a split leaves
     one end reading or writing a ring nobody serves.
@@ -1529,15 +1528,6 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
             OUTPUTD_RING_PATH_ENV_VAR,
             outputd_ring_path_for(outputd_text),
         ),
-        RuntimeEnvAction(
-            "set",
-            OUTPUTD_RING_SLOTS_ENV_VAR,
-            str(
-                resolve_outputd_ring_slots(
-                    read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR)
-                )
-            ),
-        ),
         RuntimeEnvAction("unset", _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV),
     )
 
@@ -1566,11 +1556,6 @@ def _sync_process_env_for_emit(outputd_text: str) -> None:
     os.environ.pop(_LEGACY_FANIN_COUPLING_ENV, None)
     os.environ[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] = OUTPUTD_CONTENT_BRIDGE_SHM_RING
     os.environ[OUTPUTD_RING_PATH_ENV_VAR] = outputd_ring_path_for(outputd_text)
-    os.environ[OUTPUTD_RING_SLOTS_ENV_VAR] = str(
-        resolve_outputd_ring_slots(
-            read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR)
-        )
-    )
     os.environ.pop(_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV, None)
 
 

@@ -34,7 +34,6 @@ from jasper.fanin_coupling import (
     DEFAULT_FANIN_RING_SLOTS,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_RING_PATH_ENV_VAR,
-    OUTPUTD_RING_SLOTS_ENV_VAR,
 )
 from tests._lock_holder import spawn_lock_holder
 
@@ -884,7 +883,6 @@ def test_convergence_writes_the_coherent_pair_in_order(tmp_path, _ring_assets_pr
     assert read_value(fanin_env.read_text(), _LEGACY_FANIN_COUPLING_ENV) is None
     outputd_text = outputd_env.read_text()
     assert read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR) == "shm_ring"
-    assert read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR) == "2"
 
 
 # --- D5 (wide-output-path program): ring wire-width preflight ----------------
@@ -1266,17 +1264,14 @@ def _coherent_shm_ring_outputd_text(*, period_frames: int = 128) -> str:
     """
     from jasper.fanin_coupling import (
         DEFAULT_OUTPUTD_RING_PATH,
-        DEFAULT_OUTPUTD_RING_SLOTS,
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         OUTPUTD_CONTENT_BRIDGE_SHM_RING,
         OUTPUTD_RING_PATH_ENV_VAR,
-        OUTPUTD_RING_SLOTS_ENV_VAR,
     )
 
     return (
         f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={OUTPUTD_CONTENT_BRIDGE_SHM_RING}\n"
         f"{OUTPUTD_RING_PATH_ENV_VAR}={DEFAULT_OUTPUTD_RING_PATH}\n"
-        f"{OUTPUTD_RING_SLOTS_ENV_VAR}={DEFAULT_OUTPUTD_RING_SLOTS}\n"
         f"JASPER_OUTPUTD_PERIOD_FRAMES={period_frames}\n"
         "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE\n"
     )
