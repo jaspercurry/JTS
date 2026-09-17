@@ -568,7 +568,10 @@ def rear_branch_sum_headroom_db(document: Mapping[str, Any] | None) -> float:
     """Worst case of the two unmuted rear branches summing in phase, dB.
 
     Charged pre-split beside the room-PEQ boost: the branch sum is the one place
-    the cardioid stage can exceed the program it was handed.
+    the cardioid stage can exceed the program it was handed. Filter magnitude is
+    deliberately NOT modelled — ``rear_calibration``'s vocabulary bounds every
+    chain filter to |H| <= 1 — except a resonant high/low-pass, whose <= 1.25 dB
+    peak at the document's Q ceiling this charge does not include.
     """
     rear = (document or {}).get("rear") or {}
     if not document or document.get("rear_muted") or rear.get("mode") != "branches":
@@ -708,9 +711,11 @@ def _assert_tweeter_outputs_protected(yaml_text: str, preset: ActiveSpeakerPrese
     tweeter_channels = _channels_for_role(preset, "tweeter")
     if not tweeter_channels:
         return
-    view = view_from_emitted_text(yaml_text)
+    # Parsed, not text-scraped: this gate runs on the FINAL graph, which a
+    # decoration (dynamic bass, the rear calibration stage) has re-serialized.
     unprotected = unprotected_tweeter_outputs(
-        view, tweeter_channels=set(tweeter_channels)
+        view_from_yaml_dict(yaml.safe_load(yaml_text)),
+        tweeter_channels=set(tweeter_channels),
     )
     if not unprotected:
         return
@@ -3614,15 +3619,6 @@ pipeline:
 {pipeline_yaml}
 """
 
-    # L0 emit gate (fail-closed): the durable (unmuted) baseline is the graph a
-    # household plays through, so re-prove every tweeter output carries its
-    # crossover / protective high-pass before it can leave the emitter.
-    _assert_tweeter_outputs_protected(yaml, preset)
-    # Reference-closure gate (fail-closed): the baseline assembles its
-    # filters/mixer/pipeline from independent helper calls, exactly as the
-    # program graph does.
-    _assert_pipeline_references_closed(yaml, preset)
-
     yaml = _with_dynamic_bass(yaml, preset, bass_extension)
     # The rear output plays only behind its own fitted stage; without one it stays
     # terminally muted (ADR-0318, issue #5161).
@@ -3631,6 +3627,14 @@ pipeline:
         if safe_rear_calibration
         else _mute_unfitted_rear_outputs(yaml, preset)
     )
+
+    # L0 emit gates (fail-closed), on the FINAL graph so every decoration is
+    # inside them: the durable (unmuted) baseline is what a household plays
+    # through, so re-prove every tweeter output carries its crossover /
+    # protective high-pass, and that the pipeline the baseline assembled from
+    # independent helper calls references nothing undefined.
+    _assert_tweeter_outputs_protected(yaml, preset)
+    _assert_pipeline_references_closed(yaml, preset)
 
     if out_path is not None:
         out_path = Path(out_path)

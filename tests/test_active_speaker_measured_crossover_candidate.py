@@ -21,6 +21,7 @@ import yaml as yaml_lib
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT, POLARITY_KEEP
 from jasper.active_speaker.measured_crossover_candidate import (
     CANDIDATE_KIND,
+    REAR_CALIBRATION_TWEETER_ONLY,
     _OPTIONAL_FIELD_TYPES,
     SCHEMA_VERSION,
     MeasuredCrossoverAlignment,
@@ -738,6 +739,47 @@ def test_runtime_rear_calibration_scope_is_refused_at_the_candidate(document, co
         _candidate(preset=_rear_pair("mono")[0], trims={"woofer": 0.0, "tweeter": -3.5},
                    rear_calibration=document())
     assert caught.value.code == code
+
+
+def _biquad(kind: str, **params) -> dict:
+    return {"type": "Biquad", "parameters": {"type": kind, "freq": 200.0, **params}}
+
+
+@pytest.mark.parametrize("filters", [
+    [_biquad("Peaking", q=1.0, gain=1.0)],
+    [_biquad("Lowshelf", q=0.7, gain=0.5)],
+    [_biquad("Highpass", q=1.5)],
+    [_biquad("Lowpass", q=2.0)],
+    [{"type": "BiquadCombo", "parameters": {"type": "ButterworthHighpass", "freq": 200.0, "order": 10}}],
+    [_biquad("Peaking", q=1.0, gain=-1.0)] * 17,
+])
+def test_the_document_vocabulary_keeps_every_chain_filter_from_boosting(filters):
+    """One refusal per bound: the headroom charge models the branch SUM only,
+    so no chain filter may raise the branch it rides."""
+    document = _rear_document()
+    document["rear"]["bass"]["filters"] = filters
+    with pytest.raises(MeasuredCrossoverCandidateError) as caught:
+        _candidate(preset=_rear_pair("mono")[0], trims={"woofer": 0.0, "tweeter": -3.5},
+                   rear_calibration=document)
+    assert caught.value.code == "rear_calibration_invalid"
+
+
+def test_a_cabinet_left_on_its_tweeter_alone_is_disclosed_not_refused():
+    document = _rear_document(rear_muted=True)
+    document["front"]["muted"] = True
+    candidate = _candidate(preset=_rear_pair("mono")[0], trims={"woofer": 0.0, "tweeter": -3.5},
+                           rear_calibration=document)
+    assert [item["code"] for item in candidate.analysis["issues"]] == [
+        REAR_CALIBRATION_TWEETER_ONLY,
+    ]
+    assert [item["severity"] for item in candidate.analysis["issues"]] == ["warning"]
+    # Reopening must not re-append it, or the round trip would read as tampering.
+    reopened = MeasuredCrossoverCandidate.from_mapping(candidate.to_dict())
+    assert reopened.fingerprint == candidate.fingerprint
+    assert len(reopened.analysis["issues"]) == 1
+    audible = _candidate(preset=_rear_pair("mono")[0], trims={"woofer": 0.0, "tweeter": -3.5},
+                         rear_calibration=_rear_document())
+    assert "issues" not in audible.analysis
 
 
 @pytest.mark.parametrize("preset", [lambda: _rear_pair("stereo")[0], _preset])

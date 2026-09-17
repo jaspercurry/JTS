@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from copy import deepcopy
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -26,7 +27,10 @@ from jasper.output_topology import (
 )
 from jasper.web.sound_active_speaker import _active_speaker_channel_identity_save_payload
 from tests.test_active_speaker_profile import _two_way_preset
-from tests.test_active_speaker_runtime_contract import _active_topology, _classify_staged_active, _dynamic_bass_descriptor
+from tests.test_active_speaker_runtime_contract import (
+    _active_topology, _classify_staged_active, _dynamic_bass_descriptor, _staged_metadata,
+    classify_camilla_graph,
+)
 from tests.test_active_speaker_staging import _crossover_preview
 
 
@@ -210,6 +214,16 @@ def _cardioid_baseline(document: dict | None = None, **kwargs) -> tuple[ActiveSp
     )
 
 
+def _classify(topology, text: str, *, document: dict | None = None):
+    """The staged-active door, with the saved rear calibration section (or none)."""
+    config_path = Path("/var/lib/camilladsp/configs/test-staged-active.yml")
+    return classify_camilla_graph(
+        topology=topology, text=text, config_path=str(config_path),
+        staged_config=_staged_metadata(topology, config_path),
+        rear_calibration=document,
+    )
+
+
 def _mixer_names(payload: dict) -> list[str]:
     return [step["name"] for step in payload["pipeline"] if step["type"] == "Mixer"]
 
@@ -251,7 +265,9 @@ def test_rear_calibration_plays_the_rear_behind_the_shared_woofer_chain():
         emit.emit_active_speaker_baseline_config(legacy, playback_device=ACTIVE_PCM)
     )
     assert _post_split_names(payload, 2)[len(stage):] == _post_split_names(unfitted, 0)
-    assert _classify_staged_active(topology, text).allowed
+    assert _classify(topology, text, document=_seed()).allowed
+    # No saved document, no tolerated fragment: the rear must then be muted.
+    assert "rear_output_not_muted" in {i["code"] for i in _classify(topology, text).issues}
 
 
 def test_the_stage_delays_the_rear_branch_without_a_subsample_allpass():
@@ -301,7 +317,7 @@ def test_the_mixer_sequence_grows_by_exactly_the_stages_split_then_sum():
     )
     assert _mixer_names(plain) == ["split_active_2way"]
     assert _mixer_names(yaml.safe_load(text)) == ["split_active_2way", *rear_stage_mixer_names(2)]
-    assert _classify_staged_active(topology, text).allowed
+    assert _classify(topology, text, document=_seed()).allowed
 
 
 @pytest.mark.parametrize("mutation", ["reordered", "third_mixer"])
@@ -317,16 +333,32 @@ def test_the_mixer_sequence_refuses_a_reordered_or_extra_post_split_mixer(mutati
         steps[split], steps[summed] = steps[summed], steps[split]
     else:
         steps.append({"type": "Mixer", "name": "rear_out2_sum"})
-    result = _classify_staged_active(topology, _reserialized(text, payload))
+    result = _classify(topology, _reserialized(text, payload), document=_seed())
     assert "active_graph_mixer_sequence_invalid" in {issue["code"] for issue in result.issues}
 
 
-@pytest.mark.parametrize("tamper", ["gain", "subsample", "mixer", "unwire"])
-def test_runtime_refuses_an_unproven_rear_stage(tamper):
+def _retarget(payload: dict, name: str, channel: int) -> None:
+    for step in payload["pipeline"]:
+        if step.get("type") == "Filter" and name in step.get("names", []):
+            step["channels"] = [channel]
+
+
+@pytest.mark.parametrize("tamper", [
+    "branch_gain", "boosting_filter", "repointed_channel", "subsample", "mixer", "unwire",
+])
+def test_runtime_refuses_a_stage_that_is_not_the_saved_document_recompiled(tamper):
+    """Every tamper leaves the NAMES intact — only content differs."""
     _, topology, text = _cardioid_baseline()
     payload = yaml.safe_load(text)
-    if tamper == "gain":
+    if tamper == "branch_gain":
         payload["filters"]["rear_out2_bass_gain"]["parameters"]["gain"] = 3.0
+    elif tamper == "boosting_filter":
+        payload["filters"]["rear_out2_front_gain"] = {
+            "type": "Biquad",
+            "parameters": {"type": "Peaking", "freq": 60.0, "q": 4.0, "gain": 40.0},
+        }
+    elif tamper == "repointed_channel":
+        _retarget(payload, "rear_out2_front_gain", 1)
     elif tamper == "subsample":
         payload["filters"]["rear_out2_cancellation_delay"]["parameters"]["subsample"] = True
     elif tamper == "mixer":
@@ -338,5 +370,28 @@ def test_runtime_refuses_an_unproven_rear_stage(tamper):
             step for step in payload["pipeline"]
             if step.get("name") != "rear_out2_sum"
         ]
-    result = _classify_staged_active(topology, _reserialized(text, payload))
+    result = _classify(topology, _reserialized(text, payload), document=_seed())
     assert "rear_stage_unproven" in {issue["code"] for issue in result.issues}
+
+
+def test_a_rear_named_filter_smuggled_into_a_graph_without_a_rear_output_refuses():
+    """The stage's name shape grants nothing: a topology with no rear output
+    still refuses a `rear_out*` filter exactly as it did before the stage."""
+    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
+    topology = _active_topology("mono", "active_2_way")
+    text = emit.emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+    payload = yaml.safe_load(text)
+    payload["filters"]["rear_out9_smuggled"] = {
+        "type": "Biquad",
+        "parameters": {"type": "Peaking", "freq": 60.0, "q": 4.0, "gain": 40.0},
+    }
+    split = next(
+        index for index, step in enumerate(payload["pipeline"])
+        if step.get("name") == "split_active_2way"
+    )
+    payload["pipeline"].insert(
+        split + 1, {"type": "Filter", "channels": [0], "names": ["rear_out9_smuggled"]},
+    )
+    result = _classify(topology, _reserialized(text, payload))
+    assert not result.allowed
+    assert "active_output_driver_chain_unrecognized" in {i["code"] for i in result.issues}

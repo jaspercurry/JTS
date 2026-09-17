@@ -20,6 +20,18 @@ PHASE_CONVENTION = "positive_delay_has_negative_phase"
 STAGES = {"crossover", "driver_correction", "boundary_correction", "protection"}
 BIQUADS = {"Highpass", "Lowpass", "Peaking", "Lowshelf", "Highshelf", "Allpass"}
 COMBOS = {"ButterworthHighpass", "ButterworthLowpass", "LinkwitzRileyHighpass", "LinkwitzRileyLowpass"}
+SHELVING = {"Peaking", "Lowshelf", "Highshelf"}
+
+# The vocabulary bounds that keep every chain filter at |H| <= 1, so the branch
+# sum is the only gain the composer has to charge headroom for. The one
+# exception is a resonant high/low-pass, which peaks by at most 1.25 dB at
+# Q = 1.0. Allpass is unity magnitude at every Q; a Peaking filter that cannot
+# boost is a cut at every Q.
+MAX_FILTERS_PER_CHAIN = 16
+# CamillaDSP's own Gain floor; a chain at it is silent.
+MIN_CHAIN_GAIN_DB = -150.0
+MAX_RESONANT_Q = 1.0
+MAX_COMBO_ORDER = 8
 
 
 class RearCalibrationError(ValueError):
@@ -44,7 +56,10 @@ def _number(raw: Any, field: str, minimum: float | None = None) -> float:
 
 
 def _filters(raw: Any, sample_rate: int, field: str) -> None:
-    for i, item in enumerate(_FIELDS.sequence(raw, field)):
+    items = _FIELDS.sequence(raw, field)
+    if len(items) > MAX_FILTERS_PER_CHAIN:
+        raise RearCalibrationError(f"{field} carries more than {MAX_FILTERS_PER_CHAIN} filters")
+    for i, item in enumerate(items):
         name = f"{field}[{i}]"
         entry = _object(item, {"type", "parameters"}, name)
         params = _FIELDS.mapping(entry["parameters"], name + ".parameters")
@@ -53,15 +68,21 @@ def _filters(raw: Any, sample_rate: int, field: str) -> None:
             raise RearCalibrationError(f"{name}.type must be text")
         if entry["type"] == "Biquad" and kind in BIQUADS:
             keys = {"type", "freq", "q"}
-            if kind in {"Peaking", "Lowshelf", "Highshelf"}:
+            if kind in SHELVING:
                 keys.add("gain")
-                _number(params.get("gain"), name + ".gain")
-            if _number(params.get("q"), name + ".q", 0) == 0:
+                if _number(params.get("gain"), name + ".gain") > 0:
+                    raise RearCalibrationError(f"{name}.gain must be a cut, not a boost")
+            q = _number(params.get("q"), name + ".q", 0)
+            if q == 0:
                 raise RearCalibrationError(f"{name}.q must be positive")
+            if kind not in {"Peaking", "Allpass"} and q > MAX_RESONANT_Q:
+                raise RearCalibrationError(f"{name}.q must not exceed {MAX_RESONANT_Q} and resonate")
         elif entry["type"] == "BiquadCombo" and kind in COMBOS:
             keys = {"type", "freq", "order"}
             order = params.get("order")
-            if type(order) is not int or order < 1 or (str(kind).startswith("LinkwitzRiley") and order % 2):
+            if type(order) is not int or not 1 <= order <= MAX_COMBO_ORDER or (
+                str(kind).startswith("LinkwitzRiley") and order % 2
+            ):
                 raise RearCalibrationError(f"{name}.order is invalid")
         else:
             raise RearCalibrationError(f"{name} is not a supported biquad or crossover")
@@ -73,8 +94,9 @@ def _filters(raw: Any, sample_rate: int, field: str) -> None:
 
 def _chain(raw: Any, sample_rate: int, name: str) -> None:
     chain = _object(raw, {"gain_db", "inverted", "delay_ms", "muted", "filters"}, name)
-    if not -150 <= _number(chain["gain_db"], name + ".gain_db") <= 0:
-        raise RearCalibrationError(f"{name}.gain_db must be an attenuation between -150 and 0 dB")
+    if not MIN_CHAIN_GAIN_DB <= _number(chain["gain_db"], name + ".gain_db") <= 0:
+        raise RearCalibrationError(
+            f"{name}.gain_db must be an attenuation between {MIN_CHAIN_GAIN_DB:g} and 0 dB")
     _number(chain["delay_ms"], name + ".delay_ms")
     for key in ("inverted", "muted"):
         if type(chain[key]) is not bool:
@@ -192,22 +214,6 @@ def rear_stage_mixer_names(rear_channel: int) -> tuple[str, str]:
     return f"rear_out{rear_channel}_split", f"rear_out{rear_channel}_sum"
 
 
-def rear_stage_mixers(*, rear_channel: int, channel_count: int) -> dict[str, Any]:
-    """The split/sum pair opening and closing the rear branch lane on one spare channel."""
-    split, summed = rear_stage_mixer_names(rear_channel)
-    mixers: dict[str, Any] = {}
-    for name, width_in, width_out, mapping in (
-        (split, channel_count, channel_count + 1,
-         [(i, [(i, 0.0, False)]) for i in range(channel_count)] + [(channel_count, [(rear_channel, 0.0, False)])]),
-        (summed, channel_count + 1, channel_count,
-         [(i, [(i, 0.0, False)] + ([(channel_count, 0.0, False)] if i == rear_channel else []))
-          for i in range(channel_count)]),
-    ):
-        mixers.update(yaml.safe_load(emit_mixer(name, channels_in=width_in,
-                                                channels_out=width_out, mapping=mapping)))
-    return mixers
-
-
 def compile_rear_stage(raw: Any, *, front_channel: int, rear_channel: int, channel_count: int,
                        sample_rate: int, tweeter_channel: int, subsample: bool = False) -> dict[str, Any]:
     """Stage after common EQ / physical split, before per-output protection.
@@ -251,7 +257,15 @@ def compile_rear_stage(raw: Any, *, front_channel: int, rear_channel: int, chann
     rear = data["rear"]
     if rear["mode"] == "branches":
         split, summed = rear_stage_mixer_names(rear_channel)
-        mixers.update(rear_stage_mixers(rear_channel=rear_channel, channel_count=channel_count))
+        for mixer_name, width_in, width_out, mapping in (
+            (split, channel_count, channel_count + 1,
+             [(i, [(i, 0.0, False)]) for i in range(channel_count)] + [(channel_count, [(rear_channel, 0.0, False)])]),
+            (summed, channel_count + 1, channel_count,
+             [(i, [(i, 0.0, False)] + ([(channel_count, 0.0, False)] if i == rear_channel else []))
+              for i in range(channel_count)]),
+        ):
+            mixers.update(yaml.safe_load(emit_mixer(mixer_name, channels_in=width_in,
+                                                    channels_out=width_out, mapping=mapping)))
         pipeline.append({"type": "Mixer", "name": split})
         for name, channel in (("bass", rear_channel), ("cancellation", channel_count)):
             chain(name, channel, rear[name], common + front_delay + rear[name]["delay_ms"])
