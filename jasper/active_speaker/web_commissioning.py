@@ -121,11 +121,8 @@ def request_missing_software_guards(
     return updated, changed
 
 
-def ensure_missing_software_guards(*, persist: bool = True) -> tuple[OutputTopology, bool]:
-    """Fresh-read missing protection requests; persist them transactionally if requested."""
-
-    if not persist:
-        return request_missing_software_guards(load_output_topology())
+def ensure_missing_software_guards() -> tuple[OutputTopology, bool]:
+    """Fresh-read missing protection requests and persist them transactionally."""
 
     with output_topology_mutation() as mutation:
         topology = mutation.snapshot().topology

@@ -615,25 +615,19 @@ def test_crossover_above_lower_driver_range_is_a_warning() -> None:
                 if issue["code"] == "crossover_frequency_above_lower_driver_range") == "warning"
 
 
-@pytest.mark.parametrize("has_research", [True, False])
-def test_session_preview_repairs_against_live_topology_without_writes(tmp_path, monkeypatch, has_research):
+def test_session_start_refuses_a_blocked_declaration_without_writes(tmp_path, monkeypatch):
     draft_path = tmp_path / "draft.json"
     topology_path = tmp_path / "topology.json"
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(draft_path))
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     draft = _draft(
         topology=mono_output_topology(identity_verified=False, protection_status="unknown"),
-        research=_research() if has_research else None,
+        research=_research(),
     )
     draft_path.write_text(json.dumps(draft))
     topology_path.write_text(json.dumps(mono_output_topology(protection_status="unknown").to_dict()))
     before = {path: path.read_bytes() for path in tmp_path.iterdir()}
     assert build_crossover_preview(draft)["status"] == "blocked"
-    if has_research:
-        preview = ensure_crossover_preview_ready()
-        assert preview["status"] == "ready_for_protected_staging"
-        assert preview["summary"]["blocker_count"] == 0
-    else:
-        with pytest.raises(CrossoverV2Refused):
-            ensure_crossover_preview_ready()
+    with pytest.raises(CrossoverV2Refused):
+        ensure_crossover_preview_ready()
     assert {path: path.read_bytes() for path in tmp_path.iterdir()} == before
