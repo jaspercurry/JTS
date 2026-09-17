@@ -990,16 +990,6 @@ class Pass:
 
     def apply_audio_runtime_env(self) -> bool:
         target = self.outputd_env_target
-        # The RETIRED content lane's capture PCM, HEALED rather than restated.
-        # outputd stopped reading this key with the lane (ADR-0100), so this
-        # reconciler no longer states it — but a box that reconciled before that
-        # carries the old line, and a per-key upsert never touches a key nobody
-        # writes. Present-but-empty defeats the absent-key default in
-        # jasper.audio_runtime_plan's retired-route describer, and on an
-        # ACTIVE -> PASSIVE move the leftover can fail the staged validator
-        # outright. REMOVED, never written empty.
-        # REMOVAL CONDITION: dies with that describer's read.
-        prelude: list[EnvAction] = [("JASPER_OUTPUTD_CONTENT_PCM", None)]
         # The CONTENT lane's width is a function of the fan-in coupling, never
         # of the DAC, so unlike the edge format it is emitted once ahead of the
         # per-hardware branches and is always definitive. An empty answer means
@@ -1015,6 +1005,7 @@ class Pass:
         # content lane; the pass is marked degraded below.
         except Exception:  # noqa: BLE001
             content_format = ""
+        prelude: list[EnvAction] = []
         if content_format:
             prelude.append(("JASPER_OUTPUTD_CONTENT_FORMAT", content_format))
         else:

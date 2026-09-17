@@ -869,8 +869,9 @@ def test_stage_protected_startup_config_supports_stereo_three_way_on_dac8x(
     assert capacity_gate["passed"] is True
 
 
-def test_stage_protected_startup_config_preview_honors_saved_role_mapping(
-    tmp_path: Path,
+@pytest.mark.parametrize("use_preview", [False, True])
+def test_stage_protected_startup_config_honors_saved_role_mapping(
+    tmp_path: Path, use_preview: bool,
 ) -> None:
     raw = _topology().to_dict()
     raw["speaker_groups"][0]["channels"][0]["physical_output_index"] = 1
@@ -880,22 +881,17 @@ def test_stage_protected_startup_config_preview_honors_saved_role_mapping(
 
     payload = stage_protected_startup_config(
         topology,
-        crossover_preview=preview,
+        crossover_preview=preview if use_preview else None,
         config_path=tmp_path / "active_staged.yml",
         metadata_path=tmp_path / "active_staged.json",
         validate=_valid_config,
         created_at="2026-06-03T12:00:00Z",
     )
-    role_order_gate = next(
-        gate for gate in payload["required_gates"]
-        if gate["id"] == "active_output_role_order"
-    )
-
     assert payload["status"] == "staged"
-    assert role_order_gate["passed"] is True
-    assert role_order_gate["message"] == (
-        "Preview-derived DSP will follow the saved output role mapping"
-    )
+    graph = yaml_lib.safe_load(Path(payload["config"]["path"]).read_text())
+    tweeter_chain = next(step for step in graph["pipeline"]
+                         if step.get("type") == "Filter" and "as_tweeter_protective_hp" in step.get("names", []))
+    assert tweeter_chain["channels"] == [0]
 
 
 def test_stage_protected_startup_config_uses_outputd_active_lane_for_dual_apple(
@@ -1030,34 +1026,6 @@ def test_stage_protected_startup_config_blocks_noncontiguous_outputs(
     assert "active_outputs_must_be_contiguous" in {
         issue["code"] for issue in payload["issues"]
     }
-
-
-def test_stage_protected_startup_config_blocks_swapped_role_outputs(
-    tmp_path: Path,
-) -> None:
-    raw = _topology().to_dict()
-    raw["speaker_groups"][0]["channels"][0]["physical_output_index"] = 1
-    raw["speaker_groups"][0]["channels"][1]["physical_output_index"] = 0
-    topology = OutputTopology.from_mapping(raw)
-
-    payload = stage_protected_startup_config(
-        topology,
-        config_path=tmp_path / "active_staged.yml",
-        metadata_path=tmp_path / "active_staged.json",
-        validate=_valid_config,
-        created_at="2026-06-03T12:00:00Z",
-    )
-    role_order_gate = next(
-        gate for gate in payload["required_gates"]
-        if gate["id"] == "active_output_role_order"
-    )
-
-    assert payload["status"] == "blocked"
-    assert "active_outputs_must_match_role_order" in {
-        issue["code"] for issue in payload["issues"]
-    }
-    assert role_order_gate["passed"] is False
-    assert "woofer on DAC output 1" in role_order_gate["message"]
 
 
 def test_stage_protected_startup_config_boot_candidate_is_fully_muted(

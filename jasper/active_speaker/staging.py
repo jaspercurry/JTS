@@ -36,7 +36,7 @@ from jasper.output_topology import (
     subwoofer_speaker_groups,
 )
 
-from ._common import gate as _gate, issue as _issue
+from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, gate as _gate, issue as _issue
 from .camilla_yaml import (
     COMMISSIONING_FILTER_MODE,
     COMMISSIONING_HEADROOM_DB,
@@ -341,18 +341,6 @@ def _software_guard_needed(groups: list[SpeakerGroup]) -> bool:
     )
 
 
-def _active_mode_for_way(way_count: int) -> str:
-    return f"active_{way_count}_way"
-
-
-def _way_count_for_mode(mode: str) -> int | None:
-    if mode == "active_2_way":
-        return 2
-    if mode == "active_3_way":
-        return 3
-    return None
-
-
 def _role_pair_key(raw: Any) -> tuple[str, str] | None:
     if not isinstance(raw, list) or len(raw) != 2:
         return None
@@ -393,7 +381,7 @@ def _active_groups_for_preset(
 ) -> tuple[list[SpeakerGroup], list[dict[str, str]], list[dict[str, Any]]]:
     issues: list[dict[str, str]] = []
     gates: list[dict[str, Any]] = []
-    expected_mode = _active_mode_for_way(preset.way_count)
+    expected_mode = f"active_{preset.way_count}_way"
     active_groups = [
         group for group in topology.speaker_groups if group.mode == expected_mode
     ]
@@ -637,7 +625,7 @@ def _preset_from_crossover_preview(
     active_modes = {
         str(group.get("mode"))
         for group in preview_groups
-        if _way_count_for_mode(str(group.get("mode"))) is not None
+        if str(group.get("mode")) in ACTIVE_CROSSOVER_ROLE_PAIRS
     }
     if len(active_modes) != 1:
         issues.append(_issue(
@@ -647,14 +635,7 @@ def _preset_from_crossover_preview(
         ))
         return None, issues, gates
     mode = next(iter(active_modes))
-    way_count = _way_count_for_mode(mode)
-    if way_count is None:
-        issues.append(_issue(
-            "blocker",
-            "crossover_preview_mode_unsupported",
-            f"protected staging does not support {mode}",
-        ))
-        return None, issues, gates
+    way_count = len(ACTIVE_CROSSOVER_ROLE_PAIRS[mode]) + 1
 
     kinds = {str(group.get("kind")) for group in preview_groups}
     if kinds == {"mono"} and len(preview_groups) == 1:
@@ -1009,8 +990,6 @@ def build_passive_mains_preset(
 def _bind_preset_to_topology(
     preset: ActiveSpeakerPreset,
     topology: OutputTopology,
-    *,
-    allow_mapped_role_order: bool = False,
 ) -> tuple[
     ActiveSpeakerPreset | None,
     list[dict[str, str]],
@@ -1135,55 +1114,6 @@ def _bind_preset_to_topology(
             "active_outputs_must_be_contiguous",
             "protected staging requires active outputs to be contiguous from DAC output 1",
         ))
-    role_output_indexes = {
-        (side, role, variant): channels_by_slot[(side, role, variant)].physical_output_index
-        for side, role, variant in required_slots
-        if (
-            (side, role, variant) in channels_by_slot
-            and channels_by_slot[(side, role, variant)].physical_output_index is not None
-        )
-    }
-    role_order_ok = (
-        bool(required_slots)
-        and len(role_output_indexes) == len(required_slots)
-        and all(
-            role_output_indexes.get((side, role, variant)) == index
-            for index, (side, role, variant) in enumerate(required_slots)
-        )
-    )
-    expected_role_order = ", ".join(
-        f"{side} {role} on DAC output {index + 1}"
-        if side != "mono"
-        else f"{role} on DAC output {index + 1}"
-        for index, (side, role, variant) in enumerate(required_slots)
-    )
-    gates.append(_gate(
-        "active_output_role_order",
-        label="Assigned outputs match the protected DSP role order",
-        passed=allow_mapped_role_order or role_order_ok,
-        message=(
-            "Preview-derived DSP will follow the saved output role mapping"
-            if allow_mapped_role_order
-            else (
-            "Woofer and compression-driver outputs match the staged DSP order"
-            if role_order_ok
-            else f"This staging slice requires {expected_role_order}"
-            )
-        ),
-    ))
-    if (
-        not allow_mapped_role_order
-        and bool(required_slots)
-        and len(role_output_indexes) == len(required_slots)
-        and contiguous
-        and not role_order_ok
-    ):
-        issues.append(_issue(
-            "blocker",
-            "active_outputs_must_match_role_order",
-            f"first protected staging slice requires {expected_role_order}",
-        ))
-
     if issues:
         blocker_count = sum(
             1 for issue in issues if issue.get("severity") == "blocker"
@@ -1234,7 +1164,6 @@ def _build_active_commissioning_context(
     issues: list[dict[str, str]] = []
     gates: list[dict[str, Any]] = []
     source: dict[str, Any]
-    allow_mapped_role_order = False
     if crossover_preview is not None:
         source_preview = (
             crossover_preview.get("source")
@@ -1247,7 +1176,6 @@ def _build_active_commissioning_context(
         )
         issues.extend(preview_issues)
         gates.extend(preview_gates)
-        allow_mapped_role_order = True
         source = {
             "mode": "crossover_preview",
             "preview_status": crossover_preview.get("status"),
@@ -1263,7 +1191,6 @@ def _build_active_commissioning_context(
         bound_preset, bind_issues, bind_gates, active_groups = _bind_preset_to_topology(
             preset,
             topology,
-            allow_mapped_role_order=allow_mapped_role_order,
         )
         issues.extend(bind_issues)
         gates.extend(bind_gates)
@@ -1427,23 +1354,14 @@ def _record_camilla_validation(
         ))
 
 
-def _anchor_lock_contended_payload(
+def _staged_startup_payload(
     topology: OutputTopology,
     *,
     out_path: Path,
     meta_path: Path,
     created_at: str,
-    detail: str,
+    contended: str | None = None,
 ) -> dict[str, Any]:
-    """The staging refusal for a pair another writer is publishing.
-
-    Same envelope as an ordinary staged payload — ``status`` plus a blocker in
-    ``issues`` — so every existing consumer's "did this stage?" branch already
-    covers it and no caller learns a new failure vocabulary. Nothing on this
-    path is written: a refusal that overwrote the metadata would be the very
-    corruption the lock exists to prevent.
-    """
-
     return {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": STAGED_STARTUP_CONFIG_KIND,
@@ -1489,10 +1407,11 @@ def _anchor_lock_contended_payload(
             ),
         },
         "required_gates": [],
-        "issues": [_issue("blocker", "staged_config_anchor_lock_contended", detail)],
+        "issues": [_issue("blocker", "staged_config_anchor_lock_contended", contended)] if contended else [],
         "next_step": (
             "Another writer is publishing the protected startup config. Wait "
             "for it to finish, then stage again."
+            if contended else "Resolve staging blockers before loading or playing active-speaker audio."
         ),
     }
 
@@ -1537,12 +1456,12 @@ def stage_protected_startup_config(
                 created_at=created_at,
             )
     except StagedAnchorLockContended as exc:
-        return _anchor_lock_contended_payload(
+        return _staged_startup_payload(
             topology,
             out_path=out_path,
             meta_path=meta_path,
             created_at=created_at,
-            detail=str(exc),
+            contended=str(exc),
         )
 
 
@@ -1705,13 +1624,11 @@ def _stage_protected_startup_config_locked(
 
     blocker_count = sum(1 for issue in issues if issue.get("severity") == "blocker")
     status = "staged" if blocker_count == 0 and out_path.exists() else "blocked"
-    target_outputs = _target_outputs_for_groups(active_groups)
-    payload = {
-        "artifact_schema_version": SCHEMA_VERSION,
-        "kind": STAGED_STARTUP_CONFIG_KIND,
+    payload = _staged_startup_payload(
+        topology, out_path=out_path, meta_path=meta_path, created_at=created_at,
+    )
+    payload.update({
         "status": status,
-        "created_at": created_at,
-        "metadata_path": str(meta_path),
         "preset": {
             "preset_id": preset.preset_id if preset else None,
             "name": preset.name if preset else None,
@@ -1720,25 +1637,15 @@ def _stage_protected_startup_config_locked(
             "source": source,
         },
         "topology": {
-            "topology_id": topology.topology_id,
-            "name": topology.name,
+            **payload["topology"],
             "speaker_group_id": active_groups[0].id if len(active_groups) == 1 else None,
             "speaker_label": active_groups[0].label if len(active_groups) == 1 else None,
             "speaker_group_ids": [group.id for group in active_groups],
             "speaker_labels": [group.label for group in active_groups],
         },
-        "hardware": {
-            "device_id": topology.hardware.device_id,
-            "device_label": topology.hardware.device_label,
-            "card_id": topology.hardware.card_id,
-            "physical_output_count": topology.hardware.physical_output_count,
-            "clock_domain_id": topology.hardware.clock_domain_id,
-        },
-        "targets": target_outputs,
+        "targets": _target_outputs_for_groups(active_groups),
         "config": {
-            "path": str(out_path),
-            "basename": out_path.name,
-            "exists": out_path.exists(),
+            **payload["config"],
             "playback_device": resolved_playback_device,
             "playback_device_source": playback_device_source,
             "playback_channels": (
@@ -1765,14 +1672,6 @@ def _stage_protected_startup_config_locked(
             "validation": validation,
         },
         "software_guard": software_guard,
-        "load": {
-            "load_allowed": False,
-            "load_gate": "startup_load_preflight_required",
-            "next_step": (
-                "Run the guarded startup-load preflight before CamillaDSP is "
-                "allowed to reload this staged graph."
-            ),
-        },
         "required_gates": gates,
         "issues": issues,
         "next_step": (
@@ -1780,7 +1679,7 @@ def _stage_protected_startup_config_locked(
             if status == "staged"
             else "Resolve staging blockers before loading or playing active-speaker audio."
         ),
-    }
+    })
     try:
         atomic_write_json(
             meta_path,

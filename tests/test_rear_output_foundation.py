@@ -73,7 +73,7 @@ def test_rear_identity_roundtrip_and_width(layout, width):
     for group in topology.speaker_groups:
         assert f"{group.id}:woofer" in {t["target_id"] for t in targets}
         assert f"{group.id}:woofer:rear" in {t["target_id"] for t in targets}
-    bound, issues, _, _ = _bind_preset_to_topology(preset, topology, allow_mapped_role_order=True)
+    bound, issues, _, _ = _bind_preset_to_topology(preset, topology)
     assert not [i for i in issues if i["severity"] == "blocker"]
     assert [(o.index, o.side, o.driver_role, o.output_variant) for o in bound.channel_map.outputs] == [
         (o.index, o.side, o.driver_role, o.output_variant) for o in preset.channel_map.outputs

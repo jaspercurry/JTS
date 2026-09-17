@@ -98,8 +98,6 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
     # DAC, so the DAC8x declares the active outputd lane at its full width.
     assert HIFIBERRY_DAC8X.supports_active_outputd_lane is True
     assert HIFIBERRY_DAC8X.active_outputd_lane_channels == 8
-    # No explicit channel map => the transport builds an identity map.
-    assert HIFIBERRY_DAC8X.dac_channel_map is None
     # Exactly the literal `rpi-simple-soundcard.c` emits as this board's
     # `.card_name`, and nothing fuzzier — the family patterns it replaced
     # matched labels no driver produces while swallowing Studio silicon
@@ -107,11 +105,8 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
     assert HIFIBERRY_DAC8X.supported_card_matches == (
         r"\bsnd_rpi_hifiberry_dac8x\b",
     )
-    assert HIFIBERRY_DAC8X.validation_profile == "hifiberry_dac8x_outputd_stability"
-    assert HIFIBERRY_DAC8X.supports_active_crossover_commissioning is True
     assert HIFIBERRY_DAC8X.dtoverlay == "hifiberry-dac8x"
     assert HIFIBERRY_DAC8X_STUDIO.id == "hifiberry_dac8x_studio"
-    assert HIFIBERRY_DAC8X_STUDIO.supports_active_crossover_commissioning is False
     assert HIFIBERRY_DAC8X_STUDIO.label == "HiFiBerry DAC8x Studio"
     assert HIFIBERRY_DAC8X_STUDIO.physical_output_count == 8
     assert HIFIBERRY_DAC8X_STUDIO.clock_domain_contract == "single_device"
@@ -119,9 +114,6 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
     assert HIFIBERRY_DAC8X_STUDIO.connection == "i2s"
     assert HIFIBERRY_DAC8X_STUDIO.supports_active_outputd_lane is True
     assert HIFIBERRY_DAC8X_STUDIO.active_outputd_lane_channels == 8
-    assert HIFIBERRY_DAC8X_STUDIO.validation_profile == (
-        "hifiberry_dac8x_outputd_stability"
-    )
     # The Studio's own overlay, not the base board's. `configured_i2s_overlays()`
     # intersects config.txt against these declarations, so the previous
     # `hifiberry-dac8x` here made a correctly-configured Studio box read as
@@ -425,8 +417,6 @@ def test_innomaker_hifi_amp_pro_declares_the_width_two_active_i2s_shape() -> Non
     assert profile.is_coherent_single() is True
     # The lane can never ask for more than the board physically has.
     assert profile.active_outputd_lane_channels <= profile.physical_output_count
-    # No explicit channel map => the transport builds an identity map.
-    assert profile.dac_channel_map is None
     # The declared format the raw `hw:` open lands on. Unchanged by the flip,
     # and load-bearing: outputd requests it and parks at exit 78 if the device
     # installs something else.
@@ -439,27 +429,7 @@ def test_innomaker_hifi_amp_pro_declares_the_width_two_active_i2s_shape() -> Non
     )
 
 
-def test_innomaker_lane_does_not_claim_the_narrower_launch_scopes() -> None:
-    """Declaring the transport lane is not a claim about measured scopes.
-
-    Two deliberately-narrower capabilities stay off, each with its own
-    qualification evidence that this board has not been through:
-
-    * ``supports_active_crossover_commissioning`` gates ONLY the AUTOMATIC
-      measured summed-region capture service
-      (``CommissioningCaptureService._current``), which is DAC8x-scoped. The
-      guided/manual commissioning flow reads no DacProfile field beyond the
-      route capability — which is exactly how the Apple USB-C dongle, also
-      ``False`` here, ran a commissioned mono active 2-way.
-    * ``chip_aec_qualification`` needs per-profile timing calibration.
-
-    The registry validator would ACCEPT commissioning=True post-flip
-    (``is_coherent_single() and supports_active_outputd_lane``), so nothing but
-    this test stops it drifting on without the measurements behind it.
-    """
-
-    assert INNOMAKER_HIFI_AMP_PRO.supports_active_crossover_commissioning is False
-    assert APPLE_USB_C_DONGLE.supports_active_crossover_commissioning is False
+def test_innomaker_lane_requires_chip_aec_calibration() -> None:
     assert APPLE_USB_C_DONGLE.supports_active_outputd_lane is True
     assert INNOMAKER_HIFI_AMP_PRO.chip_aec_qualification == "needs_calibration"
 
@@ -565,49 +535,6 @@ def test_profile_validation_rejects_bad_static_shapes() -> None:
             supports_active_outputd_lane=True,
         )
 
-    with pytest.raises(
-        ValueError, match="commissioning requires one coherent active-output device"
-    ):
-        DacProfile(
-            id="bad_composite_commissioning",
-            label="Bad composite commissioning",
-            kind="composite",
-            physical_output_count=4,
-            coherent_clock_domain=False,
-            clock_domain_label="Two clocks",
-            clock_domain_contract="measured_sync_required",
-            outputd_sink="composite",
-            supported_card_matches=("usb",),
-            child_profile_ids=(APPLE_USB_C_DONGLE_ID, APPLE_USB_C_DONGLE_ID),
-            supports_active_outputd_lane=True,
-            active_outputd_lane_channels=4,
-            supports_active_crossover_commissioning=True,
-        )
-
-
-def _active_single(**overrides: object) -> DacProfile:
-    """A minimal valid single coherent active-lane DAC for channel-map tests."""
-
-    base: dict[str, object] = dict(
-        id="test_active_single",
-        label="Test active single",
-        kind="single",
-        physical_output_count=4,
-        coherent_clock_domain=True,
-        clock_domain_label="Test clock",
-        clock_domain_contract="single_device",
-        outputd_sink="alsa",
-        supported_card_matches=("test",),
-        supports_active_outputd_lane=True,
-        active_outputd_lane_channels=4,
-    )
-    base.update(overrides)
-    return DacProfile(**base)  # type: ignore[arg-type]
-
-
-def _identity_map(width: int) -> tuple[dac.ChannelMapEntry, ...]:
-    return tuple(dac.ChannelMapEntry(i, i) for i in range(width))
-
 
 def test_is_coherent_single_predicate() -> None:
     # The single-PCM-transport shape: one device, one clock.
@@ -617,89 +544,7 @@ def test_is_coherent_single_predicate() -> None:
     assert DUAL_APPLE_USB_C_DAC_4CH.is_coherent_single() is False
 
 
-def test_dac_channel_map_accepts_valid_permutations() -> None:
-    assert _active_single(dac_channel_map=_identity_map(4)).dac_channel_map == (
-        _identity_map(4)
-    )
-    # A non-identity permutation onto distinct, in-range physical channels.
-    swapped = _active_single(
-        dac_channel_map=(
-            dac.ChannelMapEntry(0, 1),
-            dac.ChannelMapEntry(1, 0),
-            dac.ChannelMapEntry(2, 3),
-            dac.ChannelMapEntry(3, 2),
-        )
-    )
-    assert len(swapped.dac_channel_map or ()) == 4
-    # Active lane narrower than physical outputs: map the 4 lanes onto a subset
-    # of the 8 physical channels (distinct, in range).
-    narrow = _active_single(
-        physical_output_count=8,
-        active_outputd_lane_channels=4,
-        dac_channel_map=(
-            dac.ChannelMapEntry(0, 0),
-            dac.ChannelMapEntry(1, 2),
-            dac.ChannelMapEntry(2, 4),
-            dac.ChannelMapEntry(3, 6),
-        ),
-    )
-    assert len(narrow.dac_channel_map or ()) == 4
-
-
-def test_dac_channel_map_validation_is_fail_closed() -> None:
-    # A map only means something for a DAC with an active lane.
-    with pytest.raises(ValueError, match="dac_channel_map requires"):
-        DacProfile(
-            id="map_no_lane",
-            label="x",
-            kind="single",
-            physical_output_count=2,
-            coherent_clock_domain=True,
-            clock_domain_label="c",
-            clock_domain_contract="single_device",
-            outputd_sink="alsa",
-            supported_card_matches=("x",),
-            dac_channel_map=_identity_map(2),
-        )
-    # One entry per active-lane channel (width is 4 here).
-    with pytest.raises(ValueError, match="one entry per active-lane channel"):
-        _active_single(dac_channel_map=_identity_map(2))
-    # camilla_out_index must be a clean 0..width-1 permutation (no gap/dup).
-    with pytest.raises(ValueError, match="camilla_out_index values must be"):
-        _active_single(
-            dac_channel_map=(
-                dac.ChannelMapEntry(0, 0),
-                dac.ChannelMapEntry(0, 1),
-                dac.ChannelMapEntry(2, 2),
-                dac.ChannelMapEntry(3, 3),
-            )
-        )
-    # No two lanes may share a physical channel.
-    with pytest.raises(ValueError, match="same"):
-        _active_single(
-            dac_channel_map=(
-                dac.ChannelMapEntry(0, 0),
-                dac.ChannelMapEntry(1, 0),
-                dac.ChannelMapEntry(2, 2),
-                dac.ChannelMapEntry(3, 3),
-            )
-        )
-    # physical_dac_channel must be within physical_output_count.
-    with pytest.raises(ValueError, match="exceeds physical_output_count"):
-        _active_single(
-            dac_channel_map=(
-                dac.ChannelMapEntry(0, 0),
-                dac.ChannelMapEntry(1, 1),
-                dac.ChannelMapEntry(2, 2),
-                dac.ChannelMapEntry(3, 9),
-            )
-        )
-    # The entry itself rejects negative indices.
-    with pytest.raises(ValueError, match="camilla_out_index must be"):
-        dac.ChannelMapEntry(-1, 0)
-    with pytest.raises(ValueError, match="physical_dac_channel must be"):
-        dac.ChannelMapEntry(0, -1)
-
+def test_active_lane_width_stays_within_physical_outputs() -> None:
     with pytest.raises(ValueError, match="cannot exceed physical_output_count"):
         DacProfile(
             id="bad_active_too_wide",

@@ -146,7 +146,6 @@ PROVENANCE_MEASURED = "measured"
 PROVENANCE_AUTHORED_BY_MODEL = "authored_by_model"
 PROVENANCE_SET_BY_USER = "set_by_user"
 PROVENANCE_RECOMMENDED_START = "recommended_start"
-PROVENANCE_PRESERVED = "preserved"
 
 # Reporting-layer migration from the legacy per-role gain-trim vocabulary
 # (this module's own ``sources[role]`` values, plus ``"explicit"`` kept as a
@@ -1732,7 +1731,6 @@ def persist_applied_baseline_profile(
     now = applied_at or _utc_now()
     applied = {**candidate, "status": "applied", "applied_at": now, "updated_at": now,
                "apply": dict(apply_state), "candidate_fingerprint": identity,
-               "revalidation": {"required": False, "status": "not_required"},
                "permissions": {"may_apply": False}}
     applied.pop("applied_recomposition_profile", None)
     atomic_write_text(target, json.dumps(applied, indent=2, sort_keys=True) + "\n", mode=0o640, durable=True)

@@ -1258,7 +1258,6 @@ def test_i2s_hat_payload_offers_only_the_undetectable_hats(monkeypatch, tmp_path
     assert payload["visibility"] == "visible"
     assert payload["available"] is True
     assert payload["shared_usb_data_port"] is True
-    assert payload["warnings"] == []
 
     write_hat_eeprom(hat_dir, product="StudioDAC8x")
     detected = sound_active_speaker._i2s_hat_payload(intent_path=intent, hat_dir=hat_dir)
@@ -1276,25 +1275,6 @@ def test_i2s_hat_payload_offers_only_the_undetectable_hats(monkeypatch, tmp_path
     assert unsupported["available"] is False
     assert unsupported["detected_profile_id"] is None
     assert unsupported["detected_label"] == ""
-
-
-def test_i2s_hat_payload_surfaces_a_boot_config_collision(monkeypatch, tmp_path):
-    intent = tmp_path / "i2s_hat.env"
-    boot_config = tmp_path / "config.txt"
-    boot_config.write_text("[all]\ndtoverlay=merus-amp\n", encoding="utf-8")
-    sound_active_speaker.write_i2s_hat_intent("innomaker_hifi_amp_pro", intent)
-    monkeypatch.setattr(
-        sound_active_speaker,
-        "_output_hardware_dict",
-        lambda: {"usb_data_role": {"board_topology": "shared_otg_port"}},
-    )
-
-    payload = sound_active_speaker._i2s_hat_payload(
-        intent_path=intent, boot_config_path=boot_config, hat_dir=tmp_path / "hat"
-    )
-
-    assert payload["desired_profile_id"] == "innomaker_hifi_amp_pro"
-    assert len(payload["warnings"]) == 1
 
 
 def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
@@ -4035,40 +4015,32 @@ def _stub_baseline_apply(monkeypatch, *, applied_profile: bool = True):
     return apply_calls, mux_commands
 
 
-def _reviewed_candidate(monkeypatch) -> None:
-    monkeypatch.setattr(
-        sound_active_speaker,
-        "_active_speaker_baseline_profile_payload",
-        lambda **_kwargs: {"candidate_fingerprint": "reviewed-candidate"},
-    )
-
-
 async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
     apply_calls, mux_commands = _stub_baseline_apply(
         monkeypatch, applied_profile=False
     )
 
     payload = await sound_active_speaker._active_speaker_baseline_profile_apply_payload(
-        expected_candidate_fingerprint="reviewed-candidate",
         camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
     )
 
     assert mux_commands == ["AUTO"]
-    assert apply_calls[0]["expected_candidate_fingerprint"] == "reviewed-candidate"
     assert payload["source_selection_restore"]["status"] == "ok"
     assert payload["source_selection_restore"]["state"]["mode"] == "auto"
 
 
-async def test_active_speaker_finish_commissioning_is_single_backend_handoff(
-    monkeypatch,
-):
-    _reviewed_candidate(monkeypatch)
+@pytest.mark.parametrize("echo", [None, "stale-candidate", "reviewed-candidate"])
+def test_active_speaker_finish_commissioning_ignores_page_echo(monkeypatch, tmp_path, echo):
     apply_calls, mux_commands = _stub_baseline_apply(monkeypatch)
 
-    payload = await sound_setup._active_speaker_finish_commissioning_payload(
-        expected_candidate_fingerprint="reviewed-candidate",
-        camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    body = json.dumps({"expected_candidate_fingerprint": echo}).encode()
+    response, _ = _drive_raw_sound_post(
+        tmp_path, path="/active-speaker/baseline-profile/save-and-apply",
+        body=body, content_length=len(body),
     )
+    assert response.startswith(b"HTTP/1.1 200")
+    payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
 
     assert len(apply_calls) == 1
     assert mux_commands == ["AUTO"]
@@ -4082,40 +4054,7 @@ async def test_active_speaker_finish_commissioning_is_single_backend_handoff(
     }
 
 
-async def test_active_speaker_finish_stale_candidate_skips_cleanup(monkeypatch):
-    monkeypatch.setattr(
-        sound_active_speaker,
-        "_active_speaker_baseline_profile_payload",
-        lambda **_kwargs: {
-            "candidate_fingerprint": "current-candidate",
-            "permissions": {"may_apply": True},
-            "issues": [],
-        },
-    )
-    monkeypatch.setattr(
-        sound_active_speaker,
-        "_active_speaker_baseline_profile_apply_payload",
-        lambda **_kwargs: pytest.fail("stale apply must not start DSP apply"),
-    )
-
-    payload = await sound_setup._active_speaker_finish_commissioning_payload(
-        expected_candidate_fingerprint="stale-candidate",
-        camilla_factory=lambda: pytest.fail("stale apply must not open CamillaDSP"),
-    )
-
-    assert payload["status"] == "blocked"
-    assert payload["commissioning_cleanup"] == {"status": "not_attempted"}
-    assert payload["issues"][-1]["code"] == (
-        "baseline_candidate_fingerprint_mismatch"
-    )
-
-
-async def test_active_speaker_finish_race_refusal_skips_cleanup(monkeypatch):
-    monkeypatch.setattr(
-        sound_active_speaker,
-        "_active_speaker_baseline_profile_payload",
-        lambda **_kwargs: {"candidate_fingerprint": "reviewed-candidate"},
-    )
+async def test_active_speaker_finish_proof_refusal_skips_cleanup(monkeypatch):
     seen = {}
 
     async def refuse_after_locked_refresh(**kwargs):
@@ -4125,7 +4064,7 @@ async def test_active_speaker_finish_race_refusal_skips_cleanup(monkeypatch):
             "profile": {"candidate_fingerprint": "newer-candidate"},
             "apply": None,
             "issues": [
-                {"code": "baseline_candidate_fingerprint_mismatch"}
+                {"code": "baseline_graph_safety_proof_failed"}
             ],
         }
 
@@ -4136,11 +4075,9 @@ async def test_active_speaker_finish_race_refusal_skips_cleanup(monkeypatch):
     )
 
     payload = await sound_setup._active_speaker_finish_commissioning_payload(
-        expected_candidate_fingerprint="reviewed-candidate",
         camilla_factory=lambda: pytest.fail("refused apply must not open CamillaDSP"),
     )
 
-    assert seen["expected_candidate_fingerprint"] == "reviewed-candidate"
     assert callable(seen["on_candidate_verified"])
     assert payload["status"] == "blocked"
     assert payload["commissioning_cleanup"] == {"status": "not_attempted"}
@@ -4157,7 +4094,6 @@ async def test_active_speaker_finish_commissioning_clears_pending_ramp(
         ramp_state_path,
     )
 
-    _reviewed_candidate(monkeypatch)
     for name, filename in (
         ("JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE", "ramp.json"),
         ("JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE", "commission-load.json"),
@@ -4178,7 +4114,6 @@ async def test_active_speaker_finish_commissioning_clears_pending_ramp(
     _stub_baseline_apply(monkeypatch)
 
     payload = await sound_setup._active_speaker_finish_commissioning_payload(
-        expected_candidate_fingerprint="reviewed-candidate",
         camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
     )
 

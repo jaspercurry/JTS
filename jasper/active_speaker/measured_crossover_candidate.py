@@ -412,11 +412,6 @@ _NO_ALIGNMENT = MeasuredCrossoverAlignment()
 class MeasuredCrossoverCandidate:
     """A v2 measured-crossover proposal: required trims + optional alignment.
 
-    ``program_id`` and ``analysis`` are opaque identity/evidence; this module
-    only fingerprints them alongside the proposal, so a stale reviewed candidate
-    cannot silently apply with different semantics (the fingerprint feeds
-    ``baseline_profile``'s ``expected_candidate_fingerprint`` staleness gate).
-
     ``linearization`` entries come in two shapes: a FITTED role
     (``linearization_fit.LinearizationFit.to_dict``) and a PRESCRIBED role
     (``filters``, ``prescribed_by``, ``mic_tier``, ``headroom_cost_db`` and

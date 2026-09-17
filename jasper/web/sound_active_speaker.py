@@ -28,13 +28,11 @@ from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.tuning_handoff import PROGRAM_ENTRIES, build_tuning_handoff
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 
-from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
 from jasper.audio_hardware.hat_eeprom import DEFAULT_HAT_DIR
 from jasper.audio_hardware.i2s_hat import (
     DEFAULT_I2S_HAT_INTENT_PATH,
     detected_i2s_hat_profile,
     read_i2s_hat_intent,
-    render_i2s_hat_boot_config,
     selectable_i2s_hat_profiles,
     write_i2s_hat_intent,
 )
@@ -106,43 +104,9 @@ def _output_hardware_dict() -> dict[str, Any] | None:
     return hardware.to_dict() if hardware is not None else None
 
 
-def _i2s_hat_collision_warnings(
-    profile_id: str | None, boot_config_path: str | Path, *, detected: bool
-) -> list[str]:
-    """Re-derive (read-only) whether applying ``profile_id`` would collide.
-
-    ``jasper-audio-hardware-reconcile`` owns the actual write and is the
-    one place a collision gets refused; this recomputes the same pure
-    check against the live config.txt purely to surface it in the wizard.
-    """
-    if profile_id is None:
-        return []
-    try:
-        content = Path(boot_config_path).read_text(encoding="utf-8")
-    except OSError:
-        return []
-    try:
-        _, _, collision = render_i2s_hat_boot_config(content, profile_id)
-    except ValueError:
-        return []
-    if collision is None:
-        return []
-    remedy = (
-        "Remove the hand-written line, then deploy or reboot."
-        if detected
-        else "Remove the existing line, then try again."
-    )
-    return [
-        f"A hand-written dtoverlay={overlay} line is already in config.txt; "
-        f"the {collision.managed_overlay} boot line was not written. {remedy}"
-        for overlay in collision.colliding_overlays
-    ]
-
-
 def _i2s_hat_payload(
     *,
     intent_path: str | Path = DEFAULT_I2S_HAT_INTENT_PATH,
-    boot_config_path: str | Path = DEFAULT_BOOT_CONFIG_PATH,
     hat_dir: str | Path = DEFAULT_HAT_DIR,
 ) -> dict[str, Any]:
     profiles = selectable_i2s_hat_profiles()
@@ -164,7 +128,6 @@ def _i2s_hat_payload(
     # choosing anything, so the wizard reports it instead of offering it. On a
     # board the reconciler will not manage, it reports nothing.
     detected = detected_i2s_hat_profile(hat_dir) if available else None
-    resolved_id = detected.id if detected is not None else desired_profile_id
     return {
         "visibility": "visible",
         "available": available,
@@ -175,9 +138,6 @@ def _i2s_hat_payload(
         "desired_profile_id": desired_profile_id,
         "detected_profile_id": detected.id if detected is not None else None,
         "detected_label": detected.label if detected is not None else "",
-        "warnings": _i2s_hat_collision_warnings(
-            resolved_id, boot_config_path, detected=detected is not None
-        ),
         "restart_required": Path(I2S_HAT_REBOOT_REQUIRED_PATH).is_file(),
     }
 
@@ -1019,7 +979,6 @@ def _active_speaker_baseline_profile_payload(
 
 async def _active_speaker_baseline_profile_apply_payload(
     *,
-    expected_candidate_fingerprint: str,
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
     camilla_factory: Callable[[], Any],
 ) -> dict[str, Any]:
@@ -1029,7 +988,6 @@ async def _active_speaker_baseline_profile_apply_payload(
 
     payload = await apply_candidate(
         camilla_factory=camilla_factory,
-        expected_candidate_fingerprint=expected_candidate_fingerprint,
         on_candidate_verified=on_candidate_verified,
     )
     if payload.get("status") == "applied":
@@ -1066,7 +1024,6 @@ def _active_speaker_output_safety_from_config_path(
 
 async def _active_speaker_finish_commissioning_payload(
     *,
-    expected_candidate_fingerprint: str,
     camilla_factory: Callable[[], Any],
 ) -> dict[str, Any]:
     """Backend-owned final handoff from commissioning to the active profile.
@@ -1076,13 +1033,6 @@ async def _active_speaker_finish_commissioning_payload(
     compile/validate/load/confirm sequence, so the UI cannot wedge itself
     between "saved" and "applied".
     """
-
-    from jasper.active_speaker.baseline_profile import reviewed_candidate_refusal  # lazy: baseline readers import wizard state
-
-    reviewed = _active_speaker_baseline_profile_payload(write=False)
-    refusal = reviewed_candidate_refusal(reviewed, expected_candidate_fingerprint)
-    if refusal:
-        return {**refusal, "commissioning_cleanup": {"status": "not_attempted"}}
 
     commissioning_cleanup: dict[str, Any] = {"status": "not_attempted"}
 
@@ -1114,7 +1064,6 @@ async def _active_speaker_finish_commissioning_payload(
         }
 
     payload = await _active_speaker_baseline_profile_apply_payload(
-        expected_candidate_fingerprint=expected_candidate_fingerprint,
         on_candidate_verified=cleanup_after_locked_proof,
         camilla_factory=camilla_factory,
     )

@@ -1632,15 +1632,8 @@ def test_the_config_fingerprint_moves_for_config_and_nothing_else(
     assert (changed != topology_config_fingerprint(topology)) is moves
 
 
-def test_an_anchor_written_before_the_narrowing_still_names_its_topology() -> None:
-    """A persisted anchor must not read as stale purely because the hash
-    narrowed — the fix would otherwise cause the false refusals it prevents.
-    Remove with `_legacy_topology_config_fingerprint`."""
+def test_topology_anchor_matches_only_the_current_fingerprint() -> None:
     topology = _fingerprint_topology()
-    legacy = output_topology_mod._legacy_topology_config_fingerprint(topology)
-
-    assert legacy != topology_config_fingerprint(topology)
-    assert topology_fingerprint_matches(legacy, topology)
     assert topology_fingerprint_matches(topology_config_fingerprint(topology), topology)
     assert not topology_fingerprint_matches("a" * 64, topology)
     assert not topology_fingerprint_matches(None, topology)

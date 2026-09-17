@@ -817,30 +817,12 @@ def topology_config_fingerprint(topology: OutputTopology) -> str:
     }))
 
 
-def _legacy_topology_config_fingerprint(topology: OutputTopology) -> str:
-    """The pre-#2500 hash, for reading anchors persisted before the narrowing.
-
-    Remove once no fleet box can still carry an anchor written by a build older
-    than #2500 — every one is rewritten by the next apply of the artifact that
-    holds it (baseline profile, bass-extension profile, commissioning plan).
-    """
-
-    return canonical_fingerprint(dsp_topology_projection({
-        key: value
-        for key, value in topology.to_dict().items()
-        if key != "pairing_intent"
-    }))
-
-
 def topology_fingerprint_matches(recorded: Any, topology: OutputTopology) -> bool:
-    """Whether a persisted anchor names this topology, old hash or new."""
+    """Whether a persisted anchor names this topology."""
 
     if not isinstance(recorded, str) or not recorded:
         return False
-    return recorded in (
-        topology_config_fingerprint(topology),
-        _legacy_topology_config_fingerprint(topology),
-    )
+    return recorded == topology_config_fingerprint(topology)
 
 
 def default_physical_outputs(count: int) -> tuple[PhysicalOutput, ...]:

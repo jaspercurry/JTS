@@ -2014,10 +2014,7 @@ def _commissioning_apply_site(cam):
     def call_site():
         text, reviewed = baseline_profile.compile_commissioning_profile()
         assert reviewed["status"] == "ready_to_compile", reviewed["issues"]
-        result = asyncio.run(apply_candidate(
-            expected_candidate_fingerprint=reviewed["candidate_fingerprint"],
-            camilla_factory=lambda: cam,
-        ))
+        result = asyncio.run(apply_candidate(camilla_factory=lambda: cam))
         assert result["status"] == "applied", result["issues"]
         assert cam.path == result["profile"]["config"]["path"]
         assert Path(cam.path).read_text() == text
@@ -2201,7 +2198,6 @@ def test_ring_candidate_refuses_a_typod_wire_as_a_typed_config_error(
         assert caught.value.args == caught.value.__cause__.args
 
     result = asyncio.run(apply_candidate(
-        expected_candidate_fingerprint=reviewed["candidate_fingerprint"],
         camilla_factory=lambda: cam,
     ))
     assert result["status"] == "blocked"
