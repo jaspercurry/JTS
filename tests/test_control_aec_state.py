@@ -36,27 +36,61 @@ from jasper.mics import xvf3800
 from jasper.web import wake_setup
 
 
+_MAINTENANCE_UNIT = "jasper-enhanced-aec-install.service"
+
+
 @pytest.mark.parametrize(
-    ("active_state", "expected"),
+    ("probe", "state", "expected"),
     [
-        ("active", True),
-        ("activating", True),
-        ("reloading", True),
-        ("inactive", False),
-        ("failed", False),
+        # Job liveness: a Type=oneshot mid-run must not look interrupted.
+        ("_unit_active", "active", True),
+        ("_unit_active", "activating", True),
+        ("_unit_active", "inactive", False),
+        # Bridge readiness: `activating` is not yet carrying reference audio.
+        ("_aec_bridge_active", "active", True),
+        ("_aec_bridge_active", "activating", False),
+        ("_aec_bridge_active", "inactive", False),
     ],
 )
-def test_foreground_maintenance_unit_activity_includes_activating(
-    monkeypatch, active_state, expected,
+def test_aec_probes_choose_their_own_activating_verdict(
+    monkeypatch, probe, state, expected,
 ):
     monkeypatch.setattr(
-        aec_endpoints.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            [], 3, stdout=active_state + "\n", stderr="",
-        ),
+        aec_endpoints.systemd_probe,
+        "unit_states",
+        lambda units, **_kwargs: {unit: state for unit in units},
     )
-    assert aec_endpoints._unit_active("jasper-enhanced-aec-install.service") is expected
+    call = getattr(aec_endpoints, probe)
+    result = call(_MAINTENANCE_UNIT) if probe == "_unit_active" else call()
+    assert result is expected
+
+
+def test_batched_probe_spawns_once_and_falls_back_on_an_unresolved_unit(monkeypatch):
+    """One spawn answers the batch; a unit the batch could not resolve still
+    gets its own probe rather than inheriting a wrong verdict."""
+    spawns: list[list[str]] = []
+
+    def fake_run(argv, **_kwargs):
+        spawns.append(list(argv))
+        # The batch resolves only the bridge (systemd left the second slot
+        # empty); the per-unit retry answers the maintenance unit.
+        stdout = "active\n\n" if len(argv) > 3 else "activating\n"
+        return subprocess.CompletedProcess(argv, 3, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(aec_endpoints.systemd_probe.subprocess, "run", fake_run)
+
+    with aec_endpoints._batched_unit_probes(
+        aec_endpoints._AEC_BRIDGE_SERVICE, _MAINTENANCE_UNIT,
+    ):
+        assert aec_endpoints._aec_bridge_active() is True
+        assert aec_endpoints._unit_active(_MAINTENANCE_UNIT) is True
+
+    assert len(spawns) == 2
+    assert spawns[0] == [
+        "systemctl", "is-active",
+        aec_endpoints._AEC_BRIDGE_SERVICE, _MAINTENANCE_UNIT,
+    ]
+    assert spawns[1] == ["systemctl", "is-active", _MAINTENANCE_UNIT]
 
 
 @pytest.fixture
