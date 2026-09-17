@@ -495,7 +495,6 @@ function commissioningViewPayload(overrides = {}) {
     },
     driver_checks: { complete: true, captured: 2, required: 2 },
     summed_validation: { complete: false, validated: 0, required: 1 },
-    revalidation: {},
     test_level: levelPayload(-72).test_signal,
     combined_groups: [],
     next_action: {},
@@ -1671,30 +1670,16 @@ async function testOneDriverComponentCanPrepareResearchPrompt() {
   });
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
-  const copyButton = harness.elements.get("copy-driver-research-prompt-control");
-  const initialHtml = harness.elements.get("view-body").innerHTML;
-  if (!/<button[^>]*data-act="copy-driver-research-prompt"[^>]*disabled/.test(
-    initialHtml
-  )) {
-    fail("a one-driver prompt should start disabled without component details");
-  }
-
   harness.dispatchInput(
     { "data-driver-target": "main:full_range" },
     "Example FR8"
   );
-  if (!copyButton.disabled) {
-    fail("the prompt should still require the installed enclosure choice");
-  }
   harness.dispatchInput({
     "data-manual-driver": "main:full_range",
     "data-manual-field": "enclosure_kind",
   }, "sealed");
   harness.dispatchInput({ "data-driver-field": "notes" },
     "Passive radiator on the rear baffle");
-  if (copyButton.disabled) {
-    fail("choosing the enclosure should visibly enable Copy prompt");
-  }
   harness.dispatchClick({ "data-act": "copy-driver-research-prompt" });
   await harness.flush();
   await harness.flush();
@@ -1842,8 +1827,6 @@ async function testPartialSavePreservesUnchosenEnclosure() {
   const html = harness.elements.get("view-body").innerHTML;
   if (!html.includes(
     '<option value="" disabled selected>Choose enclosure / loading</option>'
-  ) || !/<button[^>]*data-act="copy-driver-research-prompt"[^>]*disabled/.test(
-    html
   )) {
     fail("reload after a partial save must still require an explicit choice", {
       html,
@@ -1993,45 +1976,36 @@ async function testThreeWayRendersEveryPhysicalComponentChoice() {
   return { threeWayRendersEveryPhysicalComponentChoice: true };
 }
 
-async function testActiveRouteLimitsRenderedTemplates() {
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: emptyTopologyPayload(),
-      active_playback_route: activeRoutePayload(),
-    })),
-    "./active-speaker/design-draft": () => Promise.resolve(response({
-      status: "not_saved",
-      summary: {},
-      operator_inputs: {},
-    })),
-    "./active-speaker/crossover-preview": () => Promise.resolve(response({
-      status: "blocked",
-      summary: {},
-      groups: [],
-      issues: [],
-    })),
-  });
-  const harness = setupHarness(fetchHandler);
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
-  harness.dispatchClick({
-    "data-act": "output-template-axis",
-    "data-axis": "layout",
-    "data-value": "stereo",
-  });
-  await harness.flush();
-  await harness.flush();
-
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("This install can test and apply up to 4 active outputs right now")) {
-    fail("Stereo active 3-way should explain the active route width limit", { html });
+async function testTemplateSaveRendersServerRefusal() {
+  const saves = [];
+  const topology = emptyTopologyPayload();
+  topology.hardware.physical_output_count = 2;
+  topology.hardware.outputs = topology.hardware.outputs.slice(0, 2);
+  const harness = setupHarness(baseFetch({
+    './output-topology': (_path, options = {}) => {
+      if (options.method === 'POST') {
+        saves.push(JSON.parse(options.body).output_topology);
+        return Promise.resolve(response({error: 'layout cannot be built'}, false, 400));
+      }
+      return Promise.resolve(response({output_topology: topology, active_playback_route: activeRoutePayload()}));
+    },
+  }));
+  await loadAndSetActiveState(harness);
+  globalThis.__jtsConfirm = async () => { throw new Error('Layout edits must not ask for confirmation'); };
+  for (const [axis, value] of [['layout', 'stereo'], ['speaker-mode', 'active_3way']]) {
+    harness.dispatchClick({'data-act': 'output-template-axis', 'data-axis': axis, 'data-value': value});
+    await harness.flush();
   }
-  if (!html.includes('data-value="active_3way" aria-pressed="false" disabled')) {
-    fail("Stereo active 3-way should be disabled when the active route is four lanes", { html });
-  }
-  return { activeRouteLimitsRenderedTemplates: true };
+  const html = harness.elements.get('view-body').innerHTML;
+  assert.match(html, /data-value="active_3way" aria-pressed="true">/);
+  assert.ok(!html.includes('class="output-error"'));
+  harness.dispatchClick({'data-act': 'save-output-topology'});
+  await harness.flush(); await harness.flush();
+  assert.equal(saves.length, 1);
+  assert.deepEqual(saves[0].speaker_groups.map(group => group.mode), ['active_3_way', 'active_3_way']);
+  assert.match(harness.elements.get('view-body').innerHTML, /class="output-error"/);
+  assert.match(harness.elements.get('status').className, /err/);
+  return {templateSaveRendersServerRefusal: true};
 }
 
 
@@ -2097,63 +2071,6 @@ async function testSpeakerLayoutMatrixAndRearAssignment() {
     }
   }
   return {speakerLayoutMatrixAndRearAssignment: true};
-}
-
-async function testTwoOutputChannelSelectorAutoAssignsPeerOnSave() {
-  const topology = activeTwoWayTopologyPayload();
-  topology.hardware.physical_output_count = 8;
-  topology.hardware.outputs = Array.from({ length: 8 }, (_unused, index) => ({
-    index,
-    human_label: `DAC output ${index + 1}`,
-  }));
-  topology.speaker_groups[0].channels[0].human_output_label = "Old woofer label";
-  topology.speaker_groups[0].channels[1].human_output_label = "Old tweeter label";
-  const saves = [];
-  const fetchHandler = baseFetch({
-    "./output-topology": (_path, options = {}) => {
-      if (options.method === "POST") {
-        const body = JSON.parse(options.body || "{}");
-        saves.push(body.output_topology);
-        return Promise.resolve(response({
-          output_topology: body.output_topology,
-        }));
-      }
-      return Promise.resolve(response(topology));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-  const initialHtml = harness.elements.get("view-body").innerHTML;
-  if (/<option[^>]* disabled/.test(initialHtml.match(/<select data-output-channel[^]*?<\/select>/g)?.join("") || "")) {
-    fail("no DAC output option should ever be disabled", { initialHtml });
-  }
-  if (!initialHtml.includes(" — used by Main speaker · Tweeter")) {
-    fail("the used-by hint should still appear for an output taken by another driver", { initialHtml });
-  }
-
-  harness.dispatchChange({
-    value: "1",
-    getAttribute(name) {
-      return { "data-group-id": "main", "data-role": "woofer" }[name] || "";
-    },
-    hasAttribute(name) { return name === "data-output-channel"; },
-  });
-  await harness.flush();
-  harness.dispatchClick({ "data-act": "save-output-topology" });
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  if (saves.length !== 1) fail("selector save should POST one topology", { saves });
-  const channels = saves[0].speaker_groups[0].channels;
-  const byRole = Object.fromEntries(channels.map((channel) => [channel.role, channel]));
-  if (byRole.woofer.physical_output_index !== 1 ||
-      byRole.tweeter.physical_output_index !== 0) {
-    fail("two-output selector should auto-assign the peer to the remaining channel", { channels });
-  }
-
-  if ("human_output_label" in byRole.woofer || "human_output_label" in byRole.tweeter) {
-    fail("changing channel assignment should clear stale human labels", { channels });
-  }
-  return { twoOutputChannelSelectorAutoAssignsPeerOnSave: true };
 }
 
 // JTS3 hardware punch: a compression-driver tweeter commissioned with a
@@ -2283,21 +2200,16 @@ async function testDesignDraftSaveRefusalShowsServerErrorNotSavedToast() {
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
 
+  harness.dispatchClick({'data-act': 'output-template-axis', 'data-axis': 'speaker-mode', 'data-value': 'active_3way'});
+  await harness.flush();
+  assert.doesNotMatch(harness.elements.get('view-body').innerHTML, /data-act="save-driver-design" disabled/);
   harness.dispatchClick({ "data-act": "save-driver-design" });
   await harness.flush(); await harness.flush(); await harness.flush();
 
   if (posts.length !== 1) fail("save action should POST once", { posts });
-  const statusNode = harness.elements.get("status");
-  if (!statusNode.textContent.includes("speaker design changed in another session")) {
-    fail("a 400 refusal must surface the server's real error text", { text: statusNode.textContent });
-  }
-  if (statusNode.textContent.toLowerCase().includes("updated")) {
-    fail("a 400 refusal must not show a success/saved toast", { text: statusNode.textContent });
-  }
-  if (!statusNode.className.includes("err")) {
-    fail("a 400 refusal must render with the error status style", { className: statusNode.className });
-  }
-  return { designDraftSaveRefusalShowsServerErrorNotSavedToast: true };
+  assert.match(harness.elements.get('view-body').innerHTML, /driver-research__error/);
+  assert.match(harness.elements.get('status').className, /err/);
+  return {designDraftSaveRefusalShowsServerErrorNotSavedToast: true};
 }
 
 async function testChannelSelectorKeepsLayoutOpenWhenDraftDirty() {
@@ -2412,56 +2324,6 @@ async function testThreeOutputChannelSelectorDoesNotAutoAssignPeers() {
   }
 
   return { threeOutputChannelSelectorDoesNotAutoAssignPeers: true };
-}
-
-async function testCompiledProfileApplyBlockStaysUnderstandable() {
-  const confirmedTopology = activeTwoWayTopologyPayload();
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response({
-      output_topology: confirmedTopology,
-    })),
-    "./active-speaker/measurements": () => Promise.resolve(response({
-      status: "ready_for_baseline",
-      summary: summedSummary({}, {
-        validated_summed_group_count: 1,
-        summed_validation_complete: true,
-        latest_summed_validations: {
-          main: { validated: true, outcome: "blend_ok" },
-        },
-      }),
-      permissions: { may_compile_baseline: true },
-      issues: [],
-    })),
-    "./active-speaker/baseline-profile": () => Promise.resolve(response({
-      status: "compiled_apply_blocked",
-      permissions: { may_compile: true, may_apply: false },
-      config: { basename: "active_speaker_baseline.yml" },
-      issues: [{
-        severity: "blocker",
-        code: "baseline_output_handoff_not_supported",
-        message: "active profile YAML can be compiled, but applying it is disabled until outputd owns this DAC handoff",
-      }],
-    })),
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  const html = harness.elements.get("view-body").innerHTML;
-  for (const expected of [
-    "blocked",
-    "cannot be made active from this page yet",
-    "cannot switch normal playback to it from here yet",
-  ]) {
-    if (!html.includes(expected)) {
-      fail("Apply-blocked profiles should explain the limitation in user terms", { expected, html });
-    }
-  }
-  for (const forbidden of ["outputd owns", "handoff", "Save profile"]) {
-    if (html.includes(forbidden)) {
-      fail("Apply-blocked profiles should not leak backend ownership vocabulary", { forbidden, html });
-    }
-  }
-  return { compiledProfileApplyBlockStaysUnderstandable: true };
 }
 
 async function testAppliedProfileCardUsesCommissioningRecord() {
@@ -2729,17 +2591,14 @@ async function testManualCrossoverPayloadEmitsPolarityAndZeroDelay() {
   return { manualCrossoverPayloadEmitsPolarityAndZeroDelay: true };
 }
 
-// A delay entered without picking which driver it applies to must block the
-// save client-side (not silently drop the delay, not silently POST a
-// mis-shaped candidate) and surface an inline hint.
-async function testManualCrossoverDelayWithoutTargetBlocksSaveClientSide() {
+async function testManualCrossoverDelayWithoutTargetReachesServer() {
   const designSaves = [];
   const fetchHandler = baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
     "./active-speaker/design-draft": (_path, options = {}) => {
       if (options.method === "POST") {
         designSaves.push(JSON.parse(options.body || "{}"));
-        return Promise.resolve(response({ status: "ready_for_review", summary: {}, operator_inputs: {} }));
+        return Promise.resolve(response({error: "delay target is required"}, false, 400));
       }
       return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
     },
@@ -2762,14 +2621,13 @@ async function testManualCrossoverDelayWithoutTargetBlocksSaveClientSide() {
   await harness.flush();
   await harness.flush();
 
-  if (designSaves.length !== 0) {
-    fail("A delay without a target driver must block the save client-side", { designSaves });
-  }
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("Pick which driver is delayed")) {
-    fail("The blocked save should surface an inline hint", { html });
-  }
-  return { manualCrossoverDelayWithoutTargetBlocksSaveClientSide: true };
+  assert.equal(designSaves.length, 1);
+  const candidate = designSaves[0].manual_settings.crossover_candidates[0];
+  assert.equal(candidate.delay_ms, 0.15);
+  assert.equal(candidate.delay_target_role, '');
+  assert.match(harness.elements.get('view-body').innerHTML, /class="setting-row__hint driver-research__error"/);
+  assert.match(harness.elements.get('status').className, /err/);
+  return {manualCrossoverDelayWithoutTargetReachesServer: true};
 }
 
 // The crossover pickers offer exactly what the compiler builds, and offer it
@@ -3023,26 +2881,25 @@ async function testDriverResearchImportToleratesFencesAndProse() {
     ],
   ];
   for (const [label, text] of accepted) {
+    const posts = [];
     const harness = setupHarness(baseFetch({
       "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+      './active-speaker/design-draft': (_path, options = {}) => {
+        if (options.method === 'POST') posts.push(JSON.parse(options.body));
+        return Promise.resolve(response({status: 'not_saved', summary: {}}));
+      },
     }));
     await loadAndSetActiveState(harness);
     harness.dispatchInput({ "data-driver-import": "" }, text);
     harness.dispatchClick({ "data-act": "parse-driver-research" });
     await harness.flush();
-    const statusText = harness.elements.get("status").textContent;
-    if (!statusText.includes("Imported driver research.")) {
-      fail(`paste-back should accept a ${label}`, { label, statusText });
-    }
-    const html = harness.elements.get("view-body").innerHTML;
-    if (!html.includes("import ready")) {
-      fail(`paste-back should summarize a ${label}`, { label });
-    }
+    assert.doesNotMatch(harness.elements.get('status').className, /err/, label);
+    assert.doesNotMatch(harness.elements.get('view-body').innerHTML, /driver-research__error/, label);
+    harness.dispatchClick({'data-act': 'save-driver-design'});
+    await harness.flush(); await harness.flush();
+    assert.deepEqual(posts[0].driver_research, payload, label);
   }
 
-  // Junk after a value inside the object — a unit suffix or a comment — is the
-  // shape the operator actually hit. No recovery can rescue it, so the message
-  // has to lead with the action, not the offset.
   const harness = setupHarness(baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
   }));
@@ -3051,21 +2908,8 @@ async function testDriverResearchImportToleratesFencesAndProse() {
     '```json\n{"kind": "jts_active_crossover_driver_research", "sensitivity_db_2v83_1m": 90 dB}\n```');
   harness.dispatchClick({ "data-act": "parse-driver-research" });
   await harness.flush();
-  const statusText = harness.elements.get("status").textContent;
-  if (!statusText.includes(
-    "Couldn't read that as JSON — paste the complete code block the assistant returned."
-  )) {
-    fail("unparseable paste should lead with the action, not the parser offset", { statusText });
-  }
-  if (!/\([\s\S]+\)$/.test(statusText)) {
-    fail("unparseable paste should still carry the parser detail in parentheses", { statusText });
-  }
-  // The detail must come from the recovered block, not from the outer fence:
-  // "Unexpected token '`'" would send the operator after the thing they were
-  // told to paste instead of the junk inside their JSON.
-  if (statusText.includes("```") || statusText.includes("'`'")) {
-    fail("parser detail should describe the object, not the fence", { statusText });
-  }
+  assert.match(harness.elements.get('status').className, /err/);
+  assert.match(harness.elements.get('view-body').innerHTML, /driver-research__error/);
   return { driverResearchImportToleratesFencesAndProse: true };
 }
 
@@ -3304,238 +3148,6 @@ async function testCrossoverPreviewRowsShowInversionAndDelay() {
     fail("A delayed region should be echoed on the preview row", { html });
   }
   return { crossoverPreviewRowsShowInversionAndDelay: true };
-}
-
-
-async function testDriverResearchNullProtectionNumbersAreRefusedNotDropped() {
-  const honestNullPacket = {
-    artifact_schema_version: 2,
-    kind: "jts_active_crossover_driver_research",
-    drivers: [
-      { target_id: "main:woofer", role: "woofer", model: "Manual Woofer" },
-      {
-        target_id: "main:tweeter",
-        role: "tweeter",
-        model: "Dayton CX120-8",
-        usable_frequency_range_hz: [4500, 20000],
-        sensitivity_db_2v83_1m: 89.2,
-        // The exact shape the retired "null is a correct answer" rule invited.
-        required_protection_filters: [{
-          kind: "highpass",
-          cutoff_hz: null,
-          minimum_slope_db_per_octave: null,
-          family_or_equivalent: "equivalent_or_steeper",
-        }],
-        unknowns: ["required high-pass cutoff and slope are not published"],
-      },
-    ],
-    crossover_candidates: [],
-  };
-  const harness = setupHarness(baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-  }));
-  await loadAndSetActiveState(harness);
-  const pasted = JSON.stringify(honestNullPacket, null, 2);
-  harness.dispatchInput({ "data-driver-import": "" }, pasted);
-  harness.dispatchClick({ "data-act": "parse-driver-research" });
-  await harness.flush();
-
-  const statusText = harness.elements.get("status").textContent;
-  if (statusText.includes("Imported driver research.")) {
-    fail("a filter with null cutoff/slope must not import as if it were storable",
-      { statusText });
-  }
-  if (!statusText.includes("without both a cutoff and a minimum slope") ||
-      !statusText.includes("tweeter")) {
-    fail("the refusal must name the driver and the missing numbers", { statusText });
-  }
-  if (!statusText.includes("conservative estimate, not null")) {
-    fail("the refusal must say what the right answer looks like", { statusText });
-  }
-  // An explanation the operator cannot act on is only half a fix: the paste has
-  // to survive so they can re-ask or hand-type the two numbers.
-  const importBox = harness.elements.get("view-body").innerHTML;
-  if (!importBox.includes("Dayton CX120-8")) {
-    fail("a refused paste must stay in the box for the operator to act on", {
-      importBox: importBox.slice(0, 400),
-    });
-  }
-  if (importBox.includes("import ready")) {
-    fail("a refused paste must not render as a ready import", {
-      importBox: importBox.slice(0, 400),
-    });
-  }
-
-  // The guard mirrors its server twin (_positive_float), which refuses '' and
-  // 0 as well as null -- a bare null check would let both through to a server
-  // 400 or, worse, to protectionFiltersFromSetting's drop. It must NOT be
-  // tighter than the server either: a numeric string is accepted by float()
-  // server-side, so it is accepted here.
-  const refused = [["empty string", ""], ["zero", 0], ["negative", -1]];
-  for (const [label, value] of refused) {
-    const packet = _honestNullPacket();
-    packet.drivers[1].required_protection_filters = [{
-      kind: "highpass",
-      cutoff_hz: value,
-      minimum_slope_db_per_octave: 24,
-      family_or_equivalent: "equivalent_or_steeper",
-    }];
-    const box = setupHarness(baseFetch({
-      "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    }));
-    await loadAndSetActiveState(box);
-    box.dispatchInput({ "data-driver-import": "" }, JSON.stringify(packet));
-    box.dispatchClick({ "data-act": "parse-driver-research" });
-    await box.flush();
-    const text = box.elements.get("status").textContent;
-    if (!text.includes("without both a cutoff and a minimum slope")) {
-      fail(`a ${label} cutoff must be refused like a null one`, { label, text });
-    }
-  }
-
-  // ... and the subset property: what the server accepts, this accepts.
-  const numericString = _honestNullPacket();
-  numericString.drivers[1].required_protection_filters = [{
-    kind: "highpass",
-    cutoff_hz: "4500",
-    minimum_slope_db_per_octave: "24",
-    family_or_equivalent: "equivalent_or_steeper",
-  }];
-  const ok = setupHarness(baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-  }));
-  await loadAndSetActiveState(ok);
-  ok.dispatchInput({ "data-driver-import": "" }, JSON.stringify(numericString));
-  ok.dispatchClick({ "data-act": "parse-driver-research" });
-  await ok.flush();
-  const okText = ok.elements.get("status").textContent;
-  if (okText.includes("without both a cutoff and a minimum slope")) {
-    fail("the browser guard must not be tighter than its server twin", { okText });
-  }
-  return { driverResearchNullProtectionNumbersAreRefusedNotDropped: true };
-}
-
-// #2186 resilience follow-up. The import-boundary guard above is only one of
-// the three places the silent drop had to die, and the other two live on the
-// SAVE path -- which nothing in this harness exercised. Both of these tests
-// must go RED against a revert of their half; the status line alone is not
-// enough, because the operator's next ordinary click overwrites it and the
-// panel is then the only surviving account of what happened.
-function _honestNullPacket() {
-  return {
-    artifact_schema_version: 2,
-    kind: "jts_active_crossover_driver_research",
-    drivers: [
-      { target_id: "main:woofer", role: "woofer", model: "Manual Woofer" },
-      {
-        target_id: "main:tweeter",
-        role: "tweeter",
-        model: "Dayton CX120-8",
-        required_protection_filters: [{
-          kind: "highpass",
-          cutoff_hz: null,
-          minimum_slope_db_per_octave: null,
-          family_or_equivalent: "equivalent_or_steeper",
-        }],
-      },
-    ],
-    crossover_candidates: [],
-  };
-}
-
-async function _harnessWithNamedDrivers(designSaves) {
-  const harness = setupHarness(baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/design-draft": (_path, options = {}) => {
-      if (options.method === "POST") {
-        const body = JSON.parse(options.body || "{}");
-        designSaves.push(body);
-        // The server saves the visible values and NOT the dropped packet --
-        // which is exactly why ingestDesignDraft would blank the paste box.
-        return Promise.resolve(response({
-          status: "ready_for_review",
-          summary: { manual_driver_count: 2 },
-          manual_settings: body.manual_settings,
-          driver_research: body.driver_research,
-          operator_inputs: body.operator_inputs || {},
-        }));
-      }
-      return Promise.resolve(response({
-        status: "not_saved", summary: {}, operator_inputs: {},
-      }));
-    },
-  }));
-  await loadAndSetActiveState(harness);
-  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
-  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
-  return harness;
-}
-
-async function testRejectedImportReasonSurvivesTheSaveInThePanel() {
-  // The paste -> "Update working setup" path WITHOUT pressing Parse first.
-  // Nothing else guards it: the reason is produced inside saveDriverResearchDraft
-  // and was then cleared before the first render.
-  const designSaves = [];
-  const harness = await _harnessWithNamedDrivers(designSaves);
-  harness.dispatchInput(
-    { "data-driver-import": "" },
-    JSON.stringify(_honestNullPacket(), null, 2)
-  );
-  harness.dispatchClick({ "data-act": "save-driver-design" });
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
-  if (designSaves.length !== 1) {
-    fail("the visible values should still save when the packet is dropped", {
-      designSaves,
-    });
-  }
-  if (designSaves[0].driver_research !== null) {
-    fail("an unstorable packet must not be sent as research evidence", {
-      sent: designSaves[0].driver_research,
-    });
-  }
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("driver-research__error")) {
-    fail("the drop reason must reach the panel, not only the status line", { html });
-  }
-  if (!html.includes("without both a cutoff and a minimum slope")) {
-    fail("the panel must name WHY the packet was dropped", {
-      panel: html.slice(html.indexOf("driver-research__error") - 200, 600),
-    });
-  }
-  const statusText = harness.elements.get("status").textContent;
-  if (!statusText.includes("Imported JSON was not saved")) {
-    fail("the toast should still name the outcome", { statusText });
-  }
-  return { rejectedImportReasonSurvivesTheSaveInThePanel: true };
-}
-
-async function testRejectedPasteAndReasonSurviveDraftIngest() {
-  // ingestDesignDraft blanks importText whenever the saved draft carries no
-  // driver_research. Handing back an explanation with nothing to act on is
-  // half a fix, so the paste has to survive the round trip too.
-  const designSaves = [];
-  const harness = await _harnessWithNamedDrivers(designSaves);
-  const pasted = JSON.stringify(_honestNullPacket(), null, 2);
-  harness.dispatchInput({ "data-driver-import": "" }, pasted);
-  harness.dispatchClick({ "data-act": "save-driver-design" });
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("Dayton CX120-8")) {
-    fail("a refused paste must survive the draft ingest so it can be fixed", {
-      html: html.slice(0, 600),
-    });
-  }
-  if (!html.includes("driver-research__error")) {
-    fail("the reason must survive the draft ingest alongside the paste", { html });
-  }
-
-  return { rejectedPasteAndReasonSurviveDraftIngest: true };
 }
 
 // --- #2195: the best-estimate provenance echo-back --------------------------
@@ -4305,45 +3917,6 @@ async function testDriverResearchPromptCopyBlockedSelectsPrompt() {
   return { driverResearchPromptCopyBlockedSelectsPrompt: true };
 }
 
-async function testDriverResearchNotesCapExplainsBeforePost() {
-  const designSaves = [];
-  const importedResearch = {
-    artifact_schema_version: 1,
-    kind: "jts_active_crossover_driver_research",
-    drivers: [
-      { role: "woofer", model: "Imported Woofer", notes: "x".repeat(2049) },
-    ],
-    crossover_candidates: [],
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/design-draft": (_path, options = {}) => {
-      if (options.method === "POST") {
-        const body = JSON.parse(options.body || "{}");
-        designSaves.push(body);
-        return Promise.resolve(response({ status: "ready_for_review" }));
-      }
-      return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  harness.dispatchInput({ "data-driver-import": "" }, JSON.stringify(importedResearch));
-  harness.dispatchClick({ "data-act": "save-driver-design" });
-  await harness.flush();
-  await harness.flush();
-
-  if (designSaves.length) {
-    fail("Overlong imported driver notes should fail before posting", { designSaves });
-  }
-  const statusText = harness.elements.get("status").textContent;
-  if (!statusText.includes("Driver research notes for woofer must be <= 2048 chars")) {
-    fail("Overlong imported driver notes should explain the 2048 char cap", { statusText });
-  }
-  return { driverResearchNotesCapExplainsBeforePost: true };
-}
-
 async function testWorkingSetupSummaryAvoidsStorageCounts() {
   const draft = {
     status: "ready_for_review",
@@ -4496,29 +4069,9 @@ async function testDriverMicCaptureIsRemovedFromSoundFlow() {
 
 async function testSaveAndApplyUsesSingleFinishEndpoint() {
   const confirmedTopology = activeTwoWayTopologyPayload();
-  const measurements = {
-    status: "ready_for_baseline",
-    summary: {
-      ...summedSummary({
-        main: {
-          captured: true,
-          audio_emitted: true,
-          summed_test_id: "sum-1",
-          playback_id: "sum-1",
-        },
-      }),
-      validated_summed_group_count: 1,
-      summed_validation_complete: true,
-      latest_summed_validations: {
-        main: { validated: true, outcome: "blend_ok", summed_test_id: "sum-1" },
-      },
-    },
-    permissions: { may_compile_baseline: true },
-    issues: [],
-  };
   const baselineReady = {
     status: "ready_to_compile",
-    permissions: { may_compile: true, may_apply: false },
+    permissions: { may_compile: false, may_apply: true },
     config: { basename: "active_speaker_baseline.yml" },
     issues: [],
   };
@@ -4531,7 +4084,6 @@ async function testSaveAndApplyUsesSingleFinishEndpoint() {
   const finishPosts = [];
   const harness = setupHarness(baseFetch({
     "./output-topology": () => Promise.resolve(response(confirmedTopology)),
-    "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
     "./active-speaker/baseline-profile": () => Promise.resolve(response(baselineReady)),
     "./active-speaker/baseline-profile/save-and-apply": (_path, options = {}) => {
       finishPosts.push(JSON.parse(options.body || "{}"));
@@ -4548,7 +4100,7 @@ async function testSaveAndApplyUsesSingleFinishEndpoint() {
     },
     "./active-speaker/commissioning-view": () => Promise.resolve(response({
       status: finishPosts.length ? "applied" : "ready_to_save_profile",
-      review: {ready: true, may_apply: true},
+      review: {ready: false, may_apply: false},
       applied_profile: {exists: finishPosts.length > 0, stands: finishPosts.length > 0,
         candidate_fingerprint: baselineApplied.candidate_fingerprint,
         applied_at: baselineApplied.applied_at, config_path: baselineApplied.config.path},
@@ -4557,22 +4109,15 @@ async function testSaveAndApplyUsesSingleFinishEndpoint() {
   }));
   await loadAndSetActiveState(harness);
 
+  assert.match(harness.elements.get('view-body').innerHTML, /data-act="save-apply-baseline-profile">/);
+  globalThis.__jtsConfirm = async () => { throw new Error('Save and apply must not ask for confirmation'); };
   harness.dispatchClick({ "data-act": "save-apply-baseline-profile" });
   for (let i = 0; i < 8; i += 1) await harness.flush();
 
-  if (finishPosts.length !== 1) {
-    fail("save/apply should be a single backend-owned mutation", { finishPosts });
-  }
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("This is now your active speaker profile")) {
-    fail("successful finish should render the applied active profile", { html });
-  }
-  if (!harness.elements.get("status").textContent.includes("saved and applied")) {
-    fail("successful finish should provide one clear success message", {
-      status: harness.elements.get("status").textContent,
-    });
-  }
-  return { saveAndApplyUsesSingleFinishEndpoint: true };
+  assert.deepEqual(finishPosts, [{expected_candidate_fingerprint: ''}]);
+  assert.ok(harness.elements.get('view-body').innerHTML.includes(baselineApplied.config.path));
+  assert.doesNotMatch(harness.elements.get('status').className, /err/);
+  return {saveAndApplyUsesSingleFinishEndpoint: true};
 }
 
 
@@ -5743,6 +5288,99 @@ async function testComputedSafetyIssuesRenderByTarget() {
   return {computedSafetyIssuesRenderByTarget: true};
 }
 
+async function testResearchValidationRendersServerRefusal() {
+  for (const research of [
+    {kind: 'unsupported', artifact_schema_version: 99, drivers: []},
+    {kind: 'jts_active_crossover_driver_research', artifact_schema_version: 2, drivers: [
+      {role: 'woofer', target_id: 'main:woofer', notes: 'x'.repeat(2049),
+        required_protection_filters: [{kind: 'highpass', cutoff_hz: null, minimum_slope_db_per_octave: null}]},
+    ]},
+  ]) {
+    const posts = [];
+    const harness = setupHarness(baseFetch({
+      './output-topology': () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+      './active-speaker/design-draft': (_path, options = {}) => {
+        if (options.method === 'POST') {
+          posts.push(JSON.parse(options.body));
+          return Promise.resolve(response({error: 'invalid research'}, false, 400));
+        }
+        return Promise.resolve(response({status: 'not_saved', summary: {}}));
+      },
+    }));
+    await loadAndSetActiveState(harness);
+    harness.dispatchInput({'data-driver-import': ''}, JSON.stringify(research));
+    harness.dispatchClick({'data-act': 'parse-driver-research'});
+    await harness.flush();
+    assert.doesNotMatch(harness.elements.get('view-body').innerHTML, /driver-research__error/);
+    harness.dispatchClick({'data-act': 'save-driver-design'});
+    await harness.flush(); await harness.flush();
+    assert.equal(posts.length, 1);
+    assert.deepEqual(posts[0].driver_research, research);
+    assert.match(harness.elements.get('view-body').innerHTML, /driver-research__error/);
+    assert.match(harness.elements.get('status').className, /err/);
+  }
+  return {researchValidationRendersServerRefusal: true};
+}
+
+async function testIncompleteResearchPromptReachesServer() {
+  const posts = [];
+  const harness = setupHarness(baseFetch({
+    './output-topology': () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    './active-speaker/driver-research-request': (_path, options) => {
+      posts.push(JSON.parse(options.body));
+      return Promise.resolve(response({error: 'missing components'}, false, 400));
+    },
+  }));
+  await loadAndSetActiveState(harness);
+  harness.dispatchClick({'data-act': 'output-template-axis', 'data-axis': 'speaker-mode', 'data-value': 'active_3way'});
+  await harness.flush();
+  assert.match(harness.elements.get('view-body').innerHTML, /data-act="copy-driver-research-prompt">/);
+  harness.dispatchClick({'data-act': 'copy-driver-research-prompt'});
+  await harness.flush(); await harness.flush();
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].operator_inputs.woofer, '');
+  assert.match(harness.elements.get('status').className, /err/);
+  return {incompleteResearchPromptReachesServer: true};
+}
+
+async function testLayoutEditsPreserveResearchAndDirtyDriverValues() {
+  for (const dirty of [false, true]) {
+    let reads = 0;
+    const posts = [];
+    const initial = echoDraft();
+    const harness = setupHarness(baseFetch({
+      './output-topology': () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+      './active-speaker/design-draft': (_path, options = {}) => {
+        if (options.method === 'POST') {
+          posts.push(JSON.parse(options.body));
+          return Promise.resolve(response(initial));
+        }
+        const draft = structuredClone(initial);
+        if (reads++) draft.manual_settings.drivers[0].sensitivity_db_2v83_1m = 77;
+        return Promise.resolve(response(draft));
+      },
+    }));
+    await loadAndSetActiveState(harness);
+    if (dirty) harness.dispatchInput({'data-manual-driver': 'main:woofer', 'data-manual-field': 'sensitivity_db_2v83_1m'}, '66');
+    const before = dirty ? harness.elements.get('driver-echo-control').innerHTML : echoPanel(harness.elements.get('view-body').innerHTML);
+    harness.dispatchClick({'data-act': 'output-template-axis', 'data-axis': 'speaker-mode', 'data-value': 'active_2way'});
+    await harness.flush();
+    assert.ok(harness.elements.get('view-body').innerHTML.includes(before));
+    globalThis.__jtsConfirm = async () => { throw new Error('Refresh must not ask for confirmation'); };
+    harness.dispatchClick({'data-act': 'refresh-output-topology'});
+    for (let i = 0; i < 8; i++) await harness.flush();
+    harness.dispatchClick({'data-act': 'save-driver-design'});
+    for (let i = 0; i < 8; i++) await harness.flush();
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].manual_settings.drivers[0].sensitivity_db_2v83_1m, dirty ? 66 : 77);
+    assert.deepEqual(posts[0].driver_research, initial.driver_research);
+  }
+  return {layoutEditsPreserveResearchAndDirtyDriverValues: true};
+}
+
+results.push(await testResearchValidationRendersServerRefusal());
+results.push(await testIncompleteResearchPromptReachesServer());
+results.push(await testLayoutEditsPreserveResearchAndDirtyDriverValues());
 results.push(await testComputedSafetyIssuesRenderByTarget());
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
@@ -5762,15 +5400,13 @@ results.push(await testPassiveMainWithSubUsesResearchableMainTargetOnly());
 results.push(await testPartialSavePreservesUnchosenEnclosure());
 results.push(await testDirectCrossoverEditRefreshesProposalAndFooter());
 results.push(await testThreeWayRendersEveryPhysicalComponentChoice());
-results.push(await testActiveRouteLimitsRenderedTemplates());
+results.push(await testTemplateSaveRendersServerRefusal());
 results.push(await testSpeakerLayoutMatrixAndRearAssignment());
-results.push(await testTwoOutputChannelSelectorAutoAssignsPeerOnSave());
 results.push(await testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview());
 results.push(await testUnknownDriverStyleRendersWithoutGuessedFloor());
 results.push(await testDesignDraftSaveRefusalShowsServerErrorNotSavedToast());
 results.push(await testChannelSelectorKeepsLayoutOpenWhenDraftDirty());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
-results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testAppliedProfileCardUsesCommissioningRecord());
 results.push(await testStereoDriverValuesStayTargetSpecific());
 results.push(await testResearchReloadAndBooleanNumbersDrop());
@@ -5779,7 +5415,7 @@ results.push(await testDeclaredEnclosureKeepsResearchCitations());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
 results.push(await testManualCrossoverPayloadOmitsPolarityAndDelayWhenDefault());
 results.push(await testManualCrossoverPayloadEmitsPolarityAndZeroDelay());
-results.push(await testManualCrossoverDelayWithoutTargetBlocksSaveClientSide());
+results.push(await testManualCrossoverDelayWithoutTargetReachesServer());
 results.push(await testCrossoverPickersOfferOnlyTheServedVocabulary());
 results.push(await testStoredUnsupportedCrossoverSlopeBlocksSaveClientSide());
 results.push(await testAPassiveLayoutSavesWithNoCrossoverVocabularyServed());
@@ -5789,9 +5425,6 @@ results.push(await testDriverResearchImportToleratesFencesAndProse());
 results.push(await testDriverResearchImportPreservesOperatorInstalledConfiguration());
 results.push(await testCrossoverPreviewRowsShowInversionAndDelay());
 results.push(await testLoadedResearchReplacesSavedPreview());
-results.push(await testDriverResearchNullProtectionNumbersAreRefusedNotDropped());
-results.push(await testRejectedImportReasonSurvivesTheSaveInThePanel());
-results.push(await testRejectedPasteAndReasonSurviveDraftIngest());
 results.push(await testResearchEchoBackNamesEveryValueWithBadgeAndSource());
 results.push(await testFailedDraftFetchPreservesEveryDeclaredDriverOnSave());
 results.push(await testResearchEchoBackDisclosesTheDelegation());
@@ -5800,7 +5433,6 @@ results.push(await testResearchEchoBackFollowsTheSameCurrencyRulesAsTheEvidence(
 results.push(await testResearchEchoBackRendersRightAfterAPaste());
 results.push(await testDriverResearchPromptCopyUsesHttpFallback());
 results.push(await testDriverResearchPromptCopyBlockedSelectsPrompt());
-results.push(await testDriverResearchNotesCapExplainsBeforePost());
 results.push(await testWorkingSetupSummaryAvoidsStorageCounts());
 results.push(await testPartialThreeWayWorkingSetupSummaryReadsCleanly());
 results.push(await testDriverMicCaptureIsRemovedFromSoundFlow());

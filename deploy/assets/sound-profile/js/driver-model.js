@@ -24,8 +24,7 @@ import {
 import {
   crossoverPreview,
   crossoverVocabulary,
-  driverResearch,
-  outputTopology
+  driverResearch
 } from "/assets/sound-profile/js/state.js";
 import {
   activeCrossoverPairs,
@@ -40,7 +39,6 @@ import {
   physicalOutputLabel
 } from "/assets/sound-profile/js/topology.js";
 
-var DRIVER_RESEARCH_NOTE_MAX_CHARS = 2048;
 const DRIVER_VOCABULARY = JSON.parse(document.getElementById('jts-driver-fields').textContent);
 
 function driverResearchRoles(topology) {
@@ -342,15 +340,6 @@ function driverResearchHasPreviewInputs(topology) {
   return rolesReady && crossoversReady;
 }
 
-function driverResearchPromptReady(topology) {
-  if (!topology || !outputGroups(topology).length ||
-      outputTopology.dirty || outputTopology.saving) return false;
-  return driverResearchTargets(topology).every(function(target) {
-    if (!targetModel(target, topology)) return false;
-    if (target.role === 'tweeter') return !!target.driver_style;
-    return !!driverSetting(target.target_id).enclosure_kind;
-  });
-}
 function setManualCrossoverField(pairKey, field, value) {
   if (!driverResearch.settings.crossovers[pairKey]) {
     driverResearch.settings.crossovers[pairKey] = {};
@@ -360,22 +349,6 @@ function setManualCrossoverField(pairKey, field, value) {
   driverResearch.dirty = true;
 }
 
-// A delay entered without picking which driver it applies to would silently
-// mis-shape the saved candidate (manualSettingsPayload omits both delay_ms
-// and delay_target_role rather than guess). Block the save client-side with
-// a specific hint instead of discarding the entered value.
-function manualCrossoverDelayValidationError(topology) {
-  var offending = activeCrossoverPairs(topology).filter(function(pair) {
-    var setting = crossoverSetting(pair);
-    if (manualNumberValue(setting.delay_ms) == null) return false;
-    var target = String(setting.delay_target_role || '').trim();
-    return target !== pair[0] && target !== pair[1];
-  });
-  if (!offending.length) return '';
-  var pair = offending[0];
-  return 'Pick which driver is delayed for ' +
-    humanRole(pair[0]) + ' / ' + humanRole(pair[1]) + ' before saving.';
-}
 function manualCrossoverVocabularyValidationError(topology) {
   // Layout first: a passive layout has no crossover to author, so a damaged
   // island must not block its save over a vocabulary it never uses.
@@ -510,89 +483,6 @@ function applySafetyBandToSetting(setting, prefix, band) {
   if (!Array.isArray(band) || band.length !== 2) return;
   setting[prefix + '_min_hz'] = band[0];
   setting[prefix + '_max_hz'] = band[1];
-}
-
-function driverResearchPrompt(topology) {
-  return driverResearchPromptReady(topology)
-    ? 'Copy prepares a prompt from the current components and build notes.'
-    : 'Add every component model and choose its enclosure or tweeter type before preparing the target-bound research prompt.';
-}
-function summarizeDriverResearchPayload(payload) {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new Error('Driver research must be a JSON object.');
-  }
-  if (payload.kind !== 'jts_active_crossover_driver_research') {
-    throw new Error('Driver research kind must be jts_active_crossover_driver_research.');
-  }
-  var schemaVersion = Number(payload.artifact_schema_version);
-  if (schemaVersion !== 1 && schemaVersion !== 2) {
-    throw new Error('Driver research artifact_schema_version must be 1 or 2.');
-  }
-  var drivers = Array.isArray(payload.drivers) ? payload.drivers : [];
-  var candidates = Array.isArray(payload.crossover_candidates) ? payload.crossover_candidates : [];
-  if (!drivers.length) throw new Error('Driver research must include at least one driver.');
-  drivers.forEach(function(driver, index) {
-    if (!driver || driver.notes == null || driver.notes === '') return;
-    var role = driver.role || 'driver ' + (index + 1);
-    if (typeof driver.notes !== 'string') {
-      throw new Error('Driver research notes for ' + role + ' must be a string.');
-    }
-    var normalized = driver.notes.trim().split(/\s+/).filter(Boolean).join(' ');
-    if (normalized.length > DRIVER_RESEARCH_NOTE_MAX_CHARS) {
-      throw new Error(
-        'Driver research notes for ' + role + ' must be <= ' +
-        DRIVER_RESEARCH_NOTE_MAX_CHARS + ' chars.'
-      );
-    }
-  });
-  // A protection filter with a null cutoff or slope is the one research
-  // answer this flow cannot store: applyDriverSafetyToSetting would write
-  // the halves it has, and protectionFiltersFromSetting then drops the whole
-  // requirement out of the POST with nothing on screen to say so (#2186).
-  // Refuse it here instead -- parseDriverResearchImport surfaces this message
-  // and leaves the paste box intact, so the operator can act on it.
-  // Mirrors the server twin (_positive_float + the both-present check in
-  // driver_safety._normalise_protection_filters) rather than merely testing
-  // for null: '' and 0 are refused there too. Deliberately NOT tighter than
-  // the server -- a numeric STRING is accepted by float() server-side, so it
-  // is accepted here, keeping this guard a subset of what the server refuses.
-  function storableFilterNumber(value) {
-    if (value === null || value === undefined || value === '') return false;
-    var parsed = Number(value);
-    return Number.isFinite(parsed) && parsed > 0;
-  }
-  drivers.forEach(function(driver, index) {
-    if (!driver || !Array.isArray(driver.required_protection_filters)) return;
-    var role = driver.role || 'driver ' + (index + 1);
-    driver.required_protection_filters.forEach(function(filter) {
-      if (!filter || typeof filter !== 'object') return;
-      if (storableFilterNumber(filter.cutoff_hz) &&
-          storableFilterNumber(filter.minimum_slope_db_per_octave)) return;
-      throw new Error(
-        'Driver research declares a ' + (filter.kind || 'protection') +
-        ' filter for ' + role + ' without both a cutoff and a minimum slope. ' +
-        'A required filter whose numbers are unpublished takes a conservative ' +
-        'estimate, not null — ask the assistant again, or type the two numbers ' +
-        'under Advanced.'
-      );
-    });
-  });
-  return {
-    schemaVersion: schemaVersion,
-    driverCount: drivers.length,
-    candidateCount: candidates.length,
-    roles: drivers.map(function(driver) { return driver.role || 'unknown'; })
-      .filter(function(role, index, arr) { return arr.indexOf(role) === index; }),
-    unknownCount: drivers.reduce(function(count, driver) {
-      return count + (Array.isArray(driver.unknowns) ? driver.unknowns.length : 0);
-    }, 0),
-    provenanceFieldCount: drivers.reduce(function(count, driver) {
-      return count + Object.keys(driver.field_provenance || {}).length;
-    }, 0),
-    warnings: candidates.reduce(function(out, candidate) {
-      return out.concat(Array.isArray(candidate.warnings) ? candidate.warnings : []);
-    }, []).slice(0, 4)
-  };
 }
 
 function crossoverPreviewReadyForProtectedStaging(payload) {
@@ -895,8 +785,6 @@ export {
   driverProvenanceState,
   driverResearchFlowComplete,
   driverResearchHasPreviewInputs,
-  driverResearchPrompt,
-  driverResearchPromptReady,
   driverResearchRoleLabel,
   driverResearchStepSatisfied,
   driverResearchTargets,
@@ -909,7 +797,6 @@ export {
   ingestCrossoverPreview,
   kaBeamingOnsetHz,
   levelDurationLimitsFromSetting,
-  manualCrossoverDelayValidationError,
   padFromSetting,
   padKinds,
   previewStatusClass,
@@ -917,7 +804,6 @@ export {
   protectionFiltersFromSetting,
   safetyBandFromSetting,
   setManualCrossoverField,
-  summarizeDriverResearchPayload,
   targetModel,
   workingSetupSummary,
 };
