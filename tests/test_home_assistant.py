@@ -181,18 +181,16 @@ def _client_with(handler, *, clock: _FakeClock | None = None, **kwargs) -> HACli
 
 # ---- URL normalization ------------------------------------------------------
 
-def test_url_normalization_strips_trailing_slash():
-    c = HAClient(url="http://homeassistant.local:8123/", token="t")
-    assert c.url == "http://homeassistant.local:8123"
-
-
-def test_url_normalization_strips_api_suffix():
-    c = HAClient(url="http://homeassistant.local:8123/api", token="t")
-    assert c.url == "http://homeassistant.local:8123"
-
-
-def test_url_normalization_strips_api_slash_suffix():
-    c = HAClient(url="http://homeassistant.local:8123/api/", token="t")
+@pytest.mark.parametrize(
+    "raw_url",
+    [
+        pytest.param("http://homeassistant.local:8123/", id="trailing_slash"),
+        pytest.param("http://homeassistant.local:8123/api", id="api_suffix"),
+        pytest.param("http://homeassistant.local:8123/api/", id="api_slash_suffix"),
+    ],
+)
+def test_url_normalization(raw_url):
+    c = HAClient(url=raw_url, token="t")
     assert c.url == "http://homeassistant.local:8123"
 
 
@@ -932,29 +930,21 @@ def test_read_ha_env_file(tmp_path, content, expected):
 # but real) would have their discovery results render as malformed
 # URLs that downstream urlparse couldn't reconstruct.
 
-def test_bracket_ipv6_passes_ipv4_through():
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param("192.168.1.42", "192.168.1.42", id="ipv4_passes_through"),
+        pytest.param(
+            "homeassistant.local", "homeassistant.local", id="mdns_hostname_passes_through"
+        ),
+        pytest.param("uuid.local.", "uuid.local.", id="mdns_hostname_trailing_dot"),
+        pytest.param("fe80::1", "[fe80::1]", id="wraps_v6_literal"),
+        pytest.param("::1", "[::1]", id="wraps_v6_loopback"),
+        pytest.param("2001:db8::42", "[2001:db8::42]", id="wraps_v6_global"),
+        pytest.param("[fe80::1]", "[fe80::1]", id="idempotent_when_already_bracketed"),
+        pytest.param("", "", id="empty_passes_through"),
+    ],
+)
+def test_bracket_ipv6(raw, expected):
     from jasper.web.home_assistant_setup import _bracket_ipv6
-    assert _bracket_ipv6("192.168.1.42") == "192.168.1.42"
-
-
-def test_bracket_ipv6_passes_mdns_hostname_through():
-    from jasper.web.home_assistant_setup import _bracket_ipv6
-    assert _bracket_ipv6("homeassistant.local") == "homeassistant.local"
-    assert _bracket_ipv6("uuid.local.") == "uuid.local."
-
-
-def test_bracket_ipv6_wraps_v6_literal():
-    from jasper.web.home_assistant_setup import _bracket_ipv6
-    assert _bracket_ipv6("fe80::1") == "[fe80::1]"
-    assert _bracket_ipv6("::1") == "[::1]"
-    assert _bracket_ipv6("2001:db8::42") == "[2001:db8::42]"
-
-
-def test_bracket_ipv6_idempotent_when_already_bracketed():
-    from jasper.web.home_assistant_setup import _bracket_ipv6
-    assert _bracket_ipv6("[fe80::1]") == "[fe80::1]"
-
-
-def test_bracket_ipv6_empty_passes_through():
-    from jasper.web.home_assistant_setup import _bracket_ipv6
-    assert _bracket_ipv6("") == ""
+    assert _bracket_ipv6(raw) == expected

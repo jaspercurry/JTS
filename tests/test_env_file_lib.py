@@ -454,36 +454,44 @@ def test_env_file_repair_permissions_uses_parent_group(tmp_path: Path) -> None:
     ]
 
 
-def test_env_file_unset_removes_key(tmp_path: Path) -> None:
-    """jasper_env_file_unset must REMOVE the key (not write it empty).
+@pytest.mark.parametrize(
+    ("initial", "key", "expected"),
+    [
+        pytest.param(
+            "KEEP=1\nDROP=stale\nKEEP2=2\n",
+            "DROP",
+            "KEEP=1\nKEEP2=2\n",
+            id="removes_key",
+        ),
+        pytest.param(
+            "DROP=a\nKEEP=1\nDROP=b\n",
+            "DROP",
+            "KEEP=1\n",
+            id="removes_all_duplicate_lines",
+        ),
+        pytest.param(
+            "KEEP=1\n", "MISSING", "KEEP=1\n", id="noop_when_key_absent"
+        ),
+    ],
+)
+def test_env_file_unset_removes_key(
+    tmp_path: Path, initial: str, key: str, expected: str
+) -> None:
+    """jasper_env_file_unset must REMOVE the key (not write it empty), on
+    every duplicate line, and no-op when the key is not present.
 
-    The #27 HIGH fix relies on this: when an operator sets a floor key in an
-    earlier-loaded EnvironmentFile, the reconciler-owned later file must DROP
-    the key so an empty `KEY=` assignment can't override the operator value.
+    The #27 HIGH fix relies on the removal case: when an operator sets a
+    floor key in an earlier-loaded EnvironmentFile, the reconciler-owned
+    later file must DROP the key so an empty `KEY=` assignment can't
+    override the operator value.
     """
     env_file = tmp_path / "outputd.env"
-    env_file.write_text("KEEP=1\nDROP=stale\nKEEP2=2\n")
-    result = _bash(f'jasper_env_file_unset "{env_file}" DROP')
+    env_file.write_text(initial)
+    result = _bash(f'jasper_env_file_unset "{env_file}" {key}')
     assert result.returncode == 0, result.stderr
-    assert env_file.read_text() == "KEEP=1\nKEEP2=2\n"
+    assert env_file.read_text() == expected
     # Crucially NOT left as an empty assignment.
-    assert "DROP=" not in env_file.read_text()
-
-
-def test_env_file_unset_removes_all_duplicate_lines(tmp_path: Path) -> None:
-    env_file = tmp_path / "outputd.env"
-    env_file.write_text("DROP=a\nKEEP=1\nDROP=b\n")
-    result = _bash(f'jasper_env_file_unset "{env_file}" DROP')
-    assert result.returncode == 0, result.stderr
-    assert env_file.read_text() == "KEEP=1\n"
-
-
-def test_env_file_unset_noop_when_key_absent(tmp_path: Path) -> None:
-    env_file = tmp_path / "outputd.env"
-    env_file.write_text("KEEP=1\n")
-    result = _bash(f'jasper_env_file_unset "{env_file}" MISSING')
-    assert result.returncode == 0, result.stderr
-    assert env_file.read_text() == "KEEP=1\n"
+    assert f"{key}=" not in env_file.read_text()
 
 
 def test_env_file_unset_noop_when_file_absent(tmp_path: Path) -> None:

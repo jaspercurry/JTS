@@ -1254,23 +1254,6 @@ def test_shared_escape_module_exists_and_exports_the_escaper():
     )
 
 
-def test_modules_do_not_redefine_the_shared_html_escaper():
-    """No deploy/assets module re-declares escapeHtml/escapeText now that the
-    shared escape.js owns it — they import from /assets/shared/js/escape.js
-    instead. escape.js itself is the canonical definition and is exempt."""
-    assert WEB_MODULE_FILES, "expected web ES modules to scan"
-    offenders = []
-    for path in WEB_MODULE_FILES:
-        if path.resolve() == _SHARED_ESCAPE_MODULE.resolve():
-            continue
-        for lineno, line in enumerate(path.read_text().splitlines(), 1):
-            if _LOCAL_ESCAPER_DEF_RE.search(line):
-                offenders.append(f"{path}:{lineno}: {line.strip()}")
-    assert offenders == [], (
-        "these modules redefine the shared HTML escaper — import escapeHtml "
-        "(or escapeAttr / the escapeText alias) from /assets/shared/js/escape.js "
-        "instead:\n" + "\n".join(offenders)
-    )
 
 
 # The text-node DOM builder (h() / svg()) is the entire basis of the
@@ -1303,23 +1286,6 @@ def test_shared_dom_module_exists_and_exports_the_builder():
     )
 
 
-def test_modules_do_not_redefine_the_shared_dom_builder():
-    """No deploy/assets module re-declares h()/svg() now that the shared dom.js
-    owns the text-node DOM builder — they import from /assets/shared/js/dom.js
-    instead. dom.js itself is the canonical definition and is exempt."""
-    assert WEB_MODULE_FILES, "expected web ES modules to scan"
-    offenders = []
-    for path in WEB_MODULE_FILES:
-        if path.resolve() == _SHARED_DOM_MODULE.resolve():
-            continue
-        for lineno, line in enumerate(path.read_text().splitlines(), 1):
-            if _LOCAL_DOM_BUILDER_DEF_RE.search(line):
-                offenders.append(f"{path}:{lineno}: {line.strip()}")
-    assert offenders == [], (
-        "these modules redefine the shared text-node DOM builder — import "
-        "h/svg from /assets/shared/js/dom.js instead (it is the one home for "
-        "the XSS-safety primitive):\n" + "\n".join(offenders)
-    )
 
 
 # The CSRF/JSON fetch helpers (csrfHeaders / jsonHeaders) were promoted to the
@@ -1352,22 +1318,47 @@ def test_shared_http_module_exists_and_exports_the_csrf_helpers():
     )
 
 
-def test_modules_do_not_redefine_the_shared_csrf_helpers():
-    """No deploy/assets module re-declares csrfHeaders/jsonHeaders now that the
-    shared http.js owns them — they import from /assets/shared/js/http.js
-    instead. http.js itself is the canonical definition and is exempt."""
+@pytest.mark.parametrize(
+    ("shared_module", "local_def_re", "label"),
+    [
+        pytest.param(
+            _SHARED_ESCAPE_MODULE,
+            _LOCAL_ESCAPER_DEF_RE,
+            "the shared HTML escaper — import escapeHtml (or escapeAttr / the "
+            "escapeText alias) from /assets/shared/js/escape.js instead",
+            id="html_escaper",
+        ),
+        pytest.param(
+            _SHARED_DOM_MODULE,
+            _LOCAL_DOM_BUILDER_DEF_RE,
+            "the shared text-node DOM builder — import h/svg from "
+            "/assets/shared/js/dom.js instead (it is the one home for the "
+            "XSS-safety primitive)",
+            id="dom_builder",
+        ),
+        pytest.param(
+            _SHARED_HTTP_MODULE,
+            _LOCAL_HTTP_HELPER_DEF_RE,
+            "the shared CSRF/JSON fetch helpers — import csrfHeaders / "
+            "jsonHeaders from /assets/shared/js/http.js instead",
+            id="csrf_helpers",
+        ),
+    ],
+)
+def test_modules_do_not_redefine_a_shared_js_primitive(shared_module, local_def_re, label):
+    """No deploy/assets module re-declares a primitive that was promoted to a
+    shared module (escape.js / dom.js / http.js) — pages import it instead.
+    The shared module itself is the canonical definition and is exempt."""
     assert WEB_MODULE_FILES, "expected web ES modules to scan"
     offenders = []
     for path in WEB_MODULE_FILES:
-        if path.resolve() == _SHARED_HTTP_MODULE.resolve():
+        if path.resolve() == shared_module.resolve():
             continue
         for lineno, line in enumerate(path.read_text().splitlines(), 1):
-            if _LOCAL_HTTP_HELPER_DEF_RE.search(line):
+            if local_def_re.search(line):
                 offenders.append(f"{path}:{lineno}: {line.strip()}")
     assert offenders == [], (
-        "these modules redefine the shared CSRF/JSON fetch helpers — import "
-        "csrfHeaders / jsonHeaders from /assets/shared/js/http.js instead:\n"
-        + "\n".join(offenders)
+        f"these modules redefine {label}:\n" + "\n".join(offenders)
     )
 
 
