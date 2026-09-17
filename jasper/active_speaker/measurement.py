@@ -214,7 +214,7 @@ def _crossover_groups(topology: OutputTopology) -> list[Any]:
     ]
 
 
-def _measured_groups(topology: OutputTopology) -> list[Any]:
+def measured_speaker_groups(topology: OutputTopology) -> list[Any]:
     """The groups whose drivers need per-driver measurement evidence.
 
     Every crossover group, PLUS a subless passive main, whose one full-range
@@ -302,10 +302,10 @@ def _driver_targets_for(
 def active_driver_targets(topology: OutputTopology) -> list[dict[str, Any]]:
     """Return the driver targets that need measurement evidence.
 
-    Eligibility is :func:`_measured_groups`, WIDER than "has a crossover".
+    Eligibility is :func:`measured_speaker_groups`, WIDER than "has a crossover".
     """
 
-    return _driver_targets_for(topology, _measured_groups(topology))
+    return _driver_targets_for(topology, measured_speaker_groups(topology))
 
 
 def _summed_fingerprint(

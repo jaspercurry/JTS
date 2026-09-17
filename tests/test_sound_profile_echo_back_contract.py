@@ -2,35 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Cross-language contract for the /sound/ research echo-back panel (#2195).
-
-The panel ("3. What JTS is running with") is the only surface in the product
-that reads a research reply's **raw** ``field_provenance`` and shows it to a
-household as authority.  Everywhere else, provenance reaches an operator only
-after ``_profile_core`` has checked, per field, that the visible value still
-equals the researched one and downgraded the entry to ``confidence: "unknown"``
-when it does not.  The panel does not run that check -- it renders straight
-after a paste, before anything is saved, so there is no confirmed profile to
-read from yet.
-
-That shortcut is safe today because of two invariants, and **neither is
-enforced by the code that depends on them**:
-
-1. A v1 packet is stripped of provenance before it can reach the page, so only
-   a v2 packet's assertions are ever rendered.
-2. Every key the panel echoes is inside ``_V2_RESEARCH_COMPARABLE_FIELDS``,
-   which ``_validate_v2_research_prefill`` compares field-by-field against the
-   visible values.  A bound v2 packet therefore cannot be attached to a draft
-   whose visible value for an echoed key has drifted from the reply's.
-
-Invariant 2 is what this module pins.  The failure it prevents is silent and
-ugly: echo a key the staleness comparison does not cover, and the panel can
-show a researcher's citation and ``confirmed`` badge next to a number the
-operator typed -- the exact mislabelling the panel exists to end, arriving with
-no error anywhere.  A drift on either side (a new echoed field, or a field
-dropped from the comparison set) is a code change nobody would connect to this
-page, which is why the tripwire lives here rather than in a comment.
-"""
+"""The research echo panel covers the fields its heading names."""
 from __future__ import annotations
 
 import ast
@@ -52,13 +24,7 @@ def _echo_back_field_body() -> str:
 
     source = sound_page_js()
     start = source.find(_ECHO_FIELDS_FUNCTION)
-    assert start != -1, (
-        f"the /sound/ page JS no longer declares `{_ECHO_FIELDS_FUNCTION}`. "
-        "If the echo-back field list moved or was renamed, point this contract "
-        "at its new home -- do not delete it: it is the only guard that the "
-        "panel's raw-provenance shortcut stays inside the server's "
-        "divergence check."
-    )
+    assert start != -1, f"Missing echo field list: {_ECHO_FIELDS_FUNCTION}"
     open_brace = source.index("{", start + len(_ECHO_FIELDS_FUNCTION) - 1)
     depth = 0
     for index in range(open_brace, len(source)):
@@ -120,28 +86,6 @@ def _frozen_safety_field_names() -> set[str]:
     raise AssertionError(
         "_profile_core no longer assigns `safety_field_names`; the frozen-field "
         "list moved and this contract must follow it"
-    )
-
-
-def test_echoed_provenance_keys_stay_inside_the_server_divergence_check() -> None:
-    """Every echoed key is one ``_validate_v2_research_prefill`` compares.
-
-    See this module's docstring for why that containment is the whole safety
-    argument for reading raw reply provenance on this page.  This is a subset
-    assertion in one direction only: the comparison set may legitimately be
-    wider than the panel, but the panel may never step outside it.
-    """
-
-    from jasper.active_speaker.design_draft import _V2_RESEARCH_COMPARABLE_FIELDS
-
-    echoed = _echoed_field_keys()
-    uncovered = echoed - set(_V2_RESEARCH_COMPARABLE_FIELDS)
-    assert not uncovered, (
-        f"{sorted(uncovered)} are echoed on /sound/ with the research reply's "
-        "own provenance, but _validate_v2_research_prefill does not compare "
-        "them against the visible values. A bound packet could then attribute "
-        "a researcher's citation to a number the operator typed. Either add "
-        "the field to _V2_RESEARCH_COMPARABLE_FIELDS or stop echoing it."
     )
 
 

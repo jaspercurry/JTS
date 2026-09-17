@@ -77,7 +77,6 @@ import {
   driverSafetyReviewHint,
   extractDriverResearchJson,
   ingestCrossoverPreview,
-  invalidateDriverResearchBinding,
   levelDurationLimitsFromSetting,
   manualCrossoverDelayValidationError,
   manualCrossoverVocabularyValidationError,
@@ -820,7 +819,6 @@ import {
     if (field.startsWith('installation_')) return;
     driverResearch.safetyDirty = true;
     driverResearch.editedDriverTargets[targetId] = true;
-    invalidateDriverResearchBinding();
     // driver_class/pad_kind each gate which OTHER fields this row shows
     // (a radiating diameter or nothing; resistor inputs vs the direct-dB
     // input) -- unlike every other manual-driver field above, a selection
@@ -991,6 +989,41 @@ import {
       }
     }
   }
+  function applyDriverResearchToSetting(driver, targetSetting) {
+    [
+      'sensitivity_db_2v83_1m',
+      'nominal_impedance_ohm',
+      'recommended_highpass_hz',
+      // #2603: the low limit's slope condition travels with the frequency it
+      // conditions. Dropping it here would leave the owner half-declared.
+      'recommended_highpass_slope_db_per_octave',
+      'recommended_lowpass_hz',
+      'do_not_test_below_hz',
+      'gain_offset_db'
+    ].forEach(function(field) {
+      if (driver[field] != null) targetSetting[field] = driver[field];
+    });
+    if (driver.gain_offset_db != null) {
+      targetSetting.gain_offset_db_provenance =
+        driver.gain_offset_db_provenance || 'research_estimate';
+    }
+    // Physical installation choices belong to the operator. Research can
+    // fill product geometry, but it cannot change the declared enclosure,
+    // an explicitly chosen driver/loading class, or a resistor pad. Strip
+    // those fields at this untrusted-import boundary; the shared apply
+    // helper also handles trusted persisted records during reload.
+    var researchDriver = Object.assign({}, driver);
+    if (researchDriver.cabinet && typeof researchDriver.cabinet === 'object') {
+      researchDriver.cabinet = Object.assign({}, researchDriver.cabinet);
+      delete researchDriver.cabinet.enclosure_kind;
+    }
+    if (targetSetting.driver_class &&
+        targetSetting.driver_class !== 'unknown') {
+      delete researchDriver.driver_class;
+    }
+    delete researchDriver.pad;
+    applyDriverSafetyToSetting(researchDriver, targetSetting);
+  }
   function applyDriverResearchToManualSettings(payload) {
     if (!payload || typeof payload !== 'object') return;
     var topology = currentOutputTopology();
@@ -1014,41 +1047,9 @@ import {
       }
       if (driver.model && !(driverResearch.inputs.target_models || {})[target.target_id]) {
         driverResearch.inputs.target_models[target.target_id] = String(driver.model);
+        driverResearch.prompt = '';
       }
-      var targetSetting = driverSetting(target.target_id);
-      [
-        'sensitivity_db_2v83_1m',
-        'nominal_impedance_ohm',
-        'recommended_highpass_hz',
-        // #2603: the low limit's slope condition travels with the frequency it
-        // conditions. Dropping it here would leave the owner half-declared.
-        'recommended_highpass_slope_db_per_octave',
-        'recommended_lowpass_hz',
-        'do_not_test_below_hz',
-        'gain_offset_db'
-      ].forEach(function(field) {
-        if (driver[field] != null) targetSetting[field] = driver[field];
-      });
-      if (driver.gain_offset_db != null) {
-        targetSetting.gain_offset_db_provenance =
-          driver.gain_offset_db_provenance || 'research_estimate';
-      }
-      // Physical installation choices belong to the operator. Research can
-      // fill product geometry, but it cannot change the declared enclosure,
-      // an explicitly chosen driver/loading class, or a resistor pad. Strip
-      // those fields at this untrusted-import boundary; the shared apply
-      // helper also handles trusted persisted records during reload.
-      var researchDriver = Object.assign({}, driver);
-      if (researchDriver.cabinet && typeof researchDriver.cabinet === 'object') {
-        researchDriver.cabinet = Object.assign({}, researchDriver.cabinet);
-        delete researchDriver.cabinet.enclosure_kind;
-      }
-      if (targetSetting.driver_class &&
-          targetSetting.driver_class !== 'unknown') {
-        delete researchDriver.driver_class;
-      }
-      delete researchDriver.pad;
-      applyDriverSafetyToSetting(researchDriver, targetSetting);
+      applyDriverResearchToSetting(driver, driverSetting(target.target_id));
     });
     // Pick ONE crossover per role-pair: the highest-confidence candidate with a
     // usable frequency (ties keep the first listed). The old code applied every
@@ -1120,6 +1121,7 @@ import {
     driverResearch.designDraft = payload;
     driverResearch.saving = false;
     if (!options.force && driverResearch.dirty) return;
+    driverResearch.prompt = '';
     var inputs = payload.operator_inputs || {};
     ['full_range', 'woofer', 'mid', 'tweeter', 'subwoofer', 'notes'].forEach(function(key) {
       driverResearch.inputs[key] = inputs[key] || '';
@@ -1184,9 +1186,18 @@ import {
     driverResearch.dirty = false;
     driverResearch.safetyDirty = false;
     driverResearch.editedDriverTargets = {};
-    driverResearch.promptCopy.copied = false;
-    driverResearch.promptCopy.selected = false;
-    driverResearch.researchRequest = payload.driver_research_request || null;
+    ((payload.driver_research || {}).drivers || []).forEach(function(driver) {
+      var visible = (manual.drivers || []).find(function(row) {
+        return row.target_id === driver.target_id;
+      });
+      if (!visible) return;
+      var setting = driverSetting(driver.target_id);
+      var projected = Object.assign({}, setting);
+      applyDriverResearchToSetting(driver, projected);
+      if (Object.keys(projected).some(function(field) {
+        return projected[field] !== setting[field];
+      })) driverResearch.editedDriverTargets[driver.target_id] = true;
+    });
   }
   async function fetchDesignDraft() {
     var payload = await getJSON('./active-speaker/design-draft');
@@ -1575,10 +1586,6 @@ import {
   }
   function renderDriverResearchAiHelper(topology) {
     var promptReady = driverResearchPromptReady(topology);
-    var copyState = promptCopyState(driverResearch.promptCopy);
-    var promptSelected = copyState.selected;
-    var promptClass = copyState.promptClass;
-    var promptButtonLabel = copyState.label;
     return '<section class="driver-research__section driver-research__ai">' +
       '<div><h3 class="setting-row__title">Research your components</h3>' +
         '<p class="setting-row__hint">Copy the populated prompt, use it with the research assistant of your choice, then paste the JSON response here.</p></div>' +
@@ -1589,12 +1596,12 @@ import {
               '<p class="setting-row__hint">The button unlocks after every component has a model and its enclosure or tweeter type is selected. Build notes are optional.</p></div>' +
             '<button type="button" class="btn btn--ghost" data-act="copy-driver-research-prompt"' +
               (promptReady ? '' : ' disabled') + '>' +
-              escapeHtml(promptButtonLabel) + '</button>' +
+              'Copy prompt</button>' +
           '</div>' +
-          '<textarea id="driver-research-prompt" class="' + promptClass + '" readonly ' +
-            (promptSelected ? 'rows="6" ' : '') +
+          '<textarea id="driver-research-prompt" class="driver-research__textarea driver-research__textarea--' +
+            (driverResearch.prompt ? 'compact' : 'hidden') + '" readonly ' +
             'aria-label="Driver research prompt">' +
-            escapeHtml(driverResearchPrompt(topology)) + '</textarea>' +
+            escapeHtml(driverResearch.prompt || driverResearchPrompt(topology)) + '</textarea>' +
         '</div>' +
         '<div class="driver-research__panel">' +
           '<div class="row-between active-speaker-level__head">' +
@@ -2758,7 +2765,6 @@ import {
       driverResearch.dirty = true;
       driverResearch.safetyDirty = true;
       driverResearch.editedDriverTargets[driverTarget] = true;
-      invalidateDriverResearchBinding();
       updateDriverResearchPromptPreview();
       updateDriverResearchPromptButton();
       refreshDriverResearchDerivedUi();
@@ -2770,7 +2776,6 @@ import {
       driverResearch.error = '';
       driverResearch.dirty = true;
       driverResearch.safetyDirty = true;
-      invalidateDriverResearchBinding();
       updateDriverResearchPromptPreview();
       updateDriverResearchPromptButton();
       refreshDriverResearchDerivedUi();
@@ -3234,6 +3239,7 @@ import {
     }
   }
   function setOutputDraft(next) {
+    driverResearch.prompt = '';
     outputTopology.draft = next;
     if (outputGroups(next).length) resetOutputTemplateDraft();
     outputTopology.dirty = true;
@@ -3241,7 +3247,6 @@ import {
     outputTopology.error = '';
     driverResearch.dirty = true;
     driverResearch.safetyDirty = true;
-    invalidateDriverResearchBinding();
     crossoverPreview.payload = null;
     crossoverPreview.error = '';
     render();
@@ -3462,6 +3467,7 @@ import {
       'Added subwoofer to the speaker layout draft. Save before verification.');
   }
   function updateDriverResearchPromptPreview() {
+    driverResearch.prompt = '';
     var prompt = el('driver-research-prompt');
     if (prompt) prompt.value = driverResearchPrompt(currentOutputTopology());
   }
@@ -3470,7 +3476,7 @@ import {
     if (!button) return;
     var ready = driverResearchPromptReady(currentOutputTopology());
     button.disabled = !ready;
-    button.textContent = promptCopyState(driverResearch.promptCopy).label;
+    button.textContent = 'Copy prompt';
   }
   function updateDriverResearchImportSummary() {
     var summary = el('driver-research-import-summary');
@@ -3492,14 +3498,13 @@ import {
   // The shared tail of every copy-a-box-minted-prompt control: copy, record
   // which of copied/selected happened, repaint, and never leave a blocked copy
   // without selected text.
-  async function copyPromptField(fieldId, state, copiedMessage, afterRender) {
+  async function copyPromptField(fieldId, state, copiedMessage) {
     var field = el(fieldId);
     if (!field) return;
     var copied = await copyTextToClipboard(field.value, field);
     state.copied = copied;
     state.selected = !copied;
     render();
-    if (afterRender) afterRender();
     if (!copied) {
       var fallback = el(fieldId);
       if (fallback) {
@@ -3611,17 +3616,26 @@ import {
     }
     try {
       var payload = await postJSON('./active-speaker/driver-research-request', {
-        operator_inputs: driverResearch.inputs,
-        manual_settings: manualSettingsPayload(currentOutputTopology())
+        operator_inputs: driverResearch.inputs
       });
-      prompt.value = String(payload.prompt || '');
-      driverResearch.researchRequest = payload.request || null;
+      driverResearch.prompt = String(payload.prompt || '');
+      prompt.value = driverResearch.prompt;
     } catch (e) {
       status('Could not prepare the target-bound research prompt: ' + e.message, true);
       return;
     }
-    await copyPromptField('driver-research-prompt', driverResearch.promptCopy,
-      'Copied driver research prompt.', updateDriverResearchPromptButton);
+    var copied = await copyTextToClipboard(prompt.value, prompt);
+    button.textContent = copied ? 'Copied' : 'Selected';
+    prompt.className = 'driver-research__textarea driver-research__textarea--' +
+      (copied ? 'hidden' : 'compact');
+    if (!copied) {
+      prompt.rows = 6;
+      prompt.focus();
+      prompt.select();
+      prompt.setSelectionRange(0, prompt.value.length);
+    }
+    status(copied ? 'Copied driver research prompt.' :
+      'Copy was blocked by the browser. Prompt text is selected.', !copied);
   }
   async function copyTuningHandoffPrompt(programId) {
     var field = el('tuning-handoff-prompt');
@@ -3652,8 +3666,6 @@ import {
       driverResearch.dirty = true;
       driverResearch.safetyDirty = true;
       driverResearch.editedDriverTargets = {};
-      driverResearch.promptCopy.copied = false;
-      driverResearch.promptCopy.selected = false;
       status('Imported driver research. Review the visible values before updating the working setup.');
     } catch (e) {
       driverResearch.parsed = null;
@@ -3698,15 +3710,6 @@ import {
         researchPayload = extractDriverResearchJson(driverResearch.importText);
         driverResearch.parsed = summarizeDriverResearchPayload(researchPayload);
         driverResearch.importedPayload = researchPayload;
-        if (driverResearch.parsed.schemaVersion === 2 &&
-            !driverResearch.researchRequest) {
-          researchPayload = null;
-          importWarning = 'Target-bound research was invalidated by a visible edit.';
-        }
-        // Both drop paths behave the same way: whatever caused the packet to
-        // be dropped reaches the PANEL, not just the status line, which the
-        // operator's next ordinary click overwrites (#2186).
-        driverResearch.error = importWarning;
       } catch (e) {
         driverResearch.parsed = null;
         driverResearch.importedPayload = null;
@@ -3733,9 +3736,7 @@ import {
       var payload = await postJSON('./active-speaker/design-draft', {
         operator_inputs: driverResearch.inputs,
         manual_settings: manualPayload,
-        driver_research_request: driverResearch.researchRequest,
-        driver_research: researchPayload,
-        expected_revision: Number((driverResearch.designDraft || {}).revision || 0)
+        driver_research: researchPayload
       });
       // The saved draft carries no driver_research when this save dropped the
       // packet, so ingestDesignDraft would blank both the paste box and the
@@ -3763,18 +3764,6 @@ import {
       render();
       return true;
     } catch (e) {
-      if (e.status === 409) {
-        var conflictPayload = e.body || {};
-        var keptLocalEdits = driverResearch.dirty;
-        ingestDesignDraft(conflictPayload, {force: !keptLocalEdits});
-        var conflictMessage = conflictPayload.error || 'Speaker design changed in another tab.';
-        driverResearch.error = keptLocalEdits
-          ? conflictMessage + ' Your unsaved edits were kept; review and save again.'
-          : conflictMessage + ' Review the refreshed values.';
-        status(driverResearch.error, true);
-        render();
-        return false;
-      }
       driverResearch.saving = false;
       driverResearch.error = e.message;
       status('Could not update working setup: ' + e.message, true);
@@ -3853,12 +3842,6 @@ import {
           issues: [{message: draftError.message}]
         };
       }
-      // A research request is fingerprinted to the saved topology, including
-      // topology-owned installation facts such as tweeter type. The design
-      // draft fetched above may still contain the prior binding, so invalidate
-      // it after every successful topology save instead of letting Copy remain
-      // visibly "done" for a request the server will reject as stale.
-      invalidateDriverResearchBinding();
       try {
         await fetchCrossoverPreview();
       } catch (previewError) {

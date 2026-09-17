@@ -20,6 +20,8 @@ from typing import Any
 import pytest
 
 from jasper.active_speaker import design_draft as design_draft_module
+from jasper.active_speaker.driver_safety import DriverSafetyProfileError, build_driver_research_context
+from tests.active_speaker_fixtures import mono_output_topology
 from jasper.active_speaker.crossover_v2 import operator_notes as module
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     OPERATOR_NOTES_BLOCK,
@@ -293,42 +295,13 @@ def test_nothing_is_unclaimed_today():
 
 
 def test_each_carrier_reports_the_cap_its_source_actually_applies():
-    """#2871 requirement 3, the "no second cap" half, made auditable.
-
-    ``max_chars`` in the emitted table is a REPORT of the source's own cap. If
-    the source moves and the table does not, the document tells a reader a
-    length that is not enforced anywhere — so the numbers are read off the
-    owning modules here rather than restated.
-
-    Two of the three source caps are bare literals at a call site rather than
-    named constants, so those halves match on source text. That makes them
-    reformat-sensitive as well as value-sensitive; each carries its own message
-    saying which it is, because a bare ``in`` assertion on a 200 KB module
-    prints the whole file and tells a reader nothing.
-    """
-    driver_safety = (
-        REPO_ROOT / "jasper/active_speaker/driver_safety.py"
-    ).read_text()
-
-    assert CARRIERS["drivers[].notes"]["max_chars"] == (
-        design_draft_module.MAX_DRIVER_NOTE_CHARS
-    ), "the per-driver cap moved; update CARRIERS to match design_draft"
-
-    assert '"operator_inputs.notes",\n            max_chars=1000,' in driver_safety, (
-        "driver_safety no longer caps operator_inputs.notes at 1000 chars at "
-        "that call site — either the cap moved (update CARRIERS['build_notes']"
-        "['max_chars']) or the call was reformatted (update this anchor)"
-    )
-    assert CARRIERS["build_notes"]["max_chars"] == 1000
-
-    assert (
-        "operator_declared_context.operator_notes\",\n                max_chars=2048,"
-        in driver_safety
-    ), (
-        "driver_safety no longer caps operator_declared_context.operator_notes "
-        "at 2048 chars at that call site — either the cap moved (update "
-        "CARRIERS) or the call was reformatted (update this anchor)"
-    )
+    assert CARRIERS["drivers[].notes"]["max_chars"] == design_draft_module.MAX_DRIVER_NOTE_CHARS
+    topology = mono_output_topology(card_id=None)
+    notes = "x" * CARRIERS["build_notes"]["max_chars"]
+    inputs = {"woofer": "Example W6", "tweeter": "Example T1", "notes": notes}
+    assert build_driver_research_context(topology, inputs)["build_notes"] == notes
+    with pytest.raises(DriverSafetyProfileError):
+        build_driver_research_context(topology, {**inputs, "notes": notes + "x"})
     assert CARRIERS["declared_context[].operator_notes"]["max_chars"] == 2048
 
 
@@ -347,22 +320,11 @@ def test_the_new_kind_satisfies_the_namespacing_rule_that_landed_under_it():
 
 
 def test_the_one_carrier_with_an_ambiguous_author_says_so():
-    """"Declared" is not "typed", and only one carrier has to make that split.
-
-    ``manual_settings.drivers[].notes`` predates the single Build-notes field
-    and can hold text the research assistant wrote and the operator pasted —
-    ``driver_safety``'s own comment at the request builder says so, and nothing
-    on the record separates the two after the fact. Publishing ``authored_by:
-    operator`` for that row would be a provenance the draft cannot support.
-    """
     assert CARRIERS["build_notes"]["authored_by"] == "operator"
     assert CARRIERS["declared_context[].operator_notes"]["authored_by"] == "operator"
     assert CARRIERS["drivers[].notes"]["authored_by"] == (
         "operator_or_research_assistant_indistinguishable"
     )
-    assert "may contain either operator prose or an imported" in (
-        REPO_ROOT / "jasper/active_speaker/driver_safety.py"
-    ).read_text()
 
 
 def test_every_carrier_declares_the_same_four_facts():
@@ -538,10 +500,4 @@ def test_no_shipped_module_reads_the_packets_operator_notes_block():
         text = path.read_text()
         if any(n in text for n in ('"operator_notes"', "'operator_notes'")):
             offenders.append(path.relative_to(REPO_ROOT).as_posix())
-    # driver_safety and design_draft name the DRAFT's legacy key while
-    # validating and demoting it; neither reads the packet block, and neither
-    # branches on the text. Named explicitly so a new offender stands out.
-    assert offenders == [
-        "jasper/active_speaker/design_draft.py",
-        "jasper/active_speaker/driver_safety.py",
-    ]
+    assert offenders == []

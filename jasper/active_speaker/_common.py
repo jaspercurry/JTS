@@ -45,12 +45,8 @@ DRIVER_CLASSES: tuple[str, ...] = (
 # record can still carry: every gate TOLERATES them, every normaliser DROPS
 # them. Append-only.
 #
-# ADDING A KEY HERE IS ONLY HALF THE DECISION — two unreachable-from-here places
-# answer their own question about a retired key:
-# ``driver_safety._RETIRED_TARGET_FIELDS`` (stale-but-fixable vs corrupt;
-# reported, never dropped) and
-# ``driver_safety.validate_driver_research_request`` (the FINGERPRINTED
-# ``operator_declared_context`` digest must stay acceptable and be re-stamped).
+# ``driver_safety._RETIRED_TARGET_FIELDS`` separately names profiles that
+# must be rebuilt because they still store a retired field.
 LEGACY_DROPPED_DRIVER_FIELDS: frozenset[str] = frozenset({
     "horn_coverage_deg",
     "crossover_search_band_hz",

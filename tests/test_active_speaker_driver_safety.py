@@ -22,16 +22,14 @@ from jasper.active_speaker.design_draft import (
 from jasper.active_speaker import driver_safety as driver_safety_module
 from jasper.active_speaker.driver_safety import (
     DRIVER_RESEARCH_KIND,
-    DRIVER_RESEARCH_REQUEST_KIND,
     DRIVER_SAFETY_PROFILE_KIND,
     SUPPORTED_PROTECTION_KINDS,
     DriverSafetyProfileError,
     _V2_RESEARCH_DRIVER_FIELDS,
-    build_driver_research_request,
+    build_driver_research_context,
     build_driver_safety_profile,
     driver_research_targets,
     evaluate_driver_safety_profile,
-    validate_driver_research_request,
     validate_driver_research_result_shape,
 )
 from jasper.active_speaker.driver_safety_prompt import build_driver_research_prompt
@@ -209,7 +207,6 @@ def _research_result(request: dict) -> dict:
         drivers.append(
             {
                 "target_id": target["target_id"],
-                "target_fingerprint": target["target_fingerprint"],
                 "role": role,
                 "model": target["manufacturer_and_model"],
                 **safety,
@@ -228,7 +225,6 @@ def _research_result(request: dict) -> dict:
     return {
         "artifact_schema_version": 2,
         "kind": DRIVER_RESEARCH_KIND,
-        "request_fingerprint": request["request_fingerprint"],
         "drivers": drivers,
         "crossover_candidates": [],
     }
@@ -345,8 +341,8 @@ def _prompt_result_shape(prompt: str) -> str:
 
 @pytest.mark.parametrize("role", [*DRIVER_SWEEP_DURATIONS_S, "full_range"])
 def test_prompt_recommends_the_roles_protocol_sweep_ceiling(role) -> None:
-    request = build_driver_research_request(
-        mono_output_topology(card_id=None), _operator_inputs(), _manual_settings(),
+    request = build_driver_research_context(
+        mono_output_topology(card_id=None), _operator_inputs(),
     )
     request["targets"] = [{**request["targets"][0], "role": role}]
     prompt = build_driver_research_prompt(request)
@@ -360,53 +356,24 @@ def test_prompt_recommends_the_roles_protocol_sweep_ceiling(role) -> None:
     assert example["field_provenance"]["level_duration_limits"]["confidence"] == "low"
 
 
-def test_research_request_and_prompt_bind_exact_physical_targets() -> None:
+def test_prompt_contains_drivers_and_build_notes_without_typed_limits() -> None:
     topology = mono_output_topology(card_id=None)
-    manual_settings = _manual_settings()
-    manual_settings["drivers"][0]["notes"] = (
-        "Legacy per-driver note that is no longer editable"
+    manual = _manual_settings()
+    manual["drivers"][0]["hard_excitation_band_hz"] = [137, 17439]
+    draft = build_design_draft(
+        topology, operator_inputs=_operator_inputs(), manual_settings=manual,
     )
-
-    request = build_driver_research_request(
-        topology,
-        _operator_inputs(),
-        manual_settings,
-    )
-    prompt = build_driver_research_prompt(request)
-
-    assert request["kind"] == DRIVER_RESEARCH_REQUEST_KIND
-    assert request["artifact_schema_version"] == 1
-    assert len(request["request_fingerprint"]) == 64
-    assert [target["target_id"] for target in request["targets"]] == [
-        "mono:woofer",
-        "mono:tweeter",
+    context = build_driver_research_context(topology, draft["operator_inputs"])
+    prompt = build_driver_research_prompt(context)
+    assert "137" not in prompt
+    assert "17439" not in prompt
+    assert "fingerprint" not in prompt
+    assert "operator_declared_context" not in prompt
+    assert json.loads(_prompt_targets_block(prompt)) == context
+    assert context["build_notes"] == _operator_inputs()["notes"]
+    assert [target["target_id"] for target in context["targets"]] == [
+        "mono:woofer", "mono:tweeter",
     ]
-    assert all(len(target["target_fingerprint"]) == 64 for target in request["targets"])
-    assert request["targets"][1]["physical_output_index"] == 1
-    assert request["targets"][0]["operator_declared_context"]["cabinet"] == {
-        "enclosure_kind": "sealed",
-        "lf_reconstruction_capability": "sealed_single_radiator_supported",
-        "radiator_count": 1,
-        "effective_radiating_diameter_mm": 132.0,
-        "baffle_width_mm": 210.0,
-    }
-    assert "operator_notes" not in request["targets"][0]["operator_declared_context"]
-    assert request["build_notes"] == "Sealed bench cabinet"
-    assert "Legacy per-driver note that is no longer editable" not in prompt
-    assert "Sealed bench cabinet" in prompt
-    assert "Never infer physical installation choices" in prompt
-    assert "Treat operator_declared_context as authoritative" in prompt
-    assert "preserving any operator-declared enclosure choice" in prompt
-
-    # Binding is what the server re-checks on paste-back, so every identity the
-    # result must echo has to be legible in the prompt itself.
-    targets_block = _prompt_targets_block(prompt)
-    assert request["request_fingerprint"] in targets_block
-    for target in request["targets"]:
-        assert target["target_fingerprint"] in targets_block
-        assert target["target_id"] in targets_block
-        assert target["manufacturer_and_model"] in targets_block
-    assert "Copy target_id, target_fingerprint, and model verbatim." in prompt
 
 
 def test_prompt_demands_one_fenced_json_object_and_exact_driver_count() -> None:
@@ -416,7 +383,7 @@ def test_prompt_demands_one_fenced_json_object_and_exact_driver_count() -> None:
 
     two_way = mono_output_topology(card_id=None)
     prompt = build_driver_research_prompt(
-        build_driver_research_request(two_way, _operator_inputs(), _manual_settings())
+        build_driver_research_context(two_way, _operator_inputs())
     )
 
     assert "exactly one ```json fenced code block" in prompt
@@ -431,51 +398,23 @@ def test_prompt_demands_one_fenced_json_object_and_exact_driver_count() -> None:
 
     one_target = mono_output_topology(mode="full_range_passive", card_id=None)
     single = build_driver_research_prompt(
-        build_driver_research_request(
+        build_driver_research_context(
             one_target,
             {"full_range": "Example FR8", "target_models": {"mono:full_range": "Example FR8"}},
-            None,
         )
     )
     assert "Return exactly 1 entry in drivers[]" in single
 
 
-def test_prompt_projects_targets_without_the_server_hardware_block() -> None:
-    """The prompt embeds a projection, not the whole request: the hardware
-    inventory and the physical output/topology labels are server bookkeeping
-    the assistant cannot use, and they were most of the prompt's length. The
-    request object itself is unchanged and still carries them."""
-
-    topology = mono_output_topology(card_id=None)
-    request = build_driver_research_request(
-        topology, _operator_inputs(), _manual_settings()
+def test_prompt_projects_only_driver_identity_and_build_notes() -> None:
+    context = build_driver_research_context(
+        mono_output_topology(card_id=None), _operator_inputs(),
     )
-    prompt = build_driver_research_prompt(request)
-    targets_block = _prompt_targets_block(prompt)
-
-    assert request["hardware"]["outputs"]
-    assert request["targets"][0]["physical_output_label"]
-    # Absent from the whole prompt, not merely from the projection.
-    assert '"hardware"' not in prompt
-    assert "clock_domain" not in prompt
-    assert "physical_output_label" not in prompt
-    assert "physical_output_index" not in prompt
-    assert "topology_id" not in prompt
-    assert request["hardware"]["device_label"] not in prompt
-    assert '"state": "unused"' not in prompt
-    # ...while every key the assistant is asked to reason about survives.
-    assert "artifact_schema_version" not in targets_block
-    for key in (
-        "target_id",
-        "target_fingerprint",
-        "role",
-        "manufacturer_and_model",
-        "driver_style",
-        "speaker_group_id",
-        "speaker_group_mode",
-        "operator_declared_context",
-    ):
-        assert f'"{key}"' in targets_block
+    projection = json.loads(_prompt_targets_block(build_driver_research_prompt(context)))
+    assert set(projection) == {"targets", "build_notes"}
+    assert all(set(target) == {
+        "target_id", "role", "manufacturer_and_model", "driver_style",
+    } for target in projection["targets"])
 
 
 def test_prompt_states_the_crossover_vocabulary_the_saver_accepts() -> None:
@@ -495,8 +434,8 @@ def test_prompt_states_the_crossover_vocabulary_the_saver_accepts() -> None:
     )
 
     prompt = build_driver_research_prompt(
-        build_driver_research_request(
-            mono_output_topology(card_id=None), _operator_inputs(), _manual_settings()
+        build_driver_research_context(
+            mono_output_topology(card_id=None), _operator_inputs()
         )
     )
 
@@ -527,7 +466,7 @@ def test_prompt_asks_only_for_fields_with_a_consumer() -> None:
 
     topology = mono_output_topology(card_id=None)
     prompt = build_driver_research_prompt(
-        build_driver_research_request(topology, _operator_inputs(), _manual_settings())
+        build_driver_research_context(topology, _operator_inputs())
     )
     result_shape = _prompt_result_shape(prompt)
 
@@ -608,7 +547,7 @@ def test_prompt_scopes_provenance_to_the_five_limit_setting_keys() -> None:
 
     topology = mono_output_topology(card_id=None)
     prompt = build_driver_research_prompt(
-        build_driver_research_request(topology, _operator_inputs(), _manual_settings())
+        build_driver_research_context(topology, _operator_inputs())
     )
 
     assert _PROMPT_PROVENANCE_KEYS == (
@@ -665,10 +604,9 @@ def test_passive_full_range_component_has_research_only_physical_target() -> Non
     assert targets[0]["speaker_group_mode"] == "full_range_passive"
     assert len(targets[0]["target_fingerprint"]) == 64
 
-    request = build_driver_research_request(
+    request = build_driver_research_context(
         topology,
         operator_inputs,
-        manual_settings,
     )
     prompt = build_driver_research_prompt(request)
     assert [target["target_id"] for target in request["targets"]] == [
@@ -693,7 +631,7 @@ def test_prompt_asks_for_driver_class_and_geometry_but_never_pad() -> None:
     deleted it for never having gained a reader; see
     ``test_prompt_asks_only_for_fields_with_a_consumer``."""
     topology = mono_output_topology(card_id=None)
-    request = build_driver_research_request(topology, _operator_inputs(), _manual_settings())
+    request = build_driver_research_context(topology, _operator_inputs())
     prompt = build_driver_research_prompt(request)
     result_shape = _prompt_result_shape(prompt)
 
@@ -714,10 +652,9 @@ def test_dropped_ask_fields_are_still_accepted_and_normalised() -> None:
     or slimming the prompt would have silently become a schema change."""
 
     topology = mono_output_topology(card_id=None)
-    request = build_driver_research_request(
+    request = build_driver_research_context(
         topology,
         _operator_inputs(),
-        _manual_settings(),
     )
     research = _research_result(request)
     verbose = {
@@ -728,10 +665,6 @@ def test_dropped_ask_fields_are_still_accepted_and_normalised() -> None:
     }
     for driver in research["drivers"]:
         driver.update(verbose)
-    # The browser copies researched editable values into the visible record
-    # before saving, and _validate_v2_research_prefill checks the two agree.
-    # `manufacturer` is deliberately NOT mirrored: it is not a comparable
-    # field, so it round-trips research-only.
     manual_settings = _manual_settings()
     for driver in manual_settings["drivers"]:
         driver.update({k: v for k, v in verbose.items() if k != "manufacturer"})
@@ -741,7 +674,6 @@ def test_dropped_ask_fields_are_still_accepted_and_normalised() -> None:
     validate_driver_research_result_shape(research)
     draft = build_design_draft(
         topology,
-        driver_research_request=request,
         driver_research=research,
         manual_settings=manual_settings,
         operator_inputs=_operator_inputs(),
@@ -768,10 +700,9 @@ def test_legacy_research_horn_coverage_deg_is_tolerated_and_dropped() -> None:
     """
 
     topology = mono_output_topology(card_id=None)
-    request = build_driver_research_request(
+    request = build_driver_research_context(
         topology,
         _operator_inputs(),
-        _manual_settings(),
     )
     research = _research_result(request)
     for driver in research["drivers"]:
@@ -786,7 +717,6 @@ def test_legacy_research_horn_coverage_deg_is_tolerated_and_dropped() -> None:
     # re-validation of the same normalised record.
     draft = build_design_draft(
         topology,
-        driver_research_request=request,
         driver_research=research,
         manual_settings=manual_settings,
         operator_inputs=_operator_inputs(),
@@ -815,72 +745,32 @@ def test_legacy_research_horn_coverage_deg_is_tolerated_and_dropped() -> None:
     )
 
 
-def test_v2_research_refuses_stale_request_or_target_binding() -> None:
+def test_pasted_reply_and_edited_visible_value_both_survive_save(tmp_path: Path) -> None:
     topology = mono_output_topology(card_id=None)
-    request = build_driver_research_request(topology, _operator_inputs())
-    research = _research_result(request)
-
-    stale_request = deepcopy(research)
-    stale_request["request_fingerprint"] = "0" * 64
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="request_fingerprint does not match",
-    ):
-        build_design_draft(
-            topology,
-            driver_research_request=request,
-            driver_research=stale_request,
-            operator_inputs=_operator_inputs(),
-        )
-
-    wrong_target = deepcopy(research)
-    wrong_target["drivers"][1]["target_fingerprint"] = "f" * 64
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="targets do not exactly match",
-    ):
-        build_design_draft(
-            topology,
-            driver_research_request=request,
-            driver_research=wrong_target,
-            operator_inputs=_operator_inputs(),
-        )
-
-
-def test_a_research_reply_folded_into_the_form_still_saves_with_its_request() -> None:
-    """The page copies a pasted reply's values into the visible driver fields
-    before the save, so the manual settings at save time differ from the ones
-    the prompt was built from. Only the targets and models bind the request to
-    the reply; the declared limits are what the reply is allowed to change.
-    """
-
-    topology = mono_output_topology(card_id=None)
-    request = build_driver_research_request(topology, _operator_inputs(), None)
-    research = _research_result(request)
-    draft = build_design_draft(
-        topology,
-        driver_research_request=request,
-        driver_research=research,
-        manual_settings=_manual_settings(),
-        operator_inputs=_operator_inputs(),
-        created_at="2026-09-16T00:00:00Z",
+    research = _research_result(build_driver_research_context(topology, _operator_inputs()))
+    research["drivers"][1]["recommended_highpass_hz"] = 3000
+    manual = _manual_settings()
+    manual["drivers"][1]["recommended_highpass_hz"] = 3500
+    draft = save_design_draft(
+        topology, driver_research=research, manual_settings=manual,
+        operator_inputs=_operator_inputs(), path=tmp_path / "draft.json",
     )
-    assert draft["driver_research"]["request_fingerprint"] == request["request_fingerprint"]
-    assert draft["driver_safety_profile"]["status"] == "confirmed"
+    assert draft["driver_research"]["drivers"][1]["recommended_highpass_hz"] == 3000
+    assert draft["manual_settings"]["drivers"][1]["recommended_highpass_hz"] == 3500
+    assert load_design_draft(tmp_path / "draft.json") == draft
+    assert draft["driver_safety_profile"]["research"] == {"advisory_only": True}
 
 
 def test_confirmed_profile_uses_visible_values_and_never_authorizes_audio() -> None:
     topology = mono_output_topology(card_id=None)
-    request = build_driver_research_request(
+    request = build_driver_research_context(
         topology,
         _operator_inputs(),
-        _manual_settings(),
     )
     research = _research_result(request)
 
     draft = build_design_draft(
         topology,
-        driver_research_request=request,
         driver_research=research,
         manual_settings=_manual_settings(),
         operator_inputs=_operator_inputs(),
@@ -967,21 +857,15 @@ def test_incomplete_values_save_as_incomplete_and_never_read_as_current() -> Non
         )
 
 
-def test_v2_contracts_reject_boolean_versions_values_and_unknown_fields() -> None:
+def test_v2_result_rejects_boolean_values_and_unknown_fields() -> None:
     topology = mono_output_topology(card_id=None)
-    request = build_driver_research_request(topology, _operator_inputs())
-
-    bool_version = deepcopy(request)
-    bool_version["artifact_schema_version"] = True
-    with pytest.raises(DriverSafetyProfileError, match="schema or kind"):
-        validate_driver_research_request(bool_version, topology, _operator_inputs())
+    request = build_driver_research_context(topology, _operator_inputs())
 
     research = _research_result(request)
     research["typo_field"] = "must not disappear silently"
     with pytest.raises(ActiveSpeakerDesignDraftError, match="unknown fields"):
         build_design_draft(
             topology,
-            driver_research_request=request,
             driver_research=research,
             operator_inputs=_operator_inputs(),
         )
@@ -991,7 +875,6 @@ def test_v2_contracts_reject_boolean_versions_values_and_unknown_fields() -> Non
     with pytest.raises(ActiveSpeakerDesignDraftError, match="must not be boolean"):
         build_design_draft(
             topology,
-            driver_research_request=request,
             driver_research=bool_value,
             operator_inputs=_operator_inputs(),
         )
@@ -1618,9 +1501,6 @@ def test_a_pre_2870_box_can_still_save_and_accept_its_stored_declaration() -> No
     # tolerating rather than refusing.
     assert evaluate_driver_safety_profile(profile, topology).confirmed_and_current
 
-    # The stored research request has its own test below: it needs a request
-    # built by the PRE-CUT builder, which this file cannot construct.
-
     # The eval reason still fires for a profile that has NOT been re-saved --
     # tolerance at the write gates must not quietly confirm a stale artifact.
     legacy_profile = deepcopy(profile)
@@ -1631,182 +1511,6 @@ def test_a_pre_2870_box_can_still_save_and_accept_its_stored_declaration() -> No
     assert evaluation.reasons == (
         driver_safety_module.DRIVER_SAFETY_PROFILE_RETIRED_FIELD_REASON,
     )
-
-
-#: A driver-research request as a PRE-#2870 build actually wrote it, frozen from
-#: that build's own ``build_driver_research_request``. Its
-#: ``operator_declared_context`` carries ``crossover_search_band_hz`` AND its
-#: ``request_fingerprint`` was computed over a core INCLUDING that key.
-#:
-#: That inversion is the whole reason this is a fixture rather than something
-#: built here. A request built by THIS branch and then injected with the field
-#: is fingerprinted WITHOUT it, and the branch normaliser drops the injection --
-#: so the recomputed core matches the original and the digest agrees by
-#: accident. Such a test passes whether or not the tolerance exists. A real
-#: box's request is the other way round, and only the frozen artifact has it.
-_PRE_2870_REQUEST_FIXTURE = (
-    Path(__file__).parent / "fixtures"
-    / "driver_research_request_pre_2870_20260822" / "request.json"
-)
-
-
-def test_a_request_built_from_a_manual_highpass_validates_on_save() -> None:
-    """The validator must accept every key the builder's own normaliser emits.
-
-    ``build_driver_research_request`` normalises each driver's manual settings
-    into ``operator_declared_context``; since #2682 that carries the operator's
-    recommended high-pass pair. ``validate_driver_research_request`` re-checks
-    the stored request on every save, so a missing allow-list entry makes any
-    driver with a manual high-pass unsaveable.
-    """
-
-    manual = deepcopy(_manual_settings())
-    manual["drivers"][1]["recommended_highpass_hz"] = 2500.0
-    manual["drivers"][1]["recommended_highpass_slope_db_per_octave"] = 24.0
-    manual["drivers"][1]["fit_budget"] = {"max_gain_db": 6.0}
-    manual = normalise_manual_settings(manual)
-    assert manual is not None
-    topology = mono_output_topology(card_id=None)
-    inputs = _operator_inputs()
-    request = build_driver_research_request(topology, inputs, manual)
-    validated = validate_driver_research_request(request, topology, inputs, manual)
-    context = validated["targets"][1]["operator_declared_context"]
-    assert context["recommended_highpass_hz"] == 2500.0
-    assert context["recommended_highpass_slope_db_per_octave"] == 24.0
-    assert context["fit_budget"]["max_gain_db"] == 6.0
-
-
-def test_a_research_request_fingerprinted_before_the_cut_still_validates() -> None:
-    """#2870's migration, one line deeper than the allowlist.
-
-    Tolerating the retired key in ``operator_declared_context``'s allowlist is
-    NECESSARY AND NOT SUFFICIENT, because that context is FINGERPRINTED. The
-    build that wrote a stored request hashed a core whose context still carried
-    the key; dropping it recomputes a different digest, so the request is
-    refused ``fingerprint is invalid`` -- and ``design_draft.build_design_draft``
-    re-validates the stored request on EVERY save, which is precisely the save
-    /sound's own copy tells the household to make. The browser re-sends the
-    stored request verbatim and v2 replies may not drop it, so the household
-    would be left with a raw internal error and no signposted way out.
-
-    The fix follows this PR's own doctrine one module over
-    (``crossover_v2.topology_prescription._parse_prescription``): a document this
-    repository already wrote must stay readable across the deploy that retired
-    the field. The digest is accepted when it matches the core computed WITH the
-    retired key present, and the record is RE-STAMPED to the current shape on the
-    way out, so the tolerance is transitional rather than permanent.
-    """
-
-    banked = json.loads(_PRE_2870_REQUEST_FIXTURE.read_text())
-    manual = banked["manual_settings"]
-    inputs = banked["operator_inputs"]
-    request = banked["driver_research_request"]
-    topology = mono_output_topology(card_id=None)
-
-    # The premise, asserted on BOTH halves -- the earlier version of this test
-    # checked only that manual_settings carried the field, which is exactly how
-    # it missed that the fingerprint is the thing that matters.
-    context = request["targets"][0]["operator_declared_context"]
-    assert "crossover_search_band_hz" in context
-    stored_fingerprint = request["request_fingerprint"]
-    assert stored_fingerprint == driver_safety_module._fingerprint(
-        {k: v for k, v in request.items() if k != "request_fingerprint"}
-    ), "the fixture's digest must cover the core that CARRIES the retired key"
-
-    validated = validate_driver_research_request(request, topology, inputs, manual)
-
-    # Tolerated on the way in...
-    assert all(
-        "crossover_search_band_hz" not in (
-            target.get("operator_declared_context") or {}
-        )
-        for target in validated["targets"]
-    ), "tolerated, but it must never be stored again"
-    # ...and RE-STAMPED, so the draft this save writes matches on its own terms
-    # next time rather than depending on the tolerance forever.
-    assert validated["request_fingerprint"] != stored_fingerprint
-    assert validated["request_fingerprint"] == driver_safety_module._fingerprint(
-        {k: v for k, v in validated.items() if k != "request_fingerprint"}
-    )
-
-    # Re-validating the RE-STAMPED record needs no tolerance at all: that is
-    # what makes this transitional rather than a permanent second shape.
-    again = validate_driver_research_request(validated, topology, inputs, manual)
-    assert again["request_fingerprint"] == validated["request_fingerprint"]
-
-    # The tolerance is narrow: a digest matching NEITHER core is still refused,
-    # so this did not become "any fingerprint will do".
-    forged = dict(request, request_fingerprint="0" * 64)
-    with pytest.raises(DriverSafetyProfileError, match="fingerprint is invalid"):
-        validate_driver_research_request(forged, topology, inputs, manual)
-
-
-def test_a_pre_2870_request_and_the_v2_result_bound_to_it_migrate_together() -> None:
-    """The re-stamp's own second-order hazard, caught by walking the real save.
-
-    A v2 result ECHOES its request's fingerprint, and
-    ``validate_research_result_binding`` compares the two. Re-stamping the
-    request therefore ORPHANS the result the same box stored beside it: the save
-    stops failing at ``fingerprint is invalid`` and starts failing one gate
-    later at ``does not match the current request``. Migrating one of a matched
-    pair is not a migration, and the household sees the same dead end.
-
-    ``design_draft`` owns the pair -- it is the module that refuses a v2 result
-    with no request -- so ``_rebound_to_restamped_request`` carries the result
-    across, and this walks ``build_design_draft`` end to end rather than either
-    validator alone, because the coupling only exists between them.
-    """
-
-    banked = json.loads(_PRE_2870_REQUEST_FIXTURE.read_text())
-    request = banked["driver_research_request"]
-    stored_fingerprint = request["request_fingerprint"]
-
-    # The v2 result as that same pre-cut build stored it: echoing the request's
-    # own digest, the one computed WITH the retired context key.
-    result = {
-        "artifact_schema_version": 2,
-        "kind": DRIVER_RESEARCH_KIND,
-        "request_fingerprint": stored_fingerprint,
-        "drivers": [
-            {
-                "target_id": target["target_id"],
-                "target_fingerprint": target["target_fingerprint"],
-                "role": target["role"],
-                "model": target["manufacturer_and_model"],
-            }
-            for target in request["targets"]
-        ],
-    }
-
-    draft = build_design_draft(
-        mono_output_topology(card_id=None),
-        operator_inputs=banked["operator_inputs"],
-        manual_settings=banked["manual_settings"],
-        driver_research=result,
-        driver_research_request=request,
-    )
-
-    saved_request = draft["driver_research_request"]
-    assert saved_request["request_fingerprint"] != stored_fingerprint
-    # Both halves land in the NEW shape, so the next save needs no tolerance.
-    assert (
-        draft["driver_research"]["request_fingerprint"]
-        == saved_request["request_fingerprint"]
-    )
-
-    # Narrow, not a blanket rebind: a result bound to neither digest is still
-    # refused, which is the binding check's entire job.
-    foreign = dict(result, request_fingerprint="0" * 64)
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError, match="does not match the current request"
-    ):
-        build_design_draft(
-            mono_output_topology(card_id=None),
-            operator_inputs=banked["operator_inputs"],
-            manual_settings=banked["manual_settings"],
-            driver_research=foreign,
-            driver_research_request=request,
-        )
 
 
 def test_the_sound_page_phrases_the_retired_field_reason_by_name() -> None:
@@ -1990,10 +1694,9 @@ def test_stereo_targets_require_physical_target_values_and_preserve_asymmetry() 
 
 
 def test_stereo_research_request_uses_exact_target_models() -> None:
-    request = build_driver_research_request(
+    request = build_driver_research_context(
         _stereo_topology(),
         _stereo_operator_inputs(),
-        _stereo_manual_settings(),
     )
 
     assert {
@@ -2004,29 +1707,39 @@ def test_stereo_research_request_uses_exact_target_models() -> None:
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    (("role", "woofer"), ("model", "Wrong T1")),
+    (("target_id", "unknown:tweeter"), ("model", "Wrong T1")),
 )
-def test_v2_research_refuses_role_or_model_mismatch(field: str, value: str) -> None:
+def test_v2_research_refuses_unknown_target_or_model_mismatch(field: str, value: str) -> None:
     topology = mono_output_topology(card_id=None)
-    request = build_driver_research_request(
-        topology,
-        _operator_inputs(),
-        _manual_settings(),
-    )
-    research = _research_result(request)
+    inputs = {**_operator_inputs(), "tweeter": "  EXAMPLE   T1  "}
+    research = _research_result(build_driver_research_context(topology, inputs))
     research["drivers"][1][field] = value
-
-    with pytest.raises(
-        ActiveSpeakerDesignDraftError,
-        match="targets do not exactly match",
-    ):
+    with pytest.raises(ActiveSpeakerDesignDraftError):
         build_design_draft(
-            topology,
-            driver_research_request=request,
-            driver_research=research,
-            manual_settings=_manual_settings(),
-            operator_inputs=_operator_inputs(),
+            topology, driver_research=research, manual_settings=_manual_settings(),
+            operator_inputs=inputs,
         )
+
+
+def test_v2_research_accepts_model_case_and_spacing() -> None:
+    topology = mono_output_topology(card_id=None)
+    inputs = {**_operator_inputs(), "tweeter": "  EXAMPLE   T1  "}
+    research = _research_result(build_driver_research_context(topology, inputs))
+    research["drivers"][1]["model"] = "example\t t1"
+    draft = build_design_draft(
+        topology, driver_research=research, manual_settings=_manual_settings(),
+        operator_inputs=inputs,
+    )
+    assert draft["driver_research"]["drivers"][1]["model"] == "example t1"
+
+
+def test_v2_research_refuses_a_missing_target() -> None:
+    topology = mono_output_topology(mode="active_3_way", card_id=None)
+    inputs = {**_operator_inputs(), "mid": "Example M3"}
+    research = _research_result(build_driver_research_context(topology, inputs))
+    research["drivers"] = [driver for driver in research["drivers"] if driver["role"] != "mid"]
+    with pytest.raises(ActiveSpeakerDesignDraftError):
+        build_design_draft(topology, driver_research=research, operator_inputs=inputs)
 
 
 def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
@@ -2137,7 +1850,7 @@ def test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typis
     """
 
     topology = mono_output_topology(card_id=None)
-    request = build_driver_research_request(topology, _operator_inputs())
+    request = build_driver_research_context(topology, _operator_inputs())
 
     implausible_reply = _research_result(request)
     tweeter_reply = next(
@@ -2151,7 +1864,6 @@ def test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typis
     ) as refused:
         build_design_draft(
             topology,
-            driver_research_request=request,
             driver_research=implausible_reply,
             operator_inputs=_operator_inputs(),
         )
@@ -2635,14 +2347,12 @@ def test_sealed_cabinet_without_baffle_width_has_typed_refusal() -> None:
 
 def test_operator_override_drops_research_provenance_for_changed_field() -> None:
     topology = mono_output_topology(card_id=None)
-    request = build_driver_research_request(
+    request = build_driver_research_context(
         topology,
         _operator_inputs(),
-        _manual_settings(),
     )
     imported = build_design_draft(
         topology,
-        driver_research_request=request,
         driver_research=_research_result(request),
         manual_settings=_manual_settings(),
         operator_inputs=_operator_inputs(),
@@ -2702,13 +2412,6 @@ def test_manual_target_binding_refuses_contradictions(mutate, match: str) -> Non
             manual_settings=manual,
             driver_research=None,
             saved_at="2026-07-13T12:00:00Z",
-        )
-
-    with pytest.raises(DriverSafetyProfileError, match=match):
-        build_driver_research_request(
-            mono_output_topology(card_id=None),
-            _operator_inputs(),
-            manual,
         )
 
 
@@ -2789,27 +2492,6 @@ def test_direct_builder_rejects_boolean_and_unknown_manual_fields() -> None:
         )
 
 
-def test_research_request_stales_when_current_build_notes_change() -> None:
-    topology = mono_output_topology(card_id=None)
-    request = build_driver_research_request(
-        topology,
-        _operator_inputs(),
-        _manual_settings(),
-    )
-    changed_inputs = {**_operator_inputs(), "notes": "Vented production cabinet"}
-
-    with pytest.raises(
-        DriverSafetyProfileError,
-        match="stale for the current visible inputs",
-    ):
-        validate_driver_research_request(
-            request,
-            topology,
-            changed_inputs,
-            _manual_settings(),
-        )
-
-
 def test_later_confirmation_records_confirmation_time_not_draft_creation(
     tmp_path: Path,
 ) -> None:
@@ -2839,7 +2521,6 @@ def test_later_confirmation_records_confirmation_time_not_draft_creation(
 
 
 def test_component_fields_have_distinct_declaration_and_research_contracts():
-    from jasper.active_speaker import design_draft as dd
     from jasper.active_speaker import driver_safety as ds
     from jasper.active_speaker._common import MANUAL_DRIVER_FIELDS
 
@@ -2849,7 +2530,6 @@ def test_component_fields_have_distinct_declaration_and_research_contracts():
     # two researchable fields only.
     researchable = new_fields - {"pad"}
     assert researchable <= set(ds._V2_RESEARCH_DRIVER_FIELDS)
-    assert researchable <= set(dd._V2_RESEARCH_COMPARABLE_FIELDS)
 
 
 def test_retired_driver_fields_are_gone_from_every_schema_copy():
@@ -2865,7 +2545,6 @@ def test_retired_driver_fields_are_gone_from_every_schema_copy():
     because that set is append-only: the next key retired the same way
     inherits this coverage instead of needing someone to remember to add it.
     """
-    from jasper.active_speaker import design_draft as dd
     from jasper.active_speaker import driver_safety as ds
     from jasper.active_speaker._common import LEGACY_DROPPED_DRIVER_FIELDS, MANUAL_DRIVER_FIELDS
 
@@ -2875,7 +2554,6 @@ def test_retired_driver_fields_are_gone_from_every_schema_copy():
     for schema in (
         MANUAL_DRIVER_FIELDS,
         ds._V2_RESEARCH_DRIVER_FIELDS,
-        dd._V2_RESEARCH_COMPARABLE_FIELDS,
     ):
         assert not (LEGACY_DROPPED_DRIVER_FIELDS & set(schema))
 
@@ -2897,7 +2575,7 @@ def _prompt_json_example(prompt: str) -> dict:
 def _mono_prompt(tweeter_style: str = "dome_tweeter") -> str:
     topology = _topology_with_tweeter_style(tweeter_style)
     return build_driver_research_prompt(
-        build_driver_research_request(topology, _operator_inputs(), _manual_settings())
+        build_driver_research_context(topology, _operator_inputs())
     )
 
 
@@ -3570,8 +3248,6 @@ _CX120_SENSITIVITY = {"woofer": 88.5, "tweeter": 89.2}
 
 
 def _cx120_manual_settings(*, tweeter_peak_dbfs: float = -65) -> dict:
-    # The browser copies every researched value into the visible form on
-    # import, and _validate_v2_research_prefill re-proves that match on save.
     normalised = normalise_manual_settings({
         "drivers": [
             {
@@ -3613,7 +3289,6 @@ def _cx120_research(request: dict, *, estimating: bool) -> dict:
             }
         drivers.append({
             "target_id": target["target_id"],
-            "target_fingerprint": target["target_fingerprint"],
             "role": role,
             "model": target["manufacturer_and_model"],
             "sensitivity_db_2v83_1m": _CX120_SENSITIVITY[role],
@@ -3644,7 +3319,6 @@ def _cx120_research(request: dict, *, estimating: bool) -> dict:
     return {
         "artifact_schema_version": 2,
         "kind": DRIVER_RESEARCH_KIND,
-        "request_fingerprint": request["request_fingerprint"],
         "drivers": drivers,
         "crossover_candidates": [],
     }
@@ -3653,8 +3327,8 @@ def _cx120_research(request: dict, *, estimating: bool) -> dict:
 def _cx120_setup() -> tuple[OutputTopology, dict, dict]:
     topology = _topology_with_tweeter_style("dome_tweeter")
     manual = _cx120_manual_settings()
-    request = build_driver_research_request(
-        topology, _cx120_operator_inputs(), manual
+    request = build_driver_research_context(
+        topology, _cx120_operator_inputs()
     )
     return topology, manual, request
 
@@ -3672,7 +3346,6 @@ def test_cx120_honest_null_reply_is_refused_loudly_never_dropped() -> None:
     with pytest.raises(ActiveSpeakerDesignDraftError) as excinfo:
         build_design_draft(
             topology,
-            driver_research_request=request,
             driver_research=_cx120_research(request, estimating=False),
             manual_settings=manual,
             operator_inputs=_cx120_operator_inputs(),
@@ -3696,7 +3369,6 @@ def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:
 
     draft = build_design_draft(
         topology,
-        driver_research_request=request,
         driver_research=research,
         manual_settings=manual,
         operator_inputs=_cx120_operator_inputs(),
@@ -3733,10 +3405,8 @@ def _cx120_confirmed_profile(*, tweeter_peak_dbfs: float = -65) -> tuple[dict, d
 
     topology = _topology_with_tweeter_style("dome_tweeter")
     manual = _cx120_manual_settings(tweeter_peak_dbfs=tweeter_peak_dbfs)
-    request = build_driver_research_request(topology, _cx120_operator_inputs(), manual)
     draft = build_design_draft(
         topology,
-        driver_research_request=request,
         driver_research=None,
         manual_settings=manual,
         operator_inputs=_cx120_operator_inputs(),

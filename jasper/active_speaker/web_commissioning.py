@@ -166,7 +166,6 @@ def regenerate_crossover_preview_from_current_draft(
         topology, _guards_changed = ensure_missing_software_guards()
         draft = build_design_draft(
             topology,
-            driver_research_request=draft.get("driver_research_request"),
             driver_research=draft.get("driver_research"),
             manual_settings=draft.get("manual_settings"),
             operator_inputs=draft.get("operator_inputs"),

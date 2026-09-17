@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The copyable driver-research prompt, built from one bound research request."""
+"""The copyable driver-research prompt, built from the current drivers and build notes."""
 
 from __future__ import annotations
 
@@ -27,13 +27,9 @@ from .test_signal_plan import DEFAULT_DRIVER_SWEEP_DURATION_S, DRIVER_SWEEP_DURA
 
 _PROMPT_TARGET_KEYS = (
     "target_id",
-    "target_fingerprint",
     "role",
     "manufacturer_and_model",
     "driver_style",
-    "speaker_group_id",
-    "speaker_group_mode",
-    "operator_declared_context",
 )
 
 # Keys whose value directly bounds what the speaker is allowed to excite. Only
@@ -61,7 +57,6 @@ def _driver_research_prompt_targets(request: Mapping[str, Any]) -> str:
         if isinstance(target, Mapping)
     ]
     projection: dict[str, Any] = {
-        "request_fingerprint": request.get("request_fingerprint"),
         "targets": targets,
     }
     if request.get("build_notes"):
@@ -107,7 +102,7 @@ def _driver_research_prompt_limits(request: Mapping[str, Any]) -> list[str]:
     made a code default the operative ceiling (ADR-0227 §1).
 
     Every bound is per-target and optional, so the heading is emitted only when
-    one exists. Prompt text only: ``request`` and its fingerprint are untouched.
+    one exists.
     """
 
     lines: list[str] = []
@@ -136,15 +131,10 @@ def _driver_research_prompt_limits(request: Mapping[str, Any]) -> list[str]:
 
 
 def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
-    """Return the copyable v2 research prompt for one exact request.
+    """Return the copyable v2 research prompt for the current drivers.
 
     The contract with the assistant is exactly one fenced ``json`` block back,
-    so the browser's paste box can recover the object from an ordinary chat
-    reply. The prompt embeds a *projection* of ``request`` — target identities,
-    models, operator-declared context — never the whole request; ``request``
-    stays the single source of truth the server binds against. The ask is a
-    strict SUBSET of what the parser accepts, so asking for less cannot
-    invalidate a previously-saved result.
+    so the browser's paste box can recover the object from an ordinary chat reply.
 
     **The estimate contract.** The ask orders the answer: published value first,
     then the researcher's best reality-grounded engineering estimate tagged
@@ -204,7 +194,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             'When the number is not published, give your best reality-grounded engineering estimate from the driver\'s published facts and physics. Tag it confidence "low", say in basis how you derived it (for example "estimated: 25 mm soft dome, Fs unpublished"), and round it — an estimate should look like one.',
             "Declare every estimate as an estimate and name one source in that field's provenance either way: the datasheet or measurement for a published number, and for an estimate the one fact or document it leaned on.",
             "Use null only for a field with no engineering basis at all, and add one entry to that driver's unknowns saying which fact is missing.",
-            "Never infer physical installation choices such as enclosure kind or horn or waveguide use. Treat operator_declared_context as authoritative; if an installation choice is undeclared, leave it unknown.",
+            "Never infer physical installation choices such as enclosure kind or horn or waveguide use. Use the build notes for installation choices; otherwise leave them unknown.",
             "For cabinet geometry, research radiator count, effective radiating diameter, and baffle width only when supported by evidence, while preserving any operator-declared enclosure choice.",
             "For a tweeter or compression driver, recommended_highpass_hz is the priority lookup.",
             "",
@@ -231,10 +221,8 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             "{",
             '  "artifact_schema_version": 2,',
             f'  "kind": "{DRIVER_RESEARCH_KIND}",',
-            '  "request_fingerprint": "echo from TARGETS",',
             '  "drivers": [{',
             '    "target_id": "echo from TARGETS",',
-            '    "target_fingerprint": "echo from TARGETS",',
             '    "role": "full_range|woofer|mid|tweeter",',
             '    "model": "echo manufacturer_and_model from TARGETS",',
             '    "nominal_impedance_ohm": 8,',
@@ -262,7 +250,7 @@ def build_driver_research_prompt(request: Mapping[str, Any]) -> str:
             "}",
             "```",
             "",
-            f"Return exactly {target_count} {entries} in drivers[] — one per target above, in the same order. Copy target_id, target_fingerprint, and model verbatim.",
+            f"Return exactly {target_count} {entries} in drivers[] — one per target above, in the same order. Copy target_id and model verbatim.",
             "",
             "KEY GUIDE",
             "- Every numeric key names its own unit (_hz, _ohm, _db, _mm, _s, _dbfs).",

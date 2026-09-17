@@ -20,6 +20,8 @@ if TYPE_CHECKING:
     from jasper.active_speaker.crossover_declaration import CrossoverGeometry
 
 from jasper.active_speaker import commissioning_coordinator, design_draft as design_draft_store
+from jasper.active_speaker.driver_safety import build_driver_research_context
+from jasper.active_speaker.driver_safety_prompt import build_driver_research_prompt
 from jasper.active_speaker.installation import installation_view
 from jasper.active_speaker.rear_calibration import RearCalibrationError, diagnostic_seed, read_rear_calibration
 from jasper.active_speaker.state_paths import baseline_profile_state_path
@@ -717,48 +719,30 @@ def _active_speaker_design_draft_payload() -> dict[str, Any]:
 def _active_speaker_driver_research_request_payload(
     raw: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build the silent, target-bound research request and copyable prompt."""
-
-    from jasper.active_speaker.driver_safety import build_driver_research_request
-    from jasper.active_speaker.driver_safety_prompt import build_driver_research_prompt
-    from jasper.active_speaker.design_draft import (
-        normalise_manual_settings,
-        normalise_operator_inputs,
-    )
+    """Return prompt text for the unsaved models and build notes."""
 
     if not isinstance(raw, dict):
         raise ValueError("driver research request must be an object")
-    allowed = {"operator_inputs", "manual_settings"}
+    allowed = {"operator_inputs"}
     unknown = sorted(str(key) for key in raw if key not in allowed)
     if unknown:
         raise ValueError(
             "driver research request has unknown fields: " + ", ".join(unknown)
         )
     topology = load_output_topology()
-    operator_inputs = normalise_operator_inputs(raw.get("operator_inputs"))
-    manual_settings = normalise_manual_settings(raw.get("manual_settings"))
-    request = build_driver_research_request(
+    operator_inputs = design_draft_store.normalise_operator_inputs(raw.get("operator_inputs"))
+    request = build_driver_research_context(
         topology,
         operator_inputs,
-        manual_settings,
     )
     payload = {
-        "request": request,
         "prompt": build_driver_research_prompt(request),
-        "safety": {
-            "no_audio": True,
-            "loads_camilla": False,
-            "applies_filters": False,
-            "authorizes_playback": False,
-            "research_is_advisory": True,
-        },
     }
     log_event(
         logger,
         "sound.active_speaker_driver_research_request",
         topology_id=topology.topology_id,
         target_count=len(request.get("targets") or []),
-        request_fingerprint=str(request.get("request_fingerprint")),
     )
     return payload
 
@@ -779,34 +763,21 @@ def _active_speaker_design_draft_save_payload(
     if not isinstance(raw, dict):
         raise ValueError("design draft request must be an object")
     allowed = {
-        "driver_research_request",
         "driver_research",
         "manual_settings",
         "operator_inputs",
-        "expected_revision",
     }
     unknown = sorted(str(key) for key in raw if key not in allowed)
     if unknown:
         raise ValueError(
             "design draft request has unknown fields: " + ", ".join(unknown)
         )
-    if "expected_revision" not in raw:
-        raise ValueError("design draft request requires expected_revision")
-    expected_revision = raw.get("expected_revision")
-    if (
-        isinstance(expected_revision, bool)
-        or not isinstance(expected_revision, int)
-        or expected_revision < 0
-    ):
-        raise ValueError("expected_revision must be a non-negative integer")
     topology, _guards_changed = ensure_missing_software_guards()
     payload = save_design_draft(
         topology,
-        driver_research_request=raw.get("driver_research_request"),
         driver_research=raw.get("driver_research"),
         manual_settings=raw.get("manual_settings"),
         operator_inputs=raw.get("operator_inputs"),
-        expected_revision=expected_revision,
         durable=durable,
     )
     log_event(
@@ -846,7 +817,7 @@ def _active_speaker_design_draft_save_payload(
 
 
 def apply_measured_crossover_geometry(
-    *, expected_revision: int, between_roles: tuple[str, str],
+    *, between_roles: tuple[str, str],
     configured: "CrossoverGeometry", selected: "CrossoverGeometry",
 ) -> dict[str, Any]:
     """Write a measured crossover onto the Sound declaration. Durable: every
@@ -859,8 +830,7 @@ def apply_measured_crossover_geometry(
     crossover regions included, and slope compiles into
     ``CrossoverRegion.order``, so a candidate measured at a
     different slope is as unreconcilable with the saved declaration as one
-    measured at a different corner. The compare-and-swap covers all three for
-    the same reason: it defends "Sound still says what this review measured".
+    measured at a different corner.
     """
     from jasper.active_speaker.crossover_declaration import (
         declared_crossover_geometry,
@@ -873,8 +843,6 @@ def apply_measured_crossover_geometry(
     if current is None or not current.matches(configured):
         raise ValueError("Sound changed since this measurement; review afresh")
     return _active_speaker_design_draft_save_payload({
-        "expected_revision": expected_revision,
-        "driver_research_request": draft.get("driver_research_request"),
         "driver_research": draft.get("driver_research"),
         "manual_settings": manual_settings_for_crossover(draft, between_roles, selected),
         "operator_inputs": draft.get("operator_inputs"),
@@ -912,7 +880,6 @@ def _active_speaker_crossover_preview_save_payload() -> dict[str, Any]:
         topology, _guards_changed = ensure_missing_software_guards()
         draft = build_design_draft(
             topology,
-            driver_research_request=draft.get("driver_research_request"),
             driver_research=draft.get("driver_research"),
             manual_settings=draft.get("manual_settings"),
             operator_inputs=draft.get("operator_inputs"),
