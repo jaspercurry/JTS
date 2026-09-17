@@ -2,14 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Active-speaker playback route capability contract.
-
-Active-speaker test/apply audio reaches hardware through a narrower runtime route than
-the full DAC output topology describes. Route resolution itself (stable ``hw:CARD=``
-identity, DAC-agnostic transport plan) lives on :mod:`jasper.output_topology`; this
-module is a thin reader over :func:`~jasper.output_topology.resolve_output_layout` that
-adds speaker-group demand accounting and route-fit issues.
-"""
+"""Active-speaker route capacity over :mod:`jasper.output_topology` resolution."""
 
 from __future__ import annotations
 
@@ -70,11 +63,10 @@ def _subwoofer_groups(topology: OutputTopology) -> list[SpeakerGroup]:
 
 
 def _required_active_output_count(groups: list[SpeakerGroup]) -> int:
-    channels = [channel for group in groups for channel in group.channels]
-    return max(len(channels), max(
-        (channel.physical_output_index for channel in channels
+    return max(
+        (channel.physical_output_index for group in groups for channel in group.channels
          if channel.physical_output_index is not None), default=-1,
-    ) + 1)
+    ) + 1
 
 
 @dataclass(frozen=True)
@@ -248,6 +240,11 @@ def active_playback_route_capability(
                 f"This install can drive {transport_channels} active output "
                 f"lanes, but this layout needs {required_outputs}."
             ),
+        ))
+    if subwoofer_groups and not layout.subwoofer_supported:
+        issues.append(_issue(
+            "blocker", "active_playback_subwoofer_not_supported",
+            "This install cannot drive a subwoofer output.",
         ))
 
     return ActivePlaybackRouteCapability(

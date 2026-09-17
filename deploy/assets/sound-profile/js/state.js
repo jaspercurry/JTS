@@ -93,6 +93,13 @@ function resetOutputTemplateDraft() {
 }
 
 function el(id) { return document.getElementById(id); }
+function readJsonIsland(id, fallback) {
+  try {
+    return JSON.parse((el(id) || {}).textContent || 'null') || fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
 // The crossover filters and slopes this page may OFFER, served on the island
 // by jasper/web/sound_setup.py:_sound_page_island and owned by the compiler
 // (jasper/active_speaker/profile.py's SUPPORTED_CROSSOVER_TYPES /
@@ -120,31 +127,18 @@ function crossoverVocabularyFromIsland(raw) {
 // Match Loudness; Speaker owns the layout, drivers and local commissioning;
 // Output owns the I2S HAT and volume shaping.
 var pageData = (function() {
-  var node = document.getElementById('sound-page-data');
-  var text = node && node.textContent ? node.textContent.trim() : '';
-  var legacyFollowerIsland = false;
-  // Keep the standalone follower harness compatible with the old island.
-  if (!text) {
-    node = document.getElementById('sound-follower-data');
-    text = node && node.textContent ? node.textContent.trim() : '';
-    legacyFollowerIsland = !!text;
-  }
-  if (!text) {
-    return {mode: 'eq', follower: false, crossoverVocabulary: crossoverVocabularyFromIsland(null)};
-  }
-  try {
-    var parsed = JSON.parse(text);
-    var mode = parsed.mode === 'speaker' || parsed.mode === 'output' ? parsed.mode : 'eq';
-    return {
-      mode: legacyFollowerIsland ? 'speaker' : mode,
-      follower: parsed.follower === true,
-      crossoverVocabulary: crossoverVocabularyFromIsland(parsed.crossover_vocabulary)
-    };
-  } catch (e) {
-    // Split pages without EQ chrome must stay on the local-speaker side if the
-    // tiny island is damaged; attempting EQ would dereference absent tabs.
-    return {mode: 'speaker', follower: true, crossoverVocabulary: crossoverVocabularyFromIsland(null)};
-  }
+  var id = (el('sound-page-data') || {}).textContent?.trim() ?
+    'sound-page-data' : 'sound-follower-data';
+  // Damaged split-page islands must not select absent EQ tabs.
+  var fallback = (el(id) || {}).textContent?.trim() ?
+    {mode: 'speaker', follower: true} : {mode: 'eq', follower: false};
+  var parsed = readJsonIsland(id, fallback);
+  var mode = parsed.mode === 'speaker' || parsed.mode === 'output' ? parsed.mode : 'eq';
+  return {
+    mode: id === 'sound-follower-data' && (el(id) || {}).textContent?.trim() ? 'speaker' : mode,
+    follower: parsed.follower === true,
+    crossoverVocabulary: crossoverVocabularyFromIsland(parsed.crossover_vocabulary)
+  };
 })();
 var pageMode = pageData.mode;
 var followerMode = pageData.follower;
@@ -161,6 +155,7 @@ export {
   outputPage,
   outputTopology,
   pageMode,
+  readJsonIsland,
   resetEqEditor,
   resetOutputTemplateDraft,
 };

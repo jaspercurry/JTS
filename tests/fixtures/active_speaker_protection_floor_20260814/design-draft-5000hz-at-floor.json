@@ -36,7 +36,6 @@
  "driver_safety_profile": {
   "artifact_schema_version": 1,
   "authority": "operator_visible_values",
-  "authorizes_playback": false,
   "confirmation": {
    "confirmed_at": "2026-08-14T17:49:23Z",
    "confirmed_fingerprint": "829e0f9fe4b3356558fad406f59ef934d189ec1baf30a0e95f428c8d09ba83f0",
@@ -362,7 +361,6 @@
   "topology_id": "default"
  },
  "driver_safety_profile_evaluation": {
-  "authorizes_playback": false,
   "confirmed_and_current": true,
   "profile_fingerprint": "829e0f9fe4b3356558fad406f59ef934d189ec1baf30a0e95f428c8d09ba83f0",
   "reasons": [],
@@ -547,8 +545,6 @@
  "revision": 4,
  "safety": {
   "applies_filters": false,
-  "authorizes_playback": false,
-  "driver_safety_profile_authorizes_playback": false,
   "loads_camilla": false,
   "no_audio": true,
   "requires_human_review": true,

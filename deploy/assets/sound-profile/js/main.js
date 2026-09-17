@@ -3512,19 +3512,13 @@ import {
     render();
   }
   async function saveAndApplyBaselineProfile() {
-    var profile = activeSpeaker.baselineProfile || {};
     patchActiveSpeaker({
       loading: false, action: 'Finishing active profile',
       error: ''
     });
     render();
     try {
-      var expectedCandidateFingerprint = String(
-        profile.candidate_fingerprint || ''
-      );
-      var payload = await postJSON('./active-speaker/baseline-profile/save-and-apply', {
-        expected_candidate_fingerprint: expectedCandidateFingerprint
-      });
+      var payload = await postJSON('./active-speaker/baseline-profile/save-and-apply', {});
       patchActiveSpeaker({
         loading: false, action: '',
         baselineProfile: payload.profile || payload,

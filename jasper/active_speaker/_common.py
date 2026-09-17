@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any, Collection, Mapping
+from typing import Any, Collection, Mapping, Sequence
 
 from jasper.json_fields import JsonFields
+from jasper.output_topology import SpeakerGroup
 
 
 # Float round-trip noise only; must never bridge a real crossover setting change.
@@ -39,6 +40,7 @@ DRIVER_CLASSES: tuple[str, ...] = (
 LEGACY_DROPPED_DRIVER_FIELDS: frozenset[str] = frozenset({
     "horn_coverage_deg",
     "crossover_search_band_hz",
+    "target_fingerprint",
 })
 
 MANUAL_DRIVER_FIELDS = (
@@ -63,7 +65,7 @@ MANUAL_DRIVER_FIELDS = (
     "notes", "pad", "installation", "source",
 )
 DRIVER_RESEARCH_FIELDS = frozenset(MANUAL_DRIVER_FIELDS) | {
-    "sources", "unknowns", "field_provenance", "target_fingerprint",
+    "sources", "unknowns", "field_provenance",
 }
 MANUAL_CANDIDATE_FIELDS = {
     "between_roles", "frequency_hz", "filter_type", "slope_db_per_octave",
@@ -73,21 +75,22 @@ MANUAL_CANDIDATE_FIELDS = {
 _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 
-def issue(severity: str, code: str, message: str) -> dict[str, str]:
-    """A severity-tagged diagnostic record (`blocker`/`warning`/…)."""
+def software_guard_needed(groups: Sequence[SpeakerGroup]) -> bool:
+    return any(
+        channel.role == "tweeter" and channel.protection_status == "absent"
+        for group in groups for channel in group.channels
+    )
 
+
+def issue(severity: str, code: str, message: str) -> dict[str, str]:
     return {"severity": severity, "code": code, "message": message}
 
 
 def blocker_issue(code: str, message: str) -> dict[str, str]:
-    """A blocker diagnostic for fail-closed operator paths."""
-
     return issue("blocker", code, message)
 
 
 def gate(gate_id: str, *, label: str, passed: bool, message: str) -> dict[str, Any]:
-    """A named pass/fail readiness gate with an operator-facing label."""
-
     return {
         "id": gate_id,
         "label": label,
@@ -123,11 +126,7 @@ def require_sha256_hex(
     *,
     message: str | None = None,
 ) -> str:
-    """Return ``value`` if it is a 64-character lowercase-hex SHA-256 digest.
-
-    Otherwise raises ``exc_type(message)``; ``message`` defaults to the wording
-    most call sites use, and a call site needing different wording passes it.
-    """
+    """Require a lowercase SHA-256 digest."""
 
     if isinstance(value, str) and _SHA256_HEX_RE.fullmatch(value) is not None:
         return value

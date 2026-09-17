@@ -14,6 +14,8 @@ import pytest
 from jasper.active_speaker.design_draft import (
     ActiveSpeakerDesignDraftError,
     build_design_draft,
+    design_draft_view,
+    normalise_driver_research,
     load_design_draft,
     normalise_manual_settings,
     save_design_draft,
@@ -26,7 +28,6 @@ from jasper.active_speaker.driver_safety import (
     build_driver_research_context,
     compute_driver_safety_profile,
     driver_research_targets,
-    validate_driver_research_result_shape,
 )
 from jasper.active_speaker.driver_safety_prompt import build_driver_research_prompt
 from jasper.active_speaker.driver_protection import (
@@ -636,7 +637,6 @@ def test_dropped_ask_fields_are_still_accepted_and_normalised() -> None:
     for driver in manual_settings["drivers"]:
         driver.update({k: v for k, v in verbose.items() if k != "manufacturer"})
 
-    validate_driver_research_result_shape(research)
     draft = build_design_draft(
         topology,
         driver_research=research,
@@ -665,7 +665,6 @@ def test_legacy_research_horn_coverage_deg_is_tolerated_and_dropped() -> None:
     for driver in manual_settings["drivers"]:
         driver["horn_coverage_deg"] = 90
 
-    validate_driver_research_result_shape(research)
     draft = build_design_draft(
         topology,
         driver_research=research,
@@ -677,7 +676,7 @@ def test_legacy_research_horn_coverage_deg_is_tolerated_and_dropped() -> None:
         assert "horn_coverage_deg" not in driver
     for driver in draft["manual_settings"]["drivers"]:
         assert "horn_coverage_deg" not in driver
-    assert draft["driver_safety_profile"] is not None
+    assert design_draft_view(draft)["driver_safety_profile"] is not None
 
     profile = compute_driver_safety_profile(
         topology,
@@ -721,7 +720,7 @@ def test_computed_profile_uses_visible_values_and_never_authorizes_audio() -> No
         created_at="2026-07-13T12:00:00Z",
     )
 
-    profile = draft["driver_safety_profile"]
+    profile = design_draft_view(draft)["driver_safety_profile"]
     assert profile["kind"] == DRIVER_SAFETY_PROFILE_KIND
     assert not any(i["severity"] == "blocker" for i in profile["issues"])
     assert profile["authority"] == "operator_visible_values"
@@ -759,24 +758,23 @@ def test_missing_floor_and_duration_are_computed_issues() -> None:
         "max_sweep_duration_s_missing" in issue["code"] for issue in partial["issues"]
     )
 
-def test_v2_result_rejects_boolean_values_and_unknown_fields() -> None:
-    topology = mono_output_topology(card_id=None)
-    request = build_driver_research_context(topology, _operator_inputs())
-
-    bool_value = _research_result(request)
-    bool_value["drivers"][0]["hard_excitation_band_hz"][0] = True
-    with pytest.raises(ActiveSpeakerDesignDraftError):
-        build_design_draft(
-            topology,
-            driver_research=bool_value,
-            operator_inputs=_operator_inputs(),
-        )
-
-    unknown = _research_result(request)
-    unknown["typo"] = True
+@pytest.mark.parametrize("patch,code", [
+    ({"artifact_schema_version": True}, "invalid_design_draft"),
+    ({"kind": "other"}, "invalid_design_draft"),
+    ({"drivers": [False]}, "invalid_design_draft"),
+    ({"drivers": {}}, "invalid_design_draft"),
+    ({"drivers": [{"role": "woofer", "model": "W", "hard_excitation_band_hz": [True, 20000]}]}, "invalid_design_draft"),
+    ({"crossover_candidates": [False]}, "invalid_design_draft"),
+    ({"crossover_candidates": {}}, "invalid_design_draft"),
+    ({"crossover_candidates": [{"between_roles": ["woofer", "tweeter"]}] * 9}, "invalid_design_draft"),
+    ({"crossover_candidates": [{"between_roles": ["woofer", "tweeter"], "source": {"value": True}}]}, "invalid_design_draft"),
+    ({"typo": True}, "unknown_driver_fields"),
+])
+def test_v2_result_rejects_invalid_shapes(patch, code):
+    request = build_driver_research_context(mono_output_topology(card_id=None), _operator_inputs())
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
-        build_design_draft(topology, driver_research=unknown, operator_inputs=_operator_inputs())
-    assert caught.value.code == "unknown_driver_fields"
+        normalise_driver_research(dict(_research_result(request), **patch))
+    assert caught.value.code == code
 
 
 def test_a_typed_protection_value_the_derivation_replaced_is_disclosed() -> None:
@@ -1016,7 +1014,7 @@ def test_legacy_research_remains_readable_but_advisory() -> None:
     draft = build_design_draft(topology, driver_research=legacy)
 
     assert draft["driver_research"]["artifact_schema_version"] == 1
-    assert any(i["severity"] == "blocker" for i in draft["driver_safety_profile"]["issues"])
+    assert any(i["severity"] == "blocker" for i in design_draft_view(draft)["driver_safety_profile"]["issues"])
     assert draft["safety"]["research_is_advisory"] is True
 
 
@@ -2292,13 +2290,6 @@ def test_cx120_honest_null_reply_is_refused_loudly_never_dropped() -> None:
 
 
 def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:
-    """Direction 2: the same driver, answered under the estimate contract.
-
-    Published bands and sensitivities where the datasheet has them, conservative
-    estimates where it does not — and that is enough to confirm.  This is the
-    end of the two-leg deadlock: no honest-null wall, no nine manual fields.
-    """
-
     topology, manual, request = _cx120_setup()
     research = _cx120_research(request, estimating=True)
 
@@ -2310,7 +2301,7 @@ def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:
         created_at="2026-08-06T12:00:00Z",
     )
 
-    profile = draft["driver_safety_profile"]
+    profile = design_draft_view(draft)["driver_safety_profile"]
     assert profile["issues"] == []
     assert not any(i["severity"] == "blocker" for i in profile["issues"])
     assert profile["authority"] == "operator_visible_values"
@@ -2328,8 +2319,6 @@ def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:
 
 
 def _cx120_profile(*, tweeter_peak_dbfs: float = -65) -> tuple[dict, dict]:
-    """Return (computed safety profile, pad-folded declared sensitivities)."""
-
     from jasper.active_speaker.design_draft import (
         declared_effective_driver_sensitivities,
     )
@@ -2343,7 +2332,7 @@ def _cx120_profile(*, tweeter_peak_dbfs: float = -65) -> tuple[dict, dict]:
         operator_inputs=_cx120_operator_inputs(),
         created_at="2026-08-06T12:00:00Z",
     )
-    profile = draft["driver_safety_profile"]
+    profile = design_draft_view(draft)["driver_safety_profile"]
     assert profile["issues"] == []
     return profile, declared_effective_driver_sensitivities(draft)
 
@@ -2600,7 +2589,7 @@ def test_declared_target_fit_budget_round_trip_and_refusal(budget, accepted):
             compute_driver_safety_profile(topology, manual_settings=manual, driver_research=None)
         return
     draft = build_design_draft(topology, manual_settings=manual, created_at="2026-09-12T00:00:00Z")
-    profile = draft["driver_safety_profile"]
+    profile = design_draft_view(draft)["driver_safety_profile"]
     assert profile["targets"][0].get("fit_budget", {}) == budget
 
 
@@ -2621,7 +2610,7 @@ def test_apply_requires_only_the_floor_but_measurement_requires_its_inputs(missi
     draft = build_design_draft(topology, manual_settings=manual)
     applied = load_tuning_declaration(topology, design_draft=draft)
     assert applied.protection_sections_by_role["tweeter"]
-    profile = draft["driver_safety_profile"]
+    profile = design_draft_view(draft)["driver_safety_profile"]
     tweeter = next(t for t in profile["targets"] if t["role"] == "tweeter")
     with pytest.raises(ExcitationSafetyPlanError) as refused_measurement:
         prepare_driver_excitation_plan(topology, profile, _requested(tweeter["target_fingerprint"]))

@@ -538,7 +538,7 @@ function summedSummary(latestSummedTests, overrides = {}) {
 function setupHarness(fetchHandler, options = {}) {
   const pageMode = options.mode || "speaker";
   const elements = new Map();
-  const absent = new Set();
+  const absent = new Set(options.absentIslands || []);
   for (const id of [
     "tab-off", "tab-saved", "tab-draft", "eq-tabs", "back", "view-body",
     "now-playing", "plot", "plot-summary", "live-label", "status",
@@ -4056,7 +4056,7 @@ async function testSaveAndApplyUsesSingleFinishEndpoint() {
   harness.dispatchClick({ "data-act": "save-apply-baseline-profile" });
   for (let i = 0; i < 8; i += 1) await harness.flush();
 
-  assert.deepEqual(finishPosts, [{expected_candidate_fingerprint: ''}]);
+  assert.deepEqual(finishPosts, [{}]);
   assert.ok(harness.elements.get('view-body').innerHTML.includes(baselineApplied.config.path));
   assert.doesNotMatch(harness.elements.get('status').className, /err/);
   return {saveAndApplyUsesSingleFinishEndpoint: true};
@@ -4495,32 +4495,19 @@ async function testFollowerModeRendersLocalDriverUi() {
   return { followerModeRendersLocalDriverUi: true };
 }
 
-// A malformed island must fall to the SAFE side (follower), never solo: the
-// follower page has no Off/Saved/Draft tabs or plot, so a solo fallback would
-// dereference absent elements and blank the page. (json_island always emits
-// valid JSON; this guards the fallback direction, not a real server output.)
 async function testFollowerModeSafeFallbackOnMalformedIsland() {
-  const fallback = baseFetch();
-  const harness = setupHarness((path, options = {}) => {
-    if (path === "./output-topology") {
-      return Promise.resolve(response(activeTwoWayTopologyPayload()));
-    }
-    return fallback(path, options);
-  }, { follower: true, islandText: "{not valid json" });
-  // Reaching here means the module booted without throwing on the absent tabs —
-  // i.e. it resolved to follower mode and skipped the solo tab/plot wiring.
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("Active crossover setup")) {
-    fail("a malformed island must still render the local active-speaker UI", { html });
+  for (const options of [
+    {follower: true, islandText: "{not valid json"},
+    {absentIslands: ['jts-driver-fields']},
+  ]) {
+    const harness = setupHarness(baseFetch({
+      "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    }), options);
+    for (let i = 0; i < 4; i++) await harness.flush();
+    assert.match(harness.elements.get("view-body").innerHTML, /Active crossover setup/);
   }
-  return { followerModeSafeFallbackOnMalformedIsland: true };
+  return {followerModeSafeFallbackOnMalformedIsland: true, missingDriverIslandBoots: true};
 }
-
 
 async function testStereoDriverValuesStayTargetSpecific() {
   const designSaves = [];

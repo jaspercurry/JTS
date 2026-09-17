@@ -6471,13 +6471,9 @@ def test_a_measure_only_session_resolves_to_review_never_done():
 
 @pytest.mark.parametrize("layers", [(), ("room",), ("bass",), ("room", "bass")])
 def test_apply_after_draft_edit_loads_the_trial_composers_exact_bytes(monkeypatch, tmp_path, layers):
-    import hashlib
     from jasper.sound.settings import saved_sound_layers
     from jasper.active_speaker.candidate_bank import publish_authored_candidate
-    from jasper.active_speaker.branch_chain import confirmed_protection_sections
-    from jasper.active_speaker.crossover_v2.conductor_context import measurement_role_channels
-    from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
-    from jasper.active_speaker.playback_route import resolve_active_playback_device
+    from jasper.active_speaker.measurement_emit import compile_tuning_graph
 
     topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     from tests.test_active_speaker_measured_crossover_candidate import _room_correction
@@ -6492,10 +6488,7 @@ def test_apply_after_draft_edit_loads_the_trial_composers_exact_bytes(monkeypatc
     draft.update(revision=7, updated_at="2026-09-13T12:00:00Z")
     draft["manual_settings"]["driver_spacing_mm"] = 190
     path.write_text(json.dumps(draft))
-    declaration = MeasurementGraphProfile(
-        preset, topology, measurement_role_channels(preset), resolve_active_playback_device(topology)[0],
-        confirmed_protection_sections(draft["driver_safety_profile"]),
-    )
+    declaration = v2apply.load_tuning_declaration(topology, design_draft=v2apply.load_design_draft(topology=topology))
     preference_filters, trim_db = saved_sound_layers()
     expected = compile_tuning_graph(declaration, candidate=candidate,
                                     preference_filters=preference_filters, output_trim_db=trim_db).encode("utf-8")

@@ -23,6 +23,10 @@ from jasper.active_speaker import commissioning_coordinator, design_draft as des
 from jasper.active_speaker.driver_safety import build_driver_research_context
 from jasper.active_speaker.driver_safety_prompt import build_driver_research_prompt
 from jasper.active_speaker.installation import installation_view
+from jasper.active_speaker.playback_route import (
+    ActiveLaneCapabilityGap, UnrecognizedDacProfile,
+    active_lane_capability_gap, active_playback_route_capability,
+)
 from jasper.active_speaker.rear_calibration import RearCalibrationError, diagnostic_seed, read_rear_calibration
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.tuning_handoff import PROGRAM_ENTRIES, build_tuning_handoff
@@ -84,12 +88,11 @@ class OutputHardwareRequestConflict(ValueError):
 
 
 class OutputTopologyCapabilityBlocked(ValueError):
-    """Raised when a posted layout needs hardware this DAC does not have.
+    """Raised when a posted layout needs hardware this DAC does not have."""
 
-    A ``ValueError`` so the POST dispatcher's existing validation branch returns
-    it as ``{"error": ...}`` with 400 — the shape the page already renders as a
-    layout error while keeping the operator's unsaved draft on screen.
-    """
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
 
 
 def _output_hardware_dict() -> dict[str, Any] | None:
@@ -206,17 +209,11 @@ def _output_topology_payload() -> dict[str, Any]:
         "hardware_repin": repin.to_dict() if repin is not None else None,
         "i2s_hat": _i2s_hat_payload(),
         "clock_domain": clock_domain_report(topology),
-        "active_playback_route": _active_speaker_playback_route_payload(topology),
     }
 
 
 def _refuse_undrivable_layout(topology: OutputTopology) -> None:
     """Refuse layouts outside the DAC's declared active route capacity."""
-    from jasper.active_speaker.playback_route import (
-        ActiveLaneCapabilityGap, UnrecognizedDacProfile,
-        active_lane_capability_gap, active_playback_route_capability,
-    )
-
     gap = active_lane_capability_gap(topology)
     if isinstance(gap, UnrecognizedDacProfile):
         return
@@ -230,15 +227,11 @@ def _refuse_undrivable_layout(topology: OutputTopology) -> None:
             "audio to every output — only safe when the speaker has its own "
             "built-in passive crossover), or attach an active-capable DAC."
         )
-    elif not route.fits_required_outputs:
-        reason = "active_playback_route_too_narrow"
-        message = (f"This install can drive {route.transport_channel_count} active outputs, "
-                   f"but this layout needs {route.required_active_output_count}.")
-    elif route.subwoofer_group_count and not route.subwoofer_supported:
-        reason = "active_playback_subwoofer_not_supported"
-        message = "This install cannot drive a subwoofer output."
     else:
-        return
+        blocker = next((issue for issue in route.issues if issue["severity"] == "blocker"), None)
+        if blocker is None:
+            return
+        reason, message = blocker["code"], blocker["message"]
     log_event(
         logger, "sound.output_topology_save", level=logging.WARNING,
         result="blocked", reason=reason, device_id=topology.hardware.device_id,
@@ -247,25 +240,16 @@ def _refuse_undrivable_layout(topology: OutputTopology) -> None:
         transport_channel_count=route.transport_channel_count,
         subwoofer_supported=route.subwoofer_supported,
     )
-    raise OutputTopologyCapabilityBlocked(message)
+    raise OutputTopologyCapabilityBlocked(reason, message)
 
 
-def _refuse_duplicate_physical_outputs(topology: OutputTopology) -> None:
-    """Refuse a save that puts two drivers on the same DAC channel.
-
-    The channel selector never disables an already-used output (a 3+
-    channel group could not otherwise swap two drivers without parking one
-    on a spare channel first), so this is the only gate against two
-    channels sharing a physical_output_index. Reuses evaluate_output_topology's
-    existing duplicate_physical_output blocker instead of re-deriving it.
-    """
-
-    duplicates = [
+def _refuse_invalid_physical_outputs(topology: OutputTopology) -> None:
+    blockers = [
         issue for issue in topology.evaluation()["blockers"]
-        if issue["code"] == "duplicate_physical_output"
+        if issue["code"] in {"duplicate_physical_output", "physical_output_unassigned"}
     ]
-    if duplicates:
-        raise OutputTopologyError(duplicates[0]["message"])
+    if blockers:
+        raise OutputTopologyError(blockers[0]["message"])
 
 
 def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
@@ -278,8 +262,8 @@ def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
         snapshot = mutation.snapshot()
         raw_topology = raw.get("output_topology", raw)
         topology = OutputTopology.from_mapping(raw_topology)
+        _refuse_invalid_physical_outputs(topology)
         _refuse_undrivable_layout(topology)
-        _refuse_duplicate_physical_outputs(topology)
         safe_stop = _active_speaker_stop_payload()
         def commit_topology() -> OutputTopology:
             mutation.save(topology)
@@ -540,18 +524,6 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
     payload["runtime_convergence"] = runtime.convergence.to_dict()
     payload["reconcile"] = reconcile
     return payload
-
-
-def _active_speaker_playback_route_payload(
-    topology: OutputTopology | None = None,
-) -> dict[str, Any]:
-    """Return the active-speaker runtime route capability for the saved topology."""
-
-    from jasper.active_speaker.playback_route import active_playback_route_capability
-
-    return active_playback_route_capability(
-        topology or load_output_topology()
-    ).to_dict()
 
 
 def _active_speaker_stop_payload() -> dict[str, Any]:

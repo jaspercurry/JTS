@@ -2,12 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Sound profile — driver-research and crossover model.
-//
-// Derives the driver/crossover working state from the topology plus the
-// research record: targets, safety settings, validation and the payload
-// summaries the setup flow reads. No rendering, no IO.
-
 import {
   activeCommissionGroup,
   humanRole,
@@ -24,7 +18,8 @@ import {
 import {
   crossoverPreview,
   crossoverVocabulary,
-  driverResearch
+  driverResearch,
+  readJsonIsland
 } from "/assets/sound-profile/js/state.js";
 import {
   activeCrossoverPairs,
@@ -39,7 +34,9 @@ import {
   physicalOutputLabel
 } from "/assets/sound-profile/js/topology.js";
 
-const DRIVER_VOCABULARY = JSON.parse(document.getElementById('jts-driver-fields').textContent);
+const DRIVER_VOCABULARY = readJsonIsland('jts-driver-fields', {
+  driver_fields: [], driver_echo_back_fields: []
+});
 
 function driverResearchRoles(topology) {
   var pairs = activeCrossoverPairs(topology);

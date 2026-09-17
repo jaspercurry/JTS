@@ -36,7 +36,7 @@ from jasper.output_topology import (
     subwoofer_speaker_groups,
 )
 
-from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, gate as _gate, issue as _issue
+from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, gate as _gate, issue as _issue, software_guard_needed as _software_guard_needed
 from .camilla_yaml import (
     COMMISSIONING_FILTER_MODE,
     COMMISSIONING_HEADROOM_DB,
@@ -332,13 +332,6 @@ def load_staged_startup_config(
         ],
         "next_step": "Stage a fresh protected startup config.",
     }
-
-
-def _software_guard_needed(groups: list[SpeakerGroup]) -> bool:
-    return any(
-        channel.role == "tweeter" and channel.protection_status == "absent"
-        for group in groups for channel in group.channels
-    )
 
 
 def _role_pair_key(raw: Any) -> tuple[str, str] | None:
@@ -2093,4 +2086,3 @@ def prepare_driver_commissioning_config(
         ),
     )
     return payload
-

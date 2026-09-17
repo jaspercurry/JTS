@@ -36,6 +36,7 @@ from .driver_safety import (
     DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
     DriverSafetyProfileError,
     _normalise_field_provenance,
+    _reject_bool_tree,
     compute_driver_safety_profile,
     driver_protection_policy_view,
     driver_research_targets,
@@ -43,7 +44,6 @@ from .driver_safety import (
     normalise_driver_safety_fields,
     validate_manual_target_bindings,
     build_driver_research_context,
-    validate_driver_research_result_shape,
 )
 from .installation import normalise_installation
 from .profile import SUPPORTED_POLARITY
@@ -480,11 +480,6 @@ def normalise_driver_research(
         raise ActiveSpeakerDesignDraftError(
             f"driver_research.kind must be {DRIVER_RESEARCH_KIND}"
         )
-    if research_schema_version == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:
-        try:
-            validate_driver_research_result_shape(raw)
-        except DriverSafetyProfileError as exc:
-            raise ActiveSpeakerDesignDraftError(str(exc)) from exc
     drivers = []
     for index, item in enumerate(_sequence(
         raw.get("drivers"), "driver_research.drivers", limit=_MAX_DRIVERS,
@@ -511,12 +506,18 @@ def normalise_driver_research(
         raise ActiveSpeakerDesignDraftError("driver_research.drivers is required")
     candidates = []
     for index, item in enumerate(_sequence(
-        raw.get("crossover_candidates"), "driver_research.crossover_candidates", limit=_MAX_CANDIDATES,
+        raw.get("crossover_candidates"), "driver_research.crossover_candidates",
+        limit=8 if research_schema_version == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION else _MAX_CANDIDATES,
     )):
         _reject_unknown_keys(
             _mapping(item, f"driver_research.crossover_candidates[{index}]"),
             f"driver_research.crossover_candidates[{index}]", MANUAL_CANDIDATE_FIELDS,
         )
+        if research_schema_version == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:
+            try:
+                _reject_bool_tree(item, f"driver_research.crossover_candidates[{index}]")
+            except DriverSafetyProfileError as exc:
+                raise ActiveSpeakerDesignDraftError(str(exc)) from exc
         candidates.append(_normalise_candidate(item))
     result: dict[str, Any] = {
         "artifact_schema_version": research_schema_version,
@@ -1006,7 +1007,7 @@ def build_design_draft(
         status = "ready_for_review"
     now = updated_at or created_at or _utc_now()
     created = created_at or now
-    return design_draft_view({
+    return {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": DESIGN_DRAFT_KIND,
         "status": status,
@@ -1040,7 +1041,7 @@ def build_design_draft(
             if status == "needs_research"
             else "Review the crossover settings before preparing a no-audio preview."
         ),
-    }, topology=topology)
+    }
 
 
 def design_draft_view(
@@ -1073,14 +1074,6 @@ def load_design_draft(
     raw = _read_design_draft(_design_draft_path(path))
     if raw["status"] in ("not_saved", "unreadable"):
         return raw
-    raw.pop("driver_research_request", None)
-    research = raw.get("driver_research")
-    if isinstance(research, dict):
-        research.pop("request_fingerprint", None)
-        research.pop("result_fingerprint", None)
-        for driver in research.get("drivers", []):
-            if isinstance(driver, dict):
-                driver.pop("target_fingerprint", None)
     return design_draft_view(raw, topology=topology)
 
 
@@ -1184,10 +1177,8 @@ def save_design_draft(
             target,
             # allow_nan=False: fail at the writer that produced the non-finite
             # value, not at the evidence packet hours later (#2839).
-            json.dumps({key: value for key, value in draft.items()
-                        if key not in _COMPUTED_DRAFT_FIELDS},
-                       allow_nan=False, indent=2, sort_keys=True) + "\n",
+            json.dumps(draft, allow_nan=False, indent=2, sort_keys=True) + "\n",
             mode=0o640,
             durable=durable,
         )
-    return draft
+    return design_draft_view(draft, topology=topology)
