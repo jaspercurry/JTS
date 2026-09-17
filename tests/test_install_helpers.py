@@ -3701,6 +3701,7 @@ def test_retire_leftovers_clears_units_then_files_then_tombstones(tmp_path):
             "STATE_DIR": str(state_dir),
             "SYSTEMD_DIR": str(systemd_dir),
             "CAMILLA_CONF": str(tmp_path / "camilla"),
+            "LOCAL_SBIN_DIR": str(tmp_path / "sbin"),
         },
     )
 
@@ -3743,19 +3744,21 @@ def test_retire_leftovers_clears_units_then_files_then_tombstones(tmp_path):
 
 
 #: What a `file` row may name. `dir` rows are narrower -- they rm -rf a whole
-#: subtree, so they must match _RETIRE_DIR_ROOTS in retirements.sh.
+#: subtree, so they are confined to the directories install.sh itself owns.
+#: This pin is the only scope check the kind has; retirements.sh applies the
+#: rows without re-validating them.
 _RETIRE_FILE_ROOTS = (
     "${STATE_DIR}/",
     "${SYSTEMD_DIR}/",
     "${CAMILLA_CONF}/",
+    "${LOCAL_SBIN_DIR}/",
     "/etc/",
-    "/usr/local/sbin/",
 )
 _RETIRE_DIR_ROOTS = (
     "${STATE_DIR}/",
+    "${LOCAL_SBIN_DIR}/",
     "/etc/jasper/",
     "/etc/alsa/conf.d/",
-    "/usr/local/sbin/",
 )
 
 
@@ -3786,7 +3789,7 @@ def test_retired_leftovers_table_targets_are_scoped():
     # The retired dmix/fanin switcher: nothing else in the tree removes its
     # binary or its config tree.
     assert {
-        "/usr/local/sbin/jasper-audio-topology",
+        "${LOCAL_SBIN_DIR}/jasper-audio-topology",
         "/etc/jasper/audio-topology",
     } <= path_targets
 
@@ -3818,12 +3821,12 @@ def _run_retire_env_rows(tmp_path: Path, seeded: str | None):
     env_dir.mkdir(exist_ok=True)
     if seeded is not None:
         (env_dir / "jasper.env").write_text(seeded, encoding="utf-8")
-    sed_lib = _INSTALL_LIB_DIR.parent / "jasper-sed-inplace.sh"
+    env_lib = _INSTALL_LIB_DIR.parent / "jasper-env-file.sh"
     return subprocess.run(
         [
             "bash",
             "-euc",
-            f". {shlex.quote(str(sed_lib))}\n"
+            f". {shlex.quote(str(env_lib))}\n"
             f". {shlex.quote(str(_INSTALL_LIB_DIR / 'retirements.sh'))}\n"
             "_retire_apply env _retire_env_lines\n",
         ],
@@ -3836,6 +3839,7 @@ def _run_retire_env_rows(tmp_path: Path, seeded: str | None):
             "STATE_DIR": str(tmp_path / "state"),
             "SYSTEMD_DIR": str(tmp_path / "systemd"),
             "CAMILLA_CONF": str(tmp_path / "camilla"),
+            "LOCAL_SBIN_DIR": str(tmp_path / "sbin"),
         },
     )
 
