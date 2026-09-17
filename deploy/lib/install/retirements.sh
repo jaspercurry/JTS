@@ -77,6 +77,12 @@ JASPER_RETIRED_LEFTOVERS=(
     # with nothing left to read or write them.
     # REMOVAL CONDITION: every box has taken one install after this lands.
     "file|${STATE_DIR}/active_speaker_commissioning_run.json ${STATE_DIR}/.active_speaker_commissioning_run.json.lock ${STATE_DIR}/.active_speaker_commissioning_run.json.live-execution.lock ${STATE_DIR}/.active_speaker_commissioning_run.json.live-mutation.json|the retired v1 commissioning run record and its lock/mutation sidecars"
+    # The AirPlay free-running toggle is deleted: shairport is always synced,
+    # so nothing reads or writes the mode file any more. Its presence would
+    # otherwise outlive every reader with a value that no longer means anything.
+    # REMOVAL CONDITION: drops once every box has deployed a release after
+    # 2026-09-17.
+    "file|${STATE_DIR}/airplay_mode.env|the retired AirPlay free-running toggle"
     # capture-entry anchor stash: its writer was deleted with the module (issue #4942 wave 0); drop this row once every box has installed a build past it
     "file|${STATE_DIR}/active_speaker_capture_entry.json|the retired capture-entry anchor stash"
 )
