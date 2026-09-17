@@ -323,7 +323,7 @@ def test_nmcli_secret_argv_never_logs_the_psk(monkeypatch, caplog, psk):
     assert event_fields(caplog, "wifi.nmcli_timeout")["argv"] == (
         "nmcli device wifi connect HomeNet password <redacted>"
     )
-    assert psk not in caplog.text
+    assert not any(psk in r.getMessage() for r in caplog.records)
 
 
 def test_connect_new_scrubs_psk_from_returned_message(monkeypatch):
@@ -591,8 +591,8 @@ def test_post_connect_emits_one_redacted_action_event(
             "ok": str(ok).lower(), "client": "127.0.0.1",
         }
     assert record.getMessage().splitlines() == [record.getMessage()]
-    assert psk not in caplog.text
-    assert backend_message not in caplog.text
+    assert not any(psk in r.getMessage() for r in caplog.records)
+    assert not any(backend_message in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.parametrize("ok", [True, False])
@@ -615,7 +615,7 @@ def test_post_forget_emits_one_action_event(monkeypatch, caplog, ok):
         "profile": "Guest profile", "ok": str(ok).lower(), "client": "127.0.0.1",
     }
     assert records[0].levelno == (logging.INFO if ok else logging.WARNING)
-    assert backend_message not in caplog.text
+    assert not any(backend_message in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.parametrize(("enabled", "ok"), [(True, True), (False, False)])
@@ -647,7 +647,7 @@ def test_post_radio_emits_one_action_event(
         "enabled": str(enabled).lower(), "ok": str(ok).lower(), "client": "127.0.0.1",
     }
     assert records[0].levelno == (logging.INFO if ok else logging.WARNING)
-    assert backend_message not in caplog.text
+    assert not any(backend_message in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.parametrize(
@@ -687,8 +687,8 @@ def test_post_action_backend_exception_is_structured_and_generic(
     assert records[0].exc_info is None
     assert not event_records(caplog, "wifi.connect")
     assert captured["responses"] == [502]
-    assert private_message not in caplog.text
-    assert "Traceback" not in caplog.text
+    assert not any(private_message in r.getMessage() for r in caplog.records)
+    assert all(r.exc_info is None for r in caplog.records)
     assert private_message not in h.wfile.getvalue().decode()
 
 

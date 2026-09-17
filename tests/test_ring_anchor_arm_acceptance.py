@@ -48,6 +48,7 @@ from jasper.fanin_coupling import (
 # "incoherent endpoint" fixture below. Resolved from the contract rather than
 # spelled, so a rename moves this test with it.
 from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+from tests._log_events import event_field_maps
 
 # The canonical saved dual-Apple composite: 4 outputs, left woofer/tweeter on
 # 0/1, right on 2/3. Reused rather than re-fabricated so this file cannot drift
@@ -954,7 +955,10 @@ def test_the_journal_records_both_acceptance_outcomes(tmp_path, monkeypatch, cap
     assert _anchor_log_records(caplog) == [
         ("camilla_anchor_not_converged", logging.WARNING)
     ]
-    assert f"refusal={CARRIER_TRANSIENT_ACTIVE_REFUSAL}" in caplog.text
+    (fields,) = event_field_maps(
+        caplog, "fanin.coupling_reconcile", result="camilla_anchor_not_converged"
+    )
+    assert fields["refusal"] == CARRIER_TRANSIENT_ACTIVE_REFUSAL
 
     # 3. A DIFFERENT refusal -> the acceptance is never consulted, so neither
     #    line appears.

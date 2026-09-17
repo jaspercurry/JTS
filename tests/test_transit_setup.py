@@ -33,6 +33,7 @@ import pytest
 from jasper import env_file
 from jasper.transit import geocode as geocode_mod
 from jasper.web import transit_page, transit_setup
+from tests._log_events import event_records
 from jasper.web._common import RestartOutcome
 
 
@@ -726,9 +727,9 @@ def test_handler_post_geocode_writes_state(wizard_server, monkeypatch, caplog):
     state = env_file.read_env_file(state_path)
     assert state[transit_setup.LAT_ENV] == "40.646"
     assert state[transit_setup.LON_ENV] == "-73.994"
-    assert "event=transit.geocode" in caplog.text
-    assert "9 Av Brooklyn" not in caplog.text
-    assert "Sunset Park" not in caplog.text
+    assert len(event_records(caplog, "transit.geocode")) == 1
+    assert not any("9 Av Brooklyn" in r.getMessage() for r in caplog.records)
+    assert not any("Sunset Park" in r.getMessage() for r in caplog.records)
 
 
 def test_handler_post_save_restarts_voice(wizard_server):

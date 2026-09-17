@@ -327,7 +327,9 @@ def test_chip_aec_refuses_to_start_without_a_chip_reference_producer(
     with caplog.at_level(logging.ERROR, logger="jasper.aec_bridge"):
         assert aec_bridge.main() == os.EX_CONFIG
 
-    assert "JASPER_OUTPUTD_CHIP_REF_PCM" in caplog.text
+    fields = event_fields(caplog, "aec_bridge.park")
+    assert fields["reason"] == "chip_aec_without_chip_reference"
+    assert "JASPER_OUTPUTD_CHIP_REF_PCM" in fields["detail"]
     # Failed at THIS guard, not incidentally at a later one: the guard sits
     # ahead of mic validation, so the mic was never even queried.
     sd_mod.query_devices.assert_not_called()

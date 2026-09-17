@@ -69,7 +69,10 @@ def test_reference_enqueue_counts_and_debounces_full_queue(
     assert bridge_reference.ref_clip_percent() == pytest.approx(
         100.0 * 4 / (3 * FRAME_SAMPLES)
     )
-    assert "ref queue full, dropped 3 frames in last 1.0s" in caplog.text
+    (record,) = caplog.records
+    assert record.levelname == "WARNING"
+    assert record.name == "jasper.aec_bridge"
+    assert record.getMessage() == "ref queue full, dropped 3 frames in last 1.0s"
 
 
 def test_reference_input_age_advances_and_new_input_resets(monkeypatch):

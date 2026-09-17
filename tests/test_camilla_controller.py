@@ -1296,5 +1296,5 @@ async def test_failed_duck_release_logs_a_named_event(
     with caplog.at_level(logging.WARNING, logger="jasper.camilla"):
         assert await cam.set_active_config_raw(CEILING_GRAPH)
 
-    assert "event=camilla.graph_swap_duck_restore_failed" in caplog.text
-    assert "target_db=0.0" in caplog.text
+    fields = event_fields(caplog, "camilla.graph_swap_duck_restore_failed")
+    assert fields["target_db"] == "0.0"

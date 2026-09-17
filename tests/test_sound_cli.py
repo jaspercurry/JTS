@@ -8,6 +8,7 @@ import json
 import logging
 
 from jasper.cli import sound as sound_cli
+from tests._log_events import event_fields
 
 
 def test_reconcile_current_dsp_fail_open_returns_json_and_logs_event(
@@ -28,6 +29,6 @@ def test_reconcile_current_dsp_fail_open_returns_json_and_logs_event(
     assert payload["status"] == "failed"
     assert payload["reason"] == "RuntimeError"
     assert payload["message"] == "camilla unavailable"
-    assert "event=sound.reconcile_current_dsp" in caplog.text
-    assert "result=failed" in caplog.text
-    assert "reason=RuntimeError" in caplog.text
+    fields = event_fields(caplog, "sound.reconcile_current_dsp")
+    assert fields["result"] == "failed"
+    assert fields["reason"] == "RuntimeError"

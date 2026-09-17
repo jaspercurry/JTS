@@ -294,8 +294,10 @@ async def test_redacted_tool_payload_omits_body_text_from_info_logs(caplog):
     assert event_fields(caplog, "tool.dispatch_done")["payload"].startswith(
         "<redacted len="
     )
-    assert "dentist appointment" not in caplog.text
-    assert "Your appointment is Tuesday" not in caplog.text
+    assert not any("dentist appointment" in r.getMessage() for r in caplog.records)
+    assert not any(
+        "Your appointment is Tuesday" in r.getMessage() for r in caplog.records
+    )
 
 
 async def test_redacted_tool_args_omit_user_text_from_info_logs(caplog):
@@ -316,7 +318,9 @@ async def test_redacted_tool_args_omit_user_text_from_info_logs(caplog):
     assert event_fields(caplog, "tool.dispatch_start")["args"].startswith(
         "<redacted keys=query len="
     )
-    assert "turn on the bedroom lights" not in caplog.text
+    assert not any(
+        "turn on the bedroom lights" in r.getMessage() for r in caplog.records
+    )
 
 
 async def test_unknown_tool_args_are_value_redacted(caplog):
@@ -331,7 +335,7 @@ async def test_unknown_tool_args_are_value_redacted(caplog):
     assert event_fields(caplog, "tool.dispatch_unknown")["args"].startswith(
         "<redacted keys=query len="
     )
-    assert "unlock the front door" not in caplog.text
+    assert not any("unlock the front door" in r.getMessage() for r in caplog.records)
 
 
 def test_default_timeout_is_single_sourced():

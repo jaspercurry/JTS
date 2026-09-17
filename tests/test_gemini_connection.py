@@ -247,7 +247,7 @@ async def test_turn_failure_events_redact_key(caplog, monkeypatch, operation, ev
     fields = event_fields(caplog, event)
     assert fields["provider"] == "gemini"
     assert fields["detail"]
-    assert conn._api_key not in caplog.text
+    assert not any(conn._api_key in r.getMessage() for r in caplog.records)
     (record,) = event_records(caplog, event)
     assert record.levelno == level
     assert record.exc_info is None
