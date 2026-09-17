@@ -23,6 +23,7 @@ import time
 from typing import Any, Callable, Mapping
 
 from .atomic_io import locked_update_env_file, read_regular_bytes_nofollow
+from .control._health_fields import _mapping
 from .env_file import read_value
 from .env_load import SOURCE_INTENT_ENV
 from .music_sources import Source
@@ -219,10 +220,6 @@ def _systemd_active(unit: str) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
-
-
-def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
 
 
 def _status_int(value: Any, default: int = 0) -> int:

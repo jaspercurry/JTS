@@ -84,6 +84,49 @@ def _as_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _as_float(value: Any) -> float | None:
+    """``value`` as a ``float``, or ``None`` when it is not one."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_int_or_none(value: Any) -> int | None:
+    """Like ``_as_int``, but a missing/unparseable value stays ``None``, not
+    ``0`` -- ``0`` would misread as "confirmed zero" rather than "couldn't
+    tell".
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _nonneg_delta(curr: Any, prev: Any) -> int | None:
+    """``curr - prev`` when both are ``int`` and non-decreasing, else ``None``."""
+    if not isinstance(curr, int) or not isinstance(prev, int) or curr < prev:
+        return None
+    return curr - prev
+
+
+def _nonneg_rate(curr: Any, prev: Any, dt: float) -> float | None:
+    """A monotonic counter's per-second delta, or ``None`` on wrap/reset/absence."""
+    delta = _nonneg_delta(curr, prev)
+    return delta / dt if delta is not None else None
+
+
+def _sum_or_none(block: Mapping[str, Any], keys: tuple[str, ...]) -> int | None:
+    """Sum of the named counters, or ``None`` unless every one of them is present."""
+    total = 0
+    for key in keys:
+        value = _as_int_or_none(block.get(key))
+        if value is None:
+            return None
+        total += value
+    return total
+
+
 def _nonnegative_counter(value: Any) -> int | None:
     """A monotonic counter's current reading, or ``None`` when unreadable.
 
