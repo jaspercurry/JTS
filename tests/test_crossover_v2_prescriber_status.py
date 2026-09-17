@@ -30,6 +30,8 @@ from typing import Any
 
 import pytest
 
+from tests import nginx_site
+
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.active_speaker.measured_crossover_candidate import (
@@ -590,9 +592,7 @@ def test_every_path_this_tool_prints_is_a_route_nginx_serves(path):
     the paths this tool hands out are checked against it rather than against a
     second list somebody would have to remember to update.
     """
-    conf = (
-        Path(__file__).resolve().parents[1] / "deploy" / "nginx-jasper.conf"
-    ).read_text()
+    conf = nginx_site.conf_text("full")
 
     assert f"location {path} {{" in conf
 

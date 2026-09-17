@@ -11,6 +11,7 @@ from jasper.control import restart_broker
 from jasper.local_sources import local_source_lifecycles
 from jasper.multiroom.effective_role import FOLLOWER_STATUS_FILE
 from jasper.music_sources import Source
+from tests import nginx_site
 from tests.install_surface import installer_text
 from tests.systemd_unit_helpers import (
     never_stays_complete,
@@ -28,10 +29,7 @@ ROLE_OWNER_UNITS = (
     ROOT / "deploy/systemd/jasper-accessory-reconcile.service",
     ROOT / "deploy/systemd/jasper-fanin-coupling-auto.service",
 )
-NGINX_CONFIGS = (
-    ROOT / "deploy/nginx-jasper.conf",
-    ROOT / "deploy/nginx-jasper-streambox.conf",
-)
+NGINX_PROFILES = tuple(nginx_site.PROFILE_CONFS)
 SOURCE_UNIT_FILES = {
     "shairport-sync.service": ROOT / "deploy/systemd/shairport-sync.service",
     "nqptp.service": ROOT / "deploy/systemd/nqptp.service",
@@ -519,8 +517,8 @@ def test_source_http_routes_outlast_two_bounded_broker_passes() -> None:
         )
     )
     handler_margin = 60
-    for path in NGINX_CONFIGS:
-        text = path.read_text(encoding="utf-8")
+    for profile in NGINX_PROFILES:
+        text = nginx_site.conf_text(profile)
         for route in ("/sources/", "/bluetooth/", "/speaker/"):
             block = _location_block(text, route)
             timeout_line = next(
@@ -531,7 +529,7 @@ def test_source_http_routes_outlast_two_bounded_broker_passes() -> None:
             timeout = int(
                 timeout_line.removeprefix("proxy_read_timeout ").removesuffix("s;")
             )
-            assert timeout >= minimum_http_timeout, (path, route, timeout)
+            assert timeout >= minimum_http_timeout, (profile, route, timeout)
             if route in {"/sources/", "/bluetooth/"}:
                 assert timeout >= minimum_http_timeout + handler_margin
             if route == "/speaker/":

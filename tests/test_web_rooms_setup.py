@@ -39,6 +39,7 @@ from pathlib import Path
 
 import pytest
 
+from . import nginx_site
 from jasper.control import household_credential
 from jasper.platform.control_client import (
     PEER_DETAIL_MAX_CHARS,
@@ -1214,15 +1215,15 @@ def test_socket_unit_has_rooms_listenstream():
 
 
 def test_nginx_proxies_rooms_to_8785():
-    nginx_text = (_REPO / "deploy" / "nginx-jasper.conf").read_text()
+    nginx_text = nginx_site.conf_text("full")
     assert "location /sound/pair/ {" in nginx_text
     assert "proxy_pass http://127.0.0.1:8785/;" in nginx_text
 
 
 def test_nginx_has_no_peers_route():
     """No legacy /peers redirect/page remains; /rooms is the only surface."""
-    for conf in ("nginx-jasper.conf", "nginx-jasper-streambox.conf"):
-        nginx_text = (_REPO / "deploy" / conf).read_text()
+    for profile in nginx_site.PROFILE_CONFS:
+        nginx_text = nginx_site.conf_text(profile)
         assert "/peers" not in nginx_text
         assert "8776" not in nginx_text
 

@@ -98,6 +98,7 @@ from .active_speaker_fixtures import (
     mono_output_topology,
 )
 from ._hat_eeprom import write_hat_eeprom
+from . import nginx_site
 from ._log_events import event_records, parse_event
 from ._web_test_helpers import (
     json_post_with_csrf,
@@ -1358,8 +1359,8 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
 
     repo = Path(__file__).resolve().parents[1]
     unit = (repo / "deploy/systemd/jasper-audio-hardware-reconcile.service").read_text()
-    nginx = (repo / "deploy/nginx-jasper.conf").read_text()
-    streambox = (repo / "deploy/nginx-jasper-streambox.conf").read_text()
+    nginx = nginx_site.conf_text("full")
+    streambox = nginx_site.conf_text("streambox")
     assert "TimeoutStartSec=50s" in unit
     assert 50 < 55 < 55 + restart_broker._CLIENT_SOCKET_MARGIN_SEC < 65
     # The I2S HAT control POSTs through /sound/output/; the speaker page shares

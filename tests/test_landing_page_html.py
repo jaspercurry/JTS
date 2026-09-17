@@ -27,6 +27,8 @@ from jasper.web import wifi_setup
 from jasper.web.landing import render_landing
 from jasper.web.nav import hub_paths, render_hub
 
+from . import nginx_site
+
 
 _REPO = Path(__file__).resolve().parent.parent
 _INDEX_PATH = _REPO / "deploy" / "index.html"
@@ -34,8 +36,9 @@ _LANDING_JS_PATH = _REPO / "deploy" / "assets" / "landing" / "js" / "main.js"
 _SETTINGS_STATUS_JS_PATH = (
     _REPO / "deploy" / "assets" / "shared" / "js" / "settings-status.js"
 )
-_NGINX_PATH = _REPO / "deploy" / "nginx-jasper.conf"
-_STREAMBOX_NGINX_PATH = _REPO / "deploy" / "nginx-jasper-streambox.conf"
+_NGINX_PATH = nginx_site.PROFILE_CONFS["full"]
+_STREAMBOX_NGINX_PATH = nginx_site.PROFILE_CONFS["streambox"]
+_PROFILE_BY_CONF = {v: k for k, v in nginx_site.PROFILE_CONFS.items()}
 _INSTALL_PATH = _REPO / "deploy" / "install.sh"
 _FONT_DIR = _REPO / "deploy" / "assets" / "fonts"
 _APP_CSS_PATH = _REPO / "deploy" / "assets" / "app.css"
@@ -52,6 +55,11 @@ def _index_html() -> str:
     )
 
 
+def _nginx_conf(conf_path: Path) -> str:
+    """The profile's site conf with its deploy/nginx/ snippets resolved."""
+    return nginx_site.conf_text(_PROFILE_BY_CONF[conf_path])
+
+
 def _landing_js() -> str:
     return _LANDING_JS_PATH.read_text(encoding="utf-8")
 
@@ -60,41 +68,8 @@ def _app_css() -> str:
     return _APP_CSS_PATH.read_text(encoding="utf-8")
 
 
-_LOCATION_RX = re.compile(
-    r"(?m)^    location +(?:(?P<mod>=|\^~|~\*?) +)?(?P<path>\S+) *\{"
-)
-
-
-def _nginx_servers(conf: str) -> list[tuple[frozenset[int], dict]]:
-    """Every top-level `server {}`: its listener ports and its locations.
-
-    Locations are keyed `(modifier, path)` — `("=", "/sound/pair/sync")` for
-    an exact block — and carry their brace-balanced body, so a caller reads
-    structure rather than slicing the file on comment text or line order.
-    Several callers pass a slice of a conf rather than the whole file; one
-    that starts inside a server block (they cut at `listen 443` to separate
-    the two) reads as that single server.
-    """
-    chunks = conf.split("\nserver {")
-    servers = []
-    for chunk in (chunks[1:] or chunks):
-        body = chunk[: chunk.index("\n}")] if "\n}" in chunk else chunk
-        ports = frozenset(
-            int(m.group(1))
-            for m in re.finditer(r"(?m)^    listen +(?:\[::\]:)?(\d+)", body)
-        )
-        locations = {}
-        for m in _LOCATION_RX.finditer(body):
-            start = body.index("{", m.start())
-            depth, end = 0, start
-            while True:
-                depth += {"{": 1, "}": -1}.get(body[end], 0)
-                if depth == 0:
-                    break
-                end += 1
-            locations[(m.group("mod") or "", m.group("path"))] = body[start + 1 : end]
-        servers.append((ports, locations))
-    return servers
+_LOCATION_RX = nginx_site.LOCATION_RX
+_nginx_servers = nginx_site.servers
 
 
 def _proxy_upstream(block: str) -> str:
@@ -729,7 +704,7 @@ def test_streambox_shows_no_link_its_nginx_conf_cannot_serve() -> None:
     from jasper.install_profile import system_capabilities_for_profile
 
     caps = system_capabilities_for_profile("streambox")
-    conf = _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8")
+    conf = _nginx_conf(_STREAMBOX_NGINX_PATH)
     # An exact-match block serves that one path (`= /` is the landing page,
     # `= /sound/` the hub); a prefix block serves everything under it, except
     # the `/` catch-all, which is exactly what a dead link falls to. A link is
@@ -861,7 +836,7 @@ def test_no_household_journey_step_lands_on_the_self_signed_https_origin() -> No
     assert "deploy/correction-preflight.html" not in install
 
     for path in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
-        nginx = path.read_text(encoding="utf-8")
+        nginx = _nginx_conf(path)
         http_nginx = nginx[: nginx.index("listen 443")]
         assert "correction-preflight.html" not in nginx
         assert "/sound/proceed" not in nginx
@@ -870,8 +845,8 @@ def test_no_household_journey_step_lands_on_the_self_signed_https_origin() -> No
 
 
 def test_nginx_serves_the_measurement_pages_over_plain_http() -> None:
-    nginx = _NGINX_PATH.read_text(encoding="utf-8")
-    http_nginx = nginx[:nginx.index("# HTTPS server block")]
+    nginx = _nginx_conf(_NGINX_PATH)
+    http_nginx = nginx[: nginx.index("listen 443")]
     https_nginx = nginx[nginx.index("listen 443") :]
     location = "location /sound/speaker/crossover/"
     http_proxy_block = _nginx_location_block(http_nginx, location)
@@ -891,7 +866,7 @@ def test_nginx_serves_the_measurement_pages_over_plain_http() -> None:
 
 
 def test_streambox_nginx_matches_plain_http_measurement_entry() -> None:
-    nginx = _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8")
+    nginx = _nginx_conf(_STREAMBOX_NGINX_PATH)
     http_nginx = nginx[: nginx.index("listen 443")]
     proxy_block = _nginx_location_block(
         http_nginx, "location /sound/speaker/crossover/"
@@ -912,7 +887,7 @@ def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
         "measurements/": "measurements/",
     }
     for path in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
-        nginx = path.read_text(encoding="utf-8")
+        nginx = _nginx_conf(path)
         https_at = nginx.index("listen 443")
         http_nginx = nginx[:https_at]
         https_nginx = nginx[https_at:]
@@ -970,8 +945,8 @@ def test_both_nginx_profiles_mount_the_same_locations() -> None:
     parity. Every documented difference is speaker-only, so the streambox
     conf holds no location the speaker conf lacks in either direction.
     """
-    speaker = _conf_locations(_NGINX_PATH.read_text(encoding="utf-8"))
-    streambox = _conf_locations(_STREAMBOX_NGINX_PATH.read_text(encoding="utf-8"))
+    speaker = _conf_locations(_nginx_conf(_NGINX_PATH))
+    streambox = _conf_locations(_nginx_conf(_STREAMBOX_NGINX_PATH))
 
     assert sorted(map(sorted, speaker)) == sorted(map(sorted, streambox)), (
         "the two confs do not declare the same listeners"
@@ -999,7 +974,7 @@ def test_every_proxying_block_includes_the_shared_proxy_headers() -> None:
     for path in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
         missing = sorted(
             f"{sorted(ports)} " + f"{modifier} {location}".strip()
-            for ports, locations in _nginx_servers(path.read_text(encoding="utf-8"))
+            for ports, locations in _nginx_servers(_nginx_conf(path))
             for (modifier, location), body in locations.items()
             if "proxy_pass" in body and include not in body
         )
@@ -1035,7 +1010,7 @@ def test_assistant_pages_proxy_at_their_hub_path_and_redirect_from_the_old_one(
     and the bare `/<name>/` prefix returns a prefix-preserving 301 so a
     bookmark or a deep link with a query string still lands.
     """
-    conf = conf_path.read_text(encoding="utf-8")
+    conf = _nginx_conf(conf_path)
     served = set()
     for ports, locations in _nginx_servers(conf):
         if 80 not in ports:
@@ -1078,7 +1053,7 @@ def test_google_oauth_callback_path_is_pinned_outside_the_wizard_prefix(
     lands. So the path gets its own exact block on the wizard's upstream,
     independent of whichever prefix the wizard itself is served under.
     """
-    servers = _nginx_servers(conf_path.read_text(encoding="utf-8"))
+    servers = _nginx_servers(_nginx_conf(conf_path))
     listeners = set()
     for ports, locations in servers:
         callback = locations.get(("=", "/google/callback"))
@@ -1092,7 +1067,7 @@ def test_google_oauth_callback_path_is_pinned_outside_the_wizard_prefix(
 
 def test_both_nginx_profiles_allow_bounded_wifi_connect_rollback() -> None:
     for path in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
-        nginx = path.read_text(encoding="utf-8")
+        nginx = _nginx_conf(path)
         wifi = _nginx_location_block(nginx, "location /wifi/")
         assert "proxy_pass http://127.0.0.1:8775/;" in wifi
         match = re.search(r"proxy_read_timeout (\d+)s;", wifi)
@@ -1107,7 +1082,7 @@ def test_both_nginx_profiles_serve_the_hubs_from_disk(path: str) -> None:
     # block reads from disk like `location = /` — and only the exact match,
     # or the `/sound/` prefix proxy would stop serving the pages under it.
     for conf in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
-        nginx = conf.read_text(encoding="utf-8")
+        nginx = _nginx_conf(conf)
         hub = _nginx_location_block(nginx, f"location = {path}")
         bare = _nginx_location_block(nginx, f"location = {path.rstrip('/')}")
 
@@ -1119,7 +1094,7 @@ def test_both_nginx_profiles_serve_the_hubs_from_disk(path: str) -> None:
 
 
 def test_nginx_serves_static_management_assets() -> None:
-    nginx = _NGINX_PATH.read_text(encoding="utf-8")
+    nginx = _nginx_conf(_NGINX_PATH)
 
     assert "location /assets/" in nginx
     assert "root /usr/share/jasper-web;" in nginx
@@ -1133,7 +1108,7 @@ def test_nginx_serves_assets_over_https_no_mixed_content() -> None:
     # itself; otherwise those subresources fall through to the downgrade
     # catch-all, 302 to HTTP, and browsers block them as mixed content —
     # leaving the page unstyled and its JS (mic capture, sweep) dead.
-    nginx = _NGINX_PATH.read_text(encoding="utf-8")
+    nginx = _nginx_conf(_NGINX_PATH)
     https_block = nginx[nginx.index("listen 443") :]
 
     assert "location /assets/" in https_block
@@ -1156,7 +1131,7 @@ def test_speaker_timing_is_mounted_on_both_listeners(conf_path: Path) -> None:
     the plain-HTTP journey and invites a redirect into the self-signed origin
     (issue #2632) — so it is mounted on both, exactly as the walk is.
     """
-    servers = _nginx_servers(conf_path.read_text(encoding="utf-8"))
+    servers = _nginx_servers(_nginx_conf(conf_path))
     listeners = set()
     for ports, locations in servers:
         crossover = locations.get(("", "/sound/speaker/crossover/"))
@@ -1191,7 +1166,7 @@ def test_the_split_sound_pages_keep_their_trailing_slash(conf_path: Path) -> Non
     same shape. The 308 is what makes the no-slash URL usable.
     """
     listeners = set()
-    for ports, locations in _nginx_servers(conf_path.read_text(encoding="utf-8")):
+    for ports, locations in _nginx_servers(_nginx_conf(conf_path)):
         if ("", "/sound/speaker/crossover/") in locations:
             # The child page rides both listeners, so its normaliser does too.
             assert locations[("=", "/sound/speaker/crossover")].strip() == (
@@ -1225,7 +1200,7 @@ def test_the_old_sound_setup_page_redirects_but_its_subtree_still_proxies(
     """
     blocks = {
         (mod, path): body
-        for _ports, locations in _nginx_servers(conf_path.read_text(encoding="utf-8"))
+        for _ports, locations in _nginx_servers(_nginx_conf(conf_path))
         for (mod, path), body in locations.items()
         if path == "/sound/setup" or path.startswith("/sound/setup/")
     }
@@ -1248,7 +1223,7 @@ def test_no_conf_still_mounts_the_old_sync_path(conf_path: Path) -> None:
     """The move is a move: no redirect and no compat block left behind."""
     stale = [
         (mod, path)
-        for _ports, locations in _nginx_servers(conf_path.read_text(encoding="utf-8"))
+        for _ports, locations in _nginx_servers(_nginx_conf(conf_path))
         for mod, path in locations
         if path == "/sync" or path.startswith("/sync/")
     ]
@@ -1293,7 +1268,7 @@ def test_landing_page_stereo_pair_banner_wiring() -> None:
     assert "function localWebHost" not in pair_js
     assert "innerHTML" not in pair_js
     # nginx exposes GET /grouping on the landing origin.
-    nginx = _NGINX_PATH.read_text(encoding="utf-8")
+    nginx = _nginx_conf(_NGINX_PATH)
     assert "location = /grouping" in nginx
 
 

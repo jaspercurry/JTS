@@ -1263,27 +1263,38 @@ tune_nginx_worker_processes() {
 }
 
 install_nginx_site_conf() {
-    # <site conf source> <nginx config root>. A conf in sites-enabled is on
-    # disk at once and the next nginx restart loads it (Restart=always, see
-    # nginx.service.d/jts-recovery.conf), so what `nginx -t` rejects is put
-    # back — site conf and its snippet — from a fixed-name snapshot dir
-    # outside sites-enabled, which nginx.conf includes unfiltered. Drop this
-    # guard once the conf ships from a package that tests before enabling.
-    local src="${1}" root="${2}" prev="${2}/.jasper-site-prev" rel=""
-    local site="sites-enabled/jasper.conf" snip="snippets/jts-proxy-headers.conf"
+    # <site conf source> <nginx config root>. The site conf is a listener
+    # shell; its routes live in deploy/nginx/ and go to ${root}/snippets/,
+    # which it includes by absolute path, so both profiles share one body.
+    # A conf in sites-enabled is on disk at once and the next nginx restart
+    # loads it (Restart=always, see nginx.service.d/jts-recovery.conf), so
+    # what `nginx -t` rejects is put back — site conf and every snippet —
+    # from a fixed-name snapshot dir outside sites-enabled, which nginx.conf
+    # includes unfiltered. Snippet basenames are unique, so the flat snapshot
+    # is unambiguous. Drop this guard once the conf ships from a package that
+    # tests before enabling.
+    local src="${1}" root="${2}" prev="${2}/.jasper-site-prev" rel="" snip=""
+    local site="sites-enabled/jasper.conf"
+    local -a snips=("${REPO_DIR}"/deploy/nginx/*.conf)
+    local -a rels=("${site}")
+    for snip in "${snips[@]}"; do
+        rels+=("snippets/${snip##*/}")
+    done
     rm -rf "${prev}"
     install -d -m 0755 "${root}/snippets" "${prev}"
-    for rel in "${site}" "${snip}"; do
+    for rel in "${rels[@]}"; do
         [[ -f "${root}/${rel}" ]] || continue
         cp -a "${root}/${rel}" "${prev}/"
     done
-    install -m 0644 "${REPO_DIR}/deploy/nginx-proxy-headers.conf" "${root}/${snip}"
+    for snip in "${snips[@]}"; do
+        install -m 0644 "${snip}" "${root}/snippets/${snip##*/}"
+    done
     install -m 0644 "${src}" "${root}/${site}"
     # nginx-light's enabled `default` site clashes with our default_server.
     rm -f "${root}/sites-enabled/default"
     if ! nginx -t; then
         echo "  ERROR: event=install.nginx_conf_rejected src=${src}" >&2
-        for rel in "${site}" "${snip}"; do
+        for rel in "${rels[@]}"; do
             rm -f "${root}/${rel}"
             [[ -f "${prev}/${rel##*/}" ]] || continue
             cp -a "${prev}/${rel##*/}" "${root}/${rel}"
