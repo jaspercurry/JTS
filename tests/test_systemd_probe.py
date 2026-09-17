@@ -137,3 +137,69 @@ def test_unit_property_probe_failure_is_none(monkeypatch):
     _fake_run(monkeypatch, raises=subprocess.TimeoutExpired(["systemctl"], 1.0))
     assert systemd_probe.unit_property("u.service", "ActiveState", timeout=1.0) is None
     assert systemd_probe.unit_loaded("u.service", timeout=1.0) is False
+
+
+@pytest.mark.parametrize(
+    ("query", "state", "expected"),
+    [
+        ("is-active", "active", True),
+        ("is-active", "inactive", False),
+        ("is-active", "failed", False),
+        ("is-active", "activating", None),  # a transitional word: unresolved
+        ("is-enabled", "enabled", True),
+        ("is-enabled", "enabled-runtime", True),
+        ("is-enabled", "disabled", False),
+        ("is-enabled", "alias", False),
+        ("is-enabled", "static", False),
+        ("is-enabled", "indirect", False),
+        ("is-enabled", "generated", False),
+        ("is-enabled", "transient", False),
+        ("is-enabled", "linked", False),
+        ("is-enabled", "linked-runtime", False),
+        ("is-enabled", "masked", False),
+        ("is-enabled", "masked-runtime", False),
+        ("is-enabled", "not-found", False),
+        ("is-failed", "failed", True),
+        ("is-failed", "active", False),
+        ("is-failed", "activating", False),
+        ("is-failed", "deactivating", False),
+        ("is-failed", "inactive", False),
+        ("is-failed", "maintenance", False),
+        ("is-failed", "reloading", False),
+        ("is-failed", "bad-word", None),
+    ],
+)
+def test_unit_query_verdict_matrix(monkeypatch, query, state, expected):
+    # rc is non-zero for a legitimate not-true word too (`is-enabled`/
+    # `is-failed` exit non-zero for most of their false-ish states); this
+    # probe must classify by stdout TEXT alone, same as `unit_active` above.
+    _fake_run(monkeypatch, stdout=state + "\n", returncode=1)
+    result = systemd_probe.unit_query(query, "u.service", timeout=1.0)
+    assert result.verdict is expected
+    assert result.proc is not None and result.error is None
+
+
+def test_unit_query_argv_and_timeout(monkeypatch):
+    calls: list[tuple[list[str], dict]] = []
+    _fake_run(monkeypatch, stdout="active\n", calls=calls)
+    result = systemd_probe.unit_query("is-active", "u.service", timeout=3.5)
+    assert result.verdict is True
+    assert calls[0][0] == ["systemctl", "is-active", "u.service"]
+    assert calls[0][1]["timeout"] == 3.5
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        FileNotFoundError("systemctl"),
+        OSError("cannot allocate process"),
+        subprocess.TimeoutExpired(["systemctl"], 1.0),
+        subprocess.SubprocessError("boom"),
+    ],
+)
+def test_unit_query_spawn_failure_is_unresolved_with_error(monkeypatch, failure):
+    _fake_run(monkeypatch, raises=failure)
+    result = systemd_probe.unit_query("is-enabled", "u.service", timeout=1.0)
+    assert result.verdict is None
+    assert result.proc is None
+    assert result.error is failure

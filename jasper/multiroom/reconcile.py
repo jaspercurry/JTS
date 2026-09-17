@@ -38,15 +38,12 @@ from ..env_load import OUTPUTD_GROUPING_ENV_FILE, VOICE_GROUPING_ENV_FILE
 from ..fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
-from ..service_units import (
-    OUTPUTD_SERVICE,
-    run_systemctl,
-)
+from ..service_units import OUTPUTD_SERVICE
 from ..source_intent_units import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
 )
 from ..source_intent_units import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
-from ..systemd_probe import unit_property
+from ..systemd_probe import unit_property, unit_query
 from . import config
 from .config import SNAP_STREAM_ID, GroupingConfig
 from .dac_content_ring import (
@@ -518,58 +515,34 @@ def _systemctl_unit_state(query: str, unit: str) -> bool | None:
     A missing systemctl binary returns ``None`` silently; other spawn failures
     return ``None`` with one warning. Completed commands are classified by their
     explicit state TEXT, not return code alone, so a manager/D-Bus error cannot
-    masquerade as disabled or inactive.
+    masquerade as disabled or inactive. Classification itself lives in
+    jasper.systemd_probe (shared with jasper.source_intent); this wrapper
+    keeps only the observability this caller wants on an unresolved probe.
     """
-    try:
-        proc = run_systemctl(
-            [query, unit],
-            timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
-        )
-    except FileNotFoundError:
+    result = unit_query(query, unit, timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC)
+    if result.verdict is not None:
+        return result.verdict
+    if isinstance(result.error, FileNotFoundError):
         return None
-    except (OSError, subprocess.SubprocessError) as e:
+    if result.error is not None:
         log_event(
             logger,
             "multiroom.reconcile.unit_state_probe_failed",
             unit=unit,
             query=query,
-            error=e,
+            error=result.error,
             level=logging.WARNING,
         )
         return None
-
-    state = (proc.stdout or "").strip().lower()
-    true_states = {
-        "is-enabled": {"enabled", "enabled-runtime"},
-        "is-active": {"active"},
-    }
-    false_states = {
-        "is-enabled": {
-            "alias",
-            "static",
-            "indirect",
-            "disabled",
-            "generated",
-            "transient",
-            "linked",
-            "linked-runtime",
-            "masked",
-            "masked-runtime",
-            "not-found",
-        },
-        "is-active": {"inactive", "failed"},
-    }
-    if state in true_states.get(query, set()):
-        return True
-    if state in false_states.get(query, set()):
-        return False
+    proc = result.proc
+    assert proc is not None  # verdict is None, error is None => proc completed
     log_event(
         logger,
         "multiroom.reconcile.unit_state_probe_failed",
         unit=unit,
         query=query,
         rc=proc.returncode,
-        state=state or "(none)",
+        state=(proc.stdout or "").strip().lower() or "(none)",
         stderr=(proc.stderr or "").strip(),
         level=logging.WARNING,
     )
