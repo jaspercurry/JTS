@@ -1387,20 +1387,23 @@ def test_restart_headphone_monitor_after_deploy_try_restarts(tmp_path):
     ]
 
 
-def test_headphone_monitor_restart_is_wired_into_both_install_tails():
-    """The full-box and streambox install tails must each call the restart
-    helper once, after the DSP reconcile has decided the unit's enablement
+def test_headphone_monitor_restart_is_wired_into_the_shared_install_tail():
+    """The core-graph tail both profiles run must call the restart helper
+    once, after the DSP reconcile has decided the unit's enablement
     (jasper-audio-hardware-reconcile owns enable/disable/start; this only
     ever needs to run try-restart, never install a second restart path)."""
     text = _SYSTEMD_UNITS_LIB.read_text(encoding="utf-8")
+    match = re.search(r"^_start_core_graph_units\(\) \{\n(.*?)^\}$", text, re.M | re.S)
+    assert match, "_start_core_graph_units not found"
+    body = match.group(1)
+    assert body.count("restart_headphone_monitor_after_deploy") == 1
+    assert body.index("restart_core_camilla_after_dsp_reconcile") < body.index(
+        "restart_headphone_monitor_after_deploy"
+    )
     for func in ("install_systemd_units", "start_streambox_runtime_units"):
-        match = re.search(rf"^{func}\(\) \{{\n(.*?)^\}}$", text, re.M | re.S)
-        assert match, f"{func} not found"
-        body = match.group(1)
-        assert body.count("restart_headphone_monitor_after_deploy") == 1
-        assert body.index("restart_core_camilla_after_dsp_reconcile") < body.index(
-            "restart_headphone_monitor_after_deploy"
-        )
+        caller = re.search(rf"^{func}\(\) \{{\n(.*?)^\}}$", text, re.M | re.S)
+        assert caller, f"{func} not found"
+        assert "_start_core_graph_units" in caller.group(1)
 
 
 def _run_tune_nginx_worker_processes(conf: Path) -> None:

@@ -209,7 +209,8 @@ def test_voice_is_parked_before_the_installer_restarts_fanin():
 
     Checked per shell function rather than over the whole file, so a future
     function that restarts fan-in without parking first cannot hide behind an
-    unrelated earlier park call.
+    unrelated earlier park call. Both install profiles reach it through the one
+    shared core-graph tail.
 
     THE SUCCESS PATH ONLY. A deploy that aborts before this step — a fan-in
     build failure — never parks anything, so this ordering is simply not
@@ -221,10 +222,7 @@ def test_voice_is_parked_before_the_installer_restarts_fanin():
     text = INSTALL_SYSTEMD_UNITS.read_text()
     bodies = re.split(r"^(?=[a-z_][a-z0-9_]*\(\) \{$)", text, flags=re.MULTILINE)
     restarting = [b for b in bodies if _FANIN_RESTART in b]
-    assert len(restarting) >= 2, (
-        "expected the full-install and streambox paths to restart fan-in; "
-        f"found {len(restarting)}"
-    )
+    assert restarting, "expected an install path that restarts fan-in"
     for body in restarting:
         name = body.splitlines()[0]
         assert _PARK_CALL in body, (
