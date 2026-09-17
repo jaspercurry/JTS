@@ -39,12 +39,15 @@ class WizardClient:
     def __init__(
         self,
         *,
-        host_header: str,
+        host_header: str | None = None,
         base_url: str = "http://127.0.0.1",
         timeout_s: float = 30.0,
         opener: Any | None = None,
         csrf_page_path: str = CSRF_PAGE_PATH,
     ) -> None:
+        """``host_header=None`` sends no explicit Host header: urllib derives
+        it from ``base_url`` instead, and the management-host guard accepts
+        loopback IPs (``jasper/net/http_security.py``)."""
         self._host = host_header
         self._base = base_url.rstrip("/")
         self._timeout = timeout_s
@@ -62,7 +65,10 @@ class WizardClient:
         request = urllib.request.Request(
             self._base + path,
             data=data,
-            headers={"Host": self._host, **(headers or {})},
+            headers={
+                **({"Host": self._host} if self._host else {}),
+                **(headers or {}),
+            },
             method="POST" if data is not None else "GET",
         )
         try:

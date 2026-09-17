@@ -21,7 +21,6 @@ from jasper.active_speaker.baseline_profile import (
     baseline_profile_state_path,
     load_applied_baseline_profile_state,
 )
-from jasper.identity.reader import read_identity
 
 from ._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, answered, failed
 
@@ -281,12 +280,7 @@ def _add_connection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--hostname",
         default=None,
-        help=(
-            "the speaker's own hostname (JASPER_HOSTNAME, e.g. jts3.local). "
-            "Sent as the Host header so the wizard's management-host guard "
-            "admits a loopback request (default: this speaker's configured "
-            "identity)"
-        ),
+        help="Host header override (default: derived from --base-url)",
     )
     parser.add_argument(
         "--base-url",
@@ -361,7 +355,7 @@ def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int
     """``opener`` is :class:`WizardClient`'s own transport seam, for tests."""
     args = build_parser().parse_args(list(argv) if argv is not None else None)
     wizard = WizardClient(
-        host_header=args.hostname or read_identity().hostname,
+        host_header=args.hostname,
         base_url=args.base_url,
         csrf_page_path=CSRF_PAGE_PATH,
         opener=opener,
