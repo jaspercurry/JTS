@@ -296,3 +296,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0319](0319-timing-measured-once-with-confidence.md) | Timing is measured once with confidence | accepted |
 | [0320](0320-live-hangup-is-one-silence-window.md) | Live hang-up is one silence window | amended by 0321 |
 | [0321](0321-live-first-answer-wait-is-separate-from-followup.md) | Live first-answer wait is separate from follow-up | accepted |
+| [0323](0323-speaker-setup-binds-by-driver-computes-on-read.md) | Speaker setup binds a pasted reply by driver, computes the safety profile on read, and builds the crossover preview on request | accepted |
