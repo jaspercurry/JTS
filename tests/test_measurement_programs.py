@@ -67,6 +67,7 @@ def test_speaker_bookkeeping_uses_room_views_when_the_round_holds_room_sweeps():
                      ("inventory", True, False))),
     ("bass", False, (("bass", True, False), ("frequency", False, False), ("inventory", True, False))),
     ("reference", False, ()),
+    ("rear", False, (("inventory", True, False),)),
 ])
 def test_the_view_table_answers_every_automatic_view(purpose, has_room, expected):
     """One table, not four lists: each automatic view resolves to a builder."""
@@ -124,6 +125,8 @@ def test_available_programs_is_the_sorted_registry() -> None:
         ("branches", "express"),
         ("close", "spot"),
         ("front_rear", "express"),
+        ("rear", "express"),
+        ("rear", "wide"),
         ("room", "arm"),
         ("room", "cloud"),
         ("room", "seat"),
@@ -235,7 +238,7 @@ def test_spot_is_one_take_at_the_callers_bearing(azimuth: int, elevation: int) -
 def test_configured_defaults_preserve_existing_cli_choices_and_add_room() -> None:
     assert {
         program_id: mp.program(program_id).size
-        for program_id in ("baseline", "tournament", "branches", "seat", "room", "close")
+        for program_id in ("baseline", "tournament", "branches", "seat", "room", "close", "rear")
     } == {
         "baseline": "express",
         "tournament": "express",
@@ -243,6 +246,7 @@ def test_configured_defaults_preserve_existing_cli_choices_and_add_room() -> Non
         "seat": "cloud",
         "room": "seat",
         "close": "spot",
+        "rear": "express",
     }
 
 
@@ -258,6 +262,47 @@ def test_room_and_bass_plans_share_poses_and_summed_regime(program, size, purpos
     assert {row.purpose for row in (cloud, quick)} == {purpose}
     assert {row.regime for row in (cloud, quick)} == {mp.REGIME_SUMMED}
     assert mp.gate_exemption(cloud.purpose) == SEAT_EXEMPT
+
+
+@pytest.mark.parametrize("size,poses", [
+    ("express", [(0, 2), (-20, 1), (20, 1)]),
+    ("wide", [(0, 2), (-20, 1), (20, 1), (-45, 1), (45, 1)]),
+])
+def test_rear_layouts_pin_no_mover_and_repeat_the_zero_pose(size, poses) -> None:
+    """The arm is a temporary convenience; a rear layout never pins one (issue #5330)."""
+    row = mp.program("rear", size)
+
+    assert row.purpose == mp.PURPOSE_REAR and row.regime == mp.REGIME_SUMMED
+    assert row.mover is None
+    assert [(pose.azimuth_deg, pose.repeats) for pose in row.poses] == poses
+
+
+def test_rear_gate_exemption_matches_room() -> None:
+    """A rear comparison reads below the gate's trusted floor, same as room (issue #5330)."""
+    assert mp.gate_exemption(mp.PURPOSE_REAR) == mp.gate_exemption(mp.PURPOSE_ROOM) == SEAT_EXEMPT
+
+
+def test_rear_summed_capture_is_valid_but_per_driver_is_refused() -> None:
+    assert mp.validated_capture_purpose(mp.PURPOSE_REAR, mp.POSE_KIND_BEARING, mp.REGIME_SUMMED) == mp.PURPOSE_REAR
+    with pytest.raises(ValueError):
+        mp.validated_capture_purpose(mp.PURPOSE_REAR, mp.POSE_KIND_BEARING, mp.REGIME_PER_DRIVER)
+
+
+@pytest.mark.parametrize("mover", [None, "arm", "human"])
+@pytest.mark.parametrize("sections", [{"rear_calibration"}, {"rear_calibration", "room"}, {"rear_calibration", "bass", "room"}])
+def test_rear_calibration_trials_the_rear_row_for_every_mover(sections, mover) -> None:
+    """The rear section trials first, ahead of bass and room, with no arm-only layout."""
+    selected = mp.trial_program(sections, mover)
+
+    assert (selected.purpose, selected.layout) == (mp.PURPOSE_REAR, "rear_express")
+
+
+def test_run_program_resolves_rear_layouts_and_custom_bearings() -> None:
+    assert (mp.run_program("rear").program_id, mp.run_program("rear").size) == ("rear", "express")
+    assert (mp.run_program("rear", "rear/wide").program_id, mp.run_program("rear", "rear/wide").size) == ("rear", "wide")
+    custom = mp.run_program("rear", "0,-45,45")
+    assert [(pose.azimuth_deg, pose.elevation_deg) for pose in custom.poses] == [(0, 0), (-45, 0), (45, 0)]
+    assert (custom.purpose, custom.regime) == (mp.PURPOSE_REAR, mp.REGIME_SUMMED)
 
 
 @pytest.mark.parametrize(

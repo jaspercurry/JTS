@@ -24,7 +24,13 @@ PURPOSE_SPEAKER = "speaker"
 PURPOSE_ROOM = "room"
 PURPOSE_BASS = "bass"
 PURPOSE_REFERENCE = "reference"
-PURPOSES = (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REFERENCE)
+PURPOSE_REAR = "rear"
+PURPOSES = (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REFERENCE, PURPOSE_REAR)
+
+#: The purposes a caller may pick by name (``jasper-round run --program``):
+#: every purpose except ``reference``, which the close/spot program alone
+#: reaches (:func:`program`), never a named ``--program`` choice.
+RUNNABLE_PROGRAMS = (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR)
 
 REGIME_PER_DRIVER = "per_driver"
 REGIME_SUMMED = "summed"
@@ -90,7 +96,7 @@ def run_purpose(run_program: str | None) -> str:
 def gate_exemption(purpose: str | None) -> str | None:
     from jasper.audio_measurement.gating import SEAT_EXEMPT  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
 
-    return SEAT_EXEMPT if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_BASS) else None
+    return SEAT_EXEMPT if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR) else None
 
 
 def validated_pose(
@@ -351,6 +357,7 @@ def load_programs(
 _PROGRAMS, _DEFAULT_SIZES = _load_programs()
 
 _TRIAL_PROGRAMS = {
+    "rear_calibration": (PURPOSE_REAR, "rear_express", None),
     "bass": (PURPOSE_BASS, "bass_axis", None),
     "room": (PURPOSE_ROOM, "seat_express", "room_quick"),
     None: (PURPOSE_ROOM, "room_quick", None),
@@ -410,7 +417,7 @@ def run_program(purpose: str, poses: str | None = None) -> MeasurementProgram:
 
 
 def trial_program(sections: Collection[str], mover: str | None = None) -> MeasurementProgram:
-    """Bass precedes room, then driver/alignment/blend/topology or a carried document."""
+    """Rear precedes bass precedes room, then driver/alignment/blend/topology or a carried document."""
     purpose, layout, arm_layout = next(value for section, value in _TRIAL_PROGRAMS.items()
                                      if section is None or section in sections)
     selected = run_program(purpose, arm_layout if mover == "arm" and arm_layout else layout)
