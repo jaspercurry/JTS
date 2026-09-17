@@ -381,6 +381,7 @@ Rear
 | document_section | "rear_calibration" | field | contract.rear.document_section |
 | case | "electrical_dsp" | field | contract.rear.case |
 | mode | "branches" | field | contract.rear.mode |
+| freq_hz_upper_bound_rule | "every filter's freq must stay strictly below the document's own sample_rate_hz / 2 (Nyquist); freq is otherwise required to be > 0" | rule | contract.rear.bounds.freq_hz_upper_bound_rule |
 | max_filters_per_chain | 16 | count | contract.rear.bounds.max_filters_per_chain |
 | chain_gain_db | [-150.0,0.0] | dB | contract.rear.bounds.chain_gain_db |
 | chain_gain_rule | "front, rear.bass and rear.cancellation gain_db is an attenuation between -150 and 0 dB: a rear chain only attenuates" | rule | contract.rear.bounds.chain_gain_rule |
@@ -393,6 +394,7 @@ Rear
 | cut_only_rule | "Peaking, Lowshelf and Highshelf gain must be a cut (<= 0 dB); a boost is refused" | rule | contract.rear.bounds.cut_only_rule |
 | emitted_delay_rule | "common_delay_ms + front.delay_ms + a rear branch's own delay_ms must sum to >= 0; add common delay to realize a negative relative rear delay" | rule | contract.rear.bounds.emitted_delay_rule |
 | branch_delay_is_not_acoustic_delay | "a branch's raw delay_ms is not its acoustic delay: the branch's own filters add delay" | rule | contract.rear.bounds.branch_delay_is_not_acoustic_delay |
+| stage_kinds | ["boundary_correction","crossover","driver_correction","protection"] | type | contract.rear.bounds.stage_kinds |
 | boundary_correction_rule | "included_stages.<side> must not list boundary_correction while boundary.<side> carries filters" | rule | contract.rear.bounds.boundary_correction_rule |
 | comparison_scope | "a variant changes ONE control family -- rear gain, rear relative delay, or one band edge -- and carries every other field of the incumbent's section verbatim, including the front chain and the filter structure" | rule | contract.rear.bounds.comparison_scope |
 | rear_muted_reference | "the same section with rear_muted: true is the rear-muted reference" | rule | contract.rear.bounds.rear_muted_reference |

@@ -59,8 +59,9 @@ def _object(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
             "additionalProperties": False}
 
 
-def _number(lo: float | None = None, hi: float | None = None) -> dict[str, Any]:
-    return {"type": "number", **({"minimum": lo} if lo is not None else {}),
+def _number(lo: float | None = None, hi: float | None = None, *, exclusive_lo: bool = False) -> dict[str, Any]:
+    lo_key = "exclusiveMinimum" if exclusive_lo else "minimum"
+    return {"type": "number", **({lo_key: lo} if lo is not None else {}),
             **({"maximum": hi} if hi is not None else {})}
 
 
@@ -355,34 +356,75 @@ def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _rear_biquad_shape(kinds: set[str], q: dict[str, Any], *, cut_only: bool = False) -> dict[str, Any]:
+    """One Biquad kind-group's `parameters`: exact keys, per-kind ``q`` cap.
+
+    ``cut_only`` kinds (SHELVING) require ``gain``; every other kind forbids
+    it (``_object``'s ``additionalProperties: False``), matching
+    ``rear_calibration._object``'s exact-key-set check.
+    """
+    props = {"type": {"enum": sorted(kinds)}, "freq": _number(0, exclusive_lo=True), "q": q}
+    required = ["type", "freq", "q"]
+    if cut_only:
+        props["gain"] = _number(hi=0.0)
+        required.append("gain")
+    return _object(props, required)
+
+
+def _rear_combo_shape(kinds: set[str], *, even: bool) -> dict[str, Any]:
+    """One BiquadCombo kind-group's `parameters`; LinkwitzRiley order is even."""
+    order: dict[str, Any] = {"type": "integer", "minimum": 1, "maximum": rear_calibration.MAX_COMBO_ORDER}
+    if even:
+        order["multipleOf"] = 2
+    return _object({"type": {"enum": sorted(kinds)}, "freq": _number(0, exclusive_lo=True), "order": order},
+                   ["type", "freq", "order"])
+
+
 def _rear_filter() -> dict[str, Any]:
-    biquad = _object({
-        "type": {"enum": sorted(rear_calibration.BIQUADS)},
-        "freq": _number(), "q": _number(), "gain": _number(hi=0.0),
-    }, ["type", "freq", "q"])
-    biquad["allOf"] = [{"if": {"properties": {"type": {"enum": sorted(rear_calibration.SHELVING)}}},
-                        "then": {"required": ["gain"]}}]
-    combo = _object({
-        "type": {"enum": sorted(rear_calibration.COMBOS)}, "freq": _number(),
-        "order": {"type": "integer", "minimum": 1, "maximum": rear_calibration.MAX_COMBO_ORDER},
-    }, ["type", "freq", "order"])
+    """One filter entry, ``{type, parameters}``, split into exact per-kind shapes.
+
+    Every kind's own key set and numeric caps match ``rear_calibration``'s
+    validator exactly (see ``MAX_RESONANT_Q``/``MAX_ALLPASS_Q`` for Biquad,
+    ``MAX_COMBO_ORDER`` and LinkwitzRiley's even-order rule for BiquadCombo).
+    ``freq``'s Nyquist ceiling depends on the document's own declared
+    ``sample_rate_hz`` and is not a schema constant; see
+    ``bounds.freq_hz_upper_bound_rule``.
+    """
+    resonant_capped = rear_calibration.BIQUADS - rear_calibration.SHELVING - {"Allpass"}
+    shelf_capped = rear_calibration.SHELVING - {"Peaking"}
+    linkwitz_riley = {kind for kind in rear_calibration.COMBOS if kind.startswith("LinkwitzRiley")}
+    biquads = [
+        _rear_biquad_shape(resonant_capped, _number(0, rear_calibration.MAX_RESONANT_Q, exclusive_lo=True)),
+        _rear_biquad_shape({"Allpass"}, _number(0, rear_calibration.MAX_ALLPASS_Q, exclusive_lo=True)),
+        _rear_biquad_shape(shelf_capped, _number(0, rear_calibration.MAX_RESONANT_Q, exclusive_lo=True), cut_only=True),
+        _rear_biquad_shape({"Peaking"}, _number(0, exclusive_lo=True), cut_only=True),
+    ]
+    combos = [
+        _rear_combo_shape(rear_calibration.COMBOS - linkwitz_riley, even=False),
+        _rear_combo_shape(linkwitz_riley, even=True),
+    ]
     return {"type": "object", "oneOf": [
-        _object({"type": {"const": "Biquad"}, "parameters": biquad}, ["type", "parameters"]),
-        _object({"type": {"const": "BiquadCombo"}, "parameters": combo}, ["type", "parameters"]),
+        _object({"type": {"const": "Biquad"}, "parameters": shape}, ["type", "parameters"]) for shape in biquads
+    ] + [
+        _object({"type": {"const": "BiquadCombo"}, "parameters": shape}, ["type", "parameters"]) for shape in combos
     ]}
 
 
-def _rear_chain() -> dict[str, Any]:
+def _rear_filters_array() -> dict[str, Any]:
+    return {"type": "array", "maxItems": rear_calibration.MAX_FILTERS_PER_CHAIN, "items": _rear_filter()}
+
+
+def _rear_chain(filters: dict[str, Any]) -> dict[str, Any]:
     return _object({
         "gain_db": _number(rear_calibration.MIN_CHAIN_GAIN_DB, 0.0),
         "inverted": {"type": "boolean"}, "delay_ms": _number(), "muted": {"type": "boolean"},
-        "filters": {"type": "array", "maxItems": rear_calibration.MAX_FILTERS_PER_CHAIN, "items": _rear_filter()},
+        "filters": filters,
     }, ["gain_db", "inverted", "delay_ms", "muted", "filters"])
 
 
 def _rear_calibration_schema() -> dict[str, Any]:
-    chain = _rear_chain()
-    filters = {"type": "array", "maxItems": rear_calibration.MAX_FILTERS_PER_CHAIN, "items": _rear_filter()}
+    filters = _rear_filters_array()
+    chain = _rear_chain(filters)
     stages = {"type": "array", "items": {"enum": sorted(rear_calibration.STAGES)}}
     properties = {
         "kind": {"const": rear_calibration.KIND},
@@ -401,7 +443,7 @@ def _rear_calibration_schema() -> dict[str, Any]:
             "level": {},
         }, ["quantity", "units", "level"]),
         "conditions": {"type": "object"},
-        "valid_band_hz": {"type": ["array", "null"], "items": _number(0), "minItems": 2, "maxItems": 2},
+        "valid_band_hz": {"type": ["array", "null"], "items": _number(0, exclusive_lo=True), "minItems": 2, "maxItems": 2},
         "assumptions": {"type": "array", "items": {"type": "string"}},
         "included_stages": _object({"front": stages, "rear": stages}, ["front", "rear"]),
         "front": chain,
@@ -428,6 +470,10 @@ def _rear() -> dict[str, Any]:
         "mode": "branches",
         "schema": _rear_calibration_schema(),
         "bounds": {
+            "freq_hz_upper_bound_rule": (
+                "every filter's freq must stay strictly below the document's own "
+                "sample_rate_hz / 2 (Nyquist); freq is otherwise required to be > 0"
+            ),
             "max_filters_per_chain": rear_calibration.MAX_FILTERS_PER_CHAIN,
             "chain_gain_db": [rear_calibration.MIN_CHAIN_GAIN_DB, 0.0],
             "chain_gain_rule": (

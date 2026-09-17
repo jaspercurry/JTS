@@ -396,76 +396,147 @@ def test_rear_contract_bounds_equal_the_rear_calibration_constants():
     assert json.loads(contract_json(contract)) == contract
 
 
-def _break_chain_gain_floor(document):
-    document["front"]["gain_db"] = rear_cal.MIN_CHAIN_GAIN_DB - 0.01
+def test_rear_schema_filter_shapes_match_the_validators_per_kind_caps():
+    """Walk contract["schema"] directly (no jsonschema in the venv) and pin
+    each Biquad/BiquadCombo kind's own key set and numeric cap against the
+    owning constants, closing the gap a bounds-only or validator-only test
+    would miss: a wrong constant inside `_rear_filter()` itself.
+    """
+    filter_schema = prescription_contracts()["rear"]["schema"]["properties"]["front"]["properties"]["filters"]["items"]
+    q_max_by_kind: dict[str, float | None] = {}
+    gain_required_kinds: set[str] = set()
+    order_kinds_seen: set[str] = set()
+    for branch in filter_schema["oneOf"]:
+        parameters = branch["properties"]["parameters"]
+        kinds = set(parameters["properties"]["type"]["enum"])
+        assert parameters["additionalProperties"] is False
+        if "gain" in parameters["properties"]:
+            # Never an optional property within a branch: a kind either always
+            # carries gain (SHELVING) or the key is absent entirely.
+            assert "gain" in parameters["required"]
+            gain_required_kinds |= kinds
+        if "q" in parameters["properties"]:
+            q = parameters["properties"]["q"]
+            assert q["exclusiveMinimum"] == 0
+            for kind in kinds:
+                q_max_by_kind[kind] = q.get("maximum")
+        if "order" in parameters["properties"]:
+            order = parameters["properties"]["order"]
+            assert order["minimum"] == 1
+            assert order["maximum"] == rear_cal.MAX_COMBO_ORDER
+            even = order.get("multipleOf") == 2
+            assert even == all(kind.startswith("LinkwitzRiley") for kind in kinds)
+            order_kinds_seen |= kinds
+
+    assert gain_required_kinds == rear_cal.SHELVING
+    assert order_kinds_seen == rear_cal.COMBOS
+    for kind in rear_cal.BIQUADS - rear_cal.SHELVING - {"Allpass"}:
+        assert q_max_by_kind[kind] == rear_cal.MAX_RESONANT_Q
+    for kind in rear_cal.SHELVING - {"Peaking"}:
+        assert q_max_by_kind[kind] == rear_cal.MAX_RESONANT_Q
+    assert q_max_by_kind["Allpass"] == rear_cal.MAX_ALLPASS_Q
+    assert q_max_by_kind["Peaking"] is None
 
 
-def _break_chain_gain_ceiling(document):
-    document["rear"]["bass"]["gain_db"] = 0.01
+def _biquad(kind, *, freq=100.0, q, gain=None):
+    params = {"type": kind, "freq": freq, "q": q}
+    if gain is not None:
+        params["gain"] = gain
+    return {"type": "Biquad", "parameters": params}
 
 
-def _break_max_filters_per_chain(document):
-    document["front"]["filters"] = [
-        {"type": "Biquad", "parameters": {"type": "Peaking", "freq": 100.0, "q": 1.0, "gain": -1.0}},
-    ] * (rear_cal.MAX_FILTERS_PER_CHAIN + 1)
+def _combo(kind, *, freq=100.0, order):
+    return {"type": "BiquadCombo", "parameters": {"type": kind, "freq": freq, "order": order}}
 
 
-def _break_resonant_q_max(document):
-    document["front"]["filters"] = [
-        {"type": "Biquad", "parameters": {"type": "Highpass", "freq": 100.0, "q": rear_cal.MAX_RESONANT_Q + 0.01}},
-    ]
+def _delay_edge(document, *, common_delay_ms, cancellation_delay_ms):
+    document["common_delay_ms"] = common_delay_ms
+    document["rear"]["cancellation"]["delay_ms"] = cancellation_delay_ms
 
 
-def _break_allpass_q_max(document):
-    document["front"]["filters"] = [
-        {"type": "Biquad", "parameters": {"type": "Allpass", "freq": 100.0, "q": rear_cal.MAX_ALLPASS_Q + 0.01}},
-    ]
-
-
-def _break_combo_order_max(document):
-    document["front"]["filters"] = [
-        {"type": "BiquadCombo", "parameters": {"type": "ButterworthLowpass", "freq": 100.0,
-                                               "order": rear_cal.MAX_COMBO_ORDER + 1}},
-    ]
-
-
-def _break_cut_only_rule(document):
-    document["front"]["filters"] = [
-        {"type": "Biquad", "parameters": {"type": "Lowshelf", "freq": 100.0, "q": 0.7, "gain": 0.01}},
-    ]
-
-
-def _break_emitted_delay_rule(document):
-    document["rear"]["cancellation"]["delay_ms"] = -10.0
-
-
-def _break_boundary_correction_rule(document):
-    document["boundary"]["front"] = [
-        {"type": "Biquad", "parameters": {"type": "Highpass", "freq": 100.0, "q": 0.7}},
-    ]
+def _boundary_conflict(document):
+    document["boundary"]["front"] = [_biquad("Highpass", q=0.7)]
     document["included_stages"]["front"] = ["boundary_correction"]
 
 
-@pytest.mark.parametrize("mutate", [
-    pytest.param(None, id="obeys"),
-    pytest.param(_break_chain_gain_floor, id="chain_gain_floor"),
-    pytest.param(_break_chain_gain_ceiling, id="chain_gain_ceiling"),
-    pytest.param(_break_max_filters_per_chain, id="max_filters_per_chain"),
-    pytest.param(_break_resonant_q_max, id="resonant_q_max"),
-    pytest.param(_break_allpass_q_max, id="allpass_q_max"),
-    pytest.param(_break_combo_order_max, id="combo_order_max"),
-    pytest.param(_break_cut_only_rule, id="cut_only_rule"),
-    pytest.param(_break_emitted_delay_rule, id="emitted_delay_rule"),
-    pytest.param(_break_boundary_correction_rule, id="boundary_correction_rule"),
+# Nyquist at diagnostic_seed(48000)'s sample rate; freq must stay strictly below it.
+_NYQUIST_HZ = 24000.0
+
+
+@pytest.mark.parametrize(("mutate", "expect_pass"), [
+    pytest.param(lambda d: None, True, id="obeys_unmodified_seed"),
+
+    pytest.param(lambda d: d["front"].update(gain_db=rear_cal.MIN_CHAIN_GAIN_DB), True, id="chain_gain_floor_inside"),
+    pytest.param(lambda d: d["front"].update(gain_db=rear_cal.MIN_CHAIN_GAIN_DB - 0.01), False, id="chain_gain_floor_outside"),
+    pytest.param(lambda d: d["rear"]["bass"].update(gain_db=0.0), True, id="chain_gain_ceiling_inside"),
+    pytest.param(lambda d: d["rear"]["bass"].update(gain_db=0.01), False, id="chain_gain_ceiling_outside"),
+
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Highpass", q=rear_cal.MAX_RESONANT_Q)]),
+                 True, id="resonant_q_max_inside"),
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Highpass", q=rear_cal.MAX_RESONANT_Q + 0.01)]),
+                 False, id="resonant_q_max_outside"),
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Lowshelf", q=rear_cal.MAX_RESONANT_Q, gain=-1.0)]),
+                 True, id="shelf_resonant_q_max_inside"),
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Lowshelf", q=rear_cal.MAX_RESONANT_Q + 0.01, gain=-1.0)]),
+                 False, id="shelf_resonant_q_max_outside"),
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Allpass", q=rear_cal.MAX_ALLPASS_Q)]),
+                 True, id="allpass_q_max_inside"),
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Allpass", q=rear_cal.MAX_ALLPASS_Q + 0.01)]),
+                 False, id="allpass_q_max_outside"),
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Peaking", q=1_000_000.0, gain=-1.0)]),
+                 True, id="peaking_q_uncapped"),
+
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Highpass", q=0.7, gain=-3.0)]),
+                 False, id="gain_key_forbidden_on_non_shelving_kind"),
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Lowshelf", q=0.7, gain=0.0)]),
+                 True, id="cut_only_gain_zero_inside"),
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Lowshelf", q=0.7, gain=0.01)]),
+                 False, id="cut_only_gain_outside"),
+
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Highpass", freq=1e-3, q=0.7)]),
+                 True, id="freq_lower_bound_inside"),
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Highpass", freq=0.0, q=0.7)]),
+                 False, id="freq_lower_bound_outside"),
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Highpass", freq=_NYQUIST_HZ - 0.01, q=0.7)]),
+                 True, id="freq_nyquist_inside"),
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Highpass", freq=_NYQUIST_HZ, q=0.7)]),
+                 False, id="freq_nyquist_outside"),
+
+    pytest.param(lambda d: d["front"].update(filters=[_combo("ButterworthLowpass", order=rear_cal.MAX_COMBO_ORDER)]),
+                 True, id="combo_order_max_inside"),
+    pytest.param(lambda d: d["front"].update(filters=[_combo("ButterworthLowpass", order=rear_cal.MAX_COMBO_ORDER + 1)]),
+                 False, id="combo_order_max_outside"),
+    pytest.param(lambda d: d["front"].update(filters=[_combo("ButterworthLowpass", order=rear_cal.MAX_COMBO_ORDER - 1)]),
+                 True, id="butterworth_odd_order_allowed"),
+    pytest.param(lambda d: d["front"].update(filters=[_combo("LinkwitzRileyLowpass", order=rear_cal.MAX_COMBO_ORDER)]),
+                 True, id="linkwitz_riley_order_max_inside_and_even"),
+    pytest.param(lambda d: d["front"].update(filters=[_combo("LinkwitzRileyLowpass", order=rear_cal.MAX_COMBO_ORDER - 1)]),
+                 False, id="linkwitz_riley_odd_order_refused"),
+
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Peaking", q=1.0, gain=-1.0)] * rear_cal.MAX_FILTERS_PER_CHAIN),
+                 True, id="max_filters_per_chain_inside"),
+    pytest.param(lambda d: d["front"].update(
+        filters=[_biquad("Peaking", q=1.0, gain=-1.0)] * (rear_cal.MAX_FILTERS_PER_CHAIN + 1)),
+                 False, id="max_filters_per_chain_outside"),
+
+    pytest.param(lambda d: _delay_edge(d, common_delay_ms=10.0, cancellation_delay_ms=-10.0),
+                 True, id="emitted_delay_rule_inside"),
+    pytest.param(lambda d: _delay_edge(d, common_delay_ms=10.0, cancellation_delay_ms=-10.01),
+                 False, id="emitted_delay_rule_outside"),
+
+    pytest.param(_boundary_conflict, False, id="boundary_correction_rule_outside"),
+
+    pytest.param(lambda d: d.update(valid_band_hz=[0.001, 100.0]), True, id="valid_band_hz_lower_bound_inside"),
+    pytest.param(lambda d: d.update(valid_band_hz=[0.0, 100.0]), False, id="valid_band_hz_lower_bound_outside"),
 ])
-def test_rear_document_obeys_or_breaks_each_published_bound(mutate):
+def test_rear_document_agrees_with_the_validator_at_each_bound_edge(mutate, expect_pass):
     document = rear_cal.diagnostic_seed(48000)
-    if mutate is None:
-        assert rear_cal.read_rear_calibration(document, sample_rate=48000)["case"] == "electrical_dsp"
-        return
     mutate(document)
-    with pytest.raises(rear_cal.RearCalibrationError):
-        rear_cal.read_rear_calibration(document, sample_rate=48000)
+    if expect_pass:
+        assert rear_cal.read_rear_calibration(document, sample_rate=48000)["case"] == "electrical_dsp"
+    else:
+        with pytest.raises(rear_cal.RearCalibrationError):
+            rear_cal.read_rear_calibration(document, sample_rate=48000)
 
 
 def test_contract_cli_rear_shares_rooms_top_level_shape(capsys):
