@@ -112,6 +112,8 @@ def test_a_weaker_reflection_reads_a_shallower_dip():
         ),
         ({"section_band_hz": (60.0, 300.0)}, rear_evidence.BAND_SOURCE_SECTION_BAND, (60.0, 300.0)),
         ({}, rear_evidence.BAND_SOURCE_COVERAGE, (COVERAGE_HZ[0], CEILING_HZ)),
+        # Wholly above the coverage: a disclosed no-band, never an inverted range.
+        ({"section_band_hz": (1000.0, 1200.0)}, rear_evidence.BAND_SOURCE_SECTION_BAND, None),
     ],
 )
 def test_with_no_measurable_dip_the_band_falls_back_in_order(declared, source, band_hz):
@@ -120,7 +122,8 @@ def test_with_no_measurable_dip_the_band_falls_back_in_order(declared, source, b
         reference_take=(FREQS_HZ, _image_curve(rho=0.0)), **declared,
     )
     assert (band["source"], band["dip_hz"]) == (source, None)
-    assert band["band_hz"] == pytest.approx(list(band_hz))
+    assert band["reason"] == ("" if band_hz else rear_evidence.REASON_COVERAGE_SHORT)
+    assert band["band_hz"] == (None if band_hz is None else pytest.approx(list(band_hz)))
 
 
 def test_filling_the_dip_while_digging_a_handover_hole_shows_both():
@@ -148,15 +151,21 @@ def test_a_quieter_candidate_keeps_its_shape_and_loses_band_level():
     assert quiet["low_bass"]["change_db"] == pytest.approx(-3.0)
 
 
-def test_a_dip_at_another_frequency_is_reported_as_shifted():
+@pytest.mark.parametrize("notch_at", ["inside", "band_low_edge", "band_high_edge"])
+def test_a_dip_at_another_frequency_is_reported_as_shifted(notch_at):
     band, reference = _batch(_image_curve(rho=0.8))
     incumbent = _figures(_image_curve(rho=0.8), band, reference)
-    shifted_hz = incumbent["dip"]["hz"] * 1.5
+    lo_hz, hi_hz = band["band_hz"]
+    # A dip ON the band's own first or last SAMPLE is still a dip.
+    in_band = FREQS_HZ[(FREQS_HZ >= lo_hz) & (FREQS_HZ < hi_hz)]
+    shifted_hz = {"inside": incumbent["dip"]["hz"] * 1.5,
+                  "band_low_edge": in_band[0], "band_high_edge": in_band[-1]}[notch_at]
     variant = _figures(
-        _image_curve(rho=0.0, notch_hz=shifted_hz, notch_db=8.0),
+        _image_curve(rho=0.8, notch_hz=shifted_hz, notch_db=12.0),
         band, reference, incumbent=incumbent,
     )
-    assert variant["dip_shift"]["hz"] == pytest.approx(shifted_hz, rel=0.1)
+    assert variant["dip"]["hz"] == pytest.approx(shifted_hz, rel=0.02)
+    assert variant["dip_shift"]["hz"] == pytest.approx(shifted_hz, rel=0.02)
     assert variant["dip_shift"]["depth_db"] == pytest.approx(variant["dip"]["depth_db"])
     assert _figures(_image_curve(rho=0.8), band, reference, incumbent=incumbent)["dip_shift"] is None
 
@@ -183,7 +192,12 @@ def test_one_bad_position_is_the_reported_worst_regression():
     assert worst["exceeds_repeat_spread"] is True
     hole = summary["figures"]["handover.hole_db"]
     assert hole["worst_db"] > hole["median_db"] + 8.0
-    assert (summary["positions"], summary["positions_unavailable"]) == (3, [])
+    assert (summary["positions"], summary["positions_unavailable"]) == (3, {})
+    # A position this candidate was never measured at is disclosed, not dropped.
+    partial = rear_evidence.across_positions(
+        {key: row for key, row in rows.items() if key != "left"}, incumbent_rows=incumbent_rows)
+    assert partial["positions"] == 3
+    assert partial["positions_unavailable"] == {"left": rear_evidence.REASON_NO_ROW}
 
 
 @pytest.mark.parametrize(
@@ -206,13 +220,15 @@ def test_repeat_spread_comes_only_from_repeats(n_repeats, offset_db, expected_le
         assert spread["spread_db"]["ripple_db"] == pytest.approx(0.0, abs=1e-9)
 
 
-def test_a_curve_that_misses_the_band_reports_coverage_short():
+@pytest.mark.parametrize("missing", ["short_grid", "no_band"])
+def test_a_curve_that_misses_the_band_reports_coverage_short(missing):
     curve = _image_curve()
     band, reference = _batch(curve)
-    short = FREQS_HZ < band["band_hz"][1]
+    keep = FREQS_HZ < band["band_hz"][1] if missing == "short_grid" else FREQS_HZ > 0.0
     row = rear_evidence.position_figures(
-        FREQS_HZ[short], curve[short], reference_db=reference[short],
-        band_hz=band["band_hz"], coverage_hz=COVERAGE_HZ, handover_hz=HANDOVER_HZ,
+        FREQS_HZ[keep], curve[keep], reference_db=reference[keep],
+        band_hz=None if missing == "no_band" else band["band_hz"],
+        coverage_hz=COVERAGE_HZ, handover_hz=HANDOVER_HZ,
     )
     assert row["reason"] == rear_evidence.REASON_COVERAGE_SHORT
     assert all(
@@ -220,5 +236,5 @@ def test_a_curve_that_misses_the_band_reports_coverage_short():
         for key in ("dip", "dip_shift", "ripple_db", "handover", "low_bass", "band_level_db")
     )
     summary = rear_evidence.across_positions({"front": row}, incumbent_rows={"front": row})
-    assert summary["positions_unavailable"] == ["front"]
+    assert summary["positions_unavailable"] == {"front": rear_evidence.REASON_COVERAGE_SHORT}
     assert summary["worst_regression"] is None
