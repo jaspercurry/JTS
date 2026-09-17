@@ -67,6 +67,7 @@ from jasper.active_speaker.runtime_contract import (
 
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor
+from tests.test_rear_output_foundation import _rear_pair
 from jasper.bass_extension.dynamic_graph import PREFIX, validated_base_graph
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
@@ -75,6 +76,26 @@ ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 def _preset(layout: str = "mono", way: int = 2) -> ActiveSpeakerPreset:
     raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
     return ActiveSpeakerPreset.from_mapping(raw)
+
+
+def _one_way_stereo_preset() -> ActiveSpeakerPreset:
+    # A passive-mains 1-way box (#5321): one declared role, program capture
+    # width 1 -- the narrowest program graph the emitter can build.
+    return ActiveSpeakerPreset.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": "jts_active_speaker_preset",
+        "preset_id": "oneway-emit-gate-probe",
+        "name": "one-way stereo probe",
+        "way_count": 1,
+        "channel_map": {
+            "layout": "stereo",
+            "outputs": [
+                {"index": 0, "side": "left", "driver_role": "full_range", "label": "L"},
+                {"index": 1, "side": "right", "driver_role": "full_range", "label": "R"},
+            ],
+        },
+        "drivers": {"full_range": {"manufacturer": "Example", "model": "FR"}},
+    })
 
 
 def _hp_stripping(original: Callable[..., list[str]]) -> Callable[..., list[str]]:
@@ -791,19 +812,32 @@ def test_every_emitter_writes_a_zero_volume_limit_and_refuses_a_boost(
         emit(volume_limit_db=0.5)
 
 
-@pytest.mark.parametrize("role_channels,parked,refuses", [
-    ({"woofer": 0, "tweeter": 1}, (), False),
-    ({"woofer": 0}, (), True),
-    ({"woofer": 0}, ("tweeter",), False),
-    ({"woofer": 0, "midrange": 1}, (), True),
+_PARK_TEST_TWO_WAY = _preset("mono", 2)
+_PARK_TEST_ONE_WAY = _one_way_stereo_preset()
+_PARK_TEST_REAR_PAIR = _rear_pair("mono")[0]
+
+
+@pytest.mark.parametrize("preset,role_channels,parked,refuses", [
+    pytest.param(_PARK_TEST_TWO_WAY, {"woofer": 0, "tweeter": 1}, (), False, id="2ch"),
+    pytest.param(_PARK_TEST_TWO_WAY, {"woofer": 0}, (), True, id="2ch_forgotten_role_refuses"),
+    pytest.param(_PARK_TEST_TWO_WAY, {"woofer": 0}, ("tweeter",), False, id="2ch_named_park"),
+    pytest.param(_PARK_TEST_TWO_WAY, {"woofer": 0, "midrange": 1}, (), True, id="2ch_unknown_role_refuses"),
+    pytest.param(_PARK_TEST_ONE_WAY, {"full_range": 0}, (), False, id="1ch_one_way"),
+    pytest.param(_PARK_TEST_REAR_PAIR, {"woofer": 0, "tweeter": 1, "woofer:rear": 2}, (), False, id="3ch_rear_pair"),
 ])
-def test_a_program_take_may_park_a_role_only_by_naming_it(role_channels, parked, refuses):
+def test_a_program_take_may_park_a_role_only_by_naming_it(preset, role_channels, parked, refuses):
     """Silence is a decision, never an omission: a role with no program channel
     refuses unless the take names its targets as parked. A graph emitted from a
     forgotten role would capture at the wrong width and route a live step to a
-    channel the program never fills."""
+    channel the program never fills.
+
+    Also pins #5321 item B at capture widths 1, 2 and 3: every pipeline step
+    before the first Mixer step must stay inside the actual capture width, and
+    together they must cover it exactly -- a wider or narrower pre-Mixer step
+    is a graph CamillaDSP refuses to load.
+    """
     emit = lambda: camilla_yaml.emit_active_speaker_program_config(
-        _preset("mono", 2), role_channels=role_channels, playback_device=ACTIVE_PCM,
+        preset, role_channels=role_channels, playback_device=ACTIVE_PCM,
         parked_target_ids=parked,
     )
     if refuses:
@@ -811,7 +845,19 @@ def test_a_program_take_may_park_a_role_only_by_naming_it(role_channels, parked,
             emit()
         return
     payload = yaml.safe_load(emit())
-    assert payload["devices"]["capture"]["channels"] == 1 + max(role_channels.values())
-    parked_dests = [entry["dest"] for entry in payload["mixers"]["split_active_2way"]["mapping"]
+    capture_channels = payload["devices"]["capture"]["channels"]
+    assert capture_channels == 1 + max(role_channels.values())
+
+    pre_mixer_steps = []
+    for step in payload["pipeline"]:
+        if step.get("type") == "Mixer":
+            break
+        pre_mixer_steps.append(step)
+    capture_range = set(range(capture_channels))
+    assert all(set(step.get("channels", ())) <= capture_range for step in pre_mixer_steps)
+    assert set().union(*(set(step["channels"]) for step in pre_mixer_steps)) == capture_range
+
+    mixer_name = f"split_active_{preset.way_count}way"
+    parked_dests = [entry["dest"] for entry in payload["mixers"][mixer_name]["mapping"]
                     if not entry["sources"]]
     assert parked_dests == ([1] if parked else [])
