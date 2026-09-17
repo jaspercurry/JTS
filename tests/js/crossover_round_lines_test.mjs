@@ -22,6 +22,14 @@ render(env);
 assert.equal(elements.get('crossover-round-start').children[0], start);
 await start.click();
 assert.deepEqual(posted, [{endpoint: action.endpoint, body: action.body}]);
+// Its refused pair (#5321): a choice the server sent no action for renders
+// its reason and no Start button.
+const refused = {id: 'front_rear/express', label: 'front_rear/express', code: 'measurement_candidate_required',
+  lines: ['This measurement needs a saved tuning to test. Select the tuning, then measure again.']};
+elements.get('crossover-round-select').value = refused.id;
+render({...env, round_choices: [choice, refused]});
+assert.deepEqual(elements.get('crossover-round-summary').children.map(n => n.textContent), refused.lines);
+assert.deepEqual(elements.get('crossover-round-start').children, []);
 env = {...env, round_choices: [], round_lines: ['server progress'], capture: null, busy: true,
   pending: {actions: [{...action, id: 'retake'}]}};
 render(env);
@@ -30,4 +38,4 @@ assert.deepEqual(elements.get('crossover-round-lines').children.map(n => n.textC
 assert.equal(elements.get('crossover-action').children[0].textContent, action.label);
 render({...env, busy: false, pending: null, next_action: action});
 assert.equal(elements.get('crossover-action').children[0].textContent, action.label);
-console.log(JSON.stringify({ok: true, passed: 8}));
+console.log(JSON.stringify({ok: true, passed: 10}));

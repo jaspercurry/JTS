@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from jasper.active_speaker.measurement_programs import program
 
 from jasper.active_speaker import commissioning_coordinator as coordinator, plan_run
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_MEASUREMENT_CANDIDATE_REQUIRED
 from jasper.web import correction_crossover_flow as flow
 from jasper.active_speaker.measurement_programs import available_programs
 from tests.crossover_v2_fixtures import _roles
@@ -31,6 +32,28 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
     selected = next(c for c in choices if c["id"] == "tournament/full")
     assert selected["action"]["body"]["plan"]["program"] == "tournament/full"
     assert len(selected["action"]["body"]["plan"]["stops"]) == 3
+
+
+def test_a_branches_row_discloses_its_refusal_beside_a_startable_row(monkeypatch):
+    """#5321: picking a ``regime: branches`` row 500'd the page."""
+    context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
+                              driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
+                        lambda *a, **kw: context)
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}})
+    monkeypatch.setattr(flow, "handle_status", lambda **kw: ({"active": True,
+        "setup": {"active": True, "status": "ready"}, "capture": None}, 200))
+    picked = {}
+    for row in ("front_rear/express", "branches/express", "speaker/mark"):
+        envelope, code = flow.handle_envelope(selected_program=row)
+        assert code == 200
+        picked[row] = next(c for c in envelope["round_choices"] if c["id"] == row)
+    for row in ("front_rear/express", "branches/express"):
+        assert picked[row]["code"] == REASON_MEASUREMENT_CANDIDATE_REQUIRED
+        assert "action" not in picked[row]
+        assert picked[row]["lines"]
+    assert picked["speaker/mark"]["action"]["id"] == "run_program"
+    assert "code" not in picked["speaker/mark"]
 
 
 def test_pre_round_choice_survives_a_stopped_run(monkeypatch):

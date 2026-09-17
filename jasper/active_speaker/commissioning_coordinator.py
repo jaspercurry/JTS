@@ -57,8 +57,9 @@ def round_capture(capture: Mapping[str, Any], verdict: str, *, advertise_capture
 
 
 def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict[str, Any]]:
-    from .angle_capture import request_for_program  # lazy: measurement planning
+    from .angle_capture import REGIME_BRANCHES, request_for_program  # lazy: measurement planning
     from .crossover_v2.conductor_context import resolve_conductor_context  # lazy: measurement planning
+    from .crossover_v2.refusal_copy import REASON_MEASUREMENT_CANDIDATE_REQUIRED, refusal_copy_for  # lazy: measurement planning
     from .plan_run import prepare_plan_captures, preview_schedule  # lazy: measurement planning
 
     default = program(load_commissioning_view()["next_action"].get("program") or "speaker")
@@ -70,12 +71,20 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
                                   "default": f"{name}/{size}" == default_id,
                                   "poses": plan.mic_move_count, "captures": plan.capture_count}
         if choice["id"] == (selected_id or default_id):
-            context = resolve_conductor_context(status, require_banked_level=False)
-            request = request_for_program(plan, mover=plan.mover or "human")
-            captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
-            facts = preview_schedule(request, captures, context)
-            choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start the round",
-                          "endpoint": "/sound/speaker/crossover/v2/session", "body": {"plan": request.to_dict()}})
+            if plan.regime == REGIME_BRANCHES:
+                # A branches round measures one saved candidate's two branches
+                # and this picker names no candidate, so the row discloses the
+                # refusal ``request_for_program`` raises rather than let it
+                # escape the route as a 500 (#5321).
+                copy, _ = refusal_copy_for(REASON_MEASUREMENT_CANDIDATE_REQUIRED)
+                choice.update(code=REASON_MEASUREMENT_CANDIDATE_REQUIRED, lines=[copy])
+            else:
+                context = resolve_conductor_context(status, require_banked_level=False)
+                request = request_for_program(plan, mover=plan.mover or "human")
+                captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
+                facts = preview_schedule(request, captures, context)
+                choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start the round",
+                              "endpoint": "/sound/speaker/crossover/v2/session", "body": {"plan": request.to_dict()}})
         choices.append(choice)
     return choices
 
