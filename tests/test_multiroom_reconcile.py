@@ -51,6 +51,7 @@ from jasper.multiroom.dac_content_ring import (
     DAC_CONTENT_RING_PCM,
     DAC_CONTENT_RING_PERIOD_FRAMES,
 )
+from jasper.multiroom.grouping_env import airplay_grouping_env
 from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
 from jasper.multiroom.reconcile import (
     AIRPLAY_BONDED_EXTRA_DELAY_ENV,
@@ -59,7 +60,6 @@ from jasper.multiroom.reconcile import (
     LANE_REFUSED_PERIOD,
     RoleDecision,
     _write_args_file,
-    airplay_grouping_env,
     decide_role,
     desired_snapfifo_path,
     main,
@@ -449,9 +449,7 @@ def test_outputd_grouping_env_active_endpoint_clears_dac_content():
     round-trip lane marker is cleared; TTS also stays off outputd because active
     voice rides fan-in upstream of the crossover. A DUMB member still arms the
     lane."""
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_TTS_SOCKET_ENV,
-    )
+    from jasper.tts_routing import OUTPUTD_TTS_SOCKET_ENV
 
     active = bonded_grouping_env(_follower(), active_endpoint=True)
     assert active[DAC_CONTENT_LANE_ENV] == ""  # cleared (no dac_content)
@@ -464,7 +462,7 @@ def test_outputd_grouping_env_active_endpoint_clears_dac_content():
 
 def test_topology_changes_revoke_dac_bypass_without_deleting_bond_intent():
     """Reset and active-layout save both close a bonded passive DAC bypass."""
-    from jasper.multiroom.reconcile import outputd_grouping_env
+    from jasper.multiroom.grouping_env import outputd_grouping_env
     from jasper.multiroom.reconcile_plan import _assemble_args
 
     bonded = _follower()
@@ -568,14 +566,10 @@ def test_outputd_direct_dac_paths_follow_one_topology_predicate(
     ADR-0112's "passive bonded NON-SUB member", implemented. A LEADER is the
     reachable shape: a follower additionally parks voice.
     """
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_TTS_SOCKET_ENV,
-        outputd_grouping_env,
-        output_topology_state,
-        voice_grouping_env,
-    )
+    from jasper.multiroom.grouping_env import outputd_grouping_env, voice_grouping_env
+    from jasper.multiroom.reconcile import output_topology_state
     from jasper.output_topology import save_output_topology
-    from jasper.tts_routing import VOICE_TTS_SOCKET_ENV
+    from jasper.tts_routing import OUTPUTD_TTS_SOCKET_ENV, VOICE_TTS_SOCKET_ENV
 
     topology_path = tmp_path / "output_topology.json"
     save_output_topology(build_topology(), path=topology_path)
@@ -3106,7 +3100,7 @@ def test_every_dac_profile_arms_the_return_ring_exactly_when_its_period_fits(
     """
 
     from jasper.audio_runtime_plan import resolve_outputd_period_setting
-    from jasper.multiroom.reconcile import outputd_grouping_env
+    from jasper.multiroom.grouping_env import outputd_grouping_env
     from jasper.multiroom.reconcile_plan import _assemble_args
 
     period = int(

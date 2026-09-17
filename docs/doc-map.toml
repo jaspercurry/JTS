@@ -550,6 +550,7 @@ code = [
   "jasper/control/shairport_supervisor.py",
   "jasper/control/restart_broker.py",
   "jasper/multiroom/reconcile.py",
+  "jasper/multiroom/grouping_env.py",
   "jasper/multiroom/effective_role.py",
   "jasper/control/server.py",
   "jasper/control/handlers/**",

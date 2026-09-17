@@ -20,7 +20,7 @@ def bonded_grouping_env(cfg: Any, **kw: Any) -> dict[str, str]:
     call site that means "a servable box" would otherwise restate. The
     DAC-profile matrix test drives the real per-profile periods instead.
     """
-    from jasper.multiroom.reconcile import outputd_grouping_env
+    from jasper.multiroom.grouping_env import outputd_grouping_env
 
     kw.setdefault("outputd_period_frames", DAC_CONTENT_RING_PERIOD_FRAMES)
     kw.setdefault("flat_output_allowed", True)
