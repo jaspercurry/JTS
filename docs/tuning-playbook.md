@@ -199,6 +199,48 @@ The reach at each level is the corner; the drive evidence is prescribed minus
 realized; the headroom evidence is the harmonics; nothing is graded against a
 fixed band. Keep `qualified_from_hz` and null fields. Harmonics give no hardware limit.
 
+## Rear
+
+A rear woofer near a wall does two jobs. In its cancellation band it is an
+inverted, delayed copy that lowers what the box sends to the wall. Below
+that band it adds in-phase bass and the wall is part of the speaker. The
+`rear_calibration` section sets both (fields:
+`rear-calibration-tuning-fields.md`; decisions: ADR-0318, ADR-0322,
+ADR-0324).
+
+The goal is a repeatable, measured improvement at the measured positions,
+with its costs stated. It is not a proof of a polar pattern. Nothing in
+this loop measures rear rejection; do not claim it.
+
+Start from an incumbent: the applied section, an imported simulation fit,
+or a clearly labelled provisional seed. Geometry and a simulation are
+inputs. They locate the region to watch. They are not settings, and a
+measured win may disagree with either. The raw `delay_ms` of a branch is
+not its acoustic delay: the branch's own filters add delay. Judge a change
+by its measured effect.
+
+Compare in one trial, at the same positions and the same session level:
+the incumbent, the same section with `rear_muted: true` (the reference for
+what the rear contributes), and one to three variants. A variant changes
+ONE control family: rear gain, rear relative delay, or one band edge.
+Carry every other field verbatim, including the `front` chain and the
+filter structure. Removing the front chain is its own experiment.
+
+`jasper-crossover-prescriber contract --section rear` prints the schema
+and bounds. Rear chains only attenuate: chain and filter gains are at most
+0 dB. An absent `rear_calibration` key inherits; `null` clears the stage
+and the rear output is muted.
+
+Read the wall dip, the ripple beside it, the hand-over between the bass
+branch and the cancellation branch, the low bass, and the absolute level.
+A shallower dip with a new hole at the hand-over, or with less output, is
+a trade, not a win. Do not average a bad position away. A difference
+smaller than repeat spread is not a result; without repeats, say so.
+
+The stack plays as composed: room and bass stay in, the same in every
+candidate. After a rear change is adopted, check the room and bass
+responses and refit them if needed.
+
 ## Five rules that hold everywhere
 
 1. **An unplayed graph is unmeasured.** A fit, simulation or preview can choose
@@ -332,5 +374,30 @@ Bass
 | delta_highpass | {"type":["number","null"],"minimum":10.0,"default":null} | Hz | contract.bass.schema.properties.delta_highpass_hz |
 | delta_highpass_exclusive_upper | "detector_lowpass_hz" | field | contract.bass.bounds.delta_highpass_hz_exclusive_upper_field |
 | shared_headroom_layers | ["driver_linearization","room","bass_extension"] | layers | contract.bass.shared_headroom.layers |
+
+Rear
+| Name | Value | Unit | Constant or function field |
+|---|---|---|---|
+| document_section | "rear_calibration" | field | contract.rear.document_section |
+| case | "electrical_dsp" | field | contract.rear.case |
+| mode | "branches" | field | contract.rear.mode |
+| freq_hz_upper_bound_rule | "every filter's freq must stay strictly below the document's own sample_rate_hz / 2 (Nyquist); freq is otherwise required to be > 0" | rule | contract.rear.bounds.freq_hz_upper_bound_rule |
+| max_filters_per_chain | 16 | count | contract.rear.bounds.max_filters_per_chain |
+| chain_gain_db | [-150.0,0.0] | dB | contract.rear.bounds.chain_gain_db |
+| chain_gain_rule | "front, rear.bass and rear.cancellation gain_db is an attenuation between -150 and 0 dB: a rear chain only attenuates" | rule | contract.rear.bounds.chain_gain_rule |
+| resonant_Q_max | 1.0 | Q | contract.rear.bounds.resonant_q_max |
+| allpass_Q_max | 10.0 | Q | contract.rear.bounds.allpass_q_max |
+| combo_order_max | 8 | count | contract.rear.bounds.combo_order_max |
+| biquad_kinds | ["Allpass","Highpass","Highshelf","Lowpass","Lowshelf","Peaking"] | type | contract.rear.bounds.biquad_kinds |
+| combo_kinds | ["ButterworthHighpass","ButterworthLowpass","LinkwitzRileyHighpass","LinkwitzRileyLowpass"] | type | contract.rear.bounds.combo_kinds |
+| cut_only_kinds | ["Highshelf","Lowshelf","Peaking"] | type | contract.rear.bounds.cut_only_kinds |
+| cut_only_rule | "Peaking, Lowshelf and Highshelf gain must be a cut (<= 0 dB); a boost is refused" | rule | contract.rear.bounds.cut_only_rule |
+| emitted_delay_rule | "common_delay_ms + front.delay_ms + a rear branch's own delay_ms must sum to >= 0; add common delay to realize a negative relative rear delay" | rule | contract.rear.bounds.emitted_delay_rule |
+| branch_delay_is_not_acoustic_delay | "a branch's raw delay_ms is not its acoustic delay: the branch's own filters add delay" | rule | contract.rear.bounds.branch_delay_is_not_acoustic_delay |
+| stage_kinds | ["boundary_correction","crossover","driver_correction","protection"] | type | contract.rear.bounds.stage_kinds |
+| boundary_correction_rule | "included_stages.<side> must not list boundary_correction while boundary.<side> carries filters" | rule | contract.rear.bounds.boundary_correction_rule |
+| comparison_scope | "a variant changes ONE control family -- rear gain, rear relative delay, or one band edge -- and carries every other field of the incumbent's section verbatim, including the front chain and the filter structure" | rule | contract.rear.bounds.comparison_scope |
+| rear_muted_reference | "the same section with rear_muted: true is the rear-muted reference" | rule | contract.rear.bounds.rear_muted_reference |
+| inheritance_rule | "an absent rear_calibration key inherits the base's section; null clears the stage and the rear output is then muted" | rule | contract.rear.bounds.inheritance_rule |
 ```
 <!-- BOUNDS_END -->

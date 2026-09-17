@@ -25,6 +25,8 @@ The branch filters themselves can be fitted from a target table, or re-fitted
 from measured front-alone and rear-alone responses, with
 [`scripts/fit-rear-branches.py`](../scripts/fit-rear-branches.py) — its
 `--help` carries the input shapes and the phase/sign conventions.
+`jasper-crossover-prescriber contract --section rear` prints this section's
+machine-readable schema and bounds.
 
 ## Document header (both cases)
 
@@ -77,7 +79,7 @@ Use it for measurement setup notes (mic distance, ambient noise, dataset id).
 | `inverted` | bool |
 | `delay_ms` | any finite number. `front.delay_ms` is relative to the stage input; branch `delay_ms` is relative to the front reference. The compiler refuses a branch whose `common_delay_ms + front.delay_ms + branch.delay_ms` is negative — realize a negative relative rear delay by raising `common_delay_ms` instead |
 | `muted` | bool |
-| `filters` | list of filter entries, see below |
+| `filters` | list of filter entries, at most `MAX_FILTERS_PER_CHAIN` (`16`); see below |
 
 ## Boundary filters
 
@@ -89,10 +91,12 @@ Use it for measurement setup notes (mic distance, ambient noise, dataset id).
 
 | `type` | `parameters.type` (kind) | Required keys | Range |
 |---|---|---|---|
-| `Biquad` | `Highpass`, `Lowpass`, `Allpass` | `type, freq, q` | `0 < freq < sample_rate_hz/2`; `q > 0` |
-| `Biquad` | `Peaking`, `Lowshelf`, `Highshelf` | `type, freq, q, gain` | as above, plus `gain` finite (dB) |
-| `BiquadCombo` | `ButterworthHighpass`, `ButterworthLowpass` | `type, freq, order` | `order` a positive int |
-| `BiquadCombo` | `LinkwitzRileyHighpass`, `LinkwitzRileyLowpass` | `type, freq, order` | `order` a positive **even** int |
+| `Biquad` | `Highpass`, `Lowpass` | `type, freq, q` | `0 < freq < sample_rate_hz/2`; `0 < q <= MAX_RESONANT_Q` (`1.0`) |
+| `Biquad` | `Allpass` | `type, freq, q` | as above; `0 < q <= MAX_ALLPASS_Q` (`10.0`) |
+| `Biquad` | `Peaking` | `type, freq, q, gain` | as above; `q > 0`, uncapped; `gain` finite (dB), a cut only: `<= 0` |
+| `Biquad` | `Lowshelf`, `Highshelf` | `type, freq, q, gain` | as above; `0 < q <= MAX_RESONANT_Q` (`1.0`); `gain` finite (dB), a cut only: `<= 0` |
+| `BiquadCombo` | `ButterworthHighpass`, `ButterworthLowpass` | `type, freq, order` | `order` a positive int `<= MAX_COMBO_ORDER` (`8`) |
+| `BiquadCombo` | `LinkwitzRileyHighpass`, `LinkwitzRileyLowpass` | `type, freq, order` | `order` a positive **even** int `<= MAX_COMBO_ORDER` (`8`) |
 
 ## FIR alternative (`rear.mode == "fir"`)
 
