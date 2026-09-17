@@ -64,7 +64,7 @@
       "physical_output_count": 8
     },
     "kind": "jts_active_crossover_driver_research_request",
-    "request_fingerprint": "797cf0e964c4fce9128ad20cd471304284b8350ba91f423dd48cafda37475fdf",
+    "request_fingerprint": "886d145c7c68dd7c46816dd41bd824df94e40a6ea43f3412bd4bf9ebe531c6ef",
     "targets": [
       {
         "driver_style": "unspecified",
@@ -109,7 +109,7 @@
         "role": "woofer",
         "speaker_group_id": "mono",
         "speaker_group_mode": "active_2_way",
-        "target_fingerprint": "11bcdfa370ae2a69b69b0b587bfed2497ccb3fcc5ee5c7000867ac54d7a6e779",
+        "target_fingerprint": "2e0350fd6967afa5264fb9d91fc61e3ae33165bdac46db3c84e48855a866c2f7",
         "target_id": "mono:woofer"
       },
       {
@@ -154,7 +154,7 @@
         "role": "tweeter",
         "speaker_group_id": "mono",
         "speaker_group_mode": "active_2_way",
-        "target_fingerprint": "679455bdb98ce7c2fd9fee2ded758a776d1a6006a1376e39255a93fdce5759eb",
+        "target_fingerprint": "5e82d98043bcf059b3a2d6cc5a086549eec555e231df479e298f6143f67579b3",
         "target_id": "mono:tweeter"
       }
     ],
