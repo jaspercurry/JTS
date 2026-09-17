@@ -1337,7 +1337,7 @@ def _migrate_stale_fanin_ring_slots(
         stale_source=resolution.source,
         conf_n_slots=conf_a,
     )
-    return _EnvSnapshot(current.path, new_text, True), True
+    return _EnvSnapshot(current.path, new_text), True
 
 
 def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:

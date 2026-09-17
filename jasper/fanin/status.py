@@ -167,7 +167,6 @@ __all__ = [
     "DIRECT_HEALTH_BROKEN",
     "DIRECT_HEALTH_CAPTURING",
     "DIRECT_HEALTH_IDLE",
-    "DirectHealthSample",
     "FANIN_INPUT_SOURCE_DIRECT",
     "USBSINK_INPUT_LABEL",
     "extract_direct_sample",
