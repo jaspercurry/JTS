@@ -101,24 +101,33 @@ def test_parse_empty_returns_empty():
     assert parse_saved_stations("   ") == []
 
 
-def test_parse_happy_path():
-    got = parse_saved_stations("abc|9 Av,def|Atlantic")
-    assert got == [("abc", "9 Av"), ("def", "Atlantic")]
-
-
-def test_parse_tolerates_whitespace():
-    got = parse_saved_stations("  abc | 9 Av  ,  def | Atlantic  ")
-    assert got == [("abc", "9 Av"), ("def", "Atlantic")]
-
-
-def test_parse_bare_id_uses_id_as_label():
-    got = parse_saved_stations("abc-uuid,def|Atlantic")
-    assert got == [("abc-uuid", "abc-uuid"), ("def", "Atlantic")]
-
-
-def test_parse_skips_empty_id():
-    got = parse_saved_stations("abc|9 Av,|orphan_label,def|D")
-    assert got == [("abc", "9 Av"), ("def", "D")]
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param(
+            "abc|9 Av,def|Atlantic",
+            [("abc", "9 Av"), ("def", "Atlantic")],
+            id="happy_path",
+        ),
+        pytest.param(
+            "  abc | 9 Av  ,  def | Atlantic  ",
+            [("abc", "9 Av"), ("def", "Atlantic")],
+            id="tolerates_whitespace",
+        ),
+        pytest.param(
+            "abc-uuid,def|Atlantic",
+            [("abc-uuid", "abc-uuid"), ("def", "Atlantic")],
+            id="bare_id_uses_id_as_label",
+        ),
+        pytest.param(
+            "abc|9 Av,|orphan_label,def|D",
+            [("abc", "9 Av"), ("def", "D")],
+            id="skips_empty_id",
+        ),
+    ],
+)
+def test_parse_saved_stations_shapes(raw, expected):
+    assert parse_saved_stations(raw) == expected
 
 
 def test_parse_empty_label_falls_back_to_id():

@@ -64,11 +64,29 @@ def test_coords_returns_tuple_when_set():
 # ---------- Geocode action -------------------------------------------------
 
 
-def test_apply_geocode_empty_input_returns_error():
-    new, err = transit_setup._apply_geocode({}, {})
+@pytest.mark.parametrize(
+    ("form", "expected_error_substrings", "expected_new"),
+    [
+        pytest.param({}, ("address",), {}, id="empty_input"),
+        pytest.param({"manual_lat": "40.6"}, (), None, id="manual_one_side_only"),
+        pytest.param(
+            {"manual_lat": "200", "manual_lon": "0"},
+            ("-90",),
+            None,
+            id="manual_out_of_range",
+        ),
+    ],
+)
+def test_apply_geocode_rejects_invalid_input(
+    form, expected_error_substrings, expected_new
+):
+    new, err = transit_setup._apply_geocode(form, {})
     assert err is not None
-    assert "address" in err.lower()
-    assert new == {}
+    err_lower = err.lower()
+    for substring in expected_error_substrings:
+        assert substring.lower() in err_lower
+    if expected_new is not None:
+        assert new == expected_new
 
 
 def test_apply_geocode_writes_coords_on_success(monkeypatch):
@@ -111,18 +129,6 @@ def test_apply_geocode_manual_lat_lon_bypasses_nominatim(monkeypatch):
     assert new[transit_setup.LAT_ENV] == "40.646"
     assert new[transit_setup.LON_ENV] == "-73.994"
 
-
-def test_apply_geocode_manual_one_side_only_errors():
-    new, err = transit_setup._apply_geocode({"manual_lat": "40.6"}, {})
-    assert err is not None
-
-
-def test_apply_geocode_manual_out_of_range_errors():
-    new, err = transit_setup._apply_geocode(
-        {"manual_lat": "200", "manual_lon": "0"}, {},
-    )
-    assert err is not None
-    assert "-90" in err
 
 
 def test_seed_weather_from_transit_only_when_weather_missing(tmp_path):
