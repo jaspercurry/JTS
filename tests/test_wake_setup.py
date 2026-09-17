@@ -421,8 +421,6 @@ def test_active_threshold_falls_back_to_env(monkeypatch):
     assert wake_setup._active_threshold({}) == 0.2
 
 
-
-
 # ---------- Page render ----------------------------------------------------
 
 

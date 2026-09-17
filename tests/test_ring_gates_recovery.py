@@ -406,6 +406,9 @@ def test_wire_gate_names_the_end_that_disagrees(
     to read them in. Three declaring ends can each be the one out of step —
     fan-in's format, outputd's channel count out of range, and outputd's
     channel count that will not even parse — and each refusal must name its
+    (the unparseable case is its own per-axis flag rather than a reuse of the
+    format-axis note: otherwise an outputd channel count that will not parse
+    would pass on every unarmed box, i.e. every box about to arm)
     own end and its own reason. (The disagreeing token on the format axis is
     the NARROW one now: the shipped conf.d and the resolver both answer wide,
     so a fan-in snapshot still carrying an ``S16_LE`` declaration is the end

@@ -24,6 +24,7 @@ from typing import Any
 
 from jasper.aec_sweep import Aec3SweepVariant, DEFAULT_AEC3_SWEEP_VARIANTS
 from jasper.atomic_io import atomic_write_text, read_json_mapping
+from jasper.log_event import log_event
 from jasper import wake_legs
 from jasper.usb_mic import (
     USB_MIC_HEADER_STRUCT,
@@ -58,7 +59,10 @@ def read_bridge_stats(path: Path | None = None) -> dict[str, Any] | None:
     if stats_path is None:
         raw = os.environ.get(BRIDGE_STATS_PATH_ENV, "").strip()
         stats_path = Path(raw) if raw else BRIDGE_STATS_PATH
-    return read_json_mapping(stats_path)
+    stats = read_json_mapping(stats_path)
+    if stats is None and stats_path.exists():
+        log_event(logger, "aec_bridge.stats_unreadable", path=str(stats_path), level=logging.DEBUG)
+    return stats
 
 
 @dataclass(frozen=True)

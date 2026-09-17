@@ -107,7 +107,7 @@ JASPER_RETIRED_LEFTOVERS=(
     # every reader when ADR-0291 deleted background research, and the capture
     # relay it registered against is gone.
     # REMOVAL CONDITION: every box has taken one install after this lands.
-    "env|${ENV_DIR}/jasper.env SPOTIFY_CLIENT_ID SPOTIFY_OAUTH_MODE SPOTIFY_REDIRECT_URI JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN JASPER_RESEARCH_*|the wizard-owned Spotify keys, the capture-relay token and the research keys"
+    "env|${ENV_DIR}/jasper.env SPOTIFY_CLIENT_ID SPOTIFY_OAUTH_MODE JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN JASPER_RESEARCH_*|the wizard-owned Spotify keys, the capture-relay token and the research keys"
     # jasper.env is a frozen first-install seed (never re-synced), so a box
     # seeded before these defaults changed keeps the stale value forever: the
     # 1 GiB wake-events cap the doctor's smaller threshold warns on, and a

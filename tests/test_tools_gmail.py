@@ -29,7 +29,7 @@ from jasper.tools import gmail as gmail_mod
 from jasper.tools.gmail import make_gmail_tools
 from tests._google_client_fakes import FakeExecutable as _FakeExecutable
 from tests._google_client_fakes import make_google_clients as _make_clients
-from tests._log_events import event_fields
+from tests._log_events import event_fields, never_logged
 
 
 _FENCE_OPEN_PREFIX = f"[{_FENCE_TAG} from gmail"
@@ -428,10 +428,8 @@ async def test_read_thread_dispatch_redacts_message_content_from_info_logs(
     assert event_fields(caplog, "tool.dispatch_done")["payload"].startswith(
         "<redacted len="
     )
-    assert not any("Dentist appointment" in r.getMessage() for r in caplog.records)
-    assert not any(
-        "Your appointment is Tuesday" in r.getMessage() for r in caplog.records
-    )
+    assert never_logged(caplog, "Dentist appointment")
+    assert never_logged(caplog, "Your appointment is Tuesday")
 
 
 async def test_read_thread_caps_at_10_messages(monkeypatch):
