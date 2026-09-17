@@ -40,7 +40,6 @@ def _ready_preview() -> dict:
     return {
         "kind": "jts_active_speaker_crossover_preview",
         "status": "ready_for_protected_staging",
-        "permissions": {"may_prepare_protected_startup_config": True},
     }
 
 
@@ -156,7 +155,7 @@ def test_preview_and_displaced_profile_keep_existing_actions(displaced):
         first_experiment={"candidate_fingerprint": "measured-fp"},
     )
     assert view["status"] == ("ready_to_save_profile" if displaced else "needs_driver_values")
-    assert view["next_action"]["id"] == ("apply_candidate" if displaced else "preview_crossover")
+    assert view["next_action"]["id"] == ("apply_candidate" if displaced else "save_driver_values")
     assert view["next_action"]["enabled"] is True
 
 

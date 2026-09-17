@@ -198,8 +198,8 @@ def _stub_box_reads(monkeypatch, *, preview_status: str) -> None:
     monkeypatch.setattr(design_draft, "load_design_draft", lambda **kw: {})
     monkeypatch.setattr(
         crossover_preview,
-        "load_crossover_preview",
-        lambda **kw: {"status": preview_status},
+        "build_crossover_preview",
+        lambda draft: {"status": preview_status},
     )
 
 
@@ -1260,16 +1260,12 @@ def test_request_flag_is_retired():
         build_parser().parse_args(["--request", "staged"])
     assert exc.value.code == 2
 
-def test_a_preview_that_is_not_staged_refuses_before_the_gate_is_reached(
+def test_an_incomplete_declaration_refuses_before_the_session_gate(
     monkeypatch,
 ):
-    """The door measures the box as DECLARED. ``resolve_conductor_context``
-    runs ``ensure_crossover_preview_ready``, which REGENERATES a stale preview
-    — setup under a measurement's name — so an unstaged preview has to refuse
-    before the gate, not be repaired by it."""
     from jasper.active_speaker.crossover_v2 import conductor_context
 
-    _stub_box_reads(monkeypatch, preview_status="stale")
+    _stub_box_reads(monkeypatch, preview_status="blocked")
     monkeypatch.setattr(
         conductor_context,
         "conductor_status",

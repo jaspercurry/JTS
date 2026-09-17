@@ -3261,7 +3261,7 @@ def _anchor_reemit_harness(
     # loader would read it against, so the command's "derive from persisted
     # state only" contract is exercised rather than bypassed.
     monkeypatch.setattr(
-        "jasper.active_speaker.crossover_preview.load_crossover_preview",
+        "jasper.active_speaker.crossover_preview.build_crossover_preview",
         lambda *a, **k: build_crossover_preview(draft),
     )
     # Redirect only the DEFAULT (no-argument) answer — "where does this box keep

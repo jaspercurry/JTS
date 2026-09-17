@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared startup anchors, software guards, preview updates and commission status."""
+"""Shared startup anchors, software guards and commission status."""
 
 from __future__ import annotations
 
@@ -132,48 +132,6 @@ def ensure_missing_software_guards() -> tuple[OutputTopology, bool]:
         return updated, changed
 
 
-def regenerate_crossover_preview_from_current_draft(
-    *, durable: bool = False
-) -> dict[str, Any]:
-    """Rebuild and persist a fresh crossover preview from the saved design draft.
-
-    This is the exact machinery ``/sound/``'s Preview button drives
-    (``jasper.web.sound_active_speaker._active_speaker_crossover_preview_save_payload``):
-    request any missing software guards on the current topology, rebuild the
-    design draft against it (preserving the saved draft's own inputs and
-    revision), then persist through :func:`~jasper.active_speaker.crossover_preview.save_crossover_preview`
-    — the one real generator, never reimplemented. Exposed here rather than
-    imported from the `/sound/` page module so a second caller (the v2 flow's
-    session-start preview ensure) can reuse it without importing a wizard page
-    — the same reason this module already re-exposes
-    :func:`request_missing_software_guards` for its own startup-anchor use.
-
-    ``durable`` passes straight through to :func:`~jasper.active_speaker.crossover_preview.save_crossover_preview`;
-    the default keeps routine Preview regenerations cheap, and the v2 flow's
-    crossover-accept caller opts in.
-
-    Returns whatever :func:`~jasper.active_speaker.crossover_preview.save_crossover_preview`
-    produces, ready or not — callers decide what a non-ready result means.
-    """
-    from jasper.active_speaker.crossover_preview import save_crossover_preview
-    from jasper.active_speaker.design_draft import build_design_draft, load_design_draft
-
-    draft = load_design_draft()
-    if draft.get("status") not in {"not_saved", "unreadable"}:
-        saved_revision = draft.get("revision", 0)
-        topology, _guards_changed = ensure_missing_software_guards()
-        draft = build_design_draft(
-            topology,
-            driver_research=draft.get("driver_research"),
-            manual_settings=draft.get("manual_settings"),
-            operator_inputs=draft.get("operator_inputs"),
-            created_at=draft.get("created_at"),
-            updated_at=draft.get("updated_at"),
-        )
-        draft["revision"] = saved_revision
-    return save_crossover_preview(draft, durable=durable)
-
-
 def _stage_startup_config(
     topology: OutputTopology,
     *,
@@ -181,13 +139,11 @@ def _stage_startup_config(
     crossover_preview: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if preset is None and crossover_preview is None:
-        from jasper.active_speaker.crossover_preview import load_crossover_preview
+        from jasper.active_speaker.crossover_preview import build_crossover_preview
         from jasper.active_speaker.design_draft import load_design_draft
 
         design_draft = load_design_draft()
-        crossover_preview = load_crossover_preview(
-            current_design_draft=design_draft
-        )
+        crossover_preview = build_crossover_preview(design_draft)
     return stage_protected_startup_config(
         topology,
         preset=preset,
@@ -315,7 +271,7 @@ async def _ensure_commission_startup_anchor(
     )
     if stage.get("status") != "staged":
         # #2184: forward the SPECIFIC stage failure(s) — ~8 distinct causes
-        # (stale preview, active_playback_device_required,
+        # (blocked preview, active_playback_device_required,
         # subwoofer_staging_unresolved, passive_main_output_unassigned,
         # software_tweeter_guard_incomplete, staged_config_generation_failed,
         # preset-bind issues, ...) each already mint their own code+message

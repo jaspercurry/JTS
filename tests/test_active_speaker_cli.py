@@ -437,8 +437,8 @@ def _commission_env(monkeypatch, tmp_path: Path, controller: _FakeController) ->
         "jasper.active_speaker.design_draft.load_design_draft", lambda path=None: {}
     )
     monkeypatch.setattr(
-        "jasper.active_speaker.crossover_preview.load_crossover_preview",
-        lambda path=None, current_design_draft=None: {"status": "not_prepared"},
+        "jasper.active_speaker.crossover_preview.build_crossover_preview",
+        lambda draft: {"status": "blocked"},
     )
     # The startup-load gate requires a real camilladsp --check VALID (not the
     # "binary missing" skip). Point validation at a stub binary that exits 0 so

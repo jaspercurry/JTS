@@ -698,8 +698,7 @@ def test_stage_protected_startup_config_blocks_unready_crossover_preview(
     tmp_path: Path,
 ) -> None:
     preview = _crossover_preview(_topology())
-    preview["status"] = "stale"
-    preview["permissions"]["may_prepare_protected_startup_config"] = False
+    preview["status"] = "blocked"
 
     payload = stage_protected_startup_config(
         _topology(),

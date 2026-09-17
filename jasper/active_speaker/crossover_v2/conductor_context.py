@@ -146,34 +146,13 @@ def measurement_role_channels(preset: Any) -> dict[str, int]:
     return {role: channel for channel, role in enumerate(required_driver_roles(preset.way_count))}
 
 
-def ensure_crossover_preview_ready(*, durable: bool = False) -> dict[str, Any]:
-    """Keep capture preset resolution off its generic no-preview fallback.
-
-    See ``commission_wiring.resolve_capture_preset``. A reused preview is
-    unchanged; a regenerated preview uses the declaration's existing writer.
-    """
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
+def ensure_crossover_preview_ready() -> dict[str, Any]:
+    """Refuse incomplete declarations before capture preset resolution."""
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.web_commissioning import (
-        regenerate_crossover_preview_from_current_draft,
-    )
 
-    preview = load_crossover_preview(current_design_draft=load_design_draft())
-    outcome = "reused"
+    preview = build_crossover_preview(load_design_draft())
     if preview.get("status") != "ready_for_protected_staging":
-        preview = regenerate_crossover_preview_from_current_draft(durable=durable)
-        outcome = (
-            "generated"
-            if preview.get("status") == "ready_for_protected_staging"
-            else "refused"
-        )
-    log_event(
-        logger,
-        "correction.crossover_v2_preview_ensured",
-        outcome=outcome,
-        preview_status=str(preview.get("status")),
-    )
-    if outcome == "refused":
         messages = [
             str(issue.get("message") or issue.get("code"))
             for issue in (preview.get("issues") or [])

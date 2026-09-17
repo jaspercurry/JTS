@@ -267,6 +267,30 @@ def test_baseline_source_binds_exact_normalized_preview_candidate(
     assert first["fingerprint"] != changed["fingerprint"]
 
 
+def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):
+    from jasper.active_speaker import design_draft as draft_module
+    from jasper.active_speaker import driver_base_trim
+    from jasper.active_speaker.commission_wiring import resolve_commission_preset
+    from tests.test_active_speaker_crossover_preview import _draft as preview_draft
+
+    draft = preview_draft()
+    preview = build_crossover_preview(draft)
+    topology = OutputTopology.from_mapping(draft["topology"])
+    source = baseline_profile_mod._source_payload(topology, draft, preview, {})
+    old_fingerprint = "5faa7123f06913da9dc9f497bfa595b8659b8d050a34dc3e80a3a2a7abed15e9"
+    assert source["crossover_preview_fingerprint"] == old_fingerprint
+    monkeypatch.setattr(draft_module, "load_design_draft", lambda: draft)
+    monkeypatch.setattr(driver_base_trim, "load_base_trim", lambda **kw: {
+        "declaration_fingerprint": old_fingerprint,
+        "trims_db": {"woofer": 0.0, "tweeter": -6.0},
+        "speaker_group_ids": ["main"], "trim_source": "strict_measured_candidate",
+    })
+    preset = resolve_commission_preset(topology, crossover_preview=preview)
+    trims, meta = baseline_profile_mod.measured_level_trims(preset, {}, preview)
+    assert trims == {"woofer": 0.0, "tweeter": -6.0}
+    assert meta["base_trim"]["status"] == driver_base_trim.STATUS_APPLIED
+
+
 # --- Fail-safe level trim derived from the driver sensitivity gap -------------
 #
 def _applied_layer_a_yaml(tmp_path: Path) -> str:

@@ -47,7 +47,7 @@ from .measurement_emit import MeasurementGraphProfile
 from .crossover_contract import (
     measured_level_match_applied,
 )
-from .crossover_preview import crossover_design_fingerprint, crossover_preview_fingerprint, load_crossover_preview
+from .crossover_preview import build_crossover_preview, crossover_preview_fingerprint
 from .driver_base_trim import (
     BANK_CLEAR_FAILED,
     BANK_CORRECTION_ENTRY_UNREADABLE,
@@ -518,20 +518,13 @@ def _source_payload(
     # The baseline config cache invalidates whenever this source fingerprint
     # changes, so nothing spurious may ride the topology fingerprint — what it
     # covers and why is `topology_config_fingerprint`'s own docstring.
-    preview_source = crossover_preview.get("source") or {}
-    draft_updated_at = design_draft.get("updated_at")
-    if preview_source.get("design_draft_fingerprint") == crossover_design_fingerprint(design_draft):
-        # A hardware-only save does not change the design that the preview proved.
-        draft_updated_at = preview_source.get("design_draft_updated_at", draft_updated_at)
     source = {
         "topology_id": topology.topology_id,
         "topology_fingerprint": topology_config_fingerprint(topology),
-        "design_draft_updated_at": draft_updated_at,
-        "crossover_preview_updated_at": crossover_preview.get("updated_at"),
-        # Bind the exact normalized candidate that protected staging consumes,
-        # not merely the design draft it came from.
+        "design_draft_updated_at": design_draft.get("updated_at"),
+        # Banked driver trims must match the declaration they measured.
         "crossover_preview_fingerprint": crossover_preview_fingerprint(
-            crossover_preview
+            crossover_preview, design_draft
         ),
         "measurements_updated_at": measurements.get("updated_at"),
         "measurement_summary_fingerprint": _fingerprint(measurement_summary),
@@ -628,9 +621,11 @@ def _measured_level_trims(
         capture_proof_valid,
     )
 
+    from .design_draft import load_design_draft  # lazy: design draft imports baseline readers
+
     roles = required_driver_roles(preset.way_count)
     declaration_fingerprint = (
-        crossover_preview_fingerprint(crossover_preview)
+        crossover_preview_fingerprint(crossover_preview, load_design_draft())
         if isinstance(crossover_preview, Mapping) and crossover_preview
         else None
     )
@@ -1670,7 +1665,7 @@ def prepare_applied_baseline_profile(
         banked = publish_authored_candidate(candidate)
     protection = _protection_projection(design_draft.get("driver_safety_profile"))
     source = _source_payload(
-        declaration.topology, design_draft, load_crossover_preview(current_design_draft=design_draft), measurements,
+        declaration.topology, design_draft, build_crossover_preview(design_draft), measurements,
         measured_candidate_fingerprint=candidate.fingerprint, driver_protection=protection,
     )
     source = {**source, **((provenance or {}).get("source") or {}),

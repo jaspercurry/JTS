@@ -836,49 +836,16 @@ def apply_measured_crossover_geometry(
 
 
 def _active_speaker_crossover_preview_payload() -> dict[str, Any]:
-    """Return the saved no-audio crossover preview, if any."""
+    """Compute the no-audio crossover preview from the current design draft."""
 
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
 
-    payload = load_crossover_preview(current_design_draft=load_design_draft())
+    payload = build_crossover_preview(load_design_draft())
     log_event(
         logger,
         "sound.active_speaker_crossover_preview",
         status=str(payload.get("status")),
-        active_crossover_count=str(
-            (payload.get("summary") or {}).get("active_crossover_count")
-        ),
-        blocker_count=str((payload.get("summary") or {}).get("blocker_count")),
-    )
-    return payload
-
-
-def _active_speaker_crossover_preview_save_payload() -> dict[str, Any]:
-    """Persist a no-audio crossover preview from the saved design draft."""
-
-    from jasper.active_speaker.crossover_preview import save_crossover_preview
-    from jasper.active_speaker.design_draft import build_design_draft, load_design_draft
-
-    draft = load_design_draft()
-    if draft.get("status") not in {"not_saved", "unreadable"}:
-        saved_revision = draft.get("revision", 0)
-        topology, _guards_changed = ensure_missing_software_guards()
-        draft = build_design_draft(
-            topology,
-            driver_research=draft.get("driver_research"),
-            manual_settings=draft.get("manual_settings"),
-            operator_inputs=draft.get("operator_inputs"),
-            created_at=draft.get("created_at"),
-            updated_at=draft.get("updated_at"),
-        )
-        draft["revision"] = saved_revision
-    payload = save_crossover_preview(draft)
-    log_event(
-        logger,
-        "sound.active_speaker_crossover_preview_save",
-        status=str(payload.get("status")),
-        topology_id=str((payload.get("source") or {}).get("topology_id")),
         active_crossover_count=str(
             (payload.get("summary") or {}).get("active_crossover_count")
         ),

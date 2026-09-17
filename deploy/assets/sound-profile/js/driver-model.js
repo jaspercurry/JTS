@@ -622,10 +622,8 @@ function summarizeDriverResearchPayload(payload) {
 
 function crossoverPreviewReadyForProtectedStaging(payload) {
   payload = payload || {};
-  var permissions = payload.permissions || {};
   return payload.kind === 'jts_active_speaker_crossover_preview' &&
-    payload.status === 'ready_for_protected_staging' &&
-    permissions.may_prepare_protected_startup_config === true;
+    payload.status === 'ready_for_protected_staging';
 }
 function driverResearchStepSatisfied() {
   var draftPayload = driverResearch.designDraft || {};
@@ -642,7 +640,6 @@ function driverResearchFlowComplete(topology) {
 function ingestCrossoverPreview(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return;
   crossoverPreview.payload = payload;
-  crossoverPreview.preparing = false;
   crossoverPreview.error = '';
 }
 
@@ -873,13 +870,12 @@ function crossoverPreviewReadyCount(payload) {
 }
 function crossoverPreviewDisplayStatus(payload) {
   payload = payload || {};
-  var raw = payload.status || 'not_prepared';
+  var raw = payload.status;
   if (crossoverPreviewReadyCount(payload) > 0) return 'preview ready';
   if (raw === 'ready_for_protected_staging') return 'preview ready';
   if (raw === 'blocked') return 'not ready yet';
-  if (raw === 'stale') return 'needs refresh';
   if (raw === 'not_applicable') return 'not needed';
-  return 'not prepared';
+  return 'waiting for information';
 }
 function crossoverPreviewReviewIssues(issues) {
   return (Array.isArray(issues) ? issues : []).filter(function(issue) {

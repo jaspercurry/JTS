@@ -25,7 +25,6 @@ from typing import Any
 from jasper.log_event import log_event
 
 from .commission_ramp import ramp_state_path
-from .crossover_preview import crossover_preview_path
 from .design_draft import DEFAULT_DESIGN_DRAFT_PATH, DESIGN_DRAFT_PATH_ENV
 from .measurement import measurement_state_path
 from .path_safety import path_safety_evidence_path
@@ -64,7 +63,6 @@ def active_speaker_setup_state_paths() -> dict[str, Path]:
 
     return {
         "design_draft": _design_draft_state_path(),
-        "crossover_preview": crossover_preview_path(),
         "staged_config": staged_metadata_path(),
         "path_safety": path_safety_evidence_path(),
         "startup_load": startup_load_state_path(),
@@ -83,17 +81,12 @@ def active_speaker_setup_state_paths() -> dict[str, Path]:
 #   re-researching drivers, not just re-measuring them.
 # * ``baseline_profile`` — the SOLO applied Layer-A anchor and the sole durable
 #   record of the corrections the speaker is playing, read as the applied SSOT
-#   by ``jasper.sound.graph_carrier`` and ``jasper-doctor``. It does NOT protect
-#   a bonded speaker: the multiroom builders rebuild the driver-domain graph
-#   from ``design_draft`` plus the CLEARED ``crossover_preview`` +
-#   ``measurements``, so after a scoped reset a grouped speaker fails SAFE to
-#   solo-active and needs re-measurement before it can re-group.
+#   by ``jasper.sound.graph_carrier`` and ``jasper-doctor``.
 # * ``startup_load`` — the load/rollback bookkeeping for the protected candidate
 #   CamillaDSP is CURRENTLY running. Its ``previous_config_path`` is the only
 #   recorded path back to the config that was playing before, so deleting it
 #   while ``loaded=True`` strands the rollback pointer.
 _MEASUREMENT_JOURNEY_ARTIFACT_IDS = (
-    "crossover_preview",
     "staged_config",
     "path_safety",
     "commission_load",
@@ -123,7 +116,7 @@ def _staged_anchor_unlink_guard(artifact_id: str) -> Iterator[None]:
     """Hold the staged startup anchor's pair lock — for ONE unlink only.
 
     Scoped to the ``staged_config`` artifact and nothing else: holding it across
-    the whole clear loop would let one contending stage block eight unrelated
+    the whole clear loop would let one contending stage block seven unrelated
     deletions.
 
     :func:`~jasper.active_speaker.staging.staged_anchor_lock` keyed on the GRAPH

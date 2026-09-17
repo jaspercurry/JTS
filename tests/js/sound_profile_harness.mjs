@@ -760,7 +760,7 @@ function baseFetch(overrides = {}) {
       return Promise.resolve(response({ status: "ready_for_review", summary: {}, operator_inputs: {} }));
     }
     if (path === "./active-speaker/crossover-preview") {
-      return Promise.resolve(response({ status: "not_prepared", issues: [] }));
+      return Promise.resolve(response({ status: "blocked", issues: [] }));
     }
     if (path === "./active-speaker/commissioning-view") {
       return Promise.resolve(response(commissioningViewPayload({
@@ -1443,7 +1443,7 @@ async function testActiveCrossoverFirstStepRender() {
       operator_inputs: {},
     })),
     "./active-speaker/crossover-preview": () => Promise.resolve(response({
-      status: "not_prepared",
+      status: "blocked",
       summary: {},
       groups: [],
       issues: [],
@@ -1875,12 +1875,18 @@ async function testDirectCrossoverEditRefreshesProposalAndFooter() {
       }],
     },
   };
+  let previewPosts = 0;
   const fetchHandler = baseFetch({
     "./output-topology": () => Promise.resolve(response(
       activeTwoWayTopologyPayload()
     )),
-    "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
-    "./active-speaker/crossover-preview": () => Promise.resolve(response({
+    "./active-speaker/design-draft": (_path, options = {}) => {
+      if (options.method === "POST") Object.assign(draft, JSON.parse(options.body));
+      return Promise.resolve(response(draft));
+    },
+    "./active-speaker/crossover-preview": (_path, options = {}) => {
+      if (options.method === "POST") previewPosts += 1;
+      return Promise.resolve(response({
       status: "ready_for_protected_staging",
       summary: { ready_crossover_count: 1, blocker_count: 0 },
       groups: [{
@@ -1889,7 +1895,7 @@ async function testDirectCrossoverEditRefreshesProposalAndFooter() {
         crossovers: [{
           status: "ready_for_review",
           between_roles: ["woofer", "tweeter"],
-          proposed_frequency_hz: 1800,
+          proposed_frequency_hz: draft.manual_settings.crossover_candidates[0].frequency_hz,
           filters: [{
             filter_type: "Linkwitz-Riley",
             slope_db_per_octave: 24,
@@ -1897,8 +1903,8 @@ async function testDirectCrossoverEditRefreshesProposalAndFooter() {
         }],
       }],
       issues: [],
-      permissions: { may_prepare_protected_startup_config: true },
-    })),
+    }));
+    },
   });
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
@@ -1910,15 +1916,20 @@ async function testDirectCrossoverEditRefreshesProposalAndFooter() {
 
   const proposal = harness.elements.get("driver-proposal-control").innerHTML;
   const footer = harness.elements.get("driver-research-footer-control").innerHTML;
-  if (!proposal.includes("2.4 kHz") ||
-      !proposal.includes("working proposal") ||
-      proposal.includes("1.8 kHz") ||
-      proposal.includes("preview ready") ||
+  if (!proposal.includes("1.8 kHz") ||
+      !proposal.includes("preview ready") ||
       !footer.includes("Save values")) {
-    fail("direct edits must immediately replace the stale prepared proposal", {
+    fail("unsaved edits must keep the server preview visible", {
       proposal,
       footer,
     });
+  }
+  harness.dispatchClick({ "data-act": "save-driver-design" });
+  await harness.flush();
+  await harness.flush();
+  const savedHtml = harness.elements.get("view-body").innerHTML;
+  if (!savedHtml.includes("2.4 kHz") || previewPosts !== 0) {
+    fail("saving values must GET the computed preview", { savedHtml, previewPosts });
   }
   return { directCrossoverEditRefreshesProposalAndFooter: true };
 }
@@ -1987,7 +1998,7 @@ async function testActiveRouteLimitsRenderedTemplates() {
       operator_inputs: {},
     })),
     "./active-speaker/crossover-preview": () => Promise.resolve(response({
-      status: "not_prepared",
+      status: "blocked",
       summary: {},
       groups: [],
       issues: [],
@@ -3222,108 +3233,7 @@ async function testCrossoverPreviewRowsShowInversionAndDelay() {
   return { crossoverPreviewRowsShowInversionAndDelay: true };
 }
 
-async function testLoadedResearchHidesStalePreparedPreview() {
-  const topology = activeTwoWayTopologyPayload();
-  topology.speaker_groups[0].channels[1].driver_style = "compression_driver";
-  const draft = {
-    status: "ready_for_review",
-    summary: {},
-    operator_inputs: {
-      target_models: {
-        "main:woofer": "Manual Woofer",
-        "main:tweeter": "Manual Tweeter",
-      },
-    },
-    manual_settings: {
-      drivers: [
-        {
-          target_id: "main:woofer",
-          role: "woofer",
-          model: "Manual Woofer",
-          cabinet: { enclosure_kind: "sealed" },
-        },
-        {
-          target_id: "main:tweeter",
-          role: "tweeter",
-          model: "Manual Tweeter",
-        },
-      ],
-      crossover_candidates: [{
-        between_roles: ["woofer", "tweeter"],
-        frequency_hz: 1800,
-        filter_type: "Linkwitz-Riley",
-        slope_db_per_octave: 24,
-      }],
-    },
-  };
-  const oldPreview = {
-    kind: "jts_active_speaker_crossover_preview",
-    status: "ready_for_protected_staging",
-    summary: { ready_crossover_count: 1, blocker_count: 0 },
-    groups: [{
-      group_id: "main",
-      label: "Main speaker",
-      crossovers: [{
-        status: "ready_for_review",
-        between_roles: ["woofer", "tweeter"],
-        proposed_frequency_hz: 1800,
-        filters: [{ filter_type: "Linkwitz-Riley", slope_db_per_octave: 24 }],
-      }],
-    }],
-    issues: [],
-  };
-  const importedResearch = {
-    artifact_schema_version: 1,
-    kind: "jts_active_crossover_driver_research",
-    drivers: [
-      { target_id: "main:woofer", role: "woofer", model: "Manual Woofer" },
-      { target_id: "main:tweeter", role: "tweeter", model: "Manual Tweeter" },
-    ],
-    crossover_candidates: [{
-      between_roles: ["woofer", "tweeter"],
-      frequency_hz: 2400,
-      filter_type: "Linkwitz-Riley",
-      slope_db_per_octave: 24,
-      confidence: "high",
-    }],
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(topology)),
-    "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
-    "./active-speaker/crossover-preview": () => Promise.resolve(response(oldPreview)),
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
 
-  harness.dispatchInput({ "data-driver-import": "" }, JSON.stringify(importedResearch));
-  harness.dispatchClick({ "data-act": "parse-driver-research" });
-  await harness.flush();
-
-  const html = harness.elements.get("view-body").innerHTML;
-  const proposal = html.slice(
-    html.indexOf("Proposed starting crossover"),
-    html.indexOf("data-driver-advanced")
-  );
-  if (!proposal.includes("2.4 kHz") ||
-      !proposal.includes("working proposal") ||
-      proposal.includes("1.8 kHz") ||
-      proposal.includes("preview ready")) {
-    fail("loaded working values should replace a stale prepared preview immediately", {
-      proposal,
-    });
-  }
-  return { loadedResearchHidesStalePreparedPreview: true };
-}
-
-// #2186 field case (jts5, Dayton CX120-8): the old prompt called null "a
-// correct answer", so an honest researcher returned the tweeter's required
-// high-pass as kind-only with null cutoff and slope. applyDriverSafetyToSetting
-// wrote the halves it had, protectionFiltersFromSetting then dropped the whole
-// requirement out of the POST, and the operator got a cheerful success toast
-// with the protection silently gone. Before this guard the paste was ACCEPTED
-// ("Imported driver research." + an "import ready" pill), which is what makes
-// this a fail-first test: run the harness against the pre-change main.js and
-// the two assertions below both fail.
 async function testDriverResearchNullProtectionNumbersAreRefusedNotDropped() {
   const honestNullPacket = {
     artifact_schema_version: 2,
@@ -4342,7 +4252,7 @@ async function testWorkingSetupSummaryAvoidsStorageCounts() {
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
     "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
     "./active-speaker/crossover-preview": () => Promise.resolve(response({
-      status: "not_prepared",
+      status: "blocked",
       summary: {},
       groups: [],
       issues: [],
@@ -4376,240 +4286,8 @@ async function testWorkingSetupSummaryAvoidsStorageCounts() {
   return { workingSetupSummaryAvoidsStorageCounts: true };
 }
 
-async function testPreparePreviewUpdatesWorkingSetupFirst() {
-  const designSaves = [];
-  const previewSaves = [];
-  let commissioningViewFetches = 0;
-  const fetchHandler = baseFetch({
-    "./active-speaker/commissioning-view": () => {
-      commissioningViewFetches += 1;
-      return Promise.resolve(response(commissioningViewPayload(
-        commissioningViewFetches > 1
-          ? {
-              status: "needs_layout",
-              current_step: "layout",
-              stepStatuses: {
-                layout: "active",
-                research: "done",
 
-                experiment: "todo",
-                profile: "todo",
-              },
-            }
-          : {
-              status: "needs_driver_values",
-              current_step: "research",
-              stepStatuses: {
-                layout: "done",
-                research: "active",
-                experiment: "todo",
-                profile: "todo",
-              },
-            }
-      )));
-    },
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/design-draft": (_path, options = {}) => {
-      if (options.method === "POST") {
-        const body = JSON.parse(options.body || "{}");
-        designSaves.push(body);
-        return Promise.resolve(response({
-          status: "ready_for_review",
-          summary: { manual_driver_count: 2, manual_crossover_candidate_count: 1 },
-          manual_settings: body.manual_settings,
-          driver_research: body.driver_research,
-          operator_inputs: body.operator_inputs || {},
-        }));
-      }
-      return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
-    },
-    "./active-speaker/crossover-preview": (_path, options = {}) => {
-      if (options.method === "POST") {
-        previewSaves.push(JSON.parse(options.body || "{}"));
-        return Promise.resolve(response({
-          status: "ready_for_protected_staging",
-          summary: { ready_crossover_count: 1, blocker_count: 0 },
-          groups: [{
-            group_id: "main",
-            label: "Main speaker",
-            crossovers: [{
-              status: "ready_for_review",
-              between_roles: ["woofer", "tweeter"],
-              proposed_frequency_hz: 2100,
-              filters: [{ filter_type: "Linkwitz-Riley", slope_db_per_octave: 24 }],
-              issues: [],
-            }],
-          }],
-          issues: [],
-          permissions: { may_prepare_protected_startup_config: true },
-        }));
-      }
-      return Promise.resolve(response({ status: "not_prepared", summary: {}, groups: [], issues: [] }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
 
-  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
-  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
-  harness.dispatchInput({
-    "data-manual-crossover": "woofer:tweeter",
-    "data-manual-field": "frequency_hz",
-  }, "2100");
-  harness.dispatchClick({ "data-act": "prepare-crossover-preview" });
-  for (let i = 0; i < 8; i += 1) await harness.flush();
-
-  if (designSaves.length !== 1) {
-    fail("Preparing the preview should update the working setup first", { designSaves, previewSaves });
-  }
-  if (previewSaves.length !== 1) {
-    fail("Preparing the preview should build the preview after updating", { designSaves, previewSaves });
-  }
-  const saved = designSaves[0];
-  const manualCandidate = saved.manual_settings.crossover_candidates[0];
-  if (manualCandidate.frequency_hz !== 2100) {
-    fail("Preview auto-update should persist the visible crossover point", { saved });
-  }
-  if (commissioningViewFetches < 2) {
-    fail("Preview completion should refresh the backend-owned commissioning step", {
-      commissioningViewFetches,
-    });
-  }
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!/data-output-step="layout"[^>]* open/.test(html)) {
-    fail("Preview completion should open Speaker layout without a page reload", {
-      html,
-    });
-  }
-  return { preparePreviewUpdatesWorkingSetupFirst: true };
-}
-
-async function testPreparePreviewIgnoresOptionalSubwooferDriverInfo() {
-  const designSaves = [];
-  const previewSaves = [];
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayWithSubwooferTopologyPayload())),
-    "./active-speaker/design-draft": (_path, options = {}) => {
-      if (options.method === "POST") {
-        const body = JSON.parse(options.body || "{}");
-        designSaves.push(body);
-        return Promise.resolve(response({
-          status: "ready_for_review",
-          summary: { manual_driver_count: 2, manual_crossover_candidate_count: 1 },
-          manual_settings: body.manual_settings,
-          driver_research: body.driver_research,
-          operator_inputs: body.operator_inputs || {},
-        }));
-      }
-      return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
-    },
-    "./active-speaker/crossover-preview": (_path, options = {}) => {
-      if (options.method === "POST") {
-        previewSaves.push(JSON.parse(options.body || "{}"));
-        return Promise.resolve(response({
-          status: "ready_for_protected_staging",
-          summary: { ready_crossover_count: 1, blocker_count: 0 },
-          groups: [],
-          issues: [],
-          permissions: { may_prepare_protected_startup_config: true },
-        }));
-      }
-      return Promise.resolve(response({ status: "not_prepared", summary: {}, groups: [], issues: [] }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
-  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
-  harness.dispatchInput({
-    "data-manual-crossover": "woofer:tweeter",
-    "data-manual-field": "frequency_hz",
-  }, "2100");
-  harness.dispatchClick({ "data-act": "prepare-crossover-preview" });
-  for (let i = 0; i < 8; i += 1) await harness.flush();
-
-  if (designSaves.length !== 1 || previewSaves.length !== 1) {
-    fail("Optional local subwoofer should not block active-main crossover preview", {
-      designSaves,
-      previewSaves,
-      status: harness.elements.get("status").textContent,
-    });
-  }
-  const roles = (designSaves[0].manual_settings.drivers || []).map((driver) => driver.role);
-  if (roles.includes("subwoofer")) {
-    fail("Active-main driver research payload should not require the optional subwoofer", {
-      roles,
-      saved: designSaves[0],
-    });
-  }
-  const html = harness.elements.get("view-body").innerHTML;
-  if (html.includes("- subwoofer:")) {
-    fail("AI helper prompt should not ask for optional subwoofer model details", { html });
-  }
-  return { preparePreviewIgnoresOptionalSubwooferDriverInfo: true };
-}
-
-async function testPreparePreviewWaitsForInFlightWorkingSetupUpdate() {
-  const designSaves = [];
-  const previewSaves = [];
-  const pendingSave = deferred();
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/design-draft": (_path, options = {}) => {
-      if (options.method === "POST") {
-        const body = JSON.parse(options.body || "{}");
-        designSaves.push(body);
-        return pendingSave.promise.then(() => response({
-          status: "ready_for_review",
-          summary: { manual_driver_count: 2, manual_crossover_candidate_count: 1 },
-          manual_settings: body.manual_settings,
-          driver_research: body.driver_research,
-          operator_inputs: body.operator_inputs || {},
-        }));
-      }
-      return Promise.resolve(response({ status: "not_saved", summary: {}, operator_inputs: {} }));
-    },
-    "./active-speaker/crossover-preview": (_path, options = {}) => {
-      if (options.method === "POST") {
-        previewSaves.push(JSON.parse(options.body || "{}"));
-        return Promise.resolve(response({ status: "ready_for_protected_staging", issues: [] }));
-      }
-      return Promise.resolve(response({ status: "not_prepared", summary: {}, groups: [], issues: [] }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  harness.dispatchInput({ "data-driver-field": "woofer" }, "Manual Woofer");
-  harness.dispatchInput({ "data-driver-field": "tweeter" }, "Manual Tweeter");
-  harness.dispatchInput({
-    "data-manual-crossover": "woofer:tweeter",
-    "data-manual-field": "frequency_hz",
-  }, "2100");
-  harness.dispatchClick({ "data-act": "save-driver-design" });
-  await harness.flush();
-
-  let html = harness.elements.get("view-body").innerHTML;
-  if (!/data-act="save-driver-design" disabled/.test(html)) {
-    fail("Preview should be disabled while the working setup update is in flight", { html });
-  }
-
-  harness.dispatchClick({ "data-act": "prepare-crossover-preview" });
-  await harness.flush();
-  if (designSaves.length !== 1 || previewSaves.length !== 0) {
-    fail("Preview click during an in-flight update should not double-save or prepare", {
-      designSaves,
-      previewSaves,
-      status: harness.elements.get("status").textContent,
-    });
-  }
-
-  pendingSave.resolve();
-  await harness.flush();
-  await harness.flush();
-  return { preparePreviewWaitsForInFlightWorkingSetupUpdate: true };
-}
 
 async function testPartialThreeWayWorkingSetupSummaryReadsCleanly() {
   const draft = {
@@ -4643,7 +4321,7 @@ async function testPartialThreeWayWorkingSetupSummaryReadsCleanly() {
     "./output-topology": () => Promise.resolve(response(activeThreeWayTopologyPayload())),
     "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
     "./active-speaker/crossover-preview": () => Promise.resolve(response({
-      status: "not_prepared",
+      status: "blocked",
       summary: {},
       groups: [],
       issues: [],
@@ -5255,99 +4933,6 @@ async function testFollowerModeSafeFallbackOnMalformedIsland() {
   return { followerModeSafeFallbackOnMalformedIsland: true };
 }
 
-async function testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy() {
-  let designPosts = 0;
-  let previewPosts = 0;
-  const targetIds = ["left:woofer", "left:tweeter", "right:woofer", "right:tweeter"];
-  const legacyDraft = {
-    status: "ready_for_review",
-    revision: 7,
-    summary: {
-      missing_driver_info_target_ids: [],
-      missing_crossover_candidate_pairs: [],
-    },
-    operator_inputs: { woofer: "Legacy shared woofer", tweeter: "Legacy shared tweeter" },
-    manual_settings: {
-      drivers: [
-        { role: "woofer", model: "Legacy shared woofer" },
-        { role: "tweeter", model: "Legacy shared tweeter" },
-      ],
-      crossover_candidates: [{
-        between_roles: ["woofer", "tweeter"],
-        frequency_hz: 2500,
-        filter_type: "Linkwitz-Riley",
-        slope_db_per_octave: 24,
-      }],
-    },
-    driver_safety_profile: {
-      targets: targetIds.map((targetId) => ({
-        target_id: targetId,
-        target_values_binding: "missing",
-      })),
-    },
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": () => Promise.resolve(response(activeStereoTwoWayTopologyPayload())),
-    "./active-speaker/design-draft": (_path, options = {}) => {
-      if (options.method === "POST") designPosts += 1;
-      return Promise.resolve(response(legacyDraft));
-    },
-    "./active-speaker/crossover-preview": (_path, options = {}) => {
-      if (options.method === "POST") {
-        previewPosts += 1;
-        return Promise.resolve(response({
-          kind: "jts_active_speaker_crossover_preview",
-          status: "ready_for_protected_staging",
-          summary: { ready_crossover_count: 2, blocker_count: 0 },
-          groups: [],
-          issues: [],
-          permissions: { may_prepare_protected_startup_config: true },
-        }));
-      }
-      return Promise.resolve(response({ status: "not_prepared", summary: {}, issues: [] }));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  const initialHtml = harness.elements.get("view-body").innerHTML;
-  if (initialHtml.includes("Legacy shared woofer") || initialHtml.includes("Legacy shared tweeter")) {
-    fail("Legacy role-only values must not copy into stereo target edit rows", { initialHtml });
-  }
-  for (const targetId of targetIds) {
-    if (!initialHtml.includes(`data-driver-target="${targetId}"`)) {
-      fail("Legacy stereo draft must retain one editable row per physical target", {
-        targetId,
-        initialHtml,
-      });
-    }
-  }
-  if (/data-act="prepare-crossover-preview" disabled/.test(initialHtml)) {
-    fail("A clean server-ready legacy draft must allow crossover preview", { initialHtml });
-  }
-
-  harness.dispatchClick({ "data-act": "prepare-crossover-preview" });
-  for (let i = 0; i < 6; i += 1) await harness.flush();
-
-  if (previewPosts !== 1 || designPosts !== 0) {
-    fail("Legacy stereo preview should POST directly without rewriting ambiguous target values", {
-      previewPosts,
-      designPosts,
-      status: harness.elements.get("status").textContent,
-    });
-  }
-  const previewHtml = harness.elements.get("view-body").innerHTML;
-  if (previewHtml.includes("Legacy shared woofer") || previewHtml.includes("Legacy shared tweeter")) {
-    fail("Preparing a preview must not promote or copy legacy role-only safety values", {
-      previewHtml,
-    });
-  }
-  if (legacyDraft.driver_safety_profile.targets.some((target) =>
-        target.target_values_binding !== "missing")) {
-    fail("Legacy preview must leave physical-target safety confirmation incomplete", { legacyDraft });
-  }
-  return { legacyStereoDraftCanPreparePreviewWithoutTargetCopy: true };
-}
 
 async function testStereoDriverValuesStayTargetSpecific() {
   const designSaves = [];
@@ -5695,7 +5280,7 @@ async function testNextActionOwnsTheSpeakerPage() {
   for (const [status, action, step] of [
     ['needs_layout', {id: 'declare_speaker'}, 'layout'],
     ['needs_driver_values', {id: 'save_driver_values'}, 'research'],
-    ['needs_driver_values', {id: 'preview_crossover'}, 'research'],
+    ['needs_driver_values', {id: 'save_driver_values'}, 'research'],
     ['ready_to_save_profile', {id: 'apply_candidate'}, 'profile'],
     ['applied', {id: 'copy_prompt', program: 'room'}, ''],
     ['applied', {id: 'run_program', program: 'speaker'}, 'experiment'],
@@ -6086,7 +5671,6 @@ results.push(await testChannelSelectorKeepsLayoutOpenWhenDraftDirty());
 results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
 results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testAppliedProfileCardUsesCommissioningRecord());
-results.push(await testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy());
 results.push(await testStereoDriverValuesStayTargetSpecific());
 results.push(await testResearchReloadAndBooleanNumbersDrop());
 results.push(await testPasteEditSaveKeepsReplyAndVisibleValues());
@@ -6103,7 +5687,6 @@ results.push(await testDriverResearchImportCopiesPolarityAndDelayIntoManualSetti
 results.push(await testDriverResearchImportToleratesFencesAndProse());
 results.push(await testDriverResearchImportPreservesOperatorInstalledConfiguration());
 results.push(await testCrossoverPreviewRowsShowInversionAndDelay());
-results.push(await testLoadedResearchHidesStalePreparedPreview());
 results.push(await testDriverResearchNullProtectionNumbersAreRefusedNotDropped());
 results.push(await testRejectedImportReasonSurvivesTheSaveInThePanel());
 results.push(await testRejectedPasteAndReasonSurviveDraftIngest());
@@ -6116,9 +5699,6 @@ results.push(await testDriverResearchPromptCopyUsesHttpFallback());
 results.push(await testDriverResearchPromptCopyBlockedSelectsPrompt());
 results.push(await testDriverResearchNotesCapExplainsBeforePost());
 results.push(await testWorkingSetupSummaryAvoidsStorageCounts());
-results.push(await testPreparePreviewUpdatesWorkingSetupFirst());
-results.push(await testPreparePreviewIgnoresOptionalSubwooferDriverInfo());
-results.push(await testPreparePreviewWaitsForInFlightWorkingSetupUpdate());
 results.push(await testPartialThreeWayWorkingSetupSummaryReadsCleanly());
 results.push(await testDriverMicCaptureIsRemovedFromSoundFlow());
 results.push(await testSaveAndApplyUsesSingleFinishEndpoint());

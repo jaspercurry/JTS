@@ -392,13 +392,14 @@ def _resolve_measurement_level_trims(
     if not spec.level_matched:
         return {}, ""
     from jasper.active_speaker.baseline_profile import measured_level_trims
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
 
     trims, meta = measured_level_trims(
         preset,
         load_measurement_state(topology) or {},
-        load_crossover_preview() or {},
+        build_crossover_preview(load_design_draft()),
     )
     return (
         {str(role): float(db) for role, db in trims.items()},

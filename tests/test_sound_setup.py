@@ -677,6 +677,7 @@ def test_dead_active_speaker_post_routes_are_unregistered(tmp_path):
         dispatch.__code__.co_freevars.index("_POST_ROUTES")
     ].cell_contents
     dead = {
+        "/active-speaker/crossover-preview",
         "/active-speaker/stop",
         "/active-speaker/channel-protection",
         "/active-speaker/stage-config",
@@ -1366,10 +1367,7 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "'./active-speaker/baseline-profile/save-and-apply'" in js
     assert "expected_candidate_fingerprint: expectedCandidateFingerprint" in js
     assert "data-act=\"refresh-active-speaker\"" not in js
-    assert "act === 'prepare-crossover-preview'" in js
     assert "Save values" in js
-    assert "Preview crossover" in js
-    assert "function driverResearchCanPreparePreview()" in js
     assert "function driverResearchStepSatisfied()" in js
     assert "function driverResearchFlowComplete(topology)" in js
     assert "driverResearchSatisfied: driverResearchFlowComplete(topology)" in js
@@ -1379,7 +1377,6 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
         _ACTIVE_SPEAKER_UI_MODULE.read_text()
     )
     assert "Working setup updated. No filters are active and no sound was played." in js
-    assert "The working values below are ready to save and turn into a no-audio preview." in js
     assert "data-act=\"arm-active-speaker\"" not in js
     assert "data-act=\"stage-active-config\"" not in js
     assert "data-act=\"check-active-path-safety\"" not in js
@@ -1802,7 +1799,6 @@ def test_active_speaker_setup_copy_has_no_backend_jargon():
     assert "This driver can’t be tested yet — finish the earlier setup steps first." in helper_js
 
     # The new consumer copy is present and stable.
-    assert "The working values below are ready to save and turn into a no-audio preview." in js
     assert (
         "Save the checked crossover as your active speaker profile. "
         "JTS validates and applies it in one step; no sound plays."
@@ -2027,7 +2023,6 @@ def _bench_active_topology_payload() -> dict:
 _ACTIVE_SPEAKER_STATE_FILENAMES = {
     "JASPER_OUTPUT_TOPOLOGY_PATH": "output_topology.json",
     "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE": "design_draft.json",
-    "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE": "crossover_preview.json",
     "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE": "measurements.json",
     "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR": "tone-artifacts",
     "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE": "safe-playback.json",
@@ -2049,7 +2044,6 @@ def _set_active_speaker_state_paths(
     env_names = (
         "JASPER_OUTPUT_TOPOLOGY_PATH",
         "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
         *extra_env_names,
     )
     paths = {
@@ -2784,7 +2778,7 @@ def _save_active_speaker_design_and_preview(*, frequency_hz: float = 2500) -> di
             frequency_hz=frequency_hz,
         ),
     })
-    return sound_setup._active_speaker_crossover_preview_save_payload()
+    return sound_setup._active_speaker_crossover_preview_payload()
 
 
 def test_driver_research_prompt_payload_uses_unsaved_models_and_notes(monkeypatch) -> None:
@@ -2954,7 +2948,6 @@ def test_active_speaker_design_draft_route_persists_saved_topology_research(
 ):
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     draft_path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
-    preview_path = paths["JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE"]
     sound_setup._save_output_topology_payload(
         _active_speaker_mono_topology_payload(
             protection_status="software_guard_requested",
@@ -3009,30 +3002,14 @@ def test_active_speaker_design_draft_route_persists_saved_topology_research(
         "ready_for_review"
     )
 
-    preview = sound_setup._active_speaker_crossover_preview_save_payload()
+    preview = sound_setup._active_speaker_crossover_preview_payload()
     loaded_preview = sound_setup._active_speaker_crossover_preview_payload()
 
     assert preview["kind"] == "jts_active_speaker_crossover_preview"
     assert preview["status"] == "ready_for_protected_staging"
     assert preview["safety"]["no_audio"] is True
-    assert preview["permissions"]["may_not_emit_camilla_yaml"] is True
+    assert preview["safety"]["emits_camilla_yaml"] is False
     assert loaded_preview["status"] == "ready_for_protected_staging"
-    assert json.loads(preview_path.read_text(encoding="utf-8"))["status"] == (
-        "ready_for_protected_staging"
-    )
-
-    stale_draft = json.loads(draft_path.read_text(encoding="utf-8"))
-    stale_draft["driver_research"]["crossover_candidates"][0]["frequency_hz"] = 3200
-    stale_draft["updated_at"] = "2026-06-10T12:45:00Z"
-    draft_path.write_text(json.dumps(stale_draft), encoding="utf-8")
-
-    stale_preview = sound_setup._active_speaker_crossover_preview_payload()
-
-    assert stale_preview["status"] == "stale"
-    assert stale_preview["permissions"]["may_prepare_protected_startup_config"] is False
-    assert "crossover_preview_stale_design_draft" in {
-        issue["code"] for issue in stale_preview["issues"]
-    }
 
 
 @pytest.mark.parametrize("spacing", [{}, {"driver_spacing_mm": None}, {"driver_spacing_mm": 200}])
@@ -3104,7 +3081,7 @@ def test_preview_preserves_driver_values_and_does_not_rewrite_draft(
     draft_path.write_text(json.dumps(draft), encoding="utf-8")
     before = draft_path.read_bytes()
 
-    preview = sound_setup._active_speaker_crossover_preview_save_payload()
+    preview = sound_setup._active_speaker_crossover_preview_payload()
 
     after = draft_path.read_bytes()
     loaded = sound_setup._active_speaker_design_draft_payload()
@@ -4055,7 +4032,6 @@ def test_reset_output_topology_payload_clears_active_setup_state(
     initial = sound_setup._output_topology_payload()
     state_envs = {
         "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE": "design.json",
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE": "preview.json",
         "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH": "staged.json",
         "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE": "path-safety.json",
         "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE": "startup-load.json",
@@ -4561,65 +4537,46 @@ async def test_active_speaker_finish_commissioning_clears_pending_ramp(
     assert load_ramp_state()["pending"] is None
 
 
-def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(
-    monkeypatch,
-    tmp_path: Path,
+@pytest.mark.parametrize("old_preview", [None, "{"])
+def test_active_speaker_crossover_preview_get_tracks_draft_without_preview_file(
+    monkeypatch, tmp_path: Path, old_preview,
 ):
-    _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    with sound_server(tmp_path) as base:
-        topology = _active_speaker_mono_topology_payload(
-            protection_status="software_guard_requested",
-            card_id=None,
-            identity_verified=True,
-        )
-        research = {
-            "artifact_schema_version": 1,
-            "kind": "jts_active_crossover_driver_research",
-            "drivers": [
-                {"role": "woofer", "model": "Epique E150HE-44"},
-                {
-                    "role": "tweeter",
-                    "model": "F110M-8",
-                    "recommended_highpass_hz": 2500,
-                    "do_not_test_below_hz": 1200,
-                },
-            ],
-            "crossover_candidates": [
-                {
-                    "between_roles": ["woofer", "tweeter"],
-                    "frequency_hz": 2500,
-                    "filter_type": "Linkwitz-Riley",
-                    "slope_db_per_octave": 24,
-                    "confidence": "medium",
-                }
-            ],
-        }
-        topology_state = json.loads(
-            urllib.request.urlopen(f"{base}/output-topology").read().decode("utf-8")
-        )
-        json_post_with_csrf(
-            base,
-            "/output-topology",
-            {
-                "output_topology": topology,
-                "topology_revision": topology_state["topology_revision"],
-            },
-        )
-        json_post_with_csrf(
-            base,
-            "/active-speaker/design-draft",
-            {
-                "operator_inputs": {},
-                "driver_research": research,
-            },
-        )
-
-        resp = json_post_with_csrf(base, "/active-speaker/crossover-preview", {})
-        payload = json.loads(resp.read().decode("utf-8"))
-
+    paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    preview_path = tmp_path / "active_speaker_crossover_preview.json"
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE", str(preview_path))
+    if old_preview is not None:
+        preview_path.write_text(old_preview)
+    sound_setup._save_output_topology_payload(_active_speaker_mono_topology_payload(
+        protection_status="software_guard_requested", card_id=None, identity_verified=True,
+    ))
+    _save_active_speaker_design_and_preview()
+    handler_cls = sound_setup._make_handler(
+        profile_path=tmp_path / "profile.json", library_path=tmp_path / "library.json",
+        config_dir=tmp_path / "configs",
+    )
+    for frequency in (2500, 3200):
+        draft_path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
+        draft = json.loads(draft_path.read_text())
+        draft["driver_research"]["crossover_candidates"][0]["frequency_hz"] = frequency
+        draft_path.write_text(json.dumps(draft))
+        handler = handler_cls.__new__(handler_cls)
+        handler.rfile = io.BytesIO(b"GET /active-speaker/crossover-preview HTTP/1.1\r\nHost: jts.local\r\n\r\n")
+        handler.wfile = io.BytesIO()
+        handler.client_address = ("127.0.0.1", 0)
+        handler.server = None
+        handler.raw_requestline = handler.rfile.readline()
+        handler.parse_request()
+        handler.do_GET()
+        response = handler.wfile.getvalue()
+        assert b" 200 " in response.split(b"\r\n", 1)[0]
+        payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
         assert payload["status"] == "ready_for_protected_staging"
+        assert payload["groups"][0]["crossovers"][0]["proposed_frequency_hz"] == frequency
         assert payload["safety"]["no_audio"] is True
-        assert payload["permissions"]["may_not_emit_camilla_yaml"] is True
+        assert payload["safety"]["emits_camilla_yaml"] is False
+        assert "design_draft_fingerprint" not in payload["source"]
+        assert "preview_fingerprint" not in payload["source"]
+    assert (preview_path.read_text() if preview_path.exists() else None) == old_preview
 
 
 def test_sound_module_treats_saved_tab_as_live_lane_with_flat_fallback():

@@ -179,7 +179,7 @@ def _stub_evidence_loaders(monkeypatch):
 
     monkeypatch.setattr(measurement, "load_measurement_state", lambda _t: {})
     monkeypatch.setattr(
-        crossover_preview, "load_crossover_preview", lambda *a, **k: {}
+        crossover_preview, "build_crossover_preview", lambda *a, **k: {}
     )
 
 

@@ -33,7 +33,6 @@ def _staged_graph_half(monkeypatch, tmp_path: Path) -> Path:
 
 # The subset clear_active_speaker_measurement_journey() must remove.
 _MEASUREMENT_JOURNEY_ENVS = {
-    "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE": "preview.json",
     "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH": "staged.json",
     "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE": "path-safety.json",
     "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE": "commission-load.json",
@@ -51,7 +50,6 @@ _MEASUREMENT_JOURNEY_KEPT_ENVS = {
 
 _STATE_ENVS = {
     "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE": "design.json",
-    "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE": "preview.json",
     "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH": "staged.json",
     "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE": "path-safety.json",
     "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE": "startup-load.json",
@@ -128,7 +126,6 @@ def test_clear_active_speaker_measurement_journey_clears_only_journey_subset(
     assert len(payload["cleared"]) == len(journey_paths)
     assert payload["errors"] == []
     assert {entry["id"] for entry in payload["cleared"]} == {
-        "crossover_preview",
         "staged_config",
         "path_safety",
         "commission_load",
@@ -215,13 +212,13 @@ def test_reset_refuses_the_staged_anchor_while_a_stage_holds_the_pair_lock(
       2. the contention is reported as THAT artifact's error, through the
          existing ``errors``/``status="partial"`` contract — no new exception
          type and no new return shape;
-      3. the other eight artifacts still cleared — the hold is scoped to the
+      3. the other artifacts still cleared — the hold is scoped to the
          one unlink, so a contending stage cannot block unrelated deletions.
     """
     paths = _seed_state_paths(monkeypatch, tmp_path)
     metadata = tmp_path / _STATE_ENVS["JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH"]
     others = [path for path in paths if path != metadata]
-    assert len(others) == 8, others
+    assert len(others) == len(_STATE_ENVS) - 1
     # Bounded wait, so the refusal is the test's outcome rather than its runtime.
     monkeypatch.setattr(staging_mod, "STAGED_ANCHOR_LOCK_TIMEOUT_SEC", 0.2)
 
@@ -247,7 +244,6 @@ def test_reset_refuses_the_staged_anchor_while_a_stage_holds_the_pair_lock(
     # (3) the hold was scoped to one unlink.
     assert {entry["id"] for entry in payload["cleared"]} == {
         "design_draft",
-        "crossover_preview",
         "path_safety",
         "startup_load",
         "commission_load",
@@ -325,5 +321,4 @@ def test_measurement_journey_reset_also_locks_the_staged_anchor(
 
     assert payload["status"] == "partial"
     assert [entry["id"] for entry in payload["errors"]] == ["staged_config"]
-    # Scoped: the other five journey artifacts still cleared.
-    assert len(payload["cleared"]) == 5
+    assert len(payload["cleared"]) == len(_MEASUREMENT_JOURNEY_ENVS) - 1

@@ -213,7 +213,6 @@ const STEREO_WITH_SUB_UNSET_FC = {
 for (const [id, act, step] of [
   ['declare_speaker', 'open-output-layout', 'layout'],
   ['save_driver_values', 'save-driver-design', 'research'],
-  ['preview_crossover', 'prepare-crossover-preview', 'research'],
   ['apply_candidate', 'save-apply-baseline-profile', 'profile'],
   ['copy_prompt', 'copy-tuning-handoff', ''],
   ['run_speaker_program', '', 'experiment'],

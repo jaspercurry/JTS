@@ -128,7 +128,7 @@ def build_commissioning_view(
     passive = topology_is_subless_passive_mains(topology)
     has_layout = bool(topology.speaker_groups)
     design_ready = passive or draft.get("status") == "ready_for_review"
-    preview_ready = passive or (preview.get("permissions") or {}).get("may_prepare_protected_startup_config") is True
+    preview_ready = passive or preview.get("status") == "ready_for_protected_staging"
     safety_ready = passive or bool(draft.get("driver_safety_profile")) and not driver_floor_issues(draft["driver_safety_profile"])
     values_ready = design_ready and preview_ready and safety_ready
     profile_applied = applied_profile is not None and applied_profile_verdict != APPLIED_PROFILE_DISPLACED
@@ -169,11 +169,8 @@ def build_commissioning_view(
                   "endpoint": SPEAKER_SETUP_PAGE_PATH, "method": "GET", "body": {}}
     elif not values_ready:
         status = "needs_driver_safety_profile" if design_ready and preview_ready else "needs_driver_values"
-        needs_preview = design_ready and safety_ready and not preview_ready
-        action = {"id": "preview_crossover" if needs_preview else "save_driver_values",
-                  "label": "Preview crossover" if needs_preview else "Save values", "enabled": True,
-                  "endpoint": "./active-speaker/crossover-preview" if needs_preview else "./active-speaker/design-draft",
-                  "method": "POST", "body": {}}
+        action = {"id": "save_driver_values", "label": "Save values", "enabled": True,
+                  "endpoint": "./active-speaker/design-draft", "method": "POST", "body": {}}
     elif not experiment_complete:
         status = "needs_first_experiment"
         action = {"id": "run_speaker_program", "label": "Run speaker experiment", "enabled": True,
@@ -231,7 +228,7 @@ def load_commissioning_view(
     )
     from jasper.active_speaker.calibration_level import load_calibration_level_state
     from jasper.active_speaker.commissioning_experiment import commissioning_candidate, commissioning_experiment_summary  # lazy: candidate imports baseline
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds  # lazy: reader imports baseline
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
@@ -241,7 +238,7 @@ def load_commissioning_view(
     if topology is None:
         topology = load_output_topology()
     design_draft = load_design_draft(topology=topology)
-    preview = load_crossover_preview(current_design_draft=design_draft)
+    preview = build_crossover_preview(design_draft)
     measurements = load_measurement_state(topology)
     calibration_level = load_calibration_level_state()
     _, baseline = compile_commissioning_profile(topology=topology, design_draft=design_draft)

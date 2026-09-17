@@ -597,27 +597,22 @@ def _preset_from_crossover_preview(
     preview_ready = (
         preview.get("kind") == CROSSOVER_PREVIEW_KIND
         and preview.get("status") == "ready_for_protected_staging"
-        and bool(
-            (preview.get("permissions") or {}).get(
-                "may_prepare_protected_startup_config"
-            )
-        )
     )
     gates.append(_gate(
         "crossover_preview_ready",
-        label="Fresh crossover preview is ready for protected staging",
+        label="Crossover preview is ready for protected staging",
         passed=preview_ready,
         message=(
             "Crossover preview can feed protected staging"
             if preview_ready
-            else "Prepare a fresh ready crossover preview before staging"
+            else "Complete the crossover declaration before staging"
         ),
     ))
     if not preview_ready:
         issues.append(_issue(
             "blocker",
             "crossover_preview_not_ready",
-            "stage protected config requires a fresh ready crossover preview",
+            "stage protected config requires a ready crossover preview",
         ))
         return None, issues, gates
 
@@ -630,14 +625,14 @@ def _preset_from_crossover_preview(
         message=(
             "Preview topology matches the saved output setup"
             if topology_matches
-            else "Prepare a fresh crossover preview for this output setup"
+            else "Complete the crossover declaration for this output setup"
         ),
     ))
     if not topology_matches:
         issues.append(_issue(
             "blocker",
             "crossover_preview_topology_mismatch",
-            "saved crossover preview was prepared for a different output topology",
+            "crossover declaration is for a different output topology",
         ))
         return None, issues, gates
 
@@ -858,7 +853,7 @@ def compile_preset_from_crossover_preview(
     topology: OutputTopology,
     preview: dict[str, Any],
 ) -> tuple[ActiveSpeakerPreset | None, list[dict[str, str]], list[dict[str, Any]]]:
-    """Compile a saved crossover preview into active-speaker preset intent.
+    """Compile a crossover preview into active-speaker preset intent.
 
     This is the shared no-side-effect bridge used by protected startup staging
     and final baseline candidate compilation. It does not write YAML, load

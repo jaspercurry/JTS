@@ -42,7 +42,7 @@ var driverResearch = {
   editedDriverTargets: {},
   saving: false
 };
-var crossoverPreview = {payload: null, preparing: false, error: ''};
+var crossoverPreview = {payload: null, error: ''};
 
 // The EQ editor's record (/sound/eq/). resetEqEditor() serves the exits that
 // discard the naming UI outright — newDraft, editEntry, resetDraft,

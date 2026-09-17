@@ -1328,7 +1328,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--preset",
         help=(
             "optional preset JSON override (preset-fallback mode); default loads "
-            "the saved crossover preview to match protected staging"
+            "the crossover preview computed from the design draft to match protected staging"
         ),
     )
     commission_load.add_argument(

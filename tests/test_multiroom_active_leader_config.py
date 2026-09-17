@@ -118,7 +118,7 @@ def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurement
     )
     monkeypatch.setattr(design_draft_mod, "load_design_draft", lambda *a, **k: draft)
     monkeypatch.setattr(
-        crossover_preview_mod, "load_crossover_preview", lambda *a, **k: preview
+        crossover_preview_mod, "build_crossover_preview", lambda *a, **k: preview
     )
     monkeypatch.setattr(
         measurement_mod, "load_measurement_state", lambda *a, **k: measurements
