@@ -31,7 +31,6 @@ from ._common import (
     CodedFieldError,
     DriverFields,
     issue as _issue,
-    raised_code,
 )
 from .driver_pad import DriverPadError, effective_sensitivity_db, normalise_pad
 from .driver_safety import (
@@ -330,7 +329,7 @@ def _normalise_driver_common(
             field_name=f"{prefix}.pad",
         )
     except (DriverSafetyProfileError, DriverPadError) as exc:
-        raise ActiveSpeakerDesignDraftError(str(exc), code=raised_code(exc)) from exc
+        raise ActiveSpeakerDesignDraftError(str(exc), code=getattr(exc, "code", None)) from exc
     return {key: value for key, value in driver.items() if value not in (None, [])}
 
 
@@ -528,7 +527,7 @@ def normalise_driver_research(
             try:
                 _reject_bool_tree(item, f"driver_research.crossover_candidates[{index}]")
             except DriverSafetyProfileError as exc:
-                raise ActiveSpeakerDesignDraftError(str(exc), code=raised_code(exc)) from exc
+                raise ActiveSpeakerDesignDraftError(str(exc), code=getattr(exc, "code", None)) from exc
         candidates.append(_normalise_candidate(item))
     result: dict[str, Any] = {
         "artifact_schema_version": research_schema_version,
@@ -957,7 +956,7 @@ def build_design_draft(
     try:
         validate_manual_target_bindings(topology, manual)
     except DriverSafetyProfileError as exc:
-        raise ActiveSpeakerDesignDraftError(str(exc), code=raised_code(exc)) from exc
+        raise ActiveSpeakerDesignDraftError(str(exc), code=getattr(exc, "code", None)) from exc
     research = normalise_driver_research(driver_research)
     if research and research["artifact_schema_version"] == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:
         try:
@@ -965,7 +964,7 @@ def build_design_draft(
                 research, build_driver_research_context(topology, inputs),
             )
         except DriverSafetyProfileError as exc:
-            raise ActiveSpeakerDesignDraftError(str(exc), code=raised_code(exc)) from exc
+            raise ActiveSpeakerDesignDraftError(str(exc), code=getattr(exc, "code", None)) from exc
     evaluation = topology.evaluation()
     summary = _summary(topology, research, manual)
     issues: list[dict[str, str]] = []

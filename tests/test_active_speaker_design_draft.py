@@ -509,7 +509,7 @@ def test_legacy_draft_loads_as_revision_zero_and_invalid_revision_fails_soft(
     assert "driver_safety_profile" not in invalid
 
 
-def test_duplicate_manual_target_and_boolean_numeric_value_are_rejected() -> None:
+def test_two_manual_rows_for_one_target_are_rejected() -> None:
     duplicate = {
         "drivers": [
             {"target_id": "mono:woofer", "role": "woofer", "model": "A"},
@@ -521,6 +521,8 @@ def test_duplicate_manual_target_and_boolean_numeric_value_are_rejected() -> Non
         build_design_draft(_topology(), manual_settings=duplicate)
     assert caught.value.code == "duplicate_target_id"
 
+
+def test_boolean_in_a_numeric_driver_field_is_rejected() -> None:
     boolean_numeric = {
         "drivers": [
             {
@@ -1000,10 +1002,6 @@ def test_radiating_diameter_mm_must_be_positive():
 
 
 def test_pad_error_surfaces_as_design_draft_error():
-    # driver_pad.DriverPadError is caught and re-raised as
-    # ActiveSpeakerDesignDraftError -- the same pattern as
-    # DriverSafetyProfileError, so callers only need to catch one exception.
-    # DriverPadError carries no code of its own, so the wrap lands the default.
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(
             _topology(),

@@ -64,8 +64,6 @@ MAX_PROVENANCE_SOURCE_CHARS = 320
 class DriverSafetyProfileError(CodedFieldError):
     """Raised when research or safety-profile input is malformed."""
 
-    code = "invalid_driver_safety_profile"
-
 
 _fields = DriverFields(DriverSafetyProfileError, length_limit_separator=" ")
 _text = partial(_fields._text, max_chars=320)

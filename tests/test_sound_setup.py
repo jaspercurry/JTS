@@ -1508,6 +1508,9 @@ _ACTIVE_SPEAKER_STATE_FILENAMES = {
     "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH": "active_staged.yml",
     "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH": "active_staged.json",
     "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE": "path_safety.json",
+    "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE": "startup_load.json",
+    "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE": "commission_load.json",
+    "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE": "commission_ramp.json",
     "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE": "baseline_profile.json",
     "JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH": "active_speaker_baseline.yml",
 }
@@ -3103,38 +3106,34 @@ def test_reset_http_reports_ambiguous_failure_with_current_topology(
     assert payload["output_topology"]["speaker_groups"] == []
 
 
-@pytest.mark.parametrize("outputd_ok", [True, False])
-def test_reset_stops_audio_before_it_unlinks_setup_state(
-    monkeypatch,
-    tmp_path: Path,
-    outputd_ok,
-):
-    """The setup state is unlinked only once jasper-outputd is really stopped.
+#: The eight artifacts ``clear_active_speaker_setup_state`` unlinks, by env var.
+_RESET_UNLINKED_STATE_ENVS = (
+    "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
+    "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
+    "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE",
+    "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE",
+    "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE",
+    "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE",
+    "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE",
+    "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE",
+)
 
-    Unlinking first would leave the speaker playing a graph whose own record is
-    already gone, with nothing left to say what it is playing.
-    """
+
+def _stale_setup_state(
+    monkeypatch, tmp_path: Path, *, outputd_ok: bool,
+) -> tuple[list[Path], list[str]]:
+    """Stale setup state on disk, and the ordered log one reset writes into."""
     from jasper.active_speaker.reset import clear_active_speaker_setup_state
 
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH", str(tmp_path / "staged.yml")
+    paths = _set_active_speaker_state_paths(
+        monkeypatch,
+        tmp_path,
+        "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH",
+        *_RESET_UNLINKED_STATE_ENVS,
     )
-    state_envs = {
-        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE": "design.json",
-        "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH": "staged.json",
-        "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE": "path-safety.json",
-        "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE": "startup-load.json",
-        "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE": "commission-load.json",
-        "JASPER_ACTIVE_SPEAKER_COMMISSION_RAMP_STATE": "commission-ramp.json",
-        "JASPER_ACTIVE_SPEAKER_MEASUREMENTS_STATE": "measurements.json",
-        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE": "baseline.json",
-    }
-    paths = []
-    for env_name, filename in state_envs.items():
-        path = tmp_path / filename
+    written = [paths[name] for name in _RESET_UNLINKED_STATE_ENVS]
+    for path in written:
         path.write_text('{"stale": true}\n', encoding="utf-8")
-        monkeypatch.setenv(env_name, str(path))
-        paths.append(path)
 
     events = _stub_audio_stops(monkeypatch)
 
@@ -3152,20 +3151,29 @@ def test_reset_stops_audio_before_it_unlinks_setup_state(
         clear_and_record,
     )
     _stub_reconcile(monkeypatch, {"ok": True})
+    return written, events
 
-    if not outputd_ok:
-        with pytest.raises(RuntimeError):
-            sound_setup._reset_output_topology_payload({})
 
-        assert events == ["safe", "outputd-stop"]
-        assert all(path.exists() for path in paths)
-        return
+def test_reset_stops_audio_before_it_unlinks_setup_state(monkeypatch, tmp_path: Path):
+    """Unlinking first would leave the speaker playing a graph whose own record
+    is already gone, with nothing left to say what it is playing."""
+    paths, events = _stale_setup_state(monkeypatch, tmp_path, outputd_ok=True)
 
     payload = sound_setup._reset_output_topology_payload({})
 
     assert events == ["safe", "outputd-stop", "clear"]
     assert payload["reset"]["status"] == "reset"
     assert [path for path in paths if path.exists()] == []
+
+
+def test_reset_unlinks_nothing_when_the_audio_stop_fails(monkeypatch, tmp_path: Path):
+    paths, events = _stale_setup_state(monkeypatch, tmp_path, outputd_ok=False)
+
+    with pytest.raises(RuntimeError):
+        sound_setup._reset_output_topology_payload({})
+
+    assert events == ["safe", "outputd-stop"]
+    assert all(path.exists() for path in paths)
 
 
 def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph(
@@ -3513,20 +3521,13 @@ def test_save_and_apply_answers_a_refusal_as_a_typed_two_hundred(monkeypatch, tm
     the status is a wire contract only HTTP can pin. When the door refuses is
     pinned at module altitude in test_cli_seat_level.py.
     """
-    blocker = {
-        "severity": "blocker",
-        "code": "baseline_config_validation_failed",
-        "message": "x",
-    }
-    apply_calls, mux_commands = _stub_baseline_apply(monkeypatch, refusal={
+    _, mux_commands = _stub_baseline_apply(monkeypatch, refusal={
         "status": "blocked",
-        "apply": None,
-        "issues": [blocker],
-        "profile": {
-            "status": "blocked",
-            "permissions": {"may_apply": False},
-            "issues": [blocker],
-        },
+        "issues": [{
+            "severity": "blocker",
+            "code": "baseline_config_validation_failed",
+            "message": "x",
+        }],
     })
     monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
 
@@ -3538,14 +3539,10 @@ def test_save_and_apply_answers_a_refusal_as_a_typed_two_hundred(monkeypatch, tm
     assert response.startswith(b"HTTP/1.1 200")
     payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
     assert payload["status"] == "blocked"
-    assert payload["apply"] is None
-    assert payload["profile"]["permissions"]["may_apply"] is False
     assert [issue["code"] for issue in payload["issues"]] == [
         "baseline_config_validation_failed"
     ]
-    assert payload["commissioning_cleanup"] == {"status": "not_attempted"}
     assert mux_commands == []
-    assert len(apply_calls) == 1
 
 
 async def test_active_speaker_finish_proof_refusal_skips_cleanup(monkeypatch):

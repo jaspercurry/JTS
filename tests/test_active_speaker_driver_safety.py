@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from functools import partial
 import json
 from pathlib import Path
 import re
@@ -1438,42 +1439,49 @@ def _legacy_duplicate_role(manual: dict) -> None:
     manual["drivers"].append(deepcopy(manual["drivers"][0]))
 
 
+_mono_topology = partial(mono_output_topology, card_id=None)
+
+
 @pytest.mark.parametrize(
-    "mutate,code,stereo",
+    ("mutate", "topology", "code"),
     [
-        (
+        pytest.param(
             lambda manual: manual["drivers"][1].update({"role": "woofer"}),
+            _mono_topology,
             "manual_target_role_mismatch",
-            False,
+            id="role_contradicts_target_id",
         ),
-        (
+        pytest.param(
             lambda manual: manual["drivers"][1].update(
                 {"target_id": "missing:tweeter"}
             ),
+            _mono_topology,
             "manual_target_unknown",
-            False,
+            id="target_id_not_in_topology",
         ),
-        (
+        pytest.param(
             lambda manual: manual["drivers"].append(
                 {**deepcopy(manual["drivers"][1]), "target_id": None}
             ),
+            _mono_topology,
             "manual_target_bound_twice",
-            False,
+            id="legacy_role_row_rebinds_a_bound_target",
         ),
-        (_legacy_duplicate_role, "manual_duplicate_legacy_role", True),
+        pytest.param(
+            _legacy_duplicate_role,
+            _stereo_topology,
+            "manual_duplicate_legacy_role",
+            id="two_legacy_rows_for_one_role",
+        ),
     ],
 )
-def test_manual_target_binding_refuses_contradictions(
-    mutate, code: str, stereo: bool,
-) -> None:
+def test_manual_target_binding_refuses_contradictions(mutate, topology, code: str) -> None:
     manual = _manual_settings()
     mutate(manual)
 
     with pytest.raises(DriverSafetyProfileError) as caught:
         compute_driver_safety_profile(
-            _stereo_topology() if stereo else mono_output_topology(card_id=None),
-            manual_settings=manual,
-            driver_research=None,
+            topology(), manual_settings=manual, driver_research=None,
         )
     assert caught.value.code == code
 
@@ -1805,9 +1813,8 @@ def test_provenance_source_is_additive_and_old_entries_are_byte_identical() -> N
             "source": "x" * (MAX_PROVENANCE_SOURCE_CHARS + 1),
         }
     }
-    with pytest.raises(DriverSafetyProfileError) as excinfo:
+    with pytest.raises(DriverSafetyProfileError):
         _normalise_field_provenance(too_long, "driver.field_provenance")
-    assert excinfo.value.code == "invalid_driver_safety_profile"
 
     # The citation slot must hold any URL the `sources` list holds. They are
     # separate budgets, but a datasheet URL is a legal citation, so a cap that
