@@ -10,6 +10,7 @@ import pytest
 import yaml
 from scipy.io import wavfile
 
+from jasper.active_speaker import branch_chain
 from jasper.active_speaker import camilla_yaml as emit
 from jasper.active_speaker import graph_safety as gs
 from jasper.active_speaker.branch_peak import stimulus_branch_peaks_dbfs
@@ -580,7 +581,7 @@ def test_a_narrow_allpass_peak_cannot_hide_between_grid_points():
     document = _branches(cancellation=_chain(inverted=True, filters=[deepcopy(_NARROW_ALLPASS)]))
     dense = np.geomspace(1.0, 23995.2, 400_000)
     summed = sum(
-        emit._rear_stage_chain_response(document["rear"][branch], dense, delay_ms=0.0)
+        branch_chain.rear_stage_chain_response(document["rear"][branch], dense, delay_ms=0.0)
         for branch in ("bass", "cancellation")
     )
     truth = 20.0 * np.log10(np.max(np.abs(summed)))

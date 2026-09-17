@@ -42,6 +42,7 @@ restate either.
 | Detect, probe, or move the experimental USB turntable | [USB turntable experiment](#usb-turntable-experiment) |
 | Pull a crossover-v2 round's evidence off the Pi | [Crossover-v2 round banking](#crossover-v2-round-banking) |
 | Judge and compose a prescription document | [Crossover prescriber harness](#crossover-prescriber-harness) |
+| Fit or re-fit the cardioid rear branches of a `jts_rear_calibration` document | [`scripts/fit-rear-branches.py`](../scripts/fit-rear-branches.py) — usage, input shapes and conventions in `--help` |
 | Decide if a bump is a driver defect, interference, or the room | [Feature-classification instrument](#feature-classification-instrument) |
 | Grade a round's entry state, or compare seats and sessions | [Round-grading comparison views](#round-grading-comparison-views) |
 | State a capture walk at stated angles | [Inline measurement plans](#inline-measurement-plans) |
