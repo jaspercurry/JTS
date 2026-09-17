@@ -28,6 +28,7 @@ from jasper.audio_measurement.program import (
     PROGRAM_PHASE_VERIFY,
     KIND_PILOT,
     KIND_SUMMED_SWEEP,
+    KIND_SWEEP,
     PROGRAM_SAMPLE_RATE_HZ,
     ExcitationProgram,
     ProgramSegment,
@@ -76,6 +77,15 @@ OUT_OF_SEGMENT_RMS_FLOOR_DBFS = -60.0
 # (the loudest scheduled segment on that channel) within this tolerance. 0.5 dB
 # absorbs int16 quantization while still catching gross composer/render drift.
 CHANNEL_PEAK_TOLERANCE_DB = 0.5
+
+#: Sweep kinds that load the driver they are routed to, and so count against
+#: ``max_repeat_count`` and ``minimum_cooldown_s``: a branch take's solo sweep
+#: excites its target exactly as the summed one does. ``KIND_PILOT`` stays out
+#: deliberately — ``level_duration_limits`` bounds the sweep protocol, every
+#: pilot is still bounded on its own by the per-segment loop below, and
+#: counting the ``DEFAULT_PILOT_GAP_S`` pilot pair would refuse plain VERIFY at
+#: the 2 s cooldown the research prompt asks every driver to declare.
+EXCITING_SWEEP_KINDS = (KIND_SWEEP, KIND_SUMMED_SWEEP)
 
 _DBFS_FLOOR = 1e-12
 
@@ -823,7 +833,7 @@ def readmit_summed_program_from_wav(
         boost_db = bass_boost_db if output in bass_channels else 0.0
         input_caps.append(cap - boost_db)
         limits = declared[fingerprint]["level_duration_limits"]
-        sweeps = sorted((s for s in program.segments if s.kind == KIND_SUMMED_SWEEP
+        sweeps = sorted((s for s in program.segments if s.kind in EXCITING_SWEEP_KINDS
                          and (not branches or s.channel == branch_channel)), key=lambda s: s.start_sample)
         if len(sweeps) > limits["max_repeat_count"]:
             refusals.append(ProgramAdmissionRefusal.REPEAT_COUNT_OVER_CAP)

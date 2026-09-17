@@ -27,6 +27,7 @@ from jasper.audio_measurement.program_analysis.model import (
 from jasper.audio_measurement.quality_model import DRIVER
 from tests.crossover_v2_fixtures import (
     FakeSeams, _alignment, _conductor, _driver_response, _loc, _measure_analysis, _run_phase,
+    plan_context,
 )
 from jasper.cli.measure import _ran
 from tests.engine_twin import FakeSeams as EngineSeams, open_session
@@ -210,7 +211,7 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, pea
     for attempt in (1, 2):
         manifest.begin({"index": 1, "candidate_id": "candidate", "pose": {"kind": "bearing", "deg": 20, "elevation_deg": 0}},
                        attempt=attempt, pose_index=0)
-        program = compose_plan_program(conductor, spec, rung, context=SimpleNamespace())
+        program = compose_plan_program(conductor, spec, rung, context=plan_context())
         gain = program.segment("sweep_w").gain_db
         assert gain == pytest.approx(-30 + (raise_db if attempt == 2 else 0))
         assert all(seg.effective_peak_dbfs <= conductor._excitation.caps_dbfs[seg.role]

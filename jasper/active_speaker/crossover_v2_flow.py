@@ -631,6 +631,7 @@ class CrossoverV2Session:
         session_volume_db: float,
         seams: V2FlowSeams,
         driver_sweep_duration_limits_s: Mapping[str, float] | None = None,
+        driver_minimum_cooldown_s: float = 0.0,
             positions_gated: bool = False,
         driver_spacing_m: float | None = 0.0,
         accepted_phases: Sequence[str] = (),
@@ -693,6 +694,9 @@ class CrossoverV2Session:
         # Per-role longest admissible ONE sweep (#2921); an absent role composes at its
         # nominal duration.
         self._sweep_duration_limits_s = dict(driver_sweep_duration_limits_s or {})
+        # ``declared_minimum_cooldown_s`` over this session's targets; the flow
+        # holds no safety profile, so the web layer resolves it.
+        self._minimum_cooldown_s = float(driver_minimum_cooldown_s)
         self._session_volume_db = float(session_volume_db)
         self._seams = seams
         # True once ``authorize_begin`` has refused: the capture writes its own
@@ -821,7 +825,8 @@ class CrossoverV2Session:
         # The position groups' twin: same sweep, same clamp, no courtesy prelude.
         self._cloud_program = self._excitation.cloud_program()
         self._branch_program = (
-            build_branch_program(self._cloud_program, {r.role: r.channel for r in self._roles})
+            build_branch_program(self._cloud_program, {r.role: r.channel for r in self._roles},
+                                 cooldown_s=self._minimum_cooldown_s)
             if any(s.graph_scope == "candidate_branches" for s in self._measure_specs_by_index.values())
             else None
         )

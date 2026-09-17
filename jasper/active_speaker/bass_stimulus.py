@@ -15,7 +15,11 @@ from jasper.audio_measurement.repeated_sweep import repeat_summed_program
 from jasper.audio_measurement.sweep_levels import sweep_band_sample_ranges
 
 from .bass_fit import REFERENCE_BAND_HZ
-from .excitation_safety_plan import ACTIVE_DRIVER_MAX_REPEAT_COUNT, effective_sweep_duration_limit_s
+from .excitation_safety_plan import (
+    ACTIVE_DRIVER_MAX_REPEAT_COUNT,
+    declared_minimum_cooldown_s,
+    effective_sweep_duration_limit_s,
+)
 from .measurement_bass import BASS_BANDS_HZ
 
 if TYPE_CHECKING:
@@ -45,7 +49,7 @@ def build_bass_program(
         floor, ceiling = float(woofer["hard_excitation_band_hz"][0]), float(stimulus["ceiling_hz"])
         limits = [target["level_duration_limits"] for target in driven]
         passes = min(ACTIVE_DRIVER_MAX_REPEAT_COUNT, *(limit["max_repeat_count"] for limit in limits))
-        cooldown = max(float(limit["minimum_cooldown_s"]) for limit in limits)
+        cooldown = declared_minimum_cooldown_s(safety_profile, role_targets)
         durations = {role: effective_sweep_duration_limit_s(safety_profile, fingerprint)
                      for role, fingerprint in role_targets.items()}
     except (KeyError, TypeError, ValueError) as exc:

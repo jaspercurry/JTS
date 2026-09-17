@@ -135,8 +135,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
 def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None, *, context: Any) -> Any:
     gains = conductor._gain_plan_db if spec.graph_scope == "drivers" and spec.program_phase != PHASE_CHECK else None
     program = program_for_spec(spec, conductor._excitation, gains, stimulus_dbfs,
-                               safety_profile=context.safety_profile if spec.stimulus is not None else {},
-                               role_targets=context.role_targets if spec.stimulus is not None else {})
+                               safety_profile=context.safety_profile, role_targets=context.role_targets)
     if spec.program_phase == PHASE_CHECK:
         conductor._check_program = program
     elif spec.program_phase == PHASE_VERIFY:

@@ -21,6 +21,7 @@ from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.conductor_context import conductor_status, resolve_conductor_context
 from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
+from .excitation_safety_plan import declared_minimum_cooldown_s
 from .measured_crossover_candidate import MeasuredCrossoverCandidate
 from .preflight import PreflightFacts, PreflightIssue
 from .run_levels import prepare_level_captures
@@ -84,12 +85,20 @@ def read_preflight_facts(
         captures = prepare_level_captures(replace(request, repeats=1), roles_bands=context.roles_bands)
         if any(capture.spec.graph_scope == "drivers" for capture in captures):
             return ()
+        safety_profile = getattr(context, "safety_profile", {})
+        role_targets = getattr(context, "role_targets", {})
+        cooldown_s = (
+            declared_minimum_cooldown_s(safety_profile, role_targets)
+            if any(c.spec.graph_scope == "candidate_branches" for c in captures) else 0.0
+        )
         programs = []
         for capture in captures:
             program = compose_summed_program(excitation, capture.spec,
-                safety_profile=getattr(context, "safety_profile", {}), role_targets=getattr(context, "role_targets", {}))
+                safety_profile=safety_profile, role_targets=role_targets)
             if capture.spec.graph_scope == "candidate_branches":
-                program = build_branch_program(program, {role.role: role.channel for role in excitation.roles})
+                program = build_branch_program(
+                    program, {role.role: role.channel for role in excitation.roles},
+                    cooldown_s=cooldown_s)
             programs.append(program.program_id)
         return tuple(programs)
 
