@@ -75,9 +75,6 @@ from .sound_seat_level import (
 from .sound_active_speaker import (
     OutputHardwareRequestConflict,
     OutputTopologyRevisionConflict,
-    _active_speaker_baseline_profile_apply_payload,
-    _active_speaker_baseline_profile_payload,
-    _active_speaker_calibration_level_payload,
     _active_speaker_commission_ramp_abort_payload,
     _active_speaker_commission_state_payload,
     _active_speaker_commissioning_view_payload,
@@ -95,18 +92,11 @@ from .sound_active_speaker import (
     _save_output_topology_payload,
 )
 
-# `_GET_JSON_ROUTES` names its builders as strings and `_json_route_payload`
-# resolves them off THIS module at call time, so a read-only route's builder
-# has to be bound here even where no call site spells it out.
+# Builders are resolved by name so route calls use the current module binding.
 from .sound_active_speaker import (  # noqa: F401 - resolved by name
-    _active_speaker_bringup_preflight_payload,
     _active_speaker_crossover_preview_payload,
-    _active_speaker_environment_payload,
     _active_speaker_measurements_payload,
     _active_speaker_rear_calibration_seed_payload,
-    _active_speaker_safe_playback_payload,
-    _active_speaker_staged_config_payload,
-    _active_speaker_startup_load_payload,
     _active_speaker_tuning_handoff_payload,
 )
 from .sound_seat_level import (  # noqa: F401 - resolved by name
@@ -326,14 +316,11 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
     )
 
 
-#: Read-only GET routes whose entire handler is "send this payload, or
-#: answer 502 under this event name", dispatched once in :func:`_make_handler`;
-#: a route that needs the handler's own state (the two commissioning views
-#: close over ``camilla_factory``) stays spelled out there. The log-event drift
-#: pin reads the event strings here. The builder is NAMED, not captured: a
-#: table holding the objects it had at import time would answer with a builder
-#: the module no longer has.
-_GET_JSON_ROUTES: dict[str, tuple[str, str]] = {
+_GET_ROUTES = {
+    "/": None,
+    "/state": None,
+    "/active-speaker/commission-state": None,
+    "/active-speaker/commissioning-view": None,
     "/output-topology": ("_output_topology_payload", "sound.output_topology"),
     "/active-speaker/design-draft": (
         "_active_speaker_design_draft_payload",
@@ -355,30 +342,6 @@ _GET_JSON_ROUTES: dict[str, tuple[str, str]] = {
         "_active_speaker_tuning_handoff_payload",
         "sound.active_speaker_tuning_handoff",
     ),
-    "/active-speaker/environment": (
-        "_active_speaker_environment_payload",
-        "sound.active_speaker_environment",
-    ),
-    "/active-speaker/safe-playback": (
-        "_active_speaker_safe_playback_payload",
-        "sound.active_speaker_safe_playback",
-    ),
-    "/active-speaker/calibration-level": (
-        "_active_speaker_calibration_level_payload",
-        "sound.active_speaker_calibration_level",
-    ),
-    "/active-speaker/bringup-preflight": (
-        "_active_speaker_bringup_preflight_payload",
-        "sound.active_speaker_bringup_preflight",
-    ),
-    "/active-speaker/startup-load": (
-        "_active_speaker_startup_load_payload",
-        "sound.active_speaker_startup_load",
-    ),
-    "/active-speaker/staged-config": (
-        "_active_speaker_staged_config_payload",
-        "sound.active_speaker_staged_config",
-    ),
     "/active-speaker/rear-calibration/seed": (
         "_active_speaker_rear_calibration_seed_payload",
         "sound.active_speaker_rear_calibration_seed",
@@ -391,7 +354,7 @@ _GET_JSON_ROUTES: dict[str, tuple[str, str]] = {
 
 
 def _json_route_payload(builder: str) -> dict[str, Any]:
-    """Call one :data:`_GET_JSON_ROUTES` builder, resolved at call time."""
+    """Call one :data:`_GET_ROUTES` builder, resolved at call time."""
     fn: Callable[[], dict[str, Any]] = getattr(sys.modules[__name__], builder)
     return fn()
 
@@ -460,7 +423,7 @@ def _make_handler(
             return read_json_object(self, max_bytes=max_bytes)
 
         def do_GET(self) -> None:  # noqa: N802
-            dispatch_get(self, _GET_ROUTES)
+            dispatch_get(self, get_routes)
 
         def _dispatch_get_route(self) -> None:
             path = route_path(self.path)
@@ -497,7 +460,7 @@ def _make_handler(
                     )
                 )
                 return
-            json_route = _GET_JSON_ROUTES.get(path)
+            json_route = _GET_ROUTES.get(path)
             if json_route is not None:
                 builder, event = json_route
                 if path == "/active-speaker/tuning-handoff":
@@ -580,8 +543,6 @@ def _make_handler(
                         payload["error"] = str(error or "hardware apply failed")
                     self._send_json(payload, status=200 if result.get("ok") else 502)
                     return
-                if path == "/active-speaker/calibration-level":
-                    self._send_json(_active_speaker_calibration_level_payload(raw))
                     return
                 if path == "/active-speaker/design-draft":
                     from jasper.active_speaker.design_draft import (
@@ -617,30 +578,6 @@ def _make_handler(
                             event="sound.active_speaker_crossover_preview_save",
                             error=type(e).__name__,
                         )
-                    return
-                if path == "/active-speaker/baseline-profile":
-                    try:
-                        self._send_json(
-                            _active_speaker_baseline_profile_payload(write=True)
-                        )
-                    except OSError as e:
-                        send_route_failure(
-                            self._send_json, e, logger=logger,
-                            event="sound.active_speaker_baseline_profile",
-                            error=type(e).__name__,
-                        )
-                    return
-                if path == "/active-speaker/baseline-profile/apply":
-                    self._send_json(
-                        asyncio.run(
-                            _active_speaker_baseline_profile_apply_payload(
-                                expected_candidate_fingerprint=str(
-                                    raw.get("expected_candidate_fingerprint") or ""
-                                ),
-                                camilla_factory=camilla_factory,
-                            )
-                        )
-                    )
                     return
                 if path == "/active-speaker/baseline-profile/restore":
                     from .correction_crossover_v2_apply import CrossoverV2Refused, handle_v2_apply  # lazy: applying imports NumPy
@@ -999,28 +936,7 @@ def _make_handler(
             return
         route(handler)
 
-    # Dict literals, not comprehensions: test_web_wizard_conventions.py finds
-    # these tables by their AST shape.
-    _GET_ROUTES = {
-        "/": Handler._dispatch_get_route,
-        "/state": Handler._dispatch_get_route,
-        "/output-topology": Handler._dispatch_get_route,
-        "/active-speaker/design-draft": Handler._dispatch_get_route,
-        "/active-speaker/crossover-preview": Handler._dispatch_get_route,
-        "/active-speaker/measurements": Handler._dispatch_get_route,
-        "/active-speaker/baseline-profile": Handler._dispatch_get_route,
-        "/active-speaker/tuning-handoff": Handler._dispatch_get_route,
-        "/active-speaker/environment": Handler._dispatch_get_route,
-        "/active-speaker/safe-playback": Handler._dispatch_get_route,
-        "/active-speaker/calibration-level": Handler._dispatch_get_route,
-        "/active-speaker/bringup-preflight": Handler._dispatch_get_route,
-        "/active-speaker/startup-load": Handler._dispatch_get_route,
-        "/active-speaker/commission-state": Handler._dispatch_get_route,
-        "/active-speaker/commissioning-view": Handler._dispatch_get_route,
-        "/active-speaker/staged-config": Handler._dispatch_get_route,
-        "/active-speaker/rear-calibration/seed": Handler._dispatch_get_route,
-        "/active-speaker/seat-level/status": Handler._dispatch_get_route,
-    }
+    get_routes = dict.fromkeys(_GET_ROUTES, Handler._dispatch_get_route)
 
     _POST_ROUTES = {
         "/apply": Handler._dispatch_post_route,
@@ -1033,14 +949,11 @@ def _make_handler(
         "/active-speaker/design-draft": Handler._dispatch_post_route,
         "/active-speaker/driver-research-request": Handler._dispatch_post_route,
         "/active-speaker/crossover-preview": Handler._dispatch_post_route,
-        "/active-speaker/calibration-level": Handler._dispatch_post_route,
         "/active-speaker/rear-calibration/validate": Handler._dispatch_post_route,
         "/active-speaker/rear-calibration/bank": Handler._dispatch_post_route,
         "/active-speaker/seat-level/start": Handler._dispatch_post_route,
         "/active-speaker/seat-level/stop": Handler._dispatch_post_route,
         "/active-speaker/commission-ramp-abort": Handler._dispatch_post_route,
-        "/active-speaker/baseline-profile": Handler._dispatch_post_route,
-        "/active-speaker/baseline-profile/apply": Handler._dispatch_post_route,
         "/active-speaker/baseline-profile/restore": Handler._dispatch_post_route,
         "/active-speaker/baseline-profile/save-and-apply": Handler._dispatch_post_route,
         "/output-topology": Handler._dispatch_post_route,

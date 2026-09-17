@@ -11,8 +11,7 @@ import logging
 
 import pytest
 
-from jasper.active_speaker import environment
-from jasper.web import sound_active_speaker, sound_profile_apply, volume_floor_tone
+from jasper.web import sound_profile_apply, volume_floor_tone
 
 from ._log_events import parse_event
 
@@ -82,44 +81,3 @@ def test_volume_floor_exception_keeps_error_level_and_traceback(
     assert record.exc_info[0] is OSError
     assert record.exc_info[1] is error
     assert record.exc_info[2] is not None
-
-
-@pytest.mark.parametrize(("status", "allowed"), [(None, False), ("ready", True)])
-def test_environment_event_preserves_optional_and_bool_fields(
-    monkeypatch, caplog, json_logs, status, allowed,
-):
-    report = {
-        "status": status,
-        "load_gate": "ready",
-        "blocker_count": 0,
-        "safe_playback": {"playback_allowed": allowed},
-    }
-    monkeypatch.setenv("JASPER_LOG_JSON", str(int(json_logs)))
-    monkeypatch.setattr(
-        environment, "probe_active_speaker_environment", lambda **_kwargs: report,
-    )
-    monkeypatch.setattr(
-        sound_active_speaker, "_active_speaker_path_safety_evidence_path", lambda: None,
-    )
-
-    with caplog.at_level(logging.INFO, logger=sound_active_speaker.__name__):
-        assert sound_active_speaker._active_speaker_environment_payload() == report
-
-    (record,) = caplog.records
-    expected = {
-        "status": str(status),
-        "load_gate": "ready",
-        "blockers": 0,
-        "safe_playback": str(allowed),
-    }
-    if json_logs:
-        assert json.loads(record.getMessage()) == {
-            "event": "sound.active_speaker_environment", **expected,
-        }
-    else:
-        assert parse_event(record.getMessage()) == (
-            "sound.active_speaker_environment",
-            {key: str(value) for key, value in expected.items()},
-        )
-    assert record.levelno == logging.INFO
-    assert record.exc_info is None

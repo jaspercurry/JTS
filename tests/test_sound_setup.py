@@ -25,6 +25,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from jasper.active_speaker.calibration_level import (
+    load_calibration_level_state,
+    update_calibration_level_state,
+)
+from jasper.active_speaker.safe_playback import load_safe_playback_state
 from jasper.active_speaker.commissioning_coordinator import build_commissioning_view
 from jasper.active_speaker.baseline_profile import persist_applied_baseline_profile
 from jasper.active_speaker.design_draft import declared_driver_spacing_m, load_design_draft
@@ -1163,7 +1168,7 @@ def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: 
         assert _follower_post_status(base, "/settings", session) == 409
         # An active-speaker read is served (200) — the GET path has no follower gate.
         assert (
-            _follower_get_status(base, "/active-speaker/safe-playback", session) == 200
+            _follower_get_status(base, "/active-speaker/design-draft", session) == 200
         )
         # An active-speaker mutation reaches its handler (200/502), never the
         # follower 409 nor a 404 — the gate is content-DSP only.
@@ -1371,9 +1376,6 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert 'from "/assets/sound-profile/js/active-speaker-ui.js"' in js
     assert "function refreshActiveSpeakerStatus()" not in js
     for retired in (
-        "fetch('./active-speaker/environment'",
-        "fetch('./active-speaker/safe-playback'",
-        "fetch('./active-speaker/staged-config'",
         "fetch('./active-speaker/prepare-driver-test'",
         "fetch('./active-speaker/stage-config'",
         "fetch('./active-speaker/check-path-safety'",
@@ -1382,7 +1384,6 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
         "fetch('./active-speaker/play-tone'",
         "fetch('./active-speaker/floor-audio-result'",
         "fetch('./active-speaker/driver-measurement'",
-        "fetch('./active-speaker/startup-load'",
         "function activeSpeakerPost(",
         "function stopActiveSpeakerTest()",
         "fmtDbfs",
@@ -1410,7 +1411,6 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "'./active-speaker/baseline-profile'" in js
     assert "'./active-speaker/baseline-profile/save-and-apply'" in js
     assert "expected_candidate_fingerprint: expectedCandidateFingerprint" in js
-    assert "fetch('./active-speaker/baseline-profile/apply'" not in js
     assert "data-act=\"refresh-active-speaker\"" not in js
     assert "act === 'prepare-crossover-preview'" in js
     assert "Save values" in js
@@ -1877,37 +1877,6 @@ def test_active_speaker_setup_copy_has_no_backend_jargon():
     assert "did not complete" not in helper_js
 
 
-def test_active_speaker_environment_payload_uses_configured_evidence_path(
-    monkeypatch,
-):
-    calls = {}
-
-    def fake_probe(**kwargs):
-        calls.update(kwargs)
-        return {
-            "status": "blocked",
-            "load_gate": "path_safety_evidence_missing",
-            "blocker_count": 2,
-            "safe_playback": {"playback_allowed": False},
-        }
-
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE",
-        "/tmp/path-safety.json",
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.environment.probe_active_speaker_environment",
-        fake_probe,
-    )
-
-    payload = sound_setup._active_speaker_environment_payload()
-
-    assert payload["status"] == "blocked"
-    assert calls == {
-        "path_safety_evidence_path": "/tmp/path-safety.json",
-    }
-
-
 def test_active_speaker_stop_and_level_payloads_are_no_audio(
     monkeypatch,
     tmp_path: Path,
@@ -1925,37 +1894,30 @@ def test_active_speaker_stop_and_level_payloads_are_no_audio(
         str(tmp_path / "tone-artifacts"),
     )
     monkeypatch.setenv("JASPER_AUDIO_LAB_TONE_BACKEND", "wav_artifact")
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_environment_payload",
-        lambda: {
-            "status": "pass",
-            "load_gate": "ready",
-            "ok_to_load_active_config": True,
-            "camilla_config": {
-                "classification": "active_startup_candidate",
-                "path": "/tmp/active.yml",
-            },
-            "safe_playback": {
-                "status": "not_implemented",
-                "playback_allowed": False,
-            },
-            "issues": [],
+    environment = {
+        "status": "pass",
+        "load_gate": "ready",
+        "ok_to_load_active_config": True,
+        "camilla_config": {
+            "classification": "active_startup_candidate",
+            "path": "/tmp/active.yml",
         },
-    )
+        "safe_playback": {
+            "status": "not_implemented",
+            "playback_allowed": False,
+        },
+        "issues": [],
+    }
 
     from jasper.active_speaker.safe_playback import arm_safe_playback_session
 
-    armed = arm_safe_playback_session(
-        sound_setup._active_speaker_environment_payload()
+    armed = arm_safe_playback_session(environment)
+    guarded = update_calibration_level_state(
+        action="set", requested_level_dbfs=-55, run_id=armed["session_id"],
     )
-    guarded = sound_setup._active_speaker_calibration_level_payload({
-        "action": "set",
-        "level_dbfs": -55,
-    })
-    status = sound_setup._active_speaker_safe_playback_payload()
+    status = load_safe_playback_state()
     stopped = sound_active_speaker._active_speaker_stop_payload()
-    stopped_level = sound_setup._active_speaker_calibration_level_payload()
+    stopped_level = load_calibration_level_state()
 
     assert armed["status"] == "armed"
     assert armed["playback_allowed"] is False
@@ -1979,31 +1941,27 @@ def test_active_speaker_stop_payload_survives_level_reset_failure(
         "JASPER_ACTIVE_SPEAKER_SAFE_PLAYBACK_STATE",
         str(tmp_path / "safe-playback.json"),
     )
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_environment_payload",
-        lambda: {
-            "status": "pass",
-            "load_gate": "ready",
-            "ok_to_load_active_config": True,
-            "camilla_config": {
-                "classification": "active_startup_candidate",
-                "path": "/tmp/active.yml",
-            },
-            "safe_playback": {
-                "status": "not_implemented",
-                "playback_allowed": False,
-            },
-            "issues": [],
+    environment = {
+        "status": "pass",
+        "load_gate": "ready",
+        "ok_to_load_active_config": True,
+        "camilla_config": {
+            "classification": "active_startup_candidate",
+            "path": "/tmp/active.yml",
         },
-    )
+        "safe_playback": {
+            "status": "not_implemented",
+            "playback_allowed": False,
+        },
+        "issues": [],
+    }
 
     def fail_reset(*args, **kwargs):
         raise OSError("state path is unavailable")
 
     from jasper.active_speaker.safe_playback import arm_safe_playback_session
 
-    arm_safe_playback_session(sound_setup._active_speaker_environment_payload())
+    arm_safe_playback_session(environment)
     monkeypatch.setattr(level_mod, "update_calibration_level_state", fail_reset)
 
     stopped = sound_active_speaker._active_speaker_stop_payload()
@@ -3720,61 +3678,6 @@ def test_sound_output_topology_save_discloses_a_cross_child_speaker_group(
     assert topology["safety"]["blockers"] == []
 
 
-def test_active_speaker_tone_backend_status_is_explicit_lab_only(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.delenv("JASPER_AUDIO_LAB_TONE_BACKEND", raising=False)
-    monkeypatch.delenv("JASPER_AUDIO_LAB_TEST_PCM", raising=False)
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(
-            protection_status="software_guard_requested",
-            card_id="sndrpihifiberry",
-            identity_verified=True,
-        )
-    )
-
-    status = sound_active_speaker._active_speaker_tone_backend_status()
-
-    assert status["status"] == "artifact_only"
-    assert status["backend"] == "wav_artifact"
-    assert status["test_pcm"] is None
-    assert status["playback_device"] is None
-    assert status["default_pcm_source"] == "explicit_lab_pcm"
-    assert status["channel_count"] == 8
-    assert status["requires_protected_startup"] is True
-
-    monkeypatch.setenv("JASPER_AUDIO_LAB_TONE_BACKEND", "direct_dac")
-    stale_env_status = sound_active_speaker._active_speaker_tone_backend_status()
-    assert stale_env_status["status"] == "blocked"
-    assert stale_env_status["backend"] == "direct_dac"
-    assert stale_env_status["audio_enabled"] is False
-    assert "unknown_tone_backend" in {
-        issue["code"] for issue in stale_env_status["issues"]
-    }
-
-    # Selecting the audio-lab backend echoes the operator's typed values but
-    # is BLOCKED, not audio-enabled: nothing wires an audio backend, so the
-    # tone renders to a WAV artifact whatever the knob says.
-    monkeypatch.setenv("JASPER_AUDIO_LAB_TONE_BACKEND", "aplay")
-    monkeypatch.setenv("JASPER_AUDIO_LAB_TEST_PCM", "hw:Active")
-    lab_status = sound_active_speaker._active_speaker_tone_backend_status()
-    assert lab_status["status"] == "blocked"
-    assert lab_status["audio_enabled"] is False
-    assert lab_status["backend"] == "aplay"
-    assert lab_status["audio_backend"] is None
-    assert "tone_backend_not_wired" in {
-        issue["code"] for issue in lab_status["issues"]
-    }
-    assert lab_status["playback_device"] == "hw:Active"
-    assert lab_status["channel_count"] == 8
-    assert lab_status["requires_protected_startup"] is True
-
-
 def test_sound_output_topology_save_validates_and_persists_complete_contract(
     monkeypatch,
     tmp_path: Path,
@@ -4658,7 +4561,7 @@ async def test_active_speaker_baseline_apply_restores_source_auto(monkeypatch):
         monkeypatch, applied_profile=False
     )
 
-    payload = await sound_setup._active_speaker_baseline_profile_apply_payload(
+    payload = await sound_active_speaker._active_speaker_baseline_profile_apply_payload(
         expected_candidate_fingerprint="reviewed-candidate",
         camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
     )
