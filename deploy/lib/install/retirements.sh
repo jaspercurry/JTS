@@ -154,10 +154,13 @@ _retire_env_lines() {
             *\*)
                 while read -r name; do
                     jasper_env_file_unset "${file}" "${name%=}" 0640
-                done < <(grep -o "^${key%\*}[A-Za-z0-9_]*=" "${file}" | sort -u)
+                done < <(grep -o "^[[:space:]]*${key%\*}[A-Za-z0-9_]*=" "${file}" | tr -d ' \t' | sort -u)
                 ;;
             *=*)
-                if [[ "$(jasper_env_file_get "${file}" "${key%%=*}")" == "${key#*=}" ]]; then
+                # Only a lone stale seed goes: a key stated twice is a hand
+                # edit, and the unset would take the operator's line with it.
+                if [[ "$(grep -c "^[[:space:]]*${key%%=*}=" "${file}")" == 1 \
+                    && "$(jasper_env_file_get "${file}" "${key%%=*}")" == "${key#*=}" ]]; then
                     jasper_env_file_unset "${file}" "${key%%=*}" 0640
                 fi
                 ;;

@@ -2574,8 +2574,9 @@ def build_volume_coordinator(
     spotify_router: Any | None = None,
     duck_active_probe: CamillaLockProbe | None = None,
 ) -> VolumeCoordinator:
-    """Assemble a coordinator, persisted level loaded, around the actuators
-    whose acquisition differs per process; the rest is the same everywhere."""
+    """The daemon-side assembly (mux, jasper-control): persisted level loaded,
+    speaker name and context publisher wired, around the actuators whose
+    acquisition differs per process. One-shot readers build their own."""
     coordinator = VolumeCoordinator(
         camilla=camilla,
         persistence=VolumePersistence(volume_state_path()),
