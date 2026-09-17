@@ -40,11 +40,11 @@ the ``/state`` aggregator.
 """
 from __future__ import annotations
 
-import subprocess
 from typing import Any, Callable
 
 from ..env_load import GROUPING_ENV_FILE
 from ..ring_assets import RingFlowState, ring_flow_state
+from ..systemd_probe import unit_states
 from . import config
 from .config import SNAP_STREAM_ID, GroupingConfig
 from .effective_role import read_effective_role_status
@@ -62,34 +62,13 @@ _PROBE_TIMEOUT_SEC = 5
 
 
 def read_unit_active_states(units: list[str]) -> dict[str, str]:
-    """Thin I/O: ``systemctl is-active <units…>`` → ``{unit: state}``.
+    """``systemctl is-active <units…>`` → ``{unit: state}``, fail-soft.
 
-    One subprocess for ALL units (``is-active`` prints one state line per
-    argument, in order). Fail-soft: any error — no systemd, timeout,
-    line-count mismatch — resolves every unit to ``"unknown"`` rather
-    than raising. NOT unit-tested (it shells out); the pure
-    :func:`derive_grouping_runtime` consumes its output via an injected
+    Any error resolves every unit to ``"unknown"`` rather than raising; the
+    pure :func:`derive_grouping_runtime` consumes this through an injected
     reader in tests.
-
-    ``systemctl is-active`` exits non-zero when any unit is not active —
-    that is the normal "follower can't reach leader" case, so we read
-    stdout and ignore the exit code.
     """
-    if not units:
-        return {}
-    try:
-        proc = subprocess.run(
-            ["systemctl", "is-active", *units],
-            capture_output=True,
-            text=True,
-            timeout=_PROBE_TIMEOUT_SEC,
-        )
-        lines = proc.stdout.splitlines()
-        if len(lines) == len(units):
-            return {u: (lines[i].strip() or "unknown") for i, u in enumerate(units)}
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return {u: "unknown" for u in units}
+    return unit_states(units, timeout=_PROBE_TIMEOUT_SEC)
 
 
 def _dac_content_signal(local_outputd_status: Any) -> dict[str, Any]:

@@ -31,7 +31,6 @@ import contextlib
 import json
 import logging
 import re
-import subprocess
 import threading
 import time
 import urllib.parse
@@ -80,6 +79,7 @@ from ..bluetooth.models import BluetoothActionResult
 from ..log_event import log_event
 from ..local_sources import local_source_lifecycle
 from ..music_sources import Source
+from .. import systemd_probe
 from ..service_units import read_unit_states, unit_active, unit_loaded
 from ..source_intent import (
     request_source_intent,
@@ -138,18 +138,7 @@ def _normalize_mutation_id(value: object, *, url_encoded: bool = False) -> str |
 
 
 def _unit_available(unit: str) -> bool:
-    try:
-        proc = subprocess.run(
-            ["systemctl", "show", unit, "-p", "LoadState", "--value"],
-            check=False,
-            timeout=STATE_PROBE_TIMEOUT_SEC,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return proc.returncode == 0 and proc.stdout.strip() == "loaded"
+    return systemd_probe.unit_loaded(unit, timeout=STATE_PROBE_TIMEOUT_SEC)
 
 
 def _effective_bluetooth_state(

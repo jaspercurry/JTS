@@ -49,6 +49,7 @@ from ..source_intent_units import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
 )
 from ..source_intent_units import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
+from ..systemd_probe import unit_property
 from . import config
 from .config import SNAP_STREAM_ID, GroupingConfig
 from .dac_content_ring import (
@@ -894,25 +895,15 @@ def _unit_active(unit: str) -> bool | None:
     ``None`` on a probe failure or an unrecognized state; callers treat that
     as unproven and take the safe branch.
     """
-    try:
-        proc = subprocess.run(
-            ["systemctl", "show", unit, "--property=ActiveState", "--value"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
-        )
-    except (OSError, subprocess.SubprocessError):
+    state = unit_property(
+        unit, "ActiveState", timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
+    )
+    if state is None:
         return None
-    state = (proc.stdout or "").strip().lower()
-    if proc.returncode == 0 and state in {
-        "active",
-        "activating",
-        "reloading",
-        "deactivating",
-    }:
+    state = state.lower()
+    if state in {"active", "activating", "reloading", "deactivating"}:
         return True
-    if proc.returncode == 0 and state in {"inactive", "failed"}:
+    if state in {"inactive", "failed"}:
         return False
     return None
 

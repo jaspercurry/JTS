@@ -18,7 +18,6 @@ import json
 import os
 from pathlib import Path
 import struct
-import subprocess
 import time
 from typing import Any, Callable, Mapping
 
@@ -29,6 +28,7 @@ from .env_load import SOURCE_INTENT_ENV
 from .music_sources import Source
 from .identity.speaker_name import DEFAULT_SPEAKER_NAME, runtime_name
 from .source_intent import source_intent_enabled
+from .systemd_probe import unit_active
 
 INTENT_PATH = "/var/lib/jasper/usb_mic.env"
 INTENT_ENV_OWNER = "JTS /aec USB mic control"
@@ -56,6 +56,8 @@ USB_MIC_BCD_DEVICE = "0x0210"
 USB_NO_MIC_BCD_DEVICE = "0x0200"
 RELAY_STATUS_FRESH_SECONDS = 3.0
 _MAX_ENV_BYTES = 4096
+# Bound on the gadget/relay unit probe; /aec polls it.
+_UNIT_PROBE_TIMEOUT_SEC = 2.0
 
 
 @dataclass(frozen=True)
@@ -209,17 +211,9 @@ def _read_relay_status(path: Path) -> dict[str, Any]:
 
 
 def _systemd_active(unit: str) -> bool:
-    try:
-        result = subprocess.run(
-            ["systemctl", "is-active", "--quiet", unit],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=2.0,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
+    return unit_active(
+        unit, timeout=_UNIT_PROBE_TIMEOUT_SEC, activating_is_live=False,
+    )
 
 
 def _status_int(value: Any, default: int = 0) -> int:
