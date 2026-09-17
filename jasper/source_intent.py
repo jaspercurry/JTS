@@ -51,6 +51,7 @@ from jasper.atomic_io import (
     locked_update_env_file,
     read_regular_bytes_nofollow,
 )
+from jasper.bluetooth.rfkill import BluetoothRfkillState, read_bluetooth_rfkill_state
 from jasper.control.restart_broker import manage_units
 from jasper.env_file import parse_env_lines
 from jasper.install_profile import (
@@ -155,26 +156,6 @@ UnitProbe = Callable[[str], bool | None]
 IntentWriter = Callable[[str, Mapping[str, str]], None]
 ReconcileKicker = Callable[[], Mapping[str, Any]]
 StatusWriter = Callable[[str, Mapping[str, Any]], None]
-
-
-@dataclass(frozen=True)
-class BluetoothRfkillState:
-    """Observed Linux RF-kill state for Bluetooth radios."""
-
-    present: bool
-    # ``soft_blocked`` means any Bluetooth RF-kill entry is blocked, which is
-    # the correct On-path warning. ``all_soft_blocked`` proves the stronger Off
-    # invariant when more than one adapter exists; ``None`` preserves the
-    # single-adapter/test construction contract.
-    soft_blocked: bool
-    hard_blocked: bool
-    all_soft_blocked: bool | None = None
-
-    @property
-    def fully_soft_blocked(self) -> bool:
-        if self.all_soft_blocked is None:
-            return self.soft_blocked
-        return self.all_soft_blocked
 
 
 @dataclass(frozen=True)
@@ -829,31 +810,6 @@ def _usb_direct_ready() -> bool:
         sample is not None
         and sample.present
         and sample.health in {DIRECT_HEALTH_IDLE, DIRECT_HEALTH_CAPTURING}
-    )
-
-
-def read_bluetooth_rfkill_state() -> BluetoothRfkillState:
-    present = False
-    soft_states: list[bool] = []
-    hard_blocked = False
-    for entry in Path("/sys/class/rfkill").glob("rfkill*"):
-        try:
-            if (entry / "type").read_text(encoding="utf-8").strip() != "bluetooth":
-                continue
-            present = True
-            soft_states.append(
-                (entry / "soft").read_text(encoding="utf-8").strip() == "1"
-            )
-            hard_blocked = hard_blocked or (
-                (entry / "hard").read_text(encoding="utf-8").strip() == "1"
-            )
-        except OSError as exc:
-            raise RuntimeError(f"cannot read Bluetooth RF-kill state: {exc}") from exc
-    return BluetoothRfkillState(
-        present,
-        any(soft_states),
-        hard_blocked,
-        all(soft_states) if soft_states else False,
     )
 
 
