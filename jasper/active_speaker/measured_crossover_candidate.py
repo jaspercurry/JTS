@@ -89,11 +89,7 @@ _LINEARIZATION_OUTCOME_VALUES = frozenset({
 })
 
 
-#: The candidate keys ``from_mapping`` accepts as absent, each mapped to the
-#: type whose empty value that absence claims. ONE list: the unknown-field
-#: check, the reopen comparison's ``setdefault`` (without which a candidate
-#: written before a field refuses as ``candidate_tampered``) and the test that
-#: walks them all read it.
+# Shared by the unknown-field check, from_mapping persisted-core filter, and optional-field coverage test.
 _OPTIONAL_FIELD_TYPES: Mapping[str, type] = {
     "linearization": dict,
     "linearization_outcome": str,
@@ -484,6 +480,9 @@ class MeasuredCrossoverCandidate:
     bass_extension: Mapping[str, Any] = field(default_factory=dict)
     rear_calibration: Mapping[str, Any] = field(default_factory=dict)
     fingerprint: str = field(init=False, repr=False)
+    _persisted_core: DspPredecessor | None = field(
+        default=None, init=False, repr=False, compare=False,
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.program_id, str) or not self.program_id.strip():
@@ -622,14 +621,9 @@ class MeasuredCrossoverCandidate:
         ).state["analysis"])
 
     def _core(self) -> dict[str, Any]:
-        """The exact fingerprinted payload (see ``__post_init__``).
-
-        Every optional field is OMITTED when empty rather than included as
-        ``{}`` / ``""`` / ``[]``, so an empty candidate's ``_core()`` keeps the
-        fingerprint code from before the field existed. Non-empty values stay
-        in, and are therefore tamper-protected like every other field.
-        ``to_dict()`` deliberately does NOT mirror this omission.
-        """
+        """Stored identity survives preset schema changes; new identities use today's schema."""
+        if self._persisted_core is not None:
+            return self._persisted_core.state
         core: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "kind": CANDIDATE_KIND,
@@ -658,25 +652,11 @@ class MeasuredCrossoverCandidate:
         return core
 
     def to_dict(self) -> dict[str, Any]:
-        """The full persisted shape — ALWAYS carries every optional key.
-
-        Unlike ``_core()`` (the fingerprint input), this never omits a key even
-        when empty, so a fresh write and a freshly-built ``raw`` dict agree
-        byte-for-byte, which ``from_mapping``'s tamper check relies on. Era
-        tolerance for older payloads lives in ``from_mapping``, on the read side.
-        """
-        return {
-            **self._core(),
-            "linearization": dict(self.linearization),
-            "linearization_outcome": self.linearization_outcome,
-            "trim_decision": dict(self.trim_decision),
-            "exclusion_evidence": dict(self.exclusion_evidence),
-            "blend_correction": [dict(f) for f in self.blend_correction],
-            "room_correction": dict(self.room_correction),
-            "bass_extension": dict(self.bass_extension),
-            "rear_calibration": dict(self.rear_calibration),
-            "fingerprint": self.fingerprint,
-        }
+        """Persist the fingerprinted core with explicit empty optional fields."""
+        payload = self._core()
+        for key, empty in _OPTIONAL_FIELD_TYPES.items():
+            payload.setdefault(key, empty())
+        return {**payload, "fingerprint": self.fingerprint}
 
     def driver_corrections(self) -> dict[str, dict[str, float | bool]]:
         """The compiler-ready ``{role: {gain_db, delay_ms, inverted}}`` mapping."""
@@ -805,18 +785,22 @@ class MeasuredCrossoverCandidate:
             raise MeasuredCrossoverCandidateError(
                 "candidate_malformed", str(exc)
             ) from exc
-        # to_dict() always carries every optional key, while an older `raw`
-        # claimed the empty value by never mentioning it — so compare against
-        # that claim made explicit.
-        raw_for_comparison = dict(raw)
-        for key, empty in _OPTIONAL_FIELD_TYPES.items():
-            raw_for_comparison.setdefault(key, empty())
-        if candidate.to_dict() != raw_for_comparison:
+        core = {
+            key: value for key, value in raw.items()
+            if key != "fingerprint" and (key not in _OPTIONAL_FIELD_TYPES or value)
+        }
+        try:
+            fingerprint = json_fingerprint(core)
+        except EvidenceIdentityError as exc:
+            _refuse("candidate_invalid", str(exc))
+        if fingerprint != raw["fingerprint"]:
             _refuse(
                 "candidate_tampered",
                 "persisted measured crossover candidate does not match its "
                 "declared result",
             )
+        object.__setattr__(candidate, "_persisted_core", DspPredecessor(core))
+        object.__setattr__(candidate, "fingerprint", fingerprint)
         return candidate
 
 
