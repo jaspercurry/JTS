@@ -11,6 +11,7 @@ under `deploy/nginx/`, which install.sh installs beside the site conf into
 text, so this resolves those includes against the repo exactly as nginx
 resolves them against the Pi.
 """
+import functools
 import re
 from pathlib import Path
 
@@ -32,6 +33,7 @@ _KEEP_AS_INCLUDE = frozenset({"jts-proxy-headers.conf"})
 _INCLUDE_RX = re.compile(r"^\s*include\s+(\S+);\s*$")
 
 
+@functools.cache
 def conf_text(profile: str) -> str:
     """The profile's site conf with its route and server snippets inlined."""
     return _resolve(PROFILE_CONFS[profile].read_text(encoding="utf-8"))
