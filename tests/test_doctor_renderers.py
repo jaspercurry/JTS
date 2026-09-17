@@ -193,20 +193,19 @@ def test_shairport_check_jasper_renderer_in_fails(monkeypatch, tmp_path):
     assert r.reason == renderers.REASON_SHAIRPORT_LEGACY_DMIX
 
 
-def test_shairport_check_legacy_plughw_ok_with_redeploy_hint(
+def test_shairport_check_legacy_plughw_fails_with_redeploy_hint(
     monkeypatch,
     tmp_path,
 ):
-    """Pre-PR-#214 wiring: output_device still points at the bare
-    loopback. Legacy-but-functional, cosmetic advisory to redeploy —
-    not a fault (ADR-0233)."""
+    """output_device still points at the bare loopback: the same stale
+    pre-fan-in wiring as the dmix and raw-hw arms, graded the same way."""
     _patch_shairport_conf(
         monkeypatch,
         'alsa = {\n    output_device = "plughw:Loopback,0,0";\n};\n',
         tmp_path,
     )
     r = renderers.check_shairport_sync_loopback_plughw()
-    assert r.status == "ok"
+    assert r.status == "fail"
     assert r.reason == renderers.REASON_SHAIRPORT_LEGACY_PLUGHW
 
 
@@ -247,8 +246,7 @@ def test_shairport_legacy_remediations_name_the_canonical_device(
         "plughw:Loopback,0,0": renderers.REASON_SHAIRPORT_LEGACY_PLUGHW,
         "hw:Loopback,0,0": renderers.REASON_SHAIRPORT_RAW_HW_LOOPBACK,
     }[stale_device]
-    expected_status = "ok" if stale_device == "plughw:Loopback,0,0" else "fail"
-    assert r.status == expected_status
+    assert r.status == "fail"
     assert r.reason == expected_reason
     assert "shairport_substream" in r.detail
 
