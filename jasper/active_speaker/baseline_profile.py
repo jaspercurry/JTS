@@ -175,9 +175,13 @@ def baseline_config_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get(CONFIG_PATH_ENV) or DEFAULT_CONFIG_PATH)
 
 
+def config_text_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def baseline_candidate_config_path(text: str, path: str | Path | None = None) -> Path:
     target = baseline_config_path(path)
-    sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    sha256 = config_text_sha256(text)
     return target.with_name(f"{target.stem}_candidate_{sha256[:12]}{target.suffix}")
 
 
@@ -215,7 +219,7 @@ async def load_composed_graph(
                 applied["source"]["fingerprint"] = _fingerprint({key: value for key, value in applied["source"].items() if key != "fingerprint"})
             if not audition:
                 target = baseline_candidate_config_path(rendered, directory / baseline_config_path().name)
-            sha256 = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+            sha256 = config_text_sha256(rendered)
             applied["config"] = {**profile.get("config", {}), "path": str(target), "basename": target.name,
                                  "sha256": sha256, "exists": True}
             atomic_write_text(target, rendered, mode=CONFIG_FILE_MODE)
@@ -252,12 +256,8 @@ def baseline_candidate_fingerprint(candidate: Mapping[str, Any]) -> str:
     if hashed_snapshot is not None and isinstance(
         hashed_snapshot.get("level_match"), Mapping
     ):
-        # ``newest_capture_at`` is evidence-recency metadata for the banked
-        # trim's clock, not graph identity: the measured-candidate arm mints it
-        # from the compose instant, and the seams that compare this fingerprint
-        # across two composes of the same inputs (review -> apply, the
-        # idempotent re-apply) must hash equal across a second boundary.
-        # Absent-key candidates (pre-field artifacts) hash unchanged.
+        # Capture recency changes on recompose; graph identity must not.
+        # Candidates without this field must keep their stored fingerprint.
         hashed_snapshot["level_match"] = {
             key: value
             for key, value in hashed_snapshot["level_match"].items()
@@ -357,11 +357,10 @@ def compile_commissioning_profile(
         preference_filters, trim_db = saved_sound_layers()
         text = compile_tuning_graph(declaration, candidate=candidate,
                                     preference_filters=preference_filters, output_trim_db=trim_db)
-        sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
         target = baseline_candidate_config_path(text)
         profile.update(prepare_applied_baseline_profile(
             candidate, declaration=declaration, design_draft=draft, measurements=load_measurement_state(topology),
-            config_path=target, config_sha256=sha, find_candidate=find_candidate, crossover_preview=crossover_preview,
+            config_path=target, config_sha256=config_text_sha256(text), find_candidate=find_candidate, crossover_preview=crossover_preview,
         ))
         profile["issues"] = [*(candidate.analysis.get("issues") or []), *rear_calibration_issues(candidate)]
         profile["candidate_fingerprint"] = baseline_candidate_fingerprint(profile)
