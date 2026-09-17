@@ -74,7 +74,7 @@ async def apply_candidate(
                 applied_baseline_state={"recomposition_snapshot": baseline_profile.recomposition_snapshot_for(
                     selected, declaration=declaration, design_draft=draft)})
             if not proof.allowed or proof.classification != runtime_contract.GRAPH_APPROVED_ACTIVE_RUNTIME:
-                raise CrossoverV2Refused(proof.classification, code="baseline_graph_safety_proof_failed",
+                raise CrossoverV2Refused("graph safety proof failed", code="baseline_graph_safety_proof_failed",
                                          issues=proof.issues)
             issue = candidate_boost_issue(measured_sha[:16])
             if issue:
