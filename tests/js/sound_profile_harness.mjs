@@ -2029,19 +2029,23 @@ async function testSpeakerLayoutMatrixAndRearAssignment() {
         },
       }));
       await harness.flush(); await harness.flush(); await harness.flush();
-      for (const [axis, value] of [['layout', layout], ['speaker-mode', speakerMode === 'cardioid' ? 'active_3way' : speakerMode]]) {
+      for (const [axis, value] of [['layout', layout], ['speaker-mode', speakerMode === 'cardioid' ? 'active_2way' : speakerMode]]) {
         harness.dispatchClick({'data-act': 'output-template-axis', 'data-axis': axis, 'data-value': value});
         await harness.flush(); await harness.flush();
       }
       if (speakerMode === 'cardioid') {
         harness.dispatchChange({checked: true, hasAttribute: name => name === 'data-output-cardioid'});
         await harness.flush(); await harness.flush();
-        const html = harness.elements.get('view-body').innerHTML;
-        assert.ok(html.includes('Front woofer') && html.includes('Rear woofer'));
       }
       harness.dispatchClick({'data-act': 'save-output-topology'});
       await harness.flush(); await harness.flush(); await harness.flush();
       const saved = saves.at(-1);
+      if (speakerMode === 'cardioid') {
+        const html = harness.elements.get('view-body').innerHTML;
+        assert.match(html, /data-value="active_2way" aria-pressed="true">/);
+        assert.match(html, /data-value="active_3way" aria-pressed="false">/);
+        assert.match(html, /data-output-cardioid checked/);
+      }
       const count = layout === 'mono' ? 1 : 2;
       const perSpeaker = speakerMode === 'passive' ? 1 : speakerMode === 'active_2way' ? 2 : 3;
       assert.equal(saved.speaker_groups.length, count);

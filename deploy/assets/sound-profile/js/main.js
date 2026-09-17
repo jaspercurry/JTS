@@ -1304,7 +1304,7 @@ import {
     var cardioid = mainGroups.some(function(group) {
       return (group.channels || []).some(function(channel) { return channel.output_variant === 'rear'; });
     });
-    return {layout: layout, speakerMode: cardioid ? 'active_3way' : speakerMode, cardioid: cardioid};
+    return {layout: layout, speakerMode: speakerMode, cardioid: cardioid};
   }
   function outputTemplateAxisButton(axis, value, label, hint, selected) {
     return '<button type="button" class="output-template-option" data-act="output-template-axis" ' +
@@ -1319,7 +1319,7 @@ import {
     var count = Number(hardware && hardware.physical_output_count) || 0;
     var axes = outputTemplateAxesForTopology(topology);
     var selectedTemplate = outputTemplateDefinition(
-      outputTemplateKindFromAxes(axes.layout, axes.speakerMode, axes.cardioid)
+      axes.cardioid ? axes.layout + '_active_cardioid' : outputTemplateKindFromAxes(axes.layout, axes.speakerMode)
     );
     var hasSub = outputHasSubwoofer(topology);
     var selectedLabel = selectedTemplate
@@ -1336,8 +1336,8 @@ import {
     ];
     var speakerChoices = [
       {value: 'passive', label: 'Passive', hint: 'Full-range output per speaker'},
-      {value: 'active_2way', label: 'Active 2-way', hint: 'Woofer + tweeter'},
-      {value: 'active_3way', label: 'Active 3-way', hint: 'Three independently driven outputs'}
+      {value: 'active_2way', label: axes.cardioid ? 'Active 2-way with rear woofer (cardioid)' : 'Active 2-way', hint: 'Woofer + tweeter'},
+      {value: 'active_3way', label: 'Active 3-way', hint: 'Woofer + mid + tweeter'}
     ];
     return '<div class="output-card output-card--templates">' +
       '<div class="output-card__head"><div><p class="output-card__title">Main speakers</p>' +
@@ -1372,7 +1372,7 @@ import {
           '</div>' +
         '</div>' +
       '</div>' +
-      (axes.speakerMode === 'active_3way'
+      (axes.speakerMode === 'active_2way'
         ? '<label class="setting-row"><span><strong>Cardioid</strong>' +
           '<span class="setting-row__hint">Front woofer, rear woofer and tweeter. Rear starts muted for tuning.</span></span>' +
           '<input type="checkbox" data-output-cardioid' + (axes.cardioid ? ' checked' : '') + '></label>'
@@ -3094,7 +3094,7 @@ import {
       render();
       return;
     }
-    var kind = outputTemplateKindFromAxes(layout, speakerMode, axes.cardioid);
+    var kind = speakerMode === 'active_2way' && axes.cardioid ? layout + '_active_cardioid' : outputTemplateKindFromAxes(layout, speakerMode);
     if (!kind) {
       status('Choose a supported speaker layout option.', true);
       return;
