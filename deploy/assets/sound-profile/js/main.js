@@ -804,16 +804,10 @@ import {
     if (field.startsWith('installation_')) return;
     driverResearch.safetyDirty = true;
     driverResearch.editedDriverTargets[targetId] = true;
-    // driver_class/pad_kind each gate which OTHER fields this row shows
-    // (a radiating diameter or nothing; resistor inputs vs the direct-dB
-    // input) -- unlike every other manual-driver field above, a selection
-    // here must re-render immediately or the newly-relevant field stays
-    // hidden until some unrelated action repaints the page. Mirrors
-    // setOutputChannelDriverStyle's existing full-repaint-on-select pattern.
     if (field === 'driver_class' || field === 'pad_kind' || field === 'enclosure_kind') render();
   }
   function refreshDriverResearchDerivedUi() {
-    var topology = currentOutputTopology();
+    var topology = outputTopology.payload;
     var proposal = el('view-body').querySelector('[data-driver-proposal]');
     if (proposal) proposal.innerHTML = renderCrossoverPreviewCardBody(topology);
     var footer = el('view-body').querySelector('[data-driver-research-footer]');
@@ -978,7 +972,7 @@ import {
   }
   function applyDriverResearchToManualSettings(payload) {
     if (!payload || typeof payload !== 'object') return;
-    var topology = currentOutputTopology();
+    var topology = outputTopology.payload;
     var targets = driverResearchTargets(topology);
     var driversByRole = {};
     (Array.isArray(payload.drivers) ? payload.drivers : []).forEach(function(driver) {
@@ -1048,14 +1042,14 @@ import {
   }
   function driverResearchWorkingStatusLabel(status) {
     if (driverResearch.dirty) return 'editing';
-    if (driverResearchPreviewInputsReady(currentOutputTopology())) return 'ready to preview';
+    if (driverResearchPreviewInputsReady(outputTopology.payload)) return 'ready to preview';
     if (status === 'blocked') return 'needs speaker layout';
     if (status === 'unreadable') return 'needs review';
     if (status === 'needs_research') return 'needs crossover info';
     return 'working setup';
   }
   function driverResearchWorkingStatusClass(status) {
-    if (!driverResearch.dirty && driverResearchPreviewInputsReady(currentOutputTopology())) {
+    if (!driverResearch.dirty && driverResearchPreviewInputsReady(outputTopology.payload)) {
       return ' status-pill--ready';
     }
     if (status === 'blocked' || status === 'unreadable') return ' status-pill--blocked';
@@ -1081,7 +1075,7 @@ import {
       var role = String(driver.role);
       var targetId = String(driver.target_id || '');
       if (!targetId) {
-        var roleTargets = driverResearchTargets(currentOutputTopology()).filter(function(item) {
+        var roleTargets = driverResearchTargets(outputTopology.payload).filter(function(item) {
           return item.role === role;
         });
         if (roleTargets.length === 1) targetId = roleTargets[0].target_id;
@@ -1178,7 +1172,7 @@ import {
       hasLayout: outputGroups(topology).length > 0,
       dirty: outputTopology.dirty,
       hardwareMatchesSaved: !outputHardwareMismatch(topology),
-      driverResearchSatisfied: driverResearchFlowComplete(topology),
+      driverResearchSatisfied: driverResearchFlowComplete(outputTopology.payload),
       steps: (activeSpeaker.commissioningView || {}).steps,
       currentStep: (activeSpeaker.commissioningView || {}).current_step
     };
@@ -1319,7 +1313,7 @@ import {
     var count = Number(hardware && hardware.physical_output_count) || 0;
     var axes = outputTemplateAxesForTopology(topology);
     var selectedTemplate = outputTemplateDefinition(
-      axes.cardioid ? axes.layout + '_active_cardioid' : outputTemplateKindFromAxes(axes.layout, axes.speakerMode)
+      outputTemplateKindFromAxes(axes.layout, axes.speakerMode, axes.cardioid)
     );
     var hasSub = outputHasSubwoofer(topology);
     var selectedLabel = selectedTemplate
@@ -1419,7 +1413,7 @@ import {
   function renderDriverResearchSummary() {
     var saved = driverResearch.designDraft || {};
     var savedStatus = saved.status || '';
-    var topology = currentOutputTopology();
+    var topology = outputTopology.payload;
     var safetyRoles = driverSafetyNoteRoles(topology);
     var savedHtml =
       '<div class="driver-research__summary driver-research__summary--saved">' +
@@ -1468,11 +1462,6 @@ import {
           '<div id="driver-research-import-summary">' + renderDriverResearchSummary() + '</div>' +
         '</div>' +
       '</div>' +
-      // Stable container so a manual edit can repaint just this panel. A
-      // number input's own keystrokes must not trigger a full render (focus
-      // loss), but leaving the echo showing a value the operator has already
-      // changed is the exact dishonesty this panel exists to end -- so it gets
-      // the same targeted refresh [data-driver-proposal] has.
       '<div data-driver-echo>' + renderDriverEchoBack(topology) + '</div>' +
     '</section>';
   }
@@ -1483,10 +1472,12 @@ import {
     var node = document.getElementById('driver-safety-issues');
     if (node && typeof node.scrollIntoView === 'function') node.scrollIntoView({block: 'center'});
   }
-  function renderDriverResearchCard(topology) {
+  function renderDriverResearchCard() {
+    var topology = outputTopology.payload;
     return '<div class="output-card output-card--driver-research">' +
       '<div class="output-card__head"><div><p class="output-card__title">Component setup</p>' +
         '<p class="setting-row__hint">Start with what is physically installed. JTS uses these choices as authoritative context, not facts for AI to guess.</p></div></div>' +
+      (outputTopology.dirty ? '<p class="setting-row__hint" data-saved-layout-values>These values and research prompts use the saved speaker layout.</p>' : '') +
       renderDriverSafetyIssues() +
       '<div class="driver-research__section">' +
         '<h3 class="setting-row__title">Your components</h3>' +
@@ -1591,7 +1582,7 @@ import {
         'Driver values',
         outputStepHint('research', 'Describe each installed driver, then research a starting crossover.'),
         topology,
-        renderDriverResearchCard(topology),
+        renderDriverResearchCard(),
         renderDriverResearchStepFooter()
       ) +
       renderOutputStepCard(
@@ -2605,7 +2596,7 @@ import {
         );
         if (noteEl) {
           noteEl.innerHTML = kaBeamingNoteHtml(
-            crossoverKey.split(':'), ev.target.value, currentOutputTopology()
+            crossoverKey.split(':'), ev.target.value, outputTopology.payload
           );
         }
       }
@@ -2702,14 +2693,11 @@ import {
       return;
     }
     if (ev.target.hasAttribute && ev.target.hasAttribute('data-driver-style')) {
-      var saveDriverStyle = ev.target.hasAttribute('data-save-driver-style');
-      if (saveDriverStyle) outputPage.stepOverride = 'research';
       setOutputChannelDriverStyle(
         ev.target.getAttribute('data-group-id') || '',
         ev.target.getAttribute('data-role') || '',
         ev.target.value
       );
-      if (saveDriverStyle) saveOutputTopology({nextStep: 'research'});
       return;
     }
     if (ev.target.hasAttribute && ev.target.hasAttribute('data-sub-crossover-fc')) {
@@ -2885,6 +2873,8 @@ import {
   }
   async function refreshOutputTopology(options) {
     options = options || {};
+    if (!options.silent && outputTopology.dirty &&
+        !await jtsConfirm('Refresh hardware and lose the unsaved speaker layout draft?')) return;
     if (!options.silent) outputTopology.touched = true;
     outputTopology.loading = true;
     outputTopology.error = '';
@@ -3024,26 +3014,19 @@ import {
     status('Channel assignment updated. Save the speaker layout.');
   }
   function setOutputChannelDriverStyle(groupId, role, rawValue) {
-    var topology = currentOutputTopology();
-    if (!topology) return;
-    var next = baseOutputDraft(topology);
-    if (!next) return;
-    var targetChannel = null;
-    outputGroups(next).forEach(function(group) {
-      if ((group.id || '') !== groupId) return;
-      (group.channels || []).forEach(function(channel) {
-        if ((channel.role || '') === role) targetChannel = channel;
-      });
-    });
-    if (!targetChannel) {
-      status('Could not find that driver in the speaker layout.', true);
-      return;
-    }
+    var next = baseOutputDraft(outputTopology.payload);
     var value = String(rawValue || '').trim();
-    if (value) targetChannel.driver_style = value;
-    else delete targetChannel.driver_style;
-    setOutputDraft(next);
-    status('Tweeter style updated.');
+    function update(topology) {
+      var group = outputGroups(topology).find(function(item) { return item.id === groupId; });
+      var channel = group && group.channels.find(function(item) { return item.role === role; });
+      if (!channel) return false;
+      if (value) channel.driver_style = value;
+      else delete channel.driver_style;
+      return true;
+    }
+    if (!next || !update(next)) return;
+    update(outputTopology.draft);
+    saveOutputTopology({nextStep: 'research', topology: next});
   }
   async function setOutputTemplate(kind) {
     var next = baseOutputDraft();
@@ -3094,7 +3077,7 @@ import {
       render();
       return;
     }
-    var kind = speakerMode === 'active_2way' && axes.cardioid ? layout + '_active_cardioid' : outputTemplateKindFromAxes(layout, speakerMode);
+    var kind = outputTemplateKindFromAxes(layout, speakerMode, axes.cardioid);
     if (!kind) {
       status('Choose a supported speaker layout option.', true);
       return;
@@ -3305,6 +3288,7 @@ import {
   function parseDriverResearchImport() {
     try {
       var payload = extractDriverResearchJson(driverResearch.importText);
+      if (!payload) throw new Error('Paste a driver research document.');
       driverResearch.importedPayload = payload;
       applyDriverResearchToManualSettings(payload);
       driverResearch.error = '';
@@ -3327,11 +3311,11 @@ import {
       render();
       return true;
     }
-    if (!currentOutputTopology()) {
+    if (!outputTopology.payload) {
       status('Load output hardware before updating the working setup.', true);
       return false;
     }
-    var manualTopology = currentOutputTopology();
+    var manualTopology = outputTopology.payload;
     var manualError = manualCrossoverVocabularyValidationError(manualTopology);
     if (manualError) {
       driverResearch.error = manualError;
@@ -3339,12 +3323,13 @@ import {
       render();
       return false;
     }
-    var manualPayload = manualSettingsPayload(currentOutputTopology());
+    var manualPayload = manualSettingsPayload(outputTopology.payload);
     var researchPayload = null;
     var importWarning = '';
     if ((driverResearch.importText || '').trim()) {
       try {
         researchPayload = extractDriverResearchJson(driverResearch.importText);
+        if (!researchPayload) throw new Error('Paste a driver research document.');
         driverResearch.importedPayload = researchPayload;
       } catch (e) {
         driverResearch.importedPayload = null;
@@ -3398,17 +3383,21 @@ import {
   async function saveOutputTopology(options) {
     options = options || {};
     if (!outputTopology.draft) return;
+    var pendingDraft = options.topology && outputTopology.dirty ? outputTopology.draft : null;
     outputTopology.saving = true;
     outputTopology.touched = true;
     outputTopology.error = '';
     render();
     try {
       var payload = await postJSON('./output-topology', {
-        output_topology: outputTopology.draft
+        output_topology: options.topology || outputTopology.draft
       });
       ingestOutputTopology(payload);
-      // The refusal card names the carrier this save just replaced, so a fixed
-      // layout drops it at the render below instead of outliving its cause.
+      if (pendingDraft) {
+        outputTopology.draft = pendingDraft;
+        outputTopology.dirty = true;
+      }
+      updateDriverResearchPromptPreview();
       outputPage.blocked = false;
       try {
         await fetchDesignDraft();

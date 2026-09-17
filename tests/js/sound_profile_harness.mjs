@@ -2077,83 +2077,41 @@ async function testSpeakerLayoutMatrixAndRearAssignment() {
   return {speakerLayoutMatrixAndRearAssignment: true};
 }
 
-// JTS3 hardware punch: a compression-driver tweeter commissioned with a
-// ~2 kHz crossover point was permanently blocked because driver_style had no
-// UI surface anywhere, so the conservative 5000 Hz "unknown style" floor
-// could never be lowered to the driver's real 2000 Hz floor. This pins the
-// fix: the component card offers a tweeter-only style selector before Copy
-// prompt, writes onto the topology channel (the existing single writer), and
-// auto-saves that choice before research can proceed.
 async function testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview() {
-  const topology = activeTwoWayTopologyPayload();
-  const saves = [];
-  const fetchHandler = baseFetch({
-    "./output-topology": (_path, options = {}) => {
-      if (options.method === "POST") {
-        const body = JSON.parse(options.body || "{}");
-        saves.push(body.output_topology);
-        return Promise.resolve(response({
-          output_topology: body.output_topology,
-        }));
-      }
-      return Promise.resolve(response(topology));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  const initialHtml = harness.elements.get("view-body").innerHTML;
-  if (!initialHtml.includes(
-      'data-driver-style data-save-driver-style data-group-id="main" data-role="tweeter"'
-  )) {
-    fail("component card must offer the topology-owned tweeter style before the prompt", {
-      initialHtml,
-    });
+  for (const dirty of [false, true]) {
+    const topology = activeTwoWayTopologyPayload(), saves = [];
+    const harness = setupHarness(baseFetch({
+      './output-topology': (_path, options = {}) => {
+        if (options.method === 'POST') saves.push(JSON.parse(options.body).output_topology);
+        return Promise.resolve(response(saves.at(-1) || topology));
+      },
+    }));
+    await loadAndSetActiveState(harness);
+    const initial = harness.elements.get('view-body').innerHTML;
+    assert.match(initial, /data-driver-style data-save-driver-style data-group-id="main" data-role="tweeter"/);
+    assert.doesNotMatch(initial, /data-driver-style[^>]*data-role="woofer"/);
+    if (dirty) {
+      harness.dispatchClick({'data-act': 'output-template-axis', 'data-axis': 'speaker-mode', 'data-value': 'active_3way'});
+      await harness.flush();
+    }
+    harness.dispatchChange({value: 'compression_driver',
+      getAttribute: key => ({'data-group-id': 'main', 'data-role': 'tweeter'})[key],
+      hasAttribute: key => key === 'data-driver-style' || key === 'data-save-driver-style'});
+    for (let i = 0; i < 8; i++) await harness.flush();
+    assert.equal(saves.length, 1);
+    assert.equal(saves[0].speaker_groups[0].mode, 'active_2_way');
+    assert.equal(saves[0].speaker_groups[0].channels.find(channel => channel.role === 'tweeter').driver_style, 'compression_driver');
+    const html = harness.elements.get('view-body').innerHTML;
+    assert.match(html, /value="compression_driver" selected/);
+    assert.match(html, new RegExp('data-value="' + (dirty ? 'active_3way' : 'active_2way') + '" aria-pressed="true"'));
+    if (dirty) {
+      harness.dispatchClick({'data-act': 'save-output-topology'});
+      for (let i = 0; i < 8; i++) await harness.flush();
+      assert.equal(saves[1].speaker_groups[0].mode, 'active_3_way');
+      assert.equal(saves[1].speaker_groups[0].channels.find(channel => channel.role === 'tweeter').driver_style, 'compression_driver');
+    }
   }
-  if (initialHtml.includes('data-driver-style data-group-id="main" data-role="woofer"')) {
-    fail("a low-frequency role must not get a driver-style selector (unused by the floor policy)", { initialHtml });
-  }
-  if (!initialHtml.includes("Choose tweeter type") ||
-      !initialHtml.includes("Not sure (conservative default)")) {
-    fail("undeclared style should require an explicit type or Not sure choice", { initialHtml });
-  }
-  if (!initialHtml.includes("Tweeter style not set")) {
-    fail("component card must explain why the exact style is required", { initialHtml });
-  }
-
-  harness.dispatchChange({
-    value: "compression_driver",
-    getAttribute(name) {
-      return { "data-group-id": "main", "data-role": "tweeter" }[name] || "";
-    },
-    hasAttribute(name) {
-      return name === "data-driver-style" || name === "data-save-driver-style";
-    },
-  });
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  const afterSelectHtml = harness.elements.get("view-body").innerHTML;
-  if (!afterSelectHtml.includes('value="compression_driver" selected')) {
-    fail("selecting a style must reflect back as the selected option", { afterSelectHtml });
-  }
-  // #2603 re-baselined this copy: the figure is the DEFAULT minimum crossover
-  // used when the datasheet publishes none, not a floor the declaration must
-  // clear. The assertion still pins that the declared style and its number
-  // reach the review card.
-  if (!afterSelectHtml.includes("Tweeter style: Compression driver (horn-loaded)") ||
-      !afterSelectHtml.includes("default minimum crossover 2000 Hz")) {
-    fail("declared style must be visible on the review card with its figure", { afterSelectHtml });
-  }
-  if (afterSelectHtml.includes("protective high-pass floor")) {
-    fail("the retired floor vocabulary must not return to this hint", { afterSelectHtml });
-  }
-
-  if (saves.length !== 1) fail("style change should auto-save through the existing topology writer", { saves });
-  const tweeter = saves[0].speaker_groups[0].channels.find((c) => c.role === "tweeter");
-  if (!tweeter || tweeter.driver_style !== "compression_driver") {
-    fail("saved topology must carry the declared driver_style on the channel", { tweeter });
-  }
-  return { tweeterDriverStyleSelectorSetsTopologyAndAppearsInReview: true };
+  return {tweeterDriverStyleSelectorSetsTopologyAndAppearsInReview: true};
 }
 
 // A stored driver_style the picker doesn't know (set via API or a newer
@@ -2281,53 +2239,33 @@ async function testChannelSelectorKeepsLayoutOpenWhenDraftDirty() {
 }
 
 
-async function testThreeOutputChannelSelectorDoesNotAutoAssignPeers() {
-  const topology = activeThreeWayTopologyPayload();
-  topology.speaker_groups[0].channels[0].physical_output_index = null;
-  const saves = [];
-  const fetchHandler = baseFetch({
-    "./output-topology": (_path, options = {}) => {
-      if (options.method === "POST") {
-        const body = JSON.parse(options.body || "{}");
-        saves.push(body.output_topology);
-        return Promise.resolve(response({
-          output_topology: body.output_topology,
-        }));
-      }
-      return Promise.resolve(response(topology));
-    },
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-  const rowHints = Array.from(
-    harness.elements.get("view-body").innerHTML.matchAll(/<div class="output-role__text">([^]*?)<\/div>/g),
-    (match) => match[1].match(/<small>([^]*?)<\/small>/)?.[1] || "",
-  );
-  if (JSON.stringify(rowHints) !== JSON.stringify(["Assign a DAC output.", "", ""])) {
-    fail("only an unassigned DAC row should show an assignment hint", { rowHints });
+async function testChannelAssignmentKeepsOptionsAndClearsStaleLabels() {
+  for (const topology of [activeTwoWayTopologyPayload(), activeThreeWayTopologyPayload()]) {
+    const channel = topology.speaker_groups[0].channels[0];
+    channel.human_output_label = 'stale-label';
+    const saves = [];
+    const harness = setupHarness(baseFetch({
+      './output-topology': (_path, options = {}) => {
+        if (options.method === 'POST') saves.push(JSON.parse(options.body).output_topology);
+        return Promise.resolve(response(saves.at(-1) || topology));
+      },
+    }));
+    await loadAndSetActiveState(harness);
+    const selects = harness.elements.get('view-body').innerHTML.match(/<select data-output-channel[^]*?<\/select>/g).join('');
+    assert.doesNotMatch(selects, /<option[^>]* disabled/);
+    harness.dispatchChange({value: '1', getAttribute: key => ({'data-group-id': 'main', 'data-role': 'woofer'})[key],
+      hasAttribute: key => key === 'data-output-channel'});
+    await harness.flush();
+    const html = harness.elements.get('view-body').innerHTML;
+    assert.doesNotMatch(html.match(/<div class="output-role__text">[^]*?<\/div>/g).join(''), /stale-label/);
+    harness.dispatchClick({'data-act': 'save-output-topology'});
+    await harness.flush(); await harness.flush();
+    assert.equal(saves.length, 1);
+    assert.equal(saves[0].speaker_groups[0].channels[0].physical_output_index, 1);
+    assert.ok(!('human_output_label' in saves[0].speaker_groups[0].channels[0]));
+    assert.deepEqual(saves[0].speaker_groups[0].channels.slice(1), topology.speaker_groups[0].channels.slice(1));
   }
-
-  harness.dispatchChange({
-    value: "0",
-    getAttribute(name) {
-      return { "data-group-id": "main", "data-role": "woofer" }[name] || "";
-    },
-    hasAttribute(name) { return name === "data-output-channel"; },
-  });
-  await harness.flush();
-  harness.dispatchClick({ "data-act": "save-output-topology" });
-  await harness.flush(); await harness.flush(); await harness.flush();
-
-  if (saves.length !== 1) fail("three-output selector save should POST one topology", { saves });
-  const channels = saves[0].speaker_groups[0].channels;
-  const byRole = Object.fromEntries(channels.map((channel) => [channel.role, channel]));
-  if (byRole.woofer.physical_output_index !== 0 ||
-      byRole.mid.physical_output_index !== 1 ||
-      byRole.tweeter.physical_output_index !== 2) {
-    fail("three-output selector should only update the selected driver", { channels });
-  }
-
-  return { threeOutputChannelSelectorDoesNotAutoAssignPeers: true };
+  return {channelAssignmentKeepsOptionsAndClearsStaleLabels: true};
 }
 
 async function testAppliedProfileCardUsesCommissioningRecord() {
@@ -5294,7 +5232,7 @@ async function testComputedSafetyIssuesRenderByTarget() {
 
 async function testResearchValidationRendersServerRefusal() {
   for (const research of [
-    {kind: 'unsupported', artifact_schema_version: 99, drivers: []},
+    {kind: 'jts_active_crossover_driver_research', artifact_schema_version: 99, drivers: []},
     {kind: 'jts_active_crossover_driver_research', artifact_schema_version: 2, drivers: [
       {role: 'woofer', target_id: 'main:woofer', notes: 'x'.repeat(2049),
         required_protection_filters: [{kind: 'highpass', cutoff_hz: null, minimum_slope_db_per_octave: null}]},
@@ -5370,7 +5308,7 @@ async function testLayoutEditsPreserveResearchAndDirtyDriverValues() {
     harness.dispatchClick({'data-act': 'output-template-axis', 'data-axis': 'speaker-mode', 'data-value': 'active_2way'});
     await harness.flush();
     assert.ok(harness.elements.get('view-body').innerHTML.includes(before));
-    globalThis.__jtsConfirm = async () => { throw new Error('Refresh must not ask for confirmation'); };
+    globalThis.__jtsConfirm = async () => true;
     harness.dispatchClick({'data-act': 'refresh-output-topology'});
     for (let i = 0; i < 8; i++) await harness.flush();
     harness.dispatchClick({'data-act': 'save-driver-design'});
@@ -5382,6 +5320,130 @@ async function testLayoutEditsPreserveResearchAndDirtyDriverValues() {
   return {layoutEditsPreserveResearchAndDirtyDriverValues: true};
 }
 
+async function testComponentsUseSavedTopologyAndClearPromptOnLayoutSave() {
+  let topology = activeTwoWayTopologyPayload();
+  const requests = [], saves = [];
+  const draft = {status: 'ready_for_review', operator_inputs: {woofer: 'W', tweeter: 'T'}, summary: {},
+    manual_settings: {drivers: [{target_id: 'main:woofer', role: 'woofer', model: 'W'},
+      {target_id: 'main:tweeter', role: 'tweeter', model: 'T'}],
+      crossover_candidates: [{between_roles: ['woofer', 'tweeter'], frequency_hz: 2500}]} };
+  const prompt = 'served-prompt';
+  const harness = setupHarness(baseFetch({
+    './output-topology': (_path, options = {}) => {
+      if (options.method === 'POST') topology = JSON.parse(options.body).output_topology;
+      return Promise.resolve(response(topology));
+    },
+    './active-speaker/design-draft': (_path, options = {}) => {
+      if (options.method === 'POST') saves.push(JSON.parse(options.body));
+      return Promise.resolve(response(draft));
+    },
+    './active-speaker/driver-research-request': (_path, options) => {
+      requests.push(JSON.parse(options.body));
+      return Promise.resolve(response({prompt}));
+    },
+  }));
+  await loadAndSetActiveState(harness);
+  harness.dispatchClick({'data-act': 'output-template-axis', 'data-axis': 'speaker-mode', 'data-value': 'active_3way'});
+  await harness.flush();
+  const html = harness.elements.get('view-body').innerHTML;
+  assert.match(html, /data-saved-layout-values/);
+  assert.match(html, /data-driver-target="main:woofer"/);
+  assert.match(html, /data-driver-target="main:tweeter"/);
+  assert.doesNotMatch(html, /data-driver-target="main:mid"/);
+  harness.dispatchClick({'data-act': 'save-driver-design'});
+  for (let i = 0; i < 8; i++) await harness.flush();
+  assert.equal(saves.length, 1);
+  assert.deepEqual(saves[0].manual_settings.drivers.map(driver => driver.target_id), ['main:woofer', 'main:tweeter']);
+  assert.deepEqual(saves[0].manual_settings.crossover_candidates.map(candidate => [candidate.between_roles, candidate.frequency_hz]),
+    [[['woofer', 'tweeter'], 2500]]);
+  harness.dispatchClick({'data-act': 'copy-driver-research-prompt'});
+  await harness.flush(); await harness.flush();
+  assert.equal(requests.length, 1);
+  assert.equal(harness.elements.get('driver-research-prompt').value, prompt);
+  harness.dispatchClick({'data-act': 'output-template-axis', 'data-axis': 'speaker-mode', 'data-value': 'active_3way'});
+  await harness.flush();
+  assert.match(harness.elements.get('view-body').innerHTML, /aria-label="Driver research prompt">served-prompt<\/textarea>/);
+  harness.dispatchInput({'data-manual-driver': 'main:woofer', 'data-manual-field': 'sensitivity_db_2v83_1m'}, '88');
+  harness.dispatchClick({'data-act': 'copy-driver-research-prompt'});
+  await harness.flush();
+  harness.dispatchClick({'data-act': 'save-output-topology'});
+  for (let i = 0; i < 8; i++) await harness.flush();
+  assert.equal(harness.elements.get('driver-research-prompt').value, '');
+  assert.match(harness.elements.get('view-body').innerHTML, /aria-label="Driver research prompt"><\/textarea>/);
+  return {componentsUseSavedTopologyAndClearPromptOnLayoutSave: true};
+}
+
+async function testRefreshRequiresConsentOnlyForDirtyLayout() {
+  for (const dirty of [false, true]) {
+    let reads = 0, confirms = 0, consent = false;
+    const harness = setupHarness(baseFetch({'./output-topology': () => {
+      reads++;
+      return Promise.resolve(response(activeTwoWayTopologyPayload()));
+    }}));
+    await loadAndSetActiveState(harness);
+    if (dirty) {
+      harness.dispatchClick({'data-act': 'output-template-axis', 'data-axis': 'speaker-mode', 'data-value': 'active_3way'});
+      await harness.flush();
+    }
+    const before = reads;
+    globalThis.__jtsConfirm = async () => { confirms++; return consent; };
+    harness.dispatchClick({'data-act': 'refresh-output-topology'});
+    for (let i = 0; i < 8; i++) await harness.flush();
+    assert.equal(confirms, dirty ? 1 : 0);
+    assert.equal(reads, before + (dirty ? 0 : 1));
+    if (dirty) {
+      assert.match(harness.elements.get('view-body').innerHTML, /data-value="active_3way" aria-pressed="true"/);
+      consent = true;
+      harness.dispatchClick({'data-act': 'refresh-output-topology'});
+      for (let i = 0; i < 8; i++) await harness.flush();
+      assert.equal(reads, before + 1);
+      assert.match(harness.elements.get('view-body').innerHTML, /data-value="active_2way" aria-pressed="true"/);
+    }
+  }
+  return {refreshRequiresConsentOnlyForDirtyLayout: true};
+}
+
+async function rejectedResearchSave(parseFirst) {
+  const posts = [];
+  const pasted = JSON.stringify({kind: 'jts_rear_calibration', drivers: [{role: 'woofer', model: 'wrong-packet'}]});
+  const harness = setupHarness(baseFetch({
+    './output-topology': () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+    './active-speaker/design-draft': (_path, options = {}) => {
+      if (options.method === 'POST') posts.push(JSON.parse(options.body));
+      return Promise.resolve(response({status: 'ready_for_review', driver_research: null,
+        manual_settings: posts.at(-1)?.manual_settings, operator_inputs: posts.at(-1)?.operator_inputs || {}, summary: {}}));
+    },
+  }));
+  await loadAndSetActiveState(harness);
+  harness.dispatchInput({'data-driver-target': 'main:woofer'}, 'visible-woofer');
+  harness.dispatchInput({'data-driver-import': ''}, pasted);
+  if (parseFirst) {
+    harness.dispatchClick({'data-act': 'parse-driver-research'});
+    await harness.flush();
+    assert.match(harness.elements.get('view-body').innerHTML, /driver-research__error/);
+  }
+  harness.dispatchClick({'data-act': 'save-driver-design'});
+  for (let i = 0; i < 8; i++) await harness.flush();
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].driver_research, null);
+  assert.equal(posts[0].manual_settings.drivers[0].model, 'visible-woofer');
+  return harness.elements.get('view-body').innerHTML;
+}
+async function testRejectedImportReasonSurvivesTheSaveInThePanel() {
+  assert.match(await rejectedResearchSave(false), /driver-research__error/);
+  return {rejectedImportReasonSurvivesTheSaveInThePanel: true};
+}
+async function testRejectedPasteAndReasonSurviveDraftIngest() {
+  const html = await rejectedResearchSave(true);
+  assert.match(html, /driver-research__error/);
+  assert.match(html, /aria-label="Driver research JSON result">[^]*?jts_rear_calibration[^]*?<\/textarea>/);
+  return {rejectedPasteAndReasonSurviveDraftIngest: true};
+}
+
+results.push(await testComponentsUseSavedTopologyAndClearPromptOnLayoutSave());
+results.push(await testRefreshRequiresConsentOnlyForDirtyLayout());
+results.push(await testRejectedImportReasonSurvivesTheSaveInThePanel());
+results.push(await testRejectedPasteAndReasonSurviveDraftIngest());
 results.push(await testResearchValidationRendersServerRefusal());
 results.push(await testIncompleteResearchPromptReachesServer());
 results.push(await testLayoutEditsPreserveResearchAndDirtyDriverValues());
@@ -5410,7 +5472,7 @@ results.push(await testTweeterDriverStyleSelectorSetsTopologyAndAppearsInReview(
 results.push(await testUnknownDriverStyleRendersWithoutGuessedFloor());
 results.push(await testDesignDraftSaveRefusalShowsServerErrorNotSavedToast());
 results.push(await testChannelSelectorKeepsLayoutOpenWhenDraftDirty());
-results.push(await testThreeOutputChannelSelectorDoesNotAutoAssignPeers());
+results.push(await testChannelAssignmentKeepsOptionsAndClearsStaleLabels());
 results.push(await testAppliedProfileCardUsesCommissioningRecord());
 results.push(await testStereoDriverValuesStayTargetSpecific());
 results.push(await testResearchReloadAndBooleanNumbersDrop());

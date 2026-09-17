@@ -20,12 +20,14 @@ import urllib.request
 import wave
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, call
 
 import numpy as np
 import pytest
 
+from jasper.active_speaker import playback_route
 from jasper.active_speaker._common import MANUAL_DRIVER_FIELDS
 from jasper.active_speaker.driver_safety import DRIVER_SAFETY_FIELDS
 from jasper.active_speaker.driver_safety_prompt import _PROMPT_PROVENANCE_KEYS
@@ -2247,6 +2249,36 @@ def test_a_roleful_layout_on_a_dac_without_an_active_lane_is_refused(
     assert all(fragment in message for fragment in named_in_refusal)
     # Refused means refused: nothing was written.
     assert not topo_path.exists()
+
+
+@pytest.mark.parametrize("assigned,subwoofer_supported", [(False, True), (True, True), (True, False)])
+def test_layout_save_refuses_active_route_over_capacity(monkeypatch, tmp_path, caplog, assigned, subwoofer_supported):
+    path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    payload = _active_speaker_mono_topology_payload(protection_status="present")
+    payload["hardware"]["device_id"] = "dual_apple_usb_c_dac_4ch"
+    payload["hardware"]["physical_output_count"] = 4
+    payload["speaker_groups"] = [{
+        "id": side, "label": side, "kind": side, "mode": "active_3_way",
+        "channels": [{"role": role, "physical_output_index": index + offset if assigned and index + offset < 4 else None}
+                     for index, role in enumerate(("woofer", "mid", "tweeter"))],
+    } for side, offset in (("left", 0), ("right", 3))]
+    payload["routing"] = {"main_left_group_id": "left", "main_right_group_id": "right"}
+    if not subwoofer_supported:
+        sub_layout = _passive_stereo_with_sub_topology_payload()
+        payload.update({key: sub_layout[key] for key in ("speaker_groups", "routing")})
+    resolve = playback_route.resolve_output_layout
+    monkeypatch.setattr(playback_route, "resolve_output_layout", lambda topology, **kwargs:
+        replace(resolve(topology, **kwargs), subwoofer_supported=subwoofer_supported))
+    with pytest.raises(sound_active_speaker.OutputTopologyCapabilityBlocked):
+        sound_setup._save_output_topology_payload(payload)
+    _, refusal = _event_record(caplog, "sound.output_topology_save")
+    assert refusal["result"] == "blocked"
+    assert refusal["reason"] == ("active_playback_route_too_narrow" if subwoofer_supported
+                                 else "active_playback_subwoofer_not_supported")
+    assert int(refusal["required_active_output_count"]) == (6 if subwoofer_supported else 3)
+    assert int(refusal["transport_channel_count"]) == 4
+    assert not path.exists()
 
 
 def test_passive_layout_on_a_no_lane_dac_still_saves(monkeypatch, tmp_path: Path):

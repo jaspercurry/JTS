@@ -205,13 +205,9 @@ function pairRoleKey(pair) {
 }
 
 function outputTemplateKindFromAxes(layout, speakerMode, cardioid) {
-  if (layout !== 'mono' && layout !== 'stereo') return '';
-  if (speakerMode !== 'passive' &&
-      speakerMode !== 'active_2way' &&
-      speakerMode !== 'active_3way') {
-    return '';
-  }
-  return layout + '_' + (speakerMode === 'active_3way' && cardioid ? 'active_cardioid' : speakerMode);
+  if (['mono', 'stereo'].indexOf(layout) < 0 ||
+      ['passive', 'active_2way', 'active_3way'].indexOf(speakerMode) < 0) return '';
+  return layout + '_' + (speakerMode === 'active_2way' && cardioid ? 'active_cardioid' : speakerMode);
 }
 function outputTemplateDefinition(kind) {
   var match = /^(mono|stereo)_(passive|active_2way|active_3way|active_cardioid)$/.exec(kind);

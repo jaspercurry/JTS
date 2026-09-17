@@ -736,9 +736,6 @@ function crossoverAlignmentDetailText(crossover, roles) {
 // the two cannot drift.
 function extractDriverResearchJson(text) {
   var raw = String(text == null ? '' : text).trim();
-  // Strictly additive: the untouched paste is tried first, so anything that
-  // parses today still parses to exactly the same value. Only a paste that
-  // already fails reaches the recovery candidates.
   var candidates = [raw];
   var fenced = raw.match(/```[^\S\n]*[A-Za-z0-9_-]*[^\S\n]*\n([\s\S]*?)```/);
   if (fenced) candidates.push(fenced[1].trim());
@@ -751,7 +748,8 @@ function extractDriverResearchJson(text) {
   var lastError = null;
   for (var i = 0; i < candidates.length; i++) {
     try {
-      return JSON.parse(candidates[i]);
+      var payload = JSON.parse(candidates[i]);
+      return payload && payload.kind === 'jts_active_crossover_driver_research' ? payload : null;
     } catch (e) {
       lastError = e;
     }

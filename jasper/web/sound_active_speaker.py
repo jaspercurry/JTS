@@ -230,40 +230,43 @@ def _output_topology_payload() -> dict[str, Any]:
 
 
 def _refuse_undrivable_layout(topology: OutputTopology) -> None:
-    """Refuse a layout this box's DAC can never drive, before anything is saved.
-
-    A roleful (crossover / protected / subwoofer) layout on a DAC that declares
-    no active outputd lane leaves CamillaDSP playing into the active loopback
-    lane while outputd captures the passive one: structurally silent with every
-    daemon reporting healthy, and unrepairable downstream.
-    """
-
+    """Refuse layouts outside the DAC's declared active route capacity."""
     from jasper.active_speaker.playback_route import (
-        ActiveLaneCapabilityGap,
-        active_lane_capability_gap,
+        ActiveLaneCapabilityGap, UnrecognizedDacProfile,
+        active_lane_capability_gap, active_playback_route_capability,
     )
 
     gap = active_lane_capability_gap(topology)
-    # An unrecognized DAC profile is not proof the layout is undrivable — see
-    # active_lane_capability_gap's docstring — so it must not block the save.
-    if not isinstance(gap, ActiveLaneCapabilityGap):
+    if isinstance(gap, UnrecognizedDacProfile):
+        return
+    route = active_playback_route_capability(topology)
+    if isinstance(gap, ActiveLaneCapabilityGap):
+        reason = "dac_no_active_lane"
+        message = (
+            f"{gap.device_label} does not support the active speaker lane. Active "
+            "crossover and subwoofer layouts need an active-capable DAC; choose a "
+            "passive speaker layout for this hardware (passive sends full-range "
+            "audio to every output — only safe when the speaker has its own "
+            "built-in passive crossover), or attach an active-capable DAC."
+        )
+    elif not route.fits_required_outputs:
+        reason = "active_playback_route_too_narrow"
+        message = (f"This install can drive {route.transport_channel_count} active outputs, "
+                   f"but this layout needs {route.required_active_output_count}.")
+    elif route.subwoofer_group_count and not route.subwoofer_supported:
+        reason = "active_playback_subwoofer_not_supported"
+        message = "This install cannot drive a subwoofer output."
+    else:
         return
     log_event(
-        logger,
-        "sound.output_topology_save",
-        level=logging.WARNING,
-        result="blocked",
-        reason="dac_no_active_lane",
-        device_id=gap.device_id,
+        logger, "sound.output_topology_save", level=logging.WARNING,
+        result="blocked", reason=reason, device_id=topology.hardware.device_id,
         topology_id=topology.topology_id,
+        required_active_output_count=route.required_active_output_count,
+        transport_channel_count=route.transport_channel_count,
+        subwoofer_supported=route.subwoofer_supported,
     )
-    raise OutputTopologyCapabilityBlocked(
-        f"{gap.device_label} does not support the active speaker lane. Active "
-        "crossover and subwoofer layouts need an active-capable DAC; choose a "
-        "passive speaker layout for this hardware (passive sends full-range "
-        "audio to every output — only safe when the speaker has its own "
-        "built-in passive crossover), or attach an active-capable DAC."
-    )
+    raise OutputTopologyCapabilityBlocked(message)
 
 
 def _refuse_duplicate_physical_outputs(topology: OutputTopology) -> None:
