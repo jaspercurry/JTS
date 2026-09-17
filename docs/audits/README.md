@@ -20,7 +20,7 @@ the tracking issue for anything current.
 | 2026-09-05 (voice) | `8777cff19` | voice loop (wake→turn→TTS) audit | ledger deleted in #4784 | #4777–#4783 (its open rows) | not committed | superseded |
 | 2026-09-09 | `53a883808` | whole-repo deep audit, 114 agents | [2026-09-09-deep-audit.md](2026-09-09-deep-audit.md) | #4775 | release tag [`audit-evidence-2026-09-09`](https://github.com/jaspercurry/JTS/releases/tag/audit-evidence-2026-09-09) | current baseline |
 | 2026-09-11 | `c364bce19` | tech-debt paydown lane — 165 open issues across the 3 prior audits re-verified, then executed across 5 waves | [2026-09-11-tech-debt-lane.md](2026-09-11-tech-debt-lane.md) | `#4939` | `https://github.com/jaspercurry/JTS/releases/tag/tech-debt-lane-evidence-2026-09-11` | landing report |
-| 2026-09-17 | `25d049f37` | speaker setup path investigation (`/sound/speaker/`: topology → research → safety → preview → apply → boot), code-only, 5 subagents | [2026-09-17-speaker-setup-investigation.md](2026-09-17-speaker-setup-investigation.md) | TRACKING_PLACEHOLDER | none (code-only) | open findings |
+| 2026-09-17 | `25d049f37` | speaker setup path investigation (`/sound/speaker/`: topology → research → safety → preview → apply → boot), code-only, 5 subagents | [2026-09-17-speaker-setup-investigation.md](2026-09-17-speaker-setup-investigation.md) | #5270 (#5271–#5285) | none (code-only) | open findings |
 
 ## How to run the next one
 

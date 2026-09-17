@@ -3,7 +3,7 @@
 - **Audited SHA:** `25d049f37` (`origin/main`, merge of #5265). Frozen report
   under [ADR-0284](../adr/0284-audits-are-frozen-reports-and-issues-are-the-ledger.md);
   findings that are not fixed inline are filed as `audit` +
-  `audit-2026-09-17` issues (list at the end).
+  `audit-2026-09-17` issues (list at the end; tracking issue #5270).
 - **Scope:** the path from a blank speaker to a playing speaker on
   `/sound/speaker/`: output topology, design draft, driver research loop,
   driver safety profile, crossover preview, baseline profile apply, the staged
@@ -1048,7 +1048,25 @@ contract a rewriter needs (section 5).
 
 ## Appendix — issues filed
 
-One `audit` + `audit-2026-09-17` issue per finding not fixed inline; the
-tracking issue lists them. Numbers are filled in below at filing time.
+One `audit` + `audit-2026-09-17` issue per finding not fixed inline (no
+product code was edited in this run, so every finding is filed).
 
-ISSUES_PLACEHOLDER
+Tracking issue: #5270. Order is the section 10 rank.
+
+| Rank | Issue | Finding |
+|---|---|---|
+| 1 | #5271 | applied baseline is not the boot graph; the identity conjunct parks the box after reboot (sections 4, 7) |
+| 2 | #5272 | dead summed-test / commission-tone lane (section 8) |
+| 3 | #5273 | routes the page never calls (section 5) |
+| 4 | #5274 | research-request fingerprint coupling (section 6) |
+| 5 | #5275 | revision / hardware-identity echo tokens; park on a no-op save (sections 4, 5) |
+| 6 | #5276 | one driver vocabulary (section 1a) |
+| 7 | #5277 | compute the safety profile on read; measurement-only fields block Apply (section 6) |
+| 8 | #5278 | persisted crossover preview and its stale states; driver-range blocker (section 1c) |
+| 9 | #5279 | client re-derivations, dead states, dead confirms, validator mirrors (sections 2, 8) |
+| 10 | #5280 | tweeter-protection bookkeeping auto-writers (section 3b) |
+| 11 | #5281 | verified dead server code and four hypothetical gates (section 8) |
+| 12 | #5282 | one fingerprint helper (section 1b) |
+| 13 | #5283 | cardioid axes rendering (section 1d) |
+| 14 | #5284 | tests: source-text tests, prose asserts, duplicate altitudes, missing pins (section 8) |
+| — | #5285 | ADR-0283 topology stamps carry no removal condition (section 4c) |
