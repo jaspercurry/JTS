@@ -211,7 +211,14 @@ def test_apply_posts_the_named_fingerprint_when_it_is_the_live_one(
 def test_reset_composes_and_applies_the_selected_timing_scope(
     keep_timing, monkeypatch, capsys, tmp_path, isolated_candidate_bank,
 ):
+    """saved_base() serves the one pre-apply read (its own binding in
+    prescription_document); round.py's post-apply timing read is a second,
+    separate read (baseline_profile's binding). A single-item side_effect on
+    each binding fails loudly if either is read again, pinning that the
+    compose step no longer hides a third read through the unmonitored one."""
     from jasper.active_speaker import baseline_profile, candidate_bank
+    from jasper.active_speaker.crossover_v2 import prescription_document as prescription_document_mod
+    from jasper.cli import crossover_prescriber
     from jasper import output_topology
 
     topology, _ = _seed_baseline_apply_environment(monkeypatch, tmp_path)
@@ -226,9 +233,17 @@ def test_reset_composes_and_applies_the_selected_timing_scope(
         if trims_db else {}
     )}
     persisted = {"timing": timing} if keep_timing else {}
-    load_applied = Mock(side_effect=[applied, persisted])
-    monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", load_applied)
+    pre_apply_read = Mock(side_effect=[applied])
+    post_apply_read = Mock(side_effect=[persisted])
+    monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state", pre_apply_read)
+    monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", post_apply_read)
     monkeypatch.setattr(output_topology, "load_output_topology_strict", lambda: topology)
+    real_compose = crossover_prescriber.compose_prescription_document
+    composed_with: dict = {}
+    def _spy_compose(document, *, base, evidence=None, base_profile=None):
+        composed_with["base_profile"] = base_profile
+        return real_compose(document, base=base, evidence=evidence, base_profile=base_profile)
+    monkeypatch.setattr(crossover_prescriber, "compose_prescription_document", _spy_compose)
 
     opener = _opener()
     code, body = _run(["reset", *(["--keep-timing"] if keep_timing else [])],
@@ -241,7 +256,9 @@ def test_reset_composes_and_applies_the_selected_timing_scope(
     assert body["timing"] == {"saved": keep_timing,
                               "provenance": "measured" if keep_timing else None}
     assert body["trims_db"] == trims_db
-    assert load_applied.call_count == 2
+    assert pre_apply_read.call_count == 1
+    assert post_apply_read.call_count == 1
+    assert composed_with["base_profile"] is applied
     assert [json.loads(request.data) for request in opener.posts()] == [
         {"expected_candidate_fingerprint": candidate.fingerprint},
     ]

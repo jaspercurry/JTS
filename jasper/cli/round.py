@@ -220,28 +220,24 @@ def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
 def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
     from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: reset-only state
     from jasper.active_speaker.candidate_bank import (  # lazy: reset-only bank
-        BankedCandidate, CandidateBankRefusal, publish_authored_candidate,
+        CandidateBankRefusal, publish_authored_candidate,
     )
-    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: reset-only composition
     from jasper.cli.crossover_prescriber import (  # lazy: reset-only prescription stack imports NumPy
         compose_prescription_document, reset_prescription_document,
     )
-    from jasper.active_speaker.crossover_v2.prescription_document import PrescriptionDocumentRefused  # lazy: reset-only document
-    from jasper.active_speaker.state_paths import baseline_profile_state_path  # lazy: reset-only base
-    from jasper.output_topology import load_output_topology_strict  # lazy: reset-only topology
+    from jasper.active_speaker.crossover_v2.prescription_document import (  # lazy: reset-only document
+        PrescriptionDocumentRefused, saved_base,
+    )
     from jasper.audio_measurement.bundles import BundleError  # lazy: reset-only bank writer
 
     try:
-        applied = load_applied_baseline_profile_state() or {}
-        base = candidate_from_applied_profile(load_output_topology_strict(), applied)
+        base, applied = saved_base()
         corrections = applied.get("corrections") or {}
         trims_db = {role: values["gain_db"] for role, values in corrections.items()}
         document = reset_prescription_document(
             keep_timing=args.keep_timing, trims_db=trims_db,
         )
-        candidate = compose_prescription_document(
-            document, base=BankedCandidate(base, "", "", baseline_profile_state_path()),
-        )
+        candidate = compose_prescription_document(document, base=base, base_profile=applied)
         published = publish_authored_candidate(candidate)
     except PrescriptionDocumentRefused as exc:
         print(json.dumps(exc.to_dict(), sort_keys=True))
