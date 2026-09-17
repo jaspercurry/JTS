@@ -1261,7 +1261,7 @@ mod tests {
             ..test_config()
         });
         let before = parse_snapshot_json(&state.snapshot_json());
-        assert!(before["dac"].get("channels").is_none());
+        assert_eq!(before["dac"]["channels"], 3);
         assert_eq!(before["shm_ring"]["channels"], 3);
         state.set_dac_channels(4);
         state.mark_shm_ring_wire(SampleFormat::S32Le, 3);
@@ -1308,6 +1308,7 @@ mod tests {
             capture(&state);
             state.latch_sched_policy("fifo".to_string());
             state.set_dac_format(SampleFormat::S24_3Le);
+            state.set_dac_channels(4);
             state.mark_period(
                 IoCounters {
                     content_frames_read: 8192,
@@ -1409,7 +1410,7 @@ mod tests {
             capture(&state);
         }
         assert!(expected.next().is_none());
-        assert_eq!(hash, 13_254_872_796_562_678_660);
+        assert_eq!(hash, 2_334_067_162_804_135_790);
     }
 
     #[test]
@@ -1928,11 +1929,13 @@ mod tests {
         // owner).
         let synthetic = NegotiatedPcm {
             sample_rate: 48_000,
+            channels: 2,
             period_frames: 1024,
             buffer_frames: 1024,
         };
         let dac = NegotiatedPcm {
             sample_rate: 48_000,
+            channels: 2,
             period_frames: 1024,
             buffer_frames: 3072,
         };
