@@ -28,7 +28,6 @@ from pathlib import Path
 import pytest
 
 from jasper.web import (
-    airplay_setup,
     bluetooth_setup,
     chat_setup,
     correction_setup,
@@ -447,9 +446,6 @@ _WAKE_CORPUS_TOKEN = "wake-corpus-test-token"
 _VALID_CSRF_TOKEN = "A" * 43
 
 _TABLED_WIZARD_FACTORIES = {
-    "airplay_setup": lambda: airplay_setup._make_handler(
-        {"state_path": str(_SCRATCH / "airplay.env")},
-    ),
     "bluetooth_setup": lambda: bluetooth_setup._make_handler(),
     "chat_setup": chat_setup._make_handler,
     "correction_setup": lambda: correction_setup._make_handler_class(
@@ -1410,7 +1406,6 @@ _PAGE_MODULE = {
     "/sources/": "sources_setup",
     "/spotify/": "spotify_setup",
     "/bluetooth/": "bluetooth_setup",
-    "/airplay/": "airplay_setup",
     "/sound/eq/": "sound_setup",
     "/sound/speaker/": "sound_setup",
     "/sound/output/": "sound_setup",

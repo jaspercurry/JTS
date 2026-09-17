@@ -558,10 +558,7 @@ code = [
   "jasper/web/chrome.py",
   "jasper/web/sources_setup.py",
   "jasper/web/bluetooth_setup.py",
-  "jasper/web/airplay_setup.py",
   "jasper/web/speaker_setup.py",
-  "jasper/airplay_mode.py",
-  "jasper/cli/airplay_mode.py",
   "jasper/cli/doctor/renderers.py",
   "jasper/cli/doctor/usbsink.py",
   "jasper/control/audio_*.py",
@@ -999,7 +996,6 @@ code = [
   "jasper/control/camilla_recover_state.py",
   "jasper/control/park_record.py",
   "jasper/web/system_setup.py",
-  "jasper/web/airplay_setup.py",
   "jasper/platform/systemd.py",
   "deploy/journald/**",
   "deploy/rpi-swap/**",
@@ -1029,7 +1025,7 @@ docs = [
   "AGENTS.md",
 ]
 requires_docs_when = [
-  "Watchdog, OOM, restart, dashboard health, AirPlay mode/health, or systemd unit resilience behavior changes.",
+  "Watchdog, OOM, restart, dashboard health, AirPlay conf render/health, or systemd unit resilience behavior changes.",
   "Logging verbosity, the debug-mode toggle, or log/journald volume behavior changes.",
 ]
 verification = [
