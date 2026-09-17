@@ -11,12 +11,10 @@ YAML, no config load, no playback authority, and no sound.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 from typing import Any, Mapping
 
-from jasper.output_topology import OutputTopology, OutputTopologyError
+from jasper.output_topology import OutputTopology, OutputTopologyError, canonical_fingerprint
 from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, issue as _issue
 from .driver_protection import (
     LOW_LIMIT_DECLARED,
@@ -72,8 +70,7 @@ def crossover_preview_fingerprint(
             "driver_research": design_draft.get("driver_research"),
             "manual_settings": _manual_crossover_settings(design_draft),
         }
-        raw = json.dumps(design, sort_keys=True, separators=(",", ":"), default=str)
-        design_fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        design_fingerprint = canonical_fingerprint(design)
     source = _as_mapping(preview.get("source")) or {}
     stable = {
         "artifact_schema_version": preview.get("artifact_schema_version"),
@@ -97,8 +94,7 @@ def crossover_preview_fingerprint(
         },
         "safety": preview.get("safety"),
     }
-    raw = json.dumps(stable, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    return canonical_fingerprint(stable)
 
 
 def _finite_positive(value: Any) -> float | None:
