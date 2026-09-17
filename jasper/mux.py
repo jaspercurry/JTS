@@ -91,7 +91,6 @@ from jasper.log_event import log_event
 
 from . import librespot_state, mux_mode_persistence
 from .airplay_session import AirplaySessionCleanup
-from .assistant_volume import volume_context_publisher_for_runtime
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .camilla import primary_controller
 from .control import restart_broker
@@ -111,11 +110,7 @@ from .source_state import (
     usbsink_direct_streaming,
 )
 from .spotify_oauth import resolved_spotify_redirect_uri
-from .volume_coordinator import VolumeCoordinator
-from .volume_persistence import (
-    VolumePersistence,
-    configured_path as volume_state_path,
-)
+from .volume_coordinator import build_volume_coordinator
 from .logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -1037,27 +1032,17 @@ class Mux:
     def _ensure_volume_coordinator(self) -> Any:
         if self._volume_coordinator is not None:
             return self._volume_coordinator
-        camilla = primary_controller()
-        persistence = VolumePersistence(volume_state_path())
-        backend = RendererClient(librespot_state_path=self._librespot_state_path)
-        coordinator = VolumeCoordinator(
-            camilla=camilla,
-            persistence=persistence,
-            backend=backend,
+        self._volume_coordinator = build_volume_coordinator(
+            camilla=primary_controller(),
+            backend=RendererClient(librespot_state_path=self._librespot_state_path),
             spotify_router=self._ensure_spotify_router(),
-            spotify_device_name=speaker_runtime_name(),
             duck_active_probe=_make_duck_active_probe(
                 os.environ.get(
                     "JASPER_VOICE_CONTROL_SOCKET", "/run/jasper/voice.sock",
                 ),
             ),
-            volume_context_publisher=volume_context_publisher_for_runtime(
-                os.environ,
-            ),
         )
-        coordinator.load_persisted_level()
-        self._volume_coordinator = coordinator
-        return coordinator
+        return self._volume_coordinator
 
     async def _transition_to_source_locked(
         self,

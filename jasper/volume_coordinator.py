@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
@@ -42,9 +43,11 @@ from uuid import uuid4
 from .assistant_volume import (
     EffectiveVolumeContext,
     VolumeContextPublisher,
+    volume_context_publisher_for_runtime,
     volume_context_stamp_boot_ns,
 )
 from .assistant_loudness import tts_envelope_lufs_for_level
+from .identity.speaker_name import runtime_name as speaker_runtime_name
 from .log_event import log_event
 from .music_sources import (
     MUSIC_SOURCE_VALUES,
@@ -68,6 +71,7 @@ from .volume_scales import native_to_listening_level
 from .volume_state import SourceHandoff, VolumeState, _OutboundStamp
 from .volume_persistence import (
     VolumePersistence,
+    configured_path as volume_state_path,
     percent_to_db,
     regress_listening_level_if_stale,
 )
@@ -2561,3 +2565,25 @@ class VolumeCoordinator:
             },
         )
         return bool(ok)
+
+
+def build_volume_coordinator(
+    *,
+    camilla: "CamillaController",
+    backend: "RendererClient",
+    spotify_router: Any | None = None,
+    duck_active_probe: CamillaLockProbe | None = None,
+) -> VolumeCoordinator:
+    """Assemble a coordinator, persisted level loaded, around the actuators
+    whose acquisition differs per process; the rest is the same everywhere."""
+    coordinator = VolumeCoordinator(
+        camilla=camilla,
+        persistence=VolumePersistence(volume_state_path()),
+        backend=backend,
+        spotify_router=spotify_router,
+        spotify_device_name=speaker_runtime_name(),
+        duck_active_probe=duck_active_probe,
+        volume_context_publisher=volume_context_publisher_for_runtime(os.environ),
+    )
+    coordinator.load_persisted_level()
+    return coordinator
