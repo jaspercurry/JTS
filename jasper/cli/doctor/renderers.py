@@ -755,7 +755,7 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
         )
     if 'plughw:Loopback' in line:
         return CheckResult(
-            label, "ok",
+            label, "fail",
             "plughw:Loopback,0,0 — stale pre-fan-in wiring. Redeploy "
             f"to render {expected_device}.",
             reason=REASON_SHAIRPORT_LEGACY_PLUGHW,
