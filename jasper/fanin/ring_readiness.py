@@ -66,7 +66,6 @@ RingGate = Callable[[], tuple[bool, str]]
 class _EnvSnapshot:
     path: Path
     text: str
-    existed: bool
 
 
 @dataclass(frozen=True)
@@ -82,9 +81,9 @@ class FaninRingSlotsResolution:
 def _read_snapshot(path: str | Path) -> _EnvSnapshot:
     env_path = Path(path)
     try:
-        return _EnvSnapshot(env_path, env_path.read_text(encoding="utf-8"), True)
+        return _EnvSnapshot(env_path, env_path.read_text(encoding="utf-8"))
     except OSError:
-        return _EnvSnapshot(env_path, "", False)
+        return _EnvSnapshot(env_path, "")
 
 
 # outputd's own declarations, from the reconciler-owned outputd.env. The FORMAT

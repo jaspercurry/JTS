@@ -615,21 +615,15 @@ def status(
 
 
 __all__ = [
-    "ACTIVATION_PROOF_DIR",
     "EnhancedAecError",
-    "FEATURE_ID",
     "INSTALL_LOCK_PATH",
     "INSTALLED_MARKER_PATH",
     "INTENT_PATH",
-    "JOB_STATE_PATH",
     "SCHEMA_VERSION",
     "SOURCE_ROOT",
-    "STATE_LOCK_PATH",
-    "TARGET_MANIFEST_NAME",
     "VENV_ROOT",
     "desired_fingerprint",
     "install_profile_supports_enhanced_aec",
-    "installed_v2_extensions",
     "parse_target_manifest",
     "read_installed_marker",
     "read_intent",

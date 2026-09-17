@@ -75,7 +75,6 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "CONFIG_FILE_MODE",
-    "SHARED_LOCK_MODE",
     "advisory_file_lock",
     "advisory_file_lock_async",
     "atomic_write_bytes",

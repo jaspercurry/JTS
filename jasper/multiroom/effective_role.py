@@ -217,7 +217,6 @@ def effective_follower_leader_addr(
 
 __all__ = [
     "FOLLOWER_STATUS_FILE",
-    "BOOT_ID_FILE",
     "MAX_EFFECTIVE_ROLE_STATUS_BYTES",
     "MAX_BOOT_ID_BYTES",
     "effective_follower_leader_addr",
