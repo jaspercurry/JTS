@@ -43,7 +43,6 @@ from jasper.output_topology import (
     new_topology_draft,
     repin_composite_child_serials,
     save_output_topology,
-    set_channel_protection_status,
     clear_topology_fingerprint_stamp,
     read_topology_fingerprint_stamp,
     topology_config_fingerprint,
@@ -315,11 +314,11 @@ def test_direct_channel_construction_requires_explicit_protection_state() -> Non
     channel = SpeakerChannel(
         role="tweeter",
         protection_required=True,
-        protection_status="required_missing",
+        protection_status="absent",
     )
 
     assert channel.protection_required is True
-    assert channel.protection_status == "required_missing"
+    assert channel.protection_status == "absent"
 
 
 def test_persisted_status_hint_cannot_override_derived_status() -> None:
@@ -338,81 +337,30 @@ def test_persisted_status_hint_cannot_override_derived_status() -> None:
     assert topology.to_dict()["status"] == "draft"
 
 
-def test_tweeter_protection_status_can_be_marked_present() -> None:
-    topology = _topology(
-        groups=[
-            {
-                "id": "mono",
-                "label": "Mono speaker",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {"role": "woofer", "physical_output_index": 0},
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "required_missing",
-                    },
-                ],
-            }
+@pytest.mark.parametrize("stored, expected", [
+    ("present", "present"), ("absent", "absent"),
+    ("required_missing", "absent"), ("software_guard_requested", "absent"),
+    ("not_required", "absent"), ("unknown", "absent"),
+])
+def test_stored_tweeter_protection_loads_as_declaration(tmp_path, stored, expected):
+    raw = _topology(groups=[{
+        "id": "mono", "label": "Mono", "kind": "mono", "mode": "active_2_way",
+        "channels": [
+            {"role": "woofer", "physical_output_index": 0},
+            {"role": "tweeter", "physical_output_index": 1},
         ],
-        routing={"mono_group_id": "mono"},
-    )
+    }]).to_dict()
+    raw["speaker_groups"][0]["channels"][1]["protection_status"] = stored
+    path = tmp_path / "topology.json"
+    path.write_text(json.dumps(raw))
+    before = path.read_bytes()
 
-    blocked = topology.evaluation()
-    updated = set_channel_protection_status(
-        topology,
-        speaker_group_id="mono",
-        role="tweeter",
-        protection_status="present",
-    )
+    loaded = load_output_topology_strict(path)
 
-    assert "tweeter_protection_unverified" in {
-        issue["code"] for issue in blocked["blockers"]
-    }
-    tweeter = updated.speaker_groups[0].channels[1]
-    assert tweeter.protection_required is True
-    assert tweeter.protection_status == "present"
-    assert tweeter.startup_muted is True
-    assert "tweeter_protection_unverified" not in {
-        issue["code"] for issue in updated.evaluation()["blockers"]
-    }
-
-
-def test_software_guard_request_is_warning_not_topology_blocker() -> None:
-    topology = _topology(
-        groups=[
-            {
-                "id": "mono",
-                "label": "Mono speaker",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {"role": "woofer", "physical_output_index": 0},
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 1,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "software_guard_requested",
-                    },
-                ],
-            }
-        ],
-        routing={"mono_group_id": "mono"},
-    )
-
-    evaluation = topology.evaluation()
-
-    assert evaluation["status"] == "valid"
-    assert "tweeter_software_guard_requested" in {
-        issue["code"] for issue in evaluation["warnings"]
-    }
-    assert "tweeter_software_guard_requested" not in {
-        issue["code"] for issue in evaluation["blockers"]
-    }
+    assert loaded.speaker_groups[0].channels[1].protection_status == expected
+    assert loaded.status == "valid"
+    assert loaded.schema_version == 1
+    assert path.read_bytes() == before
 
 
 def test_clock_domain_report_records_single_device_boundary() -> None:
@@ -720,40 +668,6 @@ def test_posted_human_output_label_is_rederived_from_hardware() -> None:
 
     assert channel["physical_output_index"] == 0
     assert channel["human_output_label"] == "DAC output 1"
-
-
-def test_active_two_way_topology_requires_tweeter_protection() -> None:
-    topology = _topology(groups=[
-        {
-            "id": "left",
-            "label": "Left active speaker",
-            "kind": "left",
-            "mode": "active_2_way",
-            "channels": [
-                {
-                    "role": "woofer",
-                    "physical_output_index": 0,
-                    "identity_verified": True,
-                },
-                {
-                    "role": "tweeter",
-                    "physical_output_index": 1,
-                    "identity_verified": True,
-                    "startup_muted": True,
-                    "protection_required": True,
-                    "protection_status": "unknown",
-                },
-            ],
-        }
-    ])
-
-    evaluation = topology.evaluation()
-
-    assert evaluation["status"] == "blocked"
-    assert evaluation["safety"]["requires_tweeter_protection"] is True
-    assert "tweeter_protection_unverified" in {
-        issue["code"] for issue in evaluation["blockers"]
-    }
 
 
 def test_stereo_plus_subwoofer_topology_tracks_sub_routes() -> None:

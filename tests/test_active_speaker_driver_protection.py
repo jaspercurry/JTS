@@ -38,18 +38,18 @@ def test_high_frequency_protection_requires_highpass_band_limit() -> None:
     missing = driver_protection_payload(
         "tweeter",
         driver_style="ribbon_tweeter",
-        protection_status="software_guard_requested",
+        protection_status="absent",
     )
     blocked = driver_protection_payload(
         "tweeter",
         driver_style="ribbon_tweeter",
-        protection_status="software_guard_requested",
+        protection_status="absent",
         band_limit={"type": "highpass", "highpass_hz": 3000},
     )
     allowed = driver_protection_payload(
         "tweeter",
         driver_style="ribbon_tweeter",
-        protection_status="software_guard_requested",
+        protection_status="absent",
         band_limit={"type": "highpass", "highpass_hz": 5000},
     )
 

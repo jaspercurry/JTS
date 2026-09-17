@@ -42,7 +42,7 @@ def mono_output_topology(
     identity_verified: bool = True,
     tweeter_verified: bool | None = None,
     tweeter_output: int | None = None,
-    protection_status: str = "software_guard_requested",
+    protection_status: str = "absent",
     topology_id: str = "bench_mono",
     topology_name: str = "Bench mono cabinet",
     group_label: str = "Mono cabinet",

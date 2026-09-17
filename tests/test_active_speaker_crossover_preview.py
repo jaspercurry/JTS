@@ -620,12 +620,10 @@ def test_session_start_refuses_a_blocked_declaration_without_writes(tmp_path, mo
     topology_path = tmp_path / "topology.json"
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(draft_path))
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    draft = _draft(
-        topology=mono_output_topology(identity_verified=False, protection_status="unknown"),
-        research=_research(),
-    )
+    topology = mono_output_topology(tweeter_output=0)
+    draft = _draft(topology=topology, research=_research())
     draft_path.write_text(json.dumps(draft))
-    topology_path.write_text(json.dumps(mono_output_topology(protection_status="unknown").to_dict()))
+    topology_path.write_text(json.dumps(topology.to_dict()))
     before = {path: path.read_bytes() for path in tmp_path.iterdir()}
     assert build_crossover_preview(draft)["status"] == "blocked"
     with pytest.raises(CrossoverV2Refused):

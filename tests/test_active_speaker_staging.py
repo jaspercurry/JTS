@@ -923,44 +923,21 @@ def test_stage_protected_startup_config_uses_outputd_active_lane_for_dual_apple(
     )
 
 
-def test_stage_protected_startup_config_blocks_missing_tweeter_protection(
+def test_stage_without_physical_cap_keeps_software_highpass(
     tmp_path: Path,
 ) -> None:
     out = tmp_path / "active_staged.yml"
     meta = tmp_path / "active_staged.json"
 
     payload = stage_protected_startup_config(
-        _topology(protection_status="required_missing"),
+        _topology(protection_status="absent"),
         config_path=out,
         metadata_path=meta,
         validate=_valid_config,
         created_at="2026-06-03T12:00:00Z",
     )
-
-    assert payload["status"] == "blocked"
-    assert out.exists() is False
-    assert "tweeter_protection_required" in {
-        issue["code"] for issue in payload["issues"]
-    }
-    assert payload["config"]["validation"]["status"] == "skipped"
-
-
-def test_stage_protected_startup_config_allows_software_guard_request_no_load_candidate(
-    tmp_path: Path,
-) -> None:
-    out = tmp_path / "active_staged.yml"
-    meta = tmp_path / "active_staged.json"
-
-    payload = stage_protected_startup_config(
-        _topology(protection_status="software_guard_requested"),
-        config_path=out,
-        metadata_path=meta,
-        validate=_valid_config,
-        created_at="2026-06-03T12:00:00Z",
-    )
-    text = out.read_text(encoding="utf-8")
+    graph = yaml_lib.safe_load(out.read_text(encoding="utf-8"))
     loaded = load_staged_startup_config(metadata_path=meta)
-    codes = {issue["code"]: issue["severity"] for issue in payload["issues"]}
     guard_gate = next(
         gate for gate in payload["required_gates"]
         if gate["id"] == "software_tweeter_guard_evidence"
@@ -973,14 +950,15 @@ def test_stage_protected_startup_config_allows_software_guard_request_no_load_ca
     assert payload["software_guard"]["no_playback"] is True
     assert all(payload["software_guard"]["checks"].values())
     assert guard_gate["passed"] is True
-    assert codes == {"software_tweeter_guard_requested": "warning"}
-    assert "as_tweeter_protective_hp" in text
-    # Single-audio-path commissioning isolates per *physical output*: the tweeter
-    # (mono 2-way output index 1) is muted by its per-output commission mute, and
-    # the per-role startup mute is gone. Protective HP + limiter still wrap it.
-    assert "as_out1_commission_mute" in text
-    assert "as_tweeter_startup_mute" not in text
-    assert "as_tweeter_startup_limiter" in text
+    assert graph["filters"]["as_tweeter_protective_hp"] == {
+        "type": "BiquadCombo",
+        "parameters": {"type": "LinkwitzRileyHighpass", "freq": 5000.0, "order": 4},
+    }
+    guard_chain = next(step["names"] for step in graph["pipeline"]
+                       if step["type"] == "Filter" and step["channels"] == [1]
+                       and "as_tweeter_protective_hp" in step["names"])
+    assert "as_tweeter_startup_limiter" in guard_chain
+    assert graph["filters"]["as_out1_commission_mute"]["parameters"]["mute"] is True
     assert loaded["status"] == "staged"
     assert loaded["software_guard"]["passed"] is True
 
@@ -1018,7 +996,7 @@ def test_stage_protected_startup_config_blocks_incomplete_software_guard_evidenc
         corrupt_tweeter_mute,
     )
     payload = stage_protected_startup_config(
-        _topology(protection_status="software_guard_requested"),
+        _topology(protection_status="absent"),
         config_path=tmp_path / "active_staged.yml",
         metadata_path=tmp_path / "active_staged.json",
         validate=_valid_config,

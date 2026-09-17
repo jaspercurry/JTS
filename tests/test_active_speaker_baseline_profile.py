@@ -302,10 +302,10 @@ def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):
     preview = build_crossover_preview(draft)
     topology = OutputTopology.from_mapping(draft["topology"])
     source = baseline_profile_mod._source_payload(topology, draft, preview, {})
-    old_fingerprint = "5faa7123f06913da9dc9f497bfa595b8659b8d050a34dc3e80a3a2a7abed15e9"
-    assert source["crossover_preview_fingerprint"] == old_fingerprint
+    fingerprint = "8f7a5f3298b042a1ac764eacff37e48c8b11c31b56b51dbb784d9497382b040f"
+    assert source["crossover_preview_fingerprint"] == fingerprint
     monkeypatch.setattr(driver_base_trim, "load_base_trim", lambda **kw: {
-        "declaration_fingerprint": old_fingerprint,
+        "declaration_fingerprint": fingerprint,
         "trims_db": {"woofer": 0.0, "tweeter": -6.0},
         "speaker_group_ids": ["main"], "trim_source": "strict_measured_candidate",
     })

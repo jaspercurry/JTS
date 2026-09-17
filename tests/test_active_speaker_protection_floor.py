@@ -498,15 +498,6 @@ def test_both_surfaces_render_a_non_integer_floor_identically() -> None:
 def test_a_non_tweeter_declared_floor_grows_no_clamp_and_no_refusal(
     tmp_path: Path,
 ) -> None:
-    """A woofer's declared floor must not gate the woofer/tweeter crossover.
-
-    The live jts.local composite declares its woofer channels
-    ``protection_status=not_required`` while the tweeter channels are
-    ``software_guard_requested``. The derived protective high-pass and the load
-    gate are both tweeter-scoped, so a floor declared on any other role changes
-    nothing -- hard stops belong exactly and only to the protected role.
-    """
-
     topology = mono_output_topology()
     woofer_channel = next(
         channel
@@ -515,7 +506,7 @@ def test_a_non_tweeter_declared_floor_grows_no_clamp_and_no_refusal(
         if channel.role == "woofer"
     )
     assert woofer_channel.protection_required is False
-    assert woofer_channel.protection_status == "not_required"
+    assert woofer_channel.protection_status == "absent"
 
     preview = _preview(
         topology,

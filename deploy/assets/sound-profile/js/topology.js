@@ -216,13 +216,6 @@ function pairRoleKey(pair) {
   return (pair || []).map(String).sort().join(':');
 }
 
-function outputChannelGuardReady(channel) {
-  var statusValue = channel && channel.protection_status || 'unknown';
-  return !channel || !channel.protection_required ||
-    statusValue === 'present' ||
-    statusValue === 'software_guard_requested';
-}
-
 function activeOutputGroups(topology) {
   return outputGroups(topology).filter(function(group) {
     return group && (group.mode === 'active_2_way' || group.mode === 'active_3_way');
@@ -352,7 +345,7 @@ function outputChannel(role, index) {
     physical_output_index: index,
     startup_muted: true,
     protection_required: tweeter,
-    protection_status: tweeter ? 'required_missing' : 'not_required'
+    protection_status: 'absent'
   };
 }
 function baseOutputDraft(source) {
@@ -382,7 +375,6 @@ export {
   outputAssignedToOtherMap,
   outputChannel,
   outputChannelLabel,
-  outputChannelGuardReady,
   outputClockDomainReport,
   outputGroups,
   outputHardware,

@@ -718,12 +718,6 @@ def driver_protection_payload(
             "recommended crossover frequency or a measurement band",
         ))
     if profile.role_class == "high_frequency":
-        if status not in {"present", "software_guard_requested"}:
-            issues.append(_issue(
-                "blocker",
-                "high_frequency_protection_missing",
-                "high-frequency drivers require marked physical protection or software-guarded bring-up",
-            ))
         # Absent and below-floor are different facts with different fixes, so
         # they get different codes, both naming the floor and its provenance.
         # ``low_limit is not None`` narrows for the renderer rather than

@@ -103,13 +103,7 @@ REQUIRED_ROLES_BY_MODE = {
 SUPPORTED_ROLES = {
     role for roles in REQUIRED_ROLES_BY_MODE.values() for role in roles
 }
-PROTECTION_STATUSES = {
-    "not_required",
-    "required_missing",
-    "present",
-    "software_guard_requested",
-    "unknown",
-}
+PROTECTION_STATUSES = {"present", "absent"}
 OUTPUT_STATES = {"unused", "assigned", "blocked"}
 # Pure-data pairing intent recorded at commission time: "is this box meant to
 # run solo, become a wireless follower, or host one?" It seeds later reconciler
@@ -522,13 +516,11 @@ class SpeakerChannel:
             role == "tweeter",
         )
         protection_status = _enum(
-            raw.get(
-                "protection_status",
-                "required_missing" if protection_required else "not_required",
-            ),
+            raw.get("protection_status", "absent"),
             "speaker_groups[].channels[].protection_status",
-            PROTECTION_STATUSES,
+            PROTECTION_STATUSES | {"required_missing", "software_guard_requested", "not_required", "unknown"},
         )
+        protection_status = "present" if protection_status == "present" else "absent"
         return cls(
             role=role,
             output_variant=_enum(raw.get("output_variant", "primary"), "output_variant", SUPPORTED_OUTPUT_VARIANTS),
@@ -1054,26 +1046,6 @@ def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
                             f"{group.label} tweeter must require protection",
                         )
                     )
-                if channel.protection_status == "software_guard_requested":
-                    warnings.append(
-                        _issue(
-                            "warning",
-                            "tweeter_software_guard_requested",
-                            (
-                                f"{group.label} tweeter software guard is requested; "
-                                "protected startup DSP, floor confirmation, and "
-                                "driver-aware level caps are required before playback"
-                            ),
-                        )
-                    )
-                elif channel.protection_status != "present":
-                    blockers.append(
-                        _issue(
-                            "blocker",
-                            "tweeter_protection_unverified",
-                            f"{group.label} tweeter protection must be marked present",
-                        )
-                    )
 
     warnings.extend(cross_child_group_verdicts(topology))
 
@@ -1579,38 +1551,6 @@ def _update_speaker_channel(
         for group in topology.speaker_groups
     )
     return replace(topology, speaker_groups=groups)
-
-
-def set_channel_protection_status(
-    topology: OutputTopology,
-    *,
-    speaker_group_id: str,
-    role: str,
-    protection_status: str,
-) -> OutputTopology:
-    """Return a copy with one channel's protection evidence updated."""
-
-    group_id = _require_id(speaker_group_id, "speaker_group_id")
-    role_id = _enum(role, "role", SUPPORTED_ROLES)
-    status = _enum(protection_status, "protection_status", PROTECTION_STATUSES)
-    if role_id != "tweeter" and status != "not_required":
-        raise OutputTopologyError("only tweeter channels can require protection")
-
-    def update(channel: SpeakerChannel) -> SpeakerChannel:
-        return replace(
-            channel,
-            startup_muted=True if role_id == "tweeter" else channel.startup_muted,
-            protection_required=channel.protection_required or role_id == "tweeter",
-            protection_status=status,
-        )
-
-    return _update_speaker_channel(
-        topology,
-        group_id=group_id,
-        role=role_id,
-        ambiguity_subject="protection",
-        update=update,
-    )
 
 
 @dataclass(frozen=True)

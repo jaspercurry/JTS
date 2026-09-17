@@ -232,13 +232,13 @@ def software_guard_ready_for_startup(
 ) -> bool:
     """Return whether software-only compression-driver guard evidence is ready."""
 
-    software_guard_requested = any(
+    software_guard_needed = any(
         channel.role == "tweeter"
-        and channel.protection_status == "software_guard_requested"
+        and channel.protection_status == "absent"
         for group in topology.speaker_groups
         for channel in group.channels
     )
-    if not software_guard_requested:
+    if not software_guard_needed:
         return True
     guard = staged_config.get("software_guard")
     if not isinstance(guard, dict):
@@ -253,14 +253,11 @@ def software_guard_ready_for_startup(
 
 def _topology_blockers(
     topology: OutputTopology,
-    *,
-    software_guard_ready: bool,
 ) -> list[dict[str, str]]:
-    ignored = {"tweeter_software_guard_requested"} if software_guard_ready else set()
     return [
         _normalise_issue(issue)
         for issue in topology.evaluation().get("blockers", [])
-        if isinstance(issue, dict) and str(issue.get("code")) not in ignored
+        if isinstance(issue, dict)
     ]
 
 
@@ -711,10 +708,7 @@ def build_startup_load_path_safety_evidence(
         staged = staged_config
     staged = staged if isinstance(staged, dict) else {}
     software_guard_ready = software_guard_ready_for_startup(topology, staged)
-    topology_blockers = _topology_blockers(
-        topology,
-        software_guard_ready=software_guard_ready,
-    )
+    topology_blockers = _topology_blockers(topology)
     assigned = topology.evaluation()["assigned_output_count"]
     topology_ready = assigned > 0 and not topology_blockers
     candidate_ready = (

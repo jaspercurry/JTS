@@ -63,11 +63,6 @@ from jasper.active_speaker.commission_wiring import (
     commission_seams,
 )
 
-from jasper.active_speaker.web_commissioning import (
-    ensure_missing_software_guards,
-    request_missing_software_guards as _request_missing_software_guards,
-)
-
 from ._common import refusal_envelope
 from .sound_profile_apply import _sound_state_write_lock
 
@@ -301,7 +296,6 @@ def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
         topology = OutputTopology.from_mapping(raw_topology)
         _refuse_undrivable_layout(topology)
         _refuse_duplicate_physical_outputs(topology)
-        topology, guards_changed = _request_missing_software_guards(topology)
         safe_stop = _active_speaker_stop_payload()
         def commit_topology() -> OutputTopology:
             mutation.save(topology)
@@ -331,7 +325,6 @@ def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
         assigned_outputs=evaluation["assigned_output_count"],
         blockers=len(evaluation["blockers"]),
         warnings=len(evaluation["warnings"]),
-        software_guards_requested=str(guards_changed),
         runtime_convergence_ok=runtime.convergence.ok,
         live_applied=runtime.convergence.live_applied,
         parked=runtime.parked.live_applied,
@@ -706,7 +699,7 @@ def _active_speaker_design_draft_save_payload(
         raise ValueError(
             "design draft request has unknown fields: " + ", ".join(unknown)
         )
-    topology, _guards_changed = ensure_missing_software_guards()
+    topology = load_output_topology()
     payload = save_design_draft(
         topology,
         driver_research=raw.get("driver_research"),
