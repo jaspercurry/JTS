@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, Mapping, TypeVar, overl
 from jasper.log_event import log_event
 from jasper.active_speaker.profile import required_driver_roles
 from jasper.active_speaker.design_draft import declared_driver_spacing_m
+from jasper.output_topology import measurement_target_id
 
 from .refusal_copy import (
     REASON_MEASUREMENT_TARGETS_MISSING,
@@ -43,7 +44,6 @@ __all__ = [
     "ensure_crossover_preview_ready",
     "profile_refusal_code",
     "measurement_role_channels",
-    "measurement_target_id",
     "resolve_conductor_context",
 ]
 
@@ -143,18 +143,6 @@ class V2ConductorContext(Generic[_Level]):
             (entry.band for entry in self.roles_bands if entry.role == role),
             None,
         )
-
-
-def measurement_target_id(role: str, output_variant: str = "primary") -> str:
-    """One physical driver output's identity inside a speaker group.
-
-    A primary output's id IS its role, so every role-keyed measurement map on a
-    primary-only speaker is unchanged; a rear woofer adds ``woofer:rear``
-    (ADR-0316). This is the group-relative half of
-    :func:`~jasper.output_topology.physical_target_id`; crossover-v2 measures
-    one group at a time.
-    """
-    return role if output_variant == "primary" else f"{role}:{output_variant}"
 
 
 def measurement_role_channels(preset: Any) -> dict[str, int]:
@@ -411,15 +399,17 @@ def resolve_conductor_context(
     # role: a rear woofer is a third target of a two-way speaker, and collapsing
     # it onto its role hides it from the play-door admission map.
     role_targets: dict[str, str] = {}
+    primary_roles: set[str] = set()
     for target in drivers:
         if isinstance(target, Mapping):
             role = str(target.get("role") or "").lower()
+            variant = str(target.get("output_variant") or "primary")
             fingerprint = str(target.get("target_fingerprint") or "")
             if role and fingerprint:
-                role_targets[measurement_target_id(
-                    role, str(target.get("output_variant") or "primary"),
-                )] = fingerprint
-    if {target_id for target_id in role_targets if ":" not in target_id} != set(roles):
+                role_targets[measurement_target_id(role, variant)] = fingerprint
+                if variant == "primary":
+                    primary_roles.add(role)
+    if primary_roles != set(roles):
         # The registry copy cannot carry the roles; the journal line can.
         log_event(
             logger,

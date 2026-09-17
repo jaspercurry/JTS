@@ -35,6 +35,7 @@ from jasper.active_speaker.candidate_bank import CandidateBankRefusal, banked_ca
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
 from jasper.active_speaker.crossover_v2.prescription_contract import contract_digests, contract_json, prescription_contracts
 from jasper.active_speaker.crossover_v2.round_inputs import prescription_sources, round_inputs
+from jasper.active_speaker.crossover_v2 import prescription_document as prescription_document_mod
 from jasper.active_speaker.crossover_v2.prescription_document import (
     PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document,
 )
@@ -383,8 +384,8 @@ def test_bass_compose_uses_saved_layers_without_reviving_old_candidate(bank, sav
     v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     topology, applied = saved_tune
     original = deepcopy(applied)
-    monkeypatch.setattr(crossover_prescriber, "load_output_topology_strict", lambda: topology)
-    monkeypatch.setattr(crossover_prescriber, "load_applied_baseline_profile_state", lambda: applied)
+    monkeypatch.setattr("jasper.output_topology.load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state", lambda: applied)
     bass = tmp_path / "bass.json"
     base = "saved" if base_kind == "saved" else publish_authored_candidate(
         candidate_from_applied_profile(topology, applied), root=bank,
@@ -547,8 +548,8 @@ def test_driver_numeric_refusals_keep_the_judges_code(base, evidence, value):
 @pytest.mark.parametrize("base_choice", ["saved", "banked"])
 def test_saved_base_preview_migrates_once_and_invalid_composition_banks_no_child(bank, saved_tune, tmp_path, monkeypatch, capsys, base_choice):
     topology, applied = saved_tune
-    monkeypatch.setattr(crossover_prescriber, "load_output_topology_strict", lambda: topology)
-    monkeypatch.setattr(crossover_prescriber, "load_applied_baseline_profile_state", lambda: applied)
+    monkeypatch.setattr("jasper.output_topology.load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state", lambda: applied)
     base_name = "saved" if base_choice == "saved" else publish_authored_candidate(candidate_from_applied_profile(topology, applied), root=bank).fingerprint
     path = tmp_path / "prescription.json"
     path.write_text(json.dumps(document(base_name)))

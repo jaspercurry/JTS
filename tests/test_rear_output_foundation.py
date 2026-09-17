@@ -175,7 +175,7 @@ def test_runtime_refuses_audible_rear_graph(mutation):
 ACTIVE_PCM = "jts_ring_active_playback"
 
 
-def _seed(**overrides) -> dict:
+def _rear_document(**overrides) -> dict:
     """The diagnostic document, audible unless a case asks otherwise."""
     return {**diagnostic_seed(48000), "rear_muted": False, **overrides}
 
@@ -183,7 +183,7 @@ def _seed(**overrides) -> dict:
 def _cardioid_baseline(document: dict | None = None, **kwargs) -> tuple[ActiveSpeakerPreset, OutputTopology, str]:
     preset, topology = _rear_pair("mono")
     return preset, topology, emit.emit_active_speaker_baseline_config(
-        preset, playback_device=ACTIVE_PCM, rear_calibration=document or _seed(), **kwargs,
+        preset, playback_device=ACTIVE_PCM, rear_calibration=document or _rear_document(), **kwargs,
     )
 
 
@@ -238,13 +238,13 @@ def test_rear_calibration_plays_the_rear_behind_the_shared_woofer_chain():
         emit.emit_active_speaker_baseline_config(legacy, playback_device=ACTIVE_PCM)
     )
     assert _post_split_names(payload, 2)[len(stage):] == _post_split_names(unfitted, 0)
-    assert _classify(topology, text, document=_seed()).allowed
+    assert _classify(topology, text, document=_rear_document()).allowed
     # No saved document, no tolerated fragment: the rear must then be muted.
     assert "rear_output_not_muted" in {i["code"] for i in _classify(topology, text).issues}
 
 
 def test_the_stage_delays_the_rear_branch_without_a_subsample_allpass():
-    payload = yaml.safe_load(_cardioid_baseline(_seed(common_delay_ms=2.0))[2])
+    payload = yaml.safe_load(_cardioid_baseline(_rear_document(common_delay_ms=2.0))[2])
     delays = {
         name for name, spec in payload["filters"].items()
         if spec["type"] == "Delay" and name.startswith("rear_out2_")
@@ -271,7 +271,7 @@ def test_every_output_of_the_cardioid_graph_renders_a_finite_branch_peak(tmp_pat
 
 
 def test_muted_rear_keeps_the_stage_but_silences_its_output_gain():
-    payload = yaml.safe_load(_cardioid_baseline(_seed(rear_muted=True))[2])
+    payload = yaml.safe_load(_cardioid_baseline(_rear_document(rear_muted=True))[2])
     assert payload["filters"]["rear_out2_output_gain"]["parameters"]["mute"] is True
     assert payload["filters"]["rear_out2_bass_gain"]["parameters"]["mute"] is False
 
@@ -290,7 +290,7 @@ def test_the_mixer_sequence_grows_by_exactly_the_stages_split_then_sum():
     )
     assert _mixer_names(plain) == ["split_active_2way"]
     assert _mixer_names(yaml.safe_load(text)) == ["split_active_2way", *rear_stage_mixer_names(2)]
-    assert _classify(topology, text, document=_seed()).allowed
+    assert _classify(topology, text, document=_rear_document()).allowed
 
 
 @pytest.mark.parametrize("mutation", ["reordered", "third_mixer"])
@@ -306,7 +306,7 @@ def test_the_mixer_sequence_refuses_a_reordered_or_extra_post_split_mixer(mutati
         steps[split], steps[summed] = steps[summed], steps[split]
     else:
         steps.append({"type": "Mixer", "name": "rear_out2_sum"})
-    result = _classify(topology, _reserialized(text, payload), document=_seed())
+    result = _classify(topology, _reserialized(text, payload), document=_rear_document())
     assert "active_graph_mixer_sequence_invalid" in {issue["code"] for issue in result.issues}
 
 
@@ -343,7 +343,7 @@ def test_runtime_refuses_a_stage_that_is_not_the_saved_document_recompiled(tampe
             step for step in payload["pipeline"]
             if step.get("name") != "rear_out2_sum"
         ]
-    result = _classify(topology, _reserialized(text, payload), document=_seed())
+    result = _classify(topology, _reserialized(text, payload), document=_rear_document())
     assert "rear_stage_unproven" in {issue["code"] for issue in result.issues}
 
 

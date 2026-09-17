@@ -1298,39 +1298,26 @@ def _active_speaker_rear_calibration_validate_payload(raw: dict[str, Any]) -> di
 
 def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[str, Any]:
     """Bank a candidate carrying a pasted rear-calibration document on the applied
-    baseline (``--base saved``); never applies it. Mirrors
-    ``jasper-crossover-prescriber compose`` in-process, never shelling out."""
+    baseline, through the same ``--base saved`` composer
+    ``jasper-crossover-prescriber compose`` uses; never applies it."""
 
-    from jasper.active_speaker.baseline_profile import (  # lazy: graph compilation imports NumPy
-        _rear_calibration_issues,
-        load_applied_baseline_profile_state,
-    )
+    from jasper.active_speaker.baseline_profile import rear_calibration_issues  # lazy: graph compilation imports NumPy
     from jasper.active_speaker.candidate_bank import (  # lazy: graph compilation imports NumPy
-        BankedCandidate,
         CandidateBankRefusal,
         publish_authored_candidate,
     )
-    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: graph compilation imports NumPy
     from jasper.active_speaker.crossover_v2.prescription_document import (  # lazy: graph compilation imports NumPy
         PrescriptionDocumentRefused,
-        judge_prescription_document,
+        bank_section,
     )
     from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError  # lazy: graph compilation imports NumPy
     from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError  # lazy: graph compilation imports NumPy
-    from jasper.active_speaker.state_paths import baseline_profile_state_path  # lazy: graph compilation imports NumPy
-    from jasper.output_topology import load_output_topology_strict  # lazy: graph compilation imports NumPy
 
-    document = {
-        "kind": "jts_prescription", "schema": 1, "base": "saved",
-        "sections": {"rear_calibration": raw if isinstance(raw, dict) else {}},
-        "rationale": "Bank a cardioid rear calibration edited in the wizard.",
-    }
     try:
-        saved = candidate_from_applied_profile(
-            load_output_topology_strict(), load_applied_baseline_profile_state() or {},
+        candidate = bank_section(
+            "rear_calibration", raw,
+            rationale="Bank a cardioid rear calibration edited in the wizard.",
         )
-        base = BankedCandidate(saved, "", "", baseline_profile_state_path())
-        candidate = judge_prescription_document(document, base=base)
         published = publish_authored_candidate(candidate)
     except PrescriptionDocumentRefused as exc:
         return exc.to_dict()
@@ -1349,5 +1336,5 @@ def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[s
     return {
         "ok": True,
         "candidate_fingerprint": published.fingerprint,
-        "issues": _rear_calibration_issues(published.candidate),
+        "issues": rear_calibration_issues(published.candidate),
     }

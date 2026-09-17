@@ -4,7 +4,7 @@
 """Acoustic-task handoff and a CamillaDSP stage; no devices, storage or apply."""
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 import hashlib
 import struct
@@ -209,21 +209,44 @@ def diagnostic_seed(sample_rate: int) -> dict[str, Any]:
                      "cancellation": {**deepcopy(chain), "gain_db": -0.84, "inverted": True, "delay_ms": 1.14}}}
 
 
+def cardioid_cabinet_channels(
+    outputs: Iterable[tuple[str, str, int]],
+) -> tuple[int, int, int] | None:
+    """``(front woofer, rear woofer, tweeter)`` channel indexes of the one
+    cabinet a rear calibration document describes, or ``None``.
+
+    ADR-0318: exactly one rear output, one front output of the rear's role, and
+    one output of the other role, over ``(role, variant, index)`` triples. The
+    caller owns what else its own topology must satisfy.
+    """
+    items = list(outputs)
+    rear = [item for item in items if item[1] == "rear"]
+    if len(rear) != 1:
+        return None
+    role = rear[0][0]
+    front = [item for item in items if item[1] != "rear" and item[0] == role]
+    tweeter = [item for item in items if item[0] != role]
+    if len(front) != 1 or len(tweeter) != 1:
+        return None
+    return front[0][2], rear[0][2], tweeter[0][2]
+
+
 def rear_stage_mixer_names(rear_channel: int) -> tuple[str, str]:
     """The stage's split and sum mixer names, in the order it wires them."""
     return f"rear_out{rear_channel}_split", f"rear_out{rear_channel}_sum"
 
 
-def compile_rear_stage(raw: Any, *, front_channel: int, rear_channel: int, channel_count: int,
-                       sample_rate: int, tweeter_channel: int, subsample: bool = False) -> dict[str, Any]:
+def compile_rear_stage(document: Mapping[str, Any], *, front_channel: int, rear_channel: int,
+                       channel_count: int, tweeter_channel: int) -> dict[str, Any]:
     """Stage after common EQ / physical split, before per-output protection.
 
-    Rear branch delays are relative to the front reference. FIR coefficients
-    replace both branches; their declared latency is reported, never added twice.
-    ``subsample`` selects ADR-0318's fractional delay; the runtime path takes
-    whole samples, which the branch-peak render can model exactly.
+    ``document`` must already be through :func:`read_rear_calibration`: the
+    caller's read is where the document is bound to ITS sample rate. Rear branch
+    delays are relative to the front reference. FIR coefficients replace both
+    branches; their declared latency is reported, never added twice. Delays are
+    whole-sample, which the branch-peak render can model exactly.
     """
-    data = read_rear_calibration(raw, sample_rate=sample_rate)
+    data = document
     if data["case"] != "electrical_dsp":
         raise RearCalibrationError("acoustic targets still require electrical conversion and causal fitting")
     if type(channel_count) is not int or channel_count < 3 or len({front_channel, rear_channel, tweeter_channel}) != 3 or any(
@@ -242,7 +265,7 @@ def compile_rear_stage(raw: Any, *, front_channel: int, rear_channel: int, chann
         names.append(gain)
         if delay:
             delay_name = f"{prefix}_{name}_delay"
-            filters.update(yaml.safe_load("\n".join(emit_delay_filter(delay_name, delay_ms=delay, subsample=subsample))))
+            filters.update(yaml.safe_load("\n".join(emit_delay_filter(delay_name, delay_ms=delay))))
             names.append(delay_name)
         for i, item in enumerate(value["filters"]):
             filter_name = f"{prefix}_{name}_{i}"

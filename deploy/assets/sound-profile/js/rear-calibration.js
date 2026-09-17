@@ -19,9 +19,12 @@ import { outputGroups } from "/assets/sound-profile/js/topology.js";
 var rearCalibration = {
   text: '',
   pending: '',   // '' | 'seed' | 'validate' | 'bank'
-  result: null,  // the last server response, whichever action produced it
+  action: '',    // the action `result` answered; the shape follows from it
+  result: null,  // the last server response
   localError: '' // a local JSON-parse failure, never sent to the server
 };
+
+var ACTIONS = [['seed', 'Seed'], ['validate', 'Validate'], ['bank', 'Bank']];
 
 // The panel only ever answers about the SAVED topology (outputTopology.payload),
 // not a working draft — a draft rear output has no applied baseline to bank onto.
@@ -49,7 +52,7 @@ function resultHtml() {
     return '<p class="setting-row__hint driver-research__error">' +
       escapeHtml(result.error || 'The calibration document was refused.') + '</p>';
   }
-  if ('candidate_fingerprint' in result) {
+  if (rearCalibration.action === 'bank') {
     var issues = Array.isArray(result.issues) ? result.issues : [];
     return '<div class="driver-research__summary">' +
       '<span class="status-pill status-pill--ready">banked</span>' +
@@ -63,7 +66,7 @@ function resultHtml() {
         }).join('') + '</ul></div>' : '') +
     '</div>';
   }
-  if ('case' in result) {
+  if (rearCalibration.action === 'validate') {
     return '<div class="driver-research__summary">' +
       '<span class="status-pill status-pill--ready">valid</span>' +
       '<p class="setting-row__hint">' + escapeHtml(String(result.summary || result.case)) + '</p>' +
@@ -129,6 +132,7 @@ function runOnParsedDocument(path) {
   return postJSON(path.url, parsed.document)
     .then(function(payload) {
       rearCalibration.result = payload;
+      rearCalibration.action = path.action;
     })
     .catch(function(err) {
       rearCalibration.localError = 'Could not reach the speaker: ' + err.message;
@@ -161,12 +165,10 @@ export function renderRearCalibrationPanel() {
               '<p class="setting-row__hint">Paste a document, or seed an explicitly ' +
               'untuned, muted starting point.</p></div>' +
             '<div class="driver-research__actions">' +
-              '<button type="button" class="btn btn--ghost" data-act="rear-calibration-seed" ' +
-                'data-rear-calibration-action' + (pending ? ' disabled' : '') + '>Seed</button>' +
-              '<button type="button" class="btn btn--ghost" data-act="rear-calibration-validate" ' +
-                'data-rear-calibration-action' + (pending ? ' disabled' : '') + '>Validate</button>' +
-              '<button type="button" class="btn btn--ghost" data-act="rear-calibration-bank" ' +
-                'data-rear-calibration-action' + (pending ? ' disabled' : '') + '>Bank</button>' +
+              ACTIONS.map(function(action) {
+                return '<button type="button" class="btn btn--ghost" data-act="rear-calibration-' + action[0] + '" ' +
+                  'data-rear-calibration-action' + (pending ? ' disabled' : '') + '>' + action[1] + '</button>';
+              }).join('') +
             '</div>' +
           '</div>' +
           '<textarea id="rear-calibration-text" class="driver-research__textarea" ' +

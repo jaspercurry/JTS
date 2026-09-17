@@ -52,7 +52,8 @@ class MeasurementGraphProfile:
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None
     #: Physical targets this take deliberately silences. A role absent from
     #: ``role_channels`` must be named here or the graph refuses to emit —
-    #: silence is a decision, never an omission.
+    #: silence is a decision, never an omission. No production plan sets this
+    #: yet; the front/rear take is the first that will.
     parked_target_ids: tuple[str, ...] = ()
 
 

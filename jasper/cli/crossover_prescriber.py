@@ -15,8 +15,6 @@ from typing import Any
 from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed, read_source_bytes
 from .round_views._common import RoundSetRefused, add_set_argument, context_artifacts
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
-from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.crossover_declaration import preset_crossover_geometry
 from jasper.active_speaker.crossover_v2.blend_prescription import BlendPrescriptionRefused, read_prescription_bytes
 from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
@@ -27,7 +25,8 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
-    PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document, preview_room_document, read_prescription_document,
+    PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document, preview_room_document,
+    read_prescription_document, saved_base,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
     banked_round_of, recent_round_sessions, round_inputs, prescription_sources, resolve_set, RoundInputs,
@@ -35,11 +34,9 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.seat_level_reference import seat_level_reference_volume_db
 from jasper.active_speaker.rear_calibration import compile_rear_stage, diagnostic_seed, read_rear_calibration
-from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
 from jasper.identity.reader import CROSSOVER_PAGE_PATH, SPEAKER_SETUP_PAGE_PATH, read_identity, speaker_url
-from jasper.output_topology import load_output_topology_strict
 
 PROG = "jasper-crossover-prescriber"
 AUTHORITY_TIER = "advisory (judge, contract and status read; compose banks a candidate)"
@@ -82,8 +79,7 @@ def _cmd_rear_calibration(args: argparse.Namespace) -> int:
             if any(value is None for value in routing):
                 raise ValueError("stage compilation requires --channels, --front, --rear and --tweeter")
             answer["stage"] = compile_rear_stage(document, channel_count=args.channels,
-                front_channel=args.front, rear_channel=args.rear, tweeter_channel=args.tweeter,
-                sample_rate=args.sample_rate or document["sample_rate_hz"])
+                front_channel=args.front, rear_channel=args.rear, tweeter_channel=args.tweeter)
         return answered(answer)
     except (OSError, ValueError, TypeError) as exc:
         return failed(EXIT_REFUSED, "rear_calibration_invalid", str(exc))
@@ -125,11 +121,8 @@ def _cmd_document(args: argparse.Namespace) -> int:
         if args.base is not None and args.base != document["base"]:
             raise PrescriptionDocumentRefused("composition_base_mismatch", None, "--base and document.base differ")
         root = Path(args.root) if args.root else None
-        if document["base"] == "saved":
-            saved = candidate_from_applied_profile(load_output_topology_strict(), load_applied_baseline_profile_state() or {})
-            base = BankedCandidate(saved, "", "", baseline_profile_state_path())
-        else:
-            base = find_banked_candidate(document["base"], root=root)
+        base = (saved_base() if document["base"] == "saved"
+                else find_banked_candidate(document["base"], root=root))
         evidence = _document_evidence(args, document)
         if args.command == "judge" and args.preview:
             return answered(preview_room_document(document, base=base, evidence=evidence))

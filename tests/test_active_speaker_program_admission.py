@@ -18,7 +18,7 @@ from scipy.io import wavfile
 
 from jasper.active_speaker import camilla_yaml
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
-from jasper.active_speaker.crossover_v2.conductor_context import measurement_target_id
+from jasper.output_topology import measurement_target_id
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.driver_safety import build_driver_safety_profile
 from jasper.active_speaker.measurement import active_driver_targets
@@ -1050,8 +1050,7 @@ def test_an_excited_rear_outside_its_role_chain_is_still_refused(tmp_path):
 
 def test_a_measurement_program_graph_is_refused_by_its_own_name(tmp_path):
     """The protected-neutral emit is neither baseline-shaped nor a commissioning
-    bring-up graph. Judged as one it produced a pile of commissioning blockers
-    describing a graph nobody wrote; it now refuses under one true code."""
+    bring-up graph, so this door refuses it under one true code."""
     from jasper.active_speaker.measurement_emit import emit_measurement_graph
 
     topology, safety, targets = _profile_and_targets(

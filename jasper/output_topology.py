@@ -146,8 +146,18 @@ _float = _JSON_FIELDS.number
 _optional_float = _JSON_FIELDS.optional_number
 
 
+def measurement_target_id(role: str, output_variant: str = "primary") -> str:
+    """One physical driver output's identity inside a speaker group.
+
+    A primary output's id IS its role, so every role-keyed measurement map on a
+    primary-only speaker is unchanged; a rear woofer adds ``woofer:rear``
+    (ADR-0316). :func:`physical_target_id` is the same id under its group.
+    """
+    return role if output_variant == "primary" else f"{role}:{output_variant}"
+
+
 def physical_target_id(group_id: str, role: str, output_variant: str = "primary") -> str:
-    return f"{group_id}:{role}" + (f":{output_variant}" if output_variant != "primary" else "")
+    return f"{group_id}:{measurement_target_id(role, output_variant)}"
 
 
 def _safe_id_fragment(value: str) -> str:

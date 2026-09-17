@@ -13,15 +13,17 @@ from typing import Any
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal
 from jasper.active_speaker.alignment_evidence import commissioning_alignment, round_alignment
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-from jasper.active_speaker.candidate_parts import compose_candidate
+from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
 from jasper.active_speaker.camilla_yaml import _branch_context
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, room_peqs_from_correction, driver_corrections,
 )
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
+from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker import rear_calibration
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper import output_topology
 from .topology_prescription import apply_topology_pin
 
 from . import alignment_prescription as alignment
@@ -191,6 +193,27 @@ def _refused_section(code: str) -> str | None:
     if code == "composition_topology_required":
         return "topology"
     return "rear_calibration" if code.startswith("rear_calibration_") else None
+
+
+def saved_base() -> BankedCandidate:
+    """The applied baseline as a composition base (a document's ``base: saved``)."""
+    saved = candidate_from_applied_profile(
+        output_topology.load_output_topology_strict(), load_applied_baseline_profile_state() or {},
+    )
+    return BankedCandidate(saved, "", "", baseline_profile_state_path())
+
+
+def bank_section(name: str, section: Any, *, rationale: str) -> MeasuredCrossoverCandidate:
+    """Judge ONE authored section on the applied baseline, as ``--base saved`` does.
+
+    The candidate is composed and returned, never banked and never applied.
+    """
+    return judge_prescription_document(
+        {"kind": DOCUMENT_KIND, "schema": 1, "base": "saved",
+         "sections": {name: section if isinstance(section, dict) else {}},
+         "rationale": rationale},
+        base=saved_base(),
+    )
 
 
 def judge_prescription_document(raw: Any, *, base: BankedCandidate,
