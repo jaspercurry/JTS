@@ -25,7 +25,7 @@ from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.output_topology import OutputTopology
 
-from ._common import finite_float as _finite_float, issue as _issue
+from ._common import finite_float as _finite_float, issue as _issue, software_guard_needed
 from .calibration_level import MAX_TEST_LEVEL_DBFS
 from .driver_protection import (
     format_protection_hz,
@@ -232,13 +232,7 @@ def software_guard_ready_for_startup(
 ) -> bool:
     """Return whether software-only compression-driver guard evidence is ready."""
 
-    software_guard_needed = any(
-        channel.role == "tweeter"
-        and channel.protection_status == "absent"
-        for group in topology.speaker_groups
-        for channel in group.channels
-    )
-    if not software_guard_needed:
+    if not software_guard_needed(topology.speaker_groups):
         return True
     guard = staged_config.get("software_guard")
     if not isinstance(guard, dict):

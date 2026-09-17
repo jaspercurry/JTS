@@ -29,16 +29,12 @@ _PROMPT_TARGET_KEYS = (
     "driver_style",
 )
 
-# Keys whose value directly bounds what the speaker is allowed to excite. Only
-# these carry per-field provenance in the ask; the rest are advisory prefill an
-# operator reviews anyway.
-_PROMPT_PROVENANCE_KEYS = tuple(key for key in (
-    "hard_excitation_band_hz",
-    "recommended_highpass_hz",
-    "required_protection_filters",
-    "level_duration_limits",
-    "sensitivity_db_2v83_1m",
-) if key in MANUAL_DRIVER_FIELDS)
+# Only excitation limits carry per-field provenance in the ask.
+_PROMPT_PROVENANCE_KEYS = (
+    "hard_excitation_band_hz", "recommended_highpass_hz", "required_protection_filters",
+    "level_duration_limits", "sensitivity_db_2v83_1m",
+)
+assert set(_PROMPT_PROVENANCE_KEYS) <= set(MANUAL_DRIVER_FIELDS)
 
 
 def driver_field_vocabulary() -> dict[str, list[str]]:

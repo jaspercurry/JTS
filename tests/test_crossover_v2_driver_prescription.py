@@ -15,6 +15,8 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import camilla_yaml
+from jasper.active_speaker.design_draft import build_design_draft, design_draft_view
+from tests.active_speaker_fixtures import mono_output_topology
 from jasper.active_speaker.baseline_profile import (
     BASELINE_PROFILE_KIND,
     SCHEMA_VERSION as BASELINE_SCHEMA_VERSION,
@@ -87,16 +89,12 @@ pytestmark = pytest.mark.usefixtures("no_real_pi_paths")
 WOOFER_BAND = (40.0, 3000.0)
 TWEETER_BAND = (1600.0, 20000.0)
 
-#: One classified feature per driver, both `defect-cuttable`.
 WOOFER_FEATURE_HZ = 900.0
 TWEETER_FEATURE_HZ = 5000.0
 
 
 def _draft() -> dict[str, Any]:
-    from jasper.active_speaker.design_draft import build_design_draft
-    from tests.active_speaker_fixtures import mono_output_topology
-
-    return build_design_draft(mono_output_topology(), manual_settings={"drivers": [
+    return design_draft_view(build_design_draft(mono_output_topology(), manual_settings={"drivers": [
         {"role": "woofer", "measurement_band_hz": [40, 4000],
          "hard_excitation_band_hz": [30, 5000],
          "required_protection_filters": [{"kind": "lowpass", "cutoff_hz": 3000,
@@ -105,7 +103,7 @@ def _draft() -> dict[str, Any]:
          "hard_excitation_band_hz": [900, 22000],
          "required_protection_filters": [{"kind": "highpass", "cutoff_hz": 1600,
                                           "minimum_slope_db_per_octave": 24}]},
-    ]})
+    ]}))
 
 
 def _verdict(

@@ -399,22 +399,6 @@ function dongleMonoTopologyPayload() {
   };
 }
 
-function activeRoutePayload(overrides = {}) {
-  return {
-    kind: "jts_active_speaker_playback_route_capability",
-    playback_device: "outputd_active_content_playback",
-    playback_device_source: "outputd_active_lane",
-    transport_channel_count: 4,
-    required_active_output_count: 0,
-    active_group_count: 0,
-    subwoofer_group_count: 0,
-    subwoofer_supported: false,
-    fits_required_outputs: true,
-    ready: true,
-    issues: [],
-    ...overrides,
-  };
-}
 
 function activePayloads() {
   return {
@@ -538,7 +522,7 @@ function summedSummary(latestSummedTests, overrides = {}) {
 function setupHarness(fetchHandler, options = {}) {
   const pageMode = options.mode || "speaker";
   const elements = new Map();
-  const absent = new Set();
+  const absent = new Set(options.absentIslands || []);
   for (const id of [
     "tab-off", "tab-saved", "tab-draft", "eq-tabs", "back", "view-body",
     "now-playing", "plot", "plot-summary", "live-label", "status",
@@ -1987,7 +1971,7 @@ async function testTemplateSaveRendersServerRefusal() {
         saves.push(JSON.parse(options.body).output_topology);
         return Promise.resolve(response({error: 'layout cannot be built'}, false, 400));
       }
-      return Promise.resolve(response({output_topology: topology, active_playback_route: activeRoutePayload()}));
+      return Promise.resolve(response({output_topology: topology}));
     },
   }));
   await loadAndSetActiveState(harness);
@@ -2024,7 +2008,6 @@ async function testSpeakerLayoutMatrixAndRearAssignment() {
           if (options.method === 'POST') saves.push(JSON.parse(options.body).output_topology);
           return Promise.resolve(response({
             output_topology: saves.at(-1) || topology,
-            active_playback_route: activeRoutePayload({transport_channel_count: 8}),
           }));
         },
       }));
@@ -4056,7 +4039,7 @@ async function testSaveAndApplyUsesSingleFinishEndpoint() {
   harness.dispatchClick({ "data-act": "save-apply-baseline-profile" });
   for (let i = 0; i < 8; i += 1) await harness.flush();
 
-  assert.deepEqual(finishPosts, [{expected_candidate_fingerprint: ''}]);
+  assert.deepEqual(finishPosts, [{}]);
   assert.ok(harness.elements.get('view-body').innerHTML.includes(baselineApplied.config.path));
   assert.doesNotMatch(harness.elements.get('status').className, /err/);
   return {saveAndApplyUsesSingleFinishEndpoint: true};
@@ -4495,32 +4478,36 @@ async function testFollowerModeRendersLocalDriverUi() {
   return { followerModeRendersLocalDriverUi: true };
 }
 
-// A malformed island must fall to the SAFE side (follower), never solo: the
-// follower page has no Off/Saved/Draft tabs or plot, so a solo fallback would
-// dereference absent elements and blank the page. (json_island always emits
-// valid JSON; this guards the fallback direction, not a real server output.)
 async function testFollowerModeSafeFallbackOnMalformedIsland() {
-  const fallback = baseFetch();
-  const harness = setupHarness((path, options = {}) => {
-    if (path === "./output-topology") {
-      return Promise.resolve(response(activeTwoWayTopologyPayload()));
+  for (const options of [
+    {follower: true, islandText: "{not valid json"},
+    {absentIslands: ['jts-driver-fields']},
+  ]) {
+    const designPosts = [];
+    const harness = setupHarness(baseFetch({
+      "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+      "./active-speaker/design-draft": (_path, fetchOptions = {}) => {
+        if (fetchOptions.method === "POST") designPosts.push(fetchOptions.body);
+        return Promise.resolve(response({status: "not_saved", revision: 0}));
+      },
+    }), options);
+    for (let i = 0; i < 4; i++) await harness.flush();
+    assert.match(harness.elements.get("view-body").innerHTML, /Active crossover setup/);
+    if (options.absentIslands) {
+      // A page without its field vocabulary must refuse to save, never send
+      // an empty driver list that would wipe the stored declarations.
+      harness.dispatchClick({ "data-act": "save-driver-design" });
+      for (let i = 0; i < 6; i++) await harness.flush();
+      if (designPosts.length !== 0) {
+        fail("missing driver island must not POST the design draft", { designPosts });
+      }
+      if (!harness.elements.get("status").textContent) {
+        fail("missing driver island must surface a status error on save");
+      }
     }
-    return fallback(path, options);
-  }, { follower: true, islandText: "{not valid json" });
-  // Reaching here means the module booted without throwing on the absent tabs —
-  // i.e. it resolved to follower mode and skipped the solo tab/plot wiring.
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes("Active crossover setup")) {
-    fail("a malformed island must still render the local active-speaker UI", { html });
   }
-  return { followerModeSafeFallbackOnMalformedIsland: true };
+  return {followerModeSafeFallbackOnMalformedIsland: true, missingDriverIslandBoots: true};
 }
-
 
 async function testStereoDriverValuesStayTargetSpecific() {
   const designSaves = [];

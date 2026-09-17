@@ -75,6 +75,7 @@ import {
   levelDurationLimitsFromSetting,
   manualCrossoverVocabularyValidationError,
   driverFields,
+  driverVocabularyLoaded,
   driverNumberFields,
   padFromSetting,
   previewStatusClass,
@@ -3315,6 +3316,11 @@ import {
       status('Load output hardware before updating the working setup.', true);
       return false;
     }
+    if (!driverVocabularyLoaded()) {
+      driverResearch.error = 'This page did not load its driver field list. Reload the page before saving.';
+      status(driverResearch.error, true);
+      return false;
+    }
     var manualTopology = outputTopology.payload;
     var manualError = manualCrossoverVocabularyValidationError(manualTopology);
     if (manualError) {
@@ -3512,19 +3518,13 @@ import {
     render();
   }
   async function saveAndApplyBaselineProfile() {
-    var profile = activeSpeaker.baselineProfile || {};
     patchActiveSpeaker({
       loading: false, action: 'Finishing active profile',
       error: ''
     });
     render();
     try {
-      var expectedCandidateFingerprint = String(
-        profile.candidate_fingerprint || ''
-      );
-      var payload = await postJSON('./active-speaker/baseline-profile/save-and-apply', {
-        expected_candidate_fingerprint: expectedCandidateFingerprint
-      });
+      var payload = await postJSON('./active-speaker/baseline-profile/save-and-apply', {});
       patchActiveSpeaker({
         loading: false, action: '',
         baselineProfile: payload.profile || payload,

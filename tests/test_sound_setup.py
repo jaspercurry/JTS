@@ -41,7 +41,6 @@ from jasper.active_speaker.baseline_profile import persist_applied_baseline_prof
 from jasper.active_speaker.design_draft import declared_driver_spacing_m, load_design_draft
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
 from jasper.audio_measurement.program_analysis.model import MeasurementGeometry
-from jasper.active_speaker.playback_route import OUTPUTD_ACTIVE_LANE_SOURCE
 from jasper.active_speaker.runtime_convergence import PARK_SKIPPED, park_and_commit_topology
 from jasper.active_speaker.runtime_contract import (
     FLAT_PROGRAM_GRAPH_UNCONFIGURED,
@@ -2187,13 +2186,8 @@ def _no_lane_topology_payload(*, active: bool, subwoofer: bool = False) -> dict:
     return payload
 
 
-def test_two_drivers_on_the_same_dac_output_are_refused(
-    monkeypatch, tmp_path: Path,
-):
-    """The channel selector never disables an already-used output (a 3+
-    channel group could not otherwise swap two drivers without parking one
-    on a spare channel first), so save-time is the only gate against two
-    channels landing on the same physical_output_index."""
+@pytest.mark.parametrize("output_index", [0, None])
+def test_duplicate_dac_outputs_are_refused_and_unassigned_ones_save(monkeypatch, tmp_path, output_index):
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
     payload = _passive_left_topology_payload()
@@ -2202,10 +2196,16 @@ def test_two_drivers_on_the_same_dac_output_are_refused(
         "label": "Right speaker",
         "kind": "right",
         "mode": "full_range_passive",
-        "channels": [{"role": "full_range", "physical_output_index": 0}],
+        "channels": [{"role": "full_range", "physical_output_index": output_index}],
     })
     payload["routing"]["main_right_group_id"] = "right"
 
+    if output_index is None:
+        # A half-assigned layout is a supported stored state (#2145).
+        saved = sound_setup._save_output_topology_payload(payload)
+        assert saved["output_topology"]["speaker_groups"][1]["channels"][0]["physical_output_index"] is None
+        assert topo_path.exists()
+        return
     with pytest.raises(OutputTopologyError):
         sound_setup._save_output_topology_payload(payload)
 
@@ -2254,28 +2254,34 @@ def test_a_roleful_layout_on_a_dac_without_an_active_lane_is_refused(
     assert not topo_path.exists()
 
 
-@pytest.mark.parametrize("assigned,subwoofer_supported", [(False, True), (True, True), (True, False)])
-def test_layout_save_refuses_active_route_over_capacity(monkeypatch, tmp_path, caplog, assigned, subwoofer_supported):
+@pytest.mark.parametrize("subwoofer_supported, assigned", [(True, True), (True, False), (False, True)])
+def test_layout_save_refuses_active_route_over_capacity(monkeypatch, tmp_path, caplog, subwoofer_supported, assigned):
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
     payload = _active_speaker_mono_topology_payload(protection_status="present")
-    payload["hardware"]["device_id"] = "dual_apple_usb_c_dac_4ch"
-    payload["hardware"]["physical_output_count"] = 4
+    payload["hardware"]["device_id"] = "hifiberry_dac8x"
+    payload["hardware"]["physical_output_count"] = 8
     payload["speaker_groups"] = [{
         "id": side, "label": side, "kind": side, "mode": "active_3_way",
-        "channels": [{"role": role, "physical_output_index": index + offset if assigned and index + offset < 4 else None}
+        "channels": [{"role": role, "physical_output_index": index + offset}
                      for index, role in enumerate(("woofer", "mid", "tweeter"))],
     } for side, offset in (("left", 0), ("right", 3))]
     payload["routing"] = {"main_left_group_id": "left", "main_right_group_id": "right"}
+    if not assigned:
+        # A half-assigned layout is a supported stored state (#2145); it still
+        # needs a lane per channel.
+        for channel in payload["speaker_groups"][1]["channels"]:
+            channel["physical_output_index"] = None
     if not subwoofer_supported:
         sub_layout = _passive_stereo_with_sub_topology_payload()
         payload.update({key: sub_layout[key] for key in ("speaker_groups", "routing")})
     resolve = playback_route.resolve_output_layout
     monkeypatch.setattr(playback_route, "resolve_output_layout", lambda topology, **kwargs:
-        replace(resolve(topology, **kwargs), subwoofer_supported=subwoofer_supported))
-    with pytest.raises(sound_active_speaker.OutputTopologyCapabilityBlocked):
+        replace(resolve(topology, **kwargs), transport_channel_count=4, subwoofer_supported=subwoofer_supported))
+    with pytest.raises(sound_active_speaker.OutputTopologyCapabilityBlocked) as caught:
         sound_setup._save_output_topology_payload(payload)
     _, refusal = _event_record(caplog, "sound.output_topology_save")
+    assert caught.value.code == refusal["reason"]
     assert refusal["result"] == "blocked"
     assert refusal["reason"] == ("active_playback_route_too_narrow" if subwoofer_supported
                                  else "active_playback_subwoofer_not_supported")
@@ -2331,12 +2337,6 @@ def test_a_roleful_layout_on_the_innomaker_is_accepted_with_a_drivable_route(
     assert topo_path.exists()
     roleful = saved["output_topology"]["speaker_groups"][-1]
     assert roleful["mode"] == ("active_2_way" if shape["active"] else "subwoofer")
-
-    route = saved["active_playback_route"]
-    assert route["playback_device_source"] == OUTPUTD_ACTIVE_LANE_SOURCE
-    assert route["transport_channel_count"] == 2
-    assert route["issues"] == []
-    assert route["ready"] is True
 
 
 def test_topology_save_kicks_hardware_and_grouping_reconcile(
@@ -2892,13 +2892,6 @@ def test_output_topology_payload_serializes_with_populated_hardware_state(
     hardware = envelope["output_hardware"]
     assert isinstance(hardware, dict)
     assert hardware["status"] == "ready"
-    assert envelope["active_playback_route"]["kind"] == (
-        "jts_active_speaker_playback_route_capability"
-    )
-    assert envelope["active_playback_route"]["playback_device_source"] == (
-        "outputd_active_lane"
-    )
-    assert envelope["active_playback_route"]["transport_channel_count"] == 2
     assert envelope["hardware_adoption"]["allowed"] is True
     # #2812 S5: the JS mismatch card (and #2819's re-pin offer nested inside
     # it) is a pure proxy for this key now — it does not recompute the rule
@@ -3517,12 +3510,6 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
         get_resp = urllib.request.urlopen(f"{base}/output-topology")
         get_payload = json.loads(get_resp.read().decode("utf-8"))
         assert get_payload["output_topology"]["status"] == "draft"
-        # Stage 2: the DAC8x declares an active outputd lane, so the route
-        # resolves to that lane (not a direct-DAC route) at its full width.
-        assert get_payload["active_playback_route"]["playback_device_source"] == (
-            "outputd_active_lane"
-        )
-        assert get_payload["active_playback_route"]["transport_channel_count"] == 8
 
         post_resp = request_with_csrf(
             base,
@@ -3534,7 +3521,6 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
         )
         post_payload = json.loads(post_resp.read().decode("utf-8"))
         assert post_payload["output_topology"]["safety"]["sound_tests_allowed"] is False
-        assert post_payload["active_playback_route"]["transport_channel_count"] == 8
 
 
 def test_sound_output_topology_reset_http_route_is_csrf_protected(

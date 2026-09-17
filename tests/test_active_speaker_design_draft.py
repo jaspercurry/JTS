@@ -42,7 +42,7 @@ def _topology() -> OutputTopology:
 def test_installation_round_trips_without_changing_driver_authority(tmp_path):
     manual = {"drivers": [{"role": "woofer", "target_id": "mono:woofer", "model": "Test driver"}],
               "driver_spacing_mm": 150}
-    before = build_design_draft(_topology(), manual_settings=manual)
+    before = save_design_draft(_topology(), manual_settings=manual, path=tmp_path / 'draft.json')
     facts = {"amplifier_model": "TPA3255", "amplifier_gain_control": "Fixed; volume in software", "supply_voltage_v": 36,
              "passive_radiator_model": "E180HE-PR", "passive_radiator_added_mass_g": 0}
     manual['drivers'][0]['installation'] = facts
@@ -426,7 +426,7 @@ def test_load_design_draft_fails_soft_on_unsupported_schema(tmp_path: Path):
     assert payload["issues"][0]["code"] == "design_draft_unsupported_schema"
 
 
-def test_load_drops_old_request_and_reply_digests_without_losing_values(tmp_path: Path) -> None:
+def test_legacy_digests_are_ignored_on_read_and_dropped_on_save(tmp_path: Path) -> None:
     from tests.test_active_speaker_driver_safety import (
         _manual_settings, _operator_inputs, _research_result,
     )
@@ -873,9 +873,6 @@ def test_declared_driver_spacing_m_survives_the_normalised_persisted_draft():
 
 
 def test_build_design_draft_does_not_raise_with_driver_class_set():
-    """Gotcha #1's regression signature: a save-time 500 from a driver-safety
-    allowlist that wasn't updated in lockstep with design_draft.py's own."""
-
     payload = build_design_draft(
         _topology(),
         manual_settings={
@@ -904,10 +901,7 @@ def test_build_design_draft_does_not_raise_with_driver_class_set():
         "attenuation_db": -14.4,
         "effective_impedance_ohm": 8.4,
     }
-    # driver_safety_profile is also built from the SAME manual_settings
-    # record (build_design_draft always tries it when an active crossover
-    # pair exists) -- confirm it too survived the re-validation.
-    assert payload["driver_safety_profile"] is not None
+    assert design_draft_view(payload)["driver_safety_profile"] is not None
 
 
 def test_driver_class_rejects_unsupported_value():

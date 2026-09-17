@@ -66,13 +66,11 @@ _sequence = _fields._sequence
 _reject_unknown_keys = _fields._reject_unknown_keys
 
 
-DRIVER_SAFETY_FIELDS = tuple(key for key in (
-    "hard_excitation_band_hz",
-    "required_protection_filters",
-    "measurement_band_hz",
-    "level_duration_limits",
-    "cabinet",
-) if key in MANUAL_DRIVER_FIELDS)
+DRIVER_SAFETY_FIELDS = (
+    "hard_excitation_band_hz", "required_protection_filters",
+    "measurement_band_hz", "level_duration_limits", "cabinet",
+)
+assert set(DRIVER_SAFETY_FIELDS) <= set(MANUAL_DRIVER_FIELDS)
 
 
 def _canonical_json(value: Any) -> str:
@@ -574,47 +572,6 @@ def normalise_driver_safety_fields(
             value.get("field_provenance"), f"{field_name}.field_provenance"
         )
     return out
-
-
-def validate_driver_research_result_shape(raw: Any) -> None:
-    """Check the version and container shapes of a research result."""
-
-    if not isinstance(raw, Mapping):
-        raise DriverSafetyProfileError("driver_research must be an object")
-    if type(raw.get("artifact_schema_version")) is not int:  # noqa: E721
-        raise DriverSafetyProfileError(
-            "driver_research.artifact_schema_version must be integer 2"
-        )
-    if raw.get("artifact_schema_version") != DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:
-        raise DriverSafetyProfileError(
-            "driver_research.artifact_schema_version must be integer 2"
-        )
-    if raw.get("kind") != DRIVER_RESEARCH_KIND:
-        raise DriverSafetyProfileError(
-            f"driver_research.kind must be {DRIVER_RESEARCH_KIND}"
-        )
-    for index, driver in enumerate(
-        _sequence(raw.get("drivers"), "driver_research.drivers", limit=16)
-    ):
-        if not isinstance(driver, Mapping):
-            raise DriverSafetyProfileError(
-                f"driver_research.drivers[{index}] must be an object"
-            )
-    for index, candidate in enumerate(
-        _sequence(
-            raw.get("crossover_candidates"),
-            "driver_research.crossover_candidates",
-            limit=8,
-        )
-    ):
-        if not isinstance(candidate, Mapping):
-            raise DriverSafetyProfileError(
-                f"driver_research.crossover_candidates[{index}] must be an object"
-            )
-        _reject_bool_tree(
-            {key: value for key, value in candidate.items() if key in MANUAL_CANDIDATE_FIELDS},
-            f"driver_research.crossover_candidates[{index}]",
-        )
 
 
 def build_driver_research_context(
