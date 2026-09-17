@@ -6,7 +6,11 @@ from types import SimpleNamespace
 from jasper.active_speaker.measurement_programs import program
 
 from jasper.active_speaker import commissioning_coordinator as coordinator, plan_run
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_MEASUREMENT_CANDIDATE_REQUIRED
+from jasper.active_speaker.crossover_v2.refusal_copy import (
+    REASON_MEASUREMENT_CANDIDATE_REQUIRED,
+    REASON_MEASUREMENT_TARGETS_MISSING,
+    CrossoverV2Refused,
+)
 from jasper.web import correction_crossover_flow as flow
 from jasper.active_speaker.measurement_programs import available_programs
 from tests.crossover_v2_fixtures import _roles
@@ -54,6 +58,33 @@ def test_a_branches_row_discloses_its_refusal_beside_a_startable_row(monkeypatch
         assert picked[row]["lines"]
     assert picked["speaker/mark"]["action"]["id"] == "run_program"
     assert "code" not in picked["speaker/mark"]
+
+
+def test_a_conductor_context_refusal_discloses_on_its_row_instead_of_500(monkeypatch):
+    """#5340: resolve_conductor_context's typed refusal (e.g. a declared role
+    with no measurement target) escaped ``round_choices`` uncaught and 500'd
+    the envelope route."""
+    def _refuse(*_args, **_kwargs):
+        raise CrossoverV2Refused(
+            "no measurement target for every declared driver",
+            code=REASON_MEASUREMENT_TARGETS_MISSING,
+        )
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context", _refuse,
+    )
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}})
+    monkeypatch.setattr(flow, "handle_status", lambda **kw: ({"active": True,
+        "setup": {"active": True, "status": "ready"}, "capture": None}, 200))
+
+    envelope, code = flow.handle_envelope(selected_program="speaker/mark")
+
+    assert code == 200
+    choices = {c["id"]: c for c in envelope["round_choices"]}
+    assert len(choices) == len(available_programs())
+    selected = choices["speaker/mark"]
+    assert selected["code"] == REASON_MEASUREMENT_TARGETS_MISSING
+    assert "action" not in selected
+    assert selected["lines"]
 
 
 def test_pre_round_choice_survives_a_stopped_run(monkeypatch):

@@ -59,7 +59,9 @@ def round_capture(capture: Mapping[str, Any], verdict: str, *, advertise_capture
 def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict[str, Any]]:
     from .angle_capture import REGIME_BRANCHES, request_for_program  # lazy: measurement planning
     from .crossover_v2.conductor_context import resolve_conductor_context  # lazy: measurement planning
-    from .crossover_v2.refusal_copy import REASON_MEASUREMENT_CANDIDATE_REQUIRED, refusal_copy_for  # lazy: measurement planning
+    from .crossover_v2.refusal_copy import (  # lazy: measurement planning
+        CrossoverV2Refused, REASON_MEASUREMENT_CANDIDATE_REQUIRED, refusal_copy_for,
+    )
     from .plan_run import prepare_plan_captures, preview_schedule  # lazy: measurement planning
 
     default = program(load_commissioning_view()["next_action"].get("program") or "speaker")
@@ -79,12 +81,19 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
                 copy, _ = refusal_copy_for(REASON_MEASUREMENT_CANDIDATE_REQUIRED)
                 choice.update(code=REASON_MEASUREMENT_CANDIDATE_REQUIRED, lines=[copy])
             else:
-                context = resolve_conductor_context(status, require_banked_level=False)
-                request = request_for_program(plan, mover=plan.mover or "human")
-                captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
-                facts = preview_schedule(request, captures, context)
-                choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start the round",
-                              "endpoint": "/sound/speaker/crossover/v2/session", "body": {"plan": request.to_dict()}})
+                try:
+                    context = resolve_conductor_context(status, require_banked_level=False)
+                except CrossoverV2Refused as exc:
+                    # Disclosed the way jasper.web._common.refusal_envelope
+                    # renders one: ``str(exc)`` is the household sentence its
+                    # raisers pass; some carry no code.
+                    choice.update(code=exc.code or None, lines=[str(exc)])
+                else:
+                    request = request_for_program(plan, mover=plan.mover or "human")
+                    captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
+                    facts = preview_schedule(request, captures, context)
+                    choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start the round",
+                                  "endpoint": "/sound/speaker/crossover/v2/session", "body": {"plan": request.to_dict()}})
         choices.append(choice)
     return choices
 
