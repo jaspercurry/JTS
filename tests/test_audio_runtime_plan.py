@@ -1064,7 +1064,7 @@ def test_the_lane_arms_on_exactly_the_dumb_member_cells():
     """
     from jasper.fanin_coupling import dac_content_lane_marker_armed
     from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
-    from jasper.multiroom.reconcile import outputd_grouping_env
+    from jasper.multiroom.grouping_env import outputd_grouping_env
 
     for label, cfg, endpoint, flat, expected_armed in _T5_CELLS:
         assert _t5_decision(cfg, endpoint, flat).armed is expected_armed, label
