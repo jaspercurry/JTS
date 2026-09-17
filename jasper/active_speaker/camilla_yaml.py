@@ -79,6 +79,7 @@ from .profile import (
     lowest_driver_role,
     required_driver_roles,
 )
+from .rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
 from .test_signal_plan import (
     declared_protection_floor_hz,
     protective_tweeter_highpass_frequency_hz,
@@ -527,6 +528,103 @@ def _with_dynamic_bass(text: str, preset: ActiveSpeakerPreset, descriptor: Mappi
     return header + "\n" + yaml.safe_dump(decorated, sort_keys=False)
 
 
+def _rear_stage_channels(preset: ActiveSpeakerPreset) -> tuple[int, int, int] | None:
+    """``(front woofer, rear woofer, tweeter)`` of the one cabinet a rear
+    calibration document describes, or ``None`` when this preset is not one.
+
+    ADR-0318: one document, one mono cabinet of exactly three declared outputs.
+    """
+    outputs = preset.channel_map.outputs
+    rear = [output for output in outputs if output.output_variant == "rear"]
+    if (
+        preset.channel_map.layout != "mono"
+        or preset.local_subwoofer is not None
+        or len(outputs) != 3
+        or len(rear) != 1
+    ):
+        return None
+    front = [
+        output for output in outputs
+        if output.output_variant != "rear" and output.driver_role == rear[0].driver_role
+    ]
+    tweeter = [output for output in outputs if output.driver_role != rear[0].driver_role]
+    if len(front) != 1 or len(tweeter) != 1:
+        return None
+    return front[0].index, rear[0].index, tweeter[0].index
+
+
+def _validated_rear_calibration(
+    document: Mapping[str, Any] | None, *, sample_rate: int
+) -> dict[str, Any] | None:
+    if not document:
+        return None
+    try:
+        return read_rear_calibration(document, sample_rate=sample_rate)
+    except RearCalibrationError as exc:
+        raise ActiveSpeakerConfigError(f"rear calibration is invalid: {exc}") from exc
+
+
+def rear_branch_sum_headroom_db(document: Mapping[str, Any] | None) -> float:
+    """Worst case of the two unmuted rear branches summing in phase, dB.
+
+    Charged pre-split beside the room-PEQ boost: the branch sum is the one place
+    the cardioid stage can exceed the program it was handed. Filter magnitude is
+    deliberately NOT modelled — ``rear_calibration``'s vocabulary bounds every
+    chain filter to |H| <= 1 — except a resonant high/low-pass, whose <= 1.25 dB
+    peak at the document's Q ceiling this charge does not include.
+    """
+    rear = (document or {}).get("rear") or {}
+    if not document or document.get("rear_muted") or rear.get("mode") != "branches":
+        return 0.0
+    total = sum(
+        10.0 ** (float(rear[branch]["gain_db"]) / 20.0)
+        for branch in ("bass", "cancellation")
+        if not rear[branch]["muted"]
+    )
+    return max(0.0, 20.0 * math.log10(total)) if total > 0.0 else 0.0
+
+
+def _with_rear_calibration(
+    text: str, preset: ActiveSpeakerPreset, document: Mapping[str, Any] | None
+) -> str:
+    """Splice the compiled cardioid stage in after the split, before every role chain."""
+    if not document:
+        return text
+    channels = _rear_stage_channels(preset)
+    if channels is None:
+        raise ActiveSpeakerConfigError(
+            "rear calibration requires a mono cabinet of one front woofer, "
+            "one rear woofer and one tweeter"
+        )
+    front_channel, rear_channel, tweeter_channel = channels
+    base = yaml.safe_load(text)
+    try:
+        stage = compile_rear_stage(
+            document,
+            front_channel=front_channel,
+            rear_channel=rear_channel,
+            tweeter_channel=tweeter_channel,
+            channel_count=_output_count(preset),
+            sample_rate=int(base["devices"]["samplerate"]),
+        )
+    except RearCalibrationError as exc:
+        raise ActiveSpeakerConfigError(f"rear calibration is invalid: {exc}") from exc
+    for section, additions in (("filters", stage["filters"]), ("mixers", stage["mixers"])):
+        if set(base[section]) & set(additions):
+            raise ActiveSpeakerConfigError("rear calibration conflicts with the static speaker tune")
+        base[section].update(additions)
+    split = [
+        index
+        for index, step in enumerate(base["pipeline"])
+        if step.get("type") == "Mixer" and str(step.get("name", "")).startswith("split_active_")
+    ]
+    if len(split) != 1:
+        raise ActiveSpeakerConfigError("rear calibration needs exactly one active split mixer to follow")
+    base["pipeline"][split[0] + 1 : split[0] + 1] = stage["pipeline"]
+    header = "\n".join(line for line in text.splitlines() if line.startswith("#"))
+    return header + "\n" + yaml.safe_dump(base, sort_keys=False)
+
+
 def _assert_tweeter_crossover_honours_declared_floor(
     preset: ActiveSpeakerPreset,
 ) -> None:
@@ -594,7 +692,9 @@ def _assert_tweeter_crossover_honours_declared_floor(
     )
 
 
-def _assert_tweeter_outputs_protected(yaml_text: str, preset: ActiveSpeakerPreset) -> None:
+def _assert_tweeter_outputs_protected(
+    yaml_text: str, preset: ActiveSpeakerPreset, *, decorated: bool = False,
+) -> None:
     """Fail-closed L0 emit gate: refuse a graph with an unprotected tweeter output.
 
     Runs on every active-speaker graph this module emits, right before it is
@@ -613,9 +713,22 @@ def _assert_tweeter_outputs_protected(yaml_text: str, preset: ActiveSpeakerPrese
     tweeter_channels = _channels_for_role(preset, "tweeter")
     if not tweeter_channels:
         return
-    view = view_from_emitted_text(yaml_text)
+    # ``decorated`` picks the view, and the choice is itself a check: the text
+    # view REFUSES CamillaDSP's re-serialised dialect, which is how it catches
+    # emitter drift, so an undecorated graph must still read in the emitter's
+    # own spelling. Only a graph a decoration (dynamic bass, the rear
+    # calibration stage) has re-serialised is read back parsed.
+    if decorated:
+        try:
+            view = view_from_yaml_dict(yaml.safe_load(yaml_text))
+        except yaml.YAMLError as exc:
+            raise ActiveSpeakerConfigError(
+                f"decorated active-speaker config did not parse as YAML: {exc}"
+            ) from exc
+    else:
+        view = view_from_emitted_text(yaml_text)
     unprotected = unprotected_tweeter_outputs(
-        view, tweeter_channels=set(tweeter_channels)
+        view, tweeter_channels=set(tweeter_channels),
     )
     if not unprotected:
         return
@@ -1595,10 +1708,12 @@ def program_headroom_db(
     room_peqs: Sequence[PeqFilter] = (),
     baseline_headroom_db: float = BASELINE_HEADROOM_DB,
     output_trim_db: float = 0.0,
+    rear_calibration: Mapping[str, Any] | None = None,
 ) -> float:
     """Total program attenuation in dB, including shared gains and branch peaks."""
     return (baseline_headroom_db + total_positive_boost_db(room_peqs)
             + linearization_headroom_db(linearization, branch_context=branch_context)
+            + rear_branch_sum_headroom_db(rear_calibration)
             + max(0.0, output_trim_db))
 
 
@@ -1716,6 +1831,7 @@ def _emit_baseline_filter_definitions(
     output_trim_db: float = 0.0,
     linearization: dict[str, list[dict[str, Any]]] | None = None,
     blend_correction: Sequence[Mapping[str, Any]] = (),
+    rear_calibration: Mapping[str, Any] | None = None,
 ) -> str:
     lines: list[str] = []
     room_peqs = tuple(room_peqs)
@@ -1764,6 +1880,7 @@ def _emit_baseline_filter_definitions(
     total_headroom_db = program_headroom_db(
         linearization, baseline_headroom_db=baseline_headroom_db,
         room_peqs=room_peqs, output_trim_db=output_trim_db,
+        rear_calibration=rear_calibration,
         branch_context=_branch_context(preset, corrections) if linearization_has_boost(linearization) else {},
     )
     if total_headroom_db > MAX_PROGRAM_HEADROOM_DB:
@@ -3350,6 +3467,7 @@ def emit_active_speaker_baseline_config(
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     blend_correction: Sequence[Mapping[str, Any]] | None = None,
+    rear_calibration: Mapping[str, Any] | None = None,
 ) -> str:
     """Build an accepted active-speaker baseline candidate.
 
@@ -3373,6 +3491,11 @@ def emit_active_speaker_baseline_config(
     * ``blend_correction`` — the crossover blend region's summed-response-owned
       shape correction, flat rather than per-role because it describes the SUM;
       see ``_emit_baseline_pipeline`` for what that placement buys.
+
+    ``rear_calibration`` is the ``jts_rear_calibration`` electrical document for
+    this cabinet. Present, it compiles to the cardioid stage spliced straight
+    after the split mixer, upstream of every role chain, and the rear output
+    plays; absent, the rear output stays terminally muted.
 
     ``linearization`` (Layer 1a) is the per-driver stage the fit engine designs,
     in the REDUCED shape ``{role: [{biquad_type, freq, q, gain}, ...]}``. Each
@@ -3426,6 +3549,7 @@ def emit_active_speaker_baseline_config(
     safe_corrections = _validated_driver_corrections(preset, corrections)
     safe_linearization = _validated_linearization(preset, linearization)
     safe_blend_correction = _validated_blend_correction(blend_correction)
+    safe_rear_calibration = _validated_rear_calibration(rear_calibration, sample_rate=sample_rate)
 
     emitted_preference_filters = tuple(preference_filters)
     room_peqs = tuple(room_peqs)
@@ -3445,6 +3569,7 @@ def emit_active_speaker_baseline_config(
         output_trim_db=output_trim_db,
         linearization=safe_linearization,
         blend_correction=safe_blend_correction,
+        rear_calibration=safe_rear_calibration,
     )
     # apply_region_polarity=False: this graph carries polarity through
     # ``safe_corrections`` (a per-driver Gain filter below), so the mixer must
@@ -3507,16 +3632,24 @@ pipeline:
 {pipeline_yaml}
 """
 
-    # L0 emit gate (fail-closed): the durable (unmuted) baseline is the graph a
-    # household plays through, so re-prove every tweeter output carries its
-    # crossover / protective high-pass before it can leave the emitter.
-    _assert_tweeter_outputs_protected(yaml, preset)
-    # Reference-closure gate (fail-closed): the baseline assembles its
-    # filters/mixer/pipeline from independent helper calls, exactly as the
-    # program graph does.
-    _assert_pipeline_references_closed(yaml, preset)
+    yaml = _with_dynamic_bass(yaml, preset, bass_extension)
+    # The rear output plays only behind its own fitted stage; without one it stays
+    # terminally muted (ADR-0318, issue #5161).
+    yaml = (
+        _with_rear_calibration(yaml, preset, safe_rear_calibration)
+        if safe_rear_calibration
+        else _mute_unfitted_rear_outputs(yaml, preset)
+    )
 
-    yaml = _mute_unfitted_rear_outputs(_with_dynamic_bass(yaml, preset, bass_extension), preset)
+    # L0 emit gates (fail-closed), on the FINAL graph so every decoration is
+    # inside them: the durable (unmuted) baseline is what a household plays
+    # through, so re-prove every tweeter output carries its crossover /
+    # protective high-pass, and that the pipeline the baseline assembled from
+    # independent helper calls references nothing undefined.
+    _assert_tweeter_outputs_protected(
+        yaml, preset, decorated=bool(bass_extension or safe_rear_calibration),
+    )
+    _assert_pipeline_references_closed(yaml, preset)
 
     if out_path is not None:
         out_path = Path(out_path)

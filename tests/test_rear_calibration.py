@@ -12,9 +12,9 @@ from jasper.active_speaker.rear_calibration import (
 from jasper.cli.crossover_prescriber import main
 
 
-def _compile(data):
+def _compile(data, *, subsample=False):
     return compile_rear_stage(data, front_channel=4, rear_channel=6, tweeter_channel=5,
-                              channel_count=8, sample_rate=48000)
+                              channel_count=8, sample_rate=48000, subsample=subsample)
 
 
 def test_stage_preserves_other_outputs_and_separates_rear_branch_timing():
@@ -27,7 +27,9 @@ def test_stage_preserves_other_outputs_and_separates_rear_branch_timing():
     filters = stage["filters"]
     assert filters["rear_out6_front_delay"]["parameters"]["delay"] == 2.5
     assert filters["rear_out6_bass_delay"]["parameters"]["delay"] == 2.5
-    assert filters["rear_out6_cancellation_delay"]["parameters"] == {"delay": 3.64, "unit": "ms", "subsample": True}
+    assert filters["rear_out6_cancellation_delay"]["parameters"] == {"delay": 3.64, "unit": "ms"}
+    assert _compile(data, subsample=True)["filters"]["rear_out6_cancellation_delay"]["parameters"] == {
+        "delay": 3.64, "unit": "ms", "subsample": True}
     assert filters["rear_out6_cancellation_gain"]["parameters"] == {"gain": -0.84, "inverted": True, "mute": False}
     assert filters["rear_out6_bass_gain"]["parameters"] == {"gain": 0, "inverted": False, "mute": True}
     assert filters["rear_out6_common_5_delay"]["parameters"]["delay"] == 2
@@ -67,7 +69,7 @@ def test_fir_replaces_both_branches_without_adding_declared_latency_twice():
         _compile(data)
 
 
-@pytest.mark.parametrize("field,value", [("gain_db", None), ("delay_ms", True), ("gain_db", "0"), ("gain_db", float("nan")), ("gain_db", 151), ("gain_db", -151), ("inverted", 1)])
+@pytest.mark.parametrize("field,value", [("gain_db", None), ("delay_ms", True), ("gain_db", "0"), ("gain_db", float("nan")), ("gain_db", 0.1), ("gain_db", -151), ("inverted", 1)])
 def test_electrical_values_are_explicit_numbers_and_booleans(field, value):
     data = diagnostic_seed(48000)
     data["rear"]["bass"][field] = value

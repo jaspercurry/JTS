@@ -118,6 +118,7 @@ from .profile import (
     SUB_CROSSOVER_ORDER,
     SUPPORTED_LR_ORDERS,
 )
+from .rear_calibration import RearCalibrationError, compile_rear_stage
 
 logger = logging.getLogger(__name__)
 
@@ -1461,6 +1462,102 @@ def _post_split_filter_names(
     return tuple(out)
 
 
+def _rear_cabinet_channels(contract: OutputContract) -> tuple[int, int, int] | None:
+    """``(front woofer, rear woofer, tweeter)`` of the one mono cabinet a rear
+    calibration document describes, re-derived from the SAVED topology rather
+    than from the emitter's preset."""
+    roleful = [
+        item for item in contract.roleful_assignments
+        if item.physical_output_index is not None
+    ]
+    rear = [item for item in roleful if item.output_variant == "rear"]
+    if len(roleful) != 3 or len(rear) != 1:
+        return None
+    front = [
+        item for item in roleful
+        if item.output_variant != "rear" and item.role == rear[0].role
+    ]
+    tweeter = [item for item in roleful if item.role != rear[0].role]
+    if len(front) != 1 or len(tweeter) != 1:
+        return None
+    return (
+        int(front[0].physical_output_index),
+        int(rear[0].physical_output_index),
+        int(tweeter[0].physical_output_index),
+    )
+
+
+def _rear_stage_evidence(
+    payload: dict[str, Any],
+    *,
+    contract: OutputContract,
+    document: Mapping[str, Any] | None,
+) -> tuple[dict[int, int], tuple[str, ...], str | None]:
+    """``(stage names to skip per channel, the stage's mixer names, why unproven)``.
+
+    The stage is proved by RECOMPILING it from the saved document and requiring
+    the graph's leading post-split fragment to EQUAL the result: filters by name
+    AND value, both branch mixers, the step order, and each step's channels. A
+    name pattern proves nothing — the channel a step is pointed at, a filter's
+    parameters and the branch routing are all outside it.
+
+    No document means no fragment is tolerated: ``rear_out*`` names are then as
+    unrecognised as any other, exactly as before the stage existed.
+    """
+    if not document:
+        return {}, (), None
+    channels = _rear_cabinet_channels(contract)
+    if channels is None:
+        return {}, (), "saved topology is not a mono cabinet with one rear woofer"
+    required = _required_roleful_indexes(contract)
+    devices = payload.get("devices")
+    samplerate = devices.get("samplerate") if isinstance(devices, Mapping) else None
+    if isinstance(samplerate, bool) or not isinstance(samplerate, int):
+        return {}, (), "graph declares no readable sample rate"
+    front_channel, rear_channel, tweeter_channel = channels
+    try:
+        stage = compile_rear_stage(
+            document,
+            front_channel=front_channel,
+            rear_channel=rear_channel,
+            tweeter_channel=tweeter_channel,
+            channel_count=max(required) + 1,
+            sample_rate=samplerate,
+        )
+    except (RearCalibrationError, TypeError, ValueError) as exc:
+        return {}, (), f"the saved rear calibration does not compile: {exc}"
+    for section in ("filters", "mixers"):
+        defined = payload.get(section)
+        if not isinstance(defined, Mapping) or any(
+            defined.get(name) != definition for name, definition in stage[section].items()
+        ):
+            return {}, (), f"graph {section} are not the compiled rear calibration stage's"
+    pipeline = payload.get("pipeline")
+    fragment = stage["pipeline"]
+    start = next(
+        (
+            index + 1
+            for index, step in enumerate(pipeline)
+            if isinstance(step, Mapping) and step.get("type") == "Mixer"
+            and str(step.get("name") or "").startswith(ACTIVE_SPLIT_MIXER_PREFIX)
+        ),
+        None,
+    ) if isinstance(pipeline, list) else None
+    if start is None or pipeline[start : start + len(fragment)] != fragment:
+        return {}, (), "the leading post-split fragment is not the compiled stage"
+    lead: dict[int, int] = {}
+    for step in fragment:
+        if step["type"] != "Filter":
+            continue
+        for channel in step["channels"]:
+            lead[channel] = lead.get(channel, 0) + len(step["names"])
+    return (
+        lead,
+        tuple(step["name"] for step in fragment if step["type"] == "Mixer"),
+        None,
+    )
+
+
 def _pipeline_names_for_channels(
     payload: dict[str, Any],
     *,
@@ -1727,9 +1824,11 @@ def _linearization_boost_allowance_db(payload: dict[str, Any]) -> float:
     recoverable from the graph, so it is subtracted exactly as the emitter added
     it.
 
-    **Residual slack, stated rather than hidden**: ``output_trim_db`` is folded
-    into the same gain and is NOT recoverable, so with preference EQ present
-    this allowance is generous by at most that trim — never tight. The emitter
+    **Residual slack, stated rather than hidden**: ``output_trim_db`` and the
+    rear calibration branch sum (``camilla_yaml.rear_branch_sum_headroom_db``,
+    at most 6.02 dB) are folded into the same gain and are NOT recoverable, so
+    with preference EQ or a cardioid stage present this allowance is generous by
+    at most those terms — never tight. The emitter
     also adds a caller-supplied ``baseline_headroom_db`` while this subtracts
     the module default; they agree only because every production path takes the
     default 0.0, which a test pins.
@@ -1952,6 +2051,7 @@ def _baseline_output_chain(
     assignment: OutputAssignment,
     channel: int,
     bass_management_highpass: bool,
+    rear_stage_lead: int = 0,
     notes: list[dict[str, str]] | None = None,
 ) -> tuple[tuple[str, str], ...] | None:
     """Prove the exact emitter-owned chain before the canonical limiter.
@@ -1961,7 +2061,7 @@ def _baseline_output_chain(
     Every other ``None`` this returns genuinely means "not the emitter's
     chain", which the caller's own issue already says."""
 
-    names = _post_split_filter_names(payload, channel=channel)
+    names = _post_split_filter_names(payload, channel=channel)[rear_stage_lead:]
     if assignment.role == "subwoofer":
         expected = (
             _sub_lowpass_name(),
@@ -2490,6 +2590,7 @@ def _active_graph_evidence(
     contract: OutputContract,
     summary: dict[str, Any],
     bass_profile_summary: Mapping[str, Any] | None,
+    rear_calibration: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
     # Parse the text ONCE. `payload` gives the two distinct parse-error codes
@@ -2514,15 +2615,27 @@ def _active_graph_evidence(
         ))
         return {"issues": issues, "safe": False}
     view = view_from_yaml_dict(payload)
-    # Until fitted rear transfer/protection is admitted (issue #5161), even a
-    # manually edited graph must leave every rear physical output silent.
+    # A rear physical output plays only behind the calibration stage the SAVED
+    # document compiles to (ADR-0318). Anything else — no document, a stage that
+    # is not that one, every emitter but the baseline's — must stay silent.
+    rear_lead, rear_stage_mixers, rear_unproven = _rear_stage_evidence(
+        payload, contract=contract, document=rear_calibration,
+    )
     for assignment in contract.assignments:
         if assignment.output_variant == "rear" and assignment.physical_output_index is not None:
             index = assignment.physical_output_index
-            if not output_terminally_muted(
+            if index in rear_lead or output_terminally_muted(
                 payload, view, index, mute_name=f"as_out{index}_rear_pending_mute",
                 mute_gain_db=STARTUP_MUTE_GAIN_DB,
             ):
+                continue
+            if rear_calibration:
+                issues.append(_issue(
+                    "blocker", "rear_stage_unproven",
+                    f"Rear output {index + 1} does not carry the saved rear "
+                    f"calibration stage: {rear_unproven}",
+                ))
+            else:
                 issues.append(_issue("blocker", "rear_output_not_muted", f"Rear output {index + 1} requires a fitted transfer and protection"))
     if payload.get("processors") or any(
         not isinstance(step, Mapping) or step.get("type") not in {"Filter", "Mixer"}
@@ -2657,11 +2770,13 @@ def _active_graph_evidence(
         if len(active_way_counts) == 1
         else None
     )
+    # A proven rear calibration stage adds exactly the branch mixers the
+    # recompiled fragment wires, in its order; nothing else is post-split.
     expected_mixers = (
         (_channel_select_mixer_name, expected_split)
         if is_driver_domain and expected_split is not None
         else ((expected_split,) if expected_split is not None else ())
-    )
+    ) + (rear_stage_mixers if expected_split is not None else ())
     if tuple(mixer_names) != expected_mixers:
         issues.append(_issue(
             "blocker",
@@ -3072,6 +3187,7 @@ def _active_graph_evidence(
                 bass_management_highpass=(
                     contract.subwoofer_present and index in mains_low_outputs
                 ),
+                rear_stage_lead=rear_lead.get(index, 0),
                 notes=chain_notes,
             )
             if crossovers is None:
@@ -3103,7 +3219,9 @@ def _active_graph_evidence(
                     for output, item in by_output.items()
                     if item.role == role
                 }
-                post_split_names = _post_split_filter_names(payload, channel=index)
+                post_split_names = _post_split_filter_names(
+                    payload, channel=index,
+                )[rear_lead.get(index, 0):]
                 limiter_index = post_split_names.index(limiter_name)
                 expected_names = post_split_names[: limiter_index + 1]
                 if index == min(role_channels) and not _canonical_chain_grouped(
@@ -3308,9 +3426,10 @@ def _active_graph_allowed(
     summary: dict[str, Any],
     staged_config: dict[str, Any] | None,
     bass_profile_summary: Mapping[str, Any] | None,
+    rear_calibration: Mapping[str, Any] | None,
 ) -> GraphSafety:
     evidence = _active_graph_evidence(
-        text, contract, summary, bass_profile_summary
+        text, contract, summary, bass_profile_summary, rear_calibration
     )
     issues = list(evidence.get("issues") or [])
     classification = GRAPH_UNSAFE
@@ -3570,6 +3689,7 @@ def classify_camilla_graph(
     text: str | None = None,
     staged_config: dict[str, Any] | None = None,
     bass_profile_summary: Mapping[str, Any] | None = None,
+    rear_calibration: Mapping[str, Any] | None = None,
 ) -> GraphSafety:
     """Return whether a CamillaDSP graph is legal for the saved topology."""
 
@@ -3651,6 +3771,7 @@ def classify_camilla_graph(
             summary=summary,
             staged_config=staged_config,
             bass_profile_summary=bass_profile_summary,
+            rear_calibration=rear_calibration,
         )
     elif camilla_class == CAMILLA_CLASS_ACTIVE_PARKED:
         # No staged-metadata authority here on purpose: a parked graph is
@@ -3791,6 +3912,14 @@ def _classify_bass_extension_snapshot(
         text=graph_text,
         staged_config=staged,
         bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
+        # The rear calibration section travels in the SAME saved snapshot the
+        # bass descriptor does, and is the only authority the stage is proved
+        # against. Absent, a rear output must be terminally muted.
+        rear_calibration=(
+            snapshot.get("rear_calibration")
+            if isinstance(snapshot.get("rear_calibration"), Mapping)
+            else None
+        ),
     )
     return replace(
         graph,

@@ -41,13 +41,14 @@ from jasper.audio_measurement.room_limits import (
     ROOM_PEQ_Q_MIN,
 )
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
-from jasper.camilla_config_contract import PeqFilter, total_positive_boost_db
+from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE, PeqFilter, total_positive_boost_db
 from jasper.json_fields import finite_float
 
-from ._common import require_sha256_hex
+from ._common import issue, require_sha256_hex
 from .camilla_yaml import (
     _channels_for_role,
     _driver_delay_name,
+    _rear_stage_channels,
     _role_polarity,
     emit_active_speaker_baseline_config,
 )
@@ -62,6 +63,11 @@ from .profile import (
     CrossoverRegion,
     required_driver_roles,
     declared_role_delays,
+)
+from .rear_calibration import (
+    MIN_CHAIN_GAIN_DB,
+    RearCalibrationError,
+    read_rear_calibration,
 )
 
 SCHEMA_VERSION = 1
@@ -96,6 +102,7 @@ _OPTIONAL_FIELD_TYPES: Mapping[str, type] = {
     "blend_correction": list,
     "room_correction": dict,
     "bass_extension": dict,
+    "rear_calibration": dict,
 }
 
 _ROOM_CORRECTION_KEYS = frozenset({
@@ -137,6 +144,62 @@ def _region_for_role(preset: ActiveSpeakerPreset, role: str) -> CrossoverRegion:
             f"driver role {role!r} must identify exactly one crossover region",
         )
     return matches[0]
+
+
+def _validated_rear_calibration(
+    raw: Mapping[str, Any], preset: ActiveSpeakerPreset
+) -> dict[str, Any]:
+    """This cabinet's electrical cardioid document, or a typed refusal.
+
+    Runtime v1 (ADR-0318): one mono cabinet, electrical settings, two summed
+    rear branches. An acoustic-target or FIR document still validates as a
+    handoff — it just cannot be the section a runtime graph is compiled from.
+    """
+    if _rear_stage_channels(preset) is None:
+        _refuse(
+            "rear_calibration_topology_unsupported",
+            "rear calibration needs a mono cabinet of one front woofer, "
+            "one rear woofer and one tweeter",
+        )
+    try:
+        document = read_rear_calibration(raw, sample_rate=DEFAULT_SAMPLE_RATE)
+    except RearCalibrationError as exc:
+        _refuse("rear_calibration_invalid", str(exc))
+    if document["case"] != "electrical_dsp":
+        _refuse(
+            "rear_calibration_case_unsupported",
+            "a runtime rear calibration carries electrical settings, not acoustic targets",
+        )
+    if document["rear"]["mode"] != "branches":
+        _refuse(
+            "rear_calibration_mode_unsupported",
+            "a runtime rear calibration carries two summed rear branches, not a FIR",
+        )
+    return document
+
+
+#: The cabinet's woofers are both silent — a tuning the owner should see, not a
+#: refusal: a document may legitimately park the rear while the front is fitted.
+REAR_CALIBRATION_TWEETER_ONLY = "rear_calibration_cabinet_tweeter_only"
+
+
+def _chain_is_silent(chain: Mapping[str, Any]) -> bool:
+    return bool(chain["muted"]) or float(chain["gain_db"]) <= MIN_CHAIN_GAIN_DB
+
+
+def _rear_calibration_disclosure(document: Mapping[str, Any]) -> dict[str, str] | None:
+    """A warning when the document leaves only the tweeter audible."""
+    rear = document["rear"]
+    rear_silent = bool(document["rear_muted"]) or all(
+        _chain_is_silent(rear[branch]) for branch in ("bass", "cancellation")
+    )
+    if not rear_silent or not _chain_is_silent(document["front"]):
+        return None
+    return issue(
+        "warning",
+        REAR_CALIBRATION_TWEETER_ONLY,
+        "this rear calibration silences both woofers; only the tweeter plays",
+    )
 
 
 def _validated_room_correction(
@@ -394,6 +457,12 @@ class MeasuredCrossoverCandidate:
     room layer's limits. Per-side sets are DATA today — the emitter takes one
     list (:func:`candidate_room_peqs`) and per-side emission arrives later.
 
+    ``rear_calibration`` is this cabinet's ``jts_rear_calibration`` electrical
+    document (ADR-0318). Present, the baseline emitter compiles it into the
+    cardioid stage and the rear woofer plays; absent, the rear output stays
+    terminally muted. ``_validated_rear_calibration`` re-checks it here against
+    the runtime's v1 scope.
+
     Every optional field above is frozen through the same exact-JSON-data walk,
     participates in the fingerprint when non-empty, and is omitted from the
     fingerprinted core when empty so a candidate from before the field existed
@@ -413,6 +482,7 @@ class MeasuredCrossoverCandidate:
     blend_correction: Sequence[Mapping[str, Any]] = ()
     room_correction: Mapping[str, Any] = field(default_factory=dict)
     bass_extension: Mapping[str, Any] = field(default_factory=dict)
+    rear_calibration: Mapping[str, Any] = field(default_factory=dict)
     fingerprint: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -496,6 +566,12 @@ class MeasuredCrossoverCandidate:
             except ValueError as exc:
                 _refuse(getattr(exc, "reason"), str(exc))
             object.__setattr__(self, "bass_extension", dynamic_bass)
+        if self.rear_calibration:
+            document = _validated_rear_calibration(
+                self.rear_calibration, self.source_preset,
+            )
+            object.__setattr__(self, "rear_calibration", document)
+            self._disclose(_rear_calibration_disclosure(document))
         # A list, not a mapping, so the shape check differs from its neighbours
         # above; the exact-JSON-data walk and the freeze are the same.
         # Cuts-only is enforced at the emitter boundary
@@ -526,6 +602,24 @@ class MeasuredCrossoverCandidate:
         except EvidenceIdentityError as exc:
             _refuse("candidate_invalid", str(exc))
         object.__setattr__(self, "fingerprint", fingerprint)
+
+    def _disclose(self, note: dict[str, str] | None) -> None:
+        """Append one warning to ``analysis["issues"]``, idempotently.
+
+        Reopening a written candidate must not re-append it, or the fingerprint
+        would move on every round trip and read as tampering.
+        """
+        if note is None:
+            return
+        existing = list(self.analysis.get("issues") or [])
+        if any(
+            isinstance(item, Mapping) and item.get("code") == note["code"]
+            for item in existing
+        ):
+            return
+        object.__setattr__(self, "analysis", DspPredecessor(
+            {"analysis": {**self.analysis, "issues": [*existing, note]}}
+        ).state["analysis"])
 
     def _core(self) -> dict[str, Any]:
         """The exact fingerprinted payload (see ``__post_init__``).
@@ -559,6 +653,8 @@ class MeasuredCrossoverCandidate:
             core["room_correction"] = dict(self.room_correction)
         if self.bass_extension:
             core["bass_extension"] = dict(self.bass_extension)
+        if self.rear_calibration:
+            core["rear_calibration"] = dict(self.rear_calibration)
         return core
 
     def to_dict(self) -> dict[str, Any]:
@@ -578,6 +674,7 @@ class MeasuredCrossoverCandidate:
             "blend_correction": [dict(f) for f in self.blend_correction],
             "room_correction": dict(self.room_correction),
             "bass_extension": dict(self.bass_extension),
+            "rear_calibration": dict(self.rear_calibration),
             "fingerprint": self.fingerprint,
         }
 
@@ -679,6 +776,11 @@ class MeasuredCrossoverCandidate:
             _refuse(
                 "bass_extension_malformed", "candidate bass_extension is malformed"
             )
+        rear_calibration_raw = raw.get("rear_calibration", {})
+        if not isinstance(rear_calibration_raw, Mapping):
+            _refuse(
+                "rear_calibration_malformed", "candidate rear_calibration is malformed"
+            )
         try:
             candidate = cls(
                 program_id=str(raw["program_id"]),
@@ -697,6 +799,7 @@ class MeasuredCrossoverCandidate:
                 blend_correction=list(blend_correction_raw),
                 room_correction=dict(room_correction_raw),
                 bass_extension=dict(bass_extension_raw),
+                rear_calibration=dict(rear_calibration_raw),
             )
         except (TypeError, ActiveSpeakerConfigError) as exc:
             raise MeasuredCrossoverCandidateError(
@@ -848,6 +951,7 @@ def compile_candidate_config(
         linearization=linearization,
         blend_correction=list(candidate.blend_correction),
         bass_extension=candidate.bass_extension,
+        rear_calibration=candidate.rear_calibration,
         **emit_kwargs,
     )
 
