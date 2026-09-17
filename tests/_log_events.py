@@ -25,6 +25,7 @@ __all__ = [
     "event_fields_in",
     "event_records",
     "event_records_in",
+    "leaked_lines",
     "parse_event",
     "stderr_event",
     "stderr_events",
@@ -169,7 +170,7 @@ def event_field_maps(
     return maps
 
 
-def never_logged(caplog, needle: str) -> bool:
-    """True when *needle* appears nowhere in the captured log, tracebacks
-    and ``exc_info`` text included — the surface a secret-leak pin needs."""
-    return needle not in caplog.text
+def leaked_lines(caplog: pytest.LogCaptureFixture, needle: str) -> list[str]:
+    """Every captured log line carrying *needle*, tracebacks and ``exc_info``
+    text included — the surface a secret-leak pin needs; empty when clean."""
+    return [line for line in caplog.text.splitlines() if needle in line]

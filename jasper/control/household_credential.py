@@ -80,16 +80,6 @@ SECRET_FILE = os.environ.get(
 )
 
 
-def _stored_secret() -> str:
-    """The stripped household secret on disk, or "" when absent/empty/unreadable.
-
-    Any read error (missing file, permission denied, a directory in its place)
-    resolves to "" — i.e. "not yet paired", never a raise: a grouping request
-    must not 500 because the secret file couldn't be read.
-    """
-    return _secret_file.read(SECRET_FILE)
-
-
 def is_paired() -> bool:
     """True iff a non-empty household secret exists (this speaker is bonded).
 

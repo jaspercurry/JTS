@@ -26,7 +26,7 @@ from tests._gemini_fakes import Response as _Resp
 from tests._gemini_fakes import ResumptionUpdate as _ResumptionUpdate
 from tests._gemini_fakes import ServerContent as _ServerContent
 from tests._gemini_fakes import Transcription as _Transcription
-from tests._log_events import event_fields, event_records, never_logged
+from tests._log_events import event_fields, event_records, leaked_lines
 
 try:
     from google.genai import types
@@ -247,7 +247,7 @@ async def test_turn_failure_events_redact_key(caplog, monkeypatch, operation, ev
     fields = event_fields(caplog, event)
     assert fields["provider"] == "gemini"
     assert fields["detail"]
-    assert never_logged(caplog, conn._api_key)
+    assert not leaked_lines(caplog, conn._api_key)
     (record,) = event_records(caplog, event)
     assert record.levelno == level
     assert record.exc_info is None

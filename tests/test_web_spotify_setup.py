@@ -31,7 +31,7 @@ from jasper.web import spotify_setup
 from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 
 from ._web_test_helpers import assert_canonical_page
-from tests._log_events import never_logged
+from tests._log_events import leaked_lines
 
 
 # ---------------------------------------------------------------------------
@@ -543,7 +543,7 @@ def test_oauth_callback_exchange_failure_flash_is_redacted(monkeypatch, caplog):
     ]
     assert len(flashes) == 1
     assert leaked not in flashes[0]
-    assert never_logged(caplog, leaked)
+    assert not leaked_lines(caplog, leaked)
 
 
 def test_oauth_callback_with_error_redirects_without_exchange(monkeypatch):
