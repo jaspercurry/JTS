@@ -2998,7 +2998,6 @@ import {
     outputTopology.hardwareMismatch = payload && payload.hardware_mismatch || null;
     outputTopology.hardwareRepin = payload && payload.hardware_repin || null;
     outputPage.i2sHat = payload && payload.i2s_hat || outputPage.i2sHat;
-    outputTopology.revision = payload && payload.topology_revision || null;
     outputTopology.error = '';
     outputTopology.dirty = false;
     outputTopology.saving = false;
@@ -3615,13 +3614,6 @@ import {
       return false;
     }
   }
-  function handleTopologyConflict(e, defaultMessage) {
-    if (e.status !== 409 || !e.body || !e.body.output_topology) return false;
-    ingestOutputTopology(e.body);
-    status(e.body.error || defaultMessage, true);
-    render();
-    return true;
-  }
   async function saveOutputTopology(options) {
     options = options || {};
     if (!outputTopology.draft) return;
@@ -3631,8 +3623,7 @@ import {
     render();
     try {
       var payload = await postJSON('./output-topology', {
-        output_topology: outputTopology.draft,
-        topology_revision: outputTopology.revision
+        output_topology: outputTopology.draft
       });
       ingestOutputTopology(payload);
       // The refusal card names the carrier this save just replaced, so a fixed
@@ -3662,15 +3653,6 @@ import {
         needsAttention
       );
     } catch (e) {
-      if (handleTopologyConflict(e, 'Speaker layout changed; refresh before saving.')) {
-        // handleTopologyConflict already rendered once with the ingested
-        // topology; outputTopology.error is the one field save alone needs
-        // on top of that, so it re-renders to show the refusal card instead
-        // of leaving the freshly-ingested (editable-looking) topology up.
-        outputTopology.error = e.body.error || 'Speaker layout changed; refresh before saving.';
-        render();
-        return;
-      }
       outputTopology.saving = false;
       outputTopology.error = e.message;
       status('Could not save speaker layout: ' + e.message, true);
@@ -3688,11 +3670,7 @@ import {
     outputTopology.error = '';
     render();
     try {
-      var payload = await postJSON('./output-topology/reset', {
-        topology_revision: outputTopology.revision,
-        detected_hardware_identity: outputTopology.hardwareAdoption &&
-          outputTopology.hardwareAdoption.identity
-      });
+      var payload = await postJSON('./output-topology/reset', {});
       ingestOutputTopology(payload);
       patchActiveSpeaker({
         commissioningView: null,
@@ -3723,9 +3701,6 @@ import {
         status(resetStatus.message || 'Speaker setup was reset. Audio is off until you choose a speaker layout.');
       }
     } catch (e) {
-      if (handleTopologyConflict(
-        e, 'Speaker setup or detected hardware changed. Review it and try again.'
-      )) return;
       outputTopology.resetting = false;
       status('Could not reset speaker setup: ' + e.message, true);
     }
@@ -3748,11 +3723,7 @@ import {
     outputTopology.error = '';
     render();
     try {
-      var payload = await postJSON('./output-topology/repin', {
-        topology_revision: outputTopology.revision,
-        detected_hardware_identity: outputTopology.hardwareAdoption &&
-          outputTopology.hardwareAdoption.identity
-      });
+      var payload = await postJSON('./output-topology/repin', {});
       ingestOutputTopology(payload);
       await refreshCommissioningView();
       outputPage.stepOverride = '';
@@ -3765,9 +3736,6 @@ import {
         status(repinStatus.message || 'Pinned the new DAC and kept your speaker setup.');
       }
     } catch (e) {
-      if (handleTopologyConflict(
-        e, 'Speaker setup or detected hardware changed. Review it and try again.'
-      )) return;
       outputTopology.repinning = false;
       status('Could not pin the new DAC: ' + e.message, true);
     }

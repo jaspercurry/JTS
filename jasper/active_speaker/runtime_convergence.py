@@ -2,14 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Park, commit, and live-converge output topology through CamillaDSP.
-
-``runtime_contract`` owns which graph is safe. This module owns the effectful
-topology transaction after that proof. It deliberately does not render DAC
-configs, reconcile hardware, or write outputd state; those belong to the root
-audio-hardware reconciler. It only stops outputd before topology publication so
-an already-armed direct DAC lane cannot bypass the parked CamillaDSP graph.
-"""
+"""Park, commit, and live-converge output topology through CamillaDSP."""
 
 from __future__ import annotations
 
@@ -33,6 +26,7 @@ from jasper.output_topology import (
     OutputTopology,
     load_output_topology_strict,
     stamp_statefile_convergence,
+    topology_config_fingerprint,
 )
 from jasper.service_units import OUTPUTD_SERVICE
 
@@ -41,20 +35,20 @@ OUTPUTD_UNIT = OUTPUTD_SERVICE
 
 @dataclass(frozen=True)
 class RuntimeConvergenceResult:
-    """One attempted live-graph convergence."""
-
-    decision: SafeGraphDecision
+    decision: SafeGraphDecision | None
     live_applied: bool
     error: str | None = None
 
     @property
     def ok(self) -> bool:
-        return self.decision.ok and self.live_applied
+        return self.error is None and (
+            self.decision is None or (self.decision.ok and self.live_applied)
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ok": self.ok,
-            "decision": self.decision.to_dict(),
+            "decision": self.decision.to_dict() if self.decision else None,
             "live_applied": self.live_applied,
             "error": self.error,
         }
@@ -62,16 +56,12 @@ class RuntimeConvergenceResult:
 
 @dataclass(frozen=True)
 class TopologyRuntimeMutationResult:
-    """Runtime outcome around one committed topology replacement."""
-
     parked: RuntimeConvergenceResult
     convergence: RuntimeConvergenceResult
 
 
 @dataclass(frozen=True)
 class StatefileConvergenceResult:
-    """One boot-statefile seeding pass: the decision and what it wrote."""
-
     decision: SafeGraphDecision
     topology: OutputTopology
     statefile_written: bool
@@ -314,19 +304,21 @@ def park_and_commit_topology(
     topology: OutputTopology,
     commit: Callable[[], OutputTopology],
     *,
+    replacement: OutputTopology | None = None,
     controller_factory: Callable[[], Any] | None = None,
     profile_path: str | Path | None = None,
     config_dir: str | Path | None = None,
     stay_parked: bool = False,
     parked_reason: str | None = None,
 ) -> TopologyRuntimeMutationResult:
-    """Park, durably commit topology, then converge under one graph lock.
+    """Park changed intent before commit; re-pins stay parked until Apply."""
 
-    ``stay_parked`` keeps the speaker silent after a composite re-pin.
-    Apply re-proves the graph's volume limit and declared floors, runs
-    ``camilladsp --check``, and rewrites the applied record before playback
-    resumes. It does not verify wiring.
-    """
+    if replacement is not None and (
+        topology_config_fingerprint(replacement) == topology_config_fingerprint(topology)
+    ):
+        commit()
+        unchanged = RuntimeConvergenceResult(None, False)
+        return TopologyRuntimeMutationResult(unchanged, unchanged)
 
     return asyncio.run(
         _park_and_commit_topology(

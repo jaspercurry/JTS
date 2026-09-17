@@ -74,7 +74,6 @@ from .sound_seat_level import (
 )
 from .sound_active_speaker import (
     OutputHardwareRequestConflict,
-    OutputTopologyRevisionConflict,
     _active_speaker_commissioning_view_payload,
     _active_speaker_design_draft_save_payload,
     _active_speaker_driver_research_request_payload,
@@ -577,19 +576,8 @@ def _make_handler(
                 if path == "/output-topology":
                     try:
                         self._send_json(
-                            _save_output_topology_payload(raw, require_revision=True)
+                            _save_output_topology_payload(raw)
                         )
-                    except OutputTopologyRevisionConflict as e:
-                        log_event(
-                            logger,
-                            "sound.output_topology_save",
-                            level=logging.WARNING,
-                            result="conflict",
-                            error=type(e).__name__,
-                        )
-                        payload = _output_topology_payload()
-                        payload["error"] = str(e)
-                        self._send_json(payload, status=HTTPStatus.CONFLICT)
                     except (OSError, RuntimeError) as e:
                         send_route_failure(
                             self._send_json, e, logger=logger,
@@ -600,11 +588,6 @@ def _make_handler(
                 if path == "/output-topology/reset":
                     try:
                         self._send_json(_reset_output_topology_payload(raw))
-                    except OutputHardwareRequestConflict as e:
-                        payload = _output_topology_payload()
-                        payload["error"] = str(e)
-                        payload["conflict"] = e.code
-                        self._send_json(payload, status=HTTPStatus.CONFLICT)
                     except ValueError as e:
                         self._send_json({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
                     except (OSError, RuntimeError) as e:

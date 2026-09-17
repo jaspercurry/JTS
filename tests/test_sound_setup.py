@@ -21,6 +21,7 @@ import wave
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -36,6 +37,7 @@ from jasper.active_speaker.design_draft import declared_driver_spacing_m, load_d
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
 from jasper.audio_measurement.program_analysis.model import MeasurementGeometry
 from jasper.active_speaker.playback_route import OUTPUTD_ACTIVE_LANE_SOURCE
+from jasper.active_speaker.runtime_convergence import park_and_commit_topology
 from jasper.active_speaker.runtime_contract import (
     FLAT_PROGRAM_GRAPH_UNCONFIGURED,
     PARKED_MUTED_STATUS,
@@ -53,6 +55,7 @@ from jasper.output_topology import (
     OutputTopology,
     OutputTopologyError,
     load_output_topology,
+    save_output_topology,
 )
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
@@ -2451,7 +2454,6 @@ def test_topology_save_kicks_hardware_and_grouping_reconcile(
     assert calls[1]["no_block"] is False
     assert grouping_env.read_text() == "JASPER_OUTPUTD_DAC_CONTENT_LANE=\n"
     assert saved["reconcile"] is sentinel
-    assert set(saved["hardware_adoption"]) == {"allowed", "identity"}
 
 
 # The two reconcile outcomes every topology-mutating endpoint has to tell
@@ -2540,6 +2542,28 @@ def test_topology_save_parks_before_replacing_saved_layout(
 
     assert seen == [original]
     assert saved["output_topology"]["name"] != original.name
+
+
+def test_topology_resave_leaves_camilla_untouched(monkeypatch):
+    raw = _active_speaker_mono_topology_payload(
+        protection_status="software_guard_requested",
+    )
+    save_output_topology(OutputTopology.from_mapping(raw))
+    controller = Mock()
+    monkeypatch.setattr("jasper.camilla.primary_controller", lambda: controller)
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        park_and_commit_topology,
+    )
+    _stub_audio_stops(monkeypatch)
+    _stub_reconcile(monkeypatch, {"ok": True})
+
+    result = sound_setup._save_output_topology_payload({"output_topology": raw})
+
+    assert controller.mock_calls == []
+    assert result["save"]["status"] == "saved"
+    assert result["runtime_convergence"]["live_applied"] is False
+    assert load_output_topology() == OutputTopology.from_mapping(raw)
 
 
 def test_topology_save_does_not_restore_old_graph_for_a_post_write_read_failure(
@@ -2638,15 +2662,6 @@ def test_refused_layout_reaches_the_page_as_a_rendered_error(
     monkeypatch,
     tmp_path: Path,
 ):
-    """Pin the wire shape the page already knows how to render.
-
-    ``deploy/assets/sound-profile/js/main.js``'s ``saveOutputTopology`` awaits
-    the shared ``postJSON``, which throws on any non-2xx; its ``catch`` only
-    special-cases ``e.status === 409`` (re-ingests the server's topology,
-    which would wipe the draft) and otherwise surfaces ``e.message`` while
-    keeping the operator's draft on screen — so the refusal has to arrive as a
-    non-409 non-2xx with an ``error`` string.
-    """
     register_passive_only_dac(monkeypatch)
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
@@ -2656,9 +2671,6 @@ def test_refused_layout_reaches_the_page_as_a_rendered_error(
             "/output-topology",
             {
                 "output_topology": _no_lane_topology_payload(active=True),
-                # The page always echoes the revision it last read; "missing"
-                # is what the endpoint reports before anything is saved.
-                "topology_revision": "missing",
             },
             expect_status=400,
         )
@@ -2885,9 +2897,7 @@ def test_output_topology_payload_does_not_take_mutation_lock(
         lambda: pytest.fail("read-only payload must not take the mutation lock"),
     )
 
-    envelope = sound_setup._output_topology_payload()
-
-    assert envelope["topology_revision"] == "missing"
+    assert sound_setup._output_topology_payload()["output_topology"]["status"] == "draft"
 
 
 def test_output_topology_payload_serializes_with_populated_hardware_state(
@@ -2931,8 +2941,7 @@ def test_output_topology_payload_serializes_with_populated_hardware_state(
         "outputd_active_lane"
     )
     assert envelope["active_playback_route"]["transport_channel_count"] == 2
-    # The reset precondition is derived from, never a copy of, detection.
-    assert set(envelope["hardware_adoption"]) == {"allowed", "identity"}
+    assert envelope["hardware_adoption"]["allowed"] is True
     # #2812 S5: the JS mismatch card (and #2819's re-pin offer nested inside
     # it) is a pure proxy for this key now — it does not recompute the rule
     # itself. Deleting the key here would silently kill both with every test
@@ -3537,142 +3546,6 @@ def test_sound_output_topology_save_validates_and_persists_complete_contract(
         "DAC output 1"
     )
     assert payload["clock_domain"]["status"] == "single_device_clock"
-    assert payload["topology_revision"].startswith("sha256:")
-
-
-def test_sound_output_topology_save_rejects_stale_revision(
-    monkeypatch,
-    tmp_path: Path,
-):
-    from jasper.output_topology import new_topology_draft, save_output_topology
-
-    path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    stale = sound_setup._output_topology_payload()
-    active_topology = _active_speaker_mono_topology_payload(
-        protection_status="software_guard_requested"
-    )
-
-    save_output_topology(new_topology_draft(), path=path)
-
-    with pytest.raises(sound_setup.OutputTopologyRevisionConflict):
-        sound_setup._save_output_topology_payload(
-            {
-                "output_topology": active_topology,
-                "topology_revision": stale["topology_revision"],
-            },
-            require_revision=True,
-        )
-
-    current = json.loads(path.read_text(encoding="utf-8"))
-    assert current["speaker_groups"] == []
-
-
-def test_sound_output_topology_save_serializes_concurrent_writers(
-    monkeypatch,
-    tmp_path: Path,
-):
-    """Two writers racing the same revision: exactly one wins, no lost update.
-
-    ``_save_output_topology_payload`` runs under ``ThreadingHTTPServer`` (one
-    thread per request), so the revision-compare and the file write must be a
-    single critical section. This test parks writer A *inside*
-    ``save_output_topology`` (after it has read+validated the revision but
-    before it publishes the new file) while writer B begins. Without the lock,
-    B reads the still-original revision, passes the stale-check, and clobbers
-    A's write (the exact lost-update the revision guard exists to prevent).
-    With the lock, B blocks until A fully publishes, then observes the new
-    revision and raises ``OutputTopologyRevisionConflict``.
-    """
-
-    from jasper.output_topology import (
-        OutputTopologyMutation,
-        new_topology_draft,
-        save_output_topology,
-    )
-
-    path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-
-    # Seed a known starting topology and capture the revision both writers see.
-    save_output_topology(new_topology_draft(), path=path)
-    start_revision = sound_setup._output_topology_payload()["topology_revision"]
-
-    topology_a = _active_speaker_mono_topology_payload(
-        protection_status="software_guard_requested",
-        card_id="DAC_A",
-    )
-    topology_b = _active_speaker_mono_topology_payload(
-        protection_status="software_guard_requested",
-        card_id="DAC_B",
-    )
-
-    real_save = OutputTopologyMutation.save
-    a_in_critical_section = threading.Event()
-    release_a = threading.Event()
-
-    def parking_save(self, topology):
-        # Only the first writer to reach the write parks; the parked writer is
-        # holding the critical section (it has already passed the revision
-        # compare). Releasing it after B has had its chance to run exercises
-        # the interleaving the lock must prevent.
-        if not a_in_critical_section.is_set():
-            a_in_critical_section.set()
-            assert release_a.wait(timeout=5.0), "writer A was never released"
-        return real_save(self, topology)
-
-    monkeypatch.setattr(OutputTopologyMutation, "save", parking_save)
-
-    results: dict[str, object] = {}
-
-    def writer(name: str, topology: dict) -> None:
-        try:
-            sound_setup._save_output_topology_payload(
-                {
-                    "output_topology": topology,
-                    "topology_revision": start_revision,
-                },
-                require_revision=True,
-            )
-            results[name] = "saved"
-        except sound_setup.OutputTopologyRevisionConflict:
-            results[name] = "conflict"
-        except BaseException as exc:  # noqa: BLE001 - surface unexpected failures
-            results[name] = exc
-
-    thread_a = threading.Thread(target=writer, args=("A", topology_a))
-    thread_a.start()
-    assert a_in_critical_section.wait(timeout=5.0), "writer A never started saving"
-
-    # A is parked inside the write holding the lock. Start B; with the lock it
-    # must block on acquisition, so it cannot finish before we release A.
-    thread_b = threading.Thread(target=writer, args=("B", topology_b))
-    thread_b.start()
-    thread_b.join(timeout=0.5)
-    assert thread_b.is_alive(), (
-        "writer B completed while writer A held the critical section — the "
-        "compare-and-write is not serialized (TOCTOU)"
-    )
-
-    release_a.set()
-    thread_a.join(timeout=5.0)
-    thread_b.join(timeout=5.0)
-    assert not thread_a.is_alive()
-    assert not thread_b.is_alive()
-
-    # Exactly one writer wins; the other sees the advanced revision and is
-    # rejected. No lost update: the persisted card_id is the winner's.
-    outcomes = sorted(
-        v for v in results.values() if isinstance(v, str)
-    )
-    unexpected = [v for v in results.values() if not isinstance(v, str)]
-    assert not unexpected, f"writer raised unexpectedly: {unexpected}"
-    assert outcomes == ["conflict", "saved"], results
-
-    winner = next(name for name, outcome in results.items() if outcome == "saved")
-    expected_card = {"A": "DAC_A", "B": "DAC_B"}[winner]
-    persisted = json.loads(path.read_text(encoding="utf-8"))
-    assert persisted["hardware"]["card_id"] == expected_card
 
 
 def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
@@ -3688,7 +3561,6 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
         get_resp = urllib.request.urlopen(f"{base}/output-topology")
         get_payload = json.loads(get_resp.read().decode("utf-8"))
         assert get_payload["output_topology"]["status"] == "draft"
-        assert get_payload["topology_revision"] == "missing"
         # Stage 2: the DAC8x declares an active outputd lane, so the route
         # resolves to that lane (not a direct-DAC route) at its full width.
         assert get_payload["active_playback_route"]["playback_device_source"] == (
@@ -3701,48 +3573,12 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
             "/output-topology",
             json.dumps({
                 "output_topology": get_payload["output_topology"],
-                "topology_revision": get_payload["topology_revision"],
             }).encode("utf-8"),
             content_type="application/json",
         )
         post_payload = json.loads(post_resp.read().decode("utf-8"))
         assert post_payload["output_topology"]["safety"]["sound_tests_allowed"] is False
-        assert post_payload["topology_revision"].startswith("sha256:")
         assert post_payload["active_playback_route"]["transport_channel_count"] == 8
-
-
-def test_sound_output_topology_http_route_rejects_stale_browser_save(
-    monkeypatch,
-    tmp_path: Path,
-):
-    from jasper.output_topology import new_topology_draft, save_output_topology
-
-    path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    with sound_server(tmp_path) as base:
-        old_payload = sound_setup._save_output_topology_payload(
-            _active_speaker_mono_topology_payload(
-                protection_status="software_guard_requested"
-            )
-        )
-        save_output_topology(new_topology_draft(), path=path)
-
-        resp = request_with_csrf(
-            base,
-            "/output-topology",
-            json.dumps({
-                "output_topology": old_payload["output_topology"],
-                "topology_revision": old_payload["topology_revision"],
-            }).encode("utf-8"),
-            content_type="application/json",
-            expect_status=409,
-        )
-        conflict = json.loads(resp.read().decode("utf-8"))
-        saved = json.loads(path.read_text(encoding="utf-8"))
-
-        assert "changed in another session" in conflict["error"]
-        assert conflict["output_topology"]["speaker_groups"] == []
-        assert saved["speaker_groups"] == []
 
 
 def test_sound_output_topology_reset_http_route_is_csrf_protected(
@@ -3781,68 +3617,9 @@ def _dac8x_detected() -> None:
     ))
 
 
-@pytest.mark.parametrize(
-    ("change", "code"),
-    [
-        pytest.param("topology", "topology_changed", id="another_session_saved"),
-        pytest.param(
-            "hardware", "detected_hardware_changed", id="the_dac_was_swapped"
-        ),
-    ],
-)
-def test_reset_refuses_a_stale_request_before_parking_or_deleting(
-    monkeypatch, tmp_path: Path, change, code,
-):
-    """A reset carries the browser's view of both the saved layout and the
-    attached hardware; either having moved refuses by code, and refusing must
-    happen before anything is parked or deleted."""
-    from jasper.output_topology import new_topology_draft, save_output_topology
-
-    topology_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_HARDWARE_STATE_PATH", str(tmp_path / "output_hardware.json")
-    )
-    save_output_topology(new_topology_draft(), path=topology_path)
+def test_reset_adopts_hardware_read_after_parking(monkeypatch):
+    save_output_topology(OutputTopology.from_mapping(_passive_left_topology_payload()))
     _apple_dongle_detected()
-    request = sound_setup._output_topology_payload()
-    before = topology_path.read_bytes()
-
-    if change == "topology":
-        save_output_topology(
-            new_topology_draft(name="Newer layout"), path=topology_path
-        )
-        before = topology_path.read_bytes()
-    else:
-        _dac8x_detected()
-    monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
-        lambda *_args, **_kwargs: pytest.fail("a stale reset must not park or delete"),
-    )
-
-    with pytest.raises(sound_setup.OutputHardwareRequestConflict) as raised:
-        sound_setup._reset_output_topology_payload({
-            "topology_revision": request["topology_revision"],
-            "detected_hardware_identity": request["hardware_adoption"]["identity"],
-        })
-
-    assert raised.value.code == code
-    assert topology_path.read_bytes() == before
-
-
-def test_reset_revalidates_hardware_after_parking_before_deleting(
-    monkeypatch, tmp_path: Path,
-):
-    from jasper.output_topology import new_topology_draft, save_output_topology
-
-    topology_path = tmp_path / "output_topology.json"
-    hardware_path = tmp_path / "output_hardware.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(hardware_path))
-    initial = new_topology_draft(name="Initial")
-    save_output_topology(initial, path=topology_path)
-    _apple_dongle_detected()
-    request = sound_setup._output_topology_payload()
 
     def park_and_commit(_topology, commit, **_kwargs):
         _dac8x_detected()
@@ -3855,81 +3632,18 @@ def test_reset_revalidates_hardware_after_parking_before_deleting(
     _stub_audio_stops(monkeypatch)
     monkeypatch.setattr(
         "jasper.active_speaker.reset.clear_active_speaker_setup_state",
-        lambda: pytest.fail("second-check conflict must not clear setup evidence"),
+        lambda: {"status": "cleared"},
     )
+    _stub_reconcile(monkeypatch, {"ok": True})
 
-    with pytest.raises(sound_setup.OutputHardwareRequestConflict) as raised:
-        sound_setup._reset_output_topology_payload({
-            "topology_revision": request["topology_revision"],
-            "detected_hardware_identity": request["hardware_adoption"]["identity"],
-        })
+    result = sound_setup._reset_output_topology_payload({})
 
-    assert raised.value.code == "detected_hardware_changed"
-    assert load_output_topology() == initial
+    assert result["reset"]["status"] == "reset"
+    assert load_output_topology().hardware.device_id == "hifiberry_dac8x"
+    assert load_output_topology().speaker_groups == ()
 
 
-def test_reset_validation_and_empty_write_share_the_topology_transaction(
-    monkeypatch, tmp_path: Path,
-):
-    from jasper.output_topology import (
-        OutputTopologyMutation,
-        new_topology_draft,
-        output_topology_mutation,
-        save_output_topology,
-    )
-
-    topology_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH", str(tmp_path / "staged.yml")
-    )
-    save_output_topology(new_topology_draft(), path=topology_path)
-    request = sound_setup._output_topology_payload()
-    events: list[str] = []
-    original_check = sound_active_speaker._reset_request_hardware
-    original_save = OutputTopologyMutation.save
-    check_count = 0
-
-    def assert_transaction_held():
-        with pytest.raises(TimeoutError):
-            with output_topology_mutation(topology_path, timeout_sec=0):
-                pass
-
-    def checked(raw, *, revision):
-        nonlocal check_count
-        check_count += 1
-        result = original_check(raw, revision=revision)
-        assert_transaction_held()
-        events.append(f"check-{check_count}")
-        return result
-
-    def save_under_same_lock(self, topology):
-        assert_transaction_held()
-        events.append("empty-write")
-        return original_save(self, topology)
-
-    monkeypatch.setattr(sound_active_speaker, "_reset_request_hardware", checked)
-    monkeypatch.setattr(OutputTopologyMutation, "save", save_under_same_lock)
-    _stub_audio_stops(monkeypatch)
-    def clear_under_same_lock():
-        assert_transaction_held()
-        events.append("setup-cleanup")
-        return {"status": "cleared", "removed": []}
-
-    monkeypatch.setattr(
-        "jasper.active_speaker.reset.clear_active_speaker_setup_state",
-        clear_under_same_lock,
-    )
-
-    sound_setup._reset_output_topology_payload({
-        "topology_revision": request["topology_revision"],
-        "detected_hardware_identity": request["hardware_adoption"]["identity"],
-    })
-
-    assert events == ["check-1", "check-2", "empty-write", "setup-cleanup"]
-
-
-def test_reset_accepts_the_response_from_a_normal_save_without_reload(
+def test_reset_after_a_normal_save_clears_the_layout(
     monkeypatch, tmp_path: Path,
 ):
     topology_path = tmp_path / "output_topology.json"
@@ -3943,41 +3657,13 @@ def test_reset_accepts_the_response_from_a_normal_save_without_reload(
         lambda: {"status": "cleared", "removed": []},
     )
 
-    saved = sound_setup._save_output_topology_payload(
+    sound_setup._save_output_topology_payload(
         _innomaker_topology_payload(active=False)
     )
-    reset = sound_setup._reset_output_topology_payload({
-        "topology_revision": saved["topology_revision"],
-        "detected_hardware_identity": saved["hardware_adoption"]["identity"],
-    })
+    reset = sound_setup._reset_output_topology_payload({})
 
     assert reset["saved"] is True
     assert reset["output_topology"]["speaker_groups"] == []
-
-
-def test_reset_http_requires_revision_and_hardware_identity(
-    monkeypatch, tmp_path: Path,
-):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json")
-    )
-    with sound_server(tmp_path) as base:
-        resp = json_post_with_csrf(
-            base, "/output-topology/reset", {}, expect_status=400
-        )
-        payload = json.loads(resp.read().decode("utf-8"))
-
-        assert payload["error"] == "topology_revision is required"
-
-        current = sound_setup._output_topology_payload()
-        resp = json_post_with_csrf(
-            base,
-            "/output-topology/reset",
-            {"topology_revision": current["topology_revision"]},
-            expect_status=400,
-        )
-        payload = json.loads(resp.read().decode("utf-8"))
-        assert payload["error"] == "detected_hardware_identity is required"
 
 
 def test_reset_http_reports_ambiguous_failure_with_current_topology(
@@ -3985,7 +3671,6 @@ def test_reset_http_reports_ambiguous_failure_with_current_topology(
 ) -> None:
     topology_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    current = sound_setup._output_topology_payload()
 
     def publish_then_fail(_topology, commit, **_kwargs):
         commit()
@@ -4005,18 +3690,13 @@ def test_reset_http_reports_ambiguous_failure_with_current_topology(
         response = json_post_with_csrf(
             base,
             "/output-topology/reset",
-            {
-                "topology_revision": current["topology_revision"],
-                "detected_hardware_identity": current["hardware_adoption"]["identity"],
-            },
+            {},
             expect_status=502,
         )
         payload = json.loads(response.read().decode("utf-8"))
 
-    assert "not changed" not in payload["error"]
     assert payload["reset"]["status"] == "needs_attention"
     assert payload["output_topology"]["speaker_groups"] == []
-    assert payload["topology_revision"] != current["topology_revision"]
 
 
 def test_reset_output_topology_payload_clears_active_setup_state(
@@ -4029,7 +3709,6 @@ def test_reset_output_topology_payload_clears_active_setup_state(
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH", str(tmp_path / "staged.yml")
     )
-    initial = sound_setup._output_topology_payload()
     state_envs = {
         "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE": "design.json",
         "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH": "staged.json",
@@ -4057,10 +3736,7 @@ def test_reset_output_topology_payload_clears_active_setup_state(
         lambda: {"output_topology": {"status": "draft"}},
     )
 
-    payload = sound_setup._reset_output_topology_payload({
-        "topology_revision": initial["topology_revision"],
-        "detected_hardware_identity": initial["hardware_adoption"]["identity"],
-    })
+    payload = sound_setup._reset_output_topology_payload({})
 
     assert payload["output_topology"]["status"] == "draft"
     assert payload["reset"]["status"] == "reset"
@@ -4077,7 +3753,6 @@ def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph
     topology_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     save_output_topology(new_topology_draft(name="Old intent"), topology_path)
-    request = sound_setup._output_topology_payload()
     events: list[str] = []
 
     def park_and_commit(_topology, commit, **_kwargs):
@@ -4105,10 +3780,7 @@ def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph
     )
     _stub_audio_stops(monkeypatch)
 
-    payload = sound_setup._reset_output_topology_payload({
-        "topology_revision": request["topology_revision"],
-        "detected_hardware_identity": request["hardware_adoption"]["identity"],
-    })
+    payload = sound_setup._reset_output_topology_payload({})
 
     assert events == ["park", "cleanup", "converge-new-graph"]
     assert load_output_topology(topology_path).speaker_groups == ()
@@ -4148,7 +3820,6 @@ def test_reset_reports_the_reconcile_verdict(
     topology_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     save_output_topology(new_topology_draft(name="Old intent"), topology_path)
-    request = sound_setup._output_topology_payload()
     monkeypatch.setattr(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
         lambda _topology, commit, **_kwargs: _RuntimeMutation(commit()),
@@ -4160,10 +3831,7 @@ def test_reset_reports_the_reconcile_verdict(
     _stub_reconcile(monkeypatch, reconcile)
     _stub_audio_stops(monkeypatch)
 
-    payload = sound_setup._reset_output_topology_payload({
-        "topology_revision": request["topology_revision"],
-        "detected_hardware_identity": request["hardware_adoption"]["identity"],
-    })
+    payload = sound_setup._reset_output_topology_payload({})
 
     assert payload["reset"] == verdict
 
@@ -6633,12 +6301,10 @@ def _write_repin_fixture(
     _observe_apple_cards(tmp_path, LEFT_APPLE_SERIAL, attached_serial_b)
 
 
-def _stub_repin_runtime(monkeypatch, park_kwargs: dict | None = None) -> list[str]:
+def _stub_repin_runtime(monkeypatch) -> list[str]:
     """Stand in for the audio-parking choreography a re-pin shares with save."""
 
-    def park_and_commit(_topology, commit, **kwargs):
-        if park_kwargs is not None:
-            park_kwargs.update(kwargs)
+    def park_and_commit(_topology, commit, **_kwargs):
         return _RuntimeMutation(commit())
 
     monkeypatch.setattr(
@@ -6679,23 +6345,28 @@ def test_repin_endpoint_keeps_the_design_and_drops_drift_evidence(
 
     _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
     park_kwargs: dict = {}
-    stops = _stub_repin_runtime(monkeypatch, park_kwargs)
-    request = sound_setup._output_topology_payload()
+    stops = _stub_repin_runtime(monkeypatch)
 
-    payload = sound_setup._repin_output_topology_payload({
-        "topology_revision": request["topology_revision"],
-        "detected_hardware_identity": request["hardware_adoption"]["identity"],
-    })
+    def park_and_commit(_topology, commit, **kwargs):
+        park_kwargs.update(kwargs)
+        _observe_apple_cards(tmp_path, LEFT_APPLE_SERIAL, "LATEST-DONGLE")
+        return _RuntimeMutation(commit())
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        park_and_commit,
+    )
+
+    payload = sound_setup._repin_output_topology_payload({})
 
     assert payload["repin"]["status"] == "repinned"
-    assert "Apply the baseline" in payload["repin"]["message"]
     assert stops == ["safe"]
     assert park_kwargs["stay_parked"] is True
 
     saved = load_output_topology()
     assert [child.serial for child in saved.hardware.child_devices] == [
         LEFT_APPLE_SERIAL,
-        "NEW-DONGLE",
+        "LATEST-DONGLE",
     ]
     # The design itself is untouched — this is the whole point of the flow.
     before = OutputTopology.from_mapping(_ported_dual_apple_topology_raw())
@@ -6755,12 +6426,8 @@ def test_repinned_box_reconcile_cannot_repoint_the_statefile_at_audio(
         statefile_path=statefile, topology=topology,
     )
     monkeypatch.setattr("jasper.output_topology_runtime.trigger_reconcile", reconcile)
-    request = sound_setup._output_topology_payload()
 
-    sound_setup._repin_output_topology_payload({
-        "topology_revision": request["topology_revision"],
-        "detected_hardware_identity": request["hardware_adoption"]["identity"],
-    })
+    sound_setup._repin_output_topology_payload({})
 
     assert not applied.exists()
     assert decisions[-1].status == PARKED_MUTED_STATUS
@@ -6805,43 +6472,10 @@ def test_repin_reports_the_reconcile_verdict(
     _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
     _stub_repin_runtime(monkeypatch)
     _stub_reconcile(monkeypatch, reconcile)
-    request = sound_setup._output_topology_payload()
 
-    payload = sound_setup._repin_output_topology_payload({
-        "topology_revision": request["topology_revision"],
-        "detected_hardware_identity": request["hardware_adoption"]["identity"],
-    })
+    payload = sound_setup._repin_output_topology_payload({})
 
     assert payload["repin"] == verdict
-
-
-def test_repin_rejects_a_stale_request_before_parking(monkeypatch, tmp_path: Path):
-    """A re-pin offered against older saved state never reaches the graph."""
-
-    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
-    request = sound_setup._output_topology_payload()
-    topology_path = tmp_path / "output_topology.json"
-    from jasper.output_topology import save_output_topology
-
-    renamed = _ported_dual_apple_topology_raw()
-    renamed["name"] = "Living room, renamed in another session"
-    save_output_topology(
-        OutputTopology.from_mapping(renamed), path=topology_path
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
-        lambda *_args, **_kwargs: pytest.fail("stale re-pin must not park"),
-    )
-    before = topology_path.read_bytes()
-
-    with pytest.raises(sound_setup.OutputHardwareRequestConflict) as raised:
-        sound_setup._repin_output_topology_payload({
-            "topology_revision": request["topology_revision"],
-            "detected_hardware_identity": request["hardware_adoption"]["identity"],
-        })
-
-    assert raised.value.code == "topology_changed"
-    assert topology_path.read_bytes() == before
 
 
 def test_repin_refuses_when_the_attached_pair_is_already_pinned(
@@ -6851,18 +6485,14 @@ def test_repin_refuses_when_the_attached_pair_is_already_pinned(
     """The endpoint is not a laxer door than the offer it is rendered from."""
 
     _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b=RIGHT_APPLE_SERIAL)
-    request = sound_setup._output_topology_payload()
-    assert request["hardware_repin"] is None
+    assert sound_setup._output_topology_payload()["hardware_repin"] is None
     monkeypatch.setattr(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
         lambda *_args, **_kwargs: pytest.fail("unofferable re-pin must not park"),
     )
 
     with pytest.raises(sound_setup.OutputHardwareRequestConflict) as raised:
-        sound_setup._repin_output_topology_payload({
-            "topology_revision": request["topology_revision"],
-            "detected_hardware_identity": request["hardware_adoption"]["identity"],
-        })
+        sound_setup._repin_output_topology_payload({})
 
     assert raised.value.code == "repin_unavailable"
 
