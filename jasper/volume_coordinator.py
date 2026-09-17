@@ -36,7 +36,6 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 from uuid import uuid4
 
@@ -57,6 +56,13 @@ from .music_sources import (
 from . import volume_diagnostics
 from . import volume_push_sources
 from .voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
+from .volume_echo import (
+    ECHO_WINDOW_SEC as ECHO_WINDOW_SEC,  # re-exported: tests import it from here
+    PERSISTENCE_ECHO_WINDOW_SEC as PERSISTENCE_ECHO_WINDOW_SEC,
+    is_own_echo,
+    is_recent_cross_process_write,
+    stamp_outbound,
+)
 from .volume_owner import VolumeClaimRefused, VolumeOwner
 from .volume_scales import native_to_listening_level
 from .volume_state import SourceHandoff, VolumeState, _OutboundStamp
@@ -76,15 +82,6 @@ logger = logging.getLogger(__name__)
 # to patch time.monotonic process-wide (which would corrupt asyncio clocks) —
 # the same seam jasper/voice/measurement_hold.py keeps.
 _measurement_monotonic = time.monotonic
-
-
-# Window during which an observed source-side change is treated as
-# the echo of our own write and ignored. Long enough that DBus
-# round-trip + bus latency on a busy Pi 5 is well within it; short
-# enough that a real user-touched slider movement that happens to
-# land just after our write isn't swallowed.
-ECHO_WINDOW_SEC = 0.5
-PERSISTENCE_ECHO_WINDOW_SEC = 2.0
 
 
 # Cross-daemon Camilla-ownership probe. None fails open, so a wedged
@@ -2421,47 +2418,15 @@ class VolumeCoordinator:
         return record.main_volume_db if record is not None else None
 
     def _stamp_outbound(self, source: Source) -> None:
-        self._last_outbound[source] = _OutboundStamp(at_mono=time.monotonic())
+        stamp_outbound(self._last_outbound, source)
 
     def _is_own_echo(self, source: Source, observed_level: int) -> bool:
-        stamp = self._last_outbound.get(source)
-        if stamp is None:
-            return False
-        if time.monotonic() - stamp.at_mono > ECHO_WINDOW_SEC:
-            return False
-        # Within the window, ignore even a different value. Polling can
-        # race the source's own state update after an outbound write,
-        # especially on source handoff. If the user really changed the
-        # sender slider, the next 1 Hz poll will pick up the stable
-        # value outside this short window.
-        return True
+        return is_own_echo(self._last_outbound, source, observed_level)
 
     def _is_recent_cross_process_write(self, observed_level: int) -> bool:
-        """Suppress stale polls after another process changed volume.
-
-        jasper-control creates its own coordinator for LAN / hardware
-        knob requests, so voice_daemon's observer does not see that
-        coordinator's in-memory outbound stamp. `last_used_at` is the
-        durable cross-process echo stamp: if disk moved ahead of this
-        coordinator very recently and the source reports a different
-        level, prefer the persisted knob/HTTP/voice truth for one short
-        poll window.
-        """
-        record = self._persistence.load()
-        if (
-            record is None
-            or record.last_used_at is None
-            or record.listening_level is None
-        ):
-            return False
-        if int(record.listening_level) == int(observed_level):
-            return False
-        if int(record.listening_level) == int(self._level):
-            return False
-        age = (datetime.now(timezone.utc) - record.last_used_at).total_seconds()
-        # VolumePersistence writes timestamps at second precision, so
-        # this needs to be wider than the in-memory monotonic window.
-        return 0.0 <= age <= PERSISTENCE_ECHO_WINDOW_SEC
+        return is_recent_cross_process_write(
+            self._persistence, self._level, observed_level,
+        )
 
     # ------------------------------------------------------------------
     # Source-side dispatchers
