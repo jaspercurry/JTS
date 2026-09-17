@@ -30,6 +30,10 @@ from jasper.active_speaker.program_admission import (
     readmit_program_from_wav,
     readmit_summed_program_from_wav,
 )
+from jasper.active_speaker.runtime_contract import (
+    GRAPH_APPROVED_ACTIVE_RUNTIME,
+    classify_bass_extension_graph,
+)
 from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
 from jasper.camilla_emit import emit_gain_filter, emit_linkwitz_riley
@@ -926,6 +930,18 @@ def _rear_take_inputs(branch_channels, *, layout="mono"):
     return topology, safety, targets, graph
 
 
+def _without_rear_mute(text, index=2):
+    """The graph an emitter produces once the take's rear owns a channel."""
+    header = "\n".join(line for line in text.splitlines() if line.startswith("#"))
+    payload = yaml.safe_load(text)
+    name = f"as_out{index}_rear_pending_mute"
+    assert name in payload["filters"]
+    payload["filters"].pop(name)
+    payload["pipeline"] = [step for step in payload["pipeline"]
+                           if name not in (step.get("names") or [])]
+    return header + "\n" + yaml.safe_dump(payload, sort_keys=False)
+
+
 def _rear_take_program(branch_channels):
     from jasper.audio_measurement.branch_program import build_branch_program
 
@@ -997,3 +1013,75 @@ def test_a_stereo_cabinet_pair_cannot_be_admitted_through_one_group_map(tmp_path
         tmp_path, CROSSOVER_TAKE, layout="stereo",
     )
     assert ProgramAdmissionRefusal.TARGET_NOT_MAPPED in admission.refusals
+
+
+def test_a_rear_the_take_excites_is_admitted_without_its_pending_mute(tmp_path):
+    """The third arm of the rear proof. A take measuring the rear drives it on
+    its own program channel, so ADR-0316's terminal mute would record silence,
+    and there is no document yet — the take exists to author one. What replaces
+    the mute is the role's own grouped protection chain at that index, unlocked
+    only by the take's in-memory evidence: the SAME graph without that evidence
+    still refuses."""
+    topology, safety, targets, emitted = _rear_take_inputs(CARDIOID_TAKE)
+    graph = _without_rear_mute(emitted)
+    program = _rear_take_program(CARDIOID_TAKE)
+    wav = tmp_path / "branches.wav"
+    write_program_wav(wav, program)
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=graph, topology=topology, safety_profile=safety,
+        role_targets=targets, session_volume_db=-20,
+    )
+    assert admission.allowed, admission.to_dict()
+    assert {segment.role for segment in admission.segments} == set(CARDIOID_TAKE)
+    unclaimed = classify_bass_extension_graph(
+        topology, evidence_source="desired", graph_text=graph,
+        applied_baseline_state={"recomposition_snapshot": {"bass_extension": {}}},
+    )
+    assert "rear_output_not_muted" in {issue["code"] for issue in unclaimed.issues}
+    claimed = classify_bass_extension_graph(
+        topology, evidence_source="desired", graph_text=graph,
+        applied_baseline_state={"recomposition_snapshot": {"bass_extension": {}}},
+        excited_target_ids=frozenset(CARDIOID_TAKE),
+    )
+    assert claimed.allowed and claimed.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+
+
+def test_an_excited_rear_outside_its_role_chain_is_still_refused(tmp_path):
+    """The evidence unlocks a PROOF, not the mute: a rear whose protection step
+    no longer groups with its role's primary output is refused even when the
+    take names it."""
+    topology, _safety, _targets, emitted = _rear_take_inputs(CARDIOID_TAKE)
+    payload = yaml.safe_load(_without_rear_mute(emitted))
+    step = next(s for s in payload["pipeline"]
+                if s.get("type") == "Filter" and s.get("channels") == [0, 2])
+    step["channels"] = [0]
+    header = "\n".join(line for line in emitted.splitlines() if line.startswith("#"))
+    graph = header + "\n" + yaml.safe_dump(payload, sort_keys=False)
+    result = classify_bass_extension_graph(
+        topology, evidence_source="desired", graph_text=graph,
+        applied_baseline_state={"recomposition_snapshot": {"bass_extension": {}}},
+        excited_target_ids=frozenset(CARDIOID_TAKE),
+    )
+    assert "excited_rear_unprotected" in {issue["code"] for issue in result.issues}
+
+
+def test_a_measurement_program_graph_is_refused_by_its_own_name(tmp_path):
+    """The protected-neutral emit is neither baseline-shaped nor a commissioning
+    bring-up graph. Judged as one it produced a pile of commissioning blockers
+    describing a graph nobody wrote; it now refuses under one true code."""
+    from jasper.active_speaker.measurement_emit import emit_measurement_graph
+
+    topology, safety, targets = _profile_and_targets(
+        rear=True, woofer_floor=40, woofer_highpass=40, max_sweep_duration_s=4,
+    )
+    graph = emit_measurement_graph(MeasurementGraphProfile(
+        _rear_pair("mono")[0], topology, CARDIOID_TAKE, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets),
+        parked_target_ids=("tweeter",),
+    ))
+    result = classify_bass_extension_graph(
+        topology, evidence_source="desired", graph_text=graph,
+        applied_baseline_state={"recomposition_snapshot": {"bass_extension": {}}},
+        excited_target_ids=frozenset(CARDIOID_TAKE),
+    )
+    assert {issue["code"] for issue in result.issues} == {"active_graph_program_shape_unproven"}

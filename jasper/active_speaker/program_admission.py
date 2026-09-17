@@ -733,11 +733,26 @@ def readmit_summed_program_from_wav(
         != admitted[t["target_id"]] for t in physical.values()
     ):
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.TARGET_NOT_MAPPED)
+    # A branch identity is a measurement target id, exactly as the emitting
+    # mixer keys its sources. A target the take does not name is parked: its
+    # dest carries no source at all, which is silence.
+    channels: dict[str, int | None] = {
+        target_id: None for target_id in role_targets
+    } if branches else {}
+    channels.update({segment.role: segment.channel for segment in program.stimulus_segments()
+                     if segment.role in channels})
+    excited = frozenset(
+        target_id for target_id, channel in channels.items() if channel is not None
+    )
     graph = classify_bass_extension_graph(
         topology, evidence_source="desired", graph_text=graph_yaml,
         applied_baseline_state={
             "recomposition_snapshot": {"bass_extension": bass_extension or {}},
         },
+        # This take's own targets, in memory: a rear it excites on its own
+        # program channel cannot be muted, so the door proves the role chain
+        # at that index instead of the mute.
+        excited_target_ids=excited,
     )
     if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
         log_event(logger, "active_speaker.program_graph_refused", level=logging.WARNING,
@@ -749,14 +764,6 @@ def readmit_summed_program_from_wav(
     pcm = _read_program_pcm(program, wav_path)
     if pcm is None:
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH)
-    # A branch identity is a measurement target id, exactly as the emitting
-    # mixer keys its sources. A target the take does not name is parked: its
-    # dest carries no source at all, which is silence.
-    channels: dict[str, int | None] = {
-        target_id: None for target_id in role_targets
-    } if branches else {}
-    channels.update({segment.role: segment.channel for segment in program.stimulus_segments()
-                     if segment.role in channels})
     if branches:
         mapping = [entry for name, mixer in payload["mixers"].items()
                    if name.startswith("split_active_") for entry in mixer["mapping"]]
