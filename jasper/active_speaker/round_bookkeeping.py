@@ -4,6 +4,7 @@
 """Publish the program's registered views as part of round completion."""
 from __future__ import annotations
 
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -18,33 +19,45 @@ from .round_view_builders import (
     analyzed_frequency_run, frequency_payload, frequency_image, bass_payload, room_payload, room_grade_payload,
 )
 
+_Answer = tuple[Any, dict[str, Any]]
+
+
+def room(inputs, target, set_id, incumbent) -> _Answer:
+    payload = room_payload(inputs, set_id)
+    return payload, {**{key: payload["median"][key] for key in (
+        "set_id", "ceiling_hz", "n_positions", "spatial_support", "coverage_hz")},
+        "features": len(payload["persistence"]["features"]),
+        "incumbent": payload["incumbent"], "incumbent_reason": payload["incumbent_reason"]}
+
+
+def room_grade(inputs, target, set_id, incumbent) -> _Answer:
+    return (payload := room_grade_payload(inputs, target, set_id, incumbent_id=incumbent)), payload
+
+
+def bass(inputs, target, set_id, incumbent) -> _Answer:
+    return (payload := bass_payload(inputs, set_id)), {"takes": len(payload["takes"])}
+
+
+def frequency(inputs, target, set_id, incumbent) -> _Answer:
+    payload, series = frequency_payload(analyzed_frequency_run(target))
+    return payload, {"runs": [run["id"] for run in payload["runs"]], "series": series}
+
+
+def inventory(inputs, target, set_id, incumbent) -> _Answer:
+    return (payload := inventory_payload(inputs, target, set_id)), inventory_summary(payload)
+
 
 def run_bookkeeping(view: str, target: Path, *, set_id: str | None = None,
                     incumbent: str | None = None) -> dict[str, Any]:
-    if view not in {"room", "room-grade", "bass", "frequency", "inventory"}:
-        return {"view": view, "status": "unavailable", "reason": (
-            "inputs_required" if view in ARTIFACT_BY_VIEW else "verb_not_registered")}
+    row = ARTIFACT_BY_VIEW.get(view)
+    if row is None or row.builder is None:
+        return {"view": view, "status": "unavailable",
+                "reason": "inputs_required" if row else "verb_not_registered"}
+    module, _, builder = row.builder.rpartition(".")
     try:
         inputs = round_inputs(target)
-        path = default_out(inputs, target, ARTIFACT_BY_VIEW[view].artifact, set_id)
-        if view == "room":
-            payload = room_payload(inputs, set_id)
-            summary = {**{key: payload["median"][key] for key in (
-                "set_id", "ceiling_hz", "n_positions", "spatial_support", "coverage_hz")},
-                "features": len(payload["persistence"]["features"]),
-                "incumbent": payload["incumbent"], "incumbent_reason": payload["incumbent_reason"]}
-        elif view == "room-grade":
-            payload = room_grade_payload(inputs, target, set_id, incumbent_id=incumbent)
-            summary = payload
-        elif view == "bass":
-            payload = bass_payload(inputs, set_id)
-            summary = {"takes": len(payload["takes"])}
-        elif view == "frequency":
-            payload, series = frequency_payload(analyzed_frequency_run(target))
-            summary = {"runs": [run["id"] for run in payload["runs"]], "series": series}
-        else:
-            payload = inventory_payload(inputs, target, set_id)
-            summary = inventory_summary(payload)
+        path = default_out(inputs, target, row.artifact, set_id)
+        payload, summary = getattr(import_module(f".{module}", __package__), builder)(inputs, target, set_id, incumbent)
     except (RoundSetRefused, RoundCapturesRefused, RoomPrescriptionRefused) as exc:
         return {"view": view, "status": "unavailable", "reason": exc.reason, "detail": exc.detail}
     except CrossoverV2Refused as exc:

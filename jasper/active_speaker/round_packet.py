@@ -24,6 +24,7 @@ from .crossover_v2.prescription_contract import prescription_contracts
 from .crossover_v2.round_inputs import RoundInputs, round_inputs, prescription_sources, ROUND_INPUT_ERRORS
 from .frequency_plot import prepare_plot_curve, render_frequency_view
 from .frequency_view import build_frequency_view, FREQUENCY_VIEW_FILENAME
+from .round_view_artifacts import ARTIFACT_BY_VIEW, PACKET_FAMILIES
 from .round_view_builders import analyzed_frequency_run
 from .speaker_fit import design_clouds, speaker_fit
 from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose
@@ -145,7 +146,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     errors: list[dict[str, Any]] = []
     series: list[dict[str, Any]] = []
     artifacts: dict[str, Any] = {"frequency_png": None, "frequency_view": None,
-                               "room_views": [], "bass_views": [], "manifest": manifest_path}
+                               **{f"{family}_views": [] for family in PACKET_FAMILIES}, "manifest": manifest_path}
     view_path = target / FREQUENCY_VIEW_FILENAME
     try:
         if purpose == PURPOSE_SPEAKER:
@@ -154,7 +155,6 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                 atomic_write_json(view_path, build_frequency_view(run))
         if view_path.is_file():
             view = json.loads(view_path.read_text())
-            series = []
             rows: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = [(g, t) for g in manifest.get("sets", ()) for t in g["takes"]]
             for run_doc in view["runs"]:
                 for curve in run_doc["series"]:
@@ -172,25 +172,23 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
             artifacts["frequency_view"] = str(view_path)
             if purpose == PURPOSE_SPEAKER:
                 render_frequency_view(view, target / PICTURE_FILENAME)
-        else:
-            series = []
     except ROUND_INPUT_ERRORS + (ImportError,) as exc:
         errors.append({"artifact": "frequency", "reason": getattr(exc, "reason", "frequency_unavailable")})
     if (target / PICTURE_FILENAME).is_file():
         artifacts["frequency_png"] = str(target / PICTURE_FILENAME)
-    analysis: dict[str, list[dict[str, Any]]] = {"room": [], "bass": []}
+    analysis: dict[str, list[dict[str, Any]]] = {family: [] for family in PACKET_FAMILIES}
     for row in views:
-        if row["view"].startswith(("room", "bass")):
-            artifacts["room_views" if row["view"].startswith("room") else "bass_views"].append(
-                {key: row[key] for key in ("view", "set_id", "out", "status", "reason") if key in row})
-        if row["view"] in analysis and row["status"] == "written" and row.get("out"):
+        if (spec := ARTIFACT_BY_VIEW.get(row["view"])) is None or spec.packet is None:
+            continue
+        artifacts[f"{spec.packet}_views"].append({key: row[key] for key in ("view", "set_id", "out", "status", "reason") if key in row})
+        if row["view"] == spec.packet and row["status"] == "written" and row.get("out"):
             try:
                 document = json.loads(Path(row["out"]).read_text())
             except (OSError, ValueError):
                 continue
             if row["view"] == "room":
                 document.pop("limits", None)
-            analysis[row["view"]].append({**document, "out": row["out"],
+            analysis[spec.packet].append({**document, "out": row["out"],
                                      "set_id": row.get("set_id") or manifest["sets"][0]["set_id"]})
     try:
         sources = prescription_sources(inputs)

@@ -7,12 +7,14 @@
 from __future__ import annotations
 
 import json
+from importlib import import_module
 from pathlib import Path
 
 import pytest
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker import measurement_programs as mp
+from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER, PACKET_FAMILIES
 from jasper.audio_measurement.gating import SEAT_EXEMPT
 
 
@@ -56,6 +58,25 @@ def test_summed_bookkeeping_includes_one_frequency_image(purpose):
 def test_speaker_bookkeeping_uses_room_views_when_the_round_holds_room_sweeps():
     assert mp.bookkeeping_views("speaker", has_room=True) == tuple(
         row for row in mp.bookkeeping_views("room") if row[0] != "frequency")
+
+
+@pytest.mark.parametrize(("purpose", "has_room", "expected"), [
+    ("speaker", False, (("inventory", True, False),)),
+    ("speaker", True, (("room", True, False), ("room-grade", True, True), ("inventory", True, False))),
+    ("room", False, (("room", True, False), ("room-grade", True, True), ("frequency", False, False),
+                     ("inventory", True, False))),
+    ("bass", False, (("bass", True, False), ("frequency", False, False), ("inventory", True, False))),
+    ("reference", False, ()),
+])
+def test_the_view_table_answers_every_automatic_view(purpose, has_room, expected):
+    """One table, not four lists: each automatic view resolves to a builder."""
+    assert mp.bookkeeping_views(purpose, has_room=has_room) == expected
+    assert {name for name, row in ARTIFACT_BY_VIEW.items() if row.builder} == set(BOOKKEEPING_ORDER)
+    for view, _, _ in expected:
+        row = ARTIFACT_BY_VIEW[view]
+        module, _, builder = row.builder.rpartition(".")
+        assert callable(getattr(import_module(f".{module}", "jasper.active_speaker"), builder))
+        assert row.packet is None or row.packet in PACKET_FAMILIES
 
 
 @pytest.mark.parametrize("reverse", [False, True])

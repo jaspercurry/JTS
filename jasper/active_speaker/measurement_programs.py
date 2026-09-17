@@ -72,13 +72,13 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
 
 def bookkeeping_views(purpose: str, *, has_room: bool = False) -> tuple[tuple[str, bool, bool], ...]:
     """View name, per-set scope, and whether it grades against the base."""
-    views = {
-        PURPOSE_SPEAKER: (("inventory", True, False),),
-        PURPOSE_ROOM: (("room", True, False), ("room-grade", True, True), ("frequency", False, False),
-                       ("inventory", True, False)),
-        PURPOSE_BASS: (("bass", True, False), ("frequency", False, False), ("inventory", True, False)),
-    }.get(PURPOSE_ROOM if purpose == PURPOSE_SPEAKER and has_room else purpose, ())
-    return tuple(row for row in views if purpose != PURPOSE_SPEAKER or row[0] != "frequency")
+    from .round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER  # lazy: the view table reads this module
+
+    wanted = PURPOSE_ROOM if purpose == PURPOSE_SPEAKER and has_room else purpose
+    rows = ((name, ARTIFACT_BY_VIEW[name]) for name in BOOKKEEPING_ORDER)
+    # A speaker round takes its frequency view from the packet writer, not here.
+    return tuple((name, row.per_set, row.grades_against_base) for name, row in rows
+                 if wanted in row.bookkeeping and (purpose != PURPOSE_SPEAKER or name != "frequency"))
 
 
 def run_purpose(run_program: str | None) -> str:
