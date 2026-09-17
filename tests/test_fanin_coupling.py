@@ -296,28 +296,16 @@ def test_outputd_bridge_ring_aliases_match_the_rust_accept_set():
     )
 
 
-def test_resolve_outputd_ring_path_and_slots_fail_safe():
+def test_resolve_outputd_ring_path_fail_safe():
     from jasper.fanin_coupling import (
         DEFAULT_OUTPUTD_RING_PATH,
-        DEFAULT_OUTPUTD_RING_SLOTS,
         resolve_outputd_ring_path,
-        resolve_outputd_ring_slots,
     )
 
     assert resolve_outputd_ring_path(None) == DEFAULT_OUTPUTD_RING_PATH
     assert resolve_outputd_ring_path("  ") == DEFAULT_OUTPUTD_RING_PATH
     assert resolve_outputd_ring_path(" /dev/shm/x.ring ") == "/dev/shm/x.ring"
     assert DEFAULT_OUTPUTD_RING_PATH == "/dev/shm/jts-ring/content.ring"
-
-    assert resolve_outputd_ring_slots(None) == DEFAULT_OUTPUTD_RING_SLOTS
-    assert resolve_outputd_ring_slots("") == DEFAULT_OUTPUTD_RING_SLOTS
-    assert resolve_outputd_ring_slots("2") == 2
-    assert resolve_outputd_ring_slots(" 16 ") == 16
-    assert DEFAULT_OUTPUTD_RING_SLOTS == 2
-    # Out-of-range / unparseable fail loud (mirror the Rust MIN/MAX; no clamp).
-    for bad in ("1", "0", "17", "-1", "garbage", "2.5"):
-        with pytest.raises(ValueError):
-            resolve_outputd_ring_slots(bad)
 
 
 # --- resolve_ring_wire: one resolution, four declarers -------------------------
