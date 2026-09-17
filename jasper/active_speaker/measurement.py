@@ -247,7 +247,7 @@ def _target_fingerprint(
         "role": target.get("role"),
         **({"output_variant": target["output_variant"]} if target.get("output_variant", "primary") != "primary" else {}),
         "output_index": target.get("output_index"),
-        # Preserve hashes in saved measurement and research records; see #5271.
+        # Stored records hashed True because the recorder refused unverified targets.
         "identity_verified": True,
     })
 

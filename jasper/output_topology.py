@@ -1082,7 +1082,6 @@ def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
         "warnings": warnings,
         "safety": {
             "sound_tests_allowed": False,
-            "requires_identity_verification": True,
             "requires_tweeter_protection": any(
                 channel.role == "tweeter"
                 for group in topology.speaker_groups

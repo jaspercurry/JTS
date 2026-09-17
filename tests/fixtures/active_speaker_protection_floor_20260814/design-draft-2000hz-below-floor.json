@@ -612,7 +612,6 @@
    "safety": {
     "blockers": [],
     "next_step": "Topology is saved; sound tests still require a separate safe session.",
-    "requires_identity_verification": true,
     "requires_tweeter_protection": true,
     "sound_tests_allowed": false,
     "warnings": [
@@ -718,7 +717,6 @@
   "safety": {
    "blockers": [],
    "next_step": "Topology is saved; sound tests still require a separate safe session.",
-   "requires_identity_verification": true,
    "requires_tweeter_protection": true,
    "sound_tests_allowed": false,
    "warnings": [

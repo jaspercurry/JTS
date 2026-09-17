@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 from jasper.active_speaker import commissioning_coordinator, design_draft as design_draft_store
 from jasper.active_speaker.installation import installation_view
 from jasper.active_speaker.rear_calibration import RearCalibrationError, diagnostic_seed, read_rear_calibration
+from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.tuning_handoff import PROGRAM_ENTRIES, build_tuning_handoff
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 
@@ -539,10 +540,8 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
     physical-output assignment, and the crossover/commissioning design are all
     keyed to physical output INDEX, never to a DAC serial, so a replacement
     unit of the same kind in the same USB port invalidates none of them — while
-    the reset's wipe would throw all of it away. The two things a swap does
-    invalidate (per-lane identity for the replaced unit, and a drift
-    measurement of two crystals that never ran together) are cleared by
-    ``repin_composite_child_serials``.
+    the reset's wipe would throw all of it away. The applied baseline record
+    and the pair's drift measurement must be renewed after the swap.
     """
 
     from jasper.active_speaker.runtime_convergence import park_and_commit_topology
@@ -578,6 +577,7 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
                 "parked after a DAC re-pin; Apply the baseline to resume audio"
             ),
         )
+        baseline_profile_state_path().unlink(missing_ok=True)
         reconcile = trigger_reconcile(reason="output_topology_repin")
     needs_attention_repin = {
         "status": "needs_attention",

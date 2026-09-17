@@ -1,13 +1,12 @@
 # Active speaker DSP — investigation history
 
 > **Status: historical.** Not current truth. (Note: it preserves the ORIGINAL
-> doc, including its own now-superseded “Current Operational
+> doc verbatim, including its own now-superseded “Current Operational
 > Truth” heading and mid-appendix `Last verified:` line — do not read
 > those as current.) Everything below this line is this doc's
 > original chronological narrative (2026-05-25 through 2026-07-16),
-> kept for primary-source archaeology. The retired output-confirmation step
-> has been removed; Apply is the proof for the boot graph (issue #5271).
-> It predates the five-layer tuning model, the v2 crossover conductor flow, and the
+> preserved verbatim for primary-source archaeology. It predates the
+> five-layer tuning model, the v2 crossover conductor flow, and the
 > issue-#1666 candidate-promotion fix described above. Several of its
 > claims are superseded and should not be read as current: the
 > near-field/null-depth/gated-summed measurement triad presented as
@@ -52,7 +51,7 @@
 > speaker groups, assigned/unassigned lanes, safety evidence, and no-audio
 > setup templates for mono/stereo passive, mono/stereo active 2-way, and
 > mono/stereo active 3-way wiring. The active walkthrough step labels are **Choose speaker
-> layout**, **Add your components**, **Test combined
+> layout**, **Add your components**, **Confirm outputs**, **Test combined
 > drivers**, and **Validate and apply**. Subwoofer is an optional add-on to the
 > current draft rather than a duplicated template matrix: when an unused
 > physical output exists, the UI adds one `subwoofer` group and records it
@@ -86,6 +85,15 @@
 > superseded per-driver planners have been removed. Per-driver test planning is
 > commission-ramp-owned; the summed topology planner remains only for the live
 > combined-crossover test.
+> `/sound/active-speaker/channel-identity` now exposes and updates
+> operator-confirmed physical channel identity evidence for the saved
+> topology. The Confirm outputs UI can run a guarded quiet **Play** audition for
+> an assigned driver before identity is confirmed; the backend treats that as
+> identity-audition mode and still requires the saved topology, staged protected
+> config, software guards, path-safety evidence, calibration floor, Stop/session
+> control, and CamillaDSP rollback gates. Marking or clearing identity evidence
+> still does not grant playback permission; tweeter protection and later path
+> safety remain separate blockers.
 > The bottom **Reset speaker setup** recovery action posts to
 > `/sound/output-topology/reset`: it stops any active-speaker tone/session,
 > resets the saved topology to an unconfigured zero-group draft, kicks
@@ -278,7 +286,7 @@
 > clicks still cannot unlock the active profile. As of 2026-06-23, `/sound/`
 > does not expose the browser mic-capture buttons; mic-backed crossover leveling
 > should live in the HTTPS measurement/correction experience. The UI presents
-> this as the next human task: test each driver by ear,
+> this as the next human task after confirming outputs: test each driver by ear,
 > run the combined test at a bounded selectable level, record what the operator
 > heard, then save/apply the active profile when backend permissions allow it.
 > `/sound/` also includes manual crossover settings for active-crossover
@@ -407,7 +415,9 @@
 > design draft exists. `/sound/active-speaker/channel-protection`
 > records either physical compression-driver protection evidence or a
 > software-guarded bring-up request. The normal UI path does not expose this as
-> a separate "protection" choice. The
+> a separate "protection" choice; after the operator confirms a high-frequency
+> output and then confirms that named driver in the Confirm outputs card, the
+> page records the software-guard request internally before checking readiness. The
 > software-guard state is
 > deliberately still a topology/playback blocker; it only lets
 > `/sound/active-speaker/stage-config` write a no-load muted/protected
@@ -1247,7 +1257,11 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
 - **Stage 4 — jts3, masked active load, drivers connected, speaker SILENT.** *Red:*
   any audible output → fail closed, do not unmute.
 - **Stage 5 — per-driver floor unmute, woofer→tweeter, operator-confirmed
-  (built; runnable via `jasper-active-speaker commission-ramp` —
+  (built; runnable via `jasper-active-speaker commission-ramp` **or** the
+  `/sound/` Speaker setup → "Confirm outputs" step, which embeds the guarded
+  per-driver Play/Stop/"I hear <role>" controls next to the DAC-channel mapping
+  for an active 2/3-way group; passive/full-range groups have no separate
+  active driver test —
   POST `/active-speaker/commission-{load,ramp-step,ramp-ack,ramp-abort}` +
   read-only GET `/active-speaker/commission-state`).** A commission
   load still exists internally: it arms a driver at the protected floor (gain

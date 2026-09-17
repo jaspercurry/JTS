@@ -26,11 +26,18 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.commissioning_coordinator import build_commissioning_view
+from jasper.active_speaker.baseline_profile import persist_applied_baseline_profile
 from jasper.active_speaker.design_draft import declared_driver_spacing_m, load_design_draft
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
 from jasper.audio_measurement.program_analysis.model import MeasurementGeometry
 from jasper.active_speaker.playback_route import OUTPUTD_ACTIVE_LANE_SOURCE
-from jasper.active_speaker.runtime_contract import FLAT_PROGRAM_GRAPH_UNCONFIGURED
+from jasper.active_speaker.runtime_contract import (
+    FLAT_PROGRAM_GRAPH_UNCONFIGURED,
+    PARKED_MUTED_STATUS,
+    apply_safe_graph_decision_to_statefile,
+    parked_safe_graph_decision,
+    safe_graph_for_current_topology,
+)
 from jasper.audio_hardware.dac import all_profiles as dac_all_profiles
 from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
@@ -94,6 +101,7 @@ from ._web_test_helpers import (
     sound_page_js,
 )
 from .sound_camilla_fixtures import FakeCamilla
+from .test_active_speaker_runtime_contract import _active_baseline_yaml
 
 
 class _RuntimeStep:
@@ -6901,6 +6909,9 @@ def _write_repin_fixture(
     hardware_path = tmp_path / "output_hardware.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(hardware_path))
+    monkeypatch.setenv(
+        "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(tmp_path / "baseline.json")
+    )
     save_output_topology(
         OutputTopology.from_mapping(_ported_dual_apple_topology_raw()),
         path=topology_path,
@@ -6991,6 +7002,62 @@ def test_repin_endpoint_keeps_the_design_and_drops_drift_evidence(
     ]
     # The offer is spent: the save now matches the attached hardware.
     assert sound_setup._output_topology_payload()["hardware_repin"] is None
+
+
+def test_repinned_box_reconcile_cannot_repoint_the_statefile_at_audio(
+    monkeypatch, tmp_path: Path,
+):
+    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
+    _stub_repin_runtime(monkeypatch)
+    baseline = tmp_path / "baseline.yml"
+    baseline.write_text(_active_baseline_yaml("stereo", 2))
+    applied = tmp_path / "baseline.json"
+    candidate = {"config": {"path": str(baseline)}}
+    persist_applied_baseline_profile(candidate, apply_state={"result": "success"})
+    statefile = tmp_path / "statefile.yml"
+    parked = tmp_path / "parked.yml"
+    decisions = []
+
+    def reconcile(**_kwargs):
+        topology = load_output_topology()
+        decision = safe_graph_for_current_topology(
+            topology,
+            statefile_path=statefile,
+            parked_config_path=parked,
+            staged_metadata_path=tmp_path / "staged.json",
+            staged_startup_hold_path=tmp_path / "startup-hold",
+        )
+        apply_safe_graph_decision_to_statefile(
+            decision, statefile_path=statefile, topology=topology,
+        )
+        decisions.append(decision)
+        return {"ok": True}
+
+    reconcile()
+    assert decisions[-1].status == "select_active_baseline"
+    topology = load_output_topology()
+    apply_safe_graph_decision_to_statefile(
+        parked_safe_graph_decision(topology, config_path=parked),
+        statefile_path=statefile, topology=topology,
+    )
+    monkeypatch.setattr("jasper.output_topology_runtime.trigger_reconcile", reconcile)
+    request = sound_setup._output_topology_payload()
+
+    sound_setup._repin_output_topology_payload({
+        "topology_revision": request["topology_revision"],
+        "detected_hardware_identity": request["hardware_adoption"]["identity"],
+    })
+
+    assert not applied.exists()
+    assert decisions[-1].status == PARKED_MUTED_STATUS
+    assert decisions[-1].selected_config_path == str(parked)
+    assert str(baseline) not in statefile.read_text()
+
+    persist_applied_baseline_profile(candidate, apply_state={"result": "success"})
+    reconcile()
+    assert decisions[-1].status == "select_active_baseline"
+    assert decisions[-1].selected_config_path == str(baseline)
+    assert f"config_path: {baseline}" in statefile.read_text()
 
 
 @pytest.mark.parametrize(

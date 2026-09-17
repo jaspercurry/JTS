@@ -1998,7 +1998,7 @@ import {
           '<div class="output-role__text">' +
             '<span>' + escapeHtml(label) + '</span>' +
             '<strong>' + escapeHtml(hardwareLabel) + '</strong>' +
-            '<small>' + escapeHtml(label) + '</small>' +
+            (channel.physical_output_index == null ? '<small>Assign a DAC output.</small>' : '') +
           '</div>' +
           '<label class="output-role__select">' +
             '<span>DAC channel</span>' +

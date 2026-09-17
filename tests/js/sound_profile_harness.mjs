@@ -2520,6 +2520,13 @@ async function testThreeOutputChannelSelectorDoesNotAutoAssignPeers() {
   });
   const harness = setupHarness(fetchHandler);
   await loadAndSetActiveState(harness);
+  const rowHints = Array.from(
+    harness.elements.get("view-body").innerHTML.matchAll(/<div class="output-role__text">([^]*?)<\/div>/g),
+    (match) => match[1].match(/<small>([^]*?)<\/small>/)?.[1] || "",
+  );
+  if (JSON.stringify(rowHints) !== JSON.stringify(["Assign a DAC output.", "", ""])) {
+    fail("only an unassigned DAC row should show an assignment hint", { rowHints });
+  }
 
   harness.dispatchChange({
     value: "0",

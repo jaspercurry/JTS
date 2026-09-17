@@ -323,7 +323,9 @@ def park_and_commit_topology(
     """Park, durably commit topology, then converge under one graph lock.
 
     ``stay_parked`` keeps the speaker silent after a composite re-pin.
-    Apply proves the baseline against the new hardware before playback resumes.
+    Apply re-proves the graph's volume limit and declared floors, runs
+    ``camilladsp --check``, and rewrites the applied record before playback
+    resumes. It does not verify wiring.
     """
 
     return asyncio.run(
