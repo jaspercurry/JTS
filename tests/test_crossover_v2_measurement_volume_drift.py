@@ -653,7 +653,7 @@ def _drive(
         return SimpleNamespace(ok=True)
 
     monkeypatch.setattr(program_playback, "verified_program_aplay", emit)
-    monkeypatch.setattr(measurement_emit, "measurement_bass_extension", lambda **kw: {})
+    monkeypatch.setattr(measurement_emit, "measurement_graph_evidence", lambda **kw: {})
     monkeypatch.setattr(dsp_apply, "dsp_writer_lock", lambda *a, **kw: _Window(cam))
     monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
     for name in ("readmit_program_from_wav", "readmit_summed_program_from_wav"):

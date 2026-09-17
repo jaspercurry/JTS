@@ -692,7 +692,7 @@ def readmit_summed_program_from_wav(
     role_targets: Mapping[str, str],
     session_volume_db: float,
     declared_sensitivities: Mapping[str, float] | None = None,
-    bass_extension: Mapping[str, Any] | None = None,
+    graph_evidence: Mapping[str, Any] | None = None,
 ) -> ProgramAdmission:
     """Admit a mono summed artifact through its complete protected tuning graph.
 
@@ -746,9 +746,7 @@ def readmit_summed_program_from_wav(
     )
     graph = classify_bass_extension_graph(
         topology, evidence_source="desired", graph_text=graph_yaml,
-        applied_baseline_state={
-            "recomposition_snapshot": {"bass_extension": bass_extension or {}},
-        },
+        applied_baseline_state={"recomposition_snapshot": graph_evidence or {}},
         # This take's own targets, in memory: a rear it excites on its own
         # program channel cannot be muted, so the door proves the role chain
         # at that index instead of the mute.
