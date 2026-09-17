@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from jasper.active_speaker import rear_calibration as rear_cal
 from jasper.active_speaker.crossover_v2 import alignment_prescription as alignment
 from jasper.active_speaker.crossover_v2 import bass_prescription as bass
 from jasper.active_speaker.crossover_v2 import blend_prescription as blend
@@ -371,3 +372,105 @@ def test_speaker_contract_publishes_playback_cost_with_unreadable_measurements(r
         assert row["binding"] is None
         assert row["session_volume_db"] == (-21.09 if manifest.get("sets") and manifest["sets"][0] else None)
         assert row["spl_headroom_db"] == (42.0 if row["session_volume_db"] is not None else None)
+
+
+def test_rear_contract_bounds_equal_the_rear_calibration_constants():
+    contract = prescription_contracts()["rear"]
+    assert contract["document_section"] == "rear_calibration"
+    assert contract["case"] == "electrical_dsp"
+    assert contract["mode"] == "branches"
+    schema = contract["schema"]
+    assert schema["type"] == "object"
+    assert set(schema["required"]) == set(schema["properties"])
+    assert schema["additionalProperties"] is False
+    bounds = contract["bounds"]
+    assert bounds["max_filters_per_chain"] == rear_cal.MAX_FILTERS_PER_CHAIN
+    assert bounds["chain_gain_db"] == [rear_cal.MIN_CHAIN_GAIN_DB, 0.0]
+    assert bounds["resonant_q_max"] == rear_cal.MAX_RESONANT_Q
+    assert bounds["allpass_q_max"] == rear_cal.MAX_ALLPASS_Q
+    assert bounds["combo_order_max"] == rear_cal.MAX_COMBO_ORDER
+    assert set(bounds["biquad_kinds"]) == rear_cal.BIQUADS
+    assert set(bounds["combo_kinds"]) == rear_cal.COMBOS
+    assert set(bounds["cut_only_kinds"]) == rear_cal.SHELVING
+    assert set(bounds["stage_kinds"]) == rear_cal.STAGES
+    assert json.loads(contract_json(contract)) == contract
+
+
+def _break_chain_gain_floor(document):
+    document["front"]["gain_db"] = rear_cal.MIN_CHAIN_GAIN_DB - 0.01
+
+
+def _break_chain_gain_ceiling(document):
+    document["rear"]["bass"]["gain_db"] = 0.01
+
+
+def _break_max_filters_per_chain(document):
+    document["front"]["filters"] = [
+        {"type": "Biquad", "parameters": {"type": "Peaking", "freq": 100.0, "q": 1.0, "gain": -1.0}},
+    ] * (rear_cal.MAX_FILTERS_PER_CHAIN + 1)
+
+
+def _break_resonant_q_max(document):
+    document["front"]["filters"] = [
+        {"type": "Biquad", "parameters": {"type": "Highpass", "freq": 100.0, "q": rear_cal.MAX_RESONANT_Q + 0.01}},
+    ]
+
+
+def _break_allpass_q_max(document):
+    document["front"]["filters"] = [
+        {"type": "Biquad", "parameters": {"type": "Allpass", "freq": 100.0, "q": rear_cal.MAX_ALLPASS_Q + 0.01}},
+    ]
+
+
+def _break_combo_order_max(document):
+    document["front"]["filters"] = [
+        {"type": "BiquadCombo", "parameters": {"type": "ButterworthLowpass", "freq": 100.0,
+                                               "order": rear_cal.MAX_COMBO_ORDER + 1}},
+    ]
+
+
+def _break_cut_only_rule(document):
+    document["front"]["filters"] = [
+        {"type": "Biquad", "parameters": {"type": "Lowshelf", "freq": 100.0, "q": 0.7, "gain": 0.01}},
+    ]
+
+
+def _break_emitted_delay_rule(document):
+    document["rear"]["cancellation"]["delay_ms"] = -10.0
+
+
+def _break_boundary_correction_rule(document):
+    document["boundary"]["front"] = [
+        {"type": "Biquad", "parameters": {"type": "Highpass", "freq": 100.0, "q": 0.7}},
+    ]
+    document["included_stages"]["front"] = ["boundary_correction"]
+
+
+@pytest.mark.parametrize("mutate", [
+    pytest.param(None, id="obeys"),
+    pytest.param(_break_chain_gain_floor, id="chain_gain_floor"),
+    pytest.param(_break_chain_gain_ceiling, id="chain_gain_ceiling"),
+    pytest.param(_break_max_filters_per_chain, id="max_filters_per_chain"),
+    pytest.param(_break_resonant_q_max, id="resonant_q_max"),
+    pytest.param(_break_allpass_q_max, id="allpass_q_max"),
+    pytest.param(_break_combo_order_max, id="combo_order_max"),
+    pytest.param(_break_cut_only_rule, id="cut_only_rule"),
+    pytest.param(_break_emitted_delay_rule, id="emitted_delay_rule"),
+    pytest.param(_break_boundary_correction_rule, id="boundary_correction_rule"),
+])
+def test_rear_document_obeys_or_breaks_each_published_bound(mutate):
+    document = rear_cal.diagnostic_seed(48000)
+    if mutate is None:
+        assert rear_cal.read_rear_calibration(document, sample_rate=48000)["case"] == "electrical_dsp"
+        return
+    mutate(document)
+    with pytest.raises(rear_cal.RearCalibrationError):
+        rear_cal.read_rear_calibration(document, sample_rate=48000)
+
+
+def test_contract_cli_rear_shares_rooms_top_level_shape(capsys):
+    assert cli.main(["contract", "--section", "rear"]) == 0
+    rear = json.loads(capsys.readouterr().out)
+    assert cli.main(["contract", "--section", "room"]) == 0
+    room_contract = json.loads(capsys.readouterr().out)
+    assert {"schema", "bounds"} <= set(rear) & set(room_contract)

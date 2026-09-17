@@ -26,6 +26,7 @@ from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB, _branch_
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
 from jasper.active_speaker.measured_crossover_candidate import room_peqs_from_correction
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, SIDES_BY_LAYOUT, SPL_RAISE_MARGIN_DB
+from jasper.active_speaker import rear_calibration
 from jasper.audio_measurement import room_limits as rl
 from jasper.bass_extension import dynamic as bass
 from jasper.json_fields import finite_float
@@ -40,7 +41,7 @@ from .feature_classification import UNCERTAINTY_RANDOM
 from .fc_sweep import fc_rejection_scenarios
 
 CONTRACT_COMMAND = "jasper-crossover-prescriber contract"
-SECTIONS = ("speaker", "room", "bass")
+SECTIONS = ("speaker", "room", "bass", "rear")
 
 
 def contract_json(value: Mapping[str, Any]) -> str:
@@ -354,6 +355,117 @@ def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _rear_filter() -> dict[str, Any]:
+    biquad = _object({
+        "type": {"enum": sorted(rear_calibration.BIQUADS)},
+        "freq": _number(), "q": _number(), "gain": _number(hi=0.0),
+    }, ["type", "freq", "q"])
+    biquad["allOf"] = [{"if": {"properties": {"type": {"enum": sorted(rear_calibration.SHELVING)}}},
+                        "then": {"required": ["gain"]}}]
+    combo = _object({
+        "type": {"enum": sorted(rear_calibration.COMBOS)}, "freq": _number(),
+        "order": {"type": "integer", "minimum": 1, "maximum": rear_calibration.MAX_COMBO_ORDER},
+    }, ["type", "freq", "order"])
+    return {"type": "object", "oneOf": [
+        _object({"type": {"const": "Biquad"}, "parameters": biquad}, ["type", "parameters"]),
+        _object({"type": {"const": "BiquadCombo"}, "parameters": combo}, ["type", "parameters"]),
+    ]}
+
+
+def _rear_chain() -> dict[str, Any]:
+    return _object({
+        "gain_db": _number(rear_calibration.MIN_CHAIN_GAIN_DB, 0.0),
+        "inverted": {"type": "boolean"}, "delay_ms": _number(), "muted": {"type": "boolean"},
+        "filters": {"type": "array", "maxItems": rear_calibration.MAX_FILTERS_PER_CHAIN, "items": _rear_filter()},
+    }, ["gain_db", "inverted", "delay_ms", "muted", "filters"])
+
+
+def _rear_calibration_schema() -> dict[str, Any]:
+    chain = _rear_chain()
+    filters = {"type": "array", "maxItems": rear_calibration.MAX_FILTERS_PER_CHAIN, "items": _rear_filter()}
+    stages = {"type": "array", "items": {"enum": sorted(rear_calibration.STAGES)}}
+    properties = {
+        "kind": {"const": rear_calibration.KIND},
+        "schema": {"const": 1},
+        "case": {"const": "electrical_dsp"},
+        "sample_rate_hz": {"type": "integer", "minimum": 1, "description": "must equal the installed DSP rate"},
+        "phase_convention": {"const": rear_calibration.PHASE_CONVENTION},
+        "geometry": _object({
+            "cabinet_back_wall_m": {"type": ["number", "null"], "minimum": 0},
+            "sources": _object({"front": {}, "rear": {}}, ["front", "rear"]),
+            "details": {},
+        }, ["cabinet_back_wall_m", "sources", "details"]),
+        "reference": _object({
+            "quantity": {"const": "electrical_filter_transfer"},
+            "units": {"type": "string", "minLength": 1},
+            "level": {},
+        }, ["quantity", "units", "level"]),
+        "conditions": {"type": "object"},
+        "valid_band_hz": {"type": ["array", "null"], "items": _number(0), "minItems": 2, "maxItems": 2},
+        "assumptions": {"type": "array", "items": {"type": "string"}},
+        "included_stages": _object({"front": stages, "rear": stages}, ["front", "rear"]),
+        "front": chain,
+        "boundary": _object({"front": filters, "rear": filters}, ["front", "rear"]),
+        "common_delay_ms": _number(0.0),
+        "rear_muted": {"type": "boolean"},
+        "rear": _object({"mode": {"const": "branches"}, "bass": chain, "cancellation": chain},
+                        ["mode", "bass", "cancellation"]),
+    }
+    return _object(properties, list(properties))
+
+
+def _rear() -> dict[str, Any]:
+    """Authoring contract for ``rear_calibration``: case ``electrical_dsp``, ``rear.mode`` ``branches``.
+
+    The runtime candidate boundary's own scope today (ADR-0318, ADR-0322,
+    ADR-0324) — see ``measured_crossover_candidate._validated_rear_calibration``.
+    An acoustic-target or FIR document still round-trips ``read_rear_calibration``
+    but is outside this contract.
+    """
+    return {
+        "document_section": "rear_calibration",
+        "case": "electrical_dsp",
+        "mode": "branches",
+        "schema": _rear_calibration_schema(),
+        "bounds": {
+            "max_filters_per_chain": rear_calibration.MAX_FILTERS_PER_CHAIN,
+            "chain_gain_db": [rear_calibration.MIN_CHAIN_GAIN_DB, 0.0],
+            "chain_gain_rule": (
+                "front, rear.bass and rear.cancellation gain_db is an attenuation between "
+                f"{rear_calibration.MIN_CHAIN_GAIN_DB:g} and 0 dB: a rear chain only attenuates"
+            ),
+            "resonant_q_max": rear_calibration.MAX_RESONANT_Q,
+            "allpass_q_max": rear_calibration.MAX_ALLPASS_Q,
+            "combo_order_max": rear_calibration.MAX_COMBO_ORDER,
+            "biquad_kinds": sorted(rear_calibration.BIQUADS),
+            "combo_kinds": sorted(rear_calibration.COMBOS),
+            "cut_only_kinds": sorted(rear_calibration.SHELVING),
+            "stage_kinds": sorted(rear_calibration.STAGES),
+            "cut_only_rule": "Peaking, Lowshelf and Highshelf gain must be a cut (<= 0 dB); a boost is refused",
+            "emitted_delay_rule": (
+                "common_delay_ms + front.delay_ms + a rear branch's own delay_ms must sum to >= 0; "
+                "add common delay to realize a negative relative rear delay"
+            ),
+            "branch_delay_is_not_acoustic_delay": (
+                "a branch's raw delay_ms is not its acoustic delay: the branch's own filters add delay"
+            ),
+            "boundary_correction_rule": (
+                "included_stages.<side> must not list boundary_correction while boundary.<side> carries filters"
+            ),
+            "comparison_scope": (
+                "a variant changes ONE control family -- rear gain, rear relative delay, or one band "
+                "edge -- and carries every other field of the incumbent's section verbatim, including "
+                "the front chain and the filter structure"
+            ),
+            "rear_muted_reference": "the same section with rear_muted: true is the rear-muted reference",
+            "inheritance_rule": (
+                "an absent rear_calibration key inherits the base's section; null clears the stage and "
+                "the rear output is then muted"
+            ),
+        },
+    }
+
+
 def prescription_contracts(*, draft: Mapping[str, Any] | None = None,
                            receipt: Mapping[str, Any] | None = None,
                            candidate: Mapping[str, Any] | None = None,
@@ -368,7 +480,8 @@ def prescription_contracts(*, draft: Mapping[str, Any] | None = None,
         _mapping((applied_profile or {}).get("recomposition_snapshot")).get("preset")})
     return {"speaker": _speaker(draft or {}, receipt or {}, preset, candidate, manifest or {}),
             "room": _room(room_median or {}, room_persistence or {}, room_ceiling or {}, preset),
-            "bass": _bass(bass_evidence or {})}
+            "bass": _bass(bass_evidence or {}),
+            "rear": _rear()}
 
 
 _SNR_NOT_AN_UNCERTAINTY: dict[str, str] = {'<role>_snr_db': "the worst per-band signal-to-noise ratio over the bands that decide this DRIVER role's MAGNITUDE claims — its level and its overlap-band trim. A ratio is not a spread about a reading: it BOUNDS the random error a level measured in that band can carry, and it does not shrink as captures are added, because it is a property of the capture conditions rather than of how many times they were repeated", '<role>_snr_verdict': "the policy's own answer about the figure above, in jasper.audio_measurement.snr_policy's per-band rank — a REFUSAL vocabulary that ships a shortfall in dB, deliberately not the quality_model trust labels it resembles. The words are not spelled here: they have an owner, and a copy that agrees today is still a copy. A verdict, not a quantity: there is nothing here to be uncertain by", '<role>_snr_band': 'which band produced the worst reading above. A label, not a quantity', '<role>_alignment_snr_db': "the same worst-band ratio over the bands that decide this DRIVER role's ALIGNMENT claims — polarity and delay — which need far more SNR because a null of depth D cannot be measured with less than roughly D + 10 dB. Published apart from the magnitude figure rather than pooled with it: the two answer different questions under different floors, and one number would let a capture that is fine for a trim read as fine for a null depth", '<role>_alignment_snr_verdict': "the same policy's answer about the alignment figure, under the alignment floor rather than the magnitude one — which is why one capture can legitimately carry a passing magnitude verdict and a refusing alignment one at the same time. A verdict, not a quantity", '<role>_alignment_snr_band': 'which band produced the worst alignment reading. A label, not a quantity', '<role>_pilot_snr_db': "the quiet-pilot in-band SNR this PILOT role's snr_valid is thresholded from. The role vocabulary here is the pilot's, not a driver's — 'summed' appears and names no driver. Null when the capture carried no ambient window to validate against, which is an absent measurement rather than a low one. Like every ratio here it bounds a random error without being one", 'pilot_snr_ok': "whether EVERY pilot in the capture cleared its own SNR floor, and null when the capture carried no pilots at all — 'no evidence', never a pass. A boolean verdict over the per-pilot figures above", 'gain_plan_snr_floor_ok': 'the room-quality gate: whether the ambient report cleared the floor the target capture level needs. False also when that report was missing or unreadable, so it is a gate outcome rather than a measurement, and never a spread'}
