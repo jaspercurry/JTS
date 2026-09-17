@@ -205,6 +205,32 @@ def test_clean_program_is_admitted():
     assert facts[0].peak_matches_manifest and facts[1].peak_matches_manifest
 
 
+@pytest.mark.parametrize("repeats, cooldown_s, refusal", [
+    (3, 2.0, None),
+    (2, 2.0, ProgramAdmissionRefusal.REPEAT_COUNT_OVER_CAP),
+    (3, 12.0, ProgramAdmissionRefusal.COOLDOWN_BELOW_MINIMUM),
+])
+def test_declared_repeat_and_cooldown_caps_grade_every_driver_sweep(
+    repeats, cooldown_s, refusal,
+):
+    """The driver door grades both caps per target channel (#5322), through the
+    same helper the summed door uses. MEASURE plays ``MEASURE_REPEAT_COUNT``
+    sweeps per driver and no builder clamps it, so a declaration under what the
+    program plays refuses with the typed code rather than being excited past it.
+    """
+    topology, profile, targets = _profile_and_targets(
+        max_repeat_count=repeats, minimum_cooldown_s=cooldown_s,
+    )
+    sv = session_measurement_volume_db(profile, targets.values())
+    adm = _admit(
+        _measure_program(sv), topology=topology, safety_profile=profile,
+        role_targets=targets, session_volume_db=sv,
+    )
+    assert adm.allowed is (refusal is None), adm.to_dict()
+    if refusal is not None:
+        assert refusal in adm.refusals
+
+
 def test_band_escape_refuses_segment():
     topology, profile, targets = _profile_and_targets()
     sv = session_measurement_volume_db(profile, targets.values())

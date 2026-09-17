@@ -60,6 +60,7 @@ from jasper.active_speaker.crossover_v2.programs import (
     courtesy_prelude_for_phase,
     program_for_phase,
 )
+from jasper.active_speaker.program_admission import ProgramAdmissionRefusal
 from jasper.audio_measurement.program import KIND_COURTESY_TONE
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.web.correction_run_host import compose_plan_program
@@ -679,6 +680,57 @@ def test_a_driver_take_the_plan_host_composes_honours_the_declared_cooldown(way)
     assert (grown_ms > 0) is (way == 1)
     assert grown_ms == pytest.approx(
         _program_duration_ms(program) - _program_duration_ms(undeclared), abs=50)
+
+
+@pytest.mark.parametrize("repeats, cooldown_s, refusal_by_phase", [
+    (3, 2.0, {}),
+    (2, 2.0, {"measure": ProgramAdmissionRefusal.REPEAT_COUNT_OVER_CAP}),
+    (3, 12.0, {"measure": ProgramAdmissionRefusal.COOLDOWN_BELOW_MINIMUM}),
+])
+def test_driver_takes_the_plan_host_composes_are_graded_against_declared_caps(
+    tmp_path, repeats, cooldown_s, refusal_by_phase,
+):
+    """The PRODUCTION composer for every ``drivers``-scope spec, not the builder.
+
+    ``compose_plan_program`` is what ``bind_production_play`` plays through the
+    driver door, and MEASURE puts ``MEASURE_REPEAT_COUNT`` sweeps on each
+    driver's own channel: at the declaration the research prompt asks for (3
+    repeats, 2 s) every phase still admits, while a declaration under what the
+    program plays refuses (#5322). CHECK admits in every row — its pilots are
+    bounded per segment and stay out of the repeat/cooldown count.
+    """
+    from jasper.active_speaker.excitation_safety_plan import effective_sweep_duration_limit_s
+    from jasper.active_speaker.program_admission import readmit_program_from_wav
+    from jasper.audio_measurement.program import write_program_wav
+    from tests.test_active_speaker_program_admission import _roles as _declared_roles
+
+    topology, safety, targets = _profile_and_targets(
+        max_repeat_count=repeats, minimum_cooldown_s=cooldown_s, max_sweep_duration_s=4)
+    roles = tuple(_declared_roles())
+    excitation = SessionExcitation(
+        roles=roles, caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB, fc_hz=FC_HZ,
+        sweep_duration_limits_s={rb.role: effective_sweep_duration_limit_s(safety, targets[rb.role])
+                                 for rb in roles})
+    host = SimpleNamespace(_excitation=excitation,
+                           _gain_plan_db={"woofer": -6.0, "tweeter": -46.0})
+    context = SimpleNamespace(safety_profile=safety, role_targets=targets)
+    request = request_for_program(measurement_program("speaker", "mark"), mover="human")
+
+    graded = {}
+    for capture in prepare_plan_captures(request, roles_bands=roles):
+        if capture.spec.graph_scope != "drivers":
+            continue
+        program = compose_plan_program(host, capture.spec, None, context=context)
+        wav = tmp_path / f"{program.program_id}.wav"
+        write_program_wav(wav, program)
+        graded[capture.spec.program_phase] = readmit_program_from_wav(
+            program, wav, topology=topology, safety_profile=safety,
+            role_targets=targets, session_volume_db=SESSION_VOLUME_DB)
+    assert set(graded) == {"check", "measure"}
+    for phase, admission in graded.items():
+        assert admission.allowed is (phase not in refusal_by_phase), admission.to_dict()
+        if phase in refusal_by_phase:
+            assert refusal_by_phase[phase] in admission.refusals
 
 
 def test_per_driver_measure_keeps_declared_bands_with_a_room_session():
