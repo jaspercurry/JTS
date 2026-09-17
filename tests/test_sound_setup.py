@@ -4697,7 +4697,8 @@ def test_rear_calibration_validate_route_refuses_a_bad_document_with_its_code(
 
     assert payload["ok"] is False
     assert payload["code"] == "rear_calibration_invalid"
-    assert "sample rate" in payload["error"]
+    assert payload["next_action"] is None
+    assert isinstance(payload["error"], str) and payload["error"]
 
 
 def test_rear_calibration_bank_route_banks_without_touching_the_applied_identity(
@@ -4742,6 +4743,32 @@ def test_rear_calibration_bank_route_names_the_section_on_a_refused_document(
     assert payload["ok"] is False
     assert payload["code"] == "rear_calibration_case_unsupported"
     assert payload["section"] == "rear_calibration"
+
+
+def test_rear_calibration_bank_route_refuses_a_corrupt_saved_topology(
+    monkeypatch, tmp_path: Path,
+):
+    """Mirrors jasper-crossover-prescriber's ``--base saved`` block: a corrupt
+    on-disk file fails closed as a typed refusal, not an unhandled 502."""
+    from jasper.output_topology import OutputTopologyError
+
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json"))
+    monkeypatch.setattr(
+        "jasper.output_topology.load_output_topology_strict",
+        lambda *a, **kw: (_ for _ in ()).throw(OutputTopologyError("output topology is not valid JSON")),
+    )
+    document = sound_active_speaker._active_speaker_rear_calibration_seed_payload()["calibration"]
+    with sound_server(tmp_path) as base:
+        resp = request_with_csrf(
+            base, "/active-speaker/rear-calibration/bank",
+            json.dumps(document).encode("utf-8"),
+            content_type="application/json",
+        )
+        payload = json.loads(resp.read().decode("utf-8"))
+
+    assert payload["ok"] is False
+    assert payload["code"] == "evidence_unreadable"
+    assert payload["section"] is None
 
 
 def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(

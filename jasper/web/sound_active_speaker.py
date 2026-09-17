@@ -1857,6 +1857,7 @@ def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[s
         PrescriptionDocumentRefused,
         judge_prescription_document,
     )
+    from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError  # lazy: graph compilation imports NumPy
     from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError  # lazy: graph compilation imports NumPy
     from jasper.active_speaker.state_paths import baseline_profile_state_path  # lazy: graph compilation imports NumPy
     from jasper.output_topology import load_output_topology_strict  # lazy: graph compilation imports NumPy
@@ -1877,6 +1878,11 @@ def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[s
         return exc.to_dict()
     except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
         return PrescriptionDocumentRefused(exc.code, None, exc.detail).to_dict()
+    except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
+        # Mirrors jasper-crossover-prescriber's --base saved block: a corrupt or
+        # unreadable on-disk topology/applied-profile file fails closed as a
+        # typed refusal instead of an unhandled exception reaching the client.
+        return PrescriptionDocumentRefused("evidence_unreadable", None, str(exc)).to_dict()
     log_event(
         logger,
         "sound.active_speaker_rear_calibration_bank",
