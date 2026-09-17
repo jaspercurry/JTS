@@ -37,7 +37,10 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.camilla_config_contract import PeqFilter
 
+from jasper.active_speaker.rear_calibration import coefficient_sha256, diagnostic_seed
+
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
+from tests.test_rear_output_foundation import _rear_pair
 
 
 def _preset(layout: str = "mono") -> ActiveSpeakerPreset:
@@ -60,6 +63,7 @@ def _candidate(
     exclusion_evidence: dict | None = None,
     room_correction: dict | None = None,
     bass_extension: dict | None = None,
+    rear_calibration: dict | None = None,
 ) -> MeasuredCrossoverCandidate:
     preset = preset or _preset()
     trims = trims if trims is not None else {"woofer": 0.0, "tweeter": -3.5}
@@ -78,6 +82,8 @@ def _candidate(
         kwargs["room_correction"] = room_correction
     if bass_extension is not None:
         kwargs["bass_extension"] = bass_extension
+    if rear_calibration is not None:
+        kwargs["rear_calibration"] = rear_calibration
     return MeasuredCrossoverCandidate(
         program_id=program_id,
         analysis={"drift_ppm": 12.5, "sweeps": ["w", "t", "w"]},
@@ -681,6 +687,73 @@ def test_bass_extension_is_fingerprinted_and_reopened():
     with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
         MeasuredCrossoverCandidate.from_mapping(tampered)
     assert excinfo.value.code == "candidate_tampered"
+
+
+def _rear_document(**overrides) -> dict:
+    return {**diagnostic_seed(48000), "rear_muted": False, **overrides}
+
+
+def _fir_rear() -> dict:
+    coefficients = [0.0, 0.0, -0.75]
+    return {"mode": "fir", "coefficients": coefficients, "sample_rate_hz": 48000,
+            "normalization": "as_supplied", "added_latency_ms": 0.0,
+            "sha256": coefficient_sha256(coefficients)}
+
+
+def _acoustic_rear_document() -> dict:
+    document = _rear_document()
+    for key in ("front", "rear", "boundary", "common_delay_ms", "rear_muted"):
+        del document[key]
+    document.update(case="acoustic_targets", valid_band_hz=[50, 500],
+                    targets={"frequency_hz": [50, 500], "front": [[1, 0], [0.9, 0.1]],
+                             "rear": [[1, 0], [0, 0]]})
+    document["reference"].update(quantity="acoustic_motion", units="m", level=None)
+    return document
+
+
+def test_rear_calibration_rides_the_candidate_and_reaches_the_emitted_stage():
+    preset = _rear_pair("mono")[0]
+    candidate = _candidate(
+        preset=preset, trims={"woofer": 0.0, "tweeter": -3.5},
+        rear_calibration=_rear_document(),
+    )
+    reopened = MeasuredCrossoverCandidate.from_mapping(candidate.to_dict())
+    assert reopened.rear_calibration == candidate.rear_calibration
+    assert reopened.fingerprint == candidate.fingerprint
+    assert _candidate(preset=preset).fingerprint != candidate.fingerprint
+    payload = yaml_lib.safe_load(
+        compile_candidate_config(candidate, playback_device="jts_ring_active_playback")
+    )
+    assert "rear_out2_output_gain" in payload["filters"]
+
+
+@pytest.mark.parametrize("document,code", [
+    (lambda: _rear_document(front={**diagnostic_seed(48000)["front"], "gain_db": 1.0}),
+     "rear_calibration_invalid"),
+    (lambda: _rear_document(rear=_fir_rear()), "rear_calibration_mode_unsupported"),
+    (_acoustic_rear_document, "rear_calibration_case_unsupported"),
+])
+def test_runtime_rear_calibration_scope_is_refused_at_the_candidate(document, code):
+    with pytest.raises(MeasuredCrossoverCandidateError) as caught:
+        _candidate(preset=_rear_pair("mono")[0], trims={"woofer": 0.0, "tweeter": -3.5},
+                   rear_calibration=document())
+    assert caught.value.code == code
+
+
+@pytest.mark.parametrize("preset", [lambda: _rear_pair("stereo")[0], _preset])
+def test_rear_calibration_needs_a_mono_cabinet_with_a_rear_woofer(preset):
+    with pytest.raises(MeasuredCrossoverCandidateError) as caught:
+        _candidate(preset=preset(), rear_calibration=_rear_document())
+    assert caught.value.code == "rear_calibration_topology_unsupported"
+
+
+def test_from_mapping_rejects_non_mapping_rear_calibration():
+    raw = {**_candidate().to_dict(), "rear_calibration": []}
+
+    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
+        MeasuredCrossoverCandidate.from_mapping(raw)
+
+    assert excinfo.value.code == "rear_calibration_malformed"
 
 
 def test_from_mapping_rejects_non_mapping_bass_extension():

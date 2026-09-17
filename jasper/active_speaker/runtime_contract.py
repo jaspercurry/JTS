@@ -118,6 +118,7 @@ from .profile import (
     SUB_CROSSOVER_ORDER,
     SUPPORTED_LR_ORDERS,
 )
+from .rear_calibration import rear_stage_mixer_names, rear_stage_mixers
 
 logger = logging.getLogger(__name__)
 
@@ -1461,6 +1462,103 @@ def _post_split_filter_names(
     return tuple(out)
 
 
+def _is_rear_stage_name(name: object) -> bool:
+    """True for a ``rear_out<index>_*`` filter — the rear calibration stage's
+    own vocabulary (``rear_calibration.compile_rear_stage``)."""
+    if not isinstance(name, str) or not name.startswith("rear_out"):
+        return False
+    index, separator, _ = name[len("rear_out"):].partition("_")
+    return bool(separator) and index.isdigit()
+
+
+def _rear_stage_lead(names: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Split one channel's post-split names into its leading rear calibration
+    stage and the role chain the emitter wires after it."""
+    cut = 0
+    while cut < len(names) and _is_rear_stage_name(names[cut]):
+        cut += 1
+    return names[:cut], names[cut:]
+
+
+def _rear_stage_filter_names(payload: dict[str, Any], *, rear_channel: int) -> tuple[str, ...]:
+    """Every post-split filter name this rear output's stage owns, on ANY channel
+    — the branch lane runs on a spare channel the playback device never sees."""
+    prefix = f"rear_out{rear_channel}_"
+    pipeline = payload.get("pipeline")
+    if not isinstance(pipeline, list):
+        return ()
+    split_seen = False
+    out: list[str] = []
+    for raw_step in pipeline:
+        step = raw_step if isinstance(raw_step, dict) else {}
+        if step.get("type") == "Mixer":
+            name = step.get("name")
+            if isinstance(name, str) and name.startswith(ACTIVE_SPLIT_MIXER_PREFIX):
+                split_seen = True
+            continue
+        if not split_seen or step.get("type") != "Filter":
+            continue
+        raw_names = step.get("names")
+        if isinstance(raw_names, list):
+            out.extend(
+                name for name in raw_names
+                if isinstance(name, str) and name.startswith(prefix)
+            )
+    return tuple(out)
+
+
+def _rear_stage_filter_safe(payload: dict[str, Any], name: str) -> bool:
+    kind = _filter_type(payload, name)
+    params = _filter_params(payload, name)
+    if kind == "Gain":
+        gain = _strict_finite_number(params.get("gain"))
+        return (
+            gain is not None
+            and gain <= 0.0
+            and type(params.get("inverted")) is bool
+            and type(params.get("mute")) is bool
+        )
+    if kind == "Delay":
+        delay_ms = _strict_finite_number(params.get("delay"))
+        # Whole samples only: branch_peak refuses to model a subsample allpass,
+        # so a subsample Delay here would make every branch-peak proof fall back.
+        return (
+            params.get("unit") == "ms"
+            and "subsample" not in params
+            and delay_ms is not None
+            and 0.0 <= delay_ms <= MAX_DSP_DELAY_US / 1000.0
+        )
+    return kind in {"Biquad", "BiquadCombo"}
+
+
+def _rear_stage_unproven(payload: dict[str, Any], *, channel: int) -> str | None:
+    """Why this rear output's calibration stage is not one this repo emits, or
+    ``None`` when it is. Fail-closed on every shape it cannot read."""
+    unsafe = sorted({
+        name for name in _rear_stage_filter_names(payload, rear_channel=channel)
+        if not _rear_stage_filter_safe(payload, name)
+    })
+    if unsafe:
+        return "unapproved rear calibration filters: " + ", ".join(unsafe)
+    if not _rear_stage_lead(_post_split_filter_names(payload, channel=channel))[1]:
+        return "no driver chain runs after the rear calibration stage"
+    playback = payload.get("devices", {})
+    playback = playback.get("playback") if isinstance(playback, Mapping) else None
+    width = playback.get("channels") if isinstance(playback, Mapping) else None
+    if not isinstance(width, int) or isinstance(width, bool):
+        return "rear calibration stage has no readable playback width"
+    expected = rear_stage_mixers(rear_channel=channel, channel_count=width)
+    order = list(rear_stage_mixer_names(channel))
+    mixers = payload.get("mixers")
+    if not isinstance(mixers, Mapping) or any(
+        mixers.get(name) != expected[name] for name in order
+    ):
+        return "rear calibration branch mixers are not the emitter's split/sum pair"
+    if [name for name in _pipeline_mixer_names(payload) if name in expected] != order:
+        return "rear calibration branch mixers are not wired split-then-sum"
+    return None
+
+
 def _pipeline_names_for_channels(
     payload: dict[str, Any],
     *,
@@ -1727,9 +1825,11 @@ def _linearization_boost_allowance_db(payload: dict[str, Any]) -> float:
     recoverable from the graph, so it is subtracted exactly as the emitter added
     it.
 
-    **Residual slack, stated rather than hidden**: ``output_trim_db`` is folded
-    into the same gain and is NOT recoverable, so with preference EQ present
-    this allowance is generous by at most that trim — never tight. The emitter
+    **Residual slack, stated rather than hidden**: ``output_trim_db`` and the
+    rear calibration branch sum (``camilla_yaml.rear_branch_sum_headroom_db``,
+    at most 6.02 dB) are folded into the same gain and are NOT recoverable, so
+    with preference EQ or a cardioid stage present this allowance is generous by
+    at most those terms — never tight. The emitter
     also adds a caller-supplied ``baseline_headroom_db`` while this subtracts
     the module default; they agree only because every production path takes the
     default 0.0, which a test pins.
@@ -1961,7 +2061,7 @@ def _baseline_output_chain(
     Every other ``None`` this returns genuinely means "not the emitter's
     chain", which the caller's own issue already says."""
 
-    names = _post_split_filter_names(payload, channel=channel)
+    names = _rear_stage_lead(_post_split_filter_names(payload, channel=channel))[1]
     if assignment.role == "subwoofer":
         expected = (
             _sub_lowpass_name(),
@@ -2514,12 +2614,20 @@ def _active_graph_evidence(
         ))
         return {"issues": issues, "safe": False}
     view = view_from_yaml_dict(payload)
-    # Until fitted rear transfer/protection is admitted (issue #5161), even a
-    # manually edited graph must leave every rear physical output silent.
+    # A rear physical output plays only behind its own fitted calibration stage
+    # (ADR-0318). Without one — every emitter but the baseline's, and any
+    # manually edited graph — it must stay silent.
     for assignment in contract.assignments:
         if assignment.output_variant == "rear" and assignment.physical_output_index is not None:
             index = assignment.physical_output_index
-            if not output_terminally_muted(
+            if _rear_stage_filter_names(payload, rear_channel=index):
+                unproven = _rear_stage_unproven(payload, channel=index)
+                if unproven is not None:
+                    issues.append(_issue(
+                        "blocker", "rear_stage_unproven",
+                        f"Rear output {index + 1} calibration stage is unproven: {unproven}",
+                    ))
+            elif not output_terminally_muted(
                 payload, view, index, mute_name=f"as_out{index}_rear_pending_mute",
                 mute_gain_db=STARTUP_MUTE_GAIN_DB,
             ):
@@ -2657,11 +2765,23 @@ def _active_graph_evidence(
         if len(active_way_counts) == 1
         else None
     )
+    # A proven rear calibration stage adds exactly its own split/sum pair after
+    # the active split; the pair's routing is proved by `_rear_stage_unproven`.
+    rear_stage_mixers_expected = tuple(
+        name
+        for index in sorted(
+            item.physical_output_index
+            for item in contract.assignments
+            if item.output_variant == "rear" and item.physical_output_index is not None
+        )
+        if _rear_stage_filter_names(payload, rear_channel=index)
+        for name in rear_stage_mixer_names(index)
+    )
     expected_mixers = (
         (_channel_select_mixer_name, expected_split)
         if is_driver_domain and expected_split is not None
         else ((expected_split,) if expected_split is not None else ())
-    )
+    ) + (rear_stage_mixers_expected if expected_split is not None else ())
     if tuple(mixer_names) != expected_mixers:
         issues.append(_issue(
             "blocker",
@@ -3103,7 +3223,9 @@ def _active_graph_evidence(
                     for output, item in by_output.items()
                     if item.role == role
                 }
-                post_split_names = _post_split_filter_names(payload, channel=index)
+                post_split_names = _rear_stage_lead(
+                    _post_split_filter_names(payload, channel=index)
+                )[1]
                 limiter_index = post_split_names.index(limiter_name)
                 expected_names = post_split_names[: limiter_index + 1]
                 if index == min(role_channels) and not _canonical_chain_grouped(

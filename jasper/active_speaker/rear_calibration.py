@@ -73,8 +73,8 @@ def _filters(raw: Any, sample_rate: int, field: str) -> None:
 
 def _chain(raw: Any, sample_rate: int, name: str) -> None:
     chain = _object(raw, {"gain_db", "inverted", "delay_ms", "muted", "filters"}, name)
-    if not -150 <= _number(chain["gain_db"], name + ".gain_db") <= 150:
-        raise RearCalibrationError(f"{name}.gain_db is outside CamillaDSP's -150 to +150 dB range")
+    if not -150 <= _number(chain["gain_db"], name + ".gain_db") <= 0:
+        raise RearCalibrationError(f"{name}.gain_db must be an attenuation between -150 and 0 dB")
     _number(chain["delay_ms"], name + ".delay_ms")
     for key in ("inverted", "muted"):
         if type(chain[key]) is not bool:
@@ -187,12 +187,35 @@ def diagnostic_seed(sample_rate: int) -> dict[str, Any]:
                      "cancellation": {**deepcopy(chain), "gain_db": -0.84, "inverted": True, "delay_ms": 1.14}}}
 
 
+def rear_stage_mixer_names(rear_channel: int) -> tuple[str, str]:
+    """The stage's split and sum mixer names, in the order it wires them."""
+    return f"rear_out{rear_channel}_split", f"rear_out{rear_channel}_sum"
+
+
+def rear_stage_mixers(*, rear_channel: int, channel_count: int) -> dict[str, Any]:
+    """The split/sum pair opening and closing the rear branch lane on one spare channel."""
+    split, summed = rear_stage_mixer_names(rear_channel)
+    mixers: dict[str, Any] = {}
+    for name, width_in, width_out, mapping in (
+        (split, channel_count, channel_count + 1,
+         [(i, [(i, 0.0, False)]) for i in range(channel_count)] + [(channel_count, [(rear_channel, 0.0, False)])]),
+        (summed, channel_count + 1, channel_count,
+         [(i, [(i, 0.0, False)] + ([(channel_count, 0.0, False)] if i == rear_channel else []))
+          for i in range(channel_count)]),
+    ):
+        mixers.update(yaml.safe_load(emit_mixer(name, channels_in=width_in,
+                                                channels_out=width_out, mapping=mapping)))
+    return mixers
+
+
 def compile_rear_stage(raw: Any, *, front_channel: int, rear_channel: int, channel_count: int,
-                       sample_rate: int, tweeter_channel: int) -> dict[str, Any]:
+                       sample_rate: int, tweeter_channel: int, subsample: bool = False) -> dict[str, Any]:
     """Stage after common EQ / physical split, before per-output protection.
 
     Rear branch delays are relative to the front reference. FIR coefficients
     replace both branches; their declared latency is reported, never added twice.
+    ``subsample`` selects ADR-0318's fractional delay; the runtime path takes
+    whole samples, which the branch-peak render can model exactly.
     """
     data = read_rear_calibration(raw, sample_rate=sample_rate)
     if data["case"] != "electrical_dsp":
@@ -213,7 +236,7 @@ def compile_rear_stage(raw: Any, *, front_channel: int, rear_channel: int, chann
         names.append(gain)
         if delay:
             delay_name = f"{prefix}_{name}_delay"
-            filters.update(yaml.safe_load("\n".join(emit_delay_filter(delay_name, delay_ms=delay, subsample=True))))
+            filters.update(yaml.safe_load("\n".join(emit_delay_filter(delay_name, delay_ms=delay, subsample=subsample))))
             names.append(delay_name)
         for i, item in enumerate(value["filters"]):
             filter_name = f"{prefix}_{name}_{i}"
@@ -227,16 +250,12 @@ def compile_rear_stage(raw: Any, *, front_channel: int, rear_channel: int, chann
     chain("front", front_channel, front, common + front_delay)
     rear = data["rear"]
     if rear["mode"] == "branches":
-        for name, width_in, width_out, mapping in (
-            ("split", channel_count, channel_count + 1, [(i, [(i, 0.0, False)]) for i in range(channel_count)] + [(channel_count, [(rear_channel, 0.0, False)])]),
-            ("sum", channel_count + 1, channel_count, [(i, [(i, 0.0, False)] + ([(channel_count, 0.0, False)] if i == rear_channel else [])) for i in range(channel_count)]),
-        ):
-            mixer_name = f"{prefix}_{name}"
-            mixers.update(yaml.safe_load(emit_mixer(mixer_name, channels_in=width_in, channels_out=width_out, mapping=mapping)))
-        pipeline.append({"type": "Mixer", "name": f"{prefix}_split"})
+        split, summed = rear_stage_mixer_names(rear_channel)
+        mixers.update(rear_stage_mixers(rear_channel=rear_channel, channel_count=channel_count))
+        pipeline.append({"type": "Mixer", "name": split})
         for name, channel in (("bass", rear_channel), ("cancellation", channel_count)):
             chain(name, channel, rear[name], common + front_delay + rear[name]["delay_ms"])
-        pipeline.append({"type": "Mixer", "name": f"{prefix}_sum"})
+        pipeline.append({"type": "Mixer", "name": summed})
     else:
         name = f"{prefix}_fir"
         filters[name] = {"type": "Conv", "parameters": {"type": "Values", "values": rear["coefficients"]}}
