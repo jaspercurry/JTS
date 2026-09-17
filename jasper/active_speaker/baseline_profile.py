@@ -1616,6 +1616,40 @@ def _candidate_timing(
     return None
 
 
+def recomposition_snapshot_for(
+    candidate: MeasuredCrossoverCandidate,
+    *,
+    declaration: MeasurementGraphProfile,
+    design_draft: Mapping[str, Any],
+    projected: MeasuredCrossoverCandidate | None = None,
+    topology_fingerprint: str | None = None,
+    provenance: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """THE writer of the section set every graph-safety proof recomposes from.
+
+    The pre-apply proof and the persisted profile must recompose the same
+    sections; one a single caller assembles by hand is a graph the runtime
+    door cannot prove (ADR-0322's ``rear_calibration``).
+    """
+    from .linearization_fit import linearization_filters_by_role  # lazy: applied graph recording imports NumPy
+
+    shaped = candidate if projected is None else projected
+    return {
+        **((provenance or {}).get("recomposition_snapshot") or {}),
+        "schema_version": 1, "domain": "full", "topology_id": declaration.topology.topology_id,
+        "topology_fingerprint": topology_fingerprint or topology_config_fingerprint(declaration.topology),
+        "preset": effective_preset(candidate_on_declaration(shaped, declaration.preset)).to_dict(),
+        "corrections": driver_corrections(shaped),
+        "linearization": linearization_filters_by_role(candidate.linearization),
+        "blend_correction": list(candidate.blend_correction),
+        "room_correction": dict(candidate.room_correction), "bass_extension": dict(candidate.bass_extension),
+        "rear_calibration": dict(candidate.rear_calibration),
+        "driver_protection": _protection_projection(design_draft.get("driver_safety_profile")),
+        "playback_device": declaration.playback_device,
+        "measured_candidate_fingerprint": candidate.fingerprint,
+    }
+
+
 def prepare_applied_baseline_profile(
     candidate: MeasuredCrossoverCandidate,
     *,
@@ -1629,7 +1663,6 @@ def prepare_applied_baseline_profile(
     find_candidate: Callable[[str], BankedCandidate] | None = None,
 ) -> dict[str, Any]:
     """Resolve the complete applied record before changing the DSP graph."""
-    from .linearization_fit import linearization_filters_by_role  # lazy: applied graph recording imports NumPy
     try:
         banked = (find_candidate or find_banked_candidate)(candidate.fingerprint)
     except CandidateBankRefusal as exc:
@@ -1654,20 +1687,10 @@ def prepare_applied_baseline_profile(
         fields = alignment_to_candidate_fields({**timing, "alignment_status": "ok"},
                                               roles=required_driver_roles(candidate.source_preset.way_count))
         projected = replace(candidate, alignment=MeasuredCrossoverAlignment(*fields))
-    corrections = driver_corrections(projected)
-    linearization = linearization_filters_by_role(candidate.linearization)
     meta = _measured_candidate_metadata(candidate, declaration.preset, declaration.topology, measurements, at)
-    snapshot = {
-        **((provenance or {}).get("recomposition_snapshot") or {}),
-        "schema_version": 1, "domain": "full", "topology_id": declaration.topology.topology_id,
-        "topology_fingerprint": source["topology_fingerprint"],
-        "preset": effective_preset(candidate_on_declaration(projected, declaration.preset)).to_dict(), "corrections": corrections,
-        "linearization": linearization, "blend_correction": list(candidate.blend_correction),
-        "room_correction": dict(candidate.room_correction), "bass_extension": dict(candidate.bass_extension),
-        "rear_calibration": dict(candidate.rear_calibration),
-        "driver_protection": protection, "playback_device": declaration.playback_device,
-        "measured_candidate_fingerprint": candidate.fingerprint,
-    }
+    snapshot = recomposition_snapshot_for(candidate, declaration=declaration, design_draft=design_draft,
+        projected=projected, topology_fingerprint=source["topology_fingerprint"], provenance=provenance)
+    corrections, linearization = snapshot["corrections"], snapshot["linearization"]
     applied = {
         **(provenance or {}),
         "artifact_schema_version": SCHEMA_VERSION, "kind": BASELINE_PROFILE_KIND,

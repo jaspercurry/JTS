@@ -6630,6 +6630,15 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
         with pytest.raises(refusal_copy.CrossoverV2Refused) as refused:
             v2apply.handle_v2_apply(raw, _bg_run_async, lambda: cam)
         assert refused.value.code == code
+        if fault == "graph":
+            from jasper.web._common import refusal_envelope
+
+            # The refusal names WHICH door refused: a bare code sent the
+            # operator to read the graph by hand.
+            envelope = refusal_envelope(refused.value)
+            assert envelope["code"] == code
+            assert [(issue["severity"], issue["code"]) for issue in envelope["issues"]] == [
+                ("blocker", "volume_limit_positive")]
     fields = event_fields(caplog, "correction.crossover_v2_apply")
     assert fields["status"] == ("apply_failed" if fault == "load" else "blocked")
     assert fields["code"] == code
@@ -6647,6 +6656,35 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
         assert "applied_recomposition_profile" not in failed
     else:
         assert not (tmp_path / "baseline_profile.json").exists()
+
+
+def test_apply_proves_the_snapshot_it_persists(monkeypatch, tmp_path):
+    """The pre-apply proof reads the section set the applied record writes.
+
+    Both snapshots come from one builder. Hand-assembling the proof's copy
+    dropped ``rear_calibration`` and refused every banked cardioid candidate
+    against a plain role chain (ADR-0322); no graph the route emits differs
+    between the two, so the proof's own input is what this pins.
+    """
+    from jasper.active_speaker import baseline_profile, runtime_contract
+    from jasper.active_speaker.candidate_bank import publish_authored_candidate
+
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    candidate = replace(_run6_measured_candidate(preset), analysis={"measurement_status": "unmeasured"})
+    publish_authored_candidate(candidate)
+    classify, proved = runtime_contract.classify_bass_extension_graph, []
+
+    def record(*args, **kwargs):
+        snapshot = (kwargs.get("applied_baseline_state") or {}).get("recomposition_snapshot")
+        if snapshot is not None:
+            proved.append(dict(snapshot))
+        return classify(*args, **kwargs)
+
+    monkeypatch.setattr(runtime_contract, "classify_bass_extension_graph", record)
+    assert v2apply.handle_v2_apply({"expected_candidate_fingerprint": candidate.fingerprint},
+                                   _bg_run_async, lambda: _FakeApplyCam())["status"] == "applied"
+    applied = baseline_profile.load_applied_baseline_profile_state()
+    assert set(proved[0]) == set(applied["recomposition_snapshot"])
 
 
 @pytest.mark.parametrize("measured", [True, False])

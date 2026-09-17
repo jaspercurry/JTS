@@ -72,9 +72,11 @@ async def apply_candidate(
                     preference_filters=preference_filters, output_trim_db=trim_db)
             sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
             proof = runtime_contract.classify_bass_extension_graph(topology, evidence_source="desired", graph_text=text,
-                applied_baseline_state={"recomposition_snapshot": {"bass_extension": selected.bass_extension}})
+                applied_baseline_state={"recomposition_snapshot": baseline_profile.recomposition_snapshot_for(
+                    selected, declaration=declaration, design_draft=draft)})
             if not proof.allowed or proof.classification != runtime_contract.GRAPH_APPROVED_ACTIVE_RUNTIME:
-                raise CrossoverV2Refused(proof.classification, code="baseline_graph_safety_proof_failed")
+                raise CrossoverV2Refused(proof.classification, code="baseline_graph_safety_proof_failed",
+                                         issues=proof.issues)
             issue = candidate_boost_issue(measured_sha[:16])
             if issue:
                 log_event(logger, "correction.crossover_v2_apply", status="blocked", code=issue["code"], candidate_fingerprint=expected)
@@ -128,7 +130,7 @@ async def apply_candidate(
             baseline_profile._commissioning_refusal(prepared, exc)
             await baseline_profile._record_apply_outcome_into_bundle(measurements, candidate=prepared, apply_state=None, rollback_target=None)
             if expected_candidate_fingerprint is None:
-                raise CrossoverV2Refused(str(exc), code=code) from exc
+                raise CrossoverV2Refused(str(exc), code=code, issues=getattr(exc, "issues", ())) from exc
             return {"status": "blocked", "profile": prepared, "apply": None, "issues": prepared["issues"]}
         except DspApplyError as exc:
             log_event(logger, "correction.crossover_v2_apply", status="apply_failed", code="apply_failed", candidate_fingerprint=expected)

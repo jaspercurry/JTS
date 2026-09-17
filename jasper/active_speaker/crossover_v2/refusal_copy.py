@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping
+from typing import Any, Iterable, Literal, Mapping
 
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import LOST_AT_CAPTURE_OVERRUN
@@ -237,10 +237,12 @@ class CrossoverV2Refused(ValueError):
     and an action (see #1821). Unknown provider codes have no registry action.
     """
 
-    def __init__(self, *args: Any, code: str = "", next_action: Mapping[str, Any] | None = None) -> None:
+    def __init__(self, *args: Any, code: str = "", next_action: Mapping[str, Any] | None = None,
+                 issues: Iterable[Mapping[str, str]] = ()) -> None:
         super().__init__(*args)
         self.code = code
         self.next_action = next_action
+        self.issues = [dict(issue) for issue in issues]
 
 
 def verify_inconclusive_cause(

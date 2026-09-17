@@ -450,7 +450,9 @@ def _bonded_active_member() -> bool:
 
 def _compile_active_baseline_with_eq(profile, *, output_trim_db: float = 0.0) -> ReemitResult:
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
-    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state, prepare_applied_baseline_profile  # lazy: active graph owner
+    from jasper.active_speaker.baseline_profile import (  # lazy: active graph owner
+        load_applied_baseline_profile_state, prepare_applied_baseline_profile, recomposition_snapshot_for,
+    )
     from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: active candidate bank
     from jasper.active_speaker.design_draft import load_design_draft  # lazy: active speaker declaration
     from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration  # lazy: active graph compilation
@@ -465,7 +467,8 @@ def _compile_active_baseline_with_eq(profile, *, output_trim_db: float = 0.0) ->
         text = compile_tuning_graph(declaration, candidate=candidate,
             preference_filters=build_sound_filter_slots(profile), output_trim_db=output_trim_db)
         graph = classify_bass_extension_graph(declaration.topology, evidence_source="desired", graph_text=text,
-            applied_baseline_state={"recomposition_snapshot": {"bass_extension": candidate.bass_extension}})
+            applied_baseline_state={"recomposition_snapshot": recomposition_snapshot_for(
+                candidate, declaration=declaration, design_draft=draft, provenance=applied)})
         if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
             raise ValueError(graph.classification)
         prepared = prepare_applied_baseline_profile(candidate, declaration=declaration, design_draft=draft, measurements={}, provenance=applied)
