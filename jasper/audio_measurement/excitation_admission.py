@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import cast
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
 
 
@@ -187,7 +187,6 @@ _REQUEST_FIELDS = frozenset(
         "duration_s",
         "repeat_count",
         "target_fingerprint",
-        "safety_profile_fingerprint",
         "authority_fingerprint",
         "excitation_plan_fingerprint",
     }
@@ -213,7 +212,6 @@ class ExcitationRequest:
     duration_s: float
     repeat_count: int
     target_fingerprint: str | None
-    safety_profile_fingerprint: str | None
     authority_fingerprint: str | None
     excitation_plan_fingerprint: str | None
 
@@ -225,7 +223,6 @@ class ExcitationRequest:
         repeats = _positive_int(self.repeat_count, field="repeat_count")
         for field in (
             "target_fingerprint",
-            "safety_profile_fingerprint",
             "authority_fingerprint",
             "excitation_plan_fingerprint",
         ):
@@ -247,7 +244,6 @@ class ExcitationRequest:
             "duration_s": self.duration_s,
             "repeat_count": self.repeat_count,
             "target_fingerprint": self.target_fingerprint,
-            "safety_profile_fingerprint": self.safety_profile_fingerprint,
             "authority_fingerprint": self.authority_fingerprint,
             "excitation_plan_fingerprint": self.excitation_plan_fingerprint,
         }
@@ -283,10 +279,6 @@ class ExcitationRequest:
             duration_s=cast(float, payload["duration_s"]),
             repeat_count=cast(int, payload["repeat_count"]),
             target_fingerprint=cast(str | None, payload["target_fingerprint"]),
-            safety_profile_fingerprint=cast(
-                str | None,
-                payload["safety_profile_fingerprint"],
-            ),
             authority_fingerprint=cast(
                 str | None,
                 payload["authority_fingerprint"],
@@ -310,7 +302,6 @@ _LIMIT_FIELDS = frozenset(
         "maximum_duration_s",
         "maximum_repeat_count",
         "target_fingerprint",
-        "safety_profile_fingerprint",
         "protection_requirement_fingerprint",
         "excitation_plan_fingerprint",
     }
@@ -338,7 +329,6 @@ class ExcitationLimits:
     maximum_duration_s: float
     maximum_repeat_count: int
     target_fingerprint: str
-    safety_profile_fingerprint: str
     protection_requirement_fingerprint: str
     excitation_plan_fingerprint: str
 
@@ -358,7 +348,6 @@ class ExcitationLimits:
         )
         for field in (
             "target_fingerprint",
-            "safety_profile_fingerprint",
             "protection_requirement_fingerprint",
             "excitation_plan_fingerprint",
         ):
@@ -380,7 +369,6 @@ class ExcitationLimits:
             "maximum_duration_s": self.maximum_duration_s,
             "maximum_repeat_count": self.maximum_repeat_count,
             "target_fingerprint": self.target_fingerprint,
-            "safety_profile_fingerprint": self.safety_profile_fingerprint,
             "protection_requirement_fingerprint": (
                 self.protection_requirement_fingerprint
             ),
@@ -423,10 +411,6 @@ class ExcitationLimits:
             maximum_duration_s=cast(float, payload["maximum_duration_s"]),
             maximum_repeat_count=cast(int, payload["maximum_repeat_count"]),
             target_fingerprint=cast(str, payload["target_fingerprint"]),
-            safety_profile_fingerprint=cast(
-                str,
-                payload["safety_profile_fingerprint"],
-            ),
             protection_requirement_fingerprint=cast(
                 str,
                 payload["protection_requirement_fingerprint"],
@@ -446,7 +430,6 @@ _EVIDENCE_FIELDS = frozenset(
         "schema_version",
         "kind",
         "target_fingerprint",
-        "safety_profile_fingerprint",
         "protection_requirement_fingerprint",
         "authority_fingerprint",
         "excitation_plan_fingerprint",
@@ -469,7 +452,6 @@ class ProtectionEvidence:
     """
 
     target_fingerprint: str | None
-    safety_profile_fingerprint: str | None
     protection_requirement_fingerprint: str | None
     authority_fingerprint: str | None
     excitation_plan_fingerprint: str | None
@@ -481,7 +463,6 @@ class ProtectionEvidence:
             raise ValueError("current must be a bool")
         for field in (
             "target_fingerprint",
-            "safety_profile_fingerprint",
             "protection_requirement_fingerprint",
             "authority_fingerprint",
             "excitation_plan_fingerprint",
@@ -498,7 +479,6 @@ class ProtectionEvidence:
             "schema_version": SCHEMA_VERSION,
             "kind": "jts_excitation_protection_evidence",
             "target_fingerprint": self.target_fingerprint,
-            "safety_profile_fingerprint": self.safety_profile_fingerprint,
             "protection_requirement_fingerprint": (
                 self.protection_requirement_fingerprint
             ),
@@ -535,10 +515,6 @@ class ProtectionEvidence:
         )
         result = cls(
             target_fingerprint=cast(str | None, payload["target_fingerprint"]),
-            safety_profile_fingerprint=cast(
-                str | None,
-                payload["safety_profile_fingerprint"],
-            ),
             protection_requirement_fingerprint=cast(
                 str | None,
                 payload["protection_requirement_fingerprint"],
@@ -567,8 +543,6 @@ class ExcitationRefusalReason(str, Enum):
 
     TARGET_IDENTITY_MISSING = "target_identity_missing"
     TARGET_IDENTITY_MISMATCH = "target_identity_mismatch"
-    SAFETY_PROFILE_IDENTITY_MISSING = "safety_profile_identity_missing"
-    SAFETY_PROFILE_IDENTITY_MISMATCH = "safety_profile_identity_mismatch"
     AUTHORITY_IDENTITY_MISSING = "authority_identity_missing"
     AUTHORITY_IDENTITY_MISMATCH = "authority_identity_mismatch"
     EXCITATION_PLAN_IDENTITY_MISSING = "excitation_plan_identity_missing"
@@ -577,8 +551,6 @@ class ExcitationRefusalReason(str, Enum):
     PROTECTION_EVIDENCE_STALE = "protection_evidence_stale"
     PROTECTION_TARGET_IDENTITY_MISSING = "protection_target_identity_missing"
     PROTECTION_TARGET_IDENTITY_MISMATCH = "protection_target_identity_mismatch"
-    PROTECTION_PROFILE_IDENTITY_MISSING = "protection_profile_identity_missing"
-    PROTECTION_PROFILE_IDENTITY_MISMATCH = "protection_profile_identity_mismatch"
     PROTECTION_REQUIREMENT_MISSING = "protection_requirement_missing"
     PROTECTION_REQUIREMENT_MISMATCH = "protection_requirement_mismatch"
     PROTECTION_AUTHORITY_MISSING = "protection_authority_missing"
@@ -605,11 +577,6 @@ def _decision_reasons(
     elif request.target_fingerprint != limits.target_fingerprint:
         reasons.append(ExcitationRefusalReason.TARGET_IDENTITY_MISMATCH)
 
-    if request.safety_profile_fingerprint is None:
-        reasons.append(ExcitationRefusalReason.SAFETY_PROFILE_IDENTITY_MISSING)
-    elif request.safety_profile_fingerprint != limits.safety_profile_fingerprint:
-        reasons.append(ExcitationRefusalReason.SAFETY_PROFILE_IDENTITY_MISMATCH)
-
     if request.authority_fingerprint is None:
         reasons.append(ExcitationRefusalReason.AUTHORITY_IDENTITY_MISSING)
     elif request.authority_fingerprint != limits.fingerprint:
@@ -629,13 +596,6 @@ def _decision_reasons(
             reasons.append(ExcitationRefusalReason.PROTECTION_TARGET_IDENTITY_MISSING)
         elif protection_evidence.target_fingerprint != limits.target_fingerprint:
             reasons.append(ExcitationRefusalReason.PROTECTION_TARGET_IDENTITY_MISMATCH)
-        if protection_evidence.safety_profile_fingerprint is None:
-            reasons.append(ExcitationRefusalReason.PROTECTION_PROFILE_IDENTITY_MISSING)
-        elif (
-            protection_evidence.safety_profile_fingerprint
-            != limits.safety_profile_fingerprint
-        ):
-            reasons.append(ExcitationRefusalReason.PROTECTION_PROFILE_IDENTITY_MISMATCH)
         if protection_evidence.protection_requirement_fingerprint is None:
             reasons.append(ExcitationRefusalReason.PROTECTION_REQUIREMENT_MISSING)
         elif (

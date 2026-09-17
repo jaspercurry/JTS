@@ -59,15 +59,15 @@ def _echoed_field_keys() -> set[str]:
 
 
 def _frozen_safety_field_names() -> set[str]:
-    """The fields ``_profile_core`` freezes into the confirmed safety profile.
+    """The fields ``compute_driver_safety_profile`` computes from the driver declaration.
 
     Read out of the function rather than re-typed here, so this cannot drift
     into asserting yesterday's list.
     """
 
-    from jasper.active_speaker.driver_safety import _profile_core
+    from jasper.active_speaker.driver_safety import compute_driver_safety_profile
 
-    tree = ast.parse(textwrap.dedent(inspect.getsource(_profile_core)))
+    tree = ast.parse(textwrap.dedent(inspect.getsource(compute_driver_safety_profile)))
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
             continue
@@ -84,7 +84,7 @@ def _frozen_safety_field_names() -> set[str]:
             if isinstance(element, ast.Constant) and isinstance(element.value, str)
         }
     raise AssertionError(
-        "_profile_core no longer assigns `safety_field_names`; the frozen-field "
+        "compute_driver_safety_profile no longer assigns `safety_field_names`; the frozen-field "
         "list moved and this contract must follow it"
     )
 

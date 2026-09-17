@@ -646,68 +646,6 @@ function ingestCrossoverPreview(payload) {
   crossoverPreview.error = '';
 }
 
-// Issue #2191. An 'incomplete' safety profile has two very different causes
-// and only one of them is a blank field: a band-relationship issue leaves
-// every declared value present, so "add the missing limits" sends the
-// operator hunting for an empty box that does not exist. These are the
-// relationship and policy codes _target_issues (driver_safety.py) can emit
-// with nothing missing; every other code it emits ends in `_missing`.
-var SAFETY_RELATIONSHIP_TEXT = {
-  measurement_band_outside_hard_band:
-    'measurement band reaches outside its hard excitation band',
-  highpass_cutoff_outside_hard_band:
-    'high-pass cutoff sits outside its hard excitation band',
-  lowpass_cutoff_outside_hard_band:
-    'low-pass cutoff sits outside its hard excitation band'
-  // `low_limit_implausible_for_style` used to sit here. Since #2874 an
-  // implausible SAVED low limit is not a refusal at all — it is a warning
-  // the server renders itself, because its copy names numbers (the value,
-  // the band it missed, the class anchor) that a code-to-phrase map here
-  // cannot carry. renderDriverSafetyWarnings in driver-fields.js shows that
-  // server text.
-  //
-  // `max_effective_peak_above_code_policy` used to sit here too. The
-  // 2026-08-23 ruling struck that refusal: a declared level limit is a
-  // published or operator figure and a class default may not overrule it,
-  // so no server produces the code any more.
-};
-// Reason codes are `<role>:<code>` (a few are bare). Server text, so read it
-// as data: only codes this page knows how to phrase produce a sentence.
-function driverSafetyConflicts(reasons) {
-  var out = [];
-  (reasons || []).forEach(function(raw) {
-    var parts = String(raw).split(':');
-    var code = parts[parts.length - 1];
-    if (!Object.prototype.hasOwnProperty.call(SAFETY_RELATIONSHIP_TEXT, code)) {
-      return;
-    }
-    var text = SAFETY_RELATIONSHIP_TEXT[code];
-    var line = parts.length > 1 ? 'the ' + parts[0] + "'s " + text : text;
-    if (out.indexOf(line) < 0) out.push(line);
-  });
-  return out;
-}
-function driverSafetyHasMissing(reasons) {
-  return (reasons || []).some(function(raw) {
-    return /_missing$/.test(String(raw));
-  });
-}
-// #2603. A profile confirmed before a driver's low limit had one declared
-// owner can no longer match its own derivation, so it evaluates 'malformed'
-// under this name rather than the generic schema-invalid one.
-var SAFETY_LOW_LIMIT_STALE = 'driver_safety_profile_low_limit_stale';
-function driverSafetyLowLimitStale(reasons) {
-  return (reasons || []).indexOf(SAFETY_LOW_LIMIT_STALE) >= 0;
-}
-// #2870. A profile saved before JTS retired a field is not corrupt — it just
-// names something this build no longer speaks, and one save rebuilds it.
-// Named separately so the copy can say that, instead of the generic "JTS
-// could not read these limits", which reads as damage and names no remedy.
-var SAFETY_RETIRED_FIELD = 'driver_safety_profile_retired_field';
-function driverSafetyRetiredField(reasons) {
-  return (reasons || []).indexOf(SAFETY_RETIRED_FIELD) >= 0;
-}
-
 function driverEvidenceForTarget(targetId) {
   var profileTargets = driverResearch.safetyDirty ? [] :
     (((driverResearch.designDraft || {}).driver_safety_profile || {}).targets || []);
@@ -812,7 +750,7 @@ function echoLevelText(setting) {
 // household reading the panel:
 //   * the five keys the research ask requires a source for
 //     (driver_safety_prompt._PROMPT_PROVENANCE_KEYS), and
-//   * the five fields _profile_core FREEZES into the confirmed safety profile
+//   * the five fields compute_driver_safety_profile derives from the driver values
 //     (its `safety_field_names`).
 // Seven keys, because three overlap. The panel headline states that union as
 // its completeness claim, so the two must not drift apart: the tripwire is
@@ -820,7 +758,7 @@ function echoLevelText(setting) {
 //
 // Each entry reads the value JTS is actually RUNNING WITH out of the working
 // setting, not the number in the reply — those are the same until the
-// operator edits one, and the setting is what gets frozen.
+// operator edits one, and the setting is what gets saved.
 function driverEchoBackFields() {
   return [
     {
@@ -908,67 +846,10 @@ function driverEchoDelegationText(targetId, setting) {
     'sensitivity against the low-frequency driver’s own limit.';
 }
 
-function driverSafetyReviewHint(state) {
-  if (state.status === 'incomplete') {
-    var conflicts = driverSafetyConflicts(state.reasons);
-    if (!conflicts.length) {
-      return 'Some safety limits are still missing. Add them under Advanced, ' +
-        'then save.';
-    }
-    return (driverSafetyHasMissing(state.reasons) ?
-      'Some safety limits are still missing, and some do not line up: ' :
-      'Nothing is missing, but some safety limits do not line up: ') +
-      joinListText(conflicts, {two: ' and ', final: ', and '}) +
-      '. Fix them under Advanced, then save.';
-  }
-  // #2603. Named before the generic 'stale' text, because the cause is
-  // specific and so is the fix: this profile was written when a driver's
-  // minimum crossover could be declared in two places, and the two no longer
-  // agree. Saving rebuilds it — unless deriving the one number pushed
-  // something else out of range, which the server tells us.
-  if (driverSafetyLowLimitStale(state.reasons)) {
-    var stale = driverSafetyConflicts(state.reasons);
-    if (!stale.length) {
-      return 'These limits were saved before JTS kept one declared ' +
-        'minimum crossover per driver. Review the visible values, then ' +
-        'save them again.';
-    }
-    return 'These limits were saved before JTS kept one declared ' +
-      'minimum crossover per driver, and rebuilding them needs one fix ' +
-      'first: ' + joinListText(stale, {two: ' and ', final: ', and '}) +
-      '. Under Advanced, either enter the minimum crossover the datasheet ' +
-      'publishes for that driver, or move the range that no longer fits.';
-  }
-  // #2870. Before the generic unreadable copy, for the same reason the
-  // stale-low-limit case sits before the generic 'stale' one: the cause is
-  // specific and so is the fix. These limits name a field this build no
-  // longer has, so one save rewrites them in the shape it does.
-  if (driverSafetyRetiredField(state.reasons)) {
-    return 'These limits name a setting JTS no longer uses. Nothing is ' +
-      'wrong with your speaker — review the visible values, then save them ' +
-      'again to rebuild them.';
-  }
-  if (state.status === 'stale') {
-    return 'The outputs changed since these limits were saved. Review the ' +
-      'visible values, then save them again.';
-  }
-  return 'JTS could not read these limits. Review the visible values, then ' +
-    'save them again.';
-}
-
-// Non-blocking disclosures the SERVER phrased (#2874). Unlike a blocking
-// reason — a bare code this page turns into a sentence via
-// SAFETY_RELATIONSHIP_TEXT — a warning's copy names the household's own
-// numbers, so the server sends the sentence and this renders it. Shown
-// whatever the profile status is: the whole point of a warning is that the
-// declaration SAVED and is in use, which is exactly when the review callout
-// (renderDriverSafetyReviewCallout in main.js) stays quiet.
-function driverSafetyWarnings() {
+function driverSafetyIssues() {
+  if (driverResearch.safetyDirty) return [];
   var profile = (driverResearch.designDraft || {}).driver_safety_profile || {};
-  var issues = Array.isArray(profile.issues) ? profile.issues : [];
-  return issues.filter(function(issue) {
-    return issue && issue.severity === 'warning' && issue.message;
-  });
+  return Array.isArray(profile.issues) ? profile.issues : [];
 }
 
 function previewStatusClass(value) {
@@ -1085,10 +966,8 @@ export {
   driverResearchRoleLabel,
   driverResearchStepSatisfied,
   driverResearchTargets,
-  driverSafetyConflicts,
   driverSafetyNoteRoles,
-  driverSafetyReviewHint,
-  driverSafetyWarnings,
+  driverSafetyIssues,
   driverStyleLabel,
   extractDriverResearchJson,
   hfDriverStyleEntry,

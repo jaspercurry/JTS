@@ -364,7 +364,7 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
     than none.
     """
     from jasper.active_speaker.crossover_v2.refusal_copy import (
-        REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
+        REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID,
         REASON_REGISTRY,
     )
 
@@ -373,11 +373,11 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
     )
     caplog.set_level(logging.WARNING, logger=correction_capture.logger.name)
 
-    spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED]
+    spec = REASON_REGISTRY[REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID]
 
     def _refuse_coded(*_a, **_k):
         raise refusal_copy.CrossoverV2Refused(
-            spec.message, code=REASON_PROGRAM_PROFILE_NOT_CONFIRMED
+            spec.message, code=REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID
         )
 
     monkeypatch.setattr(
@@ -390,11 +390,11 @@ def test_coded_refusal_carries_its_resolution_action_in_the_400_body(
     assert body["error"] == spec.message
     # Same registry entry the hard-stop screen would have rendered.
     assert body["next_action"] == dict(spec.next_action)
-    assert body["next_action"]["href"] == "/sound/speaker/#confirm-safety-limits"
+    assert body["next_action"]["href"] == "/sound/speaker/#driver-safety-issues"
     # And the code is on the journal line beside the reason.
     assert (
         event_fields(caplog, "correction.crossover_v2_refused")["code"]
-        == REASON_PROGRAM_PROFILE_NOT_CONFIRMED
+        == REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID
     )
 
     def _refuse_uncoded(*_a, **_k):

@@ -448,8 +448,6 @@ def test_bass_compose_refuses_malformed_descriptor(bank, tmp_path, capsys, descr
 def test_all_sections_form_one_proved_candidate(base, evidence, bass_packet, delay):
 
     sources = deepcopy(dict(evidence.sources))
-    for target in sources["draft"]["driver_safety_profile"]["targets"]:
-        target["target_fingerprint"] = target["role"]
     sources["receipt"] = _receipt()
     evidence = replace(evidence, sources=sources)
     sections = {
@@ -476,9 +474,9 @@ def test_all_sections_form_one_proved_candidate(base, evidence, bass_packet, del
 ])
 def test_structural_bounds_use_proposed_topology(base, evidence, section, payload, code):
     sources = deepcopy(dict(evidence.sources))
-    for target in sources["draft"]["driver_safety_profile"]["targets"]:
-        target["target_fingerprint"] = target["role"]
-        target["recommended_highpass_slope_db_per_octave"] = 24
+    tweeter = sources["draft"]["manual_settings"]["drivers"][1]
+    tweeter["recommended_highpass_hz"] = 1600
+    tweeter["recommended_highpass_slope_db_per_octave"] = 24
     sections = {"topology": {"fc_hz": 2000, "order": 4, "basis_artifacts": ["fc.json"]}, section: payload}
     with pytest.raises(PrescriptionDocumentRefused) as refused:
         judge_prescription_document(document(base.fingerprint, sections), base=base, evidence=replace(evidence, sources=sources))
@@ -504,7 +502,7 @@ def test_cli_round_evidence_judges_and_banks_one_combined_document(base, bank, t
     round_dir, _ = round_bank
     draft_path = round_dir / "design-draft.json"
     draft = json.loads(draft_path.read_text())
-    draft["manual_settings"] = {"drivers": [{"role": "woofer", "radiating_diameter_mm": diameter}]}
+    draft["manual_settings"]["drivers"][0]["radiating_diameter_mm"] = diameter
     draft_path.write_text(json.dumps(draft))
     args = crossover_prescriber.build_parser().parse_args(["status", str(round_dir)])
     packet = crossover_prescriber._load_packet(args)

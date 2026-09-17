@@ -29,7 +29,6 @@ from jasper.web import correction_crossover_v2_state as v2state
 from typing import Any
 
 from jasper.active_speaker import baseline_profile as baseline_profile_mod
-from jasper.active_speaker.driver_safety import evaluate_driver_safety_profile as _real_safety_evaluation
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.crossover_v2.round_evidence import (
@@ -281,7 +280,7 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
     from dataclasses import replace
     from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.web import correction_crossover_v2_apply as apply_host
-    from jasper.active_speaker.driver_safety import build_driver_safety_profile
+    from jasper.active_speaker.design_draft import design_draft_view
     from tests.test_active_speaker_driver_safety import _manual_settings
     from tests.test_active_speaker_baseline_profile import _draft, _MEASURE_EVIDENCE
     from tests.test_active_speaker_measured_crossover_candidate import _candidate
@@ -289,11 +288,10 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
 
     root = v2state._state_path().parent
     topology = _topology()
-    with monkeypatch.context() as build_context:
-        build_context.setattr("jasper.active_speaker.driver_safety.evaluate_driver_safety_profile", _real_safety_evaluation)
-        draft = _draft(topology)
-        draft["driver_safety_profile"] = build_driver_safety_profile(
-            topology, manual_settings=_manual_settings(), driver_research=None, saved_at="2026-09-13T12:00:00Z")
+    draft = _draft(topology)
+    draft["manual_settings"] = _manual_settings()
+    draft["manual_settings"]["drivers"][1]["recommended_highpass_hz"] = 2000
+    draft = design_draft_view(draft)
     preview = build_crossover_preview(draft)
     preset, _, _ = staging.compile_preset_from_crossover_preview(topology, preview)
     if preset is None:
@@ -314,11 +312,7 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
     monkeypatch.setattr(apply_host, "load_output_topology", lambda: topology)
     monkeypatch.setattr(apply_host, "load_design_draft", lambda **kwargs: draft)
     from jasper.active_speaker.measurement_emit import load_tuning_declaration
-    def declaration_for_apply(*args, **kwargs):
-        with monkeypatch.context() as context:
-            context.setattr("jasper.active_speaker.driver_safety.evaluate_driver_safety_profile", _real_safety_evaluation)
-            return load_tuning_declaration(*args, **kwargs)
-    monkeypatch.setattr(apply_host, "load_tuning_declaration", declaration_for_apply)
+    monkeypatch.setattr(apply_host, "load_tuning_declaration", load_tuning_declaration)
     return []
 
 

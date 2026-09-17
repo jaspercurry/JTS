@@ -457,7 +457,7 @@ function levelPayload(value) {
 function commissioningSteps(currentStep, statuses = {}) {
   const labels = {
     layout: "Choose speaker layout",
-    research: "Confirm driver safety profile",
+    research: "Driver values",
     experiment: "First speaker experiment",
     profile: "Apply speaker profile",
   };
@@ -1464,7 +1464,7 @@ async function testActiveCrossoverFirstStepRender() {
   };
   includes("Active crossover setup");
   includes("Choose speaker layout");
-  includes("Confirm driver safety profile");
+  includes("Driver values");
   includes("Component setup");
   includes("Research your components");
   includes("Load information");
@@ -3612,7 +3612,7 @@ function echoProtectionPolicy(overrides = {}) {
 //
 // It also carries the fields the FIRST cut of this panel left unechoed. Two of
 // the three it originally missed survive — measurement_band_hz and cabinet, both
-// frozen into the confirmed safety profile by _profile_core, so a panel that
+// computed from the driver values by compute_driver_safety_profile, so a panel that
 // claims completeness at the confirmation gate has to name them. The third,
 // crossover_search_band_hz, was deleted outright by #2870.
 function echoResearchPacket(tweeterPeakDbfs = ECHO_TWEETER_CLASS_CEILING_DBFS) {
@@ -3720,11 +3720,7 @@ function echoManualSettings(research) {
 
 function echoDraft({ research, policy } = {}) {
   const packet = research || echoResearchPacket();
-  const draft = designDraftWithSafety({
-    status: "confirmed",
-    confirmed_and_current: true,
-    reasons: [],
-  });
+  const draft = designDraftWithSafety();
   draft.driver_research = packet;
   draft.manual_settings = echoManualSettings(packet);
   // `driver_protection_policy_view`, not `driver_protection_policy`: the
@@ -5284,16 +5280,10 @@ async function testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy() {
       }],
     },
     driver_safety_profile: {
-      status: "incomplete",
-      confirmation: null,
       targets: targetIds.map((targetId) => ({
         target_id: targetId,
         target_values_binding: "missing",
       })),
-    },
-    driver_safety_profile_evaluation: {
-      status: "incomplete",
-      confirmed_and_current: false,
     },
   };
   const fetchHandler = baseFetch({
@@ -5332,9 +5322,6 @@ async function testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy() {
       });
     }
   }
-  if (!initialHtml.includes("Safety profile: add the missing limits.")) {
-    fail("Preview readiness must not imply a usable per-target declaration", { initialHtml });
-  }
   if (/data-act="prepare-crossover-preview" disabled/.test(initialHtml)) {
     fail("A clean server-ready legacy draft must allow crossover preview", { initialHtml });
   }
@@ -5350,14 +5337,12 @@ async function testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy() {
     });
   }
   const previewHtml = harness.elements.get("view-body").innerHTML;
-  if (!previewHtml.includes("Safety profile: add the missing limits.") ||
-      previewHtml.includes("Legacy shared woofer") || previewHtml.includes("Legacy shared tweeter")) {
+  if (previewHtml.includes("Legacy shared woofer") || previewHtml.includes("Legacy shared tweeter")) {
     fail("Preparing a preview must not promote or copy legacy role-only safety values", {
       previewHtml,
     });
   }
-  if (legacyDraft.driver_safety_profile.confirmation !== null ||
-      legacyDraft.driver_safety_profile.targets.some((target) =>
+  if (legacyDraft.driver_safety_profile.targets.some((target) =>
         target.target_values_binding !== "missing")) {
     fail("Legacy preview must leave physical-target safety confirmation incomplete", { legacyDraft });
   }
@@ -6047,329 +6032,32 @@ async function testSubwooferWithSpareOutputRendersAddOn() {
   return { subwooferWithSpareOutputRendersAddOn: true };
 }
 
-// Issue #1820 defect 3, as it stands after the confirm step was retired.
-// Saving the declaration IS declaring it, so an ordinary edit can no longer
-// leave the profile unusable — but 'incomplete', 'stale', and 'malformed' still
-// refuse EVERY crossover measurement, and each needs a different edit before a
-// save can succeed. These render the real card and assert the review callout is
-// hoisted ahead of the Advanced disclosure in exactly those states, names the
-// right remedy, and is gone once the declaration is usable.
-function designDraftWithSafety(evaluation, issues = []) {
-  return {
-    status: "ready_for_review",
-    revision: 3,
-    summary: {},
-    operator_inputs: {},
-    driver_safety_profile: {
-      status: evaluation.status === "confirmed" ? "confirmed" : "incomplete",
-      issues,
-    },
-    driver_safety_profile_evaluation: evaluation,
-    permissions: {},
-  };
+function designDraftWithSafety(issues = []) {
+  return {status: "ready_for_review", revision: 3, summary: {}, operator_inputs: {},
+    driver_safety_profile: {targets: [], issues}, permissions: {}};
 }
 
-async function harnessWithSafetyEvaluation(evaluation, options = {}, issues = []) {
+async function testComputedSafetyIssuesRenderByTarget() {
+  const issue = {severity: "blocker", target_id: "mono:tweeter",
+    code: "tweeter:required_highpass_missing", message: "Driver <floor> missing"};
   const harness = setupHarness(baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
-    "./active-speaker/design-draft": () => Promise.resolve(
-      response(designDraftWithSafety(evaluation, issues))
-    ),
-  }), options);
+    "./active-speaker/design-draft": () => Promise.resolve(response(designDraftWithSafety([issue]))),
+  }), {hash: "#driver-safety-issues"});
   await loadAndSetActiveState(harness);
-  return harness;
-}
-
-// The nanny loop, pinned shut on the browser side: a declaration whose values
-// are usable renders NO callout and NO confirm control, whatever the operator
-// last edited. Before the ruling this state existed and blocked every
-// measurement behind a button.
-async function testUsableSafetyProfileRendersNoCalloutAndNoConfirmControl() {
-  const harness = await harnessWithSafetyEvaluation({
-    status: "confirmed",
-    confirmed_and_current: true,
-    reasons: [],
-  });
   const html = harness.elements.get("view-body").innerHTML;
-  if (html.includes('id="confirm-safety-limits"')) {
-    fail("a usable profile must not nag with the hoisted callout", { html });
+  if (!html.includes('data-safety-target="mono:tweeter"') ||
+      html.includes('<code>tweeter:required_highpass_missing</code>') ||
+      !html.includes('Driver &lt;floor&gt; missing')) {
+    fail("Computed issues must render the server target and escaped message", {html});
   }
-  if (html.includes('data-act="confirm-driver-safety"')) {
-    fail("the confirm control was retired and must not render anywhere", { html });
-  }
-  return { usableSafetyProfileRendersNoCalloutAndNoConfirmControl: true };
+  harness.dispatchInput({"data-manual-driver": "main:tweeter", "data-manual-field": "driver_class"}, "compression_driver");
+  const edited = harness.elements.get("view-body").innerHTML;
+  assert.ok(!edited.includes('data-safety-target=') && edited.includes("save your current edits to update it"));
+  return {computedSafetyIssuesRenderByTarget: true};
 }
 
-// #2874. An implausible low limit the household TYPED saves, and the page has
-// to say so — the review callout above stays quiet on a confirmed profile,
-// which is exactly the state a warning describes. The copy is server-phrased
-// because it names the household's own numbers, so this proves it is rendered
-// and escaped rather than dropped or trusted as markup.
-async function testATypedDeclarationWarningIsShownOnAConfirmedProfile() {
-  const harness = await harnessWithSafetyEvaluation(
-    { status: "confirmed", confirmed_and_current: true, reasons: [] },
-    {},
-    [{
-      severity: "warning",
-      code: "tweeter:low_limit_implausible_for_style",
-      message: "tweeter: declared 700 Hz is more than 4x below the "
-        + "compression_driver class band of 500-8000 Hz <img src=x onerror=1>",
-    }],
-  );
-  const html = harness.elements.get("view-body").innerHTML;
-  if (html.includes('id="confirm-safety-limits"')) {
-    fail("a warning is not a refusal and must not hoist the review callout", {
-      html,
-    });
-  }
-  if (!html.includes("JTS is trusting your declaration")) {
-    fail("a saved declaration JTS is warning about must say so", { html });
-  }
-  if (!html.includes("declared 700 Hz is more than 4x below")) {
-    fail("the server-phrased warning text must reach the page", { html });
-  }
-  if (html.includes("<img src=x onerror=1>")) {
-    fail("warning text is server data and must be escaped, never markup", {
-      html,
-    });
-  }
-  if (!html.includes("&lt;img src=x onerror=1&gt;")) {
-    fail("the escaped form of the warning text is missing", { html });
-  }
-  return { typedDeclarationWarningIsShownOnAConfirmedProfile: true };
-}
-
-// ...and a profile with no warnings renders no such block at all.
-async function testNoWarningsRenderNoTrustBlock() {
-  const harness = await harnessWithSafetyEvaluation({
-    status: "confirmed",
-    confirmed_and_current: true,
-    reasons: [],
-  });
-  const html = harness.elements.get("view-body").innerHTML;
-  if (html.includes("JTS is trusting your declaration")) {
-    fail("an unwarned declaration must not grow a warning block", { html });
-  }
-  return { noWarningsRenderNoTrustBlock: true };
-}
-
-async function testIncompleteSafetyProfileHoistsTheReviewCallout() {
-  const harness = await harnessWithSafetyEvaluation({
-    status: "incomplete",
-    confirmed_and_current: false,
-    reasons: ["driver_safety_missing_values"],
-  });
-  const html = harness.elements.get("view-body").innerHTML;
-  const calloutAt = html.indexOf('id="confirm-safety-limits"');
-  const advancedAt = html.indexOf("data-driver-advanced");
-  if (calloutAt < 0) {
-    fail("an incomplete profile still needs the explanation", { html });
-  }
-  if (!(calloutAt < advancedAt)) {
-    fail("the review callout must render before the Advanced disclosure", {
-      calloutAt, advancedAt, html,
-    });
-  }
-  const callout = html.slice(calloutAt, advancedAt);
-  if (!callout.includes("Some safety limits are still missing")) {
-    fail("an incomplete profile must name the add-the-values action", { callout });
-  }
-  if (callout.includes('data-act="confirm-driver-safety"')) {
-    fail("the callout must explain, never offer a retired confirm action", {
-      callout,
-    });
-  }
-  return { incompleteSafetyProfileHoistsTheReviewCallout: true };
-}
-
-// #2603. A profile written before a driver's low limit had one declared owner
-// evaluates 'malformed', NOT 'incomplete'. jts3's own stored artifact is this
-// shape, and the copy has to name both the cause and the ONE fix a save still
-// needs first — otherwise the operator saves, nothing changes, and the loop
-// stays shut with no explanation.
-async function testStaleLowLimitWithABlockerNamesTheCauseAndTheFix() {
-  const harness = await harnessWithSafetyEvaluation({
-    status: "malformed",
-    confirmed_and_current: false,
-    reasons: [
-      "driver_safety_profile_low_limit_stale",
-      "tweeter:measurement_band_outside_hard_band",
-    ],
-  });
-  const html = harness.elements.get("view-body").innerHTML;
-  const calloutAt = html.indexOf('id="confirm-safety-limits"');
-  if (calloutAt < 0) {
-    fail("a stale-low-limit profile still needs the explanation", { html });
-  }
-  const callout = html.slice(calloutAt, html.indexOf("data-driver-advanced"));
-  if (!callout.includes("one declared minimum crossover per driver")) {
-    fail("the copy must name WHY the declaration went unusable", { callout });
-  }
-  if (!callout.includes(
-    "the tweeter&#39;s measurement band reaches outside its hard excitation band"
-  )) {
-    fail("the copy must name the blocker a save has to clear first", { callout });
-  }
-  if (!callout.includes("the datasheet")) {
-    fail("the copy must name the remedy, not just the conflict", { callout });
-  }
-  if (html.includes('data-act="confirm-driver-safety"')) {
-    fail("the confirm control was retired and must not render anywhere", { html });
-  }
-  return { staleLowLimitWithABlockerNamesTheCauseAndTheFix: true };
-}
-
-// The control. Without it the copy above reads as "malformed is always
-// blocked", which would strand every box in the compat class instead of
-// telling it that one ordinary save is the whole remedy.
-async function testStaleLowLimitWithoutABlockerNamesTheSaveAsTheRemedy() {
-  const harness = await harnessWithSafetyEvaluation({
-    status: "malformed",
-    confirmed_and_current: false,
-    reasons: ["driver_safety_profile_low_limit_stale"],
-  });
-  const html = harness.elements.get("view-body").innerHTML;
-  const calloutAt = html.indexOf('id="confirm-safety-limits"');
-  const callout = html.slice(calloutAt, html.indexOf("data-driver-advanced"));
-  if (!callout.includes("one declared minimum crossover per driver")) {
-    fail("the copy must still name why the declaration went unusable", { callout });
-  }
-  if (!callout.includes("save them again")) {
-    fail("a profile that rebuilds cleanly must name the save as the remedy", {
-      callout,
-    });
-  }
-  return { staleLowLimitWithoutABlockerNamesTheSaveAsTheRemedy: true };
-}
-
-// #2870. A profile written before a field was RETIRED is not corrupt, and the
-// generic malformed copy ("JTS could not read these limits") reads as damage
-// and names no remedy. Every box confirmed before that ruling lands here, so
-// the copy is the whole migration story the household ever sees — pinned on the
-// RENDERED DOM, mirroring the #2603 pair above, because a reason the server
-// names and the page cannot phrase buys nothing.
-async function testRetiredFieldNamesTheSaveAsTheRemedyAndNotCorruption() {
-  const harness = await harnessWithSafetyEvaluation({
-    status: "malformed",
-    confirmed_and_current: false,
-    reasons: ["driver_safety_profile_retired_field"],
-  });
-  const html = harness.elements.get("view-body").innerHTML;
-  const calloutAt = html.indexOf('id="confirm-safety-limits"');
-  if (calloutAt < 0) {
-    fail("a retired-field profile still needs the explanation", { html });
-  }
-  const callout = html.slice(calloutAt, html.indexOf("data-driver-advanced"));
-  if (!callout.includes("no longer uses")) {
-    fail("the copy must name WHY the declaration stopped reading", { callout });
-  }
-  if (!callout.includes("save them again")) {
-    fail("the copy must name the save as the remedy", { callout });
-  }
-  // The load-bearing half: it must NOT fall through to the generic unreadable
-  // sentence, which is what the reason exists to replace.
-  if (callout.includes("could not read these limits")) {
-    fail("a retired field must not be reported as unreadable", { callout });
-  }
-  return { retiredFieldNamesTheSaveAsTheRemedyAndNotCorruption: true };
-}
-
-async function testIncompleteFromABandRelationshipNamesTheRelationship() {
-  // Issue #2191. 'incomplete' is also reached with every value present — the
-  // owner's tweeter repair hit exactly this — and "add the missing limits"
-  // then sends the operator hunting for a blank field that does not exist.
-  const harness = await harnessWithSafetyEvaluation({
-    status: "incomplete",
-    confirmed_and_current: false,
-    reasons: ["tweeter:measurement_band_outside_hard_band"],
-  });
-  const html = harness.elements.get("view-body").innerHTML;
-  const calloutAt = html.indexOf('id="confirm-safety-limits"');
-  if (calloutAt < 0) {
-    fail("an incomplete profile still needs the explanation", { html });
-  }
-  const callout = html.slice(calloutAt, html.indexOf("data-driver-advanced"));
-  if (callout.includes("still missing")) {
-    fail("nothing is missing here — the copy must not say it is", { callout });
-  }
-  if (!callout.includes("Nothing is missing")) {
-    fail("the copy must contradict the missing-values reading", { callout });
-  }
-  if (!callout.includes(
-    "the tweeter&#39;s measurement band reaches outside its hard excitation band"
-  )) {
-    fail("the copy must name which relationship does not line up", { callout });
-  }
-  // The saved-summary line is the second place that read 'missing'.
-  if (!html.includes(
-    "Safety profile: resolve the limits that do not line up"
-  )) {
-    fail("the saved summary must not send the operator after a blank field", {
-      html,
-    });
-  }
-
-  // Both causes at once names both actions rather than picking one.
-  const mixed = await harnessWithSafetyEvaluation({
-    status: "incomplete",
-    confirmed_and_current: false,
-    reasons: [
-      "tweeter:measurement_band_outside_hard_band",
-      "woofer:max_sweep_duration_s_missing",
-    ],
-  });
-  const mixedHtml = mixed.elements.get("view-body").innerHTML;
-  const mixedCallout = mixedHtml.slice(
-    mixedHtml.indexOf('id="confirm-safety-limits"'),
-    mixedHtml.indexOf("data-driver-advanced"),
-  );
-  if (!mixedCallout.includes("still missing, and some do not line up")) {
-    fail("a mixed incomplete state must name both causes", { mixedCallout });
-  }
-  return { incompleteFromABandRelationshipNamesTheRelationship: true };
-}
-
-async function testSafetyLimitsDeepLinkOpensTheComponentStep() {
-  const unusable = {
-    status: "stale",
-    confirmed_and_current: false,
-    reasons: ["driver_safety_profile_target_mismatch"],
-  };
-  const harness = await harnessWithSafetyEvaluation(
-    unusable, { hash: "#confirm-safety-limits" },
-  );
-  await harness.flush();
-  const html = harness.elements.get("view-body").innerHTML;
-  // The component step's <details> is OPEN, so the deep-linked explanation is
-  // actually on screen rather than behind a collapsed summary — the whole
-  // point of not relying on bare fragment behaviour.
-  const stepAt = html.indexOf('data-output-step="research"');
-  if (stepAt < 0) fail("the component step must render", { html });
-  if (!html.slice(stepAt, stepAt + 60).includes(" open>")) {
-    fail("the deep link must open the component step", {
-      step: html.slice(stepAt, stepAt + 200),
-    });
-  }
-  if (html.indexOf('id="confirm-safety-limits"') < 0) {
-    fail("the deep-linked callout must be rendered", { html });
-  }
-
-  // And a page opened at the same fragment with nothing to review must NOT be
-  // yanked into the component step by a stale bookmark.
-  const usable = await harnessWithSafetyEvaluation(
-    { status: "confirmed", confirmed_and_current: true, reasons: [] },
-    { hash: "#confirm-safety-limits" },
-  );
-  await usable.flush();
-  const usableHtml = usable.elements.get("view-body").innerHTML;
-  const usableStepAt = usableHtml.indexOf('data-output-step="research"');
-  if (usableStepAt >= 0 &&
-      usableHtml.slice(usableStepAt, usableStepAt + 60).includes(" open>")) {
-    fail("a stale fragment must not open the component step", { usableHtml });
-  }
-  return { safetyLimitsDeepLinkOpensTheComponentStep: true };
-}
-
+results.push(await testComputedSafetyIssuesRenderByTarget());
 const liveTabResult = await testLiveTabReplay();
 results.push(liveTabResult);
 results.push(await testEqSliderDragSendsNoLiveAudioUntilRelease());
@@ -6444,15 +6132,6 @@ results.push(await testFollowerModeRendersLocalDriverUi());
 results.push(await testFollowerModeSafeFallbackOnMalformedIsland());
 results.push(await testSubwooferDeadEndKeepsAddAffordance());
 results.push(await testSubwooferWithSpareOutputRendersAddOn());
-results.push(await testUsableSafetyProfileRendersNoCalloutAndNoConfirmControl());
-results.push(await testATypedDeclarationWarningIsShownOnAConfirmedProfile());
-results.push(await testNoWarningsRenderNoTrustBlock());
-results.push(await testIncompleteSafetyProfileHoistsTheReviewCallout());
-results.push(await testStaleLowLimitWithABlockerNamesTheCauseAndTheFix());
-results.push(await testStaleLowLimitWithoutABlockerNamesTheSaveAsTheRemedy());
-results.push(await testRetiredFieldNamesTheSaveAsTheRemedyAndNotCorruption());
-results.push(await testIncompleteFromABandRelationshipNamesTheRelationship());
-results.push(await testSafetyLimitsDeepLinkOpensTheComponentStep());
 results.push(await testCrossChildSpeakerGroupIsDisclosedInTheMapStep());
 results.push(await testIssueListEscapesUntrustedVerdictMessages());
 results.push(await testIssueDetailCodeRendersBesideTheMessage());

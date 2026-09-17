@@ -49,7 +49,7 @@ import {
   renderComponentSettings,
   renderCrossoverPreviewRows,
   renderDriverEchoBack,
-  renderDriverSafetyWarnings,
+  renderDriverSafetyIssues,
   renderIssueList,
   renderManualCrossoverSettings,
   renderPreviewIssues,
@@ -72,9 +72,8 @@ import {
   driverResearchPromptReady,
   driverResearchStepSatisfied,
   driverResearchTargets,
-  driverSafetyConflicts,
   driverSafetyNoteRoles,
-  driverSafetyReviewHint,
+  driverSafetyIssues,
   extractDriverResearchJson,
   ingestCrossoverPreview,
   levelDurationLimitsFromSetting,
@@ -212,13 +211,6 @@ import {
   // revision the copied prompt was MINTED against (server-stamped), so a
   // later declaration edit turns the copy stale instead of drifting silently.
   var tuningHandoff = {prompt: '', copied: false, selected: false, copiedRevision: null};
-  // Issue #1820 defect 3 / #1821: the DOM id the measurement wizard's
-  // profile-not-confirmed hard stop deep-links to
-  // (crossover_v2_flow.REASON_PROGRAM_PROFILE_NOT_CONFIRMED's next_action href
-  // is "/sound/speaker/#confirm-safety-limits"). Both halves of that link — the id
-  // rendered here and the href in the registry — are pinned by
-  // tests/test_sound_profile_confirm_deeplink.py so neither can move alone.
-  var CONFIRM_SAFETY_ANCHOR_ID = 'confirm-safety-limits';
   var driverAdvancedOpen = false;
   var ZERO_DETENT_DB = 0.1;
   var volumeFloorTone = {
@@ -833,6 +825,9 @@ import {
     if (footer) footer.innerHTML = driverResearchStepFooterButtonHtml();
     var echo = el('view-body').querySelector('[data-driver-echo]');
     if (echo) echo.innerHTML = renderDriverEchoBack(topology);
+    var issues = el('driver-safety-issues');
+    if (issues && driverResearch.safetyDirty) issues.innerHTML = '';
+    updateDriverResearchImportSummary();
   }
   function manualSettingsPayload(topology) {
     var drivers = driverResearchTargets(topology).map(function(target) {
@@ -1530,11 +1525,6 @@ import {
     var savedStatus = saved.status || '';
     var topology = currentOutputTopology();
     var safetyRoles = driverSafetyNoteRoles(topology);
-    var safetyProfile = saved.driver_safety_profile || {};
-    var safetyEvaluation = saved.driver_safety_profile_evaluation || {};
-    var safetyStatus = safetyEvaluation.status || safetyProfile.status || 'missing';
-    var safetyReady = !driverResearch.safetyDirty &&
-      safetyEvaluation.confirmed_and_current === true;
     var savedHtml =
       '<div class="driver-research__summary driver-research__summary--saved">' +
         '<span class="status-pill' + driverResearchWorkingStatusClass(savedStatus) + '">' +
@@ -1543,16 +1533,7 @@ import {
         (safetyRoles.length ? '<p class="setting-row__hint">' + escapeHtml(
           'Driver safety notes captured for ' + roleSentenceText(safetyRoles) + '.'
         ) + '</p>' : '') +
-        '<p class="setting-row__hint">Safety profile: ' + escapeHtml(
-          safetyReady ? 'declared for the current outputs' :
-            (driverResearch.safetyDirty ? 'save your current edits to update it' :
-            (safetyStatus === 'stale' ? 'the outputs changed; save the visible values again' :
-              (safetyStatus === 'incomplete' ?
-                (driverSafetyConflicts(safetyEvaluation.reasons).length ?
-                  'resolve the limits that do not line up' :
-                  'add the missing limits') :
-                'save the visible limits again')))
-        ) + '.</p>' +
+        (driverResearch.safetyDirty ? '<p class="setting-row__hint">Driver issue list: save your current edits to update it.</p>' : '') +
       '</div>';
     if (driverResearch.error) {
       return savedHtml +
@@ -1574,7 +1555,7 @@ import {
       (summary.schemaVersion === 2 ? '<p class="setting-row__hint">' + escapeHtml(
         'Target-bound research includes ' + summary.provenanceFieldCount +
         ' sourced field assertions and ' + summary.unknownCount + ' explicit unknowns.'
-      ) + '</p>' : '<p class="setting-row__hint">Legacy research is advisory only and cannot satisfy the confirmed safety-profile contract by itself.</p>') +
+      ) + '</p>' : '<p class="setting-row__hint">Legacy research is advisory. Review the visible driver values.</p>') +
       (summary.warnings.length ? '<div class="driver-research__notes">' +
         '<p class="setting-row__title">Review notes</p>' +
         '<ul>' + summary.warnings.map(function(warning) {
@@ -1623,63 +1604,18 @@ import {
       '<div data-driver-echo>' + renderDriverEchoBack(topology) + '</div>' +
     '</section>';
   }
-  // Saving the declaration IS declaring it, so there is no confirm control and
-  // nothing to un-confirm. What remains is the set of states in which the
-  // server still refuses a measurement — 'incomplete', 'stale', 'malformed' —
-  // each of which needs a DIFFERENT edit before a save can succeed. This
-  // resolves that state once so the hoisted callout and the Advanced editor
-  // cannot disagree about whether the declared values are usable.
-  function driverSafetyReviewState(topology) {
-    var draft = driverResearch.designDraft || {};
-    var evaluation = draft.driver_safety_profile_evaluation || {};
-    var profile = draft.driver_safety_profile || {};
-    var status = String(evaluation.status || profile.status || '');
-    return {
-      // 'missing' stays out: a speaker with no active crossover pair has no
-      // declaration to review, and the callout would be pure noise.
-      needsReview: !!topology && !!status && status !== 'missing' &&
-        evaluation.confirmed_and_current !== true,
-      status: status,
-      reasons: Array.isArray(evaluation.reasons) ? evaluation.reasons : []
-    };
-  }
-  function renderDriverSafetyReviewCallout(topology) {
-    var state = driverSafetyReviewState(topology);
-    if (!state.needsReview) return '';
-    // No estimate COUNT here any more (#2195). A tally told the operator how
-    // many numbers to distrust without saying which, so it could only produce
-    // unease. "Here's what we're running with" below the paste box names every
-    // value, its published/estimated badge, and its source instead.
-    return '<div class="driver-research__section driver-research__confirm" id="' +
-        CONFIRM_SAFETY_ANCHOR_ID + '">' +
-      '<div><h3 class="setting-row__title">Review the safety limits</h3>' +
-        '<p class="setting-row__hint">' +
-          escapeHtml(driverSafetyReviewHint(state)) + '</p>' +
-        '</div>' +
-    '</div>';
-  }
-  // Deep link from the measurement wizard's profile hard stop. A bare fragment
-  // is not enough: the callout lives inside a collapsible step card that is
-  // only open when it is the current step, so this opens the owning step,
-  // re-renders, and then scrolls the callout into view. No-ops when there is
-  // nothing to review, so a stale bookmark cannot yank an unrelated page into
-  // the component step.
   function applySafetyLimitsDeepLink() {
-    if (window.location.hash !== '#' + CONFIRM_SAFETY_ANCHOR_ID) return;
-    if (!driverSafetyReviewState(currentOutputTopology()).needsReview) return;
+    if (window.location.hash !== '#driver-safety-issues' || !driverSafetyIssues().length) return;
     outputPage.stepOverride = 'research';
     render();
-    var node = document.getElementById(CONFIRM_SAFETY_ANCHOR_ID);
-    if (node && typeof node.scrollIntoView === 'function') {
-      node.scrollIntoView({block: 'center'});
-    }
+    var node = document.getElementById('driver-safety-issues');
+    if (node && typeof node.scrollIntoView === 'function') node.scrollIntoView({block: 'center'});
   }
   function renderDriverResearchCard(topology) {
     return '<div class="output-card output-card--driver-research">' +
       '<div class="output-card__head"><div><p class="output-card__title">Component setup</p>' +
         '<p class="setting-row__hint">Start with what is physically installed. JTS uses these choices as authoritative context, not facts for AI to guess.</p></div></div>' +
-      renderDriverSafetyReviewCallout(topology) +
-      renderDriverSafetyWarnings() +
+      renderDriverSafetyIssues() +
       '<div class="driver-research__section">' +
         '<h3 class="setting-row__title">Your components</h3>' +
         renderComponentSettings(topology) +
@@ -1792,7 +1728,7 @@ import {
       ) +
       renderOutputStepCard(
         'research',
-        'Confirm driver safety profile',
+        'Driver values',
         outputStepHint('research', 'Describe each installed driver, then research a starting crossover.'),
         topology,
         renderDriverResearchCard(topology),
@@ -3271,14 +3207,6 @@ import {
     setOutputDraft(next);
     status('Channel assignment updated. Save the speaker layout.');
   }
-  // Sets the safety-relevant driver_style on a topology channel (the same
-  // single writer as physical_output_index — see setOutputChannelAssignment
-  // above). driver_style is topology-owned, not part of manual_settings /
-  // driver_research: build_driver_safety_profile reads it straight off the
-  // topology channel, so a style change here folds into the safety profile's
-  // fingerprint and is picked up by the next save, the same as any other
-  // topology/output change (docs/active-crossover-information-design.md,
-  // "Hardware research and confirmed safety profile").
   function setOutputChannelDriverStyle(groupId, role, rawValue) {
     var topology = currentOutputTopology();
     if (!topology) return;
@@ -3924,7 +3852,7 @@ import {
       return;
     }
     if (!readyToApply && !mayCompile) {
-      status('Confirm the driver safety profile and run the speaker experiment before applying.', true);
+      status('Check the driver issues and run the speaker experiment before applying.', true);
       return;
     }
     if (!await jtsConfirm(
@@ -3935,7 +3863,7 @@ import {
       return;
     }
     if (!readyToApply && !mayCompile) {
-      status('Confirm the driver safety profile and run the speaker experiment before applying.', true);
+      status('Check the driver issues and run the speaker experiment before applying.', true);
       return;
     }
     patchActiveSpeaker({

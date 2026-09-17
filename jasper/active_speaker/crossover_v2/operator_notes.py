@@ -125,10 +125,10 @@ EXCLUDED_PROSE: dict[str, str] = {
         "the research assistant's per-driver summary, not operator-typed"
     ),
     "driver_safety_profile.targets[].field_provenance[].basis": (
-        "the research assistant's own justification for a value"
+        "computed field provenance, including research citations"
     ),
     "driver_safety_profile.targets[].unknowns[]": (
-        "reason codes the profile builder generates"
+        "computed disclosures about driver values"
     ),
 }
 

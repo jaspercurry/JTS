@@ -1578,7 +1578,6 @@ def _protection_projection(profile: Mapping[str, Any] | None) -> dict[str, Any] 
     if profile is None:
         return None
     return {
-        "profile_fingerprint": profile["profile_fingerprint"],
         "targets": [{
             "role": target["role"],
             "target_fingerprint": target["target_fingerprint"],

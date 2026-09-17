@@ -528,8 +528,11 @@ def test_speaker_fit_reads_declared_budgets_and_only_overrides_stdout(speaker_ro
     root, *_ = speaker_round
     path = root / "design-draft.json"
     draft = json.loads(path.read_text())
+    draft["topology"] = mono_output_topology().to_dict()
     budget = {"max_filters": 3, "boost_floor_hz": 300, "max_gain_db": 8, "max_giveback_db": 4}
-    draft["driver_safety_profile"] = {"targets": [{"role": "woofer", "fit_budget": budget}]}
+    for driver in draft["manual_settings"]["drivers"]:
+        if driver["role"] == "woofer":
+            driver["fit_budget"] = budget
     path.write_text(json.dumps(draft))
     before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
     assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set", *overrides]) == 0

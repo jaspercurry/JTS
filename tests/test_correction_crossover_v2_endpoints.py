@@ -5096,7 +5096,7 @@ def test_a_blocked_apply_declares_no_offset_and_moves_no_level(monkeypatch, tmp_
     with pytest.raises(refusal_copy.CrossoverV2Refused) as refused:
         _apply({"expected_candidate_fingerprint": candidate.fingerprint, "candidate": candidate.to_dict()},
                _bg_run_async, _FakeApplyAndVolumeCam)
-    assert refused.value.code == "driver_safety_profile_not_confirmed"
+    assert refused.value.code == "tweeter:required_highpass_missing"
     assert v2state._applied_offset_gate() == 0.0
     assert _FakeApplyAndVolumeCam.vol == -20.0
     assert plan.measurement_volume_db == -20.0
@@ -6551,10 +6551,10 @@ def test_document_apply_keeps_timing_only_when_alignment_is_inherited(monkeypatc
 
 
 @pytest.mark.parametrize("fault,code", [
-    ("bank", "not_found"), ("declaration", "driver_safety_profile_not_confirmed"),
+    ("bank", "not_found"), ("declaration", "tweeter:required_highpass_missing"),
     ("floor", "crossover_below_declared_protection_floor"),
     ("graph", "baseline_graph_safety_proof_failed"), ("boost", "boost_over_declared_bound"),
-    ("load", "apply_failed"), ("malformed", "driver_safety_profile_not_confirmed"),
+    ("load", "apply_failed"), ("malformed", "driver_protection_invalid"),
     ("compose", "compose_refused"), ("live_floor", "crossover_below_declared_protection_floor"),
     ("identity", "measurement_candidate_speaker_mismatch"),
 ])
@@ -6594,7 +6594,8 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
     if fault == "declaration":
         path = tmp_path / "design_draft.json"
         draft = json.loads(path.read_text())
-        draft.pop("driver_safety_profile")
+        draft["manual_settings"]["drivers"][1].pop("required_protection_filters")
+        draft["manual_settings"]["drivers"][1].pop("recommended_highpass_hz", None)
         path.write_text(json.dumps(draft))
     elif fault == "graph":
         compile_graph = v2apply.compile_tuning_graph

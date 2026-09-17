@@ -980,22 +980,22 @@ def test_refusal_envelope_carries_an_independent_resolution_action():
     """The response action is a copy of the refusal's registry action."""
 
     from jasper.active_speaker.crossover_v2.refusal_copy import (
-        CrossoverV2Refused, REASON_PROGRAM_PROFILE_NOT_CONFIRMED, REASON_REGISTRY,
+        CrossoverV2Refused, REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID, REASON_REGISTRY,
     )
 
     refused = CrossoverV2Refused(
-        "copy", code=REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
+        "copy", code=REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID,
     )
     assert _common.refusal_envelope(refused)["next_action"] == (
-        REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].next_action
+        REASON_REGISTRY[REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID].next_action
     )
     # Mutating the response body must not reach back into the registry.
     action = _common.refusal_envelope(refused)["next_action"]
     assert action is not None
     action["href"] = "/tampered/"
-    assert REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].next_action[
+    assert REASON_REGISTRY[REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID].next_action[
         "href"
-    ] == "/sound/speaker/#confirm-safety-limits"
+    ] == "/sound/speaker/#driver-safety-issues"
 
     assert _common.refusal_envelope(CrossoverV2Refused("no code"))["next_action"] is None
     assert _common.refusal_envelope(ValueError("not ours"))["next_action"] is None

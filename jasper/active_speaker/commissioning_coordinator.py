@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.json_fields import finite_float, parse_utc_iso
 from jasper.output_topology import OutputTopology, topology_is_subless_passive_mains
+from .driver_safety import driver_floor_issues
 from .applied_identity import applied_identity
 from .capture_status import SESSION_ENDED_STATUSES
 from .measurement_programs import PURPOSE_BASS, PURPOSE_ROOM, PURPOSE_SPEAKER
@@ -22,7 +23,7 @@ COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
 VIEW_STATUS_NOT_REQUIRED = "not_required"
 COMMISSIONING_STEP_PAGE_TITLES = {
     "layout": "Choose speaker layout",
-    "research": "Confirm driver safety profile",
+    "research": "Driver values",
     "experiment": "First speaker experiment",
     "profile": "Apply speaker profile",
 }
@@ -128,7 +129,7 @@ def build_commissioning_view(
     has_layout = bool(topology.speaker_groups)
     design_ready = passive or draft.get("status") == "ready_for_review"
     preview_ready = passive or (preview.get("permissions") or {}).get("may_prepare_protected_startup_config") is True
-    safety_ready = passive or (draft.get("driver_safety_profile_evaluation") or {}).get("confirmed_and_current") is True
+    safety_ready = passive or bool(draft.get("driver_safety_profile")) and not driver_floor_issues(draft["driver_safety_profile"])
     values_ready = design_ready and preview_ready and safety_ready
     profile_applied = applied_profile is not None and applied_profile_verdict != APPLIED_PROFILE_DISPLACED
     applied = applied_identity(applied_profile) or {}
@@ -143,7 +144,7 @@ def build_commissioning_view(
             disclosures = [{**refusal["issues"][-1], "severity": "warning", "status": "disclosed_stale"}]
     messages = {
         "layout": "Declare the speaker layout and assign each driver to its output.",
-        "research": "Save the driver values, confirm their safety limits, and preview the crossover.",
+        "research": "Save the driver values and preview the crossover.",
         "experiment": "Place the microphone at the design mark and run the speaker program.",
         "profile": "Apply the candidate named in the experiment packet to finish commissioning.",
     }
@@ -200,7 +201,7 @@ def build_commissioning_view(
         "review": {"ready": review_ready, "may_apply": review_ready,
                    "status": review.get("status"), "issues": list(review.get("issues") or [])},
         "driver_values": {"complete": values_ready, "design_ready": design_ready,
-                          "preview_ready": preview_ready, "safety_profile_confirmed": safety_ready},
+                          "preview_ready": preview_ready, "driver_floors_declared": safety_ready},
         "driver_spacing_mm": (draft.get("manual_settings") or {}).get("driver_spacing_mm"),
         "driver_checks": checks,
         "summed_validation": {"complete": bool(summary.get("summed_validation_complete")),
@@ -239,7 +240,7 @@ def load_commissioning_view(
 
     if topology is None:
         topology = load_output_topology()
-    design_draft = load_design_draft()
+    design_draft = load_design_draft(topology=topology)
     preview = load_crossover_preview(current_design_draft=design_draft)
     measurements = load_measurement_state(topology)
     calibration_level = load_calibration_level_state()

@@ -10,7 +10,7 @@ import logging
 import pytest
 
 from jasper.active_speaker.driver_protection import apply_driver_low_limit
-from jasper.active_speaker.driver_safety import build_driver_safety_profile
+from jasper.active_speaker.driver_safety import compute_driver_safety_profile
 from jasper.active_speaker.excitation_safety_plan import (
     DriverSweepGeneratorPlan,
     ExcitationSafetyPlanError,
@@ -26,6 +26,9 @@ from jasper.active_speaker.excitation_safety_plan import (
 from jasper.active_speaker.measurement import active_driver_targets
 from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import mono_output_topology
+
+
+_JTS3_SENSITIVITIES = {"woofer": 83.3, "tweeter": 108.5}
 
 
 def _profile_and_targets(
@@ -132,11 +135,10 @@ def _profile_and_targets(
         )
     drivers.append(_driver("tweeter", tweeter_peak, tweeter_filters))
     settings = {"drivers": drivers, "crossover_candidates": []}
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology,
         manual_settings=settings,
         driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
     targets = {target["role"]: target for target in active_driver_targets(topology)}
     return topology, profile, targets
@@ -210,7 +212,7 @@ def test_the_shared_duration_limit_refuses_an_undeclared_duration():
     with pytest.raises(ExcitationSafetyPlanError) as excinfo:
         effective_sweep_duration_limit_s(broken, fingerprint)
     assert str(excinfo.value) == (
-        ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+        ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
     )
 
 
@@ -314,61 +316,6 @@ def test_closed_generator_rejects_positive_gain():
             commissioning_gain_db=1,
         )
 
-
-def test_safety_plan_refuses_a_profile_it_cannot_read_back():
-    """The deep gate still fails closed on an unusable declaration.
-
-    What it no longer refuses is a declaration nobody re-acknowledged: the
-    confirm ceremony is gone, and a profile carrying that legacy status reads as
-    current (pinned in tests/test_active_speaker_driver_safety.py). What still
-    stops every sweep is a declaration this code cannot trust -- here a
-    fingerprint that does not match the values it claims to cover.
-    """
-
-    topology, profile, targets = _profile_and_targets()
-    tampered = dict(profile)
-    tampered["profile_fingerprint"] = "0" * 64
-    with pytest.raises(
-        ExcitationSafetyPlanError,
-        match=ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value,
-    ):
-        prepare_driver_excitation_plan(
-            topology,
-            tampered,
-            _requested(targets["woofer"]["target_fingerprint"]),
-        )
-
-    # And the legacy status is genuinely admitted, so the test above is about
-    # the fingerprint rather than passing by accident.
-    legacy = dict(profile)
-    legacy["status"] = "needs_confirmation"
-    legacy["confirmation"] = None
-    prepare_driver_excitation_plan(
-        topology,
-        legacy,
-        _requested(targets["woofer"]["target_fingerprint"]),
-    )
-
-
-# --- resolve_driver_excitation_ceilings: two-invariant protection model ------
-#
-# Operator ruling (2026-07-19): the -65 dBFS HF class default was sized for a
-# naked driver tone with no proven protective HP. On the program-admission
-# path (``program_admission=True``) it is superseded by a sensitivity-derived
-# ceiling -- but ONLY when NO driver-specific level was declared, and ONLY for
-# the caller that asks for it. Every other caller keeps the declared ceiling,
-# or the class default when nothing is published. (Until 2026-08-23 the
-# delegation was carried by the declared value EQUALLING the class-default
-# seed; it is carried by the field's absence now, and a stored seed is read as
-# the retired encoding of the same thing -- see
-# ``declared_level_ceiling_dbfs``.) The sensitivities come from the DECLARATION (the
-# design draft's manual_settings, its one owner -- see
-# design_draft.declared_driver_sensitivities), passed as a plain per-role
-# mapping; they never ride the safety profile. JTS3 hardware numbers: woofer
-# (Dayton Epique E150HE-44) 83.3 dB, tweeter (B&C DE250-8) 108.5 dB -- a
-# 25.2 dB delta.
-
-_JTS3_SENSITIVITIES = {"woofer": 83.3, "tweeter": 108.5}
 
 
 def test_the_level_ceiling_reports_where_its_number_came_from() -> None:
@@ -835,7 +782,7 @@ def test_resolve_driver_measurement_band_hz_raises_when_the_field_is_missing():
     ]
     with pytest.raises(
         ExcitationSafetyPlanError,
-        match=ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value,
+        match=ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value,
     ):
         resolve_driver_measurement_band_hz(
             mutated, targets["woofer"]["target_fingerprint"],

@@ -32,6 +32,7 @@ from jasper.active_speaker.crossover_v2.prescription_contract import (
 )
 from jasper.active_speaker.crossover_v2.round_inputs import contract_sources, default_out, round_inputs
 from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
 from jasper.active_speaker.bass_table_report import BASS_READOUT_FIELDS, bass_table_rows
 from jasper.audio_measurement import room_limits as limits
@@ -67,9 +68,10 @@ def round_bank(tmp_path):
     preset = _two_way_preset()
     (artifact / "candidate.json").write_text(json.dumps({"source_preset": preset}))
     draft = _draft()
-    for target in draft["driver_safety_profile"]["targets"]:
-        target["target_fingerprint"] = target["role"]
-        target["recommended_highpass_slope_db_per_octave"] = 12.0
+    draft["manual_settings"]["drivers"][1].update(
+        recommended_highpass_hz=1000.0, recommended_highpass_slope_db_per_octave=12.0,
+    )
+    draft = design_draft_view(draft)
     (bank / "design-draft.json").write_text(json.dumps(draft))
     median = _room_median()
     (bank / "room.json").write_text(json.dumps({

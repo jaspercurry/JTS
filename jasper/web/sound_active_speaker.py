@@ -795,22 +795,8 @@ def _active_speaker_design_draft_save_payload(
         manual_candidate_count=str(
             (payload.get("summary") or {}).get("manual_crossover_candidate_count")
         ),
-        safety_profile_status=str(
-            (payload.get("driver_safety_profile") or {}).get("status")
-        ),
-        # #2603: the EVALUATION, not just the stored status, so a box whose
-        # profile went un-confirmed is findable in the journal. Carried on this
-        # save event rather than a new one — no second grep contract.
-        safety_profile_evaluation=str(
-            (payload.get("driver_safety_profile_evaluation") or {}).get("status")
-        ),
-        safety_profile_reasons=",".join(
-            str(reason)
-            for reason in (
-                (payload.get("driver_safety_profile_evaluation") or {}).get("reasons")
-                or ()
-            )
-        ),
+        safety_profile_issues=",".join(issue["code"] for issue in
+                                     (payload.get("driver_safety_profile") or {}).get("issues", [])),
         issues=len(payload.get("issues") or []),
     )
     return installation_view(payload)

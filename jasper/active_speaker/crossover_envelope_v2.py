@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Mapping
 
+from .driver_safety import driver_floor_issues
 from ..json_fields import finite_float as _finite
 from ..log_event import log_event
 from jasper.audio_measurement.program_analysis.model import TIMING_NEEDS_MEASUREMENT
@@ -458,8 +459,10 @@ def _applied_chip(status: Mapping[str, Any]) -> dict[str, str]:
 
 def _setup_ready(status: Mapping[str, Any]) -> bool:
     setup = _mapping(status.get("setup"))
-    safety = _mapping(status.get("driver_safety_profile_evaluation"))
-    return safety.get("confirmed_and_current") is True or (setup.get("active") is True and setup.get("status") == "ready")
+    safety = _mapping(status.get("driver_safety_profile"))
+    if safety:
+        return not driver_floor_issues(safety)
+    return setup.get("active") is True and setup.get("status") == "ready"
 
 
 def _envelope(
@@ -640,7 +643,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
     if not _setup_ready(status):
         return _envelope(
             screen="speaker_setup", active_step="speaker_setup",
-            verdict="Declare the speaker layout and confirm the driver safety profile before measuring.",
+            verdict="Declare the speaker layout and add the missing driver limits before measuring.",
             next_action={"id": "speaker_setup", "label": "Finish speaker setup", "href": "/sound/speaker/"},
             status=status,
         )

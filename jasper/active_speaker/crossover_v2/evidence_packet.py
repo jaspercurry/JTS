@@ -25,6 +25,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from jasper.active_speaker.design_draft import design_draft_view
 from jasper.audio_measurement.evidence_identity import (
     EvidenceIdentityError,
     json_fingerprint,
@@ -1893,7 +1894,7 @@ def _verify_block(state: dict[str, Any], reason: str) -> dict[str, Any]:
 def _drivers_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
     """Each role's own declared band — the bound a per-driver filter sits inside.
 
-    Read from the design draft's confirmed ``driver_safety_profile`` and
+    Read from the design draft's computed ``driver_safety_profile`` and
     composed by
     :func:`~.driver_prescription.driver_passbands_from_safety_profile`, so the
     packet reports a band it does not also define.
@@ -1903,7 +1904,7 @@ def _drivers_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
     of full output over — the bound on a LIFT, narrower than the driver — and
     the whole driver is meant to be correctable.
     """
-    profile = _mapping(draft.get("driver_safety_profile"))
+    profile = _mapping(design_draft_view(draft).get("driver_safety_profile"))
     passbands = driver_passbands_from_safety_profile(profile)
     absent = _absence(reason, bool(passbands), "driver_safety_profile.targets")
     if absent:
@@ -1917,7 +1918,7 @@ def _drivers_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
             "design_draft.driver_safety_profile.targets[].measurement_band_hz, "
             "floored/capped by that target's own required_protection_filters"
         ),
-        "confirmation": _mapping(profile.get("confirmation")),
+        "issues": profile.get("issues", []),
         "note": (
             "the driver's published response range narrowed by whatever "
             "protective corners it declares. A per-driver prescription's "
@@ -2252,9 +2253,9 @@ def build_crossover_evidence_packet(
       per-driver prescription's displacement is ``unknown`` rather than
       guessed. See :func:`_incumbent_block` for why the flow state cannot
       stand in for it.
-    * ``driver_draft_path`` — the design draft carrying the confirmed
-      driver-safety profile; without it the per-driver prescription class has
-      no bound to check against and refuses by name.
+    * ``driver_draft_path`` — the design draft used to compute driver limits;
+      without it the per-driver prescription class has no bound to check
+      against and refuses by name.
     * ``repeat_floor_path`` — the banked repeat floor; without it the floor is
       unmeasured and the two codified assumptions are used, named.
     * ``declared_geometry_path`` — the household's declared rig geometry, the
@@ -2307,8 +2308,7 @@ def build_crossover_evidence_packet(
     draft_raw: Any = None
     draft_reason = "no driver design draft was supplied"
     if driver_draft_path is not None:
-        draft_raw, read_reason = _read_json(driver_draft_path)
-        draft_reason = read_reason
+        draft_raw, draft_reason = _read_json(driver_draft_path)
     drivers = _drivers_block(_mapping(draft_raw), draft_reason)
     operator_notes = _operator_notes_block(_mapping(draft_raw), draft_reason)
     classification = _classification_block(classification_raw, classification_reason)

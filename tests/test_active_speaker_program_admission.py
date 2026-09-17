@@ -20,7 +20,7 @@ from jasper.active_speaker import camilla_yaml
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.output_topology import measurement_target_id
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
-from jasper.active_speaker.driver_safety import build_driver_safety_profile
+from jasper.active_speaker.driver_safety import compute_driver_safety_profile
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
@@ -131,11 +131,10 @@ def _profile_and_targets(
     drivers = [{**by_role[target["role"]], "target_id": target["target_id"]}
                for target in active_driver_targets(topology)]
     settings = {"drivers": drivers, "crossover_candidates": []}
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology,
         manual_settings=settings,
         driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
     targets = {measurement_target_id(t["role"], t.get("output_variant") or "primary"):
                t["target_fingerprint"] for t in active_driver_targets(topology)}

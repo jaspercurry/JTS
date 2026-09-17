@@ -88,7 +88,7 @@ def classify_program_failure(
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_MEASUREMENT_VOLUME_DRIFT, REASON_MEASUREMENT_GRAPH_UNAVAILABLE,
         REASON_PROGRAM_PLAN_SHAPE_INVALID,
-        REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
+        REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID,
         REASON_PROGRAM_UNPLAYABLE,
         REASON_PROTECTION_NOT_SEPARABLE,
         REASON_PROTECTION_SWEEP_TOO_LOW,
@@ -150,8 +150,8 @@ def classify_program_failure(
     if isinstance(exc, ProgramPlaybackRefused):
         refusals = tuple(reason.value for reason in exc.admission.refusals)
     code = (
-        REASON_PROGRAM_PROFILE_NOT_CONFIRMED
-        if ProgramAdmissionRefusal.PROFILE_NOT_CONFIRMED.value in refusals
+        REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID
+        if ProgramAdmissionRefusal.MEASUREMENT_INPUTS_INVALID.value in refusals
         else REASON_PROGRAM_UNPLAYABLE
     )
     return code, refusals

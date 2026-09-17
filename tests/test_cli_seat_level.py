@@ -472,7 +472,7 @@ def test_commissioning_review_requires_write_to_enable_apply(commissioning_box, 
 
 @pytest.mark.parametrize("change,code", [
     ("trim", "baseline_candidate_fingerprint_mismatch"),
-    ("protection", "driver_safety_profile_not_confirmed"),
+    ("protection", "tweeter:required_highpass_missing"),
     ("validation", "baseline_config_validation_failed"),
 ])
 async def test_commissioning_refusals_precede_cleanup_and_load(tmp_path, monkeypatch, commissioning_box, change, code):
@@ -489,7 +489,8 @@ async def test_commissioning_refusals_precede_cleanup_and_load(tmp_path, monkeyp
         path = tmp_path / "design_draft.json"
         draft = json.loads(path.read_text())
         if change == "protection":
-            draft["driver_safety_profile"] = None
+            draft["manual_settings"]["drivers"][1].pop("recommended_highpass_hz", None)
+            draft["manual_settings"]["drivers"][1].pop("required_protection_filters", None)
         else:
             draft["manual_settings"]["drivers"][1]["gain_offset_db"] = -12.0
         path.write_text(json.dumps(draft))

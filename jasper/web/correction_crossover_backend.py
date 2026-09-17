@@ -85,15 +85,6 @@ def status_payload() -> dict[str, Any]:
     targets: dict[str, Any] = targets_raw if isinstance(targets_raw, dict) else {}
     driver_count = len(targets.get("drivers") or [])
     summed_count = len(targets.get("summed") or [])
-    # The envelope gates the measurement flow on the driver safety profile's
-    # own confirmed-and-current verdict (evaluate_driver_safety_profile), not
-    # on "protected setup" readiness alone: JTS3 hardware evidence showed an
-    # operator admitted through level locks into driver sweeps while the
-    # profile still self-described as incomplete, only refused by the deep
-    # excitation admission after burning acceptance repeats. Load fresh (not
-    # the design draft's own stale save-time evaluation) so a topology change
-    # since the last save is honoured; unreadable is reported as None so the
-    # envelope fails closed rather than silently treating it as authorized.
     if payload["active"]:
         from jasper.active_speaker.design_draft import load_design_draft
         from jasper.output_topology import load_output_topology
@@ -101,11 +92,11 @@ def status_payload() -> dict[str, Any]:
         try:
             safety_topology = load_output_topology()
             safety_draft = load_design_draft(topology=safety_topology)
-            payload["driver_safety_profile_evaluation"] = safety_draft.get(
-                "driver_safety_profile_evaluation"
+            payload["driver_safety_profile"] = safety_draft.get(
+                "driver_safety_profile"
             )
         except (OSError, RuntimeError, TypeError, ValueError):
-            payload["driver_safety_profile_evaluation"] = None
+            payload["driver_safety_profile"] = None
     applied = load_applied_baseline_profile_state()
     payload["applied_profile"] = applied
     identity = applied_identity(applied)

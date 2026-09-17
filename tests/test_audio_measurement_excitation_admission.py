@@ -40,7 +40,6 @@ def _limits(**changes: object) -> ExcitationLimits:
         "maximum_duration_s": 8,
         "maximum_repeat_count": 3,
         "target_fingerprint": TARGET,
-        "safety_profile_fingerprint": PROFILE,
         "protection_requirement_fingerprint": REQUIREMENT,
         "excitation_plan_fingerprint": PLAN,
     }
@@ -60,7 +59,6 @@ def _request(
         "duration_s": 4,
         "repeat_count": 2,
         "target_fingerprint": authority.target_fingerprint,
-        "safety_profile_fingerprint": authority.safety_profile_fingerprint,
         "authority_fingerprint": authority.fingerprint,
         "excitation_plan_fingerprint": authority.excitation_plan_fingerprint,
     }
@@ -76,7 +74,6 @@ def _evidence(
     authority = limits or _limits()
     values: dict[str, object] = {
         "target_fingerprint": authority.target_fingerprint,
-        "safety_profile_fingerprint": authority.safety_profile_fingerprint,
         "protection_requirement_fingerprint": (
             authority.protection_requirement_fingerprint
         ),
@@ -160,7 +157,6 @@ def test_missing_request_identities_fail_closed() -> None:
     decision = _decide(
         request=_request(
             target_fingerprint=None,
-            safety_profile_fingerprint=None,
             authority_fingerprint=None,
             excitation_plan_fingerprint=None,
         )
@@ -168,7 +164,6 @@ def test_missing_request_identities_fail_closed() -> None:
 
     assert decision.refusal_reasons == (
         ExcitationRefusalReason.TARGET_IDENTITY_MISSING,
-        ExcitationRefusalReason.SAFETY_PROFILE_IDENTITY_MISSING,
         ExcitationRefusalReason.AUTHORITY_IDENTITY_MISSING,
         ExcitationRefusalReason.EXCITATION_PLAN_IDENTITY_MISSING,
     )
@@ -178,7 +173,6 @@ def test_mismatched_request_identities_fail_closed() -> None:
     decision = _decide(
         request=_request(
             target_fingerprint=OTHER_TARGET,
-            safety_profile_fingerprint=OTHER_PROFILE,
             authority_fingerprint=OTHER_AUTHORITY,
             excitation_plan_fingerprint=OTHER_PLAN,
         )
@@ -186,7 +180,6 @@ def test_mismatched_request_identities_fail_closed() -> None:
 
     assert decision.refusal_reasons == (
         ExcitationRefusalReason.TARGET_IDENTITY_MISMATCH,
-        ExcitationRefusalReason.SAFETY_PROFILE_IDENTITY_MISMATCH,
         ExcitationRefusalReason.AUTHORITY_IDENTITY_MISMATCH,
         ExcitationRefusalReason.EXCITATION_PLAN_IDENTITY_MISMATCH,
     )
@@ -217,7 +210,6 @@ def test_mismatched_protection_bindings_fail_closed() -> None:
     decision = _decide(
         evidence=_evidence(
             target_fingerprint=OTHER_TARGET,
-            safety_profile_fingerprint=OTHER_PROFILE,
             protection_requirement_fingerprint=OTHER_REQUIREMENT,
             authority_fingerprint=OTHER_AUTHORITY,
             excitation_plan_fingerprint=OTHER_PLAN,
@@ -226,7 +218,6 @@ def test_mismatched_protection_bindings_fail_closed() -> None:
 
     assert decision.refusal_reasons == (
         ExcitationRefusalReason.PROTECTION_TARGET_IDENTITY_MISMATCH,
-        ExcitationRefusalReason.PROTECTION_PROFILE_IDENTITY_MISMATCH,
         ExcitationRefusalReason.PROTECTION_REQUIREMENT_MISMATCH,
         ExcitationRefusalReason.PROTECTION_AUTHORITY_MISMATCH,
         ExcitationRefusalReason.PROTECTION_PLAN_IDENTITY_MISMATCH,
@@ -237,7 +228,6 @@ def test_partial_protection_evidence_reports_every_missing_binding() -> None:
     decision = _decide(
         evidence=_evidence(
             target_fingerprint=None,
-            safety_profile_fingerprint=None,
             protection_requirement_fingerprint=None,
             authority_fingerprint=None,
             excitation_plan_fingerprint=None,
@@ -247,7 +237,6 @@ def test_partial_protection_evidence_reports_every_missing_binding() -> None:
 
     assert decision.refusal_reasons == (
         ExcitationRefusalReason.PROTECTION_TARGET_IDENTITY_MISSING,
-        ExcitationRefusalReason.PROTECTION_PROFILE_IDENTITY_MISSING,
         ExcitationRefusalReason.PROTECTION_REQUIREMENT_MISSING,
         ExcitationRefusalReason.PROTECTION_AUTHORITY_MISSING,
         ExcitationRefusalReason.PROTECTION_PLAN_IDENTITY_MISSING,
@@ -267,7 +256,6 @@ def test_broadened_limits_with_same_target_and_profile_are_not_same_authority() 
     evidence = _evidence(limits=original)
 
     assert broadened.target_fingerprint == original.target_fingerprint
-    assert broadened.safety_profile_fingerprint == original.safety_profile_fingerprint
     assert broadened.fingerprint != original.fingerprint
     decision = _decide(request=request, limits=broadened, evidence=evidence)
     assert decision.refusal_reasons == (
@@ -385,7 +373,7 @@ def test_schema_versioned_artifacts_round_trip_through_json() -> None:
     )
 
     for artifact in (request_wire, limits_wire, evidence_wire, admission_wire):
-        assert artifact["schema_version"] == 1
+        assert artifact["schema_version"] == 2
         assert len(artifact["fingerprint"]) == 64
 
 
@@ -407,7 +395,7 @@ def test_serialized_numeric_authority_is_canonical_and_tamper_evident() -> None:
         ExcitationLimits.from_dict(tampered)
 
     wrong_schema = integer_inputs.to_dict()
-    wrong_schema["schema_version"] = 2
+    wrong_schema["schema_version"] = 1
     with pytest.raises(ValueError, match="fingerprint does not match"):
         ExcitationLimits.from_dict(wrong_schema)
 

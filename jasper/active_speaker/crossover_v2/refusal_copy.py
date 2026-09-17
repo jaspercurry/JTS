@@ -100,20 +100,7 @@ REASON_PROTECTION_NOT_SEPARABLE = "protection_not_separable"
 # Sibling for the OTHER conditioning branch: `abs(P) < floor` does not involve
 # `C`, so "change the crossover frequency" cannot clear it.
 REASON_PROTECTION_SWEEP_TOO_LOW = "protection_sweep_too_low"
-# The ONE program refusal that is neither unexpected nor about levels: a
-# deterministic, one-edit-away state, not a level ceiling the speaker could not
-# meet. Terminal, because deterministic. The states that reach it are ``stale``
-# and ``malformed``. The SLUG keeps its wire name — a stable identifier
-# shipping in ``state["failure"]``, the phone envelope, and the journal.
-REASON_PROGRAM_PROFILE_NOT_CONFIRMED = "program_profile_not_confirmed"
-# Its two siblings, told apart by the session-open pre-flight, which holds the
-# full ``DriverSafetyProfileEvaluation``: ``missing`` has no profile at all and
-# no ``/sound/`` safety callout to review, ``incomplete`` has declared values
-# that are missing or do not line up, so a save rebuilds the same profile.
-# Neither has a ``ProgramAdmissionRefusal`` counterpart — the play-seam
-# vocabulary carries one ``PROFILE_NOT_CONFIRMED`` slug for all three.
-REASON_PROGRAM_PROFILE_MISSING = "program_profile_missing"
-REASON_PROGRAM_PROFILE_INCOMPLETE = "program_profile_incomplete"
+REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID = "program_measurement_inputs_invalid"
 # The session-open shape gate: the walk handles a 1-way passive main or a
 # 2-way, and this speaker is neither. Terminal — no household action clears it.
 REASON_SPEAKER_SHAPE_UNSUPPORTED = "speaker_shape_unsupported"
@@ -708,25 +695,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "apart well enough to trust the result. Change the crossover frequency "
         "in speaker setup, then measure again.",
     ),
-    REASON_PROGRAM_PROFILE_NOT_CONFIRMED: ReasonSpec(
-        REASON_PROGRAM_PROFILE_NOT_CONFIRMED, TEMPLATE_HARD_STOP, 0, "",
-        # The states that reach here are ``stale`` (the outputs moved
-        # underneath the saved limits) and ``malformed`` (JTS cannot read them
-        # back). Both end the same way: open the limits and save them again.
-        # There is no separate confirm step — saving the declaration IS
-        # declaring it — so the copy does not name one.
-        "JTS could not use this speaker's saved safety limits, so it did not "
-        "play the measurement signal. Review the limits in speaker setup and "
-        "save them again, then measure.",
-        next_action={
-            "id": "review_safety_limits",
-            "label": "Review safety limits",
-            # ``/sound/``'s Component setup card renders the hoisted review
-            # callout under this exact id whenever the limits are unusable
-            # (deploy/assets/sound-profile/js/main.js), and its boot path opens
-            # the owning step for this fragment.
-            "href": "/sound/speaker/#confirm-safety-limits",
-        },
+    REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID: ReasonSpec(
+        REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID, TEMPLATE_HARD_STOP, 0, "",
+        "The driver limits needed for measurement are missing or do not fit. "
+        "Check the listed driver issues in speaker setup before measuring.",
+        next_action={"id": "review_safety_limits", "label": "Review driver limits",
+                     "href": "/sound/speaker/#driver-safety-issues"},
     ),
     REASON_MEASUREMENT_TARGETS_MISSING: ReasonSpec(
         REASON_MEASUREMENT_TARGETS_MISSING, TEMPLATE_HARD_STOP, 0, "",
@@ -748,37 +722,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "id": "speaker_setup",
             "label": "Open speaker setup",
             "href": "/sound/speaker/",
-        },
-    ),
-    REASON_PROGRAM_PROFILE_MISSING: ReasonSpec(
-        REASON_PROGRAM_PROFILE_MISSING, TEMPLATE_HARD_STOP, 0, "",
-        # NOT "review the safety limits": there are none to review and no
-        # callout naming them.
-        "This speaker's driver details are not finished, so JTS has no safety "
-        "limits to measure within. Finish the driver details in speaker setup, "
-        "then measure again.",
-        next_action={
-            "id": "speaker_setup",
-            "label": "Finish speaker setup",
-            # No fragment: ``/sound/`` renders no review callout in this state,
-            # so a deep link would land on nothing.
-            "href": "/sound/speaker/",
-        },
-    ),
-    REASON_PROGRAM_PROFILE_INCOMPLETE: ReasonSpec(
-        REASON_PROGRAM_PROFILE_INCOMPLETE, TEMPLATE_HARD_STOP, 0, "",
-        # Matches what ``/sound/``'s own callout says in this state: the action
-        # is adding the values, not saving — a save with values missing
-        # rebuilds an ``incomplete`` profile.
-        "Some of this speaker's safety limits are still missing, so JTS did "
-        "not play the measurement signal. Add them under Advanced in speaker "
-        "setup, then save and measure again.",
-        next_action={
-            "id": "add_safety_limits",
-            "label": "Add the missing limits",
-            # The callout DOES render for this state, naming the
-            # add-the-values action, so the fragment lands on the explanation.
-            "href": "/sound/speaker/#confirm-safety-limits",
         },
     ),
     # Measurement graph and walk refusals (tracking issue #4942).
