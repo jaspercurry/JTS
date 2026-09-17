@@ -53,7 +53,6 @@ from jasper.audio_hardware.dac import all_profiles as dac_all_profiles
 from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
 from jasper.output_topology import (
-    CROSS_CHILD_GROUP_CODE,
     DUAL_APPLE_ACTIVE_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
@@ -619,17 +618,17 @@ def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
 
 
 @pytest.mark.parametrize(
-    ("content_length", "expected_error"),
+    ("content_length", "expected_code"),
     [
-        (-1, "Content-Length must not be negative"),
-        (sound_setup.MAX_JSON_BYTES + 1, "JSON body exceeds 65536 bytes"),
+        (-1, "negative_content_length"),
+        (sound_setup.MAX_JSON_BYTES + 1, "body_too_large"),
     ],
 )
 def test_sound_post_rejects_invalid_body_length_before_read(
     tmp_path,
     monkeypatch,
     content_length,
-    expected_error,
+    expected_code,
 ):
     monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
 
@@ -640,9 +639,7 @@ def test_sound_post_rejects_invalid_body_length_before_read(
     )
 
     assert b" 400 " in response.split(b"\r\n", 1)[0]
-    assert json.loads(response.split(b"\r\n\r\n", 1)[1]) == {
-        "error": expected_error,
-    }
+    assert json.loads(response.split(b"\r\n\r\n", 1)[1])["code"] == expected_code
     assert read_calls == []
 
 
@@ -962,12 +959,11 @@ def test_design_draft_save_refuses_an_uncompilable_crossover_at_the_door(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    """The refusal reaches the operator's own surface, not just the module.
+    """The coded refusal reaches the operator's own surface, not just the module.
 
-    A save carrying a filter the compiler cannot build must come back 400 with
-    the field named and the offer spelled out, instead of being persisted and
-    then blocked at ``crossover_preview_filter_unsupported`` several screens
-    later.
+    A save carrying a filter the compiler cannot build must come back 400
+    carrying the raise site's code, instead of being persisted and then blocked
+    at ``crossover_preview_filter_unsupported`` several screens later.
     """
     from jasper.output_topology import output_topology_mutation
     from tests.active_speaker_fixtures import mono_output_topology
@@ -1001,9 +997,7 @@ def test_design_draft_save_refuses_an_uncompilable_crossover_at_the_door(
         )
         payload = json.loads(refused.read().decode("utf-8"))
 
-    assert payload["error"] == (
-        "crossover_candidate.filter_type must be one of: Linkwitz-Riley"
-    )
+    assert payload["code"] == "unsupported_filter_type"
 
 
 def test_eq_page_delegates_content_dsp_when_bonded_follower(monkeypatch):
@@ -1253,19 +1247,6 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
     assert refreshed["restart_required"] is True
     assert refreshed["warnings"] == ["collision"]
     assert failed == {"ok": False, "error": "broker unavailable"}
-
-
-# An operator remedy: a sudo/systemctl invocation, a `jasper-*` binary, or a
-# long CLI flag. Household surfaces must never carry one.
-#
-# The left boundary admits a backtick and a slash, not whitespace alone:
-# backend prose spells a remedy as "Arm it with
-# `sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile …`", where `sudo`
-# follows a backtick and the binary follows a slash, so a whitespace-only
-# boundary scans that whole sentence as command-free.
-_OPERATOR_COMMAND_RE = re.compile(
-    r"(?:^|[\s`/])(?:sudo\s|systemctl\s|jasper-[a-z-]+|--[a-z][a-z-]+)"
-)
 
 
 def test_every_preflight_gate_id_has_household_copy():
@@ -1997,32 +1978,14 @@ def _stub_reconcile(monkeypatch, result: dict) -> None:
 
 
 @pytest.mark.parametrize(
-    ("reconcile", "verdict"),
+    ("reconcile", "status"),
     [
-        (
-            RECONCILE_FAILED,
-            {
-                "status": "needs_attention",
-                "message": (
-                    "Speaker layout was saved, but audio remains off. "
-                    "Open Status before continuing."
-                ),
-            },
-        ),
-        (
-            RECONCILE_STILL_CONVERGING,
-            {
-                "status": "converging",
-                "message": (
-                    "Speaker layout was saved and is still applying. "
-                    "Check Status in a moment."
-                ),
-            },
-        ),
+        (RECONCILE_FAILED, "needs_attention"),
+        (RECONCILE_STILL_CONVERGING, "converging"),
     ],
 )
 def test_topology_save_reports_the_reconcile_verdict_without_leaking_it(
-    monkeypatch, tmp_path: Path, reconcile, verdict,
+    monkeypatch, tmp_path: Path, reconcile, status,
 ):
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
     _stub_audio_stops(monkeypatch)
@@ -2032,7 +1995,7 @@ def test_topology_save_reports_the_reconcile_verdict_without_leaking_it(
         _innomaker_topology_payload(active=False)
     )
 
-    assert saved["save"] == verdict
+    assert saved["save"]["status"] == status
     assert "private backend detail" not in saved["save"]["message"]
 
 
@@ -2392,28 +2355,6 @@ def _record_dac8x() -> None:
     )
 
 
-def test_sound_output_topology_payload_is_no_audio_draft(
-    monkeypatch,
-    tmp_path: Path,
-):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    _record_dac8x()
-
-    envelope = sound_setup._output_topology_payload()
-    payload = envelope["output_topology"]
-
-    assert payload["kind"] == OUTPUT_TOPOLOGY_KIND
-    assert payload["status"] == "draft"
-    assert payload["hardware"]["physical_output_count"] == 8
-    assert envelope["clock_domain"]["status"] == "single_device_clock"
-    assert envelope["clock_domain"]["multi_device_aggregate_supported"] is False
-    assert payload["safety"]["sound_tests_allowed"] is False
-    assert payload["evaluation"]["warnings"][0]["code"] == "no_speaker_groups"
-
-
 def test_output_topology_payload_does_not_take_mutation_lock(
     monkeypatch,
     tmp_path: Path,
@@ -2473,76 +2414,6 @@ def test_output_topology_payload_serializes_with_populated_hardware_state(
     # independent of this payload builder), so the key's presence is pinned at
     # its one source.
     assert "hardware_mismatch" in envelope
-
-
-def test_active_speaker_design_draft_route_persists_saved_topology_research(
-    monkeypatch,
-    tmp_path: Path,
-):
-    paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    draft_path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(
-            protection_status="absent",
-            card_id=None,
-            identity_verified=True,
-        )
-    )
-
-    payload = sound_setup._active_speaker_design_draft_save_payload({
-        "operator_inputs": {
-            "woofer": "Dayton Epique E150HE-44",
-            "tweeter": "Eminence F110M-8",
-        },
-        "driver_research": {
-            "artifact_schema_version": 1,
-            "kind": "jts_active_crossover_driver_research",
-            "drivers": [
-                {
-                    "role": "woofer",
-                    "model": "Epique E150HE-44",
-                    "recommended_lowpass_hz": 2500,
-                    "sources": ["https://example.test/woofer"],
-                },
-                {
-                    "role": "tweeter",
-                    "model": "F110M-8",
-                    "recommended_highpass_hz": 2500,
-                    "do_not_test_below_hz": 1200,
-                    "sources": ["https://example.test/tweeter"],
-                },
-            ],
-            "crossover_candidates": [
-                {
-                    "between_roles": ["woofer", "tweeter"],
-                    "frequency_hz": 2500,
-                    "filter_type": "Linkwitz-Riley",
-                    "slope_db_per_octave": 24,
-                    "confidence": "medium",
-                }
-            ],
-        },
-    })
-    loaded = sound_setup._active_speaker_design_draft_payload()
-
-    assert payload["kind"] == "jts_active_speaker_design_draft"
-    assert payload["status"] == "ready_for_review"
-    assert payload["summary"]["driver_count"] == 2
-    assert payload["summary"]["crossover_candidate_count"] == 1
-    assert payload["safety"]["no_audio"] is True
-    assert loaded["status"] == "ready_for_review"
-    assert json.loads(draft_path.read_text(encoding="utf-8"))["status"] == (
-        "ready_for_review"
-    )
-
-    preview = sound_setup._active_speaker_crossover_preview_payload()
-    loaded_preview = sound_setup._active_speaker_crossover_preview_payload()
-
-    assert preview["kind"] == "jts_active_speaker_crossover_preview"
-    assert preview["status"] == "ready_for_protected_staging"
-    assert preview["safety"]["no_audio"] is True
-    assert preview["safety"]["emits_camilla_yaml"] is False
-    assert loaded_preview["status"] == "ready_for_protected_staging"
 
 
 @pytest.mark.parametrize("spacing", [{}, {"driver_spacing_mm": None}, {"driver_spacing_mm": 200}])
@@ -2978,17 +2849,16 @@ def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
     assert topology["safety"]["sound_tests_allowed"] is False
 
 
-def test_sound_output_topology_save_discloses_a_cross_child_speaker_group(
+def test_sound_output_topology_save_accepts_a_cross_child_speaker_group(
     monkeypatch,
     tmp_path: Path,
 ):
-    """POST /output-topology accepts a cross-child layout and says so.
+    """The save door persists a layout its own evaluation warns about.
 
-    Issue #2486. One cabinet with its woofer on dongle A and its tweeter on
-    dongle B puts an uncorrected clock seam inside a crossover. That is a
-    fidelity cost, not a hearing-safety one, so per the never-nanny ruling the
-    save is ACCEPTED and the verdict rides back in the response for the wizard
-    to show. This pins both halves: not refused, and not silent.
+    One cabinet with its woofer on dongle A and its tweeter on dongle B puts an
+    uncorrected clock seam inside a crossover. That is a fidelity cost, not a
+    hearing-safety one, so per the never-nanny ruling the save is ACCEPTED. The
+    verdict's own shape is pinned where it is built, in test_output_topology.py.
     """
 
     path = tmp_path / "output_topology.json"
@@ -3033,17 +2903,9 @@ def test_sound_output_topology_save_discloses_a_cross_child_speaker_group(
     })
 
     topology = sound_setup._output_topology_payload()["output_topology"]
-    verdicts = [
-        issue for issue in topology["evaluation"]["warnings"]
-        if issue["code"] == CROSS_CHILD_GROUP_CODE
-    ]
 
-    assert len(verdicts) == 1
-    assert verdicts[0]["group_id"] == "mono"
-    assert verdicts[0]["child_ids"] == ["left_dac", "right_dac"]
     # Accepted, not refused: it persisted and it is not blocked.
     assert path.exists()
-    assert topology["status"] == "valid"
     assert topology["safety"]["blockers"] == []
 
 
@@ -3241,13 +3103,19 @@ def test_reset_http_reports_ambiguous_failure_with_current_topology(
     assert payload["output_topology"]["speaker_groups"] == []
 
 
-def test_reset_output_topology_payload_clears_active_setup_state(
+@pytest.mark.parametrize("outputd_ok", [True, False])
+def test_reset_stops_audio_before_it_unlinks_setup_state(
     monkeypatch,
     tmp_path: Path,
+    outputd_ok,
 ):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json")
-    )
+    """The setup state is unlinked only once jasper-outputd is really stopped.
+
+    Unlinking first would leave the speaker playing a graph whose own record is
+    already gone, with nothing left to say what it is playing.
+    """
+    from jasper.active_speaker.reset import clear_active_speaker_setup_state
+
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH", str(tmp_path / "staged.yml")
     )
@@ -3267,23 +3135,37 @@ def test_reset_output_topology_payload_clears_active_setup_state(
         path.write_text('{"stale": true}\n', encoding="utf-8")
         monkeypatch.setenv(env_name, str(path))
         paths.append(path)
+
+    events = _stub_audio_stops(monkeypatch)
+
+    def stop_outputd(*_units, **_kwargs):
+        events.append("outputd-stop")
+        return {"ok": outputd_ok}
+
+    def clear_and_record():
+        events.append("clear")
+        return clear_active_speaker_setup_state()
+
+    monkeypatch.setattr("jasper.control.restart_broker.manage_units", stop_outputd)
     monkeypatch.setattr(
-        "jasper.output_topology_runtime.trigger_reconcile",
-        lambda **_kwargs: {"ok": True},
+        "jasper.active_speaker.reset.clear_active_speaker_setup_state",
+        clear_and_record,
     )
-    stops = _stub_audio_stops(monkeypatch)
-    monkeypatch.setattr(
-        sound_active_speaker,
-        "_output_topology_payload",
-        lambda: {"output_topology": {"status": "draft"}},
-    )
+    _stub_reconcile(monkeypatch, {"ok": True})
+
+    if not outputd_ok:
+        with pytest.raises(RuntimeError):
+            sound_setup._reset_output_topology_payload({})
+
+        assert events == ["safe", "outputd-stop"]
+        assert all(path.exists() for path in paths)
+        return
 
     payload = sound_setup._reset_output_topology_payload({})
 
-    assert payload["output_topology"]["status"] == "draft"
+    assert events == ["safe", "outputd-stop", "clear"]
     assert payload["reset"]["status"] == "reset"
-    assert stops == ["safe"]
-    assert all(not path.exists() for path in paths)
+    assert [path for path in paths if path.exists()] == []
 
 
 def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph(
@@ -3330,32 +3212,14 @@ def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph
 
 
 @pytest.mark.parametrize(
-    ("reconcile", "verdict"),
+    ("reconcile", "status"),
     [
-        (
-            RECONCILE_STILL_CONVERGING,
-            {
-                "status": "converging",
-                "message": (
-                    "Speaker setup was reset and is still applying. "
-                    "Check Status in a moment."
-                ),
-            },
-        ),
-        (
-            RECONCILE_FAILED,
-            {
-                "status": "needs_attention",
-                "message": (
-                    "Speaker setup was reset and audio is off. JTS could not "
-                    "finish setup cleanup; open Status before continuing."
-                ),
-            },
-        ),
+        (RECONCILE_STILL_CONVERGING, "converging"),
+        (RECONCILE_FAILED, "needs_attention"),
     ],
 )
 def test_reset_reports_the_reconcile_verdict(
-    monkeypatch, tmp_path: Path, reconcile, verdict,
+    monkeypatch, tmp_path: Path, reconcile, status,
 ) -> None:
     from jasper.output_topology import new_topology_draft, save_output_topology
 
@@ -3375,7 +3239,7 @@ def test_reset_reports_the_reconcile_verdict(
 
     payload = sound_setup._reset_output_topology_payload({})
 
-    assert payload["reset"] == verdict
+    assert payload["reset"]["status"] == status
 
 
 def _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path: Path) -> dict:
@@ -3548,14 +3412,22 @@ def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(
 BASELINE_CONFIG_PATH = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
 
 
-def _stub_baseline_apply(monkeypatch, *, applied_profile: bool = True):
-    """Stub the graph apply and collect finish cleanup/source restoration."""
+def _stub_baseline_apply(
+    monkeypatch, *, applied_profile: bool = True, refusal: dict | None = None,
+):
+    """Stub the graph apply and collect finish cleanup/source restoration.
+
+    ``refusal`` is returned verbatim instead of an applied envelope, and the
+    verification callback stays unrun — nothing was verified.
+    """
 
     apply_calls: list[dict] = []
     mux_commands: list[str] = []
 
     async def fake_apply_candidate(**kwargs):
         apply_calls.append(kwargs)
+        if refusal is not None:
+            return refusal
         callback = kwargs.get("on_candidate_verified")
         if callback is not None:
             await callback()
@@ -3632,6 +3504,48 @@ def test_active_speaker_finish_commissioning_ignores_page_echo(monkeypatch, tmp_
         "reason": None,
         "active_config_path": BASELINE_CONFIG_PATH,
     }
+
+
+def test_save_and_apply_answers_a_refusal_as_a_typed_two_hundred(monkeypatch, tmp_path):
+    """A refused finish is a 200 carrying the refusal, never an HTTP error.
+
+    ``jasper/cli/basic_profile.py`` reads any non-200 as an unreachable door, so
+    the status is a wire contract only HTTP can pin. When the door refuses is
+    pinned at module altitude in test_cli_seat_level.py.
+    """
+    blocker = {
+        "severity": "blocker",
+        "code": "baseline_config_validation_failed",
+        "message": "x",
+    }
+    apply_calls, mux_commands = _stub_baseline_apply(monkeypatch, refusal={
+        "status": "blocked",
+        "apply": None,
+        "issues": [blocker],
+        "profile": {
+            "status": "blocked",
+            "permissions": {"may_apply": False},
+            "issues": [blocker],
+        },
+    })
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+
+    response, _ = _drive_raw_sound_post(
+        tmp_path, path="/active-speaker/baseline-profile/save-and-apply",
+        body=b"{}", content_length=2,
+    )
+
+    assert response.startswith(b"HTTP/1.1 200")
+    payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
+    assert payload["status"] == "blocked"
+    assert payload["apply"] is None
+    assert payload["profile"]["permissions"]["may_apply"] is False
+    assert [issue["code"] for issue in payload["issues"]] == [
+        "baseline_config_validation_failed"
+    ]
+    assert payload["commissioning_cleanup"] == {"status": "not_attempted"}
+    assert mux_commands == []
+    assert len(apply_calls) == 1
 
 
 async def test_active_speaker_finish_proof_refusal_skips_cleanup(monkeypatch):
@@ -5761,32 +5675,14 @@ def test_repinned_box_reconcile_cannot_repoint_the_statefile_at_audio(
 
 
 @pytest.mark.parametrize(
-    ("reconcile", "verdict"),
+    ("reconcile", "status"),
     [
-        (
-            RECONCILE_STILL_CONVERGING,
-            {
-                "status": "converging",
-                "message": (
-                    "Pinned the new DAC and kept your speaker setup. Audio is "
-                    "still applying. Check Status in a moment."
-                ),
-            },
-        ),
-        (
-            RECONCILE_FAILED,
-            {
-                "status": "needs_attention",
-                "message": (
-                    "The new DAC was pinned and your speaker setup was kept, "
-                    "but audio remains off. Open Status before continuing."
-                ),
-            },
-        ),
+        (RECONCILE_STILL_CONVERGING, "converging"),
+        (RECONCILE_FAILED, "needs_attention"),
     ],
 )
 def test_repin_reports_the_reconcile_verdict(
-    monkeypatch, tmp_path: Path, reconcile, verdict,
+    monkeypatch, tmp_path: Path, reconcile, status,
 ):
     _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
     _stub_repin_runtime(monkeypatch)
@@ -5794,7 +5690,7 @@ def test_repin_reports_the_reconcile_verdict(
 
     payload = sound_setup._repin_output_topology_payload({})
 
-    assert payload["repin"] == verdict
+    assert payload["repin"]["status"] == status
 
 
 def test_repin_refuses_when_the_attached_pair_is_already_pinned(

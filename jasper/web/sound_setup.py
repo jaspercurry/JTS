@@ -763,7 +763,12 @@ def _make_handler(
                     raw_profile = raw
                 profile = SoundProfile.from_mapping(raw_profile)
             except (JsonBodyError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
-                self._send_json({"error": str(e)}, status=400)
+                code = getattr(e, "code", None)
+                self._send_json(
+                    {"error": str(e)} if code is None
+                    else {"error": str(e), "code": code},
+                    status=400,
+                )
                 return
             except (OSError, RuntimeError) as e:
                 if self._json_response_started:

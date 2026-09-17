@@ -79,8 +79,7 @@ class CodedFieldError(ValueError):
     """A field refusal carrying a machine-readable ``code`` beside its prose.
 
     Subclasses set the class attribute as their default; a raise site that a
-    caller must tell apart passes ``code=``. ``refusal_envelope`` reads the
-    attribute straight onto the wire.
+    caller must tell apart passes ``code=``.
     """
 
     code = "invalid_field"
