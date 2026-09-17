@@ -40,10 +40,15 @@ from jasper.log_event import log_event
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
 from jasper.output_topology import OutputTopology
 
+from .camilla_yaml import STARTUP_MUTE_GAIN_DB
 from .crossover_v2.conductor_context import measurement_target_id
 from .driver_safety import evaluate_driver_safety_profile
 from .driver_protection import PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
-from .graph_safety import protection_requirement_present, view_from_yaml_dict
+from .graph_safety import (
+    output_terminally_muted,
+    protection_requirement_present,
+    view_from_yaml_dict,
+)
 from .measurement import active_driver_targets
 from .test_signal_plan import MIN_DRIVER_TEST_FREQUENCY_HZ
 from .runtime_contract import (
@@ -658,6 +663,12 @@ def _read_program_pcm(program: ExcitationProgram, wav_path: str | Path) -> Any:
     return data.astype(np.float32) / np.float32(32767.0)
 
 
+def _terminal_mute_names(output_index: int) -> tuple[str, ...]:
+    """The mute filter names an emitter can end ``output_index`` with."""
+    return (f"as_out{output_index}_rear_pending_mute",
+            f"as_out{output_index}_commission_mute")
+
+
 def _refused_program(
     program: ExcitationProgram, session_volume_db: float,
     reason: ProgramAdmissionRefusal,
@@ -708,15 +719,19 @@ def readmit_summed_program_from_wav(
     evaluation = evaluate_driver_safety_profile(safety_profile, topology)
     if not evaluation.confirmed_and_current:
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.PROFILE_NOT_CONFIRMED)
-    physical = {
-        measurement_target_id(
-            target["role"], target.get("output_variant") or "primary",
-        ): target
-        for target in active_driver_targets(topology)
+    physical = {target["target_fingerprint"]: target for target in active_driver_targets(topology)}
+    # ``role_targets`` is keyed group-relatively (crossover-v2 measures ONE
+    # speaker group), so completeness is judged over the FULL physical target
+    # ids: a stereo topology's six targets share three group-relative ids, and
+    # comparing those would read one cabinet's map as covering both (ADR-0316).
+    admitted = {
+        physical[fingerprint]["target_id"]: target_id
+        for target_id, fingerprint in role_targets.items() if fingerprint in physical
     }
-    if not role_targets or dict(role_targets) != {
-        target_id: target["target_fingerprint"] for target_id, target in physical.items()
-    }:
+    if not role_targets or set(admitted) != {t["target_id"] for t in physical.values()} or any(
+        measurement_target_id(t["role"], t.get("output_variant") or "primary")
+        != admitted[t["target_id"]] for t in physical.values()
+    ):
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.TARGET_NOT_MAPPED)
     graph = classify_bass_extension_graph(
         topology, evidence_source="desired", graph_text=graph_yaml,
@@ -734,22 +749,21 @@ def readmit_summed_program_from_wav(
     pcm = _read_program_pcm(program, wav_path)
     if pcm is None:
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH)
-    # A branch identity is a measurement target id; a target the take does not
-    # name rides its ROLE's channel, exactly as the emitting mixer resolves it,
-    # and a target neither reaches is parked (no source at all = silence).
-    branch_channels = {segment.role: segment.channel for segment in program.stimulus_segments()
-                       if segment.role in role_targets} if branches else {}
+    # A branch identity is a measurement target id, exactly as the emitting
+    # mixer keys its sources. A target the take does not name is parked: its
+    # dest carries no source at all, which is silence.
     channels: dict[str, int | None] = {
-        target_id: branch_channels.get(target_id, branch_channels.get(target_id.partition(":")[0]))
-        for target_id in role_targets
+        target_id: None for target_id in role_targets
     } if branches else {}
+    channels.update({segment.role: segment.channel for segment in program.stimulus_segments()
+                     if segment.role in channels})
     if branches:
         mapping = [entry for name, mixer in payload["mixers"].items()
                    if name.startswith("split_active_") for entry in mixer["mapping"]]
-        if set(branch_channels.values()) != {0, 1}:
+        if {channel for channel in channels.values() if channel is not None} != {0, 1}:
             return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.TARGET_NOT_MAPPED)
-        for target_id in role_targets:
-            entries = [entry for entry in mapping if entry["dest"] == physical[target_id]["output_index"]]
+        for target_id, fingerprint in role_targets.items():
+            entries = [entry for entry in mapping if entry["dest"] == physical[fingerprint]["output_index"]]
             if len(entries) != 1 or entries[0].get("mute", False):
                 return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
             sources = entries[0]["sources"] or []
@@ -789,8 +803,17 @@ def readmit_summed_program_from_wav(
             duration = effective_sweep_duration_limit_s(safety_profile, fingerprint)
         except ExcitationSafetyPlanError as exc:
             return _refused_program(program, session_volume_db, _map_safety_plan_error(exc))
-        output = physical[target_id]["output_index"]
-        same_role_outputs = role_outputs[physical[target_id]["role"]]
+        output = physical[fingerprint]["output_index"]
+        same_role_outputs = role_outputs[physical[fingerprint]["role"]]
+        # Routed AND terminally muted records silence as if it were a
+        # measurement. The take must park such an output, not excite it.
+        if any(output_terminally_muted(payload, view, output, mute_name=name,
+                                       mute_gain_db=STARTUP_MUTE_GAIN_DB)
+               for name in _terminal_mute_names(output)):
+            log_event(logger, "active_speaker.program_graph_refused", level=logging.WARNING,
+                      program_id=program.program_id, role=target_id, output_index=output,
+                      result="excited_output_muted")
+            return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
         # Reserve the maximum lift; admission remains valid across Aux updates.
         boost_db = bass_boost_db if output in bass_channels else 0.0
         input_caps.append(cap - boost_db)

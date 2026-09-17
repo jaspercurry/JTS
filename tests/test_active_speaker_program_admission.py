@@ -53,6 +53,7 @@ from tests.test_rear_output_foundation import _rear_pair
 def _profile_and_targets(
     *,
     rear: bool = False,
+    layout: str = "mono",
     woofer_peak: float = 0.0,
     tweeter_peak: float = -65.0,
     max_sweep_duration_s: float = 6,
@@ -65,7 +66,7 @@ def _profile_and_targets(
     """Asymmetric caps by default (woofer 0.0, tweeter -65): the realistic
     2-way shape whose ~65 dB spread is exactly what the (fixed) session-volume
     derivation must handle — symmetric fixtures masked the min/max inversion."""
-    topology = _rear_pair("mono")[1] if rear else mono_output_topology()
+    topology = _rear_pair(layout)[1] if rear else mono_output_topology()
 
     def _limits(peak):
         return {
@@ -122,9 +123,11 @@ def _profile_and_targets(
                 },
             },
     ]
-    if rear:
-        # Same driver model, its own physical target (ADR-0316 / plan 6.3).
-        drivers.append({**drivers[0], "target_id": "mono:woofer:rear"})
+    # One entry per PHYSICAL target; a rear woofer shares its role's model and
+    # declared limits (ADR-0316 / plan 6.3) but owns its own target id.
+    by_role = {entry["role"]: entry for entry in drivers}
+    drivers = [{**by_role[target["role"]], "target_id": target["target_id"]}
+               for target in active_driver_targets(topology)]
     settings = {"drivers": drivers, "crossover_candidates": []}
     profile = build_driver_safety_profile(
         topology,
@@ -908,11 +911,11 @@ CARDIOID_TAKE = {"woofer": 0, "woofer:rear": 1}
 CROSSOVER_TAKE = {"woofer": 0, "tweeter": 1}
 
 
-def _rear_branch_inputs(branch_channels):
+def _rear_take_inputs(branch_channels, *, layout="mono"):
     topology, safety, targets = _profile_and_targets(
-        rear=True, woofer_floor=40, woofer_highpass=40, max_sweep_duration_s=4,
+        rear=True, layout=layout, woofer_floor=40, woofer_highpass=40, max_sweep_duration_s=4,
     )
-    preset = _rear_pair("mono")[0]
+    preset = _rear_pair(layout)[0]
     graph_profile = MeasurementGraphProfile(
         preset, topology, branch_channels, ACTIVE_PCM,
         protection_sections_by_role=confirmed_protection_sections(safety, targets),
@@ -920,66 +923,77 @@ def _rear_branch_inputs(branch_channels):
     graph = compile_tuning_graph(
         graph_profile, scope="candidate_branches", candidate=_trial_candidate(graph_profile),
     )
-    return topology, safety, targets, preset, graph
+    return topology, safety, targets, graph
 
 
-@pytest.mark.parametrize("branch_channels", [CROSSOVER_TAKE, CARDIOID_TAKE])
-def test_rear_declared_topology_is_admitted_on_either_branch_take(tmp_path, branch_channels):
-    """A rear woofer is a THIRD physical target of a two-way speaker: the
-    admission map is 1:1 over targets, so neither take is refused as unmapped,
-    and a target the take parks is admitted carrying no excitation."""
+def _rear_take_program(branch_channels):
     from jasper.audio_measurement.branch_program import build_branch_program
 
-    topology, safety, targets, _preset, graph = _rear_branch_inputs(branch_channels)
-    assert set(targets) == {"woofer", "tweeter", "woofer:rear"}
-    program = build_branch_program(SessionExcitation(
+    return build_branch_program(SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65}, session_volume_db=-20,
         fc_hz=1600, sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
     ).cloud_program(), branch_channels)
+
+
+def _admit_rear_take(tmp_path, branch_channels, *, graph=None, layout="mono"):
+    topology, safety, targets, emitted = _rear_take_inputs(branch_channels, layout=layout)
+    program = _rear_take_program(branch_channels)
     wav = tmp_path / "branches.wav"
     write_program_wav(wav, program)
-    admission = readmit_summed_program_from_wav(
-        program, wav, graph_yaml=graph, topology=topology, safety_profile=safety,
+    return targets, program, readmit_summed_program_from_wav(
+        program, wav, graph_yaml=graph or emitted, topology=topology, safety_profile=safety,
         role_targets=targets, session_volume_db=-20,
     )
+
+
+def test_rear_declared_topology_is_admitted_with_the_rear_parked(tmp_path):
+    """A rear woofer is a THIRD physical target of a two-way speaker, so the
+    admission map is 1:1 over targets and the crossover take is no longer
+    refused as unmapped. The rear, which no branch names, is admitted carrying
+    zero excitation — consistent with the terminal mute it still ends in."""
+    targets, program, admission = _admit_rear_take(tmp_path, CROSSOVER_TAKE)
+    assert set(targets) == {"woofer", "tweeter", "woofer:rear"}
     assert admission.allowed, admission.to_dict()
+    assert {segment.role for segment in admission.segments} == set(CROSSOVER_TAKE)
     # One clock, one level: solo, solo, repeat, repeat, then the summed verify.
     assert program.channels == 2
     sweeps = [s for s in program.segments if s.kind in (KIND_SWEEP, KIND_SUMMED_SWEEP)]
     assert len({s.gain_db for s in sweeps}) == 1
-    first, second = sorted(branch_channels, key=branch_channels.__getitem__)
     assert [(s.segment_id, s.role, s.channel) for s in sweeps] == [
-        ("sweep_w", first, 0), ("sweep_t", second, 1),
-        ("sweep_w_rep", first, 0), ("sweep_t_rep", second, 1),
+        ("sweep_w", "woofer", 0), ("sweep_t", "tweeter", 1),
+        ("sweep_w_rep", "woofer", 0), ("sweep_t_rep", "tweeter", 1),
         ("sweep_verify", None, 0), ("sum_companion", None, 1),
     ]
-    driven = set(branch_channels) | ({"woofer:rear"} if "tweeter" in branch_channels else set())
-    assert {segment.role for segment in admission.segments} == driven
 
 
-def test_a_target_the_take_parks_must_carry_no_source(tmp_path):
-    """Pin (d) fails closed the other way: a parked dest fed by any source is
-    refused, so a graph cannot quietly excite a driver the take does not admit."""
-    from jasper.audio_measurement.branch_program import build_branch_program
-
-    topology, safety, targets, _preset, graph = _rear_branch_inputs(CARDIOID_TAKE)
-    parked = yaml.safe_load(graph)
-    mixer = next(value for name, value in parked["mixers"].items() if name.startswith("split_active_"))
-    entry = next(e for e in mixer["mapping"] if e["dest"] == 1)
-    assert entry["sources"] == []
-    graph = graph.replace(
-        "      - dest: 1\n        sources: []\n",
-        "      - dest: 1\n        sources:\n"
-        "          - { channel: 0, gain: 0.0000, inverted: false }\n",
-    )
-    program = build_branch_program(SessionExcitation(
-        roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65}, session_volume_db=-20,
-        fc_hz=1600, sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
-    ).cloud_program(), CARDIOID_TAKE)
-    wav = tmp_path / "branches.wav"
-    write_program_wav(wav, program)
-    admission = readmit_summed_program_from_wav(
-        program, wav, graph_yaml=graph, topology=topology, safety_profile=safety,
-        role_targets=targets, session_volume_db=-20,
-    )
+@pytest.mark.parametrize("damage", [None, "parked_target_fed"])
+def test_a_graph_that_disagrees_with_the_take_is_refused(tmp_path, damage):
+    """Both halves of the routing contract fail closed. An excited output must
+    not end in a terminal mute — a routed-but-muted branch records silence as
+    if it were a measurement, which is how a cardioid take reads on the
+    candidate emitter until the rear mute is lifted. A parked dest must carry
+    no source, so a graph cannot quietly excite a driver the take parked."""
+    graph = None
+    if damage == "parked_target_fed":
+        graph = _rear_take_inputs(CARDIOID_TAKE)[3].replace(
+            "      - dest: 1\n        sources: []\n",
+            "      - dest: 1\n        sources:\n"
+            "          - { channel: 0, gain: 0.0000, inverted: false }\n",
+        )
+    _targets, _program, admission = _admit_rear_take(tmp_path, CARDIOID_TAKE, graph=graph)
     assert ProgramAdmissionRefusal.GRAPH_NOT_PROVEN in admission.refusals
+
+
+def test_a_stereo_cabinet_pair_cannot_be_admitted_through_one_group_map(tmp_path):
+    """Group-relative keys cannot address six targets: a stereo 2-way with rears
+    declares six physical targets whose ids collapse to three, so admission
+    refuses rather than reading one cabinet's map as covering both."""
+    _preset, topology = _rear_pair("stereo")
+    physical = active_driver_targets(topology)
+    assert len(physical) == 6
+    assert len({measurement_target_id(t["role"], t.get("output_variant") or "primary")
+                for t in physical}) == 3
+    _targets, _program, admission = _admit_rear_take(
+        tmp_path, CROSSOVER_TAKE, layout="stereo",
+    )
+    assert ProgramAdmissionRefusal.TARGET_NOT_MAPPED in admission.refusals

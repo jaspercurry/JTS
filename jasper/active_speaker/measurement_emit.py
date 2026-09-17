@@ -50,6 +50,10 @@ class MeasurementGraphProfile:
     role_channels: Mapping[str, int]
     playback_device: str
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None
+    #: Physical targets this take deliberately silences. A role absent from
+    #: ``role_channels`` must be named here or the graph refuses to emit —
+    #: silence is a decision, never an omission.
+    parked_target_ids: tuple[str, ...] = ()
 
 
 class MeasurementGraphRefused(ValueError):
@@ -212,4 +216,5 @@ def emit_measurement_graph(
         inverted_roles=inverted_roles,
         measurement_delays_us=measurement_delays_us,
         measurement_level_trims_db=level_trims_db,
+        parked_target_ids=profile.parked_target_ids,
     )

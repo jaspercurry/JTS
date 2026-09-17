@@ -32,6 +32,7 @@ from jasper.active_speaker.branch_chain import (
     branch_chain_peak_db,
     branch_headroom_db,
     chain_response,
+    RoleProtectionDisagrees,
     confirmed_protection_sections,
     crossover_response_complex,
     crossover_response_db,
@@ -148,6 +149,29 @@ def test_confirmed_protection_sections_bind_exact_current_role_targets():
             {"targets": [{"role": "tweeter", "target_fingerprint": "t"}]},
             {"tweeter": "t"},
         )
+
+
+def test_two_outputs_of_one_role_may_not_confirm_different_protection():
+    """The emitted role chain is ONE grouped pipeline step over every output of
+    the role, so a rear-only corner cannot be represented — and unioning it
+    would apply the rear's high-pass to the front driver."""
+    def _profile(rear_cutoff_hz):
+        return {"targets": [
+            {"role": "woofer", "target_fingerprint": "w",
+             "required_protection_filters": [{
+                 "kind": "highpass", "cutoff_hz": 40.0,
+                 "minimum_slope_db_per_octave": 24.0}]},
+            {"role": "woofer", "target_fingerprint": "r", "output_variant": "rear",
+             "required_protection_filters": [{
+                 "kind": "highpass", "cutoff_hz": rear_cutoff_hz,
+                 "minimum_slope_db_per_octave": 24.0}]},
+        ]}
+
+    agreed = confirmed_protection_sections(_profile(40.0), {"woofer": "w", "woofer:rear": "r"})
+    assert agreed == {"woofer": (CrossoverSection(40.0, 4, True),)}
+    with pytest.raises(RoleProtectionDisagrees) as excinfo:
+        confirmed_protection_sections(_profile(120.0), {"woofer": "w", "woofer:rear": "r"})
+    assert (excinfo.value.code, excinfo.value.role) == ("role_protection_sections_disagree", "woofer")
 
 
 def test_crossover_attenuation_reproduces_the_jts3_stopband_numbers():

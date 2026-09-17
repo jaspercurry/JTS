@@ -193,6 +193,21 @@ def sections_by_role(regions: Iterable[Any]) -> dict[str, tuple[CrossoverSection
     return {role: tuple(sections) for role, sections in out.items()}
 
 
+class RoleProtectionDisagrees(ValueError):
+    """Two outputs of one role confirm different protection sections.
+
+    The emitted role chain is ONE grouped pipeline step over every output of
+    the role, so it cannot carry a per-output corner. Refused rather than
+    unioned: a union would apply a rear-only high-pass to the front driver.
+    """
+
+    code = "role_protection_sections_disagree"
+
+    def __init__(self, role: str) -> None:
+        self.role = role
+        super().__init__(f"{self.code}:{role}")
+
+
 def confirmed_protection_sections(
     safety_profile: Mapping[str, Any], role_targets: Mapping[str, str] | None = None,
 ) -> dict[str, tuple[CrossoverSection, ...]]:
@@ -231,7 +246,9 @@ def confirmed_protection_sections(
             if not (math.isfinite(cutoff) and math.isfinite(slope)) or cutoff <= 0 or not order:
                 raise ValueError(f"confirmed protection filter is unsupported for {role}")
             sections.append(CrossoverSection(cutoff, order, raw["kind"] == "highpass"))
-        out[role] = tuple(dict.fromkeys((*out.get(role, ()), *sections)))
+        if role in out and out[role] != tuple(sections):
+            raise RoleProtectionDisagrees(role)
+        out[role] = tuple(sections)
     return out
 
 

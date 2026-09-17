@@ -2872,12 +2872,13 @@ def _emit_role_routed_mixer(
     (:func:`_validated_measurement_trims`), so every peak can only fall.
 
     Unlike :func:`_emit_split_mixer` (which routes a stereo bus by output
-    *side*), this routes by driver identity. ``role_channels`` may name a
-    physical target (``woofer:rear``, ADR-0316) or a whole role (``woofer``,
-    which reaches that role's rear output too); the specific entry wins. An
-    output neither entry names is parked for this take: its dest carries no
-    source, which is silence. ``channels_in`` is the program channel count
-    (max mapped channel + 1).
+    *side*), this routes by PHYSICAL TARGET: a primary output's key is its role,
+    a variant output's is ``role:variant`` (``woofer:rear``, ADR-0316). An
+    output the map does not name is parked for this take — its dest carries no
+    source, which is silence. A rear is never reached by its role's entry: an
+    unfitted rear ends in a terminal mute, and routing signal into a muted
+    output would record silence as if it were a measurement.
+    ``channels_in`` is the program channel count (max mapped channel + 1).
 
     The mixer is named ``split_active_{way_count}way`` — the SAME name
     :func:`_emit_split_mixer` uses — for two reasons landing on one spelling:
@@ -2903,8 +2904,7 @@ def _emit_role_routed_mixer(
         role = output.driver_role
         channel = role_channels.get(
             role if output.output_variant == "primary"
-            else f"{role}:{output.output_variant}",
-            role_channels.get(role),
+            else f"{role}:{output.output_variant}"
         )
         mapping.append((output.index, [] if channel is None else [(
             channel, trims.get(role, 0.0), polarity[role] != (role in flipped),
@@ -2925,13 +2925,15 @@ def _emit_role_routed_mixer(
 def _validate_program_role_channels(
     preset: ActiveSpeakerPreset,
     role_channels: dict[str, int],
+    parked_target_ids: Collection[str] = (),
 ) -> dict[str, int]:
-    """Fail-closed check that every named driver owns one distinct program channel.
+    """Fail-closed check that every driver role owns one distinct program channel.
 
-    A take may PARK a driver by leaving it out — its outputs then carry no
-    source at all (:func:`_emit_role_routed_mixer`), which is how a front/rear
-    take silences the tweeter. Nothing is silently dropped: program admission
-    proves every declared target's routing, driven or parked, at the play door.
+    A take may PARK a role — every output of it then carries no source at all
+    (:func:`_emit_role_routed_mixer`), which is how a front/rear take silences
+    the tweeter — but only by NAMING those targets in ``parked_target_ids``. A
+    role that is neither channelled nor declared parked refuses: silence must
+    be a decision, never an omission.
     """
 
     if preset.local_subwoofer is not None:
@@ -2946,16 +2948,30 @@ def _validate_program_role_channels(
                 f"program channel for role {role!r} must be a non-negative integer"
             )
         normalized[role] = channel
-    declared = set(required_driver_roles(preset.way_count))
+    declared: dict[str, set[str]] = {
+        role: set() for role in required_driver_roles(preset.way_count)
+    }
     for output in preset.channel_map.outputs:
-        declared.add(output.driver_role)
-        if output.output_variant != "primary":
-            declared.add(f"{output.driver_role}:{output.output_variant}")
-    unknown = set(normalized) - declared
+        declared.setdefault(output.driver_role, set()).add(
+            output.driver_role if output.output_variant == "primary"
+            else f"{output.driver_role}:{output.output_variant}"
+        )
+    every_id = set(declared).union(*declared.values())
+    unknown = (set(normalized) | set(parked_target_ids)) - every_id
     if unknown or not normalized:
         raise ActiveSpeakerConfigError(
             "program role_channels names no declared driver: "
             + (", ".join(sorted(unknown)) or "(empty)")
+        )
+    parked = set(parked_target_ids)
+    missing = sorted(
+        role for role, target_ids in declared.items()
+        if role not in normalized and not (target_ids and target_ids <= parked | set(normalized))
+    )
+    if missing:
+        raise ActiveSpeakerConfigError(
+            "program role_channels is missing a channel for role(s) "
+            + ", ".join(missing)
         )
     if len(set(normalized.values())) != len(normalized):
         raise ActiveSpeakerConfigError(
@@ -3211,6 +3227,7 @@ def emit_active_speaker_program_config(
     inverted_roles: Sequence[str] = (),
     measurement_delays_us: Mapping[str, float] | None = None,
     measurement_level_trims_db: Mapping[str, float] | None = None,
+    parked_target_ids: Collection[str] = (),
     out_path: str | Path | None = None,
 ) -> str:
     """Emit the static channel-routed program graph for CHECK/MEASURE playback.
@@ -3257,7 +3274,7 @@ def emit_active_speaker_program_config(
             f"presets; way_count={preset.way_count} requires a designed "
             "program reshape"
         )
-    role_channels = _validate_program_role_channels(preset, role_channels)
+    role_channels = _validate_program_role_channels(preset, role_channels, parked_target_ids)
     playback_device = _yaml_string(playback_device, "playback_device")
     forbidden_token = forbidden_playback_token(playback_device)
     if forbidden_token:
