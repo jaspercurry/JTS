@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import math
 import os
@@ -41,7 +40,7 @@ from ..audio_profile_state import (
     resolve_audio_input_intent,
     runtime_env_from_mapping,
 )
-from ..atomic_io import locked_update_env_file
+from ..atomic_io import locked_update_env_file, read_json_mapping
 from ..audio_input_view import build_microphone_settings_view
 from ..env_file import read_env_file
 from ..env_load import env_file_path, read_env_file_state
@@ -406,12 +405,7 @@ def _unit_active(unit: str) -> bool:
 
 
 def _read_xvf_firmware_update_state() -> dict[str, Any]:
-    try:
-        with open(_XVF_FIRMWARE_UPDATE_STATE_FILE) as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return read_json_mapping(_XVF_FIRMWARE_UPDATE_STATE_FILE) or {}
 
 
 def _commission_status() -> dict[str, Any]:

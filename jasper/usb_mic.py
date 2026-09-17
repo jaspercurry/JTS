@@ -14,14 +14,17 @@ strictly downstream of JTS voice/wake routing.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import os
 from pathlib import Path
 import struct
 import time
 from typing import Any, Callable, Mapping
 
-from .atomic_io import locked_update_env_file, read_regular_bytes_nofollow
+from .atomic_io import (
+    locked_update_env_file,
+    read_json_mapping,
+    read_regular_bytes_nofollow,
+)
 from .control._health_fields import _mapping
 from .env_file import read_value
 from .env_load import SOURCE_INTENT_ENV
@@ -202,12 +205,7 @@ def _read_text(path: Path) -> str:
 
 
 def _read_relay_status(path: Path) -> dict[str, Any]:
-    try:
-        raw = path.read_text(encoding="utf-8")
-        payload = json.loads(raw)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    return read_json_mapping(path) or {}
 
 
 def _systemd_active(unit: str) -> bool:

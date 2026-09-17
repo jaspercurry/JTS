@@ -30,7 +30,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import atomic_write_text, read_json_mapping
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
 
@@ -246,11 +246,7 @@ def _maybe_repair_scan_suppression_locked(
 
 
 def _read_state(path: Path) -> dict[str, Any]:
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return {}
-    return raw if isinstance(raw, dict) else {}
+    return read_json_mapping(path) or {}
 
 
 def _write_state(path: Path, state: dict[str, Any]) -> None:

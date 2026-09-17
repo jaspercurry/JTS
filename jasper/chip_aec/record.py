@@ -13,13 +13,12 @@ daemon can import it without pulling the commissioner's numpy stack.
 
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import atomic_write_json
+from jasper.atomic_io import atomic_write_json, read_json_mapping
 
 OUTCOME_PATH = Path("/var/lib/jasper/chip-aec-commission.json")
 SCHEMA_VERSION = 1
@@ -61,12 +60,8 @@ class CommissionOutcome:
 
 def read(path: Path) -> CommissionOutcome | None:
     """The record at ``path``, or None when it is absent or unreadable."""
-    try:
-        with open(path) as handle:
-            data = json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
+    data = read_json_mapping(path)
+    if data is None:
         return None
     version = data.get("schema_version")
     return CommissionOutcome(
