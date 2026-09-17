@@ -215,7 +215,6 @@ import {
   var tuningHandoff = {prompt: '', copied: false, selected: false, copiedRevision: null};
   var COMMISSION_RAMP_LISTEN_MS = 900;
   var COMMISSION_RAMP_NEXT_PULSE_MS = 80;
-  var SUMMED_TEST_STOP_ARM_MS = 250;
   // Issue #1820 defect 3 / #1821: the DOM id the measurement wizard's
   // profile-not-confirmed hard stop deep-links to
   // (crossover_v2_flow.REASON_PROGRAM_PROFILE_NOT_CONFIRMED's next_action href

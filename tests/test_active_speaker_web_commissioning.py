@@ -8,13 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import threading
-import time
 
 import pytest
 
-import jasper.active_speaker.playback as active_playback
-import jasper.audio_measurement.playback as measurement_playback
 from jasper.active_speaker import web_commissioning as web
 from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
@@ -75,114 +71,6 @@ def _staged_anchor_for(topology, staged_path):
             for channel in group.channels
         ],
     }
-
-
-def test_commission_tone_select_fanin_lane_indeterminate_recovery_standalone(
-    monkeypatch,
-):
-    """SELECT response lost (mux command raises): standalone mode's recovery
-    releases its OWN owner — never correction's gate."""
-
-    calls: list[str] = []
-
-    def flaky_mux_command(cmd: str) -> dict:
-        calls.append(cmd)
-        if len(calls) == 1:
-            raise RuntimeError("response lost")
-        return {"active_source": None}
-
-    monkeypatch.setattr(web, "_commission_tone_mux_command", flaky_mux_command)
-
-    with pytest.raises(RuntimeError, match="response lost"):
-        web._commission_tone_select_fanin_lane()
-
-    assert calls == [
-        "TEST_SELECT correction active-speaker-commissioning",
-        "TEST_RELEASE active-speaker-commissioning",
-    ]
-
-
-def test_async_commission_tone_mux_command_runs_off_event_loop(monkeypatch):
-    worker_thread_ids: list[int] = []
-
-    def command() -> dict:
-        worker_thread_ids.append(threading.get_ident())
-        return {"status": "ok"}
-
-    monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", command)
-
-    async def scenario() -> tuple[int, dict]:
-        loop_thread_id = threading.get_ident()
-        payload = await web._commission_tone_select_fanin_lane_async()
-        return loop_thread_id, payload
-
-    loop_thread_id, payload = asyncio.run(scenario())
-
-    assert payload == {"status": "ok"}
-    assert worker_thread_ids
-    assert worker_thread_ids[0] != loop_thread_id
-
-
-def test_async_commission_tone_select_cancellation_settles_and_releases_gate(
-    monkeypatch,
-):
-    """Cancellation cannot orphan a late successful mux TEST_SELECT.
-
-    ``asyncio.to_thread`` cannot stop its worker. Model the mux committing the
-    selection only after caller cancellation, then cancel the caller again
-    while release/restore is blocked. Cancellation must not propagate until
-    the same owner has given the gate back.
-    """
-
-    select_started = threading.Event()
-    allow_select_response = threading.Event()
-    cleanup_started = threading.Event()
-    allow_cleanup_response = threading.Event()
-    calls: list[str] = []
-
-    def delayed_mux_command(cmd: str) -> dict:
-        calls.append(cmd)
-        if len(calls) == 1:
-            select_started.set()
-            assert allow_select_response.wait(timeout=2.0)
-        else:
-            cleanup_started.set()
-            assert allow_cleanup_response.wait(timeout=2.0)
-        return {"active_source": "correction"}
-
-    monkeypatch.setattr(web, "_commission_tone_mux_command", delayed_mux_command)
-
-    async def wait_for_thread_event(event: threading.Event) -> None:
-        while not event.is_set():
-            await asyncio.sleep(0)
-
-    async def scenario() -> None:
-        task = asyncio.create_task(
-            web._commission_tone_select_fanin_lane_async()
-        )
-        await wait_for_thread_event(select_started)
-
-        task.cancel()
-        await asyncio.sleep(0)
-        assert task.done() is False
-
-        allow_select_response.set()
-        await wait_for_thread_event(cleanup_started)
-
-        task.cancel()
-        await asyncio.sleep(0)
-        assert task.done() is False
-
-        allow_cleanup_response.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    asyncio.run(scenario())
-
-    assert calls == [
-        "TEST_SELECT correction active-speaker-commissioning",
-        "TEST_RELEASE active-speaker-commissioning",
-    ]
 
 
 def test_a_path_match_with_a_stale_topology_is_not_already_loaded(monkeypatch):
@@ -499,40 +387,6 @@ def test_startup_anchor_rejects_ambiguous_graph_source_before_fast_path():
         )
 
 
-def test_summed_loader_threads_resolved_source_to_startup_anchor(monkeypatch):
-    frozen_preset = object()
-    anchor_call = {}
-
-    class Cam:
-        async def get_config_file_path(self, *, best_effort):
-            assert best_effort is False
-            return "/var/lib/camilladsp/configs/sound_current.yml"
-
-    monkeypatch.setattr(web, "load_staged_startup_config", lambda: {"status": "staged"})
-
-    async def blocked_anchor(**kwargs):
-        anchor_call.update(kwargs)
-        return {"status": "blocked"}
-
-    monkeypatch.setattr(web, "_ensure_commission_startup_anchor", blocked_anchor)
-
-    result = asyncio.run(
-        web._load_summed_commissioning_config(
-            topology=_topology(),
-            speaker_group_id="mono",
-            level_dbfs=-12.0,
-            startup_gate_calibration_level={"status": "floor"},
-            preset=frozen_preset,
-            crossover_preview=None,
-            camilla_factory=Cam,
-        )
-    )
-
-    assert result == {"status": "blocked"}
-    assert anchor_call["preset"] is frozen_preset
-    assert anchor_call["crossover_preview"] is None
-
-
 def test_automatic_measurement_source_peak_is_one_shared_default():
     from jasper.active_speaker import driver_acoustics
     from jasper.audio_measurement.sweep import synchronized_swept_sine
@@ -543,68 +397,6 @@ def test_automatic_measurement_source_peak_is_one_shared_default():
     assert AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS == -12.0
     assert sweep_default == AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
     assert driver_acoustics.DEFAULT_AMPLITUDE_DBFS == sweep_default
-
-
-def test_summed_capture_sweep_refuses_before_session_or_graph_mutation(monkeypatch):
-    armed = {}
-    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
-    monkeypatch.setattr(
-        web,
-        "load_output_topology",
-        lambda: pytest.fail("blocked summed capture must not inspect the graph"),
-    )
-    monkeypatch.setattr(
-        web,
-        "load_measurement_state",
-        lambda _topology: pytest.fail("blocked summed capture must not read evidence"),
-    )
-    monkeypatch.setattr(
-        web,
-        "load_safe_playback_state",
-        lambda: pytest.fail("blocked summed capture must not arm playback"),
-    )
-    monkeypatch.setattr(
-        web,
-        "arm_safe_playback_session",
-        lambda report: armed.setdefault("report", report) or {"status": "armed"},
-    )
-
-    payload = asyncio.run(
-        web.play_summed_capture_sweep(
-            {"speaker_group_id": "mono"},
-            camilla_factory=lambda: object(),
-        )
-    )
-
-    assert armed == {}
-    assert payload["status"] == "refused"
-    assert payload["reason"] == "active_summed_persisted_admission_unavailable"
-    assert payload["audio_emitted"] is False
-
-
-def test_summed_capture_refuses_unloaded_reverse_or_delay_candidate(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(web, "commission_status_payload", lambda: {})
-    monkeypatch.setattr(
-        web,
-        "load_output_topology",
-        lambda: (_ for _ in ()).throw(AssertionError("must refuse before load")),
-    )
-
-    for candidate in (
-        {"expect_null": True, "polarity": "invert_tweeter"},
-        {"delay_ms": 0.1, "delay_target_role": "tweeter"},
-    ):
-        payload = asyncio.run(
-            web.play_summed_capture_sweep(
-                {"speaker_group_id": "mono", **candidate},
-                camilla_factory=lambda: object(),
-            )
-        )
-        assert payload["status"] == "refused"
-        assert payload["reason"] == "active_summed_persisted_admission_unavailable"
-        assert payload["audio_emitted"] is False
 
 
 def test_resilient_restore_does_not_retry_cancelled_child(monkeypatch):
@@ -631,118 +423,6 @@ def test_resilient_restore_does_not_retry_cancelled_child(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(restore_wait.await_restore_task_resilient(CancelledTask()))
     assert shield_calls == 1
-
-
-def test_summed_test_playback_does_not_block_the_correction_loop(monkeypatch):
-    """C4a-6: the summed-test stimulus must play OFF the shared correction loop.
-
-    The crossover summed test previously ran ``aplay`` via a synchronous
-    ``subprocess.run`` directly on the single background correction loop
-    (``jasper-correction-loop``), stalling every other correction/commissioning
-    request — status polls, SSE progress, the safe-playback TTL deadman — for
-    the whole stimulus duration.
-
-    This pins the fix behaviourally: while playback is "in flight", a concurrent
-    coroutine scheduled on the same loop must keep making progress. We stand in
-    for the real ``aplay`` two ways at once: the off-loop primitive
-    (``play_wav``) yields via ``await asyncio.sleep``, while the old blocking
-    primitive (``subprocess.run``) would ``time.sleep`` and freeze the loop
-    thread. Reverting to ``subprocess.run`` makes the ticker starve and the
-    assertion fail (mutation check).
-    """
-
-    playback_seconds = 0.30
-
-    async def _fake_play_wav(wav_path, *, alsa_device, timeout_s):
-        # Off-loop: yields control so the loop can run other coroutines.
-        await asyncio.sleep(playback_seconds)
-
-    class _CompletedProc:
-        returncode = 0
-        stderr = ""
-
-    class _BlockingRun:
-        """Stand-in for the removed blocking ``subprocess.run`` path.
-
-        If the code under test ever calls ``subprocess.run`` again it freezes
-        the loop thread for the playback duration — exactly the bug. It returns
-        a clean completed-process so the regression manifests as loop starvation
-        (the ``ticks`` assertion below), not as an exception.
-        """
-
-        def __call__(self, *args, **kwargs):
-            time.sleep(playback_seconds)
-            return _CompletedProc()
-
-    monkeypatch.setattr(measurement_playback, "play_wav", _fake_play_wav)
-    monkeypatch.setattr(web.subprocess, "run", _BlockingRun())
-
-    # ``start_tone_playback`` is lazily imported inside the function, so patch
-    # it on its source module.
-    monkeypatch.setattr(
-        active_playback,
-        "start_tone_playback",
-        lambda *a, **k: {"status": "completed", "tone": {"level_dbfs": -72.0}},
-    )
-    monkeypatch.setattr(
-        web,
-        "_combined_speech_stimulus_wav_path",
-        lambda: ("/tmp/jts-fake-summed-stimulus.wav", {"duration_s": playback_seconds}),
-    )
-
-    async def _fake_load(**kwargs):
-        return {"load": {"status": "loaded"}}
-
-    async def _fake_rollback(**kwargs):
-        return {"status": "rolled_back"}
-
-    monkeypatch.setattr(web, "_load_summed_commissioning_config", _fake_load)
-    monkeypatch.setattr(web, "_rollback_summed_commissioning_config", _fake_rollback)
-    monkeypatch.setattr(web, "_commission_tone_select_fanin_lane", lambda: {"status": "ok"})
-    monkeypatch.setattr(
-        web,
-        "_commission_tone_release_fanin_lane",
-        lambda *, reason: {"status": "ok", "reason": reason},
-    )
-
-    async def _scenario():
-        ticks = 0
-
-        async def _ticker():
-            nonlocal ticks
-            # Tick frequently relative to the playback window. A responsive loop
-            # accumulates many ticks during the ~0.30 s "playback".
-            while True:
-                ticks += 1
-                await asyncio.sleep(0.01)
-
-        ticker = asyncio.create_task(_ticker())
-        playback = await web._play_summed_commission_tone(
-            {},
-            safe_session={"status": "armed"},
-            topology=object(),
-            speaker_group_id="mono",
-            startup_gate_calibration_level=None,
-            preset=object(),
-            crossover_preview=None,
-            camilla_factory=lambda: object(),
-        )
-        ticker.cancel()
-        try:
-            await ticker
-        except asyncio.CancelledError:
-            pass
-        return playback, ticks
-
-    playback, ticks = asyncio.run(_scenario())
-
-    # Playback completed through the off-loop primitive...
-    assert playback["status"] == "completed"
-    assert playback["backend"] == web.SUMMED_COMMISSION_SPEECH_BACKEND
-    assert playback["audio_emitted"] is True
-    # ...and the loop stayed responsive: many ticks landed during playback.
-    # A blocked loop would yield ~0-1 ticks; require clearly more.
-    assert ticks >= 5, f"correction loop appears blocked during playback (ticks={ticks})"
 
 
 def test_regenerate_crossover_preview_matches_sound_setups_preview_button(

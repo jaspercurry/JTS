@@ -18,13 +18,12 @@ from jasper.active_speaker.measurement import (
     current_driver_floor_evidence,
     load_measurement_state,
     record_driver_measurement,
-    record_summed_test_artifact,
     record_summed_validation,
     start_active_comparison_set,
 )
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from tests._log_events import event_fields, event_records
-from tests.active_speaker_fixtures import mono_output_topology
+from tests.active_speaker_fixtures import mono_output_topology, seed_summed_test
 
 
 def _topology(
@@ -113,124 +112,6 @@ def _safe_session(
                 "target": target,
             },
         },
-    }
-
-
-def _record_summed_test(
-    topology: OutputTopology,
-    state_path: Path,
-    *,
-    playback_id: str = "summed-playback-1",
-    audio_emitted: bool = True,
-    playback_issues: list[dict] | None = None,
-) -> dict:
-    return record_summed_test_artifact(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "playback": {
-                "status": "completed",
-                "backend": "aplay" if audio_emitted else "wav_artifact",
-                "playback_id": playback_id,
-                "audio_emitted": audio_emitted,
-                "artifact": {
-                    "wav_basename": f"tone_{playback_id}.wav",
-                    "metadata_basename": f"tone_{playback_id}.json",
-                    "target_output_indices": [0, 1],
-                    "channel_count": 2,
-                },
-                "tone": {"frequency_hz": 2500, "level_dbfs": -72},
-                "stimulus": {
-                    "kind": "jts_active_speaker_speech_stimulus",
-                    "text": "Like and subscribe to Jasper tech.",
-                    "duration_ms": 12000,
-                },
-                "issues": playback_issues or [],
-            },
-        },
-        state_path=state_path,
-        now="2026-06-14T12:02:30Z",
-    )
-
-
-def test_summed_test_records_spoken_stimulus_metadata(tmp_path: Path) -> None:
-    topology = _topology()
-    payload = _record_summed_test(topology, tmp_path / "measurements.json")
-
-    latest = payload["summary"]["latest_summed_tests"]["mono"]
-    assert latest["stimulus"] == {
-        "kind": "jts_active_speaker_speech_stimulus",
-        "text": "Like and subscribe to Jasper tech.",
-        "duration_ms": 12000,
-    }
-
-
-def test_failed_summed_test_without_artifact_does_not_claim_output_mismatch(
-    tmp_path: Path,
-) -> None:
-    topology = _topology()
-    payload = record_summed_test_artifact(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "playback": {
-                "status": "failed",
-                "backend": "wav_artifact",
-                "playback_id": "summed-playback-failed",
-                "audio_emitted": False,
-                "artifact": None,
-                "tone": {"frequency_hz": 2500, "level_dbfs": -80},
-                "issues": [{
-                    "severity": "blocker",
-                    "code": "tone_backend_failed",
-                    "message": "tone artifact directory is not writable",
-                }],
-            },
-        },
-        state_path=tmp_path / "measurements.json",
-        now="2026-06-18T20:00:00Z",
-    )
-
-    latest = payload["summary"]["latest_summed_tests"]["mono"]
-    codes = {issue["code"] for issue in latest["issues"]}
-    assert latest["target_output_indices"] == []
-    assert "tone_backend_failed" in codes
-    assert "summed_test_artifact_missing" in codes
-    assert "summed_test_output_mismatch" not in codes
-
-
-def test_summed_test_output_mismatch_requires_inspectable_artifact(
-    tmp_path: Path,
-) -> None:
-    topology = _topology()
-    payload = record_summed_test_artifact(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "playback": {
-                "status": "completed",
-                "backend": "wav_artifact",
-                "playback_id": "summed-playback-wrong-output",
-                "audio_emitted": False,
-                "artifact": {
-                    "wav_basename": "tone_wrong.wav",
-                    "metadata_basename": "tone_wrong.json",
-                    "target_output_indices": [0],
-                    "channel_count": 2,
-                },
-                "tone": {"frequency_hz": 2500, "level_dbfs": -80},
-                "issues": [],
-            },
-        },
-        state_path=tmp_path / "measurements.json",
-        now="2026-06-18T20:01:00Z",
-    )
-
-    latest = payload["summary"]["latest_summed_tests"]["mono"]
-    assert latest["target_output_indices"] == [0]
-    assert latest["expected_output_indices"] == [0, 1]
-    assert "summed_test_output_mismatch" in {
-        issue["code"] for issue in latest["issues"]
     }
 
 
@@ -684,25 +565,7 @@ def test_summed_validation_waits_for_all_driver_measurements(
         ]
     }
 
-    blocked_test = _record_summed_test(
-        topology,
-        state_path,
-        playback_id="summed-playback-blocked",
-        audio_emitted=False,
-        playback_issues=[{
-            "severity": "blocker",
-            "code": "summed_commission_load_failed",
-            "message": "could not open the combined active-speaker test path",
-        }],
-    )
-    assert "summed_commission_load_failed" in {
-        issue["code"]
-        for issue in blocked_test["summary"]["latest_summed_tests"]["mono"][
-            "issues"
-        ]
-    }
-
-    _record_summed_test(
+    seed_summed_test(
         topology,
         state_path,
         playback_id="summed-playback-artifact",
@@ -730,7 +593,7 @@ def test_summed_validation_waits_for_all_driver_measurements(
         ]
     }
 
-    _record_summed_test(topology, state_path, playback_id="summed-playback-audible")
+    seed_summed_test(topology, state_path, playback_id="summed-playback-audible")
     ready = record_summed_validation(
         topology,
         {
@@ -757,7 +620,7 @@ def test_summed_validation_waits_for_all_driver_measurements(
         "validated"
     ] is True
 
-    superseded = _record_summed_test(
+    superseded = seed_summed_test(
         topology,
         state_path,
         playback_id="summed-playback-newer",
@@ -801,7 +664,7 @@ def test_summed_validation_accepts_operator_check_after_audible_test_without_mic
             state_path=state_path,
             now=f"2026-06-14T12:0{1 if role == 'woofer' else 2}:00Z",
         )
-    _record_summed_test(topology, state_path, playback_id="summed-playback-audible")
+    seed_summed_test(topology, state_path, playback_id="summed-playback-audible")
 
     no_operator_check = record_summed_validation(
         topology,
@@ -851,7 +714,7 @@ def test_summed_validation_accepts_backend_driver_target_proof(
     topology = _topology()
     state_path = tmp_path / "measurements.json"
 
-    _record_summed_test(
+    seed_summed_test(
         topology,
         state_path,
         playback_id="summed-playback-revalidate",
@@ -1136,7 +999,7 @@ def test_driver_measurement_records_optional_bundle_ref(tmp_path: Path) -> None:
 def test_summed_validation_records_optional_bundle_ref(tmp_path: Path) -> None:
     topology = _topology()
     state_path = tmp_path / "measurements.json"
-    _record_summed_test(topology, state_path)
+    seed_summed_test(topology, state_path)
     bundle_ref = {"session_id": "sess-2", "artifact_path": "summed/y.wav"}
 
     state = record_summed_validation(
@@ -1443,7 +1306,7 @@ def test_reverse_capture_does_not_overwrite_in_phase_latest(tmp_path: Path) -> N
     IN-PHASE record specifically."""
     topology = _topology()
     state_path = tmp_path / "measurements.json"
-    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
 
     in_phase = record_summed_validation(
         topology,
@@ -1517,7 +1380,7 @@ def test_in_phase_capture_after_reverse_does_not_lose_the_reverse_pair_slot(
     clear the already-recorded reverse evidence out of the pair."""
     topology = _topology()
     state_path = tmp_path / "measurements.json"
-    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
 
     reverse = record_summed_validation(
         topology,
@@ -1577,7 +1440,7 @@ def test_paired_summed_evidence_never_crosses_comparison_sets(
     """
     topology = _topology()
     state_path = tmp_path / "measurements.json"
-    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
     run_a = "a" * 32
     run_b = "b" * 32
 
@@ -1635,7 +1498,7 @@ def test_reverse_only_new_run_does_not_fall_back_to_old_in_phase(
     """
     topology = _topology()
     state_path = tmp_path / "measurements.json"
-    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
     run_a = "a" * 32
     run_b = "b" * 32
 
@@ -1683,7 +1546,7 @@ def test_malformed_modern_proof_never_falls_into_the_legacy_pair_bucket(
     """Corrupt/migrated modern evidence must fail closed, not look legacy."""
     topology = _topology()
     state_path = tmp_path / "measurements.json"
-    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
 
     for expect_null, depth, created_at in (
         (False, 2.0, "2026-07-11T12:00:00Z"),
@@ -1731,7 +1594,7 @@ def test_malformed_modern_proof_never_falls_into_the_legacy_pair_bucket(
 def test_summed_validation_persists_valid_region(tmp_path: Path) -> None:
     topology = _topology()
     state_path = tmp_path / "measurements.json"
-    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
 
     state = record_summed_validation(
         topology,
@@ -1779,7 +1642,7 @@ def test_summed_validation_rejects_malformed_region(
 ) -> None:
     topology = _topology()
     state_path = tmp_path / "measurements.json"
-    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
 
     state = record_summed_validation(
         topology,
@@ -1843,7 +1706,7 @@ def test_operator_only_record_counts_as_in_phase_but_never_pairs(
     existed) but can never contribute to a region's in-phase/reverse pair."""
     topology = _topology()
     state_path = tmp_path / "measurements.json"
-    _record_summed_test(topology, state_path, playback_id="summed-playback-1")
+    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
 
     state = record_summed_validation(
         topology,

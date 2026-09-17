@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 
-import jasper.web.sound_active_speaker as sound_active_speaker
 import jasper.web.sound_setup as sound_setup
 
 
@@ -38,26 +37,3 @@ def test_commission_state_payload_is_idle_and_read_only(monkeypatch, tmp_path):
     assert payload["ramp"]["confirmed_roles"] == []
     assert payload["ramp"]["pending"] is None
     assert payload["floor"]["status"] == "floor_required"
-
-
-def test_summed_test_stop_marks_preparing_session(monkeypatch):
-    session = {
-        "playback_id": "pending-summed-test",
-        "process": None,
-        "stop_reason": None,
-    }
-    monkeypatch.setattr(sound_active_speaker, "_SUMMED_TEST_TONE_SESSION", session)
-    try:
-        payload = sound_active_speaker._active_speaker_stop_summed_test_tone(
-            reason="test_stop"
-        )
-    finally:
-        monkeypatch.setattr(sound_active_speaker, "_SUMMED_TEST_TONE_SESSION", None)
-
-    assert payload == {
-        "status": "stopping",
-        "reason": "test_stop",
-        "playback_id": "pending-summed-test",
-        "phase": "preparing",
-    }
-    assert session["stop_reason"] == "test_stop"

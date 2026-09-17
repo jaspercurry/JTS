@@ -5,7 +5,7 @@
 """Output-hardware, topology and active-speaker commissioning payloads.
 
 :mod:`jasper.web.sound_setup` owns the HTTP surface and imports the builders
-here; this module owns the tone and summed-test session state they guard.
+here.
 """
 
 from __future__ import annotations
@@ -13,8 +13,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import threading
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
@@ -66,12 +64,11 @@ from jasper.active_speaker.commission_wiring import (
 
 from jasper.active_speaker.web_commissioning import (
     _commission_tone_mux_command,
-    _commission_tone_release_fanin_lane,
     ensure_missing_software_guards,
     request_missing_software_guards as _request_missing_software_guards,
 )
 
-from ._common import refusal_envelope, terminate_process
+from ._common import refusal_envelope
 from .sound_profile_apply import _sound_state_write_lock
 
 logger = logging.getLogger(__name__)
@@ -334,10 +331,7 @@ def _save_output_topology_payload(
         _refuse_undrivable_layout(topology)
         _refuse_duplicate_physical_outputs(topology)
         topology, guards_changed = _request_missing_software_guards(topology)
-        summed_stop = _active_speaker_stop_summed_test_tone(
-            reason="output_topology_save"
-        )
-        safe_stop = _active_speaker_stop_payload(reason="output_topology_save")
+        safe_stop = _active_speaker_stop_payload()
         def commit_topology() -> OutputTopology:
             mutation.save(topology)
             return topology
@@ -368,8 +362,6 @@ def _save_output_topology_payload(
         runtime_convergence_ok=runtime.convergence.ok,
         reconcile_ok=reconcile.get("ok"),
         reconcile_converging=reconcile.get("converging"),
-        summed_stop=str(summed_stop.get("status")),
-        tone_stop=str(safe_stop.get("commission_tone", {}).get("status")),
         safe_stop=str(safe_stop.get("status")),
     )
     needs_attention_save = {
@@ -461,10 +453,7 @@ def _reset_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
     with output_topology_mutation() as mutation:
         snapshot = mutation.snapshot()
         _reset_request_hardware(raw, revision=snapshot.revision)
-        summed_stop = _active_speaker_stop_summed_test_tone(
-            reason="output_topology_reset"
-        )
-        safe_stop = _active_speaker_stop_payload(reason="output_topology_reset")
+        safe_stop = _active_speaker_stop_payload()
         setup_reset: dict[str, Any]
         saved_revision: str
 
@@ -536,8 +525,6 @@ def _reset_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
         runtime_convergence_ok=runtime.convergence.ok,
         reconcile_ok=str(bool(reconcile.get("ok"))),
         reconcile_converging=str(bool(reconcile.get("converging"))),
-        summed_stop=str(summed_stop.get("status")),
-        tone_stop=str(safe_stop.get("commission_tone", {}).get("status")),
         safe_stop=str(safe_stop.get("status")),
     )
     payload = _output_topology_payload()
@@ -573,10 +560,7 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
         plan = composite_serial_repin_plan(snapshot.topology, observed)
         if plan is None:
             raise OutputHardwareRequestConflict("repin_unavailable")
-        summed_stop = _active_speaker_stop_summed_test_tone(
-            reason="output_topology_repin"
-        )
-        safe_stop = _active_speaker_stop_payload(reason="output_topology_repin")
+        safe_stop = _active_speaker_stop_payload()
         saved_revision = ""
 
         def commit_repin() -> OutputTopology:
@@ -646,8 +630,6 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
         runtime_convergence_ok=runtime.convergence.ok,
         reconcile_ok=str(bool(reconcile.get("ok"))),
         reconcile_converging=str(bool(reconcile.get("converging"))),
-        summed_stop=str(summed_stop.get("status")),
-        tone_stop=str(safe_stop.get("commission_tone", {}).get("status")),
         safe_stop=str(safe_stop.get("status")),
     )
     payload = _output_topology_payload()
@@ -884,17 +866,15 @@ def _active_speaker_calibration_level_payload(
     return payload
 
 
-def _active_speaker_stop_payload(reason: str = "operator_stop") -> dict[str, Any]:
-    """Stop the no-audio safety session and the audible commission tone."""
+def _active_speaker_stop_payload() -> dict[str, Any]:
+    """Stop the no-audio safety session."""
 
     from jasper.active_speaker.calibration_level import update_calibration_level_state
     from jasper.active_speaker.playback import stop_tone_playback
     from jasper.active_speaker.safe_playback import stop_safe_playback_session
 
     playback = stop_tone_playback(reason="operator_stop")
-    tone_stop = _active_speaker_stop_commission_tone(reason=reason)
     state = dict(stop_safe_playback_session())
-    state["commission_tone"] = tone_stop
     try:
         state["calibration_level"] = update_calibration_level_state(
             action="stop", run_id=state.get("session_id")
@@ -920,7 +900,6 @@ def _active_speaker_stop_payload(reason: str = "operator_stop") -> dict[str, Any
         session_id=str(state.get("session_id")),
         playback_status=str(playback.get("status")),
         audio_emitted=str(bool(playback.get("audio_emitted"))),
-        tone_stop_status=str(tone_stop.get("status")),
         level_status=str(state.get("calibration_level", {}).get("status")),
     )
     return state
@@ -1236,40 +1215,6 @@ def _active_speaker_crossover_preview_save_payload() -> dict[str, Any]:
     return payload
 
 
-# --- single-audio-path per-driver commissioning + Stage-5 ramp ----------------
-#
-# The browser surface over the guarded machinery the `jasper-active-speaker` CLI
-# drives, shared with it through `jasper.active_speaker.commission_wiring`.
-# Every loader uses the INLINE CamillaController seams (set_active_config_raw)
-# so the persisted boot statefile is never repointed (crash-recovery-MUTED stays
-# structural). A commission load arms a driver at the protected floor (silent);
-# the Stage-5 ramp raises it one gated, operator-ACK'd step at a time. The GET
-# state endpoint is read-only on purpose — the preflight emits the candidate
-# YAML, so the load/step that run it are POST-only.
-
-
-#: Operator stop reasons that mean "I heard it" — the only client-supplied
-#: strings that complete a combined test. The loop's own budget end is NOT in
-#: here: it passes ``completed=True`` directly, so a client cannot borrow the
-#: machine's reason string to claim a completion it did not earn.
-SUMMED_TEST_CONFIRM_STOP_REASONS = {"operator_confirmed"}
-#: End reason for a play that ran the caller's whole ``duration_ms`` budget.
-SUMMED_TEST_DURATION_ELAPSED_REASON = "duration_elapsed"
-SUMMED_TEST_MAX_LOOP_SECONDS = 10 * 60.0
-_COMMISSION_TONE_LOCK = threading.Lock()
-_COMMISSION_TONE_SESSION: dict[str, Any] | None = None
-_SUMMED_TEST_TONE_LOCK = threading.Lock()
-_SUMMED_TEST_TONE_SESSION: dict[str, Any] | None = None
-_SUMMED_TEST_ARM_REPORT: dict[str, Any] = {
-    "status": "ready",
-    "load_gate": "ready",
-    "ok_to_load_active_config": True,
-    "camilla_config": {},
-    "safe_playback": {},
-    "issues": [],
-}
-
-
 def _active_speaker_restore_auto_source(*, reason: str) -> dict[str, Any]:
     """Best-effort return from setup-only routing to normal latest-source-wins."""
 
@@ -1307,170 +1252,6 @@ def _active_speaker_restore_auto_source(*, reason: str) -> dict[str, Any]:
     }
 
 
-def _stop_commission_tone_locked(*, reason: str) -> dict[str, Any]:
-    global _COMMISSION_TONE_SESSION
-
-    session = _COMMISSION_TONE_SESSION
-    _COMMISSION_TONE_SESSION = None
-    if not session:
-        return {"status": "idle", "reason": reason}
-    proc = session.get("process")
-    was_running = bool(proc is not None and proc.poll() is None)
-    if was_running:
-        terminate_process(proc)
-    return {
-        "status": "stopped" if was_running else "expired",
-        "reason": reason,
-        "playback_id": session.get("playback_id"),
-        "target_key": session.get("target_key"),
-    }
-
-
-def _active_speaker_stop_commission_tone(*, reason: str) -> dict[str, Any]:
-    with _COMMISSION_TONE_LOCK:
-        payload = _stop_commission_tone_locked(reason=reason)
-    payload["fanin_gate"] = _commission_tone_release_fanin_lane(reason=reason)
-    log_event(
-        logger,
-        "sound.active_speaker_commission_tone",
-        action="stop",
-        reason=reason,
-        status=str(payload.get("status")),
-    )
-    return payload
-
-
-# A session sits at ``process=None`` both between the looped ``aplay`` spawns
-# and when it leaked before its owning request reached the try/finally teardown.
-# A leaked session stays ``process=None`` forever with no owner to clear it, and
-# would wedge every retry with ``summed_test_already_active`` until jasper-web
-# restarted; a running loop refreshes ``progress_monotonic`` each iteration, so
-# a stale heartbeat distinguishes the two.
-#
-# The window MUST exceed the longest a genuinely-live session can sit at
-# process=None — the prepare phase before the first spawn: a ~15 s
-# jasper-audio-hardware-reconcile wait (startup_load, manage_units timeout=15.0)
-# plus the summed-config camilla WS ops. Shorter than a slow-but-live prepare, a
-# concurrent start would misjudge it leaked and preempt it, racing on the fan-in
-# lane, a second aplay and the config rollback. A hung (not merely slow) camilla
-# is out of scope: the test cannot run then, and both starts block on the same
-# dead WS.
-SUMMED_TEST_SESSION_STALE_SECONDS = 90.0
-
-
-def _summed_test_session_active(
-    session: dict[str, Any] | None,
-    *,
-    now: float | None = None,
-) -> bool:
-    """Whether a combined-test session is genuinely live. Caller holds the lock.
-
-    Live means: a session exists, no stop has been requested, and either the
-    ``aplay`` child is alive *or* the loop refreshed its heartbeat within
-    ``SUMMED_TEST_SESSION_STALE_SECONDS``.
-    """
-
-    if not session or session.get("stop_reason"):
-        return False
-    proc = session.get("process")
-    if proc is not None:
-        return proc.poll() is None
-    if now is None:
-        now = time.monotonic()
-    heartbeat = session.get("progress_monotonic", session.get("started_monotonic"))
-    try:
-        heartbeat = float(heartbeat)
-    except (TypeError, ValueError):
-        return False
-    return (now - heartbeat) < SUMMED_TEST_SESSION_STALE_SECONDS
-
-
-def _active_summed_test_snapshot() -> dict[str, Any]:
-    """Live snapshot of the in-progress combined (summed) test, if any.
-
-    The commissioning view is otherwise composed from *persisted* state and
-    cannot see this in-memory playback session, so a reloaded ``/sound/`` page
-    would offer "Play combined test" with no Stop while the test audio is still
-    looping. Surfacing the live session lets any page load render a
-    reload-safe Stop.
-    """
-
-    with _SUMMED_TEST_TONE_LOCK:
-        session = _SUMMED_TEST_TONE_SESSION
-        if session is None or not _summed_test_session_active(session):
-            return {"active": False}
-        return {
-            "active": True,
-            "playback_id": session.get("playback_id"),
-            "speaker_group_id": session.get("speaker_group_id"),
-            "level_dbfs": session.get("level_dbfs"),
-        }
-
-
-def _attach_active_summed_test(view: dict[str, Any], snapshot: dict[str, Any]) -> None:
-    """Fold the live summed-test snapshot into the commissioning view.
-
-    Attaches a top-level ``active_summed_test`` block and, when active, marks
-    the matching ``combined_groups`` entry with ``summed_test_active`` so the
-    client can render a reload-safe Stop per group.
-    """
-
-    if not isinstance(view, dict):
-        return
-    view["active_summed_test"] = snapshot
-    if not snapshot.get("active"):
-        return
-    group_id = str(snapshot.get("speaker_group_id") or "")
-    groups = view.get("combined_groups")
-    if not isinstance(groups, list):
-        return
-    for group in groups:
-        if not isinstance(group, dict):
-            continue
-        if not group_id or str(group.get("group_id") or "") == group_id:
-            group["summed_test_active"] = True
-
-
-def _stop_summed_test_tone_locked(*, reason: str) -> dict[str, Any]:
-    session = _SUMMED_TEST_TONE_SESSION
-    if not session:
-        return {"status": "idle", "reason": reason}
-    session["stop_reason"] = reason
-    session["progress_monotonic"] = time.monotonic()
-    proc = session.get("process")
-    if proc is None:
-        return {
-            "status": "stopping",
-            "reason": reason,
-            "playback_id": session.get("playback_id"),
-            "phase": "preparing",
-        }
-    was_running = bool(proc.poll() is None)
-    if was_running:
-        terminate_process(proc)
-    return {
-        "status": "stopped" if was_running else "expired",
-        "reason": reason,
-        "playback_id": session.get("playback_id"),
-        "phase": "playing",
-    }
-
-
-def _active_speaker_stop_summed_test_tone(*, reason: str) -> dict[str, Any]:
-    """End any combined test owned by this process."""
-
-    with _SUMMED_TEST_TONE_LOCK:
-        payload = _stop_summed_test_tone_locked(reason=reason)
-    log_event(
-        logger,
-        "sound.active_speaker_summed_test",
-        action="stop",
-        reason=reason,
-        status=str(payload.get("status")),
-    )
-    return payload
-
-
 def _active_speaker_confirmed_driver_roles(
     topology: OutputTopology,
     *,
@@ -1491,11 +1272,9 @@ async def _active_speaker_commission_ramp_abort_payload(
 
     from jasper.active_speaker.commission_ramp import abort_ramp
 
-    tone_stop = _active_speaker_stop_commission_tone(reason="commission_abort")
     cam = camilla_factory()
     load_config, _, _ = commission_seams(cam)
     payload = await abort_ramp(load_config=load_config)
-    payload["tone_stop"] = tone_stop
     log_event(
         logger,
         "sound.active_speaker_commission",
@@ -1616,14 +1395,11 @@ async def _active_speaker_commissioning_view_payload(
     identity = applied_identity(applied)
     recent = latest_banked_rounds(identity) if identity is not None else {}
     view["timing"] = timing_status_lines(applied, recent.get("speaker"))
-    active_summed_test = _active_summed_test_snapshot()
-    _attach_active_summed_test(view, active_summed_test)
     log_event(
         logger,
         "sound.active_speaker_commissioning_view",
         status=str(view.get("status")),
         next_action=str((view.get("next_action") or {}).get("id")),
-        summed_test_active=str(active_summed_test.get("active")),
     )
     return view
 
@@ -1745,9 +1521,6 @@ async def _active_speaker_finish_commissioning_payload(
 
     async def cleanup_after_locked_proof() -> None:
         nonlocal commissioning_cleanup
-        summed_stop = _active_speaker_stop_summed_test_tone(
-            reason="finish_commissioning"
-        )
         try:
             from jasper.active_speaker.commission_ramp import load_ramp_state
             from jasper.active_speaker.commission_load import load_commission_load_state
@@ -1770,7 +1543,6 @@ async def _active_speaker_finish_commissioning_payload(
         except (OSError, RuntimeError, ValueError) as exc:
             ramp_cleanup = {"status": "error", "error": str(exc)}
         commissioning_cleanup = {
-            "summed_test": summed_stop,
             "ramp": ramp_cleanup,
         }
 

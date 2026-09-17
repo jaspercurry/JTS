@@ -6,15 +6,16 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from pathlib import Path
 
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
 from jasper.active_speaker.measurement import (
-    record_driver_measurement,
-    record_summed_test_artifact,
-    record_summed_validation,
+    active_summed_targets,
+    load_measurement_state,
 )
 from jasper.audio_hardware import dac as dac_registry
 from jasper.audio_hardware.dac import DacProfile
@@ -263,34 +264,6 @@ def register_passive_only_dac(monkeypatch) -> DacProfile:
     return profile
 
 
-def safe_measurement_session(
-    *,
-    role: str,
-    output_index: int,
-    playback_id: str,
-) -> dict:
-    target = {
-        "speaker_group_id": "mono",
-        "role": role,
-        "driver_role": role,
-        "output_index": output_index,
-    }
-    return {
-        "status": "armed",
-        "quiet_start": {
-            "status": "floor_confirmed",
-            "floor_audio_confirmed": True,
-            "current_target": target,
-            "last_operator_result": {
-                "accepted": True,
-                "outcome": "heard_correct_driver",
-                "playback_id": playback_id,
-                "target": target,
-            },
-        },
-    }
-
-
 def standard_driver_research(
     *,
     tweeter_gain_db: float = -18.5,
@@ -371,63 +344,38 @@ def standard_design_draft(
     )
 
 
-def standard_measurements(topology: OutputTopology, tmp_path: Path) -> dict:
-    state_path = tmp_path / "measurements.json"
-    for role in ("woofer", "tweeter"):
-        output_index = 0 if role == "woofer" else 1
-        playback_id = f"playback-{role}"
-        record_driver_measurement(
-            topology,
-            {
-                "speaker_group_id": "mono",
-                "role": role,
-                "outcome": "heard_correct_driver",
-                "observed_mic_dbfs": -42.0,
-                "test_level_dbfs": -68.0,
-                "playback_id": playback_id,
-            },
-            safe_session=safe_measurement_session(
-                role=role,
-                output_index=output_index,
-                playback_id=playback_id,
-            ),
-            state_path=state_path,
-            now=f"2026-06-14T12:0{1 if role == 'woofer' else 2}:00Z",
-        )
-    record_summed_test_artifact(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "playback": {
-                "status": "completed",
-                "backend": "aplay",
-                "playback_id": "summed-playback-audible",
-                "audio_emitted": True,
-                "artifact": {
-                    "wav_basename": "tone_summed-playback-audible.wav",
-                    "metadata_basename": "tone_summed-playback-audible.json",
-                    "target_output_indices": [0, 1],
-                    "channel_count": 2,
-                },
-                "tone": {"frequency_hz": 2500, "level_dbfs": -72},
-            },
+def seed_summed_test(
+    topology: OutputTopology,
+    state_path: Path,
+    *,
+    playback_id: str = "summed-playback-1",
+    audio_emitted: bool = True,
+) -> dict:
+    """Seed legacy playback evidence for tests of the persisted-state readers."""
+    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    target = next(t for t in active_summed_targets(topology) if t["speaker_group_id"] == "mono")
+    state.setdefault("summed_tests", []).append({
+        "summed_test_id": playback_id,
+        "created_at": "2026-06-14T12:02:30Z",
+        "speaker_group_id": "mono",
+        "group_fingerprint": target["group_fingerprint"],
+        "captured": True,
+        "audio_emitted": audio_emitted,
+        "playback_id": playback_id,
+        "backend": "aplay" if audio_emitted else "wav_artifact",
+        "artifact": {
+            "wav_basename": f"tone_{playback_id}.wav",
+            "metadata_basename": f"tone_{playback_id}.json",
+            "target_output_indices": [0, 1],
+            "channel_count": 2,
         },
-        state_path=state_path,
-        now="2026-06-14T12:02:30Z",
-    )
-    return record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -40.0,
-            "polarity": "normal",
-            "delay_ms": 0.0,
-            "summed_test_id": "summed-playback-audible",
-        },
-        state_path=state_path,
-        now="2026-06-14T12:03:00Z",
-    )
+        "target_output_indices": [0, 1],
+        "expected_output_indices": [0, 1],
+        "tone": {"frequency_hz": 2500, "level_dbfs": -72},
+        "issues": [],
+    })
+    state_path.write_text(json.dumps(state))
+    return load_measurement_state(topology, state_path=state_path)
 
 
 def applied_graph_fixture(topology, applied, *, playback_device=None):

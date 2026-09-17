@@ -4,11 +4,6 @@
 
 """Active-speaker crossover commissioning substrate.
 
-Most of this package does not emit audio or grant playback authority — the
-exception is `web_commissioning`, whose safety-gated driver/summed test and
-capture-sweep flows launch `aplay` to produce real hardware
-audio.
-
 Package-level names resolve lazily (PEP 562): importing a submodule such as
 `volume_latch` must not drag the measurement stack (yaml, numpy/scipy via
 `jasper.audio_measurement`) into a resident daemon.
@@ -65,7 +60,6 @@ _LAZY_ATTRS: dict[str, str] = {
     "load_driver_commissioning_config": "commission_load",
     "load_ramp_state": "commission_ramp",
     "load_staged_startup_config": "staging",
-    "load_summed_commissioning_config": "commission_load",
     "lowest_driver_role": "profile",
     "next_ramp_gain_db": "commission_ramp",
     "parse_camilla_statefile_config_path": "environment",
