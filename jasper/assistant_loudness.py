@@ -492,7 +492,11 @@ def _build_active_seed_backend(
 
 
 def _load_payload(path: str | os.PathLike[str]) -> dict[str, Any]:
-    data = read_json_mapping(path) or {"version": PROFILE_VERSION, "profiles": []}
+    data = read_json_mapping(path)
+    if data is None:
+        if os.path.exists(path):
+            logger.warning("assistant loudness profile unreadable: %s", path)
+        data = {"version": PROFILE_VERSION, "profiles": []}
     if not isinstance(data.get("profiles"), list):
         data["profiles"] = []
     return data

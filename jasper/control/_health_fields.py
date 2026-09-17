@@ -25,6 +25,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from jasper.json_fields import as_mapping
+
 # Expected failures at optional/cached observability boundaries. Programming
 # errors outside this set should not be hidden; a dead sampler is surfaced as
 # stale by snapshot() instead of silently retrying a broken implementation.
@@ -64,10 +66,7 @@ def _finite_number(value: Any) -> int | float | None:
     return value
 
 
-def _mapping(value: Any) -> Mapping[str, Any]:
-    """``value`` when it is an object, else an empty one — so a chain of
-    ``.get()`` hops over an absent branch stays a lookup, not a crash."""
-    return value if isinstance(value, Mapping) else {}
+_mapping = as_mapping
 
 
 def _as_int(value: Any, default: int = 0) -> int:

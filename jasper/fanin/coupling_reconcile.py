@@ -101,6 +101,7 @@ CAMILLA_UNIT = "jasper-camilla.service"
 # Remove once every deployed Pi has booted a build carrying this sweep; the
 # Camilla -> outputd File playback pipe (ADR-0100).
 _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
+_LEGACY_OUTPUTD_RING_SLOTS_ENV = "JASPER_OUTPUTD_SHM_RING_SLOTS"
 # Remove once every deployed Pi has booted a build carrying this sweep; the
 # fan-in transport selector, which selects nothing (ADR-0100). jasper-fanin
 # still REFUSES a value it cannot serve (exit 78), so a stale `loopback` left
@@ -1529,6 +1530,7 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
             outputd_ring_path_for(outputd_text),
         ),
         RuntimeEnvAction("unset", _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV),
+        RuntimeEnvAction("unset", _LEGACY_OUTPUTD_RING_SLOTS_ENV),
     )
 
 
@@ -1557,6 +1559,7 @@ def _sync_process_env_for_emit(outputd_text: str) -> None:
     os.environ[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] = OUTPUTD_CONTENT_BRIDGE_SHM_RING
     os.environ[OUTPUTD_RING_PATH_ENV_VAR] = outputd_ring_path_for(outputd_text)
     os.environ.pop(_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV, None)
+    os.environ.pop(_LEGACY_OUTPUTD_RING_SLOTS_ENV, None)
 
 
 @dataclass(frozen=True)

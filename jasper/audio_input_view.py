@@ -28,7 +28,7 @@ from .audio_profile_state import (
     PROFILE_XVF_CHIP_AEC_TESTING,
     PROFILE_XVF_SOFTWARE_AEC3,
 )
-from .control._health_fields import _mapping
+from jasper.json_fields import as_mapping as _mapping
 
 
 @dataclass(frozen=True)

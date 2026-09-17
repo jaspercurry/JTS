@@ -21,7 +21,7 @@ import threading
 import pytest
 
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
-from tests._log_events import event_fields
+from tests._log_events import event_fields, never_logged
 from jasper.tools import (
     DEFAULT_TOOL_TIMEOUT_SEC,
     Tool,
@@ -294,10 +294,8 @@ async def test_redacted_tool_payload_omits_body_text_from_info_logs(caplog):
     assert event_fields(caplog, "tool.dispatch_done")["payload"].startswith(
         "<redacted len="
     )
-    assert not any("dentist appointment" in r.getMessage() for r in caplog.records)
-    assert not any(
-        "Your appointment is Tuesday" in r.getMessage() for r in caplog.records
-    )
+    assert never_logged(caplog, "dentist appointment")
+    assert never_logged(caplog, "Your appointment is Tuesday")
 
 
 async def test_redacted_tool_args_omit_user_text_from_info_logs(caplog):
@@ -318,9 +316,7 @@ async def test_redacted_tool_args_omit_user_text_from_info_logs(caplog):
     assert event_fields(caplog, "tool.dispatch_start")["args"].startswith(
         "<redacted keys=query len="
     )
-    assert not any(
-        "turn on the bedroom lights" in r.getMessage() for r in caplog.records
-    )
+    assert never_logged(caplog, "turn on the bedroom lights")
 
 
 async def test_unknown_tool_args_are_value_redacted(caplog):
@@ -335,7 +331,7 @@ async def test_unknown_tool_args_are_value_redacted(caplog):
     assert event_fields(caplog, "tool.dispatch_unknown")["args"].startswith(
         "<redacted keys=query len="
     )
-    assert not any("unlock the front door" in r.getMessage() for r in caplog.records)
+    assert never_logged(caplog, "unlock the front door")
 
 
 def test_default_timeout_is_single_sourced():

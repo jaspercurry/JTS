@@ -167,3 +167,9 @@ def event_field_maps(
         if all(parsed[1].get(key) == value for key, value in where.items()):
             maps.append(parsed[1])
     return maps
+
+
+def never_logged(caplog, needle: str) -> bool:
+    """True when *needle* appears nowhere in the captured log, tracebacks
+    and ``exc_info`` text included — the surface a secret-leak pin needs."""
+    return needle not in caplog.text

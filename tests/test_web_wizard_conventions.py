@@ -1254,8 +1254,6 @@ def test_shared_escape_module_exists_and_exports_the_escaper():
     )
 
 
-
-
 # The text-node DOM builder (h() / svg()) is the entire basis of the
 # "untrusted strings never reach innerHTML" safety argument: string children
 # become text nodes, so transcripts, provider names, device labels, etc. are
@@ -1284,8 +1282,6 @@ def test_shared_dom_module_exists_and_exports_the_builder():
     assert re.search(r"export\s+function\s+svg\b", src), (
         "dom.js must export svg"
     )
-
-
 
 
 # The CSRF/JSON fetch helpers (csrfHeaders / jsonHeaders) were promoted to the

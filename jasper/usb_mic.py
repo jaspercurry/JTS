@@ -25,7 +25,7 @@ from .atomic_io import (
     read_json_mapping,
     read_regular_bytes_nofollow,
 )
-from .control._health_fields import _mapping
+from .json_fields import as_mapping as _mapping
 from .env_file import read_value
 from .env_load import SOURCE_INTENT_ENV
 from .music_sources import Source

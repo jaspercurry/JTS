@@ -288,12 +288,6 @@ def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
     # restating them, so the values are pinned at their real source
     # (jasper-ring) and fanin's re-export is pinned separately.
     text = _config_rs_text()
-    assert "MIN_N_SLOTS as RING_SLOTS_MIN" in text, (
-        "jasper-fanin must re-export jasper_ring::MIN_N_SLOTS, not restate it"
-    )
-    assert "MAX_N_SLOTS as RING_SLOTS_MAX" in text, (
-        "jasper-fanin must re-export jasper_ring::MAX_N_SLOTS, not restate it"
-    )
     assert ring_abi()["min_n_slots"] == RING_SLOTS_MIN, (
         "jasper_ring::MIN_N_SLOTS must match the Python RING_SLOTS_MIN bound"
     )

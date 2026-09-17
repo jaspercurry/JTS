@@ -33,7 +33,7 @@ import pytest
 from jasper import env_file
 from jasper.transit import geocode as geocode_mod
 from jasper.web import transit_page, transit_setup
-from tests._log_events import event_records
+from tests._log_events import event_records, never_logged
 from jasper.web._common import RestartOutcome
 
 
@@ -66,28 +66,17 @@ def test_coords_returns_tuple_when_set():
 
 
 @pytest.mark.parametrize(
-    ("form", "expected_error_substrings", "expected_new"),
+    ("form", "expected_error_substring"),
     [
-        pytest.param({}, ("address",), {}, id="empty_input"),
-        pytest.param({"manual_lat": "40.6"}, (), None, id="manual_one_side_only"),
-        pytest.param(
-            {"manual_lat": "200", "manual_lon": "0"},
-            ("-90",),
-            None,
-            id="manual_out_of_range",
-        ),
+        pytest.param({}, "address", id="empty_input"),
+        pytest.param({"manual_lat": "40.6"}, "both", id="manual_one_side_only"),
+        pytest.param({"manual_lat": "200", "manual_lon": "0"}, "-90", id="manual_out_of_range"),
     ],
 )
-def test_apply_geocode_rejects_invalid_input(
-    form, expected_error_substrings, expected_new
-):
+def test_apply_geocode_rejects_invalid_input(form, expected_error_substring):
     new, err = transit_setup._apply_geocode(form, {})
-    assert err is not None
-    err_lower = err.lower()
-    for substring in expected_error_substrings:
-        assert substring.lower() in err_lower
-    if expected_new is not None:
-        assert new == expected_new
+    assert new == {}
+    assert err is not None and expected_error_substring.lower() in err.lower()
 
 
 def test_apply_geocode_writes_coords_on_success(monkeypatch):
@@ -129,7 +118,6 @@ def test_apply_geocode_manual_lat_lon_bypasses_nominatim(monkeypatch):
     assert err is None
     assert new[transit_setup.LAT_ENV] == "40.646"
     assert new[transit_setup.LON_ENV] == "-73.994"
-
 
 
 def test_seed_weather_from_transit_only_when_weather_missing(tmp_path):
@@ -728,8 +716,8 @@ def test_handler_post_geocode_writes_state(wizard_server, monkeypatch, caplog):
     assert state[transit_setup.LAT_ENV] == "40.646"
     assert state[transit_setup.LON_ENV] == "-73.994"
     assert len(event_records(caplog, "transit.geocode")) == 1
-    assert not any("9 Av Brooklyn" in r.getMessage() for r in caplog.records)
-    assert not any("Sunset Park" in r.getMessage() for r in caplog.records)
+    assert never_logged(caplog, "9 Av Brooklyn")
+    assert never_logged(caplog, "Sunset Park")
 
 
 def test_handler_post_save_restarts_voice(wizard_server):

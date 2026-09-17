@@ -42,7 +42,7 @@ from jasper.voice.openai_session import (
 from jasper.voice.grok_session import GROK_WEBSOCKET_BASE_URL, GrokRealtimeConnection
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled, wait_until
 from tests._live_turn_fake import drain_audio_chunks
-from tests._log_events import event_fields, event_records
+from tests._log_events import event_fields, event_records, never_logged
 
 
 # ---------------------------------------------------------------------------
@@ -538,9 +538,7 @@ async def test_setup_acknowledgement_controls_readiness(conn_cls, outcome, monke
             assert conn.is_paused()
             assert conn.last_failure_detail()
             assert "plainvalue123" not in conn.last_failure_detail()
-            assert not any(
-                "plainvalue123" in r.getMessage() for r in caplog.records
-            )
+            assert never_logged(caplog, "plainvalue123")
             assert wire.closed
     finally:
         await conn.stop()
@@ -609,7 +607,7 @@ async def test_typed_setup_error_preserves_retry_and_cue(error_type, code, trans
     assert "plainvalue123" not in str(failure.value)
     await run_reconnect_with_backoff(conn)
     assert conn._state is ConnectionState.FAILED
-    assert not any("plainvalue123" in r.getMessage() for r in caplog.records)
+    assert never_logged(caplog, "plainvalue123")
     assert "plainvalue123" not in conn.last_failure_detail()
     await conn.stop()
 
