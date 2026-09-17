@@ -6974,7 +6974,7 @@ def test_repin_endpoint_keeps_the_design_and_drops_drift_evidence(
     })
 
     assert payload["repin"]["status"] == "repinned"
-    assert "Apple DAC B left, Apple DAC B right" in payload["repin"]["message"]
+    assert "Apply the baseline" in payload["repin"]["message"]
     assert stops == ["safe"]
     assert park_kwargs["stay_parked"] is True
 
