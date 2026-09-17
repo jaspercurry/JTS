@@ -51,6 +51,7 @@ from jasper.camilla_emit import (
 )
 from jasper.camilla_stereo_prefix import emit_filter_spec
 from jasper.log_event import log_event
+from jasper.output_topology import cardioid_cabinet_channels, measurement_target_id
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
@@ -60,6 +61,7 @@ from .driver_protection import (
 )
 from .graph_safety import (
     TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
+    GraphView,
     output_hard_muted_and_wired,
     output_highpass_protected,
     pipeline_reference_closure_errors,
@@ -512,20 +514,37 @@ def _channels_for_role(preset: ActiveSpeakerPreset, role: str) -> list[int]:
     )
 
 
-def _with_dynamic_bass(text: str, preset: ActiveSpeakerPreset, descriptor: Mapping[str, Any] | None) -> str:
-    if not descriptor:
-        return text
+def _reserialize_keeping_header(text: str, payload: Mapping[str, Any]) -> str:
+    """``payload`` re-serialised under ``text``'s own comment header.
+
+    The header carries the source marker every graph door reads the emitter's
+    identity from; CamillaDSP's dialect below it is what a decorated graph is
+    then proved in.
+    """
+    header = "\n".join(line for line in text.splitlines() if line.startswith("#"))
+    return header + "\n" + yaml.safe_dump(dict(payload), sort_keys=False)
+
+
+def _dynamic_bass_graph(
+    base: dict[str, Any], preset: ActiveSpeakerPreset, descriptor: Mapping[str, Any]
+) -> dict[str, Any]:
     channels = (
         (preset.local_subwoofer.physical_output_index,)
         if preset.local_subwoofer is not None
         else tuple(_channels_for_role(preset, lowest_driver_role(preset.way_count)))
     )
-    base = yaml.safe_load(text)
     decorated = apply_dynamic_bass_graph(base, descriptor, channels)
     if validated_base_graph(decorated, descriptor, channels) != base:
         raise ActiveSpeakerConfigError("dynamic bass changed the static speaker tune")
-    header = "\n".join(line for line in text.splitlines() if line.startswith("#"))
-    return header + "\n" + yaml.safe_dump(decorated, sort_keys=False)
+    return decorated
+
+
+def _with_dynamic_bass(text: str, preset: ActiveSpeakerPreset, descriptor: Mapping[str, Any] | None) -> str:
+    if not descriptor:
+        return text
+    return _reserialize_keeping_header(
+        text, _dynamic_bass_graph(yaml.safe_load(text), preset, descriptor),
+    )
 
 
 def _rear_stage_channels(preset: ActiveSpeakerPreset) -> tuple[int, int, int] | None:
@@ -535,22 +554,15 @@ def _rear_stage_channels(preset: ActiveSpeakerPreset) -> tuple[int, int, int] | 
     ADR-0318: one document, one mono cabinet of exactly three declared outputs.
     """
     outputs = preset.channel_map.outputs
-    rear = [output for output in outputs if output.output_variant == "rear"]
     if (
         preset.channel_map.layout != "mono"
         or preset.local_subwoofer is not None
         or len(outputs) != 3
-        or len(rear) != 1
     ):
         return None
-    front = [
-        output for output in outputs
-        if output.output_variant != "rear" and output.driver_role == rear[0].driver_role
-    ]
-    tweeter = [output for output in outputs if output.driver_role != rear[0].driver_role]
-    if len(front) != 1 or len(tweeter) != 1:
-        return None
-    return front[0].index, rear[0].index, tweeter[0].index
+    return cardioid_cabinet_channels(
+        (output.driver_role, output.output_variant, output.index) for output in outputs
+    )
 
 
 def _validated_rear_calibration(
@@ -584,12 +596,10 @@ def rear_branch_sum_headroom_db(document: Mapping[str, Any] | None) -> float:
     return max(0.0, 20.0 * math.log10(total)) if total > 0.0 else 0.0
 
 
-def _with_rear_calibration(
-    text: str, preset: ActiveSpeakerPreset, document: Mapping[str, Any] | None
-) -> str:
+def _rear_calibration_graph(
+    base: dict[str, Any], preset: ActiveSpeakerPreset, document: Mapping[str, Any]
+) -> dict[str, Any]:
     """Splice the compiled cardioid stage in after the split, before every role chain."""
-    if not document:
-        return text
     channels = _rear_stage_channels(preset)
     if channels is None:
         raise ActiveSpeakerConfigError(
@@ -597,7 +607,6 @@ def _with_rear_calibration(
             "one rear woofer and one tweeter"
         )
     front_channel, rear_channel, tweeter_channel = channels
-    base = yaml.safe_load(text)
     try:
         stage = compile_rear_stage(
             document,
@@ -605,7 +614,6 @@ def _with_rear_calibration(
             rear_channel=rear_channel,
             tweeter_channel=tweeter_channel,
             channel_count=_output_count(preset),
-            sample_rate=int(base["devices"]["samplerate"]),
         )
     except RearCalibrationError as exc:
         raise ActiveSpeakerConfigError(f"rear calibration is invalid: {exc}") from exc
@@ -621,8 +629,7 @@ def _with_rear_calibration(
     if len(split) != 1:
         raise ActiveSpeakerConfigError("rear calibration needs exactly one active split mixer to follow")
     base["pipeline"][split[0] + 1 : split[0] + 1] = stage["pipeline"]
-    header = "\n".join(line for line in text.splitlines() if line.startswith("#"))
-    return header + "\n" + yaml.safe_dump(base, sort_keys=False)
+    return base
 
 
 def _assert_tweeter_crossover_honours_declared_floor(
@@ -710,9 +717,6 @@ def _assert_tweeter_outputs_protected(
     protect and the gate is a no-op. A block emits
     ``event=active_speaker.emit_gate`` before raising.
     """
-    tweeter_channels = _channels_for_role(preset, "tweeter")
-    if not tweeter_channels:
-        return
     # ``decorated`` picks the view, and the choice is itself a check: the text
     # view REFUSES CamillaDSP's re-serialised dialect, which is how it catches
     # emitter drift, so an undecorated graph must still read in the emitter's
@@ -727,6 +731,14 @@ def _assert_tweeter_outputs_protected(
             ) from exc
     else:
         view = view_from_emitted_text(yaml_text)
+    _assert_view_tweeters_protected(view, preset)
+
+
+def _assert_view_tweeters_protected(view: GraphView, preset: ActiveSpeakerPreset) -> None:
+    """:func:`_assert_tweeter_outputs_protected` over a graph already read."""
+    tweeter_channels = _channels_for_role(preset, "tweeter")
+    if not tweeter_channels:
+        return
     unprotected = unprotected_tweeter_outputs(
         view, tweeter_channels=set(tweeter_channels),
     )
@@ -833,7 +845,8 @@ def _mute_unfitted_rear_outputs(
     # where the take needs its rear sweep. Measurement graphs only.
     rear = [output.index for output in preset.channel_map.outputs
             if output.output_variant == "rear"
-            and f"{output.driver_role}:{output.output_variant}" not in excited_target_ids]
+            and measurement_target_id(output.driver_role, output.output_variant)
+            not in excited_target_ids]
     if not rear:
         return text
     head, pipeline = text.split("\npipeline:\n", 1)
@@ -2903,8 +2916,7 @@ def _emit_role_routed_mixer(
     for output in outputs:
         role = output.driver_role
         channel = role_channels.get(
-            role if output.output_variant == "primary"
-            else f"{role}:{output.output_variant}"
+            measurement_target_id(role, output.output_variant)
         )
         mapping.append((output.index, [] if channel is None else [(
             channel, trims.get(role, 0.0), polarity[role] != (role in flipped),
@@ -2953,8 +2965,7 @@ def _validate_program_role_channels(
     }
     for output in preset.channel_map.outputs:
         declared.setdefault(output.driver_role, set()).add(
-            output.driver_role if output.output_variant == "primary"
-            else f"{output.driver_role}:{output.output_variant}"
+            measurement_target_id(output.driver_role, output.output_variant)
         )
     every_id = set(declared).union(*declared.values())
     unknown = (set(normalized) | set(parked_target_ids)) - every_id
@@ -3076,6 +3087,13 @@ def _assert_pipeline_references_closed(
         raise ActiveSpeakerConfigError(
             f"emitted active-speaker config did not parse as YAML: {e}"
         ) from e
+    _assert_graph_references_closed(payload, preset)
+
+
+def _assert_graph_references_closed(
+    payload: Mapping[str, Any], preset: ActiveSpeakerPreset
+) -> None:
+    """:func:`_assert_pipeline_references_closed` over a graph already read."""
     errors = pipeline_reference_closure_errors(payload)
     if not errors:
         return
@@ -3677,28 +3695,34 @@ pipeline:
 {pipeline_yaml}
 """
 
-    yaml = _with_dynamic_bass(yaml, preset, bass_extension)
     # The rear output plays only behind its own fitted stage; without one it stays
     # terminally muted (ADR-0318, issue #5161) — unless a measurement take names
     # it as an excited target, which is how the stage's own transfer gets
     # measured in the first place. Empty for every household graph.
-    yaml = (
-        _with_rear_calibration(yaml, preset, safe_rear_calibration)
-        if safe_rear_calibration
-        else _mute_unfitted_rear_outputs(
-            yaml, preset, excited_target_ids=excited_target_ids,
-        )
-    )
-
-    # L0 emit gates (fail-closed), on the FINAL graph so every decoration is
+    #
+    # L0 emit gates (fail-closed) run on the FINAL graph so every decoration is
     # inside them: the durable (unmuted) baseline is what a household plays
     # through, so re-prove every tweeter output carries its crossover /
     # protective high-pass, and that the pipeline the baseline assembled from
     # independent helper calls references nothing undefined.
-    _assert_tweeter_outputs_protected(
-        yaml, preset, decorated=bool(bass_extension or safe_rear_calibration),
-    )
-    _assert_pipeline_references_closed(yaml, preset)
+    if safe_rear_calibration:
+        import yaml as yaml_lib  # lazy: the local `yaml` here is the emitted text
+
+        # Read ONCE, decorated in place, dumped once below.
+        graph = yaml_lib.safe_load(yaml)
+        if bass_extension:
+            graph = _dynamic_bass_graph(graph, preset, bass_extension)
+        graph = _rear_calibration_graph(graph, preset, safe_rear_calibration)
+        _assert_view_tweeters_protected(view_from_yaml_dict(graph), preset)
+        _assert_graph_references_closed(graph, preset)
+        yaml = _reserialize_keeping_header(yaml, graph)
+    else:
+        yaml = _mute_unfitted_rear_outputs(
+            _with_dynamic_bass(yaml, preset, bass_extension), preset,
+            excited_target_ids=excited_target_ids,
+        )
+        _assert_tweeter_outputs_protected(yaml, preset, decorated=bool(bass_extension))
+        _assert_pipeline_references_closed(yaml, preset)
 
     if out_path is not None:
         out_path = Path(out_path)

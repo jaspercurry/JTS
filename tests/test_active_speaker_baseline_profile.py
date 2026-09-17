@@ -955,11 +955,18 @@ def _fitted_rear_document() -> dict[str, Any]:
     }}}
 
 
-def test_the_runtime_door_proves_the_cardioid_graph_against_the_saved_section(tmp_path, monkeypatch):
+@pytest.fixture
+def cardioid_declaration(tmp_path, monkeypatch):
+    """The declared cardioid speaker, its draft and its compiled declaration."""
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
     topology = _rear_pair("mono")[1]
     draft = standard_design_draft(topology)
     declaration, declared = declared_graph_fixture(topology, draft)
+    return topology, draft, declaration, declared
+
+
+def test_the_runtime_door_proves_the_cardioid_graph_against_the_saved_section(tmp_path, cardioid_declaration):
+    topology, draft, declaration, declared = cardioid_declaration
     document = _fitted_rear_document()
     candidate = compose_candidate(publish_authored_candidate(declared),
                                   sections={"rear_calibration": document})
@@ -970,8 +977,6 @@ def test_the_runtime_door_proves_the_cardioid_graph_against_the_saved_section(tm
         config_path=tmp_path / "baseline.yml",
         config_sha256=hashlib.sha256(text.encode()).hexdigest(),
     )
-    # The door reads this exact key out of the snapshot this writer wrote.
-    assert applied["recomposition_snapshot"]["rear_calibration"] == document
 
     def classify(state: dict[str, Any]) -> Any:
         return classify_bass_extension_graph(
@@ -998,11 +1003,9 @@ def _rear_candidate(gap_m: Any, front_delay_ms: float, alignment: str) -> Measur
     return replace(candidate, analysis={**candidate.analysis, "resolution": {"alignment": alignment}})
 
 
-def test_rear_calibration_rides_the_recomposition_snapshot(tmp_path, monkeypatch):
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
-    topology = _rear_pair("mono")[1]
-    draft = standard_design_draft(topology)
-    declaration, declared = declared_graph_fixture(topology, draft)
+def test_rear_calibration_rides_the_recomposition_snapshot(cardioid_declaration):
+    """The snapshot key the runtime door later reads is what this writer wrote."""
+    topology, draft, declaration, declared = cardioid_declaration
     candidate = replace(declared, rear_calibration=_rear_document())
 
     prepared = baseline_profile_mod.prepare_applied_baseline_profile(
@@ -1040,7 +1043,7 @@ def test_a_rear_calibration_discloses_what_it_cannot_prove(
         speaker_height_m=1.0, mic_height_m=1.0, distance_m=1.0, cabinet_back_wall_m=declared_m)
     monkeypatch.setattr(measurement_geometry, "load_declared_geometry", lambda *a, **kw: geometry)
 
-    issues = baseline_profile_mod._rear_calibration_issues(
+    issues = baseline_profile_mod.rear_calibration_issues(
         _rear_candidate(gap_m, front_delay_ms, alignment))
 
     assert [issue["code"] for issue in issues] == codes

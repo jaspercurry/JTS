@@ -49,7 +49,9 @@ from jasper.output_topology import (
     OutputTopologyError,
     SpeakerChannel,
     SpeakerGroup,
+    cardioid_cabinet_channels,
     load_output_topology_strict,
+    measurement_target_id,
     stamp_statefile_topology,
 )
 
@@ -60,6 +62,7 @@ from .camilla_yaml import (
     BASELINE_LIMITER_CLIP_LIMIT_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
+    _reserialize_keeping_header,
     baseline_protection_name,
 )
 from .graph_evidence import (
@@ -117,7 +120,7 @@ from .profile import (
     SUB_CROSSOVER_ORDER,
     SUPPORTED_LR_ORDERS,
 )
-from .rear_calibration import RearCalibrationError, compile_rear_stage
+from .rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
 
 logger = logging.getLogger(__name__)
 
@@ -232,10 +235,9 @@ ACTIVE_DRIVER_DOMAIN_SOURCE = (
 _BASELINE_LIKE_SOURCES = (ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE)
 
 # The protected-neutral CHECK/MEASURE emit. Named here only to REFUSE it by its
-# own name: it is neither baseline-shaped nor a commissioning bring-up graph, so
-# judging it as one produced a pile of commissioning blockers that described a
-# graph nobody wrote. It has no proof arm in this door; its protection is proved
-# per segment and per output index by program admission instead.
+# own name: it is neither baseline-shaped nor a commissioning bring-up graph. It
+# has no proof arm in this door; its protection is proved per segment and per
+# output index by program admission instead.
 ACTIVE_PROGRAM_SOURCE = (
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_program_config"
 )
@@ -1448,20 +1450,11 @@ def _rear_cabinet_channels(contract: OutputContract) -> tuple[int, int, int] | N
         item for item in contract.roleful_assignments
         if item.physical_output_index is not None
     ]
-    rear = [item for item in roleful if item.output_variant == "rear"]
-    if len(roleful) != 3 or len(rear) != 1:
+    if len(roleful) != 3:
         return None
-    front = [
-        item for item in roleful
-        if item.output_variant != "rear" and item.role == rear[0].role
-    ]
-    tweeter = [item for item in roleful if item.role != rear[0].role]
-    if len(front) != 1 or len(tweeter) != 1:
-        return None
-    return (
-        int(front[0].physical_output_index),
-        int(rear[0].physical_output_index),
-        int(tweeter[0].physical_output_index),
+    return cardioid_cabinet_channels(
+        (item.role, item.output_variant, int(item.physical_output_index))
+        for item in roleful
     )
 
 
@@ -1471,7 +1464,7 @@ def _rear_stage_evidence(
     contract: OutputContract,
     document: Mapping[str, Any] | None,
 ) -> tuple[dict[int, int], tuple[str, ...], str | None]:
-    """``(stage names to skip per channel, the stage's mixer names, why unproven)``.
+    """``(stage names to skip per channel, the stage's mixer names, unproven code)``.
 
     The stage is proved by RECOMPILING it from the saved document and requiring
     the graph's leading post-split fragment to EQUAL the result: filters by name
@@ -1486,30 +1479,29 @@ def _rear_stage_evidence(
         return {}, (), None
     channels = _rear_cabinet_channels(contract)
     if channels is None:
-        return {}, (), "saved topology is not a mono cabinet with one rear woofer"
+        return {}, (), "saved_topology_not_cardioid"
     required = _required_roleful_indexes(contract)
     devices = payload.get("devices")
     samplerate = devices.get("samplerate") if isinstance(devices, Mapping) else None
     if isinstance(samplerate, bool) or not isinstance(samplerate, int):
-        return {}, (), "graph declares no readable sample rate"
+        return {}, (), "graph_sample_rate_unreadable"
     front_channel, rear_channel, tweeter_channel = channels
     try:
         stage = compile_rear_stage(
-            document,
+            read_rear_calibration(document, sample_rate=samplerate),
             front_channel=front_channel,
             rear_channel=rear_channel,
             tweeter_channel=tweeter_channel,
             channel_count=max(required) + 1,
-            sample_rate=samplerate,
         )
-    except (RearCalibrationError, TypeError, ValueError) as exc:
-        return {}, (), f"the saved rear calibration does not compile: {exc}"
+    except (RearCalibrationError, TypeError, ValueError):
+        return {}, (), "saved_calibration_does_not_compile"
     for section in ("filters", "mixers"):
         defined = payload.get(section)
         if not isinstance(defined, Mapping) or any(
             defined.get(name) != definition for name, definition in stage[section].items()
         ):
-            return {}, (), f"graph {section} are not the compiled rear calibration stage's"
+            return {}, (), f"graph_{section}_are_not_the_stage"
     pipeline = payload.get("pipeline")
     fragment = stage["pipeline"]
     start = next(
@@ -1522,7 +1514,7 @@ def _rear_stage_evidence(
         None,
     ) if isinstance(pipeline, list) else None
     if start is None or pipeline[start : start + len(fragment)] != fragment:
-        return {}, (), "the leading post-split fragment is not the compiled stage"
+        return {}, (), "leading_fragment_is_not_the_stage"
     lead: dict[int, int] = {}
     for step in fragment:
         if step["type"] != "Filter":
@@ -2646,7 +2638,7 @@ def _active_graph_evidence(
             # The third arm: a measurement take that names this rear as one of
             # its excited targets. It cannot be muted and has no document yet —
             # it is being measured to author one — so the role chain proves it.
-            if f"{assignment.role}:{assignment.output_variant}" in excited_target_ids:
+            if measurement_target_id(assignment.role, assignment.output_variant) in excited_target_ids:
                 if _excited_rear_protected(
                     payload, contract, assignment=assignment, index=index,
                 ):
@@ -2658,11 +2650,11 @@ def _active_graph_evidence(
                 ))
                 continue
             if rear_calibration:
-                issues.append(_issue(
+                issues.append({**_issue(
                     "blocker", "rear_stage_unproven",
                     f"Rear output {index + 1} does not carry the saved rear "
-                    f"calibration stage: {rear_unproven}",
-                ))
+                    "calibration stage",
+                ), "detail": rear_unproven or ""})
             else:
                 issues.append(_issue("blocker", "rear_output_not_muted", f"Rear output {index + 1} requires a fitted transfer and protection"))
     if payload.get("processors") or any(
@@ -3939,9 +3931,9 @@ def _classify_bass_extension_snapshot(
             # Startup/parked graphs have their own proof and contain no extension.
             source = str(classify_camilla_config_text(graph_text).get("source") or "")
             if source in (ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE):
-                base = validated_base_graph(yaml.safe_load(graph_text), descriptor, channels)
-                header = "\n".join(line for line in graph_text.splitlines() if line.startswith("#"))
-                graph_text = header + "\n" + yaml.safe_dump(base, sort_keys=False)
+                graph_text = _reserialize_keeping_header(graph_text, validated_base_graph(
+                    yaml.safe_load(graph_text), descriptor, channels,
+                ))
         except (AttributeError, KeyError, TypeError, ValueError, yaml.YAMLError):
             return _unsafe_boundary("bass_extension_block_invalid", "bass graph differs from the saved tune")
     graph = classify_camilla_graph(

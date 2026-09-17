@@ -151,10 +151,21 @@ def _issues(profile: Mapping[str, Any]) -> list[dict[str, str]]:
             "severity": str(issue.get("severity") or ""),
             "code": str(issue.get("code") or ""),
             "message": str(issue.get("message") or ""),
+            # Absent unless the door sent one: this record is also the CLI's
+            # machine-readable answer, and an empty key would be noise in it.
+            **({"detail": str(issue["detail"])} if issue.get("detail") else {}),
         }
         for issue in (raw if isinstance(raw, list) else [])
         if isinstance(issue, Mapping)
     ]
+
+
+def _issue_line(issue: Mapping[str, str]) -> str:
+    """One printed issue. ``detail`` is a code, not prose: it names WHICH
+    condition of ``code`` the door hit, so it is printed as it was sent."""
+    detail = issue.get("detail") or ""
+    return (f"  issue  {issue['severity']}  {issue['code']}: {issue['message']}"
+            + (f" [{detail}]" if detail else ""))
 
 
 def _say(line: str = "") -> None:
@@ -198,7 +209,7 @@ def _cmd_review(wizard: WizardClient, args: argparse.Namespace) -> int:
     _say("basic profile candidate")
     _print_facts(summary)
     for issue in issues:
-        _say(f"  issue  {issue['severity']}  {issue['code']}: {issue['message']}")
+        _say(_issue_line(issue))
     _say(
         "\nNothing was applied. To put THIS candidate on the speaker:\n"
         f"  {apply_line}"
@@ -289,7 +300,7 @@ def _cmd_apply(wizard: WizardClient, args: argparse.Namespace) -> int:
     issues = _issues(applied)
     _say("applied.")
     for issue in issues:
-        _say(f"  issue  {issue['severity']}  {issue['code']}: {issue['message']}")
+        _say(_issue_line(issue))
     _say(f"  {'fingerprint':<22}{named}")
     if proof is None:
         _say(f"  the applied record at {state_path} could not be read")

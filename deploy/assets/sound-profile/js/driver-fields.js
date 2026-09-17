@@ -672,6 +672,15 @@ function renderDriverSafetyWarnings() {
   '</div>';
 }
 
+// A generic message plus the door's own name for WHICH condition it hit: the
+// `detail` code is the only thing distinguishing two issues of one code, so it
+// is rendered verbatim rather than folded into prose.
+function issueDetailHtml(issue) {
+  var detail = issue && issue.detail;
+  if (!detail) return '';
+  return ' <code class="active-speaker-issue__detail">' + escapeHtml(String(detail)) + '</code>';
+}
+
 function renderIssueList(issues, maxItems) {
   issues = Array.isArray(issues) ? issues : [];
   if (!issues.length) return '';
@@ -679,6 +688,7 @@ function renderIssueList(issues, maxItems) {
     var severity = issue && issue.severity === 'warning' ? 'warning' : 'blocker';
     return '<li class="active-speaker-issue active-speaker-issue--' + escapeHtml(severity) + '">' +
       escapeHtml((issue && (issue.message || issue.code)) || 'review required') +
+      issueDetailHtml(issue) +
     '</li>';
   }).join('') + '</ul>';
 }
@@ -731,6 +741,7 @@ function renderWorkingCrossoverRows(topology) {
 }
 
 export {
+  issueDetailHtml,
   kaBeamingNoteHtml,
   renderAdvancedDriverSettings,
   renderBuildNotes,

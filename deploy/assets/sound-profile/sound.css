@@ -357,6 +357,11 @@
   .active-speaker-issue--blocker {
     color: var(--status-danger);
   }
+  .active-speaker-issue__detail {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.95em; padding: 1px 5px;
+    border-radius: var(--radius-sm); background: var(--foreground-005);
+  }
   .active-speaker-note {
     display: grid; gap: 6px;
     padding-top: 10px;

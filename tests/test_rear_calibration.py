@@ -12,9 +12,9 @@ from jasper.active_speaker.rear_calibration import (
 from jasper.cli.crossover_prescriber import main
 
 
-def _compile(data, *, subsample=False):
-    return compile_rear_stage(data, front_channel=4, rear_channel=6, tweeter_channel=5,
-                              channel_count=8, sample_rate=48000, subsample=subsample)
+def _compile(data):
+    return compile_rear_stage(read_rear_calibration(data, sample_rate=48000),
+                              front_channel=4, rear_channel=6, tweeter_channel=5, channel_count=8)
 
 
 def test_stage_preserves_other_outputs_and_separates_rear_branch_timing():
@@ -28,8 +28,6 @@ def test_stage_preserves_other_outputs_and_separates_rear_branch_timing():
     assert filters["rear_out6_front_delay"]["parameters"]["delay"] == 2.5
     assert filters["rear_out6_bass_delay"]["parameters"]["delay"] == 2.5
     assert filters["rear_out6_cancellation_delay"]["parameters"] == {"delay": 3.64, "unit": "ms"}
-    assert _compile(data, subsample=True)["filters"]["rear_out6_cancellation_delay"]["parameters"] == {
-        "delay": 3.64, "unit": "ms", "subsample": True}
     assert filters["rear_out6_cancellation_gain"]["parameters"] == {"gain": -0.84, "inverted": True, "mute": False}
     assert filters["rear_out6_bass_gain"]["parameters"] == {"gain": 0, "inverted": False, "mute": True}
     assert filters["rear_out6_common_5_delay"]["parameters"]["delay"] == 2

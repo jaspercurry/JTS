@@ -41,7 +41,7 @@ from jasper.camilla_config_contract import PeqFilter
 from jasper.active_speaker.rear_calibration import coefficient_sha256, diagnostic_seed
 
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
-from tests.test_rear_output_foundation import _rear_pair
+from tests.test_rear_output_foundation import _rear_document, _rear_pair
 
 
 def _preset(layout: str = "mono") -> ActiveSpeakerPreset:
@@ -688,10 +688,6 @@ def test_bass_extension_is_fingerprinted_and_reopened():
     with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
         MeasuredCrossoverCandidate.from_mapping(tampered)
     assert excinfo.value.code == "candidate_tampered"
-
-
-def _rear_document(**overrides) -> dict:
-    return {**diagnostic_seed(48000), "rear_muted": False, **overrides}
 
 
 def _fir_rear() -> dict:

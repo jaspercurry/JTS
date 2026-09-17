@@ -231,11 +231,11 @@ def compose_candidate(
     room = dict(selected.get("room", base.candidate.room_correction) or {})
     bass = dict(selected.get("bass", base.candidate.bass_extension) or {})
     rear = dict(selected.get("rear_calibration", base.candidate.rear_calibration) or {})
-    names = ["driver", "blend", "topology", "room", "bass"]
-    # Named only once a cardioid document is in play, so a candidate composed
-    # without one keeps the fingerprint it had before the section existed.
-    if rear or "rear_calibration" in selected:
-        names.append("rear_calibration")
+    # ``rear_calibration`` is named only once a cardioid document is in play, so
+    # a candidate composed without one keeps the fingerprint it had before the
+    # section existed.
+    names = ["driver", "blend", "topology", "room", "bass",
+             *(["rear_calibration"] if rear or "rear_calibration" in selected else [])]
     resolution = {
         name: "base" if name not in selected else "document" if selected[name] else "cleared"
         for name in names

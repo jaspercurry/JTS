@@ -5742,6 +5742,33 @@ async function testIssueListEscapesUntrustedVerdictMessages() {
   return { issueListEscapesUntrustedVerdictMessages: true };
 }
 
+// A door issue may carry a `detail`: the code naming WHICH condition of that
+// issue's code it hit (the runtime rear-stage proof is the first to send one).
+// It is the only thing separating two issues of one code, so it must reach the
+// page verbatim — and, being server text in an innerHTML sink, escaped.
+async function testIssueDetailCodeRendersBesideTheMessage() {
+  const [verdict] = crossChildVerdict("Left cabinet is split across DACs left_dac, right_dac");
+  const coded = await crossChildMapStepHtml(crossChildTopology([
+    { ...verdict, detail: "leading_fragment_is_not_the_stage" },
+  ]));
+  const chip = '<code class="active-speaker-issue__detail">' +
+    "leading_fragment_is_not_the_stage</code>";
+  if (!coded.includes(chip)) {
+    fail("an issue carrying a detail code must render that code", { coded });
+  }
+  const hostile = await crossChildMapStepHtml(crossChildTopology([
+    { ...verdict, detail: '<script>alert("x")</script>' },
+  ]));
+  if (hostile.includes("<script>")) {
+    fail("a detail code must never reach innerHTML as markup", { hostile });
+  }
+  const plain = await crossChildMapStepHtml(crossChildTopology([verdict]));
+  if (plain.includes("active-speaker-issue__detail")) {
+    fail("an issue with no detail must render no chip", { plain });
+  }
+  return { issueDetailCodeRendersBesideTheMessage: true };
+}
+
 async function testNextActionOwnsTheSpeakerPage() {
   const programs = ['speaker', 'room', 'bass'].map(id => ({id, title: id, description: id}));
   for (const [status, action, step] of [
@@ -6492,6 +6519,7 @@ results.push(await testIncompleteFromABandRelationshipNamesTheRelationship());
 results.push(await testSafetyLimitsDeepLinkOpensTheComponentStep());
 results.push(await testCrossChildSpeakerGroupIsDisclosedInTheMapStep());
 results.push(await testIssueListEscapesUntrustedVerdictMessages());
+results.push(await testIssueDetailCodeRendersBesideTheMessage());
 results.push(await testNextActionOwnsTheSpeakerPage());
 results.push(await testSeatLevelSurvivesStepRenders());
 results.push(await testCardioidRearCalibrationPanelGatedOnSavedRearOutput());

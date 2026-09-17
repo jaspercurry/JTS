@@ -214,16 +214,17 @@ def rear_stage_mixer_names(rear_channel: int) -> tuple[str, str]:
     return f"rear_out{rear_channel}_split", f"rear_out{rear_channel}_sum"
 
 
-def compile_rear_stage(raw: Any, *, front_channel: int, rear_channel: int, channel_count: int,
-                       sample_rate: int, tweeter_channel: int, subsample: bool = False) -> dict[str, Any]:
+def compile_rear_stage(document: Mapping[str, Any], *, front_channel: int, rear_channel: int,
+                       channel_count: int, tweeter_channel: int) -> dict[str, Any]:
     """Stage after common EQ / physical split, before per-output protection.
 
-    Rear branch delays are relative to the front reference. FIR coefficients
-    replace both branches; their declared latency is reported, never added twice.
-    ``subsample`` selects ADR-0318's fractional delay; the runtime path takes
-    whole samples, which the branch-peak render can model exactly.
+    ``document`` must already be through :func:`read_rear_calibration`: the
+    caller's read is where the document is bound to ITS sample rate. Rear branch
+    delays are relative to the front reference. FIR coefficients replace both
+    branches; their declared latency is reported, never added twice. Delays are
+    whole-sample, which the branch-peak render can model exactly.
     """
-    data = read_rear_calibration(raw, sample_rate=sample_rate)
+    data = document
     if data["case"] != "electrical_dsp":
         raise RearCalibrationError("acoustic targets still require electrical conversion and causal fitting")
     if type(channel_count) is not int or channel_count < 3 or len({front_channel, rear_channel, tweeter_channel}) != 3 or any(
@@ -242,7 +243,7 @@ def compile_rear_stage(raw: Any, *, front_channel: int, rear_channel: int, chann
         names.append(gain)
         if delay:
             delay_name = f"{prefix}_{name}_delay"
-            filters.update(yaml.safe_load("\n".join(emit_delay_filter(delay_name, delay_ms=delay, subsample=subsample))))
+            filters.update(yaml.safe_load("\n".join(emit_delay_filter(delay_name, delay_ms=delay))))
             names.append(delay_name)
         for i, item in enumerate(value["filters"]):
             filter_name = f"{prefix}_{name}_{i}"

@@ -294,8 +294,14 @@ def _commissioning_refusal(profile: dict[str, Any], exc: Exception) -> None:
     )]
 
 
-def _rear_calibration_issues(candidate: MeasuredCrossoverCandidate) -> list[dict[str, str]]:
-    """Disclose what a cardioid document assumes but cannot prove (ADR-0101)."""
+def rear_calibration_issues(candidate: MeasuredCrossoverCandidate) -> list[dict[str, str]]:
+    """Disclose what a cardioid document assumes but cannot prove (ADR-0101).
+
+    The declared-geometry reads live here. A disclosure the document alone
+    carries is attached to the candidate at construction instead
+    (``measured_crossover_candidate._rear_calibration_disclosure``), so it
+    already rides ``analysis["issues"]`` and is never re-derived here.
+    """
     from jasper.audio_measurement.measurement_geometry import load_declared_geometry  # lazy: geometry pulls NumPy in
 
     document = candidate.rear_calibration
@@ -356,7 +362,7 @@ def compile_commissioning_profile(
             candidate, declaration=declaration, design_draft=draft, measurements=load_measurement_state(topology),
             config_path=target, config_sha256=sha, find_candidate=find_candidate,
         ))
-        profile["issues"] = [*(candidate.analysis.get("issues") or []), *_rear_calibration_issues(candidate)]
+        profile["issues"] = [*(candidate.analysis.get("issues") or []), *rear_calibration_issues(candidate)]
         profile["candidate_fingerprint"] = baseline_candidate_fingerprint(profile)
         profile["config"]["exists"] = target.exists()
         proof = classify_bass_extension_graph(topology, evidence_source="desired", graph_text=text, applied_baseline_state=profile)

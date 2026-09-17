@@ -13,15 +13,17 @@ from typing import Any
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal
 from jasper.active_speaker.alignment_evidence import commissioning_alignment, round_alignment
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-from jasper.active_speaker.candidate_parts import compose_candidate
+from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
 from jasper.active_speaker.camilla_yaml import _branch_context
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, room_peqs_from_correction, driver_corrections,
 )
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
+from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker import rear_calibration
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper import output_topology
 from .topology_prescription import apply_topology_pin
 
 from . import alignment_prescription as alignment
@@ -193,8 +195,32 @@ def _refused_section(code: str) -> str | None:
     return "rear_calibration" if code.startswith("rear_calibration_") else None
 
 
+def saved_base() -> tuple[BankedCandidate, Mapping[str, Any]]:
+    """The applied baseline as a composition base (a document's ``base: saved``),
+    with the profile state it was read from: composing that base needs the same
+    state, and this is the one read of it."""
+    state = load_applied_baseline_profile_state() or {}
+    saved = candidate_from_applied_profile(output_topology.load_output_topology_strict(), state)
+    return BankedCandidate(saved, "", "", baseline_profile_state_path()), state
+
+
+def bank_section(name: str, section: Any, *, rationale: str) -> MeasuredCrossoverCandidate:
+    """Judge ONE authored section on the applied baseline, as ``--base saved`` does.
+
+    The candidate is composed and returned, never banked and never applied.
+    """
+    base, base_profile = saved_base()
+    return judge_prescription_document(
+        {"kind": DOCUMENT_KIND, "schema": 1, "base": "saved",
+         "sections": {name: section if isinstance(section, dict) else {}},
+         "rationale": rationale},
+        base=base, base_profile=base_profile,
+    )
+
+
 def judge_prescription_document(raw: Any, *, base: BankedCandidate,
-                               evidence: PrescriptionEvidence | None = None) -> MeasuredCrossoverCandidate:
+                               evidence: PrescriptionEvidence | None = None,
+                               base_profile: Mapping[str, Any] | None = None) -> MeasuredCrossoverCandidate:
     document = read_prescription_document(raw)
     if document["base"] != "saved" and document["base"] != base.fingerprint:
         raise PrescriptionDocumentRefused("composition_base_mismatch", None, "document and resolved base differ")
@@ -228,10 +254,14 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
         rows, _ = round_alignment({**(evidence.sources.get("manifest") or {}), "round_id": evidence.round_id},
                                  evidence.sources) if evidence.round_id else ([], {})
         read = commissioning_alignment(rows, base.fingerprint)
+        if evidence.round_id and document["base"] != "saved":
+            base_profile = evidence.sources.get("applied_profile")
+        elif base_profile is None:
+            # Not resolved with the base (:func:`saved_base` hands its state over).
+            base_profile = load_applied_baseline_profile_state()
         return compose_candidate(
             base, sections=selected, rationale=document["rationale"],
-            base_profile=(evidence.sources.get("applied_profile") if evidence.round_id and document["base"] != "saved"
-                          else load_applied_baseline_profile_state()),
+            base_profile=base_profile,
             room_prescription_sha256=(blend.prescription_sha256(contract_json(judged["room"]).encode())
                                       if selected.get("room") else ""),
             room_measured_basis=judged.get("room", {}).get("measured_basis"),

@@ -21,7 +21,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Mapping, cast
+from typing import Any, Callable, Iterable, Mapping, cast
 
 from .atomic_io import advisory_file_lock, atomic_write_text
 from .json_fields import JsonFields
@@ -146,8 +146,40 @@ _float = _JSON_FIELDS.number
 _optional_float = _JSON_FIELDS.optional_number
 
 
+def measurement_target_id(role: str, output_variant: str = "primary") -> str:
+    """One physical driver output's identity inside a speaker group.
+
+    A primary output's id IS its role, so every role-keyed measurement map on a
+    primary-only speaker is unchanged; a rear woofer adds ``woofer:rear``
+    (ADR-0316). :func:`physical_target_id` is the same id under its group.
+    """
+    return role if output_variant == "primary" else f"{role}:{output_variant}"
+
+
+def cardioid_cabinet_channels(
+    outputs: Iterable[tuple[str, str, int]],
+) -> tuple[int, int, int] | None:
+    """``(front woofer, rear woofer, tweeter)`` channel indexes of the one
+    cabinet a rear calibration document describes, or ``None``.
+
+    ADR-0318: exactly one rear output, one front output of the rear's role, and
+    one output of the other role, over ``(role, variant, index)`` triples. The
+    caller owns what else its own topology must satisfy.
+    """
+    items = list(outputs)
+    rear = [item for item in items if item[1] == "rear"]
+    if len(rear) != 1:
+        return None
+    role = rear[0][0]
+    front = [item for item in items if item[1] != "rear" and item[0] == role]
+    tweeter = [item for item in items if item[0] != role]
+    if len(front) != 1 or len(tweeter) != 1:
+        return None
+    return front[0][2], rear[0][2], tweeter[0][2]
+
+
 def physical_target_id(group_id: str, role: str, output_variant: str = "primary") -> str:
-    return f"{group_id}:{role}" + (f":{output_variant}" if output_variant != "primary" else "")
+    return f"{group_id}:{measurement_target_id(role, output_variant)}"
 
 
 def _safe_id_fragment(value: str) -> str:
