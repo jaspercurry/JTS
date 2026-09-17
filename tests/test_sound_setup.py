@@ -1017,7 +1017,6 @@ def test_design_draft_save_refuses_an_uncompilable_crossover_at_the_door(
             base,
             "/active-speaker/design-draft",
             {
-                "expected_revision": 0,
                 "operator_inputs": {"woofer": "W", "tweeter": "T"},
                 "manual_settings": {
                     "crossover_candidates": [
@@ -2822,7 +2821,6 @@ def _active_speaker_driver_research_payload(*, frequency_hz: float = 2500) -> di
 
 def _save_active_speaker_design_and_preview(*, frequency_hz: float = 2500) -> dict:
     sound_setup._active_speaker_design_draft_save_payload({
-        "expected_revision": 0,
         "operator_inputs": {
             "woofer": "Dayton Epique E150HE-44",
             "tweeter": "Eminence F110M-8",
@@ -2834,38 +2832,20 @@ def _save_active_speaker_design_and_preview(*, frequency_hz: float = 2500) -> di
     return sound_setup._active_speaker_crossover_preview_save_payload()
 
 
-def test_driver_research_request_payload_is_target_bound_and_silent(
-    monkeypatch,
-) -> None:
+def test_driver_research_prompt_payload_uses_unsaved_models_and_notes(monkeypatch) -> None:
     from tests.active_speaker_fixtures import mono_output_topology
 
     topology = mono_output_topology(card_id=None)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
-
     payload = sound_setup._active_speaker_driver_research_request_payload({
-        "operator_inputs": {
-            "woofer": "Example W6",
-            "tweeter": "Example T1",
-            "notes": "sealed cabinet",
-        }
+        "operator_inputs": {"woofer": "Example W6", "tweeter": "Example T1", "notes": "sealed cabinet"},
     })
-
-    request = payload["request"]
-    assert request["targets"][0]["target_id"] == "mono:woofer"
-    assert request["targets"][1]["target_id"] == "mono:tweeter"
-    assert request["request_fingerprint"] in payload["prompt"]
-    assert payload["safety"] == {
-        "no_audio": True,
-        "loads_camilla": False,
-        "applies_filters": False,
-        "authorizes_playback": False,
-        "research_is_advisory": True,
-    }
-    with pytest.raises(ValueError, match="unknown fields: typo"):
-        sound_setup._active_speaker_driver_research_request_payload({
-            "operator_inputs": {},
-            "typo": "must not disappear silently",
-        })
+    assert set(payload) == {"prompt", "targets"}
+    assert [target["target_id"] for target in payload["targets"]] == ["mono:woofer", "mono:tweeter"]
+    assert all(target["manufacturer_and_model"] in payload["prompt"] for target in payload["targets"])
+    assert "sealed cabinet" in payload["prompt"]
+    with pytest.raises(ValueError):
+        sound_setup._active_speaker_driver_research_request_payload({"typo": "unknown"})
 
 
 def test_active_speaker_crossover_preview_refreshes_current_output_topology(
@@ -3018,7 +2998,6 @@ def test_active_speaker_design_draft_route_persists_saved_topology_research(
     )
 
     payload = sound_setup._active_speaker_design_draft_save_payload({
-        "expected_revision": 0,
         "operator_inputs": {
             "woofer": "Dayton Epique E150HE-44",
             "tweeter": "Eminence F110M-8",
@@ -3096,7 +3075,6 @@ def test_driver_spacing_draft_save_reaches_geometry_and_handoff(monkeypatch, tmp
     topology = mono_output_topology(card_id=None)
     monkeypatch.setattr(sound_active_speaker, "ensure_missing_software_guards", lambda: (topology, False))
     saved = sound_setup._active_speaker_design_draft_save_payload({
-        "expected_revision": 0,
         "manual_settings": {"drivers": [{"role": "woofer", "model": "Test woofer"}], **spacing},
     })
     loaded = load_design_draft(topology=topology, path=paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"])
@@ -3110,77 +3088,28 @@ def test_driver_spacing_draft_save_reaches_geometry_and_handoff(monkeypatch, tmp
     assert build_tuning_handoff(commissioning_view=view, design_draft=loaded)["driver_spacing_mm"] == expected
 
 
-def test_design_draft_save_payload_requires_strict_revision_contract() -> None:
-    with pytest.raises(ValueError, match="requires expected_revision"):
-        sound_setup._active_speaker_design_draft_save_payload({})
-    with pytest.raises(ValueError, match="expected_revision must be"):
-        sound_setup._active_speaker_design_draft_save_payload({
-            "expected_revision": True,
-        })
-    # The separate confirm step was retired -- saving the declaration IS
-    # declaring it -- so this key is no longer part of the request contract at
-    # all, and a stale client sending it is told so rather than silently obeyed.
-    with pytest.raises(ValueError, match="unknown fields: confirm_safety_profile"):
-        sound_setup._active_speaker_design_draft_save_payload({
-            "expected_revision": 0,
-            "confirm_safety_profile": True,
-        })
-    with pytest.raises(ValueError, match="unknown fields: typo"):
-        sound_setup._active_speaker_design_draft_save_payload({
-            "expected_revision": 0,
-            "typo": "ignored before this contract",
-        })
+@pytest.mark.parametrize("field", ["confirm_safety_profile", "typo"])
+def test_design_draft_save_payload_refuses_unknown_fields(field) -> None:
+    with pytest.raises(ValueError):
+        sound_setup._active_speaker_design_draft_save_payload({field: True})
 
 
-def test_design_draft_http_conflict_returns_fresh_revision(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    from jasper.output_topology import output_topology_mutation
+def test_design_draft_save_without_expected_revision_succeeds(monkeypatch, tmp_path: Path) -> None:
     from tests.active_speaker_fixtures import mono_output_topology
 
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
-        str(tmp_path / "design_draft.json"),
-    )
-    topology_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    with output_topology_mutation(topology_path) as mutation:
-        mutation.save(mono_output_topology(card_id=None))
-    with sound_server(tmp_path) as base:
-        first = json_post_with_csrf(
-            base,
-            "/active-speaker/design-draft",
-            {"expected_revision": 0, "operator_inputs": {"notes": "first"}},
-        )
-        assert json.loads(first.read().decode("utf-8"))["revision"] == 1
-
-        with output_topology_mutation(topology_path) as mutation:
-            changed = mutation.snapshot().topology.to_dict()
-            changed["speaker_groups"][0]["channels"][1][
-                "driver_style"
-            ] = "ribbon_tweeter"
-            mutation.save(OutputTopology.from_mapping(changed))
-
-        conflict = json_post_with_csrf(
-            base,
-            "/active-speaker/design-draft",
-            {"expected_revision": 0, "operator_inputs": {"notes": "stale"}},
-            expect_status=409,
-        )
-        fresh = json.loads(conflict.read().decode("utf-8"))
-
-    assert fresh["revision"] == 1
-    assert fresh["operator_inputs"]["notes"] == "first"
-    assert fresh["driver_safety_profile_evaluation"]["status"] == "stale"
-    assert "another session" in fresh["error"]
+    paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    topology = mono_output_topology(card_id=None)
+    monkeypatch.setattr(sound_active_speaker, "ensure_missing_software_guards", lambda: (topology, False))
+    saved = sound_setup._active_speaker_design_draft_save_payload({"operator_inputs": {"notes": "current"}})
+    assert saved["revision"] == 1
+    assert json.loads(paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"].read_text())["operator_inputs"] == {"notes": "current"}
 
 
 def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    from jasper.active_speaker.driver_safety import build_driver_research_request
+    from jasper.active_speaker.driver_safety import build_driver_research_context
     from tests.active_speaker_fixtures import mono_output_topology
     from tests.test_active_speaker_driver_safety import (
         _manual_settings,
@@ -3195,14 +3124,11 @@ def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
 
     save_output_topology(topology)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
-    request = build_driver_research_request(
+    request = build_driver_research_context(
         topology,
         _operator_inputs(),
-        _manual_settings(),
     )
     saved = sound_setup._active_speaker_design_draft_save_payload({
-        "expected_revision": 0,
-        "driver_research_request": request,
         "driver_research": _research_result(request),
         "manual_settings": _manual_settings(),
         "operator_inputs": _operator_inputs(),
@@ -3218,7 +3144,6 @@ def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
     loaded = sound_setup._active_speaker_design_draft_payload()
     assert after == before
     assert loaded["revision"] == saved["revision"] == 1
-    assert loaded["driver_research_request"] == saved["driver_research_request"]
     assert loaded["driver_research"] == saved["driver_research"]
     assert loaded["driver_safety_profile"]["confirmation"] == (
         saved["driver_safety_profile"]["confirmation"]
@@ -3262,7 +3187,6 @@ def _declared_candidate_box(
     fsync_calls: list[int] = []
     monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
     saved = sound_setup._active_speaker_design_draft_save_payload({
-        "expected_revision": 0,
         "manual_settings": manual,
         "operator_inputs": operator_inputs or {},
     })
@@ -3281,7 +3205,7 @@ def _geometry(fc_hz: float, slope_db_per_octave: int):
     )
 
 
-def test_measured_fc_uses_sound_cas_and_leaves_the_loop_open(
+def test_measured_fc_saves_the_declaration_and_leaves_the_loop_open(
     monkeypatch, tmp_path: Path,
 ) -> None:
     """The nanny loop, pinned shut at the seam that caused it.
@@ -3303,7 +3227,6 @@ def test_measured_fc_uses_sound_cas_and_leaves_the_loop_open(
     )
 
     saved = sound_setup.apply_measured_crossover_geometry(
-        expected_revision=1,
         between_roles=("woofer", "tweeter"),
         configured=_geometry(5500, 24),
         selected=_geometry(5750, 24),
@@ -3326,15 +3249,6 @@ def test_measured_fc_uses_sound_cas_and_leaves_the_loop_open(
     # And it is still not an audio authorization.
     assert profile["authorizes_playback"] is False
 
-    with pytest.raises(ValueError, match="another session"):
-        sound_setup.apply_measured_crossover_geometry(
-            expected_revision=1,
-            between_roles=("woofer", "tweeter"),
-            configured=_geometry(5750, 24),
-            selected=_geometry(6000, 24),
-        )
-    assert load_design_draft()["revision"] == 2
-
 
 @pytest.mark.parametrize(
     ("selected_fc_hz", "selected_slope"),
@@ -3355,7 +3269,6 @@ def test_apply_measured_crossover_geometry_writes_the_measured_declaration(
     fsync_calls = _declared_candidate_box(monkeypatch, tmp_path)
 
     saved = sound_setup.apply_measured_crossover_geometry(
-        expected_revision=1,
         between_roles=("woofer", "tweeter"),
         configured=_geometry(5500, 24),
         selected=_geometry(selected_fc_hz, selected_slope),
@@ -3392,7 +3305,6 @@ def test_apply_measured_crossover_geometry_refuses_an_unreconcilable_declaration
         ValueError, match="Sound changed since this measurement; review afresh"
     ):
         sound_setup.apply_measured_crossover_geometry(
-            expected_revision=1,
             between_roles=("woofer", "tweeter"),
             configured=_geometry(5500, 48),
             selected=_geometry(5500, 24),
@@ -4748,7 +4660,6 @@ def test_active_speaker_crossover_preview_http_route_is_csrf_protected_no_audio(
             base,
             "/active-speaker/design-draft",
             {
-                "expected_revision": 0,
                 "operator_inputs": {},
                 "driver_research": research,
             },
@@ -4837,7 +4748,7 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes(
         "passiveMainWithSubUsesResearchableMainTargetOnly",
         "partialSavePreservesUnchosenEnclosure",
         "directCrossoverEditRefreshesProposalAndFooter",
-        "tweeterTypeChangeInvalidatesCopiedResearchBinding",
+        "pasteEditSaveKeepsReplyAndVisibleValues",
         # The cross-child verdict is a warning, so the notice IS the disclosure:
         # evaluate_output_topology reports speaker_group_spans_child_devices
         # without blocking the save, and nothing else tells the household. This

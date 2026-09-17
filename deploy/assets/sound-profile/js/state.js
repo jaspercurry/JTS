@@ -39,9 +39,7 @@ var driverResearch = {
   dirty: false,
   safetyDirty: false,
   editedDriverTargets: {},
-  saving: false,
-  promptCopy: {copied: false, selected: false},
-  researchRequest: null
+  saving: false
 };
 var crossoverPreview = {payload: null, preparing: false, error: ''};
 

@@ -696,6 +696,7 @@ function setupHarness(fetchHandler, options = {}) {
     for (const fn of viewBody._listeners.click || []) {
       fn({ target, preventDefault() {} });
     }
+    return target;
   };
   const dispatchChange = (target) => {
     if (!target.getAttribute) target.getAttribute = () => "";
@@ -1667,7 +1668,6 @@ async function testOneDriverComponentCanPrepareResearchPrompt() {
       researchPosts.push(JSON.parse(options.body || "{}"));
       return Promise.resolve(response({
         prompt: "Research the Example FR8 full-range driver",
-        request: { request_fingerprint: "f".repeat(64) },
       }));
     },
   });
@@ -1705,12 +1705,10 @@ async function testOneDriverComponentCanPrepareResearchPrompt() {
     fail("a one-driver layout should prepare one research request", { researchPosts });
   }
   const body = researchPosts[0];
-  const driver = body.manual_settings.drivers[0];
   if (body.operator_inputs.target_models["main:full_range"] !== "Example FR8" ||
       body.operator_inputs.notes !== "Passive radiator on the rear baffle" ||
-      driver.target_id !== "main:full_range" ||
-      driver.cabinet.enclosure_kind !== "sealed") {
-    fail("one-driver prompt should carry the physical component and enclosure", {
+      "manual_settings" in body) {
+    fail("one-driver prompt should carry the model and build notes only", {
       body,
     });
   }
@@ -1758,7 +1756,6 @@ async function testPassiveMainWithSubUsesResearchableMainTargetOnly() {
       researchPosts.push(JSON.parse(options.body || "{}"));
       return Promise.resolve(response({
         prompt: "Research the passive main component",
-        request: { request_fingerprint: "e".repeat(64) },
       }));
     },
   });
@@ -1793,9 +1790,7 @@ async function testPassiveMainWithSubUsesResearchableMainTargetOnly() {
   if (!body ||
       Object.keys(body.operator_inputs.target_models || {}).join(",") !==
         "main:full_range" ||
-      (body.manual_settings.drivers || []).some(
-        (driver) => driver.target_id === "sub:subwoofer"
-      )) {
+      "manual_settings" in body) {
     fail("passive-main prompt must not send a backend-rejected sub target", {
       researchPosts,
     });
@@ -1818,7 +1813,6 @@ async function testPartialSavePreservesUnchosenEnclosure() {
           operator_inputs: body.operator_inputs || {},
           manual_settings: body.manual_settings,
           driver_research: null,
-          driver_research_request: null,
         }));
       }
       return Promise.resolve(response({
@@ -1933,115 +1927,6 @@ async function testDirectCrossoverEditRefreshesProposalAndFooter() {
     });
   }
   return { directCrossoverEditRefreshesProposalAndFooter: true };
-}
-
-async function testTweeterTypeChangeInvalidatesCopiedResearchBinding() {
-  const topology = activeTwoWayTopologyPayload();
-  topology.speaker_groups[0].channels[1].driver_style = "soft_dome";
-  const oldRequest = {
-    kind: "jts_active_crossover_driver_research_request",
-    request_fingerprint: "d".repeat(64),
-  };
-  const designPosts = [];
-  const topologyPosts = [];
-  const draft = {
-    status: "ready_for_review",
-    revision: 3,
-    summary: { manual_driver_count: 2 },
-    operator_inputs: {
-      target_models: {
-        "main:woofer": "Example Woofer",
-        "main:tweeter": "Example Tweeter",
-      },
-    },
-    manual_settings: {
-      drivers: [
-        {
-          target_id: "main:woofer",
-          role: "woofer",
-          model: "Example Woofer",
-          cabinet: { enclosure_kind: "sealed" },
-        },
-        {
-          target_id: "main:tweeter",
-          role: "tweeter",
-          model: "Example Tweeter",
-        },
-      ],
-      crossover_candidates: [],
-    },
-    driver_research_request: oldRequest,
-    driver_research: null,
-  };
-  const fetchHandler = baseFetch({
-    "./output-topology": (_path, options = {}) => {
-      if (options.method === "POST") {
-        const body = JSON.parse(options.body || "{}");
-        topologyPosts.push(body);
-        return Promise.resolve(response({
-          output_topology: body.output_topology,
-          topology_revision: "topology-2",
-        }));
-      }
-      return Promise.resolve(response(topology));
-    },
-    "./active-speaker/design-draft": (_path, options = {}) => {
-      if (options.method === "POST") {
-        const body = JSON.parse(options.body || "{}");
-        designPosts.push(body);
-        return Promise.resolve(response({
-          ...draft,
-          revision: 4,
-          driver_research_request: body.driver_research_request,
-          driver_research: body.driver_research,
-          manual_settings: body.manual_settings,
-          operator_inputs: body.operator_inputs,
-        }));
-      }
-      // Deliberately return the pre-topology-change binding. The client must
-      // invalidate it after the topology save rather than restoring it here.
-      return Promise.resolve(response(draft));
-    },
-    "./active-speaker/driver-research-request": () => Promise.resolve(response({
-      prompt: "Research the saved soft-dome setup",
-      request: oldRequest,
-    })),
-  });
-  const harness = setupHarness(fetchHandler);
-  await loadAndSetActiveState(harness);
-
-  harness.dispatchClick({ "data-act": "copy-driver-research-prompt" });
-  await harness.flush();
-  await harness.flush();
-  harness.dispatchChange({
-    value: "compression_driver",
-    getAttribute(name) {
-      return { "data-group-id": "main", "data-role": "tweeter" }[name] || "";
-    },
-    hasAttribute(name) {
-      return name === "data-driver-style" || name === "data-save-driver-style";
-    },
-  });
-  for (let i = 0; i < 6; i += 1) await harness.flush();
-
-  const html = harness.elements.get("view-body").innerHTML;
-  if (topologyPosts.length !== 1 ||
-      !html.includes(">Copy prompt</button>") ||
-      html.includes(">Copied</button>")) {
-    fail("changing tweeter type must visibly invalidate the copied prompt", {
-      topologyPosts,
-      html,
-    });
-  }
-  harness.dispatchClick({ "data-act": "save-driver-design" });
-  for (let i = 0; i < 4; i += 1) await harness.flush();
-  if (designPosts.length !== 1 ||
-      designPosts[0].driver_research_request !== null) {
-    fail("the stale topology-bound request must not reach the next save", {
-      designPosts,
-    });
-  }
-  return { tweeterTypeChangeInvalidatesCopiedResearchBinding: true };
 }
 
 async function testThreeWayRendersEveryPhysicalComponentChoice() {
@@ -3449,7 +3334,6 @@ async function testDriverResearchNullProtectionNumbersAreRefusedNotDropped() {
   const honestNullPacket = {
     artifact_schema_version: 2,
     kind: "jts_active_crossover_driver_research",
-    request_fingerprint: "a".repeat(64),
     drivers: [
       { target_id: "main:woofer", role: "woofer", model: "Manual Woofer" },
       {
@@ -3560,11 +3444,10 @@ async function testDriverResearchNullProtectionNumbersAreRefusedNotDropped() {
 // must go RED against a revert of their half; the status line alone is not
 // enough, because the operator's next ordinary click overwrites it and the
 // panel is then the only surviving account of what happened.
-function _honestNullPacket(fingerprint) {
+function _honestNullPacket() {
   return {
     artifact_schema_version: 2,
     kind: "jts_active_crossover_driver_research",
-    request_fingerprint: fingerprint || "a".repeat(64),
     drivers: [
       { target_id: "main:woofer", role: "woofer", model: "Manual Woofer" },
       {
@@ -3675,36 +3558,6 @@ async function testRejectedPasteAndReasonSurviveDraftIngest() {
     fail("the reason must survive the draft ingest alongside the paste", { html });
   }
 
-  // The v2-invalidation drop path is the OTHER way a packet gets dropped
-  // here (valid JSON, but no longer bound to the current request). It must
-  // reach the panel too, not just the ephemeral status line.
-  const invalidationSaves = [];
-  const second = await _harnessWithNamedDrivers(invalidationSaves);
-  const boundPacket = _honestNullPacket();
-  boundPacket.drivers[1].required_protection_filters = [{
-    kind: "highpass",
-    cutoff_hz: 4500,
-    minimum_slope_db_per_octave: 24,
-    family_or_equivalent: "equivalent_or_steeper",
-  }];
-  second.dispatchInput(
-    { "data-driver-import": "" }, JSON.stringify(boundPacket, null, 2)
-  );
-  second.dispatchClick({ "data-act": "save-driver-design" });
-  await second.flush();
-  await second.flush();
-  await second.flush();
-  const secondHtml = second.elements.get("view-body").innerHTML;
-  if (!secondHtml.includes("invalidated by a visible edit")) {
-    fail("the v2-invalidation drop must also explain itself in the panel", {
-      secondHtml: secondHtml.slice(0, 800),
-    });
-  }
-  if (!secondHtml.includes("Dayton CX120-8")) {
-    fail("the v2-invalidation drop must keep the paste too", {
-      secondHtml: secondHtml.slice(0, 600),
-    });
-  }
   return { rejectedPasteAndReasonSurviveDraftIngest: true };
 }
 
@@ -3772,11 +3625,9 @@ function echoResearchPacket(tweeterPeakDbfs = ECHO_TWEETER_CLASS_CEILING_DBFS) {
   return {
     artifact_schema_version: 2,
     kind: "jts_active_crossover_driver_research",
-    request_fingerprint: "b".repeat(64),
     drivers: [
       {
         target_id: "main:woofer",
-        target_fingerprint: "c".repeat(64),
         role: "woofer",
         model: "Manual Woofer",
         hard_excitation_band_hz: [30, 5000],
@@ -3810,7 +3661,6 @@ function echoResearchPacket(tweeterPeakDbfs = ECHO_TWEETER_CLASS_CEILING_DBFS) {
       },
       {
         target_id: "main:tweeter",
-        target_fingerprint: "d".repeat(64),
         role: "tweeter",
         model: "Dayton CX120-8",
         hard_excitation_band_hz: [2500, 20000],
@@ -3881,10 +3731,6 @@ function echoDraft({ research, policy } = {}) {
     confirmed_and_current: true,
     reasons: [],
   });
-  draft.driver_research_request = {
-    request_fingerprint: packet.request_fingerprint,
-    targets: [],
-  };
   draft.driver_research = packet;
   draft.manual_settings = echoManualSettings(packet);
   // `driver_protection_policy_view`, not `driver_protection_policy`: the
@@ -4174,23 +4020,6 @@ async function testResearchEchoBackEscapesUntrustedSources() {
 }
 
 async function testResearchEchoBackFollowsTheSameCurrencyRulesAsTheEvidence() {
-  // Two rules already govern the Advanced evidence block, and the panel must
-  // not become a second surface that keeps showing stale authority:
-  //   * a v2 packet with no bound request is describing some other request;
-  //   * an edited target's values are no longer the reply's.
-  const unbound = echoDraft();
-  delete unbound.driver_research_request;
-  const unboundHtml = await echoHarness(unbound);
-  if (unboundHtml.includes("driver-research__panel driver-echo")) {
-    fail("an unbound v2 packet must not render an echo-back", {
-      unboundHtml: unboundHtml.slice(0, 600),
-    });
-  }
-
-  // A manual driver edit invalidates the v2 binding (setManualDriverField ->
-  // invalidateDriverResearchBinding), so the whole panel goes with it. Typing
-  // in a number input deliberately does NOT full-render (focus loss), so this
-  // only holds because the panel has its own targeted refresh.
   const harness = setupHarness(baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
     "./active-speaker/design-draft": () => Promise.resolve(response(echoDraft())),
@@ -4204,19 +4033,16 @@ async function testResearchEchoBackFollowsTheSameCurrencyRulesAsTheEvidence() {
     "data-manual-field": "hard_excitation_min_hz",
   }, "2600");
   const afterEdit = harness.elements.get("driver-echo-control").innerHTML;
-  if (afterEdit !== "") {
-    fail("an edit that unbinds the packet must clear the echo, not go stale", {
+  if (!afterEdit.includes("You changed these values, so the research reply no longer describes them.")) {
+    fail("an edited target must disclose that its values differ from the reply", {
       afterEdit,
     });
   }
 
-  // A legacy v1 packet has no binding to invalidate, so the per-target rule is
-  // what stops its badges from outliving an edit.
+  // Legacy replies follow the same rule for edited targets.
   const legacy = echoResearchPacket();
   legacy.artifact_schema_version = 1;
-  delete legacy.request_fingerprint;
   const legacyDraft = echoDraft({ research: legacy });
-  delete legacyDraft.driver_research_request;
   const legacyHarness = setupHarness(baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
     "./active-speaker/design-draft": () => Promise.resolve(response(legacyDraft)),
@@ -4311,7 +4137,6 @@ async function testDriverResearchPromptCopyUsesHttpFallback() {
       researchRequests.push(JSON.parse(options.body || "{}"));
       return Promise.resolve(response({
         prompt: "Target-bound prompt for Manual Woofer and Manual Tweeter",
-        request: { request_fingerprint: "a".repeat(64) },
       }));
     },
   });
@@ -4400,7 +4225,6 @@ async function testDriverResearchPromptCopyBlockedSelectsPrompt() {
     "./active-speaker/design-draft": () => Promise.resolve(response(draft)),
     "./active-speaker/driver-research-request": () => Promise.resolve(response({
       prompt: "Target-bound prompt for Manual Woofer and Manual Tweeter",
-      request: { request_fingerprint: "b".repeat(64) },
     })),
   });
   const harness = setupHarness(fetchHandler);
@@ -4423,19 +4247,21 @@ async function testDriverResearchPromptCopyBlockedSelectsPrompt() {
   });
   globalThis.document.execCommand = (command) => command === "copy" ? false : false;
 
-  harness.dispatchClick({ "data-act": "copy-driver-research-prompt" });
+  const button = harness.dispatchClick({ "data-act": "copy-driver-research-prompt" });
   await harness.flush();
 
   const statusText = harness.elements.get("status").textContent;
   if (!statusText.includes("Prompt text is selected")) {
     fail("blocked copy should leave the user with selected prompt text", { statusText });
   }
-  const html = harness.elements.get("view-body").innerHTML;
-  if (!html.includes(">Selected</button>")) {
-    fail("blocked copy should update the CTA to Selected", { html });
+  if (button.textContent !== "Selected") {
+    fail("blocked copy should update the CTA to Selected", { button });
   }
-  if (!html.includes('id="driver-research-prompt" class="driver-research__textarea driver-research__textarea--compact"')) {
-    fail("blocked copy should render the prompt visibly instead of keeping it hidden", { html });
+  const prompt = harness.elements.get("driver-research-prompt");
+  if (prompt.className !== "driver-research__textarea driver-research__textarea--compact" ||
+      prompt.value !== "Target-bound prompt for Manual Woofer and Manual Tweeter" ||
+      prompt.selectionStart !== 0 || prompt.selectionEnd !== prompt.value.length) {
+    fail("blocked copy should show and select the returned prompt", { prompt });
   }
   return { driverResearchPromptCopyBlockedSelectsPrompt: true };
 }
@@ -5257,7 +5083,6 @@ async function testResetReloadsDesignDraftPastAStaleDirtyForm() {
       }],
       crossover_candidates: [],
     },
-    driver_research_request: null,
     driver_research: null,
   };
   const emptyDraft = {
@@ -5266,7 +5091,6 @@ async function testResetReloadsDesignDraftPastAStaleDirtyForm() {
     manual_settings: null,
     operator_inputs: {},
     driver_research: null,
-    driver_research_request: null,
     summary: {},
     issues: [],
   };
@@ -5649,9 +5473,6 @@ async function testStereoDriverValuesStayTargetSpecific() {
 
   if (designSaves.length !== 1) fail("Target-specific stereo save should POST once", { designSaves });
   const saved = designSaves[0];
-  if (saved.expected_revision !== 7) {
-    fail("Design save must carry the loaded optimistic revision", { saved });
-  }
   if (JSON.stringify(saved.operator_inputs.target_models) !== JSON.stringify(models)) {
     fail("Each stereo model must stay keyed by physical target", { saved });
   }
@@ -5664,16 +5485,13 @@ async function testStereoDriverValuesStayTargetSpecific() {
   return { stereoDriverValuesStayTargetSpecific: true };
 }
 
-async function testDesignConflictRefreshesWithoutBlindRetryAndBooleanNumbersDrop() {
+async function testResearchReloadAndBooleanNumbersDrop() {
   const posts = [];
-  const request = { request_fingerprint: "a".repeat(64), targets: [] };
   const research = {
     artifact_schema_version: 2,
     kind: "jts_active_crossover_driver_research",
-    request_fingerprint: "a".repeat(64),
     drivers: [{
       target_id: "main:woofer",
-      target_fingerprint: "b".repeat(64),
       role: "woofer",
       model: "Original W6",
       unknowns: ["thermal limit unknown"],
@@ -5694,7 +5512,6 @@ async function testDesignConflictRefreshesWithoutBlindRetryAndBooleanNumbersDrop
     operator_inputs: {
       target_models: { "main:woofer": "Original W6", "main:tweeter": "Original T1" },
     },
-    driver_research_request: request,
     driver_research: research,
     driver_safety_profile: {
       targets: [{
@@ -5721,22 +5538,12 @@ async function testDesignConflictRefreshesWithoutBlindRetryAndBooleanNumbersDrop
       }],
     },
   };
-  const fresh = {
-    status: "ready_for_review",
-    revision: 5,
-    error: "Speaker design changed in another session",
-    summary: {},
-    operator_inputs: {
-      target_models: { "main:woofer": "Fresh W8", "main:tweeter": "Fresh T2" },
-    },
-    manual_settings: { drivers: [], crossover_candidates: [] },
-  };
   const fetchHandler = baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
     "./active-speaker/design-draft": (_path, options = {}) => {
       if (options.method === "POST") {
         posts.push(JSON.parse(options.body || "{}"));
-        return Promise.resolve(response(fresh, false, 409));
+        return Promise.resolve(response(initial));
       }
       return Promise.resolve(response(initial));
     },
@@ -5760,150 +5567,56 @@ async function testDesignConflictRefreshesWithoutBlindRetryAndBooleanNumbersDrop
   await harness.flush();
   await harness.flush();
 
-  if (posts.length !== 1) fail("A 409 must refresh without a blind retry", { posts });
+  if (posts.length !== 1) fail("Save should POST once", { posts });
   const saved = posts[0];
-  if (saved.expected_revision !== 4) fail("Save must use the loaded revision", { saved });
-  if (saved.driver_research_request.request_fingerprint !== request.request_fingerprint ||
-      saved.driver_research.request_fingerprint !== research.request_fingerprint) {
-    fail("Reload must preserve the bound v2 request and research packet", { saved });
+  if (JSON.stringify(saved.driver_research) !== JSON.stringify(research)) {
+    fail("Reload must preserve the research reply without a request", { saved });
   }
   const woofer = saved.manual_settings.drivers.find((driver) => driver.target_id === "main:woofer");
   if (woofer && Object.prototype.hasOwnProperty.call(woofer, "nominal_impedance_ohm")) {
     fail("Boolean values must not pass through Number(true) into a numeric field", { woofer });
   }
-  const refreshedHtml = harness.elements.get("view-body").innerHTML;
-  if (!refreshedHtml.includes("Fresh W8") || !refreshedHtml.includes("Fresh T2") ||
-      !refreshedHtml.includes("another session")) {
-    fail("Conflict response must replace stale values and explain the refresh", { refreshedHtml });
-  }
-  return { designConflictRefreshesWithoutBlindRetryAndBooleanNumbersDrop: true };
+  return { researchReloadAndBooleanNumbersDrop: true };
 }
 
-async function testDesignConflictPreservesUnsavedSafetyEdits() {
+async function testPasteEditSaveKeepsReplyAndVisibleValues() {
   const posts = [];
-  const initial = {
-    status: "ready_for_review",
-    revision: 4,
-    summary: {},
-    operator_inputs: {
-      target_models: { "main:woofer": "Original W6", "main:tweeter": "Original T1" },
-    },
-    manual_settings: {
-      drivers: [
-        { target_id: "main:woofer", role: "woofer", model: "Original W6" },
-        {
-          target_id: "main:tweeter",
-          role: "tweeter",
-          model: "Original T1",
-          hard_excitation_band_hz: [5000, 22000],
-        },
-      ],
-      crossover_candidates: [],
-    },
-    driver_safety_profile: {
-      status: "confirmed",
-      targets: [{
-        target_id: "main:tweeter",
-        hard_excitation_band_hz: [5000, 22000],
-        field_provenance: {
-          hard_excitation_band_hz: {
-            confidence: "medium",
-            basis: "old saved evidence",
-            sources: ["https://example.test/old-tweeter"],
-          },
-        },
-      }],
-    },
-    driver_safety_profile_evaluation: {
-      status: "confirmed",
-      confirmed_and_current: true,
-    },
-  };
-  const fresh = {
-    status: "ready_for_review",
-    revision: 5,
-    error: "Speaker design changed in another session.",
-    summary: {},
-    operator_inputs: {
-      target_models: { "main:woofer": "Fresh W8", "main:tweeter": "Fresh T2" },
-    },
-    manual_settings: { drivers: [], crossover_candidates: [] },
-  };
-  const fetchHandler = baseFetch({
+  const initial = echoDraft();
+  const research = initial.driver_research;
+  delete initial.driver_research;
+  const harness = setupHarness(baseFetch({
     "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
     "./active-speaker/design-draft": (_path, options = {}) => {
       if (options.method !== "POST") return Promise.resolve(response(initial));
-      const body = JSON.parse(options.body || "{}");
+      const body = JSON.parse(options.body);
       posts.push(body);
-      if (posts.length === 1) return Promise.resolve(response(fresh, false, 409));
-      return Promise.resolve(response({
-        ...fresh,
-        revision: 6,
-        error: "",
-        operator_inputs: body.operator_inputs,
-        manual_settings: body.manual_settings,
-        // A save lands the declaration current in the same step -- there is no
-        // separate confirm any more.
-        driver_safety_profile: { status: "confirmed", targets: [] },
-        driver_safety_profile_evaluation: {
-          status: "confirmed",
-          confirmed_and_current: true,
-        },
-      }));
+      return Promise.resolve(response({ ...initial, ...body }));
     },
-  });
-  const harness = setupHarness(fetchHandler);
+  }));
   await loadAndSetActiveState(harness);
-  const initialHtml = harness.elements.get("view-body").innerHTML;
-  if (!initialHtml.includes("declared for the current outputs") ||
-      !initialHtml.includes("old saved evidence")) {
-    fail("A clean current draft must show its declaration and provenance", {
-      initialHtml,
-    });
-  }
-
+  harness.dispatchInput({ "data-driver-import": "" }, JSON.stringify(research));
+  harness.dispatchClick({ "data-act": "parse-driver-research" });
+  await harness.flush();
   harness.dispatchInput({
     "data-manual-driver": "main:tweeter",
     "data-manual-field": "hard_excitation_min_hz",
-  }, "5500");
+  }, "2600");
   harness.dispatchClick({ "data-act": "save-driver-design" });
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-
-  if (posts.length !== 1) fail("A conflict must not retry without user action", { posts });
-  const conflictHtml = harness.elements.get("view-body").innerHTML;
-  for (const expected of [
-    'data-manual-field="hard_excitation_min_hz" value="5500"',
-    "Your unsaved edits were kept",
-    "save your current edits to update it",
-  ]) {
-    if (!conflictHtml.includes(expected)) {
-      fail("Conflict UI must retain and truthfully label unsaved safety edits", {
-        expected,
-        conflictHtml,
-      });
-    }
+  for (let i = 0; i < 4; i += 1) await harness.flush();
+  if (posts.length !== 1) fail("Save should POST once", { posts });
+  const saved = posts[0];
+  const tweeter = saved.manual_settings.drivers.find(driver => driver.target_id === "main:tweeter");
+  if (JSON.stringify(saved.driver_research) !== JSON.stringify(research) ||
+      tweeter.hard_excitation_band_hz[0] !== 2600 ||
+      "expected_revision" in saved || "driver_research_request" in saved) {
+    fail("Paste, edit, save must keep the reply and the visible edit", { saved });
   }
-  if (conflictHtml.includes("Fresh T2") || conflictHtml.includes("old saved evidence") ||
-      conflictHtml.includes("declared for the current outputs")) {
-    fail("Conflict UI must not replace edits or show stale authority", { conflictHtml });
+  const panel = echoPanel(harness.elements.get("view-body").innerHTML);
+  if (panel.includes("Dayton CX120-8 datasheet, p.2") ||
+      !panel.includes("https://example.test/w6-datasheet.pdf")) {
+    fail("Saved edits must keep only the unchanged driver's citations", { panel });
   }
-
-  harness.dispatchClick({ "data-act": "save-driver-design" });
-  await harness.flush();
-  await harness.flush();
-  await harness.flush();
-  if (posts.length !== 2 || posts[1].expected_revision !== 5) {
-    fail("An explicit retry must reconcile against the fresh server revision", { posts });
-  }
-  const tweeter = posts[1].manual_settings.drivers.find(
-    (driver) => driver.target_id === "main:tweeter"
-  );
-  if (!tweeter || tweeter.hard_excitation_band_hz[0] !== 5500) {
-    fail("Explicit conflict retry must keep the local safety edit", { posts, tweeter });
-  }
-  return { designConflictPreservesUnsavedSafetyEdits: true };
+  return { pasteEditSaveKeepsReplyAndVisibleValues: true };
 }
 
 // One cabinet, one driver per dongle: woofer on child A, tweeter on child B.
@@ -6693,7 +6406,6 @@ results.push(await testOneDriverComponentCanPrepareResearchPrompt());
 results.push(await testPassiveMainWithSubUsesResearchableMainTargetOnly());
 results.push(await testPartialSavePreservesUnchosenEnclosure());
 results.push(await testDirectCrossoverEditRefreshesProposalAndFooter());
-results.push(await testTweeterTypeChangeInvalidatesCopiedResearchBinding());
 results.push(await testThreeWayRendersEveryPhysicalComponentChoice());
 results.push(await testActiveRouteLimitsRenderedTemplates());
 results.push(await testSpeakerLayoutMatrixAndRearAssignment());
@@ -6707,8 +6419,8 @@ results.push(await testCompiledProfileApplyBlockStaysUnderstandable());
 results.push(await testAppliedProfileCardUsesCommissioningRecord());
 results.push(await testLegacyStereoDraftCanPreparePreviewWithoutTargetCopy());
 results.push(await testStereoDriverValuesStayTargetSpecific());
-results.push(await testDesignConflictRefreshesWithoutBlindRetryAndBooleanNumbersDrop());
-results.push(await testDesignConflictPreservesUnsavedSafetyEdits());
+results.push(await testResearchReloadAndBooleanNumbersDrop());
+results.push(await testPasteEditSaveKeepsReplyAndVisibleValues());
 results.push(await testVisibleCrossoverSettingsWinOverImportedJson());
 results.push(await testManualCrossoverPayloadOmitsPolarityAndDelayWhenDefault());
 results.push(await testManualCrossoverPayloadEmitsPolarityAndZeroDelay());

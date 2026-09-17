@@ -7,8 +7,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import threading
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -21,7 +19,6 @@ from jasper.active_speaker import (
     save_design_draft,
 )
 from jasper.active_speaker.design_draft import (
-    ActiveSpeakerDesignDraftRevisionConflict,
     _normalise_candidate,
     declared_driver_sensitivities,
     declared_driver_spacing_m,
@@ -445,146 +442,57 @@ def test_load_design_draft_fails_soft_on_unsupported_schema(tmp_path: Path):
     assert payload["issues"][0]["code"] == "design_draft_unsupported_schema"
 
 
-def test_load_demotes_legacy_hidden_note_request_and_preserves_manual_values(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "active_speaker_design_draft.json"
-    manual_settings = {
-        "drivers": [
-            {
-                "target_id": "mono:woofer",
-                "role": "woofer",
-                "model": "Example Woofer",
-                "notes": "Legacy installed-configuration value",
-            }
-        ],
-        "crossover_candidates": [],
-    }
-    path.write_text(
-        json.dumps(
-            {
-                "artifact_schema_version": 1,
-                "kind": DESIGN_DRAFT_KIND,
-                "status": "ready_for_review",
-                "revision": 4,
-                "operator_inputs": {},
-                "manual_settings": manual_settings,
-                "driver_research_request": {
-                    "targets": [
-                        {
-                            "target_id": "mono:woofer",
-                            "operator_declared_context": {
-                                "operator_notes": (
-                                    "Legacy installed-configuration value"
-                                )
-                            },
-                        }
-                    ]
-                },
-                "driver_research": {
-                    "artifact_schema_version": 2,
-                    "kind": DRIVER_RESEARCH_KIND,
-                    "request_fingerprint": "a" * 64,
-                    "drivers": [],
-                    "crossover_candidates": [],
-                },
-            }
-        ),
-        encoding="utf-8",
+def test_load_drops_old_request_and_reply_digests_without_losing_values(tmp_path: Path) -> None:
+    from tests.test_active_speaker_driver_safety import (
+        _manual_settings, _operator_inputs, _research_result,
     )
+    from jasper.active_speaker.driver_safety import build_driver_research_context
 
-    loaded = load_design_draft(path)
+    path = tmp_path / "draft.json"
+    topology = _topology()
+    research = _research_result(build_driver_research_context(topology, _operator_inputs()))
+    draft = save_design_draft(
+        topology, driver_research=research, manual_settings=_manual_settings(),
+        operator_inputs=_operator_inputs(), path=path,
+    )
+    old = json.loads(path.read_text())
+    old["driver_research_request"] = {"targets": [{"operator_declared_context": {"operator_notes": "old"}}]}
+    old["driver_research"].update(request_fingerprint="old", result_fingerprint="old")
+    for driver in old["driver_research"]["drivers"]:
+        driver["target_fingerprint"] = "old"
+    path.write_text(json.dumps(old))
 
-    assert loaded["revision"] == 4
-    assert loaded["driver_research_request"] is None
-    assert loaded["driver_research"] is None
-    assert loaded["manual_settings"] == manual_settings
-
+    loaded = load_design_draft(path, topology=topology)
+    assert loaded == draft
     saved = save_design_draft(
-        _topology(),
-        driver_research_request=loaded["driver_research_request"],
-        driver_research=loaded["driver_research"],
-        manual_settings=loaded["manual_settings"],
-        operator_inputs=loaded["operator_inputs"],
-        expected_revision=loaded["revision"],
-        path=path,
-        created_at="2026-07-28T12:00:00Z",
+        topology, driver_research=loaded["driver_research"],
+        manual_settings=loaded["manual_settings"], operator_inputs=loaded["operator_inputs"], path=path,
     )
-    assert saved["revision"] == 5
-    assert saved["driver_research_request"] is None
-    assert saved["manual_settings"]["drivers"][0]["notes"] == (
-        "Legacy installed-configuration value"
-    )
+    assert saved["driver_research"] == draft["driver_research"]
+    assert saved["manual_settings"] == draft["manual_settings"]
+    assert "driver_research_request" not in json.loads(path.read_text())
 
 
-def test_design_draft_revision_is_monotonic_and_refuses_stale_write(
+def test_design_draft_revision_is_informational(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "active_speaker_design_draft.json"
     first = save_design_draft(
         _topology(),
         operator_inputs={"notes": "first"},
-        expected_revision=0,
         path=path,
         created_at="2026-07-13T12:00:00Z",
     )
     second = save_design_draft(
         _topology(),
         operator_inputs={"notes": "second"},
-        expected_revision=1,
         path=path,
         created_at="2026-07-13T12:01:00Z",
     )
 
     assert first["revision"] == 1
     assert second["revision"] == 2
-    with pytest.raises(ActiveSpeakerDesignDraftRevisionConflict) as caught:
-        save_design_draft(
-            _topology(),
-            operator_inputs={"notes": "stale"},
-            expected_revision=1,
-            path=path,
-            created_at="2026-07-13T12:02:00Z",
-        )
-    assert caught.value.current_draft["revision"] == 2
     assert load_design_draft(path)["operator_inputs"]["notes"] == "second"
-
-
-def test_concurrent_design_draft_writes_allow_exactly_one_winner(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "active_speaker_design_draft.json"
-    barrier = threading.Barrier(2)
-
-    def writer(label: str) -> tuple[str, object]:
-        barrier.wait(timeout=5)
-        try:
-            return (
-                "saved",
-                save_design_draft(
-                    _topology(),
-                    operator_inputs={"notes": label},
-                    expected_revision=0,
-                    path=path,
-                    created_at="2026-07-13T12:00:00Z",
-                ),
-            )
-        except ActiveSpeakerDesignDraftRevisionConflict as exc:
-            return ("conflict", exc.current_draft)
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(executor.map(writer, ("left", "right")))
-
-    assert sorted(status for status, _ in results) == ["conflict", "saved"]
-    saved = next(payload for status, payload in results if status == "saved")
-    conflict = next(payload for status, payload in results if status == "conflict")
-    assert isinstance(saved, dict)
-    assert isinstance(conflict, dict)
-    assert saved["revision"] == 1
-    assert conflict["revision"] == 1
-    loaded = load_design_draft(path)
-    assert loaded["revision"] == 1
-    assert loaded["operator_inputs"] == saved["operator_inputs"]
 
 
 def test_legacy_draft_loads_as_revision_zero_and_boolean_revision_fails_soft(
@@ -1019,22 +927,6 @@ def test_declared_driver_spacing_m_survives_the_normalised_persisted_draft():
     assert declared_driver_spacing_m(payload) == pytest.approx(0.15)
 
 
-# --- #1665 component entry: driver_class / radiating_diameter_mm / pad -----
-#
-# Gotcha #1 (coordinator brief): design_draft._MANUAL_DRIVER_FIELDS,
-# driver_safety._MANUAL_DRIVER_FIELDS, driver_safety._V2_RESEARCH_DRIVER_FIELDS,
-# and _validate_v2_research_prefill's `comparable` set must ALL accept the
-# component-entry keys, or build_design_draft 500s at save time (driver_safety.py
-# re-validates the SAME normalised manual_settings record design_draft.py just
-# produced). The guard test below pins the regression signature directly.
-#
-# A fourth key, horn_coverage_deg, was deleted by #2872. It is now a tolerated
-# legacy key at every one of those gates -- the same lockstep requirement, in
-# the opposite direction: a gate that forgot to tolerate it 500s the save of a
-# draft written before the deletion. See
-# test_legacy_horn_coverage_deg_draft_still_saves_and_drops_the_key.
-
-
 def test_build_design_draft_does_not_raise_with_driver_class_set():
     """Gotcha #1's regression signature: a save-time 500 from a driver-safety
     allowlist that wasn't updated in lockstep with design_draft.py's own."""
@@ -1153,7 +1045,6 @@ def test_legacy_horn_coverage_deg_draft_still_saves_and_drops_the_key(
         _topology(),
         manual_settings=loaded["manual_settings"],
         operator_inputs=loaded["operator_inputs"],
-        expected_revision=loaded["revision"],
         path=path,
         created_at="2026-08-22T12:00:00Z",
     )
@@ -1243,7 +1134,6 @@ def test_regenerate_crossover_preview_path_re_normalises_a_saved_pad_without_rai
     #
     #     draft = build_design_draft(
     #         topology,
-    #         driver_research_request=draft.get("driver_research_request"),
     #         driver_research=draft.get("driver_research"),
     #         manual_settings=draft.get("manual_settings"),
     #         operator_inputs=draft.get("operator_inputs"),
@@ -1286,7 +1176,6 @@ def test_regenerate_crossover_preview_path_re_normalises_a_saved_pad_without_rai
     # The regenerate-path rebuild call, verbatim in argument shape.
     regenerated = build_design_draft(
         topology,
-        driver_research_request=saved.get("driver_research_request"),
         driver_research=saved.get("driver_research"),
         manual_settings=saved.get("manual_settings"),
         operator_inputs=saved.get("operator_inputs"),

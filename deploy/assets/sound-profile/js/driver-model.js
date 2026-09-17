@@ -368,12 +368,6 @@ function driverResearchPromptReady(topology) {
     return !!driverSetting(target.target_id).enclosure_kind;
   });
 }
-function invalidateDriverResearchBinding() {
-  driverResearch.researchRequest = null;
-  driverResearch.promptCopy.copied = false;
-  driverResearch.promptCopy.selected = false;
-}
-
 function setManualCrossoverField(pairKey, field, value) {
   if (!driverResearch.settings.crossovers[pairKey]) {
     driverResearch.settings.crossovers[pairKey] = {};
@@ -381,7 +375,6 @@ function setManualCrossoverField(pairKey, field, value) {
   driverResearch.settings.crossovers[pairKey][field] = value;
   driverResearch.error = '';
   driverResearch.dirty = true;
-  invalidateDriverResearchBinding();
 }
 
 // A delay entered without picking which driver it applies to would silently
@@ -546,7 +539,7 @@ function applySafetyBandToSetting(setting, prefix, band) {
 
 function driverResearchPrompt(topology) {
   return driverResearchPromptReady(topology)
-    ? 'Copy prepares a versioned prompt bound to the current speaker outputs, components, and build notes.'
+    ? 'Copy prepares a prompt from the current components and build notes.'
     : 'Add every component model and choose its enclosure or tweeter type before preparing the target-bound research prompt.';
 }
 function summarizeDriverResearchPayload(payload) {
@@ -609,9 +602,6 @@ function summarizeDriverResearchPayload(payload) {
       );
     });
   });
-  if (schemaVersion === 2 && !/^[0-9a-f]{64}$/.test(String(payload.request_fingerprint || ''))) {
-    throw new Error('Version 2 driver research must echo the request fingerprint.');
-  }
   return {
     schemaVersion: schemaVersion,
     driverCount: drivers.length,
@@ -722,10 +712,7 @@ function driverEvidenceForTarget(targetId) {
   var profileTargets = driverResearch.safetyDirty ? [] :
     (((driverResearch.designDraft || {}).driver_safety_profile || {}).targets || []);
   var importedEvidence = driverResearch.importedPayload;
-  var importedEvidenceCurrent = importedEvidence &&
-    (Number(importedEvidence.artifact_schema_version || 1) !== 2 ||
-      !!driverResearch.researchRequest);
-  var importedTargets = (importedEvidenceCurrent &&
+  var importedTargets = (importedEvidence &&
     Array.isArray(importedEvidence.drivers))
     ? importedEvidence.drivers : [];
   return driverResearch.editedDriverTargets[targetId] ? {} :
@@ -829,8 +816,7 @@ function echoLevelText(setting) {
 //     (its `safety_field_names`).
 // Seven keys, because three overlap. The panel headline states that union as
 // its completeness claim, so the two must not drift apart: the tripwire is
-// tests/test_sound_profile_echo_back_contract.py, which also pins every key
-// here inside _V2_RESEARCH_COMPARABLE_FIELDS.
+// tests/test_sound_profile_echo_back_contract.py.
 //
 // Each entry reads the value JTS is actually RUNNING WITH out of the working
 // setting, not the number in the reply — those are the same until the
@@ -1108,7 +1094,6 @@ export {
   hfDriverStyleEntry,
   hfDriverStyles,
   ingestCrossoverPreview,
-  invalidateDriverResearchBinding,
   kaBeamingOnsetHz,
   levelDurationLimitsFromSetting,
   manualCrossoverDelayValidationError,

@@ -79,7 +79,7 @@ from .sound_active_speaker import (
     _active_speaker_commission_state_payload,
     _active_speaker_commissioning_view_payload,
     _active_speaker_crossover_preview_save_payload,
-    _active_speaker_design_draft_payload,
+    _active_speaker_design_draft_payload as _active_speaker_design_draft_payload,
     _active_speaker_design_draft_save_payload,
     _active_speaker_driver_research_request_payload,
     _active_speaker_finish_commissioning_payload,
@@ -546,16 +546,8 @@ def _make_handler(
                     return
                     return
                 if path == "/active-speaker/design-draft":
-                    from jasper.active_speaker.design_draft import (
-                        ActiveSpeakerDesignDraftRevisionConflict,
-                    )
-
                     try:
                         self._send_json(_active_speaker_design_draft_save_payload(raw))
-                    except ActiveSpeakerDesignDraftRevisionConflict as e:
-                        payload = _active_speaker_design_draft_payload()
-                        payload["error"] = str(e)
-                        self._send_json(payload, status=HTTPStatus.CONFLICT)
                     except OSError as e:
                         send_route_failure(
                             self._send_json, e, logger=logger,

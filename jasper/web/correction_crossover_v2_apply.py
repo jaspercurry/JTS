@@ -109,7 +109,7 @@ async def apply_candidate(
                     update: dict[str, Any] = {"status": "unchanged"}
                     if change:
                         try:
-                            saved = apply_measured_crossover_geometry(expected_revision=draft.get("revision", 0),
+                            saved = apply_measured_crossover_geometry(
                                 between_roles=change.between_roles, configured=change.configured, selected=change.selected)
                             state = v2state.load_v2_state() or {}
                             state.update(accepted_sound_revision=saved["revision"], accepted_sound_declaration_change=change_to_record(change), accepted_sound_candidate_fingerprint=expected)

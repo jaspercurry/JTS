@@ -41,7 +41,7 @@ from .driver_safety import (
     finalise_research_result,
     normalise_driver_safety_fields,
     validate_manual_target_bindings,
-    validate_driver_research_request,
+    build_driver_research_context,
     validate_driver_research_result_shape,
 )
 from .installation import normalise_installation
@@ -53,7 +53,6 @@ DRIVER_RESEARCH_KIND = "jts_active_crossover_driver_research"
 DEFAULT_DESIGN_DRAFT_PATH = Path("/var/lib/jasper/active_speaker_design_draft.json")
 DESIGN_DRAFT_PATH_ENV = "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"
 _DESIGN_DRAFT_WRITE_LOCK = threading.RLock()
-_REVISION_UNSET = object()
 
 _SUPPORTED_RESEARCH_ROLES = {"full_range", "woofer", "mid", "tweeter", "subwoofer"}
 _SUPPORTED_CONFIDENCE = {"low", "medium", "high", "unknown"}
@@ -94,14 +93,6 @@ _OPERATOR_INPUT_FIELDS = {
 
 class ActiveSpeakerDesignDraftError(ValueError):
     """Raised when a design draft or research packet has an unsupported shape."""
-
-
-class ActiveSpeakerDesignDraftRevisionConflict(ActiveSpeakerDesignDraftError):
-    """Raised when an optimistic design-draft revision is stale."""
-
-    def __init__(self, message: str, current_draft: Mapping[str, Any]):
-        super().__init__(message)
-        self.current_draft = dict(current_draft)
 
 
 def _design_draft_path(path: str | Path | None = None) -> Path:
@@ -548,8 +539,6 @@ def _normalise_candidate(raw: Any) -> dict[str, Any]:
 
 def normalise_driver_research(
     raw: Any,
-    *,
-    expected_request: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Return a bounded driver-research packet, or ``None`` when absent."""
 
@@ -616,22 +605,6 @@ def normalise_driver_research(
             "needs_measurement_before_final": True,
         },
     }
-    if research_schema_version == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:
-        request_fingerprint = _text(
-            raw.get("request_fingerprint"),
-            "driver_research.request_fingerprint",
-            required=True,
-            max_chars=64,
-        )
-        result["request_fingerprint"] = request_fingerprint
-        if expected_request is None:
-            raise ActiveSpeakerDesignDraftError(
-                "driver_research version 2 requires the current target-bound request"
-            )
-        try:
-            result = finalise_research_result(result, expected_request)
-        except DriverSafetyProfileError as exc:
-            raise ActiveSpeakerDesignDraftError(str(exc)) from exc
     return result
 
 
@@ -855,73 +828,6 @@ def normalise_operator_inputs(raw: Any) -> dict[str, Any]:
     return out
 
 
-# The research staleness-comparison field set — one of the four allowlist
-# gates for per-driver fields (see tests/test_active_speaker_driver_safety.py
-# ::test_component_entry_fields_present_in_all_four_allowlist_gates).
-_V2_RESEARCH_COMPARABLE_FIELDS = frozenset({
-        "role",
-        "model",
-        "nominal_impedance_ohm",
-        "sensitivity_db_2v83_1m",
-        "recommended_highpass_hz",
-        "recommended_highpass_slope_db_per_octave",
-        "recommended_lowpass_hz",
-        "do_not_test_below_hz",
-        "gain_offset_db",
-        "gain_offset_db_provenance",
-        "hard_excitation_band_hz",
-        "required_protection_filters",
-        "measurement_band_hz",
-        "level_duration_limits",
-        "cabinet",
-        # #1665 component entry: driver_class/radiating_diameter_mm are
-        # researchable, so a stale bound packet must be caught the same way as
-        # any other editable field. pad is never researched (never present on
-        # a research_driver), so this entry is inert for it -- included anyway
-        # for consistency with the other allowlists, which carry the same keys.
-        "driver_class",
-        "radiating_diameter_mm",
-        "pad",
-    })
-
-
-def _validate_v2_research_prefill(
-    research: Mapping[str, Any],
-    manual: Mapping[str, Any] | None,
-) -> None:
-    """Prove persisted v2 advice still matches the visible imported values.
-
-    A visible edit intentionally invalidates the bound packet in the browser;
-    callers then save the manual authority without v2 research.  While the
-    packet remains attached, every research-provided editable field must still
-    equal its target-specific visible value.
-    """
-
-    manual_by_target = {
-        str(driver.get("target_id")): driver
-        for driver in (manual or {}).get("drivers", [])
-        if isinstance(driver, Mapping) and driver.get("target_id")
-    }
-    comparable = _V2_RESEARCH_COMPARABLE_FIELDS
-    for research_driver in research.get("drivers", []):
-        target_id = str(research_driver.get("target_id") or "")
-        visible = manual_by_target.get(target_id)
-        if visible is None:
-            raise ActiveSpeakerDesignDraftError(
-                f"driver_research target {target_id} has no visible target-specific values"
-            )
-        for key in comparable:
-            if key not in research_driver:
-                continue
-            if json.dumps(visible.get(key), sort_keys=True) != json.dumps(
-                research_driver.get(key),
-                sort_keys=True,
-            ):
-                raise ActiveSpeakerDesignDraftError(
-                    f"driver_research visible context is stale for {target_id}.{key}"
-                )
-
-
 def _topology_roles(topology: OutputTopology) -> list[str]:
     roles: list[str] = []
     for group in topology.speaker_groups:
@@ -1089,45 +995,9 @@ def _summary(
     }
 
 
-def _rebound_to_restamped_request(
-    driver_research: Any,
-    *,
-    stored: Any,
-    canonical: Mapping[str, Any] | None,
-) -> Any:
-    """Carry a v2 result across a request RE-STAMP, or leave it exactly alone.
-
-    ``validate_driver_research_request`` re-stamps a request fingerprinted by a
-    build that has since had a per-driver field retired
-    (``_common.LEGACY_DROPPED_DRIVER_FIELDS``). A v2 result ECHOES that
-    fingerprint, so re-stamping the request alone orphans the result stored
-    beside it: migrating one of a matched pair is not a migration.
-
-    This module owns the pair — the only place both artifacts are in hand — so
-    the re-binding lives here rather than in either validator.
-
-    Deliberately narrow: it moves a result ONLY when the request's digest
-    actually changed AND the result echoed the exact pre-stamp digest, so a
-    genuinely mismatched result is still refused by the binding.
-    """
-
-    if not isinstance(canonical, Mapping) or not isinstance(driver_research, Mapping):
-        return driver_research
-    if not isinstance(stored, Mapping):
-        return driver_research
-    was = stored.get("request_fingerprint")
-    now = canonical.get("request_fingerprint")
-    if not was or not now or was == now:
-        return driver_research
-    if driver_research.get("request_fingerprint") != was:
-        return driver_research
-    return {**driver_research, "request_fingerprint": now}
-
-
 def build_design_draft(
     topology: OutputTopology,
     *,
-    driver_research_request: Any = None,
     driver_research: Any = None,
     manual_settings: Any = None,
     operator_inputs: Any = None,
@@ -1153,41 +1023,14 @@ def build_design_draft(
         validate_manual_target_bindings(topology, manual)
     except DriverSafetyProfileError as exc:
         raise ActiveSpeakerDesignDraftError(str(exc)) from exc
-    request = None
-    if driver_research_request is not None:
+    research = normalise_driver_research(driver_research)
+    if research and research["artifact_schema_version"] == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:
         try:
-            request = validate_driver_research_request(
-                driver_research_request,
-                topology,
-                inputs,
-                manual,
+            research = finalise_research_result(
+                research, build_driver_research_context(topology, inputs),
             )
         except DriverSafetyProfileError as exc:
             raise ActiveSpeakerDesignDraftError(str(exc)) from exc
-        driver_research = _rebound_to_restamped_request(
-            driver_research,
-            stored=driver_research_request,
-            canonical=request,
-        )
-    if (
-        isinstance(driver_research, Mapping)
-        and driver_research.get("artifact_schema_version")
-        == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION
-    ):
-        if request is None:
-            raise ActiveSpeakerDesignDraftError(
-                "driver_research version 2 requires its target-bound request"
-            )
-    research = normalise_driver_research(
-        driver_research,
-        expected_request=request,
-    )
-    if (
-        research is not None
-        and research.get("artifact_schema_version")
-        == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION
-    ):
-        _validate_v2_research_prefill(research, manual)
     evaluation = topology.evaluation()
     summary = _summary(topology, research, manual)
     issues: list[dict[str, str]] = []
@@ -1265,7 +1108,6 @@ def build_design_draft(
         "updated_at": now,
         "topology": topology.to_dict(include_evaluation=True),
         "operator_inputs": inputs,
-        "driver_research_request": request,
         "driver_research": research,
         "driver_safety_profile": safety_profile,
         "driver_safety_profile_evaluation": safety_evaluation,
@@ -1300,42 +1142,6 @@ def build_design_draft(
             else "Review the crossover settings before preparing a no-audio preview."
         ),
     }
-
-
-def _demote_legacy_driver_research_binding(
-    draft: dict[str, Any],
-) -> dict[str, Any]:
-    """Drop obsolete v2 prompt bindings while preserving visible manual values.
-
-    Older builds included the now-hidden per-driver ``operator_notes`` field in
-    a request fingerprint. Revalidating that request against the current,
-    visible-only prompt contract makes the next save fail as stale. The
-    research result is inseparable from its v2 request fingerprint, so demote
-    both on load; the normalized manual settings and safety profile remain
-    available, and the operator can copy a fresh prompt if more research is
-    wanted.
-    """
-
-    request = draft.get("driver_research_request")
-    targets = request.get("targets") if isinstance(request, Mapping) else None
-    has_legacy_notes = isinstance(targets, list) and any(
-        isinstance(target, Mapping)
-        and isinstance(target.get("operator_declared_context"), Mapping)
-        and "operator_notes" in target["operator_declared_context"]
-        for target in targets
-    )
-    if not has_legacy_notes:
-        return draft
-    out = dict(draft)
-    out["driver_research_request"] = None
-    research = out.get("driver_research")
-    if (
-        isinstance(research, Mapping)
-        and research.get("artifact_schema_version")
-        == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION
-    ):
-        out["driver_research"] = None
-    return out
 
 
 def load_design_draft(
@@ -1452,7 +1258,15 @@ def load_design_draft(
             }
         )
         return out
-    raw = _demote_legacy_driver_research_binding({**raw, "revision": revision})
+    raw["revision"] = revision
+    raw.pop("driver_research_request", None)
+    research = raw.get("driver_research")
+    if isinstance(research, dict):
+        research.pop("request_fingerprint", None)
+        research.pop("result_fingerprint", None)
+        for driver in research.get("drivers", []):
+            if isinstance(driver, dict):
+                driver.pop("target_fingerprint", None)
     if topology is None:
         return raw
     out = dict(raw)
@@ -1480,11 +1294,9 @@ def load_design_draft(
 def save_design_draft(
     topology: OutputTopology,
     *,
-    driver_research_request: Any = None,
     driver_research: Any = None,
     manual_settings: Any = None,
     operator_inputs: Any = None,
-    expected_revision: Any = _REVISION_UNSET,
     path: str | Path | None = None,
     created_at: str | None = None,
     durable: bool = False,
@@ -1503,23 +1315,8 @@ def save_design_draft(
         prior = load_design_draft(target)
         event_at = created_at or _utc_now()
         current_revision = prior.get("revision", 0)
-        if expected_revision is not _REVISION_UNSET:
-            if (
-                isinstance(expected_revision, bool)
-                or not isinstance(expected_revision, int)
-                or expected_revision < 0
-            ):
-                raise ActiveSpeakerDesignDraftError(
-                    "expected_revision must be a non-negative integer"
-                )
-            if expected_revision != current_revision:
-                raise ActiveSpeakerDesignDraftRevisionConflict(
-                    "speaker design changed in another session; review the fresh values",
-                    prior,
-                )
         draft = build_design_draft(
             topology,
-            driver_research_request=driver_research_request,
             driver_research=driver_research,
             manual_settings=manual_settings,
             operator_inputs=operator_inputs,

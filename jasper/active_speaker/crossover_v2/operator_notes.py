@@ -99,9 +99,8 @@ CARRIERS: dict[str, dict[str, Any]] = {
         "max_chars": 2048,
         "authored_by": "operator",
         "note": (
-            "legacy carrier with no live writer: a request carrying one is "
-            "refused as stale and demoted on the draft's next load, so only a "
-            "draft banked before that demotion still has one"
+            "legacy carrier with no live writer: requests are dropped on "
+            "draft load, so only an older banked draft still has one"
         ),
     },
 }
@@ -278,9 +277,8 @@ def build_operator_notes(draft: Mapping[str, Any] | None) -> dict[str, Any]:
     """Gather one draft's operator-typed prose into one labelled artifact.
 
     Takes the design draft as it sits on disk — a raw mapping, not a loaded
-    draft — because a bundle banked before
-    ``_demote_legacy_driver_research_binding`` still holds a carrier that
-    loading would drop. Absent prose is an absent KEY: ``build_notes``,
+    draft — because an older banked bundle can hold a carrier that loading
+    would drop. Absent prose is an absent KEY: ``build_notes``,
     ``drivers`` and ``declared_context`` appear only when they carry something.
     """
     draft = draft if isinstance(draft, Mapping) else {}

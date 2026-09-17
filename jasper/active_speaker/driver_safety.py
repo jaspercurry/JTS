@@ -2,14 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Driver-research request and confirmed safety-profile contracts.
+"""Driver-research advice and confirmed safety-profile contracts.
 
 Deliberately silent: it turns the current physical active-speaker targets plus
 operator-visible limits into immutable JSON contracts, and never generates a
 signal, compiles a filter, loads CamillaDSP or grants playback permission.
 
-Research remains advice. A version-2 result must echo the exact server-authored
-request and target identities, but only the values visible in
+Research remains advice. A version-2 result names current targets and models,
+but only the values visible in
 ``manual_settings`` enter the confirmed profile; downstream audio code still
 runs its own excitation and live-graph admission checks.
 """
@@ -22,7 +22,7 @@ import json
 import math
 from typing import Any, Mapping, Sequence
 
-from jasper.output_topology import OutputTopology
+from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
 from ._common import LEGACY_DROPPED_DRIVER_FIELDS, MANUAL_DRIVER_FIELDS, MANUAL_SETTINGS_FIELDS
 from .driver_protection import (
@@ -39,11 +39,9 @@ from .driver_protection import (
     resolve_driver_low_limit,
 )
 from .linearization_budget import normalise_fit_budget
-from .measurement import active_driver_targets, physical_driver_target
+from .measurement import active_driver_targets, measured_speaker_groups, physical_driver_target
 
 DRIVER_RESEARCH_KIND = "jts_active_crossover_driver_research"
-DRIVER_RESEARCH_REQUEST_KIND = "jts_active_crossover_driver_research_request"
-DRIVER_RESEARCH_REQUEST_SCHEMA_VERSION = 1
 DRIVER_RESEARCH_RESULT_SCHEMA_VERSION = 2
 
 DRIVER_SAFETY_PROFILE_KIND = "jts_active_speaker_driver_safety_profile"
@@ -137,28 +135,28 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
+def _driver_research_channels(
+    topology: OutputTopology,
+) -> list[tuple[SpeakerGroup, SpeakerChannel]]:
+    groups = measured_speaker_groups(topology)
+    if groups:
+        return [(group, channel) for group in groups for channel in group.channels]
+    return [
+        (group, channel)
+        for group in topology.speaker_groups
+        if group.mode == "full_range_passive"
+        for channel in group.channels
+        if channel.role == "full_range"
+    ]
+
+
 def driver_research_targets(topology: OutputTopology) -> list[dict[str, Any]]:
-    """Return physical components that the component/research flow describes.
+    """Describe researchable drivers using the measurement target contract."""
 
-    Active two/three-way targets reuse the measurement contract verbatim. The
-    research-only passive full-range case lives here rather than in
-    ``measurement.active_driver_targets()``, whose callers require active
-    commissioning semantics.
-    """
-
-    active_targets = active_driver_targets(topology)
-    if active_targets:
-        return active_targets
-
-    targets: list[dict[str, Any]] = []
-    for group in topology.speaker_groups:
-        if group.mode != "full_range_passive":
-            continue
-        for channel in group.channels:
-            if channel.role != "full_range":
-                continue
-            targets.append(physical_driver_target(topology, group, channel))
-    return targets
+    return [
+        physical_driver_target(topology, group, channel)
+        for group, channel in _driver_research_channels(topology)
+    ]
 
 
 def driver_protection_policy_view(
@@ -740,17 +738,6 @@ def normalise_driver_safety_fields(
             required=True,
             max_chars=160,
         )
-        target_fingerprint = _text(
-            value.get("target_fingerprint"),
-            f"{field_name}.target_fingerprint",
-            required=True,
-            max_chars=64,
-        )
-        if not _is_sha256(target_fingerprint):
-            raise DriverSafetyProfileError(
-                f"{field_name}.target_fingerprint must be a lowercase SHA-256"
-            )
-        out["target_fingerprint"] = target_fingerprint
         out["unknowns"] = _normalise_unknowns(
             value.get("unknowns"), f"{field_name}.unknowns"
         )
@@ -840,10 +827,6 @@ def validate_driver_research_result_shape(raw: Any) -> None:
         raise DriverSafetyProfileError(
             f"driver_research.kind must be {DRIVER_RESEARCH_KIND}"
         )
-    if not _is_sha256(raw.get("request_fingerprint")):
-        raise DriverSafetyProfileError(
-            "driver_research.request_fingerprint must be a lowercase SHA-256"
-        )
     for index, driver in enumerate(
         _sequence(raw.get("drivers"), "driver_research.drivers", maximum=16)
     ):
@@ -882,387 +865,57 @@ def validate_driver_research_result_shape(raw: Any) -> None:
         )
 
 
-def build_driver_research_request(
+def build_driver_research_context(
     topology: OutputTopology,
     operator_inputs: Mapping[str, Any],
-    manual_settings: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the exact physical-target-bound request copied by ``/sound/``."""
+    """Describe the current drivers and build notes, without declared limits."""
 
-    validate_manual_target_bindings(topology, manual_settings)
-    manual_by_role = _manual_by_role(manual_settings)
-    manual_by_target = _manual_by_target(manual_settings)
-    current_targets = driver_research_targets(topology)
+    channels = _driver_research_channels(topology)
     role_counts: dict[str, int] = {}
-    for target in current_targets:
-        role = str(target.get("role") or "")
-        role_counts[role] = role_counts.get(role, 0) + 1
-    driver_styles = {
-        channel.target_id(group.id): channel.driver_style
-        for group in topology.speaker_groups
-        for channel in group.channels
-        if channel.driver_style
-    }
-    targets: list[dict[str, Any]] = []
-    for target in current_targets:
-        role = str(target.get("role") or "")
-        target_id = str(target["target_id"])
-        target_models = operator_inputs.get("target_models")
-        target_models = target_models if isinstance(target_models, Mapping) else {}
-        model_value = target_models.get(target_id)
-        if model_value in (None, "") and role_counts.get(role) == 1:
-            model_value = operator_inputs.get(role)
-        model = _text(
-            model_value,
-            f"operator_inputs.target_models.{target_id}",
-            required=True,
-            max_chars=160,
-        )
-        visible = manual_by_target.get(target_id)
-        if visible is None and role_counts.get(role) == 1:
-            visible = manual_by_role.get(role, {})
-        visible = visible or {}
-        declared_context = (
-            normalise_driver_safety_fields(
-                visible,
-                f"manual_settings.{role}",
-                include_research_evidence=False,
-            )
-            if visible
-            else {}
-        )
-        # ``manual_settings.drivers[].notes`` predates the single visible Build
-        # notes field and may contain either operator prose or an imported
-        # research summary. Preserve it in the design/safety record, but never
-        # send invisible legacy text as authoritative prompt context. Its one
-        # reader is ``crossover_v2.operator_notes``, which carries it to the
-        # TUNING LLM inside the evidence packet's quarantined block and repeats
-        # this ambiguity there as that carrier's ``authored_by`` — the research
-        # prompt still never sees it.
-        request_target = {
+    for _, channel in channels:
+        role_counts[channel.role] = role_counts.get(channel.role, 0) + 1
+    target_models = operator_inputs.get("target_models")
+    target_models = target_models if isinstance(target_models, Mapping) else {}
+    targets = []
+    for group, channel in channels:
+        target_id = channel.target_id(group.id)
+        role = channel.role
+        model = target_models.get(target_id)
+        if model in (None, "") and role_counts[role] == 1:
+            model = operator_inputs.get(role)
+        targets.append({
             "target_id": target_id,
-            "target_fingerprint": str(target["target_fingerprint"]),
-            "speaker_group_id": str(target["speaker_group_id"]),
-            "speaker_group_mode": str(target["speaker_group_mode"]),
             "role": role,
-            "driver_style": driver_styles.get(str(target["target_id"]))
-            or "unspecified",
-            "physical_output_index": target.get("output_index"),
-            "physical_output_label": target.get("output_label"),
-            "manufacturer_and_model": model,
-            "operator_declared_context": declared_context or None,
-        }
-        targets.append(
-            {key: value for key, value in request_target.items() if value is not None}
-        )
-    if not targets:
-        raise DriverSafetyProfileError(
-            "driver research requires an active two-way or three-way topology"
-        )
-    core: dict[str, Any] = {
-        "artifact_schema_version": DRIVER_RESEARCH_REQUEST_SCHEMA_VERSION,
-        "kind": DRIVER_RESEARCH_REQUEST_KIND,
-        "topology_id": topology.topology_id,
-        "hardware": topology.hardware.to_dict(),
-        "targets": targets,
-        "build_notes": _text(
-            operator_inputs.get("notes"),
-            "operator_inputs.notes",
-            max_chars=1000,
-        ),
-    }
-    core = {key: value for key, value in core.items() if value is not None}
-    return {**core, "request_fingerprint": _fingerprint(core)}
-
-
-def validate_driver_research_request(
-    request: Any,
-    topology: OutputTopology,
-    operator_inputs: Mapping[str, Any],
-    manual_settings: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return a canonical current request or refuse stale/self-invalid input."""
-
-    if not isinstance(request, Mapping):
-        raise DriverSafetyProfileError("driver_research_request must be an object")
-    _reject_unknown_keys(
-        request,
-        "driver_research_request",
-        {
-            "artifact_schema_version",
-            "kind",
-            "topology_id",
-            "hardware",
-            "targets",
-            "build_notes",
-            "request_fingerprint",
-        },
-    )
-    if (
-        type(request.get("artifact_schema_version")) is not int  # noqa: E721
-        or request.get("artifact_schema_version")
-        != DRIVER_RESEARCH_REQUEST_SCHEMA_VERSION
-        or request.get("kind") != DRIVER_RESEARCH_REQUEST_KIND
-    ):
-        raise DriverSafetyProfileError(
-            "driver_research_request schema or kind is unsupported"
-        )
-    if request.get("topology_id") != topology.topology_id:
-        raise DriverSafetyProfileError(
-            "driver_research_request topology does not match the current topology"
-        )
-    if request.get("hardware") != topology.hardware.to_dict():
-        raise DriverSafetyProfileError(
-            "driver_research_request hardware does not match the current topology"
-        )
-    raw_targets = _sequence(
-        request.get("targets"),
-        "driver_research_request.targets",
-        maximum=16,
-    )
-    current_targets = driver_research_targets(topology)
-    role_counts: dict[str, int] = {}
-    for target in current_targets:
-        role = str(target.get("role") or "")
-        role_counts[role] = role_counts.get(role, 0) + 1
-    if len(raw_targets) != len(current_targets):
-        raise DriverSafetyProfileError(
-            "driver_research_request targets do not exactly match the current physical targets"
-        )
-    driver_styles = {
-        channel.target_id(group.id): channel.driver_style
-        for group in topology.speaker_groups
-        for channel in group.channels
-        if channel.driver_style
-    }
-    targets: list[dict[str, Any]] = []
-    #: ``targets`` with any retired key the stored context still carries put
-    #: BACK verbatim, reconstructing the core the writing build fingerprinted.
-    legacy_targets: list[dict[str, Any]] = []
-    saw_retired_context_field = False
-    for index, (raw_target, current) in enumerate(zip(raw_targets, current_targets)):
-        field_name = f"driver_research_request.targets[{index}]"
-        if not isinstance(raw_target, Mapping):
-            raise DriverSafetyProfileError(f"{field_name} must be an object")
-        _reject_unknown_keys(
-            raw_target,
-            field_name,
-            {
-                "target_id",
-                "target_fingerprint",
-                "speaker_group_id",
-                "speaker_group_mode",
-                "role",
-                "driver_style",
-                "physical_output_index",
-                "physical_output_label",
-                "manufacturer_and_model",
-                "operator_declared_context",
-            },
-        )
-        _reject_bool_tree(raw_target, field_name)
-        role = str(current["role"])
-        model = _text(
-            raw_target.get("manufacturer_and_model"),
-            f"{field_name}.manufacturer_and_model",
-            required=True,
-            max_chars=160,
-        )
-        target_models = operator_inputs.get("target_models")
-        target_models = target_models if isinstance(target_models, Mapping) else {}
-        current_model_value = target_models.get(str(current["target_id"]))
-        if current_model_value in (None, "") and role_counts.get(role) == 1:
-            current_model_value = operator_inputs.get(role)
-        current_model = _text(
-            current_model_value,
-            f"operator_inputs.target_models.{current['target_id']}",
-            required=True,
-            max_chars=160,
-        )
-        expected_fields = {
-            "target_id": str(current["target_id"]),
-            "target_fingerprint": str(current["target_fingerprint"]),
-            "speaker_group_id": str(current["speaker_group_id"]),
-            "speaker_group_mode": str(current["speaker_group_mode"]),
-            "role": role,
-            "physical_output_index": current.get("output_index"),
-            "physical_output_label": current.get("output_label"),
-        }
-        for key, expected in expected_fields.items():
-            if raw_target.get(key) != expected:
-                raise DriverSafetyProfileError(
-                    "driver_research_request targets do not exactly match "
-                    "the current physical targets"
-                )
-        if model != current_model:
-            raise DriverSafetyProfileError(
-                f"driver_research_request model is stale for {role}"
-            )
-        expected_style = driver_styles.get(str(current["target_id"])) or "unspecified"
-        if raw_target.get("driver_style") != expected_style:
-            if raw_target.get("driver_style") is not None or expected_style is not None:
-                raise DriverSafetyProfileError(
-                    "driver_research_request driver style is stale"
-                )
-        context_raw = raw_target.get("operator_declared_context")
-        context: dict[str, Any] = {}
-        if context_raw is not None:
-            if not isinstance(context_raw, Mapping):
-                raise DriverSafetyProfileError(
-                    f"{field_name}.operator_declared_context must be an object"
-                )
-            # Tolerated, never stored: a request persisted by an older build
-            # carries that build's normaliser output and is re-validated on
-            # EVERY save, so refusing here would make an old draft unsaveable.
-            # The normaliser below drops it. See LEGACY_DROPPED_DRIVER_FIELDS.
-            # The context is the normaliser's projection of one manual driver,
-            # so its vocabulary is MANUAL_DRIVER_FIELDS, not a second list.
-            _reject_unknown_keys(
-                context_raw,
-                f"{field_name}.operator_declared_context",
-                MANUAL_DRIVER_FIELDS | {"operator_notes"} | LEGACY_DROPPED_DRIVER_FIELDS,
-            )
-            context = normalise_driver_safety_fields(
-                context_raw,
-                f"{field_name}.operator_declared_context",
-                include_research_evidence=False,
-            )
-            notes = _text(
-                context_raw.get("operator_notes")
-                if isinstance(context_raw, Mapping)
-                else None,
-                f"{field_name}.operator_declared_context.operator_notes",
-                max_chars=2048,
-            )
-            if notes:
-                context["operator_notes"] = notes
-        # The retired keys as this request STORED them, copied verbatim rather
-        # than re-derived: the stored value is already in the writing build's
-        # normalised form, so copying reproduces the fingerprinted bytes.
-        legacy_context = dict(context)
-        if isinstance(context_raw, Mapping):
-            for retired in sorted(LEGACY_DROPPED_DRIVER_FIELDS):
-                if retired in context_raw:
-                    legacy_context[retired] = context_raw[retired]
-                    saw_retired_context_field = True
-        target = {
-            **expected_fields,
-            "driver_style": expected_style,
-            "manufacturer_and_model": model,
-            "operator_declared_context": context or None,
-        }
-        targets.append(
-            {key: value for key, value in target.items() if value is not None}
-        )
-        legacy_targets.append(
-            {
-                key: value
-                for key, value in {**target, "operator_declared_context":
-                                   legacy_context or None}.items()
-                if value is not None
-            }
-        )
-    core: dict[str, Any] = {
-        "artifact_schema_version": DRIVER_RESEARCH_REQUEST_SCHEMA_VERSION,
-        "kind": DRIVER_RESEARCH_REQUEST_KIND,
-        "topology_id": topology.topology_id,
-        "hardware": topology.hardware.to_dict(),
-        "targets": targets,
-        "build_notes": _text(
-            request.get("build_notes"),
-            "driver_research_request.build_notes",
-            max_chars=1000,
-        ),
-    }
-    core = {key: value for key, value in core.items() if value is not None}
-    fingerprint = request.get("request_fingerprint")
-    current_fingerprint = _fingerprint(core)
-    # **Tolerating the retired key in the allowlist is necessary and NOT
-    # sufficient**, because the context is FINGERPRINTED: the writing build
-    # hashed a core whose context still carried the key, so dropping it here
-    # recomputes a different digest and a real box's request would be refused on
-    # the very save its remedy copy asks for. A stored digest is therefore also
-    # accepted when it matches the core computed WITH the retired field present.
-    # Transitional: the record is re-stamped with ``current_fingerprint`` below,
-    # which the staleness check immediately after also depends on.
-    if not _is_sha256(fingerprint):
-        raise DriverSafetyProfileError("driver_research_request fingerprint is invalid")
-    if fingerprint != current_fingerprint:
-        legacy_core = {
-            key: (legacy_targets if key == "targets" else value)
-            for key, value in core.items()
-        }
-        if not saw_retired_context_field or fingerprint != _fingerprint(legacy_core):
-            raise DriverSafetyProfileError(
-                "driver_research_request fingerprint is invalid"
-            )
-    canonical = {**core, "request_fingerprint": current_fingerprint}
-    expected = build_driver_research_request(
-        topology,
-        operator_inputs,
-        manual_settings,
-    )
-    # The page folds a pasted reply's limits into the visible fields before
-    # the save, so the context is expected to move; the targets and models
-    # are what bind the reply to the current speaker.
-    if _canonical_json(_without_declared_context(canonical)) != _canonical_json(
-        _without_declared_context(expected)
-    ):
-        raise DriverSafetyProfileError(
-            "driver_research_request is stale for the current visible inputs"
-        )
-    return canonical
-
-
-def _without_declared_context(request: Mapping[str, Any]) -> dict[str, Any]:
+            "driver_style": channel.driver_style or "unspecified",
+            "manufacturer_and_model": _text(
+                model, f"operator_inputs.target_models.{target_id}", max_chars=160,
+            ),
+        })
     return {
-        **{k: v for k, v in request.items() if k != "request_fingerprint"},
-        "targets": [
-            {k: v for k, v in target.items() if k != "operator_declared_context"}
-            for target in request.get("targets", [])
-        ],
+        "targets": targets,
+        "build_notes": _text(
+            operator_inputs.get("notes"), "operator_inputs.notes", max_chars=1000,
+        ),
     }
 
 
 def validate_research_result_binding(
     result: Mapping[str, Any],
-    expected_request: Mapping[str, Any],
+    context: Mapping[str, Any],
 ) -> None:
-    """Refuse a v2 result that is stale, incomplete, or target-mismatched."""
+    """Refuse a reply naming an unknown target or a different model."""
 
-    expected_fingerprint = expected_request.get("request_fingerprint")
-    if result.get("request_fingerprint") != expected_fingerprint:
-        raise DriverSafetyProfileError(
-            "driver_research.request_fingerprint does not match the current request"
-        )
     expected = {
-        str(target.get("target_id")): (
-            str(target.get("target_fingerprint")),
-            str(target.get("role")),
-            str(target.get("manufacturer_and_model")),
-        )
-        for target in expected_request.get("targets", [])
-        if isinstance(target, Mapping)
+        target["target_id"]: target["manufacturer_and_model"]
+        for target in context["targets"]
     }
-    observed: dict[str, tuple[str, str, str]] = {}
     for driver in result.get("drivers", []):
-        if not isinstance(driver, Mapping):
-            continue
-        target_id = str(driver.get("target_id") or "")
-        target_fingerprint = str(driver.get("target_fingerprint") or "")
-        if target_id in observed:
+        target_id = driver.get("target_id")
+        if target_id not in expected or driver.get("model") != expected[target_id]:
             raise DriverSafetyProfileError(
-                f"driver_research has duplicate target_id: {target_id}"
+                "driver_research targets or models do not match the current speaker"
             )
-        observed[target_id] = (
-            target_fingerprint,
-            str(driver.get("role") or ""),
-            str(driver.get("model") or ""),
-        )
-    if observed != expected:
-        raise DriverSafetyProfileError(
-            "driver_research targets do not exactly match the current physical targets"
-        )
 
 
 # --- One implausible low limit, two authors, two answers ---------------------
@@ -1388,13 +1041,11 @@ def finalise_research_result(
     result: Mapping[str, Any],
     expected_request: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Validate binding and add the server-computed immutable result digest."""
+    """Validate the reply against the current drivers."""
 
     validate_research_result_binding(result, expected_request)
     validate_research_low_limit_plausibility(result, expected_request)
-    core = dict(result)
-    core.pop("result_fingerprint", None)
-    return {**core, "result_fingerprint": _fingerprint(core)}
+    return dict(result)
 
 
 def _research_by_target(
@@ -1900,19 +1551,12 @@ def _profile_core(
         targets.append(entry)
     if not targets:
         issues.append("active_driver_targets_missing")
-    research_digest = None
-    request_digest = None
-    if isinstance(driver_research, Mapping):
-        research_digest = driver_research.get("result_fingerprint")
-        request_digest = driver_research.get("request_fingerprint")
     core = {
         "artifact_schema_version": DRIVER_SAFETY_PROFILE_SCHEMA_VERSION,
         "kind": DRIVER_SAFETY_PROFILE_KIND,
         "topology_id": topology.topology_id,
         "targets": targets,
         "research": {
-            "request_fingerprint": request_digest,
-            "result_fingerprint": research_digest,
             "advisory_only": True,
         },
         "authority": "operator_visible_values",
@@ -2118,12 +1762,6 @@ def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
         raise DriverSafetyProfileError(
             "driver_safety_profile.research must remain advisory"
         )
-    for digest_field in ("request_fingerprint", "result_fingerprint"):
-        digest = research.get(digest_field)
-        if digest is not None and not _is_sha256(digest):
-            raise DriverSafetyProfileError(
-                f"driver_safety_profile.research.{digest_field} is invalid"
-            )
     targets = _sequence(
         profile.get("targets"),
         "driver_safety_profile.targets",

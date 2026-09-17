@@ -618,12 +618,6 @@ function driverEchoBackRowsHtml(targetId, driver) {
 function renderDriverEchoBack(topology) {
   var payload = driverResearch.importedPayload;
   if (!payload || !Array.isArray(payload.drivers)) return '';
-  // A v2 packet whose binding a visible edit invalidated is not describing
-  // this speaker any more. Same currency rule driverEvidenceForTarget uses.
-  if (Number(payload.artifact_schema_version || 1) === 2 &&
-      !driverResearch.researchRequest) {
-    return '';
-  }
   var blocks = driverResearchTargets(topology).map(function(target) {
     var driver = payload.drivers.filter(function(item) {
       return item && String(item.target_id || '') === target.target_id;
