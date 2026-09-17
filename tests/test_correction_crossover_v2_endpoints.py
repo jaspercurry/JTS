@@ -4525,19 +4525,7 @@ class _FakeApplyCam:
 
 
 def _seed_baseline_apply_environment(monkeypatch, tmp_path):
-    """Seed the real topology/design-draft/crossover-preview/measurements
-    files ``handle_v2_apply``'s real loaders read (env-var overrides — the
-    same pattern as ``tests/test_active_speaker_setup_status.py``), plus the
-    baseline-profile/config and DSP-apply state paths. Returns
-    ``(topology, preset)`` so a caller can build a ``MeasuredCrossoverCandidate``
-    against the exact preset the seam will recompile from the same files.
-
-    W6.11: the crossover-preview file is no longer hand-built and written
-    directly — that sidestepped the exact bug this wave fixed (only
-    ``/sound/``'s Preview button ever generated it; v2 never did). It is
-    produced by ``ensure_crossover_preview_ready()``, the real
-    session-start seam, so this fixture proves the same machinery a browser
-    session would drive."""
+    """Seed the declaration and evidence used by the real apply loaders."""
     monkeypatch.setattr(v2state, "_state_path_override", tmp_path / "v2_state.json")
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda status: object())
     from jasper.active_speaker import compile_preset_from_crossover_preview
@@ -4566,10 +4554,6 @@ def _seed_baseline_apply_environment(monkeypatch, tmp_path):
     draft_path.write_text(json.dumps(draft), encoding="utf-8")
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(draft_path))
 
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
-        str(tmp_path / "crossover_preview.json"),
-    )
     preview = ensure_crossover_preview_ready()
 
     # No driver-test measurements recorded — the run-6 shape: a household
@@ -5779,17 +5763,7 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     from jasper.active_speaker import compile_preset_from_crossover_preview
     from jasper.web import correction_crossover_flow as reset_flow
 
-    preview_path = tmp_path / "crossover_preview.json"
-    assert not preview_path.exists()
-
-    # _seed_baseline_apply_environment's own preview-generation step IS a v2
-    # session start (it calls ensure_crossover_preview_ready — no direct
-    # build_crossover_preview()+write since W6.11). Assert the file landed
-    # ready, proving the ensure step actually ran rather than being a no-op.
     topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    assert preview_path.exists()
-    on_disk = json.loads(preview_path.read_text(encoding="utf-8"))
-    assert on_disk["status"] == "ready_for_protected_staging"
 
     candidate = _run6_measured_candidate(preset)
     v2state.save_v2_state({
@@ -5829,14 +5803,8 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     _reset_payload, reset_status = reset_flow.handle_reset()
 
     assert reset_status == 200
-    # The preview really is gone — reset.py's documented by-design deletion.
-    assert not preview_path.exists()
-
-    # A fresh v2 session start re-ensures the preview from the unchanged
-    # design draft — still no hand-seeding.
     reensured = ensure_crossover_preview_ready()
     assert reensured["status"] == "ready_for_protected_staging"
-    assert preview_path.exists()
 
     preset_again, issues, _gates = compile_preset_from_crossover_preview(
         topology, reensured,
@@ -5863,29 +5831,14 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
 def test_v2_session_start_refuses_by_name_when_draft_cannot_produce_a_ready_preview(
     monkeypatch, tmp_path,
 ):
-    """Negative: no design draft has ever been saved, so the ensure step's
-    regeneration attempt cannot reach ready_for_protected_staging. Session
-    start must refuse BY NAME (CrossoverV2Refused, naming the actual
-    blocker) — never a silent pass-through that only surfaces as an
-    apply-time 409 later."""
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
         str(tmp_path / "design_draft_never_saved.json"),
-    )
-    preview_path = tmp_path / "crossover_preview.json"
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE", str(preview_path)
     )
 
     with pytest.raises(refusal_copy.CrossoverV2Refused, match="not ready for measurement"):
         ensure_crossover_preview_ready()
 
-    # The regeneration attempt still ran (the same machinery /sound/ would
-    # have run) and left an honest "blocked" preview on disk, never a
-    # ready_for_protected_staging one.
-    assert preview_path.exists()
-    blocked = json.loads(preview_path.read_text(encoding="utf-8"))
-    assert blocked["status"] == "blocked"
 
 
 class _RecordingEvidenceStore:
@@ -6418,11 +6371,12 @@ def test_start_over_carries_the_sequence_epoch(applied, epoch, receipt, expected
 
 def test_restore_uses_the_saved_sound_inverse_and_the_previous_trial(monkeypatch, tmp_path):
     from jasper.active_speaker import compile_preset_from_crossover_preview
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
     from jasper.output_topology import load_output_topology
 
     selected = _seed_alternative_apply(monkeypatch, tmp_path)
-    preset, _, _ = compile_preset_from_crossover_preview(load_output_topology(), load_crossover_preview())
+    preset, _, _ = compile_preset_from_crossover_preview(load_output_topology(), build_crossover_preview(load_design_draft()))
     previous = _run6_measured_candidate(preset)
     cam = _FakeApplyCam()
     applied = _apply({"candidate": previous.to_dict(), "expected_candidate_fingerprint": previous.fingerprint},
@@ -6493,7 +6447,6 @@ def test_apply_after_draft_edit_loads_the_trial_composers_exact_bytes(monkeypatc
     draft.update(revision=7, updated_at="2026-09-13T12:00:00Z")
     draft["manual_settings"]["driver_spacing_mm"] = 190
     path.write_text(json.dumps(draft))
-    (tmp_path / "crossover_preview.json").unlink()
     declaration = MeasurementGraphProfile(
         preset, topology, measurement_role_channels(preset), resolve_active_playback_device(topology)[0],
         confirmed_protection_sections(draft["driver_safety_profile"]),
@@ -6510,7 +6463,6 @@ def test_apply_after_draft_edit_loads_the_trial_composers_exact_bytes(monkeypatc
     assert record["source"]["design_draft_updated_at"] == draft["updated_at"]
     assert record["config"]["sha256"] == hashlib.sha256(expected).hexdigest()
     assert record["apply"]["result"] == "success"
-    assert not (tmp_path / "crossover_preview.json").exists()
     assert not list(tmp_path.rglob("run_manifest.json"))
 
 

@@ -197,19 +197,14 @@ def read_box_declaration() -> BoxDeclaration:
     door adds only what a wired session needs on top — the confirmed per-role
     protection — and the 2-way scope its measurement graph is built for.
 
-    It measures the box as DECLARED and never repairs it, so a preview that is
-    not already staged refuses here rather than reaching
-    ``ensure_crossover_preview_ready``'s regenerate branch: repairing the
-    design inputs would be setup under a measurement's name.
     """
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.crossover_preview import current_crossover_preview
     from jasper.active_speaker.crossover_v2.conductor_context import (
         conductor_status,
         resolve_conductor_context,
     )
     from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
-    from jasper.active_speaker.design_draft import load_design_draft
     from jasper.output_topology import (
         load_output_topology,
         topology_is_subless_passive_mains,
@@ -220,11 +215,11 @@ def read_box_declaration() -> BoxDeclaration:
             REFUSE_BOX_NOT_READY,
             "this box has no active crossover to measure",
         )
-    preview = load_crossover_preview(current_design_draft=load_design_draft())
+    preview = current_crossover_preview()
     if preview.get("status") != "ready_for_protected_staging":
         raise BoxNotMeasurable(
             REFUSE_BOX_NOT_READY,
-            "the crossover preview is not staged for the current design; "
+            "the crossover declaration is incomplete; "
             "finish speaker setup at http://jts.local/sound/",
         )
     try:
@@ -469,13 +464,16 @@ def _level_match_trims(box: BoxDeclaration) -> dict[str, float]:
     nothing to level by and the caller refuses.
     """
     from jasper.active_speaker.baseline_profile import measured_level_trims
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
 
+    draft = load_design_draft()
     trims, _meta = measured_level_trims(
         box.preset,
         load_measurement_state(box.topology) or {},
-        load_crossover_preview() or {},
+        build_crossover_preview(draft),
+        design_draft=draft,
     )
     return {str(role): float(db) for role, db in trims.items()}
 

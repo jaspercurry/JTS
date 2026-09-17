@@ -11,15 +11,11 @@ YAML, no config load, no playback authority, and no sound.
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import math
-import os
-from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.atomic_io import atomic_write_text
-from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.output_topology import OutputTopology, OutputTopologyError
 from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, issue as _issue
 from .driver_protection import (
@@ -33,21 +29,8 @@ from .driver_protection import (
     resolve_driver_low_limit,
 )
 
-#: Bumped to 2 for the one-owner low-limit collapse (#2603). A preview saved
-#: before it carries UN-DERIVED driver payloads, and staging compiles the
-#: preset straight from those, so such a file must not be reused. It cannot be
-#: caught by a content re-prove -- ``crossover_preview_fingerprint`` reads the
-#: version out of the artifact itself, so an old preview stays self-consistent
-#: -- which is why the version is what moves. ``load_crossover_preview``'s
-#: existing guard turns that into the actionable "Prepare a fresh crossover
-#: preview."
 SCHEMA_VERSION = 2
 CROSSOVER_PREVIEW_KIND = "jts_active_speaker_crossover_preview"
-DEFAULT_CROSSOVER_PREVIEW_PATH = Path(
-    "/var/lib/jasper/active_speaker_crossover_preview.json"
-)
-CROSSOVER_PREVIEW_PATH_ENV = "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE"
-
 _CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1, "unknown": 0}
 #: What a candidate that declares no filter/slope is previewed and compiled as.
 #: Public because the /sound/ crossover editor must pre-select the SAME member
@@ -57,14 +40,6 @@ _CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1, "unknown": 0}
 #: ``tests/test_crossover_declaration.py``.
 DEFAULT_FILTER_TYPE = "Linkwitz-Riley"
 DEFAULT_SLOPE_DB_PER_OCTAVE = 24.0
-
-
-def crossover_preview_path(path: str | Path | None = None) -> Path:
-    return Path(
-        path
-        or os.environ.get(CROSSOVER_PREVIEW_PATH_ENV)
-        or DEFAULT_CROSSOVER_PREVIEW_PATH
-    )
 
 
 def _as_mapping(raw: Any) -> Mapping[str, Any] | None:
@@ -81,29 +56,24 @@ def _manual_crossover_settings(design_draft: Mapping[str, Any]) -> Mapping[str, 
     ]}
 
 
-def crossover_design_fingerprint(design_draft: Mapping[str, Any]) -> str:
-    """Return a stable content fingerprint for freshness checks."""
+def crossover_preview_fingerprint(
+    preview: Mapping[str, Any], design_draft: Mapping[str, Any] | None = None,
+) -> str:
+    """Bind banked driver trims to the normalized declaration they measured."""
 
-    stable = {
-        "status": design_draft.get("status"),
-        "topology": design_draft.get("topology"),
-        "operator_inputs": design_draft.get("operator_inputs"),
-        "driver_research": design_draft.get("driver_research"),
-        "manual_settings": _manual_crossover_settings(design_draft),
-    }
-    raw = json.dumps(stable, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def crossover_preview_fingerprint(preview: Mapping[str, Any]) -> str:
-    """Fingerprint the exact normalized preview content that can compile.
-
-    Volatile persistence/UI metadata is deliberately excluded. Every field
-    consumed by protected staging is included, including the normalized driver
-    and crossover candidate payloads. ``source.preview_fingerprint`` itself is
-    excluded so a saved preview can carry and re-prove this identity.
-    """
-
+    # Existing banked trims use this projection; removing preview persistence
+    # must not invalidate their measured declaration (ADR-0323).
+    design_fingerprint = None
+    if design_draft is not None and design_draft.get("status") not in {"not_saved", "unreadable"}:
+        design = {
+            "status": design_draft.get("status"),
+            "topology": design_draft.get("topology"),
+            "operator_inputs": design_draft.get("operator_inputs"),
+            "driver_research": design_draft.get("driver_research"),
+            "manual_settings": _manual_crossover_settings(design_draft),
+        }
+        raw = json.dumps(design, sort_keys=True, separators=(",", ":"), default=str)
+        design_fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     source = _as_mapping(preview.get("source")) or {}
     stable = {
         "artifact_schema_version": preview.get("artifact_schema_version"),
@@ -112,11 +82,19 @@ def crossover_preview_fingerprint(preview: Mapping[str, Any]) -> str:
         "source": {
             "design_draft_status": source.get("design_draft_status"),
             "topology_id": source.get("topology_id"),
-            "design_draft_fingerprint": source.get("design_draft_fingerprint"),
+            "design_draft_fingerprint": design_fingerprint,
         },
         "drivers": preview.get("drivers"),
         "groups": preview.get("groups"),
-        "permissions": preview.get("permissions"),
+        # This constant projection keeps existing banked driver-trim identities stable.
+        "permissions": {
+            "may_explain": True,
+            "may_prepare_protected_startup_config": preview.get("status") == "ready_for_protected_staging",
+            "may_not_emit_camilla_yaml": True,
+            "may_not_load_camilla": True,
+            "may_not_emit_audio": True,
+            "may_not_authorize_playback": True,
+        },
         "safety": preview.get("safety"),
     }
     raw = json.dumps(stable, sort_keys=True, separators=(",", ":"), default=str)
@@ -385,7 +363,7 @@ def _build_crossover(
     if proposed_frequency is not None and ceiling is not None and proposed_frequency > ceiling:
         issues.append(
             _issue(
-                "blocker",
+                "warning",
                 "crossover_frequency_above_lower_driver_range",
                 f"{lower_role} research only claims usable response to {round(ceiling)} Hz",
             )
@@ -503,12 +481,9 @@ def _build_crossover(
 
 def build_crossover_preview(
     design_draft: Mapping[str, Any],
-    *,
-    created_at: str | None = None,
 ) -> dict[str, Any]:
     """Return a versioned crossover preview without hardware side effects."""
 
-    now = created_at or _utc_now()
     issues: list[dict[str, str]] = []
     topology: OutputTopology | None = None
     topology_raw = _as_mapping(design_draft.get("topology"))
@@ -538,7 +513,7 @@ def build_crossover_preview(
             _issue(
                 "blocker",
                 "design_draft_not_ready",
-                "save a readable speaker design draft before preparing a crossover preview",
+                "save a readable speaker design draft for a crossover preview",
             )
         )
     elif draft_status == "needs_research":
@@ -546,7 +521,7 @@ def build_crossover_preview(
             _issue(
                 "blocker",
                 "design_draft_needs_research",
-                "driver research is required before preparing a crossover preview",
+                "driver research is required for a crossover preview",
             )
         )
 
@@ -641,13 +616,10 @@ def build_crossover_preview(
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": CROSSOVER_PREVIEW_KIND,
         "status": status,
-        "created_at": now,
-        "updated_at": now,
         "source": {
             "design_draft_status": draft_status,
             "topology_id": topology.topology_id if topology else None,
             "design_draft_updated_at": design_draft.get("updated_at"),
-            "design_draft_fingerprint": crossover_design_fingerprint(design_draft),
         },
         "drivers": {role: dict(driver) for role, driver in drivers.items()},
         "summary": {
@@ -665,14 +637,6 @@ def build_crossover_preview(
             ),
         },
         "groups": groups,
-        "permissions": {
-            "may_explain": True,
-            "may_prepare_protected_startup_config": status == "ready_for_protected_staging",
-            "may_not_emit_camilla_yaml": True,
-            "may_not_load_camilla": True,
-            "may_not_emit_audio": True,
-            "may_not_authorize_playback": True,
-        },
         "safety": {
             "no_audio": True,
             "loads_camilla": False,
@@ -691,183 +655,10 @@ def build_crossover_preview(
             else "Review the crossover preview, then stage a protected startup config in a separate step."
         ),
     }
-    preview["source"]["preview_fingerprint"] = crossover_preview_fingerprint(preview)
     return preview
 
 
-def _stale_preview(
-    preview: Mapping[str, Any],
-    *,
-    code: str,
-    message: str,
-) -> dict[str, Any]:
-    out = dict(preview)
-    out["status"] = "stale"
-    out["permissions"] = dict(out.get("permissions") or {})
-    out["permissions"]["may_prepare_protected_startup_config"] = False
-    out["issues"] = [
-        *[issue for issue in out.get("issues", []) if isinstance(issue, Mapping)],
-        _issue("blocker", code, message),
-    ]
-    out["summary"] = dict(out.get("summary") or {})
-    out["summary"]["blocker_count"] = sum(
-        1 for issue in out["issues"] if issue.get("severity") == "blocker"
-    )
-    out["next_step"] = "Prepare a fresh crossover preview from the saved design draft."
-    return out
+def current_crossover_preview() -> dict[str, Any]:
+    from .design_draft import load_design_draft  # lazy: design draft imports baseline readers
 
-
-def _validate_preview_freshness(
-    preview: Mapping[str, Any],
-    current_design_draft: Mapping[str, Any] | None,
-) -> dict[str, Any]:
-    source = _as_mapping(preview.get("source")) or {}
-    declared_preview_fingerprint = source.get("preview_fingerprint")
-    actual_preview_fingerprint = crossover_preview_fingerprint(preview)
-    if (
-        not declared_preview_fingerprint
-        or declared_preview_fingerprint != actual_preview_fingerprint
-    ):
-        return _stale_preview(
-            preview,
-            code="crossover_preview_content_mismatch",
-            message=(
-                "saved crossover preview content no longer matches its frozen "
-                "candidate; prepare a fresh crossover preview"
-            ),
-        )
-    if current_design_draft is None:
-        return dict(preview)
-    if current_design_draft.get("status") in {"not_saved", "unreadable"}:
-        return _stale_preview(
-            preview,
-            code="crossover_preview_design_draft_unavailable",
-            message="current design draft is unavailable; prepare a fresh crossover preview",
-        )
-
-    expected = source.get("design_draft_fingerprint")
-    actual = crossover_design_fingerprint(current_design_draft)
-    if expected != actual:
-        return _stale_preview(
-            preview,
-            code="crossover_preview_stale_design_draft",
-            message="saved design draft changed after this crossover preview was prepared",
-        )
-    return dict(preview)
-
-
-def load_crossover_preview(
-    path: str | Path | None = None,
-    *,
-    current_design_draft: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return the saved crossover preview, failing soft when absent."""
-
-    target = crossover_preview_path(path)
-    try:
-        raw = json.loads(target.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": CROSSOVER_PREVIEW_KIND,
-            "status": "not_prepared",
-            "path": str(target),
-            "summary": {},
-            "groups": [],
-            "issues": [],
-            "next_step": "Prepare a crossover preview from the saved speaker design draft.",
-        }
-    except (OSError, json.JSONDecodeError) as exc:
-        return {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": CROSSOVER_PREVIEW_KIND,
-            "status": "unreadable",
-            "path": str(target),
-            "summary": {},
-            "groups": [],
-            "issues": [
-                _issue(
-                    "blocker",
-                    "crossover_preview_unreadable",
-                    f"could not read active-speaker crossover preview: {type(exc).__name__}",
-                )
-            ],
-            "next_step": "Prepare a fresh crossover preview.",
-        }
-    if not isinstance(raw, dict):
-        return {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": CROSSOVER_PREVIEW_KIND,
-            "status": "unreadable",
-            "path": str(target),
-            "summary": {},
-            "groups": [],
-            "issues": [
-                _issue(
-                    "blocker",
-                    "crossover_preview_not_object",
-                    "active-speaker crossover preview is not a JSON object",
-                )
-            ],
-            "next_step": "Prepare a fresh crossover preview.",
-        }
-    if raw.get("artifact_schema_version") != SCHEMA_VERSION or raw.get("kind") != CROSSOVER_PREVIEW_KIND:
-        return {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": CROSSOVER_PREVIEW_KIND,
-            "status": "unreadable",
-            "path": str(target),
-            "summary": {},
-            "groups": [],
-            "issues": [
-                _issue(
-                    "blocker",
-                    "crossover_preview_unsupported_schema",
-                    "active-speaker crossover preview has an unsupported schema",
-                )
-            ],
-            "next_step": "Prepare a fresh crossover preview.",
-        }
-    raw["path"] = str(target)
-    return _validate_preview_freshness(raw, current_design_draft)
-
-
-def save_crossover_preview(
-    design_draft: Mapping[str, Any],
-    *,
-    path: str | Path | None = None,
-    created_at: str | None = None,
-    durable: bool = False,
-) -> dict[str, Any]:
-    """Persist a crossover preview atomically. This does not authorize audio.
-
-    ``durable=True`` fsyncs the write before it is visible (see
-    :func:`jasper.atomic_io.atomic_write_text`). The default stays ``False``
-    for the routine Preview regenerations; the crossover-accept seam opts in
-    explicitly so the accepted preview survives a power loss, not just a torn
-    write.
-    """
-
-    target = crossover_preview_path(path)
-    prior = load_crossover_preview(target)
-    preview = build_crossover_preview(
-        design_draft,
-        created_at=created_at or (
-            prior.get("created_at")
-            if prior.get("status") not in {"not_prepared", "unreadable"}
-            else None
-        ),
-    )
-    preview["path"] = str(target)
-    preview["updated_at"] = _utc_now() if created_at is None else preview["updated_at"]
-    # 0640 + the parent's group: same reason as the design-draft store this
-    # preview is derived from. The crossover-accept seam re-prepares it from
-    # the ROOT jasper-correction-web process while /sound/ reads it as
-    # jasper-web.
-    atomic_write_text(
-        target,
-        json.dumps(preview, indent=2, sort_keys=True) + "\n",
-        mode=0o640,
-        durable=durable,
-    )
-    return preview
+    return build_crossover_preview(load_design_draft())

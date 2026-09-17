@@ -76,7 +76,6 @@ from .sound_active_speaker import (
     OutputHardwareRequestConflict,
     OutputTopologyRevisionConflict,
     _active_speaker_commissioning_view_payload,
-    _active_speaker_crossover_preview_save_payload,
     _active_speaker_design_draft_save_payload,
     _active_speaker_driver_research_request_payload,
     _active_speaker_finish_commissioning_payload,
@@ -541,18 +540,6 @@ def _make_handler(
                         _active_speaker_driver_research_request_payload(raw)
                     )
                     return
-                if path == "/active-speaker/crossover-preview":
-                    try:
-                        self._send_json(
-                            _active_speaker_crossover_preview_save_payload()
-                        )
-                    except OSError as e:
-                        send_route_failure(
-                            self._send_json, e, logger=logger,
-                            event="sound.active_speaker_crossover_preview_save",
-                            error=type(e).__name__,
-                        )
-                    return
                 if path == "/active-speaker/baseline-profile/restore":
                     from .correction_crossover_v2_apply import CrossoverV2Refused, handle_v2_apply  # lazy: applying imports NumPy
 
@@ -913,7 +900,6 @@ def _make_handler(
         "/volume-floor/stop": Handler._dispatch_post_route,
         "/active-speaker/design-draft": Handler._dispatch_post_route,
         "/active-speaker/driver-research-request": Handler._dispatch_post_route,
-        "/active-speaker/crossover-preview": Handler._dispatch_post_route,
         "/active-speaker/rear-calibration/validate": Handler._dispatch_post_route,
         "/active-speaker/rear-calibration/bank": Handler._dispatch_post_route,
         "/active-speaker/seat-level/start": Handler._dispatch_post_route,

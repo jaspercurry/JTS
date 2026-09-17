@@ -129,7 +129,7 @@ def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurement
     )
     monkeypatch.setattr(design_draft_mod, "load_design_draft", lambda *a, **k: draft)
     monkeypatch.setattr(
-        crossover_preview_mod, "load_crossover_preview", lambda *a, **k: preview
+        crossover_preview_mod, "build_crossover_preview", lambda *a, **k: preview
     )
     monkeypatch.setattr(
         measurement_mod, "load_measurement_state", lambda *a, **k: measurements
@@ -161,7 +161,7 @@ def test_program_channel_for_fail_closed() -> None:
 def test_apply_emits_reproves_applies_and_stashes(monkeypatch, tmp_path) -> None:
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
@@ -244,7 +244,7 @@ def test_apply_threads_pair_trim_into_driver_domain(monkeypatch, tmp_path) -> No
     must be emitted into the relocated driver-domain graph."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
@@ -264,7 +264,7 @@ def test_apply_refuses_unprovable_graph_no_emit(monkeypatch, tmp_path) -> None:
     re-proven, refuse to bond — CamillaDSP is never loaded."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
@@ -302,7 +302,7 @@ def test_apply_emit_gate_refusal_surfaces_as_follower_error(
 
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
@@ -335,7 +335,7 @@ def test_typod_ring_wire_refusal_surfaces_as_follower_error(
 
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
@@ -839,7 +839,7 @@ def test_precheck_fails_closed_on_unreadable_topology(monkeypatch, tmp_path) -> 
     flat full-range graph would re-prove allowed and reach the tweeter."""
     topology = _dual_apple_topology()
     draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
+    preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
 

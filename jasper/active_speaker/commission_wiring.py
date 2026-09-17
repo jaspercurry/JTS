@@ -7,7 +7,7 @@
 Owns the glue the ``jasper-active-speaker`` CLI and the ``/sound/`` commission
 card both need for ``commission_load.load_driver_commissioning_config`` /
 ``commission_ramp.ramp_audible_step``: the inline CamillaController seams, the
-saved-crossover-preview resolution, and fresh path-safety evidence.
+computed crossover-preview resolution, and fresh path-safety evidence.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ ConfigPathReader = Callable[[], Awaitable[str | None]]
 
 
 class CommissionPresetResolutionError(ValueError):
-    """A saved crossover preview could not produce a commissioning preset."""
+    """A crossover preview could not produce a commissioning preset."""
 
     def __init__(self, issues: list[dict[str, Any]]) -> None:
         self.issues = issues
@@ -78,15 +78,14 @@ async def read_current_config_path(cam: Any) -> tuple[str | None, str | None]:
 def resolve_commission_inputs(preset: Any = None) -> tuple[Any, dict[str, Any] | None]:
     """Resolve ``(preset, crossover_preview)`` for a per-driver commissioning load.
 
-    Staging compiles from the saved crossover preview, so the load must use the
+    Staging compiles from the current design draft, so the load must use the
     SAME source or its mask/crossover would not match the active all-muted graph.
     """
     if preset is not None:
         return preset, None
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
+    from jasper.active_speaker.crossover_preview import current_crossover_preview
 
-    preview = load_crossover_preview(current_design_draft=load_design_draft())
+    preview = current_crossover_preview()
     if preview.get("status") == "ready_for_protected_staging":
         return None, preview
     return None, None

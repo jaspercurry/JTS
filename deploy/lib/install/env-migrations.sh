@@ -60,6 +60,8 @@ ensure_state_dir() {
 # known group-shared, multi-writer state is touched. Fresh installs no-op (the
 # files don't exist until a daemon first creates them).
 heal_shared_state_modes() {
+    # An old build could revive this stale preview after a rollback.
+    rm -f "${STATE_DIR}/active_speaker_crossover_preview.json"
     local group_line jasper_gid base sidecar web_uid
     group_line="$(getent group jasper 2>/dev/null || true)"
     [[ -n "${group_line}" ]] || return 0
@@ -99,14 +101,7 @@ heal_shared_state_modes() {
         "f:0660:${STATE_DIR}/audio_health_incidents.json"
         "f:0660:${STATE_DIR}/mux_mode.json"
         "f:0640:${STATE_DIR}/output_topology.json"
-        # The crossover-accept seam writes these two from the ROOT
-        # jasper-correction-web process while /sound/ reads them as jasper-web.
-        # Their writers now publish the parent's group, but that only fixes
-        # FUTURE writes -- a box that accepted a measured crossover before this
-        # shipped still carries root:root 0640 and renders an empty design page
-        # until something happens to rewrite them. Heal the ones already on disk.
         "f:0640:${STATE_DIR}/active_speaker_design_draft.json"
-        "f:0640:${STATE_DIR}/active_speaker_crossover_preview.json"
         "f:0660:${STATE_DIR}/grouping.env"
         "f:0660:${STATE_DIR}/.grouping.env.lock"
         "f:0660:${STATE_DIR}/source_intent.env"

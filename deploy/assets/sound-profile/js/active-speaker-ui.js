@@ -98,7 +98,6 @@ export function nextActionAct(action) {
   return {
     declare_speaker: {act: 'open-output-layout', step: 'layout'},
     save_driver_values: {act: 'save-driver-design', step: 'research'},
-    preview_crossover: {act: 'prepare-crossover-preview', step: 'research'},
     run_speaker_program: run,
     apply_candidate: {act: 'save-apply-baseline-profile', step: 'profile'},
     run_program: run,

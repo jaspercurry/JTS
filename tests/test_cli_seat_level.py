@@ -376,7 +376,6 @@ def commissioning_box(tmp_path, monkeypatch):
         delay_target_role="woofer", delay_ms=0.35, upper_polarity="inverted",
     )
     (tmp_path / "design_draft.json").write_text(json.dumps(draft))
-    (tmp_path / "crossover_preview.json").unlink()
     monkeypatch.setattr("jasper.sound.settings.saved_sound_layers", lambda: ([], 0.0))
     monkeypatch.setattr("jasper.web.sound_active_speaker.mux_socket_command", AsyncMock(return_value={}))
     return topology, _FakeApplyCam()
@@ -426,7 +425,6 @@ async def test_accepted_candidate_can_compile_without_a_banked_candidate_id(tmp_
     assert result["status"] == "applied", result
     assert Path(cam.path).read_text() == graph.graph_yaml()
     assert baseline_profile.load_applied_baseline_profile_state()["source"]["measured_candidate_fingerprint"] == candidate.fingerprint
-    assert not (tmp_path / "crossover_preview.json").exists()
     graph.select_scope("drivers")
     from jasper.active_speaker.measurement_emit import emit_measurement_graph
     assert graph.graph_yaml() == emit_measurement_graph(profile)

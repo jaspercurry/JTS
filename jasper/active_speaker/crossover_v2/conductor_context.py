@@ -146,34 +146,14 @@ def measurement_role_channels(preset: Any) -> dict[str, int]:
     return {role: channel for channel, role in enumerate(required_driver_roles(preset.way_count))}
 
 
-def ensure_crossover_preview_ready(*, durable: bool = False) -> dict[str, Any]:
-    """Keep capture preset resolution off its generic no-preview fallback.
+def ensure_crossover_preview_ready() -> dict[str, Any]:
+    """Refuse incomplete declarations before capture preset resolution."""
+    from jasper.active_speaker.crossover_preview import current_crossover_preview
 
-    See ``commission_wiring.resolve_capture_preset``. A reused preview is
-    unchanged; a regenerated preview uses the declaration's existing writer.
-    """
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.web_commissioning import (
-        regenerate_crossover_preview_from_current_draft,
-    )
-
-    preview = load_crossover_preview(current_design_draft=load_design_draft())
-    outcome = "reused"
+    # A blocked declaration is repaired by Save values on /sound/, never by a
+    # measurement session: session start writes nothing.
+    preview = current_crossover_preview()
     if preview.get("status") != "ready_for_protected_staging":
-        preview = regenerate_crossover_preview_from_current_draft(durable=durable)
-        outcome = (
-            "generated"
-            if preview.get("status") == "ready_for_protected_staging"
-            else "refused"
-        )
-    log_event(
-        logger,
-        "correction.crossover_v2_preview_ensured",
-        outcome=outcome,
-        preview_status=str(preview.get("status")),
-    )
-    if outcome == "refused":
         messages = [
             str(issue.get("message") or issue.get("code"))
             for issue in (preview.get("issues") or [])
@@ -281,7 +261,7 @@ def resolve_conductor_context(
 
     Leveling resolves the speaker inputs before a session level can be banked.
     """
-    from jasper.active_speaker.commission_wiring import resolve_capture_preset
+    from jasper.active_speaker.commission_wiring import resolve_capture_preset, resolve_commission_preset
     from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
     from jasper.active_speaker.design_draft import (
         declared_effective_driver_sensitivities,
@@ -308,6 +288,7 @@ def resolve_conductor_context(
     # A subless passive main has no active crossover, so the gates below — all
     # asking whether an ACTIVE one is commissioned — are not questions about it.
     passive_mains = topology_is_subless_passive_mains(topology)
+    preview = None
     if not passive_mains:
         if not status.get("active"):
             raise CrossoverV2Refused(
@@ -325,11 +306,9 @@ def resolve_conductor_context(
                 level=logging.WARNING,
                 code=BASELINE_TOPOLOGY_CHANGED,
             )
-        # Ensure a ready crossover preview BEFORE resolving the capture preset —
-        # otherwise resolve_capture_preset's no-preview fallback silently bakes
-        # the generic bundled preset into every MEASURE candidate (see docstring).
-        ensure_crossover_preview_ready()
-    preset = resolve_capture_preset(topology)
+        preview = ensure_crossover_preview_ready()
+    preset = (resolve_commission_preset(topology, crossover_preview=preview)
+              if preview is not None else resolve_capture_preset(topology))
     if preset.way_count not in (1, 2):
         raise CrossoverV2Refused(
             REASON_REGISTRY[REASON_SPEAKER_SHAPE_UNSUPPORTED].message,

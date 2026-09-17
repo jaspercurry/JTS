@@ -151,7 +151,7 @@ def test_stage_startup_config_does_not_reread_mutable_preview_for_explicit_prese
     stage_call = {}
     monkeypatch.setattr(
         crossover_preview,
-        "load_crossover_preview",
+        "build_crossover_preview",
         lambda **_kwargs: pytest.fail(
             "explicit applied preset must not read the mutable preview"
         ),
@@ -185,14 +185,14 @@ def test_stage_startup_config_without_explicit_source_preserves_preview_gate(
     from jasper.active_speaker import crossover_preview, design_draft
 
     draft = {"status": "ready_for_review"}
-    stale_preview = {"status": "stale"}
+    blocked_preview = {"status": "blocked"}
     stage_call = {}
     monkeypatch.setattr(design_draft, "load_design_draft", lambda: draft)
     monkeypatch.setattr(
         crossover_preview,
-        "load_crossover_preview",
-        lambda *, current_design_draft: (
-            stale_preview
+        "build_crossover_preview",
+        lambda current_design_draft: (
+            blocked_preview
             if current_design_draft is draft
             else pytest.fail("preview must bind to the loaded draft")
         ),
@@ -210,7 +210,7 @@ def test_stage_startup_config_without_explicit_source_preserves_preview_gate(
 
     assert result == {"status": "blocked"}
     assert stage_call["preset"] is None
-    assert stage_call["crossover_preview"] is stale_preview
+    assert stage_call["crossover_preview"] is blocked_preview
 
 
 def test_startup_anchor_stages_the_callers_resolved_source(monkeypatch):
@@ -253,7 +253,7 @@ def test_startup_anchor_stages_the_callers_resolved_source(monkeypatch):
 
 
 def test_startup_anchor_forwards_the_specific_stage_failure_code(monkeypatch):
-    """#2184: staging can fail for ~8 distinct reasons (stale preview,
+    """#2184: staging can fail for ~8 distinct reasons (blocked preview,
     active_playback_device_required, subwoofer_staging_unresolved, ...), each
     already carrying its own code+message via ``_issue`` inside
     ``stage_protected_startup_config``. The failure card must name that real
@@ -422,51 +422,3 @@ def test_resilient_restore_does_not_retry_cancelled_child(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(restore_wait.await_restore_task_resilient(CancelledTask()))
     assert shield_calls == 1
-
-
-def test_regenerate_crossover_preview_matches_sound_setups_preview_button(
-    monkeypatch, tmp_path,
-):
-    """W6.11: the v2 flow's session-start preview ensure
-    (``jasper.web.correction_crossover_v2.ensure_crossover_preview_ready``)
-    calls :func:`web.regenerate_crossover_preview_from_current_draft` instead
-    of reimplementing ``/sound/``'s Preview-button generation. Pin that it
-    really is the SAME machinery: seeded against the same design
-    draft/topology, its output matches
-    ``jasper.web.sound_active_speaker``'s own
-    ``_active_speaker_crossover_preview_save_payload()`` byte-for-byte except
-    for the wall-clock ``created_at``/``updated_at`` timestamps."""
-    import json
-
-    from jasper.output_topology import save_output_topology
-    from jasper.web import sound_active_speaker
-
-    from tests.test_active_speaker_baseline_profile import _draft, _dual_apple_topology
-
-    topology = _dual_apple_topology()
-    topology_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    save_output_topology(topology, topology_path)
-
-    draft = _draft(topology)
-    draft_path = tmp_path / "design_draft.json"
-    draft_path.write_text(json.dumps(draft), encoding="utf-8")
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(draft_path))
-
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
-        str(tmp_path / "via_web_commissioning.json"),
-    )
-    via_new = web.regenerate_crossover_preview_from_current_draft()
-
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE",
-        str(tmp_path / "via_sound_setup.json"),
-    )
-    via_sound = sound_active_speaker._active_speaker_crossover_preview_save_payload()
-
-    assert via_new["status"] == "ready_for_protected_staging"
-    ignored = {"path", "created_at", "updated_at"}
-    assert {k: v for k, v in via_new.items() if k not in ignored} == {
-        k: v for k, v in via_sound.items() if k not in ignored
-    }

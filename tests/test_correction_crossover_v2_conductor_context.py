@@ -39,6 +39,8 @@ from jasper.output_topology import (
 from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
 from tests.crossover_v2_fixtures import fake_measurement_mic
+from tests.test_active_speaker_crossover_preview import _research as preview_research
+from jasper.active_speaker.crossover_preview import build_crossover_preview
 
 _TWO_WAY_GROUP = [{
     "id": "mono",
@@ -274,9 +276,15 @@ def test_resolves_real_playback_device_from_a_verified_topology(monkeypatch):
     unconditionally on hardware."""
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
     _patch_topology(monkeypatch, topo)
+    draft = {"status": "ready_for_review", "topology": topo.to_dict(),
+             "driver_research": preview_research()}
+    draft["driver_research"]["crossover_candidates"][0]["frequency_hz"] = 3200
+    preview = build_crossover_preview(draft)
+    monkeypatch.setattr(v2ctx, "ensure_crossover_preview_ready", lambda: preview)
 
     context = v2ctx.resolve_conductor_context(_status())
 
+    assert context.preset.crossover_regions[0].fc_hz == 3200
     assert context.playback_device
     assert isinstance(context.playback_device, str)
     assert context.topology is topo

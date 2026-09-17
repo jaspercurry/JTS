@@ -173,7 +173,6 @@ def _preview(
             ),
             created_at="2026-08-14T12:00:00Z",
         ),
-        created_at="2026-08-14T12:30:00Z",
     )
 
 

@@ -341,24 +341,6 @@ function driverResearchHasPreviewInputs(topology) {
   return rolesReady && crossoversReady;
 }
 
-function driverResearchMissingPreviewMessage(topology) {
-  if (!topology || !outputGroups(topology).length) {
-    return 'Choose and save a speaker layout before previewing the active crossover.';
-  }
-  if (!activeCrossoverPairs(topology).length) {
-    return 'This one-driver layout does not need an active crossover.';
-  }
-  var missingDrivers = driverResearchTargets(topology).filter(function(target) {
-    return !driverForTarget(target, topology).model;
-  });
-  if (missingDrivers.length) {
-    return 'Add driver info for ' + missingDrivers.map(function(target) {
-      return target.group_label + ' ' + activeRoleLabel(target.role);
-    }).join(', ') +
-      ' before previewing the active crossover.';
-  }
-  return 'Add crossover points before previewing the active crossover.';
-}
 function driverResearchPromptReady(topology) {
   if (!topology || !outputGroups(topology).length ||
       outputTopology.dirty || outputTopology.saving) return false;
@@ -622,10 +604,8 @@ function summarizeDriverResearchPayload(payload) {
 
 function crossoverPreviewReadyForProtectedStaging(payload) {
   payload = payload || {};
-  var permissions = payload.permissions || {};
   return payload.kind === 'jts_active_speaker_crossover_preview' &&
-    payload.status === 'ready_for_protected_staging' &&
-    permissions.may_prepare_protected_startup_config === true;
+    payload.status === 'ready_for_protected_staging';
 }
 function driverResearchStepSatisfied() {
   var draftPayload = driverResearch.designDraft || {};
@@ -642,7 +622,6 @@ function driverResearchFlowComplete(topology) {
 function ingestCrossoverPreview(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return;
   crossoverPreview.payload = payload;
-  crossoverPreview.preparing = false;
   crossoverPreview.error = '';
 }
 
@@ -873,13 +852,12 @@ function crossoverPreviewReadyCount(payload) {
 }
 function crossoverPreviewDisplayStatus(payload) {
   payload = payload || {};
-  var raw = payload.status || 'not_prepared';
+  var raw = payload.status;
   if (crossoverPreviewReadyCount(payload) > 0) return 'preview ready';
   if (raw === 'ready_for_protected_staging') return 'preview ready';
   if (raw === 'blocked') return 'not ready yet';
-  if (raw === 'stale') return 'needs refresh';
   if (raw === 'not_applicable') return 'not needed';
-  return 'not prepared';
+  return 'waiting for information';
 }
 function crossoverPreviewReviewIssues(issues) {
   return (Array.isArray(issues) ? issues : []).filter(function(issue) {
@@ -960,7 +938,6 @@ export {
   driverProvenanceState,
   driverResearchFlowComplete,
   driverResearchHasPreviewInputs,
-  driverResearchMissingPreviewMessage,
   driverResearchPrompt,
   driverResearchPromptReady,
   driverResearchRoleLabel,

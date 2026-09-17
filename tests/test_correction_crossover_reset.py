@@ -15,7 +15,6 @@ from jasper.web import correction_crossover_backend as backend
 from jasper.web import correction_crossover_flow as flow
 
 _JOURNEY_ENVS = {
-    "JASPER_ACTIVE_SPEAKER_CROSSOVER_PREVIEW_STATE": "preview.json",
     "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH": "staged.json",
     "JASPER_ACTIVE_SPEAKER_PATH_SAFETY_EVIDENCE": "path-safety.json",
     "JASPER_ACTIVE_SPEAKER_COMMISSION_LOAD_STATE": "commission-load.json",
@@ -44,12 +43,9 @@ def test_reset_measurement_journey_clears_journey_keeps_driver_and_applied_state
     result = backend.reset_measurement_journey()
 
     assert result["status"] == "cleared"
-    # cleared_ids reflects the ACTUAL unlinks (all six existed), not the
-    # static intent; missing/errors are empty on a clean clear.
     assert sorted(result["cleared_ids"]) == [
         "commission_load",
         "commission_ramp",
-        "crossover_preview",
         "measurements",
         "path_safety",
         "staged_config",
@@ -93,7 +89,7 @@ def test_handle_reset_returns_fresh_envelope_with_honest_reset_summary(
         "reset_measurement_journey",
         lambda: {
             "status": "partial",
-            "cleared_ids": ["crossover_preview"],
+            "cleared_ids": ["commission_load"],
             "missing_ids": ["staged_config"],
             "error_ids": ["measurements"],
             "kept_ids": ["design_draft", "baseline_profile", "startup_load"],
@@ -118,7 +114,7 @@ def test_handle_reset_returns_fresh_envelope_with_honest_reset_summary(
     # and the errored file — the page branches on status != "cleared".
     assert payload["reset"] == {
         "status": "partial",
-        "cleared": ["crossover_preview"],
+        "cleared": ["commission_load"],
         "missing": ["staged_config"],
         "errors": ["measurements"],
         "kept": ["design_draft", "baseline_profile", "startup_load"],

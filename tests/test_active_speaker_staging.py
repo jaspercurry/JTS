@@ -251,7 +251,6 @@ def _crossover_preview(
             ),
             created_at="2026-06-10T12:00:00Z",
         ),
-        created_at="2026-06-10T12:30:00Z",
     )
 
 
@@ -550,7 +549,6 @@ def test_legacy_manual_role_rows_keep_stereo_preview_additive_but_not_confirmed(
     )
     preview = build_crossover_preview(
         draft,
-        created_at="2026-06-10T12:30:00Z",
     )
     preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
         topology,
@@ -634,7 +632,7 @@ def test_compile_preset_from_crossover_preview_manual_settings_end_to_end_sets_p
         },
         created_at="2026-07-11T12:00:00Z",
     )
-    preview = build_crossover_preview(draft, created_at="2026-07-11T12:00:05Z")
+    preview = build_crossover_preview(draft)
 
     preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
         topology, preview
@@ -675,7 +673,7 @@ def test_compile_preset_from_crossover_preview_manual_settings_reversed_between_
         },
         created_at="2026-07-11T12:00:00Z",
     )
-    preview = build_crossover_preview(draft, created_at="2026-07-11T12:00:05Z")
+    preview = build_crossover_preview(draft)
 
     preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
         topology, preview
@@ -698,8 +696,7 @@ def test_stage_protected_startup_config_blocks_unready_crossover_preview(
     tmp_path: Path,
 ) -> None:
     preview = _crossover_preview(_topology())
-    preview["status"] = "stale"
-    preview["permissions"]["may_prepare_protected_startup_config"] = False
+    preview["status"] = "blocked"
 
     payload = stage_protected_startup_config(
         _topology(),

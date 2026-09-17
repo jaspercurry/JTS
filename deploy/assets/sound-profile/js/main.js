@@ -63,11 +63,9 @@ import {
   candidateFrequency,
   crossoverPreviewDisplayStatus,
   crossoverPreviewReadyCount,
-  crossoverPreviewReadyForProtectedStaging,
   crossoverPreviewReviewIssues,
   driverResearchFlowComplete,
   driverResearchHasPreviewInputs,
-  driverResearchMissingPreviewMessage,
   driverResearchPrompt,
   driverResearchPromptReady,
   driverResearchStepSatisfied,
@@ -1087,12 +1085,6 @@ import {
     });
     proposeSensitivityTrims(driversByRole);
   }
-  function driverResearchCanPreparePreview() {
-    var draftPayload = driverResearch.designDraft || {};
-    var savedStatus = draftPayload.status || '';
-    return savedStatus && savedStatus !== 'not_saved' && savedStatus !== 'unreadable' &&
-      !driverResearch.dirty && driverResearchPreviewInputsReady(currentOutputTopology());
-  }
   function driverResearchWorkingStatusLabel(status) {
     if (driverResearch.dirty) return 'editing';
     if (driverResearchPreviewInputsReady(currentOutputTopology())) return 'ready to preview';
@@ -1318,7 +1310,7 @@ import {
   function renderNextActionButton(action) {
     var behavior = nextActionAct(action);
     var busy = outputTopology.saving || driverResearch.saving ||
-      crossoverPreview.preparing || activeSpeaker.commissionBusy;
+      activeSpeaker.commissionBusy;
     return '<button type="button" class="btn btn--primary" data-next-action="' + escapeHtml(action.id) +
       '" data-act="' + escapeHtml(behavior.act) + '" data-program="' + escapeHtml(behavior.program || '') + '"' +
       (behavior.command ? ' data-copy="tuning-run-command"' : '') +
@@ -1644,13 +1636,8 @@ import {
   }
   function renderCrossoverPreviewCardBody(topology) {
     var payload = crossoverPreview.payload || {};
-    // A prepared preview belongs to the last saved working draft. Any visible
-    // component/crossover edit makes it stale immediately, so the prominent
-    // summary must echo the current working values until a new preview is
-    // prepared rather than showing an older saved proposal as "ready".
-    var hasPreparedGroups = !driverResearch.dirty &&
-      Array.isArray(payload.groups) && payload.groups.length;
-    var displayPayload = hasPreparedGroups ? payload : {};
+    var hasPreviewGroups = !driverResearch.dirty && Array.isArray(payload.groups) && payload.groups.length;
+    var displayPayload = hasPreviewGroups ? payload : {};
     var summary = displayPayload.summary || {};
     var readyCount = crossoverPreviewReadyCount(displayPayload);
     var warningIssues = crossoverPreviewReviewIssues(displayPayload.issues);
@@ -1658,27 +1645,20 @@ import {
     var hasPreviewInputs = driverResearchPreviewInputsReady(topology);
     var needsCrossover = activeCrossoverPairs(topology).length > 0;
     var label = !needsCrossover ? 'not needed' :
-      (hasPreparedGroups ? crossoverPreviewDisplayStatus(payload) :
+      (hasPreviewGroups ? crossoverPreviewDisplayStatus(payload) :
         (hasPreviewInputs ? 'working proposal' : 'waiting for information'));
-    var canPrepare = hasPreviewInputs && !outputTopology.dirty && !driverResearch.saving;
     var hint = !needsCrossover ?
       'A single full-range driver does not need an active crossover.' :
-      (canPrepare ?
-      'The working values below are ready to save and turn into a no-audio preview.' :
-      (driverResearch.saving
-        ? 'Working setup is updating before the preview.'
-        : (outputTopology.dirty
-        ? 'Save the speaker layout before preparing a crossover preview.'
-        : driverResearchMissingPreviewMessage(topology))));
+      'Preview of the current setup. Save changes to update it.';
     if (crossoverPreview.error) hint = crossoverPreview.error;
     return '<div class="output-card__head"><div><h3 class="output-card__title">Proposed starting crossover</h3>' +
         '<p class="setting-row__hint">' + escapeHtml(hint) + '</p></div>' +
         '<span class="status-pill' + previewStatusClass(label) + '">' + escapeHtml(label) + '</span></div>' +
-      (hasPreparedGroups
+      (hasPreviewGroups
         ? renderCrossoverPreviewRows(payload)
         : renderWorkingCrossoverRows(topology)) +
       '<p class="setting-row__hint">' + escapeHtml(
-        (readyCount > 0 ? 'Ready to preview ' + String(readyCount) +
+        (readyCount > 0 ? 'Preview shows ' + String(readyCount) +
         ' crossover split' + (readyCount === 1 ? '' : 's') + '. ' :
         (needsCrossover ? 'Needs crossover info. ' : 'No active crossover is required. ')) +
         String(warningIssues.length) + ' review note' +
@@ -2643,7 +2623,6 @@ import {
     else if (act === 'copy-driver-research-prompt') { copyDriverResearchPrompt(t); }
     else if (act === 'parse-driver-research') { parseDriverResearchImport(); }
     else if (act === 'save-driver-design') { saveDriverResearchDraft(); }
-    else if (act === 'prepare-crossover-preview') { prepareCrossoverPreview(); }
     else if (act === 'save-apply-baseline-profile') { saveAndApplyBaselineProfile(); }
     else if (act === 'restore-baseline-profile') { restoreBaselineProfile(); }
     else if (act === 'copy-tuning-handoff') { copyTuningHandoffPrompt(t.getAttribute('data-program')); }
@@ -3127,8 +3106,6 @@ import {
     outputTopology.error = '';
     driverResearch.dirty = true;
     driverResearch.safetyDirty = true;
-    crossoverPreview.payload = null;
-    crossoverPreview.error = '';
     render();
   }
   // Persist the user-entered bass-management corner onto the draft local-sub
@@ -3551,9 +3528,7 @@ import {
     options = options || {};
     if (!driverResearch.dirty && driverResearchStepSatisfied() && options.nextStep) {
       outputPage.stepOverride = options.nextStep;
-      status(driverResearchCanPreparePreview() ?
-        'Working setup is already current. Preview crossover.' :
-        'Save driver names and crossover points first.');
+      status('Working setup is already current.');
       render();
       return true;
     }
@@ -3622,62 +3597,20 @@ import {
         driverResearch.importText = rejectedImport.text;
         driverResearch.error = rejectedImport.error;
       }
-      crossoverPreview.payload = null;
-      crossoverPreview.error = '';
+      await fetchCrossoverPreview();
       await refreshCommissioningView();
       if (options.nextStep) outputPage.stepOverride = options.nextStep;
-      if (!options.forPreview) {
-        status(importWarning
-          ? 'Working setup updated from visible fields. Imported JSON was not saved: ' +
-            importWarning
-          : 'Working setup updated. No filters are active and no sound was played.',
-          !!importWarning);
-      }
+      status(importWarning
+        ? 'Working setup updated from visible fields. Imported JSON was not saved: ' +
+          importWarning
+        : 'Working setup updated. No filters are active and no sound was played.',
+        !!importWarning);
       render();
       return true;
     } catch (e) {
       driverResearch.saving = false;
       driverResearch.error = e.message;
       status('Could not update working setup: ' + e.message, true);
-      render();
-      return false;
-    }
-  }
-  async function prepareCrossoverPreview() {
-    if (driverResearch.saving) {
-      status('Working setup is still updating. Try the preview again in a moment.');
-      return false;
-    }
-    if (outputTopology.dirty) {
-      status('Save the speaker layout before preparing the crossover preview.', true);
-      return false;
-    }
-    if (!driverResearchPreviewInputsReady(currentOutputTopology())) {
-      status(driverResearchMissingPreviewMessage(currentOutputTopology()), true);
-      return false;
-    }
-    if (driverResearch.dirty || !driverResearchStepSatisfied()) {
-      if (!await saveDriverResearchDraft({forPreview: true})) return false;
-    }
-    if (!driverResearchCanPreparePreview()) {
-      status(driverResearchMissingPreviewMessage(currentOutputTopology()), true);
-      return false;
-    }
-    crossoverPreview.preparing = true;
-    crossoverPreview.error = '';
-    render();
-    try {
-      var payload = await postJSON('./active-speaker/crossover-preview', {});
-      ingestCrossoverPreview(payload);
-      await refreshCommissioningView();
-      outputPage.stepOverride = defaultOutputStep();
-      status('Crossover preview ready. Continue with the speaker experiment.');
-      render();
-      return true;
-    } catch (e) {
-      crossoverPreview.preparing = false;
-      crossoverPreview.error = e.message;
-      status('Could not prepare crossover preview: ' + e.message, true);
       render();
       return false;
     }

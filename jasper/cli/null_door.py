@@ -167,13 +167,16 @@ def _level_trims(context: Any) -> tuple[dict[str, float], str]:
     honest answer, and the row's ``gap_ceiling_db`` says what it costs.
     """
     from jasper.active_speaker.baseline_profile import measured_level_trims
-    from jasper.active_speaker.crossover_preview import load_crossover_preview
+    from jasper.active_speaker.crossover_preview import build_crossover_preview
+    from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
 
+    draft = load_design_draft()
     trims, meta = measured_level_trims(
         context.preset,
         load_measurement_state(context.topology) or {},
-        load_crossover_preview() or {},
+        build_crossover_preview(draft),
+        design_draft=draft,
     )
     return (
         {str(role): float(db) for role, db in trims.items()},

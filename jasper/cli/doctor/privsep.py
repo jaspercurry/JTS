@@ -157,12 +157,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # /sound/ wizard reads the active profile + global settings.
             "/var/lib/jasper/sound_profile.json",
             "/var/lib/jasper/sound_settings.json",
-            # The two stores the /sound/ design page renders from. The
-            # crossover-accept seam writes both from the ROOT correction-web
-            # process, so an unreadable one here renders the page empty against
-            # a store the API reports "unreadable" at revision 0.
             "/var/lib/jasper/active_speaker_design_draft.json",
-            "/var/lib/jasper/active_speaker_crossover_preview.json",
         ),
     ),
     DaemonReadSpec(
@@ -192,7 +187,6 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # measurements" and silently discards the household's captures.
             "/var/lib/jasper/active_speaker_measurements.json",
             "/var/lib/jasper/active_speaker_design_draft.json",
-            "/var/lib/jasper/active_speaker_crossover_preview.json",
         ),
     ),
     DaemonReadSpec(
