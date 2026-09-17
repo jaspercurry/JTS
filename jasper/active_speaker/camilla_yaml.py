@@ -576,36 +576,6 @@ def _validated_rear_calibration(
         raise ActiveSpeakerConfigError(f"rear calibration is invalid: {exc}") from exc
 
 
-def _rear_stage_chain_response(
-    chain: Mapping[str, Any],
-    freqs: Any,
-    *,
-    delay_ms: float,
-    extra_filters: Sequence[Mapping[str, Any]] = (),
-) -> Any:
-    """One compiled chain's complex response: gain, polarity, delay, filters.
-
-    Mirrors the ``chain`` helper in ``rear_calibration.compile_rear_stage``,
-    which is what puts those four into one CamillaDSP Filter step.
-    """
-    import numpy as np  # lazy: the cardioid charge is the only emit path needing NumPy
-
-    from .branch_chain import camilla_filter_response  # lazy: cycle with branch_chain
-
-    if chain["muted"]:
-        return np.zeros(freqs.shape, dtype=np.complex128)
-    scale = 10.0 ** (float(chain["gain_db"]) / 20.0)
-    response = np.full(
-        freqs.shape, -scale if chain["inverted"] else scale, dtype=np.complex128,
-    )
-    filters = [*chain["filters"], *extra_filters]
-    if filters:
-        response = response * camilla_filter_response(filters, freqs)
-    if delay_ms:
-        response = response * np.exp(-2j * np.pi * freqs * (delay_ms / 1000.0))
-    return response
-
-
 def rear_branch_sum_headroom_db(document: Mapping[str, Any] | None) -> float:
     """Peak the compiled cardioid stage puts above unity, dB.
 
@@ -636,33 +606,21 @@ def rear_branch_sum_headroom_db(document: Mapping[str, Any] | None) -> float:
     import numpy as np  # lazy: the cardioid charge is the only emit path needing NumPy
 
     from .branch_chain import (  # lazy: cycle with branch_chain
-        camilla_evaluation_grid, camilla_filter_response,
+        camilla_evaluation_grid, rear_stage_response,
     )
 
     rear = document["rear"]
     branches = [rear[branch] for branch in ("bass", "cancellation")] if rear["mode"] == "branches" else []
     boundary = document["boundary"]
+    # The grid carries every chain's features whether or not the rear is muted:
+    # a muted rear still fixes where the front chain is sampled.
     freqs = camilla_evaluation_grid([
         *document["front"]["filters"], *boundary["front"], *boundary["rear"],
         *(item for branch in branches for item in branch["filters"]),
     ])
-    # Both branches and the front carry the common and front delays; only the
-    # branches' own delays steer the sum, but the shared term costs nothing.
-    shared_delay_ms = float(document["common_delay_ms"]) + float(document["front"]["delay_ms"])
-    summed = np.zeros(freqs.shape, dtype=np.complex128)
-    if branches and not document["rear_muted"]:
-        for branch in branches:
-            summed = summed + _rear_stage_chain_response(
-                branch, freqs, delay_ms=shared_delay_ms + float(branch["delay_ms"]),
-            )
-        if boundary["rear"]:
-            summed = summed * camilla_filter_response(boundary["rear"], freqs)
-    front = _rear_stage_chain_response(
-        document["front"], freqs,
-        delay_ms=shared_delay_ms,
-        extra_filters=boundary["front"],
+    peak = max(
+        float(np.max(np.abs(response))) for response in rear_stage_response(document, freqs)
     )
-    peak = max(float(np.max(np.abs(response))) for response in (summed, front))
     return max(0.0, 20.0 * math.log10(peak)) if peak > 0.0 else 0.0
 
 

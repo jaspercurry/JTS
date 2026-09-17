@@ -617,6 +617,61 @@ def camilla_filter_response(
     return total
 
 
+def rear_stage_chain_response(
+    chain: Mapping[str, Any],
+    freqs: np.ndarray,
+    *,
+    delay_ms: float,
+    extra_filters: Sequence[Mapping[str, Any]] = (),
+) -> np.ndarray:
+    """One compiled chain's complex response: gain, polarity, delay, filters.
+
+    Mirrors the ``chain`` helper in ``rear_calibration.compile_rear_stage``,
+    which is what puts those four into one CamillaDSP Filter step.
+    """
+    if chain["muted"]:
+        return np.zeros(freqs.shape, dtype=np.complex128)
+    scale = 10.0 ** (float(chain["gain_db"]) / 20.0)
+    response = np.full(
+        freqs.shape, -scale if chain["inverted"] else scale, dtype=np.complex128,
+    )
+    filters = [*chain["filters"], *extra_filters]
+    if filters:
+        response = response * camilla_filter_response(filters, freqs)
+    if delay_ms:
+        response = response * np.exp(-2j * np.pi * freqs * (delay_ms / 1000.0))
+    return response
+
+
+def rear_stage_response(
+    document: Mapping[str, Any], freqs: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(rear sum, front)`` of a validated ``electrical_dsp`` calibration.
+
+    The one reader of the compiler's delay rule: every emitted branch delay is
+    ``common_delay_ms + front.delay_ms + branch.delay_ms``
+    (:func:`~.rear_calibration.compile_rear_stage`). A muted or ``fir`` rear
+    sums to zero — the taps cannot reach the runtime (ADR-0322), and the
+    compiled stage's own output gain carries the mute.
+    """
+    rear = document["rear"]
+    boundary = document["boundary"]
+    shared_delay_ms = float(document["common_delay_ms"]) + float(document["front"]["delay_ms"])
+    summed = np.zeros(freqs.shape, dtype=np.complex128)
+    if rear["mode"] == "branches" and not document["rear_muted"]:
+        for name in ("bass", "cancellation"):
+            branch = rear[name]
+            summed = summed + rear_stage_chain_response(
+                branch, freqs, delay_ms=shared_delay_ms + float(branch["delay_ms"]),
+            )
+        if boundary["rear"]:
+            summed = summed * camilla_filter_response(boundary["rear"], freqs)
+    front = rear_stage_chain_response(
+        document["front"], freqs, delay_ms=shared_delay_ms, extra_filters=boundary["front"],
+    )
+    return summed, front
+
+
 def branch_chain_peak_db(
     filters: Sequence[Mapping[str, Any]],
     *,
