@@ -247,7 +247,8 @@ def _target_fingerprint(
         "role": target.get("role"),
         **({"output_variant": target["output_variant"]} if target.get("output_variant", "primary") != "primary" else {}),
         "output_index": target.get("output_index"),
-        "identity_verified": bool(target.get("identity_verified")),
+        # Preserve hashes in saved measurement and research records; see #5271.
+        "identity_verified": True,
     })
 
 
@@ -281,7 +282,6 @@ def physical_driver_target(
                 else None
             )
         ),
-        "identity_verified": bool(channel.identity_verified),
     }
     target["target_fingerprint"] = _target_fingerprint(topology, target)
     return target
@@ -1295,12 +1295,6 @@ def record_driver_measurement(
             "blocker",
             "driver_measurement_outcome_invalid",
             "driver measurement outcome is unsupported",
-        ))
-    if target is not None and not target.get("identity_verified"):
-        issues.append(_issue(
-            "blocker",
-            "driver_measurement_identity_unverified",
-            "confirm this DAC output before recording it as measured",
         ))
     if target is not None and outcome == "heard_correct_driver":
         issues.extend(_floor_confirmation_issues(

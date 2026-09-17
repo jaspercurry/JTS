@@ -41,7 +41,6 @@ from jasper.output_topology import (
     OutputHardware,
     OutputTopology,
     OutputTopologyError,
-    channel_identity_report,
     clock_domain_report,
     composite_serial_repin_plan,
     declared_hardware_mismatch,
@@ -50,7 +49,6 @@ from jasper.output_topology import (
     new_topology_draft,
     output_topology_mutation,
     repin_composite_child_serials,
-    set_channel_identity_verified,
 )
 from jasper.output_hardware import (
     OutputHardwareState,
@@ -240,7 +238,6 @@ def _output_topology_payload() -> dict[str, Any]:
         "hardware_mismatch": declared_hardware_mismatch(topology, observed_hardware),
         "hardware_repin": repin.to_dict() if repin is not None else None,
         "i2s_hat": _i2s_hat_payload(),
-        "channel_identity": channel_identity_report(topology),
         "clock_domain": clock_domain_report(topology),
         "active_playback_route": _active_speaker_playback_route_payload(topology),
     }
@@ -576,14 +573,9 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
         runtime = park_and_commit_topology(
             snapshot.topology,
             commit_repin,
-            # The graph selector proves a graph legal for the saved SHAPE, which
-            # a re-pin does not change — so it would happily resume the approved
-            # active runtime through DACs nobody has confirmed by ear yet. Stay
-            # parked instead; the arm ladder's identity gates own the way back.
             stay_parked=True,
             parked_reason=(
-                "parked after a DAC re-pin; confirm the re-pinned outputs and "
-                "re-arm before audio resumes"
+                "parked after a DAC re-pin; Apply the baseline to resume audio"
             ),
         )
         reconcile = trigger_reconcile(reason="output_topology_repin")
@@ -612,10 +604,8 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
         repin_result = {
             "status": "repinned",
             "message": (
-                "Pinned the new DAC and kept your speaker setup. Confirm these "
-                "outputs again: "
-                + ", ".join(plan.reverify_output_labels)
-                + ". Then re-run the drift measurement."
+                "Pinned the new DAC and kept your speaker setup. Re-run the "
+                "drift measurement, then Apply the baseline to resume audio."
             ),
         }
     log_event(
@@ -626,7 +616,6 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
         device_id=snapshot.topology.hardware.device_id,
         replaced_children=plan.replaced_child_count,
         child_count=plan.child_count,
-        reverify_outputs=len(plan.reverify_output_indexes),
         runtime_convergence_ok=runtime.convergence.ok,
         reconcile_ok=str(bool(reconcile.get("ok"))),
         reconcile_converging=str(bool(reconcile.get("converging"))),
@@ -650,115 +639,6 @@ def _active_speaker_playback_route_payload(
     return active_playback_route_capability(
         topology or load_output_topology()
     ).to_dict()
-
-
-def _active_speaker_channel_identity_payload() -> dict[str, Any]:
-    """Return physical-channel identity evidence for the saved topology."""
-
-    topology = load_output_topology()
-    return {
-        "channel_identity": channel_identity_report(topology),
-        "clock_domain": clock_domain_report(topology),
-    }
-
-
-def _active_speaker_channel_identity_save_payload(
-    raw: dict[str, Any],
-) -> dict[str, Any]:
-    """Mark or clear a saved topology channel's physical identity evidence."""
-
-    if not isinstance(raw, dict):
-        raise ValueError("channel identity request must be an object")
-    speaker_group_id = str(raw.get("speaker_group_id") or raw.get("group_id") or "")
-    role = str(raw.get("role") or "")
-    verified = raw.get("identity_verified")
-    if not isinstance(verified, bool):
-        raise ValueError("identity_verified must be a boolean")
-    from jasper.active_speaker.runtime_contract import roleful_identity_confirmed
-    from jasper.active_speaker.runtime_convergence import park_and_commit_topology
-
-    with output_topology_mutation() as mutation:
-        topology = mutation.snapshot().topology
-        updated = set_channel_identity_verified(
-            topology,
-            speaker_group_id=speaker_group_id,
-            role=role,
-            identity_verified=verified,
-            output_variant=str(raw.get("output_variant", "primary")),
-        )
-
-        # Un-confirming an ASSIGNED lane of a ROLEFUL topology declares doubt
-        # about which driver hangs where — the hazard a DAC swap creates, self
-        # declared. Gated on the confirmed -> unconfirmed EDGE: an already
-        # unconfirmed box is already parked, and confirming never parks.
-        park_needed = (
-            roleful_identity_confirmed(topology)
-            and not roleful_identity_confirmed(updated)
-        )
-        # ORDER IS THE SAFETY PROPERTY HERE. The DURABLE half — the cleared flag
-        # that makes `roleful_identity_confirmed` refuse an approved graph on
-        # every later pass — lands FIRST and unconditionally; the silence is
-        # best-effort after it. `park_and_commit_topology` would invert that: it
-        # parks BEFORE it commits, so a park failure would discard the declared
-        # doubt and leave the lane verified on its approved graph across every
-        # reboot — and a park most plausibly fails when the graph is already
-        # unhealthy, exactly when the doubt matters most.
-        #
-        # (The re-pin endpoint does NOT share this shape and keeps its
-        # commit-inside-park: a failed park there leaves the old serials pinned,
-        # and the hardware mismatch keeps flagging.)
-        mutation.save(updated)
-        parked = False
-        park_error: str | None = None
-        if park_needed:
-            try:
-                park_and_commit_topology(
-                    updated,
-                    lambda: updated,
-                    stay_parked=True,
-                    parked_reason=(
-                        "parked after an output was marked not confirmed; "
-                        "confirm it again and re-arm before audio resumes"
-                    ),
-                )
-                parked = True
-            except (OSError, RuntimeError, ValueError, TypeError) as exc:
-                park_error = f"{type(exc).__name__}: {exc}"
-    report = channel_identity_report(updated)
-    evaluation = updated.evaluation()
-    log_event(
-        logger,
-        "sound.active_speaker_channel_identity",
-        action="mark_verified" if verified else "clear_verified",
-        topology_id=updated.topology_id,
-        group_id=speaker_group_id,
-        role=role,
-        output_variant=str(raw.get("output_variant", "primary")),
-        status=str(report.get("status")),
-        verified="%d/%d"
-        % (report.get("verified_channel_count"), report.get("assigned_channel_count")),
-        blockers=len(evaluation.get("blockers") or []),
-        park_needed=str(park_needed),
-        parked=str(parked),
-        park_error=park_error,
-    )
-    payload = _output_topology_payload()
-    if park_needed:
-        # Say which half actually landed: the doubt is recorded either way, but
-        # only the immediate silence can fail, and the household must not be
-        # left believing the speaker went quiet when it did not.
-        payload["identity_park"] = {
-            "parked": parked,
-            "message": (
-                "Marked not confirmed. The speaker is silent until you confirm "
-                "it again and it re-arms."
-                if parked
-                else "Marked not confirmed, but JTS could not silence the "
-                "speaker right now. It stays silent from the next restart. "
-                "Open Status before playing anything loud."
-            ),
-        }
-    return payload
 
 
 def _active_speaker_environment_payload() -> dict[str, Any]:

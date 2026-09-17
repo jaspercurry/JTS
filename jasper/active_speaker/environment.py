@@ -639,11 +639,6 @@ def _safe_playback_payload(
             "label": "Path-safety evidence is hardware-probe-backed",
         },
         {
-            "id": "physical_channel_identity",
-            "passed": False,
-            "label": "Physical output channels have been identified before drivers are connected",
-        },
-        {
             "id": "level_limited_tone_generator",
             "passed": False,
             "label": "Level-limited, band-limited tone generator with emergency stop is implemented",
@@ -656,7 +651,7 @@ def _safe_playback_payload(
         "load_gate": load_gate,
         "required_gates": required_gates,
         "next_step": (
-            "Build physical channel identification and level-limited "
+            "Build level-limited "
             "test-tone playback only after the active config load gate is ready."
         ),
         "warning": (

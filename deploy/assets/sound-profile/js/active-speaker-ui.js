@@ -9,7 +9,7 @@
 // and step-state policy so the active-crossover flow has one small contract.
 
 export function outputStatusClass(statusValue) {
-  if (statusValue === 'verified' || statusValue === 'valid' ||
+  if (statusValue === 'valid' ||
       statusValue === 'ready' || statusValue === 'preview ready') {
     return ' status-pill--ready';
   }
@@ -301,9 +301,6 @@ function commissionIssueReason(codes) {
   }
   if (codes.indexOf('commission_output_hardware_reconcile_failed') >= 0) {
     return 'JTS could not switch the speaker output path into active-driver mode, so it did not start the tone.';
-  }
-  if (codes.indexOf('driver_target_identity_save_failed') >= 0) {
-    return 'JTS heard the driver, but could not save the output confirmation. Try again before continuing.';
   }
   if (codes.indexOf('stage5_ramp_load_failed') >= 0) {
     return 'JTS could not keep the driver test path loaded while raising the tone, so it re-muted the driver. Start the tone again.';

@@ -41,8 +41,6 @@ from jasper.output_topology import (
     OutputTopology,
     OutputTopologyError,
     load_output_topology,
-    output_topology_mutation,
-    set_channel_identity_verified,
 )
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
@@ -1397,7 +1395,6 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
         "action: 'auto_step'",
     ):
         assert retired not in js
-    assert "'./active-speaker/commission-ramp-abort'" in js
     assert "'./active-speaker/commissioning-view'" in js
     assert "'./active-speaker/design-draft'" in js
     assert "'./active-speaker/crossover-preview'" in js
@@ -1419,8 +1416,6 @@ def test_sound_module_active_speaker_status_is_explicit_read_only():
     assert "if (!ctx.driverResearchSatisfied) return 'research';" in (
         _ACTIVE_SPEAKER_UI_MODULE.read_text()
     )
-    assert "Preview crossover before confirming outputs." in js
-    assert "Save driver names and crossover points before confirming outputs." in js
     assert "Working setup updated. No filters are active and no sound was played." in js
     assert "The working values below are ready to save and turn into a no-audio preview." in js
     assert "data-act=\"arm-active-speaker\"" not in js
@@ -1850,7 +1845,6 @@ def test_active_speaker_setup_copy_has_no_backend_jargon():
         "Save the checked crossover as your active speaker profile. "
         "JTS validates and applies it in one step; no sound plays."
     ) in js
-    assert "Your active speaker profile, built from the checked crossover and confirmed outputs." in js
     assert (
         "Your active speaker profile is saved. "
         "Finish applying it to start using it."
@@ -2108,21 +2102,6 @@ def _bench_active_topology_payload() -> dict:
         ],
         "routing": {"mono_group_id": "main"},
     }
-
-
-def _confirm_channel_identity(group_id: str, *roles: str) -> None:
-    """Record the per-lane audition a save payload can no longer claim."""
-
-    with output_topology_mutation() as mutation:
-        topology = mutation.snapshot().topology
-        for role in roles:
-            topology = set_channel_identity_verified(
-                topology,
-                speaker_group_id=group_id,
-                role=role,
-                identity_verified=True,
-            )
-        mutation.save(topology)
 
 
 _ACTIVE_SPEAKER_STATE_FILENAMES = {
@@ -2692,7 +2671,7 @@ def test_topology_save_does_not_restore_old_graph_for_a_post_write_read_failure(
     monkeypatch.setattr(
         sound_active_speaker,
         "_output_topology_payload",
-        lambda: {"output_topology": {"status": "verified"}},
+        lambda: {"output_topology": {"status": "valid"}},
     )
     _stub_audio_stops(monkeypatch)
 
@@ -2932,7 +2911,6 @@ def test_active_speaker_crossover_preview_refreshes_current_output_topology(
     sound_setup._save_output_topology_payload(
         _active_speaker_mono_topology_payload(protection_status="required_missing")
     )
-    _confirm_channel_identity("mono", "woofer", "tweeter")
     refreshed = _save_active_speaker_design_and_preview()
 
     assert refreshed["status"] == "ready_for_protected_staging"
@@ -2944,7 +2922,6 @@ def test_active_speaker_crossover_preview_refreshes_current_output_topology(
         item for item in filters
         if item["role"] == "tweeter"
     )
-    assert tweeter_filter["channel"]["identity_verified"] is True
     assert tweeter_filter["channel"]["protection_status"] == "software_guard_requested"
 
 
@@ -3654,18 +3631,15 @@ def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
     sound_setup._save_output_topology_payload(
         _dual_apple_stereo_topology_raw(identity_verified=False)
     )
-    _confirm_channel_identity("left", "woofer", "tweeter")
-    _confirm_channel_identity("right", "woofer", "tweeter")
     payload = sound_setup._output_topology_payload()
 
     topology = payload["output_topology"]
 
-    assert topology["status"] == "verified"
+    assert topology["status"] == "valid"
     assert topology["hardware"]["physical_output_count"] == 4
     assert payload["clock_domain"]["status"] == "dual_apple_composite_clock"
     assert payload["clock_domain"]["composite_clock_supported"] is True
     assert payload["clock_domain"]["multi_device_aggregate_supported"] is False
-    assert payload["channel_identity"]["verified_channel_count"] == 4
     assert topology["safety"]["sound_tests_allowed"] is False
 
 
@@ -3722,7 +3696,6 @@ def test_sound_output_topology_save_discloses_a_cross_child_speaker_group(
         ],
         "routing": {"mono_group_id": "mono"},
     })
-    _confirm_channel_identity("mono", "woofer", "tweeter")
 
     topology = sound_setup._output_topology_payload()["output_topology"]
     verdicts = [
@@ -3735,7 +3708,7 @@ def test_sound_output_topology_save_discloses_a_cross_child_speaker_group(
     assert verdicts[0]["child_ids"] == ["left_dac", "right_dac"]
     # Accepted, not refused: it persisted and it is not blocked.
     assert path.exists()
-    assert topology["status"] == "verified"
+    assert topology["status"] == "valid"
     assert topology["safety"]["blockers"] == []
 
 
@@ -3803,19 +3776,17 @@ def test_sound_output_topology_save_validates_and_persists_complete_contract(
     sound_setup._save_output_topology_payload(
         {"output_topology": _passive_left_topology_payload()}
     )
-    _confirm_channel_identity("left", "full_range")
     payload = sound_setup._output_topology_payload()
     topology = payload["output_topology"]
     saved = json.loads(path.read_text(encoding="utf-8"))
 
-    assert topology["status"] == "verified"
+    assert topology["status"] == "valid"
     assert topology["evaluation"]["assigned_output_count"] == 1
     assert topology["safety"]["sound_tests_allowed"] is False
-    assert saved["status"] == "verified"
+    assert saved["status"] == "valid"
     assert saved["speaker_groups"][0]["channels"][0]["human_output_label"] == (
         "DAC output 1"
     )
-    assert payload["channel_identity"]["verified_channel_count"] == 1
     assert payload["clock_domain"]["status"] == "single_device_clock"
     assert payload["topology_revision"].startswith("sha256:")
 
@@ -3953,102 +3924,6 @@ def test_sound_output_topology_save_serializes_concurrent_writers(
     expected_card = {"A": "DAC_A", "B": "DAC_B"}[winner]
     persisted = json.loads(path.read_text(encoding="utf-8"))
     assert persisted["hardware"]["card_id"] == expected_card
-
-
-def test_sound_channel_identity_route_marks_saved_topology_only(
-    monkeypatch,
-    tmp_path: Path,
-):
-    path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    sound_setup._save_output_topology_payload(_passive_left_topology_payload())
-
-    payload = sound_setup._active_speaker_channel_identity_save_payload({
-        "speaker_group_id": "left",
-        "role": "full_range",
-        "identity_verified": True,
-    })
-    saved = json.loads(path.read_text(encoding="utf-8"))
-
-    assert payload["channel_identity"]["status"] == "verified"
-    assert payload["channel_identity"]["verified_channel_count"] == 1
-    assert payload["clock_domain"]["multi_device_aggregate_supported"] is False
-    assert payload["output_topology"]["status"] == "verified"
-    assert payload["topology_revision"].startswith("sha256:")
-    assert payload["hardware_adoption"]["identity"].startswith("sha256:")
-    assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is True
-
-    payload = sound_setup._active_speaker_channel_identity_save_payload({
-        "speaker_group_id": "left",
-        "role": "full_range",
-        "identity_verified": False,
-    })
-    saved = json.loads(path.read_text(encoding="utf-8"))
-
-    assert payload["channel_identity"]["status"] == "needs_verification"
-    assert payload["channel_identity"]["verified_channel_count"] == 0
-    assert payload["output_topology"]["status"] == "valid"
-    assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is False
-
-
-@pytest.mark.parametrize(
-    "raw",
-    [
-        {"speaker_group_id": "left", "role": "full_range"},
-        {
-            "speaker_group_id": "left",
-            "role": "full_range",
-            "identity_verified": "false",
-        },
-        [
-            {
-                "speaker_group_id": "left",
-                "role": "full_range",
-                "identity_verified": True,
-            }
-        ],
-    ],
-)
-def test_sound_channel_identity_save_requires_explicit_boolean(
-    monkeypatch,
-    tmp_path: Path,
-    raw,
-):
-    path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    sound_setup._save_output_topology_payload(_passive_left_topology_payload())
-
-    with pytest.raises(ValueError, match="identity|object"):
-        sound_setup._active_speaker_channel_identity_save_payload(raw)
-
-    saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is False
-
-
-def test_sound_channel_identity_http_route_rejects_non_boolean_evidence(
-    monkeypatch,
-    tmp_path: Path,
-):
-    path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    sound_setup._save_output_topology_payload(_passive_left_topology_payload())
-
-    with sound_server(tmp_path) as base:
-        resp = json_post_with_csrf(
-            base,
-            "/active-speaker/channel-identity",
-            {
-                "speaker_group_id": "left",
-                "role": "full_range",
-                "identity_verified": "false",
-            },
-            expect_status=400,
-        )
-        payload = json.loads(resp.read().decode("utf-8"))
-        saved = json.loads(path.read_text(encoding="utf-8"))
-
-        assert "identity_verified must be a boolean" in payload["error"]
-        assert saved["speaker_groups"][0]["channels"][0]["identity_verified"] is False
 
 
 def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
@@ -5038,7 +4913,6 @@ def test_sound_module_replays_latest_tab_intent_after_apply_finishes(
         # A graph that cannot host EQ is the page's state (no tabs, no editor),
         # and an unprobed /state keeps the editor.
         "blockedEqCarrierIsThePageState",
-        "confirmedOutputKeepsResetPreconditions",
         "resetPartialCleanupSurfacesWarning",
         "driverResearchImportPreservesOperatorInstalledConfiguration",
         # #2883: the handoff card renders only once a baseline plays, mints its
@@ -7062,28 +6936,20 @@ def test_output_topology_payload_offers_a_repin_only_for_a_swapped_dongle(
     _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
     offered = sound_setup._output_topology_payload()["hardware_repin"]
 
-    # One of the two was replaced, and the indexes name WHICH: lanes 2-3 are
-    # the second child's, so the untouched child keeps its confirmed lanes.
     assert offered["child_count"] == 2
     assert offered["replaced_child_count"] == 1
-    assert offered["reverify_output_indexes"] == [2, 3]
-    assert offered["reverify_output_labels"] == [
-        "Apple DAC B left",
-        "Apple DAC B right",
-    ]
-
     _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b=RIGHT_APPLE_SERIAL)
     assert sound_setup._output_topology_payload()["hardware_repin"] is None
 
 
-def test_repin_endpoint_keeps_the_design_and_clears_what_must_be_reverified(
+def test_repin_endpoint_keeps_the_design_and_drops_drift_evidence(
     monkeypatch,
     tmp_path: Path,
 ):
     """The saved artifact is the contract, not the response body.
 
-    Everything a swapped unit cannot invalidate survives on disk; the swapped
-    child's lanes lose identity and the pair's drift evidence is dropped.
+    Everything a swapped unit cannot invalidate survives on disk; the pair's
+    drift evidence is dropped.
     """
 
     _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
@@ -7099,28 +6965,13 @@ def test_repin_endpoint_keeps_the_design_and_clears_what_must_be_reverified(
     assert payload["repin"]["status"] == "repinned"
     assert "Apple DAC B left, Apple DAC B right" in payload["repin"]["message"]
     assert stops == ["safe"]
-    # The card promises audio stays off until the outputs are re-confirmed. The
-    # graph selector is identity-blind, so that promise is only true because
-    # this endpoint keeps the runtime parked; see
-    # test_runtime_convergence.py::test_stay_parked_skips_selection_...
     assert park_kwargs["stay_parked"] is True
-    assert "confirm the re-pinned outputs" in park_kwargs["parked_reason"]
 
     saved = load_output_topology()
     assert [child.serial for child in saved.hardware.child_devices] == [
         LEFT_APPLE_SERIAL,
         "NEW-DONGLE",
     ]
-    assert {
-        (group.id, channel.role): channel.identity_verified
-        for group in saved.speaker_groups
-        for channel in group.channels
-    } == {
-        ("left", "woofer"): True,
-        ("left", "tweeter"): True,
-        ("right", "woofer"): False,
-        ("right", "tweeter"): False,
-    }
     # The design itself is untouched — this is the whole point of the flow.
     before = OutputTopology.from_mapping(_ported_dual_apple_topology_raw())
     assert saved.routing == before.routing
@@ -7285,128 +7136,6 @@ def _passive_stereo_topology_raw() -> dict:
         ],
         "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
     }
-
-
-def test_unconfirming_a_roleful_output_parks_the_speaker_at_the_click(
-    monkeypatch,
-    tmp_path: Path,
-):
-    """#2814's A2 half: the effect lands at the click, not three deploys later.
-
-    Marking a driver lane "not confirmed" on an armed roleful box is the
-    household declaring doubt about which driver hangs where — the same hazard a
-    DAC swap creates. The graph selector's invariant already refuses to re-select
-    an approved graph for it, but that is the DURABLE half and would only land at
-    the next restart. This is the immediate half, and it reuses the re-pin's
-    exact seam rather than inventing a second mechanism.
-    """
-
-    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b=RIGHT_APPLE_SERIAL)
-    park_kwargs: dict = {}
-    _stub_repin_runtime(monkeypatch, park_kwargs)
-
-    sound_setup._active_speaker_channel_identity_save_payload({
-        "speaker_group_id": "left",
-        "role": "woofer",
-        "identity_verified": False,
-    })
-
-    assert park_kwargs["stay_parked"] is True
-    assert "confirm it again and re-arm before audio resumes" in park_kwargs["parked_reason"]
-    saved = load_output_topology()
-    assert {
-        (group.id, channel.role): channel.identity_verified
-        for group in saved.speaker_groups
-        for channel in group.channels
-    }[("left", "woofer")] is False
-
-
-def test_a_failed_park_still_records_the_household_s_declared_doubt(
-    monkeypatch,
-    tmp_path: Path,
-):
-    """The durable half must land even when the immediate half cannot.
-
-    ``park_and_commit_topology`` parks BEFORE it commits, so handing this
-    endpoint's save into it would mean a park failure discards the un-confirm
-    entirely: the lane stays verified, ``roleful_identity_confirmed`` never
-    engages, and the box keeps its approved graph across every reboot. A park
-    most plausibly fails when the audio graph is already unhealthy — exactly
-    when the household's doubt matters most. So the flag is saved first and the
-    silence is best-effort, and the response says which half landed.
-    """
-
-    from jasper.active_speaker.runtime_contract import roleful_identity_confirmed
-
-    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b=RIGHT_APPLE_SERIAL)
-    monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("could not safely park audio before changing topology")
-        ),
-    )
-
-    payload = sound_setup._active_speaker_channel_identity_save_payload({
-        "speaker_group_id": "left",
-        "role": "woofer",
-        "identity_verified": False,
-    })
-
-    saved = load_output_topology()
-    assert {
-        (group.id, channel.role): channel.identity_verified
-        for group in saved.speaker_groups
-        for channel in group.channels
-    }[("left", "woofer")] is False
-    # And therefore the durable half is armed: the selector now refuses to hand
-    # this box back an approved graph on any later pass.
-    assert roleful_identity_confirmed(saved) is False
-    # The household is told the immediate silence did not happen.
-    assert payload["identity_park"]["parked"] is False
-    assert "could not silence the speaker" in payload["identity_park"]["message"]
-
-
-def test_identity_writes_that_cannot_silence_a_driver_do_not_park(
-    monkeypatch,
-    tmp_path: Path,
-):
-    """The park is scoped to the confirmed -> unconfirmed edge on a roleful box.
-
-    Confirming is the common commissioning action and must stay a plain durable
-    write; a passive layout has no crossover to protect; and a box that is
-    already unconfirmed is already parked, so a second un-confirm must not bounce
-    outputd again.
-    """
-
-    # Confirming a lane never parks — including the second lane of a box that is
-    # still unconfirmed elsewhere.
-    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b=RIGHT_APPLE_SERIAL)
-    park_kwargs: dict = {}
-    _stub_repin_runtime(monkeypatch, park_kwargs)
-    sound_setup._active_speaker_channel_identity_save_payload({
-        "speaker_group_id": "left", "role": "woofer", "identity_verified": True,
-    })
-    assert park_kwargs == {}
-
-    # Already unconfirmed: the box is parked, so a second un-confirm is a write.
-    sound_setup._active_speaker_channel_identity_save_payload({
-        "speaker_group_id": "left", "role": "woofer", "identity_verified": False,
-    })
-    assert park_kwargs["stay_parked"] is True
-    park_kwargs.clear()
-    sound_setup._active_speaker_channel_identity_save_payload({
-        "speaker_group_id": "right", "role": "woofer", "identity_verified": False,
-    })
-    assert park_kwargs == {}
-
-    # A passive layout carries no crossover: an unconfirmed lane is a channel
-    # swap, not a driver hazard, and it keeps playing.
-    _save_topology(monkeypatch, tmp_path, _passive_stereo_topology_raw())
-    park_kwargs.clear()
-    sound_setup._active_speaker_channel_identity_save_payload({
-        "speaker_group_id": "left", "role": "full_range", "identity_verified": False,
-    })
-    assert park_kwargs == {}
 
 
 @pytest.mark.parametrize("review_ready", [False, True])

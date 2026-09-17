@@ -78,7 +78,6 @@ from .sound_active_speaker import (
     _active_speaker_baseline_profile_apply_payload,
     _active_speaker_baseline_profile_payload,
     _active_speaker_calibration_level_payload,
-    _active_speaker_channel_identity_save_payload,
     _active_speaker_commission_ramp_abort_payload,
     _active_speaker_commission_state_payload,
     _active_speaker_commissioning_view_payload,
@@ -101,7 +100,6 @@ from .sound_active_speaker import (
 # has to be bound here even where no call site spells it out.
 from .sound_active_speaker import (  # noqa: F401 - resolved by name
     _active_speaker_bringup_preflight_payload,
-    _active_speaker_channel_identity_payload,
     _active_speaker_crossover_preview_payload,
     _active_speaker_environment_payload,
     _active_speaker_measurements_payload,
@@ -381,10 +379,6 @@ _GET_JSON_ROUTES: dict[str, tuple[str, str]] = {
         "_active_speaker_staged_config_payload",
         "sound.active_speaker_staged_config",
     ),
-    "/active-speaker/channel-identity": (
-        "_active_speaker_channel_identity_payload",
-        "sound.active_speaker_channel_identity",
-    ),
     "/active-speaker/rear-calibration/seed": (
         "_active_speaker_rear_calibration_seed_payload",
         "sound.active_speaker_rear_calibration_seed",
@@ -588,18 +582,6 @@ def _make_handler(
                     return
                 if path == "/active-speaker/calibration-level":
                     self._send_json(_active_speaker_calibration_level_payload(raw))
-                    return
-                if path == "/active-speaker/channel-identity":
-                    try:
-                        self._send_json(
-                            _active_speaker_channel_identity_save_payload(raw)
-                        )
-                    except (OSError, RuntimeError) as e:
-                        send_route_failure(
-                            self._send_json, e, logger=logger,
-                            event="sound.active_speaker_channel_identity",
-                            error=type(e).__name__,
-                        )
                     return
                 if path == "/active-speaker/design-draft":
                     from jasper.active_speaker.design_draft import (
@@ -1036,7 +1018,6 @@ def _make_handler(
         "/active-speaker/commission-state": Handler._dispatch_get_route,
         "/active-speaker/commissioning-view": Handler._dispatch_get_route,
         "/active-speaker/staged-config": Handler._dispatch_get_route,
-        "/active-speaker/channel-identity": Handler._dispatch_get_route,
         "/active-speaker/rear-calibration/seed": Handler._dispatch_get_route,
         "/active-speaker/seat-level/status": Handler._dispatch_get_route,
     }
@@ -1053,7 +1034,6 @@ def _make_handler(
         "/active-speaker/driver-research-request": Handler._dispatch_post_route,
         "/active-speaker/crossover-preview": Handler._dispatch_post_route,
         "/active-speaker/calibration-level": Handler._dispatch_post_route,
-        "/active-speaker/channel-identity": Handler._dispatch_post_route,
         "/active-speaker/rear-calibration/validate": Handler._dispatch_post_route,
         "/active-speaker/rear-calibration/bank": Handler._dispatch_post_route,
         "/active-speaker/seat-level/start": Handler._dispatch_post_route,

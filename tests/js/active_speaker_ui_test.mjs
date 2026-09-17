@@ -140,17 +140,6 @@ assert.equal(levelMatchSummary({ corrections: {} }).available, false);
   assert.ok(!/earlier setup/i.test(reconcileFailure));
 }
 
-// A heard driver is not a successful confirmation unless the backend saved the
-// output identity proof.
-{
-  const identitySaveFailure = commissionPayloadFailure({
-    status: "failed",
-    issues: [{ code: "driver_target_identity_save_failed" }],
-  });
-  assert.ok(/could not save/i.test(identitySaveFailure));
-  assert.ok(/output confirmation/i.test(identitySaveFailure));
-}
-
 // --- Local-subwoofer crossover helpers --------------------------------------
 const STEREO_NO_SUB = {
   speaker_groups: [

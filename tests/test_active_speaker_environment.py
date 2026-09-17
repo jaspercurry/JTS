@@ -320,7 +320,6 @@ def test_probe_can_pass_when_active_config_and_hardware_evidence_are_valid(
         "active_startup_candidate": True,
         "validated_config": True,
         "hardware_probe_path_safety": True,
-        "physical_channel_identity": False,
         "level_limited_tone_generator": False,
     }
 

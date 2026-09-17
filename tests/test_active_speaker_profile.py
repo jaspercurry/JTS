@@ -385,7 +385,6 @@ def test_commissioned_baseline_requires_measurement_evidence():
         baseline_id="baseline-test",
         status="commissioned",
         verification=BaselineVerification(
-            channel_identity_verified=True,
             all_paths_protected=True,
             per_driver_measurements_captured=True,
             crossover_nulls_captured=True,

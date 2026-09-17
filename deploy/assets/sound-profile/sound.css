@@ -922,30 +922,6 @@
   .output-role__select select:disabled {
     opacity: 0.7;
   }
-  .output-role__actions {
-    display: flex; flex-wrap: wrap; justify-content: flex-start;
-    gap: 6px;
-  }
-  .output-role__action { min-height: 36px; }
-  .output-identity-list {
-    margin: 0; padding: 0; list-style: none;
-    display: flex; flex-direction: column;
-    border-top: 1px solid var(--border);
-  }
-  .output-identity-row {
-    display: grid; grid-template-columns: minmax(0, 1fr) auto;
-    gap: 4px 10px; align-items: center; padding: 8px 0;
-    border-bottom: 1px solid var(--border);
-  }
-  .output-identity-row span,
-  .output-identity-row small {
-    min-width: 0; overflow-wrap: anywhere;
-    font-size: 11px; color: var(--muted-foreground);
-  }
-  .output-identity-row strong {
-    font-size: 12px; color: var(--foreground); white-space: nowrap;
-  }
-  .output-identity-row small { grid-column: 1 / -1; }
   .output-error,
   .output-empty { display: flex; flex-direction: column; gap: 8px; }
   @media (max-width: 420px) {
@@ -978,10 +954,7 @@
     .output-role,
     .output-role__text,
     .output-role__select,
-    .output-step__summary,
-    .output-identity-row,
-    .output-role__actions { justify-content: stretch; }
-    .output-role__action { flex: 1 1 9rem; }
+    .output-step__summary { justify-content: stretch; }
   }
   /* Protected single-audio-path driver commissioning card (Stage-5 ramp). */
   .commission-card {

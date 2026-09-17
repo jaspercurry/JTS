@@ -65,7 +65,6 @@ from jasper.active_speaker.runtime_contract import (
     apply_safe_graph_decision_to_statefile,
     flat_program_graph_block,
     flat_program_graph_blocked_reason,
-    roleful_identity_confirmed,
     safe_graph_for_current_topology,
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_active_bass_extension_graph,
@@ -306,7 +305,6 @@ def _staged_metadata(topology: OutputTopology, path: Path) -> dict:
                 "role": channel.role,
                 **({"output_variant": channel.output_variant} if channel.output_variant != "primary" else {}),
                 "physical_output_index": channel.physical_output_index,
-                "identity_verified": channel.identity_verified,
                 "startup_muted": channel.startup_muted,
                 "protection_required": channel.protection_required,
                 "protection_status": channel.protection_status,
@@ -2296,48 +2294,6 @@ def test_an_ordinary_mid_commission_box_still_selects_its_startup_graph(
     assert decision.ok is True
 
 
-def test_the_identity_hold_still_selects_its_startup_graph(tmp_path: Path) -> None:
-    """Control 2, and the one the guard could actually have broken.
-
-    The #2814 hold is a DIFFERENT shape from the control above: the box's own
-    approved graph is `allowed=True` and carries no issues at all — the rung is
-    skipped because the household has not re-confirmed which driver hangs on
-    each lane, not because the graph is bad. A migration guard that keyed on
-    "we fell past the approved rungs" rather than on the numeric refusal would
-    turn every re-pinned box's deploy red, which is exactly the state the #2814
-    fall is designed to resolve silently.
-
-    Asserted on the graph's own health as well as the status, so this cannot
-    pass by the graph having become unusable for some unrelated reason.
-    """
-    topology = _identity_cleared(_active_topology("mono", "active_2_way"))
-    current = tmp_path / "active_speaker_baseline.yml"
-    current.write_text(
-        _cd_linearized_baseline({"tweeter": [_cd_peak(6245.0, 3.0)]}),
-        encoding="utf-8",
-    )
-    staged_path = tmp_path / "active_speaker_staged_startup.yml"
-    staged_path.write_text(_active_yaml("mono", 2, frozenset()), encoding="utf-8")
-
-    decision = safe_graph_for_current_topology(
-        topology,
-        current_config_path=current,
-        **_write_authority(
-            tmp_path, staged=_staged_metadata(topology, staged_path)
-        ),
-    )
-
-    assert roleful_identity_confirmed(topology) is False
-    assert decision.current_graph is not None
-    assert decision.current_graph.allowed is True, (
-        "the hold must skip a HEALTHY graph, or this control tests nothing"
-    )
-    assert decision.current_graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
-    assert decision.status == "select_active_startup"
-    assert decision.ok is True
-    assert decision.issues == ()
-
-
 def _isolated_baseline_yaml(
     layout: str,
     way: int,
@@ -3275,32 +3231,6 @@ def test_safe_graph_decision_selects_staged_active_startup(tmp_path: Path) -> No
 
     assert decision.status == "select_active_startup"
     assert decision.selected_config_path == str(staged_path)
-
-
-def test_safe_graph_preserves_staged_startup_after_identity_confirmation(
-    tmp_path: Path,
-) -> None:
-    topology = _active_topology("mono", "active_2_way")
-    staged_path = tmp_path / "active_speaker_staged_startup.yml"
-    staged_path.write_text(_active_yaml("mono", 2, frozenset()), encoding="utf-8")
-    staged = _staged_metadata(topology, staged_path)
-    for target in staged["targets"]:
-        if target["role"] == "woofer":
-            target["identity_verified"] = False
-
-    decision = safe_graph_for_current_topology(
-        topology,
-        current_config_path=staged_path,
-        **_write_authority(tmp_path, staged=staged),
-    )
-
-    assert decision.status == "preserve_current"
-    assert decision.current_graph is not None
-    assert decision.current_graph.classification == GRAPH_ALL_MUTED_ACTIVE_STARTUP
-    assert decision.current_graph.details["staged_metadata_matches_topology"] is True
-    assert "active_staged_metadata_mismatch" not in {
-        issue.id for issue in decision.issues
-    }
 
 
 def test_safe_graph_decision_does_not_persist_guarded_commissioning(
@@ -5158,138 +5088,39 @@ async def test_live_boundary_refuses_a_lone_bypassed_divergence(
 # --- #2814: an approved graph needs confirmed roleful identity ---------------
 
 
-def _identity_cleared(topology: OutputTopology) -> OutputTopology:
-    """The shape a DAC re-pin (or an explicit un-confirm) leaves behind."""
-
-    return replace(
-        topology,
-        speaker_groups=tuple(
-            replace(
-                group,
-                channels=tuple(
-                    replace(channel, identity_verified=False)
-                    for channel in group.channels
-                ),
-            )
-            for group in topology.speaker_groups
-        ),
+@pytest.mark.parametrize(
+    ("already_loaded", "expected_status"),
+    [(False, "select_active_baseline"), (True, "preserve_current")],
+)
+def test_applied_baseline_is_selected_without_channel_identity(
+    tmp_path: Path, already_loaded: bool, expected_status: str,
+) -> None:
+    topology = _active_topology("mono", "active_2_way")
+    assert all(
+        "identity_verified" not in channel
+        for group in topology.to_dict()["speaker_groups"]
+        for channel in group["channels"]
     )
-
-
-def _approved_baseline_authority(tmp_path: Path) -> tuple[Path, Path, dict]:
-    """An armed box: an applied approved baseline plus a staged all-muted graph."""
-
     baseline_path = tmp_path / "active_speaker_baseline.yml"
     baseline_path.write_text(_active_baseline_yaml("mono", 2), encoding="utf-8")
     staged_path = tmp_path / "active_speaker_staged_startup.yml"
     staged_path.write_text(_active_yaml("mono", 2, frozenset()), encoding="utf-8")
-    return baseline_path, staged_path, {"applied_config": baseline_path}
 
-
-def test_safe_graph_refuses_an_approved_graph_while_roleful_identity_is_unconfirmed(
-    tmp_path: Path,
-) -> None:
-    """The durable half of #2814's promise, at the owner.
-
-    A DAC re-pin clears per-lane identity, and the household can clear it by
-    hand too. Until #2814 this selector could not see that fact: an armed box
-    re-selected its approved baseline on the very next reconcile and resumed
-    audio through drivers nobody had re-checked. Both approved-runtime rungs now
-    require confirmed identity; the box falls to the staged all-muted graph
-    until every assigned lane is confirmed again.
-
-    The verified half is asserted first and is load-bearing: without it a
-    refusal below would prove nothing, because the fixture might have been
-    unable to reach those rungs at all.
-    """
-
-    verified = _active_topology("mono", "active_2_way")
-    baseline_path, staged_path, applied = _approved_baseline_authority(tmp_path)
-
-    def decide(topology: OutputTopology, case: str, **kwargs):
-        case_dir = tmp_path / case
-        case_dir.mkdir(exist_ok=True)
-        return safe_graph_for_current_topology(
-            topology,
-            **_write_authority(
-                case_dir,
-                staged=_staged_metadata(topology, staged_path),
-                **applied,
-            ),
-            **kwargs,
-        )
-
-    # Armed and confirmed: both entries keep their pre-#2814 selection.
-    assert decide(verified, "verified-boot").status == "select_active_baseline"
-    assert decide(
-        verified, "verified-playing", current_config_path=baseline_path
-    ).status == "preserve_current"
-
-    # The same box after a re-pin / un-confirm: no rung may hand back audio.
-    repinned = _identity_cleared(verified)
-    for case, kwargs in (
-        ("repinned-boot", {}),
-        ("repinned-playing", {"current_config_path": baseline_path}),
-    ):
-        decision = decide(repinned, case, **kwargs)
-        assert decision.status == "select_active_startup", case
-        assert decision.selected_config_path == str(staged_path), case
-
-    # Scope: a PASSIVE topology carries no crossover, so an unconfirmed lane is
-    # a channel-swap annoyance, not a driver hazard. Its rungs stay untouched.
-    assert roleful_identity_confirmed(_identity_cleared(_full_range_stereo())) is True
-
-
-def test_repinned_box_reconcile_cannot_repoint_the_statefile_at_audio(
-    tmp_path: Path,
-) -> None:
-    """The reconciler replay: the re-pin's park survives its own reconcile.
-
-    `/sound/speaker/`'s re-pin parks live AND writes a parked statefile, then
-    fires `trigger_reconcile` on the same request. That reconcile runs
-    `runtime-safe-graph --write-statefile`, which re-decides from scratch and
-    has no parked-preservation guard of its own — so before #2814 the park was
-    LIVE-ONLY: silent now, audio back at the next `jasper-camilla` bounce, which
-    every deploy and every reboot performs. This replays that exact sequence at
-    the statefile.
-    """
-
-    verified = _active_topology("mono", "active_2_way")
-    baseline_path, staged_path, applied = _approved_baseline_authority(tmp_path)
-    parked_path = tmp_path / "parked.yml"
-
-    def reconcile_statefile(topology: OutputTopology, case: str) -> str:
-        case_dir = tmp_path / case
-        case_dir.mkdir(exist_ok=True)
-        statefile = case_dir / "outputd-statefile.yml"
-        statefile.write_text(
-            f"config_path: {parked_path}\nmute:\n- true\n- false\nvolume: -60.0\n",
-            encoding="utf-8",
-        )
-        decision = safe_graph_for_current_topology(
-            topology,
-            statefile_path=statefile,
-            parked_config_path=parked_path,
-            **_write_authority(
-                case_dir,
-                staged=_staged_metadata(topology, staged_path),
-                **applied,
-            ),
-        )
-        apply_safe_graph_decision_to_statefile(
-            decision, statefile_path=statefile, topology=topology
-        )
-        return statefile.read_text(encoding="utf-8")
-
-    # A confirmed box legitimately un-parks itself on the next reconcile.
-    assert f"config_path: {baseline_path}" in reconcile_statefile(
-        verified, "verified-reconcile"
+    decision = safe_graph_for_current_topology(
+        topology,
+        current_config_path=baseline_path if already_loaded else staged_path,
+        **_write_authority(
+            tmp_path,
+            applied_config=baseline_path,
+            staged=_staged_metadata(topology, staged_path),
+        ),
     )
 
-    # A re-pinned one must not: the statefile stays on a silent graph.
-    repinned = reconcile_statefile(_identity_cleared(verified), "repinned-reconcile")
-    assert f"config_path: {staged_path}" in repinned
-    assert str(baseline_path) not in repinned
+    assert decision.status == expected_status
+    assert decision.selected_config_path == str(baseline_path)
+    assert decision.preferred_graph is not None
+    assert decision.preferred_graph.allowed is True
+    assert decision.preferred_graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
 
 
 def test_a_proved_statefile_is_stamped_with_the_topology_behind_it(

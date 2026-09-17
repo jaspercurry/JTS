@@ -6,7 +6,7 @@
 
 This module is intentionally side-effect-light: it can build or write a
 candidate YAML file, but it does not ask CamillaDSP to load it. Hardware
-activation belongs behind later channel-identity and path-safety gates.
+activation belongs behind path-safety gates.
 """
 
 from __future__ import annotations

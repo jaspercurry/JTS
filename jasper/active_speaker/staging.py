@@ -494,7 +494,6 @@ def _target_outputs_for_groups(
                 **({"output_variant": channel.output_variant} if channel.output_variant != "primary" else {}),
                 "physical_output_index": channel.physical_output_index,
                 "human_output_label": channel.human_output_label,
-                "identity_verified": channel.identity_verified,
                 "startup_muted": channel.startup_muted,
                 "protection_required": channel.protection_required,
                 "protection_status": channel.protection_status,
