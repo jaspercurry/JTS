@@ -25,7 +25,7 @@ from jasper.audio_runtime_overrides import (
 from jasper.audio_runtime_plan import (
     AUDIO_ROUTE_PROFILE_KEY,
     ROUTE_POLICY_OUTPUTD_OFF_RING,
-    FANIN_INPUT_RESAMPLER_KEY,
+    RETIRED_FANIN_INPUT_RESAMPLER_KEY,
     FANIN_INPUT_RESAMPLER_LANE_KEY,
     FANIN_USB_DIRECT_PERIOD_KEY,
     ROUTE_CORRECTED_48K,
@@ -721,8 +721,8 @@ def test_usb_low_latency_route_requires_direct_fanin_resampler_and_reference():
     assert profile.low_latency_claim is True
     assert profile.fanin_usb_direct_required is True
     assert profile.fanin_input_resampler_required is True
-    assert by_key[FANIN_INPUT_RESAMPLER_KEY].value == "enabled"
     assert by_key[FANIN_INPUT_RESAMPLER_LANE_KEY].value == "usbsink"
+    assert by_key[RETIRED_FANIN_INPUT_RESAMPLER_KEY].action == "unset"
     assert all(not key.startswith("JASPER_USBSINK_") for key in by_key)
     assert (
         by_key["JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES"].value
@@ -863,7 +863,7 @@ def test_non_low_latency_route_clears_fanin_resampler_knobs_only():
     actions = route_owned_env_actions(ROUTE_CORRECTED_48K)
     by_key = {action.key: action for action in actions}
 
-    assert by_key[FANIN_INPUT_RESAMPLER_KEY].action == "unset"
+    assert by_key[RETIRED_FANIN_INPUT_RESAMPLER_KEY].action == "unset"
     assert all(not key.startswith("JASPER_USBSINK_") for key in by_key)
 
 

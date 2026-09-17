@@ -2797,7 +2797,7 @@ def test_route_env_change_restarts_fanin_exactly_once(tmp_path: Path):
     )
     assert first.returncode == 0, first.stderr
     fanin_env = (tmp_path / "fanin.env").read_text(encoding="utf-8")
-    assert "JASPER_FANIN_INPUT_RESAMPLER=enabled" in fanin_env
+    assert "JASPER_FANIN_INPUT_RESAMPLER=" not in fanin_env
     assert "JASPER_FANIN_INPUT_RESAMPLER_LANE=usbsink" in fanin_env
     assert "JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512" in fanin_env
     assert "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=1536" in fanin_env
