@@ -18,16 +18,22 @@ def is_branch_program(program: ExcitationProgram) -> bool:
     }
 
 
-def build_branch_program(summed: ExcitationProgram, role_channels: Mapping[str, int]) -> ExcitationProgram:
-    if len(role_channels) != 2 or any(not isinstance(role, str) or not role or role == "summed" for role in role_channels) or any(
-        type(channel) is not int for channel in role_channels.values()
-    ) or set(role_channels.values()) != {0, 1}:
+def build_branch_program(summed: ExcitationProgram, branch_channels: Mapping[str, int]) -> ExcitationProgram:
+    """Solo each branch, then sum them, on one clock at one level.
+
+    A branch identity is a measurement target id — the two drivers of a
+    crossover take (``woofer``/``tweeter``) or the two woofers of a cardioid
+    take (``woofer``/``woofer:rear``). Two of them, one per stereo channel.
+    """
+    if len(branch_channels) != 2 or any(not isinstance(role, str) or not role or role == "summed" for role in branch_channels) or any(
+        type(channel) is not int for channel in branch_channels.values()
+    ) or set(branch_channels.values()) != {0, 1}:
         raise ValueError("branch diagnostic requires two distinct branch identities on separate stereo input channels")
     # Retain existing program identities, including reversed legacy input routing.
-    first, second = ("woofer", "tweeter") if set(role_channels) == {"woofer", "tweeter"} else sorted(role_channels, key=role_channels.__getitem__)
+    first, second = ("woofer", "tweeter") if set(branch_channels) == {"woofer", "tweeter"} else sorted(branch_channels, key=branch_channels.__getitem__)
     sweep = summed.segment("sweep_verify")
     tail = summed.segment("tail")
-    segments = [replace(seg, role=first, channel=role_channels[first],
+    segments = [replace(seg, role=first, channel=branch_channels[first],
                         segment_id=seg.segment_id.replace("summed", first))
                 if seg.channel is not None else seg
                 for seg in summed.segments if seg.start_sample < sweep.start_sample]
@@ -42,7 +48,7 @@ def build_branch_program(summed: ExcitationProgram, role_channels: Mapping[str, 
                             for channel in (0, 1))
         else:
             segments.append(replace(sweep, segment_id=name, kind=KIND_SWEEP,
-                                    start_sample=cursor, channel=role_channels[role], role=role))
+                                    start_sample=cursor, channel=branch_channels[role], role=role))
         cursor += sweep.n_samples
         segments.append(replace(tail, segment_id=f"tail_{name}", start_sample=cursor))
         cursor += tail.n_samples

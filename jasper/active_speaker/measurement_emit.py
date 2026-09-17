@@ -50,6 +50,10 @@ class MeasurementGraphProfile:
     role_channels: Mapping[str, int]
     playback_device: str
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None
+    #: Physical targets this take deliberately silences. A role absent from
+    #: ``role_channels`` must be named here or the graph refuses to emit —
+    #: silence is a decision, never an omission.
+    parked_target_ids: tuple[str, ...] = ()
 
 
 class MeasurementGraphRefused(ValueError):
@@ -158,6 +162,15 @@ def compile_tuning_graph(
         for value in candidate.linearization.values()
     ):
         raise MeasurementGraphRefused("measurement_filters_invalid", candidate.fingerprint)
+    excited_target_ids: tuple[str, ...] = ()
+    if scope == "candidate_branches":
+        # Two branches on a stereo recording clock; WHICH two targets they are
+        # (woofer/tweeter, or front/rear woofer) is the take's choice. A rear
+        # the take drives on its own program channel must reach the emitter as
+        # an excited target: muted, its branch would record silence.
+        if set(profile.role_channels.values()) != {0, 1}:
+            raise MeasurementGraphRefused("measurement_branch_channels", profile.role_channels)
+        excited_target_ids = tuple(profile.role_channels)
     devices = camilla_yaml.active_emit_devices(profile.playback_device, topology=profile.topology)
     candidate_text = compile_candidate_config(
         candidate, playback_device=profile.playback_device,
@@ -169,11 +182,10 @@ def compile_tuning_graph(
         queuelimit=devices.queuelimit, enable_rate_adjust=devices.enable_rate_adjust,
         protection_sections_by_role=profile.protection_sections_by_role,
         room_peqs=candidate_room_peqs(candidate),
+        excited_target_ids=excited_target_ids,
     )
     prove_candidate_config(candidate, candidate_text)
     if scope == "candidate_branches":
-        if set(profile.role_channels) != {"woofer", "tweeter"} or set(profile.role_channels.values()) != {0, 1}:
-            raise MeasurementGraphRefused("measurement_branch_channels", profile.role_channels)
         prefix, rest = candidate_text.split("\nmixers:\n", 1)
         _, pipeline = rest.split("\npipeline:\n", 1)
         mixer = camilla_yaml._emit_role_routed_mixer(
@@ -210,4 +222,5 @@ def emit_measurement_graph(
         inverted_roles=inverted_roles,
         measurement_delays_us=measurement_delays_us,
         measurement_level_trims_db=level_trims_db,
+        parked_target_ids=profile.parked_target_ids,
     )

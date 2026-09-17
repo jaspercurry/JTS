@@ -40,9 +40,15 @@ from jasper.log_event import log_event
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
 from jasper.output_topology import OutputTopology
 
+from .camilla_yaml import STARTUP_MUTE_GAIN_DB
+from .crossover_v2.conductor_context import measurement_target_id
 from .driver_safety import evaluate_driver_safety_profile
 from .driver_protection import PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
-from .graph_safety import protection_requirement_present, view_from_yaml_dict
+from .graph_safety import (
+    output_terminally_muted,
+    protection_requirement_present,
+    view_from_yaml_dict,
+)
 from .measurement import active_driver_targets
 from .test_signal_plan import MIN_DRIVER_TEST_FREQUENCY_HZ
 from .runtime_contract import (
@@ -657,6 +663,12 @@ def _read_program_pcm(program: ExcitationProgram, wav_path: str | Path) -> Any:
     return data.astype(np.float32) / np.float32(32767.0)
 
 
+def _terminal_mute_names(output_index: int) -> tuple[str, ...]:
+    """The mute filter names an emitter can end ``output_index`` with."""
+    return (f"as_out{output_index}_rear_pending_mute",
+            f"as_out{output_index}_commission_mute")
+
+
 def _refused_program(
     program: ExcitationProgram, session_volume_db: float,
     reason: ProgramAdmissionRefusal,
@@ -708,16 +720,39 @@ def readmit_summed_program_from_wav(
     if not evaluation.confirmed_and_current:
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.PROFILE_NOT_CONFIRMED)
     physical = {target["target_fingerprint"]: target for target in active_driver_targets(topology)}
-    if (
-        not role_targets or set(role_targets.values()) != set(physical)
-        or any(physical[fingerprint]["role"] != role for role, fingerprint in role_targets.items())
+    # ``role_targets`` is keyed group-relatively (crossover-v2 measures ONE
+    # speaker group), so completeness is judged over the FULL physical target
+    # ids: a stereo topology's six targets share three group-relative ids, and
+    # comparing those would read one cabinet's map as covering both (ADR-0316).
+    admitted = {
+        physical[fingerprint]["target_id"]: target_id
+        for target_id, fingerprint in role_targets.items() if fingerprint in physical
+    }
+    if not role_targets or set(admitted) != {t["target_id"] for t in physical.values()} or any(
+        measurement_target_id(t["role"], t.get("output_variant") or "primary")
+        != admitted[t["target_id"]] for t in physical.values()
     ):
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.TARGET_NOT_MAPPED)
+    # A branch identity is a measurement target id, exactly as the emitting
+    # mixer keys its sources. A target the take does not name is parked: its
+    # dest carries no source at all, which is silence.
+    channels: dict[str, int | None] = {
+        target_id: None for target_id in role_targets
+    } if branches else {}
+    channels.update({segment.role: segment.channel for segment in program.stimulus_segments()
+                     if segment.role in channels})
+    excited = frozenset(
+        target_id for target_id, channel in channels.items() if channel is not None
+    )
     graph = classify_bass_extension_graph(
         topology, evidence_source="desired", graph_text=graph_yaml,
         applied_baseline_state={
             "recomposition_snapshot": {"bass_extension": bass_extension or {}},
         },
+        # This take's own targets, in memory: a rear it excites on its own
+        # program channel cannot be muted, so the door proves the role chain
+        # at that index instead of the mute.
+        excited_target_ids=excited,
     )
     if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
         log_event(logger, "active_speaker.program_graph_refused", level=logging.WARNING,
@@ -729,19 +764,24 @@ def readmit_summed_program_from_wav(
     pcm = _read_program_pcm(program, wav_path)
     if pcm is None:
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.RENDER_SHAPE_MISMATCH)
-    channels_by_role = {segment.role: segment.channel for segment in program.stimulus_segments()
-                        if segment.role in role_targets} if branches else {}
     if branches:
         mapping = [entry for name, mixer in payload["mixers"].items()
                    if name.startswith("split_active_") for entry in mixer["mapping"]]
-        if set(channels_by_role) != set(role_targets) or set(channels_by_role.values()) != {0, 1}:
+        if {channel for channel in channels.values() if channel is not None} != {0, 1}:
             return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.TARGET_NOT_MAPPED)
-        for role, fingerprint in role_targets.items():
+        for target_id, fingerprint in role_targets.items():
             entries = [entry for entry in mapping if entry["dest"] == physical[fingerprint]["output_index"]]
-            if len(entries) != 1 or entries[0].get("mute", False) or len(entries[0]["sources"]) != 1:
+            if len(entries) != 1 or entries[0].get("mute", False):
                 return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
-            source = entries[0]["sources"][0]
-            if source["channel"] != channels_by_role[role] or source["gain"] != 0 or source.get("inverted", False) or source.get("mute", False):
+            sources = entries[0]["sources"] or []
+            if channels[target_id] is None:
+                if sources:
+                    return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
+                continue
+            if len(sources) != 1:
+                return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
+            source = sources[0]
+            if source["channel"] != channels[target_id] or source["gain"] != 0 or source.get("inverted", False) or source.get("mute", False):
                 return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
     input_caps: list[float] = []
     bass_channels = set(graph.details.get("bass_output_channels", ()))
@@ -750,7 +790,18 @@ def readmit_summed_program_from_wav(
     segments: list[SegmentAdmission] = []
     refusals: list[ProgramAdmissionRefusal] = []
     declared = {target["target_fingerprint"]: target for target in safety_profile["targets"]}
-    for role, fingerprint in role_targets.items():
+    # A role's protection chain covers every output of that role, so a cardioid
+    # woofer's step is ``channels: [front, rear]`` (ADR-0316). That is the
+    # same-role set ``protection_requirement_present`` grades a covering step
+    # against; a single output index would read the grouped step as unproven.
+    role_outputs: dict[str, frozenset[int]] = {}
+    for target in physical.values():
+        role_outputs[target["role"]] = role_outputs.get(
+            target["role"], frozenset()) | {target["output_index"]}
+    for target_id, fingerprint in role_targets.items():
+        branch_channel = channels.get(target_id) if branches else None
+        if branches and branch_channel is None:
+            continue  # parked for this take: no source reaches this output
         try:
             band, cap = resolve_driver_excitation_ceilings(
                 safety_profile, fingerprint, program_admission=True,
@@ -760,12 +811,22 @@ def readmit_summed_program_from_wav(
         except ExcitationSafetyPlanError as exc:
             return _refused_program(program, session_volume_db, _map_safety_plan_error(exc))
         output = physical[fingerprint]["output_index"]
+        same_role_outputs = role_outputs[physical[fingerprint]["role"]]
+        # Routed AND terminally muted records silence as if it were a
+        # measurement. The take must park such an output, not excite it.
+        if any(output_terminally_muted(payload, view, output, mute_name=name,
+                                       mute_gain_db=STARTUP_MUTE_GAIN_DB)
+               for name in _terminal_mute_names(output)):
+            log_event(logger, "active_speaker.program_graph_refused", level=logging.WARNING,
+                      program_id=program.program_id, role=target_id, output_index=output,
+                      result="excited_output_muted")
+            return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
         # Reserve the maximum lift; admission remains valid across Aux updates.
         boost_db = bass_boost_db if output in bass_channels else 0.0
         input_caps.append(cap - boost_db)
         limits = declared[fingerprint]["level_duration_limits"]
         sweeps = sorted((s for s in program.segments if s.kind == KIND_SUMMED_SWEEP
-                         and (not branches or s.channel == channels_by_role[role])), key=lambda s: s.start_sample)
+                         and (not branches or s.channel == branch_channel)), key=lambda s: s.start_sample)
         if len(sweeps) > limits["max_repeat_count"]:
             refusals.append(ProgramAdmissionRefusal.REPEAT_COUNT_OVER_CAP)
         cooldown = math.ceil(limits["minimum_cooldown_s"] * program.sample_rate_hz)
@@ -777,14 +838,14 @@ def readmit_summed_program_from_wav(
         protected_floor_hz = float(declared[fingerprint]["hard_excitation_band_hz"][0])
         for requirement in requirements:
             if not protection_requirement_present(
-                view, output_index=output, allowed_channels={output}, requirement=requirement,
+                view, output_index=output, allowed_channels=same_role_outputs, requirement=requirement,
             ):
                 log_event(logger, "active_speaker.program_graph_refused", level=logging.WARNING,
-                          program_id=program.program_id, role=role, output_index=output,
+                          program_id=program.program_id, role=target_id, output_index=output,
                           required_protection=requirement)
                 return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
         for segment in program.stimulus_segments():
-            if branches and segment.channel != channels_by_role[role]:
+            if branches and segment.channel != branch_channel:
                 continue
             low, high = segment_emitted_band_hz(segment)
             low_ok = low >= MIN_DRIVER_TEST_FREQUENCY_HZ and (low >= protected_floor_hz or any(
@@ -797,7 +858,7 @@ def readmit_summed_program_from_wav(
                 and requirement["cutoff_hz"] <= band.upper_hz
                 for requirement in requirements
             ) or protection_requirement_present(
-                view, output_index=output, allowed_channels={output},
+                view, output_index=output, allowed_channels=same_role_outputs,
                 requirement={
                     "kind": "lowpass", "cutoff_hz": band.upper_hz,
                     "family_or_equivalent": "equivalent_or_steeper",
@@ -812,7 +873,7 @@ def readmit_summed_program_from_wav(
             reasons = () if allowed else (ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS.value,)
             assert segment.channel is not None
             segments.append(SegmentAdmission(
-                segment.segment_id, role, segment.channel, (low, high), peak, allowed, reasons,
+                segment.segment_id, target_id, segment.channel, (low, high), peak, allowed, reasons,
             ))
             if not allowed:
                 refusals.append(ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS)

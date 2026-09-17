@@ -16,7 +16,9 @@ pytestmark = pytest.mark.usefixtures("banked_session_level", "isolated_candidate
 import yaml
 from scipy.io import wavfile
 
+from jasper.active_speaker import camilla_yaml
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
+from jasper.active_speaker.crossover_v2.conductor_context import measurement_target_id
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.driver_safety import build_driver_safety_profile
 from jasper.active_speaker.measurement import active_driver_targets
@@ -29,11 +31,14 @@ from jasper.active_speaker.program_admission import (
     readmit_program_from_wav,
     readmit_summed_program_from_wav,
 )
+from jasper.active_speaker.runtime_contract import classify_bass_extension_graph
 from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
 from jasper.camilla_emit import emit_gain_filter, emit_linkwitz_riley
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
+    KIND_SUMMED_SWEEP,
+    KIND_SWEEP,
     RoleBand,
     build_measure_program,
     build_verify_program,
@@ -44,10 +49,13 @@ from tests.active_speaker_fixtures import mono_output_topology, isolated_candida
 from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, _trial_candidate
 from tests.test_crossover_v2_session_graph import FakeCam, _entry, _graph as _session_graph
+from tests.test_rear_output_foundation import _rear_pair
 
 
 def _profile_and_targets(
     *,
+    rear: bool = False,
+    layout: str = "mono",
     woofer_peak: float = 0.0,
     tweeter_peak: float = -65.0,
     max_sweep_duration_s: float = 6,
@@ -60,7 +68,7 @@ def _profile_and_targets(
     """Asymmetric caps by default (woofer 0.0, tweeter -65): the realistic
     2-way shape whose ~65 dB spread is exactly what the (fixed) session-volume
     derivation must handle — symmetric fixtures masked the min/max inversion."""
-    topology = mono_output_topology()
+    topology = _rear_pair(layout)[1] if rear else mono_output_topology()
 
     def _limits(peak):
         return {
@@ -74,8 +82,7 @@ def _profile_and_targets(
         "hard_excitation_band_hz": [500, 20_000],
         "measurement_band_hz": [500, 10_000],
     }
-    settings = {
-        "drivers": [
+    drivers = [
             {
                 **common,
                 "hard_excitation_band_hz": [woofer_floor, woofer_upper],
@@ -117,16 +124,21 @@ def _profile_and_targets(
                     "effective_radiating_diameter_mm": 25,
                 },
             },
-        ],
-        "crossover_candidates": [],
-    }
+    ]
+    # One entry per PHYSICAL target; a rear woofer shares its role's model and
+    # declared limits (ADR-0316 / plan 6.3) but owns its own target id.
+    by_role = {entry["role"]: entry for entry in drivers}
+    drivers = [{**by_role[target["role"]], "target_id": target["target_id"]}
+               for target in active_driver_targets(topology)]
+    settings = {"drivers": drivers, "crossover_candidates": []}
     profile = build_driver_safety_profile(
         topology,
         manual_settings=settings,
         driver_research=None,
         saved_at="2026-07-13T12:00:00Z",
     )
-    targets = {t["role"]: t["target_fingerprint"] for t in active_driver_targets(topology)}
+    targets = {measurement_target_id(t["role"], t.get("output_variant") or "primary"):
+               t["target_fingerprint"] for t in active_driver_targets(topology)}
     return topology, profile, targets
 
 
@@ -895,3 +907,164 @@ def test_summed_room_band_uses_hard_floor_without_adding_highpass(tmp_path, low_
         safety_profile=safety, role_targets=targets, session_volume_db=-20,
     )
     assert admission.allowed is (low_hz >= 20 and (low_hz >= 40 or highpass is not None)), admission.to_dict()
+
+
+CARDIOID_TAKE = {"woofer": 0, "woofer:rear": 1}
+CROSSOVER_TAKE = {"woofer": 0, "tweeter": 1}
+
+
+def _rear_take_inputs(branch_channels, *, layout="mono"):
+    topology, safety, targets = _profile_and_targets(
+        rear=True, layout=layout, woofer_floor=40, woofer_highpass=40, max_sweep_duration_s=4,
+    )
+    preset = _rear_pair(layout)[0]
+    graph_profile = MeasurementGraphProfile(
+        preset, topology, branch_channels, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets),
+    )
+    graph = compile_tuning_graph(
+        graph_profile, scope="candidate_branches", candidate=_trial_candidate(graph_profile),
+    )
+    return topology, safety, targets, graph
+
+
+def _rear_take_program(branch_channels):
+    from jasper.audio_measurement.branch_program import build_branch_program
+
+    return build_branch_program(SessionExcitation(
+        roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65}, session_volume_db=-20,
+        fc_hz=1600, sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
+    ).cloud_program(), branch_channels)
+
+
+def _admit_rear_take(tmp_path, branch_channels, *, graph=None, layout="mono"):
+    topology, safety, targets, emitted = _rear_take_inputs(branch_channels, layout=layout)
+    program = _rear_take_program(branch_channels)
+    wav = tmp_path / "branches.wav"
+    write_program_wav(wav, program)
+    return targets, program, readmit_summed_program_from_wav(
+        program, wav, graph_yaml=graph or emitted, topology=topology, safety_profile=safety,
+        role_targets=targets, session_volume_db=-20,
+    )
+
+
+def test_rear_declared_topology_is_admitted_with_the_rear_parked(tmp_path):
+    """A rear woofer is a THIRD physical target of a two-way speaker, so the
+    admission map is 1:1 over targets and the crossover take is no longer
+    refused as unmapped. The rear, which no branch names, is admitted carrying
+    zero excitation — consistent with the terminal mute it still ends in."""
+    targets, program, admission = _admit_rear_take(tmp_path, CROSSOVER_TAKE)
+    assert set(targets) == {"woofer", "tweeter", "woofer:rear"}
+    assert admission.allowed, admission.to_dict()
+    assert {segment.role for segment in admission.segments} == set(CROSSOVER_TAKE)
+    # One clock, one level: solo, solo, repeat, repeat, then the summed verify.
+    assert program.channels == 2
+    sweeps = [s for s in program.segments if s.kind in (KIND_SWEEP, KIND_SUMMED_SWEEP)]
+    assert len({s.gain_db for s in sweeps}) == 1
+    assert [(s.segment_id, s.role, s.channel) for s in sweeps] == [
+        ("sweep_w", "woofer", 0), ("sweep_t", "tweeter", 1),
+        ("sweep_w_rep", "woofer", 0), ("sweep_t_rep", "tweeter", 1),
+        ("sweep_verify", None, 0), ("sum_companion", None, 1),
+    ]
+
+
+def test_a_graph_that_feeds_a_parked_target_is_refused(tmp_path):
+    """The other half of the routing contract: a parked dest must carry no
+    source, so a graph cannot quietly excite a driver the take parked."""
+    graph = _rear_take_inputs(CARDIOID_TAKE)[3].replace(
+        "      - dest: 1\n        sources: []\n",
+        "      - dest: 1\n        sources:\n"
+        "          - { channel: 0, gain: 0.0000, inverted: false }\n",
+    )
+    _targets, _program, admission = _admit_rear_take(tmp_path, CARDIOID_TAKE, graph=graph)
+    assert ProgramAdmissionRefusal.GRAPH_NOT_PROVEN in admission.refusals
+
+
+def test_a_stereo_cabinet_pair_cannot_be_admitted_through_one_group_map(tmp_path):
+    """Group-relative keys cannot address six targets: a stereo 2-way with rears
+    declares six physical targets whose ids collapse to three, so admission
+    refuses rather than reading one cabinet's map as covering both."""
+    _preset, topology = _rear_pair("stereo")
+    physical = active_driver_targets(topology)
+    assert len(physical) == 6
+    assert len({measurement_target_id(t["role"], t.get("output_variant") or "primary")
+                for t in physical}) == 3
+    _targets, _program, admission = _admit_rear_take(
+        tmp_path, CROSSOVER_TAKE, layout="stereo",
+    )
+    assert ProgramAdmissionRefusal.TARGET_NOT_MAPPED in admission.refusals
+
+
+@pytest.mark.parametrize("names_the_rear", [True, False])
+def test_a_rear_the_take_excites_is_emitted_and_admitted_un_muted(tmp_path, names_the_rear):
+    """End to end on the REAL emitter path. A take measuring the rear drives it
+    on its own program channel, so ADR-0316's terminal mute would record
+    silence, and there is no document yet — the take exists to author one. The
+    emitter leaves it un-muted only because the take named it; the same graph
+    with the mute back is refused, because a routed-but-muted branch measures
+    nothing."""
+    topology, safety, targets, graph = _rear_take_inputs(CARDIOID_TAKE)
+    assert "as_out2_rear_pending_mute" not in yaml.safe_load(graph)["filters"]
+    if not names_the_rear:
+        # What the same emitter produces for a take that does not name the rear.
+        graph = camilla_yaml._mute_unfitted_rear_outputs(graph, _rear_pair("mono")[0])
+        assert "as_out2_rear_pending_mute" in yaml.safe_load(graph)["filters"]
+    program = _rear_take_program(CARDIOID_TAKE)
+    wav = tmp_path / "branches.wav"
+    write_program_wav(wav, program)
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=graph, topology=topology, safety_profile=safety,
+        role_targets=targets, session_volume_db=-20,
+    )
+    if not names_the_rear:
+        assert ProgramAdmissionRefusal.GRAPH_NOT_PROVEN in admission.refusals
+        return
+    assert admission.allowed, admission.to_dict()
+    assert {segment.role for segment in admission.segments} == set(CARDIOID_TAKE)
+    # The door unlocks on the take's own evidence, never on the graph alone.
+    unclaimed = classify_bass_extension_graph(
+        topology, evidence_source="desired", graph_text=graph,
+        applied_baseline_state={"recomposition_snapshot": {"bass_extension": {}}},
+    )
+    assert "rear_output_not_muted" in {issue["code"] for issue in unclaimed.issues}
+
+
+def test_an_excited_rear_outside_its_role_chain_is_still_refused(tmp_path):
+    """The evidence unlocks a PROOF, not the mute: a rear whose protection step
+    no longer groups with its role's primary output is refused even when the
+    take names it."""
+    topology, _safety, _targets, emitted = _rear_take_inputs(CARDIOID_TAKE)
+    payload = yaml.safe_load(emitted)
+    step = next(s for s in payload["pipeline"]
+                if s.get("type") == "Filter" and s.get("channels") == [0, 2])
+    step["channels"] = [0]
+    header = "\n".join(line for line in emitted.splitlines() if line.startswith("#"))
+    graph = header + "\n" + yaml.safe_dump(payload, sort_keys=False)
+    result = classify_bass_extension_graph(
+        topology, evidence_source="desired", graph_text=graph,
+        applied_baseline_state={"recomposition_snapshot": {"bass_extension": {}}},
+        excited_target_ids=frozenset(CARDIOID_TAKE),
+    )
+    assert "excited_rear_unprotected" in {issue["code"] for issue in result.issues}
+
+
+def test_a_measurement_program_graph_is_refused_by_its_own_name(tmp_path):
+    """The protected-neutral emit is neither baseline-shaped nor a commissioning
+    bring-up graph. Judged as one it produced a pile of commissioning blockers
+    describing a graph nobody wrote; it now refuses under one true code."""
+    from jasper.active_speaker.measurement_emit import emit_measurement_graph
+
+    topology, safety, targets = _profile_and_targets(
+        rear=True, woofer_floor=40, woofer_highpass=40, max_sweep_duration_s=4,
+    )
+    graph = emit_measurement_graph(MeasurementGraphProfile(
+        _rear_pair("mono")[0], topology, CARDIOID_TAKE, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets),
+        parked_target_ids=("tweeter",),
+    ))
+    result = classify_bass_extension_graph(
+        topology, evidence_source="desired", graph_text=graph,
+        applied_baseline_state={"recomposition_snapshot": {"bass_extension": {}}},
+        excited_target_ids=frozenset(CARDIOID_TAKE),
+    )
+    assert {issue["code"] for issue in result.issues} == {"active_graph_program_shape_unproven"}

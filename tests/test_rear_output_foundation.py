@@ -393,3 +393,68 @@ def test_the_decorated_baseline_gate_reads_the_re_serialised_graph():
     emit._assert_tweeter_outputs_protected(text, preset, decorated=True)
     with pytest.raises(ActiveSpeakerConfigError):
         emit._assert_tweeter_outputs_protected("pipeline: [", preset, decorated=True)
+
+
+@pytest.mark.parametrize("role_channels,parked,expected,rear_muted", [
+    ({"woofer": 0, "tweeter": 1}, (),
+     {0: [(0, 0.0, False)], 1: [(1, 0.0, False)], 2: []}, True),
+    ({"woofer": 0, "woofer:rear": 1}, ("tweeter",),
+     {0: [(0, 0.0, False)], 1: [], 2: [(1, 0.0, False)]}, False),
+])
+def test_program_take_routes_by_physical_target_and_parks_the_rest(
+    role_channels, parked, expected, rear_muted,
+):
+    """A take names physical targets. The crossover take names neither the rear
+    nor a rear channel, so the rear is parked AND stays terminally muted — a
+    routed-but-muted output would record silence as a measurement. The cardioid
+    take gives the rear its own channel, so it must not be muted and keeps its
+    role's protection at its own output index; the tweeter it parks is named."""
+    preset, _ = _rear_pair("mono")
+    text = emit.emit_active_speaker_program_config(
+        preset, role_channels=role_channels, playback_device="jts_ring_active_playback",
+        parked_target_ids=parked,
+    )
+    payload = yaml.safe_load(text)
+    view = gs.view_from_yaml_dict(payload)
+    assert {entry["dest"]: [(s["channel"], s["gain"], s["inverted"]) for s in entry["sources"]]
+            for entry in payload["mixers"]["split_active_2way"]["mapping"]} == expected
+    assert gs.output_terminally_muted(
+        payload, view, 2, mute_name="as_out2_rear_pending_mute", mute_gain_db=-120.0,
+    ) is rear_muted
+    protection = next(step for step in payload["pipeline"]
+                      if step.get("type") == "Filter" and step.get("channels") == [0, 2])
+    assert any(payload["filters"][name]["type"] == "Limiter" for name in protection["names"])
+    assert any(payload["filters"][name].get("parameters", {}).get("type")
+               == "LinkwitzRileyLowpass" for name in protection["names"])
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"excited_target_ids": ()}, {"excited_target_ids": ("tweeter",)}])
+def test_a_baseline_with_no_document_and_no_take_still_mutes_the_rear(kwargs):
+    """The household path cannot drift: naming no target, or naming one that is
+    not a rear, emits the same bytes as before the take existed, and the
+    undocumented rear stays terminally muted (ADR-0316/ADR-0318)."""
+    preset, _ = _rear_pair("mono")
+    text = emit.emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, **kwargs,
+    )
+    assert text == emit.emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
+    payload = yaml.safe_load(text)
+    assert gs.output_terminally_muted(
+        payload, gs.view_from_yaml_dict(payload), 2,
+        mute_name="as_out2_rear_pending_mute", mute_gain_db=-120.0,
+    )
+
+
+def test_a_take_that_names_the_rear_lifts_only_its_mute():
+    """Naming the rear removes its pending mute and nothing else: every other
+    filter and pipeline step is the household graph's."""
+    preset, _ = _rear_pair("mono")
+    household = yaml.safe_load(emit.emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM))
+    take = yaml.safe_load(emit.emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM, excited_target_ids=("woofer", "woofer:rear")))
+    assert set(household["filters"]) - set(take["filters"]) == {"as_out2_rear_pending_mute"}
+    assert {name: value for name, value in household["filters"].items()
+            if name in take["filters"]} == take["filters"]
+    assert [step for step in household["pipeline"]
+            if "as_out2_rear_pending_mute" not in (step.get("names") or [])] == take["pipeline"]

@@ -789,3 +789,29 @@ def test_every_emitter_writes_a_zero_volume_limit_and_refuses_a_boost(
     assert yaml.safe_load(emit())["devices"]["volume_limit"] == 0.0
     with pytest.raises(ActiveSpeakerConfigError):
         emit(volume_limit_db=0.5)
+
+
+@pytest.mark.parametrize("role_channels,parked,refuses", [
+    ({"woofer": 0, "tweeter": 1}, (), False),
+    ({"woofer": 0}, (), True),
+    ({"woofer": 0}, ("tweeter",), False),
+    ({"woofer": 0, "midrange": 1}, (), True),
+])
+def test_a_program_take_may_park_a_role_only_by_naming_it(role_channels, parked, refuses):
+    """Silence is a decision, never an omission: a role with no program channel
+    refuses unless the take names its targets as parked. A graph emitted from a
+    forgotten role would capture at the wrong width and route a live step to a
+    channel the program never fills."""
+    emit = lambda: camilla_yaml.emit_active_speaker_program_config(
+        _preset("mono", 2), role_channels=role_channels, playback_device=ACTIVE_PCM,
+        parked_target_ids=parked,
+    )
+    if refuses:
+        with pytest.raises(ActiveSpeakerConfigError):
+            emit()
+        return
+    payload = yaml.safe_load(emit())
+    assert payload["devices"]["capture"]["channels"] == 1 + max(role_channels.values())
+    parked_dests = [entry["dest"] for entry in payload["mixers"]["split_active_2way"]["mapping"]
+                    if not entry["sources"]]
+    assert parked_dests == ([1] if parked else [])

@@ -28,7 +28,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import (
-    Any, Awaitable, Callable, Iterable, Literal, Mapping, Sequence,
+    Any, Awaitable, Callable, Collection, Iterable, Literal, Mapping, Sequence,
 )
 
 import yaml
@@ -230,6 +230,15 @@ ACTIVE_DRIVER_DOMAIN_SOURCE = (
 # Summed commissioning may derive a narrowly verified final mute tail from the
 # primary baseline source; the driver-domain source never may.
 _BASELINE_LIKE_SOURCES = (ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE)
+
+# The protected-neutral CHECK/MEASURE emit. Named here only to REFUSE it by its
+# own name: it is neither baseline-shaped nor a commissioning bring-up graph, so
+# judging it as one produced a pile of commissioning blockers that described a
+# graph nobody wrote. It has no proof arm in this door; its protection is proved
+# per segment and per output index by program admission instead.
+ACTIVE_PROGRAM_SOURCE = (
+    "jasper.active_speaker.camilla_yaml.emit_active_speaker_program_config"
+)
 
 CONTRACT_UNCONFIGURED = "unconfigured"
 CONTRACT_NORMAL_STEREO_FULL_RANGE = "normal_stereo_full_range"
@@ -2254,6 +2263,41 @@ def _commissioning_output_chain(
     return tuple(crossovers)
 
 
+def _excited_rear_protected(
+    payload: dict[str, Any],
+    contract: OutputContract,
+    *,
+    assignment: Any,
+    index: int,
+) -> bool:
+    """Whether an EXCITED rear output is protected without its pending mute.
+
+    A take that measures the rear drives it on its own program channel, so the
+    terminal mute ADR-0316 otherwise requires would record silence instead of a
+    sweep. What replaces the mute is proof that the signal reaching the rear
+    passes exactly the chain its role's primary output passes — the same
+    filters, in ONE grouped step over both outputs, carrying that role's
+    limiter (either emitter's spelling). Never an authority for a household
+    graph: the caller hands in the take's own excited targets, which no saved
+    file can claim.
+    """
+    role_outputs = {
+        item.physical_output_index for item in contract.assignments
+        if item.role == assignment.role and item.physical_output_index is not None
+    }
+    chain = _post_split_filter_names(payload, channel=index)
+    if chain and chain[-1] == _commission_mute_name(index):
+        chain = chain[:-1]
+    return (
+        len(role_outputs) > 1
+        and bool({driver_limiter_name(assignment.role),
+                  _baseline_limiter_name(assignment.role)} & set(chain))
+        and _canonical_chain_grouped(
+            payload, expected_channels=role_outputs, expected_names=chain,
+        )
+    )
+
+
 def _canonical_chain_grouped(
     payload: dict[str, Any],
     *,
@@ -2560,6 +2604,7 @@ def _active_graph_evidence(
     summary: dict[str, Any],
     bass_profile_summary: Mapping[str, Any] | None,
     rear_calibration: Mapping[str, Any] | None = None,
+    excited_target_ids: Collection[str] = (),
 ) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
     # Parse the text ONCE. `payload` gives the two distinct parse-error codes
@@ -2597,6 +2642,20 @@ def _active_graph_evidence(
                 payload, view, index, mute_name=f"as_out{index}_rear_pending_mute",
                 mute_gain_db=STARTUP_MUTE_GAIN_DB,
             ):
+                continue
+            # The third arm: a measurement take that names this rear as one of
+            # its excited targets. It cannot be muted and has no document yet —
+            # it is being measured to author one — so the role chain proves it.
+            if f"{assignment.role}:{assignment.output_variant}" in excited_target_ids:
+                if _excited_rear_protected(
+                    payload, contract, assignment=assignment, index=index,
+                ):
+                    continue
+                issues.append(_issue(
+                    "blocker", "excited_rear_unprotected",
+                    f"Rear output {index + 1} is excited without its role's "
+                    "grouped protection chain and limiter",
+                ))
                 continue
             if rear_calibration:
                 issues.append(_issue(
@@ -2699,6 +2758,11 @@ def _active_graph_evidence(
             ))
 
     source = str(summary.get("source") or "")
+    if source == ACTIVE_PROGRAM_SOURCE:
+        return {"issues": [_issue(
+            "blocker", "active_graph_program_shape_unproven",
+            "a measurement program graph has no proof arm in this door",
+        )], "safe": False}
     is_baseline = source == ACTIVE_BASELINE_SOURCE
     is_driver_domain = source == ACTIVE_DRIVER_DOMAIN_SOURCE
     is_baseline_commissioning = is_baseline and bool(mutes)
@@ -3396,9 +3460,11 @@ def _active_graph_allowed(
     staged_config: dict[str, Any] | None,
     bass_profile_summary: Mapping[str, Any] | None,
     rear_calibration: Mapping[str, Any] | None,
+    excited_target_ids: Collection[str] = (),
 ) -> GraphSafety:
     evidence = _active_graph_evidence(
-        text, contract, summary, bass_profile_summary, rear_calibration
+        text, contract, summary, bass_profile_summary, rear_calibration,
+        excited_target_ids=excited_target_ids,
     )
     issues = list(evidence.get("issues") or [])
     classification = GRAPH_UNSAFE
@@ -3659,6 +3725,7 @@ def classify_camilla_graph(
     staged_config: dict[str, Any] | None = None,
     bass_profile_summary: Mapping[str, Any] | None = None,
     rear_calibration: Mapping[str, Any] | None = None,
+    excited_target_ids: Collection[str] = (),
 ) -> GraphSafety:
     """Return whether a CamillaDSP graph is legal for the saved topology."""
 
@@ -3741,6 +3808,7 @@ def classify_camilla_graph(
             staged_config=staged_config,
             bass_profile_summary=bass_profile_summary,
             rear_calibration=rear_calibration,
+            excited_target_ids=excited_target_ids,
         )
     elif camilla_class == CAMILLA_CLASS_ACTIVE_PARKED:
         # No staged-metadata authority here on purpose: a parked graph is
@@ -3843,6 +3911,7 @@ def _classify_bass_extension_snapshot(
     applied_baseline_bytes: bytes | None,
     applied_baseline_state: Mapping[str, Any] | None,
     staged_metadata_bytes: bytes | None,
+    excited_target_ids: Collection[str] = (),
 ) -> GraphSafety:
     applied = (
         dict(applied_baseline_state)
@@ -3889,6 +3958,7 @@ def _classify_bass_extension_snapshot(
             if isinstance(snapshot.get("rear_calibration"), Mapping)
             else None
         ),
+        excited_target_ids=excited_target_ids,
     )
     return replace(
         graph,
@@ -3935,8 +4005,15 @@ def classify_bass_extension_graph(
     applied_baseline_path: Path | None = None,
     applied_baseline_state: Mapping[str, Any] | None = None,
     staged_metadata_path: Path | None = None,
+    excited_target_ids: Collection[str] = (),
 ) -> GraphSafety:
-    """Canonical synchronous graph/evidence boundary."""
+    """Canonical synchronous graph/evidence boundary.
+
+    ``excited_target_ids`` is a live measurement take's own evidence and is
+    honoured on the ``desired`` source ALONE: it travels in memory from the
+    admission call that holds the DSP writer lock, never from a saved file a
+    tampered statefile could author.
+    """
 
     if evidence_source == "desired":
         if (
@@ -3956,6 +4033,7 @@ def classify_bass_extension_graph(
             applied_baseline_bytes=None,
             applied_baseline_state=applied_baseline_state,
             staged_metadata_bytes=None,
+            excited_target_ids=excited_target_ids,
         )
 
     if (

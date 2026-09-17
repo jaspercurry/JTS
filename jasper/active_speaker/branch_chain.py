@@ -193,6 +193,21 @@ def sections_by_role(regions: Iterable[Any]) -> dict[str, tuple[CrossoverSection
     return {role: tuple(sections) for role, sections in out.items()}
 
 
+class RoleProtectionDisagrees(ValueError):
+    """Two outputs of one role confirm different protection sections.
+
+    The emitted role chain is ONE grouped pipeline step over every output of
+    the role, so it cannot carry a per-output corner. Refused rather than
+    unioned: a union would apply a rear-only high-pass to the front driver.
+    """
+
+    code = "role_protection_sections_disagree"
+
+    def __init__(self, role: str) -> None:
+        self.role = role
+        super().__init__(f"{self.code}:{role}")
+
+
 def confirmed_protection_sections(
     safety_profile: Mapping[str, Any], role_targets: Mapping[str, str] | None = None,
 ) -> dict[str, tuple[CrossoverSection, ...]]:
@@ -204,15 +219,18 @@ def confirmed_protection_sections(
     requested = (role_targets.items() if role_targets is not None else (
         (target["role"], target["target_fingerprint"]) for target in targets
     ))
-    for role, fingerprint in sorted(requested):
+    # Matched on the fingerprint alone: it already identifies ONE physical
+    # target, and a role carries more than one of them on a cardioid speaker
+    # (ADR-0316), whose rear rides its role's protection chain.
+    for key, fingerprint in sorted(requested):
         matches = [
             target for target in targets
             if isinstance(target, Mapping)
-            and target.get("role") == role
             and target.get("target_fingerprint") == fingerprint
         ]
         if len(matches) != 1:
-            raise ValueError(f"confirmed protection target is not unique for {role}")
+            raise ValueError(f"confirmed protection target is not unique for {key}")
+        role = str(matches[0].get("role") or "")
         raw_filters = matches[0].get("required_protection_filters")
         if not isinstance(raw_filters, list):
             raise ValueError(f"confirmed protection filters are missing for {role}")
@@ -228,7 +246,9 @@ def confirmed_protection_sections(
             if not (math.isfinite(cutoff) and math.isfinite(slope)) or cutoff <= 0 or not order:
                 raise ValueError(f"confirmed protection filter is unsupported for {role}")
             sections.append(CrossoverSection(cutoff, order, raw["kind"] == "highpass"))
-        out[role] = tuple(dict.fromkeys((*out.get(role, ()), *sections)))
+        if role in out and out[role] != tuple(sections):
+            raise RoleProtectionDisagrees(role)
+        out[role] = tuple(sections)
     return out
 
 

@@ -43,6 +43,7 @@ __all__ = [
     "ensure_crossover_preview_ready",
     "profile_refusal_code",
     "measurement_role_channels",
+    "measurement_target_id",
     "resolve_conductor_context",
 ]
 
@@ -93,6 +94,10 @@ class V2ConductorContext(Generic[_Level]):
     # the admission gate reads (``effective_sweep_duration_limit_s``), so a
     # MEASURE segment cannot overshoot the ceiling admission judges it against.
     driver_sweep_duration_limits_s: dict[str, float]
+    #: Measurement target id (``measurement_target_id``) -> target fingerprint,
+    #: one entry per physical driver output. The EMITTER map below
+    #: (:attr:`role_channels`) stays many-to-one: a role's channel reaches its
+    #: rear output too. These two never collapse into one.
     role_targets: dict[str, str]
     safety_profile: Mapping[str, Any]
     session_volume_db: _Level
@@ -138,6 +143,18 @@ class V2ConductorContext(Generic[_Level]):
             (entry.band for entry in self.roles_bands if entry.role == role),
             None,
         )
+
+
+def measurement_target_id(role: str, output_variant: str = "primary") -> str:
+    """One physical driver output's identity inside a speaker group.
+
+    A primary output's id IS its role, so every role-keyed measurement map on a
+    primary-only speaker is unchanged; a rear woofer adds ``woofer:rear``
+    (ADR-0316). This is the group-relative half of
+    :func:`~jasper.output_topology.physical_target_id`; crossover-v2 measures
+    one group at a time.
+    """
+    return role if output_variant == "primary" else f"{role}:{output_variant}"
 
 
 def measurement_role_channels(preset: Any) -> dict[str, int]:
@@ -390,14 +407,19 @@ def resolve_conductor_context(
     drivers = (
         targets_raw.get("drivers") if isinstance(targets_raw, Mapping) else None
     ) or []
+    # One entry per PHYSICAL target (``measurement_target_id``), never one per
+    # role: a rear woofer is a third target of a two-way speaker, and collapsing
+    # it onto its role hides it from the play-door admission map.
     role_targets: dict[str, str] = {}
     for target in drivers:
         if isinstance(target, Mapping):
             role = str(target.get("role") or "").lower()
             fingerprint = str(target.get("target_fingerprint") or "")
             if role and fingerprint:
-                role_targets[role] = fingerprint
-    if set(role_targets) != set(roles):
+                role_targets[measurement_target_id(
+                    role, str(target.get("output_variant") or "primary"),
+                )] = fingerprint
+    if {target_id for target_id in role_targets if ":" not in target_id} != set(roles):
         # The registry copy cannot carry the roles; the journal line can.
         log_event(
             logger,

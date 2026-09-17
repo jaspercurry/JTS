@@ -103,6 +103,7 @@ def test_available_programs_is_the_sorted_registry() -> None:
         ("bass", "quick"),
         ("branches", "express"),
         ("close", "spot"),
+        ("front_rear", "express"),
         ("room", "arm"),
         ("room", "cloud"),
         ("room", "seat"),
