@@ -15,7 +15,10 @@
 //! `jasper.fanin.coupling_reconcile`.
 
 use anyhow::Result;
-use jasper_env::{env_f32, env_f32_fallback, env_parse, env_str};
+use jasper_env::{
+    env_f32, env_f32_fallback, env_str, env_u32, env_u32_fallback, env_u32_positive_or_default,
+    env_u64,
+};
 
 use jasper_tts_protocol::loudness::AssistantLoudnessConfig;
 
@@ -45,8 +48,9 @@ pub(crate) const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 /// sub-period interval still ticks. The crate's ONE ms→periods conversion:
 /// every period-counted cadence states its wall-clock intent and derives the
 /// count here rather than shipping a hand-multiplied literal. `sample_rate` is
-/// the caller's guarantee (`env_u32_positive` refuses 0); `period_frames` is
-/// guarded here because the constants call this before that parse runs.
+/// the caller's guarantee (`env_u32_positive_or_default` refuses 0);
+/// `period_frames` is guarded here because the constants call this before that
+/// parse runs.
 pub(crate) const fn periods_for_ms(ms: u64, period_frames: u32, sample_rate: u32) -> u64 {
     let period_frames = if period_frames == 0 {
         1
@@ -370,8 +374,10 @@ impl Config {
             );
         }
 
-        let sample_rate = env_u32_positive("JASPER_FANIN_SAMPLE_RATE", DEFAULT_SAMPLE_RATE)?;
-        let period_frames = env_u32_positive("JASPER_FANIN_PERIOD_FRAMES", DEFAULT_PERIOD_FRAMES)?;
+        let sample_rate =
+            env_u32_positive_or_default("JASPER_FANIN_SAMPLE_RATE", DEFAULT_SAMPLE_RATE)?;
+        let period_frames =
+            env_u32_positive_or_default("JASPER_FANIN_PERIOD_FRAMES", DEFAULT_PERIOD_FRAMES)?;
         let input_buffer_frames = env_u32_fallback(
             "JASPER_FANIN_INPUT_BUFFER_FRAMES",
             "JASPER_FANIN_BUFFER_FRAMES",
@@ -745,40 +751,6 @@ fn env_list(name: &str, default: &[&str]) -> Vec<String> {
             .filter(|e| !e.is_empty())
             .collect(),
         _ => default.iter().map(|s| s.to_string()).collect(),
-    }
-}
-
-fn env_u32(name: &str, default: u32) -> Result<u32> {
-    env_parse(name, default, "a non-negative integer")
-}
-
-/// Like `env_u32`, but for a load-bearing GEOMETRY DIMENSION that must be
-/// strictly positive — `sample_rate` and `period_frames`. A parsed `0` is a
-/// legal `u32` yet a nonsensical dimension: the mixer's per-period math divides
-/// by both (`period_frames * 1e9 / sample_rate` for `mixer.rs`'s ShmRing
-/// ns/period, `(avail - target) / period_frames` in `catchup_drain_periods`, and
-/// the ms→periods conversion), all UNGUARDED, and release builds compile out the
-/// `debug_assert!(period_frames > 0)`. With `panic = "abort"` and the unit's
-/// `Restart=on-failure` a divide-by-zero panic is an infinite crash-restart loop
-/// that takes ALL audio down, the audible-cue path with it. Reject zero as a
-/// config error so the unit parks at exit 78 instead of silently changing the
-/// operator's geometry or entering that crash loop.
-fn env_u32_positive(name: &str, default: u32) -> Result<u32> {
-    let parsed = env_u32(name, default)?;
-    if parsed == 0 {
-        anyhow::bail!("{name} must be a positive integer");
-    }
-    Ok(parsed)
-}
-
-fn env_u64(name: &str, default: u64) -> Result<u64> {
-    env_parse(name, default, "a non-negative integer")
-}
-
-fn env_u32_fallback(name: &str, fallback_name: &str, default: u32) -> Result<u32> {
-    match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => env_parse(name, default, "a non-negative integer"),
-        _ => env_u32(fallback_name, default),
     }
 }
 

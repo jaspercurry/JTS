@@ -1309,7 +1309,7 @@ def test_packaged_outputd_defaults_match_the_rust_daemon():
         ("JASPER_OUTPUTD_DAC_BUFFER_FRAMES", "DEFAULT_DAC_BUFFER_FRAMES"),
     ):
         assert re.search(
-            rf'env_u32\(\s*"{key}",\s*{const},?\s*\)', config_rs
+            rf'env_u32_positive_or_bail\(\s*"{key}",\s*{const},?\s*\)', config_rs
         ), key
 
 
