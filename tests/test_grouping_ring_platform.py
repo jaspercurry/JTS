@@ -56,6 +56,7 @@ from jasper.multiroom.grouping_ring import (
     GROUPING_RING_SLOTS,
     GROUPING_RING_WRITER_LOCK,
 )
+from tests.ring_abi import ring_abi
 
 _REPO = Path(__file__).resolve().parents[1]
 _GROUPING_CONF = _REPO / "deploy" / "alsa" / "conf.d" / "62-jts-ring-grouping.conf"
@@ -600,11 +601,8 @@ def test_the_deploy_does_not_unlink_the_grouping_ring_file():
 
 
 def _ring_liveness_window_sec() -> float:
-    """The secondary guard's window, read from the C constant that owns it."""
-    header = (_REPO / "c" / "jts-ring-ioplug" / "jts_ring_shm.h").read_text()
-    m = re.search(r"#define JTS_RING_WRITER_LIVENESS_TIMEOUT_NS (\d+)ull", header)
-    assert m, "the ring's writer-liveness constant moved or changed shape"
-    return int(m.group(1)) / 1_000_000_000.0
+    """The secondary guard's window, from the generated ring ABI."""
+    return ring_abi()["writer_liveness_timeout_ns"] / 1_000_000_000.0
 
 
 def test_snapclient_restarts_slower_than_the_ring_liveness_window():
@@ -616,9 +614,9 @@ def test_snapclient_restarts_slower_than_the_ring_liveness_window():
     the boundary — which is a respawn racing its own predecessor into an
     avoidable ``-EBUSY``.
 
-    The bound is READ FROM THE C CONSTANT that owns it. A bespoke "2 s" here
-    would be a second owner of a number the header decides, and the two would
-    drift the first time it moved.
+    The bound is READ FROM THE GENERATED RING ABI that owns it. A bespoke
+    "2 s" here would be a second owner of a number ``layout.json`` decides,
+    and the two would drift the first time it moved.
     """
     text = _read(_SNAPCLIENT_UNIT)
     m = re.search(r"^RestartSec=(\d+(?:\.\d+)?)s?$", text, re.M)
