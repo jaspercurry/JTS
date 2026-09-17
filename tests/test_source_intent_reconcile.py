@@ -2014,6 +2014,15 @@ def test_mux_is_started_only_when_the_shared_verdict_allows(
     assert actions == ([("start", source_intent._MUX_UNIT)] if shared_allowed else [])
 
 
+#: ``service_units.read_unit_property``'s argv, which is what the reconciler's
+#: ``_unit_active`` ActiveState probe spawns.
+_SHOW_ACTIVE_STATE = ["systemctl", "show", "--no-page", "--property=ActiveState"]
+
+
+def _is_active_state_probe(argv: list[str]) -> bool:
+    return list(argv[:4]) == _SHOW_ACTIVE_STATE
+
+
 def test_converge_sources_runs_fresh_pass_when_inactive(monkeypatch):
     import subprocess as sp
 
@@ -2021,12 +2030,8 @@ def test_converge_sources_runs_fresh_pass_when_inactive(monkeypatch):
 
     def fake_run(argv, **kw):
         calls.append(list(argv))
-        if argv[:3] == [
-            "systemctl",
-            "show",
-            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
-        ]:
-            return sp.CompletedProcess(argv, 0, stdout="inactive\n", stderr="")
+        if _is_active_state_probe(argv):
+            return sp.CompletedProcess(argv, 0, stdout="ActiveState=inactive\n", stderr="")
         return sp.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
@@ -2038,11 +2043,8 @@ def test_converge_sources_runs_fresh_pass_when_inactive(monkeypatch):
             reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
         ],
         [
-            "systemctl",
-            "show",
+            *_SHOW_ACTIVE_STATE,
             reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
-            "--property=ActiveState",
-            "--value",
         ],
         [
             "systemctl",
@@ -2064,12 +2066,8 @@ def test_converge_sources_drains_old_activation_before_fresh_pass(monkeypatch):
 
     def fake_run(argv, **kw):
         calls.append((list(argv), dict(kw)))
-        if argv[:3] == [
-            "systemctl",
-            "show",
-            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
-        ]:
-            return sp.CompletedProcess(argv, 0, stdout="activating\n", stderr="")
+        if _is_active_state_probe(argv):
+            return sp.CompletedProcess(argv, 0, stdout="ActiveState=activating\n", stderr="")
         return sp.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
@@ -2134,7 +2132,9 @@ def test_converge_sources_barrier_timeout_fails_without_fresh_pass(
     def fake_run(argv, **kw):
         calls.append(list(argv))
         if argv[1:2] == ["show"]:
-            return sp.CompletedProcess(argv, 0, stdout="activating\n", stderr="")
+            return sp.CompletedProcess(
+                argv, 0, stdout="ActiveState=activating\n", stderr="",
+            )
         if argv[1:2] == ["start"]:
             raise sp.TimeoutExpired(argv, kw["timeout"])
         return sp.CompletedProcess(argv, 0, stdout="", stderr="")
@@ -2184,12 +2184,8 @@ def test_converge_sources_barrier_gated_by_role_change(
 
     def fake_run(argv, **kw):
         calls.append(list(argv))
-        if argv[:3] == [
-            "systemctl",
-            "show",
-            reconcile_mod.SOURCE_INTENT_RECONCILE_UNIT,
-        ]:
-            return sp.CompletedProcess(argv, 0, stdout="inactive\n", stderr="")
+        if _is_active_state_probe(argv):
+            return sp.CompletedProcess(argv, 0, stdout="ActiveState=inactive\n", stderr="")
         return sp.CompletedProcess(argv, 0, stdout="", stderr="")
 
     monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)

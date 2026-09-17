@@ -34,6 +34,7 @@ import re
 import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from http import HTTPStatus
@@ -79,7 +80,6 @@ from ..bluetooth.models import BluetoothActionResult
 from ..log_event import log_event
 from ..local_sources import local_source_lifecycle
 from ..music_sources import Source
-from .. import systemd_probe
 from ..service_units import read_unit_states, unit_active, unit_loaded
 from ..source_intent import (
     request_source_intent,
@@ -137,8 +137,14 @@ def _normalize_mutation_id(value: object, *, url_encoded: bool = False) -> str |
     return candidate if _MUTATION_ID_RE.fullmatch(candidate) else None
 
 
-def _unit_available(unit: str) -> bool:
-    return systemd_probe.unit_loaded(unit, timeout=STATE_PROBE_TIMEOUT_SEC)
+def _installed_unit_reader(
+    records: Mapping[str, dict[str, Any]] | None,
+) -> Callable[[str], bool]:
+    """``probe_bluetooth_availability``'s "is it installed" reader over ONE
+    ``read_unit_states`` batch. A failed batch (``None``) reads every unit as
+    not installed — the same fail-soft rule as an empty one."""
+    records_map = records or {}
+    return lambda unit: unit_loaded(records_map.get(unit))
 
 
 def _effective_bluetooth_state(
@@ -165,7 +171,7 @@ def _effective_bluetooth_state(
     }
     reasons: list[str] = []
     hardware = availability or probe_bluetooth_availability(
-        lambda unit: unit_loaded(records_map.get(unit))
+        _installed_unit_reader(records_map)
     )
     if hardware.error:
         reasons.append(f"Bluetooth availability probe is incomplete: {hardware.error}")
@@ -244,10 +250,7 @@ def _bluetooth_state_snapshot() -> tuple[dict[str, Any], int]:
     park_reason = bonded_follower_park_reason()
     parked = bool(park_reason)
     records = read_unit_states(_STATE_UNITS, timeout=STATE_PROBE_TIMEOUT_SEC)
-    records_map = records or {}
-    availability = probe_bluetooth_availability(
-        lambda unit: unit_loaded(records_map.get(unit))
-    )
+    availability = probe_bluetooth_availability(_installed_unit_reader(records))
     try:
         raw = _dispatch().run(
             adapter_state(),
@@ -737,7 +740,11 @@ def _make_handler(*, idle_hold=systemd.no_hold) -> type[BaseHTTPRequestHandler]:
                 )
                 return
         if (path == "/power" and body.get("on") is True) or activates_radio:
-            availability = probe_bluetooth_availability(_unit_available)
+            availability = probe_bluetooth_availability(
+                _installed_unit_reader(
+                    read_unit_states(_STATE_UNITS, timeout=STATE_PROBE_TIMEOUT_SEC)
+                )
+            )
             if not availability.available:
                 handler._send_json(
                     {"error": bluetooth_unavailable_reason(availability)},

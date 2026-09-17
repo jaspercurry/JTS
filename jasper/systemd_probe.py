@@ -5,12 +5,12 @@
 """Read-side ``systemctl`` probes: the one place that asks whether a unit runs.
 
 The WRITE side — verbs, the polkit roster, transition timeouts — belongs to
-:mod:`jasper.control.restart_broker`; multi-property ``systemctl show`` records
-belong to :mod:`jasper.service_units`. This module owns the ``is-active``
-word, the ``is-active``/``is-enabled``/``is-failed`` tri-state queries
-(:func:`unit_query`) shared by the multiroom reconciler and the source-intent
-coordinator, and the single-property reads behind "is it up" and "is it
-installed".
+:mod:`jasper.control.restart_broker`; ``systemctl show`` records and single
+properties (``LoadState``, ``ActiveState``, ``ExecStart``, ...) belong to
+:mod:`jasper.service_units`. This module owns the ``is-active`` /
+``is-enabled`` / ``is-failed`` reads: ONE spawn (:func:`unit_state`, or
+:func:`unit_states` for a batch) and pure classifiers over the word systemd
+printed.
 
 Callers keep their own semantics by parameter rather than by a private copy:
 ``timeout`` is theirs, and ``activating_is_live`` picks the verdict a
@@ -54,6 +54,48 @@ _QUERY_FALSE_STATES: dict[str, frozenset[str]] = {
 }
 
 
+@dataclass(frozen=True)
+class UnitState:
+    """One ``systemctl <query> <unit>`` read: the state word, or why there
+    is none.
+
+    ``word`` is the lowercased state TEXT, and ``None`` ONLY when the spawn
+    itself failed -- then ``error`` carries it (``FileNotFoundError`` for a
+    box without systemctl, which callers distinguish from a real failure).
+    ``rc``/``stderr`` are the diagnostic for a probe that completed but whose
+    word no classifier recognises. No classifier here reads ``rc``: all three
+    queries exit non-zero for legitimate FALSE words, so a manager/D-Bus error
+    must not masquerade as disabled or inactive.
+    """
+
+    query: str
+    word: str | None
+    error: BaseException | None = None
+    rc: int | None = None
+    stderr: str = ""
+
+
+def unit_state(query: str, unit: str, *, timeout: float) -> UnitState:
+    """Run one ``systemctl <query> <unit>`` (``is-active``, ``is-enabled``,
+    ``is-failed``). Fail-soft: a missing ``systemctl``, a timeout or a
+    manager error is reported, never raised."""
+    try:
+        proc = subprocess.run(
+            ["systemctl", query, unit],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return UnitState(query=query, word=None, error=e)
+    return UnitState(
+        query=query,
+        word=(proc.stdout or "").strip().lower(),
+        rc=proc.returncode,
+        stderr=(proc.stderr or "").strip(),
+    )
+
+
 def unit_states(units: Sequence[str], *, timeout: float) -> dict[str, str]:
     """``systemctl is-active <units…>`` → ``{unit: state word}``.
 
@@ -89,6 +131,22 @@ def state_is_live(state: str, *, activating_is_live: bool) -> bool:
     return state in (_RUNNING_OR_STARTING if activating_is_live else _RUNNING)
 
 
+def unit_query(result: UnitState) -> bool | None:
+    """Tri-state truth for one :func:`unit_state` read. PURE.
+
+    True/False for a word :data:`_QUERY_TRUE_STATES`/:data:`_QUERY_FALSE_STATES`
+    classifies for that query, None when systemd could not be asked or answered
+    a word neither set recognises for it -- fail-soft, never guessed.
+    """
+    if result.word is None:
+        return None
+    if result.word in _QUERY_TRUE_STATES.get(result.query, frozenset()):
+        return True
+    if result.word in _QUERY_FALSE_STATES.get(result.query, frozenset()):
+        return False
+    return None
+
+
 def unit_active(unit: str, *, timeout: float, activating_is_live: bool) -> bool:
     """Whether ``unit`` counts as running.
 
@@ -97,72 +155,5 @@ def unit_active(unit: str, *, timeout: float, activating_is_live: bool) -> bool:
     True (a multi-minute install must not look interrupted), a caller reading
     readiness wants False. A failed probe is never live.
     """
-    state = unit_states([unit], timeout=timeout)[unit]
-    return state_is_live(state, activating_is_live=activating_is_live)
-
-
-@dataclass(frozen=True)
-class QueryResult:
-    """One :func:`unit_query` probe's outcome. ``verdict`` is the tri-state
-    answer most callers want; ``proc`` (a completed, unrecognised probe) and
-    ``error`` (a spawn/timeout failure) carry the raw detail a caller that
-    logs its own diagnostic needs when ``verdict`` is unresolved (``None``).
-    Exactly one of ``proc``/``error`` is set whenever ``verdict is None``."""
-    verdict: bool | None
-    proc: subprocess.CompletedProcess[str] | None = None
-    error: BaseException | None = None
-
-
-def unit_query(query: str, unit: str, *, timeout: float) -> QueryResult:
-    """Tri-state truth for one ``systemctl <query> <unit>`` probe
-    (``is-active``, ``is-enabled``, ``is-failed``): True/False for a state
-    word :data:`_QUERY_TRUE_STATES`/:data:`_QUERY_FALSE_STATES` classifies
-    for that query, None when systemd could not be asked (missing
-    ``systemctl``, a timeout, a manager/D-Bus error) or answered a word
-    neither set recognises for that query -- fail-soft, never guessed.
-    """
-    try:
-        proc = subprocess.run(
-            ["systemctl", query, unit],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        return QueryResult(verdict=None, error=e)
-    state = (proc.stdout or "").strip().lower()
-    if state in _QUERY_TRUE_STATES.get(query, frozenset()):
-        return QueryResult(verdict=True, proc=proc)
-    if state in _QUERY_FALSE_STATES.get(query, frozenset()):
-        return QueryResult(verdict=False, proc=proc)
-    return QueryResult(verdict=None, proc=proc)
-
-
-def unit_property(unit: str, prop: str, *, timeout: float) -> str | None:
-    """One ``systemctl show`` property value, or ``None`` when the probe failed.
-
-    Unlike :func:`unit_states` this separates "systemd answered, with an empty
-    value" from "we could not ask", which the tri-state callers need.
-    """
-    try:
-        proc = subprocess.run(
-            ["systemctl", "show", unit, f"--property={prop}", "--value"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout.strip()
-
-
-def unit_loaded(unit: str, *, timeout: float) -> bool:
-    """Whether systemd could load ``unit``'s unit file.
-
-    A failed probe is not loaded: a box that never installs a unit and a box
-    whose probe broke both mean "do not offer it".
-    """
-    return unit_property(unit, "LoadState", timeout=timeout) == "loaded"
+    state = unit_state("is-active", unit, timeout=timeout).word
+    return state_is_live(state or UNKNOWN, activating_is_live=activating_is_live)

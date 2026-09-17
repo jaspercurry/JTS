@@ -17,13 +17,16 @@ import pytest
 from jasper import systemd_probe
 
 
-def _fake_run(monkeypatch, *, stdout="", returncode=0, raises=None, calls=None):
+def _fake_run(monkeypatch, *, stdout="", returncode=0, raises=None, calls=None,
+              stderr=""):
     def run(argv, **kwargs):
         if calls is not None:
             calls.append((list(argv), kwargs))
         if raises is not None:
             raise raises
-        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
+        return subprocess.CompletedProcess(
+            argv, returncode, stdout=stdout, stderr=stderr,
+        )
 
     monkeypatch.setattr(systemd_probe.subprocess, "run", run)
 
@@ -109,37 +112,6 @@ def test_no_units_asks_systemd_nothing(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("returncode", "stdout", "expected_value", "expected_loaded"),
-    [
-        (0, "loaded\n", "loaded", True),
-        (0, "not-found\n", "not-found", False),
-        (0, "masked\n", "masked", False),
-        (0, "\n", "", False),
-        (1, "loaded\n", None, False),
-    ],
-)
-def test_unit_property_and_loaded(
-    monkeypatch, returncode, stdout, expected_value, expected_loaded,
-):
-    calls: list[tuple[list[str], dict]] = []
-    _fake_run(monkeypatch, stdout=stdout, returncode=returncode, calls=calls)
-
-    assert systemd_probe.unit_property(
-        "u.service", "LoadState", timeout=2.0,
-    ) == expected_value
-    assert systemd_probe.unit_loaded("u.service", timeout=2.0) is expected_loaded
-    assert calls[0][0] == [
-        "systemctl", "show", "u.service", "--property=LoadState", "--value",
-    ]
-
-
-def test_unit_property_probe_failure_is_none(monkeypatch):
-    _fake_run(monkeypatch, raises=subprocess.TimeoutExpired(["systemctl"], 1.0))
-    assert systemd_probe.unit_property("u.service", "ActiveState", timeout=1.0) is None
-    assert systemd_probe.unit_loaded("u.service", timeout=1.0) is False
-
-
-@pytest.mark.parametrize(
     ("query", "state", "expected"),
     [
         ("is-active", "active", True),
@@ -173,17 +145,20 @@ def test_unit_query_verdict_matrix(monkeypatch, query, state, expected):
     # rc is non-zero for a legitimate not-true word too (`is-enabled`/
     # `is-failed` exit non-zero for most of their false-ish states); this
     # probe must classify by stdout TEXT alone, same as `unit_active` above.
-    _fake_run(monkeypatch, stdout=state + "\n", returncode=1)
-    result = systemd_probe.unit_query(query, "u.service", timeout=1.0)
-    assert result.verdict is expected
-    assert result.proc is not None and result.error is None
+    _fake_run(monkeypatch, stdout=state.upper() + "\n", returncode=1, stderr="why")
+    result = systemd_probe.unit_state(query, "u.service", timeout=1.0)
+    assert systemd_probe.unit_query(result) is expected
+    # The diagnostic an unresolved caller logs instead of a verdict.
+    assert (result.word, result.rc, result.stderr, result.error) == (
+        state, 1, "why", None,
+    )
 
 
-def test_unit_query_argv_and_timeout(monkeypatch):
+def test_unit_state_argv_and_timeout(monkeypatch):
     calls: list[tuple[list[str], dict]] = []
     _fake_run(monkeypatch, stdout="active\n", calls=calls)
-    result = systemd_probe.unit_query("is-active", "u.service", timeout=3.5)
-    assert result.verdict is True
+    result = systemd_probe.unit_state("is-active", "u.service", timeout=3.5)
+    assert systemd_probe.unit_query(result) is True
     assert calls[0][0] == ["systemctl", "is-active", "u.service"]
     assert calls[0][1]["timeout"] == 3.5
 
@@ -197,9 +172,10 @@ def test_unit_query_argv_and_timeout(monkeypatch):
         subprocess.SubprocessError("boom"),
     ],
 )
-def test_unit_query_spawn_failure_is_unresolved_with_error(monkeypatch, failure):
+def test_unit_state_spawn_failure_is_unresolved_with_error(monkeypatch, failure):
     _fake_run(monkeypatch, raises=failure)
-    result = systemd_probe.unit_query("is-enabled", "u.service", timeout=1.0)
-    assert result.verdict is None
-    assert result.proc is None
+    result = systemd_probe.unit_state("is-enabled", "u.service", timeout=1.0)
+    assert systemd_probe.unit_query(result) is None
+    assert result.word is None
+    assert result.rc is None
     assert result.error is failure

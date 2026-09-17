@@ -1420,11 +1420,12 @@ def test_plan_changes_units_reflects_live_state(
     from jasper.multiroom.reconcile import _plan_changes_units
 
     def fake_run(argv, **kw):
-        unit = argv[2]
+        # `service_units.read_unit_property`'s reply shape: one Key=value
+        # block per unit, the units last in argv.
         return sp.CompletedProcess(
             argv,
             0,
-            stdout=f"{active_states[unit]}\n",
+            stdout=f"ActiveState={active_states[argv[-1]]}\n",
             stderr="",
         )
 
