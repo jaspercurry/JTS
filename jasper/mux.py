@@ -213,9 +213,10 @@ _CONTROL_VERBS: dict[str, _ControlVerb] = {
 def _control_args(command: str, arity: int) -> list[str] | None:
     """The arguments one control line gives its verb, or None when the line
     does not fit the verb's shape."""
-    _, sep, rest = command.partition(" ")
+    parts = command.split(None, 1)
+    rest = parts[1] if len(parts) == 2 else ""
     if arity == _CONTROL_REST:
-        return [rest.strip()] if sep else None
+        return [rest.strip()] if len(parts) == 2 else None
     args = rest.split()
     return args if len(args) == arity else None
 
@@ -1444,7 +1445,7 @@ class Mux:
         try:
             raw = await asyncio.wait_for(reader.readline(), timeout=2.0)
             command = raw.decode("utf-8", "replace").strip()
-            verb = _CONTROL_VERBS.get(command.partition(" ")[0])
+            verb = _CONTROL_VERBS.get(command.split(None, 1)[0] if command.strip() else "")
             args = None if verb is None else _control_args(command, verb.arity)
             if args is not None:
                 payload = await getattr(self, verb.method)(*args)

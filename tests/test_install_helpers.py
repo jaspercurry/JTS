@@ -3828,6 +3828,28 @@ def test_retired_env_rows_are_a_noop_before_the_env_file_exists(tmp_path):
     assert not (tmp_path / "etc" / "jasper.env").exists()
 
 
+@pytest.mark.parametrize(
+    ("seeded", "survivors"),
+    [
+        pytest.param(
+            "JASPER_MIC_DEVICE_CANDIDATES=Custom\nJASPER_MIC_DEVICE_CANDIDATES=Array\n",
+            {"JASPER_MIC_DEVICE_CANDIDATES=Custom", "JASPER_MIC_DEVICE_CANDIDATES=Array"},
+            id="anchored_row_leaves_a_twice_stated_key_alone",
+        ),
+        pytest.param(
+            "  JASPER_RESEARCH_FOO=1\nJASPER_RESEARCHER=keep\n",
+            {"JASPER_RESEARCHER=keep"},
+            id="prefix_row_takes_an_indented_key",
+        ),
+    ],
+)
+def test_retired_env_rows_match_what_systemd_reads(tmp_path, seeded, survivors):
+    proc = _run_retire_env_rows(tmp_path, seeded)
+    assert proc.returncode == 0, proc.stderr
+    lines = (tmp_path / "etc" / "jasper.env").read_text().splitlines()
+    assert {line.strip() for line in lines if line.strip()} == survivors
+
+
 def test_retired_leftovers_table_retires_the_renderer_lane_ingress():
     """Static pin: an upgraded box carries the never-armed per-renderer ring
     ingress as an arm map and a conf.d drop-in, and the retirement table names
