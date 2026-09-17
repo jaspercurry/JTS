@@ -57,8 +57,10 @@ def test_aec_probes_choose_their_own_activating_verdict(
 ):
     monkeypatch.setattr(
         aec_endpoints.systemd_probe,
-        "unit_states",
-        lambda units, **_kwargs: {unit: state for unit in units},
+        "unit_state",
+        lambda query, unit, **_kwargs: aec_endpoints.systemd_probe.UnitState(
+            query=query, word=state,
+        ),
     )
     call = getattr(aec_endpoints, probe)
     result = call(_MAINTENANCE_UNIT) if probe == "_unit_active" else call()

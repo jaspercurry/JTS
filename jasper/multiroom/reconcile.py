@@ -43,12 +43,12 @@ from ..env_load import (
 from ..fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
-from ..service_units import OUTPUTD_SERVICE
+from ..service_units import OUTPUTD_SERVICE, read_unit_property
 from ..source_intent_units import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
 )
 from ..source_intent_units import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
-from ..systemd_probe import unit_property, unit_query
+from ..systemd_probe import unit_query, unit_state
 from . import config
 from .config import SNAP_STREAM_ID, GroupingConfig
 from .dac_content_ring import (
@@ -463,9 +463,10 @@ def _systemctl_unit_state(query: str, unit: str) -> bool | None:
     jasper.systemd_probe (shared with jasper.source_intent); this wrapper
     keeps only the observability this caller wants on an unresolved probe.
     """
-    result = unit_query(query, unit, timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC)
-    if result.verdict is not None:
-        return result.verdict
+    result = unit_state(query, unit, timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC)
+    verdict = unit_query(result)
+    if verdict is not None:
+        return verdict
     if isinstance(result.error, FileNotFoundError):
         return None
     if result.error is not None:
@@ -478,16 +479,14 @@ def _systemctl_unit_state(query: str, unit: str) -> bool | None:
             level=logging.WARNING,
         )
         return None
-    proc = result.proc
-    assert proc is not None  # verdict is None, error is None => proc completed
     log_event(
         logger,
         "multiroom.reconcile.unit_state_probe_failed",
         unit=unit,
         query=query,
-        rc=proc.returncode,
-        state=(proc.stdout or "").strip().lower() or "(none)",
-        stderr=(proc.stderr or "").strip(),
+        rc=result.rc,
+        state=result.word or "(none)",
+        stderr=result.stderr,
         level=logging.WARNING,
     )
     return None
@@ -661,12 +660,12 @@ def _unit_active(unit: str) -> bool | None:
     ``None`` on a probe failure or an unrecognized state; callers treat that
     as unproven and take the safe branch.
     """
-    state = unit_property(
-        unit, "ActiveState", timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
+    values = read_unit_property(
+        "ActiveState", (unit,), timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
     )
-    if state is None:
+    if not values:
         return None
-    state = state.lower()
+    state = values[0].strip().lower()
     if state in {"active", "activating", "reloading", "deactivating"}:
         return True
     if state in {"inactive", "failed"}:
