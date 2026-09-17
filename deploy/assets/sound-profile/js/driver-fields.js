@@ -27,7 +27,7 @@ import {
   driverProvenanceState,
   driverResearchRoleLabel,
   driverResearchTargets,
-  driverSafetyWarnings,
+  driverSafetyIssues,
   driverStyleLabel,
   hfDriverStyleEntry,
   hfDriverStyles,
@@ -659,17 +659,17 @@ function renderDriverEchoBack(topology) {
   '</div>';
 }
 
-function renderDriverSafetyWarnings() {
-  var warnings = driverSafetyWarnings();
-  if (!warnings.length) return '';
-  return '<div class="driver-research__section driver-research__confirm">' +
-    '<div><h3 class="setting-row__title">JTS is trusting your declaration</h3>' +
-      warnings.map(function(issue) {
-        return '<p class="setting-row__hint">' +
-          escapeHtml(String(issue.message)) + '</p>';
-      }).join('') +
-    '</div>' +
-  '</div>';
+function renderDriverSafetyIssues() {
+  var issues = driverSafetyIssues();
+  if (!issues.length) return '';
+  return '<div class="driver-research__section" id="driver-safety-issues">' +
+    '<h3 class="setting-row__title">Driver limits</h3>' +
+    issues.map(function(issue) {
+      return '<p class="setting-row__hint" data-safety-target="' +
+        escapeHtml(String(issue.target_id || '')) + '"><code>' +
+        escapeHtml(String(issue.code)) + '</code>: ' +
+        escapeHtml(String(issue.message)) + '</p>';
+    }).join('') + '</div>';
 }
 
 // A generic message plus the door's own name for WHICH condition it hit: the
@@ -748,7 +748,7 @@ export {
   renderComponentSettings,
   renderCrossoverPreviewRows,
   renderDriverEchoBack,
-  renderDriverSafetyWarnings,
+  renderDriverSafetyIssues,
   renderIssueList,
   renderManualCrossoverSettings,
   renderPreviewIssues,

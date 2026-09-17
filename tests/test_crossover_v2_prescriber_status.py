@@ -768,22 +768,13 @@ def test_a_round_with_no_region_says_a_blend_document_has_no_bound(
 
 
 def _full_range_draft() -> dict[str, Any]:
-    """A 1-way main's design draft: one declaration, no protective corner."""
-    return {
-        "kind": "jts_active_speaker_design_draft",
-        "driver_safety_profile": {
-            "kind": "jts_active_speaker_driver_safety_profile",
-            "confirmation": {"confirmed_fingerprint": "abc", "method": "operator"},
-            "targets": [
-                {
-                    "role": "full_range",
-                    "measurement_band_hz": [45.0, 18000.0],
-                    "hard_excitation_band_hz": [40.0, 20000.0],
-                    "required_protection_filters": [],
-                },
-            ],
-        },
-    }
+    from jasper.active_speaker.design_draft import build_design_draft
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    return build_design_draft(mono_output_topology(mode="full_range_passive"), manual_settings={"drivers": [
+        {"role": "full_range", "measurement_band_hz": [45, 18000],
+         "hard_excitation_band_hz": [40, 20000], "required_protection_filters": []},
+    ]})
 
 
 def _rebank_round_as_no_crossover(session: Path) -> None:

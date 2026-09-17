@@ -542,7 +542,7 @@ def _drive_raw_sound_post(
 
 @pytest.mark.parametrize("code,action", [
     ("previous_profile_unavailable", None),
-    ("program_profile_not_confirmed", {"id": "review_profile", "href": "/sound/speaker/"}),
+    ("program_measurement_inputs_invalid", {"id": "review_profile", "href": "/sound/speaker/"}),
 ])
 def test_restore_refusals_preserve_the_typed_envelope(tmp_path, monkeypatch, code, action):
     from jasper.web import correction_crossover_v2_apply as apply_host
@@ -3071,7 +3071,7 @@ def test_design_draft_save_without_expected_revision_succeeds(monkeypatch, tmp_p
     assert json.loads(paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"].read_text())["operator_inputs"] == {"notes": "current"}
 
 
-def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
+def test_preview_preserves_driver_values_and_does_not_rewrite_draft(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -3111,8 +3111,8 @@ def test_preview_preserves_bound_v2_confirmation_and_does_not_rewrite_draft(
     assert after == before
     assert loaded["revision"] == saved["revision"] == 1
     assert loaded["driver_research"] == saved["driver_research"]
-    assert loaded["driver_safety_profile"]["confirmation"] == (
-        saved["driver_safety_profile"]["confirmation"]
+    assert loaded["driver_safety_profile"] == (
+        saved["driver_safety_profile"]
     )
     assert preview["source"]["design_draft_updated_at"] == draft["updated_at"]
 
@@ -3157,7 +3157,7 @@ def _declared_candidate_box(
         "operator_inputs": operator_inputs or {},
     })
     assert fsync_calls == []  # ordinary wizard save: no fsync
-    assert saved["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
+    assert saved["driver_safety_profile"]["issues"] == []
     return fsync_calls
 
 
@@ -3174,18 +3174,6 @@ def _geometry(fc_hz: float, slope_db_per_octave: int):
 def test_measured_fc_saves_the_declaration_and_leaves_the_loop_open(
     monkeypatch, tmp_path: Path,
 ) -> None:
-    """The nanny loop, pinned shut at the seam that caused it.
-
-    Accepting a measured crossover writes the Sound declaration from the ROOT
-    correction-web process, with no human present. Before this change that write
-    went through ``build_driver_safety_profile`` with ``confirm=False``, so it
-    could only ever CARRY a confirmation forward -- and on a box where there was
-    nothing to carry (a prior profile already stale/malformed, or a driver
-    detail edited between measurements) the machine's own write landed
-    ``needs_confirmation`` and every measurement surface then refused until a
-    human clicked Confirm in the wizard. The declaration the machine just wrote
-    must read as current.
-    """
     from jasper.active_speaker.design_draft import load_design_draft
 
     _declared_candidate_box(
@@ -3204,14 +3192,9 @@ def test_measured_fc_saves_the_declaration_and_leaves_the_loop_open(
     # part of. Also asserted on the RELOADED artifact, since the gates read from
     # disk rather than from this return value.
     profile = saved["driver_safety_profile"]
-    assert profile["status"] == "confirmed"
-    assert (
-        profile["confirmation"]["confirmed_fingerprint"]
-        == profile["profile_fingerprint"]
-    )
-    assert saved["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
+    assert saved["driver_safety_profile"]["issues"] == []
     reloaded = load_design_draft(topology=sound_active_speaker.load_output_topology())
-    assert reloaded["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
+    assert reloaded["driver_safety_profile"] == profile
     # And it is still not an audio authorization.
     assert profile["authorizes_playback"] is False
 
@@ -7111,3 +7094,34 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
         default_payload["binding"], "speaker")
     assert invalid.value.code == 400
     assert set(json.loads(invalid.value.read())) == {"error"}
+
+
+@pytest.mark.parametrize("legacy_profile", [False, True])
+def test_design_draft_get_computes_profile_from_current_values(monkeypatch, tmp_path, legacy_profile):
+    from tests.active_speaker_fixtures import mono_output_topology
+    from tests.test_active_speaker_driver_safety import _manual_settings
+
+    topology = mono_output_topology(card_id=None)
+    paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(sound_active_speaker, "ensure_missing_software_guards", lambda: (topology, False))
+    monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
+    path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
+    saved = sound_setup._active_speaker_design_draft_save_payload({"manual_settings": _manual_settings()})
+    stored = json.loads(path.read_text())
+    assert {"driver_safety_profile", "driver_safety_profile_evaluation"}.isdisjoint(stored)
+    if legacy_profile:
+        stored.update(driver_safety_profile={"targets": "obsolete"},
+                      driver_safety_profile_evaluation={"status": "malformed"})
+    stored["manual_settings"]["drivers"][1]["recommended_highpass_hz"] = 6000
+    path.write_text(json.dumps(stored))
+    before = path.read_bytes()
+    loaded = sound_setup._active_speaker_design_draft_payload()
+    assert "driver_safety_profile_evaluation" not in loaded
+    profile = loaded["driver_safety_profile"]
+    assert {"status", "confirmation", "profile_fingerprint", "research"}.isdisjoint(profile)
+    tweeter = next(t for t in profile["targets"] if t["target_id"] == "mono:tweeter")
+    assert tweeter["recommended_highpass_hz"] == 6000
+    assert tweeter["hard_excitation_band_hz"][0] == 6000
+    assert tweeter["required_protection_filters"][0]["cutoff_hz"] == 6000
+    assert profile != saved["driver_safety_profile"]
+    assert path.read_bytes() == before

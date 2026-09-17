@@ -2,22 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Driver-research advice and confirmed safety-profile contracts.
-
-Deliberately silent: it turns the current physical active-speaker targets plus
-operator-visible limits into immutable JSON contracts, and never generates a
-signal, compiles a filter, loads CamillaDSP or grants playback permission.
-
-Research remains advice. A version-2 result names current targets and models,
-but only the values visible in
-``manual_settings`` enter the confirmed profile; downstream audio code still
-runs its own excitation and live-graph admission checks.
-"""
+"""Driver research and the computed view of declared driver limits."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-import hashlib
 import json
 import math
 from typing import Any, Mapping, Sequence
@@ -46,11 +34,6 @@ DRIVER_RESEARCH_RESULT_SCHEMA_VERSION = 2
 
 DRIVER_SAFETY_PROFILE_KIND = "jts_active_speaker_driver_safety_profile"
 DRIVER_SAFETY_PROFILE_SCHEMA_VERSION = 1
-
-#: Field caps for one entry in a profile's ``issues`` list. ONE owner: the shape
-#: validator ENFORCES them and ``_target_low_limit_warnings`` FITS its rendered
-#: message to them, and a warning over the cap takes the whole save down.
-PROFILE_ISSUE_FIELD_MAX_CHARS = {"severity": 20, "code": 160, "message": 320}
 
 SUPPORTED_ENCLOSURE_KINDS = {
     "sealed",
@@ -90,49 +73,8 @@ class DriverSafetyProfileError(ValueError):
     """Raised when research or safety-profile input is malformed."""
 
 
-class DriverSafetyProfileStaleLowLimitError(DriverSafetyProfileError):
-    """A stored profile predates the one-owner low-limit collapse.
-
-    Its own bands and protective high-pass disagree about where the driver
-    stops. Split out from the generic malformed case so the household is told
-    the ACTIONABLE thing — save the profile again — rather than "schema
-    invalid". Playback is unaffected: the staged graph is a separate artifact.
-    """
-
-
-@dataclass(frozen=True)
-class DriverSafetyProfileEvaluation:
-    """Fail-closed freshness result for one persisted safety profile.
-
-    ``confirmed_and_current`` means schema-valid, fingerprint intact, bound to
-    the CURRENT hardware targets, and no blocking issues. It is NOT permission
-    to emit audio — excitation and live protected-graph checks stay separate
-    downstream gates — and not a record that a human clicked anything: saving
-    the declaration is declaring it. False for ``missing``, ``malformed``,
-    ``stale`` (the outputs moved underneath it) and ``incomplete``.
-    """
-
-    status: str
-    confirmed_and_current: bool
-    profile_fingerprint: str | None
-    reasons: tuple[str, ...]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "status": self.status,
-            "confirmed_and_current": self.confirmed_and_current,
-            "profile_fingerprint": self.profile_fingerprint,
-            "reasons": list(self.reasons),
-            "authorizes_playback": False,
-        }
-
-
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
-
-
-def _fingerprint(payload: Mapping[str, Any]) -> str:
-    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 def _driver_research_channels(
@@ -258,14 +200,6 @@ def _topology_driver_style(topology: OutputTopology, target_id: str) -> str | No
             if channel.target_id(group.id) == target_id:
                 return channel.driver_style
     return None
-
-
-def _is_sha256(value: Any) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(ch in "0123456789abcdef" for ch in value)
-    )
 
 
 def _text(
@@ -660,9 +594,6 @@ def _normalise_field_provenance(value: Any, field_name: str) -> dict[str, Any]:
             "basis": basis,
             "sources": sources,
         }
-        # Omitted, never null: see this function's docstring -- a pre-#2195
-        # provenance entry has to normalise to the exact bytes it used to, or
-        # every stored profile that carries one is refused as noncanonical.
         if citation is not None:
             assertion["source"] = citation
         out[str(key)] = assertion
@@ -1316,18 +1247,7 @@ def _target_issues(target: Mapping[str, Any]) -> list[str]:
 
 
 def _target_low_limit_warnings(target: Mapping[str, Any]) -> list[dict[str, str]]:
-    """Non-blocking disclosures for one stored target's declared low limit.
-
-    Pure, because ``evaluate_driver_safety_profile`` re-derives these from the
-    stored targets so a hand-edited artifact cannot drop its own warning; that
-    check compares severity and code, never the sentence (see
-    :func:`_comparable_issue_payload`).
-
-    **The rendered message is FITTED to the schema cap**, never merely expected
-    to fit: a message over ``PROFILE_ISSUE_FIELD_MAX_CHARS["message"]`` fails
-    shape validation and refuses the save outright — so an overrun would refuse
-    the very out-of-band declaration the disclosure exists to permit.
-    """
+    """Disclose an implausible declared low limit without blocking it."""
 
     role = str(target.get("role") or "")
     style = target.get("driver_style")
@@ -1346,7 +1266,7 @@ def _target_low_limit_warnings(target: Mapping[str, Any]) -> list[dict[str, str]
     # reads as implausible on a box whose type nobody set; naming the picker
     # first keeps that from reading as an accusation about the datasheet.
     #
-    # The question is REGISTERED, not empty: ``_profile_core`` stamps
+    # The question is REGISTERED, not empty: ``compute_driver_safety_profile`` stamps
     # ``"unspecified"``, so a test against emptiness would be dead — and asking
     # the table also catches a typo'd or newer-build style that looks declared.
     check_the_type = (
@@ -1355,25 +1275,25 @@ def _target_low_limit_warnings(target: Mapping[str, Any]) -> list[dict[str, str]
         else "and that the driver type above is right."
     )
     message = (
-        f"{role}: {diagnosis}. JTS is using it as declared -- confirm it is "
+        f"{target['target_id']}: {diagnosis}. JTS is using it as declared -- confirm it is "
         f"the datasheet figure and not a transposed digit, {check_the_type}"
     )
     return [
         {
             "severity": "warning",
             "code": f"{role}:low_limit_implausible_for_style",
-            "message": _ellipsised(
-                message, PROFILE_ISSUE_FIELD_MAX_CHARS["message"]
-            ),
+            "message": message,
         }
     ]
 
 
-def _profile_core(
+def compute_driver_safety_profile(
     topology: OutputTopology,
     manual_settings: Mapping[str, Any] | None,
     driver_research: Mapping[str, Any] | None,
-) -> tuple[dict[str, Any], list[str], list[dict[str, str]]]:
+) -> dict[str, Any]:
+    """Compute limits, provenance and issues from the current declaration."""
+    manual_settings = _normalise_profile_manual_settings(topology, manual_settings)
     manual_by_role = _manual_by_role(manual_settings)
     manual_by_target = _manual_by_target(manual_settings)
     research_by_target = _research_by_target(driver_research)
@@ -1389,8 +1309,7 @@ def _profile_core(
         if channel.driver_style
     }
     targets: list[dict[str, Any]] = []
-    issues: list[str] = []
-    warnings: list[dict[str, str]] = []
+    issues: list[dict[str, str]] = []
     for physical in physical_targets:
         target_id = str(physical["target_id"])
         role = str(physical["role"])
@@ -1437,10 +1356,6 @@ def _profile_core(
                 unknown = f"{field}: operator override has no matching research source"
                 if unknown not in unknowns:
                     unknowns.append(unknown)
-        # One owner, every consumer derives: the stored target carries the
-        # PROJECTION of this driver's declared low limit, not four
-        # independently-typed numbers, so nothing downstream can disagree about
-        # where this driver stops.
         style = driver_styles.get(target_id) or "unspecified"
         low_limit = resolve_driver_low_limit(visible, role=role, driver_style=style)
         derived = apply_driver_low_limit(visible, role=role, driver_style=style)
@@ -1507,7 +1422,7 @@ def _profile_core(
             # reader could unmix the two otherwise.
             #
             # DECLARED provenance only: ``apply_driver_low_limit`` also fills
-            # these on an INFERRED limit, and persisting that would promote a
+            # these on an INFERRED limit, and returning that would promote a
             # guess into a field meaning "the manufacturer published this". The
             # pair travels together — a slope needs a frequency to condition,
             # and a target holding one half would disagree with itself.
@@ -1537,8 +1452,6 @@ def _profile_core(
             "field_provenance": provenance,
             "authority": "operator_visible_values",
         }
-        # Read off ``entry``: the shape validator re-derives this policy from
-        # the STORED target and compares it for equality.
         policy = driver_protection_profile(
             role,
             driver_style=driver_styles.get(target_id) or "unspecified",
@@ -1562,480 +1475,24 @@ def _profile_core(
                 "field_provenance",
             }
         }
-        issues.extend(_target_issues(entry))
-        warnings.extend(_target_low_limit_warnings(entry))
+        issues.extend({
+            "target_id": target_id,
+            "severity": "blocker",
+            "code": code,
+            "message": f"{target_id}: {code.split(':')[-1].replace('_', ' ')}",
+        } for code in _target_issues(entry))
+        issues.extend({"target_id": target_id, **warning}
+                      for warning in _target_low_limit_warnings(entry))
         targets.append(entry)
-    if not targets:
-        issues.append("active_driver_targets_missing")
-    core = {
+    return {
         "artifact_schema_version": DRIVER_SAFETY_PROFILE_SCHEMA_VERSION,
         "kind": DRIVER_SAFETY_PROFILE_KIND,
         "topology_id": topology.topology_id,
         "targets": targets,
-        "research": {
-            "advisory_only": True,
-        },
+        "issues": issues,
         "authority": "operator_visible_values",
         "authorizes_playback": False,
     }
-    return core, issues, warnings
-
-
-def _comparable_issue_payload(issues: Any) -> str:
-    """The part of an ``issues`` list that re-derivation must reproduce exactly.
-
-    Every entry's ``severity`` and ``code``, plus a BLOCKER's message (which is
-    mechanically derived from its own code and so cannot drift on its own).
-
-    A WARNING's message is excluded, and that exclusion is the point: warning
-    prose is hand-written and interpolates the household's numbers, so including
-    it made editing copy a breaking change — the profile read ``malformed`` and
-    ``confirmed_and_current`` flipped false on a box whose declared values had
-    not changed. What the check still guarantees is the load-bearing half: a
-    warning cannot be dropped, invented, re-coded or downgraded without
-    mismatching, and no gate reads the sentence. The fingerprint never covered
-    ``issues``, so this loosens nothing the digest was holding.
-    """
-
-    return _canonical_json([
-        {
-            "severity": str(issue.get("severity") or ""),
-            "code": str(issue.get("code") or ""),
-            **(
-                {}
-                if str(issue.get("severity") or "") == "warning"
-                else {"message": str(issue.get("message") or "")}
-            ),
-        }
-        for issue in (issues if isinstance(issues, list) else [])
-        if isinstance(issue, Mapping)
-    ])
-
-
-def _profile_issue_payload(
-    issues: Sequence[str],
-    warnings: Sequence[Mapping[str, str]] = (),
-) -> list[dict[str, str]]:
-    """The profile's ``issues`` list: every blocker, then every warning.
-
-    Warnings arrive already rendered because their copy names numbers a reason
-    CODE cannot carry; blockers keep the mechanical code-to-prose rendering.
-    Both live in one list because ``severity`` is what separates them.
-    """
-
-    return [
-        *(
-            {
-                "severity": "blocker",
-                "code": reason,
-                "message": reason.replace(":", " ").replace("_", " "),
-            }
-            for reason in issues
-        ),
-        *(dict(warning) for warning in warnings),
-    ]
-
-
-def build_driver_safety_profile(
-    topology: OutputTopology,
-    *,
-    manual_settings: Mapping[str, Any] | None,
-    driver_research: Mapping[str, Any] | None,
-    saved_at: str,
-) -> dict[str, Any]:
-    """Build the immutable profile for the visible current values.
-
-    Saving the declaration IS declaring it: every write stamps the confirmation
-    over the values it just wrote, so the only outcomes are ``incomplete`` (the
-    declared values carry blocking issues) and ``confirmed``, and this takes
-    neither a ``prior_profile`` nor a ``confirm`` flag.
-
-    Not a dropped safety gate: the confirmation bit never authorized playback
-    (``authorizes_playback`` is unconditionally ``False``) and every physical
-    protection reads the declared LIMITS, not the bit. ``issues`` still blocks,
-    so a garbage or half-declared profile is still fail-closed.
-    """
-
-    normalised_manual = _normalise_profile_manual_settings(topology, manual_settings)
-    core, issues, warnings = _profile_core(topology, normalised_manual, driver_research)
-    fingerprint = _fingerprint(core)
-    confirmation: dict[str, Any] | None = None
-    if not issues:
-        confirmation = {
-            "confirmed_fingerprint": fingerprint,
-            "confirmed_at": _text(
-                saved_at,
-                "driver_safety_profile.confirmed_at",
-                required=True,
-                max_chars=64,
-            ),
-            # Every write of this declaration originates from an operator action
-            # on a page that shows the values; there is no headless writer.
-            "method": "operator_reviewed_visible_values",
-        }
-    status = "incomplete" if issues else "confirmed"
-    profile = {
-        **core,
-        "profile_fingerprint": fingerprint,
-        "status": status,
-        "confirmation": confirmation,
-        "issues": _profile_issue_payload(issues, warnings),
-    }
-    evaluation = evaluate_driver_safety_profile(profile, topology)
-    if evaluation.status != status:
-        raise DriverSafetyProfileError(
-            "driver safety profile builder produced an incoherent artifact"
-        )
-    return profile
-
-
-def _require_canonical_text_field(
-    value: Mapping[str, Any],
-    key: str,
-    field_name: str,
-    *,
-    required: bool,
-    max_chars: int,
-) -> str | None:
-    normalised = _text(
-        value.get(key),
-        field_name,
-        required=required,
-        max_chars=max_chars,
-    )
-    if normalised is None:
-        if key in value:
-            raise DriverSafetyProfileError(f"{field_name} must be omitted when empty")
-    elif value.get(key) != normalised:
-        raise DriverSafetyProfileError(f"{field_name} is not canonical")
-    return normalised
-
-
-def _validate_driver_safety_profile_shape(profile: Mapping[str, Any]) -> None:
-    _reject_unknown_keys(
-        profile,
-        "driver_safety_profile",
-        {
-            "artifact_schema_version",
-            "kind",
-            "topology_id",
-            "targets",
-            "research",
-            "authority",
-            "authorizes_playback",
-            "profile_fingerprint",
-            "status",
-            "confirmation",
-            "issues",
-        },
-    )
-    if type(profile.get("artifact_schema_version")) is not int:  # noqa: E721
-        raise DriverSafetyProfileError(
-            "driver_safety_profile.artifact_schema_version must be integer 1"
-        )
-    if profile.get("artifact_schema_version") != DRIVER_SAFETY_PROFILE_SCHEMA_VERSION:
-        raise DriverSafetyProfileError(
-            "driver_safety_profile.artifact_schema_version must be integer 1"
-        )
-    if profile.get("kind") != DRIVER_SAFETY_PROFILE_KIND:
-        raise DriverSafetyProfileError("driver_safety_profile kind is unsupported")
-    _require_canonical_text_field(
-        profile,
-        "topology_id",
-        "driver_safety_profile.topology_id",
-        required=True,
-        max_chars=160,
-    )
-    # ``needs_confirmation`` is no longer WRITTEN but stays readable, so a box
-    # carrying an older profile is not reported as corrupt.
-    if profile.get("status") not in {
-        "incomplete",
-        "needs_confirmation",
-        "confirmed",
-    }:
-        raise DriverSafetyProfileError("driver_safety_profile status is unsupported")
-    if not _is_sha256(profile.get("profile_fingerprint")):
-        raise DriverSafetyProfileError(
-            "driver_safety_profile.profile_fingerprint is invalid"
-        )
-    if profile.get("authority") != "operator_visible_values":
-        raise DriverSafetyProfileError("driver_safety_profile authority is invalid")
-    if profile.get("authorizes_playback") is not False:
-        raise DriverSafetyProfileError(
-            "driver_safety_profile must not authorize playback"
-        )
-    research = profile.get("research")
-    if not isinstance(research, Mapping):
-        raise DriverSafetyProfileError(
-            "driver_safety_profile.research must be an object"
-        )
-    _reject_unknown_keys(
-        research,
-        "driver_safety_profile.research",
-        # Legacy digest tolerance only; delete when #5277 computes the profile on read.
-        {"request_fingerprint", "result_fingerprint", "advisory_only"},
-    )
-    if research.get("advisory_only") is not True:
-        raise DriverSafetyProfileError(
-            "driver_safety_profile.research must remain advisory"
-        )
-    targets = _sequence(
-        profile.get("targets"),
-        "driver_safety_profile.targets",
-        maximum=16,
-    )
-    for index, target in enumerate(targets):
-        field_name = f"driver_safety_profile.targets[{index}]"
-        if not isinstance(target, Mapping):
-            raise DriverSafetyProfileError(f"{field_name} must be an object")
-        _reject_unknown_keys(
-            target,
-            field_name,
-            {
-                "target_id",
-                "target_fingerprint",
-                "speaker_group_id",
-                "speaker_group_mode",
-                "role",
-                "driver_style",
-                "target_values_binding",
-                "physical_output_index",
-                "model",
-                "manufacturer",
-                # Optional, not required: an older profile carries neither and
-                # is still a sound declaration — its projections re-derive from
-                # its own protective high-pass by the legacy path. It simply has
-                # no published slope to gate a pinned crossover with.
-                "recommended_highpass_hz",
-                "recommended_highpass_slope_db_per_octave",
-                "hard_excitation_band_hz",
-                "required_protection_filters",
-                "measurement_band_hz",
-                "level_duration_limits",
-                "cabinet",
-                "unknowns",
-                "field_provenance",
-                "authority",
-                "code_owned_policy",
-                "fit_budget",
-            },
-        )
-        _require_canonical_text_field(
-            target,
-            "target_id",
-            f"{field_name}.target_id",
-            required=True,
-            max_chars=160,
-        )
-        target_fingerprint = _require_canonical_text_field(
-            target,
-            "target_fingerprint",
-            f"{field_name}.target_fingerprint",
-            required=True,
-            max_chars=64,
-        )
-        if not _is_sha256(target_fingerprint):
-            raise DriverSafetyProfileError(
-                f"{field_name}.target_fingerprint is invalid"
-            )
-        for key, max_chars in (
-            ("speaker_group_id", 160),
-            ("speaker_group_mode", 64),
-            ("role", 32),
-        ):
-            _require_canonical_text_field(
-                target,
-                key,
-                f"{field_name}.{key}",
-                required=True,
-                max_chars=max_chars,
-            )
-        for key in ("model", "manufacturer"):
-            _require_canonical_text_field(
-                target,
-                key,
-                f"{field_name}.{key}",
-                required=False,
-                max_chars=120,
-            )
-        _require_canonical_text_field(
-            target,
-            "driver_style",
-            f"{field_name}.driver_style",
-            required=True,
-            max_chars=80,
-        )
-        if target.get("target_values_binding") not in {
-            "explicit_target",
-            "unique_legacy_role",
-            "missing",
-        }:
-            raise DriverSafetyProfileError(
-                f"{field_name}.target_values_binding is invalid"
-            )
-        code_policy = target.get("code_owned_policy")
-        if not isinstance(code_policy, Mapping):
-            raise DriverSafetyProfileError(
-                f"{field_name}.code_owned_policy must be an object"
-            )
-        _reject_unknown_keys(
-            code_policy,
-            f"{field_name}.code_owned_policy",
-            {
-                "policy_version",
-                "max_auto_level_dbfs",
-                "min_highpass_hz",
-                "floor_test_frequency_hz",
-                "floor_test_duration_ms",
-            },
-        )
-        current_policy = driver_protection_profile(
-            target.get("role"),
-            driver_style=target.get("driver_style"),
-            declared_floor_hz=driver_excitation_floor_hz(target),
-        )
-        expected_policy = {
-            "policy_version": DRIVER_PROTECTION_POLICY_VERSION,
-            "max_auto_level_dbfs": current_policy.max_auto_level_dbfs,
-            "min_highpass_hz": current_policy.min_highpass_hz,
-            "floor_test_frequency_hz": current_policy.floor_test_frequency_hz,
-            "floor_test_duration_ms": current_policy.floor_test_duration_ms,
-        }
-        if _canonical_json(code_policy) != _canonical_json(expected_policy):
-            raise DriverSafetyProfileError(
-                f"{field_name}.code_owned_policy is stale or noncanonical"
-            )
-        if "physical_output_index" in target:
-            output_index = target.get("physical_output_index")
-            if isinstance(output_index, bool) or not isinstance(output_index, int):
-                raise DriverSafetyProfileError(
-                    f"{field_name}.physical_output_index must be an integer"
-                )
-            if output_index < 0:
-                raise DriverSafetyProfileError(
-                    f"{field_name}.physical_output_index must be >= 0"
-                )
-        normalised_safety = normalise_driver_safety_fields(
-            target,
-            field_name,
-            include_research_evidence=False,
-        )
-        safety_fields = {
-            "hard_excitation_band_hz",
-            "required_protection_filters",
-            "measurement_band_hz",
-            "level_duration_limits",
-            "cabinet",
-        }
-        # The low limit's OWNER pair is canonicalised with the projections but
-        # NOT re-derived below: an older profile carries neither field, so both
-        # sides of this comparison omit them and agree, while re-deriving would
-        # ADD a ``recommended_highpass_hz`` the stored target never had.
-        declared_fields = safety_fields | {
-            "fit_budget",
-            "recommended_highpass_hz",
-            "recommended_highpass_slope_db_per_octave",
-        }
-        raw_declared = {key: target[key] for key in declared_fields if key in target}
-        if _canonical_json(raw_declared) != _canonical_json(normalised_safety):
-            raise DriverSafetyProfileError(
-                f"{field_name} safety fields are not canonical"
-            )
-        raw_safety = {key: target[key] for key in safety_fields if key in target}
-        # ... and they must still be the PROJECTION of this target's own
-        # declared low limit. A stored profile whose bands and protective
-        # high-pass disagree about where the driver stops is refused rather than
-        # read, because reading it would pick one of two answers silently.
-        rederived = apply_driver_low_limit(
-            normalised_safety,
-            role=target.get("role"),
-            driver_style=target.get("driver_style"),
-        )
-        rederived_safety = {
-            key: rederived[key] for key in safety_fields if key in rederived
-        }
-        if _canonical_json(raw_safety) != _canonical_json(rederived_safety):
-            raise DriverSafetyProfileStaleLowLimitError(
-                f"{field_name} safety fields no longer match this driver's "
-                "declared low limit; review the driver profile at /sound/ and "
-                "save it again"
-            )
-        normalised_unknowns = _normalise_unknowns(
-            target.get("unknowns"),
-            f"{field_name}.unknowns",
-        )
-        if "unknowns" not in target or _canonical_json(
-            target.get("unknowns")
-        ) != _canonical_json(normalised_unknowns):
-            raise DriverSafetyProfileError(f"{field_name}.unknowns are not canonical")
-        normalised_provenance = _normalise_field_provenance(
-            target.get("field_provenance"),
-            f"{field_name}.field_provenance",
-        )
-        if "field_provenance" not in target or _canonical_json(
-            target.get("field_provenance")
-        ) != _canonical_json(normalised_provenance):
-            raise DriverSafetyProfileError(
-                f"{field_name}.field_provenance is not canonical"
-            )
-        if target.get("authority") != "operator_visible_values":
-            raise DriverSafetyProfileError(f"{field_name}.authority is invalid")
-    confirmation = profile.get("confirmation")
-    if confirmation is not None:
-        if not isinstance(confirmation, Mapping):
-            raise DriverSafetyProfileError(
-                "driver_safety_profile.confirmation must be an object or null"
-            )
-        _reject_unknown_keys(
-            confirmation,
-            "driver_safety_profile.confirmation",
-            {"confirmed_fingerprint", "confirmed_at", "method"},
-        )
-        confirmed_fingerprint = _require_canonical_text_field(
-            confirmation,
-            "confirmed_fingerprint",
-            "driver_safety_profile.confirmation.confirmed_fingerprint",
-            required=True,
-            max_chars=64,
-        )
-        if not _is_sha256(confirmed_fingerprint):
-            raise DriverSafetyProfileError(
-                "driver_safety_profile.confirmation.confirmed_fingerprint is invalid"
-            )
-        _require_canonical_text_field(
-            confirmation,
-            "confirmed_at",
-            "driver_safety_profile.confirmation.confirmed_at",
-            required=True,
-            max_chars=64,
-        )
-        _require_canonical_text_field(
-            confirmation,
-            "method",
-            "driver_safety_profile.confirmation.method",
-            required=True,
-            max_chars=80,
-        )
-    for index, issue in enumerate(
-        _sequence(profile.get("issues"), "driver_safety_profile.issues", maximum=64)
-    ):
-        if not isinstance(issue, Mapping):
-            raise DriverSafetyProfileError(
-                f"driver_safety_profile.issues[{index}] must be an object"
-            )
-        _reject_unknown_keys(
-            issue,
-            f"driver_safety_profile.issues[{index}]",
-            set(PROFILE_ISSUE_FIELD_MAX_CHARS),
-        )
-        for key, max_chars in PROFILE_ISSUE_FIELD_MAX_CHARS.items():
-            _require_canonical_text_field(
-                issue,
-                key,
-                f"driver_safety_profile.issues[{index}].{key}",
-                required=True,
-                max_chars=max_chars,
-            )
 
 
 def _superseded_typed_highpass(
@@ -2081,247 +1538,9 @@ def _superseded_typed_highpass(
     return tuple(out)
 
 
-#: Target field names a stored safety PROFILE may carry that this build has
-#: RETIRED. The only bounds entitled to refuse a corner are the drivers'
-#: declared hard excitation bands.
-#:
-#: **Deliberately not** :data:`~._common.LEGACY_DROPPED_DRIVER_FIELDS`: that set
-#: answers "may a stored DRIVER RECORD still carry this at a write gate"
-#: (tolerated and dropped), this one answers "does a stored PROFILE TARGET
-#: carrying it read as stale-but-fixable rather than corrupt" (reported, never
-#: dropped, because the profile is re-derived rather than edited). Retiring
-#: another per-driver field means deciding for BOTH.
-_RETIRED_TARGET_FIELDS = frozenset({"crossover_search_band_hz"})
-
-#: A stored profile that is structurally fine except that it names a retired
-#: field. Reported under its own name rather than the generic schema-invalid
-#: one, because the household's only question is "will saving fix it?" and the
-#: answer is yes. No auto-migration: silently rewriting a confirmed safety
-#: declaration behind the operator's back is the wrong direction for a
-#: declaration whose whole point is that a human made it.
-DRIVER_SAFETY_PROFILE_RETIRED_FIELD_REASON = "driver_safety_profile_retired_field"
-
-
-def _retired_fields_present(profile: Mapping[str, Any]) -> bool:
-    """Whether any stored target still carries a field this build retired.
-
-    Total by construction: it runs inside an except branch whose contract is to
-    REPORT rather than raise, so an unreadable target contributes ``False``.
-    """
-    targets = profile.get("targets")
-    if not isinstance(targets, list):
-        return False
-    return any(
-        isinstance(target, Mapping) and not _RETIRED_TARGET_FIELDS.isdisjoint(target)
-        for target in targets
-    )
-
-
-def _stale_low_limit_rebuild_issues(profile: Mapping[str, Any]) -> tuple[str, ...]:
-    """The blocking issues a REBUILD of this stale profile would carry.
-
-    Same derivation and vocabulary the rebuild uses, so the two cannot disagree
-    about whether confirming is possible. Total by construction: a target this
-    cannot read contributes nothing rather than raising.
-    """
-
-    targets = profile.get("targets")
-    if not isinstance(targets, list):
-        return ()
-    issues: list[str] = []
-    for target in targets:
-        if not isinstance(target, Mapping):
-            continue
-        try:
-            derived = apply_driver_low_limit(
-                target,
-                role=target.get("role"),
-                driver_style=target.get("driver_style"),
-            )
-            found = _target_issues(derived)
-        except (KeyError, TypeError, ValueError):
-            continue
-        for issue in found:
-            if issue not in issues:
-                issues.append(issue)
-    return tuple(issues)
-
-
-def evaluate_driver_safety_profile(
-    profile: Any,
-    topology: OutputTopology,
-) -> DriverSafetyProfileEvaluation:
-    """Evaluate schema, integrity, confirmation, and current target binding."""
-
-    if not isinstance(profile, Mapping):
-        return DriverSafetyProfileEvaluation(
-            "missing", False, None, ("driver_safety_profile_missing",)
-        )
-    try:
-        _validate_driver_safety_profile_shape(profile)
-    except DriverSafetyProfileStaleLowLimitError:
-        # Named separately from the generic malformed case so /sound/ can say
-        # "save it again" instead of "corrupt". Still a RETURN, never a raise,
-        # so a box carrying a split declaration reports rather than crash-looping.
-        #
-        # The reasons carry MORE than the name, because the name alone cannot
-        # answer "will saving fix it?": deriving the low limit raises the hard
-        # band's lower edge, which can leave the analysis window outside it or
-        # the limit implausible, and the rebuild then lands ``incomplete``.
-        # Appending the rebuild's own blockers lets /sound/ name the field to
-        # fix first instead of sending the household round a loop.
-        fingerprint = profile.get("profile_fingerprint")
-        return DriverSafetyProfileEvaluation(
-            "malformed",
-            False,
-            str(fingerprint) if isinstance(fingerprint, str) else None,
-            (
-                "driver_safety_profile_low_limit_stale",
-                *_stale_low_limit_rebuild_issues(profile),
-            ),
-        )
-    except DriverSafetyProfileError:
-        fingerprint = profile.get("profile_fingerprint")
-        # A profile written before a field was RETIRED is not corrupt, and
-        # saying "JTS could not read these limits" sends the household looking
-        # for damage that is not there. Named separately so /sound/ can state
-        # the specific remedy: save the visible values again.
-        if _retired_fields_present(profile):
-            return DriverSafetyProfileEvaluation(
-                "malformed",
-                False,
-                str(fingerprint) if isinstance(fingerprint, str) else None,
-                (DRIVER_SAFETY_PROFILE_RETIRED_FIELD_REASON,),
-            )
-        return DriverSafetyProfileEvaluation(
-            "malformed",
-            False,
-            str(fingerprint) if isinstance(fingerprint, str) else None,
-            ("driver_safety_profile_schema_invalid",),
-        )
-    fingerprint = profile.get("profile_fingerprint")
-    if (
-        profile.get("artifact_schema_version") != DRIVER_SAFETY_PROFILE_SCHEMA_VERSION
-        or profile.get("kind") != DRIVER_SAFETY_PROFILE_KIND
-        or not _is_sha256(fingerprint)
-    ):
-        return DriverSafetyProfileEvaluation(
-            "malformed",
-            False,
-            str(fingerprint) if isinstance(fingerprint, str) else None,
-            ("driver_safety_profile_schema_invalid",),
-        )
-    core = {
-        key: profile.get(key)
-        for key in (
-            "artifact_schema_version",
-            "kind",
-            "topology_id",
-            "targets",
-            "research",
-            "authority",
-            "authorizes_playback",
-        )
-    }
-    if _fingerprint(core) != fingerprint:
-        return DriverSafetyProfileEvaluation(
-            "malformed",
-            False,
-            str(fingerprint),
-            ("driver_safety_profile_fingerprint_mismatch",),
-        )
-    current_targets = active_driver_targets(topology)
-    saved_targets = profile.get("targets", [])
-    targets_match = len(saved_targets) == len(current_targets)
-    if targets_match:
-        for saved, current in zip(saved_targets, current_targets):
-            expected = {
-                "target_id": str(current["target_id"]),
-                "target_fingerprint": str(current["target_fingerprint"]),
-                "speaker_group_id": str(current["speaker_group_id"]),
-                "speaker_group_mode": str(current["speaker_group_mode"]),
-                "role": str(current["role"]),
-                "physical_output_index": current.get("output_index"),
-            }
-            group = next(
-                (
-                    item
-                    for item in topology.speaker_groups
-                    if item.id == current["speaker_group_id"]
-                ),
-                None,
-            )
-            channel = next(
-                (
-                    item
-                    for item in (group.channels if group is not None else ())
-                    if item.role == current["role"]
-                ),
-                None,
-            )
-            expected["driver_style"] = (
-                channel.driver_style
-                if channel and channel.driver_style
-                else "unspecified"
-            )
-            if any(saved.get(key) != value for key, value in expected.items()):
-                targets_match = False
-                break
-    if profile.get("topology_id") != topology.topology_id or not targets_match:
-        return DriverSafetyProfileEvaluation(
-            "stale",
-            False,
-            str(fingerprint),
-            ("driver_safety_profile_target_mismatch",),
-        )
-    derived_issues: list[str] = []
-    derived_warnings: list[dict[str, str]] = []
-    for target in saved_targets:
-        derived_issues.extend(_target_issues(target))
-        derived_warnings.extend(_target_low_limit_warnings(target))
-    if not saved_targets:
-        derived_issues.append("active_driver_targets_missing")
-    expected_issue_payload = _profile_issue_payload(derived_issues, derived_warnings)
-    if _comparable_issue_payload(profile.get("issues")) != _comparable_issue_payload(
-        expected_issue_payload
-    ):
-        return DriverSafetyProfileEvaluation(
-            "malformed",
-            False,
-            str(fingerprint),
-            ("driver_safety_profile_derived_state_mismatch",),
-        )
-    confirmation = profile.get("confirmation")
-    if derived_issues:
-        if profile.get("status") != "incomplete" or confirmation is not None:
-            return DriverSafetyProfileEvaluation(
-                "malformed",
-                False,
-                str(fingerprint),
-                ("driver_safety_profile_derived_state_mismatch",),
-            )
-        return DriverSafetyProfileEvaluation(
-            "incomplete",
-            False,
-            str(fingerprint),
-            tuple(derived_issues),
-        )
-    if profile.get("status") == "needs_confirmation" and confirmation is None:
-        # Read under the CURRENT definition of confirmed: structurally sound and
-        # bound to this hardware is the whole of what the word means now, and
-        # the missing second human acknowledgement no longer exists. The next
-        # save collapses the stored status; no migration pass is needed.
-        return DriverSafetyProfileEvaluation("confirmed", True, str(fingerprint), ())
-    if (
-        profile.get("status") != "confirmed"
-        or not isinstance(confirmation, Mapping)
-        or confirmation.get("confirmed_fingerprint") != fingerprint
-        or confirmation.get("method") != "operator_reviewed_visible_values"
-    ):
-        return DriverSafetyProfileEvaluation(
-            "malformed",
-            False,
-            str(fingerprint),
-            ("driver_safety_profile_derived_state_mismatch",),
-        )
-    return DriverSafetyProfileEvaluation("confirmed", True, str(fingerprint), ())
+def driver_floor_issues(profile: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The declaration issues that prevent Apply (ADR-0323 §2)."""
+    return [issue for issue in profile.get("issues", []) if issue["code"] in {
+        "tweeter:required_highpass_missing", "mid:required_highpass_missing",
+        "mid:required_lowpass_missing",
+    }]

@@ -645,7 +645,7 @@ def read_active_speaker_setup_status(
         # ADR-0019): this comparison enforces no cap — it hashes a dict and
         # reports inequality. The declared facts that DO gate keep their own
         # gates downstream, each reading the field rather than the hash
-        # (`evaluate_driver_safety_profile`, `resolve_driver_excitation_ceilings`,
+        # (`require_driver_measurement_inputs`, `resolve_driver_excitation_ceilings`,
         # the driver-protection clamps).
         protected_ready = bool(
             isinstance(protected_profile, Mapping)

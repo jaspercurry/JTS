@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.branch_chain import sections_by_role, boost_headroom_by_role
 from jasper.active_speaker.alignment_evidence import alignment_evidence
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
@@ -188,7 +189,7 @@ def speaker_fit(
         raise RoundViewsError("speaker-fit requires the banked driver declaration")
     draft = sources.get("draft") or {}
     classes = _resolve_driver_class_by_role(draft)
-    budgets = fit_budgets_by_role(draft.get("driver_safety_profile") or {})
+    budgets = fit_budgets_by_role(design_draft_view(draft).get("driver_safety_profile") or {})
     overrides = normalise_fit_budget(budget or {})
     calibration = (record.get("capture_setup") or {}).get("calibration") or {}
     applied = record.get("capture_calibration") or {}

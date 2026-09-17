@@ -310,7 +310,7 @@ def test_precheck_refuses_uncommissioned_box_no_emit(monkeypatch, tmp_path) -> N
     with pytest.raises(alc.ActiveLeaderError) as exc:
         asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
     assert exc.value.reason == "baseline_not_ready"
-    assert "driver_safety_profile_not_confirmed" in exc.value.issues
+    assert "tweeter:required_highpass_missing" in exc.value.issues
     assert not Path(alc.LEADER_BAKE_CONFIG_PATH).exists()
     assert not Path(alc.CROSSOVER_CONFIG_PATH).exists()
 

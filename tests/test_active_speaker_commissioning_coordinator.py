@@ -28,7 +28,7 @@ def _ready_design() -> dict:
     return {
         "kind": "jts_active_speaker_design_draft",
         "status": "ready_for_review",
-        "driver_safety_profile_evaluation": {"confirmed_and_current": True},
+        "driver_safety_profile": {"targets": [], "issues": []},
         "summary": {
             "missing_driver_info_roles": [],
             "missing_crossover_candidate_pairs": [],
@@ -95,7 +95,7 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
     elif status == "needs_driver_values":
         draft = {}
     elif status == "needs_driver_safety_profile":
-        draft["driver_safety_profile_evaluation"]["confirmed_and_current"] = False
+        draft["driver_safety_profile"]["issues"] = [{"code": "tweeter:required_highpass_missing"}]
     applied = _applied_anchor(layers=layers)
     applied_at = parse_utc_iso(applied["applied_at"])
     recent = {name: {"round_dir": f"/bank/{name}", "started_at": applied_at + age} for name, age in rounds}

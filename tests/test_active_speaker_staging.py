@@ -559,7 +559,8 @@ def test_legacy_manual_role_rows_keep_stereo_preview_additive_but_not_confirmed(
 
     assert draft["status"] == "ready_for_review"
     assert draft["summary"]["missing_driver_info_target_ids"] == []
-    assert draft["driver_safety_profile"]["status"] == "incomplete"
+    assert any(i["code"] == "tweeter:required_highpass_missing"
+               for i in draft["driver_safety_profile"]["issues"])
     assert {
         target["target_values_binding"]
         for target in draft["driver_safety_profile"]["targets"]

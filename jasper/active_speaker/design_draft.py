@@ -34,10 +34,9 @@ from .driver_pad import DriverPadError, effective_sensitivity_db, normalise_pad
 from .driver_safety import (
     DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
     DriverSafetyProfileError,
-    build_driver_safety_profile,
+    compute_driver_safety_profile,
     driver_protection_policy_view,
     driver_research_targets,
-    evaluate_driver_safety_profile,
     finalise_research_result,
     normalise_driver_safety_fields,
     validate_manual_target_bindings,
@@ -691,7 +690,7 @@ def declared_driver_sensitivities(draft: Mapping[str, Any] | None) -> dict[str, 
 
     The declaration (``manual_settings.drivers``) is the ONE owner of driver
     sensitivity — a declared physical property, not a safety limit — so it is
-    never duplicated onto the confirmed safety profile. Consumers wanting the
+    never duplicated onto the computed safety profile. Consumers wanting the
     ceiling read the pad-folded
     :func:`declared_effective_driver_sensitivities` rather than this naked one.
 
@@ -1084,22 +1083,6 @@ def build_design_draft(
         status = "ready_for_review"
     now = updated_at or created_at or _utc_now()
     created = created_at or now
-    safety_profile = None
-    safety_evaluation = evaluate_driver_safety_profile(None, topology).to_dict()
-    if _active_crossover_pairs(topology):
-        try:
-            safety_profile = build_driver_safety_profile(
-                topology,
-                manual_settings=manual,
-                driver_research=research,
-                saved_at=now,
-            )
-        except DriverSafetyProfileError as exc:
-            raise ActiveSpeakerDesignDraftError(str(exc)) from exc
-        safety_evaluation = evaluate_driver_safety_profile(
-            safety_profile,
-            topology,
-        ).to_dict()
     return {
         "artifact_schema_version": SCHEMA_VERSION,
         "kind": DESIGN_DRAFT_KIND,
@@ -1109,8 +1092,7 @@ def build_design_draft(
         "topology": topology.to_dict(include_evaluation=True),
         "operator_inputs": inputs,
         "driver_research": research,
-        "driver_safety_profile": safety_profile,
-        "driver_safety_profile_evaluation": safety_evaluation,
+        "driver_safety_profile": compute_driver_safety_profile(topology, manual, research),
         "driver_protection_policy_view": driver_protection_policy_view(
             topology, manual
         ),
@@ -1144,20 +1126,30 @@ def build_design_draft(
     }
 
 
+def design_draft_view(
+    draft: Mapping[str, Any], *, topology: OutputTopology | None = None,
+) -> dict[str, Any]:
+    """Add computed driver data to a live or banked declaration (ADR-0323 §2)."""
+    out = {key: value for key, value in draft.items()
+           if key not in {"driver_safety_profile", "driver_safety_profile_evaluation"}}
+    if topology is None and draft.get("topology"):
+        topology = OutputTopology.from_mapping(draft["topology"])
+    if topology is not None:
+        out["driver_safety_profile"] = compute_driver_safety_profile(
+            topology, draft.get("manual_settings"), draft.get("driver_research"),
+        )
+        out["driver_protection_policy_view"] = driver_protection_policy_view(
+            topology, draft.get("manual_settings"),
+        )
+    return out
+
+
 def load_design_draft(
     path: str | Path | None = None,
     *,
     topology: OutputTopology | None = None,
 ) -> dict[str, Any]:
-    """Return the saved design draft, failing soft when it has not been saved.
-
-    The derived, code-owned fields (``driver_safety_profile_evaluation`` and
-    ``driver_protection_policy_view``) are re-stamped here only when a
-    ``topology`` is supplied — without one there is nothing to re-derive them
-    from, and the disk copy is returned as it was written.  Callers that show
-    either field to an operator must pass a topology; the /sound/ design-draft
-    endpoint always does.
-    """
+    """Load declared values and compute the safety profile for the supplied topology."""
 
     target = _design_draft_path(path)
     try:
@@ -1240,6 +1232,8 @@ def load_design_draft(
             ],
             "next_step": "Save a fresh speaker design draft.",
         }
+    raw.pop("driver_safety_profile", None)
+    raw.pop("driver_safety_profile_evaluation", None)
     revision = raw.get("revision", 0)
     if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
         out = dict(raw)
@@ -1267,28 +1261,7 @@ def load_design_draft(
         for driver in research.get("drivers", []):
             if isinstance(driver, dict):
                 driver.pop("target_fingerprint", None)
-    if topology is None:
-        return raw
-    out = dict(raw)
-    out["driver_safety_profile_evaluation"] = evaluate_driver_safety_profile(
-        raw.get("driver_safety_profile"),
-        topology,
-    ).to_dict()
-    # Re-stamped, never trusted from disk: the saved copy was correct for the
-    # policy and topology in force when it was written, and both can move
-    # underneath it. Same reason the evaluation above is recomputed here.
-    # `_view` in the name because `driver_protection_policy` is already taken,
-    # by a different shape: excitation_safety_plan hashes one under that key
-    # inside the protection-requirement fingerprint.
-    # The saved manual settings travel in, because the resolved low limit the
-    # view now publishes is a property of the DECLARATION, not of the topology
-    # (#2874). Without them every target would report the class fallback on a
-    # box that declared its drivers.
-    out["driver_protection_policy_view"] = driver_protection_policy_view(
-        topology,
-        raw.get("manual_settings"),
-    )
-    return out
+    return design_draft_view(raw, topology=topology)
 
 
 def save_design_draft(
@@ -1338,7 +1311,9 @@ def save_design_draft(
             target,
             # allow_nan=False: fail at the writer that produced the non-finite
             # value, not at the evidence packet hours later (#2839).
-            json.dumps(draft, allow_nan=False, indent=2, sort_keys=True) + "\n",
+            json.dumps({key: value for key, value in draft.items()
+                        if key != "driver_safety_profile"},
+                       allow_nan=False, indent=2, sort_keys=True) + "\n",
             mode=0o640,
             durable=durable,
         )

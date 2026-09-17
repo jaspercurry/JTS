@@ -21,7 +21,6 @@ pytestmark = pytest.mark.usefixtures("banked_session_level")
 
 from jasper.active_speaker import commission_wiring, design_draft
 from jasper.active_speaker import session_volume_plan as session_volume_plan_mod
-from jasper.active_speaker import driver_safety as driver_safety_mod
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_TARGETS_MISSING,
     REASON_REGISTRY,
@@ -152,13 +151,6 @@ def _stub_non_topology_inputs(monkeypatch):
     # gate (issue #1821) is covered against the REAL evaluator in
     # tests/test_crossover_v2_profile_not_confirmed.py; here the stub profile is
     # a bare ``{}``, so without this the gate would refuse every case.
-    monkeypatch.setattr(
-        driver_safety_mod,
-        "evaluate_driver_safety_profile",
-        lambda profile, topology: driver_safety_mod.DriverSafetyProfileEvaluation(
-            "confirmed", True, "f" * 64, (),
-        ),
-    )
     monkeypatch.setattr(
         excitation_safety_plan_mod,
         "resolve_driver_excitation_ceilings",
@@ -471,7 +463,7 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
     plus a declaration-shaped draft, and asserts the context caps EQUAL what
     admission resolves with the same inputs — one derivation, two consumers.
     """
-    from jasper.active_speaker.driver_safety import build_driver_safety_profile
+    from jasper.active_speaker.driver_safety import compute_driver_safety_profile
     from jasper.active_speaker.measurement import active_driver_targets
 
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
@@ -518,11 +510,10 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
         ],
         "crossover_candidates": [],
     }
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topo,
         manual_settings=settings,
         driver_research=None,
-        saved_at="2026-07-19T12:00:00Z",
     )
     targets = {t["role"]: t["target_fingerprint"] for t in active_driver_targets(topo)}
     status = {
@@ -645,7 +636,7 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
     confirms declared_sensitivities now reads the PAD-FOLDED effective
     figure, not the naked one — the other half of #1665's resolver swap.
     """
-    from jasper.active_speaker.driver_safety import build_driver_safety_profile
+    from jasper.active_speaker.driver_safety import compute_driver_safety_profile
     from jasper.active_speaker.measurement import active_driver_targets
 
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
@@ -691,11 +682,10 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
         ],
         "crossover_candidates": [],
     }
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topo,
         manual_settings=settings,
         driver_research=None,
-        saved_at="2026-07-19T12:00:00Z",
     )
     targets = {t["role"]: t["target_fingerprint"] for t in active_driver_targets(topo)}
     status = {

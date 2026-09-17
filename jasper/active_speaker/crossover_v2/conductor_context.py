@@ -27,9 +27,7 @@ from jasper.output_topology import measurement_target_id
 
 from .refusal_copy import (
     REASON_MEASUREMENT_TARGETS_MISSING,
-    REASON_PROGRAM_PROFILE_INCOMPLETE,
-    REASON_PROGRAM_PROFILE_MISSING,
-    REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
+    REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID,
     REASON_REGISTRY,
     REASON_SPEAKER_SHAPE_UNSUPPORTED,
     CrossoverV2Refused,
@@ -42,7 +40,6 @@ __all__ = [
     "V2ConductorContext",
     "conductor_status",
     "ensure_crossover_preview_ready",
-    "profile_refusal_code",
     "measurement_role_channels",
     "resolve_conductor_context",
 ]
@@ -147,35 +144,6 @@ class V2ConductorContext(Generic[_Level]):
 
 def measurement_role_channels(preset: Any) -> dict[str, int]:
     return {role: channel for channel, role in enumerate(required_driver_roles(preset.way_count))}
-
-
-def profile_refusal_code(evaluation_status: str) -> str:
-    """Map a :class:`~jasper.active_speaker.driver_safety.DriverSafetyProfileEvaluation`
-    status to the reason code whose copy names the action that ACTUALLY clears it.
-
-    The pre-flight holds evidence the play seam does not — the play seam's
-    admission vocabulary carries one ``PROFILE_NOT_CONFIRMED`` slug for every
-    un-playable profile state — so this is where the three genuinely different
-    household actions separate:
-
-    * ``missing``    → finish the driver details. ``/sound/`` renders no
-      callout at all in this state, so "review the safety limits" would name a
-      panel that is not on the page.
-    * ``incomplete`` → add the missing values first. Saving with values missing
-      just rebuilds the same ``incomplete`` profile, so "save again" would send
-      the household in a circle.
-    * everything else (``stale``, ``malformed``) → review and save. Both are
-      cleared by one ordinary save: it rebuilds the profile from the visible
-      values, so an output change and an unreadable artifact end the same way.
-    """
-    status = str(evaluation_status or "")
-    if status == "missing":
-        return REASON_PROGRAM_PROFILE_MISSING
-    if status == "incomplete":
-        return REASON_PROGRAM_PROFILE_INCOMPLETE
-    return REASON_PROGRAM_PROFILE_NOT_CONFIRMED
-
-
 
 
 def ensure_crossover_preview_ready(*, durable: bool = False) -> dict[str, Any]:
@@ -319,9 +287,9 @@ def resolve_conductor_context(
         declared_effective_driver_sensitivities,
         load_design_draft,
     )
-    from jasper.active_speaker.driver_safety import evaluate_driver_safety_profile
     from jasper.active_speaker.excitation_safety_plan import (
         ExcitationSafetyPlanError,
+        require_driver_measurement_inputs,
         effective_sweep_duration_limit_s,
         resolve_driver_excitation_ceilings,
         resolve_driver_measurement_band_hz,
@@ -370,27 +338,17 @@ def resolve_conductor_context(
     roles = required_driver_roles(preset.way_count)
     draft = load_design_draft(topology=topology)
     safety_profile = draft.get("driver_safety_profile")
-    # The gate the refusal text has always CLAIMED (issue #1821). Evaluated
-    # against the live topology, so a stale profile (an output change) and an
-    # un-confirmed one (a driver-detail edit rotated the fingerprint) are both
-    # caught here rather than at play time. Copy comes from the SAME registry
-    # entry the phone's terminal failure screen renders, so the two surfaces
-    # cannot say different things about the same missing confirmation.
-    safety_evaluation = evaluate_driver_safety_profile(safety_profile, topology)
-    if not safety_evaluation.confirmed_and_current or not isinstance(
-        safety_profile, Mapping
-    ):
-        code = profile_refusal_code(safety_evaluation.status)
+    try:
+        require_driver_measurement_inputs(safety_profile or {})
+    except ExcitationSafetyPlanError as exc:
+        code = REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID
         log_event(
-            logger,
-            "correction.crossover_v2_profile_not_confirmed",
-            level=logging.WARNING,
-            gate="session_open",
-            profile_status=safety_evaluation.status,
-            code=code,
-            reasons=",".join(safety_evaluation.reasons),
+            logger, "correction.crossover_v2_measurement_inputs_invalid",
+            level=logging.WARNING, gate="session_open", code=code,
+            issues=(safety_profile or {}).get("issues", []),
         )
-        raise CrossoverV2Refused(REASON_REGISTRY[code].message, code=code)
+        raise CrossoverV2Refused(REASON_REGISTRY[code].message, code=code) from exc
+    assert isinstance(safety_profile, Mapping)
     targets_raw = status.get("targets")
     drivers = (
         targets_raw.get("drivers") if isinstance(targets_raw, Mapping) else None

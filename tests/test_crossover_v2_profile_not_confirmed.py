@@ -2,33 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Issues #1820 / #1821 — the profile-not-confirmed refusal surface.
-
-From the 2026-07-28 JTS3 dead-end: the owner declared an enclosure kind, which
-rotated the driver-safety profile's fingerprint and so cleared its confirmation
-by design, and every subsequent crossover measurement was refused. Four things
-were wrong with how that refusal reached the household, and one with WHEN:
-
-1. The raw internal slug reached the DOM. ``ProgramPlaybackRefused`` builds its
-   message by joining raw enum values, and ``correction_setup``'s capture-failure
-   mapper had no branch for the program family, so ``str(exc)`` — "program
-   re-admission refused: program_profile_not_confirmed" — was echoed on the
-   wizard's capture status line. ``crossover_v2_flow``'s own written contract says
-   "never a bare code reaches the household"; NO test pinned it.
-2. The advice looped. The copy this refusal inherited said "re-check the driver
-   details in speaker setup" — and editing those details rotates the fingerprint
-   again, which is the one action that makes it worse.
-3. The classification collapsed. Every program-family exception became one
-   ``program_unplayable`` code, so a deterministic missing confirmation and a
-   real level-ceiling failure were indistinguishable to every caller.
-4. (#1821) The confirmation was only evaluated at CHECK-phase program admission
-   — after the capture session and phone link existed. The session-open gate
-   checked only that a profile object was PRESENT while its refusal text claimed
-   confirmation had been checked.
-
-The ``/sound/`` half of defect 3 (the buried confirm control) is pinned in
-``tests/test_sound_profile_confirm_deeplink.py``.
-"""
+"""Measurement refusals reach the wizard before capture starts."""
 
 from __future__ import annotations
 
@@ -46,20 +20,16 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_PROGRAM_PLAN_SHAPE_INVALID,
-    REASON_PROGRAM_PROFILE_INCOMPLETE,
-    REASON_PROGRAM_PROFILE_MISSING,
-    REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
+    REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID,
     REASON_PROGRAM_UNPLAYABLE,
     REASON_PROTECTION_NOT_SEPARABLE,
     REASON_PROTECTION_SWEEP_TOO_LOW,
     REASON_REGISTRY,
     REASON_SPL_CEILING_EXCEEDED,
-    TEMPLATE_HARD_STOP,
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
 from jasper.active_speaker.driver_safety import (
-    build_driver_safety_profile,
-    evaluate_driver_safety_profile,
+    compute_driver_safety_profile,
 )
 from jasper.active_speaker.program_admission import (
     ProgramAdmission,
@@ -73,7 +43,6 @@ from jasper.active_speaker.program_playback import (
 from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web._common import refusal_envelope
-from tests._log_events import event_fields
 
 
 def _admission(*refusals: ProgramAdmissionRefusal) -> ProgramAdmission:
@@ -153,12 +122,12 @@ def test_program_refusal_reaches_the_wizard_as_copy_not_a_slug():
     raise site; the wizard's capture status line echoes whatever this mapper
     returns."""
 
-    exc = _refused(ProgramAdmissionRefusal.PROFILE_NOT_CONFIRMED)
-    assert str(exc) == "program re-admission refused: program_profile_not_confirmed"
+    exc = _refused(ProgramAdmissionRefusal.MEASUREMENT_INPUTS_INVALID)
+    assert str(exc) == "program re-admission refused: program_measurement_inputs_invalid"
 
     message = refusal_envelope(exc)["error"]
-    assert message == REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
-    assert "program_profile_not_confirmed" not in message
+    assert message == REASON_REGISTRY[REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID].message
+    assert "program_measurement_inputs_invalid" not in message
     assert "re-admission" not in message
 
 
@@ -166,8 +135,8 @@ def test_program_refusal_reaches_the_wizard_as_copy_not_a_slug():
     "exc, expected_code",
     [
         (
-            _refused(ProgramAdmissionRefusal.PROFILE_NOT_CONFIRMED),
-            REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
+            _refused(ProgramAdmissionRefusal.MEASUREMENT_INPUTS_INVALID),
+            REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID,
         ),
         (
             _refused(ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP),
@@ -205,10 +174,10 @@ def test_non_program_exceptions_still_fall_through_unchanged():
 
 def test_classifier_preserves_refusal_identity_and_slugs():
     profile = v2host.classify_program_failure(
-        _refused(ProgramAdmissionRefusal.PROFILE_NOT_CONFIRMED)
+        _refused(ProgramAdmissionRefusal.MEASUREMENT_INPUTS_INVALID)
     )
     assert profile == (
-        REASON_PROGRAM_PROFILE_NOT_CONFIRMED, ("program_profile_not_confirmed",)
+        REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID, ("program_measurement_inputs_invalid",)
     )
 
     over_cap = v2host.classify_program_failure(
@@ -222,11 +191,11 @@ def test_classifier_preserves_refusal_identity_and_slugs():
     # the household can act on, and every other slug still rides out.
     mixed = v2host.classify_program_failure(_refused(
         ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP,
-        ProgramAdmissionRefusal.PROFILE_NOT_CONFIRMED,
+        ProgramAdmissionRefusal.MEASUREMENT_INPUTS_INVALID,
     ))
-    assert mixed[0] == REASON_PROGRAM_PROFILE_NOT_CONFIRMED
+    assert mixed[0] == REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID
     assert set(mixed[1]) == {
-        "program_channel_peak_over_cap", "program_profile_not_confirmed",
+        "program_channel_peak_over_cap", "program_measurement_inputs_invalid",
     }
 
 
@@ -311,8 +280,8 @@ def test_the_flow_reason_code_is_the_admission_slug():
     """The 1:1 that makes ``state["failure"]`` correlatable with the journal.
     Pinned so the two vocabularies cannot drift apart silently."""
 
-    assert REASON_PROGRAM_PROFILE_NOT_CONFIRMED == (
-        ProgramAdmissionRefusal.PROFILE_NOT_CONFIRMED.value
+    assert REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID == (
+        ProgramAdmissionRefusal.MEASUREMENT_INPUTS_INVALID.value
     )
 
 
@@ -321,83 +290,10 @@ def test_the_flow_reason_code_is_the_admission_slug():
 # --------------------------------------------------------------------------- #
 
 
-def test_profile_not_confirmed_copy_names_the_save_never_re_editing():
-    """The harmful advice, pinned out. "Re-check the driver details" was the one
-    action that made this worse. And the copy must no longer name a CONFIRM
-    step: there isn't one — the states that still reach this code (``stale``,
-    ``malformed``) are cleared by an ordinary save."""
-
-    spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED]
-    copy = spec.message.lower()
-    assert "save them again" in copy
-    assert "re-check the driver details" not in copy
-    assert "confirm" not in copy
-    # Terminal: a second identical measurement reproduces it exactly.
-    assert spec.template == TEMPLATE_HARD_STOP
-    assert spec.retry_budget == 0
-
-
-def test_profile_not_confirmed_action_deep_links_the_review_callout():
-    spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED]
-    assert spec.next_action == {
-        "id": "review_safety_limits",
-        "label": "Review safety limits",
-        "href": "/sound/speaker/#confirm-safety-limits",
-    }
-
-
 # --------------------------------------------------------------------------- #
 # the two states where "review and save" is the WRONG action (review round,
 # S2/S3)
 # --------------------------------------------------------------------------- #
-
-
-def test_missing_profile_never_tells_the_household_to_review_limits():
-    """Reproduced by the reviewer on a never-saved / unreadable / pre-crossover
-    draft: ``/sound/`` renders NO safety callout when the evaluation is
-    ``missing`` (correctly — there is no declaration to review), so copy telling
-    the household to review the limits names a panel that is not on the page.
-    This state keeps the pre-gate's original, correct action."""
-
-    assert v2ctx.profile_refusal_code("missing") == REASON_PROGRAM_PROFILE_MISSING
-    spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_MISSING]
-    copy = spec.message.lower()
-    assert "review the limits" not in copy
-    assert "finish the driver details" in copy
-    assert spec.template == TEMPLATE_HARD_STOP and spec.retry_budget == 0
-    # No fragment: there is no callout to land on in this state.
-    assert spec.next_action is not None
-    assert spec.next_action["href"] == "/sound/speaker/"
-
-
-def test_incomplete_profile_asks_for_the_values_not_a_save_that_changes_nothing():
-    """A save with values missing rebuilds the same ``incomplete`` profile, so
-    "save them again" would send the household in a circle. The refusal copy
-    names the same action ``/sound/``'s own callout already names for this
-    state."""
-
-    assert (
-        v2ctx.profile_refusal_code("incomplete") == REASON_PROGRAM_PROFILE_INCOMPLETE
-    )
-    spec = REASON_REGISTRY[REASON_PROGRAM_PROFILE_INCOMPLETE]
-    copy = spec.message.lower()
-    assert "still missing" in copy
-    assert "advanced" in copy
-    assert spec.next_action is not None
-    assert spec.next_action["label"] == "Add the missing limits"
-    assert "save" not in spec.next_action["label"].lower()
-
-
-@pytest.mark.parametrize("status", ["stale", "malformed", ""])
-def test_every_other_evaluation_status_is_cleared_by_saving(status):
-    """One ordinary save rebuilds the profile from the visible values, so an
-    output change and a corrupt artifact end the same way. An unknown status
-    falls here too — fail toward the state whose remedy always exists.
-
-    ``unconfirmed`` is deliberately absent: the evaluation no longer produces
-    it, because saving the declaration IS declaring it."""
-
-    assert v2ctx.profile_refusal_code(status) == REASON_PROGRAM_PROFILE_NOT_CONFIRMED
 
 
 # --------------------------------------------------------------------------- #
@@ -408,11 +304,10 @@ def test_every_other_evaluation_status_is_cleared_by_saving(status):
 def _profile(topology, *, saved_at: str = "2026-07-28T12:00:00Z"):
     from tests.test_active_speaker_driver_safety import _manual_settings
 
-    return build_driver_safety_profile(
+    return compute_driver_safety_profile(
         topology,
         manual_settings=_manual_settings(),
         driver_research=None,
-        saved_at=saved_at,
     )
 
 
@@ -475,7 +370,7 @@ def session_open(monkeypatch, tmp_path, banked_session_level):
     from jasper.active_speaker.measurement import active_driver_targets
 
     # The REAL per-role target fingerprints — the same values
-    # ``build_driver_safety_profile`` stores — so the confirmed case reaches the
+    # ``compute_driver_safety_profile`` stores — so the confirmed case reaches the
     # ceiling resolution instead of refusing on an invented fingerprint.
     status = {
         "active": True,
@@ -493,108 +388,8 @@ def session_open(monkeypatch, tmp_path, banked_session_level):
     )
 
 
-def test_an_unreadable_profile_refuses_at_session_open_with_the_named_reason(
-    session_open, caplog,
-):
-    """No link minted, no session burned: ``prepare_v2_session`` raises BEFORE
-    it registers the capture session, and it says the same sentence the phone's
-    failure screen would have said four screens later.
-
-    The state exercised is ``malformed`` rather than the retired
-    ``unconfirmed``: a declaration JTS cannot read back is one of the two things
-    that still legitimately stops the loop."""
-    import logging
-
-    env = session_open
-    profile = dict(_profile(env.topology))
-    profile["profile_fingerprint"] = "0" * 64
-    assert evaluate_driver_safety_profile(
-        topology=env.topology, profile=profile
-    ).status == "malformed"
-    env.install(profile)
-
-    with caplog.at_level(logging.WARNING):
-        with pytest.raises(refusal_copy.CrossoverV2Refused) as excinfo:
-            v2host.prepare_v2_session(
-                _inline_body(), status=env.status, run_async=None, camilla_factory=None
-            )
-
-    assert str(excinfo.value) == (
-        REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
-    )
-    assert "save them again" in str(excinfo.value).lower()
-    assert excinfo.value.code == REASON_PROGRAM_PROFILE_NOT_CONFIRMED
-    fields = event_fields(caplog, "correction.crossover_v2_profile_not_confirmed")
-    assert fields["gate"] == "session_open"
-    assert fields["profile_status"] == "malformed"
-    # Nothing downstream of the gate ran: no evidence bundle opened, and the
-    # capture registration that mints the phone link was never reached (its seam
-    # raises loudly if it is — see the fixture).
-    assert env.calls["evidence_store"] == []
-    assert env.calls["open_capture"] == []
-
-
-def test_a_stale_profile_is_caught_by_the_same_session_open_gate(session_open):
-    """The gate evaluates against the LIVE topology, so an output change (which
-    the old presence-only check sailed past) refuses here too."""
-
-    env = session_open
-    profile = _profile(env.topology)
-    stale = dict(profile)
-    stale["topology_id"] = "some-other-topology"
-    env.install(stale)
-
-    with pytest.raises(refusal_copy.CrossoverV2Refused) as excinfo:
-        v2host.prepare_v2_session(
-            _inline_body(), status=env.status, run_async=None, camilla_factory=None
-        )
-    assert str(excinfo.value) == (
-        REASON_REGISTRY[REASON_PROGRAM_PROFILE_NOT_CONFIRMED].message
-    )
-    assert env.calls["open_capture"] == []
-
-
-@pytest.mark.parametrize(
-    "profile, expected",
-    [
-        (None, REASON_PROGRAM_PROFILE_MISSING),
-        ("not-a-mapping", REASON_PROGRAM_PROFILE_MISSING),
-    ],
-)
-def test_a_missing_profile_refuses_with_the_finish_setup_reason(
-    session_open, profile, expected,
-):
-    """The reviewer's reproduction: a never-saved / unreadable / pre-crossover
-    draft. The old copy told the household to confirm a control ``/sound/`` does
-    not render in this state."""
-
-    env = session_open
-    env.install(profile)
-
-    with pytest.raises(refusal_copy.CrossoverV2Refused) as excinfo:
-        v2host.prepare_v2_session(
-            _inline_body(), status=env.status, run_async=None, camilla_factory=None
-        )
-    assert excinfo.value.code == expected
-    assert str(excinfo.value) == REASON_REGISTRY[expected].message
-    assert "confirm the safety limits" not in str(excinfo.value).lower()
-    assert env.calls["open_capture"] == []
-
-
 @pytest.mark.parametrize("setup_status", ["ready", "blocked"])
 def test_a_freshly_edited_and_saved_profile_still_mints_a_session(session_open, setup_status):
-    """The nanny loop, pinned shut at the session-open seam.
-
-    A safety-relevant edit rotates the fingerprint, which USED to clear the
-    confirmation and refuse every measurement until a human clicked Confirm --
-    the state the crossover-accept seam put jts3 into with its own machine-
-    measured write. Saving now re-stamps the declaration, so the session opens
-    on the freshly-rotated fingerprint with no human in the loop.
-
-    Also the cannot-over-block half of the "no link minted" pin: the evidence
-    store IS opened here, so its emptiness on every refused path above is a
-    real observation about the gate rather than a stub that never runs."""
-
     from tests.test_active_speaker_driver_safety import _manual_settings
 
     env = session_open
@@ -603,16 +398,13 @@ def test_a_freshly_edited_and_saved_profile_still_mints_a_session(session_open, 
 
     edited = _manual_settings()
     edited["drivers"][1]["measurement_band_hz"] = [5000.0, 19000.0]
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         env.topology,
         manual_settings=edited,
         driver_research=None,
-        saved_at="2026-07-28T12:05:00Z",
     )
-    assert profile["profile_fingerprint"] != before["profile_fingerprint"]
-    assert evaluate_driver_safety_profile(
-        topology=env.topology, profile=profile
-    ).confirmed_and_current is True
+    assert profile["targets"] != before["targets"]
+    assert profile["issues"] == []
     env.install(profile)
 
     prepared = v2host.prepare_v2_session(
@@ -627,3 +419,19 @@ def test_graph_refusal_retains_its_classifier_code():
 
     exc = MeasurementGraphRefused("measurement_candidate_speaker_mismatch", "candidate-1")
     assert v2host.classify_program_failure(exc) == (exc.reason, ())
+
+
+@pytest.mark.parametrize("missing", ["level_duration_limits", "measurement_band_hz", "hard_excitation_band_hz", "required_protection_filters"])
+def test_missing_measurement_inputs_refuse_before_capture(session_open, missing):
+    from tests.test_active_speaker_driver_safety import _manual_settings
+
+    env = session_open
+    manual = _manual_settings()
+    manual["drivers"][1].pop(missing)
+    profile = compute_driver_safety_profile(env.topology, manual, None)
+    env.install(profile)
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as refused:
+        v2host.prepare_v2_session(_inline_body(), status=env.status, run_async=None, camilla_factory=None)
+    assert refused.value.code == REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID
+    assert env.calls["evidence_store"] == []
+    assert env.calls["open_capture"] == []

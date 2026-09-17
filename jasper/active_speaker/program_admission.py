@@ -41,7 +41,6 @@ from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_ga
 from jasper.output_topology import OutputTopology, measurement_target_id
 
 from .camilla_yaml import STARTUP_MUTE_GAIN_DB, output_commission_mute_name
-from .driver_safety import evaluate_driver_safety_profile
 from .driver_protection import PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
 from .graph_safety import (
     output_terminally_muted,
@@ -61,6 +60,7 @@ from .excitation_safety_plan import (
     PreparedDriverExcitationPlan,
     RequestedDriverExcitationPlan,
     prepare_driver_excitation_plan,
+    require_driver_measurement_inputs,
     resolve_driver_excitation_ceilings,
     effective_sweep_duration_limit_s,
 )
@@ -83,7 +83,7 @@ _DBFS_FLOOR = 1e-12
 class ProgramAdmissionRefusal(str, Enum):
     """Closed refusal vocabulary for one program admission."""
 
-    PROFILE_NOT_CONFIRMED = "program_profile_not_confirmed"
+    MEASUREMENT_INPUTS_INVALID = "program_measurement_inputs_invalid"
     TARGET_NOT_MAPPED = "program_target_not_mapped"
     CHANNEL_ROLE_INCONSISTENT = "program_channel_role_inconsistent"
     SEGMENT_OUTSIDE_LIMITS = "program_segment_outside_limits"
@@ -604,8 +604,8 @@ def _map_safety_plan_error(exc: ExcitationSafetyPlanError) -> ProgramAdmissionRe
     message = str(exc)
     if message == ExcitationSafetyPlanRefusal.TARGET_NOT_CURRENT.value:
         return ProgramAdmissionRefusal.TARGET_NOT_MAPPED
-    if message == ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value:
-        return ProgramAdmissionRefusal.PROFILE_NOT_CONFIRMED
+    if message == ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value:
+        return ProgramAdmissionRefusal.MEASUREMENT_INPUTS_INVALID
     return ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS
 
 
@@ -715,9 +715,10 @@ def readmit_summed_program_from_wav(
         raise ProgramAdmissionError("summed admission requires a mono VERIFY program")
     if not math.isfinite(session_volume_db) or session_volume_db > 0:
         raise ProgramAdmissionError("summed admission requires a non-positive finite volume")
-    evaluation = evaluate_driver_safety_profile(safety_profile, topology)
-    if not evaluation.confirmed_and_current:
-        return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.PROFILE_NOT_CONFIRMED)
+    try:
+        require_driver_measurement_inputs(safety_profile)
+    except ExcitationSafetyPlanError:
+        return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.MEASUREMENT_INPUTS_INVALID)
     physical = {target["target_fingerprint"]: target for target in active_driver_targets(topology)}
     # ``role_targets`` is keyed group-relatively (crossover-v2 measures ONE
     # speaker group), so completeness is judged over the FULL physical target

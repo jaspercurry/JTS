@@ -70,7 +70,6 @@ def _limits(**changes: object) -> ExcitationLimits:
         "maximum_duration_s": 8,
         "maximum_repeat_count": 3,
         "target_fingerprint": TARGET,
-        "safety_profile_fingerprint": PROFILE,
         "protection_requirement_fingerprint": REQUIREMENT,
         "excitation_plan_fingerprint": PLAN,
     }
@@ -85,7 +84,6 @@ def _request(limits: ExcitationLimits) -> ExcitationRequest:
         duration_s=4,
         repeat_count=3,
         target_fingerprint=limits.target_fingerprint,
-        safety_profile_fingerprint=limits.safety_profile_fingerprint,
         authority_fingerprint=limits.fingerprint,
         excitation_plan_fingerprint=limits.excitation_plan_fingerprint,
     )
@@ -94,7 +92,6 @@ def _request(limits: ExcitationLimits) -> ExcitationRequest:
 def _evidence(limits: ExcitationLimits, proof: str) -> ProtectionEvidence:
     return ProtectionEvidence(
         target_fingerprint=limits.target_fingerprint,
-        safety_profile_fingerprint=limits.safety_profile_fingerprint,
         protection_requirement_fingerprint=(limits.protection_requirement_fingerprint),
         authority_fingerprint=limits.fingerprint,
         excitation_plan_fingerprint=limits.excitation_plan_fingerprint,
@@ -778,9 +775,8 @@ def test_playback_reader_rejects_unrelated_admission_with_same_id(
             ),
         ),
         (
-            _limits(safety_profile_fingerprint=OTHER),
+            _limits(maximum_duration_s=9.0),
             (
-                ExcitationRefusalReason.SAFETY_PROFILE_IDENTITY_MISMATCH,
                 ExcitationRefusalReason.AUTHORITY_IDENTITY_MISMATCH,
             ),
         ),

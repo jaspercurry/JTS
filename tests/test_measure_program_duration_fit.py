@@ -23,7 +23,7 @@ import pytest
 
 pytestmark = pytest.mark.usefixtures("banked_session_level")
 
-from jasper.active_speaker.driver_safety import build_driver_safety_profile
+from jasper.active_speaker.driver_safety import compute_driver_safety_profile
 from jasper.active_speaker.excitation_safety_plan import (
     effective_sweep_duration_limit_s,
 )
@@ -125,11 +125,10 @@ def _profile_and_targets(
         ],
         "crossover_candidates": [],
     }
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology,
         manual_settings=settings,
         driver_research=None,
-        saved_at="2026-08-23T00:00:00Z",
     )
     targets = {
         t["role"]: t["target_fingerprint"] for t in active_driver_targets(topology)

@@ -668,17 +668,6 @@
   }
   .driver-echo__source { min-width: 0; overflow-wrap: anywhere; }
   .driver-echo__source--empty { font-style: italic; }
-  /* Issue #1820: the hoisted "Review the safety limits" callout. It reads as an
-     attention panel (same shape as __notes) rather than another plain section,
-     because it names what is blocking every measurement, and it only renders
-     while that block is real. */
-  .driver-research__confirm {
-    gap: 10px;
-    padding: 10px; border-radius: var(--radius-sm);
-    border-top: 0;
-    background: color-mix(in oklch, var(--status-warn) 8%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--status-warn) 30%, transparent);
-  }
   .driver-research__summary {
     display: flex; flex-direction: column; gap: 6px;
   }

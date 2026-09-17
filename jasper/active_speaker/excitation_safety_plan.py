@@ -39,7 +39,6 @@ from .driver_protection import (
     derive_hf_measurement_ceiling_dbfs,
     driver_protection_profile,
 )
-from .driver_safety import evaluate_driver_safety_profile
 from .measurement import active_driver_targets
 from .test_signal_plan import (
     MAX_DRIVER_TEST_FREQUENCY_HZ,
@@ -59,7 +58,7 @@ class ExcitationSafetyPlanError(ValueError):
 
 
 class ExcitationSafetyPlanRefusal(str, Enum):
-    PROFILE_NOT_CONFIRMED = "active_excitation_profile_not_confirmed"
+    MEASUREMENT_INPUTS_INVALID = "active_excitation_measurement_inputs_invalid"
     TARGET_NOT_CURRENT = "active_excitation_target_not_current"
     REQUEST_OUTSIDE_LIMITS = "active_excitation_request_outside_limits"
 
@@ -289,8 +288,6 @@ class PreparedDriverExcitationPlan(FingerprintedRecord):
         if (
             request.target_fingerprint != requested_plan.target_fingerprint
             or request.target_fingerprint != limits.target_fingerprint
-            or request.safety_profile_fingerprint
-            != limits.safety_profile_fingerprint
             or request.excitation_plan_fingerprint != requested_plan.fingerprint
             or limits.excitation_plan_fingerprint != requested_plan.fingerprint
             or request.authority_fingerprint != limits.fingerprint
@@ -370,19 +367,19 @@ def effective_sweep_duration_limit_s(
     sweep meant to pass that comparison must fit the SAME number.
 
     Refuses ``TARGET_NOT_CURRENT`` for a fingerprint this profile does not carry
-    exactly once, and ``PROFILE_NOT_CONFIRMED`` when the target declares no
+    exactly once, and ``MEASUREMENT_INPUTS_INVALID`` when the target declares no
     usable ``level_duration_limits``.
     """
     target = _target_for_request(safety_profile, target_fingerprint)
     profile_limits = target.get("level_duration_limits")
     if not isinstance(profile_limits, Mapping):
         raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+            ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
         )
     declared = profile_limits.get("max_sweep_duration_s")
     if isinstance(declared, bool) or not isinstance(declared, (int, float)):
         raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+            ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
         )
     return min(
         float(declared),
@@ -398,7 +395,7 @@ def _declared_sensitivity(
 
     ``declared_sensitivities`` is read from the DECLARATION
     (:func:`jasper.active_speaker.design_draft.declared_driver_sensitivities`),
-    the one owner of this physical property; it never rides the confirmed safety
+    the one owner of this physical property; it never rides the computed safety
     profile. Missing on either side, the derivation degrades to the class
     default rather than refusing.
     """
@@ -509,7 +506,7 @@ def declared_level_ceiling_dbfs(target: Mapping[str, Any]) -> tuple[float, str]:
     profile_limits = target.get("level_duration_limits")
     if not isinstance(profile_limits, Mapping):
         raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+            ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
         )
     protection = driver_protection_profile(
         str(target.get("role") or ""),
@@ -524,12 +521,22 @@ def declared_level_ceiling_dbfs(target: Mapping[str, Any]) -> tuple[float, str]:
         or not math.isfinite(float(declared_peak))
     ):
         raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+            ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
         )
     peak = float(declared_peak)
     if peak == float(protection.max_auto_level_dbfs):
         return peak, LEVEL_CEILING_LEGACY_CLASS_SEED
     return peak, LEVEL_CEILING_DECLARED
+
+
+def require_driver_measurement_inputs(safety_profile: Mapping[str, Any]) -> None:
+    """Require the computed measurement inputs before a sweep (ADR-0323 §2)."""
+    if not safety_profile.get("targets") or any(
+        issue["severity"] == "blocker" for issue in safety_profile.get("issues", [])
+    ):
+        raise ExcitationSafetyPlanError(
+            ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
+        )
 
 
 def resolve_driver_excitation_ceilings(
@@ -539,7 +546,7 @@ def resolve_driver_excitation_ceilings(
     program_admission: bool = False,
     declared_sensitivities: Mapping[str, Any] | None = None,
 ) -> tuple[FrequencyBand, float]:
-    """The confirmed permitted band + maximum effective-peak ceiling for one
+    """The permitted band + maximum effective-peak ceiling for one
     driver target.
 
     Shared math with no authority of its own: admission re-derives and
@@ -589,7 +596,7 @@ def resolve_driver_excitation_ceilings(
         or not isinstance(required_filters, list)
     ):
         raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+            ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
         )
     # measurement_band[0] binds the lower edge for every role and path EXCEPT a
     # high-frequency role on the proven-HP path — see "Low-side asymmetry" in
@@ -670,26 +677,26 @@ def resolve_driver_excitation_ceilings(
 def resolve_driver_measurement_band_hz(
     safety_profile: Mapping[str, Any], target_fingerprint: str,
 ) -> tuple[float, float]:
-    """The confirmed ``measurement_band_hz`` for one driver target.
+    """The computed ``measurement_band_hz`` for one driver target.
 
     :func:`resolve_driver_excitation_ceilings` validates this field but does not
     return it: its answer is the DERIVED EXCITATION ceiling, which deliberately
     excludes ``measurement_band[1]``. Exposed separately for consumers that need
     the declared analysis WINDOW itself.
 
-    Raises the SAME ``ExcitationSafetyPlanError(PROFILE_NOT_CONFIRMED)`` on the
-    identical malformed-shape check, both reading one confirmed record.
+    Raises the SAME ``ExcitationSafetyPlanError(MEASUREMENT_INPUTS_INVALID)`` on the
+    identical malformed-shape check, both reading the computed profile.
     """
     target = _target_for_request(safety_profile, target_fingerprint)
     measurement_band = target.get("measurement_band_hz")
     if not isinstance(measurement_band, list) or len(measurement_band) != 2:
         raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+            ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
         )
     lo, hi = float(measurement_band[0]), float(measurement_band[1])
     if not (math.isfinite(lo) and math.isfinite(hi)) or not 0.0 < lo < hi:
         raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+            ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
         )
     return (lo, hi)
 
@@ -707,7 +714,7 @@ def resolve_driver_protection_slope_db_per_octave(
     a lossless projection; the slope beside it is
     ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)`` and so cannot tell
     a published 24 from a published 12 raised to 24. This reads the OWNER field
-    (``recommended_highpass_slope_db_per_octave``), which a confirmed target
+    (``recommended_highpass_slope_db_per_octave``), which a computed target
     carries only when the manufacturer actually published one — reading the
     projection instead made the topology gate refuse a DE250 at order 2 against
     a code figure B&C never published.
@@ -753,17 +760,13 @@ def prepare_driver_excitation_plan(
         raise ExcitationSafetyPlanError("topology must be OutputTopology")
     if not isinstance(safety_profile, Mapping):
         raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+            ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
         )
     if not isinstance(requested_plan, RequestedDriverExcitationPlan):
         raise ExcitationSafetyPlanError(
             "requested_plan must be RequestedDriverExcitationPlan"
         )
-    evaluation = evaluate_driver_safety_profile(safety_profile, topology)
-    if not evaluation.confirmed_and_current or evaluation.profile_fingerprint is None:
-        raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
-        )
+    require_driver_measurement_inputs(safety_profile)
     target = _target_for_request(safety_profile, requested_plan.target_fingerprint)
     role = str(target.get("role") or "")
     target_id = str(target.get("target_id") or "")
@@ -773,7 +776,7 @@ def prepare_driver_excitation_plan(
     # re-check is mypy narrowing, not new runtime behavior.
     if not isinstance(profile_limits, Mapping):
         raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.PROFILE_NOT_CONFIRMED.value
+            ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
         )
     permitted_band, maximum_peak = resolve_driver_excitation_ceilings(
         safety_profile,
@@ -810,7 +813,6 @@ def prepare_driver_excitation_plan(
         maximum_duration_s=maximum_duration,
         maximum_repeat_count=maximum_repeats,
         target_fingerprint=requested_plan.target_fingerprint,
-        safety_profile_fingerprint=evaluation.profile_fingerprint,
         protection_requirement_fingerprint=requirement_fingerprint,
         excitation_plan_fingerprint=plan_fingerprint,
     )
@@ -820,7 +822,6 @@ def prepare_driver_excitation_plan(
         duration_s=requested_plan.duration_s,
         repeat_count=requested_plan.repeat_count,
         target_fingerprint=requested_plan.target_fingerprint,
-        safety_profile_fingerprint=evaluation.profile_fingerprint,
         authority_fingerprint=limits.fingerprint,
         excitation_plan_fingerprint=plan_fingerprint,
     )

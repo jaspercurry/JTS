@@ -93,34 +93,19 @@ TWEETER_FEATURE_HZ = 5000.0
 
 
 def _draft() -> dict[str, Any]:
-    """A design draft carrying a confirmed driver-safety profile."""
-    return {
-        "kind": "jts_active_speaker_design_draft",
-        "driver_safety_profile": {
-            "kind": "jts_active_speaker_driver_safety_profile",
-            "confirmation": {"confirmed_fingerprint": "abc", "method": "operator"},
-            "targets": [
-                {
-                    "role": "woofer",
-                    "measurement_band_hz": [40.0, 4000.0],
-                    "hard_excitation_band_hz": [30.0, 5000.0],
-                    "required_protection_filters": [
-                        {"kind": "lowpass", "cutoff_hz": 3000.0,
-                         "minimum_slope_db_per_octave": 24},
-                    ],
-                },
-                {
-                    "role": "tweeter",
-                    "measurement_band_hz": [1000.0, 20000.0],
-                    "hard_excitation_band_hz": [900.0, 22000.0],
-                    "required_protection_filters": [
-                        {"kind": "highpass", "cutoff_hz": 1600.0,
-                         "minimum_slope_db_per_octave": 24},
-                    ],
-                },
-            ],
-        },
-    }
+    from jasper.active_speaker.design_draft import build_design_draft
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    return build_design_draft(mono_output_topology(), manual_settings={"drivers": [
+        {"role": "woofer", "measurement_band_hz": [40, 4000],
+         "hard_excitation_band_hz": [30, 5000],
+         "required_protection_filters": [{"kind": "lowpass", "cutoff_hz": 3000,
+                                          "minimum_slope_db_per_octave": 24}]},
+        {"role": "tweeter", "measurement_band_hz": [1000, 20000],
+         "hard_excitation_band_hz": [900, 22000],
+         "required_protection_filters": [{"kind": "highpass", "cutoff_hz": 1600,
+                                          "minimum_slope_db_per_octave": 24}]},
+    ]})
 
 
 def _verdict(
@@ -359,10 +344,12 @@ def test_an_undeclared_protection_corner_leaves_the_published_edge_standing():
     5 kHz policy corner for an undeclared tweeter floor would refuse honest
     proposals on a number the operator never declared.
     """
-    profile = _draft()["driver_safety_profile"]
-    for target in profile["targets"]:
-        target.pop("required_protection_filters", None)
+    from jasper.active_speaker.design_draft import design_draft_view
 
+    draft = _draft()
+    for driver in draft["manual_settings"]["drivers"]:
+        driver.pop("required_protection_filters", None)
+    profile = design_draft_view(draft)["driver_safety_profile"]
     assert driver_passbands_from_safety_profile(profile) == {
         "woofer": (40.0, 4000.0), "tweeter": (1000.0, 20000.0),
     }
@@ -2004,13 +1991,13 @@ def test_a_boost_keeps_the_q_envelope_a_cut_no_longer_carries(
 
 def test_the_composed_grid_sees_a_narrow_boost_at_a_wide_bands_edge(tmp_path):
     wide = _draft()
-    wide["driver_safety_profile"]["targets"][1]["measurement_band_hz"] = [
+    wide["manual_settings"]["drivers"][1]["measurement_band_hz"] = [
         1000.0, 24000.0,
     ]
-    wide["driver_safety_profile"]["targets"][1]["hard_excitation_band_hz"] = [
+    wide["manual_settings"]["drivers"][1]["hard_excitation_band_hz"] = [
         900.0, 26000.0,
     ]
-    wide["driver_safety_profile"]["targets"][1]["required_protection_filters"] = []
+    wide["manual_settings"]["drivers"][1]["required_protection_filters"] = []
     packet = _speaker(
         tmp_path, draft=wide,
         classification=_boostable([_dip(hz=23800.0, depth_db=20.0)]),

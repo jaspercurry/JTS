@@ -290,7 +290,7 @@ def test_apply_document_timing_reaches_record_and_loaded_graph(monkeypatch, tmp_
 @pytest.mark.parametrize("payload,reason", [
     ({"status": "apply_failed", "issue": {"code": "apply_failed", "message": "Load failed."}}, "apply_failed"),
     ({"status": "blocked", "issue": {"id": "boost_over_declared_bound", "message": "Boost exceeded."}}, "boost_over_declared_bound"),
-    ({"status": "blocked", "issue": {}, "issues": [{"code": "driver_safety_profile_not_confirmed", "message": "Confirm limits."}]}, "driver_safety_profile_not_confirmed"),
+    ({"status": "blocked", "issue": {}, "issues": [{"code": "tweeter:required_highpass_missing", "message": "Declare the tweeter floor."}]}, "tweeter:required_highpass_missing"),
     ({"ok": False}, wc.REASON_NOT_APPLIED),
 ])
 def test_an_apply_that_answered_but_did_not_apply_is_a_refusal(

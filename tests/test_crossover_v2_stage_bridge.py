@@ -83,7 +83,6 @@ from tests.test_plan_run import fake_program_baselines
 from jasper.active_speaker import commission_wiring, crossover_v2_flow, delta_probe
 from jasper.active_speaker import session_volume_plan as session_volume_plan_mod
 from jasper.active_speaker import design_draft
-from jasper.active_speaker import driver_safety as driver_safety_mod
 from jasper.active_speaker import excitation_safety_plan as excitation_safety_plan_mod
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2.journey import (
@@ -270,7 +269,6 @@ def _production_host_seams(monkeypatch, tmp_path):
         "load_output_topology": output_topology_mod.load_output_topology,
         "resolve_capture_preset": commission_wiring.resolve_capture_preset,
         "load_design_draft": design_draft.load_design_draft,
-        "evaluate_driver_safety_profile": driver_safety_mod.evaluate_driver_safety_profile,
         "resolve_driver_excitation_ceilings": (
             excitation_safety_plan_mod.resolve_driver_excitation_ceilings
         ),
@@ -279,7 +277,6 @@ def _production_host_seams(monkeypatch, tmp_path):
         "load_output_topology": output_topology_mod,
         "resolve_capture_preset": commission_wiring,
         "load_design_draft": design_draft,
-        "evaluate_driver_safety_profile": driver_safety_mod,
         "resolve_driver_excitation_ceilings": excitation_safety_plan_mod,
     }
     # Modules that bind these names at MODULE scope and are imported lazily, so
@@ -318,13 +315,6 @@ def _production_host_seams(monkeypatch, tmp_path):
         lambda safety_profile, fingerprint, **kw: (
             FrequencyBand(20.0, 20000.0),
             90.0,
-        ),
-    )
-    monkeypatch.setattr(
-        driver_safety_mod,
-        "evaluate_driver_safety_profile",
-        lambda profile, topology: driver_safety_mod.DriverSafetyProfileEvaluation(
-            "confirmed", True, "f" * 64, (),
         ),
     )
     # Patch each name at EVERY binding, not only its home module (#2312).

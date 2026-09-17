@@ -148,16 +148,17 @@ def test_inactive_speaker_gets_not_applicable():
     assert env["alternate_actions"] == []
 
 
-@pytest.mark.parametrize("confirmed,screen", [(False, "speaker_setup"), (True, "awaiting_plan")])
-def test_first_experiment_needs_driver_limits_but_no_applied_profile(confirmed, screen):
+@pytest.mark.parametrize("floor_declared,screen", [(False, "speaker_setup"), (True, "awaiting_plan")])
+@pytest.mark.parametrize("setup_status", ["blocked", "ready"])
+def test_first_experiment_needs_driver_limits_but_no_applied_profile(floor_declared, screen, setup_status):
     env = build_crossover_envelope_v2({
         "active": True,
-        "setup": {"active": True, "status": "blocked"},
-        "driver_safety_profile_evaluation": {"confirmed_and_current": confirmed},
+        "setup": {"active": True, "status": setup_status},
+        "driver_safety_profile": {"issues": [] if floor_declared else [{"code": "tweeter:required_highpass_missing"}]},
         "crossover_v2": {"phase": "check"},
     })
     assert env["screen"] == screen
-    assert _step_statuses(env)["speaker_setup"] == ("done" if confirmed else "active")
+    assert _step_statuses(env)["speaker_setup"] == ("done" if floor_declared else "active")
 
 
 @pytest.mark.parametrize("phase", ["check", "measure", "verify", "closing"])

@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import hashlib
 import json
 from pathlib import Path
 import re
@@ -19,17 +18,14 @@ from jasper.active_speaker.design_draft import (
     normalise_manual_settings,
     save_design_draft,
 )
-from jasper.active_speaker import driver_safety as driver_safety_module
 from jasper.active_speaker.driver_safety import (
     DRIVER_RESEARCH_KIND,
     DRIVER_SAFETY_PROFILE_KIND,
-    SUPPORTED_PROTECTION_KINDS,
     DriverSafetyProfileError,
     _V2_RESEARCH_DRIVER_FIELDS,
     build_driver_research_context,
-    build_driver_safety_profile,
+    compute_driver_safety_profile,
     driver_research_targets,
-    evaluate_driver_safety_profile,
     validate_driver_research_result_shape,
 )
 from jasper.active_speaker.driver_safety_prompt import build_driver_research_prompt
@@ -38,13 +34,17 @@ from jasper.active_speaker.driver_protection import (
     driver_low_limit_plausibility_band_hz,
 )
 from jasper.active_speaker.excitation_safety_plan import (
+    ExcitationSafetyPlanError,
+    ExcitationSafetyPlanRefusal,
+    prepare_driver_excitation_plan,
     resolve_driver_excitation_ceilings,
 )
 from jasper.active_speaker.measurement import active_driver_targets
+from jasper.active_speaker.measurement_emit import load_tuning_declaration, MeasurementGraphRefused
 from jasper.active_speaker.test_signal_plan import DEFAULT_DRIVER_SWEEP_DURATION_S, DRIVER_SWEEP_DURATIONS_S
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
-from tests._web_test_helpers import sound_page_js
+from tests.test_active_speaker_excitation_safety_plan import _requested
 
 
 def _blocked_codes(
@@ -53,25 +53,12 @@ def _blocked_codes(
     *,
     driver_research: dict | None = None,
 ) -> set[str]:
-    """Blocking issue codes on the profile a SAVE of these values would land.
-
-    Saving no longer refuses -- the operator keeps their work whatever they
-    typed -- so "refused" now means the artifact lands ``incomplete`` and never
-    reads as current, which is what every measurement gate consults. Both halves
-    are asserted here so a caller cannot accidentally pin only the code.
-    """
-
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology,
         manual_settings=manual,
         driver_research=driver_research,
-        saved_at="2026-07-13T12:00:00Z",
     )
-    assert profile["status"] == "incomplete"
-    assert profile["confirmation"] is None
-    assert (
-        evaluate_driver_safety_profile(profile, topology).confirmed_and_current is False
-    )
+    assert any(i["severity"] == "blocker" for i in profile["issues"])
     return {issue["code"] for issue in profile["issues"]}
 
 
@@ -297,26 +284,6 @@ def _stereo_operator_inputs() -> dict:
             "right:tweeter": "Right Example T1",
         }
     }
-
-
-def _refingerprint_profile(profile: dict) -> None:
-    core = {
-        key: profile[key]
-        for key in (
-            "artifact_schema_version",
-            "kind",
-            "topology_id",
-            "targets",
-            "research",
-            "authority",
-            "authorizes_playback",
-        )
-    }
-    raw = json.dumps(core, sort_keys=True, separators=(",", ":"))
-    fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-    profile["profile_fingerprint"] = fingerprint
-    if isinstance(profile.get("confirmation"), dict):
-        profile["confirmation"]["confirmed_fingerprint"] = fingerprint
 
 
 def _prompt_targets_block(prompt: str) -> str:
@@ -733,11 +700,10 @@ def test_legacy_research_horn_coverage_deg_is_tolerated_and_dropped() -> None:
     # the draft path alone never puts a raw legacy record in front of gate 3.
     # This exported builder does: it is the public entry point, and a caller
     # with a stored record reaches its allowlist directly.
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology,
         manual_settings=manual_settings,
         driver_research=None,
-        saved_at="2026-08-22T12:00:00Z",
     )
     assert profile["issues"] == []
     assert all(
@@ -758,10 +724,9 @@ def test_pasted_reply_and_edited_visible_value_both_survive_save(tmp_path: Path)
     assert draft["driver_research"]["drivers"][1]["recommended_highpass_hz"] == 3000
     assert draft["manual_settings"]["drivers"][1]["recommended_highpass_hz"] == 3500
     assert load_design_draft(tmp_path / "draft.json") == draft
-    assert draft["driver_safety_profile"]["research"] == {"advisory_only": True}
 
 
-def test_confirmed_profile_uses_visible_values_and_never_authorizes_audio() -> None:
+def test_computed_profile_uses_visible_values_and_never_authorizes_audio() -> None:
     topology = mono_output_topology(card_id=None)
     request = build_driver_research_context(
         topology,
@@ -779,83 +744,43 @@ def test_confirmed_profile_uses_visible_values_and_never_authorizes_audio() -> N
 
     profile = draft["driver_safety_profile"]
     assert profile["kind"] == DRIVER_SAFETY_PROFILE_KIND
-    assert profile["status"] == "confirmed"
+    assert not any(i["severity"] == "blocker" for i in profile["issues"])
     assert profile["authority"] == "operator_visible_values"
     assert profile["authorizes_playback"] is False
     assert profile["targets"][1]["hard_excitation_band_hz"] == [5000.0, 22000.0]
     assert profile["targets"][1]["unknowns"] == [
         "thermal compression limit not published"
     ]
-    assert profile["confirmation"] == {
-        "confirmed_fingerprint": profile["profile_fingerprint"],
-        "confirmed_at": "2026-07-13T12:00:00Z",
-        "method": "operator_reviewed_visible_values",
-    }
-    assert draft["driver_safety_profile_evaluation"] == {
-        "status": "confirmed",
-        "confirmed_and_current": True,
-        "profile_fingerprint": profile["profile_fingerprint"],
-        "reasons": [],
-        "authorizes_playback": False,
-    }
     assert draft["permissions"]["may_not_emit_audio"] is True
     assert draft["safety"]["driver_safety_profile_authorizes_playback"] is False
 
 
-def test_incomplete_values_save_as_incomplete_and_never_read_as_current() -> None:
-    """A half-declared profile SAVES, and is still refused by every gate.
-
-    The confirm ceremony is gone, so a partial declaration no longer bounces the
-    save -- the operator keeps their work. What must not move is the verdict:
-    ``incomplete`` still evaluates NOT confirmed_and_current, which is the one
-    fail-closed half the measurement loop still relies on.
-    """
-
+def test_missing_floor_and_duration_are_computed_issues() -> None:
     topology = mono_output_topology(card_id=None)
     manual = _manual_settings()
     manual["drivers"][1].pop("required_protection_filters")
 
-    saved = build_driver_safety_profile(
+    saved = compute_driver_safety_profile(
         topology,
         manual_settings=manual,
         driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
-    assert saved["status"] == "incomplete"
-    assert saved["confirmation"] is None
+    assert any(i["severity"] == "blocker" for i in saved["issues"])
     assert any(
         "required_highpass_missing" in issue["code"] for issue in saved["issues"]
     )
-    evaluation = evaluate_driver_safety_profile(saved, topology)
-    assert evaluation.status == "incomplete"
-    assert evaluation.confirmed_and_current is False
 
     missing_duration = _manual_settings()
     missing_duration["drivers"][0]["level_duration_limits"].pop("max_sweep_duration_s")
-    partial = build_driver_safety_profile(
+    partial = compute_driver_safety_profile(
         topology,
         manual_settings=missing_duration,
         driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
-    assert partial["status"] == "incomplete"
+    assert any(i["severity"] == "blocker" for i in partial["issues"])
     assert any(
         "max_sweep_duration_s_missing" in issue["code"] for issue in partial["issues"]
     )
-    assert (
-        evaluate_driver_safety_profile(partial, topology).confirmed_and_current is False
-    )
-
-    # The save timestamp is still required and still canonical -- it is what the
-    # confirmation record dates, so an empty one would publish an undated write.
-    with pytest.raises(DriverSafetyProfileError, match="confirmed_at is required"):
-        build_driver_safety_profile(
-            topology,
-            manual_settings=_manual_settings(),
-            driver_research=None,
-            saved_at="",
-        )
-
 
 def test_v2_result_rejects_boolean_values_and_unknown_fields() -> None:
     topology = mono_output_topology(card_id=None)
@@ -880,225 +805,6 @@ def test_v2_result_rejects_boolean_values_and_unknown_fields() -> None:
         )
 
 
-def test_a_visible_edit_rotates_the_fingerprint_without_closing_the_loop() -> None:
-    """The nanny loop, pinned shut.
-
-    A safety-relevant edit still rotates the profile fingerprint -- that is how
-    every downstream identity binding notices the values moved. What it must NOT
-    do any more is drop the artifact into a state the measurement loop refuses:
-    the rebuild re-stamps the confirmation over the NEW fingerprint, so the
-    speaker is measurable the instant the edit is saved.
-    """
-
-    topology = mono_output_topology(card_id=None)
-    first = build_driver_safety_profile(
-        topology,
-        manual_settings=_manual_settings(),
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-    edited = _manual_settings()
-    edited["drivers"][1]["hard_excitation_band_hz"] = [4800.0, 22000.0]
-
-    rebuilt = build_driver_safety_profile(
-        topology,
-        manual_settings=edited,
-        driver_research=None,
-        saved_at="2026-07-13T12:05:00Z",
-    )
-
-    assert rebuilt["profile_fingerprint"] != first["profile_fingerprint"]
-    assert rebuilt["status"] == "confirmed"
-    assert (
-        rebuilt["confirmation"]["confirmed_fingerprint"]
-        == rebuilt["profile_fingerprint"]
-    )
-    assert rebuilt["confirmation"]["confirmed_at"] == "2026-07-13T12:05:00Z"
-    evaluation = evaluate_driver_safety_profile(rebuilt, topology)
-    assert evaluation.status == "confirmed"
-    assert evaluation.confirmed_and_current is True
-    # Still not an audio authorization -- the physics gates are unchanged.
-    assert rebuilt["authorizes_playback"] is False
-    assert evaluation.to_dict()["authorizes_playback"] is False
-
-
-def test_every_save_re_dates_the_declaration_and_keeps_it_current(
-    tmp_path: Path,
-) -> None:
-    topology = mono_output_topology(card_id=None)
-    path = tmp_path / "active_speaker_design_draft.json"
-    first = save_design_draft(
-        topology,
-        manual_settings=_manual_settings(),
-        operator_inputs=_operator_inputs(),
-        path=path,
-        created_at="2026-07-13T12:00:00Z",
-    )
-    assert first["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
-
-    edited = _manual_settings()
-    edited["drivers"][1]["measurement_band_hz"] = [5000.0, 19000.0]
-    changed = save_design_draft(
-        topology,
-        manual_settings=edited,
-        operator_inputs=_operator_inputs(),
-        path=path,
-        created_at="2026-07-13T12:02:00Z",
-    )
-    assert (
-        changed["driver_safety_profile"]["profile_fingerprint"]
-        != first["driver_safety_profile"]["profile_fingerprint"]
-    )
-    assert changed["driver_safety_profile"]["status"] == "confirmed"
-    assert changed["driver_safety_profile_evaluation"]["status"] == "confirmed"
-    assert (
-        load_design_draft(path)["driver_safety_profile"]
-        == (changed["driver_safety_profile"])
-    )
-
-
-def test_a_profile_saved_before_the_confirm_step_was_retired_reads_as_current(
-    tmp_path: Path,
-) -> None:
-    """Field boxes unbrick on deploy, not on the next save.
-
-    ``needs_confirmation`` is no longer written, but boxes already carry it on
-    disk -- including the one whose measured accept produced it. Reporting that
-    artifact as malformed would keep the loop shut for exactly the speakers this
-    change exists to reopen, so it is read under the current definition instead.
-    """
-
-    topology = mono_output_topology(card_id=None)
-    legacy = build_driver_safety_profile(
-        topology,
-        manual_settings=_manual_settings(),
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-    legacy["status"] = "needs_confirmation"
-    legacy["confirmation"] = None
-
-    evaluation = evaluate_driver_safety_profile(legacy, topology)
-    assert evaluation.status == "confirmed"
-    assert evaluation.confirmed_and_current is True
-    assert evaluation.reasons == ()
-
-    # The next ordinary save collapses the stored status; no migration pass.
-    path = tmp_path / "active_speaker_design_draft.json"
-    saved = save_design_draft(
-        topology,
-        manual_settings=_manual_settings(),
-        operator_inputs=_operator_inputs(),
-        path=path,
-        created_at="2026-07-13T12:10:00Z",
-    )
-    assert saved["driver_safety_profile"]["status"] == "confirmed"
-
-
-def test_a_legacy_artifact_carrying_blocking_issues_never_reads_as_current() -> None:
-    """The legacy read is fail-closed ONLY because of where it sits.
-
-    ``evaluate_driver_safety_profile`` returns for ``derived_issues`` BEFORE it
-    reaches the ``needs_confirmation`` compatibility branch. That ordering is
-    the entire safety property: hoist the branch above the issues gate and a
-    half-declared profile reads ``confirmed`` -- the measurement loop would then
-    run against a declaration carrying no level or duration ceiling at all.
-    Nothing in the branch itself says so, so this is the test that says it.
-
-    The artifact is the one the hoist would wave through: a stored
-    ``needs_confirmation`` status whose ``issues`` are CORRECTLY derived and
-    non-empty, so it clears every earlier gate (schema, fingerprint, target
-    binding, issue-payload equality) and lands on the ordering.
-    """
-
-    topology = mono_output_topology(card_id=None)
-    manual = _manual_settings()
-    for driver in manual["drivers"]:
-        driver.pop("level_duration_limits", None)
-
-    incomplete = build_driver_safety_profile(
-        topology,
-        manual_settings=manual,
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-    assert incomplete["status"] == "incomplete"
-    codes = {issue["code"] for issue in incomplete["issues"]}
-    assert codes == {
-        "woofer:level_duration_limits_missing",
-        "tweeter:level_duration_limits_missing",
-    }
-
-    legacy = dict(incomplete)
-    legacy["status"] = "needs_confirmation"
-    legacy["confirmation"] = None
-
-    evaluation = evaluate_driver_safety_profile(legacy, topology)
-    # The load-bearing assertion: blocking issues outrank the compatibility
-    # read, whatever the stored status says.
-    assert evaluation.confirmed_and_current is False
-    assert evaluation.status != "confirmed"
-    assert evaluation.reasons != ()
-
-
-def test_profile_refuses_stale_topology_and_fingerprint_tampering() -> None:
-    topology = mono_output_topology(card_id=None)
-    profile = build_driver_safety_profile(
-        topology,
-        manual_settings=_manual_settings(),
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-
-    moved_tweeter = mono_output_topology(card_id=None, tweeter_output=2)
-    stale = evaluate_driver_safety_profile(profile, moved_tweeter)
-    assert stale.status == "stale"
-    assert stale.confirmed_and_current is False
-
-    # Tampering with a value the low limit does NOT own is caught by the
-    # fingerprint. The analysis window's UPPER edge is that value: since #2603
-    # its LOWER edge is DERIVED from the declared low limit (so a tampered one
-    # is caught earlier and by a more specific name -- pinned separately
-    # below), while the ceiling stays a plain stored declaration.
-    tampered = deepcopy(profile)
-    tampered["targets"][1]["measurement_band_hz"][1] = 9000.0
-    malformed = evaluate_driver_safety_profile(tampered, topology)
-    assert malformed.status == "malformed"
-    assert malformed.reasons == ("driver_safety_profile_fingerprint_mismatch",)
-
-
-def test_a_profile_whose_derived_fields_left_its_own_low_limit_is_named() -> None:
-    """The #2603 stale-declaration path, and the reason it is NOT the generic
-    malformed answer.
-
-    A profile carrying two disagreeing numbers for one driver's low limit is
-    exactly what the one-owner ruling exists to end, and it is what every box
-    confirmed before this change may be carrying. Telling that household
-    "schema invalid" reads as corruption and names no remedy; the actionable
-    truth is that the driver profile needs re-confirming at /sound/.
-
-    It RETURNS rather than raises, so a box in this state reports and waits.
-    Playback is untouched -- the staged CamillaDSP graph is a separate
-    artifact, so the speaker keeps working while the profile waits.
-    """
-
-    topology = mono_output_topology(card_id=None)
-    profile = build_driver_safety_profile(
-        topology,
-        manual_settings=_manual_settings(),
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-
-    split = deepcopy(profile)
-    # The jts3 shape: the hard floor and the protective high-pass disagree.
-    split["targets"][1]["hard_excitation_band_hz"][0] = 4000.0
-    evaluation = evaluate_driver_safety_profile(split, topology)
-    assert evaluation.status == "malformed"
-    assert evaluation.reasons == ("driver_safety_profile_low_limit_stale",)
-    assert evaluation.confirmed_and_current is False
-
-
 def test_a_typed_protection_value_the_derivation_replaced_is_disclosed() -> None:
     """"Derived" alone hid the case that costs the operator something.
 
@@ -1120,9 +826,8 @@ def test_a_typed_protection_value_the_derivation_replaced_is_disclosed() -> None
             entry["cutoff_hz"] = 6500.0
             entry["minimum_slope_db_per_octave"] = 48.0
 
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology, manual_settings=manual, driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
     unknowns = profile["targets"][1]["unknowns"]
 
@@ -1145,100 +850,12 @@ def test_an_untouched_typed_high_pass_discloses_no_replacement() -> None:
     """
 
     topology = mono_output_topology(card_id=None)
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology, manual_settings=_manual_settings(), driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
 
     for target in profile["targets"]:
         assert not [n for n in target["unknowns"] if "was replaced by" in n]
-
-
-def test_a_stale_profile_whose_rebuild_would_refuse_says_so_in_its_reasons() -> None:
-    """jts3's own shape, minimised: stale AND unconfirmable in one step.
-
-    Deriving the low limit raises the hard band's lower edge to the declared
-    owner, which can leave another declared value outside the band it must nest
-    in -- and ``build_driver_safety_profile`` REFUSES to confirm while that
-    stands. The stale name alone cannot tell /sound/ that, so the button was
-    offered on a profile whose rebuild raises and the operator's first click
-    came back a bare reason code.
-
-    Verified against jts3's real stored artifacts during the fix round: its
-    tweeter declares 2000 Hz while its bands were nested against the old 1600,
-    so it lands exactly here. Reproduced with the shipped fixture rather than
-    the box's file, which is not this repo's to carry.
-
-    WHICH value the rebuild trips on moved with #2870 -- it was the declared
-    crossover-search band, and that field is gone. See the fixture note below
-    for why the shape still has to be covered against the bounds that survive.
-    """
-
-    topology = mono_output_topology(card_id=None)
-    profile = build_driver_safety_profile(
-        topology,
-        manual_settings=_manual_settings(),
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-
-    split = deepcopy(profile)
-    tweeter = split["targets"][1]
-    # jts3's exact shape: a stored profile target carries no owner field, so the
-    # low limit is inferred from its protective high-pass -- and that cutoff
-    # sits ABOVE the floor its own bands were nested against. jts3 reads 2000
-    # from the filter with its bands nested at 1600; the fixture reads 21000
-    # against bands nested at 5000.
-    #
-    # The cutoff was 6000 until #2870. Deriving 6000 used to push the declared
-    # crossover-search band under its own hard band, and that was the rebuild's
-    # blocker; with the search band deleted, 6000 rebuilds cleanly and the
-    # fixture would have silently become a duplicate of the CONTROL below.
-    # 21000 keeps the shape that has to stay covered -- a stale profile whose
-    # rebuild really is blocked -- against the bounds that survive.
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = 21000.0
-
-    evaluation = evaluate_driver_safety_profile(split, topology)
-
-    assert evaluation.status == "malformed"
-    assert evaluation.confirmed_and_current is False
-    # Still named first, so the "re-confirm" remedy still renders...
-    assert evaluation.reasons[0] == "driver_safety_profile_low_limit_stale"
-    # ...and the rebuild's own blockers ride with it, in the `<role>:<code>`
-    # vocabulary the page already knows how to phrase.
-    assert "tweeter:measurement_band_outside_hard_band" in evaluation.reasons
-
-    # The claim that this REALLY is unusable, rather than a reason string
-    # nobody checked: the rebuild lands the same codes as blocking issues.
-    manual = deepcopy(_manual_settings())
-    manual["drivers"][1]["recommended_highpass_hz"] = 21000.0
-    assert _blocked_codes(topology, manual) == {
-        "tweeter:measurement_band_outside_hard_band",
-        "tweeter:low_limit_implausible_for_style",
-    }
-
-
-def test_a_stale_profile_that_would_rebuild_cleanly_offers_no_blocker() -> None:
-    """The control for the pair above — otherwise the gate reads as "always off".
-
-    A stale profile whose derivation leaves every other declaration coherent
-    carries the stale name and NOTHING else, so /sound/ still offers the
-    button and the household re-confirms in one click.
-    """
-
-    topology = mono_output_topology(card_id=None)
-    profile = build_driver_safety_profile(
-        topology,
-        manual_settings=_manual_settings(),
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-    split = deepcopy(profile)
-    split["targets"][1]["hard_excitation_band_hz"][0] = 4000.0
-
-    evaluation = evaluate_driver_safety_profile(split, topology)
-
-    assert evaluation.reasons == ("driver_safety_profile_low_limit_stale",)
 
 
 def _de250_manual() -> dict:
@@ -1261,7 +878,7 @@ def _de250_manual() -> dict:
     return manual
 
 
-def test_a_confirmed_target_carries_the_declared_pair_beside_its_projections(
+def test_a_computed_target_carries_the_declared_pair_beside_its_projections(
 ) -> None:
     """The un-fusing (#2897). Two slopes, both on the record, distinguishable.
 
@@ -1272,13 +889,12 @@ def test_a_confirmed_target_carries_the_declared_pair_beside_its_projections(
     """
 
     topology = mono_output_topology(card_id=None)
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology,
         manual_settings=_de250_manual(),
         driver_research=None,
-        saved_at="2026-08-23T00:00:00Z",
     )
-    assert profile["status"] == "confirmed"
+    assert not any(i["severity"] == "blocker" for i in profile["issues"])
     tweeter = profile["targets"][1]
     assert tweeter["recommended_highpass_hz"] == 1600.0
     assert tweeter["recommended_highpass_slope_db_per_octave"] == 12.0
@@ -1304,11 +920,10 @@ def test_an_inferred_low_limit_stores_no_declared_pair() -> None:
     """
 
     topology = mono_output_topology(card_id=None)
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology,
         manual_settings=_manual_settings(),
         driver_research=None,
-        saved_at="2026-08-23T00:00:00Z",
     )
     tweeter = profile["targets"][1]
     assert "recommended_highpass_hz" not in tweeter
@@ -1320,115 +935,6 @@ def test_an_inferred_low_limit_stores_no_declared_pair() -> None:
         if item["kind"] == "highpass"
     )
     assert highpass["cutoff_hz"] == 5000.0
-
-
-def test_a_profile_stored_before_the_declared_pair_stays_confirmed() -> None:
-    """#2897's read-back tolerance, measured rather than argued.
-
-    The confirmed fingerprint is computed from the profile's OWN stored
-    targets, so adding a field to what the BUILDER writes cannot re-key an
-    artifact already on disk. A speaker whose profile predates this change must
-    keep playing across the deploy rather than reading ``malformed`` until
-    somebody re-saves numbers that did not change.
-    """
-
-    topology = mono_output_topology(card_id=None)
-    profile = build_driver_safety_profile(
-        topology,
-        manual_settings=_de250_manual(),
-        driver_research=None,
-        saved_at="2026-08-23T00:00:00Z",
-    )
-    stored_before = deepcopy(profile)
-    for target in stored_before["targets"]:
-        target.pop("recommended_highpass_hz", None)
-        target.pop("recommended_highpass_slope_db_per_octave", None)
-    # The stored digest is the pre-change one, unchanged by the pop above only
-    # because it was never over these keys — so re-derive it the way a
-    # pre-change build would have, and confirm the evaluation accepts it.
-    stored_before["profile_fingerprint"] = driver_safety_module._fingerprint(
-        {
-            key: stored_before.get(key)
-            for key in (
-                "artifact_schema_version",
-                "kind",
-                "topology_id",
-                "targets",
-                "research",
-                "authority",
-                "authorizes_playback",
-            )
-        }
-    )
-    stored_before["confirmation"]["confirmed_fingerprint"] = (
-        stored_before["profile_fingerprint"]
-    )
-    assert stored_before["profile_fingerprint"] != profile["profile_fingerprint"]
-
-    evaluation = evaluate_driver_safety_profile(stored_before, topology)
-
-    assert evaluation.status == "confirmed"
-    assert evaluation.confirmed_and_current is True
-    assert evaluation.reasons == ()
-
-
-def test_a_profile_carrying_a_retired_field_is_named_not_called_corrupt() -> None:
-    """#2870 hazard 1, and the migration this PR deliberately does NOT automate.
-
-    ``crossover_search_band_hz`` was part of the hashed profile core, so every
-    speaker confirmed before the ruling carries it and every one of them reads
-    ``malformed`` until it is saved again. That is accepted — the fleet is lab
-    boxes — but it must be LOUD and ACTIONABLE rather than silent, and it must
-    not read as damage: the generic answer here is
-    ``driver_safety_profile_schema_invalid``, which /sound phrases as "JTS could
-    not read these limits" and which names no remedy.
-
-    So the retired field gets its own name, exactly as the #2603 stale-low-limit
-    case does, and /sound phrases it as "save them again". No auto-migration is
-    written: a rebuild re-derives every target from the values the operator can
-    see, and silently rewriting a confirmed safety declaration behind their back
-    is the wrong direction for a declaration whose whole point is that a human
-    made it.
-    """
-
-    topology = mono_output_topology(card_id=None)
-    profile = build_driver_safety_profile(
-        topology,
-        manual_settings=_manual_settings(),
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-    assert profile["status"] == "confirmed"
-
-    # A profile as a box confirmed it before the ruling: identical in every
-    # respect except that its targets still carry the retired field.
-    legacy = deepcopy(profile)
-    for target in legacy["targets"]:
-        target["crossover_search_band_hz"] = [1200.0, 3500.0]
-
-    evaluation = evaluate_driver_safety_profile(legacy, topology)
-    assert evaluation.status == "malformed"
-    assert evaluation.confirmed_and_current is False
-    assert evaluation.reasons == (
-        driver_safety_module.DRIVER_SAFETY_PROFILE_RETIRED_FIELD_REASON,
-    )
-
-    # The control, and the reason this is a NAME rather than a widening: an
-    # unknown field that is NOT a retired one still reads as schema-invalid.
-    corrupt = deepcopy(profile)
-    corrupt["targets"][0]["not_a_field_this_build_ever_had"] = 1
-    assert evaluate_driver_safety_profile(corrupt, topology).reasons == (
-        "driver_safety_profile_schema_invalid",
-    )
-
-    # And saving really does clear it: the remedy the copy names is the remedy.
-    rebuilt = build_driver_safety_profile(
-        topology,
-        manual_settings=_manual_settings(),
-        driver_research=None,
-        saved_at="2026-08-22T12:00:00Z",
-    )
-    assert evaluate_driver_safety_profile(rebuilt, topology).confirmed_and_current
 
 
 #: A REAL pre-#2870 box's saved draft, kept verbatim under
@@ -1450,7 +956,7 @@ def test_a_pre_2870_box_can_still_save_and_accept_its_stored_declaration() -> No
     RE-VALIDATES a stored driver record raise on it. Two of those gates sit on
     paths a household cannot avoid: the crossover-preview SAVE
     (``design_draft.normalise_manual_settings``) and the crossover ACCEPT
-    (``build_driver_safety_profile``'s own manual gate, which
+    (``compute_driver_safety_profile``'s own manual gate, which
     ``apply_measured_crossover_geometry`` runs with ``durable=True`` --
     mid-measurement, after the round has already been paid for).
 
@@ -1487,115 +993,17 @@ def test_a_pre_2870_box_can_still_save_and_accept_its_stored_declaration() -> No
     accept_manual = deepcopy(_manual_settings())
     for driver in accept_manual["drivers"]:
         driver["crossover_search_band_hz"] = [1200.0, 3500.0]
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology,
         manual_settings=accept_manual,
         driver_research=None,
-        saved_at="2026-08-22T12:00:00Z",
     )
-    assert profile["status"] == "confirmed"
+    assert not any(i["severity"] == "blocker" for i in profile["issues"])
     assert all(
         "crossover_search_band_hz" not in target for target in profile["targets"]
     )
     # …and the rebuilt profile is immediately usable, which is the point of
     # tolerating rather than refusing.
-    assert evaluate_driver_safety_profile(profile, topology).confirmed_and_current
-
-    # The eval reason still fires for a profile that has NOT been re-saved --
-    # tolerance at the write gates must not quietly confirm a stale artifact.
-    legacy_profile = deepcopy(profile)
-    for target in legacy_profile["targets"]:
-        target["crossover_search_band_hz"] = [1200.0, 3500.0]
-    evaluation = evaluate_driver_safety_profile(legacy_profile, topology)
-    assert evaluation.confirmed_and_current is False
-    assert evaluation.reasons == (
-        driver_safety_module.DRIVER_SAFETY_PROFILE_RETIRED_FIELD_REASON,
-    )
-
-
-def test_the_sound_page_phrases_the_retired_field_reason_by_name() -> None:
-    """The server's name and /sound's copy are one contract across two files.
-
-    The reason exists only so the household is told a remedy, so a name the
-    page cannot phrase falls back to "JTS could not read these limits" and buys
-    nothing. Pinned like the low-limit-stale name it mirrors.
-    """
-
-    js = sound_page_js()
-    assert (
-        f"'{driver_safety_module.DRIVER_SAFETY_PROFILE_RETIRED_FIELD_REASON}'"
-        in js
-    )
-    # …and the copy says what to do, rather than only what happened.
-    assert "no longer uses" in js
-    assert "save them" in js
-
-
-def test_evaluation_recomputes_issues_instead_of_trusting_serialized_status() -> None:
-    topology = mono_output_topology(card_id=None)
-    incomplete_manual = _manual_settings()
-    incomplete_manual["drivers"][1].pop("required_protection_filters")
-    profile = build_driver_safety_profile(
-        topology,
-        manual_settings=incomplete_manual,
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-    assert profile["status"] == "incomplete"
-
-    profile["issues"] = []
-    profile["status"] = "confirmed"
-    profile["confirmation"] = {
-        "confirmed_fingerprint": profile["profile_fingerprint"],
-        "confirmed_at": "2026-07-13T12:00:00Z",
-        "method": "operator_reviewed_visible_values",
-    }
-
-    evaluation = evaluate_driver_safety_profile(profile, topology)
-    assert evaluation.status == "malformed"
-    assert evaluation.confirmed_and_current is False
-    assert evaluation.reasons == ("driver_safety_profile_derived_state_mismatch",)
-
-
-def test_refingerprinted_noncanonical_target_fields_cannot_be_confirmed() -> None:
-    topology = mono_output_topology(card_id=None)
-    canonical = build_driver_safety_profile(
-        topology,
-        manual_settings=_manual_settings(),
-        driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
-    )
-    variants = []
-
-    string_band = deepcopy(canonical)
-    string_band["targets"][1]["hard_excitation_band_hz"][0] = "5000"
-    variants.append(string_band)
-
-    noncanonical_group = deepcopy(canonical)
-    noncanonical_group["targets"][1]["speaker_group_id"] = " mono "
-    variants.append(noncanonical_group)
-
-    float_output = deepcopy(canonical)
-    float_output["targets"][1]["physical_output_index"] = 1.0
-    variants.append(float_output)
-
-    noncanonical_provenance = deepcopy(canonical)
-    noncanonical_provenance["targets"][1]["field_provenance"] = {
-        "hard_excitation_band_hz": {
-            "confidence": "medium",
-            "basis": "  padded evidence  ",
-            "sources": [],
-        }
-    }
-    variants.append(noncanonical_provenance)
-
-    for profile in variants:
-        _refingerprint_profile(profile)
-        evaluation = evaluate_driver_safety_profile(profile, topology)
-        assert evaluation.status == "malformed"
-        assert evaluation.confirmed_and_current is False
-        assert evaluation.reasons == ("driver_safety_profile_schema_invalid",)
-
 
 def test_cabinet_reconstruction_is_explicit_and_fail_closed() -> None:
     topology = mono_output_topology(card_id=None)
@@ -1606,11 +1014,10 @@ def test_cabinet_reconstruction_is_explicit_and_fail_closed() -> None:
         "lf_reconstruction_capability": "refused_multi_radiator_contract_missing",
     }
 
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology,
         manual_settings=manual,
         driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
 
     woofer = profile["targets"][0]
@@ -1636,8 +1043,7 @@ def test_legacy_research_remains_readable_but_advisory() -> None:
     draft = build_design_draft(topology, driver_research=legacy)
 
     assert draft["driver_research"]["artifact_schema_version"] == 1
-    assert draft["driver_safety_profile"]["status"] == "incomplete"
-    assert draft["driver_safety_profile_evaluation"]["confirmed_and_current"] is False
+    assert any(i["severity"] == "blocker" for i in draft["driver_safety_profile"]["issues"])
     assert draft["safety"]["research_is_advisory"] is True
 
 
@@ -1648,13 +1054,12 @@ def test_stereo_targets_require_physical_target_values_and_preserve_asymmetry() 
         driver.pop("target_id", None)
         driver.pop("source", None)
 
-    incomplete = build_driver_safety_profile(
+    incomplete = compute_driver_safety_profile(
         topology,
         manual_settings=legacy,
         driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
-    assert incomplete["status"] == "incomplete"
+    assert any(i["severity"] == "blocker" for i in incomplete["issues"])
     assert [target["target_values_binding"] for target in incomplete["targets"]] == [
         "missing",
         "missing",
@@ -1678,13 +1083,12 @@ def test_stereo_targets_require_physical_target_values_and_preserve_asymmetry() 
         }
     )
 
-    explicit = build_driver_safety_profile(
+    explicit = compute_driver_safety_profile(
         topology,
         manual_settings=_stereo_manual_settings(),
         driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
-    assert explicit["status"] == "confirmed"
+    assert not any(i["severity"] == "blocker" for i in explicit["issues"])
     assert {target["target_id"]: target["model"] for target in explicit["targets"]} == {
         "left:woofer": "Left Example W6",
         "left:tweeter": "Left Example T1",
@@ -1747,7 +1151,7 @@ def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
     # reason #2603 and #2874 reversed the rest of it one layer down: a class
     # figure may not refuse a declaration. A declared peak LOUDER than the
     # tweeter class default used to land `max_effective_peak_above_code_policy`
-    # and hold the profile `incomplete`; it now saves confirmed, and
+    # and hold the profile `incomplete`; it now has no blocker, and
     # `resolve_driver_excitation_ceilings` honours -64.0 verbatim rather than
     # clamping it back to -65.
     topology = mono_output_topology(card_id=None)
@@ -1755,13 +1159,12 @@ def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
     louder_than_class_default["drivers"][1]["level_duration_limits"][
         "max_effective_peak_dbfs"
     ] = -64.0
-    saved = build_driver_safety_profile(
+    saved = compute_driver_safety_profile(
         topology,
         manual_settings=louder_than_class_default,
         driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
-    assert saved["status"] == "confirmed"
+    assert not any(i["severity"] == "blocker" for i in saved["issues"])
     assert _issue_codes(saved) == set()
 
     # And a target that declares NO level limit at all is confirmable too --
@@ -1769,13 +1172,12 @@ def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
     # publishes it.
     undeclared = _manual_settings()
     undeclared["drivers"][1]["level_duration_limits"].pop("max_effective_peak_dbfs")
-    no_level = build_driver_safety_profile(
+    no_level = compute_driver_safety_profile(
         topology,
         manual_settings=undeclared,
         driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
-    assert no_level["status"] == "confirmed"
+    assert not any(i["severity"] == "blocker" for i in no_level["issues"])
     assert _issue_codes(no_level) == set()
 
     # #2603 REVERSED the second half of this test. A declared low limit below
@@ -1790,13 +1192,12 @@ def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
     tweeter["hard_excitation_band_hz"] = [1800.0, 22000.0]
     tweeter["measurement_band_hz"] = [1800.0, 20000.0]
     tweeter["required_protection_filters"][0]["cutoff_hz"] = 1800.0
-    accepted = build_driver_safety_profile(
+    accepted = compute_driver_safety_profile(
         compression,
         manual_settings=below_default,
         driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
-    assert accepted["status"] == "confirmed"
+    assert not any(i["severity"] == "blocker" for i in accepted["issues"])
     assert _issue_codes(accepted) == set()
 
     # ...and #2874 reversed what stood in its place. A plausibility BLOCKER
@@ -1810,13 +1211,12 @@ def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
     tweeter["hard_excitation_band_hz"] = [200.0, 22000.0]
     tweeter["measurement_band_hz"] = [200.0, 20000.0]
     tweeter["required_protection_filters"][0]["cutoff_hz"] = 200.0
-    warned = build_driver_safety_profile(
+    warned = compute_driver_safety_profile(
         compression,
         manual_settings=unsafe_highpass,
         driver_research=None,
-        saved_at="2026-08-22T12:00:00Z",
     )
-    assert warned["status"] == "confirmed"
+    assert not any(i["severity"] == "blocker" for i in warned["issues"])
     assert [
         issue["code"] for issue in warned["issues"]
         if issue["severity"] == "blocker"
@@ -1898,14 +1298,12 @@ def test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typis
     tweeter["hard_excitation_band_hz"] = [700.0, 22000.0]
     tweeter["measurement_band_hz"] = [700.0, 20000.0]
     tweeter["required_protection_filters"][0]["cutoff_hz"] = 700.0
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology,
         manual_settings=typed,
         driver_research=None,
-        saved_at="2026-08-22T12:00:00Z",
     )
-    assert profile["status"] == "confirmed"
-    assert profile["confirmation"] is not None
+    assert not any(i["severity"] == "blocker" for i in profile["issues"])
     warning = next(
         issue for issue in profile["issues"]
         if issue["code"] == "tweeter:low_limit_implausible_for_style"
@@ -1916,206 +1314,7 @@ def test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typis
     assert "(class default 5000 Hz)" in warning["message"]
     assert "transposed digit" in warning["message"]
 
-    # A warning is not a blocker: the profile it rides on is usable, and the
-    # evaluation re-derives the same warning rather than reading it off disk.
-    evaluation = evaluate_driver_safety_profile(profile, topology)
-    assert evaluation.status == "confirmed"
-    assert evaluation.confirmed_and_current is True
-
-    # And a hand-edited artifact cannot quietly drop its own warning...
-    tampered = deepcopy(profile)
-    tampered["issues"] = []
-    assert evaluate_driver_safety_profile(tampered, topology).status == "malformed"
-
-    # ...nor re-code or downgrade one.
-    recoded = deepcopy(profile)
-    recoded["issues"][0]["code"] = "tweeter:something_else"
-    assert evaluate_driver_safety_profile(recoded, topology).status == "malformed"
-    downgraded = deepcopy(profile)
-    downgraded["issues"][0]["severity"] = "info"
-    assert evaluate_driver_safety_profile(downgraded, topology).status == "malformed"
-
-    # ...but a DIFFERENT warning SENTENCE is not a mismatch, and this half is
-    # deliberate. Warning prose interpolates the household's own numbers, so
-    # comparing it byte-for-byte made editing the copy a breaking change: a
-    # profile written one commit earlier read `malformed` and lost
-    # `confirmed_and_current` although its declared values had not moved by one
-    # digit. No gate reads the sentence, and the fingerprint never covered
-    # `issues` at all, so excluding it loosens nothing the digest was holding.
-    reworded = deepcopy(profile)
-    reworded["issues"][0]["message"] = "tweeter: reworded in a later release."
-    reworded_evaluation = evaluate_driver_safety_profile(reworded, topology)
-    assert reworded_evaluation.status == "confirmed", reworded_evaluation.reasons
-    assert reworded_evaluation.confirmed_and_current is True
-    assert reworded_evaluation.profile_fingerprint == profile["profile_fingerprint"]
-
-
-def test_a_low_limit_warning_message_fits_the_profile_schema_cap() -> None:
-    """The warning must survive shape validation to be read at all.
-
-    ``_validate_driver_safety_profile_shape`` caps an issue's fields, and a
-    message over its cap lands the WHOLE profile ``malformed``, which makes
-    ``build_driver_safety_profile`` refuse the save -- so an overrun does not
-    degrade a disclosure, it REFUSES the out-of-band declaration the disclosure
-    exists to permit.
-
-    ``driver_style`` is FREE-FORM up to 80 characters (``output_topology``
-    accepts any safe id), so this grids an UNREGISTERED maximum-length style,
-    not just the longest registered one, and an absurd hand-edited cutoff --
-    the two operator-reachable inputs that made the rendered length unbounded.
-
-    The caps come from the module's own constant rather than being restated
-    here, so raising or lowering one there cannot leave this test measuring a
-    bound that is gone.
-    """
-
-    from jasper.active_speaker.driver_protection import driver_style_is_registered
-    from jasper.active_speaker.driver_safety import (
-        PROFILE_ISSUE_FIELD_MAX_CHARS as caps,
-        _target_low_limit_warnings,
-    )
-
-    registered = [
-        style for style, _ in _TWEETER_STYLE_FLOORS
-        if driver_style_is_registered(style)
-    ]
-    assert registered, _TWEETER_STYLE_FLOORS
-    # 80 chars of safe-id, which POST /output-topology accepts verbatim.
-    unregistered_max = "a" + "b" * 79
-    assert len(unregistered_max) == 80
-    # Every shape that reaches the LONGER unknown-style branch: the sentinel
-    # `_profile_core` stamps for a box whose type nobody set, a typo, an
-    # oversized custom value, and the (unstorable) empty shape.
-    unregistered = ["unspecified", "compresion_driver", unregistered_max, ""]
-    assert not any(driver_style_is_registered(s) for s in unregistered)
-
-    # The reviewers' worst `:g` renders -- 11 and 12 characters, against the
-    # 3 an ordinary declaration spends. Both branches are gridded against them,
-    # because the unknown-style branch carries the longer closing clause and is
-    # now reachable from a saved profile.
-    extreme_hz = (5e-324, 0.000123456, 1e-6, 1.5, 200.0, 999999.5, 1.79769e308)
-    for style in [*registered, *unregistered]:
-        for cutoff_hz in extreme_hz:
-            target = {
-                "role": "tweeter",
-                "required_protection_filters": [
-                    {"kind": "highpass", "cutoff_hz": cutoff_hz},
-                ],
-            }
-            if style:
-                target["driver_style"] = style
-            warnings = _target_low_limit_warnings(target)
-            assert warnings, (style, cutoff_hz)
-            for field, cap in caps.items():
-                assert len(warnings[0][field]) <= cap, (
-                    field, style, cutoff_hz, len(warnings[0][field]),
-                )
-            # The closing instruction survives on BOTH branches, at every
-            # render width. This is what the length budget is FOR -- a message
-            # that fits by losing its last clause passes a cap check and still
-            # fails the household.
-            assert warnings[0]["message"].endswith(
-                ("is right.", "cautious default.")
-            ), (style, cutoff_hz, warnings[0]["message"])
-
-    # ...and the fit is bought by ellipsizing the operator's free text, never by
-    # eating the guidance. On every REGISTERED style at a realistic cutoff the
-    # message renders whole: the style appears verbatim and the closing
-    # instruction survives. A copy change that pushed the ordinary case into the
-    # backstop would fail here rather than silently shipping a cut sentence.
-    for style in registered:
-        warnings = _target_low_limit_warnings({
-            "role": "tweeter",
-            "driver_style": style,
-            "required_protection_filters": [
-                {"kind": "highpass", "cutoff_hz": 1.5},
-            ],
-        })
-        message = warnings[0]["message"]
-        assert style in message, (style, message)
-        assert message.endswith("is right."), message
-        assert "..." not in message, message
-
-    # ...and on the 80-character style the cut lands on the STYLE, not on the
-    # sentence. Both halves matter: an ellipsis proves the free text was
-    # shortened, and the surviving closing instruction proves the guidance was
-    # not what got eaten. Clamping only at the end -- letting the final
-    # cap-fit truncate the tail -- would keep the save working and still lose
-    # the one clause that tells the household what to check.
-    long_style_warning = _target_low_limit_warnings({
-        "role": "tweeter",
-        "driver_style": unregistered_max,
-        "required_protection_filters": [
-            {"kind": "highpass", "cutoff_hz": 1.5},
-        ],
-    })[0]["message"]
-    assert "..." in long_style_warning, long_style_warning
-    # The LONGER of the two tails, because an 80-character custom value is not
-    # a style the table describes -- so this is the worst case for both terms
-    # at once, and the instruction still survives.
-    assert long_style_warning.endswith("cautious default."), long_style_warning
-    assert unregistered_max not in long_style_warning, long_style_warning
-
-    # The surface this actually broke: the SAVE. An 80-character style plus an
-    # out-of-band declaration used to render a 334-char message, fail shape
-    # validation, and make the builder raise "incoherent artifact" -- refusing
-    # the declaration outright, and ONLY when it was out of band (the in-band
-    # save on the same topology succeeded). Both must now save.
-    raw = mono_output_topology(card_id=None).to_dict()
-    raw["speaker_groups"][0]["channels"][1]["driver_style"] = unregistered_max
-    long_style_topology = OutputTopology.from_mapping(raw)
-    assert (
-        long_style_topology.speaker_groups[0].channels[1].driver_style
-        == unregistered_max
-    ), "the topology must still accept the style this test is about"
-
-    out_of_band = _manual_settings()
-    tweeter = out_of_band["drivers"][1]
-    tweeter["recommended_highpass_hz"] = 200.0
-    tweeter["hard_excitation_band_hz"] = [200.0, 22000.0]
-    tweeter["measurement_band_hz"] = [200.0, 20000.0]
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = 200.0
-
-    for manual, expected_warning in ((out_of_band, True), (_manual_settings(), False)):
-        profile = build_driver_safety_profile(
-            long_style_topology,
-            manual_settings=manual,
-            driver_research=None,
-            saved_at="2026-08-22T12:00:00Z",
-        )
-        assert profile["status"] == "confirmed"
-        warned = any(
-            issue["code"] == "tweeter:low_limit_implausible_for_style"
-            for issue in profile["issues"]
-        )
-        assert warned is expected_warning, profile["issues"]
-        assert evaluate_driver_safety_profile(
-            profile, long_style_topology
-        ).confirmed_and_current is True
-
-
-def test_an_unknown_driver_type_is_disclosed_on_the_saved_profile() -> None:
-    """The cautious-default caveat, pinned through the SHIPPED path.
-
-    Two things are pinned here and neither survives alone.
-
-    REACHABILITY. This builds a real profile from a topology whose tweeter has
-    no ``driver_style``, and reads the copy off the SAVED artifact -- because
-    that is where the caveat was dead: ``_profile_core`` stamps
-    ``"unspecified"`` and the shape validator requires the field non-empty, so
-    a branch keyed on an EMPTY style never fired in the product. A box whose
-    driver type nobody set shipped the no-caveat sentence, and only the
-    unit-test shape (key absent) reached the clause. A direct call to the
-    warning builder cannot catch that class of bug; this must go through
-    ``build_driver_safety_profile``.
-
-    THE CLAUSE ITSELF. It carries the reason the band is cautious, and it has
-    already vanished once -- it lived in the /sound/ page's
-    ``SAFETY_RELATIONSHIP_TEXT`` map until that entry was retired with the
-    blocker it phrased. Dropping it again passes every other test in this file,
-    so it gets its own assertion.
-    """
-
+def test_an_unknown_driver_type_is_disclosed_on_the_computed_profile() -> None:
     topology = mono_output_topology(card_id=None)
     assert topology.speaker_groups[0].channels[1].driver_style is None, (
         "this test is about a box whose driver type nobody set"
@@ -2128,11 +1327,10 @@ def test_an_unknown_driver_type_is_disclosed_on_the_saved_profile() -> None:
     tweeter["measurement_band_hz"] = [200.0, 20000.0]
     tweeter["required_protection_filters"][0]["cutoff_hz"] = 200.0
 
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology,
         manual_settings=manual,
         driver_research=None,
-        saved_at="2026-08-22T12:00:00Z",
     )
     stored = next(t for t in profile["targets"] if t["role"] == "tweeter")
     assert stored["driver_style"] == "unspecified", (
@@ -2153,11 +1351,10 @@ def test_an_unknown_driver_type_is_disclosed_on_the_saved_profile() -> None:
     # A declared, REGISTERED type gets the other tail on the same shipped path,
     # so the caveat is a discrimination rather than boilerplate on every save.
     declared_topology = _topology_with_tweeter_style("compression_driver")
-    declared_profile = build_driver_safety_profile(
+    declared_profile = compute_driver_safety_profile(
         declared_topology,
         manual_settings=manual,
         driver_research=None,
-        saved_at="2026-08-22T12:00:00Z",
     )
     declared_message = next(
         issue for issue in declared_profile["issues"]
@@ -2195,13 +1392,12 @@ def test_declared_compression_driver_style_clears_jts3_shaped_plan() -> None:
     # unknown-style tweeter is [1250, 20000], and a published 1600 sits inside
     # it, so the plan is believed rather than vetoed.
     undeclared = mono_output_topology(card_id=None)
-    undeclared_profile = build_driver_safety_profile(
+    undeclared_profile = compute_driver_safety_profile(
         undeclared,
         manual_settings=jts3_manual,
         driver_research=None,
-        saved_at="2026-07-16T12:00:00Z",
     )
-    assert undeclared_profile["status"] == "confirmed"
+    assert not any(i["severity"] == "blocker" for i in undeclared_profile["issues"])
     undeclared_tweeter = next(
         t for t in undeclared_profile["targets"] if t["role"] == "tweeter"
     )
@@ -2215,98 +1411,22 @@ def test_declared_compression_driver_style_clears_jts3_shaped_plan() -> None:
     assert undeclared_tweeter["code_owned_policy"]["min_highpass_hz"] == 5000.0
 
     declared = _topology_with_tweeter_style("compression_driver")
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         declared,
         manual_settings=jts3_manual,
         driver_research=None,
-        saved_at="2026-07-16T12:00:00Z",
     )
-    assert profile["status"] == "confirmed"
+    assert not any(i["severity"] == "blocker" for i in profile["issues"])
     tweeter_target = next(t for t in profile["targets"] if t["role"] == "tweeter")
     assert tweeter_target["driver_style"] == "compression_driver"
     assert tweeter_target["code_owned_policy"]["min_highpass_hz"] == 2000.0
-    evaluation = evaluate_driver_safety_profile(profile, declared)
-    assert evaluation.status == "confirmed"
-    assert evaluation.confirmed_and_current is True
 
 
 def _issue_codes(profile: dict) -> set[str]:
     return {issue["code"] for issue in profile["issues"]}
 
 
-# ``driver_safety`` emits reason codes two structurally different ways, and a
-# code escaping through EITHER of them reaches ``evaluation.reasons`` and
-# therefore /sound's copy. A scan that saw one shape would go quiet exactly when
-# the hole it exists to catch reopened. So each shape is matched on its own and
-# each is required to have contributed: a pattern that silently stops matching
-# fails loudly instead of shrinking the derived set.
-#
-# A third shape, a bare ``return [...]``, existed for ``_search_band_issues``
-# alone and went with it when #2870 deleted the crossover search band. Restore
-# it here if a checker is ever written that returns its own list again.
-_REASON_CODE_SHAPES = {
-    # _target_issues' per-target checks.
-    "reasons.append": re.compile(r'\breasons\.append\(\s*f?"([^"]+)"'),
-    # _profile_core's profile-wide issue and evaluate_driver_safety_profile's
-    # re-derivation of it, whose lists are named `issues` / `derived_issues`.
-    "issues.append": re.compile(r'\b\w*issues\.append\(\s*f?"([^"]+)"'),
-}
-
-
-def _reason_code_tail(template: str) -> str:
-    """The code half of a `<role>:<code>` template, interpolation stripped."""
-
-    tail = template.rsplit("}", 1)[-1] if "}" in template else template
-    return tail.rsplit(":", 1)[-1]
-
-
-def _emittable_reason_codes() -> set[str]:
-    """Every reason code ``driver_safety`` can emit, read from its own source.
-
-    Derived rather than restated. Two families are templated: the
-    ``{kind}_cutoff_outside_hard_band`` pair is expanded from the same
-    ``SUPPORTED_PROTECTION_KINDS`` the code interpolates, and ``{field}_missing``
-    collapses to the bare tail ``_missing`` -- which is enough, because the one
-    caller partitions on that suffix and never needs the field names.
-    """
-
-    source = Path(driver_safety_module.__file__).read_text()
-    codes: set[str] = set()
-    for shape, pattern in _REASON_CODE_SHAPES.items():
-        found = {_reason_code_tail(raw) for raw in pattern.findall(source)}
-        assert found, f"the reason-code scan stopped seeing {shape}"
-        for tail in found:
-            if tail == "_cutoff_outside_hard_band":
-                codes.update(f"{kind}{tail}" for kind in SUPPORTED_PROTECTION_KINDS)
-            else:
-                codes.add(tail)
-    assert len(codes) > 8, "the reason-code scan lost most of the source"
-    return codes
-
-
-def test_the_sound_page_can_phrase_every_reason_that_is_not_a_missing_value():
-    """#2191's regression guard, by construction rather than by restatement.
-
-    /sound splits an ``incomplete`` profile into "a value is missing" (every
-    code ending ``_missing``) and "something does not line up" (a phrase per
-    code). A NEW non-missing code with no phrase -- introduced through EITHER of
-    the emission shapes ``_REASON_CODE_SHAPES`` enumerates -- would
-    silently fall back to "Some safety limits are still missing", reintroducing
-    exactly the copy #2191 was filed about. Exact set equality both ways, so a
-    dead phrase is caught too.
-    """
-
-    js = sound_page_js()
-    block = js.split("var SAFETY_RELATIONSHIP_TEXT = {", 1)[1].split("};", 1)[0]
-    phrased = set(re.findall(r"^\s+([a-z0-9_]+):$", block, re.MULTILINE))
-
-    expected = {
-        code for code in _emittable_reason_codes() if not code.endswith("_missing")
-    }
-    assert phrased == expected
-
-
-def test_driver_style_stales_only_safety_binding_not_measurement_identity() -> None:
+def test_driver_style_changes_computed_policy_not_measurement_identity() -> None:
     compression = _topology_with_tweeter_style("compression_driver")
     ribbon = _topology_with_tweeter_style("ribbon_tweeter")
     compression_targets = active_driver_targets(compression)
@@ -2315,16 +1435,14 @@ def test_driver_style_stales_only_safety_binding_not_measurement_identity() -> N
         target["target_fingerprint"] for target in ribbon_targets
     ]
 
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         compression,
         manual_settings=_manual_settings(),
         driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
     assert profile["targets"][1]["driver_style"] == "compression_driver"
-    evaluation = evaluate_driver_safety_profile(profile, ribbon)
-    assert evaluation.status == "stale"
-    assert evaluation.reasons == ("driver_safety_profile_target_mismatch",)
+    recomputed = compute_driver_safety_profile(ribbon, manual_settings=_manual_settings(), driver_research=None)
+    assert recomputed["targets"][1]["driver_style"] == "ribbon_tweeter"
 
 
 def test_sealed_cabinet_without_baffle_width_has_typed_refusal() -> None:
@@ -2333,11 +1451,10 @@ def test_sealed_cabinet_without_baffle_width_has_typed_refusal() -> None:
     manual = normalise_manual_settings(manual)
     assert manual is not None
 
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         mono_output_topology(card_id=None),
         manual_settings=manual,
         driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
 
     assert profile["targets"][0]["cabinet"]["lf_reconstruction_capability"] == (
@@ -2360,11 +1477,10 @@ def test_operator_override_drops_research_provenance_for_changed_field() -> None
     edited = _manual_settings()
     edited["drivers"][1]["cabinet"]["baffle_width_mm"] = 150.0
 
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology,
         manual_settings=edited,
         driver_research=imported["driver_research"],
-        saved_at="2026-07-13T12:00:00Z",
     )
     tweeter = profile["targets"][1]
     assert tweeter["field_provenance"]["cabinet"] == {
@@ -2407,11 +1523,10 @@ def test_manual_target_binding_refuses_contradictions(mutate, match: str) -> Non
     mutate(manual)
 
     with pytest.raises(DriverSafetyProfileError, match=match):
-        build_driver_safety_profile(
+        compute_driver_safety_profile(
             mono_output_topology(card_id=None),
             manual_settings=manual,
             driver_research=None,
-            saved_at="2026-07-13T12:00:00Z",
         )
 
 
@@ -2422,11 +1537,10 @@ def test_stereo_duplicate_legacy_role_rows_are_rejected() -> None:
     legacy["drivers"].append(deepcopy(legacy["drivers"][0]))
 
     with pytest.raises(DriverSafetyProfileError, match="duplicate legacy role woofer"):
-        build_driver_safety_profile(
+        compute_driver_safety_profile(
             _stereo_topology(),
             manual_settings=legacy,
             driver_research=None,
-            saved_at="2026-07-13T12:00:00Z",
         )
 
 
@@ -2441,11 +1555,10 @@ def test_direct_builder_canonicalizes_manual_values_and_forged_cabinet_claim() -
     woofer["required_protection_filters"][0].pop("family_or_equivalent")
 
     topology = mono_output_topology(card_id=None)
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology,
         manual_settings=manual,
         driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
 
     assert profile["targets"][0]["hard_excitation_band_hz"] == [25.0, 5000.0]
@@ -2455,69 +1568,35 @@ def test_direct_builder_canonicalizes_manual_values_and_forged_cabinet_claim() -
     assert profile["targets"][0]["cabinet"]["lf_reconstruction_capability"] == (
         "refused_geometry_incomplete"
     )
-    evaluation = evaluate_driver_safety_profile(profile, topology)
-    assert evaluation.status == "confirmed"
-    assert evaluation.confirmed_and_current is True
 
 
 def test_direct_builder_rejects_boolean_and_unknown_manual_fields() -> None:
     boolean = _manual_settings()
     boolean["drivers"][1]["hard_excitation_band_hz"][0] = True
     with pytest.raises(DriverSafetyProfileError, match="must not be boolean"):
-        build_driver_safety_profile(
+        compute_driver_safety_profile(
             mono_output_topology(card_id=None),
             manual_settings=boolean,
             driver_research=None,
-            saved_at="2026-07-13T12:00:00Z",
         )
 
     unknown = _manual_settings()
     unknown["drivers"][0]["safe_because_ai_said_so"] = True
     with pytest.raises(DriverSafetyProfileError, match="unknown fields"):
-        build_driver_safety_profile(
+        compute_driver_safety_profile(
             mono_output_topology(card_id=None),
             manual_settings=unknown,
             driver_research=None,
-            saved_at="2026-07-13T12:00:00Z",
         )
 
     candidate_unknown = _manual_settings()
     candidate_unknown["crossover_candidates"] = [{"typo": True}]
     with pytest.raises(DriverSafetyProfileError, match="unknown fields"):
-        build_driver_safety_profile(
+        compute_driver_safety_profile(
             mono_output_topology(card_id=None),
             manual_settings=candidate_unknown,
             driver_research=None,
-            saved_at="2026-07-13T12:00:00Z",
         )
-
-
-def test_later_confirmation_records_confirmation_time_not_draft_creation(
-    tmp_path: Path,
-) -> None:
-    topology = mono_output_topology(card_id=None)
-    path = tmp_path / "active_speaker_design_draft.json"
-    first = save_design_draft(
-        topology,
-        manual_settings=_manual_settings(),
-        operator_inputs=_operator_inputs(),
-        path=path,
-        created_at="2026-07-13T12:00:00Z",
-    )
-    confirmed = save_design_draft(
-        topology,
-        manual_settings=_manual_settings(),
-        operator_inputs=_operator_inputs(),
-        path=path,
-        created_at="2026-07-13T12:05:00Z",
-    )
-
-    assert first["created_at"] == "2026-07-13T12:00:00Z"
-    assert confirmed["created_at"] == first["created_at"]
-    assert confirmed["updated_at"] == "2026-07-13T12:05:00Z"
-    assert confirmed["driver_safety_profile"]["confirmation"]["confirmed_at"] == (
-        "2026-07-13T12:05:00Z"
-    )
 
 
 def test_component_fields_have_distinct_declaration_and_research_contracts():
@@ -2684,19 +1763,13 @@ def test_prompt_result_shape_template_is_storable_not_gate_refused(
         {"drivers": raw_drivers, "crossover_candidates": []}
     )
     assert manual is not None
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology, manual_settings=manual, driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
     assert profile["issues"] == [], (
         f"the worked example is refused for driver_style={style}: "
         f"{[issue['code'] for issue in profile['issues']]}"
     )
-    # "no blockers" and "actually freezable" are different claims, and the
-    # template has to satisfy the second one too -- which a save now settles in
-    # the same step.
-    assert profile["status"] == "confirmed"
-
     # The example's low limit tracks this style's figure rather than a
     # constant, and the protective high-pass it DERIVES lands on the same
     # number -- the template teaches one declaration, not two (#2603).
@@ -2712,7 +1785,7 @@ def test_prompt_result_shape_template_is_storable_not_gate_refused(
     assert highpass["cutoff_hz"] == float(driver["recommended_highpass_hz"])
     # The three protocol limit fields survive normalisation (the original null
     # defect). The fourth, `max_effective_peak_dbfs`, is absent by design since
-    # the 2026-08-23 ruling -- and the profile is confirmed anyway, which is
+    # the 2026-08-23 ruling -- and the computed profile has no blocker, which is
     # the half of that ruling this test is the guard for.
     for field in (
         "max_sweep_duration_s",
@@ -2794,14 +1867,7 @@ def test_prompt_template_provenance_is_a_subset_of_what_the_parser_accepts() -> 
 
 
 def test_provenance_source_is_additive_and_old_entries_are_byte_identical() -> None:
-    """``source`` is optional and absent means absent, never ``None``.
-
-    A stored safety profile is re-normalised and compared as canonical JSON
-    (``_validate_driver_safety_profile_shape``).  If a pre-#2195 provenance
-    entry gained a ``"source": null`` key on the way through, every already-
-    confirmed profile on a deployed box would read back as noncanonical and
-    lose its confirmation.  This pins the omission.
-    """
+    """An absent source stays absent in research provenance."""
 
     from jasper.active_speaker.driver_safety import (
         MAX_PROVENANCE_SOURCE_CHARS,
@@ -2993,17 +2059,7 @@ def test_the_policy_view_publishes_the_resolved_floor_with_its_provenance() -> N
 def test_design_draft_restamps_the_protection_policy_on_every_topology_load(
     tmp_path: Path,
 ) -> None:
-    """A saved policy echo is never read back as current policy.
-
-    Same contract as ``driver_safety_profile_evaluation``: the value on disk
-    was right for the code and topology in force when it was written, and both
-    move underneath it.  A stale ``max_auto_level_dbfs`` here would mislabel the
-    delegation sentinel on the /sound/ echo-back panel.
-
-    Scoped to a topology-supplied load on purpose -- that is the only kind that
-    can re-derive anything, and it is what the /sound/ endpoint always does.
-    ``load_design_draft`` with no topology returns the disk copy untouched.
-    """
+    """The current topology and declaration determine the policy view."""
 
     from jasper.active_speaker.driver_safety import driver_protection_policy_view
 
@@ -3377,11 +2433,9 @@ def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:
 
     profile = draft["driver_safety_profile"]
     assert profile["issues"] == []
-    assert profile["status"] == "confirmed"
-    assert draft["driver_safety_profile_evaluation"]["confirmed_and_current"] is True
+    assert not any(i["severity"] == "blocker" for i in profile["issues"])
     # Advice never becomes permission, whatever its provenance.
     assert profile["authorizes_playback"] is False
-    assert profile["research"]["advisory_only"] is True
     assert profile["authority"] == "operator_visible_values"
 
     tweeter = next(t for t in profile["targets"] if t["role"] == "tweeter")
@@ -3396,8 +2450,8 @@ def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:
     assert tweeter["code_owned_policy"]["max_auto_level_dbfs"] == -65.0
 
 
-def _cx120_confirmed_profile(*, tweeter_peak_dbfs: float = -65) -> tuple[dict, dict]:
-    """Return (confirmed safety profile, pad-folded declared sensitivities)."""
+def _cx120_profile(*, tweeter_peak_dbfs: float = -65) -> tuple[dict, dict]:
+    """Return (computed safety profile, pad-folded declared sensitivities)."""
 
     from jasper.active_speaker.design_draft import (
         declared_effective_driver_sensitivities,
@@ -3445,7 +2499,7 @@ def test_the_ask_no_longer_writes_a_level_ceiling_it_will_read_back() -> None:
     assert "send exactly the ceiling" not in prompt
 
     # Absence delegates, through the real resolver.
-    undeclared, sensitivities = _cx120_confirmed_profile(tweeter_peak_dbfs=None)
+    undeclared, sensitivities = _cx120_profile(tweeter_peak_dbfs=None)
     tweeter_fp = next(
         t["target_fingerprint"] for t in undeclared["targets"] if t["role"] == "tweeter"
     )
@@ -3462,7 +2516,7 @@ def test_the_ask_no_longer_writes_a_level_ceiling_it_will_read_back() -> None:
     # figure. Louder used to be clamped back to it (and refused at save); that
     # was a code figure overruling a declaration, and it is gone.
     for declared in (policy.max_auto_level_dbfs - 1, policy.max_auto_level_dbfs + 1):
-        profile, sens = _cx120_confirmed_profile(tweeter_peak_dbfs=declared)
+        profile, sens = _cx120_profile(tweeter_peak_dbfs=declared)
         _band, literal = resolve_driver_excitation_ceilings(
             profile,
             next(
@@ -3492,7 +2546,7 @@ def test_cx120_declared_ceiling_delegates_but_one_db_quieter_is_literal() -> Non
     physics on an ordinary coax.
     """
 
-    profile, sensitivities = _cx120_confirmed_profile()
+    profile, sensitivities = _cx120_profile()
     # Pad-free declaration, so the effective sensitivities are the datasheet
     # ones the reply reported.
     assert sensitivities == pytest.approx({"woofer": 88.5, "tweeter": 89.2})
@@ -3519,7 +2573,7 @@ def test_cx120_declared_ceiling_delegates_but_one_db_quieter_is_literal() -> Non
     assert naked == pytest.approx(-65.0)
 
     # One dB quieter is a deliberate choice and is never raised.
-    quieter, quieter_sens = _cx120_confirmed_profile(tweeter_peak_dbfs=-66)
+    quieter, quieter_sens = _cx120_profile(tweeter_peak_dbfs=-66)
     _band, quieter_ceiling = resolve_driver_excitation_ceilings(
         quieter,
         next(
@@ -3635,15 +2689,14 @@ def test_estimate_provenance_never_buys_past_a_code_policy_clamp(
     )
     assert manual is not None
 
-    profile = build_driver_safety_profile(
+    profile = compute_driver_safety_profile(
         topology,
         manual_settings=manual,
         driver_research=None,
-        saved_at="2026-07-13T12:00:00Z",
     )
     codes = [issue["code"] for issue in profile["issues"]]
     assert expected_code in codes, codes
-    assert profile["status"] == "incomplete"
+    assert any(i["severity"] == "blocker" for i in profile["issues"])
 
     # Nothing was rewritten behind the operator's back: the refused value is
     # still exactly what was entered.
@@ -3651,12 +2704,6 @@ def test_estimate_provenance_never_buys_past_a_code_policy_clamp(
     if field == "required_protection_filters":
         assert tweeter["required_protection_filters"][0]["cutoff_hz"] == 700.0
 
-    # And it never reads as usable: the save is allowed (the operator keeps
-    # their work), the VERDICT is not.
-    assert (
-        evaluate_driver_safety_profile(profile, topology).confirmed_and_current
-        is False
-    )
 
 
 @pytest.mark.parametrize("budget,accepted", [
@@ -3674,12 +2721,47 @@ def test_declared_target_fit_budget_round_trip_and_refusal(budget, accepted):
     manual["drivers"][0]["fit_budget"] = budget
     if not accepted:
         with pytest.raises(DriverSafetyProfileError):
-            build_driver_safety_profile(topology, manual_settings=manual, driver_research=None, saved_at="2026-09-12T00:00:00Z")
+            compute_driver_safety_profile(topology, manual_settings=manual, driver_research=None)
         return
     draft = build_design_draft(topology, manual_settings=manual, created_at="2026-09-12T00:00:00Z")
     profile = draft["driver_safety_profile"]
     assert profile["targets"][0].get("fit_budget", {}) == budget
-    assert evaluate_driver_safety_profile(profile, topology).confirmed_and_current
-    profile["targets"][0]["fit_budget"] = {"max_filters": 9}
-    _refingerprint_profile(profile)
-    assert evaluate_driver_safety_profile(profile, topology).status == "malformed"
+
+
+@pytest.mark.parametrize("missing", ["level_duration_limits", "measurement_band_hz", "hard_excitation_band_hz"])
+def test_apply_requires_only_the_floor_but_measurement_requires_its_inputs(missing):
+    topology = mono_output_topology(card_id=None)
+    manual = _manual_settings()
+    manual["crossover_candidates"] = [{"between_roles": ["woofer", "tweeter"],
+        "frequency_hz": 5500, "filter_type": "Linkwitz-Riley", "slope_db_per_octave": 24}]
+    manual["drivers"][1].pop("required_protection_filters")
+    manual["drivers"][1].pop(missing)
+    draft = build_design_draft(topology, manual_settings=manual)
+    with pytest.raises(MeasurementGraphRefused) as refused:
+        load_tuning_declaration(topology, design_draft=draft)
+    assert refused.value.code == "tweeter:required_highpass_missing"
+    assert refused.value.detail["target_id"] == "mono:tweeter"
+    manual["drivers"][1]["recommended_highpass_hz"] = 5000
+    draft = build_design_draft(topology, manual_settings=manual)
+    applied = load_tuning_declaration(topology, design_draft=draft)
+    assert applied.protection_sections_by_role["tweeter"]
+    profile = draft["driver_safety_profile"]
+    tweeter = next(t for t in profile["targets"] if t["role"] == "tweeter")
+    with pytest.raises(ExcitationSafetyPlanError) as refused_measurement:
+        prepare_driver_excitation_plan(topology, profile, _requested(tweeter["target_fingerprint"]))
+    assert refused_measurement.value.args == (ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value,)
+
+
+@pytest.mark.parametrize("missing", ["highpass", "lowpass"])
+def test_apply_names_the_mid_target_when_a_required_corner_is_missing(missing):
+
+    topology = mono_output_topology(mode="active_3_way", card_id=None)
+    manual = _manual_settings()
+    manual["drivers"].append({"target_id": "mono:mid", "role": "mid", "model": "Mid",
+        "required_protection_filters": [{"kind": kind, "cutoff_hz": cutoff,
+            "minimum_slope_db_per_octave": 24}
+            for kind, cutoff in (("highpass", 300), ("lowpass", 5000)) if kind != missing]})
+    with pytest.raises(MeasurementGraphRefused) as refused:
+        load_tuning_declaration(topology, design_draft=build_design_draft(topology, manual_settings=manual))
+    assert refused.value.code == f"mid:required_{missing}_missing"
+    assert refused.value.detail["target_id"] == "mono:mid"
