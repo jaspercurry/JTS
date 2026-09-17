@@ -563,49 +563,6 @@ def test_restore_refusals_preserve_the_typed_envelope(tmp_path, monkeypatch, cod
 
 
 @pytest.mark.parametrize(
-    ("error", "error_type"),
-    [
-        (OSError("commission abort I/O failed"), "OSError"),
-        (RuntimeError("commission abort runtime failed"), "RuntimeError"),
-    ],
-)
-def test_commission_ramp_abort_http_contains_secondary_failures(
-    tmp_path,
-    monkeypatch,
-    caplog,
-    error,
-    error_type,
-):
-    async def fail_abort(*, camilla_factory):
-        raise error
-
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_commission_ramp_abort_payload",
-        fail_abort,
-    )
-    caplog.set_level(logging.ERROR, logger=sound_setup.logger.name)
-    with sound_server(tmp_path) as base:
-        response = json_post_with_csrf(
-            base,
-            "/active-speaker/commission-ramp-abort",
-            {},
-            expect_status=502,
-        )
-        assert response.headers.get_content_type() == "application/json"
-        payload = json.loads(response.read().decode("utf-8"))
-
-    assert payload == {"error": str(error)}
-    record, fields = _event_record(caplog, "sound.post_dispatch_failed")
-    assert fields == {
-        "path": "/active-speaker/commission-ramp-abort",
-        "error_type": error_type,
-    }
-    assert record.exc_info is not None
-    assert record.exc_info[0] is type(error)
-
-
-@pytest.mark.parametrize(
     ("method", "route", "builder", "event", "extra_fields"),
     [
         (
@@ -682,7 +639,7 @@ def test_sound_post_rejects_invalid_body_length_before_read(
 
     response, read_calls = _drive_raw_sound_post(
         tmp_path,
-        path="/active-speaker/commission-ramp-abort",
+        path="/i2s-hat",
         content_length=content_length,
     )
 
@@ -1169,10 +1126,8 @@ def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: 
         assert (
             _follower_get_status(base, "/active-speaker/design-draft", session) == 200
         )
-        # An active-speaker mutation reaches its handler (200/502), never the
-        # follower 409 nor a 404 — the gate is content-DSP only.
         active_status = _follower_post_status(
-            base, "/active-speaker/commission-ramp-abort", session,
+            base, "/active-speaker/rear-calibration/validate", session,
         )
         assert active_status not in (404, 409), active_status
 
@@ -4452,7 +4407,7 @@ def _stub_baseline_apply(monkeypatch, *, applied_profile: bool = True):
             }
         return applied
 
-    def fake_mux_command(command: str) -> dict:
+    async def fake_mux_command(command: str) -> dict:
         mux_commands.append(command)
         return {
             "mode": "auto",
@@ -4466,7 +4421,7 @@ def _stub_baseline_apply(monkeypatch, *, applied_profile: bool = True):
         fake_apply_candidate,
     )
     monkeypatch.setattr(
-        sound_active_speaker, "_commission_tone_mux_command", fake_mux_command
+        sound_active_speaker, "mux_socket_command", fake_mux_command
     )
     return apply_calls, mux_commands
 

@@ -435,11 +435,6 @@ function activePayloads() {
       config: {},
       issues: [],
     },
-    "./active-speaker/commission-state": {
-      commission_load: { status: "idle", target: {}, rollback_available: false },
-      ramp: { confirmed_roles: [], pending: null },
-      floor: { status: "floor_required", floor_audio_confirmed: false },
-    },
   };
 }
 
@@ -514,7 +509,6 @@ function profileCommissioningView(overrides = {}) {
       profile: "todo",
     },
     status: "needs_combined_check",
-    driver_target_proof: { complete: true, source: "measurements", captured: 2, required: 2 },
     ...overrides,
   });
 }
@@ -4691,22 +4685,8 @@ async function testDriverMicCaptureIsRemovedFromSoundFlow() {
     permissions: { may_compile_baseline: false },
     issues: [],
   };
-  const commissionState = {
-    commission_load: { status: "rolled_back", target: {}, rollback_available: false },
-    ramp: { confirmed_roles: ["woofer"], pending: null },
-    floor: {
-      status: "floor_confirmed",
-      floor_audio_confirmed: true,
-      last_operator_result: {
-        accepted: true,
-        playback_id: "pb-woofer",
-        target: { speaker_group_id: "main", role: "woofer", driver_role: "woofer", output_index: 0 },
-      },
-    },
-  };
   const fetchHandler = baseFetch({
     "./output-topology": () => Promise.resolve(response(confirmedTopology)),
-    "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
     "./active-speaker/measurements": () => Promise.resolve(response(measurements)),
   });
   const harness = setupHarness(fetchHandler);
@@ -4800,37 +4780,6 @@ async function testSaveAndApplyUsesSingleFinishEndpoint() {
   return { saveAndApplyUsesSingleFinishEndpoint: true };
 }
 
-
-// C3a-7: startCommissionAutoRamp single-flight guard must always release.
-// If an unexpected throw occurs inside the guarded body (after running is set to
-// true but before runCommissionAutoRamp is handed off), commissionAutoRamp.running
-// must be reset to false — otherwise the card wedges permanently until reload.
-//
-// We inject the throw via the status element: status('...') assigns to
-// node.className / node.textContent. By replacing the 'status' element with one
-// whose className setter throws — AFTER a successful arm response — we produce a
-// throw that escapes postCommission's try/catch (which only wraps the fetch call)
-// and propagates up into startCommissionAutoRamp's try/finally.
-//
-// Mutation check: removing the try/finally from startCommissionAutoRamp in
-// main.js makes this test fail because after the throw commissionAutoRamp.running
-// stays true, the "Play Woofer" button is replaced by a disabled "Preparing"
-// button, and the second dispatchClick produces no new arm request.
-
-// C3a-7 (symmetric half): the fire-and-forget runCommissionAutoRamp loop must
-// ALSO release the single-flight guard on every exit. A render() throw on a
-// happy-path step inside the loop body (line ~4285, OUTSIDE postCommission's
-// try/catch) rejects the un-awaited loop promise. Without the loop's try/finally
-// commissionAutoRamp.running stays true and the card wedges in the disabled
-// "Preparing" state forever.
-//
-// We inject the throw via the status className setter, gated to fire on the
-// SECOND render where the merged Speaker layout row shows the playing controls
-// ("Stop" + "I hear woofer") — the first is postCommission's post-success render
-// (now inside its try/catch after fix #2), the second is the loop's own render()
-// at line ~4285. Targeting the second isolates the loop finally: with the loop
-// finally removed, the card stays wedged and the test fails; with it present,
-// running resets and a fresh click re-runs the flow.
 
 // --- #2814: the same-shape composite re-pin offer ---------------------------
 
@@ -5163,24 +5112,11 @@ async function testResetReloadsDesignDraftPastAStaleDirtyForm() {
 async function testFailedResetPreservesCommissioningPanels() {
   for (const failureStatus of [409, 502]) {
     const topology = activeTwoWayTopologyPayload();
-    const commissionState = {
-      commission_load: {
-        status: "loaded",
-        target: { speaker_group_id: "main", role: "woofer", audible_gain_db: -80 },
-        rollback_available: true,
-      },
-      ramp: {
-        confirmed_roles: [],
-        pending: { role: "woofer", gain_db: -80, frequency_hz: 250 },
-      },
-      floor: { status: "floor_pending_operator", floor_audio_confirmed: false },
-    };
     const fetchHandler = baseFetch({
       "./output-topology": () => Promise.resolve(response({
         output_topology: topology,
         topology_revision: "sha256:current",
       })),
-      "./active-speaker/commission-state": () => Promise.resolve(response(commissionState)),
       "./active-speaker/commissioning-view": () => Promise.resolve(response(
         commissioningViewPayload({
           status: "needs_layout",

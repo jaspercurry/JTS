@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
-import jasper.web.sound_setup as sound_setup
+from jasper.web import sound_active_speaker as speaker
 
 
 def test_commission_state_payload_is_idle_and_read_only(monkeypatch, tmp_path):
@@ -27,7 +27,7 @@ def test_commission_state_payload_is_idle_and_read_only(monkeypatch, tmp_path):
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("preflight on a read")),
     )
     payload = asyncio.run(
-        sound_setup._active_speaker_commission_state_payload(
+        speaker._active_speaker_commission_state_payload(
             camilla_factory=lambda: (_ for _ in ()).throw(
                 AssertionError("camilla should not be read while idle")
             )

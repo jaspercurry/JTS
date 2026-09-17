@@ -121,7 +121,7 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
         assert view["next_action"]["endpoint"] == SPEAKER_SETUP_PAGE_PATH
         assert view["next_action"]["method"] == "GET"
     _assert_household_safe(view["next_action"]["label"], "action")
-    assert {"driver_values", "driver_target_proof", "driver_checks", "summed_validation"} <= view.keys()
+    assert {"driver_values", "driver_checks", "summed_validation"} <= view.keys()
 
 
 def _assert_household_safe(text: str, where: str) -> None:

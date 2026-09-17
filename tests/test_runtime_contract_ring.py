@@ -380,7 +380,7 @@ def test_empty_topology_is_ineligible_regardless_of_child_count():
 def test_shipped_default_output_state_does_not_authorize_ring():
     raw = _apple_dongle_shipped_default().to_dict()
     for out in raw["hardware"]["outputs"]:
-        out["state"] = "verified"
+        out["state"] = "assigned"
     topo = OutputTopology.from_mapping(raw)
     assert topology_supports_shm_ring(topo) is False
 

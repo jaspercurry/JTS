@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import socket
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -36,7 +35,6 @@ from jasper.active_speaker.startup_load import (
     staged_topology_match_status,
 )
 from jasper.camilla import CamillaUnavailable
-from jasper.platform.status_socket import MUX_CONTROL_SOCKET_PATH
 from jasper.dsp_apply import same_config_file
 from jasper.log_event import log_event
 from jasper.output_topology import (
@@ -389,27 +387,6 @@ async def _ensure_commission_startup_anchor(
         "startup_load_status": load_state.get("status"),
         "rollback_available": bool(load_state.get("rollback_available")),
     }
-
-
-def _commission_tone_mux_command(cmd: str) -> dict[str, Any]:
-    data = b""
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(2.0)
-        sock.connect(MUX_CONTROL_SOCKET_PATH)
-        sock.sendall((cmd + "\n").encode("ascii"))
-        while b"\n" not in data:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            data += chunk
-    if not data:
-        raise RuntimeError("jasper-mux returned no response")
-    payload = json.loads(data.decode("utf-8", "replace"))
-    if isinstance(payload, dict) and "error" in payload:
-        raise RuntimeError(str(payload["error"]))
-    if not isinstance(payload, dict):
-        raise RuntimeError("jasper-mux returned a non-object response")
-    return payload
 
 
 def commission_status_payload() -> dict[str, Any]:
