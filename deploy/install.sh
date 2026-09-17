@@ -525,6 +525,9 @@ require_outputd_ready() {
         echo "  ERROR: /opt/jasper/bin/jasper-outputd is missing or not executable" >&2
         return 1
     fi
+    # The unit's start-rate counter is shared with StartLimitAction=reboot;
+    # clear it so an install's own restart never counts toward that (#5267).
+    systemctl reset-failed jasper-outputd.service || true
     systemctl restart jasper-outputd.service
     systemctl is-active --quiet jasper-outputd.service || {
         echo "  ERROR: jasper-outputd.service did not become active" >&2
