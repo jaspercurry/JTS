@@ -152,14 +152,10 @@ def _lost(code: int) -> Exception:
 
 def _run(argv, opener, monkeypatch, capsys):
     """The verb's exit code and the ONE document it answered with on stdout."""
-    monkeypatch.setattr(cli, "read_identity", lambda: _Identity())
     monkeypatch.setattr(cli, "speaker_url", lambda path: f"http://jts3.local{path}")
     code = cli.main(list(argv), opener=opener)
     return code, json.loads(capsys.readouterr().out)
 
-
-class _Identity:
-    hostname = "jts3.local"
 
 @pytest.mark.parametrize(
     "live",
@@ -205,6 +201,20 @@ def test_apply_posts_the_named_fingerprint_when_it_is_the_live_one(
         {"expected_candidate_fingerprint": _FINGERPRINT}
     ]
     assert len(opener.posts()) == 1
+
+
+def test_apply_sends_no_explicit_host_header_by_default(monkeypatch, capsys):
+    """A same-box loopback client no longer resolves this speaker's own name
+    into a synthetic Host header -- with no --hostname, urllib derives Host
+    from base_url, and the management-host guard accepts loopback IPs with
+    no identity lookup."""
+    monkeypatch.setenv("JASPER_HOSTNAME", "other.local")
+    opener = _opener(v2={"candidate": {"fingerprint": _FINGERPRINT}})
+    code, _ = _run(["apply", _FINGERPRINT], opener, monkeypatch, capsys)
+
+    assert code == cli.EXIT_OK
+    assert opener.requests
+    assert all(not request.has_header("Host") for request in opener.requests)
 
 
 @pytest.mark.parametrize("keep_timing", [False, True])
@@ -808,7 +818,6 @@ def test_remote_dry_run_refuses_before_reading_local_facts(monkeypatch, capsys, 
         pytest.fail("remote dry-run read local facts")
     monkeypatch.setattr(_run_request, "read_preflight_facts", no_facts)
     opener = _opener()
-    monkeypatch.setattr(cli, "read_identity", no_facts)
     code = cli.main(["run", "--dry-run", "--base-url", address], opener=opener)
     body = json.loads(capsys.readouterr().out)
     assert code == 1 and body["reason"] == "dry_run_requires_local_host"

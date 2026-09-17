@@ -952,15 +952,15 @@ Runs **on the speaker**, in the foreground, one run per walk:
 # stage the walk first (angle-walk door, above), then start this, THEN open the
 # session — the first poll is what checks a walk is still waiting.
 sudo -u pi /opt/jasper/.venv/bin/jasper-angle-capture serve \
-    --mover turntable --attest-rig-clear --hostname jts3.local \
+    --mover turntable --attest-rig-clear \
     --trail /tmp/arm-walk.jsonl
 ```
 
 - **`pi` is the identity, not a habit**: the adapter opens a serial port, and
   `pi` is what the shipped turntable unit runs as (`User=pi` plus `dialout`).
-  **`--hostname` is required** and is the speaker's own name — it becomes the
-  `Host:` header, without which the wizard's management-host guard refuses the
-  loopback read (see `status_unreachable`).
+  With no `--hostname`, the client sends no explicit `Host:` header, so it is
+  derived from `--base-url` (loopback here); the wizard's management-host
+  guard accepts loopback IPs. `--hostname` overrides it and is rarely needed.
 - One turn of the loop: poll → power preflight → move → measured settle (30 s
   default) → `position-ready`. The adapter runs as a **subprocess** at
   `/opt/jasper/experiments/usb-turntable/jts_turntable.py` (`--tool` points at a

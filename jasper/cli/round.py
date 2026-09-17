@@ -22,7 +22,7 @@ from jasper.active_speaker.wizard_client import (
     CSRF_PAGE_PATH, STATUS_PATH, REASON_ANSWER_LOST,
     WizardClient, apply_by_fingerprint, error_of, wait_for_round,
 )
-from jasper.identity.reader import CROSSOVER_PAGE_PATH, read_identity, speaker_url
+from jasper.identity.reader import CROSSOVER_PAGE_PATH, speaker_url
 
 from ._refusal import (
     EXIT_OK as EXIT_OK,
@@ -259,7 +259,9 @@ def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
 
 
 def _connection_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--hostname", help="speaker hostname used for the Host header")
+    parser.add_argument(
+        "--hostname", help="Host header override (default: derived from --base-url)",
+    )
     parser.add_argument("--base-url", default="http://127.0.0.1", help="wizard address")
 
 
@@ -322,8 +324,10 @@ def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int
     if args.command == "run" and args.dry_run and not _is_loopback_name(urlsplit(args.base_url).hostname or ""):
         from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY  # lazy: refused run copy
         return failed(EXIT_REFUSED, "dry_run_requires_local_host", REASON_REGISTRY["dry_run_requires_local_host"].message)
-    client = WizardClient(host_header=args.hostname or read_identity().hostname,
-                          base_url=args.base_url, csrf_page_path=CSRF_PAGE_PATH, opener=opener)
+    client = WizardClient(
+        host_header=args.hostname,
+        base_url=args.base_url, csrf_page_path=CSRF_PAGE_PATH, opener=opener,
+    )
     return int(args.func(client, args))
 
 

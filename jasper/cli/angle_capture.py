@@ -91,12 +91,8 @@ def _add_serve_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--hostname",
-        required=True,
-        help=(
-            "the speaker's own hostname (JASPER_HOSTNAME, e.g. jts3.local). "
-            "Sent as the Host header so the wizard's management-host guard "
-            "admits a loopback request"
-        ),
+        default=None,
+        help="Host header override (default: derived from --base-url)",
     )
     parser.add_argument(
         "--mover",
