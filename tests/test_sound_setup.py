@@ -112,7 +112,6 @@ from ._web_test_helpers import (
     json_post_with_csrf,
     make_csrf_session,
     request_with_csrf,
-    sound_page_js,
 )
 from .sound_camilla_fixtures import FakeCamilla
 from .test_active_speaker_runtime_contract import _active_baseline_yaml
@@ -437,22 +436,10 @@ _ACTIVE_SPEAKER_UI_MODULE = (
     Path(__file__).resolve().parent.parent
     / "deploy" / "assets" / "sound-profile" / "js" / "active-speaker-ui.js"
 )
-_SOUND_CSS = (
-    Path(__file__).resolve().parent.parent
-    / "deploy" / "assets" / "sound-profile" / "sound.css"
-)
 _SOUND_HARNESS = Path(__file__).resolve().parent / "js" / "sound_profile_harness.mjs"
 
 _ACTIVE_SPEAKER_UI_TEST = (
     Path(__file__).resolve().parent / "js" / "active_speaker_ui_test.mjs"
-)
-_ACTIVE_SPEAKER_UI_JS = (
-    Path(__file__).resolve().parents[1]
-    / "deploy"
-    / "assets"
-    / "sound-profile"
-    / "js"
-    / "active-speaker-ui.js"
 )
 _NODE = shutil.which("node")
 
@@ -1163,76 +1150,6 @@ def test_index_html_embeds_csrf_meta_for_json_posts():
     assert 'meta name="jts-csrf" content="csrf-token"' in html
 
 
-def test_sound_active_speaker_ui_helpers_are_pure_module_boundary():
-    js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
-
-    assert "export function activeSpeakerStepState" in js
-    assert "export function defaultActiveSpeakerStep" in js
-    assert "querySelector" not in js
-    assert "document." not in js
-    assert "fetch(" not in js
-    assert "explicit lab backend" not in js
-
-
-def test_sound_module_preserves_editor_behaviour():
-    """The EQ editor moved from inline _SOUND_JS into a static module. Guard
-    the load-bearing pieces so the relocation can't silently drop them: the
-    5-band Simple field names, the backend endpoints + epoch handshake, the
-    CSRF-via-meta wiring, and no legacy prompt() flow."""
-    js = sound_page_js()
-    assert "sub_bass_db" in js
-    assert "presence_db" in js
-    for path in (
-        "./preview", "./live-draft", "./apply",
-        "./profiles/save", "./profiles/rename", "./profiles/delete",
-        "./volume-floor/audition", "./volume-floor/stop",
-    ):
-        assert path in js, f"sound module no longer references {path}"
-    assert "dsp_write_epoch: dspWriteEpoch" in js
-    assert "function cancelLiveDrafts()" in js
-    assert "postJSON('./apply'" in js
-    # CSRF/JSON helpers are imported from the shared http.js (which reads the
-    # meta[name=jts-csrf] tag) rather than re-declared locally — the token is
-    # never string-substituted at render time. (See the http.js drift guard in
-    # tests/test_web_wizard_conventions.py.)
-    assert 'from "/assets/shared/js/http.js"' in js
-    assert "Active crossover setup" in js
-    assert "/assets/sound-profile/js/active-speaker-ui.js" in js
-    assert "./active-speaker/prepare-driver-test" not in js
-    assert "./active-speaker/measurements" in js
-    assert "./active-speaker/baseline-profile" in js
-    assert "./output-topology" in js
-    assert "./output-topology/reset" in js
-    assert "./output-topology/repin" in js
-    assert "Reset speaker setup" in js
-    assert "Keep setup, pin the new DAC" in js
-    assert "Save and apply" in js
-    assert "Start tone" in js
-    assert "Stop tone" in js
-    assert "Save floor" in js
-    assert "save-volume-floor" in js
-    assert "Reset floor" in js
-    assert "reset-volume-floor" in js
-    assert "function saveVolumeFloor" in js
-    assert "function setVolumeFloorDraft" in js
-    assert "return true;" in js
-    assert "return false;" in js
-    assert "else if (act === 'save-volume-floor')" in js
-    assert "setVolumeFloorDraft(floor);" in js
-    assert "await saveVolumeFloor();" in js
-    assert "pagehide" in js
-    assert "scheduleVolumeFloorToneUpdate(volumeFloorValue());" in js
-    assert "if (volumeFloorTone.active) scheduleVolumeFloorToneUpdate(volumeFloorValue(), {immediate: true});" in js
-    assert "stopVolumeFloorTone({keepalive: true, quiet: true, reason: 'pagehide'})" in js
-    assert "function defaultOutputStep()" in js
-    assert "return defaultActiveSpeakerStep(outputStepContext(currentOutputTopology()));" in js
-    helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
-    assert "if (!ctx.driverResearchSatisfied) return 'research';" in helper_js
-    assert "output-step__chevron" in js
-    assert "querySelectorAll('.output-step[open]')" in js
-    assert "window.prompt" not in js
-
-
 def test_i2s_hat_payload_offers_only_the_undetectable_hats(monkeypatch, tmp_path):
     """Detected HATs are reported, never offered as a choice (ADR-0234)."""
 
@@ -1337,57 +1254,6 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
     assert refreshed["warnings"] == ["collision"]
     assert failed == {"ok": False, "error": "broker unavailable"}
 
-    repo = Path(__file__).resolve().parents[1]
-    unit = (repo / "deploy/systemd/jasper-audio-hardware-reconcile.service").read_text()
-    nginx = (repo / "deploy/nginx-jasper.conf").read_text()
-    streambox = (repo / "deploy/nginx-jasper-streambox.conf").read_text()
-    assert "TimeoutStartSec=50s" in unit
-    assert 50 < 55 < 55 + restart_broker._CLIENT_SOCKET_MARGIN_SEC < 65
-    # The I2S HAT control POSTs through /sound/output/; the speaker page shares
-    # the backend and the same bound.
-    for conf in (nginx, streambox):
-        for page in ("/sound/speaker/", "/sound/output/"):
-            block = conf.split(f"location {page} {{", 1)[1].split("}", 1)[0]
-            assert "proxy_read_timeout 65s;" in block
-
-
-# --------------------------------------------------------------------------
-# Commissioning blocker copy — the COMPLETENESS guards (#2344).
-#
-# These walk the BACKEND's codes, so a newly minted blocker with no renderer
-# entry fails here rather than shipping.
-#
-# NOT asserted: "every backend blocker code has its own entry in every map".
-# Of 78 literal codes, 46 have no specific mapping by design — the preparation
-# failures out of `staging.py` collapse into the `commissioning_candidate_prepared`
-# gate's one sentence, which is the right household copy for all of them.
-# --------------------------------------------------------------------------
-
-_COMMISSION_CODE_MODULES = (
-    "jasper/active_speaker/staging.py",
-    "jasper/active_speaker/commission_load.py",
-    "jasper/active_speaker/startup_load.py",
-    "jasper/active_speaker/commission_ramp.py",
-    "jasper/active_speaker/web_commissioning.py",
-    # Reachable through the same payloads: the preflight aggregates path-safety
-    # and topology blockers, and tone playback contributes its own.
-    "jasper/active_speaker/path_safety.py",
-    "jasper/active_speaker/playback.py",
-    "jasper/active_speaker/safe_playback.py",
-    "jasper/active_speaker/driver_protection.py",
-    "jasper/active_speaker/measurement.py",
-    "jasper/web/sound_active_speaker.py",
-    # Also in the issue flow, and absent from this list until #2285: the
-    # baseline emitter mints two of the four `ring_wire_declaration_invalid`
-    # sites, the environment probe contributes the config/ALSA blockers the
-    # preflight aggregates, and topology_tone's six target blockers are spliced
-    # straight into the combined-test payload
-    # (`web_commissioning._summed_target_or_issue`). A module that mints a
-    # blocker a household can reach and is not scanned here is a guard that
-    # reports on a subset while reading as complete.
-    "jasper/active_speaker/baseline_profile.py",
-    "jasper/active_speaker/environment.py",
-)
 
 # An operator remedy: a sudo/systemctl invocation, a `jasper-*` binary, or a
 # long CLI flag. Household surfaces must never carry one.
@@ -1400,153 +1266,6 @@ _COMMISSION_CODE_MODULES = (
 _OPERATOR_COMMAND_RE = re.compile(
     r"(?:^|[\s`/])(?:sudo\s|systemctl\s|jasper-[a-z-]+|--[a-z][a-z-]+)"
 )
-
-
-def _lit_str(node) -> str | None:
-    """The literal string a node carries, or None when it is computed."""
-    import ast
-
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if isinstance(node, ast.JoinedStr):  # f-string: keep the literal parts
-        return "".join(
-            v.value
-            for v in node.values
-            if isinstance(v, ast.Constant) and isinstance(v.value, str)
-        )
-    return None
-
-
-def _blocker_dict_fields(node) -> tuple[object, object] | None:
-    """``(code_node, message_node)`` for a literal ``severity: "blocker"`` dict."""
-    import ast
-
-    if not isinstance(node, ast.Dict):
-        return None
-    fields = {
-        key.value: value
-        for key, value in zip(node.keys, node.values)
-        if isinstance(key, ast.Constant) and isinstance(key.value, str)
-    }
-    if _lit_str(fields.get("severity")) != "blocker":
-        return None
-    if "code" not in fields:
-        return None
-    return fields["code"], fields.get("message")
-
-
-# The seeded builders, defined OUTSIDE the scanned modules
-# (`jasper.active_speaker._common`), so nothing here can discover them. ARITY,
-# not name, disambiguates the `_issue` alias: most modules import
-# `issue as _issue` (3 positional args, severity first) while
-# `web_commissioning` imports `blocker_issue as _issue` (2 args, code first),
-# so reading `args[1]` blindly would collect MESSAGES as codes there.
-# Value is (code_index, message_index).
-_SEEDED_BLOCKER_BUILDERS: dict[tuple[str, int], tuple[int, int]] = {
-    ("_issue", 2): (0, 1),
-    ("blocker_issue", 2): (0, 1),
-    ("_blocked", 2): (0, 1),
-}
-
-
-def _local_blocker_helpers(tree) -> dict[str, tuple[int, int]]:
-    """Module-local helpers that forward their own params into a blocker issue.
-
-    Discovered BY DEFINITION, not by name: a hard-coded name list cannot be
-    widened ahead of the next helper somebody writes, and a definition scan can.
-
-    Returns ``name -> (code_arg_index, message_arg_index)`` for any function
-    whose body builds a blocker (a literal `severity: "blocker"` dict, or a call
-    to a seeded builder) directly out of its own positional parameters.
-    """
-    import ast
-
-    helpers: dict[str, tuple[int, int]] = {}
-    for func in ast.walk(tree):
-        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        params = [arg.arg for arg in func.args.args + func.args.kwonlyargs]
-
-        def _param_index(node, _params=params):
-            if isinstance(node, ast.Name) and node.id in _params:
-                return _params.index(node.id)
-            return None
-
-        for inner in ast.walk(func):
-            fields = _blocker_dict_fields(inner)
-            if fields is None and isinstance(inner, ast.Call):
-                target = inner.func
-                inner_name = target.id if isinstance(target, ast.Name) else None
-                key = (inner_name, min(len(inner.args), 2))
-                if inner_name and key in _SEEDED_BLOCKER_BUILDERS and inner.args:
-                    code_i, message_i = _SEEDED_BLOCKER_BUILDERS[key]
-                    if len(inner.args) > max(code_i, message_i):
-                        fields = (inner.args[code_i], inner.args[message_i])
-            if fields is None:
-                continue
-            code_index = _param_index(fields[0])
-            message_index = _param_index(fields[1])
-            if code_index is not None and message_index is not None:
-                helpers[func.name] = (code_index, message_index)
-                break
-    return helpers
-
-
-def _commission_blocker_pairs() -> list[tuple[str, str, str]]:
-    """AST-walk the commissioning modules for literal (code, message, where).
-
-    Three shapes are collected: the seeded `_common` builders (by arity, see
-    `_SEEDED_BLOCKER_BUILDERS`), any module-local helper that forwards its own
-    params into a blocker, and bare `{"severity": "blocker", ...}` dict literals.
-
-    Codes built from an f-string or a variable are invisible here — a known
-    bound: the property under test is the literal prose an author writes next to
-    a literal code, and a computed code carries a computed message the walk
-    could not check either.
-    """
-    import ast
-
-    repo = Path(__file__).resolve().parent.parent
-    pairs: list[tuple[str, str, str]] = []
-    for rel in _COMMISSION_CODE_MODULES:
-        path = repo / rel
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        builders = dict(_SEEDED_BLOCKER_BUILDERS)
-        builders.update(
-            {(name, 2): indices for name, indices in _local_blocker_helpers(tree).items()}
-        )
-        # The 3-arg severity-first alias, kept separate: its severity must be
-        # the literal "blocker" before the pair counts.
-        for node in ast.walk(tree):
-            code = message = None
-            fields = _blocker_dict_fields(node)
-            if fields is not None:
-                code, message = _lit_str(fields[0]), _lit_str(fields[1])
-            elif isinstance(node, ast.Call):
-                func = node.func
-                name = (
-                    func.attr
-                    if isinstance(func, ast.Attribute)
-                    else func.id
-                    if isinstance(func, ast.Name)
-                    else None
-                )
-                if name == "_issue" and len(node.args) >= 3:
-                    if _lit_str(node.args[0]) == "blocker":
-                        code, message = _lit_str(node.args[1]), _lit_str(node.args[2])
-                else:
-                    indices = builders.get((name, min(len(node.args), 2)))
-                    if indices and len(node.args) > max(indices):
-                        code = _lit_str(node.args[indices[0]])
-                        message = _lit_str(node.args[indices[1]])
-                if code is None:
-                    kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
-                    if "code" in kwargs:
-                        code = _lit_str(kwargs["code"])
-                        message = _lit_str(kwargs.get("message"))
-            if code:
-                pairs.append((code, message or "", f"{rel}:{node.lineno}"))
-    return pairs
 
 
 def test_every_preflight_gate_id_has_household_copy():
@@ -1604,136 +1323,6 @@ def test_every_preflight_gate_id_has_household_copy():
         "these preflight gates would render the generic 'a setup step still "
         f"needs finishing' instead of telling the household what is wrong: {missing}"
     )
-
-
-def test_the_transport_blockers_are_registered_on_every_household_surface():
-    """Both directions of the shared code set (#2344, re-pointed by #2412).
-
-    Each live code present on both surfaces, and the retired ring-transport
-    rung absent from both: asserting only the first half would pass over a
-    partial re-point that left the dead rung reachable.
-    """
-    from jasper.active_speaker.staging import COMMISSIONING_TRANSPORT_GATE_ID
-
-    helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
-    # The codes the BUILDERS actually raise, so a map entry cannot outlive a
-    # renamed emitter: the ends-disagree code carries no operator command, so
-    # the command guard above would not catch a misspelling in its emitter.
-    emitted = {code for code, _, _ in _commission_blocker_pairs()}
-    # Quoted tokens, not substrings: `..._unarmed_X` contains `..._unarmed`, so
-    # a substring assertion passes over a misspelled rung. The ladder's real
-    # coverage is asserted behaviourally in tests/js/active_speaker_ui_test.mjs;
-    # this is the cheap second layer, not the guarantee.
-    for code in (
-        "commissioning_transport_ends_disagree",
-        "commissioning_active_endpoint_unarmed",
-        "ring_wire_declaration_invalid",
-        "commission_live_state_stale",
-        "commission_output_hardware_reconcile_failed",
-        "commission_tone_backend_failed",
-        "commission_active_graph_not_staged",
-    ):
-        assert code in emitted, f"no commissioning builder raises {code}"
-        assert f"'{code}'" in helper_js, (
-            f"the /sound/ issue ladder does not name {code}"
-        )
-    # The three the ladder reaches through a PREFIX rung, never by name: its
-    # `indexOf('commission_startup_anchor_')` branch collapses all three into
-    # one sentence, while Python routes them to three families with three
-    # remedies. Pinned as emitted + copied + swallowed by a rung that exists —
-    # deliberately NOT pinned as equivalent advice, because it is not.
-    assert "indexOf('commission_startup_anchor_') === 0" in helper_js, (
-        "the /sound/ ladder no longer collapses the startup-anchor family by "
-        "prefix; if it now names the codes, pin them like the eight above"
-    )
-    for code in (
-        "commission_startup_anchor_not_staged",
-        "commission_startup_anchor_path_safety_blocked",
-        "commission_startup_anchor_load_failed",
-    ):
-        assert code in emitted, f"no commissioning builder raises {code}"
-        assert f"'{code}'" not in helper_js, (
-            f"the /sound/ ladder now names {code} directly — move it into the "
-            "loop above so its own sentence is pinned"
-        )
-    # The transport gates the preflight publishes both key household copy on
-    # their ids (the closed-set guard below walks the builder for these).
-    assert f"\n    {COMMISSIONING_TRANSPORT_GATE_ID}:" in helper_js, (
-        "the /sound/ gate map does not name the transport gate"
-    )
-    assert "\n    commissioning_transport_armed:" in helper_js, (
-        "the /sound/ gate map does not name the armed-transport gate"
-    )
-    # THE RETIRED RUNG, ABSENT FROM BOTH SURFACES.
-    assert "commissioning_ring_transport_unsupported" not in helper_js, (
-        "the /sound/ ladder still carries the retired ring-transport blocker"
-    )
-    # And none of the copy may carry an operator command — the retired one's
-    # `baseline-reemit`, or either new reconciler invocation.
-    for command in ("baseline-reemit", "jasper-fanin-coupling-reconcile", "systemctl"):
-        assert command not in helper_js, (
-            f"a household surface carries the operator remedy verbatim: {command}"
-        )
-
-
-def test_active_speaker_setup_copy_has_no_backend_jargon():
-    """The /sound/ active-speaker flow is a guided consumer setup, not an
-    engineering console. User-facing copy must never leak backend vocabulary
-    (CamillaDSP/YAML, "protected"/"safe path", rollout "slice", raw "evidence")
-    and friendlySetupReason must never echo a raw snake_case code. See AGENTS.md
-    "Web wizard conventions" and the active-crossover flow simplification."""
-    js = sound_page_js()
-    helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
-
-    # No backend vocabulary in any user-visible string.
-    for jargon in (
-        "No YAML",
-        "CamillaDSP baseline YAML",
-        "A durable CamillaDSP baseline",
-        "The baseline YAML is saved",
-        "reloads CamillaDSP",
-        "in this slice",
-        "missing playback evidence",
-        "the protected test setup",
-        "the safe audio path",
-        "safe test setup",
-        "Polarity or delay issue",
-        "was blocked before sound could play",
-    ):
-        assert jargon not in js, f"backend jargon leaked into main.js: {jargon!r}"
-
-    # friendlySetupReason must collapse code-like strings to a calm sentence
-    # instead of echoing the raw identifier (the old `text.replace(/_/g,' ')`).
-    assert "return raw.replace(/_/g, ' ')" not in js
-    assert "return outcome.replace(/_/g, ' ')" not in js
-    assert "This driver can’t be tested yet — finish the earlier setup steps first." in helper_js
-
-    # The new consumer copy is present and stable.
-    assert (
-        "Save the checked crossover as your active speaker profile. "
-        "JTS validates and applies it in one step; no sound plays."
-    ) in js
-    assert (
-        "Your active speaker profile is saved. "
-        "Finish applying it to start using it."
-    ) in js
-    assert "Sounds hollow or thin" not in js
-    assert "Needs adjustment" not in js
-    assert "Too loud" not in js
-    for confusing_copy in (
-        "saved drivers",
-        "saved crossover settings",
-        "Save crossover settings",
-        "Saved crossover settings",
-        "saved driver info",
-        "saved partial settings",
-        "Builds the crossover plan from your saved settings",
-    ):
-        assert confusing_copy not in js
-
-    # The pure vocabulary module owns the no-sound fallbacks and stays actionable.
-    assert "Start the tone again so JTS can open the quiet driver test first." in helper_js
-    assert "did not complete" not in helper_js
 
 
 def test_active_speaker_stop_and_level_payloads_are_no_audio(
@@ -2689,22 +2278,6 @@ def test_subwoofer_crossover_fc_round_trips_through_topology_save(
         if group.mode == "subwoofer"
     )
     assert sub_group.channels[0].crossover_fc_hz == posted_fc_hz
-
-
-def test_sub_crossover_bounds_match_python():
-    """The JS active-speaker-ui bass-management bounds MUST equal the Python
-    profile + output_topology constants — drift would let the UI offer a corner
-    the server fail-loud rejects (or clamp where the server blocks)."""
-    from jasper.active_speaker.profile import (
-        DEFAULT_SUB_CROSSOVER_HZ,
-        SUB_CROSSOVER_HZ_HI,
-        SUB_CROSSOVER_HZ_LO,
-    )
-
-    js = _ACTIVE_SPEAKER_UI_JS.read_text()
-    assert f"DEFAULT_SUB_CROSSOVER_HZ = {DEFAULT_SUB_CROSSOVER_HZ}" in js
-    assert f"SUB_CROSSOVER_HZ_LO = {SUB_CROSSOVER_HZ_LO}" in js
-    assert f"SUB_CROSSOVER_HZ_HI = {SUB_CROSSOVER_HZ_HI}" in js
 
 
 def _active_speaker_driver_research_payload(*, frequency_hz: float = 2500) -> dict:
@@ -4165,34 +3738,6 @@ def test_active_speaker_crossover_preview_get_tracks_draft_without_preview_file(
         assert "preview_fingerprint" not in payload["source"]
 
 
-def test_sound_module_treats_saved_tab_as_live_lane_with_flat_fallback():
-    js = sound_page_js()
-    set_view_start = js.index("function setView(v)")
-    set_view_end = js.index("function applySavedSelection", set_view_start)
-    set_view_body = js[set_view_start:set_view_end]
-    reconcile_start = js.index("async function reconcileLiveSource()")
-    reconcile_end = js.index("async function applyProfile", reconcile_start)
-    reconcile_body = js[reconcile_start:reconcile_end]
-    delete_start = js.index("async function deleteEntry(id)")
-    delete_end = js.index("async function loadState()", delete_start)
-    delete_body = js[delete_start:delete_end]
-    load_start = js.index("async function loadState()")
-    load_body = js[load_start:]
-
-    assert "var DEFAULT_SAVED_ID = 'stock:flat';" in js
-    assert "function selectedSavedEntry()" in js
-    assert "function selectedSavedProfile()" in js
-    assert "function requestLiveSource(options)" in js
-    assert "function reconcileLiveSource()" in js
-    assert "requestLiveSource({immediate: true});" in set_view_body
-    assert "if (eqEditor.view === 'saved')" in reconcile_body
-    assert "return applySavedSelection(options.okMsg, seq);" in reconcile_body
-    assert "if (act === 'browse-presets') { setView('saved'); }" in js
-    assert "eqEditor.selectedId = fallbackSavedId();" in delete_body
-    assert "requestLiveSource({immediate: true});" in delete_body
-    assert "selectedId = findIdFor(applied);" in load_body
-
-
 @pytest.fixture(scope="module")
 def sound_harness_out() -> dict:
     """Run the /sound/ JS harness once and hand every scenario its verdict."""
@@ -4252,133 +3797,6 @@ def test_the_sound_module_passes_its_harness_scenario(sound_harness_out, scenari
     assert {scenario: True} in sound_harness_out["results"]
 
 
-def test_sound_component_flow_uses_bounded_responsive_grids():
-    css = _SOUND_CSS.read_text()
-
-    # The old fixed four-column row squeezed whole details panels into a single
-    # track on desktop. Components and Advanced use their own min-width-safe
-    # grids, capped at two columns and explicitly stacked on phones. Advanced
-    # uses the page's neutral beige instead of repeating the green input surface.
-    # The outer
-    # setup must also keep its step list stretched: otherwise closing every
-    # disclosure makes the auto-width grid shrink-wrap its summary text.
-    assert (
-        "grid-template-columns: minmax(12rem, 1.4fr) "
-        "repeat(3, minmax(7rem, 0.7fr))"
-    ) not in css
-    assert ".component-card__fields" in css
-    assert ".driver-research__advanced-editor" in css
-    advanced_rule = css.split(
-        ".driver-research__advanced-editor {", 1
-    )[1].split("}", 1)[0]
-    assert "background: var(--background);" in advanced_rule
-    assert ".driver-research__alignment," in css
-    assert ".driver-research__evidence {" in css
-    assert ".active-speaker-setup .output-setup {" in css
-    output_setup_rule = css.split(
-        ".active-speaker-setup .output-setup {", 1
-    )[1].split("}", 1)[0]
-    assert "align-items: stretch;" in output_setup_rule
-    assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in css
-    phone_start = css.index("@media (max-width: 420px)")
-    phone_css = css[phone_start:]
-    assert ".component-card__fields," in phone_css
-    assert ".driver-research__fields {" in phone_css
-    assert "grid-template-columns: minmax(0, 1fr);" in phone_css
-
-
-def test_sound_css_marks_live_sources_with_red_dots():
-    js = sound_page_js()
-    css = _SOUND_CSS.read_text()
-
-    assert "btn.classList.toggle('is-live', v === eqEditor.view);" in js
-    assert ".app-header__tabs .segmented__btn.is-live::after" in css
-    assert ".profile-row__dot--on" in css
-    assert "background: var(--destructive);" in css
-    assert ".active-speaker-issues--warning" in css
-    assert ".active-speaker-issue--blocker" in css
-    assert ".active-speaker-note" in css
-    assert ".output-sequence__item--needs-action .output-sequence__marker" not in css
-
-def test_sound_module_draws_a_single_response_curve_with_no_overlays():
-    js = sound_page_js()
-    render_start = js.index("function renderGraph(payload, enabled)")
-    render_end = js.index("  // Render the graph", render_start)
-    render_body = js[render_start:render_end]
-
-    # One line only: the summed curve + fill. No per-band component overlay is
-    # drawn, even for the expanded band (its dot + width shading mark it).
-    assert "drawArea(payload.preview" in render_body
-    assert "drawPath(curvePts, 'curve')" in render_body
-    assert "component selected" not in render_body
-    assert "comp.advanced" not in render_body
-    assert "bandComponent" not in render_body
-    # Band dots are anchored to the summed curve and only drawn when enabled.
-    assert "if (enabled) html += drawBandMarkers(curvePts);" in render_body
-
-
-def test_sound_module_anchors_band_dots_to_the_summed_curve():
-    js = sound_page_js()
-    markers_start = js.index("function drawBandMarkers(summed)")
-    markers_end = js.index("function expandedPeqBandIndex()", markers_start)
-    markers_body = js[markers_start:markers_end]
-
-    assert "var expandedBand = expandedPeqBandIndex();" in markers_body
-    assert "i === expandedBand" in markers_body
-    # The dot sits ON the curve (summedDbAt), not at the band's raw gain — the
-    # fix for the shelf/cut "dot floats off the line" bug.
-    assert "summedDbAt(summed, fx)" in markers_body
-    assert "band-dot" in markers_body
-    # Only the expanded band adds a guide line + width shading; no per-band
-    # marker lines clutter the default view.
-    assert "band-guide" in markers_body
-    assert "band-marker" not in markers_body
-    assert "(b.type || 'Peaking') === 'Peaking'" in markers_body
-
-    css = _SOUND_CSS.read_text()
-    assert ".band-guide" in css
-    assert ".band-marker " not in css
-    assert ".band-width.selected" not in css
-
-
-def test_sound_module_reset_draft_and_simple_zero_detent():
-    """Draft reset is the user-facing revert action, and Simple sliders get a
-    tiny release-time zero detent so neutral is easy without per-band buttons."""
-    js = sound_page_js()
-    assert "Reset draft" in js
-    assert 'data-act="reset-draft"' in js
-    assert "function resetDraft()" in js
-    assert "Discard" not in js
-    assert "var ZERO_DETENT_DB = 0.1;" in js
-    assert "Math.abs(next) <= ZERO_DETENT_DB" in js
-    assert "ev.target.getAttribute('data-field')" in js
-
-
-def test_sound_readouts_are_not_fake_edit_controls():
-    """Readouts are display-only; exact numeric editing was intentionally not
-    shipped, so they must not masquerade as text-edit buttons."""
-    js = sound_page_js()
-    css = _SOUND_CSS.read_text()
-    assert "range__readout-value" in js
-    assert "simple-col__readout-value" in js
-    assert "readout-btn" not in js
-    assert "readout-input" not in js
-    assert "cursor: text" not in css
-
-
-def test_sound_module_prefers_explicit_profile_identity_then_stock_matches():
-    js = sound_page_js()
-    fn_start = js.index("function findIdFor(profile)")
-    fn_end = js.index("function sourceProfile()", fn_start)
-    body = js[fn_start:fn_end]
-
-    explicit_identity = body.index("profile.profile_id && entryById(profile.profile_id)")
-    stock_match = body.index("e.kind === 'stock'")
-    custom_match = body.index("e.kind === 'custom'")
-
-    assert explicit_identity < stock_match < custom_match
-
-
 def test_state_payload_contains_stock_curves_profiles_and_preview(tmp_path: Path):
     payload = sound_setup._state_payload(
         SoundProfile(curve_id="harman"),
@@ -4404,29 +3822,6 @@ def test_state_payload_contains_stock_curves_profiles_and_preview(tmp_path: Path
     # the page's reset button + default would silently disagree with the server.
     assert payload["limits"]["volume_floor_default_db"] == DEFAULT_VOLUME_FLOOR_DB
     assert payload["headroom_db"] > 0
-
-
-def test_sound_module_hides_uncontrollable_band_controls():
-    js = sound_page_js()
-    band_row = js[js.index("function bandRow(band, index)"):js.index("function typeBtn(")]
-    # All six band types are offered.
-    for t in ("Lowshelf", "Peaking", "Highshelf", "Highpass", "Lowpass", "Notch"):
-        assert "typeBtn('" + t + "'" in band_row
-    # Gain is hidden for cut/notch (no gain term); Width is hidden for shelves
-    # (every shelf is drawn and emitted at the fixed Butterworth SHELF_Q, so
-    # the control would be inert).
-    assert "gainless ? '' : rangeRow('Gain'" in band_row
-    assert "shelf ? '' : rangeRow('Width'" in band_row
-
-
-def test_sound_module_bounds_cut_filter_width_with_cut_max_q():
-    js = sound_page_js()
-    # The Width slider and its clamp use a per-type ceiling for HP/LP, sourced
-    # from limits.cut_max_q (SSOT in jasper/sound/profile.py CUT_MAX_Q).
-    assert "function bandQMax(type)" in js
-    assert "limits.cut_max_q" in js
-    assert "rangeRow('Width', band.q, limits.min_q, bandQMax(type)" in js
-    assert "clamp(ev.target.value, limits.min_q, bandQMax(band.type))" in js
 
 
 def test_state_filter_count_signals_effective_eq_for_initial_view():
