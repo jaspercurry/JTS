@@ -116,6 +116,7 @@ def _migrate_applied_candidate(
         blend_correction=snapshot.get("blend_correction", ()),
         room_correction=snapshot.get("room_correction", applied_profile.get("room_correction", {})),
         bass_extension=snapshot.get("bass_extension", {}),
+        rear_calibration=snapshot.get("rear_calibration", {}),
     )
     if driver_corrections(candidate) != corrections:
         # The current candidate model can refine one region; verify its inverse
@@ -229,9 +230,15 @@ def compose_candidate(
             alignment_source = "measured"
     room = dict(selected.get("room", base.candidate.room_correction) or {})
     bass = dict(selected.get("bass", base.candidate.bass_extension) or {})
+    rear = dict(selected.get("rear_calibration", base.candidate.rear_calibration) or {})
+    names = ["driver", "blend", "topology", "room", "bass"]
+    # Named only once a cardioid document is in play, so a candidate composed
+    # without one keeps the fingerprint it had before the section existed.
+    if rear or "rear_calibration" in selected:
+        names.append("rear_calibration")
     resolution = {
         name: "base" if name not in selected else "document" if selected[name] else "cleared"
-        for name in ("driver", "blend", "topology", "room", "bass")
+        for name in names
     }
     resolution["alignment"] = alignment_source
     analysis: dict[str, Any] = {
@@ -257,7 +264,7 @@ def compose_candidate(
         alignment=resolved_alignment,
         linearization=linearization,
         blend_correction=selected.get("blend", base.candidate.blend_correction) or (),
-        room_correction=room, bass_extension=bass,
+        room_correction=room, bass_extension=bass, rear_calibration=rear,
     )
     # The room set is emitted here so the emitter's headroom charge runs at
     # compose rather than at apply.

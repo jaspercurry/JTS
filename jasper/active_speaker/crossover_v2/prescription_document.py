@@ -20,6 +20,8 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, room_peqs_from_correction, driver_corrections,
 )
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
+from jasper.active_speaker import rear_calibration
+from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from .topology_prescription import apply_topology_pin
 
 from . import alignment_prescription as alignment
@@ -41,6 +43,7 @@ SECTION_KINDS = {
     "topology": topology.TOPOLOGY_PRESCRIPTION_KIND,
     "room": room.ROOM_PRESCRIPTION_KIND,
     "bass": None,
+    "rear_calibration": rear_calibration.KIND,
 }
 
 
@@ -143,6 +146,9 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
     if name == "bass":
         bass_pin = bass.read_bass_prescription(raw, evidence=evidence.sources["bass_evidence"])
         return bass_pin.descriptor, bass_pin.to_dict()
+    if name == "rear_calibration":
+        document = rear_calibration.read_rear_calibration(raw, sample_rate=DEFAULT_SAMPLE_RATE)
+        return document, document
     raise PrescriptionDocumentRefused("prescription_kind_unknown", name, "unknown section kind")
 
 
@@ -151,10 +157,13 @@ def _section_payload(name: str, section: Mapping[str, Any], rationale: str,
     kind = SECTION_KINDS[name]
     if kind is None:
         return section
-    contract = contracts[name] if name == "room" else contracts["speaker"][name]
-    section = {"kind": kind, "artifact_schema_version": contract["schema"]["properties"]["artifact_schema_version"]["const"],
-               **({"rationale": rationale} if name in {"driver", "blend", "room"} else {}), **section}
-    if section["kind"] != kind:
+    # A rear calibration is authored whole and carries its own kind and schema;
+    # read_rear_calibration refuses any extra key a prescription header adds.
+    if name != "rear_calibration":
+        contract = contracts[name] if name == "room" else contracts["speaker"][name]
+        section = {"kind": kind, "artifact_schema_version": contract["schema"]["properties"]["artifact_schema_version"]["const"],
+                   **({"rationale": rationale} if name in {"driver", "blend", "room"} else {}), **section}
+    if section.get("kind") != kind:
         raise PrescriptionDocumentRefused("prescription_kind_unknown", name, "section kind does not match its name")
     return section
 
@@ -177,6 +186,13 @@ def preview_room_document(document: Mapping[str, Any], *, base: BankedCandidate,
     return {"ok": True, "section": "room", "preview": preview, "adopted": False, "banked": False}
 
 
+def _refused_section(code: str) -> str | None:
+    """The section a composition refusal came from, when its code names one."""
+    if code == "composition_topology_required":
+        return "topology"
+    return "rear_calibration" if code.startswith("rear_calibration_") else None
+
+
 def judge_prescription_document(raw: Any, *, base: BankedCandidate,
                                evidence: PrescriptionEvidence | None = None) -> MeasuredCrossoverCandidate:
     document = read_prescription_document(raw)
@@ -187,7 +203,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
     selected: dict[str, Any] = {}
     judged: dict[str, Any] = {}
     fc_hz = contracts["speaker"]["alignment"]["bounds"]["fc_hz"]
-    for name in ("topology", "blend", "alignment", "room", "bass", "driver"):
+    for name in ("topology", "blend", "alignment", "room", "bass", "rear_calibration", "driver"):
         if name not in document["sections"]:
             continue
         section = document["sections"][name]
@@ -204,6 +220,8 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
         except (blend.BlendPrescriptionRefused, alignment.AlignmentPrescriptionRefused,
                 topology.TopologyPrescriptionRefused) as exc:
             raise PrescriptionDocumentRefused(exc.reason, name, exc.detail, evidence=getattr(exc, "evidence", {})) from exc
+        except rear_calibration.RearCalibrationError as exc:
+            raise PrescriptionDocumentRefused("rear_calibration_invalid", name, str(exc)) from exc
         except (ValueError, TypeError, KeyError) as exc:
             raise PrescriptionDocumentRefused("prescription_malformed", name, str(exc)) from exc
     try:
@@ -222,6 +240,6 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
                       **({"commissioning": {"alignment": read}} if read is not None else {})},
         )
     except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
-        raise PrescriptionDocumentRefused(exc.code, "topology" if exc.code == "composition_topology_required" else None, exc.detail) from exc
+        raise PrescriptionDocumentRefused(exc.code, _refused_section(exc.code), exc.detail) from exc
     except (ValueError, TypeError, KeyError) as exc:
         raise PrescriptionDocumentRefused("composition_invalid", None, str(exc)) from exc
