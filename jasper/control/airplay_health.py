@@ -35,6 +35,14 @@ from statistics import median
 from typing import Any
 
 from jasper.camilla_config_contract import DEFAULT_CAMILLA_PORT
+from jasper.control._health_fields import (
+    _as_float,
+    _as_int,
+    _as_int_or_none,
+    _nonneg_delta,
+    _nonneg_rate,
+    _sum_or_none,
+)
 from jasper.control.system_metrics import read_thermal_zone_temp_c
 from jasper.fanin.status import fanin_inputs_by_label
 from jasper.install_profile import BUILD_MANIFEST_FILE
@@ -145,52 +153,6 @@ EVENT_BUCKET_FIELD = {
     "camilla_short_read": "camilla_short_reads",
     "camilla_playback_underrun": "camilla_playback_underruns",
 }
-
-
-def _as_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _as_float(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _as_int_or_none(value: Any) -> int | None:
-    """Like _as_int, but a missing/unparseable value stays None, not 0 —
-    0 would misread as "confirmed zero" rather than "couldn't tell"."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _nonneg_delta(curr: Any, prev: Any) -> int | None:
-    if not isinstance(curr, int) or not isinstance(prev, int) or curr < prev:
-        return None
-    return curr - prev
-
-
-def _nonneg_rate(curr: Any, prev: Any, dt: float) -> float | None:
-    """A monotonic counter's per-second delta, or None on wrap/reset/absence."""
-    delta = _nonneg_delta(curr, prev)
-    return delta / dt if delta is not None else None
-
-
-def _sum_or_none(block: Mapping[str, Any], keys: tuple[str, ...]) -> int | None:
-    """Sum of the named counters, or None unless every one of them is present."""
-    total = 0
-    for key in keys:
-        value = _as_int_or_none(block.get(key))
-        if value is None:
-            return None
-        total += value
-    return total
 
 
 def classify_journal_line(unit: str, line: str) -> dict[str, Any] | None:

@@ -146,6 +146,14 @@ class _FakeHaStatus:
         }
 
 
+@pytest.mark.parametrize("value", [True, False])
+def test_as_int_treats_bool_as_absent_not_1(value: bool) -> None:
+    """airplay_health._as_int is jasper.control._health_fields._as_int now
+    (R-135/#4805): a stray bool from upstream JSON must read as "couldn't
+    tell" (the default), never as the numeric identity of True/False."""
+    assert airplay_health._as_int(value, default=7) == 7
+
+
 def test_classify_journal_lines_for_documented_airplay_patterns() -> None:
     drop = classify_journal_line(
         "shairport-sync",
