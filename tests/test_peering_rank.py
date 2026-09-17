@@ -14,7 +14,6 @@ import pytest
 
 from jasper.peering.rank import (
     CONFIDENCE_TIE_EPS,
-    PRIMARY_BIAS,
     WakeReport,
     rank,
 )
@@ -188,12 +187,6 @@ def test_empty_input_raises():
 )
 def test_rank_picks_the_expected_winner(reports, winner):
     assert rank(reports) == winner
-
-
-def test_primary_bias_constant_value():
-    """Document the PRIMARY_BIAS value so a careless change is loud.
-    If you're updating this number, update the wizard copy too."""
-    assert PRIMARY_BIAS == 0.05
 
 
 # ---------- tie-eps documentation ----------

@@ -135,7 +135,7 @@ class PeeringConfig:
     mode: PeeringMode
     peer_id: str          # stable UUID, persists across reboots
     room: str             # human label, surfaced in /sound/pair/ UI and logs
-    primary: bool         # small bias in the ranking function (~0.05)
+    primary: bool         # wins ties inside the confidence band (rank.py tier 3)
     arb_window_ms: int    # arbitration collection window
     break_threshold: float  # local-wake confidence required to break a foreign session
 
