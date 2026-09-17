@@ -447,7 +447,7 @@ def test_legacy_digests_are_ignored_on_read_and_dropped_on_save(tmp_path: Path) 
     path.write_text(json.dumps(old))
 
     loaded = load_design_draft(path, topology=topology)
-    assert loaded["driver_safety_profile"] == draft["driver_safety_profile"]
+    assert loaded == draft
     saved = save_design_draft(
         topology, driver_research=loaded["driver_research"],
         manual_settings=loaded["manual_settings"], operator_inputs=loaded["operator_inputs"], path=path,

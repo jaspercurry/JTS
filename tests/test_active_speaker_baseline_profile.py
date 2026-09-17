@@ -147,7 +147,9 @@ def _research(*, tweeter_gain_db: float = -18.5, with_subwoofer: bool = False) -
             "role": "tweeter",
             "model": "F110M-8",
             # Alternative-Fc tests lower 2500 Hz to 2250 Hz; keep the declared
-            # floor at 2000 Hz so those candidates remain above it.
+            # floor at 2000 Hz so those candidates remain above the floor
+            # camilla_yaml._assert_tweeter_crossover_honours_declared_floor
+            # enforces (#2603).
             "recommended_highpass_hz": 2000,
             "do_not_test_below_hz": 1200,
             "gain_offset_db": tweeter_gain_db,

@@ -88,7 +88,12 @@ class OutputHardwareRequestConflict(ValueError):
 
 
 class OutputTopologyCapabilityBlocked(ValueError):
-    """Raised when a posted layout needs hardware this DAC does not have."""
+    """Raised when a posted layout needs hardware this DAC does not have.
+
+    A ValueError so the POST dispatcher's validation branch returns it as
+    ``{"error": ...}`` with 400 — the shape the page renders as a layout error
+    while keeping the operator's unsaved draft on screen.
+    """
 
     def __init__(self, code: str, message: str) -> None:
         self.code = code
@@ -243,10 +248,16 @@ def _refuse_undrivable_layout(topology: OutputTopology) -> None:
     raise OutputTopologyCapabilityBlocked(reason, message)
 
 
-def _refuse_invalid_physical_outputs(topology: OutputTopology) -> None:
+def _refuse_duplicate_physical_outputs(topology: OutputTopology) -> None:
+    """The channel selector never disables an already-used output (a 3+ channel
+    group could not otherwise swap two drivers without parking one on a spare
+    channel first), so this is the only gate against two channels sharing a
+    physical_output_index. Unassigned channels are a supported stored state:
+    the page saves a draft at every card (#2145)."""
+
     blockers = [
         issue for issue in topology.evaluation()["blockers"]
-        if issue["code"] in {"duplicate_physical_output", "physical_output_unassigned"}
+        if issue["code"] == "duplicate_physical_output"
     ]
     if blockers:
         raise OutputTopologyError(blockers[0]["message"])
@@ -262,7 +273,7 @@ def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
         snapshot = mutation.snapshot()
         raw_topology = raw.get("output_topology", raw)
         topology = OutputTopology.from_mapping(raw_topology)
-        _refuse_invalid_physical_outputs(topology)
+        _refuse_duplicate_physical_outputs(topology)
         _refuse_undrivable_layout(topology)
         safe_stop = _active_speaker_stop_payload()
         def commit_topology() -> OutputTopology:

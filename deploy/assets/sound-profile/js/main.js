@@ -75,6 +75,7 @@ import {
   levelDurationLimitsFromSetting,
   manualCrossoverVocabularyValidationError,
   driverFields,
+  driverVocabularyLoaded,
   driverNumberFields,
   padFromSetting,
   previewStatusClass,
@@ -3313,6 +3314,11 @@ import {
     }
     if (!outputTopology.payload) {
       status('Load output hardware before updating the working setup.', true);
+      return false;
+    }
+    if (!driverVocabularyLoaded()) {
+      driverResearch.error = 'This page did not load its driver field list. Reload the page before saving.';
+      status(driverResearch.error, true);
       return false;
     }
     var manualTopology = outputTopology.payload;

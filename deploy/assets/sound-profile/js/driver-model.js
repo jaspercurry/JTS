@@ -34,9 +34,9 @@ import {
   physicalOutputLabel
 } from "/assets/sound-profile/js/topology.js";
 
-const DRIVER_VOCABULARY = readJsonIsland('jts-driver-fields', {
-  driver_fields: [], driver_echo_back_fields: []
-});
+// null when the page shell did not carry the island: the form renders no
+// rows and Save values refuses, rather than saving an empty driver list.
+const DRIVER_VOCABULARY = readJsonIsland('jts-driver-fields', null);
 
 function driverResearchRoles(topology) {
   var pairs = activeCrossoverPairs(topology);
@@ -605,8 +605,11 @@ function echoLevelText(setting) {
   if (cooldown != null) parts.push(cooldown + ' s cooldown');
   return parts.join(', ');
 }
+function driverVocabularyLoaded() {
+  return !!(DRIVER_VOCABULARY && DRIVER_VOCABULARY.driver_fields);
+}
 function driverFields() {
-  return DRIVER_VOCABULARY.driver_fields;
+  return driverVocabularyLoaded() ? DRIVER_VOCABULARY.driver_fields : [];
 }
 function driverNumberFields() {
   return driverFields().filter(function(key) {
@@ -615,7 +618,7 @@ function driverNumberFields() {
   });
 }
 function driverEchoBackFields() {
-  return DRIVER_VOCABULARY.driver_echo_back_fields;
+  return (DRIVER_VOCABULARY && DRIVER_VOCABULARY.driver_echo_back_fields) || [];
 }
 function driverEchoBackField(field, setting) {
   switch (field) {
@@ -759,6 +762,7 @@ function extractDriverResearchJson(text) {
 
 export {
   driverFields,
+  driverVocabularyLoaded,
   driverEchoBackField,
   manualCrossoverVocabularyValidationError,
   driverNumberFields,

@@ -1074,6 +1074,16 @@ def load_design_draft(
     raw = _read_design_draft(_design_draft_path(path))
     if raw["status"] in ("not_saved", "unreadable"):
         return raw
+    # Files written before the request artefact and its digests were deleted
+    # (ADR-0323 §1) still carry them; they never reach the served document.
+    raw.pop("driver_research_request", None)
+    research = raw.get("driver_research")
+    if isinstance(research, dict):
+        research.pop("request_fingerprint", None)
+        research.pop("result_fingerprint", None)
+        for driver in research.get("drivers", []):
+            if isinstance(driver, dict):
+                driver.pop("target_fingerprint", None)
     return design_draft_view(raw, topology=topology)
 
 

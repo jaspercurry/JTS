@@ -2187,7 +2187,7 @@ def _no_lane_topology_payload(*, active: bool, subwoofer: bool = False) -> dict:
 
 
 @pytest.mark.parametrize("output_index", [0, None])
-def test_duplicate_or_unassigned_dac_outputs_are_refused(monkeypatch, tmp_path, output_index):
+def test_duplicate_dac_outputs_are_refused_and_unassigned_ones_save(monkeypatch, tmp_path, output_index):
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
     payload = _passive_left_topology_payload()
@@ -2200,6 +2200,12 @@ def test_duplicate_or_unassigned_dac_outputs_are_refused(monkeypatch, tmp_path, 
     })
     payload["routing"]["main_right_group_id"] = "right"
 
+    if output_index is None:
+        # A half-assigned layout is a supported stored state (#2145).
+        saved = sound_setup._save_output_topology_payload(payload)
+        assert saved["output_topology"]["speaker_groups"][1]["channels"][0]["physical_output_index"] is None
+        assert topo_path.exists()
+        return
     with pytest.raises(OutputTopologyError):
         sound_setup._save_output_topology_payload(payload)
 
@@ -2248,8 +2254,8 @@ def test_a_roleful_layout_on_a_dac_without_an_active_lane_is_refused(
     assert not topo_path.exists()
 
 
-@pytest.mark.parametrize("subwoofer_supported", [True, False])
-def test_layout_save_refuses_active_route_over_capacity(monkeypatch, tmp_path, caplog, subwoofer_supported):
+@pytest.mark.parametrize("subwoofer_supported, assigned", [(True, True), (True, False), (False, True)])
+def test_layout_save_refuses_active_route_over_capacity(monkeypatch, tmp_path, caplog, subwoofer_supported, assigned):
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
     payload = _active_speaker_mono_topology_payload(protection_status="present")
@@ -2261,6 +2267,11 @@ def test_layout_save_refuses_active_route_over_capacity(monkeypatch, tmp_path, c
                      for index, role in enumerate(("woofer", "mid", "tweeter"))],
     } for side, offset in (("left", 0), ("right", 3))]
     payload["routing"] = {"main_left_group_id": "left", "main_right_group_id": "right"}
+    if not assigned:
+        # A half-assigned layout is a supported stored state (#2145); it still
+        # needs a lane per channel.
+        for channel in payload["speaker_groups"][1]["channels"]:
+            channel["physical_output_index"] = None
     if not subwoofer_supported:
         sub_layout = _passive_stereo_with_sub_topology_payload()
         payload.update({key: sub_layout[key] for key in ("speaker_groups", "routing")})

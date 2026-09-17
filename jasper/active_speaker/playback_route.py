@@ -63,10 +63,13 @@ def _subwoofer_groups(topology: OutputTopology) -> list[SpeakerGroup]:
 
 
 def _required_active_output_count(groups: list[SpeakerGroup]) -> int:
-    return max(
-        (channel.physical_output_index for group in groups for channel in group.channels
+    # Unassigned channels still need a lane: a half-assigned layout must not
+    # under-report its demand.
+    channels = [channel for group in groups for channel in group.channels]
+    return max(len(channels), max(
+        (channel.physical_output_index for channel in channels
          if channel.physical_output_index is not None), default=-1,
-    ) + 1
+    ) + 1)
 
 
 @dataclass(frozen=True)

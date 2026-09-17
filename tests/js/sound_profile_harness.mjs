@@ -399,22 +399,6 @@ function dongleMonoTopologyPayload() {
   };
 }
 
-function activeRoutePayload(overrides = {}) {
-  return {
-    kind: "jts_active_speaker_playback_route_capability",
-    playback_device: "outputd_active_content_playback",
-    playback_device_source: "outputd_active_lane",
-    transport_channel_count: 4,
-    required_active_output_count: 0,
-    active_group_count: 0,
-    subwoofer_group_count: 0,
-    subwoofer_supported: false,
-    fits_required_outputs: true,
-    ready: true,
-    issues: [],
-    ...overrides,
-  };
-}
 
 function activePayloads() {
   return {
@@ -1987,7 +1971,7 @@ async function testTemplateSaveRendersServerRefusal() {
         saves.push(JSON.parse(options.body).output_topology);
         return Promise.resolve(response({error: 'layout cannot be built'}, false, 400));
       }
-      return Promise.resolve(response({output_topology: topology, active_playback_route: activeRoutePayload()}));
+      return Promise.resolve(response({output_topology: topology}));
     },
   }));
   await loadAndSetActiveState(harness);
@@ -2024,7 +2008,6 @@ async function testSpeakerLayoutMatrixAndRearAssignment() {
           if (options.method === 'POST') saves.push(JSON.parse(options.body).output_topology);
           return Promise.resolve(response({
             output_topology: saves.at(-1) || topology,
-            active_playback_route: activeRoutePayload({transport_channel_count: 8}),
           }));
         },
       }));
@@ -4500,11 +4483,28 @@ async function testFollowerModeSafeFallbackOnMalformedIsland() {
     {follower: true, islandText: "{not valid json"},
     {absentIslands: ['jts-driver-fields']},
   ]) {
+    const designPosts = [];
     const harness = setupHarness(baseFetch({
       "./output-topology": () => Promise.resolve(response(activeTwoWayTopologyPayload())),
+      "./active-speaker/design-draft": (_path, fetchOptions = {}) => {
+        if (fetchOptions.method === "POST") designPosts.push(fetchOptions.body);
+        return Promise.resolve(response({status: "not_saved", revision: 0}));
+      },
     }), options);
     for (let i = 0; i < 4; i++) await harness.flush();
     assert.match(harness.elements.get("view-body").innerHTML, /Active crossover setup/);
+    if (options.absentIslands) {
+      // A page without its field vocabulary must refuse to save, never send
+      // an empty driver list that would wipe the stored declarations.
+      harness.dispatchClick({ "data-act": "save-driver-design" });
+      for (let i = 0; i < 6; i++) await harness.flush();
+      if (designPosts.length !== 0) {
+        fail("missing driver island must not POST the design draft", { designPosts });
+      }
+      if (!harness.elements.get("status").textContent) {
+        fail("missing driver island must surface a status error on save");
+      }
+    }
   }
   return {followerModeSafeFallbackOnMalformedIsland: true, missingDriverIslandBoots: true};
 }
