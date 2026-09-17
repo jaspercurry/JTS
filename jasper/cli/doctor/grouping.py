@@ -753,14 +753,18 @@ def check_grouping_channel_pick() -> CheckResult:
     )
     from ...fanin_coupling import dac_content_lane_marker_armed
     from ...multiroom.config import is_active_member
-    from ...multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
-    from ...multiroom.reconcile import (
+    from ...multiroom.dac_content_ring import (
+        DAC_CONTENT_RING_PERIOD_FRAMES,
+        OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
+    )
+    from ...multiroom.grouping_env import (
         LANE_REFUSED_ACTIVE_ENDPOINT,
         LANE_REFUSED_FLAT_OUTPUT_DENIED,
         LANE_REFUSED_PERIOD,
-        OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
-        box_outputd_period_frames,
         member_lane_decision,
+    )
+    from ...multiroom.reconcile import (
+        box_outputd_period_frames,
         output_topology_state,
     )
 

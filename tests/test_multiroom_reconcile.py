@@ -44,6 +44,7 @@ from tests.multiroom_reconcile_fixtures import (
 )
 
 from jasper import systemd_probe
+from jasper.env_load import AIRPLAY_BONDED_EXTRA_DELAY_ENV
 from jasper.audio_hardware import dac as _dac
 from jasper.fanin_coupling import dac_content_lane_marker_armed
 from jasper.multiroom import reconcile as reconcile_mod
@@ -52,13 +53,14 @@ from jasper.multiroom.dac_content_ring import (
     DAC_CONTENT_RING_PCM,
     DAC_CONTENT_RING_PERIOD_FRAMES,
 )
-from jasper.multiroom.grouping_env import airplay_grouping_env
-from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
-from jasper.multiroom.reconcile import (
-    AIRPLAY_BONDED_EXTRA_DELAY_ENV,
+from jasper.multiroom.grouping_env import (
     LANE_REFUSED_ACTIVE_ENDPOINT,
     LANE_REFUSED_FLAT_OUTPUT_DENIED,
     LANE_REFUSED_PERIOD,
+    airplay_grouping_env,
+)
+from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
+from jasper.multiroom.reconcile import (
     RoleDecision,
     _write_args_file,
     decide_role,
