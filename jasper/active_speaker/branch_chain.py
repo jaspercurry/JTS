@@ -204,15 +204,18 @@ def confirmed_protection_sections(
     requested = (role_targets.items() if role_targets is not None else (
         (target["role"], target["target_fingerprint"]) for target in targets
     ))
-    for role, fingerprint in sorted(requested):
+    # Matched on the fingerprint alone: it already identifies ONE physical
+    # target, and a role carries more than one of them on a cardioid speaker
+    # (ADR-0316), whose rear rides its role's protection chain.
+    for key, fingerprint in sorted(requested):
         matches = [
             target for target in targets
             if isinstance(target, Mapping)
-            and target.get("role") == role
             and target.get("target_fingerprint") == fingerprint
         ]
         if len(matches) != 1:
-            raise ValueError(f"confirmed protection target is not unique for {role}")
+            raise ValueError(f"confirmed protection target is not unique for {key}")
+        role = str(matches[0].get("role") or "")
         raw_filters = matches[0].get("required_protection_filters")
         if not isinstance(raw_filters, list):
             raise ValueError(f"confirmed protection filters are missing for {role}")

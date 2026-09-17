@@ -16,7 +16,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
 
 import yaml
 
@@ -819,10 +819,21 @@ def _emit_split_mixer(
     )
 
 
-def _mute_unfitted_rear_outputs(text: str, preset: ActiveSpeakerPreset) -> str:
+def _mute_unfitted_rear_outputs(
+    text: str,
+    preset: ActiveSpeakerPreset,
+    *,
+    excited_target_ids: Collection[str] = (),
+) -> str:
     # Remove when the typed branch-transfer section owns rear protection and
     # routing/polarity qualification (issue #5161). Model seeds are not a tune.
-    rear = [output.index for output in preset.channel_map.outputs if output.output_variant == "rear"]
+    #
+    # ``excited_target_ids`` names the physical targets a measurement take
+    # drives on their own program channel: muting one would record silence
+    # where the take needs its rear sweep. Measurement graphs only.
+    rear = [output.index for output in preset.channel_map.outputs
+            if output.output_variant == "rear"
+            and f"{output.driver_role}:{output.output_variant}" not in excited_target_ids]
     if not rear:
         return text
     head, pipeline = text.split("\npipeline:\n", 1)
@@ -2861,9 +2872,12 @@ def _emit_role_routed_mixer(
     (:func:`_validated_measurement_trims`), so every peak can only fall.
 
     Unlike :func:`_emit_split_mixer` (which routes a stereo bus by output
-    *side*), this routes by driver *role*: every output of role ``r`` takes its
-    single source from ``role_channels[r]``. ``channels_in`` is the program
-    channel count (max mapped channel + 1).
+    *side*), this routes by driver identity. ``role_channels`` may name a
+    physical target (``woofer:rear``, ADR-0316) or a whole role (``woofer``,
+    which reaches that role's rear output too); the specific entry wins. An
+    output neither entry names is parked for this take: its dest carries no
+    source, which is silence. ``channels_in`` is the program channel count
+    (max mapped channel + 1).
 
     The mixer is named ``split_active_{way_count}way`` — the SAME name
     :func:`_emit_split_mixer` uses — for two reasons landing on one spelling:
@@ -2884,17 +2898,17 @@ def _emit_role_routed_mixer(
     outputs = sorted(preset.channel_map.outputs, key=lambda item: item.index)
     output_count = _output_count(preset)
     channels_in = 1 + max(role_channels.values())
-    mapping: list[tuple[int, list[tuple[int, float, bool]]]] = [
-        (
-            output.index,
-            [(
-                role_channels[output.driver_role],
-                trims.get(output.driver_role, 0.0),
-                polarity[output.driver_role] != (output.driver_role in flipped),
-            )],
+    mapping: list[tuple[int, list[tuple[int, float, bool]]]] = []
+    for output in outputs:
+        role = output.driver_role
+        channel = role_channels.get(
+            role if output.output_variant == "primary"
+            else f"{role}:{output.output_variant}",
+            role_channels.get(role),
         )
-        for output in outputs
-    ]
+        mapping.append((output.index, [] if channel is None else [(
+            channel, trims.get(role, 0.0), polarity[role] != (role in flipped),
+        )]))
     labels = [output.label for output in outputs]
     return emit_mixer(
         f"split_active_{preset.way_count}way",
@@ -2912,7 +2926,13 @@ def _validate_program_role_channels(
     preset: ActiveSpeakerPreset,
     role_channels: dict[str, int],
 ) -> dict[str, int]:
-    """Fail-closed check that every output's role owns one distinct program channel."""
+    """Fail-closed check that every named driver owns one distinct program channel.
+
+    A take may PARK a driver by leaving it out — its outputs then carry no
+    source at all (:func:`_emit_role_routed_mixer`), which is how a front/rear
+    take silences the tweeter. Nothing is silently dropped: program admission
+    proves every declared target's routing, driven or parked, at the play door.
+    """
 
     if preset.local_subwoofer is not None:
         raise ActiveSpeakerConfigError(
@@ -2926,13 +2946,16 @@ def _validate_program_role_channels(
                 f"program channel for role {role!r} must be a non-negative integer"
             )
         normalized[role] = channel
-    required = set(required_driver_roles(preset.way_count))
-    output_roles = {output.driver_role for output in preset.channel_map.outputs}
-    missing = (output_roles | required) - set(normalized)
-    if missing:
+    declared = set(required_driver_roles(preset.way_count))
+    for output in preset.channel_map.outputs:
+        declared.add(output.driver_role)
+        if output.output_variant != "primary":
+            declared.add(f"{output.driver_role}:{output.output_variant}")
+    unknown = set(normalized) - declared
+    if unknown or not normalized:
         raise ActiveSpeakerConfigError(
-            "program role_channels is missing a channel for role(s) "
-            + ", ".join(sorted(missing))
+            "program role_channels names no declared driver: "
+            + (", ".join(sorted(unknown)) or "(empty)")
         )
     if len(set(normalized.values())) != len(normalized):
         raise ActiveSpeakerConfigError(
@@ -3413,7 +3436,11 @@ pipeline:
 """
 
     # L0 emit gate (fail-closed): the shared per-output tweeter-protection re-proof.
-    yaml = _mute_unfitted_rear_outputs(yaml, preset)
+    # A rear target with its own program channel is the take's second branch;
+    # muting it would record silence. Every other rear output keeps the mute.
+    yaml = _mute_unfitted_rear_outputs(
+        yaml, preset, excited_target_ids=frozenset(role_channels),
+    )
     _assert_tweeter_outputs_protected(yaml, preset)
     # Build-and-prove the program graph's return contract against graph_safety.
     _assert_program_graph_proven(

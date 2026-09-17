@@ -252,7 +252,9 @@ def emit_mixer(
     lines.append("    mapping:")
     for dest, sources in mapping:
         lines.append(f"      - dest: {dest}")
-        lines.append("        sources:")
+        # A dest with no sources is silence; it must round-trip as an empty
+        # list, not as a bare key (YAML null).
+        lines.append("        sources:" if sources else "        sources: []")
         for channel, gain_db, inverted in sources:
             lines.append(
                 f"          - {{ channel: {channel}, gain: {fmt(gain_db)}, "

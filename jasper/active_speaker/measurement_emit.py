@@ -172,7 +172,9 @@ def compile_tuning_graph(
     )
     prove_candidate_config(candidate, candidate_text)
     if scope == "candidate_branches":
-        if set(profile.role_channels) != {"woofer", "tweeter"} or set(profile.role_channels.values()) != {0, 1}:
+        # Two branches on a stereo recording clock; WHICH two targets they are
+        # (woofer/tweeter, or front/rear woofer) is the take's choice.
+        if set(profile.role_channels.values()) != {0, 1}:
             raise MeasurementGraphRefused("measurement_branch_channels", profile.role_channels)
         prefix, rest = candidate_text.split("\nmixers:\n", 1)
         _, pipeline = rest.split("\npipeline:\n", 1)

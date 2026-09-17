@@ -420,3 +420,31 @@ def test_the_decorated_baseline_gate_reads_the_re_serialised_graph():
     emit._assert_tweeter_outputs_protected(text, preset, decorated=True)
     with pytest.raises(ActiveSpeakerConfigError):
         emit._assert_tweeter_outputs_protected("pipeline: [", preset, decorated=True)
+@pytest.mark.parametrize("role_channels,expected,rear_muted", [
+    ({"woofer": 0, "tweeter": 1},
+     {0: [(0, 0.0, False)], 1: [(1, 0.0, False)], 2: [(0, 0.0, False)]}, True),
+    ({"woofer": 0, "woofer:rear": 1},
+     {0: [(0, 0.0, False)], 1: [], 2: [(1, 0.0, False)]}, False),
+])
+def test_program_take_routes_by_physical_target_and_parks_the_rest(role_channels, expected, rear_muted):
+    """A take names roles or physical targets. The crossover take drives both
+    woofers off the role's channel and keeps the rear muted; the cardioid take
+    gives the rear its own channel, so it must NOT be muted (a muted branch
+    records silence) and keeps its role's protection at its own output index,
+    while the tweeter it does not name is parked with no source at all."""
+    preset, _ = _rear_pair("mono")
+    text = emit.emit_active_speaker_program_config(
+        preset, role_channels=role_channels, playback_device="jts_ring_active_playback",
+    )
+    payload = yaml.safe_load(text)
+    view = gs.view_from_yaml_dict(payload)
+    assert {entry["dest"]: [(s["channel"], s["gain"], s["inverted"]) for s in entry["sources"]]
+            for entry in payload["mixers"]["split_active_2way"]["mapping"]} == expected
+    assert gs.output_terminally_muted(
+        payload, view, 2, mute_name="as_out2_rear_pending_mute", mute_gain_db=-120.0,
+    ) is rear_muted
+    protection = next(step for step in payload["pipeline"]
+                      if step.get("type") == "Filter" and step.get("channels") == [0, 2])
+    assert any(payload["filters"][name]["type"] == "Limiter" for name in protection["names"])
+    assert any(payload["filters"][name].get("parameters", {}).get("type")
+               == "LinkwitzRileyLowpass" for name in protection["names"])
