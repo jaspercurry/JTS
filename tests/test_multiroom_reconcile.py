@@ -43,6 +43,7 @@ from tests.multiroom_reconcile_fixtures import (
     _patch_main_io,
 )
 
+from jasper import systemd_probe
 from jasper.audio_hardware import dac as _dac
 from jasper.fanin_coupling import dac_content_lane_marker_armed
 from jasper.multiroom import reconcile as reconcile_mod
@@ -2619,6 +2620,9 @@ def test_crossover_teardown_contains_spawn_oserror(monkeypatch, caplog):
 
 
 def test_unit_state_queries_share_exact_systemctl_contract(monkeypatch):
+    """`_systemctl_unit_state` is a thin wrapper: the spawn + classification
+    it delegates to is jasper.systemd_probe.unit_query (shared with
+    jasper.source_intent's `_query_unit_state`)."""
     import subprocess as sp
 
     calls: list[list[str]] = []
@@ -2635,7 +2639,7 @@ def test_unit_state_queries_share_exact_systemctl_contract(monkeypatch):
             stderr="",
         )
 
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(systemd_probe.subprocess, "run", fake_run)
 
     assert (
         reconcile_mod._systemctl_unit_state(
@@ -2772,7 +2776,7 @@ def test_unit_state_query_oserror_is_safe_false_and_observable(
     def fake_run(_argv, **_kw):
         raise OSError("cannot allocate process")
 
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(systemd_probe.subprocess, "run", fake_run)
 
     with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
         assert (
