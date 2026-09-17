@@ -395,3 +395,28 @@ def test_a_rear_named_filter_smuggled_into_a_graph_without_a_rear_output_refuses
     result = _classify(topology, _reserialized(text, payload))
     assert not result.allowed
     assert "active_output_driver_chain_unrecognized" in {i["code"] for i in result.issues}
+
+
+@pytest.mark.parametrize("emitter,kwargs", [
+    (emit.emit_active_speaker_startup_config, {}),
+    (emit.emit_active_speaker_commissioning_config, {"audible_outputs": None}),
+    (emit.emit_active_speaker_program_config, {"role_channels": {"woofer": 0, "tweeter": 1}}),
+    (emit.emit_active_speaker_driver_domain_config, {"program_channel": "left"}),
+])
+def test_undecorated_emitters_keep_the_emitter_drift_guard(emitter, kwargs):
+    """The tweeter gate's text view REFUSES CamillaDSP's re-serialised dialect
+    — that refusal is the drift check, so only a decorated graph is read back
+    parsed."""
+    preset, _ = _rear_pair("mono")
+    text = emitter(preset, playback_device=ACTIVE_PCM, **kwargs)
+    with pytest.raises(ActiveSpeakerConfigError):
+        emit._assert_tweeter_outputs_protected(
+            yaml.safe_dump(yaml.safe_load(text)), preset,
+        )
+
+
+def test_the_decorated_baseline_gate_reads_the_re_serialised_graph():
+    preset, _, text = _cardioid_baseline()
+    emit._assert_tweeter_outputs_protected(text, preset, decorated=True)
+    with pytest.raises(ActiveSpeakerConfigError):
+        emit._assert_tweeter_outputs_protected("pipeline: [", preset, decorated=True)

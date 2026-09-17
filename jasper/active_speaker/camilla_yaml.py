@@ -692,7 +692,9 @@ def _assert_tweeter_crossover_honours_declared_floor(
     )
 
 
-def _assert_tweeter_outputs_protected(yaml_text: str, preset: ActiveSpeakerPreset) -> None:
+def _assert_tweeter_outputs_protected(
+    yaml_text: str, preset: ActiveSpeakerPreset, *, decorated: bool = False,
+) -> None:
     """Fail-closed L0 emit gate: refuse a graph with an unprotected tweeter output.
 
     Runs on every active-speaker graph this module emits, right before it is
@@ -711,11 +713,22 @@ def _assert_tweeter_outputs_protected(yaml_text: str, preset: ActiveSpeakerPrese
     tweeter_channels = _channels_for_role(preset, "tweeter")
     if not tweeter_channels:
         return
-    # Parsed, not text-scraped: this gate runs on the FINAL graph, which a
-    # decoration (dynamic bass, the rear calibration stage) has re-serialized.
+    # ``decorated`` picks the view, and the choice is itself a check: the text
+    # view REFUSES CamillaDSP's re-serialised dialect, which is how it catches
+    # emitter drift, so an undecorated graph must still read in the emitter's
+    # own spelling. Only a graph a decoration (dynamic bass, the rear
+    # calibration stage) has re-serialised is read back parsed.
+    if decorated:
+        try:
+            view = view_from_yaml_dict(yaml.safe_load(yaml_text))
+        except yaml.YAMLError as exc:
+            raise ActiveSpeakerConfigError(
+                f"decorated active-speaker config did not parse as YAML: {exc}"
+            ) from exc
+    else:
+        view = view_from_emitted_text(yaml_text)
     unprotected = unprotected_tweeter_outputs(
-        view_from_yaml_dict(yaml.safe_load(yaml_text)),
-        tweeter_channels=set(tweeter_channels),
+        view, tweeter_channels=set(tweeter_channels),
     )
     if not unprotected:
         return
@@ -3633,7 +3646,9 @@ pipeline:
     # through, so re-prove every tweeter output carries its crossover /
     # protective high-pass, and that the pipeline the baseline assembled from
     # independent helper calls references nothing undefined.
-    _assert_tweeter_outputs_protected(yaml, preset)
+    _assert_tweeter_outputs_protected(
+        yaml, preset, decorated=bool(bass_extension or safe_rear_calibration),
+    )
     _assert_pipeline_references_closed(yaml, preset)
 
     if out_path is not None:
