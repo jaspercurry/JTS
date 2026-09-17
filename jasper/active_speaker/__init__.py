@@ -60,7 +60,6 @@ _LAZY_ATTRS: dict[str, str] = {
     "load_driver_commissioning_config": "commission_load",
     "load_ramp_state": "commission_ramp",
     "load_staged_startup_config": "staging",
-    "load_summed_commissioning_config": "commission_load",
     "lowest_driver_role": "profile",
     "next_ramp_gain_db": "commission_ramp",
     "parse_camilla_statefile_config_path": "environment",

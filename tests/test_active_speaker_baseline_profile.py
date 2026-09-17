@@ -39,7 +39,6 @@ from jasper.active_speaker.crossover_preview import (
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
 from jasper.active_speaker.measurement import (
     record_driver_measurement,
-    record_summed_test_artifact,
     record_summed_validation,
 )
 from jasper.active_speaker.measured_crossover_candidate import (
@@ -57,7 +56,7 @@ from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import (
     declared_profile_fixture, declared_graph_fixture, standard_design_draft,
-    mono_output_topology,
+    mono_output_topology, seed_summed_test,
     valid_camilla_config as _valid_config,  # noqa: F401 - shared fixture export
 )
 from tests.test_active_speaker_profile import _two_way_preset
@@ -226,27 +225,7 @@ def _measurements(topology: OutputTopology, tmp_path: Path) -> dict:
             state_path=state_path,
             now=f"2026-06-14T12:0{1 if role == 'woofer' else 2}:00Z",
         )
-    record_summed_test_artifact(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "playback": {
-                "status": "completed",
-                "backend": "aplay",
-                "playback_id": "summed-playback-audible",
-                "audio_emitted": True,
-                "artifact": {
-                    "wav_basename": "tone_summed-playback-audible.wav",
-                    "metadata_basename": "tone_summed-playback-audible.json",
-                    "target_output_indices": [0, 1],
-                    "channel_count": 2,
-                },
-                "tone": {"frequency_hz": 2500, "level_dbfs": -72},
-            },
-        },
-        state_path=state_path,
-        now="2026-06-14T12:02:30Z",
-    )
+    seed_summed_test(topology, state_path, playback_id="summed-playback-audible")
     return record_summed_validation(
         topology,
         {

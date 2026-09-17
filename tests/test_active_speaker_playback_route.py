@@ -15,6 +15,7 @@ from jasper.active_speaker.playback_route import (
     active_playback_route_capability,
     resolve_active_playback_device,
 )
+from jasper.audio_hardware import dac
 from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE,
     DUAL_APPLE_USB_C_DAC_4CH,
@@ -307,3 +308,141 @@ def test_unrecognized_dac_is_not_reported_as_a_gap() -> None:
     assert isinstance(gap, UnrecognizedDacProfile)
     assert not isinstance(gap, ActiveLaneCapabilityGap)
     assert gap.device_id == GENERIC_SINGLE_DAC
+
+
+HIFIBERRY_PHYSICAL_OUTPUTS = 8
+DUAL_APPLE_ACTIVE_ROUTE_CHANNELS = dac.active_outputd_lane_channels_for(
+    dac.DUAL_APPLE_USB_C_DAC_4CH_ID
+)
+
+
+def _left_topology() -> OutputTopology:
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "living_room",
+        "name": "Living room",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "HiFiBerry DAC8x",
+            "physical_output_count": HIFIBERRY_PHYSICAL_OUTPUTS,
+            "card_id": "DAC8",
+        },
+        "speaker_groups": [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "active_2_way",
+                "channels": [
+                    {
+                        "role": "woofer",
+                        "physical_output_index": 0,
+                        "identity_verified": True,
+                    },
+                    {
+                        "role": "tweeter",
+                        "physical_output_index": 1,
+                        "identity_verified": True,
+                        "startup_muted": True,
+                        "protection_required": True,
+                        "protection_status": "present",
+                    },
+                ],
+            }
+        ],
+        "routing": {"main_left_group_id": "left"},
+    })
+
+
+def test_active_playback_route_capability_resolves_dac8x_to_the_active_ring() -> None:
+    """#2285 P2 renamed this off ``..._resolves_dac8x_active_lane``.
+
+    The active lane is carried by the ACTIVE RING now — the one legal ACTIVE
+    outputd endpoint. The SOURCE token is asserted unchanged just below, because
+    it names the lane ROLE rather than the transport.
+    """
+    topology = _left_topology()
+
+    capability = active_playback_route_capability(topology)
+
+    assert capability.playback_device == RING_ACTIVE_PLAYBACK_DEVICE
+    assert capability.playback_device_source == "outputd_active_lane"
+    assert capability.transport_channel_count == HIFIBERRY_PHYSICAL_OUTPUTS
+    assert capability.required_active_output_count == 2
+    assert capability.fits_required_outputs is True
+    assert capability.ready is True
+    assert capability.issues == ()
+
+
+def test_active_playback_route_capability_counts_subwoofer_output_lane() -> None:
+    raw = _left_topology().to_dict()
+    raw["speaker_groups"].append({
+        "id": "sub",
+        "label": "Subwoofer",
+        "kind": "subwoofer",
+        "mode": "subwoofer",
+        "channels": [
+            {
+                "role": "subwoofer",
+                "physical_output_index": HIFIBERRY_PHYSICAL_OUTPUTS - 1,
+                "identity_verified": True,
+            },
+        ],
+    })
+    raw["routing"]["subwoofer_group_ids"] = ["sub"]
+
+    capability = active_playback_route_capability(
+        OutputTopology.from_mapping(raw)
+    )
+
+    assert capability.required_active_output_count == HIFIBERRY_PHYSICAL_OUTPUTS
+    assert capability.subwoofer_group_count == 1
+    assert capability.subwoofer_supported is True
+    assert capability.fits_required_outputs is True
+    assert capability.ready is True
+
+
+def test_active_playback_route_capability_uses_actual_outputd_active_lane() -> None:
+    raw = _left_topology().to_dict()
+    raw["hardware"] = {
+        "device_id": "dual_apple_usb_c_dac_4ch",
+        "device_label": "Dual Apple USB-C DAC 4-channel pair",
+        "physical_output_count": 4,
+    }
+
+    capability = active_playback_route_capability(
+        OutputTopology.from_mapping(raw)
+    )
+
+    assert capability.transport_channel_count == DUAL_APPLE_ACTIVE_ROUTE_CHANNELS
+    assert capability.ready is True
+
+
+def test_active_playback_route_accepts_four_lane_layout() -> None:
+    raw = _left_topology().to_dict()
+    raw["hardware"] = {
+        "device_id": "dual_apple_usb_c_dac_4ch",
+        "device_label": "Dual Apple USB-C DAC 4-channel pair",
+        "physical_output_count": 4,
+    }
+    right = dict(raw["speaker_groups"][0])
+    right["id"] = "right"
+    right["label"] = "Right speaker"
+    right["kind"] = "right"
+    right["channels"] = [
+        dict(right["channels"][0], physical_output_index=2),
+        dict(right["channels"][1], physical_output_index=3),
+    ]
+    raw["speaker_groups"].append(right)
+    raw["routing"]["main_right_group_id"] = "right"
+
+    capability = active_playback_route_capability(
+        OutputTopology.from_mapping(raw)
+    )
+
+    assert capability.transport_channel_count == DUAL_APPLE_ACTIVE_ROUTE_CHANNELS
+    assert capability.required_active_output_count == 4
+    assert capability.fits_required_outputs is True
+    assert capability.ready is True

@@ -1523,7 +1523,6 @@ _COMMISSION_CODE_MODULES = (
     # reports on a subset while reading as complete.
     "jasper/active_speaker/baseline_profile.py",
     "jasper/active_speaker/environment.py",
-    "jasper/active_speaker/topology_tone.py",
 )
 
 # An operator remedy: a sudo/systemctl invocation, a `jasper-*` binary, or a
