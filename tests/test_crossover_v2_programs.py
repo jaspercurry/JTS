@@ -611,6 +611,76 @@ def test_a_branch_take_the_plan_host_composes_is_padded_and_admitted(tmp_path, r
         _program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS)
 
 
+@pytest.mark.parametrize("way", [1, 2])
+def test_a_driver_take_the_plan_host_composes_honours_the_declared_cooldown(way):
+    """The PRODUCTION composer for a ``drivers``-scope MEASURE (#5342).
+
+    ``compose_plan_program`` reads the cooldown off the session's excitation —
+    what ``correction_crossover_v2`` resolves from the safety profile and hands
+    the conductor — so a wide-band 1-way box gets its repeats spaced, while a
+    2-way, whose interleaved cycles already clear the declaration, composes the
+    same program it composed before the declaration was consulted.
+    """
+    from jasper.active_speaker.crossover_v2.capture_plan import (
+        _program_duration_ms, build_inline_session_spec,
+    )
+    from jasper.active_speaker.excitation_safety_plan import declared_minimum_cooldown_s
+    from jasper.audio_measurement.program import (
+        KIND_SWEEP, PROGRAM_SAMPLE_RATE_HZ, RoleBand,
+    )
+
+    cooldown_s = 2.0
+    profile = dict(woofer_floor=100, woofer_upper=20_000, max_sweep_duration_s=4,
+                   max_repeat_count=3)
+    _topology, safety, targets = _profile_and_targets(
+        **profile, minimum_cooldown_s=cooldown_s)
+    _t, blank, blank_targets = _profile_and_targets(**profile, minimum_cooldown_s=0.0)
+    roles = ((RoleBand("woofer", 0, FrequencyBand(150.0, 20_000.0)),) if way == 1 else
+             (RoleBand("woofer", 0, FrequencyBand(500.0, 1600.0)),
+              RoleBand("tweeter", 1, FrequencyBand(1600.0, 10_000.0))))
+    targets = {"woofer": targets["woofer"]} if way == 1 else targets
+    excitation = SessionExcitation(
+        roles=roles, caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB, fc_hz=FC_HZ,
+        sweep_duration_limits_s={rb.role: 4.0 for rb in roles},
+        minimum_cooldown_s=declared_minimum_cooldown_s(safety, targets))
+    host = SimpleNamespace(_excitation=excitation,
+                           _gain_plan_db={"woofer": -6.0, "tweeter": -46.0})
+    context = SimpleNamespace(safety_profile=safety, role_targets=targets)
+    request = request_for_program(measurement_program("speaker", "mark"), mover="human")
+    captures = list(prepare_plan_captures(request, roles_bands=roles))
+    spec = next(capture.spec for capture in captures
+                if capture.spec.graph_scope == "drivers" and capture.spec.program_phase == "measure")
+
+    program = compose_plan_program(host, spec, None, context=context)
+    for rb in roles:
+        run = sorted((s for s in program.segments
+                      if s.kind == KIND_SWEEP and s.channel == rb.channel),
+                     key=lambda s: s.start_sample)
+        assert min(b.start_sample - a.start_sample - a.n_samples
+                   for a, b in zip(run, run[1:])) >= cooldown_s * PROGRAM_SAMPLE_RATE_HZ
+    undeclared = compose_plan_program(
+        SimpleNamespace(_excitation=replace(excitation, minimum_cooldown_s=0.0),
+                        _gain_plan_db=host._gain_plan_db), spec, None, context=context)
+    assert (program.program_id == undeclared.program_id) is (way == 2)
+
+    # The phone's MEASURE window follows the declaration that lengthens MEASURE.
+    # It cannot equal the played program: this budget composes at nominal gains
+    # without the session's fitted sweep durations.
+    def _window_ms(declared_profile, declared_targets) -> int:
+        plan = build_inline_session_spec(
+            [(c.spec, c.resolved(request).prompt, "trial") for c in captures],
+            roles_bands=roles, fc_hz=FC_HZ, safety_profile=declared_profile,
+            role_targets=declared_targets, acknowledgement_binding="a" * 32,
+            retries_per_pose=0).capture_plan
+        return max(entry.duration_ms for entry in plan.entries
+                   if entry.kind_label == spec.program_phase)
+
+    grown_ms = _window_ms(safety, targets) - _window_ms(blank, blank_targets)
+    assert (grown_ms > 0) is (way == 1)
+    assert grown_ms == pytest.approx(
+        _program_duration_ms(program) - _program_duration_ms(undeclared), abs=50)
+
+
 def test_per_driver_measure_keeps_declared_bands_with_a_room_session():
     excitation = replace(_excitation(CAPS), summed_sweep_band_hz=(20.0, 20000.0))
     program = excitation.measure_program(GAIN_PLAN_DB)

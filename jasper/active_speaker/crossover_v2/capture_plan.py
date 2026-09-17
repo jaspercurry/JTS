@@ -35,7 +35,9 @@ from jasper.audio_measurement.program import (
 from jasper.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.env_load import bounded_env_float
 
-from ..excitation_safety_plan import declared_minimum_cooldown_s
+from ..excitation_safety_plan import (
+    ExcitationSafetyPlanError, declared_minimum_cooldown_s,
+)
 from ..measurement_programs import (
     POSE_KIND_BEARING, POSE_KIND_CLOSE, POSE_KIND_SEAT,
     gate_exemption, pose_place, resolved_measurement_purpose,
@@ -75,10 +77,21 @@ def build_inline_session_spec(
     prompts = [prompt for _, prompt, _ in captures]
     batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
                                  [candidate_id for _, _, candidate_id in captures])
-    cooldown_s = (
-        declared_minimum_cooldown_s(safety_profile or {}, role_targets or {})
-        if any(spec.graph_scope == "candidate_branches" for spec, _, _ in captures) else 0.0
+    branches = any(spec.graph_scope == "candidate_branches" for spec, _, _ in captures)
+    spaced = branches or any(
+        spec.stimulus is None and spec.program_phase == PHASE_MEASURE
+        for spec, _, _ in captures
     )
+    try:
+        cooldown_s = declared_minimum_cooldown_s(
+            safety_profile or {}, role_targets or {}) if spaced else 0.0
+    except ExcitationSafetyPlanError:
+        if branches:
+            raise
+        # A box that declares no cooldown budgets the unspaced MEASURE it has
+        # always budgeted; the doors that PLAY it resolve this strictly, and a
+        # session refusing at its plan would refuse nothing it could have run.
+        cooldown_s = 0.0
     entries = []
     for index, (spec, prompt, _) in enumerate(captures, 1):
         phase = spec.program_phase
@@ -93,7 +106,8 @@ def build_inline_session_spec(
         elif phase == PHASE_CHECK:
             program = build_check_program(roles_bands, courtesy_prelude=True)
         elif phase == PHASE_MEASURE:
-            program = build_measure_program({r.role: BASE_STIMULUS_PEAK_DBFS for r in roles_bands}, roles_bands)
+            program = build_measure_program({r.role: BASE_STIMULUS_PEAK_DBFS for r in roles_bands},
+                                            roles_bands, cooldown_s=cooldown_s)
         else:
             program = build_verify_program(fc_hz, measurement_band_hz=measurement_band_hz(roles_bands),
                                            sweep_band_hz=spec.sweep_band_hz or None,

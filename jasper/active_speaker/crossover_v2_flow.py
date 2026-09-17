@@ -813,6 +813,7 @@ class CrossoverV2Session:
             session_volume_db=self._session_volume_db,
             fc_hz=self._fc_hz,
             sweep_duration_limits_s=self._sweep_duration_limits_s,
+            minimum_cooldown_s=self._minimum_cooldown_s,
             summed_sweep_band_hz=_plan.room_sweep_band_hz(self._roles, self._lateral_prompts),
         )
         # Composed ONCE and held: ``program_for_phase`` answers by OBJECT IDENTITY, and
@@ -1417,6 +1418,7 @@ class CrossoverV2Session:
             measure_sweep_durations_s=_priors.measure_sweep_durations_s(
                 self._measure_program
             ),
+            minimum_cooldown_s=self._minimum_cooldown_s,
             candidate_fingerprint=(
                 getattr(self._candidate, "fingerprint", None)
                 if self._candidate is not None else None

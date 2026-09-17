@@ -882,6 +882,8 @@ def prepare_v2_session(
                 fc_hz=context.fc_hz,
                 driver_caps_dbfs=context.driver_caps_dbfs,
                 driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
+                driver_minimum_cooldown_s=declared_minimum_cooldown_s(
+                    context.safety_profile, context.role_targets),
                 session_volume_db=context.session_volume_db,
                 seams=seams,
                 driver_spacing_m=context.driver_spacing_m,
