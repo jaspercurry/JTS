@@ -52,7 +52,7 @@ EOF
 echo "provenance -> $DEST/provenance.json (host=$PI_HOST user=$PI_USER banked_at=$UTC_NOW)" >&2
 
 remote() {
-    ssh -o BatchMode=yes -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}" "$@"
+    ssh "${SSH_BATCH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "$@"
 }
 
 echo "Banking crossover-v2 round from ${PI_USER}@${PI_HOST} -> ${DEST}/" >&2

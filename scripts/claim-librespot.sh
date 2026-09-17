@@ -43,7 +43,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${SCRIPT_DIR}/_lib.sh"
 OAUTH_PORT="${OAUTH_PORT:-8091}"
 SYSTEM_CACHE="/var/cache/librespot"
-SSH_OPTS=(-o ConnectTimeout=5 -o BatchMode=no)
+# BatchMode=no overrides the shared set's BatchMode=yes (first -o wins over a
+# later one with the same key): this is a one-time interactive OAuth claim
+# flow, so falling back to a password prompt when pubkey auth isn't set up
+# yet is wanted here, unlike the unattended scripts this set is shared with.
+SSH_OPTS=(-o BatchMode=no "${SSH_BATCH_OPTS[@]}")
 
 TUNNEL_SOCK="/tmp/jts-claim-librespot-$$.sock"
 CLAIM_LOG="/tmp/jts-claim-librespot-$$.log"
