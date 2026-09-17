@@ -149,10 +149,12 @@ image-source wall estimate) BEM computation, not a measurement.
 
 **REQUIRES MEASUREMENT** (nothing below has been established on real
 hardware): routing/polarity — which physical channel is the rear driver and
-whether its wiring matches `inverted` — qualified by the protected-neutral
-front/rear/both take ADR-0322 adds (one recording clock, one level, summed
-verify; only the take's own branch target output is left unmuted, still
-under role protection); the driver's electrical-to-motion transfer, needed
-to turn acoustic source-motion weights into an actual amplifier/DSP gain;
-forward (on-axis) response with the calibration applied; rear suppression
-at multiple listener positions and angles.
+whether its wiring matches `inverted` — qualified by the front/rear/both
+take ADR-0322 adds (one recording clock, one level, summed verify, run
+through the candidate-branches baseline-shaped graph with crossover,
+protection, delay, and limiter already present; only the take's own
+excited target is left unmuted, an untaken rear still mutes byte-identically);
+the driver's electrical-to-motion transfer, needed to turn acoustic
+source-motion weights into an actual amplifier/DSP gain; forward (on-axis)
+response with the calibration applied; rear suppression at multiple
+listener positions and angles.

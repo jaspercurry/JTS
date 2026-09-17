@@ -81,16 +81,22 @@ stage's `rear_out{N}_split` and `rear_out{N}_sum` mixers immediately after
 candidate; with no document, the expected sequence is unchanged (the
 active split alone, no post-split mixer).
 
-**Measurement excitation.** ADR-0316 muted every rear output "including
-commissioning, measurement." This ADR narrows that for the
-protected-neutral measurement program only: a rear output is left
-un-muted when, and only when, it is an explicit branch target of the take
-(its own program channel), with the role's protection sections
-(crossover/protection) and limiter still present at its output index —
-the legacy woofer/tweeter take keeps the existing mute. A front/rear/both
-take on one recording clock, one level, with a summed verify, is the
-routing and polarity qualification path ADR-0316 asked for; it excites
-nothing that is not both addressed by the take and still protected.
+**Measurement excitation.** The front/rear/both take does not run
+through the protected-neutral measurement graph; it runs through the
+candidate-branches (baseline-shaped) emitter, so the applied crossover,
+protection, delay, non-positive gain, and limiter are already present on
+the shared woofer chain. The take's explicitly excited target ids are
+threaded into that emitter, so an undocumented rear the take names is
+emitted un-muted, while a household/applied baseline with no document and
+no take still mutes it byte-identically. Those excited ids reach the mute
+door only from program admission, never from the on-disk snapshot:
+admission refuses an excited-but-muted output, and the door refuses an
+excited rear that is not on its role's grouped chain with the limiter
+(`excited_rear_unprotected`), refuses a program-shaped graph by name
+(`active_graph_program_shape_unproven`), and refuses two outputs of one
+role confirming different protection sections
+(`role_protection_sections_disagree`, never a union). This is the routing
+and polarity qualification path ADR-0316 asked for.
 
 ## v1 limits
 
