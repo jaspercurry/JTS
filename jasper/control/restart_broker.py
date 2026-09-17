@@ -21,13 +21,9 @@ Why this is safe to centralise:
 - **Closed verb vocabulary.** The broker NEVER runs an arbitrary ``systemctl`` verb or
   argument — :data:`ALLOWED_VERBS` maps each verb to a fixed argv prefix. A compromised
   client cannot smuggle ``systemctl ... ; rm -rf`` or a ``--property=ExecStart=``
-  injection. (Note: the ``enable`` / ``enable-now`` / ``disable-now`` verbs map to
-  ``org.freedesktop.systemd1.manage-unit-files``, which the polkit rule deliberately
-  does NOT grant the non-root ``jasper-control`` — it can't be unit-scoped and
-  ``restart`` consults it, so a grant would re-open restart-of-any-unit. Those verbs
-  therefore fail-soft for a non-root broker; nothing routes through them today — voice's
-  boot-enable is owned by the root ``jasper-aec-reconcile``. The verbs stay in the
-  vocabulary for a future root client grant.)
+  injection. No enable/disable verb exists: ``manage-unit-files`` cannot be
+  unit-scoped, so granting it to the non-root broker would re-open
+  restart-of-any-unit; boot-enable is owned by the root ``jasper-aec-reconcile``.
 - **Unit allowlist.** Every requested unit must be in :data:`MANAGED_UNITS` —
   the single source of truth for "units the privileged surface may generally
   touch" — or, for graph-transition root helpers, in
@@ -241,9 +237,6 @@ _VERB_ARGV: dict[str, tuple[list[str], bool]] = {
     "try-restart": (["try-restart"], True),
     "start": (["start"], True),
     "stop": (["stop"], True),
-    "enable": (["enable"], False),
-    "enable-now": (["enable", "--now"], True),
-    "disable-now": (["disable", "--now"], True),
     "reset-failed": (["reset-failed"], False),
     "reboot": (["reboot"], False),
     "poweroff": (["poweroff"], False),
