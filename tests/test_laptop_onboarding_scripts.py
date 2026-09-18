@@ -1462,6 +1462,31 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertIn("PI_USER=pi\n", env_text)
         self.assertIn("JASPER_HOSTNAME=jts3.local\n", env_text)
 
+    def test_use_writes_both_laptop_state_files(self):
+        with isolated_checkout(None) as checkout:
+            subprocess.run(
+                [
+                    "bash",
+                    str(checkout / "scripts" / "use"),
+                    "192.168.1.92",
+                    "pi",
+                    "jts3.local",
+                ],
+                cwd=checkout,
+                check=True,
+                capture_output=True,
+                timeout=10,
+            )
+            env_lines = (checkout / ".env.local").read_text().splitlines()
+            for line in (
+                "PI_HOST=192.168.1.92",
+                "PI_USER=pi",
+                "JASPER_HOSTNAME=jts3.local",
+            ):
+                self.assertIn(line, env_lines)
+            local_note = "CLAUDE.local.md"
+            self.assertGreater((checkout / local_note).stat().st_size, 0)
+
     def test_deploy_does_not_hardcode_pi_home_checkout(self):
         text = DEPLOY.read_text(encoding="utf-8")
 

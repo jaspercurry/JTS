@@ -239,29 +239,24 @@ write_laptop_state() {
         active_line="Active SSH target: \`${host}\` (IP target — no SSH alias was created)."
         ssh_guidance="When running commands against this Pi, use \`ssh ${usr}@${host} <cmd>\` directly. If you'd prefer a stable alias, re-onboard with the mDNS hostname instead of the IP once it resolves."
     fi
-    cat > "${REPO_ROOT}/.env.local" <<EOF
-# Laptop-side state. Gitignored. Written by scripts/onboard.sh
-# (full setup) or scripts/use (quick target switch).
-PI_HOST=${host}
-PI_USER=${usr}
-${env_speaker_line}
-EOF
-    cat > "${REPO_ROOT}/CLAUDE.local.md" <<EOF
-# Active speaker for this checkout (gitignored)
-
-${active_line}
-
-${ssh_guidance}
-
-- **SSH target**: \`${usr}@${host}\`
-${speaker_line}
-- **Activated**: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-
-Switch this checkout to a different speaker without re-onboarding:
-\`bash scripts/use <hostname>\`. Full re-onboard (rsync + install.sh
-+ jasper-doctor): \`bash scripts/onboard.sh <hostname> --adopt\`. See
-[AGENTS.md](AGENTS.md) for the full convention.
-EOF
+    # A here-document into an external command can block forever on a loaded macOS host.
+    printf '%s\n' \
+        "# Laptop-side state. Gitignored. Written by scripts/onboard.sh" \
+        "# (full setup) or scripts/use (quick target switch)." \
+        "PI_HOST=${host}" \
+        "PI_USER=${usr}" \
+        "${env_speaker_line}" > "${REPO_ROOT}/.env.local"
+    printf '%s\n' \
+        "# Active speaker for this checkout (gitignored)" \
+        "" "${active_line}" \
+        "" "${ssh_guidance}" "" \
+        "- **SSH target**: \`${usr}@${host}\`" \
+        "${speaker_line}" \
+        "- **Activated**: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "" "Switch this checkout to a different speaker without re-onboarding:" \
+        "\`bash scripts/use <hostname>\`. Full re-onboard (rsync + install.sh" \
+        "+ jasper-doctor): \`bash scripts/onboard.sh <hostname> --adopt\`. See" \
+        "[AGENTS.md](AGENTS.md) for the full convention." > "${REPO_ROOT}/CLAUDE.local.md"
 }
 
 # Deploy-target identity guard (TOFU). mDNS names are transport, not
