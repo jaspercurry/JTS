@@ -37,6 +37,11 @@ summed, cloud, on-axis, and off-axis.
   Preference EQ remains absent.
 - **Preference EQ:** subjective bass, warmth, and other voicing belongs to
   normal listening. It never participates in linearization measurements.
+- **Rear (cardioid) stage:** play the stack as composed — the applied speaker,
+  bass and room layers with the candidate's rear section — and compare rear
+  settings on one band against one rear-muted reference per position; the
+  pair take plays the raw woofers with the rear section cleared (see
+  [ADR-0325](adr/0325-rear-program-compares-measured-symptoms-and-previews-by-superposition.md)).
 
 Retain household settings while measurement uses its temporary graph. Restore
 normal playback after the operation. Record the graph that actually played;
