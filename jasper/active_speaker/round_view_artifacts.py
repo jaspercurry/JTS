@@ -76,7 +76,13 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "sweep --scope verdict": ViewArtifact("spec_gate_sensitivity.json", TAKES_SET),
     "sweep --scope round": ViewArtifact("gate_sweep.json", TAKES_SET),
     "sweep --scope take": ViewArtifact("window_view.json", (*TAKES_SET, "--take", "<take-id>")),
-    "frequency": ViewArtifact(FREQUENCY_VIEW_FILENAME, bookkeeping=(PURPOSE_ROOM, PURPOSE_BASS), builder="round_bookkeeping.frequency"),
+    "frequency": ViewArtifact(FREQUENCY_VIEW_FILENAME, bookkeeping=(PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR), builder="round_bookkeeping.frequency"),
+    # The batch spans one set per played candidate, so this view reads the
+    # round rather than a set; ``jasper-round-views rear`` is not a door yet.
+    "rear": ViewArtifact(
+        "rear_view.json", producer="jasper-round wait", purposes=(PURPOSE_REAR,),
+        bookkeeping=(PURPOSE_REAR,), builder="round_view_builders.rear", packet="rear",
+    ),
     "bass": ViewArtifact("bass_view.json", TAKES_SET, purposes=(PURPOSE_BASS,), bookkeeping=(PURPOSE_BASS,), builder="round_bookkeeping.bass", packet="bass"),
     "bass-compare": ViewArtifact("bass_comparison.json", (
         "<before-round>", TAKES_THIS_ROUND, "--before-set", "<before-set-id>",
@@ -106,7 +112,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
 
 #: The run order of the views a finished round publishes: ``room-grade``
 #: grades the median ``room`` wrote, so this is a data dependency.
-BOOKKEEPING_ORDER = ("room", "room-grade", "bass", "frequency", "inventory")
+BOOKKEEPING_ORDER = ("room", "room-grade", "bass", "rear", "frequency", "inventory")
 #: The analysis families, in the order ``packet.json`` carries their keys.
 PACKET_FAMILIES = tuple(dict.fromkeys(row.packet for row in map(ARTIFACT_BY_VIEW.__getitem__, BOOKKEEPING_ORDER) if row.packet))
 

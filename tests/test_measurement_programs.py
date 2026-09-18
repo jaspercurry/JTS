@@ -67,7 +67,8 @@ def test_speaker_bookkeeping_uses_room_views_when_the_round_holds_room_sweeps():
                      ("inventory", True, False))),
     ("bass", False, (("bass", True, False), ("frequency", False, False), ("inventory", True, False))),
     ("reference", False, ()),
-    ("rear", False, (("inventory", True, False),)),
+    ("rear", False, (("rear", False, False), ("frequency", False, False),
+                     ("inventory", True, False))),
 ])
 def test_the_view_table_answers_every_automatic_view(purpose, has_room, expected):
     """One table, not four lists: each automatic view resolves to a builder."""

@@ -4,11 +4,12 @@
 """Acoustic-task handoff and a CamillaDSP stage; no devices, storage or apply."""
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 import hashlib
+import math
 import struct
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -199,6 +200,45 @@ def read_rear_calibration(raw: Any, *, sample_rate: int | None = None) -> dict[s
     else:
         raise RearCalibrationError("rear.mode must be branches or fir")
     return deepcopy(dict(document))
+
+
+def _corner_hz(filters: Sequence[Mapping[str, Any]], suffix: str,
+               pick: Callable[..., float]) -> float | None:
+    """The corner one chain's band-limiting filters settle on, or ``None``.
+
+    A pass direction is read off the filter type's own name, which
+    :data:`BIQUADS` and :data:`COMBOS` already fix, so there is no second
+    vocabulary of high- and low-pass shapes. Several filters in one direction
+    pass what the steepest of them passes: ``pick`` is ``max`` for a high-pass
+    and ``min`` for a low-pass.
+    """
+    corners = [float(item["parameters"]["freq"]) for item in filters
+               if str(item["parameters"].get("type") or "").endswith(suffix)]
+    return pick(corners) if corners else None
+
+
+def rear_operating_facts(document: Mapping[str, Any] | None) -> dict[str, Any]:
+    """What a validated branches document OPERATES at, for a measured report.
+
+    ``band_hz`` is the cancellation branch's own pass band, ``bass_lowpass_hz``
+    the bass branch's corner, and ``handover_hz`` the geometric mean of that
+    corner and the cancellation high-pass — where the bass branch hands over to
+    the inverted one. A filter the document does not carry yields ``None``:
+    nothing here is estimated, and an acoustic-targets or ``fir`` document
+    names no corners at all.
+    """
+    rear = (document or {}).get("rear") or {}
+    if (document or {}).get("case") != "electrical_dsp" or rear.get("mode") != "branches":
+        return {"band_hz": None, "bass_lowpass_hz": None, "handover_hz": None}
+    highpass = _corner_hz(rear["cancellation"]["filters"], "Highpass", max)
+    lowpass = _corner_hz(rear["cancellation"]["filters"], "Lowpass", min)
+    bass_lowpass = _corner_hz(rear["bass"]["filters"], "Lowpass", min)
+    return {
+        "band_hz": None if highpass is None or lowpass is None else [highpass, lowpass],
+        "bass_lowpass_hz": bass_lowpass,
+        "handover_hz": None if highpass is None or bass_lowpass is None
+                       else math.sqrt(highpass * bass_lowpass),
+    }
 
 
 def diagnostic_seed(sample_rate: int) -> dict[str, Any]:

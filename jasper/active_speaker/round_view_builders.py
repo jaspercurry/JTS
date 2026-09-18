@@ -18,6 +18,7 @@ from .measurement_bass import bass_view
 from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose
 from .run_manifest import room_sets
 from .crossover_v2.gate_sweep import reference_gated_measurement
+from .crossover_v2.rear_views import rear_document
 from .crossover_v2.room_grade import bundle_graph_scopes, grade_room_median, read_room_median
 from .crossover_v2.room_views import room_document
 from .crossover_v2.room_selection import select_seat_takes
@@ -108,6 +109,17 @@ def bass_payload(inputs: RoundInputs, set_id: str | None, *, calibration_root: P
     selected = resolve_set(inputs, set_id)
     payload = bass_view(inputs.session_dir, take_ids=selected.selected_ids, calibration_root=calibration_root)
     return {**payload, "set_id": selected.set_id, "candidate_id": selected.capture_basis.get("candidate_id")}
+
+
+def rear(inputs: RoundInputs, target: Path, set_id: str | None,
+         incumbent: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The rear comparison reads the whole batch, so it takes no ``--set``."""
+    payload = rear_document(inputs, manifest=read_run_manifest(inputs))
+    comparison = payload["comparison"]
+    return payload, {"set_id": payload["set_id"], "candidates": len(payload["candidates"]),
+                     "positions": len(comparison["positions"]),
+                     "band_hz": comparison["band_hz"], "band_source": comparison["band_source"],
+                     "reference": comparison["reference"]}
 
 
 def room_payload(inputs: RoundInputs, set_id: str | None, *, calibration_root: Path | None = None) -> dict[str, Any]:
