@@ -4,7 +4,7 @@
 
 """In-line driver pad (L-pad / series-resistor attenuator) modeling.
 
-Pure computation only: no I/O, no product policy, no cross-module imports. A
+Pure computation only: no I/O, no product policy, shared field validation. A
 pad is always operator-declared — never AI-researched.
 
 Formula (verified against JTS3's tweeter pad, 2026-07-23), where a series-only
@@ -23,6 +23,9 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping
 
+from jasper.json_fields import CodedFieldError
+from ._common import DriverFields
+
 # Closed vocabulary for the "kind" of in-line pad a driver can declare.
 # "none" and an absent pad field are equivalent (both mean "no attenuation");
 # normalise_pad returns None for either so there is exactly one no-pad shape.
@@ -37,36 +40,11 @@ _PAD_FIELDS = {
 }
 
 
-class DriverPadError(ValueError):
+class DriverPadError(CodedFieldError):
     """Raised when a declared driver pad is malformed or under-specified."""
 
 
-def _positive_float(raw: Any, field_name: str) -> float | None:
-    if raw is None or raw == "":
-        return None
-    if isinstance(raw, bool):
-        raise DriverPadError(f"{field_name} must be numeric")
-    try:
-        value = float(raw)
-    except (TypeError, ValueError) as exc:
-        raise DriverPadError(f"{field_name} must be numeric") from exc
-    if not math.isfinite(value) or value <= 0:
-        raise DriverPadError(f"{field_name} must be > 0")
-    return value
-
-
-def _finite_float(raw: Any, field_name: str) -> float | None:
-    if raw is None or raw == "":
-        return None
-    if isinstance(raw, bool):
-        raise DriverPadError(f"{field_name} must be numeric")
-    try:
-        value = float(raw)
-    except (TypeError, ValueError) as exc:
-        raise DriverPadError(f"{field_name} must be numeric") from exc
-    if not math.isfinite(value):
-        raise DriverPadError(f"{field_name} must be finite")
-    return value
+_fields = DriverFields(DriverPadError)
 
 
 def normalise_pad(
@@ -99,34 +77,35 @@ def normalise_pad(
 
     if raw is None or raw == "":
         return None
-    if not isinstance(raw, Mapping):
-        raise DriverPadError(f"{field_name} must be an object")
+    raw = _fields.mapping(raw, field_name)
     unknown = sorted(str(key) for key in raw if key not in _PAD_FIELDS)
     if unknown:
-        raise DriverPadError(f"{field_name} has unknown fields: {', '.join(unknown)}")
+        raise DriverPadError(f"{field_name} has unknown fields: {', '.join(unknown)}", code="unknown_pad_fields")
     kind = raw.get("kind")
+    if kind is None:
+        raise DriverPadError(f"{field_name}.kind is required", code="field_required")
     if kind not in PAD_KINDS:
-        raise DriverPadError(f"{field_name}.kind must be one of {PAD_KINDS}")
+        raise DriverPadError(f"{field_name}.kind must be one of {PAD_KINDS}", code="field_unsupported")
     if kind == "none":
         return None
 
-    series = _positive_float(raw.get("series_ohm"), f"{field_name}.series_ohm")
-    shunt = _positive_float(raw.get("shunt_ohm"), f"{field_name}.shunt_ohm")
+    series = _fields._positive_float(raw.get("series_ohm"), f"{field_name}.series_ohm")
+    shunt = _fields._positive_float(raw.get("shunt_ohm"), f"{field_name}.shunt_ohm")
 
     if kind == "direct_db":
         if series is not None or shunt is not None:
             raise DriverPadError(
-                f"{field_name} must not declare resistor values for kind=direct_db"
+                f"{field_name} must not declare resistor values for kind=direct_db", code="pad_field_not_applicable"
             )
-        direct_db = _finite_float(
+        direct_db = _fields._finite_float(
             raw.get("attenuation_db"), f"{field_name}.attenuation_db"
         )
         if direct_db is None:
             raise DriverPadError(
-                f"{field_name}.attenuation_db is required for kind=direct_db"
+                f"{field_name}.attenuation_db is required for kind=direct_db", code="field_required"
             )
         if direct_db > 0:
-            raise DriverPadError(f"{field_name}.attenuation_db must be <= 0")
+            raise DriverPadError(f"{field_name}.attenuation_db must be <= 0", code="pad_attenuation_positive")
         # No meaning for a bare dB figure: accepted so a saved record's own
         # derived-output echo round-trips, but never stored.
         return {"kind": kind, "attenuation_db": direct_db}
@@ -135,14 +114,14 @@ def normalise_pad(
     # below from the resistor values: either key present on input is ignored
     # and recomputed, never validated, so the value is never read.
     if series is None:
-        raise DriverPadError(f"{field_name}.series_ohm is required for kind={kind}")
+        raise DriverPadError(f"{field_name}.series_ohm is required for kind={kind}", code="field_required")
     if kind == "series_resistor" and shunt is not None:
-        raise DriverPadError(f"{field_name}.shunt_ohm is only valid for kind=l_pad")
+        raise DriverPadError(f"{field_name}.shunt_ohm is only valid for kind=l_pad", code="pad_field_not_applicable")
     if kind == "l_pad" and shunt is None:
-        raise DriverPadError(f"{field_name}.shunt_ohm is required for kind=l_pad")
+        raise DriverPadError(f"{field_name}.shunt_ohm is required for kind=l_pad", code="field_required")
     if nominal_impedance_ohm is None:
         raise DriverPadError(
-            f"{field_name} requires nominal_impedance_ohm on the same record"
+            f"{field_name.rsplit('.', 1)[0]}.nominal_impedance_ohm is required", code="field_required"
         )
 
     impedance = float(nominal_impedance_ohm)

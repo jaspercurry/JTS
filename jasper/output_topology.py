@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, cast
 
 from .atomic_io import advisory_file_lock, atomic_write_text
-from .json_fields import JsonFields
+from .json_fields import CodedFieldError, JsonFields
 from .json_fields import issue as _issue
 from .log_event import log_event
 from .transition_log import TransitionLog
@@ -120,7 +120,7 @@ DEFAULT_PAIRING_INTENT = "solo"
 CROSS_CHILD_GROUP_CODE = "speaker_group_spans_child_devices"
 
 
-class OutputTopologyError(ValueError):
+class OutputTopologyError(CodedFieldError):
     """Raised when output topology JSON has an unsupported shape."""
 
 

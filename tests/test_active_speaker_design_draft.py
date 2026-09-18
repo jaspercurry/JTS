@@ -30,6 +30,8 @@ from jasper.active_speaker.declaration_vocabulary import (
     supported_declaration_filter_types,
     supported_declaration_slopes_db_per_octave,
 )
+from jasper.json_fields import CodedFieldError
+from jasper.active_speaker.driver_pad import DriverPadError
 from jasper.output_topology import OutputTopology
 from jasper.active_speaker.installation import installation_evidence, normalise_installation
 from tests.active_speaker_fixtures import mono_output_topology
@@ -60,13 +62,21 @@ def test_installation_round_trips_without_changing_driver_authority(tmp_path):
     assert normalise_installation({"amplifier_model": "TPA3255"}) == {"amplifier_model": "TPA3255"}
 
 
-@pytest.mark.parametrize('facts', [
-    {'supply_voltage_v': -1}, {'supply_voltage_v': True}, {'net_volume_l': float('inf')},
-    {'passive_radiator_count': 1.5}, {'passive_radiator_added_mass_g': -1}, {'safe_boost_db': 15},
+@pytest.mark.parametrize('facts,code', [
+    ({'supply_voltage_v': -1}, 'field_not_positive'),
+    ({'supply_voltage_v': True}, 'field_not_numeric'),
+    ({'net_volume_l': float('inf')}, 'field_not_finite'),
+    ({'passive_radiator_count': 1.5}, 'field_not_integer'),
+    ({'passive_radiator_added_mass_g': -1}, 'field_negative'),
+    ({'safe_boost_db': 15}, 'unknown_installation_fields'),
+    ([], 'field_not_object'),
 ])
-def test_installation_rejects_invalid_facts(facts):
-    with pytest.raises(ValueError):
-        normalise_installation(facts)
+def test_installation_rejects_invalid_facts(facts, code):
+    with pytest.raises(CodedFieldError) as caught:
+        build_design_draft(_topology(), manual_settings={
+            "drivers": [{"role": "woofer", "installation": facts}],
+        })
+    assert caught.value.code == code
 
 
 def _research() -> dict:
@@ -223,15 +233,6 @@ def test_driver_research_cannot_weaken_human_review_requirements():
     }
 
 
-def test_driver_research_notes_allow_detailed_safety_summary():
-    raw = _research()
-    raw["drivers"][1]["notes"] = "x" * 2048
-
-    payload = build_design_draft(_topology(), driver_research=raw)
-
-    assert len(payload["driver_research"]["drivers"][1]["notes"]) == 2048
-
-
 def test_driver_research_notes_remain_bounded():
     raw = _research()
     raw["drivers"][1]["notes"] = "x" * 2048
@@ -241,7 +242,7 @@ def test_driver_research_notes_remain_bounded():
     raw["drivers"][1]["notes"] = "x" * 2049
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(_topology(), driver_research=raw)
-    assert caught.value.code == "invalid_design_draft"
+    assert caught.value.code == "field_too_long"
 
 
 def test_manual_driver_notes_use_same_bound():
@@ -259,7 +260,7 @@ def test_manual_driver_notes_use_same_bound():
     manual_settings["drivers"][0]["notes"] = "x" * 2049
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(_topology(), manual_settings=manual_settings)
-    assert caught.value.code == "invalid_design_draft"
+    assert caught.value.code == "field_too_long"
 
 
 def test_research_and_manual_drivers_share_field_normalisation() -> None:
@@ -302,7 +303,7 @@ def test_research_requires_model_while_manual_driver_does_not() -> None:
     research["drivers"][0].pop("model")
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(_topology(), driver_research=research)
-    assert caught.value.code == "invalid_design_draft"
+    assert caught.value.code == "field_required"
 
     payload = build_design_draft(
         _topology(),
@@ -543,7 +544,7 @@ def test_boolean_in_a_numeric_driver_field_is_rejected() -> None:
     manual_settings["drivers"][0]["nominal_impedance_ohm"] = True
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(_topology(), manual_settings=manual_settings)
-    assert caught.value.code == "invalid_design_draft"
+    assert caught.value.code == "field_not_numeric"
 
 
 @pytest.mark.parametrize("inputs", [
@@ -819,7 +820,7 @@ def test_declared_driver_spacing_mm_must_be_positive():
 
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         build_design_draft(_topology(), manual_settings={"driver_spacing_mm": 0})
-    assert caught.value.code == "invalid_design_draft"
+    assert caught.value.code == "field_not_positive"
 
 
 def test_declared_driver_spacing_m_survives_the_normalised_persisted_draft():
@@ -972,7 +973,7 @@ def test_pasted_research_refuses_unknown_fields(version, shape):
         "provenance": driver["field_provenance"]["sensitivity_db_2v83_1m"],
     }[shape]
     node["typo"] = True
-    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
+    with pytest.raises(CodedFieldError) as caught:
         normalise_driver_research(research)
     assert caught.value.code == "unknown_driver_fields"
 
@@ -1021,10 +1022,10 @@ def test_radiating_diameter_mm_must_be_positive():
                 "crossover_candidates": [],
             },
         )
-    assert caught.value.code == "invalid_design_draft"
+    assert caught.value.code == "field_not_positive"
 
 
-def test_pad_error_surfaces_as_design_draft_error():
+def test_pad_error_propagates_through_design_draft():
     driver = {
         "role": "tweeter",
         "model": "B",
@@ -1037,11 +1038,11 @@ def test_pad_error_surfaces_as_design_draft_error():
     assert payload["manual_settings"]["drivers"][0]["pad"]["attenuation_db"] == -14.4
 
     del driver["nominal_impedance_ohm"]
-    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
+    with pytest.raises(DriverPadError) as caught:
         build_design_draft(
             _topology(), manual_settings={"drivers": [driver], "crossover_candidates": []},
         )
-    assert caught.value.code == "invalid_design_draft"
+    assert caught.value.code == "field_required"
 
 
 def test_regenerate_crossover_preview_path_re_normalises_a_saved_pad_without_raising():

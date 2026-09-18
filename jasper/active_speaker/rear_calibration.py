@@ -14,7 +14,7 @@ from typing import Any, Callable
 import yaml
 
 from jasper.camilla_emit import emit_delay_filter, emit_gain_filter, emit_mixer
-from jasper.json_fields import JsonFields, finite_float
+from jasper.json_fields import CodedFieldError, JsonFields, finite_float
 
 KIND = "jts_rear_calibration"
 PHASE_CONVENTION = "positive_delay_has_negative_phase"
@@ -40,7 +40,7 @@ MAX_ALLPASS_Q = 10.0
 MAX_COMBO_ORDER = 8
 
 
-class RearCalibrationError(ValueError):
+class RearCalibrationError(CodedFieldError):
     pass
 
 

@@ -10,7 +10,15 @@ import re
 
 import pytest
 
+from jasper.active_speaker.design_draft import ActiveSpeakerDesignDraftError
+from jasper.active_speaker.driver_pad import DriverPadError
+from jasper.active_speaker.driver_safety import DriverSafetyProfileError
+from jasper.active_speaker.profile import ActiveSpeakerConfigError
+from jasper.active_speaker.rear_calibration import RearCalibrationError
+from jasper.output_topology import OutputTopologyError
 from jasper.json_fields import (
+    CodedFieldError,
+    JsonFields,
     _HASH_CHUNK_BYTES,
     finite_float,
     json_fingerprint,
@@ -56,3 +64,45 @@ def test_json_fingerprint_ignores_key_order_but_not_values():
         {"b": [2, {"c": 3}], "a": 1}
     )
     assert json_fingerprint({"a": 1}) != json_fingerprint({"a": 2})
+
+
+@pytest.mark.parametrize("error_type", [
+    CodedFieldError, ActiveSpeakerDesignDraftError, DriverSafetyProfileError,
+    DriverPadError, ActiveSpeakerConfigError, RearCalibrationError, OutputTopologyError,
+])
+@pytest.mark.parametrize("method,bad,good,extra,code", [
+    ("mapping", [], {}, (), "field_not_object"),
+    ("sequence", {}, [], (), "field_not_list"),
+    ("require_id", "", "mono:woofer", (), "field_required"),
+    ("require_id", "bad id", "id", (), "field_invalid_id"),
+    ("require_id", "x" * 81, "x" * 80, (), "field_invalid_id"),
+    ("text", None, "text", (), "field_required"),
+    ("text", "x" * 121, "x" * 120, (), "field_too_long"),
+    ("optional_text", 1, "text", (), "field_not_string"),
+    ("optional_text", "  ", None, (), "field_required"),
+    ("optional_text", "x" * 241, "x" * 240, (), "field_too_long"),
+    ("integer", "1.5", "2", (), "field_not_integer"),
+    ("strict_boolean", 1, True, (), "field_not_boolean"),
+    ("enum", 1, "one", ({"one"},), "field_not_string"),
+    ("enum", "two", "one", ({"one"},), "field_unsupported"),
+    ("finite_number", "bad", "1.5", (), "field_not_numeric"),
+    ("finite_number", 10**400, 1.0, (), "field_not_numeric"),
+    ("finite_number", float("inf"), 1.0, (), "field_not_finite"),
+    ("finite_number", float("nan"), 1.0, (), "field_not_finite"),
+])
+def test_field_refusals_override_domain_defaults(error_type, method, bad, good, extra, code):
+    parse = getattr(JsonFields(error_type), method)
+    parse(good, "field", *extra)
+    with pytest.raises(error_type) as caught:
+        parse(bad, "field", *extra)
+    assert isinstance(caught.value, ValueError)
+    assert caught.value.code == code
+
+
+@pytest.mark.parametrize("error,code", [
+    (CodedFieldError("x"), "d"),
+    (CodedFieldError("x", code="c"), "c"),
+    (ActiveSpeakerDesignDraftError("x"), "invalid_design_draft"),
+])
+def test_field_error_preserves_consumer_fallback(error, code):
+    assert getattr(error, "code", "d") == code

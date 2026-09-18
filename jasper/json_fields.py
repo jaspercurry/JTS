@@ -89,30 +89,41 @@ def json_fingerprint(mapping: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+class CodedFieldError(ValueError):
+    """A field refusal whose ``code`` a caller can branch on."""
+
+    code: str  # Present only for an explicit code or a subclass default.
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+
+
 @dataclass(frozen=True)
 class JsonFields:
     """Parse common JSON field shapes using a domain-owned error type."""
 
-    error_type: type[Exception]
+    error_type: type[CodedFieldError]
     length_limit_separator: str = ""
 
     def mapping(self, raw: Any, field_name: str) -> Mapping[str, Any]:
         if not isinstance(raw, Mapping):
-            raise self.error_type(f"{field_name} must be an object")
+            raise self.error_type(f"{field_name} must be an object", code="field_not_object")
         return raw
 
     def sequence(self, raw: Any, field_name: str) -> list[Any]:
         if not isinstance(raw, list):
-            raise self.error_type(f"{field_name} must be a list")
+            raise self.error_type(f"{field_name} must be a list", code="field_not_list")
         return raw
 
     def require_id(self, value: Any, field_name: str) -> str:
         if not isinstance(value, str) or not value.strip():
-            raise self.error_type(f"{field_name} is required")
+            raise self.error_type(f"{field_name} is required", code="field_required")
         result = value.strip()
         if not _SAFE_ID_RE.match(result):
             raise self.error_type(
-                f"{field_name} must be <=80 chars and contain only safe id chars"
+                f"{field_name} must be <=80 chars and contain only safe id chars", code="field_invalid_id"
             )
         return result
 
@@ -136,12 +147,12 @@ class JsonFields:
         if value is None and default is not None:
             return default
         if not isinstance(value, str) or not value.strip():
-            raise self.error_type(f"{field_name} is required")
+            raise self.error_type(f"{field_name} is required", code="field_required")
         result = " ".join(value.split())
         if len(result) > max_length:
             raise self.error_type(
                 f"{field_name} must be <={self.length_limit_separator}"
-                f"{max_length} chars"
+                f"{max_length} chars", code="field_too_long"
             )
         return result
 
@@ -158,15 +169,15 @@ class JsonFields:
         if value is None or value == "":
             return None
         if not isinstance(value, str):
-            raise self.error_type(type_error_message or f"{field_name} is required")
+            raise self.error_type(type_error_message or f"{field_name} is required", code="field_not_string")
         result = " ".join(value.split())
         if not result and not allow_blank:
-            raise self.error_type(f"{field_name} is required")
+            raise self.error_type(f"{field_name} is required", code="field_required")
         if len(result) > max_length:
             length_name = length_field_name or field_name
             raise self.error_type(
                 f"{length_name} must be <={self.length_limit_separator}"
-                f"{max_length} chars"
+                f"{max_length} chars", code="field_too_long"
             )
         return result
 
@@ -174,7 +185,7 @@ class JsonFields:
         try:
             return int(value)
         except (TypeError, ValueError) as exc:
-            raise self.error_type(f"{field_name} must be an integer") from exc
+            raise self.error_type(f"{field_name} must be an integer", code="field_not_integer") from exc
 
     def optional_integer(self, value: Any, field_name: str) -> int | None:
         if value is None or value == "":
@@ -188,7 +199,7 @@ class JsonFields:
     def strict_boolean(self, value: Any, field_name: str) -> bool:
         if isinstance(value, bool):
             return value
-        raise self.error_type(f"{field_name} must be boolean")
+        raise self.error_type(f"{field_name} must be boolean", code="field_not_boolean")
 
     def enum(
         self,
@@ -197,10 +208,10 @@ class JsonFields:
         supported: Collection[str],
     ) -> str:
         if not isinstance(value, str):
-            raise self.error_type(f"{field_name} must be a string")
+            raise self.error_type(f"{field_name} must be a string", code="field_not_string")
         token = value.strip()
         if token not in supported:
-            raise self.error_type(f"{field_name} is unsupported: {token}")
+            raise self.error_type(f"{field_name} is unsupported: {token}", code="field_unsupported")
         return token
 
     def number(
@@ -218,9 +229,9 @@ class JsonFields:
         try:
             result = float(value)
         except (TypeError, ValueError, OverflowError) as exc:
-            raise self.error_type(f"{field_name} must be numeric") from exc
+            raise self.error_type(f"{field_name} must be numeric", code="field_not_numeric") from exc
         if not math.isfinite(result):
-            raise self.error_type(f"{field_name} must be finite")
+            raise self.error_type(f"{field_name} must be finite", code="field_not_finite")
         return result
 
     def optional_number(self, value: Any, field_name: str) -> float | None:

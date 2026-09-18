@@ -968,19 +968,16 @@ def test_sound_page_island_serves_the_compilers_crossover_vocabulary(
     assert vocabulary["default_slope_db_per_octave"] == DEFAULT_SLOPE_DB_PER_OCTAVE
 
 
-def test_design_draft_save_refuses_an_uncompilable_crossover_at_the_door(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    """The coded refusal reaches the operator's own surface, not just the module.
-
-    A save carrying a filter the compiler cannot build must come back 400
-    carrying the raise site's code, instead of being persisted and then blocked
-    at ``crossover_preview_filter_unsupported`` several screens later.
-    """
-    from jasper.output_topology import output_topology_mutation
-    from tests.active_speaker_fixtures import mono_output_topology
-
+@pytest.mark.parametrize("manual,code", [
+    ({"crossover_candidates": [{"between_roles": ["woofer", "tweeter"],
+      "frequency_hz": 2500, "filter_type": "Butterworth", "slope_db_per_octave": 24}]}, "unsupported_filter_type"),
+    ({"drivers": {}}, "field_not_list"),
+    ({"drivers": [{"role": "woofer", "pad": {"kind": "direct_db", "attenuation_db": 1}}]}, "pad_attenuation_positive"),
+    ({"drivers": [{"role": "woofer", "installation": []}]}, "field_not_object"),
+    ({"drivers": [{"role": "woofer", "required_protection_filters": [{"kind": "highpass"}]}]}, "protection_filter_numbers_missing"),
+    ({"drivers": [{"role": "woofer", "target_id": "unknown"}]}, "manual_target_unknown"),
+])
+def test_design_draft_save_carries_field_refusals(monkeypatch, tmp_path, manual, code):
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
         str(tmp_path / "active_speaker_design_draft.json"),
@@ -989,28 +986,13 @@ def test_design_draft_save_refuses_an_uncompilable_crossover_at_the_door(
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     with output_topology_mutation(topology_path) as mutation:
         mutation.save(mono_output_topology(card_id=None))
-    with sound_server(tmp_path) as base:
-        refused = json_post_with_csrf(
-            base,
-            "/active-speaker/design-draft",
-            {
-                "operator_inputs": {"woofer": "W", "tweeter": "T"},
-                "manual_settings": {
-                    "crossover_candidates": [
-                        {
-                            "between_roles": ["woofer", "tweeter"],
-                            "frequency_hz": 2500,
-                            "filter_type": "Butterworth",
-                            "slope_db_per_octave": 24,
-                        }
-                    ]
-                },
-            },
-            expect_status=400,
-        )
-        payload = json.loads(refused.read().decode("utf-8"))
-
-    assert payload["code"] == "unsupported_filter_type"
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    body = json.dumps({"manual_settings": manual}).encode()
+    response, _ = _drive_raw_sound_post(
+        tmp_path, path="/active-speaker/design-draft", content_length=len(body), body=body,
+    )
+    assert b" 400 " in response.split(b"\r\n", 1)[0]
+    assert json.loads(response.split(b"\r\n\r\n", 1)[1])["code"] == code
 
 
 def test_eq_page_delegates_content_dsp_when_bonded_follower(monkeypatch):

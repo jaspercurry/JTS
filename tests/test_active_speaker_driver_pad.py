@@ -92,36 +92,6 @@ def test_l_pad_matches_the_jts3_rig_verified_numbers():
     }
 
 
-def test_l_pad_requires_shunt_and_never_assumes_8_ohms():
-    with pytest.raises(DriverPadError, match=r"shunt_ohm is required for kind=l_pad"):
-        normalise_pad(
-            {"kind": "l_pad", "series_ohm": 6.8},
-            nominal_impedance_ohm=8.0,
-            field_name="driver.pad",
-        )
-    with pytest.raises(DriverPadError, match=r"requires nominal_impedance_ohm"):
-        normalise_pad(
-            {"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2.0},
-            nominal_impedance_ohm=None,
-            field_name="driver.pad",
-        )
-
-
-def test_l_pad_requires_series_greater_than_zero():
-    with pytest.raises(DriverPadError, match=r"series_ohm must be > 0"):
-        normalise_pad(
-            {"kind": "l_pad", "series_ohm": 0, "shunt_ohm": 2.0},
-            nominal_impedance_ohm=8.0,
-            field_name="driver.pad",
-        )
-    with pytest.raises(DriverPadError, match=r"series_ohm must be > 0"):
-        normalise_pad(
-            {"kind": "l_pad", "series_ohm": -1.0, "shunt_ohm": 2.0},
-            nominal_impedance_ohm=8.0,
-            field_name="driver.pad",
-        )
-
-
 # --- series_resistor: same formula, R_par degenerates to the bare impedance --
 
 
@@ -138,24 +108,6 @@ def test_series_resistor_uses_bare_impedance_as_r_par():
         "attenuation_db": -7.0,
         "effective_impedance_ohm": 18.0,
     }
-
-
-def test_series_resistor_requires_impedance():
-    with pytest.raises(DriverPadError, match=r"requires nominal_impedance_ohm"):
-        normalise_pad(
-            {"kind": "series_resistor", "series_ohm": 10.0},
-            nominal_impedance_ohm=None,
-            field_name="driver.pad",
-        )
-
-
-def test_series_resistor_rejects_a_stray_shunt():
-    with pytest.raises(DriverPadError, match=r"shunt_ohm is only valid for kind=l_pad"):
-        normalise_pad(
-            {"kind": "series_resistor", "series_ohm": 10.0, "shunt_ohm": 2.0},
-            nominal_impedance_ohm=8.0,
-            field_name="driver.pad",
-        )
 
 
 def test_resistor_kinds_ignore_and_recompute_a_client_supplied_derived_attenuation():
@@ -228,39 +180,6 @@ def test_direct_db_works_without_a_declared_impedance():
     assert out == {"kind": "direct_db", "attenuation_db": -6.0}
 
 
-def test_direct_db_rejects_a_positive_attenuation():
-    with pytest.raises(DriverPadError, match=r"attenuation_db must be <= 0"):
-        normalise_pad(
-            {"kind": "direct_db", "attenuation_db": 3.0},
-            nominal_impedance_ohm=8.0,
-            field_name="driver.pad",
-        )
-
-
-def test_direct_db_requires_attenuation_db():
-    with pytest.raises(DriverPadError, match=r"attenuation_db is required for kind=direct_db"):
-        normalise_pad(
-            {"kind": "direct_db"},
-            nominal_impedance_ohm=8.0,
-            field_name="driver.pad",
-        )
-
-
-def test_direct_db_rejects_resistor_fields():
-    with pytest.raises(DriverPadError, match=r"must not declare resistor values"):
-        normalise_pad(
-            {"kind": "direct_db", "attenuation_db": -3.0, "series_ohm": 1.0},
-            nominal_impedance_ohm=8.0,
-            field_name="driver.pad",
-        )
-    with pytest.raises(DriverPadError, match=r"must not declare resistor values"):
-        normalise_pad(
-            {"kind": "direct_db", "attenuation_db": -3.0, "shunt_ohm": 1.0},
-            nominal_impedance_ohm=8.0,
-            field_name="driver.pad",
-        )
-
-
 # --- none / absent: the collapsed no-pad shape --------------------------------
 
 
@@ -278,40 +197,29 @@ def test_explicit_none_kind_is_also_none():
     )
 
 
-# --- structural validation -----------------------------------------------------
-
-
-def test_non_mapping_pad_is_rejected():
-    with pytest.raises(DriverPadError, match=r"must be an object"):
-        normalise_pad("l_pad", nominal_impedance_ohm=8.0, field_name="driver.pad")
-
-
-def test_unknown_pad_fields_are_rejected():
-    with pytest.raises(DriverPadError, match=r"unknown fields: typo"):
-        normalise_pad(
-            {"kind": "none", "typo": 1},
-            nominal_impedance_ohm=8.0,
-            field_name="driver.pad",
-        )
-
-
-def test_unknown_kind_is_rejected():
-    with pytest.raises(DriverPadError, match=r"kind must be one of"):
-        normalise_pad(
-            {"kind": "resistor_ladder"},
-            nominal_impedance_ohm=8.0,
-            field_name="driver.pad",
-        )
-
-
-@pytest.mark.parametrize("bad", [True, "loud", float("nan"), float("inf")])
-def test_resistor_values_reject_non_finite_and_boolean(bad):
-    with pytest.raises(DriverPadError):
-        normalise_pad(
-            {"kind": "l_pad", "series_ohm": bad, "shunt_ohm": 2.0},
-            nominal_impedance_ohm=8.0,
-            field_name="driver.pad",
-        )
+@pytest.mark.parametrize("raw,impedance,code", [
+    ({"kind": "l_pad", "series_ohm": 6.8}, 8, "field_required"),
+    ({"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2}, None, "field_required"),
+    ({"kind": "series_resistor", "series_ohm": 10}, None, "field_required"),
+    ({"kind": "series_resistor"}, 8, "field_required"),
+    ({"kind": "series_resistor", "series_ohm": 10, "shunt_ohm": 2}, 8, "pad_field_not_applicable"),
+    ({"kind": "direct_db", "attenuation_db": 3}, 8, "pad_attenuation_positive"),
+    ({"kind": "direct_db"}, 8, "field_required"),
+    *[({"kind": "direct_db", "attenuation_db": -3, key: 1}, 8, "pad_field_not_applicable")
+      for key in ("series_ohm", "shunt_ohm")],
+    ("l_pad", 8, "field_not_object"),
+    ({}, 8, "field_required"),
+    ({"kind": "none", "typo": 1}, 8, "unknown_pad_fields"),
+    ({"kind": "resistor_ladder"}, 8, "field_unsupported"),
+    *[({"kind": "l_pad", "series_ohm": bad, "shunt_ohm": 2}, 8, code)
+      for bad, code in [(0, "field_not_positive"), (-1, "field_not_positive"),
+                        (True, "field_not_numeric"), ("loud", "field_not_numeric"),
+                        (float("nan"), "field_not_finite"), (float("inf"), "field_not_finite")]],
+])
+def test_pad_refusals_carry_condition_codes(raw, impedance, code):
+    with pytest.raises(DriverPadError) as caught:
+        normalise_pad(raw, nominal_impedance_ohm=impedance, field_name="driver.pad")
+    assert caught.value.code == code
 
 
 # --- effective_sensitivity_db: folding a pad into declared sensitivity -------

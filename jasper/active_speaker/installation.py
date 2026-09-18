@@ -9,7 +9,7 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
-from jasper.json_fields import JsonFields
+from jasper.json_fields import CodedFieldError, JsonFields
 
 
 INSTALLATION_FIELDS: dict[str, dict[str, Any]] = {
@@ -24,7 +24,7 @@ INSTALLATION_FIELDS: dict[str, dict[str, Any]] = {
     "port_area_cm2": {"label": "Total port opening area (cm²)", "type": "number", "enclosure": "vented"},
     "port_length_cm": {"label": "Port length (cm)", "type": "number", "enclosure": "vented"},
 }
-_FIELDS = JsonFields(ValueError)
+_FIELDS = JsonFields(CodedFieldError)
 
 
 def normalise_installation(raw: Any) -> dict[str, Any] | None:
@@ -32,7 +32,7 @@ def normalise_installation(raw: Any) -> dict[str, Any] | None:
         return None
     raw = _FIELDS.mapping(raw, "installation")
     if set(raw) - INSTALLATION_FIELDS.keys():
-        raise ValueError("installation has unknown fields")
+        raise CodedFieldError("installation has unknown fields", code="unknown_installation_fields")
     result: dict[str, Any] = {}
     for key, spec in INSTALLATION_FIELDS.items():
         value = raw.get(key)
@@ -42,12 +42,15 @@ def normalise_installation(raw: Any) -> dict[str, Any] | None:
             result[key] = _FIELDS.text(value, key)
             continue
         if isinstance(value, bool):
-            raise ValueError(f"{key} must be numeric")
+            raise CodedFieldError(f"{key} must be numeric", code="field_not_numeric")
         value = _FIELDS.finite_number(value, key)
-        if value < 0 or (value == 0 and not spec.get("allow_zero")):
-            raise ValueError(f"{key} must be positive")
+        if spec.get("allow_zero"):
+            if value < 0:
+                raise CodedFieldError(f"{key} must be >= 0", code="field_negative")
+        elif value <= 0:
+            raise CodedFieldError(f"{key} must be > 0", code="field_not_positive")
         if spec.get("integer") and not value.is_integer():
-            raise ValueError(f"{key} must be a whole number")
+            raise CodedFieldError(f"{key} must be a whole number", code="field_not_integer")
         result[key] = value
     return result or None
 
