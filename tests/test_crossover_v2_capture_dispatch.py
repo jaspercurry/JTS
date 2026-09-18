@@ -27,7 +27,7 @@ from jasper.audio_measurement.program_analysis.model import (
 from jasper.audio_measurement.quality_model import DRIVER
 from tests.crossover_v2_fixtures import (
     FakeSeams, _alignment, _conductor, _driver_response, _loc, _measure_analysis, _run_phase,
-    plan_context,
+    _snr_pilot, plan_context,
 )
 from jasper.cli.measure import _ran
 from tests.engine_twin import FakeSeams as EngineSeams, open_session
@@ -71,6 +71,92 @@ def test_integrity_verdict(phase, changes, code, next, charge):
     assert not any(verdict.capabilities.values())
     if next == "retake_quieter":
         assert verdict.next_gain_db == -33.0
+
+
+#: One ``rear/pair`` take as jts3 round fd97a756ea51 take_0003 measured it, in
+#: program order: segment, branch, locate confidence, residual in ms at 48 kHz.
+#: The leading pilot pair sits on the front branch, so the rear is unanchored.
+TAKE_0003_SWEEPS = (
+    ("sweep_w", "front", 0.6982, 0.58),
+    ("sweep_t", "rear", 0.2376, 4.13),
+    ("sweep_w_rep", "front", 0.6954, 0.85),
+    ("sweep_t_rep", "rear", 0.2403, 5.104),
+)
+#: One ``event=outputd.xrun``'s worth of inserted samples — 8.3 ms at 48 kHz.
+XRUN_SPLICE_SAMPLES = 400.0
+
+
+def _pair_take(*, rear_role="woofer:rear", branches=True, splice_after=None):
+    shift = 0.0
+    locations = []
+    for segment_id, branch, confidence, residual_ms in TAKE_0003_SWEEPS:
+        locations.append(replace(_loc(
+            segment_id, confidence=confidence,
+            residual_samples=residual_ms * cd.REQUIRED_SAMPLE_RATE_HZ / 1000.0 + shift,
+        ), role="woofer" if branch == "front" else rear_role))
+        if segment_id == splice_after:
+            shift = XRUN_SPLICE_SAMPLES
+    return _analysis(
+        locations=tuple(locations), pilots=(_snr_pilot("woofer", 30.0),),
+        branch_diagnostic={"responses": [{"role": rear_role}]} if branches else None,
+    )
+
+
+@pytest.mark.parametrize(("rear_role", "branches", "accepted"), [
+    ("woofer:rear", True, True),
+    ("tweeter", True, True),
+    ("woofer", True, False),
+    ("tweeter", False, False),
+])
+def test_only_a_branch_programs_unanchored_branch_is_judged_on_its_own_path(rear_role, branches, accepted):
+    """The exemption keys on the PROGRAM's shape, never on the driver: the same
+    numbers on the anchored branch, or on a program that built no branch
+    diagnostic, stay refused.
+    """
+    verdict = cd.assess(_pair_take(rear_role=rear_role, branches=branches),
+                        phase="measure", gain_db=GAINS)
+    assert verdict.ok is accepted
+    assert verdict.fault == (None if accepted else refusal_copy.REASON_LOCATE_FAILED)
+    # Judging a role against its own slot must not edit what was measured.
+    assert verdict.evidence["schedule_residual_ms_worst"] == pytest.approx(5.104, abs=1e-3)
+    assert verdict.evidence["locate_confidence_min"] == pytest.approx(0.2376)
+
+
+@pytest.mark.parametrize("splice_after", ["sweep_w", "sweep_w_rep"])
+def test_a_spliced_xrun_still_refuses_a_branch_take(splice_after):
+    """A splice anywhere in the take moves at least one sweep off its OWN
+    branch's slot — after the anchored branch's first sweep, or between the
+    unanchored branch's two.
+    """
+    verdict = cd.assess(_pair_take(splice_after=splice_after), phase="measure", gain_db=GAINS)
+    assert not verdict.ok and verdict.fault == refusal_copy.REASON_DRIFT_BASELINES_DISAGREE
+    assert (verdict.next, verdict.charge) == ("retake_same", "speaker")
+    assert verdict.evidence["guard"] == "sweep_schedule"
+
+
+@pytest.mark.parametrize("diagnostic", [None, {"responses": [{"role": "woofer:rear"}]}])
+def test_a_round_banks_the_branch_diagnostic_its_analysis_carried(diagnostic):
+    """``round_captures._capture_response`` refuses every non-``summed`` role
+    without it, and the take record is banked write-once after ``enrich``.
+    """
+    conductor = _conductor(FakeSeams(measure=lambda program: replace(
+        _measure_analysis(program), branch_diagnostic=diagnostic)),
+        index_phase_map={1: "measure"}, gain_plan_db=GAINS)
+    manifest = RunManifest("branches", SimpleNamespace(bank=AsyncMock(return_value="manifest")))
+    records = SimpleNamespace(enrich=None, after_bank=None)
+    bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
+    manifest.begin({"index": 1, "candidate_id": "candidate",
+                    "pose": {"kind": "bearing", "deg": -20, "elevation_deg": 0}},
+                   attempt=1, pose_index=0)
+    spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure")
+    program = compose_plan_program(conductor, spec, None, context=plan_context())
+    banked = records.enrich(
+        WiredCaptureAnswer(wav=b"", program=program.to_dict()),
+        {"take_id": "take-1", "index": 1, "attempt": 1, "phase": "measure",
+         "program": program.to_dict()},
+    )
+    assert banked.get("branch_diagnostic") == diagnostic
+    assert ("branch_diagnostic" in banked) is (diagnostic is not None)
 
 
 @pytest.mark.parametrize("phase", PHASES)

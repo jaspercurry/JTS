@@ -59,6 +59,15 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                 result = exc
         if isinstance(result, Exception):
             fields = {"analysis_error": {"code": REASON_INTERNAL_ERROR, "error_type": type(result).__name__}}
+        elif getattr(result, "branch_diagnostic", None):
+            # The one moment a round can retain it: the take record is banked
+            # write-once after this, so nothing downstream can put it back, and
+            # without it `round_captures._capture_response` refuses every
+            # non-``summed`` role. ``regime`` is NOT set alongside as the web
+            # flow's `_retain_lateral_pose` does: a round's record already
+            # carries its plan row's own ``regime``, and `RunManifest.append`
+            # fingerprints that word into each capture set as ``stimulus``.
+            fields = {**fields, "branch_diagnostic": result.branch_diagnostic}
         answers[record["take_id"]] = capture, result
         return enrich_capture_record({
             **record, **fields, "mark_distance_m": record.get("mark_distance_m"),
