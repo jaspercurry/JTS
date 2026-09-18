@@ -15,6 +15,7 @@ import numpy as np
 
 from jasper.audio_measurement.mic_meter import classify_mic_meter
 from jasper.audio_measurement.branch_program import is_branch_program
+from jasper.audio_measurement.rear_evidence import impulse_late_energy
 from jasper.audio_measurement.repeated_sweep import align_summed_capture, average_summed_capture
 from jasper.audio_measurement.timing_verification import TIMING_RESIDUAL_FLOOR_DB
 from .branches import analyze_branches
@@ -862,6 +863,7 @@ def _analyze_verify(
         radiated_band_hz=_radiated_band_hz(seg),
         gate_exempt_reason=geometry.gate_exempt_reason,
     )
+    summed = replace(summed, late_energy=impulse_late_energy(full_ir, sample_rate_hz=sample_rate))
     # The tracking comparator below is deliberately NOT re-based onto the
     # spatial cloud's shared spec curve: "did apply do what the model
     # predicted" is a single-position claim (both sides share that

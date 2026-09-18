@@ -24,6 +24,7 @@ The mutation table, with the suite that caught each, is in the PR.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -843,7 +844,9 @@ def _analysis_of_shape(shape: str):
         ]
     else:
         bands = {"summed": (30.0, 20000.0)}
-        sources = {"summed": _response("summed", freqs, tf)}
+        sources = {"summed": replace(_response("summed", freqs, tf), late_energy={
+            "t0_ms": 5.0, "early_late_db": 2.2, "energy_db": -21.8, "centroid_ms": 6.6,
+        })}
         analysis = SimpleNamespace(
             driver_responses=(), summed_response=sources["summed"],
         )
@@ -874,6 +877,7 @@ def test_every_shape_of_analysis_banks_its_complex_response(
         source = sources[record["role"]]
         assert record["gate_window_ms"] == 7.0
         assert record["floor_source"] == FLOOR_SEARCH_BOUND
+        assert record["late_energy"] == source.late_energy
         rebuilt = 10.0 ** (np.asarray(record["magnitude_db"]) / 20.0) * np.exp(
             1j * np.radians(np.asarray(record["phase_deg"]))
         )

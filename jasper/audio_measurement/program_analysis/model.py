@@ -625,6 +625,7 @@ class DriverResponse:
     validity_floor_hz: float | None
     repeat_responses: tuple["DriverResponse", ...] = ()
     repeat_index: int | None = None
+    late_energy: Mapping[str, float] | None = None
 
     @property
     def fit_floor_hz(self) -> float | None:
