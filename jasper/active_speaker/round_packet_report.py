@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import shlex
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -106,12 +106,55 @@ def _span(rows: list[Mapping[str, Any]], key: str) -> str:
         return f"{min(numbers)}–{max(numbers)}"
     return ", ".join(distinct)
 
+
+def _short_id(candidate_id: Any) -> str:
+    return str(candidate_id or "")[:12]
+
+
+def rear_lines(entries: Sequence[Mapping[str, Any]], target: Path) -> list[str]:
+    """Numbers-only lines for each banked ``rear`` comparison: the band, its
+    reference and repeat spread, then one line per candidate naming its
+    changed control family, headroom cost and worst pooled regression.
+    ``jasper-round-views rear`` reads the same entries back."""
+    lines: list[str] = []
+    for entry in entries:
+        comparison = entry["comparison"]
+        band = comparison["band_hz"]
+        band_repr = f"{band[0]:g}–{band[1]:g} Hz" if band else "null"
+        reference = comparison["reference"]
+        spread = comparison["repeat_spread"]
+        spread_repr = spread["reason"] or json.dumps(spread["spread_db"], sort_keys=True)
+        lines.append(
+            f"rear {_short_id(entry['set_id'])}: band {band_repr} ({comparison['band_source']}); "
+            f"reference {reference['kind']} {_short_id(reference['candidate_id'])}; "
+            f"level {json.dumps(comparison['level'], sort_keys=True)}; "
+            f"repeat_spread {spread_repr}"
+        )
+        for candidate in entry["candidates"]:
+            worst = candidate["across_positions"]["worst_regression"]
+            if worst is None:
+                worst_repr = "unavailable"
+            else:
+                exceeds = worst["exceeds_repeat_spread"]
+                exceeds_word = "unknown" if exceeds is None else ("yes" if exceeds else "no")
+                worst_repr = (f"{worst['position']} {worst['figure']} "
+                             f"{json.dumps(worst['change_db'])} dB exceeds_repeat_spread={exceeds_word}")
+            lines.append(
+                f"  {_short_id(candidate['candidate_id'])} {candidate['role']}: "
+                f"change_family={candidate['change_family'] or 'none'}; "
+                f"headroom_change_db={json.dumps(candidate['headroom_change_db'])}; "
+                f"worst_regression={worst_repr}"
+            )
+    lines.append(shlex.join(["jasper-round-views", "rear", str(target)]))
+    return lines
+
+
 def packet_index(
     packet: Mapping[str, Any], target: Path, views: list[dict[str, Any]], manifest: Mapping[str, Any],
 ) -> str:
     commands = [shlex.join(["jasper-round-views", row["view"], str(target), *(["--set", row["set_id"]] if row.get("set_id") else []),
                             *(["--incumbent", row["incumbent_set_id"]] if row.get("incumbent_set_id") else [])])
-                for row in views if row["view"] != "frequency"]
+                for row in views if row["view"] not in ("frequency", "rear")]
     if packet["artifacts"]["frequency_view"]:
         commands.append(shlex.join(["jasper-round-views", "frequency", packet["artifacts"]["frequency_view"],
                                    "--image", str(target / PICTURE_FILENAME)]))
@@ -216,6 +259,8 @@ def packet_index(
                      f"takes {', '.join(row['take_ids'])}")
     if bass_rows := bass_table_rows(packet.get("bass_table", {})):
         lines.append(bass_table_markdown(bass_rows))
+    if rear_entries := packet.get("rear"):
+        lines.append("\n".join(rear_lines(rear_entries, target)))
     lines += ["## Artifacts", f"{json.dumps(packet['artifacts'], separators=(',', ':'))}; packet: {PACKET_FILENAME}",
               "## Tools", "\n".join(f"- `{cmd}`" for cmd in dict.fromkeys(commands)),
               f"Fingerprint: {packet['packet_fingerprint']}"]

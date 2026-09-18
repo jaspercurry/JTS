@@ -270,6 +270,7 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "bass": _NO_CAPTURES,
     "bass-compare": _NO_CAPTURES,
     "bass-fit-table": _NO_CAPTURES,
+    "rear": "a banked rear batch is covered in test_round_views_rear_cli",
     "dsp-replay": _NO_CAPTURES,
     "dsp-levels": _NO_CAPTURES,
     "classify-features": _NO_CAPTURES,
