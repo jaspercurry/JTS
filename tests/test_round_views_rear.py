@@ -31,7 +31,7 @@ from jasper.active_speaker.crossover_v2 import rear_views, room_selection
 from jasper.active_speaker.crossover_v2.pose_curve import LateralPoseCurve, pose_curve_record
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
-from jasper.active_speaker.measurement_programs import POSE_KIND_CLOSE
+from jasper.active_speaker.measurement_programs import POSE_KIND_BEHIND
 from jasper.active_speaker.rear_calibration import diagnostic_seed
 from jasper.active_speaker.round_bank import _bookkeeping
 from jasper.active_speaker.round_packet import write_round_packet
@@ -310,7 +310,7 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
     if behind_gap_ms is not None:
         take_id = f"{_COMPOSED}-behind-1"
         records.append({**source, "take_id": take_id, "position_id": take_id, "repeat": 1,
-                        "pose_kind": "behind", "position_deg": 0, "vertical_deg": 0,
+                        "pose_kind": POSE_KIND_BEHIND, "position_deg": 0, "vertical_deg": 0,
                         "mark_distance_m": 0.1, "measurement_purpose": "rear",
                         "gating_applied": False, "graph_scope": "candidate_branches",
                         "program": branch_program,
@@ -468,19 +468,16 @@ def test_a_batch_without_repeats_or_a_muted_candidate_falls_back_and_says_so(
 def test_a_non_bearing_take_at_azimuth_zero_is_never_the_on_axis_reference(
     tmp_path, banked_candidates,
 ):
-    """A non-bearing pose can sit at azimuth 0 by declared coordinates (a
-    behind-the-cabinet pose is one, ADR pending #5362) without being a front
-    bearing take, so it must never seed the measured-dip search's reference
-    curve (review, PR #5362). ``close`` stands in for ``behind`` here since
-    ``POSE_KIND_BEHIND`` does not exist yet; the fix guards on kind generally,
-    not on that one name."""
-    root = rear_round(tmp_path, on_axis_kind=POSE_KIND_CLOSE)
+    """A behind-the-cabinet pose sits at azimuth 0 by declared coordinates
+    (kind ``behind``, #5362) without being a front bearing take, so it must
+    never seed the measured-dip search's reference curve (review, PR #5362)."""
+    root = rear_round(tmp_path, on_axis_kind=POSE_KIND_BEHIND)
 
     entry, = packet_of(root)[0]["rear"]
 
     # No bearing take at azimuth 0 ever freezes a reference curve there, so the
     # measured-dip search never runs and the band falls back to the declared
-    # geometry rather than crediting the close-kind take as on-axis.
+    # geometry rather than crediting the behind-kind take as on-axis.
     assert entry["comparison"]["band_source"] == BAND_SOURCE_DECLARED_GEOMETRY
     assert entry["comparison"]["band_dip_hz"] is None
 
