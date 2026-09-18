@@ -35,6 +35,7 @@ from ._supervisor import (
     await_connected,
     failure_detail,
     hand_off_first_connect,
+    is_network_down,
     provider_code,
     request_planned_reopen,
     request_unplanned_reopen,
@@ -759,7 +760,9 @@ class BaseLiveConnection:
         try:
             await self._open_session_attempt()
         except Exception as e:  # noqa: BLE001
-            if will_retry is None or not will_retry(e):
+            # `network_down` escalation counts consecutive failures, so those
+            # stay on the tracker even when retried.
+            if will_retry is None or not will_retry(e) or is_network_down(e):
                 self._outage.on_failure(e, literals=self._secret_literals())
             raise
         self._outage.on_recovery()

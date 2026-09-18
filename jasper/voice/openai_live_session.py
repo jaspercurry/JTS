@@ -74,7 +74,8 @@ SESSION_OPEN_BUDGET_SEC = 15.0
 
 # Session opens one wake pays for. Live holds no socket between
 # conversations, so the acquire is the only retry it has — there is no
-# supervisor behind it. What the second attempt is for: `_retry_open`.
+# supervisor behind it. The second attempt covers the 409 race against the
+# session the previous conversation just closed (`_supervisor.is_transient`).
 SESSION_OPEN_ATTEMPTS = 2
 
 
@@ -543,12 +544,10 @@ class OpenAILiveConnection(BaseLiveConnection):
     def _retry_open(self, exc: Exception, attempt: int) -> bool:
         """Whether one more session open is worth this wake's time.
 
-        Covers the 409 race against the session the previous
-        conversation just closed, and every other transient
-        (`_supervisor.is_transient`). A handshake 404 joins them: Live's
-        upgrade path is constant and the model rides in `session.start`,
-        so a 404 cannot mean the missing model ADR-0215 reads it as —
-        retry it once, then that terminal handling applies."""
+        Live's upgrade path is constant and the model rides in
+        `session.start`, so a handshake 404 cannot mean the missing model
+        ADR-0215 reads it as — retry it once before that terminal
+        handling applies."""
         if attempt >= SESSION_OPEN_ATTEMPTS or self._stopping.is_set():
             return False
         return is_transient(exc) or http_status(exc) == 404
@@ -569,7 +568,7 @@ class OpenAILiveConnection(BaseLiveConnection):
             except Exception as exc:  # noqa: BLE001
                 if not self._retry_open(exc, attempt):
                     raise
-                self._on_reconnect_attempt_failed(exc, attempt, is_transient(exc))
+                self._on_reconnect_attempt_failed(exc, attempt, True)
                 log_event(
                     logger, "provider.session_open_retry", provider=self.PROVIDER_NAME,
                     attempt=attempt, status=http_status(exc),

@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import audioop
 import base64
+import errno
 import json
 import logging
 import random
@@ -23,7 +24,14 @@ from websockets.http11 import Response
 
 from jasper.tools import ToolRegistry, tool
 from jasper.voice import _base, openai_live_session
-from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG, NEEDS_ATTENTION_CUE_SLUG, OUT_OF_CREDIT_CUE_SLUG, is_transient
+from jasper.voice._supervisor import (
+    CANT_CONNECT_CUE_SLUG,
+    NEEDS_ATTENTION_CUE_SLUG,
+    NETWORK_DOWN_ATTEMPTS,
+    NETWORK_DOWN_CUE_SLUG,
+    OUT_OF_CREDIT_CUE_SLUG,
+    is_transient,
+)
 from jasper.voice.openai_live_session import SILENCE_BRIDGE_SEC, OpenAILiveConnection
 from jasper.voice.session import ConnectionState
 from jasper.voice.turn_playback import PlaybackReport, play_responses
@@ -705,6 +713,43 @@ async def test_a_handshake_404_is_retried_once_before_it_reads_as_terminal(
     finally:
         if turn is not None:
             await turn.release()
+        await conn.stop()
+
+
+async def test_a_downed_link_still_counts_every_attempt_it_failed(monkeypatch):
+    """`network_down` escalates on consecutive failures, so a retried
+    attempt stays on the tracker even though the 404/409 retries do not.
+
+    Two attempts per wake reach `NETWORK_DOWN_ATTEMPTS` in two wakes.
+    Counting only the attempt the loop gave up on would double that, and
+    the household would hear "check the Wi-Fi" twice as late.
+    """
+    monkeypatch.setattr(openai_live_session, "reconnect_delay", lambda *a, **k: 0.0)
+    attempts = 0
+
+    def connect():
+        nonlocal attempts
+        attempts += 1
+        raise OSError(errno.ENETUNREACH, "Network is unreachable")
+
+    cues: list[str] = []
+
+    async def cue_cb(slug: str) -> None:
+        cues.append(slug)
+
+    conn = OpenAILiveConnection(api_key="test", connect=connect)
+    conn.set_failure_escalation_cb(cue_cb)
+    await conn.start(ToolRegistry(), "Be concise.")
+    try:
+        wakes = NETWORK_DOWN_ATTEMPTS // openai_live_session.SESSION_OPEN_ATTEMPTS
+        for _ in range(wakes):
+            with pytest.raises(RuntimeError):
+                await conn.acquire_turn()
+
+        assert attempts == NETWORK_DOWN_ATTEMPTS
+        assert conn.wake_cue() == NETWORK_DOWN_CUE_SLUG
+        await wait_until(lambda: cues == [NETWORK_DOWN_CUE_SLUG])
+    finally:
         await conn.stop()
 
 
