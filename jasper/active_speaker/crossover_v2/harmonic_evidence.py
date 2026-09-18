@@ -323,10 +323,6 @@ def rebuild_measure_program(
     tried FIRST, and the search is safe in both directions because the
     ``program_id`` hash is what accepts it: a wrong prelude cannot match.
 
-    The declared cooldown that spaced MEASURE (#5342) is READ the same way, from
-    ``V2ConductorSnapshot.minimum_cooldown_s``; a round banked before that field
-    replays at zero, which is what it composed at.
-
     **A third parameter — the duration fit (#2921) — is READ, never solved**,
     a fitted sweep's realized length being a continuous float no grid could
     reach. A round that banked it (:func:`_banked_sweep_durations_s`) is
@@ -385,12 +381,6 @@ def rebuild_measure_program(
     raw_banked_durations = state.get("measure_sweep_durations_s")
     banked_durations_present = isinstance(raw_banked_durations, Mapping)
     banked_durations = _banked_sweep_durations_s(state, bands)
-    banked_cooldown = state.get("minimum_cooldown_s")
-    cooldown_s = (
-        float(banked_cooldown)
-        if isinstance(banked_cooldown, (int, float)) and not isinstance(banked_cooldown, bool)
-        else 0.0
-    )
     shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
     # Both pilot rules asked of the composer, never restated here.
     pilot_role = leading_pilot_role(roles_bands)
@@ -404,7 +394,6 @@ def rebuild_measure_program(
                 leading_pilot_gains_db=pilot_gains(float(gains[pilot_role])),
                 leading_pilot_role=pilot_role,
                 courtesy_prelude=prelude,
-                cooldown_s=cooldown_s,
             )
             if program.program_id == want:
                 return program, float(downstream), bool(prelude)

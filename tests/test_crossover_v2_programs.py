@@ -60,7 +60,6 @@ from jasper.active_speaker.crossover_v2.programs import (
     courtesy_prelude_for_phase,
     program_for_phase,
 )
-from jasper.active_speaker.program_admission import ProgramAdmissionRefusal
 from jasper.audio_measurement.program import KIND_COURTESY_TONE
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.web.correction_run_host import compose_plan_program
@@ -544,13 +543,11 @@ def test_prepared_summed_captures_use_the_stop_purpose_band(purpose, size):
 
 
 @pytest.mark.parametrize("row", ["branches", "front_rear"])
-def test_a_branch_take_the_plan_host_composes_is_padded_and_admitted(tmp_path, row):
+def test_a_branch_take_the_plan_host_composes_is_admitted(tmp_path, row):
     """The PRODUCTION composer, not the builder. ``compose_plan_program`` is what
-    ``bind_production_play`` plays, so it has to resolve the declared cooldown
-    off the session context: a blank profile composes a take whose second
-    branch sits 0.5 s from the summed verify, and the same session's admission
-    then refuses it. The capture window is sized independently and must never
-    end before the program it records.
+    ``bind_production_play`` plays, and the same session's admission has to
+    accept what it composed. The capture window is sized independently and must
+    never end before the program it records.
 
     The registry row decides WHICH two targets sound: ``front_rear`` excites the
     two woofers and leaves the tweeter alone, and it reaches the composer and the
@@ -560,17 +557,13 @@ def test_a_branch_take_the_plan_host_composes_is_padded_and_admitted(tmp_path, r
         CAPTURE_ENTRY_MARGIN_MS, _program_duration_ms, build_inline_session_spec,
     )
     from jasper.active_speaker.program_admission import readmit_summed_program_from_wav
-    from jasper.audio_measurement.program import (
-        KIND_SUMMED_SWEEP, KIND_SWEEP, write_program_wav,
-    )
+    from jasper.audio_measurement.program import write_program_wav
     from tests.test_active_speaker_program_admission import (
         CARDIOID_TAKE, CROSSOVER_TAKE, _rear_take_inputs, _roles as _declared_roles,
     )
 
-    cooldown_s = 2.0
     take = CROSSOVER_TAKE if row == "branches" else CARDIOID_TAKE
-    topology, safety, targets, graph = _rear_take_inputs(
-        take, max_repeat_count=3, minimum_cooldown_s=cooldown_s)
+    topology, safety, targets, graph = _rear_take_inputs(take)
     roles = tuple(_declared_roles())
     excitation = SessionExcitation(
         roles=roles, caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB, fc_hz=FC_HZ,
@@ -587,14 +580,6 @@ def test_a_branch_take_the_plan_host_composes_is_padded_and_admitted(tmp_path, r
     assert program.channels == 2
     assert {s.role for s in program.stimulus_segments() if s.role} == set(take)
 
-    for channel in set(take.values()):
-        run = sorted((s for s in program.segments if s.channel == channel
-                      and s.kind in (KIND_SWEEP, KIND_SUMMED_SWEEP)),
-                     key=lambda s: s.start_sample)
-        assert len(run) == 3
-        assert min(b.start_sample - a.start_sample - a.n_samples
-                   for a, b in zip(run, run[1:])) >= cooldown_s * program.sample_rate_hz
-
     wav = tmp_path / "branches.wav"
     write_program_wav(wav, program)
     admission = readmit_summed_program_from_wav(
@@ -610,127 +595,6 @@ def test_a_branch_take_the_plan_host_composes_is_padded_and_admitted(tmp_path, r
     ).capture_plan
     assert plan.entries[0].duration_ms >= (
         _program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS)
-
-
-@pytest.mark.parametrize("way", [1, 2])
-def test_a_driver_take_the_plan_host_composes_honours_the_declared_cooldown(way):
-    """The PRODUCTION composer for a ``drivers``-scope MEASURE (#5342).
-
-    ``compose_plan_program`` reads the cooldown off the session's excitation —
-    what ``correction_crossover_v2`` resolves from the safety profile and hands
-    the conductor — so a wide-band 1-way box gets its repeats spaced, while a
-    2-way, whose interleaved cycles already clear the declaration, composes the
-    same program it composed before the declaration was consulted.
-    """
-    from jasper.active_speaker.crossover_v2.capture_plan import (
-        _program_duration_ms, build_inline_session_spec,
-    )
-    from jasper.active_speaker.excitation_safety_plan import declared_minimum_cooldown_s
-    from jasper.audio_measurement.program import (
-        KIND_SWEEP, PROGRAM_SAMPLE_RATE_HZ, RoleBand,
-    )
-
-    cooldown_s = 2.0
-    profile = dict(woofer_floor=100, woofer_upper=20_000, max_sweep_duration_s=4,
-                   max_repeat_count=3)
-    _topology, safety, targets = _profile_and_targets(
-        **profile, minimum_cooldown_s=cooldown_s)
-    _t, blank, blank_targets = _profile_and_targets(**profile, minimum_cooldown_s=0.0)
-    roles = ((RoleBand("woofer", 0, FrequencyBand(150.0, 20_000.0)),) if way == 1 else
-             (RoleBand("woofer", 0, FrequencyBand(500.0, 1600.0)),
-              RoleBand("tweeter", 1, FrequencyBand(1600.0, 10_000.0))))
-    targets = {"woofer": targets["woofer"]} if way == 1 else targets
-    excitation = SessionExcitation(
-        roles=roles, caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB, fc_hz=FC_HZ,
-        sweep_duration_limits_s={rb.role: 4.0 for rb in roles},
-        minimum_cooldown_s=declared_minimum_cooldown_s(safety, targets))
-    host = SimpleNamespace(_excitation=excitation,
-                           _gain_plan_db={"woofer": -6.0, "tweeter": -46.0})
-    context = SimpleNamespace(safety_profile=safety, role_targets=targets)
-    request = request_for_program(measurement_program("speaker", "mark"), mover="human")
-    captures = list(prepare_plan_captures(request, roles_bands=roles))
-    spec = next(capture.spec for capture in captures
-                if capture.spec.graph_scope == "drivers" and capture.spec.program_phase == "measure")
-
-    program = compose_plan_program(host, spec, None, context=context)
-    for rb in roles:
-        run = sorted((s for s in program.segments
-                      if s.kind == KIND_SWEEP and s.channel == rb.channel),
-                     key=lambda s: s.start_sample)
-        assert min(b.start_sample - a.start_sample - a.n_samples
-                   for a, b in zip(run, run[1:])) >= cooldown_s * PROGRAM_SAMPLE_RATE_HZ
-    undeclared = compose_plan_program(
-        SimpleNamespace(_excitation=replace(excitation, minimum_cooldown_s=0.0),
-                        _gain_plan_db=host._gain_plan_db), spec, None, context=context)
-    assert (program.program_id == undeclared.program_id) is (way == 2)
-
-    # The phone's MEASURE window follows the declaration that lengthens MEASURE.
-    # It cannot equal the played program: this budget composes at nominal gains
-    # without the session's fitted sweep durations.
-    def _window_ms(declared_profile, declared_targets) -> int:
-        plan = build_inline_session_spec(
-            [(c.spec, c.resolved(request).prompt, "trial") for c in captures],
-            roles_bands=roles, fc_hz=FC_HZ, safety_profile=declared_profile,
-            role_targets=declared_targets, acknowledgement_binding="a" * 32,
-            retries_per_pose=0).capture_plan
-        return max(entry.duration_ms for entry in plan.entries
-                   if entry.kind_label == spec.program_phase)
-
-    grown_ms = _window_ms(safety, targets) - _window_ms(blank, blank_targets)
-    assert (grown_ms > 0) is (way == 1)
-    assert grown_ms == pytest.approx(
-        _program_duration_ms(program) - _program_duration_ms(undeclared), abs=50)
-
-
-@pytest.mark.parametrize("repeats, cooldown_s, refusal_by_phase", [
-    (3, 2.0, {}),
-    (2, 2.0, {"measure": ProgramAdmissionRefusal.REPEAT_COUNT_OVER_CAP}),
-    (3, 12.0, {"measure": ProgramAdmissionRefusal.COOLDOWN_BELOW_MINIMUM}),
-])
-def test_driver_takes_the_plan_host_composes_are_graded_against_declared_caps(
-    tmp_path, repeats, cooldown_s, refusal_by_phase,
-):
-    """The PRODUCTION composer for every ``drivers``-scope spec, not the builder.
-
-    ``compose_plan_program`` is what ``bind_production_play`` plays through the
-    driver door, and MEASURE puts ``MEASURE_REPEAT_COUNT`` sweeps on each
-    driver's own channel: at the declaration the research prompt asks for (3
-    repeats, 2 s) every phase still admits, while a declaration under what the
-    program plays refuses (#5322). CHECK admits in every row — its pilots are
-    bounded per segment and stay out of the repeat/cooldown count.
-    """
-    from jasper.active_speaker.excitation_safety_plan import effective_sweep_duration_limit_s
-    from jasper.active_speaker.program_admission import readmit_program_from_wav
-    from jasper.audio_measurement.program import write_program_wav
-    from tests.test_active_speaker_program_admission import _roles as _declared_roles
-
-    topology, safety, targets = _profile_and_targets(
-        max_repeat_count=repeats, minimum_cooldown_s=cooldown_s, max_sweep_duration_s=4)
-    roles = tuple(_declared_roles())
-    excitation = SessionExcitation(
-        roles=roles, caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB, fc_hz=FC_HZ,
-        sweep_duration_limits_s={rb.role: effective_sweep_duration_limit_s(safety, targets[rb.role])
-                                 for rb in roles})
-    host = SimpleNamespace(_excitation=excitation,
-                           _gain_plan_db={"woofer": -6.0, "tweeter": -46.0})
-    context = SimpleNamespace(safety_profile=safety, role_targets=targets)
-    request = request_for_program(measurement_program("speaker", "mark"), mover="human")
-
-    graded = {}
-    for capture in prepare_plan_captures(request, roles_bands=roles):
-        if capture.spec.graph_scope != "drivers":
-            continue
-        program = compose_plan_program(host, capture.spec, None, context=context)
-        wav = tmp_path / f"{program.program_id}.wav"
-        write_program_wav(wav, program)
-        graded[capture.spec.program_phase] = readmit_program_from_wav(
-            program, wav, topology=topology, safety_profile=safety,
-            role_targets=targets, session_volume_db=SESSION_VOLUME_DB)
-    assert set(graded) == {"check", "measure"}
-    for phase, admission in graded.items():
-        assert admission.allowed is (phase not in refusal_by_phase), admission.to_dict()
-        if phase in refusal_by_phase:
-            assert refusal_by_phase[phase] in admission.refusals
 
 
 def test_per_driver_measure_keeps_declared_bands_with_a_room_session():

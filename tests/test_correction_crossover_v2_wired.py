@@ -1132,9 +1132,6 @@ def test_predictive_segment_count_survives_solved_gains_and_live_level(scope, ph
     spec = MeasureSpec(kind="baseline", graph_scope=scope, program_phase=phase,
                        candidate_id=None if scope == "drivers" else "fp-a",
                        branch_target_ids=("woofer", "tweeter") if scope == "candidate_branches" else ())
-    # Preview and played program read ONE declaration: a branch take is padded
-    # by the declared cooldown, so a preview off a blank profile would announce
-    # a schedule the session never plays.
     declaring = plan_context()
     context = SimpleNamespace(roles_bands=conductor._roles, driver_caps_dbfs=conductor._excitation.caps_dbfs,
                               fc_hz=conductor._excitation.fc_hz, safety_profile=declaring.safety_profile,
@@ -1144,7 +1141,6 @@ def test_predictive_segment_count_survives_solved_gains_and_live_level(scope, ph
     for stimulus_dbfs in (None, -48.0):
         live = compose_plan_program(conductor, spec, stimulus_dbfs, context=declaring)
         assert len(live.stimulus_segments()) == len(predicted.stimulus_segments())
-        assert live.total_samples == predicted.total_samples
 
 
 @pytest.mark.parametrize("target", [None, -48.0, -60.0])

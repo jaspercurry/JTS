@@ -60,24 +60,6 @@ def _bass(fixture, **kwargs):
                               safety_profile=safety, role_targets=targets, **kwargs)
 
 
-def test_an_undeclared_cooldown_refuses_the_bass_stimulus(bass_fixture):
-    """The cooldown comes from the shared resolver, which refuses rather than
-    returning a zero. That refusal has to keep arriving as this builder's own
-    code, not as the resolver's."""
-    from copy import deepcopy
-
-    from jasper.active_speaker.bass_stimulus import BassStimulusRefused
-
-    _topology, safety, targets, excitation = bass_fixture
-    broken = deepcopy(safety)
-    for target in broken["targets"]:
-        target["level_duration_limits"].pop("minimum_cooldown_s")
-    with pytest.raises(BassStimulusRefused) as refused:
-        build_bass_program(excitation, program("bass").stimulus,
-                           safety_profile=broken, role_targets=targets)
-    assert refused.value.code == "bass_stimulus_caps_missing"
-
-
 def _replay(bass, raw, tmp_path, monkeypatch):
     wav = tmp_path / "capture.wav"
     wavfile.write(wav, bass.sample_rate_hz, raw.astype(np.float32))

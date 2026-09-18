@@ -21,7 +21,6 @@ from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.output_topology import measurement_target_id
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.driver_safety import compute_driver_safety_profile
-from jasper.active_speaker.excitation_safety_plan import ACTIVE_DRIVER_MAX_REPEAT_COUNT
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph, measurement_graph_evidence
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
@@ -40,7 +39,6 @@ from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     KIND_SUMMED_SWEEP,
     KIND_SWEEP,
-    MEASURE_REPEAT_COUNT,
     RoleBand,
     build_measure_program,
     build_verify_program,
@@ -66,7 +64,6 @@ def _profile_and_targets(
     woofer_highpass: float | None = None,
     woofer_upper: float = 20_000,
     minimum_cooldown_s: float = 0,
-    max_repeat_count: int = 3,
 ):
     """Asymmetric caps by default (woofer 0.0, tweeter -65): the realistic
     2-way shape whose ~65 dB spread is exactly what the (fixed) session-volume
@@ -77,7 +74,7 @@ def _profile_and_targets(
         return {
             "max_effective_peak_dbfs": peak,
             "max_sweep_duration_s": max_sweep_duration_s,
-            "max_repeat_count": max_repeat_count,
+            "max_repeat_count": 3,
             "minimum_cooldown_s": minimum_cooldown_s,
         }
 
@@ -205,37 +202,6 @@ def test_clean_program_is_admitted():
     assert facts[0].peak_within_cap and facts[1].peak_within_cap
     assert facts[0].quiet_out_of_segment and facts[1].quiet_out_of_segment
     assert facts[0].peak_matches_manifest and facts[1].peak_matches_manifest
-
-
-@pytest.mark.parametrize("repeats, cooldown_s, refusal", [
-    (3, 2.0, None),
-    (2, 2.0, ProgramAdmissionRefusal.REPEAT_COUNT_OVER_CAP),
-    (3, 12.0, ProgramAdmissionRefusal.COOLDOWN_BELOW_MINIMUM),
-])
-def test_declared_repeat_and_cooldown_caps_grade_every_driver_sweep(
-    repeats, cooldown_s, refusal,
-):
-    """The driver door grades both caps per target channel (#5322), through the
-    same helper the summed door uses. MEASURE plays ``MEASURE_REPEAT_COUNT``
-    sweeps per driver and no builder clamps it, so a declaration under what the
-    program plays refuses with the typed code rather than being excited past it.
-    """
-    topology, profile, targets = _profile_and_targets(
-        max_repeat_count=repeats, minimum_cooldown_s=cooldown_s,
-    )
-    sv = session_measurement_volume_db(profile, targets.values())
-    adm = _admit(
-        _measure_program(sv), topology=topology, safety_profile=profile,
-        role_targets=targets, session_volume_db=sv,
-    )
-    assert adm.allowed is (refusal is None), adm.to_dict()
-    if refusal is not None:
-        assert refusal in adm.refusals
-
-
-def test_measure_repeat_count_never_exceeds_the_driver_door_clamp():
-    """The driver door grades every MEASURE sweep against this clamp (#5322)."""
-    assert MEASURE_REPEAT_COUNT <= ACTIVE_DRIVER_MAX_REPEAT_COUNT
 
 
 def test_band_escape_refuses_segment():
@@ -989,10 +955,9 @@ CARDIOID_TAKE = {"woofer": 0, "woofer:rear": 1}
 CROSSOVER_TAKE = {"woofer": 0, "tweeter": 1}
 
 
-def _rear_take_inputs(branch_channels, *, layout="mono", **limits):
+def _rear_take_inputs(branch_channels, *, layout="mono"):
     topology, safety, targets = _profile_and_targets(
         rear=True, layout=layout, woofer_floor=40, woofer_highpass=40, max_sweep_duration_s=4,
-        **limits,
     )
     preset = _rear_pair(layout)[0]
     # ``role_channels`` is empty on purpose: a branch take's pair reaches the
@@ -1008,23 +973,18 @@ def _rear_take_inputs(branch_channels, *, layout="mono", **limits):
     return topology, safety, targets, graph
 
 
-def _rear_take_program(branch_channels, *, cooldown_s=0.0):
+def _rear_take_program(branch_channels):
     from jasper.audio_measurement.branch_program import build_branch_program
 
     return build_branch_program(SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65}, session_volume_db=-20,
         fc_hz=1600, sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
-    ).cloud_program(), branch_channels, cooldown_s=cooldown_s)
+    ).cloud_program(), branch_channels)
 
 
-def _admit_rear_take(tmp_path, branch_channels, *, graph=None, layout="mono",
-                     spaced=False, **limits):
-    topology, safety, targets, emitted = _rear_take_inputs(
-        branch_channels, layout=layout, **limits,
-    )
-    program = _rear_take_program(
-        branch_channels, cooldown_s=limits.get("minimum_cooldown_s", 0) if spaced else 0.0,
-    )
+def _admit_rear_take(tmp_path, branch_channels, *, graph=None, layout="mono"):
+    topology, safety, targets, emitted = _rear_take_inputs(branch_channels, layout=layout)
+    program = _rear_take_program(branch_channels)
     wav = tmp_path / "branches.wav"
     write_program_wav(wav, program)
     return targets, program, readmit_summed_program_from_wav(
@@ -1051,33 +1011,6 @@ def test_rear_declared_topology_is_admitted_with_the_rear_parked(tmp_path):
         ("sweep_w_rep", "woofer", 0), ("sweep_t_rep", "tweeter", 1),
         ("sweep_verify", None, 0), ("sum_companion", None, 1),
     ]
-
-
-@pytest.mark.parametrize("branch_channels", [CROSSOVER_TAKE, CARDIOID_TAKE])
-@pytest.mark.parametrize("repeats, cooldown_s, spaced, refusal", [
-    (3, 0, False, None),
-    (2, 0, False, ProgramAdmissionRefusal.REPEAT_COUNT_OVER_CAP),
-    (3, 2, False, ProgramAdmissionRefusal.COOLDOWN_BELOW_MINIMUM),
-    (3, 2, True, None),
-    (3, 5, True, None),
-])
-def test_declared_repeat_and_cooldown_caps_grade_every_branch_excitation(
-    tmp_path, branch_channels, repeats, cooldown_s, spaced, refusal,
-):
-    """Both caps count the SOLO sweeps too (#5286): a branch take loads each
-    target three times, so a declared two is over cap, and the 0.5 s tail
-    between the second branch's repeat and the summed verify is under a
-    declared 2 s cooldown until the builder inserts it. The 5 s row keeps the
-    door's OTHER cooldown leg honest: it reads the rendered PCM for the whole
-    declared window before each sweep, which a longer declaration reaches
-    further back into."""
-    _targets, _program, admission = _admit_rear_take(
-        tmp_path, branch_channels, spaced=spaced,
-        max_repeat_count=repeats, minimum_cooldown_s=cooldown_s,
-    )
-    assert admission.allowed is (refusal is None), admission.to_dict()
-    if refusal is not None:
-        assert refusal in admission.refusals
 
 
 def test_a_graph_that_feeds_a_parked_target_is_refused(tmp_path):

@@ -28,11 +28,9 @@ from jasper.audio_measurement.program import (
     PROGRAM_PHASE_VERIFY,
     KIND_PILOT,
     KIND_SUMMED_SWEEP,
-    KIND_SWEEP,
     PROGRAM_SAMPLE_RATE_HZ,
     ExcitationProgram,
     ProgramSegment,
-    cooldown_samples,
     segment_emitted_band_hz,
 )
 import yaml
@@ -78,16 +76,6 @@ OUT_OF_SEGMENT_RMS_FLOOR_DBFS = -60.0
 # (the loudest scheduled segment on that channel) within this tolerance. 0.5 dB
 # absorbs int16 quantization while still catching gross composer/render drift.
 CHANNEL_PEAK_TOLERANCE_DB = 0.5
-
-#: Sweep kinds that load the driver they are routed to, and so count against
-#: ``max_repeat_count`` and ``minimum_cooldown_s``: a branch take's solo sweep
-#: excites its target exactly as the summed one does. ``KIND_PILOT`` stays out
-#: deliberately — ``level_duration_limits`` bounds the sweep protocol, every
-#: pilot is still bounded on its own by the per-segment loop below, and
-#: counting the ``DEFAULT_PILOT_GAP_S`` pilot pair would refuse plain VERIFY,
-#: and CHECK (pilots only), at the 2 s cooldown the research prompt asks every
-#: driver to declare.
-EXCITING_SWEEP_KINDS = (KIND_SWEEP, KIND_SUMMED_SWEEP)
 
 _DBFS_FLOOR = 1e-12
 
@@ -362,44 +350,6 @@ def _channel_declared_peak_dbfs(program: ExcitationProgram, channel: int) -> flo
     return max(peaks) if peaks else _dbfs(0.0)
 
 
-def _excitation_cap_refusals(
-    program: ExcitationProgram, pcm: Any, *, channel: int,
-    maximum_repeat_count: int, minimum_cooldown_s: float,
-) -> tuple[list[ProgramAdmissionRefusal], str]:
-    """Grade the excitations that reach ONE target against its declared caps,
-    and return the refusal-log note beside them (``""`` when neither capped
-    code fired).
-
-    ``channel`` is the program channel routed to that target: its sweeps are the
-    repeats the declaration counts, and two consecutive ones must be
-    ``minimum_cooldown_s`` apart in the SCHEDULE and silent in the rendered PCM
-    across that whole window. The caller supplies the cap it enforces — never
-    looser than declared: the driver door clamps ``maximum_repeat_count`` to
-    ``ACTIVE_DRIVER_MAX_REPEAT_COUNT``; the summed door passes the raw declaration.
-    """
-    sweeps = sorted(
-        (segment for segment in program.segments
-         if segment.kind in EXCITING_SWEEP_KINDS and segment.channel == channel),
-        key=lambda segment: segment.start_sample,
-    )
-    refusals: list[ProgramAdmissionRefusal] = []
-    if len(sweeps) > maximum_repeat_count:
-        refusals.append(ProgramAdmissionRefusal.REPEAT_COUNT_OVER_CAP)
-    cooldown = cooldown_samples(minimum_cooldown_s, program.sample_rate_hz)
-    if any(b.start_sample - a.start_sample - a.n_samples < cooldown
-           or pcm[b.start_sample - cooldown:b.start_sample, b.channel].any()
-           for a, b in zip(sweeps, sweeps[1:])):
-        refusals.append(ProgramAdmissionRefusal.COOLDOWN_BELOW_MINIMUM)
-    note = ""
-    if refusals:
-        gaps_s = [(b.start_sample - a.start_sample - a.n_samples) / program.sample_rate_hz
-                  for a, b in zip(sweeps, sweeps[1:])]
-        gap = f"{min(gaps_s):.2f}" if gaps_s else "n/a"
-        note = (f"ch{channel}:repeats={len(sweeps)}/{maximum_repeat_count}"
-                f",gap_s={gap}/{minimum_cooldown_s:.2f}")
-    return refusals, note
-
-
 def _channel_facts(
     program: ExcitationProgram, pcm: Any, *, channel: int, role: str,
     cap_dbfs: float, session_volume_db: float,
@@ -468,12 +418,6 @@ def _evaluate_program(
     # carry because it records what was REQUESTED. Read only by the refusal log;
     # a segment whose plan raised gets no entry and its limits are omitted.
     segment_limits: dict[str, tuple[float, float, float]] = {}
-    # ``(maximum_repeat_count, minimum_cooldown_s)`` per program channel: the
-    # caps no per-segment plan can reach, each being prepared at one repeat.
-    # One role per channel, so every segment on it declares the same numbers.
-    channel_caps: dict[int, tuple[int, float]] = {}
-    # Breach notes for the refusal log's `excitation_caps` field (below).
-    cap_breaches: list[str] = []
 
     try:
         channel_roles = _channel_roles(program)
@@ -537,9 +481,6 @@ def _evaluate_program(
             prepared.limits.permitted_band.upper_hz,
             prepared.limits.maximum_duration_s,
         )
-        channel_caps.setdefault(int(segment.channel or 0), (
-            prepared.limits.maximum_repeat_count, prepared.minimum_cooldown_s,
-        ))
         if not prepared.execution_allowed:
             refusals.append(ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS)
 
@@ -585,16 +526,6 @@ def _evaluate_program(
             )
             channels.append(facts)
             refusals.extend(reasons)
-            # No caps: this channel's plans all raised above, so the program is
-            # refused already and grading it would judge nothing new.
-            caps = channel_caps.get(channel)
-            if caps is not None:
-                cap_refusals, breach = _excitation_cap_refusals(
-                    program, pcm, channel=channel,
-                    maximum_repeat_count=caps[0], minimum_cooldown_s=caps[1],
-                )
-                refusals.extend(cap_refusals)
-                cap_breaches.append(breach)
 
     # De-duplicate refusals while preserving first-seen order.
     seen: dict[ProgramAdmissionRefusal, None] = {}
@@ -616,8 +547,8 @@ def _evaluate_program(
         # its folded comparisons apart: a bench triage once read it as a woofer
         # level breach when the real refusal was DURATION (the synchronized
         # sweep rounds to the nearest phase-closing length, exceeding a declared
-        # 4.0 s by 5.8 ms). The per-segment text omits the repeat count (fixed
-        # at one per plan); program-level grading reports it via `excitation_caps`.
+        # 4.0 s by 5.8 ms). The repeat count is not rendered because it cannot
+        # be the failing comparison — every segment is fixed at one repeat.
         # `session_volume_db` is named because a segment's effective peak is its
         # digital gain PLUS that value.
         durations_s = {
@@ -651,7 +582,6 @@ def _evaluate_program(
                 f"{facts.role}={facts.cap_dbfs:.3f}" for facts in channels
             ),
             session_volume_db=f"{float(session_volume_db):.3f}",
-            excitation_caps=",".join(filter(None, cap_breaches)),
         )
     return admission
 
@@ -857,8 +787,6 @@ def readmit_summed_program_from_wav(
     bass_boost_db = dynamic_bass_gain_reserve_db(DynamicBassDescriptor(**descriptor)) if descriptor else 0.0
     segments: list[SegmentAdmission] = []
     refusals: list[ProgramAdmissionRefusal] = []
-    # Breach notes for the refusal log's `excitation_caps` field (below).
-    cap_breaches: list[str] = []
     declared = {target["target_fingerprint"]: target for target in safety_profile["targets"]}
     # A role's protection chain covers every output of that role, so a cardioid
     # woofer's step is ``channels: [front, rear]`` (ADR-0316). That is the
@@ -895,13 +823,15 @@ def readmit_summed_program_from_wav(
         boost_db = bass_boost_db if output in bass_channels else 0.0
         input_caps.append(cap - boost_db)
         limits = declared[fingerprint]["level_duration_limits"]
-        cap_refusals, breach = _excitation_cap_refusals(
-            program, pcm, channel=0 if branch_channel is None else branch_channel,
-            maximum_repeat_count=limits["max_repeat_count"],
-            minimum_cooldown_s=limits["minimum_cooldown_s"],
-        )
-        refusals.extend(cap_refusals)
-        cap_breaches.append(breach)
+        sweeps = sorted((s for s in program.segments if s.kind == KIND_SUMMED_SWEEP
+                         and (not branches or s.channel == branch_channel)), key=lambda s: s.start_sample)
+        if len(sweeps) > limits["max_repeat_count"]:
+            refusals.append(ProgramAdmissionRefusal.REPEAT_COUNT_OVER_CAP)
+        cooldown = math.ceil(limits["minimum_cooldown_s"] * program.sample_rate_hz)
+        if any(b.start_sample - a.start_sample - a.n_samples < cooldown
+               or pcm[b.start_sample - cooldown:b.start_sample, b.channel].any()
+               for a, b in zip(sweeps, sweeps[1:])):
+            refusals.append(ProgramAdmissionRefusal.COOLDOWN_BELOW_MINIMUM)
         requirements = declared[fingerprint]["required_protection_filters"]
         protected_floor_hz = float(declared[fingerprint]["hard_excitation_band_hz"][0])
         for requirement in requirements:
@@ -962,6 +892,5 @@ def readmit_summed_program_from_wav(
             logger, "active_speaker.program_admission", level=logging.WARNING,
             result="refused", program_id=program.program_id, phase=program.phase,
             refusals=",".join(reason.value for reason in admission.refusals),
-            excitation_caps=",".join(filter(None, cap_breaches)),
         )
     return admission

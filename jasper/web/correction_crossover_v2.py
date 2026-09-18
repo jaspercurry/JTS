@@ -31,7 +31,6 @@ from jasper.active_speaker.angle_capture import (
 from jasper.active_speaker.crossover_v2.measure_spec import branch_target_ids_for
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-from jasper.active_speaker.excitation_safety_plan import declared_minimum_cooldown_s
 from jasper.active_speaker.linearization_budget import fit_budgets_by_role
 from jasper.active_speaker.crossover_v2.capture_plan import (
     POSITION_DEG_KEY, POSITION_VERTICAL_DEG_KEY, build_inline_session_spec,
@@ -882,8 +881,6 @@ def prepare_v2_session(
                 fc_hz=context.fc_hz,
                 driver_caps_dbfs=context.driver_caps_dbfs,
                 driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
-                driver_minimum_cooldown_s=declared_minimum_cooldown_s(
-                    context.safety_profile, context.role_targets),
                 session_volume_db=context.session_volume_db,
                 seams=seams,
                 driver_spacing_m=context.driver_spacing_m,
@@ -922,8 +919,6 @@ def prepare_v2_session(
                 fc_hz=context.fc_hz,
                 driver_caps_dbfs=context.driver_caps_dbfs,
                 driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
-                driver_minimum_cooldown_s=declared_minimum_cooldown_s(
-                    context.safety_profile, context.role_targets),
                 session_volume_db=context.session_volume_db,
                 seams=seams,
                 positions_gated=True,
