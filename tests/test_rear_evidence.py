@@ -126,6 +126,42 @@ def test_with_no_measurable_dip_the_band_falls_back_in_order(declared, source, b
     assert band["band_hz"] == (None if band_hz is None else pytest.approx(list(band_hz)))
 
 
+#: Two dips on one reference curve — issue #5330's own jts3 round: an
+#: unwindowed search let a 12 dB room feature at 37.6 Hz outrank the
+#: shallower dip near the true wall distance (~170 Hz).
+_ROOM_MODE_HZ = 38.0
+_WALL_DIP_HZ = 165.0
+
+
+def _two_dip_curve(*, room_db: float = 12.0, wall_db: float = 5.0) -> np.ndarray:
+    """No wall image (``rho=0``), just the two notches ``_image_curve``
+    already knows how to cut, summed onto one flat curve."""
+    return (_image_curve(rho=0.0, notch_hz=_ROOM_MODE_HZ, notch_db=room_db)
+            + _image_curve(rho=0.0, notch_hz=_WALL_DIP_HZ, notch_db=wall_db))
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected_hz", "search_hz"),
+    [
+        ({"geometric_dip_hz": 170.0}, _WALL_DIP_HZ,
+         (170.0 / rear_evidence.DIP_SEARCH_WINDOW_RATIO, 170.0 * rear_evidence.DIP_SEARCH_WINDOW_RATIO)),
+        ({"section_band_hz": (74.0, 344.0)}, _WALL_DIP_HZ, (74.0, 344.0)),
+        ({"handover_hz": 66.0}, _WALL_DIP_HZ, (66.0, CEILING_HZ)),
+        ({}, _ROOM_MODE_HZ, (COVERAGE_HZ[0], CEILING_HZ)),
+    ],
+)
+def test_the_measured_dip_search_is_windowed_so_a_deeper_dip_elsewhere_loses(
+    kwargs, expected_hz, search_hz,
+):
+    band = rear_evidence.comparison_band(
+        coverage_hz=COVERAGE_HZ, ceiling_hz=CEILING_HZ,
+        reference_take=(FREQS_HZ, _two_dip_curve()), **kwargs,
+    )
+    assert band["source"] == rear_evidence.BAND_SOURCE_MEASURED_DIP
+    assert band["dip_hz"] == pytest.approx(expected_hz, rel=0.05)
+    assert band["search_hz"] == pytest.approx(list(search_hz))
+
+
 def test_filling_the_dip_while_digging_a_handover_hole_shows_both():
     band, reference = _batch(_image_curve(rho=0.8))
     incumbent = _figures(_image_curve(rho=0.8), band, reference)
@@ -168,6 +204,20 @@ def test_a_dip_at_another_frequency_is_reported_as_shifted(notch_at):
     assert variant["dip_shift"]["hz"] == pytest.approx(shifted_hz, rel=0.02)
     assert variant["dip_shift"]["depth_db"] == pytest.approx(variant["dip"]["depth_db"])
     assert _figures(_image_curve(rho=0.8), band, reference, incumbent=incumbent)["dip_shift"] is None
+
+
+def test_a_curve_that_only_slopes_toward_the_band_edge_has_no_dip():
+    """The reviewer-style case issue #5330's wrong band exposed: a trend
+    that merely falls toward a band edge, and keeps falling past it, is not
+    a local minimum there — unlike the genuine edge dip above, the sample
+    one bin outside the edge must show a rise for the edge to count."""
+    reference = np.zeros_like(FREQS_HZ)
+    curve = -12.0 * np.log2(FREQS_HZ / FREQS_HZ[0])
+    row = rear_evidence.position_figures(
+        FREQS_HZ, curve, reference_db=reference, band_hz=(100.0, 300.0),
+        coverage_hz=COVERAGE_HZ, handover_hz=HANDOVER_HZ,
+    )
+    assert row["dip"] is None
 
 
 def test_one_bad_position_is_the_reported_worst_regression():

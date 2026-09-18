@@ -223,7 +223,7 @@ def rear_document(
     band = comparison_band(
         coverage_hz=coverage_hz, ceiling_hz=ceiling.ceiling_hz,
         reference_take=reference_on_axis, geometric_dip_hz=_wall_dip_hz(walls),
-        section_band_hz=stage["band_hz"],
+        section_band_hz=stage["band_hz"], handover_hz=stage["handover_hz"],
     )
     figures = {
         "band_hz": band["band_hz"], "coverage_hz": coverage_hz, "handover_hz": stage["handover_hz"],
