@@ -26,7 +26,8 @@ from jasper.active_speaker.angle_capture import BASE_CANDIDATE
 from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
 from jasper.active_speaker.camilla_yaml import rear_branch_sum_headroom_db
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal
-from jasper.active_speaker.crossover_v2 import rear_views
+from jasper.active_speaker import measurement_analysis
+from jasper.active_speaker.crossover_v2 import rear_views, room_selection
 from jasper.active_speaker.crossover_v2.pose_curve import LateralPoseCurve, pose_curve_record
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
@@ -34,8 +35,10 @@ from jasper.active_speaker.rear_calibration import diagnostic_seed
 from jasper.active_speaker.round_bank import _bookkeeping
 from jasper.active_speaker.round_packet import write_round_packet
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW
+from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
+from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.rear_evidence import (
     BAND_SOURCE_MEASURED_DIP, POLARITY_INVERTED, REASON_COVERAGE_SHORT,
     REASON_NO_COMPARISON, REASON_NO_REPEATS,
@@ -237,6 +240,15 @@ def _pair_curves(band_hz: Sequence[float] = SEAT_BAND_HZ) -> list[dict]:
             for role, transfer in zip(rear_views.PAIR_ROLES, (front, rear, front + rear))]
 
 
+def _branch_program(summed: Mapping[str, Any]) -> dict:
+    """The two-channel branch program a pair take plays, through the PRODUCTION
+    composer so the schedule's own ``program_id`` stays valid — the shape the
+    summed analyzer refuses (``channels == 2``)."""
+    front, rear, _summed = rear_views.PAIR_ROLES
+    return build_branch_program(
+        ExcitationProgram.from_dict(dict(summed)), {front: 0, rear: 1}).to_dict()
+
+
 def _branch_diagnostic() -> dict:
     """The branch diagnostic a pair take banks: one impulse per solo segment,
     both on the one recording clock the analyzer wrote them from."""
@@ -252,37 +264,46 @@ def _branch_diagnostic() -> dict:
 
 def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                applied: str = BASE_CANDIDATE, diagnostic: bool = True,
-               swept_hz: Sequence[float] = SEAT_BAND_HZ) -> Path:
+               swept_hz: Sequence[float] = SEAT_BAND_HZ, sidecar_curves: bool = True) -> Path:
     """One banked ``rear/pair`` round: the composed candidate at every pose,
     each take banking both woofers alone, their sum and the branch diagnostic.
 
-    The manifest carries the THREE role-scoped sets the runner banks for one
-    pair candidate. ``missing`` drops the solo segments at named bearings;
-    ``diagnostic`` false banks takes that analyzed no branches, the shape jts3
-    produced; ``swept_hz`` narrows the curves' own band so the band figures run
-    out of bands to read.
+    Every take carries the shape the runner really banks — a two-channel
+    ``candidate_branches`` program, which the summed analyzer refuses outright.
+    The manifest carries the THREE role-scoped sets. ``missing`` drops the solo
+    segments at named bearings; ``diagnostic`` false banks takes that analyzed
+    no branches, the shape jts3 produced before #5361; ``swept_hz`` narrows the
+    curves' own band so the band figures run out of bands to read;
+    ``sidecar_curves`` false leaves the sidecar's ``curves`` empty and the role
+    curves only on the manifest's own set rows, as a real round banks them.
     """
     root = bank_seat_round(tmp_path / "pair")
     source, store = _round_source(root)
+    branch_program = _branch_program(source["program"])
     records = []
     for degrees, repeat in _poses(repeats):
         take_id = f"{_COMPOSED}-{degrees}-{repeat}"
+        curves = source["curves"] if degrees in missing else _pair_curves(swept_hz)
         records.append({**source, "take_id": take_id, "position_id": take_id, "repeat": repeat,
                         "pose_kind": "bearing", "position_deg": degrees, "vertical_deg": 0,
                         "mark_distance_m": 1.0, "measurement_purpose": "rear",
-                        "gating_applied": False, "graph_scope": "candidate",
+                        "gating_applied": False, "graph_scope": "candidate_branches",
+                        "program": branch_program,
                         "candidate_id": _COMPOSED, "level_db": -30.0, "seat_offset_m": None,
                         **({"regime": "branches",
                             "branch_diagnostic": _branch_diagnostic()} if diagnostic else {}),
-                        "curves": source["curves"] if degrees in missing
-                                  else _pair_curves(swept_hz)})
+                        "curves": curves if sidecar_curves else []})
     banked = _banked(store, records)
+    by_role = {str(curve["role"]): curve for curve in _pair_curves(swept_hz)}
     groups = []
     # Role order as the runner banks it, the SUM first — so a reader that kept
     # whichever set iterated last would name a solo woofer's instead.
     for role in sorted(rear_views.PAIR_ROLES):
         group = manifest_set(banked, set_id=f"{_COMPOSED}-{role}")
         group["capture_basis"].update(role=role, candidate_id=_COMPOSED)
+        if not sidecar_curves:
+            for take in group["takes"]:
+                take["curve"] = by_role[role]
         groups.append(group)
     write_manifest(root, program="rear/pair", groups=groups)
     _round_environment(root, applied=_SECTIONS[applied])
@@ -462,8 +483,9 @@ def test_a_pair_round_packets_each_woofer_alone_and_the_trust_number(
     # One candidate, so no figure spread for a difference to be real against.
     # How the index renders that line is pinned with the other index cases.
     assert comparison["repeat_spread"]["reason"] == REASON_NO_COMPARISON
-    assert {r["view"] for r in views if r["status"] == "written"} == {
-        "rear", "frequency", "inventory"}
+    # The frequency view reads the summed analyzer, which refuses a branch
+    # take's program, so a pair round banks none — as the real round does.
+    assert {r["view"] for r in views if r["status"] == "written"} == {"rear", "inventory"}
     assert json.loads((root / ARTIFACT_BY_VIEW["rear"].artifact).read_text()) == {
         key: value for key, value in entry.items() if key != "out"}
 
@@ -488,6 +510,32 @@ def test_a_pair_position_without_its_segments_is_disclosed(tmp_path, banked_cand
     assert len(comparison["positions_unscored"]) == 1
     assert set(entry["pair"]["positions"]) == set(comparison["positions"])
     assert not set(comparison["positions_unscored"]) & set(entry["pair"]["positions"])
+
+
+def test_a_pair_round_never_asks_the_summed_analyzer(tmp_path, banked_candidates, monkeypatch):
+    """A branch take's program is two-channel and ``candidate_branches``-scoped,
+    which the summed analyzer refuses outright — so the pair path must not ask
+    it. Read with the REAL analyzer restored, which is what the round hits on
+    the box, and with the role curves only on the manifest's own set rows."""
+    monkeypatch.setattr(room_selection, "analyzed_measurements",
+                        measurement_analysis.analyzed_measurements)
+    root = pair_round(tmp_path, sidecar_curves=False)
+    inputs = round_inputs(root)
+
+    packet, views = packet_of(root)
+    entry, = packet["rear"]
+
+    # The fixture really does carry the shape the analyzer cannot read.
+    with pytest.raises(measurement_analysis.MeasurementAnalysisRefused) as refused:
+        list(measurement_analysis.analyzed_measurements(inputs.session_dir))
+    assert refused.value.code == "measurement_analysis_program_unsupported"
+    assert next(v for v in views if v["view"] == "rear")["status"] == "written"
+    assert entry["comparison"]["positions_unscored"] == {}
+    assert len(entry["pair"]["positions"]) == len(entry["comparison"]["positions"]) == 3
+    row = entry["pair"]["positions"][min(entry["comparison"]["positions"])]
+    assert (row["reason"], len(row["bands"])) == ("", 10)
+    assert row["superposition_residual_db"] == pytest.approx(0.0, abs=0.01)
+    assert row["arrival_gap"]["ms"] == pytest.approx(_PAIR_GAP_MS, abs=0.05)
 
 
 def test_a_pair_round_that_analyzed_no_branches_says_that_and_not_a_missing_incumbent(

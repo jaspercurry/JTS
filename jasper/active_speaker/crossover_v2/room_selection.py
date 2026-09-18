@@ -74,6 +74,35 @@ def _take(row: Measurement, record: Mapping[str, Any]) -> SeatTake | None:
         gating if isinstance(gating, bool) else None, (lo, hi),
     )
 
+def is_purpose_take(row: Measurement, record: Mapping[str, Any], purpose: str) -> bool:
+    """Whether this banked take is one of THIS round's lateral takes of
+    ``purpose``. The ONE filter :func:`analyzed_purpose_takes` and
+    :func:`purpose_take_records` share, so an analyzed reader and a
+    records-only reader cannot disagree about which takes a round has."""
+    try:
+        resolved = resolved_measurement_purpose(
+            record.get("measurement_purpose"), record.get("pose_kind") or POSE_KIND_BEARING,
+        )
+    except ValueError:
+        return False
+    return row.phase == PHASE_LATERAL and resolved == purpose
+
+
+def purpose_take_records(
+    bundle_dir: Path, *, purpose: str = PURPOSE_ROOM,
+) -> list[tuple[Measurement, Mapping[str, Any]]]:
+    """This round's lateral take records of ONE purpose, exactly as banked.
+
+    No analyzer, because not every take has one to run: a branch take's program
+    is two-channel and ``candidate_branches``-scoped, which
+    :func:`~jasper.active_speaker.measurement_analysis.analyzed_measurements`
+    refuses outright. A reader that needs only what the take already banked
+    reads it here instead of paying for an analysis it cannot have.
+    """
+    return [(row, record) for row, record in measurement_documents(bundle_dir)
+            if is_purpose_take(row, record, purpose)]
+
+
 def analyzed_purpose_takes(
     bundle_dir: Path, *, purpose: str = PURPOSE_ROOM,
     take_ids: tuple[str, ...] | None = None, calibration_root: Path | None = None,
@@ -91,18 +120,9 @@ def analyzed_purpose_takes(
         row, _ = documents[measurement.record_path]
         analyzed.add(measurement.record_path)
         documents[measurement.record_path] = row, measurement.document()
-    rows: list[tuple[Measurement, Mapping[str, Any], SeatTake | None]] = []
-    for path, (row, record) in documents.items():
-        try:
-            resolved = resolved_measurement_purpose(
-                record.get("measurement_purpose"), record.get("pose_kind") or POSE_KIND_BEARING,
-            )
-        except ValueError:
-            continue
-        if row.phase != PHASE_LATERAL or resolved != purpose:
-            continue
-        rows.append((row, record, _take(row, record) if path in analyzed else None))
-    return rows
+    return [(row, record, _take(row, record) if path in analyzed else None)
+            for path, (row, record) in documents.items()
+            if is_purpose_take(row, record, purpose)]
 
 
 def select_seat_takes(

@@ -339,7 +339,7 @@ def test_a_synthetic_pair_recovers_its_gap_level_and_polarity(
     )
     read = rear_evidence.rear_polarity(
         FREQS_HZ, front_tf=pair["front_tf"], rear_tf=pair["rear_tf"],
-        band_hz=_pair_band_hz(pair), arrival_gap_s=rear_evidence.confident_arrival_gap_s(gap),
+        band_hz=_pair_band_hz(pair), arrival_gap=gap,
     )
 
     # Each woofer alone, their sum, and the level gap — every band, no ranking.
@@ -428,12 +428,17 @@ def test_the_gap_pools_its_repeats_and_a_missing_segment_says_so():
     assert (missing["ms"], missing["confidence"], missing["at_edge"]) == (None, None, None)
     assert missing["reason"] == rear_evidence.REASON_NO_IMPULSE
     assert rear_evidence.confident_arrival_gap_s(missing) is None
-    # Without a gap to remove, the phase of R/F says nothing about polarity.
-    unclear = rear_evidence.rear_polarity(
-        FREQS_HZ, front_tf=near["front_tf"], rear_tf=near["rear_tf"],
-        band_hz=(40.0, 200.0), arrival_gap_s=None)
-    assert (unclear["state"], unclear["phase_deg"]) == (rear_evidence.POLARITY_UNCLEAR, None)
-    assert unclear["reason"] == rear_evidence.REASON_NO_IMPULSE
+    # Without a gap to remove, the phase of R/F says nothing about polarity —
+    # and the two ways a gap goes unusable keep their own reasons, because a
+    # gap the correlator read but does not trust is not a missing segment.
+    shy = {**pooled, "confidence": DEFAULT_CONFIDENCE_THRESHOLD / 2.0}
+    for gap, reason in ((missing, rear_evidence.REASON_NO_IMPULSE),
+                        (shy, rear_evidence.REASON_GAP_NOT_CONFIDENT)):
+        unclear = rear_evidence.rear_polarity(
+            FREQS_HZ, front_tf=near["front_tf"], rear_tf=near["rear_tf"],
+            band_hz=(40.0, 200.0), arrival_gap=gap)
+        assert (unclear["state"], unclear["phase_deg"]) == (rear_evidence.POLARITY_UNCLEAR, None)
+        assert unclear["reason"] == reason
 
 
 @pytest.mark.parametrize(

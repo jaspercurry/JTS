@@ -74,6 +74,10 @@ REASON_COVERAGE_SHORT = "coverage_short"
 REASON_NO_REPEATS = "no_repeats"
 REASON_NO_ROW = "no_row"
 REASON_NO_IMPULSE = "no_impulse"
+#: A gap the correlator DID read, under its confidence gate. Distinct from
+#: :data:`REASON_NO_IMPULSE`: the segments were there, the answer is not
+#: trustworthy enough to remove from a phase.
+REASON_GAP_NOT_CONFIDENT = "gap_not_confident"
 #: A batch with ONE played candidate: it reads no candidate figures, so it has
 #: no repeat spread for a difference to be called real against. Its own repeat
 #: evidence is per position, beside each measured figure.
@@ -436,7 +440,7 @@ def confident_arrival_gap_s(gap: Mapping[str, Any]) -> float | None:
 
 def rear_polarity(
     freqs_hz: Any, *, front_tf: Any, rear_tf: Any, band_hz: Sequence[float] | None,
-    arrival_gap_s: float | None,
+    arrival_gap: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Whether the rear woofer tracks the front woofer or opposes it.
 
@@ -449,12 +453,19 @@ def rear_polarity(
     mean angle falls between the two thresholds, and wherever the gap or the
     bands are unavailable — never a guess, and never a claim about the polar
     pattern.
+
+    ``arrival_gap`` is the whole :func:`arrival_gap_ms` row, not its seconds,
+    so the two ways a gap can be unusable keep their own reasons: one never
+    read (:data:`REASON_NO_IMPULSE`) and one read but under the correlator's
+    confidence gate (:data:`REASON_GAP_NOT_CONFIDENT`).
     """
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     bands = [] if band_hz is None else _third_octaves(freqs, band_hz)
     row: dict[str, Any] = {"state": POLARITY_UNCLEAR, "phase_deg": None, "bands_hz": None}
+    arrival_gap_s = confident_arrival_gap_s(arrival_gap)
     if arrival_gap_s is None:
-        return {**row, "reason": REASON_NO_IMPULSE}
+        return {**row, "reason": REASON_GAP_NOT_CONFIDENT
+                       if arrival_gap.get("ms") is not None else REASON_NO_IMPULSE}
     if not bands:
         return {**row, "reason": REASON_COVERAGE_SHORT}
     levels = [_band_levels(freqs, tf, bands) for tf in (front_tf, rear_tf)]

@@ -52,9 +52,9 @@ from .evidence_packet import applied_profile_source
 from .measure_spec import branch_target_ids_for
 from .measurement_context import capture_basis
 from .position_cycle import curves_for_take, parse_curve_complex
-from .room_selection import SeatTake, analyzed_purpose_takes
+from .room_selection import SeatTake, analyzed_purpose_takes, purpose_take_records
 from .room_views import room_ceiling
-from .round_captures import RoundCapturesRefused
+from .round_captures import RoundCapturesRefused, doc_pose_key
 from .round_inputs import RoundInputs, banked_round_of
 
 REFUSE_NO_REAR_TAKES = "rear_no_summed_takes"
@@ -209,15 +209,17 @@ def rear_document(
     disclosed with a reason: ``positions_unscored`` names one the reference
     take missed, and ``across_positions.positions_unavailable`` one a
     candidate itself missed. A round the manifest advertises as a PAIR batch
-    (:func:`_pair_set`) answers :func:`_pair_document` instead, or refuses with
-    its own reason when its takes banked no branch segments — never with the
-    summed path's, which asks a question a pair round does not have.
+    (:func:`_pair_set`) answers :func:`_pair_document` instead, BEFORE the
+    summed analyzer is asked for anything: a branch take's program is one the
+    analyzer refuses, so running it first would refuse the whole round.
     Predictions belong to a later preview: nothing here is a modelled value.
     """
+    pair_set = _pair_set(manifest)
+    if pair_set is not None:
+        return _pair_document(inputs, manifest=manifest, pair_set=pair_set)
     batch: dict[str, dict[str, list[SeatTake]]] = {}
     bases: dict[str, list[Mapping[str, Any]]] = {}
     on_axis: set[str] = set()
-    pairs: dict[str, list[Mapping[str, Any]]] = {}
     for row, record, take in analyzed_purpose_takes(
         inputs.session_dir, purpose=PURPOSE_REAR, calibration_root=calibration_root,
     ):
@@ -226,21 +228,10 @@ def rear_document(
         candidate = _candidate_key(record.get("candidate_id"))
         batch.setdefault(candidate, {}).setdefault(take.pose_key, []).append(take)
         bases.setdefault(candidate, []).append(capture_basis(record))
-        if record.get("branch_diagnostic"):
-            pairs.setdefault(take.pose_key, []).append(record)
         if row.position_deg == 0 and row.vertical_deg == 0:
             on_axis.add(take.pose_key)
     if not batch:
         raise RoundCapturesRefused(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})
-    pair_set = _pair_set(manifest)
-    if pair_set is not None:
-        if not pairs:
-            raise RoundCapturesRefused(REFUSE_NO_BRANCH_DIAGNOSTIC, {
-                "candidates": sorted(batch),
-                "takes": sum(len(group) for poses in batch.values() for group in poses.values()),
-            })
-        return _pair_document(inputs, manifest=manifest, pair_set=pair_set, batch=batch,
-                              bases=bases, pairs=pairs)
     sets = {_candidate_key(row["capture_basis"].get("candidate_id")): row
             for row in view_sets(manifest)}
     incumbent_id = next((name for name, row in sets.items() if row.get("base")), None)
@@ -363,7 +354,7 @@ def _pair_set(manifest: Mapping[str, Any]) -> Mapping[str, Any] | None:
 
 
 def _pair_segments(
-    record: Mapping[str, Any],
+    record: Mapping[str, Any], manifest: Mapping[str, Any],
 ) -> tuple[np.ndarray, dict[str, np.ndarray], tuple[float, float]] | None:
     """One pair take's three segments as complex transfers on ONE grid, with
     the band all three were driven over.
@@ -372,8 +363,13 @@ def _pair_segments(
     sampled at the nearest native bin, so the three banked curves stand on the
     same frequencies by construction and none is resampled here — a phase
     interpolated across a wrap is simply wrong.
+
+    The MANIFEST is read too: a real pair take's sidecar carries an empty
+    ``curves``, and each role's curve rides on that role's own set row
+    (:func:`~.position_cycle.curves_for_take`).
     """
-    banked = {str(curve.get("role")): curve for curve in curves_for_take(record)}
+    banked = {str(curve.get("role")): curve
+              for curve in curves_for_take(record, manifest)}
     parsed = {}
     for role in PAIR_ROLES:
         found = parse_curve_complex(banked[role]) if role in banked else None
@@ -412,20 +408,23 @@ def _pair_impulses(
 
 
 def _pair_position(
-    records: Sequence[Mapping[str, Any]], *, coverage_hz: Sequence[float],
+    records: Sequence[Mapping[str, Any]], manifest: Mapping[str, Any], *, ceiling_hz: float,
 ) -> tuple[dict[str, Any], np.ndarray] | None:
     """One microphone position's pair evidence, and the grid it was read on.
 
     The band figures and the trust number come from the FIRST readable repeat
     and the arrival gap is pooled over every one of them: the residual is a
     complex sum, and averaging repeats would smooth away exactly the
-    non-linearity it exists to report.
+    non-linearity it exists to report. The coverage is the band this take
+    itself drove, under the room ceiling.
     """
-    read = [found for record in records if (found := _pair_segments(record)) is not None]
+    read = [found for record in records
+            if (found := _pair_segments(record, manifest)) is not None]
     if not read:
         return None
     grid, transfers, swept_hz = read[0]
     front, rear, summed = (transfers[role] for role in PAIR_ROLES)
+    coverage_hz = [swept_hz[0], min(ceiling_hz, swept_hz[1])]
     bands = pair_band_levels(grid, front_tf=front, rear_tf=rear, pair_tf=summed,
                              coverage_hz=coverage_hz)
     band_hz = [bands[0]["band_hz"][0], bands[-1]["band_hz"][1]] if bands else None
@@ -440,10 +439,10 @@ def _pair_position(
                                          band_hz=band_hz)
     return {
         "reason": "" if bands and residual is not None else REASON_COVERAGE_SHORT,
-        "band_hz": band_hz, "bands": bands, "arrival_gap": gap,
+        "coverage_hz": coverage_hz, "band_hz": band_hz, "bands": bands, "arrival_gap": gap,
         "superposition_residual_db": residual,
         "rear_polarity": rear_polarity(grid, front_tf=front, rear_tf=rear, band_hz=band_hz,
-                                       arrival_gap_s=confident_arrival_gap_s(gap)),
+                                       arrival_gap=gap),
     }, grid
 
 
@@ -464,31 +463,41 @@ def _composed_source(inputs: RoundInputs, candidate: str) -> dict[str, Any]:
 
 def _pair_document(
     inputs: RoundInputs, *, manifest: Mapping[str, Any], pair_set: Mapping[str, Any],
-    batch: Mapping[str, Mapping[str, Sequence[SeatTake]]],
-    bases: Mapping[str, Sequence[Mapping[str, Any]]],
-    pairs: Mapping[str, Sequence[Mapping[str, Any]]],
 ) -> dict[str, Any]:
     """The pair take's evidence: each woofer alone, their sum, and the trust number.
 
-    ONE played candidate, so there is no candidate comparison and no frozen
-    reference curve — nothing has been changed yet to compare against. The
-    document is keyed on the SUM's manifest set (``pair_set``), the one of the
-    round's three role-scoped sets the pair figures are read from. ``stage`` is
-    the APPLIED document's rear section, whose ``gradient_residual_db`` is a
-    fact about that document at the measured gap rather than about this take.
+    Reads the banked take RECORDS (:func:`purpose_take_records`) rather than
+    asking the summed analyzer, which refuses a branch take's two-channel
+    program outright. ONE played candidate, so there is no candidate comparison
+    and no frozen reference curve — nothing has been changed yet to compare
+    against. The document is keyed on the SUM's manifest set (``pair_set``),
+    the one of the round's three role-scoped sets the pair figures are read
+    from. ``stage`` is the APPLIED document's rear section, whose
+    ``gradient_residual_db`` is a fact about that document at the measured gap
+    rather than about this take.
     """
-    candidate = _shared([_candidate_key(record.get("candidate_id"))
-                         for rows in pairs.values() for record in rows]) or ""
+    records: dict[str, list[Mapping[str, Any]]] = {}
+    observed: list[Mapping[str, Any]] = []
+    for _row, record in purpose_take_records(inputs.session_dir, purpose=PURPOSE_REAR):
+        records.setdefault(doc_pose_key(record), []).append(record)
+        observed.append(capture_basis(record))
+    if not records:
+        raise RoundCapturesRefused(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})
+    every = [record for rows in records.values() for record in rows]
+    candidate = _shared([_candidate_key(record.get("candidate_id")) for record in every]) or ""
+    if not any(record.get("branch_diagnostic") for record in every):
+        raise RoundCapturesRefused(REFUSE_NO_BRANCH_DIAGNOSTIC, {
+            "candidates": sorted({_candidate_key(record.get("candidate_id"))
+                                  for record in every}),
+            "takes": len(every),
+        })
     ceiling = room_ceiling(inputs.session_dir)
-    takes = [take for poses in batch.values() for group in poses.values() for take in group]
-    coverage_hz = [max(take.band_hz[0] for take in takes),
-                   min(ceiling.ceiling_hz, min(take.band_hz[1] for take in takes))]
     positions: dict[str, Any] = {}
     unscored: dict[str, str] = {}
     grids: list[np.ndarray] = []
-    for key in sorted({key for poses in batch.values() for key in poses}):
-        rows = sorted(pairs.get(key, ()), key=lambda record: str(record.get("take_id") or ""))
-        found = _pair_position(rows, coverage_hz=coverage_hz) if rows else None
+    for key, rows in sorted(records.items()):
+        found = _pair_position(sorted(rows, key=lambda record: str(record.get("take_id") or "")),
+                               manifest, ceiling_hz=ceiling.ceiling_hz)
         if found is None:
             unscored[key] = REASON_SEGMENT_MISSING
             continue
@@ -498,6 +507,7 @@ def _pair_document(
     profile, _profile_reason = applied_profile_source(inputs.applied_profile_path)
     section = ((profile or {}).get("recomposition_snapshot") or {}).get("rear_calibration") or {}
     band_hz = _shared([row["band_hz"] for row in positions.values()])
+    coverage_hz = _shared([row["coverage_hz"] for row in positions.values()])
     # One document-level figure, so it reads the MEDIAN of the positions whose
     # gap may be built on rather than privileging a bearing; with none of them
     # confident, and with no electrical chain to evaluate, it is simply absent.
@@ -508,7 +518,6 @@ def _pair_document(
         summed, front = rear_stage_response(section, grids[0])
         ratio = None if not np.all(front) else summed / front
     geometry, _walls, geometry_reason = _declared_geometry(inputs)
-    observed = [basis for rows in bases.values() for basis in rows]
     set_id = pair_set.get("set_id")
     return {
         "set_id": set_id,
