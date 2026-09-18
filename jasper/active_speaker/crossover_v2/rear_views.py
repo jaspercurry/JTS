@@ -34,7 +34,9 @@ from jasper.active_speaker.baseline_profile import profile_linearization
 from jasper.active_speaker.branch_chain import rear_stage_response
 from jasper.active_speaker.camilla_yaml import rear_branch_sum_headroom_db
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
-from jasper.active_speaker.measurement_programs import BRANCH_PAIR_FRONT_REAR, PURPOSE_REAR
+from jasper.active_speaker.measurement_programs import (
+    BRANCH_PAIR_FRONT_REAR, POSE_KIND_BEARING, PURPOSE_REAR,
+)
 from jasper.active_speaker.rear_calibration import (
     changed_section_paths, rear_operating_facts, section_change_family,
 )
@@ -228,7 +230,11 @@ def rear_document(
         candidate = _candidate_key(record.get("candidate_id"))
         batch.setdefault(candidate, {}).setdefault(take.pose_key, []).append(take)
         bases.setdefault(candidate, []).append(capture_basis(record))
-        if row.position_deg == 0 and row.vertical_deg == 0:
+        # An on-axis reference must be a bearing pose: a non-bearing pose at
+        # azimuth 0 (e.g. behind the cabinet) is never the front curve the
+        # measured-dip search assumes (review, PR #5362).
+        if (row.position_deg == 0 and row.vertical_deg == 0
+                and (record.get("pose_kind") or POSE_KIND_BEARING) == POSE_KIND_BEARING):
             on_axis.add(take.pose_key)
     if not batch:
         raise RoundCapturesRefused(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})
@@ -508,11 +514,14 @@ def _pair_document(
     section = ((profile or {}).get("recomposition_snapshot") or {}).get("rear_calibration") or {}
     band_hz = _shared([row["band_hz"] for row in positions.values()])
     coverage_hz = _shared([row["coverage_hz"] for row in positions.values()])
-    # One document-level figure, so it reads the MEDIAN of the positions whose
-    # gap may be built on rather than privileging a bearing; with none of them
-    # confident, and with no electrical chain to evaluate, it is simply absent.
-    held = [gap for row in positions.values()
-            if (gap := confident_arrival_gap_s(row["arrival_gap"])) is not None]
+    # One document-level figure, so it reads the MEDIAN of the BEARING
+    # positions' gaps that may be built on: a non-bearing position (e.g. a mic
+    # behind the cabinet) measures a different physical quantity and must not
+    # blend into this median (review, PR #5362). With none of them confident,
+    # and with no electrical chain to evaluate, it is simply absent.
+    held = [gap for key, row in positions.items()
+            if (records[key][0].get("pose_kind") or POSE_KIND_BEARING) == POSE_KIND_BEARING
+            and (gap := confident_arrival_gap_s(row["arrival_gap"])) is not None]
     ratio = None
     if grids and section.get("case") == "electrical_dsp":
         summed, front = rear_stage_response(section, grids[0])

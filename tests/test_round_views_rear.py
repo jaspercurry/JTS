@@ -31,6 +31,7 @@ from jasper.active_speaker.crossover_v2 import rear_views, room_selection
 from jasper.active_speaker.crossover_v2.pose_curve import LateralPoseCurve, pose_curve_record
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.measurement_programs import POSE_KIND_CLOSE
 from jasper.active_speaker.rear_calibration import diagnostic_seed
 from jasper.active_speaker.round_bank import _bookkeeping
 from jasper.active_speaker.round_packet import write_round_packet
@@ -40,8 +41,8 @@ from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.rear_evidence import (
-    BAND_SOURCE_MEASURED_DIP, POLARITY_INVERTED, REASON_COVERAGE_SHORT,
-    REASON_NO_COMPARISON, REASON_NO_REPEATS,
+    BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP, POLARITY_INVERTED,
+    REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_REPEATS,
 )
 from jasper.cli import round_views
 from tests.crossover_v2_banked_round import (
@@ -189,11 +190,14 @@ def _poses(repeats: int) -> list[tuple[int, int]]:
 
 
 def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
-               repeats: int = 2, missing: Mapping[str, Sequence[int]] = {}) -> Path:
+               repeats: int = 2, missing: Mapping[str, Sequence[int]] = {},
+               on_axis_kind: str = "bearing") -> Path:
     """One banked ``rear`` round: every candidate at every pose, on-axis repeated.
 
     ``missing`` drops a candidate's take at named bearings, which is how a
-    reference take goes missing where other candidates measured.
+    reference take goes missing where other candidates measured. ``on_axis_kind``
+    banks every azimuth-0 take as a non-bearing pose, for the on-axis-reference
+    guard (review, PR #5362).
     """
     root = bank_seat_round(tmp_path / "rear")
     source, store = _round_source(root)
@@ -205,7 +209,8 @@ def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
                 continue
             take_id = f"{candidate}-{degrees}-{repeat}"
             records.append({**source, "take_id": take_id, "position_id": take_id, "repeat": repeat,
-                            "pose_kind": "bearing", "position_deg": degrees, "vertical_deg": 0,
+                            "pose_kind": on_axis_kind if degrees == 0 else "bearing",
+                            "position_deg": degrees, "vertical_deg": 0,
                             "mark_distance_m": 1.0, "measurement_purpose": "rear",
                             "gating_applied": False, "graph_scope": "candidate",
                             "candidate_id": candidate, "level_db": -30.0,
@@ -249,7 +254,7 @@ def _branch_program(summed: Mapping[str, Any]) -> dict:
         ExcitationProgram.from_dict(dict(summed)), {front: 0, rear: 1}).to_dict()
 
 
-def _branch_diagnostic() -> dict:
+def _branch_diagnostic(gap_ms: float = _PAIR_GAP_MS) -> dict:
     """The branch diagnostic a pair take banks: one impulse per solo segment,
     both on the one recording clock the analyzer wrote them from."""
     front, rear, _summed = rear_views.PAIR_ROLES
@@ -257,14 +262,16 @@ def _branch_diagnostic() -> dict:
         {"role": front, "clock_shift_samples": 0.0, "band_hz": list(SEAT_BAND_HZ),
          "impulse": _pulse(_FRONT_ARRIVAL_S)},
         {"role": rear, "clock_shift_samples": 0.0, "band_hz": list(SEAT_BAND_HZ),
-         "impulse": _pulse(_FRONT_ARRIVAL_S + _PAIR_GAP_MS / 1000.0,
+         "impulse": _pulse(_FRONT_ARRIVAL_S + gap_ms / 1000.0,
                            gain=10.0 ** (_PAIR_LEVEL_GAP_DB / 20.0), inverted=True)},
     ]}
 
 
 def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                applied: str = BASE_CANDIDATE, diagnostic: bool = True,
-               swept_hz: Sequence[float] = SEAT_BAND_HZ, sidecar_curves: bool = True) -> Path:
+               swept_hz: Sequence[float] = SEAT_BAND_HZ, sidecar_curves: bool = True,
+               off_axis_gap_ms: float | None = None,
+               behind_gap_ms: float | None = None) -> Path:
     """One banked ``rear/pair`` round: the composed candidate at every pose,
     each take banking both woofers alone, their sum and the branch diagnostic.
 
@@ -276,6 +283,12 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
     curves' own band so the band figures run out of bands to read;
     ``sidecar_curves`` false leaves the sidecar's ``curves`` empty and the role
     curves only on the manifest's own set rows, as a real round banks them.
+    ``off_axis_gap_ms`` gives every off-axis bearing its own measured gap,
+    distinct from on-axis, so a document-level pooling figure can be told apart
+    from a single shared gap. ``behind_gap_ms`` additionally banks one pose
+    behind the cabinet (kind ``behind``, 0.1 m) with its own gap — the
+    ``rear/pair_behind`` shape (#5362) — to pin that a document-level figure
+    pools bearing positions only (review, PR #5362).
     """
     root = bank_seat_round(tmp_path / "pair")
     source, store = _round_source(root)
@@ -284,6 +297,7 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
     for degrees, repeat in _poses(repeats):
         take_id = f"{_COMPOSED}-{degrees}-{repeat}"
         curves = source["curves"] if degrees in missing else _pair_curves(swept_hz)
+        gap_ms = off_axis_gap_ms if degrees != 0 and off_axis_gap_ms is not None else _PAIR_GAP_MS
         records.append({**source, "take_id": take_id, "position_id": take_id, "repeat": repeat,
                         "pose_kind": "bearing", "position_deg": degrees, "vertical_deg": 0,
                         "mark_distance_m": 1.0, "measurement_purpose": "rear",
@@ -291,8 +305,20 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                         "program": branch_program,
                         "candidate_id": _COMPOSED, "level_db": -30.0, "seat_offset_m": None,
                         **({"regime": "branches",
-                            "branch_diagnostic": _branch_diagnostic()} if diagnostic else {}),
+                            "branch_diagnostic": _branch_diagnostic(gap_ms)} if diagnostic else {}),
                         "curves": curves if sidecar_curves else []})
+    if behind_gap_ms is not None:
+        take_id = f"{_COMPOSED}-behind-1"
+        records.append({**source, "take_id": take_id, "position_id": take_id, "repeat": 1,
+                        "pose_kind": "behind", "position_deg": 0, "vertical_deg": 0,
+                        "mark_distance_m": 0.1, "measurement_purpose": "rear",
+                        "gating_applied": False, "graph_scope": "candidate_branches",
+                        "program": branch_program,
+                        "candidate_id": _COMPOSED, "level_db": -30.0, "seat_offset_m": None,
+                        **({"regime": "branches",
+                            "branch_diagnostic": _branch_diagnostic(behind_gap_ms)}
+                           if diagnostic else {}),
+                        "curves": _pair_curves(swept_hz) if sidecar_curves else []})
     banked = _banked(store, records)
     by_role = {str(curve["role"]): curve for curve in _pair_curves(swept_hz)}
     groups = []
@@ -439,6 +465,26 @@ def test_a_batch_without_repeats_or_a_muted_candidate_falls_back_and_says_so(
                for row in entry["candidates"])
 
 
+def test_a_non_bearing_take_at_azimuth_zero_is_never_the_on_axis_reference(
+    tmp_path, banked_candidates,
+):
+    """A non-bearing pose can sit at azimuth 0 by declared coordinates (a
+    behind-the-cabinet pose is one, ADR pending #5362) without being a front
+    bearing take, so it must never seed the measured-dip search's reference
+    curve (review, PR #5362). ``close`` stands in for ``behind`` here since
+    ``POSE_KIND_BEHIND`` does not exist yet; the fix guards on kind generally,
+    not on that one name."""
+    root = rear_round(tmp_path, on_axis_kind=POSE_KIND_CLOSE)
+
+    entry, = packet_of(root)[0]["rear"]
+
+    # No bearing take at azimuth 0 ever freezes a reference curve there, so the
+    # measured-dip search never runs and the band falls back to the declared
+    # geometry rather than crediting the close-kind take as on-axis.
+    assert entry["comparison"]["band_source"] == BAND_SOURCE_DECLARED_GEOMETRY
+    assert entry["comparison"]["band_dip_hz"] is None
+
+
 def test_a_pair_round_packets_each_woofer_alone_and_the_trust_number(
     tmp_path, banked_candidates,
 ):
@@ -498,6 +544,30 @@ def test_a_muted_rear_is_the_whole_ideal_gradient_away_from_one(tmp_path, banked
     entry, = packet_of(root)[0]["rear"]
 
     assert entry["stage"]["gradient_residual_db"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_behind_positions_gap_never_pools_into_the_gradient_residual(
+    tmp_path, banked_candidates,
+):
+    """A mic behind the cabinet (0.1 m) measures a different physical gap than
+    one in front (1 m): the document-level gradient residual's pooled median
+    must read the front bearing positions alone (review, PR #5362). The two
+    front positions get DIFFERENT gaps so a leaked behind gap would visibly
+    shift the pooled median rather than hide behind a tied pair."""
+    front_only = pair_round(tmp_path / "front", repeats=1, missing=(20,),
+                            off_axis_gap_ms=1.6)
+    with_behind = pair_round(tmp_path / "with_behind", repeats=1, missing=(20,),
+                             off_axis_gap_ms=1.6, behind_gap_ms=-1.2)
+
+    front_entry, = packet_of(front_only)[0]["rear"]
+    behind_entry, = packet_of(with_behind)[0]["rear"]
+
+    assert behind_entry["stage"]["gradient_residual_db"] == pytest.approx(
+        front_entry["stage"]["gradient_residual_db"])
+    behind_key = next(key for key in behind_entry["pair"]["positions"]
+                      if key.startswith("behind_"))
+    assert behind_entry["pair"]["positions"][behind_key]["arrival_gap"]["ms"] == pytest.approx(
+        -1.2, abs=0.1)
 
 
 def test_a_pair_position_without_its_segments_is_disclosed(tmp_path, banked_candidates):
