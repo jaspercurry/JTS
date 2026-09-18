@@ -15,13 +15,15 @@ import pytest
 
 from jasper.active_speaker.angle_capture import BASE_CANDIDATE
 from jasper.active_speaker.round_packet_report import INDEX_FILENAME
-from jasper.audio_measurement.rear_evidence import REASON_NO_REPEATS
+from jasper.audio_measurement.rear_evidence import REASON_NO_COMPARISON, REASON_NO_REPEATS
 from jasper.cli import round_views
 from jasper.cli._refusal import EXIT_OK, EXIT_REFUSED
 from jasper.cli.round_views.rear import REFUSE_NO_REAR
 from tests.crossover_v2_banked_round import bank_seat_round
 from tests.run_manifest_fixture import write_manifest
-from tests.test_round_views_rear import _MUTED, _VARIANT, banked_candidates, packet_of, rear_round
+from tests.test_round_views_rear import (
+    _MUTED, _VARIANT, banked_candidates, packet_of, pair_round, rear_round,
+)
 
 # Re-exported so pytest resolves the fixture by name when imported into this
 # module -- the fixture is defined once, in the module that owns rear_round.
@@ -62,9 +64,10 @@ def test_rear_refuses_a_round_with_no_rear_entries(tmp_path, capsys):
 
 #: One round per rendering branch of ``rear_lines``: the default fixture
 #: scores every candidate at every position; dropping to one repeat leaves
-#: ``repeat_spread`` with no comparable difference; and starving one
-#: candidate of any position the reference also measured leaves it with no
-#: pooled regression to report at all.
+#: ``repeat_spread`` with no comparable difference; starving one candidate of
+#: any position the reference also measured leaves it with no pooled regression
+#: to report at all; and a PAIR round has one played candidate, so it renders
+#: the batch line with no candidate lines under it at all.
 _INDEX_CASES = (
     pytest.param(lambda tmp_path: rear_round(tmp_path), "repeat_spread {",
                  id="every_candidate_scored"),
@@ -72,6 +75,8 @@ _INDEX_CASES = (
                  f"repeat_spread {REASON_NO_REPEATS}", id="no_repeats"),
     pytest.param(lambda tmp_path: rear_round(tmp_path, missing={_MUTED: (-20, 20), _VARIANT: (0,)}),
                  "worst_regression=unavailable", id="a_candidate_with_no_comparable_position"),
+    pytest.param(lambda tmp_path: pair_round(tmp_path),
+                 f"repeat_spread {REASON_NO_COMPARISON}", id="a_pair_round"),
 )
 
 
