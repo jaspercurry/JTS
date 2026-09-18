@@ -86,20 +86,31 @@ _SECTIONS = {
 }
 
 
-def _wall_curve_db(strength: float, *, output_db: float = 0.0, hole_db: float = 0.0) -> list[float]:
-    """Direct sound plus one rigid image source, minus an optional hand-over hole."""
+#: A low room-mode-like dip added to the reference curve below (issue #5330's
+#: own jts3 round): deeper than the wall dip, so an unwindowed search picks
+#: it over the true wall dip unless the search is windowed to the geometry.
+_LOW_DIP_HZ = 38.0
+_LOW_DIP_DB = 20.0
+
+
+def _wall_curve_db(strength: float, *, output_db: float = 0.0, hole_db: float = 0.0,
+                   low_dip_db: float = 0.0) -> list[float]:
+    """Direct sound plus one rigid image source, minus an optional hand-over
+    hole and an optional deeper low-frequency room-mode notch."""
     excess_s = 2.0 * _WALL_M / DEFAULT_SOUND_SPEED_M_S
     summed = 1.0 + strength * np.exp(-2j * np.pi * SEAT_GRID_HZ * excess_s)
     hole = hole_db * np.exp(-0.5 * (np.log2(SEAT_GRID_HZ / _HANDOVER_HZ) / 0.12) ** 2)
-    return (-30.0 + output_db + 20.0 * np.log10(np.abs(summed)) - hole).tolist()
+    low = low_dip_db * np.exp(-0.5 * (np.log2(SEAT_GRID_HZ / _LOW_DIP_HZ) / 0.2) ** 2)
+    return (-30.0 + output_db + 20.0 * np.log10(np.abs(summed)) - hole - low).tolist()
 
 
-#: A muted rear radiates into the wall and digs a deep dip; the incumbent's
-#: cardioid leaves a shallow one; the variant keeps that dip but loses output
-#: and opens a hole where its moved corner no longer hands over.
+#: A muted rear radiates into the wall and digs a deep dip (plus the room's
+#: own low-frequency feature, deeper still); the incumbent's cardioid leaves
+#: a shallow one; the variant keeps that dip but loses output and opens a
+#: hole where its moved corner no longer hands over.
 _CURVES = {
     BASE_CANDIDATE: _wall_curve_db(0.4),
-    _MUTED: _wall_curve_db(0.95),
+    _MUTED: _wall_curve_db(0.95, low_dip_db=_LOW_DIP_DB),
     _VARIANT: _wall_curve_db(0.4, output_db=-3.0, hole_db=8.0),
 }
 
@@ -187,8 +198,13 @@ def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banke
     assert [row["set_id"] for row in entry["candidates"]] == sorted(_SECTIONS)
     # One band, frozen from the reference take's measured dip and then held:
     # every candidate's figures are read over the same band and hand-over.
+    # The reference also carries a deeper LOW room-mode-like dip (_LOW_DIP_HZ,
+    # _LOW_DIP_DB): the geometry-windowed search still brackets the wall dip,
+    # not that low one, because the search window is anchored on the declared
+    # geometry rather than searching the whole coverage (issue #5330).
     assert comparison["band_source"] == BAND_SOURCE_MEASURED_DIP
     assert comparison["band_dip_hz"] == pytest.approx(_DIP_HZ, rel=0.05)
+    assert comparison["band_dip_hz"] > _LOW_DIP_HZ * 2.0
     assert comparison["band_hz"] == pytest.approx(
         [comparison["band_dip_hz"] * 0.5, comparison["band_dip_hz"] * 2.0])
     assert len({(tuple(row["low_bass"]["band_hz"]), tuple(row["handover"]["window_hz"]))

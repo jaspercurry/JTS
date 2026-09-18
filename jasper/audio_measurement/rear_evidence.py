@@ -44,6 +44,12 @@ REFERENCE_FRACTION = 1
 #: A minimum shallower than this is not called a dip.
 DIP_MIN_DEPTH_DB = 1.0
 
+#: The measured-dip search window around a geometric or declared estimate:
+#: a dip can shift up by ``1 / cos(45°) ≈ 1.41`` between on-axis and a 45°
+#: bearing (issue #5330), so the window multiplies and divides by a margin
+#: above that.
+DIP_SEARCH_WINDOW_RATIO = 1.5
+
 #: Two dips closer than one 1/6-octave smoothing window are not independently
 #: resolved by the curve, so they are the same dip and not a shift.
 DIP_SHIFT_MIN_OCTAVES = 1.0 / FIGURE_FRACTION
@@ -88,6 +94,7 @@ def comparison_band(
     reference_take: tuple[Any, Any] | None = None,
     geometric_dip_hz: float | None = None,
     section_band_hz: Sequence[float] | None = None,
+    handover_hz: float | None = None,
     min_depth_db: float = DIP_MIN_DEPTH_DB,
 ) -> dict[str, Any]:
     """The ONE band this batch is compared over, chosen once and then held
@@ -102,14 +109,34 @@ def comparison_band(
     times its frequency. Always clipped to the coverage and the ceiling; a
     band left with nothing is ``band_hz`` ``None`` with ``coverage_short``,
     never an inverted range.
+
+    The measured-dip search is itself WINDOWED, so a deeper room mode
+    elsewhere in the coverage is never mistaken for the wall dip (issue
+    #5330): inside ``geometric_dip_hz``'s :data:`DIP_SEARCH_WINDOW_RATIO`
+    margin when given, else inside ``section_band_hz`` when given, else
+    above ``handover_hz`` when given, else the whole coverage. The window
+    searched is reported as ``search_hz``, ``None`` when it misses the
+    coverage entirely — a miss falls through to the next source, same as no
+    dip found there.
     """
-    search = _clip(coverage_hz, coverage_hz, ceiling_hz)
+    coverage_clip = _clip(coverage_hz, coverage_hz, ceiling_hz)
+    if geometric_dip_hz is not None:
+        search_hz = _clip(
+            (float(geometric_dip_hz) / DIP_SEARCH_WINDOW_RATIO,
+             float(geometric_dip_hz) * DIP_SEARCH_WINDOW_RATIO),
+            coverage_hz, ceiling_hz)
+    elif section_band_hz is not None:
+        search_hz = _clip(section_band_hz, coverage_hz, ceiling_hz)
+    elif handover_hz is not None:
+        search_hz = _clip((float(handover_hz), coverage_hz[1]), coverage_hz, ceiling_hz)
+    else:
+        search_hz = coverage_clip
     dip = None
-    if search is not None and reference_take is not None:
+    if search_hz is not None and reference_take is not None:
         freqs = np.asarray(reference_take[0], dtype=np.float64)
         curve = np.asarray(reference_take[1], dtype=np.float64)
         shape = _figure_level_db(freqs, curve) - reference_curve_db(freqs, curve)
-        dip = _deepest_dip(freqs, shape, search, min_depth_db)
+        dip = _deepest_dip(freqs, shape, search_hz, min_depth_db)
     lo_ratio, hi_ratio = CANONICAL_SHOULDER_RATIOS
     source: str
     band: tuple[float, float] | None
@@ -122,10 +149,11 @@ def comparison_band(
         source, band = BAND_SOURCE_SECTION_BAND, (
             float(section_band_hz[0]), float(section_band_hz[1]))
     else:
-        source, band = BAND_SOURCE_COVERAGE, search
+        source, band = BAND_SOURCE_COVERAGE, coverage_clip
     clipped = None if band is None else _clip(band, coverage_hz, ceiling_hz)
     return {"band_hz": None if clipped is None else list(clipped), "source": source,
             "dip_hz": dip["hz"] if dip is not None else None,
+            "search_hz": None if search_hz is None else list(search_hz),
             "reason": "" if clipped is not None else REASON_COVERAGE_SHORT}
 
 
