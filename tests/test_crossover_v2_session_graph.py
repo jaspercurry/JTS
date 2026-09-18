@@ -360,11 +360,16 @@ def test_a_failed_restore_retains_the_entry_graph_for_retry(tmp_path, failure):
 
 
 def test_scoped_graphs_have_distinct_cached_identities_and_one_entry_snapshot(tmp_path):
+    """Two branch pairs on ONE candidate are two graphs: the pair is part of the
+    variant identity, so a session running both does not serve the first take's
+    graph to the second."""
+    from tests.test_active_speaker_program_admission import CARDIOID_TAKE, CROSSOVER_TAKE
+
     emitted = []
 
-    def emit_scoped(scope, candidate_id):
-        emitted.append((scope, candidate_id))
-        return f"scope: {scope}\ncandidate: {candidate_id}\n"
+    def emit_scoped(scope, candidate_id, branch_channels):
+        emitted.append((scope, candidate_id, dict(branch_channels)))
+        return f"scope: {scope}\ncandidate: {candidate_id}\nbranches: {sorted(branch_channels)}\n"
 
     cam = FakeCam(entry_path=_entry(tmp_path))
     graph = _graph(cam, tmp_path=tmp_path, emit_scoped=emit_scoped)
@@ -373,15 +378,22 @@ def test_scoped_graphs_have_distinct_cached_identities_and_one_entry_snapshot(tm
     for named in ("candidate", "candidate_branches", "timing"):
         with pytest.raises(SessionGraphError):
             graph.select_scope(named, "")
+    with pytest.raises(SessionGraphError):
+        graph.select_scope("candidate_branches", "a")
+    with pytest.raises(SessionGraphError):
+        graph.select_scope("candidate", "a", CROSSOVER_TAKE)
     scopes = [
-        ("drivers", ""), ("candidate", "base-speaker"), ("candidate", "base-room"),
-        ("candidate", "a"), ("candidate", "b"), ("candidate_branches", "a"), ("timing", "a"),
+        ("drivers", "", {}), ("candidate", "base-speaker", {}), ("candidate", "base-room", {}),
+        ("candidate", "a", {}), ("candidate", "b", {}),
+        ("candidate_branches", "a", CROSSOVER_TAKE), ("candidate_branches", "a", CARDIOID_TAKE),
+        ("timing", "a", {}),
     ]
     fingerprints = {}
-    for scope, candidate_id in scopes * 2:
-        graph.select_scope(scope, candidate_id)
+    for scope, candidate_id, branches in scopes * 2:
+        graph.select_scope(scope, candidate_id, branches)
         fingerprint = asyncio.run(graph.install())
-        assert fingerprint == fingerprints.setdefault((scope, candidate_id), fingerprint)
+        key = (scope, candidate_id, tuple(sorted(branches)))
+        assert fingerprint == fingerprints.setdefault(key, fingerprint)
         assert graph.installed_graph_yaml() == cam.live
         emitted_graph = yaml.safe_load(graph.graph_yaml())
         submitted_graph = yaml.safe_load(cam.live)
@@ -408,8 +420,10 @@ async def test_scoped_startup_recovery_matches_real_graph_and_retained_anchor(
     from jasper import dsp_apply
     from tests.test_crossover_v2_tuning_scope import _trial_candidate
 
+    branches = tuning_profile.role_channels if scope == "candidate_branches" else None
     text = compile_tuning_graph(
         tuning_profile, scope=scope, candidate=_trial_candidate(tuning_profile),
+        branch_channels=branches,
     )
     cam = FakeCam(entry_path=_entry(tmp_path))
 
@@ -424,7 +438,7 @@ async def test_scoped_startup_recovery_matches_real_graph_and_retained_anchor(
     cam.get_active_config_raw = live
     cam.normalize_config_raw = normalize
     graph = _graph(cam, tmp_path=tmp_path, emit_scoped=lambda *_: text)
-    graph.select_scope(scope, "candidate")
+    graph.select_scope(scope, "candidate", branches)
     fingerprint = await graph.install()
     assert graph.graph_yaml() == text
     played = object()

@@ -19,6 +19,7 @@ from .baseline_profile import load_applied_baseline_profile_state
 from .candidate_parts import candidate_from_applied_profile
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.conductor_context import conductor_status, resolve_conductor_context
+from .crossover_v2.measure_spec import branch_channels_for
 from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 from .excitation_safety_plan import declared_minimum_cooldown_s
@@ -97,8 +98,7 @@ def read_preflight_facts(
                 safety_profile=safety_profile, role_targets=role_targets)
             if capture.spec.graph_scope == "candidate_branches":
                 program = build_branch_program(
-                    program, {role.role: role.channel for role in excitation.roles},
-                    cooldown_s=cooldown_s)
+                    program, branch_channels_for(capture.spec), cooldown_s=cooldown_s)
             programs.append(program.program_id)
         return tuple(programs)
 

@@ -29,8 +29,15 @@ __all__ = [
 class SessionGraph(Protocol):
     """Select and prove each take's graph, then restore the household graph."""
 
-    def select_scope(self, scope: str, candidate_id: str = "") -> None:
-        """Select drivers or an exact candidate before install."""
+    def select_scope(
+        self, scope: str, candidate_id: str = "",
+        branch_channels: Mapping[str, int] | None = None,
+    ) -> None:
+        """Select drivers or an exact candidate before install.
+
+        ``branch_channels`` is the branch take's own pair — target id to stereo
+        program channel — which only a ``candidate_branches`` scope names.
+        """
         raise NotImplementedError
 
     async def install(

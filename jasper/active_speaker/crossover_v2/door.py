@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, AsyncIterator, Awaitable, Callable, cast
+from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, cast
 
 from jasper.log_event import log_event
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
@@ -298,7 +298,7 @@ def bind_measurement_graph(
     from .composition import confirm_graph_is_live
     from .session_graph import MeasurementSessionGraph
 
-    def emit_scoped(scope: str, candidate_id: str) -> str:
+    def emit_scoped(scope: str, candidate_id: str, branch_channels: Mapping[str, int]) -> str:
         selected = None
         if scope in CANDIDATE_SCOPES:
             selected = candidate if candidate is not None else find_banked_candidate(candidate_id).candidate
@@ -306,6 +306,7 @@ def bind_measurement_graph(
             profile,
             scope=cast(TuningGraphScope, scope),
             candidate=selected,
+            branch_channels=branch_channels,
         )
 
     graph = MeasurementSessionGraph(

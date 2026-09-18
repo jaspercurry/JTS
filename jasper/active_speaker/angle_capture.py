@@ -32,7 +32,6 @@ from typing import Any, Mapping, Sequence
 
 from jasper.json_fields import finite_float
 from jasper.audio_measurement.program import ExcitationProgram, RoleBand
-from jasper.audio_measurement.branch_program import build_branch_program
 
 from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH
 from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
@@ -47,10 +46,13 @@ from .crossover_v2.contracts import (
     POLARITY_NORMAL,
 )
 from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
-from .crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS, MeasureSpec
+from .crossover_v2.measure_spec import (
+    GRAPH_SCOPE_DRIVERS, MeasureSpec, branch_target_ids_for,
+)
 from .crossover_v2.programs import program_for_phase
 from .measurement_programs import (
     POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER,
+    BRANCH_PAIR_DRIVERS,
     MeasurementProgram,
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
@@ -58,6 +60,7 @@ from .measurement_programs import (
     REGIME_NEAR_FIELD,
     REGIMES,
     resolved_measurement_purpose,
+    validated_branch_pair,
     validated_capture_purpose,
     pose_place,
     validated_pose,
@@ -240,6 +243,8 @@ class AngleStop:
     (``""`` for the program's baseline layer). ``kind``,
     ``distance_m`` and ``seat_offset_m`` are the pose's category and where it
     is stated from (:class:`~.measurement_programs.ProgramPose`).
+    ``branch_pair`` is which two targets a ``branches`` stop excites
+    (:data:`~.measurement_programs.BRANCH_PAIRS`).
     """
 
     angle_deg: int
@@ -253,6 +258,7 @@ class AngleStop:
     headline: str = ""
     detail: str = ""
     stimulus: Mapping[str, Any] | None = None
+    branch_pair: str = BRANCH_PAIR_DRIVERS
 
     def __post_init__(self) -> None:
         # Normalized back onto the field, so an ``np.int64`` a caller passed
@@ -265,6 +271,7 @@ class AngleStop:
         try:
             offset, distance = validated_pose(self.kind, self.seat_offset_m, self.distance_m)
             object.__setattr__(self, "purpose", validated_capture_purpose(self.purpose, self.kind, self.regime))
+            validated_branch_pair(self.branch_pair, self.regime)
         except ValueError as exc:
             raise CrossoverV2FlowError(str(exc)) from None
         object.__setattr__(self, "seat_offset_m", offset)
@@ -348,7 +355,7 @@ DEFAULT_TEMPLATE = MeasureSpec(kind=MEASURE_KIND_CANDIDATE)
 #: The template fields the EXECUTOR assigns per capture, and which a walk
 #: therefore may not state: a stated one would be silently replaced at every
 #: stop and silently kept on the design-axis spec.
-_EXECUTOR_ASSIGNED = ("positions", "pose_prompts", "candidate_id")
+_EXECUTOR_ASSIGNED = ("positions", "pose_prompts", "candidate_id", "branch_target_ids")
 
 
 @dataclass(frozen=True)
@@ -708,6 +715,8 @@ def stop_specs(
             pose_prompts=(prompt.text,),
             candidate_id=stop.candidate_id or baseline_id,
             graph_scope="candidate_branches" if stop.regime == REGIME_BRANCHES else "candidate",
+            branch_target_ids=(branch_target_ids_for(stop.branch_pair, roles_bands)
+                               if stop.regime == REGIME_BRANCHES else ()),
             stimulus=stop.stimulus,
             regime=MEASURE_REGIME_NEAR_FIELD if stop.regime == REGIME_NEAR_FIELD else request.template.regime,
         ))
@@ -795,6 +804,7 @@ def request_for_program(
                 purpose=PURPOSE_ROOM if room_sweep and stop.plays_summed else program.purpose,
                 headline=pose.headline, detail=pose.detail,
                 stimulus=program.stimulus,
+                branch_pair=program.branch_pair,
             )
             for pose in program.poses
             for stop in (both_at((pose.azimuth_deg,), mover=mover).stops if room_sweep else (
@@ -928,9 +938,6 @@ def program_for_stop(
     Requesting a per-driver stop before the CHECK gain solve raises
     ``NoProgramForPhaseError``, uncaught here.
     """
-    if stop.regime == REGIME_BRANCHES:
-        roles = {seg.role: seg.channel for seg in check.stimulus_segments() if seg.role and seg.channel is not None}
-        return build_branch_program(cloud, roles)
     return program_for_phase(
         stop.program_phase,
         check=check,

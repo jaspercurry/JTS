@@ -9,20 +9,25 @@ stubs — a value returned to the caller, never a log line and never a raise
 (ruling S12 -- see ADR-0228). A preset is a saved :class:`MeasureSpec` and
 nothing more. The vocabulary is copied from
 :mod:`.contracts` rather than imported from its owners, which cost ~1,100
-modules including ``numpy`` on a 1 GB Pi.
+modules including ``numpy`` on a 1 GB Pi. The two owners this module does
+import — ``output_topology`` (already transitive) and ``measurement_programs``
+(12 further modules) — were measured against that budget first.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, fields
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.json_fields import finite_float
+from jasper.output_topology import measurement_target_id
 
+from ..measurement_programs import BRANCH_PAIR_FRONT_REAR
 from .contracts import (
     DRIVER_ROLES,
+    DRIVER_ROLE_WOOFER,
     MEASURE_KINDS,
     MEASURE_REGIMES,
     POLARITIES,
@@ -45,6 +50,8 @@ __all__ = [
     "CANDIDATE_SCOPES",
     "GRAPH_SCOPES",
     "GRAPH_SCOPE_DRIVERS",
+    "branch_channels_for",
+    "branch_target_ids_for",
     "inverted_roles_for",
     "level_trims_for",
     "measurement_delays_for",
@@ -183,6 +190,12 @@ class MeasureSpec:
     graph_scope: str = GRAPH_SCOPE_DRIVERS
     program_phase: str = ""
     stimulus: Mapping[str, Any] | None = None
+    #: The two measurement target ids a ``candidate_branches`` take excites, in
+    #: program-channel order (:func:`branch_channels_for`). Which two is the
+    #: take's own choice — the declared driver pair, or a cabinet's front and
+    #: rear woofer — so it travels on the spec rather than being re-derived from
+    #: the box's acoustic roles. Empty on every other scope.
+    branch_target_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.stimulus is not None and self.graph_scope != "candidate":
@@ -191,6 +204,17 @@ class MeasureSpec:
             raise ValueError(f"graph_scope must be one of {GRAPH_SCOPES}")
         if self.graph_scope in CANDIDATE_SCOPES and not self.candidate_id.strip():
             raise ValueError(f"{self.graph_scope} graph_scope requires candidate_id")
+        ids = self.branch_target_ids
+        if self.graph_scope == "candidate_branches":
+            if len(ids) != 2 or len(set(ids)) != 2 or not all(ids):
+                raise ValueError(
+                    "a candidate_branches capture names two distinct measurement "
+                    f"target ids, got {ids!r}"
+                )
+        elif ids:
+            raise ValueError(
+                f"branch_target_ids requires the candidate_branches graph_scope, got {self.graph_scope!r}"
+            )
         if self.sweep_band_hz:
             if self.graph_scope == GRAPH_SCOPE_DRIVERS:
                 raise ValueError("sweep_band_hz requires a summed graph_scope")
@@ -348,7 +372,8 @@ _TRIMMED_STRINGS = frozenset({
     "kind", "position_axis", "regime", "polarity", "inverted_role",
     "candidate_id", "delayed_role", "graph_scope", "program_phase",
 })
-_ARRAYS = frozenset({"positions", "pose_prompts", "level_ladder_dbfs", "sweep_band_hz"})
+_ARRAYS = frozenset({"positions", "pose_prompts", "level_ladder_dbfs", "sweep_band_hz",
+                     "branch_target_ids"})
 #: ``sweep_s`` read ``None`` back as the statement it is.
 _NUMBERS = frozenset({"delay_us", "sweep_s"})
 #: Read back as banked; the dataclass judges them.
@@ -383,7 +408,7 @@ def _from_json(name: str, value: Any) -> Any:
     if name in _ARRAYS:
         if not isinstance(value, (list, tuple)):
             raise ValueError(f"{name} must be a JSON array, got {value!r}")
-        if name == "pose_prompts" and not all(
+        if name in ("pose_prompts", "branch_target_ids") and not all(
             isinstance(entry, str) for entry in value
         ):
             raise ValueError(f"{name} entries must be strings, got {value!r}")
@@ -393,6 +418,30 @@ def _from_json(name: str, value: Any) -> Any:
     if name in _NUMBERS:
         return None if value is None else _finite(name, value)
     return value
+
+
+def branch_target_ids_for(branch_pair: str, roles_bands: Sequence[Any]) -> tuple[str, ...]:
+    """The two measurement targets one branch pair excites, in channel order.
+
+    ``front_rear`` is spelled rather than resolved from the box: ``rear`` is a
+    woofer-only output variant by schema (ADR-0316), so there is exactly one id
+    it can name. Every other pair is the box's declared driver roles, lowest
+    first, which is what the crossover branch take has always played.
+    """
+    if branch_pair == BRANCH_PAIR_FRONT_REAR:
+        return (DRIVER_ROLE_WOOFER, measurement_target_id(DRIVER_ROLE_WOOFER, "rear"))
+    return tuple(band.role for band in roles_bands)
+
+
+def branch_channels_for(spec: MeasureSpec) -> dict[str, int]:
+    """Which stereo program channel carries each of this take's two branches.
+
+    THE single owner: the composers, the capture-window sizer and the graph
+    emitter all read this, so no two of them can disagree about what a branch
+    take excites. Empty off ``candidate_branches``, where one mono program
+    reaches every driver.
+    """
+    return {target_id: channel for channel, target_id in enumerate(spec.branch_target_ids)}
 
 
 def measurement_delays_for(spec: MeasureSpec) -> dict[str, float]:

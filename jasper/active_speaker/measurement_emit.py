@@ -150,8 +150,15 @@ def compile_tuning_graph(
     scope: TuningGraphScope = "candidate",
     preference_filters: Sequence[FilterSpec] | None = None,
     output_trim_db: float = 0.0,
+    branch_channels: Mapping[str, int] | None = None,
 ) -> str:
-    """Compile and prove the candidate at the requested layer."""
+    """Compile and prove the candidate at the requested layer.
+
+    ``branch_channels`` names the two measurement targets a
+    ``candidate_branches`` take excites and the stereo program channel each
+    rides (:func:`~.crossover_v2.measure_spec.branch_channels_for`). Every
+    other scope states none.
+    """
     if scope not in CANDIDATE_SCOPES:
         raise MeasurementGraphRefused("measurement_scope_invalid", scope)
     if candidate is None:
@@ -170,14 +177,17 @@ def compile_tuning_graph(
     ):
         raise MeasurementGraphRefused("measurement_filters_invalid", candidate.fingerprint)
     excited_target_ids: tuple[str, ...] = ()
+    branches: dict[str, int] = {}
     if scope == "candidate_branches":
         # Two branches on a stereo recording clock; WHICH two targets they are
-        # (woofer/tweeter, or front/rear woofer) is the take's choice. A rear
-        # the take drives on its own program channel must reach the emitter as
-        # an excited target: muted, its branch would record silence.
-        if set(profile.role_channels.values()) != {0, 1}:
-            raise MeasurementGraphRefused("measurement_branch_channels", profile.role_channels)
-        excited_target_ids = tuple(profile.role_channels)
+        # (woofer/tweeter, or front/rear woofer) is the take's own choice, so it
+        # arrives with the take rather than from the box's acoustic roles. A
+        # rear the take drives on its own program channel must reach the emitter
+        # as an excited target: muted, its branch would record silence.
+        branches = dict(branch_channels or {})
+        if len(branches) != 2 or not all(branches) or set(branches.values()) != {0, 1}:
+            raise MeasurementGraphRefused("measurement_branch_channels", branch_channels)
+        excited_target_ids = tuple(branches)
     devices = camilla_yaml.active_emit_devices(profile.playback_device, topology=profile.topology)
     candidate_text = compile_candidate_config(
         candidate, playback_device=profile.playback_device,
@@ -197,7 +207,7 @@ def compile_tuning_graph(
         mixer_text, pipeline = rest.split("\npipeline:\n", 1)
         mixers = yaml.safe_load(mixer_text)
         mixers.update(yaml.safe_load(camilla_yaml._emit_role_routed_mixer(
-            candidate.source_preset, dict(profile.role_channels), apply_region_polarity=False,
+            candidate.source_preset, branches, apply_region_polarity=False,
         )))
         return prefix + "\n" + yaml.safe_dump({"mixers": mixers}, sort_keys=False) + "\npipeline:\n" + pipeline
     return candidate_text

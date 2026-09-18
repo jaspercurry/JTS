@@ -542,13 +542,18 @@ def test_prepared_summed_captures_use_the_stop_purpose_band(purpose, size):
         assert spec.sweep_band_hz == (expected if stop_purpose == "room" else ())
 
 
-def test_a_branch_take_the_plan_host_composes_is_padded_and_admitted(tmp_path):
+@pytest.mark.parametrize("row", ["branches", "front_rear"])
+def test_a_branch_take_the_plan_host_composes_is_padded_and_admitted(tmp_path, row):
     """The PRODUCTION composer, not the builder. ``compose_plan_program`` is what
     ``bind_production_play`` plays, so it has to resolve the declared cooldown
     off the session context: a blank profile composes a take whose second
     branch sits 0.5 s from the summed verify, and the same session's admission
     then refuses it. The capture window is sized independently and must never
     end before the program it records.
+
+    The registry row decides WHICH two targets sound: ``front_rear`` excites the
+    two woofers and leaves the tweeter alone, and it reaches the composer and the
+    emitted graph through the spec, never through the box's acoustic roles.
     """
     from jasper.active_speaker.crossover_v2.capture_plan import (
         CAPTURE_ENTRY_MARGIN_MS, _program_duration_ms, build_inline_session_spec,
@@ -558,26 +563,30 @@ def test_a_branch_take_the_plan_host_composes_is_padded_and_admitted(tmp_path):
         KIND_SUMMED_SWEEP, KIND_SWEEP, write_program_wav,
     )
     from tests.test_active_speaker_program_admission import (
-        CROSSOVER_TAKE, _rear_take_inputs, _roles as _declared_roles,
+        CARDIOID_TAKE, CROSSOVER_TAKE, _rear_take_inputs, _roles as _declared_roles,
     )
 
     cooldown_s = 2.0
+    take = CROSSOVER_TAKE if row == "branches" else CARDIOID_TAKE
     topology, safety, targets, graph = _rear_take_inputs(
-        CROSSOVER_TAKE, max_repeat_count=3, minimum_cooldown_s=cooldown_s)
+        take, max_repeat_count=3, minimum_cooldown_s=cooldown_s)
     roles = tuple(_declared_roles())
     excitation = SessionExcitation(
         roles=roles, caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB, fc_hz=FC_HZ,
         sweep_duration_limits_s={"woofer": 4.0, "tweeter": 4.0})
-    request = request_for_program(measurement_program("branches"), candidates=("trial",))
+    request = request_for_program(measurement_program(row), candidates=("trial",))
     captures = [capture for capture in prepare_plan_captures(request, roles_bands=roles)
                 if capture.spec.graph_scope == "candidate_branches"]
     assert captures
+    assert captures[0].spec.branch_target_ids == tuple(take)
     context = SimpleNamespace(safety_profile=safety, role_targets=targets)
     program = compose_plan_program(
         SimpleNamespace(_excitation=excitation, _gain_plan_db=None),
         captures[0].spec, None, context=context)
+    assert program.channels == 2
+    assert {s.role for s in program.stimulus_segments() if s.role} == set(take)
 
-    for channel in set(CROSSOVER_TAKE.values()):
+    for channel in set(take.values()):
         run = sorted((s for s in program.segments if s.channel == channel
                       and s.kind in (KIND_SWEEP, KIND_SUMMED_SWEEP)),
                      key=lambda s: s.start_sample)
@@ -591,6 +600,7 @@ def test_a_branch_take_the_plan_host_composes_is_padded_and_admitted(tmp_path):
         program, wav, graph_yaml=graph, topology=topology, safety_profile=safety,
         role_targets=targets, session_volume_db=excitation.session_volume_db)
     assert admission.allowed, admission.to_dict()
+    assert {segment.role for segment in admission.segments} == set(take)
 
     plan = build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, "trial") for c in captures],

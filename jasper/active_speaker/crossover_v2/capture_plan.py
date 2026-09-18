@@ -18,7 +18,7 @@ import math
 from dataclasses import dataclass, replace
 from itertools import groupby
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
@@ -58,14 +58,12 @@ from .programs import (
     courtesy_prelude_for_phase,
     measurement_band_hz,
 )
+from .measure_spec import MeasureSpec, branch_channels_for
 from .spatial import GEOMETRY_RETRY_POSITIONS
 from .sweep_spec import build_crossover_sweep_spec
 from .refusal_copy import CrossoverV2Refused
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from .measure_spec import MeasureSpec
 
 
 def build_inline_session_spec(
@@ -101,8 +99,7 @@ def build_inline_session_spec(
                                            sweep_band_hz=spec.sweep_band_hz or None,
                                            sweep_s=spec.sweep_s or DEFAULT_VERIFY_SWEEP_S)
         if spec.graph_scope == "candidate_branches":
-            program = build_branch_program(
-                program, {r.role: r.channel for r in roles_bands}, cooldown_s=cooldown_s)
+            program = build_branch_program(program, branch_channels_for(spec), cooldown_s=cooldown_s)
         entries.append(CapturePlanEntry(
             index=index - 1, kind_label=phase,
             duration_ms=_program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS,

@@ -26,8 +26,9 @@ from typing import Any, Callable, Mapping
 
 from jasper.active_speaker.angle_capture import (
     BASE_CANDIDATE, AngleCaptureRequest, AngleStop, LateralWalkRefused,
-    REGIME_SUMMED, default_run_level,
+    REGIME_BRANCHES, REGIME_SUMMED, default_run_level,
 )
+from jasper.active_speaker.crossover_v2.measure_spec import branch_target_ids_for
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.excitation_safety_plan import declared_minimum_cooldown_s
@@ -652,6 +653,9 @@ def prepare_v2_session(
         from jasper.active_speaker.crossover_v2.journey import (
             LATERAL_CONSUMER_FORWARD_MODEL,
         )
+        from jasper.active_speaker.crossover_v2.refusal_copy import (
+            REASON_WALK_BRANCH_PAIR_UNDECLARED,
+        )
         from jasper.active_speaker.crossover_v2_flow import (
             V2ConductorSnapshot,
         )
@@ -674,6 +678,20 @@ def prepare_v2_session(
                 "a new session"
             )
         context = resolve_conductor_context(status)
+        # The one place that holds both the plan and the box. Admission stays the
+        # independent tripwire; this exists so a box that can never play the
+        # take says so before anyone places the microphone.
+        undeclared = sorted({
+            target_id
+            for stop in request.stops if stop.regime == REGIME_BRANCHES
+            for target_id in branch_target_ids_for(stop.branch_pair, context.roles_bands)
+            if target_id not in context.role_targets
+        })
+        if undeclared:
+            raise CrossoverV2Refused(
+                f"this speaker declares no measurement output for {', '.join(undeclared)}",
+                code=REASON_WALK_BRANCH_PAIR_UNDECLARED,
+            )
         facts = preflight_live.read_preflight_facts(request, context=context)
         report = preflight_levels(request, facts)
         issue = next((issue for issue in report.issues if issue.blocking), None)

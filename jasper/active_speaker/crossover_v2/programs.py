@@ -28,6 +28,7 @@ from jasper.audio_measurement.program import (
 from jasper.audio_measurement.branch_program import build_branch_program
 
 from ..excitation_safety_plan import declared_minimum_cooldown_s
+from .measure_spec import branch_channels_for
 from .journey import (
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
@@ -364,7 +365,7 @@ def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Map
         program = (excitation.cloud_program(extra_backoff_db=backoff) if spec.program_phase == PHASE_CLOUD_VERIFY
                    else excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s))
     if spec.graph_scope == "candidate_branches":
-        program = build_branch_program(program, {role.role: role.channel for role in excitation.roles},
+        program = build_branch_program(program, branch_channels_for(spec),
                                        cooldown_s=declared_minimum_cooldown_s(safety_profile, role_targets))
     return program
 

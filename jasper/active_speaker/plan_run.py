@@ -51,7 +51,7 @@ from .crossover_v2.session import TuningSession
 from .crossover_v2.spatial import analysis_curve_records
 from .crossover_v2.planning import analysis_json
 from .restore_wait import resilient_restore
-from .measurement_programs import POSE_KIND_BEARING, PURPOSE_SPEAKER
+from .measurement_programs import BRANCH_PAIR_DRIVERS, POSE_KIND_BEARING, PURPOSE_SPEAKER
 from .crossover_v2.programs import predictive_program_for_spec
 from .run_manifest import RunManifest
 
@@ -163,7 +163,7 @@ def prepare_plan_captures(
         base_stop = next(stop for stop in request.stops if candidate_identity(stop.candidate_id) == BASE_CANDIDATE)
         base_request = replace(request, stops=(replace(base_stop, angle_deg=0, elevation_deg=0,
             kind=POSE_KIND_BEARING, distance_m=None, seat_offset_m=None,
-            headline="", detail="", regime=REGIME_SUMMED),),
+            headline="", detail="", regime=REGIME_SUMMED, branch_pair=BRANCH_PAIR_DRIVERS),),
                                candidates=(), repeats=1)
         base_spec, = stop_specs(base_request,
                                 prompts=(resolve_request(base_request)[0].prompt,), baseline_id=BASE_CANDIDATE,
