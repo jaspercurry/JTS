@@ -5847,7 +5847,41 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
     # them, and must keep naming ones that exist.
     assert tuning_handoff.ORIENTATION_COMMAND in prompt
     assert tuning_handoff.PROGRAM_DOOR_COMMAND in prompt
+    assert "jasper-round trial" not in prompt  # rear-only guidance
     assert len(prompt.split()) < 250
+
+
+def test_program_entries_cover_exactly_the_runnable_programs():
+    """One entry per runnable program: no gap, no entry for a non-runnable id."""
+    from jasper.active_speaker import tuning_handoff
+    from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
+
+    ids = [entry["id"] for entry in tuning_handoff.PROGRAM_ENTRIES]
+    assert len(ids) == len(RUNNABLE_PROGRAMS)
+    assert set(ids) == set(RUNNABLE_PROGRAMS)
+
+
+def test_tuning_handoff_prompt_for_rear_adds_the_trial_commands(monkeypatch):
+    """Rear alone carries the trial/packet guidance, naming the real commands."""
+    from jasper.active_speaker import tuning_handoff
+
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
+    monkeypatch.setattr(
+        "jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions",
+        lambda **_kwargs: [],
+    )
+    payload = tuning_handoff.build_tuning_handoff(
+        commissioning_view={"applied_profile": {
+            "exists": True, "stands": True, "candidate_fingerprint": "fp",
+        }},
+        design_draft={"revision": 1},
+        program_id="rear",
+    )
+    prompt = tuning_handoff.build_tuning_handoff_prompt(payload["binding"], "rear")
+
+    assert "--program rear" in prompt
+    assert "--section rear" in prompt
+    assert "jasper-round trial" in prompt
 
 
 def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
@@ -5878,7 +5912,7 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
 
     assert payload["status"] == "ready"
     assert payload["binding"]["design_draft_revision"] == 2
-    assert [entry["id"] for entry in payload["programs"]] == ["speaker", "room", "bass"]
+    assert [entry["id"] for entry in payload["programs"]] == ["speaker", "room", "bass", "rear"]
     assert all("prompt" not in entry for entry in payload["programs"])
     assert payload["program"] == "room"
     assert payload["prompt"] == tuning_handoff.build_tuning_handoff_prompt(

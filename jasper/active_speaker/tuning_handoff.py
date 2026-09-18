@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Device-bound entry prompts for the three shared tuning programs."""
+"""Device-bound entry prompts for the shared tuning programs."""
 from __future__ import annotations
 
 from typing import Any, Mapping
@@ -61,14 +61,38 @@ def build_tuning_handoff_binding(
     }
 
 
+#: Rear alone needs extra operator guidance: composing the rear-muted
+#: reference and variants as ordinary candidates, then trialling them
+#: (playbook, Rear section). The other three programs carry none of this.
+_REAR_PROMPT_LINES = (
+    "First compose the rear-muted copy and the variants as ordinary "
+    f"candidates (playbook, Rear), then: sudo {_BIN}/jasper-round trial "
+    "<fingerprint> --candidates base,<muted>,<variant> (the trial picks "
+    "the rear positions).",
+    'Read packet["rear"] as the playbook says; the arm reaches 45 degrees, '
+    "a person any bearing.",
+)
+
+#: The single source of each program's title, description and any extra
+#: prompt lines. The id set must equal measurement_programs.RUNNABLE_PROGRAMS
+#: (test_program_entries_cover_exactly_the_runnable_programs).
 PROGRAM_ENTRIES = (
-    {"id": "speaker", "title": "Speaker", "description": "Fit the drivers and align their crossover."},
-    {"id": "room", "title": "Room", "description": "Fit the listening area and keep the saved Speaker tune."},
-    {"id": "bass", "title": "Bass", "description": "Add low bass that eases back as volume or bass demand rises. Keep Speaker and Room."},
+    {"id": "speaker", "title": "Speaker", "description": "Fit the drivers and align their crossover.",
+     "extra_prompt_lines": ()},
+    {"id": "room", "title": "Room", "description": "Fit the listening area and keep the saved Speaker tune.",
+     "extra_prompt_lines": ()},
+    {"id": "bass", "title": "Bass",
+     "description": "Add low bass that eases back as volume or bass demand rises. Keep Speaker and Room.",
+     "extra_prompt_lines": ()},
+    {"id": "rear", "title": "Rear woofer (cardioid)", "description": (
+        "Compare rear-woofer settings at the same positions: the applied tune, the same tune "
+        "with the rear muted, and one to three variants that each change one control family. "
+        "Keep Speaker, Room and Bass."
+     ), "extra_prompt_lines": _REAR_PROMPT_LINES},
 )
 
 
-def _program_entry(program_id: str) -> dict[str, str]:
+def _program_entry(program_id: str) -> dict[str, Any]:
     entry = next((item for item in PROGRAM_ENTRIES if item["id"] == program_id), None)
     if entry is None:
         raise ValueError(f"unknown tuning program: {program_id}")
@@ -107,6 +131,7 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
         entry["description"],
         f"Run: sudo {_BIN}/jasper-round run --program {program_id}",
         f"Prescription contract: sudo {_BIN}/jasper-crossover-prescriber contract --round <dir> --section {program_id}",
+        *entry["extra_prompt_lines"],
         "",
         f"Use existing SSH access to {hostname}; ask for a login only if access is missing.",
         f"Orient with {ORIENTATION_COMMAND}.",
