@@ -494,3 +494,23 @@ def test_a_curve_that_misses_the_band_reports_coverage_short(missing):
     summary = rear_evidence.across_positions({"front": row}, incumbent_rows={"front": row})
     assert summary["positions_unavailable"] == {"front": rear_evidence.REASON_COVERAGE_SHORT}
     assert summary["worst_regression"] is None
+
+
+def test_impulse_energy_windows_follow_the_own_peak():
+    impulse = np.zeros(4800)
+    impulse[480], impulse[1440] = 1.0, 0.5
+
+    assert rear_evidence.impulse_energy_figures(impulse, sample_rate_hz=48000) == pytest.approx({
+        "t0_ms": 10.0, "early_late_db": 10 * math.log10(1 / 0.25),
+        "centroid_ms": 4.0, "energy_db": 10 * math.log10(1.25),
+    }, abs=1e-6)
+
+
+def test_band_limited_impulse_preserves_the_in_band_transfer():
+    freqs = np.fft.rfftfreq(32768, 1 / 48000)
+    band = rear_evidence.LATE_ENERGY_BAND_HZ
+    transfer = ((freqs >= band[0]) & (freqs <= band[1])).astype(complex)
+
+    impulse = rear_evidence.band_limited_impulse(freqs, transfer, band)
+
+    assert np.fft.rfft(impulse) == pytest.approx(transfer, abs=1e-12)

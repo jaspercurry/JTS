@@ -121,6 +121,40 @@ FIGURE_REGRESSION_SIGN: Mapping[str, float] = {
 }
 
 
+LEVEL_BANDS_HZ = ((30.0, 60.0), (60.0, 100.0), (90.0, 350.0), (200.0, 300.0),
+                  (350.0, 700.0), (700.0, 1500.0), (1500.0, 5000.0))
+LATE_ENERGY_BAND_HZ = (90.0, 250.0)
+# These windows were validated on jts3 to 0.107 dB RMS over 53 sweeps; see ADR-0325.
+EARLY_WINDOW_MS = (0.0, 10.0)
+LATE_WINDOW_MS = (10.0, 40.0)
+CENTROID_WINDOW_MS = (-2.0, 40.0)
+
+
+def band_limited_impulse(freqs_hz: Any, transfer: Any, band_hz: Sequence[float]) -> np.ndarray:
+    freqs = np.asarray(freqs_hz)
+    mask = (freqs >= band_hz[0]) & (freqs <= band_hz[1])
+    return np.fft.irfft(np.asarray(transfer) * mask, n=2 * (len(freqs) - 1))
+
+
+def impulse_energy_figures(ir: Any, *, sample_rate_hz: int) -> dict[str, float]:
+    impulse = np.asarray(ir, dtype=float)
+    peak = int(np.argmax(np.abs(impulse)))
+    time_ms = (np.arange(impulse.size) - peak) * (1000.0 / sample_rate_hz)
+    energy = impulse ** 2
+
+    def window(bounds: tuple[float, float]) -> np.ndarray:
+        return (time_ms >= bounds[0]) & (time_ms < bounds[1])
+
+    early = max(float(np.sum(energy[window(EARLY_WINDOW_MS)])), 1e-30)
+    late = max(float(np.sum(energy[window(LATE_WINDOW_MS)])), 1e-30)
+    held = window(CENTROID_WINDOW_MS)
+    total = max(float(np.sum(energy[held])), 1e-30)
+    return {"t0_ms": peak * 1000.0 / sample_rate_hz,
+            "early_late_db": 10.0 * math.log10(early / late),
+            "energy_db": 10.0 * math.log10(total),
+            "centroid_ms": float(np.sum(time_ms[held] * energy[held])) / total}
+
+
 def reference_curve_db(freqs_hz: Any, curve_db: Any) -> np.ndarray:
     """The frozen zero for one microphone position: the one-octave trend of
     the batch's reference take there. It only sets the zero, so
@@ -350,8 +384,8 @@ def superposition_residual_db(
     inside = np.empty(0, dtype=int) if band_hz is None else _band(freqs, band_hz)
     if inside.size < 3:
         return None
-    parts = _figure_level_db(freqs, _db(np.asarray(front_tf) + np.asarray(rear_tf)))
-    played = _figure_level_db(freqs, _db(pair_tf))
+    parts = _figure_level_db(freqs, magnitude_db(np.asarray(front_tf) + np.asarray(rear_tf)))
+    played = _figure_level_db(freqs, magnitude_db(pair_tf))
     return float(np.sqrt(np.mean((parts[inside] - played[inside]) ** 2)))
 
 
@@ -369,7 +403,7 @@ def shared_radiating_band_hz(
         return None
     radiating = np.ones(inside.size, dtype=bool)
     for tf in (front_tf, rear_tf):
-        level = _figure_level_db(freqs, _db(tf))[inside]
+        level = _figure_level_db(freqs, magnitude_db(tf))[inside]
         radiating &= level >= float(np.max(level)) - RADIATING_FLOOR_BELOW_PEAK_DB
     both = np.flatnonzero(radiating)
     if both.size < 2:
@@ -505,10 +539,10 @@ def gradient_residual_db(
     if arrival_gap_s is None or not inside.size:
         return None
     ideal = np.exp(-2j * np.pi * freqs[inside] * float(arrival_gap_s))
-    return float(np.mean(_db(np.asarray(rear_stage_ratio, dtype=np.complex128)[inside] + ideal)))
+    return float(np.mean(magnitude_db(np.asarray(rear_stage_ratio, dtype=np.complex128)[inside] + ideal)))
 
 
-def _db(values: Any) -> np.ndarray:
+def magnitude_db(values: Any) -> np.ndarray:
     """Magnitude in dB, floored by :data:`_MAGNITUDE_FLOOR`."""
     return 20.0 * np.log10(np.maximum(np.abs(np.asarray(values)), _MAGNITUDE_FLOOR))
 
@@ -529,7 +563,7 @@ def _band_levels(freqs: np.ndarray, transfer: Any,
     if not bands:
         return []
     return [float(level) for level in band_levels_from_magnitude(
-        freqs, _figure_level_db(freqs, _db(transfer)), bands)]
+        freqs, _figure_level_db(freqs, magnitude_db(transfer)), bands)]
 
 
 def _figure_level_db(freqs: np.ndarray, curve_db: np.ndarray) -> np.ndarray:

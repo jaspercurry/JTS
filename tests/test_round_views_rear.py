@@ -255,15 +255,13 @@ def _branch_program(summed: Mapping[str, Any]) -> dict:
 
 
 def _branch_diagnostic(gap_ms: float = _PAIR_GAP_MS) -> dict:
-    """The branch diagnostic a pair take banks: one impulse per solo segment,
-    both on the one recording clock the analyzer wrote them from."""
-    front, rear, _summed = rear_views.PAIR_ROLES
+    front = np.asarray(_pulse(_FRONT_ARRIVAL_S))
+    rear = np.asarray(_pulse(_FRONT_ARRIVAL_S + gap_ms / 1000.0,
+                             gain=10.0 ** (_PAIR_LEVEL_GAP_DB / 20.0), inverted=True))
     return {"sample_rate_hz": _SAMPLE_RATE_HZ, "responses": [
-        {"role": front, "clock_shift_samples": 0.0, "band_hz": list(SEAT_BAND_HZ),
-         "impulse": _pulse(_FRONT_ARRIVAL_S)},
-        {"role": rear, "clock_shift_samples": 0.0, "band_hz": list(SEAT_BAND_HZ),
-         "impulse": _pulse(_FRONT_ARRIVAL_S + gap_ms / 1000.0,
-                           gain=10.0 ** (_PAIR_LEVEL_GAP_DB / 20.0), inverted=True)},
+        {"role": role, "clock_shift_samples": 0.0, "band_hz": list(SEAT_BAND_HZ),
+         "pre_guard_samples": round(_FRONT_ARRIVAL_S * _SAMPLE_RATE_HZ), "impulse": impulse.tolist()}
+        for role, impulse in zip(rear_views.PAIR_ROLES, (front, rear, front + rear))
     ]}
 
 

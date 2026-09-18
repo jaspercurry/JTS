@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal
@@ -35,7 +36,9 @@ from . import topology_prescription as topology
 from .evidence_packet import packet_feature_classifications, packet_positional_evidence
 from .prescription_contract import contract_digests, contract_json, prescription_contracts
 from .refusal_copy import refusal_copy_for
-from .round_inputs import prescription_sources
+from .rear_preview import preview_rear_section
+from .round_captures import RoundCapturesRefused
+from .round_inputs import prescription_sources, read_run_manifest, round_inputs
 
 DOCUMENT_KIND = "jts_prescription"
 SECTION_KINDS = {
@@ -168,6 +171,32 @@ def _section_payload(name: str, section: Mapping[str, Any], rationale: str,
     if section.get("kind") != kind:
         raise PrescriptionDocumentRefused("prescription_kind_unknown", name, "section kind does not match its name")
     return section
+
+
+def preview_prescription_document(
+    document: Mapping[str, Any], *, round_dir: Path | None,
+    base_of: Callable[[], BankedCandidate], evidence_of: Callable[[], PrescriptionEvidence],
+) -> dict[str, Any]:
+    sections = document["sections"]
+    if "rear_calibration" in sections:
+        if "room" in sections:
+            raise PrescriptionDocumentRefused("prescription_malformed", "rear_calibration",
+                                              "preview takes one section: room or rear_calibration")
+        if round_dir is None:
+            raise PrescriptionDocumentRefused("evidence_unreadable", "rear_calibration",
+                                              "a rear preview needs --round <pair round>")
+        inputs = round_inputs(round_dir)
+        try:
+            preview = preview_rear_section(sections["rear_calibration"], inputs=inputs,
+                                           manifest=read_run_manifest(inputs))
+        except rear_calibration.RearCalibrationError as exc:
+            raise PrescriptionDocumentRefused("rear_calibration_invalid", "rear_calibration", str(exc)) from exc
+        except RoundCapturesRefused as exc:
+            raise PrescriptionDocumentRefused(exc.reason, "rear_calibration", str(exc), evidence=exc.detail) from exc
+        return {"ok": True, "section": "rear_calibration", "preview": preview, "adopted": False, "banked": False}
+    if "room" not in sections:
+        raise PrescriptionDocumentRefused("prescription_malformed", "room", "preview requires a room section")
+    return preview_room_document(document, base=base_of(), evidence=evidence_of())
 
 
 def preview_room_document(document: Mapping[str, Any], *, base: BankedCandidate,
