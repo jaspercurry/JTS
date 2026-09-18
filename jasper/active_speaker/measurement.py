@@ -10,11 +10,10 @@ speaker group. It does not play tones, capture audio, load CamillaDSP, or infer
 acoustic truth from thin evidence. It stores what the UI and operator observed
 so the baseline compiler can decide whether it has enough evidence to proceed.
 
-``summed_validations`` is READ-ONLY legacy state: nothing in this tree writes
-it (ADR-0230 deleted that lane). Its reader stays because the summary fields it
-produces (`latest_summed_validations`, `latest_summed_pairs_by_group`) are
-hashed by `baseline_profile._source_payload` into a profile identity stored on
-a commissioned box — dropping them moves that digest.
+``summed_validations`` has no writer in this tree; its reader stays because
+commissioned boxes still hold those records, and the summary it feeds
+(`latest_summed_validations`, `latest_summed_pairs_by_group`) is hashed into
+the applied profile's identity by `baseline_profile._source_payload`.
 """
 
 from __future__ import annotations

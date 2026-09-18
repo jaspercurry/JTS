@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 
 from pathlib import Path
 
 import pytest
 
+from jasper.active_speaker.calibration_level import classify_mic_meter
 from jasper.active_speaker.measurement import (
     active_driver_targets,
     active_summed_targets,
@@ -22,7 +24,7 @@ from jasper.active_speaker.measurement import (
 )
 from jasper.output_topology import OutputTopology
 from tests._log_events import event_fields, event_records
-from tests.active_speaker_fixtures import mono_output_topology
+from tests.active_speaker_fixtures import mono_output_topology, seed_summed_test
 
 
 def _topology(
@@ -954,3 +956,219 @@ def test_start_active_comparison_set_raises_before_persisting_emits_no_event(
             )
 
     assert not event_records(caplog, "correction.crossover_session_started")
+
+
+# --- Paired summed evidence. Nothing in this tree writes `summed_validations`,
+# but commissioned boxes still hold these records and every
+# `load_measurement_state` re-derives its summary from them, so these tests
+# seed the state file by hand. ----------------------------------------------
+
+
+def _seed_summed_record(
+    topology: OutputTopology,
+    state_path: Path,
+    *,
+    kind: str | None,
+    created_at: str,
+    region: dict | None = None,
+    placement_proof: dict | None = None,
+    group_id: str = "mono",
+) -> dict:
+    """Append one summed-validation record to the state file on disk.
+
+    Every key below is one a deployed box's record carries; the reader chain
+    under test resolves records of exactly this shape. ``kind`` is the polarity
+    a mic-backed ``acoustic`` block carries (``"in_phase"``/``"reverse"``) or
+    ``None`` for the pure operator-listening-check record, which has no
+    acoustic block at all.
+    """
+    loaded = load_measurement_state(topology, state_path=state_path)
+    target = next(
+        candidate for candidate in active_summed_targets(topology)
+        if candidate["speaker_group_id"] == group_id
+    )
+    latest_test = loaded["summary"]["latest_summed_tests"].get(group_id, {})
+    record = {
+        "validation_id": uuid.uuid4().hex,
+        "created_at": created_at,
+        "speaker_group_id": group_id,
+        "group_fingerprint": target["group_fingerprint"],
+        "outcome": "blend_ok",
+        "validated": True,
+        "operator_listening_check": kind is None,
+        "summed_test_id": latest_test.get("summed_test_id"),
+        "summed_test": dict(latest_test),
+        "driver_target_proof_complete": True,
+        "observed_mic_dbfs": -40.0,
+        "mic_clipping": False,
+        "mic_meter": classify_mic_meter(observed_dbfs=-40.0, clipping=False),
+        "acoustic": None if kind is None else {
+            "verdict": "blend_ok",
+            "null_depth_db": 22.0 if kind == "reverse" else 2.0,
+            "expect_null": kind == "reverse",
+            "calibrated": True,
+        },
+        "excitation": None,
+        "placement_proof": placement_proof,
+        "polarity": "normal",
+        "delay_ms": 0.0,
+        "delay_target_role": None,
+        "notes": None,
+        "issues": [],
+        "bundle": None,
+        "region": region,
+    }
+    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    state.setdefault("summed_validations", []).append(record)
+    state_path.write_text(json.dumps(state))
+    return record
+
+
+@pytest.mark.parametrize("first_kind", ["in_phase", "reverse"])
+def test_summed_pair_keeps_both_polarities_in_either_capture_order(
+    tmp_path: Path, first_kind: str,
+) -> None:
+    """Both polarities read outcome='blend_ok'/validated=True -- a formed
+    reverse null IS the pass for a reverse capture -- so neither may overwrite
+    the other in the pair, whichever was captured first, while the flat latest
+    slot keeps resolving to the IN-PHASE record."""
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
+    second_kind = "reverse" if first_kind == "in_phase" else "in_phase"
+
+    first = _seed_summed_record(
+        topology,
+        state_path,
+        kind=first_kind,
+        created_at="2026-07-11T12:00:00Z",
+    )
+    after_first = load_measurement_state(topology, state_path=state_path)
+    if first_kind == "in_phase":
+        assert after_first["latest_summed_by_group"]["mono"]["validation_id"] == (
+            first["validation_id"]
+        )
+    else:
+        assert "mono" not in after_first["latest_summed_by_group"]
+
+    second = _seed_summed_record(
+        topology,
+        state_path,
+        kind=second_kind,
+        created_at="2026-07-11T12:01:00Z",
+    )
+    by_kind = {first_kind: first, second_kind: second}
+    state = load_measurement_state(topology, state_path=state_path)
+
+    # latest_summed_by_group is the SAME object as the summary's
+    # latest_summed_validations.
+    for latest in (
+        state["latest_summed_by_group"]["mono"],
+        state["summary"]["latest_summed_validations"]["mono"],
+    ):
+        assert latest["validation_id"] == by_kind["in_phase"]["validation_id"]
+
+    # Neither record stamped a region: a 2-way resolves into its one
+    # woofer<->tweeter region.
+    pair = state["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    assert pair["in_phase"]["validation_id"] == by_kind["in_phase"]["validation_id"]
+    assert pair["reverse"]["validation_id"] == by_kind["reverse"]["validation_id"]
+
+
+@pytest.mark.parametrize("fresh_kind", ["in_phase", "reverse"])
+def test_summed_pair_never_borrows_the_missing_polarity_from_another_run(
+    tmp_path: Path, fresh_kind: str,
+) -> None:
+    """The microphone may have moved between commissioning runs, so filling the
+    fresh run's empty polarity slot from an older run would fabricate a
+    same-position null margin. The newest record anchors the region to its own
+    comparison set."""
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
+    older_kind = "reverse" if fresh_kind == "in_phase" else "in_phase"
+    run_a = "a" * 32
+    run_b = "b" * 32
+
+    _seed_summed_record(
+        topology,
+        state_path,
+        kind=older_kind,
+        placement_proof={"comparison_set_id": run_a},
+        created_at="2026-07-11T12:00:00Z",
+    )
+    fresh = _seed_summed_record(
+        topology,
+        state_path,
+        kind=fresh_kind,
+        placement_proof={"comparison_set_id": run_b},
+        created_at="2026-07-11T12:01:00Z",
+    )
+
+    state = load_measurement_state(topology, state_path=state_path)
+    pair = state["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    assert pair[fresh_kind]["validation_id"] == fresh["validation_id"]
+    assert pair[fresh_kind]["placement_proof"]["comparison_set_id"] == run_b
+    assert pair[older_kind] is None
+
+
+def test_malformed_placement_proof_never_pairs_as_legacy_evidence(
+    tmp_path: Path,
+) -> None:
+    """Corrupt or half-migrated modern evidence fails closed: the region stays
+    present but empty, so a 2-way consumer cannot mistake absence for legacy
+    state and fall back to the flat latest-in-phase slot."""
+    topology = _topology()
+    state_path = tmp_path / "measurements.json"
+    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
+
+    for minute, kind in enumerate(("in_phase", "reverse")):
+        _seed_summed_record(
+            topology,
+            state_path,
+            kind=kind,
+            created_at=f"2026-07-11T12:0{minute}:00Z",
+        )
+    _seed_summed_record(
+        topology,
+        state_path,
+        kind="in_phase",
+        placement_proof={"comparison_set_id": "not-a-valid-id"},
+        created_at="2026-07-11T12:02:00Z",
+    )
+
+    state = load_measurement_state(topology, state_path=state_path)
+    assert state["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"] == {
+        "in_phase": None,
+        "reverse": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("mode", "kind"),
+    [("active_3_way", "in_phase"), ("active_2_way", None)],
+    ids=["three_way_without_region", "operator_only_without_acoustic"],
+)
+def test_unpairable_record_still_counts_as_the_latest(
+    tmp_path: Path, mode: str, kind: str | None,
+) -> None:
+    """Two records that resolve to no region pair: one with no region stamp on
+    a 3-way (two candidate regions, nothing to disambiguate them) and one with
+    no acoustic block at all (no polarity). Both stay eligible for
+    latest_summed_by_group; neither creates a pairs entry."""
+    topology = mono_output_topology(mode=mode, topology_name="Bench mono")
+    state_path = tmp_path / "measurements.json"
+    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
+
+    record = _seed_summed_record(
+        topology,
+        state_path,
+        kind=kind,
+        created_at="2026-07-11T12:00:00Z",
+    )
+
+    state = load_measurement_state(topology, state_path=state_path)
+    assert state["latest_summed_by_group"]["mono"]["validation_id"] == (
+        record["validation_id"]
+    )
+    assert state["latest_summed_pairs_by_group"].get("mono", {}) == {}
