@@ -227,8 +227,8 @@ Carry every other field verbatim, including the `front` chain and the
 filter structure. Removing the front chain is its own experiment.
 
 `jasper-crossover-prescriber contract --section rear` prints the schema
-and bounds. Rear chains only attenuate: chain and filter gains are at most
-0 dB. An absent `rear_calibration` key inherits; `null` clears the stage
+and bounds. Chain and filter gains may boost up to +6 dB, charged to program
+headroom. An absent `rear_calibration` key inherits; `null` clears the stage
 and the rear output is muted.
 
 Read the wall dip, the ripple beside it, the hand-over between the bass
@@ -256,10 +256,13 @@ at ONE shared corner near 100 Hz; complementary slopes leave no hole at the
 hand-over. Put the cancellation low-pass below c / (4·D), where D is the
 measured front-to-rear arrival gap times the speed of sound. Invert the
 cancellation branch and anchor its delay on that arrival gap. Start its gain at
-0 dB; if the rear reads louder than the front at the low end of the band, use a
-cut-only low shelf, not a flat cut. Keep the bass branch in phase: the bass
-below the hand-over is two woofers plus the wall, and this program does not
-spend it. A corner of 70–80 Hz is a variant, not a default: read
+0 dB; if the rear reads louder than the front at the low end of the band, shape
+it with a low shelf rather than a flat cut. A delay-and-invert pair loses
+forward level below c / (4·D); a bounded boost of up to +6 dB on BOTH branches
+in that band pays it back, and the stage's realised peak is charged to program
+headroom (ADR-0326). Keep the bass branch in phase: the bass below the hand-over
+is two woofers plus the wall, and this program does not spend it. A corner of
+70–80 Hz is a variant, not a default: read
 `low_bass.level_db`, `band_level_db` and `headroom_change_db` before you keep
 it.
 
@@ -418,15 +421,15 @@ Rear
 | mode | "branches" | field | contract.rear.mode |
 | freq_hz_upper_bound_rule | "every filter's freq must stay strictly below the document's own sample_rate_hz / 2 (Nyquist); freq is otherwise required to be > 0" | rule | contract.rear.bounds.freq_hz_upper_bound_rule |
 | max_filters_per_chain | 16 | count | contract.rear.bounds.max_filters_per_chain |
-| chain_gain_db | [-150.0,0.0] | dB | contract.rear.bounds.chain_gain_db |
-| chain_gain_rule | "front, rear.bass and rear.cancellation gain_db is an attenuation between -150 and 0 dB: a rear chain only attenuates" | rule | contract.rear.bounds.chain_gain_rule |
+| chain_gain_db | [-150.0,6.0] | dB | contract.rear.bounds.chain_gain_db |
+| chain_gain_rule | "front, rear.bass and rear.cancellation gain_db lies between -150 and +6 dB; a boost is charged to program headroom (ADR-0324), never free" | rule | contract.rear.bounds.chain_gain_rule |
 | resonant_Q_max | 1.0 | Q | contract.rear.bounds.resonant_q_max |
 | allpass_Q_max | 10.0 | Q | contract.rear.bounds.allpass_q_max |
 | combo_order_max | 8 | count | contract.rear.bounds.combo_order_max |
 | biquad_kinds | ["Allpass","Highpass","Highshelf","Lowpass","Lowshelf","Peaking"] | type | contract.rear.bounds.biquad_kinds |
 | combo_kinds | ["ButterworthHighpass","ButterworthLowpass","LinkwitzRileyHighpass","LinkwitzRileyLowpass"] | type | contract.rear.bounds.combo_kinds |
-| cut_only_kinds | ["Highshelf","Lowshelf","Peaking"] | type | contract.rear.bounds.cut_only_kinds |
-| cut_only_rule | "Peaking, Lowshelf and Highshelf gain must be a cut (<= 0 dB); a boost is refused" | rule | contract.rear.bounds.cut_only_rule |
+| gain_kinds | ["Highshelf","Lowshelf","Peaking"] | type | contract.rear.bounds.gain_kinds |
+| gain_rule | "Peaking, Lowshelf and Highshelf gain lies between the chain floor and +6 dB; the stage's realised peak is charged to program headroom" | rule | contract.rear.bounds.gain_rule |
 | emitted_delay_rule | "common_delay_ms + front.delay_ms + a rear branch's own delay_ms must sum to >= 0; add common delay to realize a negative relative rear delay" | rule | contract.rear.bounds.emitted_delay_rule |
 | branch_delay_is_not_acoustic_delay | "a branch's raw delay_ms is not its acoustic delay: the branch's own filters add delay" | rule | contract.rear.bounds.branch_delay_is_not_acoustic_delay |
 | stage_kinds | ["boundary_correction","crossover","driver_correction","protection"] | type | contract.rear.bounds.stage_kinds |

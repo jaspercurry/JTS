@@ -485,8 +485,6 @@ def _branches(bass: dict | None = None, cancellation: dict | None = None, **docu
     )
 
 
-# A resonant high-pass at the document's own Q ceiling: the one shape the
-# vocabulary admits that puts a chain above unity on its own.
 _RESONANT_HIGHPASS = _biquad("Highpass", freq=100.0, q=1.0)
 
 
@@ -530,6 +528,12 @@ def test_the_rear_charge_is_the_compiled_stages_realised_peak(document, expected
     branches would sum to if their filters let them both run wide open.
     """
     assert emit.rear_branch_sum_headroom_db(document) == pytest.approx(expected, abs=0.005)
+
+
+def test_a_boosted_cancellation_chain_is_charged():
+    document = _rear_document()
+    document["rear"]["cancellation"]["gain_db"] = 6.0
+    assert emit.rear_branch_sum_headroom_db(document) >= 6.0 - 0.5
 
 
 def test_the_emitted_baseline_absorbs_exactly_the_stages_peak():

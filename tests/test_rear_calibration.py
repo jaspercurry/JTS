@@ -44,6 +44,8 @@ def test_stage_preserves_other_outputs_and_separates_rear_branch_timing():
 @pytest.mark.parametrize("kind,params", [
     ("Biquad", {"type": kind, "freq": 180, "q": 0.9, **({"gain": -3.0} if kind in {"Peaking", "Lowshelf", "Highshelf"} else {})})
     for kind in ("Highpass", "Lowpass", "Peaking", "Lowshelf", "Highshelf", "Allpass")
+] + [("Biquad", {"type": kind, "freq": 180, "q": 0.9, "gain": 6.0})
+     for kind in ("Peaking", "Lowshelf", "Highshelf")
 ] + [("BiquadCombo", {"type": kind, "freq": 200, "order": 4})
      for kind in ("ButterworthHighpass", "ButterworthLowpass", "LinkwitzRileyHighpass", "LinkwitzRileyLowpass")])
 def test_filters_keep_all_parameters(kind, params):
@@ -68,10 +70,17 @@ def test_fir_replaces_both_branches_without_adding_declared_latency_twice():
         _compile(data)
 
 
-@pytest.mark.parametrize("field,value", [("gain_db", None), ("delay_ms", True), ("gain_db", "0"), ("gain_db", float("nan")), ("gain_db", 0.1), ("gain_db", -151), ("inverted", 1)])
-def test_electrical_values_are_explicit_numbers_and_booleans(field, value):
+@pytest.mark.parametrize("field,value,accepted", [
+    ("gain_db", 6.0, True), ("gain_db", 6.01, False), ("gain_db", -151, False),
+    ("gain_db", None, False), ("delay_ms", True, False), ("gain_db", "0", False),
+    ("gain_db", float("nan"), False), ("inverted", 1, False),
+])
+def test_electrical_values_are_explicit_numbers_and_booleans(field, value, accepted):
     data = diagnostic_seed(48000)
     data["rear"]["bass"][field] = value
+    if accepted:
+        assert read_rear_calibration(data)["rear"]["bass"][field] == value
+        return
     with pytest.raises(RearCalibrationError):
         read_rear_calibration(data)
 
@@ -121,14 +130,16 @@ def test_cli_seed_and_stage_are_read_only_and_rate_bound(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["reason"] == "rear_calibration_invalid"
 
 
-@pytest.mark.parametrize("q,accepted", [(MAX_ALLPASS_Q, True), (MAX_ALLPASS_Q + 1.0, False)])
-def test_an_allpass_q_past_the_ceiling_is_refused(q, accepted):
-    """An all-pass narrower than this rotates the branch sum faster than the
-    headroom grid resolves, so the charge could miss a peak it must bound.
-    """
+@pytest.mark.parametrize("params,accepted", [
+    ({"type": "Allpass", "q": MAX_ALLPASS_Q}, True),
+    ({"type": "Allpass", "q": MAX_ALLPASS_Q + 1.0}, False),
+    *[({"type": kind, "q": 0.9, "gain": 6.01}, False)
+      for kind in ("Peaking", "Lowshelf", "Highshelf")],
+])
+def test_filter_bounds(params, accepted):
     data = diagnostic_seed(48000)
     data["rear"]["cancellation"]["filters"] = [
-        {"type": "Biquad", "parameters": {"type": "Allpass", "freq": 200, "q": q}}
+        {"type": "Biquad", "parameters": {"freq": 200, **params}}
     ]
     if accepted:
         assert read_rear_calibration(data, sample_rate=48000) == data

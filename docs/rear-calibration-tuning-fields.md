@@ -75,7 +75,7 @@ Use it for measurement setup notes (mic distance, ambient noise, dataset id).
 
 | Field | Type / range |
 |---|---|
-| `gain_db` | number, an attenuation: `MIN_CHAIN_GAIN_DB` (`-150`) to `0` dB, for the front chain and both rear branches. Realize a rear branch the fit wants above unity by attenuating the other two chains equally — a common shift leaves every rear/front ratio unchanged |
+| `gain_db` | number, `MIN_CHAIN_GAIN_DB` (`-150`) to `MAX_CHAIN_BOOST_DB` (`+6`) dB for all chains; the realised peak is charged to program headroom (ADR-0326) |
 | `inverted` | bool |
 | `delay_ms` | any finite number. `front.delay_ms` is relative to the stage input; branch `delay_ms` is relative to the front reference. The compiler refuses a branch whose `common_delay_ms + front.delay_ms + branch.delay_ms` is negative — realize a negative relative rear delay by raising `common_delay_ms` instead |
 | `muted` | bool |
@@ -93,8 +93,8 @@ Use it for measurement setup notes (mic distance, ambient noise, dataset id).
 |---|---|---|---|
 | `Biquad` | `Highpass`, `Lowpass` | `type, freq, q` | `0 < freq < sample_rate_hz/2`; `0 < q <= MAX_RESONANT_Q` (`1.0`) |
 | `Biquad` | `Allpass` | `type, freq, q` | as above; `0 < q <= MAX_ALLPASS_Q` (`10.0`) |
-| `Biquad` | `Peaking` | `type, freq, q, gain` | as above; `q > 0`, uncapped; `gain` finite (dB), a cut only: `<= 0` |
-| `Biquad` | `Lowshelf`, `Highshelf` | `type, freq, q, gain` | as above; `0 < q <= MAX_RESONANT_Q` (`1.0`); `gain` finite (dB), a cut only: `<= 0` |
+| `Biquad` | `Peaking` | `type, freq, q, gain` | as above; `q > 0`, uncapped; `gain` finite (dB), `<= MAX_CHAIN_BOOST_DB` (`+6`) |
+| `Biquad` | `Lowshelf`, `Highshelf` | `type, freq, q, gain` | as above; `0 < q <= MAX_RESONANT_Q` (`1.0`); `gain` finite (dB), `<= MAX_CHAIN_BOOST_DB` (`+6`) |
 | `BiquadCombo` | `ButterworthHighpass`, `ButterworthLowpass` | `type, freq, order` | `order` a positive int `<= MAX_COMBO_ORDER` (`8`) |
 | `BiquadCombo` | `LinkwitzRileyHighpass`, `LinkwitzRileyLowpass` | `type, freq, order` | `order` a positive **even** int `<= MAX_COMBO_ORDER` (`8`) |
 
