@@ -356,17 +356,12 @@ def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _rear_biquad_shape(kinds: set[str], q: dict[str, Any], *, cut_only: bool = False) -> dict[str, Any]:
-    """One Biquad kind-group's `parameters`: exact keys, per-kind ``q`` cap.
-
-    ``cut_only`` kinds (SHELVING) require ``gain``; every other kind forbids
-    it (``_object``'s ``additionalProperties: False``), matching
-    ``rear_calibration._object``'s exact-key-set check.
-    """
+def _rear_biquad_shape(kinds: set[str], q: dict[str, Any], *, with_gain: bool = False) -> dict[str, Any]:
+    """Match the validator's exact keys and per-kind caps; SHELVING requires gain."""
     props = {"type": {"enum": sorted(kinds)}, "freq": _number(0, exclusive_lo=True), "q": q}
     required = ["type", "freq", "q"]
-    if cut_only:
-        props["gain"] = _number(hi=0.0)
+    if with_gain:
+        props["gain"] = _number(hi=rear_calibration.MAX_CHAIN_BOOST_DB)
         required.append("gain")
     return _object(props, required)
 
@@ -396,8 +391,8 @@ def _rear_filter() -> dict[str, Any]:
     biquads = [
         _rear_biquad_shape(resonant_capped, _number(0, rear_calibration.MAX_RESONANT_Q, exclusive_lo=True)),
         _rear_biquad_shape({"Allpass"}, _number(0, rear_calibration.MAX_ALLPASS_Q, exclusive_lo=True)),
-        _rear_biquad_shape(shelf_capped, _number(0, rear_calibration.MAX_RESONANT_Q, exclusive_lo=True), cut_only=True),
-        _rear_biquad_shape({"Peaking"}, _number(0, exclusive_lo=True), cut_only=True),
+        _rear_biquad_shape(shelf_capped, _number(0, rear_calibration.MAX_RESONANT_Q, exclusive_lo=True), with_gain=True),
+        _rear_biquad_shape({"Peaking"}, _number(0, exclusive_lo=True), with_gain=True),
     ]
     combos = [
         _rear_combo_shape(rear_calibration.COMBOS - linkwitz_riley, even=False),
@@ -478,16 +473,21 @@ def _rear() -> dict[str, Any]:
             "chain_gain_db": [rear_calibration.MIN_CHAIN_GAIN_DB, 0.0],
             "chain_gain_rule": (
                 "front, rear.bass and rear.cancellation gain_db is an attenuation between "
-                f"{rear_calibration.MIN_CHAIN_GAIN_DB:g} and 0 dB: a rear chain only attenuates"
+                f"{rear_calibration.MIN_CHAIN_GAIN_DB:g} and 0 dB: a rear chain only attenuates; "
+                "write a rear weight above 1 as front attenuation plus a band boost"
             ),
             "resonant_q_max": rear_calibration.MAX_RESONANT_Q,
             "allpass_q_max": rear_calibration.MAX_ALLPASS_Q,
             "combo_order_max": rear_calibration.MAX_COMBO_ORDER,
             "biquad_kinds": sorted(rear_calibration.BIQUADS),
             "combo_kinds": sorted(rear_calibration.COMBOS),
-            "cut_only_kinds": sorted(rear_calibration.SHELVING),
+            "gain_kinds": sorted(rear_calibration.SHELVING),
             "stage_kinds": sorted(rear_calibration.STAGES),
-            "cut_only_rule": "Peaking, Lowshelf and Highshelf gain must be a cut (<= 0 dB); a boost is refused",
+            "gain_rule": (
+                "Peaking, Lowshelf and Highshelf gain must not exceed "
+                f"+{rear_calibration.MAX_CHAIN_BOOST_DB:g} dB; "
+                "a boost is charged to program headroom (ADR-0326)"
+            ),
             "emitted_delay_rule": (
                 "common_delay_ms + front.delay_ms + a rear branch's own delay_ms must sum to >= 0; "
                 "add common delay to realize a negative relative rear delay"

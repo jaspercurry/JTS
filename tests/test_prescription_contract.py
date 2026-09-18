@@ -386,22 +386,22 @@ def test_rear_contract_bounds_equal_the_rear_calibration_constants():
     bounds = contract["bounds"]
     assert bounds["max_filters_per_chain"] == rear_cal.MAX_FILTERS_PER_CHAIN
     assert bounds["chain_gain_db"] == [rear_cal.MIN_CHAIN_GAIN_DB, 0.0]
+    front = schema["properties"]["front"]
+    rear = schema["properties"]["rear"]["properties"]
+    for chain in (front, rear["bass"], rear["cancellation"]):
+        gain = chain["properties"]["gain_db"]
+        assert [gain["minimum"], gain["maximum"]] == bounds["chain_gain_db"]
     assert bounds["resonant_q_max"] == rear_cal.MAX_RESONANT_Q
     assert bounds["allpass_q_max"] == rear_cal.MAX_ALLPASS_Q
     assert bounds["combo_order_max"] == rear_cal.MAX_COMBO_ORDER
     assert set(bounds["biquad_kinds"]) == rear_cal.BIQUADS
     assert set(bounds["combo_kinds"]) == rear_cal.COMBOS
-    assert set(bounds["cut_only_kinds"]) == rear_cal.SHELVING
+    assert set(bounds["gain_kinds"]) == rear_cal.SHELVING
     assert set(bounds["stage_kinds"]) == rear_cal.STAGES
     assert json.loads(contract_json(contract)) == contract
 
 
 def test_rear_schema_filter_shapes_match_the_validators_per_kind_caps():
-    """Walk contract["schema"] directly (no jsonschema in the venv) and pin
-    each Biquad/BiquadCombo kind's own key set and numeric cap against the
-    owning constants, closing the gap a bounds-only or validator-only test
-    would miss: a wrong constant inside `_rear_filter()` itself.
-    """
     filter_schema = prescription_contracts()["rear"]["schema"]["properties"]["front"]["properties"]["filters"]["items"]
     q_max_by_kind: dict[str, float | None] = {}
     gain_required_kinds: set[str] = set()
@@ -411,9 +411,8 @@ def test_rear_schema_filter_shapes_match_the_validators_per_kind_caps():
         kinds = set(parameters["properties"]["type"]["enum"])
         assert parameters["additionalProperties"] is False
         if "gain" in parameters["properties"]:
-            # Never an optional property within a branch: a kind either always
-            # carries gain (SHELVING) or the key is absent entirely.
             assert "gain" in parameters["required"]
+            assert parameters["properties"]["gain"]["maximum"] == rear_cal.MAX_CHAIN_BOOST_DB
             gain_required_kinds |= kinds
         if "q" in parameters["properties"]:
             q = parameters["properties"]["q"]
@@ -488,10 +487,10 @@ _NYQUIST_HZ = 24000.0
 
     pytest.param(lambda d: d["front"].update(filters=[_biquad("Highpass", q=0.7, gain=-3.0)]),
                  False, id="gain_key_forbidden_on_non_shelving_kind"),
-    pytest.param(lambda d: d["front"].update(filters=[_biquad("Lowshelf", q=0.7, gain=0.0)]),
-                 True, id="cut_only_gain_zero_inside"),
-    pytest.param(lambda d: d["front"].update(filters=[_biquad("Lowshelf", q=0.7, gain=0.01)]),
-                 False, id="cut_only_gain_outside"),
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Lowshelf", q=0.7, gain=rear_cal.MAX_CHAIN_BOOST_DB)]),
+                 True, id="filter_gain_ceiling_inside"),
+    pytest.param(lambda d: d["front"].update(filters=[_biquad("Lowshelf", q=0.7, gain=rear_cal.MAX_CHAIN_BOOST_DB + 0.01)]),
+                 False, id="filter_gain_ceiling_outside"),
 
     pytest.param(lambda d: d["front"].update(filters=[_biquad("Highpass", freq=1e-3, q=0.7)]),
                  True, id="freq_lower_bound_inside"),

@@ -23,13 +23,13 @@ BIQUADS = {"Highpass", "Lowpass", "Peaking", "Lowshelf", "Highshelf", "Allpass"}
 COMBOS = {"ButterworthHighpass", "ButterworthLowpass", "LinkwitzRileyHighpass", "LinkwitzRileyLowpass"}
 SHELVING = {"Peaking", "Lowshelf", "Highshelf"}
 
-# The vocabulary bounds that keep every chain filter at |H| <= 1. The one
-# exception is a resonant high/low-pass, which peaks by at most 1.25 dB at
-# Q = 1.0. Allpass is unity magnitude at every Q; a Peaking filter that cannot
-# boost is a cut at every Q.
+# Resonant Q, all-pass Q, filter count and combo order keep the stage evaluable
+# on the headroom grid; bounded boost is allowed and charged. See ADR-0326.
 MAX_FILTERS_PER_CHAIN = 16
 # CamillaDSP's own Gain floor; a chain at it is silent.
 MIN_CHAIN_GAIN_DB = -150.0
+# The headroom charge prices the realised peak. See ADR-0326 and ADR-0324.
+MAX_CHAIN_BOOST_DB = 6.0
 MAX_RESONANT_Q = 1.0
 # An all-pass passes every magnitude but steers the branch SUM through its phase
 # rotation, and the headroom charge reads that sum on a finite grid
@@ -76,8 +76,8 @@ def _filters(raw: Any, sample_rate: int, field: str) -> None:
             keys = {"type", "freq", "q"}
             if kind in SHELVING:
                 keys.add("gain")
-                if _number(params.get("gain"), name + ".gain") > 0:
-                    raise RearCalibrationError(f"{name}.gain must be a cut, not a boost")
+                if _number(params.get("gain"), name + ".gain") > MAX_CHAIN_BOOST_DB:
+                    raise RearCalibrationError(f"{name}.gain must not exceed {MAX_CHAIN_BOOST_DB:+g} dB")
             q = _number(params.get("q"), name + ".q", 0)
             if q == 0:
                 raise RearCalibrationError(f"{name}.q must be positive")

@@ -752,7 +752,7 @@ def test_rear_calibration_rides_the_candidate_and_reaches_the_emitted_stage():
 
 
 @pytest.mark.parametrize("document,code", [
-    (lambda: _rear_document(front={**diagnostic_seed(48000)["front"], "gain_db": 1.0}),
+    (lambda: _rear_document(front={**diagnostic_seed(48000)["front"], "gain_db": 6.0}),
      "rear_calibration_invalid"),
     (lambda: _rear_document(rear=_fir_rear()), "rear_calibration_mode_unsupported"),
     (_acoustic_rear_document, "rear_calibration_case_unsupported"),
@@ -769,16 +769,14 @@ def _biquad(kind: str, **params) -> dict:
 
 
 @pytest.mark.parametrize("filters", [
-    [_biquad("Peaking", q=1.0, gain=1.0)],
-    [_biquad("Lowshelf", q=0.7, gain=0.5)],
+    [_biquad("Peaking", q=1.0, gain=6.01)],
+    [_biquad("Lowshelf", q=0.7, gain=6.01)],
     [_biquad("Highpass", q=1.5)],
     [_biquad("Lowpass", q=2.0)],
     [{"type": "BiquadCombo", "parameters": {"type": "ButterworthHighpass", "freq": 200.0, "order": 10}}],
     [_biquad("Peaking", q=1.0, gain=-1.0)] * 17,
 ])
-def test_the_document_vocabulary_keeps_every_chain_filter_from_boosting(filters):
-    """One refusal per bound: the headroom charge models the branch SUM only,
-    so no chain filter may raise the branch it rides."""
+def test_the_document_vocabulary_refuses_gains_and_shapes_above_the_bounds(filters):
     document = _rear_document()
     document["rear"]["bass"]["filters"] = filters
     with pytest.raises(MeasuredCrossoverCandidateError) as caught:
