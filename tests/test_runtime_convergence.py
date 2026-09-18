@@ -21,7 +21,7 @@ from jasper.output_topology import (
     read_topology_fingerprint_stamp,
     statefile_topology_stamp_path,
     statefile_unproved_stamp_path,
-    topology_config_fingerprint,
+    topology_fingerprint_stamp,
 )
 from tests.test_active_speaker_runtime_contract import _flat_yaml, _topology
 
@@ -456,7 +456,7 @@ def test_a_convergence_that_proved_nothing_leaves_its_topology_stamped(
 
     assert result.ok is False
     stamp = statefile_unproved_stamp_path(paths["statefile_path"])
-    assert read_topology_fingerprint_stamp(stamp) == topology_config_fingerprint(
+    assert read_topology_fingerprint_stamp(stamp) == topology_fingerprint_stamp(
         topology
     )
 

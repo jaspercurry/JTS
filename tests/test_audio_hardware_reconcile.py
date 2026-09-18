@@ -3247,7 +3247,7 @@ def test_a_rejected_outputd_candidate_still_leaves_the_topology_unproved(
         load_output_topology_strict,
         read_topology_fingerprint_stamp,
         statefile_unproved_stamp_path,
-        topology_config_fingerprint,
+        topology_fingerprint_stamp,
     )
 
     graph_env = _apple_active_graph_env(tmp_path)
@@ -3283,7 +3283,7 @@ def test_a_rejected_outputd_candidate_still_leaves_the_topology_unproved(
     topology = load_output_topology_strict(graph_env["JASPER_OUTPUT_TOPOLOGY_PATH"])
     assert read_topology_fingerprint_stamp(
         statefile_unproved_stamp_path(statefile)
-    ) == topology_config_fingerprint(topology)
+    ) == topology_fingerprint_stamp(topology)
 
 
 def test_the_note_prefix_the_reconciler_matches_is_the_one_the_validator_emits(

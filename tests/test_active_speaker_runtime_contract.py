@@ -5127,7 +5127,7 @@ def test_a_proved_statefile_is_stamped_with_the_topology_behind_it(
     from jasper.output_topology import (
         read_topology_fingerprint_stamp,
         statefile_topology_stamp_path,
-        topology_config_fingerprint,
+        topology_fingerprint_stamp,
     )
 
     topology = _active_topology("mono", "active_2_way")
@@ -5145,7 +5145,7 @@ def test_a_proved_statefile_is_stamped_with_the_topology_behind_it(
     assert apply_safe_graph_decision_to_statefile(
         decision, statefile_path=statefile, topology=topology
     ) is True
-    assert read_topology_fingerprint_stamp(stamp) == topology_config_fingerprint(
+    assert read_topology_fingerprint_stamp(stamp) == topology_fingerprint_stamp(
         topology
     )
 
@@ -5154,7 +5154,7 @@ def test_a_proved_statefile_is_stamped_with_the_topology_behind_it(
     assert apply_safe_graph_decision_to_statefile(
         decision, statefile_path=statefile, topology=topology
     ) is False
-    assert read_topology_fingerprint_stamp(stamp) == topology_config_fingerprint(
+    assert read_topology_fingerprint_stamp(stamp) == topology_fingerprint_stamp(
         topology
     )
 
@@ -5177,12 +5177,12 @@ def test_a_statefile_write_that_fails_leaves_the_old_proof_in_place(
         stamp_statefile_convergence,
         statefile_topology_stamp_path,
         statefile_unproved_stamp_path,
-        topology_config_fingerprint,
+        topology_fingerprint_stamp,
     )
 
     first = _active_topology("mono", "active_2_way")
     moved = _active_topology("mono", "active_3_way")
-    assert topology_config_fingerprint(moved) != topology_config_fingerprint(first)
+    assert topology_fingerprint_stamp(moved) != topology_fingerprint_stamp(first)
 
     state_dir = tmp_path / "state"
     state_dir.mkdir()
@@ -5214,10 +5214,10 @@ def test_a_statefile_write_that_fails_leaves_the_old_proof_in_place(
 
     assert read_topology_fingerprint_stamp(
         statefile_topology_stamp_path(statefile)
-    ) == topology_config_fingerprint(first)
+    ) == topology_fingerprint_stamp(first)
     assert read_topology_fingerprint_stamp(
         statefile_unproved_stamp_path(statefile)
-    ) == topology_config_fingerprint(moved)
+    ) == topology_fingerprint_stamp(moved)
 
 
 def test_an_apply_that_writes_no_statefile_stamps_nothing(tmp_path: Path) -> None:

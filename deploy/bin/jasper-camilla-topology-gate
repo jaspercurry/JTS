@@ -30,9 +30,11 @@
 # UNKNOWN IS NOT MISMATCH. Either stamp absent, empty or unreadable allows the
 # start: a box that has never run a convergence carrying these stamps proves
 # nothing either way, and a permissions regression must not silence a speaker
-# over a fact nobody observed. Only two present, non-empty, different values
-# refuse. This gate never writes a stamp — shell cannot prove a graph, and a
-# stamp it minted would be a proof nobody made.
+# over a fact nobody observed. Two stamps minted by different `v<N>:` projection
+# versions are unknown for the same reason: a digest of one projection says
+# nothing about a digest of another. Only two present, non-empty, same-version
+# stamps whose digests differ refuse. This gate never writes a stamp — shell
+# cannot prove a graph, and a stamp it minted would be a proof nobody made.
 #
 # Refusal is visible on three surfaces: this journal line, the /run record the
 # `camilla statefile topology` doctor row reads, and jasper-control's heal
@@ -87,15 +89,28 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 trap 'exit 130' INT
 
-# Sets `stamp` to the file's trimmed first line, or "" for absent, unreadable
-# or empty. Builtins only, into a variable rather than through `$(...)`: this
-# runs on every CamillaDSP start, and neither a fork nor a subshell buys
-# anything here (ADR-0226).
+# Sets `stamp` to the file's trimmed first line, or "" for absent, unreadable or
+# empty, and splits it into the `v<N>` projection version that minted it and the
+# `digest` under that version. An unprefixed stamp is version 1's: the prefix
+# landed while the projection was still 1, so its digest and a v1 digest are of
+# the same thing and compare. Same rule in `topology_stamp_version`
+# (jasper/output_topology.py). Builtins only, into variables rather than through
+# `$(...)`: this runs on every CamillaDSP start, and neither a fork nor a
+# subshell buys anything here (ADR-0226).
 read_stamp() {
     stamp=""
+    version=v1
+    digest=""
     [ -r "$1" ] || return 0
     read -r stamp <"$1" 2>/dev/null || true
     stamp="${stamp//[[:space:]]/}"
+    digest="$stamp"
+    case "$stamp" in
+        *:*)
+            version="${stamp%%:*}"
+            digest="${stamp#*:}"
+            ;;
+    esac
 }
 
 clear_record() {
@@ -134,15 +149,26 @@ allow() {
 
 read_stamp "$UNPROVED_STAMP"
 unproved="$stamp"
+unproved_version="$version"
+unproved_digest="$digest"
 read_stamp "$PROVED_STAMP"
 proved="$stamp"
+proved_version="$version"
+proved_digest="$digest"
 
 [ -n "$unproved" ] || allow no_unproved_convergence
 [ -n "$proved" ] || allow no_proof_stamp
-[ "$unproved" != "$proved" ] || allow topology_matches "fingerprint=${proved:0:8}"
+# Digests taken by different projections are of different things, so neither
+# their equality nor their difference says anything about the wiring. The
+# `camilla statefile topology` doctor row warns for as long as this lasts.
+[ "$unproved_version" = "$proved_version" ] \
+    || allow stamp_version_mismatch \
+        "stamp_versions=${unproved_version}/${proved_version}"
+[ "$unproved_digest" != "$proved_digest" ] \
+    || allow topology_matches "fingerprint=${proved_digest:0:8}"
 
 write_record "$unproved" "$proved"
 log refused "reason=topology_mismatch" \
-    "unproved=${unproved:0:8} proved=${proved:0:8}" \
+    "unproved=${unproved_digest:0:8} proved=${proved_digest:0:8}" \
     "action=${REFUSE_ACTION}"
 exit 1

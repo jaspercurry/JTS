@@ -75,6 +75,7 @@ REASON_CAMILLA_STATEFILE_TOPOLOGY_MISMATCH = "camilla_statefile_topology_mismatc
 REASON_CAMILLA_TOPOLOGY_GATE_UNREADABLE = "camilla_topology_gate_unreadable"
 REASON_CAMILLA_TOPOLOGY_GATE_UNINTELLIGIBLE = "camilla_topology_gate_unintelligible"
 REASON_CAMILLA_TOPOLOGY_STAMPS_MISSING = "camilla_topology_stamps_missing"
+REASON_CAMILLA_TOPOLOGY_STAMP_VERSION_SKEW = "camilla_topology_stamp_version_skew"
 
 
 @doctor_check(core=True)
@@ -747,20 +748,44 @@ def _topology_gate_allowed_result(label: str) -> CheckResult:
     """No refusal this boot — but say whether the gate could have refused.
 
     The gate allows on UNKNOWN, so "no refusal" alone cannot tell a working
-    speaker from a blind gate. The proof stamp beside the statefile is what
-    makes the comparison possible at all, so its absence on a box running this
-    build is the warning: either no convergence has written a statefile since
-    the deploy, or the stamp writes are failing (they log
-    `event=camilla_topology_stamp.write_failed`).
+    speaker from a blind gate. Both ways it can be blind are read off the
+    stamps, not off the /run record, which only a refusal writes: no proof stamp
+    to compare with, and two stamps minted by different fingerprint projections,
+    whose digests say nothing about each other — the gate's shell script logs
+    that case on its allowed journal line with reason=stamp_version_mismatch
+    (see `deploy/bin/jasper-camilla-topology-gate`). The next convergence that
+    writes a statefile clears either.
     """
     from ...active_speaker.environment import camilla_statefile_path
     from ...output_topology import (
         read_topology_fingerprint_stamp,
         statefile_topology_stamp_path,
+        statefile_unproved_stamp_path,
+        topology_stamp_version,
     )
 
     statefile = camilla_statefile_path()
-    if read_topology_fingerprint_stamp(statefile_topology_stamp_path(statefile)):
+    proved = read_topology_fingerprint_stamp(statefile_topology_stamp_path(statefile))
+    unproved = read_topology_fingerprint_stamp(
+        statefile_unproved_stamp_path(statefile)
+    )
+    if proved and unproved and (
+        topology_stamp_version(proved) != topology_stamp_version(unproved)
+    ):
+        return CheckResult(
+            label,
+            "warn",
+            "no topology-gate refusal this boot, but the two stamps beside "
+            f"{statefile} were minted by different fingerprint projections "
+            f"(unproved {topology_stamp_version(unproved)}, proved "
+            f"{topology_stamp_version(proved)}), so the gate compared nothing "
+            "and a topology change cannot reach it. Run the hardware "
+            "reconciler (systemctl start "
+            "jasper-audio-hardware-reconcile.service): a convergence that "
+            "writes a statefile re-stamps both.",
+            reason=REASON_CAMILLA_TOPOLOGY_STAMP_VERSION_SKEW,
+        )
+    if proved:
         return CheckResult(label, "ok", "no topology-gate refusal this boot")
     return CheckResult(
         label,
