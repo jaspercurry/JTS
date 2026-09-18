@@ -2,20 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contract: the room prescription door, and what it will not let through.
-
-The door's whole job is that a room PEQ set reaching a candidate was measured
-against the round's own spatial median. So the pins here are the refusals --
-one per bar, by slug -- plus the one path that must work end to end: an
-accepted document's candidate fields build a real
-:class:`MeasuredCrossoverCandidate` whose emitted room PEQs are the filters
-that were prescribed.
-
-The median fixture is one builder with knobs rather than a family of files: a
-room is a shape (a mode, a persistent dip, an interference null, a band where
-the seats disagree) and every refusal below is that shape read against one
-proposal.
-"""
+"""Room prescriptions are bounded by their measured spatial median."""
 
 from __future__ import annotations
 
@@ -56,6 +43,7 @@ from jasper.active_speaker.crossover_v2.room_prescription import (
     SIDE_MALFORMED,
     TAPER_VIOLATED,
     RoomPrescriptionRefused,
+    preview_room_prescription,
     read_room_median,
     read_room_prescription,
     room_prescription_to_candidate_fields,
@@ -381,20 +369,31 @@ def test_an_accepted_set_becomes_the_candidates_room_peqs():
     assert candidate.room_correction["ceiling_hz"] == CEILING_HZ
 
 
-def test_room_judge_refuses_short_measurement_coverage():
-    raw = _room_median()
-    freqs = np.geomspace(50.0, 200.0, 121)
-    raw.update(
-        freqs_hz=freqs.tolist(), coverage_hz=[50.0, 200.0],
-        median_db=(-8.0 * np.exp(-(np.log2(freqs / 180.0) / 0.3) ** 2)).tolist(),
-        spread_db=[0.0] * len(freqs),
-    )
-    for position in raw["positions"]:
-        position["deviation_db"] = [0.0] * len(freqs)
-    with pytest.raises(RoomPrescriptionRefused) as excinfo:
-        _read(_document(filters=[]), raw)
-    assert excinfo.value.reason == ROOM_MEDIAN_UNAVAILABLE
-    assert excinfo.value.evidence["coverage_hz"] == raw["coverage_hz"]
+@pytest.mark.parametrize("freq_hz,coverage_floor_hz", [(25.0, 30.0), (55.0, 30.0), (55.0, 20.0)])
+def test_room_prescription_and_preview_follow_the_measured_floor(tmp_path, freq_hz, coverage_floor_hz):
+    bundle = round_inputs(bank_seat_round(tmp_path)).session_dir
+    takes = tuple(replace(take, band_hz=(30.0, take.band_hz[1])) for take in select_seat_takes(bundle).takes)
+    raw = room_median(takes, room_ceiling(bundle))
+    raw["coverage_hz"][0] = coverage_floor_hz
+    if coverage_floor_hz != 30.0:
+        with pytest.raises(RoomPrescriptionRefused) as excinfo:
+            read_room_median(raw)
+        assert excinfo.value.reason == ROOM_MEDIAN_UNAVAILABLE
+        return
+    document = _document(filters=[{"freq": freq_hz, "q": 3.0, "gain": -2.0}])
+    if freq_hz < 30.0:
+        with pytest.raises(RoomPrescriptionRefused) as excinfo:
+            _read(document, raw)
+        assert excinfo.value.reason == FILTER_OUTSIDE_REGION
+        assert excinfo.value.evidence == {"freq_hz": freq_hz, "band_hz": raw["coverage_hz"]}
+    else:
+        accepted = _read(document, raw)
+        assert accepted.band_hz == tuple(raw["coverage_hz"])
+        assert list(accepted.sides["mono"]) == document["sides"]["mono"]
+    preview = preview_room_prescription(document, room_median=read_room_median(raw),
+                                        room_median_sha256=MEDIAN_SHA256, round_id="round-7", sides=SIDES)
+    assert preview["freqs_hz"][0] == preview["residual"]["freqs_hz"][0] == 30.0
+    assert preview["freqs_hz"][-1] == raw["ceiling_hz"]
 
 
 @pytest.mark.parametrize("verb", ["judge", "compose"])

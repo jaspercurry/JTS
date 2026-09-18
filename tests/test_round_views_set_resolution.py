@@ -23,7 +23,6 @@ from jasper.active_speaker.crossover_v2.round_inputs import default_out, round_a
 from jasper.active_speaker.crossover_v2.window_view import window_view
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.audio_measurement.bundles import sha256_file
-from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 from jasper.cli._report import render_report
 from jasper.cli.round_views import ARTIFACT_BY_VIEW, _FAMILIES, build_parser, main
 from jasper.cli.round_views._common import RoundSetRefused, VIEW_PURPOSES, resolve_set
@@ -309,7 +308,7 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
             continue
         path = take_artifact_path(root, row.path)
         original.update(candidate_id="first", graph_scope="candidate", program={"program_id": "program"}, loudness_volume_db=-30.0)
-        original["curves"][0]["band_hz"] = [ROOM_FLOOR_HZ, 200.0]
+        original["curves"][0]["band_hz"] = [30.0, 200.0]
         path.write_text(json.dumps(original))
         second = json.loads(json.dumps(original))
         second.update(changed)
@@ -349,11 +348,10 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
         )["median_db"]
         assert answer["n_positions"] == doc["n_positions"] == 7
         assert len({p["pose_key"] for p in doc["positions"]}) == 7
-        assert doc["coverage_hz"] == [ROOM_FLOOR_HZ, 200.0]
-        assert min(doc["freqs_hz"]) >= ROOM_FLOOR_HZ and max(doc["freqs_hz"]) <= 200.0
+        assert doc["coverage_hz"] == [doc["freqs_hz"][0], doc["freqs_hz"][-1]] == [30.0, 200.0]
         assert np.allclose(doc["median_db"], level)
         median = read_room_median(doc)
-        assert median.band_hz == (ROOM_FLOOR_HZ, 200.0)
+        assert median.band_hz == (30.0, 200.0)
         assert median.evidence == doc["evidence"]
         expected_program = changed["program_id"] if record is second and "program_id" in changed else record["program"]["program_id"]
         assert [median.evidence["basis"][key] for key in ("program_id", "loudness_volume_db")] == [expected_program, record["loudness_volume_db"]]

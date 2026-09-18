@@ -36,9 +36,10 @@ from jasper.cli.round_views import room
 from jasper.cli.round_views._common import resolve_set
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.room_prescription import (
-    ROOM_MEDIAN_MISMATCH, ROOM_MEDIAN_UNAVAILABLE, RoomPrescriptionRefused,
+    ROOM_MEDIAN_MISMATCH, RoomPrescriptionRefused,
     read_room_median, read_room_prescription,
 )
+from jasper.active_speaker.crossover_v2.room_grade import grade_room_median
 from jasper.audio_measurement import room_limits
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry, boundary_prior
 from tests.test_active_speaker_audition import _applied_profile
@@ -103,14 +104,10 @@ def test_room_views_disclose_spatial_support(tmp_path, capsys, n_positions, suff
         assert doc["spread_db"] is None
 
 
-@pytest.mark.parametrize(("floor_hz", "sufficient", "reason"), [
-    (room_limits.ROOM_FLOOR_HZ * 1.01, True, ""),
-    (150.0, False, "coverage_short"),
-])
-def test_room_coverage_support_is_tolerant_disclosed_and_enforced(
-    tmp_path, floor_hz, sufficient, reason,
-):
-    round_dir = bank_seat_round(tmp_path, magnitudes_db=_cube()[:3])
+@pytest.mark.parametrize("floor_hz", [20.0, 30.0, 60.0, 120.0, 150.0])
+@pytest.mark.parametrize("n_positions", [1, 3])
+def test_room_band_follows_coverage_and_support_counts_positions(tmp_path, floor_hz, n_positions):
+    round_dir = bank_seat_round(tmp_path, magnitudes_db=_cube()[:n_positions])
     selected = select_seat_takes(round_inputs(round_dir).session_dir)
     takes = tuple(replace(take, band_hz=(floor_hz, take.band_hz[1])) for take in selected.takes)
     ceiling = room_views.room_ceiling(round_inputs(round_dir).session_dir)
@@ -118,15 +115,16 @@ def test_room_coverage_support_is_tolerant_disclosed_and_enforced(
     document = room_views.room_median(takes, ceiling)
     persistence = room_views.room_persistence(takes, ceiling)
 
-    support = {"n_positions": 3, "sufficient": sufficient, "reason": reason}
-    assert document["coverage_hz"][0] == floor_hz
+    support = {"n_positions": n_positions, "sufficient": n_positions > 1,
+               "reason": "" if n_positions > 1 else "too_few_positions"}
+    assert document["freqs_hz"][0] == document["coverage_hz"][0] == persistence["coverage_hz"][0] == floor_hz
     assert document["spatial_support"] == persistence["spatial_support"] == support
-    if sufficient:
-        assert read_room_median(document).coverage_hz == pytest.approx(document["coverage_hz"])
-    else:
-        with pytest.raises(RoomPrescriptionRefused) as excinfo:
-            read_room_median(document)
-        assert excinfo.value.reason == ROOM_MEDIAN_UNAVAILABLE
+    assert all(feature["band_hz"][0] >= floor_hz for feature in persistence["features"])
+    median = read_room_median(document)
+    assert median.coverage_hz == pytest.approx(document["coverage_hz"])
+    bands = grade_room_median(median).bands
+    assert [band.lo_hz for band in bands] == [floor_hz, *(split for split in (60.0, 120.0) if split > floor_hz)]
+    assert all(band.n_bins > 0 for band in bands)
 
 
 def test_room_persistence_counts_what_holds_across_the_cube(tmp_path: Path, capsys) -> None:
@@ -440,14 +438,16 @@ def test_retired_room_verbs(verb):
     assert exc.value.code == 2
 
 
-@pytest.mark.parametrize("purpose", ["speaker", "room"])
-def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(speaker_round, tmp_path, purpose):
+@pytest.mark.parametrize("purpose,floor_hz", [("speaker", 20.0), ("room", 30.0)])
+def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(speaker_round, tmp_path, purpose, floor_hz):
     root, driver, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
     analysis = json.loads((directory / "candidate.json").read_text())["analysis"]
     seat_root = bank_seat_round(tmp_path / "room", magnitudes_db=_cube()[:3])
     summed = [record for _, record in measurement_documents(round_inputs(seat_root).session_dir)]
+    for record in summed:
+        record["curves"][0]["band_hz"][0] = floor_hz
     groups = []
     for role in ("woofer", "tweeter", "summed"):
         rows = []
@@ -483,6 +483,11 @@ def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(speak
     assert set(room) == {"ceiling", "median", "persistence", "incumbent", "boundary", "boundary_reason",
                          "incumbent_reason", "room_median_sha256", "admit_boost", "out", "set_id"}
     assert packet["limits"]["summed"]["bounds"]["admit_boost"] == room["admit_boost"]
+    limits = packet["limits"]["summed"]
+    assert limits["evidence_status"] == "evaluated"
+    assert limits["bounds"]["band_hz"][0] == room["median"]["coverage_hz"][0] == floor_hz
+    assert limits["bounds"]["freqs_hz"] == room["median"]["freqs_hz"]
+    assert len(limits["bounds"]["cut_floor_db"]) == len(room["median"]["freqs_hz"])
     assert {row["set_id"] for row in views if row["view"] == "room" and row["status"] == "written"} == {"summed"}
     inventories = [json.loads(Path(row["out"]).read_text()) for row in views if row["view"] == "inventory"]
     assert any(row["view"] == "room" and row["present"] for inventory in inventories for row in inventory["artifacts"])

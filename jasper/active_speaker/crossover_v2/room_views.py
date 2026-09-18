@@ -54,11 +54,9 @@ TREND_HALF_WIDTH_OCTAVES = 0.5
 ROOM_BAND_SPLITS_HZ = (60.0, 120.0)
 
 
-def band_edges(ceiling_hz: float) -> tuple[tuple[float, float], ...]:
-    """The room bands, :data:`ROOM_FLOOR_HZ` to ``ceiling_hz``; the ceiling tops the last."""
-    lows = (ROOM_FLOOR_HZ, *ROOM_BAND_SPLITS_HZ)
-    highs = (*ROOM_BAND_SPLITS_HZ, ceiling_hz)
-    return tuple(zip(lows, highs))
+def band_edges(ceiling_hz: float, floor_hz: float = ROOM_FLOOR_HZ) -> tuple[tuple[float, float], ...]:
+    edges = (floor_hz, *(split for split in ROOM_BAND_SPLITS_HZ if floor_hz < split < ceiling_hz), ceiling_hz)
+    return tuple(zip(edges, edges[1:]))
 
 
 def band_masks(
@@ -67,7 +65,7 @@ def band_masks(
     """Each band's bins on ``freqs_hz``: half-open below a split and closed at
     the ceiling, so a bin sitting on a split is counted once."""
     freqs = np.asarray(freqs_hz, dtype=float)
-    edges = band_edges(ceiling_hz)
+    edges = band_edges(ceiling_hz, float(freqs[0]))
     return tuple(
         (lo, hi, (freqs >= lo) & ((freqs <= hi) if index == len(edges) - 1 else (freqs < hi)))
         for index, (lo, hi) in enumerate(edges)
@@ -170,10 +168,10 @@ def _coverage_hz(takes: Sequence[SeatTake], ceiling: Ceiling) -> list[float]:
 
 def room_median(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, Any]:
     """The contract a room candidate reads: median, spread, deviations."""
-    freqs, rows = _stacked(takes, ROOM_FLOOR_HZ, ceiling.ceiling_hz)
-    median = np.median(rows, axis=0)
     coverage_hz = _coverage_hz(takes, ceiling)
-    support = spatial_support(len(takes), coverage_floor_hz=coverage_hz[0])
+    freqs, rows = _stacked(takes, coverage_hz[0], ceiling.ceiling_hz)
+    median = np.median(rows, axis=0)
+    support = spatial_support(len(takes))
     return {
         "freqs_hz": freqs.tolist(),
         "median_db": median.tolist(),
@@ -236,7 +234,7 @@ def _features(freqs: np.ndarray, residual: np.ndarray, ceiling_hz: float) -> lis
             float(freqs[lo]), float(freqs[hi]), float(freqs[centre]), float(residual[centre]),
         )
         if (
-            ROOM_FLOOR_HZ <= feature.centre_hz <= ceiling_hz
+            feature.centre_hz <= ceiling_hz
             and feature.width_octaves >= FEATURE_MIN_WIDTH_OCTAVES
         ):
             found.append(feature)
@@ -245,9 +243,10 @@ def _features(freqs: np.ndarray, residual: np.ndarray, ceiling_hz: float) -> lis
 
 def room_persistence(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, Any]:
     """Which features hold across the cube, and at how many positions."""
-    # A half-octave margin either side so the trend window is whole at the edges.
+    # A half-octave margin above the ceiling keeps the trend window whole there.
     margin = 2.0 ** TREND_HALF_WIDTH_OCTAVES
-    freqs, rows = _stacked(takes, ROOM_FLOOR_HZ / margin, ceiling.ceiling_hz * margin)
+    coverage_hz = _coverage_hz(takes, ceiling)
+    freqs, rows = _stacked(takes, coverage_hz[0], ceiling.ceiling_hz * margin)
     candidates = sorted(
         (
             (position, feature)
@@ -282,10 +281,9 @@ def room_persistence(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, A
             "presence_fraction": present / len(takes),
         })
     features.sort(key=lambda f: (-f["presence_fraction"], -abs(f["median_depth_db"])))
-    coverage_hz = _coverage_hz(takes, ceiling)
     return {
         "n_positions": len(takes),
-        "spatial_support": spatial_support(len(takes), coverage_floor_hz=coverage_hz[0]),
+        "spatial_support": spatial_support(len(takes)),
         "ceiling_hz": ceiling.ceiling_hz,
         "ceiling_source": ceiling.source,
         "window": _window(takes),

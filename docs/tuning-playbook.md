@@ -115,8 +115,8 @@ Read `alignment_verdict.saved` and its `verification` line: `residual_rms_db` as
 
 ## Room
 
-The room layer reads the median across seats, through the applied speaker
-tune. One seat cannot show which features persist. Seek at least three
+The room layer reads the seat median through the applied speaker tune.
+One seat cannot show which features persist. Seek at least three
 positions before a room claim; three is the boost-admission minimum, not a
 rule that makes smaller clouds unreadable. A boost needs presence at 70% of
 positions (`ROOM_BOOST_MIN_POSITIONS`, `ROOM_BOOST_PRESENCE_MIN_FRACTION` in
@@ -136,8 +136,8 @@ curve. The ceiling follows the highest trusted floor from the round's gated
 summed or driver takes, with its source take and any pure-room fallback
 disclosed. The clamp and room/speaker ownership remain defined in ADR-0256
 (`0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md`).
-Seats are ungated by design: room reflections are part of the response being
-measured. A short speaker gate would remove that evidence.
+The room band starts at the evidence's own floor — `coverage_hz[0]`; nothing is prescribed below it.
+Seats are ungated so room reflections remain in the response.
 
 The cut floor varies by frequency with the cross-position sigma. A large
 spread supports less correction. A boost is admitted only where seats agree

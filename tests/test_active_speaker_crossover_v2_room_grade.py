@@ -171,9 +171,8 @@ def test_comparison_uses_only_common_frequency_support():
         pytest.approx(float(incumbent.freqs_hz[0])),
         pytest.approx(float(candidate.freqs_hz[0])),
     ]]
-    assert [row["rms_db"] for row in artifact["bands"][:2]] == [None, None]
-    top = artifact["bands"][2]
-    assert top["compared_hz"][0] == pytest.approx(float(candidate.freqs_hz[0]))
+    top, = artifact["bands"]
+    assert top["lo_hz"] == top["compared_hz"][0] == pytest.approx(float(candidate.freqs_hz[0]))
     assert top["delta_rms_db"] == pytest.approx(0.0, abs=1e-12)
 
 
