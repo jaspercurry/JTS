@@ -10,6 +10,8 @@ from jasper.web import correction_crossover_v2_state as v2state
 import json
 from copy import deepcopy
 from dataclasses import replace
+from itertools import product
+from math import prod
 
 import pytest
 from tests.test_prescription_contract import round_bank as round_bank
@@ -38,6 +40,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import prescription_sources
 from jasper.active_speaker.crossover_v2 import prescription_document as prescription_document_mod
 from jasper.active_speaker.crossover_v2.prescription_document import (
     PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document,
+    parse_vary_axis, vary_document,
 )
 from jasper.active_speaker.crossover_v2.bass_prescription import BASS_PRESCRIPTION_REFUSAL_REASONS
 from jasper.active_speaker.round_packet import write_round_packet
@@ -65,6 +68,70 @@ def bank(tmp_path, monkeypatch):
 def document(base, sections=None):
     return {"kind": "jts_prescription", "schema": 1, "base": base,
             "sections": sections or {}, "rationale": "Compare the resolved layers."}
+
+
+@pytest.mark.parametrize("text,paths,values", [
+    ("room.filters[0].gain,room.filters[1].gain=3,4", ("room.filters[0].gain", "room.filters[1].gain"), (3, 4)),
+    ('room.value=-3.8,true,false,null,"label",plain,a=b', ("room.value",), (-3.8, True, False, None, "label", "plain", "a=b")),
+])
+def test_vary_axis_parses_coupled_paths_and_scalar_values(text, paths, values):
+    parsed_paths, parsed_values = parse_vary_axis(text)
+    assert parsed_paths == paths and parsed_values == values
+    assert [type(value) for value in parsed_values] == [type(value) for value in values]
+
+
+@pytest.mark.parametrize("text", ["room.gain", "=1", "room.gain=", "room.gain,=1", "room.gain=[]", "room.gain={}"])
+def test_malformed_vary_axis_is_refused(text):
+    with pytest.raises(PrescriptionDocumentRefused) as caught:
+        parse_vary_axis(text)
+    assert (caught.value.code, caught.value.section) == ("prescription_malformed", "sections")
+
+
+def test_vary_document_copies_the_seed_and_expands_axes_in_product_order():
+    seed = document("saved", {"room": {"filters": [{"gain": 0}, {"gain": 0}], "enabled": False,
+                                       "assumptions": ["Keep this text."]}})
+    before = deepcopy(seed)
+    axes = [parse_vary_axis(text) for text in (
+        "room.filters[0].gain,room.filters[1].gain=1,2,3", "room.enabled=true,false")]
+    variants = list(vary_document(seed, axes))
+    assert len(variants) == prod(len(values) for _, values in axes)
+    for (values, variant), (gain, enabled) in zip(variants, product((1, 2, 3), (True, False))):
+        assert values == {"room.filters[0].gain": gain, "room.filters[1].gain": gain, "room.enabled": enabled}
+        assert variant["sections"]["room"] == {**before["sections"]["room"], "filters": [{"gain": gain}] * 2, "enabled": enabled}
+        assert variant["rationale"] == before["rationale"]
+    variants[0][1]["sections"]["room"]["assumptions"].append("Changed")
+    assert variants[1][1]["sections"]["room"]["assumptions"] == before["sections"]["room"]["assumptions"]
+    assert seed == before
+
+
+@pytest.mark.parametrize("path,section", [
+    ("missing.gain", "sections"), ("room.missing", "room"), ("room.filters[1].gain", "room"),
+    ("room.filters[-1].gain", "room"), ("room.filters[0].gain.value", "room"), ("room.filters.gain", "room"),
+    ("room.filters[0].gain[0]", "room"), ("room..gain", "room"),
+])
+def test_vary_document_checks_all_paths_before_yielding(path, section):
+    seed = document("saved", {"room": {"filters": [{"gain": 0}]}})
+    variants = vary_document(seed, [parse_vary_axis("room.filters[0].gain=1,2"), parse_vary_axis(f"{path}=3")])
+    with pytest.raises(PrescriptionDocumentRefused) as caught:
+        next(variants)
+    assert (caught.value.code, caught.value.section) == ("prescription_malformed", section)
+    assert seed["sections"]["room"]["filters"] == [{"gain": 0}]
+
+
+def test_room_grid_preserves_the_full_preview(base, bank, evidence, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(crossover_prescriber, "_document_evidence", lambda *args: evidence)
+    seed = tmp_path / "room.json"
+    seed.write_text(json.dumps(document(base.fingerprint, {"room": room_document(filters=[{"freq": 277, "q": 1, "gain": -3}])})))
+    args = ["judge", "--preview", str(seed), "--root", str(bank)]
+    assert crossover_prescriber.main(args) == 0
+    single = json.loads(capsys.readouterr().out)
+    out_dir = tmp_path / "variants"
+    assert crossover_prescriber.main([*args, "--vary", "room.sides.mono[0].gain=-3,-6", "--out-dir", str(out_dir)]) == 0
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["section"] == "room" and len(answer["variants"]) == 2
+    assert answer["variants"][0]["preview"] == single["preview"]
+    assert all("positions" not in row for row in answer["variants"])
+    assert json.loads((out_dir / "variant-01.preview.json").read_text()) == single
 
 
 @pytest.fixture
