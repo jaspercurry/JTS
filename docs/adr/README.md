@@ -299,3 +299,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0322](0322-rear-calibration-is-a-candidate-section.md) | Rear calibration is a candidate section, spliced ahead of the role chain | headroom amended by 0324 |
 | [0323](0323-speaker-setup-binds-by-driver-computes-on-read.md) | Speaker setup binds a pasted reply by driver, computes the safety profile on read, and builds the crossover preview on request | accepted |
 | [0324](0324-cardioid-headroom-is-the-stages-evaluated-peak.md) | The cardioid headroom charge is the stage's evaluated peak | accepted |
+| [0325](0325-rear-program-compares-measured-symptoms-and-previews-by-superposition.md) | The rear program compares measured symptoms and previews by superposition | accepted |
