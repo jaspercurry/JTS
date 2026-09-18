@@ -274,13 +274,14 @@ def test_room_analysis_refusals_are_unreadable(tmp_path, capsys, analyzed_room_d
     root = bank_seat_round(tmp_path)
     analyzed_room_documents.side_effect = MeasurementAnalysisRefused(code)
     if view == "bookkeeping":
+        # run_bookkeeping names the analyzer's own code; the CLI verb below
+        # still buckets it under the generic unreadable-round reason.
         result = round_views.run_bookkeeping("room", root)
-        assert result["status"] == "unavailable"
+        assert (result["status"], result["reason"]) == ("unavailable", code)
     else:
         assert round_views.main([view, str(root), "--calibration-root", str(tmp_path)]) == round_views.EXIT_UNREADABLE
         result = json.loads(capsys.readouterr().out)
-        assert result["status"] == "unreadable"
-    assert result["reason"] == round_views.REASON_UNREADABLE
+        assert (result["status"], result["reason"]) == ("unreadable", round_views.REASON_UNREADABLE)
     assert not (root / "room.json").exists()
 
 
