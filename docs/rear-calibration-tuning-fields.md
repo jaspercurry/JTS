@@ -77,7 +77,7 @@ all three chains may boost; the realised peak is charged to program headroom
 
 | Field | Type / range |
 |---|---|
-| `gain_db` | number, an attenuation: `MIN_CHAIN_GAIN_DB` (`-150`) to `0` dB for all chains. Write a rear weight above 1 as front attenuation plus a band boost |
+| `gain_db` | number, an attenuation: `MIN_CHAIN_GAIN_DB` (`-150`) to `0` dB for all chains. A rear weight above 1 is the same filter boost on both rear branches (ADR-0327), never front attenuation |
 | `inverted` | bool |
 | `delay_ms` | any finite number. `front.delay_ms` is relative to the stage input; branch `delay_ms` is relative to the front reference. The compiler refuses a branch whose `common_delay_ms + front.delay_ms + branch.delay_ms` is negative — realize a negative relative rear delay by raising `common_delay_ms` instead |
 | `muted` | bool |

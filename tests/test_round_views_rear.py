@@ -120,10 +120,11 @@ _LOW_DIP_DB = 20.0
 
 def _wall_curve_db(strength: float, *, output_db: float = 0.0, hole_db: float = 0.0,
                    low_dip_db: float = 0.0) -> list[float]:
-    """Direct sound plus one rigid image source, minus an optional hand-over
+    """Direct sound plus one rigid image source below 300 Hz, minus an optional hand-over
     hole and an optional deeper low-frequency room-mode notch."""
     excess_s = 2.0 * _WALL_M / DEFAULT_SOUND_SPEED_M_S
     summed = 1.0 + strength * np.exp(-2j * np.pi * SEAT_GRID_HZ * excess_s)
+    summed = np.where(SEAT_GRID_HZ >= 300.0, 1.0, summed)
     hole = hole_db * np.exp(-0.5 * (np.log2(SEAT_GRID_HZ / _HANDOVER_HZ) / 0.12) ** 2)
     low = low_dip_db * np.exp(-0.5 * (np.log2(SEAT_GRID_HZ / _LOW_DIP_HZ) / 0.2) ** 2)
     return (-30.0 + output_db + 20.0 * np.log10(np.abs(summed)) - hole - low).tolist()
@@ -216,7 +217,12 @@ def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
                             "candidate_id": candidate, "level_db": -30.0,
                             "seat_offset_m": None,
                             "curves": [{**source["curves"][0],
-                                        "magnitude_db": _CURVES[candidate]}]})
+                                        "magnitude_db": _CURVES[candidate],
+                                        "late_energy": {
+                                            "t0_ms": 5.0, "energy_db": -20.0,
+                                            "early_late_db": 1.0 if candidate == _MUTED else 4.0,
+                                            "centroid_ms": 6.0 if candidate == _MUTED else 5.0,
+                                        }}]})
         group = manifest_set(_banked(store, records), set_id=candidate)
         group["base"] = candidate == BASE_CANDIDATE
         groups.append(group)
@@ -408,6 +414,12 @@ def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banke
     # The variant's hole AND its lower output are both reported, and the worst
     # regression names the shape figure rather than the level it also lost.
     on_axis = min(comparison["positions"])
+    row = variant["positions"][on_axis]
+    assert row["late_energy"]["early_late_change_db"] == 3.0
+    assert row["late_energy"]["arrival_shift_ms"] == -1.0
+    assert len(row["upper_bands"]) == 3
+    assert comparison["coverage_hz"][1] == comparison["ceiling"]["ceiling_hz"]
+    assert [band["change_db"] for band in row["upper_bands"]] == pytest.approx([-3.0] * 3)
     assert variant["positions"][on_axis]["handover"]["hole_db"] > (
         incumbent["positions"][on_axis]["handover"]["hole_db"] + 5.0)
     assert variant["positions"][on_axis]["band_level_db"] == pytest.approx(
@@ -473,6 +485,11 @@ def test_a_batch_without_repeats_or_a_muted_candidate_falls_back_and_says_so(
     assert entry["comparison"]["reference"] == {"candidate_id": BASE_CANDIDATE,
                                                 "kind": "incumbent", "set_id": BASE_CANDIDATE}
     assert entry["comparison"]["repeat_spread"]["reason"] == REASON_NO_REPEATS
+    for candidate in entry["candidates"]:
+        for row in candidate["positions"].values():
+            assert row["late_energy"]["reason"] == REASON_NO_COMPARISON
+            assert row["late_energy"]["early_late_change_db"] is None
+            assert row["upper_bands"] == []
     assert set(entry["comparison"]["repeat_spread"]["spread_db"].values()) == {None}
     assert all(row["across_positions"]["worst_regression"]["exceeds_repeat_spread"] is None
                for row in entry["candidates"])

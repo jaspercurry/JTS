@@ -94,7 +94,7 @@ def lateral_pose_curve(
         trusted_floor_hz=(response.gating or {}).get("f_trusted_hz"),
         gate_window_ms=(response.gating or {}).get("window_ms"),
         floor_source=(response.gating or {}).get("floor_source"),
-        late_energy=getattr(response, "late_energy", None),
+        late_energy=response.late_energy,
         repeat_curves=tuple(
             lateral_pose_curve(occurrence, band_hz)
             for occurrence in response.repeat_responses
