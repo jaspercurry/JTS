@@ -32,6 +32,7 @@ from jasper.audio_measurement.program import (
     PROGRAM_SAMPLE_RATE_HZ,
     ExcitationProgram,
     ProgramSegment,
+    cooldown_samples,
     segment_emitted_band_hz,
 )
 import yaml
@@ -384,7 +385,7 @@ def _excitation_cap_refusals(
     refusals: list[ProgramAdmissionRefusal] = []
     if len(sweeps) > maximum_repeat_count:
         refusals.append(ProgramAdmissionRefusal.REPEAT_COUNT_OVER_CAP)
-    cooldown = math.ceil(minimum_cooldown_s * program.sample_rate_hz)
+    cooldown = cooldown_samples(minimum_cooldown_s, program.sample_rate_hz)
     if any(b.start_sample - a.start_sample - a.n_samples < cooldown
            or pcm[b.start_sample - cooldown:b.start_sample, b.channel].any()
            for a, b in zip(sweeps, sweeps[1:])):
