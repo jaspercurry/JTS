@@ -300,5 +300,5 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0323](0323-speaker-setup-binds-by-driver-computes-on-read.md) | Speaker setup binds a pasted reply by driver, computes the safety profile on read, and builds the crossover preview on request | accepted |
 | [0324](0324-cardioid-headroom-is-the-stages-evaluated-peak.md) | The cardioid headroom charge is the stage's evaluated peak | accepted |
 | [0325](0325-rear-program-compares-measured-symptoms-and-previews-by-superposition.md) | The rear program compares measured symptoms and previews by superposition | accepted |
-| [0326](0326-rear-stage-may-boost-within-the-headroom-charge.md) | The rear stage may boost, bounded, because the headroom charge pays for it | accepted |
+| [0326](0326-rear-stage-may-boost-within-the-headroom-charge.md) | The rear stage may boost, bounded, because the headroom charge pays for it | rear-weight sentence amended by 0327 |
 | [0327](0327-rear-weight-is-a-boost-on-both-rear-branches.md) | The rear weight is a boost on both rear branches, never front attenuation | accepted |

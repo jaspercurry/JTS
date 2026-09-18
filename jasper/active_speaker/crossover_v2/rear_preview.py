@@ -82,8 +82,6 @@ def _position(takes: list[PairTake], row: Mapping[str, Any],
         bands.append({"band_hz": [low, high], "muted_db": muted_level, "predicted_db": predicted_level,
                       "change_db": None if muted_level is None or predicted_level is None else predicted_level - muted_level - charge_delta,
                       "front_chain_db": electrical, "reason": "" if covered else figures.REASON_COVERAGE_SHORT})
-    energy_keys = (("early_late_change_db", "early_late_db"), ("band_energy_change_db", "energy_db"),
-                   ("arrival_shift_ms", "centroid_ms"))
     late_covered = coverage[0] <= figures.LATE_ENERGY_BAND_HZ[0] and figures.LATE_ENERGY_BAND_HZ[1] <= coverage[1]
     energies = [[figures.impulse_energy_figures(
         figures.band_limited_impulse(grid, tf, figures.LATE_ENERGY_BAND_HZ),
@@ -92,7 +90,7 @@ def _position(takes: list[PairTake], row: Mapping[str, Any],
     late = {"band_hz": figures.LATE_ENERGY_BAND_HZ,
             "reason": "" if late_covered else figures.REASON_COVERAGE_SHORT,
             **{label: float(np.median([after[key] - before[key] for before, after in energies]))
-               if energies else None for label, key in energy_keys}}
+               if energies else None for label, key in figures.LATE_ENERGY_CHANGE_KEYS}}
     gap = figures.confident_arrival_gap_s(row["arrival_gap"])
     keep = (grid >= coverage[0]) & (grid <= min(coverage[1], 5000.0))
     display = (freqs >= coverage[0]) & (freqs <= min(coverage[1], 5000.0))

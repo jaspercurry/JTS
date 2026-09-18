@@ -121,9 +121,11 @@ FIGURE_REGRESSION_SIGN: Mapping[str, float] = {
 }
 
 
-LEVEL_BANDS_HZ = ((30.0, 60.0), (60.0, 100.0), (90.0, 350.0), (200.0, 300.0),
-                  (350.0, 700.0), (700.0, 1500.0), (1500.0, 5000.0))
+UPPER_BANDS_HZ = ((350.0, 700.0), (700.0, 1500.0), (1500.0, 5000.0))
+LEVEL_BANDS_HZ = ((30.0, 60.0), (60.0, 100.0), (90.0, 350.0), (200.0, 300.0), *UPPER_BANDS_HZ)
 LATE_ENERGY_BAND_HZ = (90.0, 250.0)
+LATE_ENERGY_CHANGE_KEYS = (("early_late_change_db", "early_late_db"),
+                           ("band_energy_change_db", "energy_db"), ("arrival_shift_ms", "centroid_ms"))
 # Early/late windows of the cardioid-or-fill figure; see ADR-0325.
 EARLY_WINDOW_MS = (0.0, 10.0)
 LATE_WINDOW_MS = (10.0, 40.0)
@@ -158,6 +160,8 @@ def impulse_energy_figures(ir: Any, *, sample_rate_hz: int) -> dict[str, float]:
 
 
 def impulse_late_energy(ir: np.ndarray, *, sample_rate_hz: int) -> dict[str, float]:
+    """Early/late figures of the 90–250 Hz band-limited impulse,
+    windowed around this take's OWN peak."""
     peak = int(np.argmax(np.abs(ir)))
     # 5 ms pre / 350 ms post: the window the figure was validated on (issue #5374).
     start = max(0, peak - round(0.005 * sample_rate_hz))
@@ -172,12 +176,14 @@ def impulse_late_energy(ir: np.ndarray, *, sample_rate_hz: int) -> dict[str, flo
 def late_energy_change(
     candidate: Sequence[Mapping[str, float]], reference: Sequence[Mapping[str, float]],
 ) -> dict[str, Any]:
-    keys = (("early_late_change_db", "early_late_db"), ("band_energy_change_db", "energy_db"),
-            ("arrival_shift_ms", "centroid_ms"))
+    """Candidate minus reference at ONE position: each side's median over takes.
+    These unpaired repeat sets may differ in count, so this is a difference of
+    medians, unlike the preview's muted/predicted pairs from the same take.
+    An empty side gives ``REASON_NO_COMPARISON`` and ``None`` figures."""
     return {
         **{label: float(np.median([row[key] for row in candidate])
                         - np.median([row[key] for row in reference]))
-           if candidate and reference else None for label, key in keys},
+           if candidate and reference else None for label, key in LATE_ENERGY_CHANGE_KEYS},
         "repeats": [len(candidate), len(reference)],
         "reason": "" if candidate and reference else REASON_NO_COMPARISON,
     }
@@ -186,9 +192,13 @@ def late_energy_change(
 def upper_band_levels(
     freqs_hz: Any, curve_db: Any, *, reference_db: Any, coverage_hz: Sequence[float],
 ) -> list[dict[str, Any]]:
+    """Levels above the rear stage's own band: candidate against REAR-MUTED on the same grid;
+    power means of the 1/6-octave level. ``coverage_hz`` is the swept band,
+    not the room-clamped coverage; a band not wholly inside it or without
+    bins on this grid is absent."""
     freqs = np.asarray(freqs_hz, dtype=np.float64)
-    bands = [band for band in LEVEL_BANDS_HZ
-             if band[0] >= max(350.0, coverage_hz[0]) and band[1] <= coverage_hz[1]
+    bands = [band for band in UPPER_BANDS_HZ
+             if band[0] >= coverage_hz[0] and band[1] <= coverage_hz[1]
              and _band(freqs, band).size]
     if not bands:
         return []
