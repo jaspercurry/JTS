@@ -366,6 +366,48 @@ def test_the_trust_number_is_the_error_the_played_sum_carries(error_db):
     assert residual == pytest.approx(abs(error_db), abs=1e-6)
 
 
+def test_a_band_too_narrow_to_read_answers_empty_rather_than_a_figure():
+    """Each pair figure has its own band gate, and each says nothing rather
+    than reading one: no whole third-octave band, fewer than three bins for the
+    trust number, fewer than two for the gap's band."""
+    pair = _pair(0.8)
+    transfers = {key: pair[key] for key in ("front_tf", "rear_tf", "pair_tf")}
+    two_bins = (FREQS_HZ[100], FREQS_HZ[102])
+
+    assert rear_evidence.pair_band_levels(
+        FREQS_HZ, coverage_hz=(FREQS_HZ[0], 21.0), **transfers) == []
+    assert rear_evidence.superposition_residual_db(
+        FREQS_HZ, band_hz=two_bins, **transfers) is None
+    assert rear_evidence.shared_radiating_band_hz(
+        FREQS_HZ, front_tf=pair["front_tf"], rear_tf=pair["rear_tf"],
+        band_hz=(FREQS_HZ[100], FREQS_HZ[101])) is None
+    assert rear_evidence.gradient_residual_db(
+        FREQS_HZ, pair["rear_tf"], 0.0008, (FREQS_HZ[0], FREQS_HZ[0])) is None
+
+
+@pytest.mark.parametrize("broken", ["nan_impulse", "inf_impulse", "nan_shift", "short_impulse"])
+def test_an_unreadable_impulse_is_disclosed_rather_than_correlated(broken):
+    """The whitening returns a lag for a non-finite bin instead of an error, so
+    a corrupted repeat has to be refused before it reaches the correlator."""
+    front, rear, shift = _pair(0.8)["impulses"]
+    front, rear = np.asarray(front, dtype=np.float64), np.asarray(rear, dtype=np.float64).copy()
+    if broken == "nan_impulse":
+        rear[10] = np.nan
+    elif broken == "inf_impulse":
+        rear[10] = np.inf
+    elif broken == "nan_shift":
+        shift = np.nan
+    else:
+        front, rear = front[:1], rear[:1]
+
+    gap = rear_evidence.arrival_gap_ms([(front, rear, shift)], sample_rate_hz=SAMPLE_RATE_HZ,
+                                       band_hz=GAP_BAND_HZ)
+
+    assert (gap["ms"], gap["n_repeats"]) == (None, 0)
+    assert gap["reason"] == rear_evidence.REASON_NO_IMPULSE
+    assert rear_evidence.confident_arrival_gap_s(gap) is None
+
+
 def test_the_gap_pools_its_repeats_and_a_missing_segment_says_so():
     near, far = _pair(0.8), _pair(0.9)
     front, rear, _shift = near["impulses"]

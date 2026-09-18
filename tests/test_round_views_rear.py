@@ -33,11 +33,13 @@ from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.rear_calibration import diagnostic_seed
 from jasper.active_speaker.round_bank import _bookkeeping
 from jasper.active_speaker.round_packet import write_round_packet
+from jasper.active_speaker.round_packet_report import INDEX_FILENAME
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.rear_evidence import (
-    BAND_SOURCE_MEASURED_DIP, POLARITY_INVERTED, REASON_NO_REPEATS,
+    BAND_SOURCE_MEASURED_DIP, POLARITY_INVERTED, REASON_COVERAGE_SHORT,
+    REASON_NO_COMPARISON, REASON_NO_REPEATS,
 )
 from jasper.cli import round_views
 from tests.crossover_v2_banked_round import (
@@ -70,6 +72,8 @@ _SAMPLE_RATE_HZ = 48000
 _COMPOSED = "composed-fingerprint"
 _COMPOSED_ANALYSIS = {"base": {"fingerprint": BASE_CANDIDATE},
                       "resolution": {"rear_calibration": "cleared"}}
+#: A pair round banks one set per captured role; the SUM's is the document's.
+_PAIR_SET_ID = f"{_COMPOSED}-{rear_views.PAIR_ROLES[-1]}"
 
 #: The pair fixture's two woofers: the rear arrives this much later, inverted,
 #: and this much quieter. SHAPE knobs — no real cabinet is claimed.
@@ -222,14 +226,15 @@ def _pulse(arrival_s: float, *, gain: float = 1.0, inverted: bool = False) -> li
     return (pulse * (-gain if inverted else gain)).tolist()
 
 
-def _pair_curves() -> list[dict]:
+def _pair_curves(band_hz: Sequence[float] = SEAT_BAND_HZ) -> list[dict]:
     """The three segments a pair take banks, in the product's own curve shape:
     each woofer alone and their exact sum, so the trust number reads zero."""
     gain = 10.0 ** (_PAIR_LEVEL_GAP_DB / 20.0)
     front = np.ones_like(SEAT_GRID_HZ, dtype=np.complex128)
     rear = -gain * np.exp(-2j * np.pi * SEAT_GRID_HZ * _PAIR_GAP_MS / 1000.0)
     return [pose_curve_record(LateralPoseCurve(role=role, freqs_hz=SEAT_GRID_HZ,
-                                               complex_tf=transfer, band_hz=SEAT_BAND_HZ))
+                                               complex_tf=transfer,
+                                               band_hz=(band_hz[0], band_hz[1])))
             for role, transfer in zip(rear_views.PAIR_ROLES, (front, rear, front + rear))]
 
 
@@ -247,12 +252,16 @@ def _branch_diagnostic() -> dict:
 
 
 def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
-               applied: str = BASE_CANDIDATE) -> Path:
+               applied: str = BASE_CANDIDATE, diagnostic: bool = True,
+               swept_hz: Sequence[float] = SEAT_BAND_HZ) -> Path:
     """One banked ``rear/pair`` round: the composed candidate at every pose,
     each take banking both woofers alone, their sum and the branch diagnostic.
 
-    ``missing`` drops the solo segments at named bearings, which is how a
-    position has no pair evidence to read.
+    The manifest carries the THREE role-scoped sets the runner banks for one
+    pair candidate. ``missing`` drops the solo segments at named bearings;
+    ``diagnostic`` false banks takes that analyzed no branches, the shape jts3
+    produced; ``swept_hz`` narrows the curves' own band so the band figures run
+    out of bands to read.
     """
     root = bank_seat_round(tmp_path / "pair")
     source, store = _round_source(root)
@@ -264,10 +273,19 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                         "mark_distance_m": 1.0, "measurement_purpose": "rear",
                         "gating_applied": False, "graph_scope": "candidate",
                         "candidate_id": _COMPOSED, "level_db": -30.0, "seat_offset_m": None,
-                        "regime": "branches", "branch_diagnostic": _branch_diagnostic(),
-                        "curves": source["curves"] if degrees in missing else _pair_curves()})
-    write_manifest(root, program="rear/pair",
-                   groups=[manifest_set(_banked(store, records), set_id=_COMPOSED)])
+                        **({"regime": "branches",
+                            "branch_diagnostic": _branch_diagnostic()} if diagnostic else {}),
+                        "curves": source["curves"] if degrees in missing
+                                  else _pair_curves(swept_hz)})
+    banked = _banked(store, records)
+    groups = []
+    # Role order as the runner banks it, the SUM first — so a reader that kept
+    # whichever set iterated last would name a solo woofer's instead.
+    for role in sorted(rear_views.PAIR_ROLES):
+        group = manifest_set(banked, set_id=f"{_COMPOSED}-{role}")
+        group["capture_basis"].update(role=role, candidate_id=_COMPOSED)
+        groups.append(group)
+    write_manifest(root, program="rear/pair", groups=groups)
     _round_environment(root, applied=_SECTIONS[applied])
     return root
 
@@ -416,13 +434,15 @@ def test_a_pair_round_packets_each_woofer_alone_and_the_trust_number(
     # comparison: one played candidate has nothing to be compared against.
     assert set(entry) == {"set_id", "comparison", "candidates", "pair", "stage",
                           "geometry", "geometry_reason", "stack", "out"}
-    assert (entry["candidates"], entry["set_id"]) == ([], _COMPOSED)
+    # Three role-scoped sets, one candidate: the document names the SUM's set
+    # rather than whichever role a candidate-keyed dict iterated last.
+    assert (entry["candidates"], entry["set_id"]) == ([], _PAIR_SET_ID)
     assert entry["pair"]["candidate_id"] == _COMPOSED
     # The run composed what it played, and the packet says from what.
     assert entry["pair"]["source"] == {"candidate_id": BASE_CANDIDATE,
                                        "resolution": "cleared", "reason": ""}
     assert comparison["reference"] == {"candidate_id": _COMPOSED, "kind": "pair",
-                                       "set_id": _COMPOSED}
+                                       "set_id": _PAIR_SET_ID}
     assert comparison["positions"] == sorted(entry["pair"]["positions"])
     assert comparison["positions_unscored"] == {}
     assert comparison["band_hz"] == pytest.approx(
@@ -440,6 +460,9 @@ def test_a_pair_round_packets_each_woofer_alone_and_the_trust_number(
     # The stage is the APPLIED document's, read at the measured gap.
     assert entry["stage"]["band_hz"] == _CANCELLATION_BAND_HZ
     assert isinstance(entry["stage"]["gradient_residual_db"], float)
+    # One candidate, so no figure spread for a difference to be real against.
+    assert comparison["repeat_spread"]["reason"] == REASON_NO_COMPARISON
+    assert f"repeat_spread {REASON_NO_COMPARISON}" in (root / INDEX_FILENAME).read_text()
     assert {r["view"] for r in views if r["status"] == "written"} == {
         "rear", "frequency", "inventory"}
     assert json.loads((root / ARTIFACT_BY_VIEW["rear"].artifact).read_text()) == {
@@ -462,10 +485,44 @@ def test_a_pair_position_without_its_segments_is_disclosed(tmp_path, banked_cand
     entry, = packet_of(root)[0]["rear"]
     comparison = entry["comparison"]
 
-    assert set(comparison["positions_unscored"].values()) == {"pair_segment_missing"}
+    assert set(comparison["positions_unscored"].values()) == {rear_views.REASON_SEGMENT_MISSING}
     assert len(comparison["positions_unscored"]) == 1
     assert set(entry["pair"]["positions"]) == set(comparison["positions"])
     assert not set(comparison["positions_unscored"]) & set(entry["pair"]["positions"])
+
+
+def test_a_pair_round_that_analyzed_no_branches_says_that_and_not_a_missing_incumbent(
+    tmp_path, banked_candidates,
+):
+    """jts3's shape: the round asked for pair takes, the takes banked no branch
+    diagnostic. Falling through to the summed path would report a missing
+    incumbent, a question a pair round never asked."""
+    root = pair_round(tmp_path, diagnostic=False)
+
+    packet, views = packet_of(root)
+    row = next(view for view in views if view["view"] == "rear")
+
+    assert (row["status"], row["reason"]) == ("unavailable",
+                                              rear_views.REFUSE_NO_BRANCH_DIAGNOSTIC)
+    assert row["detail"] == {"candidates": [_COMPOSED], "takes": 4}
+    assert packet["rear"] == []
+
+
+def test_a_pair_take_too_narrow_to_read_discloses_it_rather_than_reading_clean(
+    tmp_path, banked_candidates,
+):
+    """A position whose trust number is absent is NOT a clean read, however
+    many bands the levels answered — one reason covers both gates."""
+    root = pair_round(tmp_path, swept_hz=(20.0, 21.0))
+
+    entry, = packet_of(root)[0]["rear"]
+    row = entry["pair"]["positions"][min(entry["comparison"]["positions"])]
+
+    assert (row["bands"], row["band_hz"]) == ([], None)
+    assert row["superposition_residual_db"] is None
+    assert row["reason"] == REASON_COVERAGE_SHORT
+    assert entry["comparison"]["band_reason"] == REASON_COVERAGE_SHORT
+    assert entry["stage"]["gradient_residual_db"] is None
 
 
 @pytest.mark.parametrize("program", ["room", "bass"])

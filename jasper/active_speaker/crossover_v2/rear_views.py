@@ -41,9 +41,9 @@ from jasper.active_speaker.rear_calibration import (
 from jasper.active_speaker.run_manifest import view_sets
 from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
 from jasper.audio_measurement.rear_evidence import (
-    BAND_SOURCE_COVERAGE, REASON_COVERAGE_SHORT, across_positions, arrival_gap_ms,
-    comparison_band, confident_arrival_gap_s, gradient_residual_db, pair_band_levels,
-    position_figures, rear_polarity, reference_curve_db, repeat_spread,
+    BAND_SOURCE_COVERAGE, REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, across_positions,
+    arrival_gap_ms, comparison_band, confident_arrival_gap_s, gradient_residual_db,
+    pair_band_levels, position_figures, rear_polarity, reference_curve_db, repeat_spread,
     shared_radiating_band_hz, superposition_residual_db,
 )
 from jasper.json_fields import finite_float
@@ -59,6 +59,10 @@ from .round_inputs import RoundInputs, banked_round_of
 
 REFUSE_NO_REAR_TAKES = "rear_no_summed_takes"
 REFUSE_NO_INCUMBENT = "rear_incumbent_set_unavailable"
+#: A pair round whose takes banked no branch segments. Its OWN reason: falling
+#: through to the summed path would report a missing incumbent, which is a
+#: question a pair round never asked.
+REFUSE_NO_BRANCH_DIAGNOSTIC = "rear_pair_branch_diagnostic_missing"
 
 ROLE_INCUMBENT = "incumbent"
 ROLE_REAR_MUTED = "rear_muted"
@@ -204,9 +208,11 @@ def rear_document(
     ``set_id``. Every advertised position is either scored for a candidate or
     disclosed with a reason: ``positions_unscored`` names one the reference
     take missed, and ``across_positions.positions_unavailable`` one a
-    candidate itself missed. A round whose takes banked branch segments is a
-    PAIR batch and answers :func:`_pair_document` instead. Predictions belong
-    to a later preview: nothing here is a modelled value.
+    candidate itself missed. A round the manifest advertises as a PAIR batch
+    (:func:`_pair_set`) answers :func:`_pair_document` instead, or refuses with
+    its own reason when its takes banked no branch segments — never with the
+    summed path's, which asks a question a pair round does not have.
+    Predictions belong to a later preview: nothing here is a modelled value.
     """
     batch: dict[str, dict[str, list[SeatTake]]] = {}
     bases: dict[str, list[Mapping[str, Any]]] = {}
@@ -226,11 +232,17 @@ def rear_document(
             on_axis.add(take.pose_key)
     if not batch:
         raise RoundCapturesRefused(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})
+    pair_set = _pair_set(manifest)
+    if pair_set is not None:
+        if not pairs:
+            raise RoundCapturesRefused(REFUSE_NO_BRANCH_DIAGNOSTIC, {
+                "candidates": sorted(batch),
+                "takes": sum(len(group) for poses in batch.values() for group in poses.values()),
+            })
+        return _pair_document(inputs, manifest=manifest, pair_set=pair_set, batch=batch,
+                              bases=bases, pairs=pairs)
     sets = {_candidate_key(row["capture_basis"].get("candidate_id")): row
             for row in view_sets(manifest)}
-    if pairs:
-        return _pair_document(inputs, manifest=manifest, sets=sets, batch=batch,
-                              bases=bases, pairs=pairs)
     incumbent_id = next((name for name, row in sets.items() if row.get("base")), None)
     if incumbent_id not in batch:
         raise RoundCapturesRefused(REFUSE_NO_INCUMBENT, {"candidates": sorted(batch)})
@@ -336,16 +348,30 @@ def rear_document(
     }
 
 
+def _pair_set(manifest: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The set a pair round banked its SUM under, or ``None`` for a summed round.
+
+    A round banks one manifest set per captured role, so a manifest carrying
+    all of :data:`PAIR_ROLES` is the pair batch. The take's own ``regime`` is
+    NOT the signal: the flow stamps ``branches`` only beside a branch
+    diagnostic, so the very round that banked none reads as an ordinary axis
+    take. The sum's set is the document's pointer, named rather than left to
+    whichever row a candidate-keyed dict happened to iterate last.
+    """
+    by_role = {row["capture_basis"].get("role"): row for row in view_sets(manifest)}
+    return by_role.get(PAIR_ROLES[-1]) if set(PAIR_ROLES) <= set(by_role) else None
+
+
 def _pair_segments(
     record: Mapping[str, Any],
 ) -> tuple[np.ndarray, dict[str, np.ndarray], tuple[float, float]] | None:
     """One pair take's three segments as complex transfers on ONE grid, with
     the band all three were driven over.
 
-    A branch take's segments are analyzed at one FFT size and sampled at the
-    nearest native bin, so the banked curves already share their frequencies; a
-    take whose grids disagree is skipped rather than interpolated, since a
-    phase interpolated across a wrap is simply wrong.
+    A branch take's segments are analyzed in one call at one FFT size and
+    sampled at the nearest native bin, so the three banked curves stand on the
+    same frequencies by construction and none is resampled here — a phase
+    interpolated across a wrap is simply wrong.
     """
     banked = {str(curve.get("role")): curve for curve in curves_for_take(record)}
     parsed = {}
@@ -354,10 +380,8 @@ def _pair_segments(
         if found is None:
             return None
         parsed[role] = found
-    grid = parsed[PAIR_ROLES[0]][0]
-    if any(not np.array_equal(grid, freqs) for freqs, _, _ in parsed.values()):
-        return None
-    return (grid, {role: transfer for role, (_, transfer, _) in parsed.items()},
+    return (parsed[PAIR_ROLES[0]][0],
+            {role: transfer for role, (_, transfer, _) in parsed.items()},
             (max(band[0] for _, _, band in parsed.values()),
              min(band[1] for _, _, band in parsed.values())))
 
@@ -410,14 +434,16 @@ def _pair_position(
         repeats if rate else (), sample_rate_hz=int(rate or 0),
         band_hz=shared_radiating_band_hz(grid, front_tf=front, rear_tf=rear, band_hz=swept_hz),
     )
-    gap_s = confident_arrival_gap_s(gap)
+    # The trust number has its own band gate, so a row whose residual is absent
+    # is not a clean read however many bands the levels answered.
+    residual = superposition_residual_db(grid, front_tf=front, rear_tf=rear, pair_tf=summed,
+                                         band_hz=band_hz)
     return {
-        "reason": "" if bands else REASON_COVERAGE_SHORT,
+        "reason": "" if bands and residual is not None else REASON_COVERAGE_SHORT,
         "band_hz": band_hz, "bands": bands, "arrival_gap": gap,
-        "superposition_residual_db": superposition_residual_db(
-            grid, front_tf=front, rear_tf=rear, pair_tf=summed, band_hz=band_hz),
+        "superposition_residual_db": residual,
         "rear_polarity": rear_polarity(grid, front_tf=front, rear_tf=rear, band_hz=band_hz,
-                                       arrival_gap_s=gap_s),
+                                       arrival_gap_s=confident_arrival_gap_s(gap)),
     }, grid
 
 
@@ -437,8 +463,7 @@ def _composed_source(inputs: RoundInputs, candidate: str) -> dict[str, Any]:
 
 
 def _pair_document(
-    inputs: RoundInputs, *, manifest: Mapping[str, Any],
-    sets: Mapping[str, Mapping[str, Any]],
+    inputs: RoundInputs, *, manifest: Mapping[str, Any], pair_set: Mapping[str, Any],
     batch: Mapping[str, Mapping[str, Sequence[SeatTake]]],
     bases: Mapping[str, Sequence[Mapping[str, Any]]],
     pairs: Mapping[str, Sequence[Mapping[str, Any]]],
@@ -446,10 +471,11 @@ def _pair_document(
     """The pair take's evidence: each woofer alone, their sum, and the trust number.
 
     ONE played candidate, so there is no candidate comparison and no frozen
-    reference curve — nothing has been changed yet to compare against.
-    ``stage`` is the APPLIED document's rear section, whose
-    ``gradient_residual_db`` is a fact about that document at the measured gap
-    rather than about this take.
+    reference curve — nothing has been changed yet to compare against. The
+    document is keyed on the SUM's manifest set (``pair_set``), the one of the
+    round's three role-scoped sets the pair figures are read from. ``stage`` is
+    the APPLIED document's rear section, whose ``gradient_residual_db`` is a
+    fact about that document at the measured gap rather than about this take.
     """
     candidate = _shared([_candidate_key(record.get("candidate_id"))
                          for rows in pairs.values() for record in rows]) or ""
@@ -483,7 +509,7 @@ def _pair_document(
         ratio = None if not np.all(front) else summed / front
     geometry, _walls, geometry_reason = _declared_geometry(inputs)
     observed = [basis for rows in bases.values() for basis in rows]
-    set_id = (sets.get(candidate) or {}).get("set_id")
+    set_id = pair_set.get("set_id")
     return {
         "set_id": set_id,
         "comparison": {
@@ -493,6 +519,12 @@ def _pair_document(
             "reference": {"candidate_id": candidate, "kind": ROLE_PAIR, "set_id": set_id},
             "positions": sorted(positions), "positions_unscored": unscored,
             "level": _level_facts(manifest, observed),
+            # The summed path's spread answers "how small a candidate
+            # difference is real?" A pair batch compares no candidates, so it
+            # reads none of those figures; its repeat evidence rides on each
+            # position's own ``arrival_gap``.
+            "repeat_spread": {**repeat_spread(()), "reason": REASON_NO_COMPARISON,
+                              "candidate_id": candidate, "position": None},
         },
         "candidates": [],
         "pair": {"candidate_id": candidate, "source": _composed_source(inputs, candidate),

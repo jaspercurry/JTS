@@ -74,6 +74,10 @@ REASON_COVERAGE_SHORT = "coverage_short"
 REASON_NO_REPEATS = "no_repeats"
 REASON_NO_ROW = "no_row"
 REASON_NO_IMPULSE = "no_impulse"
+#: A batch with ONE played candidate: it reads no candidate figures, so it has
+#: no repeat spread for a difference to be called real against. Its own repeat
+#: evidence is per position, beside each measured figure.
+REASON_NO_COMPARISON = "no_candidate_comparison"
 
 #: Applied before the log so a bin that cancelled to exactly zero banks a
 #: number instead of ``-inf``, which is not JSON — the same floor
@@ -388,15 +392,19 @@ def arrival_gap_ms(
     size of the gap itself — and a peak-picker takes whichever is taller.
 
     The median over repeats with the WORST repeat's ``confidence`` and
-    ``at_edge``, plus their peak-to-peak spread in µs. ``ms`` is ``None`` with
-    a reason when no repeat could be read.
+    ``at_edge``, plus their peak-to-peak spread in µs. A repeat whose impulses
+    are short, mismatched in length or not finite is NOT read — the whitening
+    returns a lag for a non-finite bin rather than an error — so ``ms`` is
+    ``None`` with a reason when none of them could be.
     """
     band = None if band_hz is None else (float(band_hz[0]), float(band_hz[1]))
     rows = []
     for front, rear, shift in repeats:
         ahead = np.asarray(front, dtype=np.float64)
         behind = np.asarray(rear, dtype=np.float64)
-        if band is None or band[0] >= band[1] or ahead.size < 2 or ahead.size != behind.size:
+        if (band is None or band[0] >= band[1] or ahead.size < 2
+                or ahead.size != behind.size or finite_float(shift) is None
+                or not (np.all(np.isfinite(ahead)) and np.all(np.isfinite(behind)))):
             continue
         lag, _sign, confidence, at_edge = gcc_phat(
             behind, ahead, sample_rate=sample_rate_hz, band_hz=band, upsample=GCC_UPSAMPLE,
