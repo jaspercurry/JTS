@@ -27,7 +27,7 @@ from .frequency_view import build_frequency_view, FREQUENCY_VIEW_FILENAME
 from .round_view_artifacts import ARTIFACT_BY_VIEW, PACKET_FAMILIES
 from .round_view_builders import analyzed_frequency_run
 from .speaker_fit import design_clouds, speaker_fit
-from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose
+from .measurement_programs import PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose
 from .round_bank import BankedRound
 from .round_verdicts import round_verdicts
 from .round_packet_report import (
@@ -235,7 +235,9 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                                    "screens": t.get("screens", []),
                                    "fault": t.get("fault") or (t.get("quality") or {}).get("fault"), **gate_fields(t)} for t in g["takes"]]}
                        for g in manifest.get("sets", ())], "series": series,
-              "fits": _fits(inputs, manifest, sources, clouds),
+              # A fit is gated speaker evidence; a rear take is measured ungated
+              # below the gate's trusted floor and proposes no driver filters.
+              "fits": [] if purpose == PURPOSE_REAR else _fits(inputs, manifest, sources, clouds),
               **analysis,
               "alignment": alignments, "alignment_verdict": alignment_verdict,
               "next_action": timing_next_action(alignment_verdict or {},

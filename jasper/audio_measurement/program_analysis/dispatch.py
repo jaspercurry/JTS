@@ -145,7 +145,8 @@ def analyze_program_capture(
     locations = _locate_segments(program, capture, sample_rate, global_offset, stimuli)
 
     if is_branch_program(program):
-        analysis = analyze_branches(program, capture, sample_rate, global_offset, locations, calibration, priors)
+        analysis = analyze_branches(program, capture, sample_rate, global_offset, locations, calibration, priors,
+                                    gate_exempt_reason=geometry.gate_exempt_reason)
     elif program.phase == PROGRAM_PHASE_CHECK:
         analysis = _analyze_check(
             program, capture, sample_rate, global_offset, locations, priors,

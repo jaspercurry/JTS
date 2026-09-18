@@ -742,6 +742,47 @@ def test_program_choices_include_rear():
     assert args.program == "rear"
 
 
+@pytest.mark.parametrize("named", [False, True])
+def test_a_rear_pair_run_composes_its_own_candidate_only_when_none_is_named(
+    named, monkeypatch, tmp_path, isolated_candidate_bank,
+):
+    """The branches regime demands one candidate, and a rear pair take must
+    measure the woofers raw: with no ``--candidates`` the run composes the
+    applied tune with its rear calibration cleared (issue #5330).
+    """
+    from jasper.active_speaker import candidate_bank
+    from jasper.active_speaker.crossover_v2 import prescription_document as prescription_document_mod
+    from jasper import output_topology
+
+    topology, _ = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    applied = publish_authored_candidate(
+        candidate_from_design_draft(topology, load_design_draft(topology=topology))
+    )
+    monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state",
+                        lambda: {"status": "applied",
+                                 "source": {"measured_candidate_fingerprint": applied.fingerprint}})
+    monkeypatch.setattr(output_topology, "load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan: ready_facts(
+        plan, candidates={name: candidate_bank.find_banked_candidate(name).candidate
+                          for name in plan.candidates}))
+    argv = ["run", "--program", "rear", "--poses", "rear/pair",
+            *(["--candidates", applied.fingerprint] if named else [])]
+
+    plan = _run_request.resolve_run(cli.build_parser().parse_args(argv)).plan
+
+    measured, = plan.candidates
+    assert [stop.candidate_id for stop in plan.stops] == [measured] * len(plan.stops)
+    assert {stop.regime for stop in plan.stops} == {"branches"}
+    if named:
+        assert measured == applied.fingerprint
+        assert [row.fingerprint for row in candidate_bank.banked_candidates()] == [applied.fingerprint]
+        return
+    assert measured != applied.fingerprint
+    composed = candidate_bank.find_banked_candidate(measured).candidate
+    assert composed.analysis["resolution"]["rear_calibration"] == "cleared"
+    assert composed.analysis["base"]["fingerprint"] == applied.fingerprint
+
+
 @pytest.mark.parametrize("state", ["awaiting_join", "starting", "awaiting_capture", "stopping"])
 def test_wait_does_not_bank_before_capture_cleanup(state, monkeypatch, capsys):
     opener = _run_opener({"status": state})
