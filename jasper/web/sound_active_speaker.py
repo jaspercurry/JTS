@@ -951,11 +951,6 @@ def _active_speaker_measurements_payload() -> dict[str, Any]:
         status=str(payload.get("status")),
         drivers="%s/%s"
         % (summary.get("captured_driver_count"), summary.get("required_driver_count")),
-        summed="%s/%s"
-        % (
-            summary.get("validated_summed_group_count"),
-            summary.get("required_summed_group_count"),
-        ),
     )
     return payload
 

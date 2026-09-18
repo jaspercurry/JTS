@@ -398,11 +398,7 @@ function activePayloads() {
         driver_checks_complete: false,
         driver_measurements_complete: false,
         latest_driver_checks: {},
-        required_summed_group_count: 0,
-        validated_summed_group_count: 0,
-        summed_validation_complete: false,
         latest_driver_measurements: {},
-        latest_summed_validations: {},
       },
       issues: [],
     },
@@ -466,7 +462,6 @@ function commissioningViewPayload(overrides = {}) {
       message: "Driver and crossover values are saved.",
     },
     driver_checks: { complete: true, captured: 2, required: 2 },
-    summed_validation: { complete: false, validated: 0, required: 1 },
     test_level: levelPayload(-72).test_signal,
     combined_groups: [],
     next_action: {},
@@ -487,24 +482,6 @@ function profileCommissioningView(overrides = {}) {
     status: "needs_combined_check",
     ...overrides,
   });
-}
-
-function summedSummary(latestSummedTests, overrides = {}) {
-  return {
-    required_driver_count: 2,
-    captured_driver_count: 2,
-    driver_measurements_complete: true,
-    required_summed_group_count: 1,
-    validated_summed_group_count: 0,
-    summed_validation_complete: false,
-    latest_driver_measurements: {
-      "main:woofer": { captured: true, outcome: "heard_correct_driver" },
-      "main:tweeter": { captured: true, outcome: "heard_correct_driver" },
-    },
-    latest_summed_tests: latestSummedTests,
-    latest_summed_validations: {},
-    ...overrides,
-  };
 }
 
 function setupHarness(fetchHandler, options = {}) {
@@ -3954,13 +3931,8 @@ async function testDriverMicCaptureIsRemovedFromSoundFlow() {
       required_driver_count: 2,
       captured_driver_count: 0,
       driver_measurements_complete: false,
-      required_summed_group_count: 1,
-      validated_summed_group_count: 0,
-      summed_validation_complete: false,
       latest_driver_measurements: {},
-      latest_summed_validations: {},
     },
-    permissions: { may_compile_baseline: false },
     issues: [],
   };
   const fetchHandler = baseFetch({
