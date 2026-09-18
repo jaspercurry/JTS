@@ -374,8 +374,9 @@ def test_room_prescription_and_preview_follow_the_measured_floor(tmp_path, freq_
     bundle = round_inputs(bank_seat_round(tmp_path)).session_dir
     takes = tuple(replace(take, band_hz=(30.0, take.band_hz[1])) for take in select_seat_takes(bundle).takes)
     raw = room_median(takes, room_ceiling(bundle))
-    raw["coverage_hz"][0] = coverage_floor_hz
     if coverage_floor_hz != 30.0:
+        # A grid that claims to start below the evidence is not this round's median.
+        raw["coverage_hz"][0] = coverage_floor_hz
         with pytest.raises(RoomPrescriptionRefused) as excinfo:
             read_room_median(raw)
         assert excinfo.value.reason == ROOM_MEDIAN_UNAVAILABLE

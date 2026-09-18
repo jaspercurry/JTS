@@ -221,9 +221,10 @@ class _Feature:
 def _features(freqs: np.ndarray, residual: np.ndarray, ceiling_hz: float) -> list[_Feature]:
     """One position's excursions against its local level, wide enough to count.
 
-    Searched over the margin the grid carries so an extremum on the band's
-    own edge bin is judged against real neighbours; only centres inside the
-    band count.
+    Searched over the margin the grid carries above the ceiling, so an extremum
+    on the ceiling's edge bin is judged against real neighbours; nothing is
+    measured below the coverage floor, so the trend there is one-sided. Only
+    centres inside the band count.
     """
     found = []
     for centre, lo, hi in local_features(
