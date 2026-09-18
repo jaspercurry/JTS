@@ -418,6 +418,7 @@ def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banke
     assert row["late_energy"]["early_late_change_db"] == 3.0
     assert row["late_energy"]["arrival_shift_ms"] == -1.0
     assert len(row["upper_bands"]) == 3
+    assert comparison["coverage_hz"][1] == comparison["ceiling"]["ceiling_hz"]
     assert [band["change_db"] for band in row["upper_bands"]] == pytest.approx([-3.0] * 3)
     assert variant["positions"][on_axis]["handover"]["hole_db"] > (
         incumbent["positions"][on_axis]["handover"]["hole_db"] + 5.0)

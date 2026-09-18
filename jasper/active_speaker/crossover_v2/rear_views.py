@@ -178,7 +178,7 @@ def _position_rows(
     reference_late: Mapping[str, Sequence[Mapping[str, float]]],
     reference_curve: Mapping[str, np.ndarray],
     *, band_hz: Sequence[float] | None, coverage_hz: Sequence[float], handover_hz: float | None,
-    incumbent: Mapping[str, Any] | None = None,
+    swept_hz: Sequence[float], incumbent: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One candidate's figures at every position the batch froze a zero for."""
     rows: dict[str, Any] = {}
@@ -196,7 +196,7 @@ def _position_rows(
             [take.late_energy for take in takes if take.late_energy], reference_late.get(key, []),
         )
         rows[key]["upper_bands"] = upper_band_levels(
-            grid, curve_db, reference_db=reference_curve[key], coverage_hz=coverage_hz,
+            grid, curve_db, reference_db=reference_curve[key], coverage_hz=swept_hz,
         ) if key in reference_curve else []
     return rows
 
@@ -255,8 +255,8 @@ def rear_document(
     stage = rear_operating_facts(incumbent_section)
     ceiling = room_ceiling(inputs.session_dir)
     takes = [take for poses in batch.values() for group in poses.values() for take in group]
-    coverage_hz = [max(take.band_hz[0] for take in takes),
-                   min(take.band_hz[1] for take in takes)]
+    swept_hz = [max(take.band_hz[0] for take in takes), min(take.band_hz[1] for take in takes)]
+    coverage_hz = [swept_hz[0], min(ceiling.ceiling_hz, swept_hz[1])]
     captured = sorted({key for poses in batch.values() for key in poses})
 
     muted = sorted(name for name, (section, _) in sections.items()
@@ -291,6 +291,7 @@ def rear_document(
     )
     figures = {
         "band_hz": band["band_hz"], "coverage_hz": coverage_hz, "handover_hz": stage["handover_hz"],
+        "swept_hz": swept_hz,
     }
     incumbent_rows = _position_rows(
         batch[incumbent_id], zeros, reference_late, reference_curve, **figures)
@@ -301,7 +302,8 @@ def rear_document(
     if repeated in zeros:
         grid, reference_db = zeros[repeated]
         repeats = [position_figures(grid, np.interp(grid, take.freqs_hz, take.magnitude_db),
-                                    reference_db=reference_db, **figures)
+                                    reference_db=reference_db, band_hz=band["band_hz"],
+                                    coverage_hz=coverage_hz, handover_hz=stage["handover_hz"])
                    for take in batch[incumbent_id][repeated]]
     spread = {**repeat_spread(repeats), "candidate_id": incumbent_id, "position": repeated}
 
