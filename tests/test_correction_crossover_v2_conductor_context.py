@@ -489,8 +489,6 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
             "level_duration_limits": {
                 "max_effective_peak_dbfs": peak,
                 "max_sweep_duration_s": 6,
-                "max_repeat_count": 3,
-                "minimum_cooldown_s": 0,
             },
             "required_protection_filters": filters,
             "cabinet": {
@@ -662,8 +660,6 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
             "level_duration_limits": {
                 "max_effective_peak_dbfs": peak,
                 "max_sweep_duration_s": 6,
-                "max_repeat_count": 3,
-                "minimum_cooldown_s": 0,
             },
             "required_protection_filters": filters,
             "cabinet": {

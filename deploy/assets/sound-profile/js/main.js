@@ -914,12 +914,7 @@ import {
     }
     if (cabinet.baffle_width_mm != null) setting.baffle_width_mm = cabinet.baffle_width_mm;
     var limits = driver.level_duration_limits || {};
-    [
-      'max_effective_peak_dbfs',
-      'max_sweep_duration_s',
-      'max_repeat_count',
-      'minimum_cooldown_s'
-    ].forEach(function(field) {
+    ['max_effective_peak_dbfs', 'max_sweep_duration_s'].forEach(function(field) {
       if (limits[field] != null) setting[field] = limits[field];
     });
     // #1665: driver_class/radiating_diameter_mm are AI-researchable, so this

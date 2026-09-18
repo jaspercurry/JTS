@@ -440,12 +440,7 @@ function padFromSetting(setting) {
 }
 function levelDurationLimitsFromSetting(setting) {
   var out = {};
-  [
-    'max_effective_peak_dbfs',
-    'max_sweep_duration_s',
-    'max_repeat_count',
-    'minimum_cooldown_s'
-  ].forEach(function(field) {
+  ['max_effective_peak_dbfs', 'max_sweep_duration_s'].forEach(function(field) {
     var value = manualNumberValue(setting[field]);
     if (value != null) out[field] = value;
   });
@@ -597,12 +592,8 @@ function echoLevelText(setting) {
   var parts = [];
   var peak = manualNumberValue(setting.max_effective_peak_dbfs);
   var sweep = manualNumberValue(setting.max_sweep_duration_s);
-  var repeats = manualNumberValue(setting.max_repeat_count);
-  var cooldown = manualNumberValue(setting.minimum_cooldown_s);
   if (peak != null) parts.push(fmtDb(peak) + ' dBFS peak');
   if (sweep != null) parts.push('sweeps up to ' + sweep + ' s');
-  if (repeats != null) parts.push(repeats + ' repeats');
-  if (cooldown != null) parts.push(cooldown + ' s cooldown');
   return parts.join(', ');
 }
 function driverVocabularyLoaded() {

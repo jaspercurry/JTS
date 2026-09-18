@@ -391,23 +391,9 @@ def _normalise_level_duration_limits(
         value.get("max_sweep_duration_s"),
         f"{field_name}.max_sweep_duration_s",
     )
-    repeats = _bounded_int(
-        value.get("max_repeat_count"),
-        f"{field_name}.max_repeat_count",
-        minimum=1,
-        maximum=16,
-    )
-    cooldown = _finite_float(
-        value.get("minimum_cooldown_s"),
-        f"{field_name}.minimum_cooldown_s",
-    )
-    if cooldown is not None and cooldown < 0:
-        raise DriverSafetyProfileError(f"{field_name}.minimum_cooldown_s must be >= 0")
     out = {
         "max_effective_peak_dbfs": peak,
         "max_sweep_duration_s": duration,
-        "max_repeat_count": repeats,
-        "minimum_cooldown_s": cooldown,
     }
     return {key: item for key, item in out.items() if item is not None} or None
 
@@ -981,17 +967,10 @@ def _target_issues(target: Mapping[str, Any]) -> list[str]:
     # publish no level limit, and its ABSENCE is how a target says so —
     # ``resolve_driver_excitation_ceilings`` reads that as the delegation the
     # sensitivity derivation answers.
-    required_limit_fields = (
-        "max_sweep_duration_s",
-        "max_repeat_count",
-        "minimum_cooldown_s",
-    )
     if not isinstance(limits, Mapping):
         reasons.append(f"{role}:level_duration_limits_missing")
-    else:
-        for field in required_limit_fields:
-            if limits.get(field) is None:
-                reasons.append(f"{role}:{field}_missing")
+    elif limits.get("max_sweep_duration_s") is None:
+        reasons.append(f"{role}:max_sweep_duration_s_missing")
     if isinstance(hard, list) and isinstance(measurement, list):
         if not _band_subset(measurement, hard):
             reasons.append(f"{role}:measurement_band_outside_hard_band")
@@ -1040,10 +1019,8 @@ _ISSUE_MESSAGES = {
     "model_missing": "Enter the driver's model.",
     "hard_excitation_band_missing": "Set the driver's hard excitation frequency range.",
     "measurement_band_missing": "Set the driver's measurement frequency range.",
-    "level_duration_limits_missing": "Set the driver's sweep duration, repeat count and cooldown.",
+    "level_duration_limits_missing": "Set the driver's maximum sweep duration.",
     "max_sweep_duration_s_missing": "Set the driver's maximum sweep duration.",
-    "max_repeat_count_missing": "Set the driver's maximum repeat count.",
-    "minimum_cooldown_s_missing": "Set the driver's minimum cooldown time.",
     "measurement_band_outside_hard_band": "Keep the measurement range inside the hard excitation range.",
     "required_highpass_missing": "Declare the {role}'s minimum crossover frequency.",
     "required_lowpass_missing": "Declare the {role}'s protective low-pass frequency.",

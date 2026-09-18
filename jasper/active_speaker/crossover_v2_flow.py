@@ -633,7 +633,6 @@ class CrossoverV2Session:
         session_volume_db: float,
         seams: V2FlowSeams,
         driver_sweep_duration_limits_s: Mapping[str, float] | None = None,
-        driver_minimum_cooldown_s: float = 0.0,
             positions_gated: bool = False,
         driver_spacing_m: float | None = 0.0,
         accepted_phases: Sequence[str] = (),
@@ -696,9 +695,6 @@ class CrossoverV2Session:
         # Per-role longest admissible ONE sweep (#2921); an absent role composes at its
         # nominal duration.
         self._sweep_duration_limits_s = dict(driver_sweep_duration_limits_s or {})
-        # ``declared_minimum_cooldown_s`` over this session's targets; the flow
-        # holds no safety profile, so the web layer resolves it.
-        self._minimum_cooldown_s = float(driver_minimum_cooldown_s)
         self._session_volume_db = float(session_volume_db)
         self._seams = seams
         # True once ``authorize_begin`` has refused: the capture writes its own
@@ -813,7 +809,6 @@ class CrossoverV2Session:
             session_volume_db=self._session_volume_db,
             fc_hz=self._fc_hz,
             sweep_duration_limits_s=self._sweep_duration_limits_s,
-            minimum_cooldown_s=self._minimum_cooldown_s,
             summed_sweep_band_hz=_plan.room_sweep_band_hz(self._roles, self._lateral_prompts),
         )
         # Composed ONCE and held: ``program_for_phase`` answers by OBJECT IDENTITY, and
@@ -830,8 +825,7 @@ class CrossoverV2Session:
         branch_spec = next((spec for spec in self._measure_specs_by_index.values()
                             if spec.graph_scope == "candidate_branches"), None)
         self._branch_program = (
-            build_branch_program(self._cloud_program, branch_channels_for(branch_spec),
-                                 cooldown_s=self._minimum_cooldown_s)
+            build_branch_program(self._cloud_program, branch_channels_for(branch_spec))
             if branch_spec is not None else None
         )
 
@@ -1418,7 +1412,6 @@ class CrossoverV2Session:
             measure_sweep_durations_s=_priors.measure_sweep_durations_s(
                 self._measure_program
             ),
-            minimum_cooldown_s=self._minimum_cooldown_s,
             candidate_fingerprint=(
                 getattr(self._candidate, "fingerprint", None)
                 if self._candidate is not None else None

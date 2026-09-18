@@ -63,8 +63,6 @@ def _profile_and_targets(*, woofer_peak: float = -30.0, tweeter_peak: float = -7
                 # shape, and it means "this maker publishes no level limit".
                 **({} if peak is None else {"max_effective_peak_dbfs": peak}),
                 "max_sweep_duration_s": 6,
-                "max_repeat_count": 3,
-                "minimum_cooldown_s": 0,
             },
             "required_protection_filters": required,
             "cabinet": {

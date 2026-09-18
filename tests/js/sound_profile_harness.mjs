@@ -3161,8 +3161,6 @@ function echoResearchPacket(tweeterPeakDbfs = ECHO_TWEETER_CLASS_CEILING_DBFS) {
             ? {}
             : { max_effective_peak_dbfs: tweeterPeakDbfs }),
           max_sweep_duration_s: 4,
-          max_repeat_count: 3,
-          minimum_cooldown_s: 2,
         },
         // Consumed, but the reply asserted nothing about it.
         sensitivity_db_2v83_1m: 89.2,
@@ -3306,7 +3304,7 @@ async function testResearchEchoBackNamesEveryValueWithBadgeAndSource() {
     "Protection filter",
     "high-pass 3.0 kHz, 24 dB/oct or steeper",
     "Test level and duration",
-    "-65.0 dBFS peak, sweeps up to 4 s, 3 repeats, 2 s cooldown",
+    "-65.0 dBFS peak, sweeps up to 4 s",
     "Sensitivity",
     "+89.2 dB",
     "Measure inside",
@@ -3481,8 +3479,6 @@ async function testResearchEchoBackDisclosesTheDelegation() {
   lfOnCeiling.drivers[0].level_duration_limits = {
     max_effective_peak_dbfs: ECHO_WOOFER_CLASS_CEILING_DBFS,
     max_sweep_duration_s: 6,
-    max_repeat_count: 3,
-    minimum_cooldown_s: 2,
   };
   const lfPanel = echoPanel(await echoHarness(
     echoDraft({ research: lfOnCeiling })

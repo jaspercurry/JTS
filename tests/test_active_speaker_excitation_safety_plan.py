@@ -33,7 +33,6 @@ _JTS3_SENSITIVITIES = {"woofer": 83.3, "tweeter": 108.5}
 
 def _profile_and_targets(
     *,
-    cooldown_s: float = 1,
     woofer_required_filters: list | None = None,
     woofer_peak: float = -65,
     tweeter_peak: float = -65,
@@ -81,8 +80,6 @@ def _profile_and_targets(
                 # published level limit.
                 **({} if peak is None else {"max_effective_peak_dbfs": peak}),
                 "max_sweep_duration_s": 4,
-                "max_repeat_count": 3,
-                "minimum_cooldown_s": cooldown_s,
             },
             "target_id": f"mono:{role}",
             "role": role,
@@ -288,7 +285,6 @@ def test_safety_plan_derives_closed_request_for_shared_admission():
     assert prepared.execution_allowed is True
     assert prepared.request.band == requested.generator.band
     assert prepared.request.effective_peak_dbfs == pytest.approx(-70)
-    assert prepared.minimum_cooldown_s == 1
     assert prepared.refusals == ()
     assert prepared.to_dict()["accepts_protection_evidence"] is True
     with pytest.raises(TypeError, match="prepare_driver_excitation_plan"):
@@ -815,8 +811,6 @@ def test_a_full_range_sweep_never_reaches_below_its_declared_low_limit():
             "required_protection_filters": [],
             "level_duration_limits": {
                 "max_sweep_duration_s": 4,
-                "max_repeat_count": 3,
-                "minimum_cooldown_s": 1,
             },
         },
         role="full_range",

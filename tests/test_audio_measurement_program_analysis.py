@@ -291,39 +291,6 @@ def test_measure_round_trip_recovers_drift_delay_polarity_trims(polarity_amp, ex
     assert trims["tweeter"] == pytest.approx(0.0, abs=0.3)
 
 
-def test_cooldown_padding_does_not_move_a_one_way_measure_result():
-    """#5342's padding is silence, and the 1-way box is the only shape it moves
-    — the shape whose own repeats the drift fit sits on. Every segment is still
-    located by id, and the driver's response comes back on the same grid.
-    """
-    roles = [RoleBand("full_range", 0, FrequencyBand(150.0, 20000.0))]
-    impulse = _band_impulse(200, 150.0, 6000.0, 1.0)
-    results = []
-    for cooldown_s in (0.0, 2.0):
-        program = build_measure_program(
-            {"full_range": -11.0}, roles, sweep_durations={"full_range": 0.8},
-            cooldown_s=cooldown_s,
-        )
-        capture = _synthesize(program, woofer_ir=impulse, tweeter_ir=impulse, epsilon=80e-6)
-        results.append(analyze_program_capture(program, capture, SR, priors=MeasurementPriors()))
-    unpadded, padded = results
-
-    assert {location.segment_id for location in padded.locations} - {
-        location.segment_id for location in unpadded.locations
-    } == {"cooldown_sweep_w_rep", "cooldown_sweep_w_rep2"}
-    assert padded.drift.epsilon_ppm == pytest.approx(unpadded.drift.epsilon_ppm, abs=2.0)
-    assert padded.glitch_detected is unpadded.glitch_detected
-    assert len(padded.driver_responses) == len(unpadded.driver_responses)
-    for before, after in zip(unpadded.driver_responses, padded.driver_responses):
-        assert after.role == before.role
-        assert np.array_equal(after.freqs_hz, before.freqs_hz)
-        assert len(after.repeat_responses) == len(before.repeat_responses)
-        assert after.validity_floor_hz == before.validity_floor_hz
-        band = np.isfinite(before.magnitude_db) & np.isfinite(after.magnitude_db)
-        assert float(np.max(np.abs(
-            after.magnitude_db[band] - before.magnitude_db[band]))) < 0.5
-
-
 def test_configured_path_conditioning_accepts_both_inclusive_boundaries():
     """Both ±12 dB VALUE boundaries admit: P exactly ON the floor, C/P exactly
     ON the limit.

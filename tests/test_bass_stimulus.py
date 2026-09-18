@@ -11,7 +11,7 @@ import pytest
 from scipy.io import wavfile
 
 from jasper.active_speaker.angle_capture import request_for_program
-from jasper.active_speaker.bass_stimulus import build_bass_program
+from jasper.active_speaker.bass_stimulus import BASS_PASSES, build_bass_program
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
@@ -46,7 +46,6 @@ pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 def bass_fixture():
     topology, safety, targets = _profile_and_targets(
         woofer_floor=20, woofer_upper=4000, woofer_peak=-8, tweeter_peak=-8, max_sweep_duration_s=4,
-        minimum_cooldown_s=2,
     )
     excitation = SessionExcitation(tuple(_roles((20, 4000), (1600, 20000))),
                                    {"woofer": -8, "tweeter": -8}, -20, 1600,
@@ -58,24 +57,6 @@ def _bass(fixture, **kwargs):
     _, safety, targets, excitation = fixture
     return build_bass_program(excitation, program("bass").stimulus,
                               safety_profile=safety, role_targets=targets, **kwargs)
-
-
-def test_an_undeclared_cooldown_refuses_the_bass_stimulus(bass_fixture):
-    """The cooldown comes from the shared resolver, which refuses rather than
-    returning a zero. That refusal has to keep arriving as this builder's own
-    code, not as the resolver's."""
-    from copy import deepcopy
-
-    from jasper.active_speaker.bass_stimulus import BassStimulusRefused
-
-    _topology, safety, targets, excitation = bass_fixture
-    broken = deepcopy(safety)
-    for target in broken["targets"]:
-        target["level_duration_limits"].pop("minimum_cooldown_s")
-    with pytest.raises(BassStimulusRefused) as refused:
-        build_bass_program(excitation, program("bass").stimulus,
-                           safety_profile=broken, role_targets=targets)
-    assert refused.value.code == "bass_stimulus_caps_missing"
 
 
 def _replay(bass, raw, tmp_path, monkeypatch):
@@ -139,33 +120,6 @@ def test_bass_schedule_fits_caps_and_noise_windows(bass_fixture, floor):
         assert quiet.n_samples >= math.ceil(required_pre_guard_s(meta) * bass.sample_rate_hz)
 
 
-def test_bass_program_charges_rear_target_caps():
-    """A rear-declared box builds the bass program, and the rear target's
-    declared repeat and cooldown caps bind the schedule."""
-    topology, safety, targets = _profile_and_targets(
-        rear=True, woofer_floor=20, woofer_upper=4000, woofer_peak=-8, tweeter_peak=-8,
-        max_sweep_duration_s=4, minimum_cooldown_s=2,
-    )
-    assert set(targets) == {"woofer", "tweeter", "woofer:rear"}
-    rear_limits = next(
-        t for t in safety["targets"] if t["target_fingerprint"] == targets["woofer:rear"]
-    )["level_duration_limits"]
-    rear_limits["max_repeat_count"] = 2
-    rear_limits["minimum_cooldown_s"] = 5
-    excitation = SessionExcitation(tuple(_roles((20, 4000), (1600, 20000))),
-                                   {"woofer": -8, "tweeter": -8}, -20, 1600,
-                                   {"woofer": 4, "tweeter": 4}, (20, 20000))
-    bass = _bass((topology, safety, targets, excitation))
-    sweeps = [s for s in bass.segments if s.kind == KIND_SUMMED_SWEEP]
-    # min(builder max 3, front 3, front 3, rear 2) == 2.
-    assert len(sweeps) == 2
-    for previous, sweep in zip(sweeps, sweeps[1:]):
-        gap = sweep.start_sample - previous.start_sample - previous.n_samples
-        quiet = bass.segment(sweep_ambient_id(sweep.segment_id))
-        # rear cooldown (5) > front (2).
-        assert gap >= max(5 * bass.sample_rate_hz, quiet.n_samples)
-
-
 @pytest.mark.parametrize("size", ["axis", "nearfield"])
 def test_bass_capture_program_agrees_across_surfaces(bass_fixture, monkeypatch, size):
     topology, safety, targets, excitation = bass_fixture
@@ -192,11 +146,7 @@ def test_bass_capture_program_agrees_across_surfaces(bass_fixture, monkeypatch, 
     assert plan.entries[0].duration_ms == 20199 + CAPTURE_ENTRY_MARGIN_MS
 
 
-@pytest.mark.parametrize("passes", [2, 3])
-def test_coherent_noise_gain_and_replayed_fundamental(bass_fixture, passes, tmp_path, monkeypatch):
-    _, safety, _, _ = bass_fixture
-    for target in safety["targets"]:
-        target["level_duration_limits"]["max_repeat_count"] = passes
+def test_coherent_noise_gain_and_replayed_fundamental(bass_fixture, tmp_path, monkeypatch):
     bass = _bass(bass_fixture)
     rate = bass.sample_rate_hz
     delay = 800
@@ -215,7 +165,7 @@ def test_coherent_noise_gain_and_replayed_fundamental(bass_fixture, passes, tmp_
     rows = [sweep_band_levels(samples, samples[start - quiet.n_samples:start], rate,
                              segment_sweep_meta(sweep), start, BASS_BANDS_HZ) for samples in (raw, averaged)]
     gain = np.median([b["estimated_snr_db"] - a["estimated_snr_db"] for a, b in zip(*rows)])
-    assert gain == pytest.approx(10 * math.log10(passes), abs=1.5)
+    assert gain == pytest.approx(10 * math.log10(BASS_PASSES), abs=1.5)
     take = _replay(bass, raw, tmp_path, monkeypatch)
     anchor = take.analysis.anchor
     assert (anchor.anchor, anchor.witness) == ("sweep_verify", "sweep_verify_repeat_1")
@@ -223,7 +173,7 @@ def test_coherent_noise_gain_and_replayed_fundamental(bass_fixture, passes, tmp_
     assert (anchor.corroborated, anchor.ambiguous, take.analysis.pilots, take.analysis.pilot_snr_ok) == (True, False, (), None)
     assert assess(take.analysis, phase="verify", program=bass).screens == []
     result = bass_take(take)
-    assert len(result["passes"]) == passes
+    assert len(result["passes"]) == BASS_PASSES
     frequencies = np.array(result["frequency_curve"]["freqs_hz"])
     reference = (frequencies >= 300) & (frequencies <= 1000)
     assert np.median(np.array(result["frequency_curve"]["magnitude_db"])[reference]) == pytest.approx(-20, abs=0.3)
@@ -231,13 +181,11 @@ def test_coherent_noise_gain_and_replayed_fundamental(bass_fixture, passes, tmp_
 
 @pytest.mark.parametrize("fault,refusal", [
     (None, None), ("duration", ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS),
-    ("repeats", ProgramAdmissionRefusal.REPEAT_COUNT_OVER_CAP),
-    ("cooldown", ProgramAdmissionRefusal.COOLDOWN_BELOW_MINIMUM),
 ])
 def test_bass_admission_keeps_jts3_role_caps(bass_fixture, tmp_path, fault, refusal):
     topology, safety, targets = _profile_and_targets(
         woofer_floor=20, woofer_upper=4000, woofer_peak=-8, tweeter_peak=-65,
-        max_sweep_duration_s=4, minimum_cooldown_s=2)
+        max_sweep_duration_s=4)
     declared = {"woofer": 83.3, "tweeter": 108.5}
     excitation = replace(bass_fixture[3], caps_dbfs={r: resolve_driver_excitation_ceilings(
         safety, t, program_admission=True, declared_sensitivities=declared)[1] for r, t in targets.items()})
@@ -248,10 +196,6 @@ def test_bass_admission_keeps_jts3_role_caps(bass_fixture, tmp_path, fault, refu
     programs = [excitation.verify_program(), _bass((topology, safety, targets, excitation))]
     if fault == "duration":
         programs[-1] = replace(excitation, summed_sweep_band_hz=(20, 1100), sweep_duration_limits_s={}).verify_program(sweep_s=5)
-    elif fault in ("repeats", "cooldown"):
-        single = replace(excitation, summed_sweep_band_hz=(20, 1100)).verify_program()
-        programs[-1] = repeat_summed_program(single, passes=4 if fault == "repeats" else 3,
-                                             quiet_samples=48000, cooldown_s=2 if fault == "repeats" else 0)
     for index, stimulus in enumerate(programs):
         wav = tmp_path / f"program-{index}.wav"
         write_program_wav(wav, stimulus)

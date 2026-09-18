@@ -93,18 +93,13 @@ SESSION_VOLUME_DB = -20.0
 CAPS = {"woofer": 0.0, "tweeter": -65.0}
 
 
-def plan_context(cooldown_s: float = 2.0) -> SimpleNamespace:
-    """What ``compose_plan_program`` needs off a conductor context.
-
-    It resolves the declared per-driver cooldown off this profile, so a context
-    without one cannot compose a branch take at all — the blank that let a
-    stage-1 branch round compose unpadded and then be refused at admission.
-    """
+def plan_context() -> SimpleNamespace:
+    """The declared profile ``compose_plan_program`` reads off a conductor
+    context and hands the composer for every spec."""
     targets = {role: f"fp-{role}" for role in CAPS}
     return SimpleNamespace(
         safety_profile={"targets": [
-            {"target_fingerprint": fingerprint, "role": role,
-             "level_duration_limits": {"minimum_cooldown_s": cooldown_s}}
+            {"target_fingerprint": fingerprint, "role": role}
             for role, fingerprint in targets.items()
         ]},
         role_targets=targets,

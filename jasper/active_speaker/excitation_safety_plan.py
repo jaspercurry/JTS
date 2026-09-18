@@ -216,7 +216,6 @@ class PreparedDriverExcitationPlan(FingerprintedRecord):
     requested_plan: RequestedDriverExcitationPlan
     limits: ExcitationLimits
     request: ExcitationRequest
-    minimum_cooldown_s: float
     refusals: tuple[ExcitationSafetyPlanRefusal, ...]
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -231,7 +230,6 @@ class PreparedDriverExcitationPlan(FingerprintedRecord):
         requested_plan: RequestedDriverExcitationPlan,
         limits: ExcitationLimits,
         request: ExcitationRequest,
-        minimum_cooldown_s: float,
         refusals: tuple[ExcitationSafetyPlanRefusal, ...],
     ) -> "PreparedDriverExcitationPlan":
         """Freeze only a fully self-consistent bounded plan."""
@@ -249,11 +247,6 @@ class PreparedDriverExcitationPlan(FingerprintedRecord):
         ):
             raise ExcitationSafetyPlanError(
                 "limits and request must be typed Shared admission inputs"
-            )
-        cooldown = _finite(minimum_cooldown_s, field="minimum_cooldown_s")
-        if cooldown < 0.0:
-            raise ExcitationSafetyPlanError(
-                "minimum_cooldown_s must be non-negative"
             )
         current_targets = [
             target
@@ -310,7 +303,6 @@ class PreparedDriverExcitationPlan(FingerprintedRecord):
         object.__setattr__(self, "requested_plan", requested_plan)
         object.__setattr__(self, "limits", limits)
         object.__setattr__(self, "request", request)
-        object.__setattr__(self, "minimum_cooldown_s", cooldown)
         object.__setattr__(self, "refusals", refusals)
         return self
 
@@ -331,7 +323,6 @@ class PreparedDriverExcitationPlan(FingerprintedRecord):
             "requested_plan": self.requested_plan.to_dict(),
             "limits": self.limits.to_dict(),
             "request": self.request.to_dict(),
-            "minimum_cooldown_s": self.minimum_cooldown_s,
             "refusals": [reason.value for reason in self.refusals],
             "execution_allowed": self.execution_allowed,
             "accepts_protection_evidence": True,
@@ -390,36 +381,6 @@ def effective_sweep_duration_limit_s(
         float(declared),
         driver_sweep_duration_s(str(target.get("role") or "")),
     )
-
-
-def declared_minimum_cooldown_s(
-    safety_profile: Mapping[str, Any], role_targets: Mapping[str, str],
-) -> float:
-    """The silence a builder must leave between two sweeps of the SAME driver.
-
-    The MAX over the take's targets, because one program reaches every target it
-    names and the strictest declaration binds. Every path that composes repeated
-    excitation reads the number here rather than deriving its own.
-
-    Refuses ``MEASUREMENT_INPUTS_INVALID`` for no targets or an undeclared
-    cooldown: a zero stands in for no padding at all, which
-    :func:`~jasper.active_speaker.program_admission.readmit_summed_program_from_wav`
-    then refuses far from the caller that blanked it.
-    """
-    if not role_targets:
-        raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
-        )
-    cooldowns = []
-    for fingerprint in role_targets.values():
-        limits = _target_for_request(safety_profile, fingerprint).get("level_duration_limits")
-        declared = limits.get("minimum_cooldown_s") if isinstance(limits, Mapping) else None
-        if isinstance(declared, bool) or not isinstance(declared, (int, float)):
-            raise ExcitationSafetyPlanError(
-                ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
-            )
-        cooldowns.append(float(declared))
-    return max(cooldowns)
 
 
 def _declared_sensitivity(
@@ -805,14 +766,7 @@ def prepare_driver_excitation_plan(
     target = _target_for_request(safety_profile, requested_plan.target_fingerprint)
     role = str(target.get("role") or "")
     target_id = str(target.get("target_id") or "")
-    profile_limits = target.get("level_duration_limits")
     required_filters = target.get("required_protection_filters")
-    # Already validated by resolve_driver_excitation_ceilings above; this
-    # re-check is mypy narrowing, not new runtime behavior.
-    if not isinstance(profile_limits, Mapping):
-        raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
-        )
     permitted_band, maximum_peak = resolve_driver_excitation_ceilings(
         safety_profile,
         requested_plan.target_fingerprint,
@@ -826,11 +780,6 @@ def prepare_driver_excitation_plan(
     maximum_duration = effective_sweep_duration_limit_s(
         safety_profile, requested_plan.target_fingerprint
     )
-    maximum_repeats = min(
-        int(profile_limits["max_repeat_count"]),
-        ACTIVE_DRIVER_MAX_REPEAT_COUNT,
-    )
-    minimum_cooldown = float(profile_limits["minimum_cooldown_s"])
     requirement_fingerprint = json_fingerprint(
         {
             "schema_version": SCHEMA_VERSION,
@@ -846,7 +795,7 @@ def prepare_driver_excitation_plan(
         permitted_band=permitted_band,
         maximum_effective_peak_dbfs=maximum_peak,
         maximum_duration_s=maximum_duration,
-        maximum_repeat_count=maximum_repeats,
+        maximum_repeat_count=ACTIVE_DRIVER_MAX_REPEAT_COUNT,
         target_fingerprint=requested_plan.target_fingerprint,
         protection_requirement_fingerprint=requirement_fingerprint,
         excitation_plan_fingerprint=plan_fingerprint,
@@ -864,7 +813,7 @@ def prepare_driver_excitation_plan(
         not requested_plan.band.is_subset_of(permitted_band)
         or requested_plan.effective_peak_dbfs > maximum_peak
         or requested_plan.duration_s > maximum_duration
-        or requested_plan.repeat_count > maximum_repeats
+        or requested_plan.repeat_count > ACTIVE_DRIVER_MAX_REPEAT_COUNT
     )
     refusals = (
         (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LIMITS,)
@@ -876,6 +825,5 @@ def prepare_driver_excitation_plan(
         requested_plan=requested_plan,
         limits=limits,
         request=request,
-        minimum_cooldown_s=minimum_cooldown,
         refusals=refusals,
     )

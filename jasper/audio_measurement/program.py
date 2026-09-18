@@ -456,32 +456,6 @@ def _sweep_meta(
     )
 
 
-def cooldown_samples(cooldown_s: float, sample_rate: int) -> int:
-    """A declared cooldown as samples, rounded UP the way the door's own
-    comparison does (``program_admission``): a rounded-down pad lands one
-    sample short of the gap that admission then refuses."""
-    return math.ceil(cooldown_s * sample_rate)
-
-
-def _cooldown_pad(
-    segments: list[ProgramSegment], cursor: int, excited_end: Mapping[int, int], *,
-    name: str, channels: Sequence[int], cooldown_n: int,
-) -> int:
-    """Hold the cursor until every channel this slot excites is ``cooldown_n``
-    past its own last excitation, appending the wait as silence.
-
-    ``excited_end`` maps a program channel to the end sample of its last
-    excitation. One rule for every builder that repeats a driver, because
-    ``program_admission`` grades one end-to-start gap PER TARGET.
-    """
-    ready = max((excited_end[channel] + cooldown_n for channel in channels
-                 if channel in excited_end), default=cursor)
-    if ready <= cursor:
-        return cursor
-    segments.append(_silence(f"cooldown_{name}", cursor, ready - cursor))
-    return ready
-
-
 def _silence(segment_id: str, start: int, n_samples: int) -> ProgramSegment:
     return ProgramSegment(
         segment_id=segment_id,
@@ -818,7 +792,6 @@ def build_measure_program(
     pilot_duration_s: float = DEFAULT_PILOT_DURATION_S,
     pilot_gap_s: float = DEFAULT_PILOT_GAP_S,
     courtesy_prelude: bool = False,
-    cooldown_s: float = 0.0,
 ) -> ExcitationProgram:
     """Compose the MEASURE program (design §5.2/§5.4): ``repeat_count``
     interleaved sweep cycles, one per declared driver. ``roles_bands[0]`` is
@@ -835,12 +808,6 @@ def build_measure_program(
     ``sweep_t``; later ones follow :func:`_occurrence_suffix`.
     ``leading_pilot_gains_db`` and ``courtesy_prelude`` are opt-ins (module
     docstring), byte-identical to the pre-v2 shape when omitted.
-
-    ``cooldown_s`` is the declared per-driver cooldown
-    (:func:`~jasper.active_speaker.excitation_safety_plan.declared_minimum_cooldown_s`),
-    spent through :func:`_cooldown_pad` as the branch take spends it. A 2-way's
-    interleaved cycles already exceed any ordinary declaration, so nothing
-    moves; zero composes the unspaced program verbatim.
     """
     roles = _validate_roles(roles_bands)
     if not 1 <= len(roles) <= 2:
@@ -969,17 +936,11 @@ def build_measure_program(
         )
         return seg
 
-    cooldown_n = cooldown_samples(cooldown_s, PROGRAM_SAMPLE_RATE_HZ)
-    excited_end: dict[int, int] = {}
-
     for cycle in range(repeat_count):
         suffix = _occurrence_suffix(cycle)
-        cursor = _cooldown_pad(segments, cursor, excited_end, name=f"sweep_w{suffix}",
-                               channels=(woofer.channel,), cooldown_n=cooldown_n)
         sweep_w = _sweep(f"sweep_w{suffix}", woofer, w_f1, w_f2, durations[woofer.role])
         segments.append(sweep_w)
         cursor += sweep_w.n_samples
-        excited_end[woofer.channel] = cursor
         if tweeter is None or t_band is None:
             # One declared driver: only silence between cycles is the MESM settle.
             if cycle < repeat_count - 1:
@@ -989,14 +950,11 @@ def build_measure_program(
         segments.append(_silence(f"gap_w_t{suffix}", cursor, gap_w_n))
         cursor += gap_w_n
 
-        cursor = _cooldown_pad(segments, cursor, excited_end, name=f"sweep_t{suffix}",
-                               channels=(tweeter.channel,), cooldown_n=cooldown_n)
         sweep_t = _sweep(
             f"sweep_t{suffix}", tweeter, t_band[0], t_band[1], durations[tweeter.role]
         )
         segments.append(sweep_t)
         cursor += sweep_t.n_samples
-        excited_end[tweeter.channel] = cursor
         if cycle < repeat_count - 1:
             segments.append(_silence(f"gap_t_w{suffix}", cursor, gap_t_n))
             cursor += gap_t_n
