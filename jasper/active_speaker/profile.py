@@ -22,7 +22,7 @@ from jasper.camilla_emit import (
     BASS_MANAGEMENT_CORNER_HZ_LO,
     BASS_MANAGEMENT_CROSSOVER_ORDER,
 )
-from jasper.json_fields import JsonFields
+from jasper.json_fields import CodedFieldError, JsonFields
 from jasper.output_topology import OUTPUT_VARIANT_SCHEMA_VERSION, SUPPORTED_OUTPUT_VARIANTS
 
 SCHEMA_VERSION = 1
@@ -93,7 +93,7 @@ BASELINE_STATUSES = {
     "commissioned",
     "rejected",
 }
-class ActiveSpeakerConfigError(ValueError):
+class ActiveSpeakerConfigError(CodedFieldError):
     """Raised when an active-speaker preset or baseline is unsafe/invalid."""
 
 

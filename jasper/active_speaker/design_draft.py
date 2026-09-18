@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
+from jasper.json_fields import CodedFieldError
 from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.output_topology import OutputTopology
 from ._common import (
@@ -28,14 +29,12 @@ from ._common import (
     LEGACY_DROPPED_DRIVER_FIELDS,
     MANUAL_CANDIDATE_FIELDS,
     DRIVER_RESEARCH_FIELDS,
-    CodedFieldError,
     DriverFields,
     issue as _issue,
 )
-from .driver_pad import DriverPadError, effective_sensitivity_db, normalise_pad
+from .driver_pad import effective_sensitivity_db, normalise_pad
 from .driver_safety import (
     DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
-    DriverSafetyProfileError,
     _normalise_field_provenance,
     _reject_bool_tree,
     compute_driver_safety_profile,
@@ -308,28 +307,25 @@ def _normalise_driver_common(
     }
     if include_sources:
         driver["sources"] = _string_list(raw.get("sources"), f"{prefix}.sources")
-    try:
-        if include_sources and not include_research_safety_evidence:
-            _normalise_field_provenance(
-                raw.get("field_provenance"), f"{prefix}.field_provenance",
-            )
-        driver.update(
-            normalise_driver_safety_fields(
-                raw,
-                prefix,
-                include_research_evidence=include_research_safety_evidence,
-            )
+    if include_sources and not include_research_safety_evidence:
+        _normalise_field_provenance(
+            raw.get("field_provenance"), f"{prefix}.field_provenance",
         )
-        # Pad is operator-owned input, excluded from research and safety limits.
-        # declared_effective_driver_sensitivities() folds it into sensitivity;
-        # level_trim.declared_driver_gains() owns the resulting trims.
-        driver["pad"] = normalise_pad(
-            raw.get("pad"),
-            nominal_impedance_ohm=nominal_impedance_ohm,
-            field_name=f"{prefix}.pad",
+    driver.update(
+        normalise_driver_safety_fields(
+            raw,
+            prefix,
+            include_research_evidence=include_research_safety_evidence,
         )
-    except (DriverSafetyProfileError, DriverPadError) as exc:
-        raise ActiveSpeakerDesignDraftError(str(exc), code=getattr(exc, "code", None)) from exc
+    )
+    # Pad is operator-owned input, excluded from research and safety limits.
+    # declared_effective_driver_sensitivities() folds it into sensitivity;
+    # level_trim.declared_driver_gains() owns the resulting trims.
+    driver["pad"] = normalise_pad(
+        raw.get("pad"),
+        nominal_impedance_ohm=nominal_impedance_ohm,
+        field_name=f"{prefix}.pad",
+    )
     return {key: value for key, value in driver.items() if value not in (None, [])}
 
 
@@ -369,10 +365,7 @@ def _normalise_manual_driver(raw: Any) -> dict[str, Any]:
     )
     if target_id:
         driver["target_id"] = target_id
-    try:
-        installation = normalise_installation(raw.get("installation"))
-    except ValueError as exc:
-        raise ActiveSpeakerDesignDraftError(str(exc)) from exc
+    installation = normalise_installation(raw.get("installation"))
     if installation:
         driver["installation"] = installation
     return driver
@@ -524,10 +517,7 @@ def normalise_driver_research(
             f"driver_research.crossover_candidates[{index}]", MANUAL_CANDIDATE_FIELDS,
         )
         if research_schema_version == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:
-            try:
-                _reject_bool_tree(item, f"driver_research.crossover_candidates[{index}]")
-            except DriverSafetyProfileError as exc:
-                raise ActiveSpeakerDesignDraftError(str(exc), code=getattr(exc, "code", None)) from exc
+            _reject_bool_tree(item, f"driver_research.crossover_candidates[{index}]")
         candidates.append(_normalise_candidate(item))
     result: dict[str, Any] = {
         "artifact_schema_version": research_schema_version,
@@ -953,18 +943,12 @@ def build_design_draft(
                 + ", ".join(unknown_target_ids)
             )
     manual = normalise_manual_settings(manual_settings)
-    try:
-        validate_manual_target_bindings(topology, manual)
-    except DriverSafetyProfileError as exc:
-        raise ActiveSpeakerDesignDraftError(str(exc), code=getattr(exc, "code", None)) from exc
+    validate_manual_target_bindings(topology, manual)
     research = normalise_driver_research(driver_research)
     if research and research["artifact_schema_version"] == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:
-        try:
-            research = finalise_research_result(
-                research, build_driver_research_context(topology, inputs),
-            )
-        except DriverSafetyProfileError as exc:
-            raise ActiveSpeakerDesignDraftError(str(exc), code=getattr(exc, "code", None)) from exc
+        research = finalise_research_result(
+            research, build_driver_research_context(topology, inputs),
+        )
     evaluation = topology.evaluation()
     summary = _summary(topology, research, manual)
     issues: list[dict[str, str]] = []

@@ -75,21 +75,6 @@ MANUAL_CANDIDATE_FIELDS = {
 _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 
-class CodedFieldError(ValueError):
-    """A field refusal whose ``code`` a caller can branch on.
-
-    A subclass sets the class attribute as its default; ``None`` means neither
-    the subclass nor the raise site named a code.
-    """
-
-    code: str | None = None
-
-    def __init__(self, message: str, *, code: str | None = None) -> None:
-        super().__init__(message)
-        if code is not None:
-            self.code = code
-
-
 def software_guard_needed(groups: Sequence[SpeakerGroup]) -> bool:
     return any(
         channel.role == "tweeter"
@@ -153,34 +138,32 @@ def require_sha256_hex(
 
 
 class DriverFields(JsonFields):
-    error_type: type[CodedFieldError]
-
     def _text(
         self, raw: Any, field_name: str, *, required: bool = False, max_chars: int = 240,
     ) -> str | None:
         if raw is None or (isinstance(raw, str) and not raw.strip()):
             if required:
-                raise self.error_type(f"{field_name} is required")
+                raise self.error_type(f"{field_name} is required", code="field_required")
             return None
         if not isinstance(raw, str):
-            raise self.error_type(f"{field_name} must be a string")
+            raise self.error_type(f"{field_name} must be a string", code="field_not_string")
         return super().text(raw, field_name, max_length=max_chars)
 
     def _finite_float(self, raw: Any, field_name: str) -> float | None:
         if isinstance(raw, bool):
-            raise self.error_type(f"{field_name} must be numeric")
+            raise self.error_type(f"{field_name} must be numeric", code="field_not_numeric")
         return self.optional_number(raw, field_name)
 
     def _positive_float(self, raw: Any, field_name: str) -> float | None:
         out = self._finite_float(raw, field_name)
         if out is not None and out <= 0:
-            raise self.error_type(f"{field_name} must be > 0")
+            raise self.error_type(f"{field_name} must be > 0", code="field_not_positive")
         return out
 
     def _sequence(self, raw: Any, field_name: str, *, limit: int | None = None) -> list[Any]:
         out = [] if raw is None else super().sequence(raw, field_name)
         if limit is not None and len(out) > limit:
-            raise self.error_type(f"{field_name} must contain <= {limit} items")
+            raise self.error_type(f"{field_name} must contain <= {limit} items", code="field_too_many_items")
         return out
 
     def _reject_unknown_keys(

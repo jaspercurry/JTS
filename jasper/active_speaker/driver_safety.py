@@ -11,10 +11,10 @@ import math
 from functools import partial
 from typing import Any, Mapping, Sequence
 
+from jasper.json_fields import CodedFieldError
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
 from ._common import (
-    CodedFieldError,
     DriverFields,
     MANUAL_CANDIDATE_FIELDS,
     MANUAL_DRIVER_FIELDS,
@@ -235,7 +235,7 @@ def _bounded_int(
 
 def _reject_bool_tree(value: Any, field_name: str) -> None:
     if isinstance(value, bool):
-        raise DriverSafetyProfileError(f"{field_name} must not be boolean")
+        raise DriverSafetyProfileError(f"{field_name} must not be boolean", code="field_boolean_forbidden")
     if isinstance(value, Mapping):
         for key, item in value.items():
             _reject_bool_tree(item, f"{field_name}.{key}")
@@ -632,7 +632,7 @@ def validate_research_result_binding(
         target_id = driver.get("target_id")
         if target_id not in expected:
             raise DriverSafetyProfileError(
-                f"driver_research names unknown target_id {target_id!r}"
+                f"driver_research names unknown target_id {target_id!r}", code="research_target_unknown"
             )
         models = [
             " ".join(model.split()).casefold()
@@ -641,13 +641,13 @@ def validate_research_result_binding(
         if models[0] != models[1]:
             raise DriverSafetyProfileError(
                 f"driver_research target {target_id!r} has model {driver['model']!r}; "
-                f"the current model is {expected[target_id]!r}"
+                f"the current model is {expected[target_id]!r}", code="research_model_mismatch"
             )
         seen.add(target_id)
     missing = expected.keys() - seen
     if missing:
         raise DriverSafetyProfileError(
-            "driver_research is missing target_ids: " + ", ".join(sorted(missing))
+            "driver_research is missing target_ids: " + ", ".join(sorted(missing)), code="research_targets_missing"
         )
 
 

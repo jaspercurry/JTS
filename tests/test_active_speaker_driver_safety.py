@@ -12,9 +12,10 @@ import re
 
 import pytest
 
+from jasper.json_fields import CodedFieldError
 from jasper.active_speaker.design_draft import (
-    ActiveSpeakerDesignDraftError,
     build_design_draft,
+    declared_effective_driver_sensitivities,
     design_draft_view,
     normalise_driver_research,
     load_design_draft,
@@ -761,18 +762,18 @@ def test_missing_floor_and_duration_are_computed_issues() -> None:
 @pytest.mark.parametrize("patch,code", [
     ({"artifact_schema_version": True}, "invalid_design_draft"),
     ({"kind": "other"}, "invalid_design_draft"),
-    ({"drivers": [False]}, "invalid_design_draft"),
-    ({"drivers": {}}, "invalid_design_draft"),
-    ({"drivers": [{"role": "woofer", "model": "W", "hard_excitation_band_hz": [True, 20000]}]}, "invalid_design_draft"),
-    ({"crossover_candidates": [False]}, "invalid_design_draft"),
-    ({"crossover_candidates": {}}, "invalid_design_draft"),
-    ({"crossover_candidates": [{"between_roles": ["woofer", "tweeter"]}] * 9}, "invalid_design_draft"),
-    ({"crossover_candidates": [{"between_roles": ["woofer", "tweeter"], "source": {"value": True}}]}, "invalid_design_draft"),
+    ({"drivers": [False]}, "field_not_object"),
+    ({"drivers": {}}, "field_not_list"),
+    ({"drivers": [{"role": "woofer", "model": "W", "hard_excitation_band_hz": [True, 20000]}]}, "field_not_numeric"),
+    ({"crossover_candidates": [False]}, "field_not_object"),
+    ({"crossover_candidates": {}}, "field_not_list"),
+    ({"crossover_candidates": [{"between_roles": ["woofer", "tweeter"]}] * 9}, "field_too_many_items"),
+    ({"crossover_candidates": [{"between_roles": ["woofer", "tweeter"], "source": {"value": True}}]}, "field_boolean_forbidden"),
     ({"typo": True}, "unknown_driver_fields"),
 ])
 def test_v2_result_rejects_invalid_shapes(patch, code):
     request = build_driver_research_context(mono_output_topology(card_id=None), _operator_inputs())
-    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
+    with pytest.raises(CodedFieldError) as caught:
         normalise_driver_research(dict(_research_result(request), **patch))
     assert caught.value.code == code
 
@@ -1081,19 +1082,20 @@ def test_stereo_research_request_uses_exact_target_models() -> None:
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
-    (("target_id", "unknown:tweeter"), ("model", "Wrong T1")),
+    ("field", "value", "code"),
+    (("target_id", "unknown:tweeter", "research_target_unknown"), ("model", "Wrong T1", "research_model_mismatch")),
 )
-def test_v2_research_refuses_unknown_target_or_model_mismatch(field: str, value: str) -> None:
+def test_v2_research_refuses_unknown_target_or_model_mismatch(field: str, value: str, code: str) -> None:
     topology = mono_output_topology(card_id=None)
     inputs = {**_operator_inputs(), "tweeter": "  EXAMPLE   T1  "}
     research = _research_result(build_driver_research_context(topology, inputs))
     research["drivers"][1][field] = value
-    with pytest.raises(ActiveSpeakerDesignDraftError):
+    with pytest.raises(DriverSafetyProfileError) as caught:
         build_design_draft(
             topology, driver_research=research, manual_settings=_manual_settings(),
             operator_inputs=inputs,
         )
+    assert caught.value.code == code
 
 
 def test_v2_research_accepts_model_case_and_spacing() -> None:
@@ -1113,8 +1115,9 @@ def test_v2_research_refuses_a_missing_target() -> None:
     inputs = {**_operator_inputs(), "mid": "Example M3"}
     research = _research_result(build_driver_research_context(topology, inputs))
     research["drivers"] = [driver for driver in research["drivers"] if driver["role"] != "mid"]
-    with pytest.raises(ActiveSpeakerDesignDraftError):
+    with pytest.raises(DriverSafetyProfileError) as caught:
         build_design_draft(topology, driver_research=research, operator_inputs=inputs)
+    assert caught.value.code == "research_targets_missing"
 
 
 def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
@@ -1224,13 +1227,12 @@ def test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typis
         if driver["role"] == "tweeter"
     )
     tweeter_reply["recommended_highpass_hz"] = 700
-    with pytest.raises(ActiveSpeakerDesignDraftError) as refused:
+    with pytest.raises(DriverSafetyProfileError) as refused:
         build_design_draft(
             topology,
             driver_research=implausible_reply,
             operator_inputs=_operator_inputs(),
         )
-    # The intake code survives the safety-profile -> design-draft wrap.
     assert refused.value.code == "research_low_limit_implausible"
 
     # A published figure INSIDE the band passes the intake screen untouched,
@@ -1822,8 +1824,9 @@ def test_provenance_source_is_additive_and_old_entries_are_byte_identical() -> N
             "source": "x" * (MAX_PROVENANCE_SOURCE_CHARS + 1),
         }
     }
-    with pytest.raises(DriverSafetyProfileError):
+    with pytest.raises(DriverSafetyProfileError) as caught:
         _normalise_field_provenance(too_long, "driver.field_provenance")
+    assert caught.value.code == "field_too_long"
 
     # The citation slot must hold any URL the `sources` list holds. They are
     # separate budgets, but a datasheet URL is a legal citation, so a cap that
@@ -2267,7 +2270,7 @@ def test_cx120_honest_null_reply_is_refused_loudly_never_dropped() -> None:
 
     topology, manual, request = _cx120_setup()
 
-    with pytest.raises(ActiveSpeakerDesignDraftError) as excinfo:
+    with pytest.raises(DriverSafetyProfileError) as excinfo:
         build_design_draft(
             topology,
             driver_research=_cx120_research(request, estimating=False),
@@ -2308,10 +2311,6 @@ def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:
 
 
 def _cx120_profile(*, tweeter_peak_dbfs: float = -65) -> tuple[dict, dict]:
-    from jasper.active_speaker.design_draft import (
-        declared_effective_driver_sensitivities,
-    )
-
     topology = _topology_with_tweeter_style("dome_tweeter")
     manual = _cx120_manual_settings(tweeter_peak_dbfs=tweeter_peak_dbfs)
     draft = build_design_draft(
