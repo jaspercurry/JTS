@@ -38,6 +38,7 @@ class SeatTake:
     magnitude_db: np.ndarray
     gating_applied: bool | None
     band_hz: tuple[float, float]
+    late_energy: Mapping[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,7 @@ def _take(row: Measurement, record: Mapping[str, Any]) -> SeatTake | None:
     return SeatTake(
         str(record.get("take_id") or row.path), doc_pose_key(record), freqs, magnitude,
         gating if isinstance(gating, bool) else None, (lo, hi),
+        late_energy=summed.get("late_energy") if summed else None,
     )
 
 def is_purpose_take(row: Measurement, record: Mapping[str, Any], purpose: str) -> bool:

@@ -473,8 +473,8 @@ def _rear() -> dict[str, Any]:
             "chain_gain_db": [rear_calibration.MIN_CHAIN_GAIN_DB, 0.0],
             "chain_gain_rule": (
                 "front, rear.bass and rear.cancellation gain_db is an attenuation between "
-                f"{rear_calibration.MIN_CHAIN_GAIN_DB:g} and 0 dB: a rear chain only attenuates; "
-                "write a rear weight above 1 as front attenuation plus a band boost"
+                f"{rear_calibration.MIN_CHAIN_GAIN_DB:g} and 0 dB: a rear weight above 1 is the same "
+                "filter boost on both rear branches (ADR-0327), never front attenuation"
             ),
             "resonant_q_max": rear_calibration.MAX_RESONANT_Q,
             "allpass_q_max": rear_calibration.MAX_ALLPASS_Q,

@@ -206,75 +206,112 @@ inverted, delayed copy that lowers what the box sends to the wall. Below
 that band it adds in-phase bass and the wall is part of the speaker. The
 `rear_calibration` section sets both (fields:
 `rear-calibration-tuning-fields.md`; decisions: ADR-0318, ADR-0322,
-ADR-0324).
+ADR-0324, ADR-0325, ADR-0326, ADR-0327).
 
-The goal is a repeatable, measured improvement at the measured positions,
-with its costs stated. It is not a proof of a polar pattern. Nothing in
-this loop measures rear rejection; do not claim it.
+The goal is a real cardioid at the listening positions: less late
+(reflected) energy and a filled wall trough, with the band above the rear
+stage — 350 Hz to the tweeter — unchanged. A front-side sweep cannot prove
+a polar pattern, so do not claim rejection. It can tell a cardioid from
+in-phase fill: a cardioid removes late energy in 90–250 Hz, fill adds it,
+and the two look alike on a smoothed magnitude curve.
 
-Start from an incumbent: the applied section, an imported simulation fit,
-or a clearly labelled provisional seed. Geometry and a simulation are
-inputs. They locate the region to watch. They are not settings, and a
-measured win may disagree with either. The raw `delay_ms` of a branch is
-not its acoustic delay: the branch's own filters add delay. Judge a change
-by its measured effect.
+The loop of record is one pair take, previews, one trial.
 
-Compare in one trial, at the same positions and the same session level:
-the incumbent, the same section with `rear_muted: true` (the reference for
-what the rear contributes), and one to three variants. A variant changes
-ONE control family: rear gain, rear relative delay, or one band edge.
-Carry every other field verbatim, including the `front` chain and the
-filter structure. Removing the front chain is its own experiment.
+1. Pair take first. `jasper-round run --program rear --poses rear/pair
+   --wait` plays, at each bearing, the front woofer alone, the rear woofer
+   alone and both, on one clock, with the rear stage cleared. Read its
+   `packet["rear"][].pair.positions[*]`: `superposition_residual_db` (the
+   trust number — the position predicts well when it is small),
+   `arrival_gap` (the measured rear-minus-front gap and its confidence) and
+   `rear_polarity`. This round is the model; everything after it is
+   computation until the trial.
 
-`jasper-crossover-prescriber contract --section rear` prints the schema
-and bounds. Filters on all three chains may boost up to +6 dB, charged to
-program headroom. Flat chain gain stays a cut; write a rear weight above 1
-as front attenuation plus a band boost. An absent `rear_calibration` key
-inherits; `null` clears the stage and the rear output is muted.
+2. Preview before you play. Write a `jts_prescription` with one
+   `rear_calibration` section and run `jasper-crossover-prescriber judge
+   --preview DOC --round <pair round dir>` — no sound, no bank. It predicts
+   the document by superposition, F·H_front + R·(H_bass + H_cancel), at
+   every position. Read `positions[*]`: `trough_fill_db` (how much the wall
+   trough rises, read at the muted curve's deepest dip inside
+   `figures_band_hz`; `figures.muted.dip.hz` names that frequency. When
+   the band's upper edge wins over the wall trough — 335 Hz under a 350 Hz
+   low-pass, not the 130 Hz trough — read `curve.change_db` at the
+   trough's frequency instead);
+   `bands[]` (`change_db` is the level the listener gets against this
+   document with its rear muted, after the headroom charge;
+   `front_chain_db` is the front chain's electrical level — the only thing
+   the document can do above the pair's coverage);
+   `late_energy.early_late_change_db` (positive: less late energy, a
+   cardioid; negative: in-phase fill; the muted document reads 0) and
+   `arrival_shift_ms` (a cardioid pulls the energy centroid earlier);
+   `gradient_residual.db` (how far the rear/front chain sits from an ideal
+   gradient at that position's measured gap — the documents that measured
+   as cardioids sat below about −6 dB at every bearing, the ones that
+   behaved like fill sat at −2 to −4); `figures.muted` and
+   `figures.predicted` (the packet's own `dip`, `ripple_db`, `handover`,
+   `low_bass`, `band_level_db`); and `stage.headroom_charge_db` (the
+   loudness the boost costs — it lands as broadband attenuation, so it is
+   already inside `change_db`).
 
-Read the wall dip, the ripple beside it, the hand-over between the bass
-branch and the cancellation branch, the low bass, and the absolute level.
-A shallower dip with a new hole at the hand-over, or with less output, is
-a trade, not a win. Do not average a bad position away. A difference
-smaller than repeat spread is not a result; without repeats, say so.
+3. Vary, then pick. Add `--vary PATH[,PATH]=v1,v2,... --out-dir DIR` to
+   preview a grid around one seed — the rear-weight Peaking gain on both
+   rear branches (coupled paths), the cancellation `delay_ms`, the
+   cancellation low-pass corner. Read the table; pick two or three;
+   `compose` each with `--base saved`.
 
-Read each `packet["rear"]` entry's `comparison` first: `band_hz` and
-`band_source` (the one band every candidate is judged on), `reference` (whose
-curve sets the zero), `level`, and `repeat_spread` (`no_repeats` means no
-difference can be called real). Then each `candidates[]` entry: `role`,
-`change_family` and `changed` (which one control moved), `headroom_change_db`
-(its cost at the same fader), the per-position figures — `dip` (depth below the
-reference, and width), `ripple_db`, `handover.hole_db`, `low_bass.level_db` and
-`change_db`, `band_level_db` (absolute: a quieter candidate is not an
-improvement) — and `across_positions.worst_regression` (which position, which
-figure, by how much, and whether it exceeds the repeat spread). `dip_shift`
-names a dip that is new or moved. Compare candidates at the same positions
-only. `jasper-round-views rear <round>` prints the same entry.
+4. One trial, judged within the round. `jasper-round trial <fp>
+   --candidates base,<fp>,<fp>,<muted fp> --wait` plays them with the same
+   section carrying `rear_muted: true` as the reference. Read
+   `packet["rear"][].candidates[]`: the per-position `dip`, `ripple_db`,
+   `handover.hole_db`, `low_bass`, `band_level_db`; the measured
+   `late_energy` (candidate minus rear-muted at that position:
+   `early_late_change_db`, `band_energy_change_db`, `arrival_shift_ms`);
+   `upper_bands` (350–700, 700–1500, 1500–5000 Hz against rear-muted); then
+   `headroom_change_db` and `across_positions`. Compare within one round
+   only: the muted trough's depth drifts by up to 5 dB between rounds at the
+   same bearing while its frequency holds, and only the repeated bearing
+   resolves tenths.
 
-First tune, from the pair take or from an imported fit: give the bass branch a
-Linkwitz-Riley low-pass and the cancellation branch a Linkwitz-Riley high-pass
-at ONE shared corner near 100 Hz; complementary slopes leave no hole at the
+What held on jts3, and what the preview should show before a document is
+worth playing:
+
+- Bass (30–100 Hz) at or above rear-muted plus the in-phase lift; do not
+  spend it.
+- 350 Hz–5 kHz within about 0.4 dB of rear-muted. The front chain is the
+  whole front-woofer path, never a level lever: a rear weight above 1 is
+  the same Peaking boost on both rear branches (ADR-0327); front
+  attenuation measured as a 2–8 dB hole from 350 Hz up.
+- 200–300 Hz within ±1 dB; leakage or over-cancellation shows here first.
+- `gradient_residual.db` below about −6 dB at every bearing; at −2 to −4
+  the document is fill with a delay.
+- The dip ruler is relative. `dip.depth_db` against the one-octave trend
+  read about 2 dB kinder than the raw curve, but differences between
+  candidates held. Compare candidates; never read a depth as absolute.
+- The trough that did not close from the front (about 6 dB remained at
+  126–134 Hz) is the room — a 10 ft cube puts its 112 and 169 Hz modes on
+  either side of it — or needs the wall-ward null measured behind the
+  cabinet.
+
+First tune, from the pair take: give the bass branch a Linkwitz-Riley
+low-pass and the cancellation branch a Linkwitz-Riley high-pass at ONE
+shared corner near 80–100 Hz; complementary slopes leave no hole at the
 hand-over. Put the cancellation low-pass below c / (4·D), where D is the
-measured front-to-rear arrival gap times the speed of sound. Invert the
-cancellation branch and anchor its delay on that arrival gap. Start its gain at
-0 dB; if the rear reads louder than the front at the low end of the band, shape
-it with a low shelf rather than a flat cut. A delay-and-invert pair loses
-forward level below c / (4·D); a filter boost of up to +6 dB on the front chain
-and both rear branches in that band pays it back, and the stage's realised peak
-is charged to program headroom (ADR-0326). Keep the bass branch in phase: the
-bass below the hand-over is two woofers plus the wall, and this program does not
-spend it. A corner of 70–80 Hz is a variant, not a default: read
-`low_bass.level_db`, `band_level_db` and `headroom_change_db` before you keep
-it.
+measured arrival gap times the speed of sound. Invert the cancellation
+branch and anchor its delay on that gap. Start its gain at 0 dB; if the
+rear reads louder than the front at the low end of the band, shape it with
+a low shelf rather than a flat cut. A delay-and-invert pair loses forward
+level below c / (4·D); the same Peaking boost on BOTH rear branches in that
+band (up to +6 dB, ADR-0326) pays it back, and the stage's realised peak is
+charged to program headroom. Keep the bass branch in phase. Carry a filter
+that flattens the front woofer itself on all three chains, so the rear/front
+ratio stays the one you fitted.
 
-A `rear/pair_behind` round records the same pair with the microphone behind the
-cabinet, halfway to the wall at woofer height. Its `pair` block behind the
-cabinet (pose kind `behind`) is what a rejection objective needs: the rear null
-for any document is |F·H_front + R·(H_bass + H_cancel)| at that position,
-predicted from the banked F and R with no sound, while the front positions hold
-the smoothness constraint. Read `superposition_residual_db` behind the cabinet
-first; a large value there means the prediction cannot be trusted at that
-position.
+A `rear/pair_behind` round records the same pair with the microphone behind
+the cabinet, halfway to the wall at woofer height. Its `behind` position is
+a peer row in the pair block and in every preview: there `change_db` in the
+cancellation band is the predicted wall-ward null, and a real cardioid
+drives it negative while the front positions hold their figures. Read
+`superposition_residual_db` behind the cabinet first; a large value there
+means the prediction cannot be trusted at that position.
 
 The stack plays as composed: room and bass stay in, the same in every
 candidate. After a rear change is adopted, check the room and bass
@@ -423,7 +460,7 @@ Rear
 | freq_hz_upper_bound_rule | "every filter's freq must stay strictly below the document's own sample_rate_hz / 2 (Nyquist); freq is otherwise required to be > 0" | rule | contract.rear.bounds.freq_hz_upper_bound_rule |
 | max_filters_per_chain | 16 | count | contract.rear.bounds.max_filters_per_chain |
 | chain_gain_db | [-150.0,0.0] | dB | contract.rear.bounds.chain_gain_db |
-| chain_gain_rule | "front, rear.bass and rear.cancellation gain_db is an attenuation between -150 and 0 dB: a rear chain only attenuates; write a rear weight above 1 as front attenuation plus a band boost" | rule | contract.rear.bounds.chain_gain_rule |
+| chain_gain_rule | "front, rear.bass and rear.cancellation gain_db is an attenuation between -150 and 0 dB: a rear weight above 1 is the same filter boost on both rear branches (ADR-0327), never front attenuation" | rule | contract.rear.bounds.chain_gain_rule |
 | resonant_Q_max | 1.0 | Q | contract.rear.bounds.resonant_q_max |
 | allpass_Q_max | 10.0 | Q | contract.rear.bounds.allpass_q_max |
 | combo_order_max | 8 | count | contract.rear.bounds.combo_order_max |

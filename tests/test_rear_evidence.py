@@ -527,3 +527,38 @@ def test_band_limited_impulse_preserves_the_in_band_transfer():
     impulse = rear_evidence.band_limited_impulse(freqs, transfer, band)
 
     assert np.fft.rfft(impulse) == pytest.approx(transfer, abs=1e-12)
+
+
+@pytest.mark.parametrize("candidate_count,reference_count", [(3, 3), (0, 3), (3, 0), (0, 0)])
+def test_late_energy_change_uses_each_sides_median(candidate_count, reference_count):
+    candidate = [{"early_late_db": early, "energy_db": energy, "centroid_ms": centroid}
+                 for early, energy, centroid in [(5, -10, 3), (7, -40, 4), (90, -12, 20)]]
+    reference = [{"early_late_db": early, "energy_db": energy, "centroid_ms": centroid}
+                 for early, energy, centroid in [(1, -14, 5), (4, -50, 6), (30, -16, 40)]]
+
+    row = rear_evidence.late_energy_change(candidate[:candidate_count], reference[:reference_count])
+
+    assert row == {
+        "early_late_change_db": 3.0 if candidate_count and reference_count else None,
+        "band_energy_change_db": 4.0 if candidate_count and reference_count else None,
+        "arrival_shift_ms": -2.0 if candidate_count and reference_count else None,
+        "repeats": [candidate_count, reference_count],
+        "reason": "" if candidate_count and reference_count else rear_evidence.REASON_NO_COMPARISON,
+    }
+
+
+@pytest.mark.parametrize("ceiling,bands", [
+    (5000, [[350.0, 700.0], [700.0, 1500.0], [1500.0, 5000.0]]),
+    (1000, [[350.0, 700.0]]), (350, []),
+])
+def test_upper_band_levels_compare_only_wholly_covered_bands(ceiling, bands):
+    freqs = np.geomspace(20, 5000, 600)
+
+    rows = rear_evidence.upper_band_levels(
+        freqs, np.full_like(freqs, 2.0), reference_db=np.zeros_like(freqs), coverage_hz=(20, ceiling),
+    )
+
+    assert [row["band_hz"] for row in rows] == bands
+    for row in rows:
+        assert {key: row[key] for key in ("level_db", "reference_db", "change_db")} == pytest.approx(
+            {"level_db": 2.0, "reference_db": 0.0, "change_db": 2.0})

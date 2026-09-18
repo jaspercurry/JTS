@@ -43,10 +43,10 @@ from jasper.active_speaker.rear_calibration import (
 from jasper.active_speaker.run_manifest import view_sets
 from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
 from jasper.audio_measurement.rear_evidence import (
-    BAND_SOURCE_COVERAGE, REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, across_positions,
+    BAND_SOURCE_COVERAGE, IMPULSE_FFT_SIZE, REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, across_positions,
     arrival_gap_ms, comparison_band, confident_arrival_gap_s, gradient_residual_db,
-    pair_band_levels, position_figures, rear_polarity, reference_curve_db, repeat_spread,
-    shared_radiating_band_hz, superposition_residual_db,
+    late_energy_change, pair_band_levels, position_figures, rear_polarity, reference_curve_db,
+    repeat_spread, shared_radiating_band_hz, superposition_residual_db, upper_band_levels,
 )
 from jasper.json_fields import finite_float
 
@@ -84,8 +84,6 @@ REASON_SEGMENT_MISSING = "pair_segment_missing"
 #: then both together. The two solo identities come from the ONE owner of what a
 #: ``front_rear`` branch pair excites, in the channel order it plays them.
 PAIR_ROLES = (*branch_target_ids_for(BRANCH_PAIR_FRONT_REAR, ()), "summed")
-# 1.46 Hz bins keep the 1/6-octave figures honest at 30 Hz.
-PAIR_FFT_SIZE = 32768
 
 #: The capture facts every candidate in one batch must share for the figures to
 #: mean anything, echoed from the takes' own basis rather than restated.
@@ -177,6 +175,8 @@ def _applied_stack(profile: Mapping[str, Any] | None) -> dict[str, bool]:
 
 def _position_rows(
     poses: Mapping[str, Sequence[SeatTake]], zeros: Mapping[str, tuple[np.ndarray, np.ndarray]],
+    reference_late: Mapping[str, Sequence[Mapping[str, float]]],
+    reference_curve: Mapping[str, np.ndarray],
     *, band_hz: Sequence[float] | None, coverage_hz: Sequence[float], handover_hz: float | None,
     incumbent: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -192,6 +192,12 @@ def _position_rows(
             handover_hz=handover_hz,
             incumbent=None if incumbent is None else incumbent.get(key),
         )
+        rows[key]["late_energy"] = late_energy_change(
+            [take.late_energy for take in takes if take.late_energy], reference_late.get(key, []),
+        )
+        rows[key]["upper_bands"] = upper_band_levels(
+            grid, curve_db, reference_db=reference_curve[key], coverage_hz=coverage_hz,
+        ) if key in reference_curve else []
     return rows
 
 
@@ -250,13 +256,15 @@ def rear_document(
     ceiling = room_ceiling(inputs.session_dir)
     takes = [take for poses in batch.values() for group in poses.values() for take in group]
     coverage_hz = [max(take.band_hz[0] for take in takes),
-                   min(ceiling.ceiling_hz, min(take.band_hz[1] for take in takes))]
+                   min(take.band_hz[1] for take in takes)]
     captured = sorted({key for poses in batch.values() for key in poses})
 
     muted = sorted(name for name, (section, _) in sections.items()
                    if section.get("rear_muted") is True)
     reference_id = muted[0] if muted else incumbent_id
     zeros: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    reference_late: dict[str, list[Mapping[str, float]]] = {}
+    reference_curve: dict[str, np.ndarray] = {}
     reference_on_axis: tuple[np.ndarray, np.ndarray] | None = None
     for key in captured:
         group = batch[reference_id].get(key)
@@ -264,6 +272,9 @@ def rear_document(
             continue
         grid, mean_db = _mean_curve_db(group)
         zeros[key] = (grid, reference_curve_db(grid, mean_db))
+        if muted:
+            reference_late[key] = [take.late_energy for take in group if take.late_energy]
+            reference_curve[key] = mean_db
         if key in on_axis and reference_on_axis is None:
             reference_on_axis = (grid, mean_db)
     # A position is advertised only once the batch froze a zero for it, so the
@@ -281,7 +292,8 @@ def rear_document(
     figures = {
         "band_hz": band["band_hz"], "coverage_hz": coverage_hz, "handover_hz": stage["handover_hz"],
     }
-    incumbent_rows = _position_rows(batch[incumbent_id], zeros, **figures)
+    incumbent_rows = _position_rows(
+        batch[incumbent_id], zeros, reference_late, reference_curve, **figures)
     # The repeated pose is the only thing a difference may be called
     # inconclusive against, so the batch's spread is the incumbent's there.
     repeated = max(batch[incumbent_id], key=lambda key: (len(batch[incumbent_id][key]), key))
@@ -302,7 +314,7 @@ def rear_document(
         charge = incumbent_charge if name == incumbent_id else (
             rear_branch_sum_headroom_db(section) if section else None)
         rows = incumbent_rows if name == incumbent_id else _position_rows(
-            batch[name], zeros, incumbent=incumbent_rows, **figures)
+            batch[name], zeros, reference_late, reference_curve, incumbent=incumbent_rows, **figures)
         candidates.append({
             "candidate_id": name, "set_id": (sets.get(name) or {}).get("set_id"),
             "role": ROLE_INCUMBENT if name == incumbent_id
@@ -383,12 +395,12 @@ def pair_takes(records: Iterable[Mapping[str, Any]]) -> list[PairTake]:
             continue
         start = max(0, int(responses[PAIR_ROLES[0]]["pre_guard_samples"]) - round(0.005 * rate))
         end = min(len(responses[role]["impulse"]) for role in roles)
-        freqs = np.fft.rfftfreq(PAIR_FFT_SIZE, 1.0 / rate)
+        freqs = np.fft.rfftfreq(IMPULSE_FFT_SIZE, 1.0 / rate)
         impulses = {role: np.asarray(responses[role]["impulse"], dtype=float)[start:end]
                     for role in roles}
         shifts = {role: float(responses[role].get("clock_shift_samples", 0.0))
                   for role in roles}
-        spectra = {role: np.fft.rfft(ir, n=PAIR_FFT_SIZE)
+        spectra = {role: np.fft.rfft(ir, n=IMPULSE_FFT_SIZE)
                    * np.exp(2j * np.pi * freqs * shifts[role] / rate)
                    for role, ir in impulses.items()}
         bands = [responses[role]["band_hz"] for role in roles]

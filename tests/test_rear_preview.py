@@ -16,7 +16,7 @@ from jasper.active_speaker.camilla_yaml import rear_branch_sum_headroom_db
 from jasper.active_speaker.crossover_v2 import rear_preview
 from jasper.active_speaker.crossover_v2.pose_curve import lateral_pose_curve
 from jasper.active_speaker.crossover_v2.prescription_document import read_prescription_document
-from jasper.active_speaker.crossover_v2.rear_views import PAIR_FFT_SIZE, pair_takes
+from jasper.active_speaker.crossover_v2.rear_views import pair_takes
 from jasper.active_speaker.crossover_v2.room_selection import purpose_take_records
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.rear_calibration import MAX_CHAIN_BOOST_DB, diagnostic_seed
@@ -190,12 +190,12 @@ def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path
             assert figures.magnitude_db(predicted)[null] < -40
         sampled = lateral_pose_curve(SimpleNamespace(
             role="summed", freqs_hz=take.freqs_hz, complex_tf=predicted,
-            validity_floor_hz=None, gating=None, repeat_responses=()), take.coverage_hz)
+            validity_floor_hz=None, gating=None, late_energy=None, repeat_responses=()), take.coverage_hz)
         display_db = smooth_fractional_octave(
             sampled.freqs_hz, figures.magnitude_db(sampled.complex_tf), fraction=figures.FIGURE_FRACTION)
         reference = lateral_pose_curve(SimpleNamespace(
             role="woofer", freqs_hz=take.freqs_hz, complex_tf=take.front * front,
-            validity_floor_hz=None, gating=None, repeat_responses=()), take.coverage_hz)
+            validity_floor_hz=None, gating=None, late_energy=None, repeat_responses=()), take.coverage_hz)
         change = display_db - smooth_fractional_octave(
             reference.freqs_hz, figures.magnitude_db(reference.complex_tf), fraction=figures.FIGURE_FRACTION)
         display = (sampled.freqs_hz >= row["coverage_hz"][0]) & (sampled.freqs_hz <= min(row["coverage_hz"][1], 5000.0))
@@ -251,11 +251,11 @@ def test_pair_takes_share_a_window_and_remove_each_clock_shift():
         response["pre_guard_samples"] += 48
         response["clock_shift_samples"] = index * 0.75
     take, = pair_takes([{}, {"branch_diagnostic": diagnostic}])
-    assert take.freqs_hz == pytest.approx(np.fft.rfftfreq(PAIR_FFT_SIZE, 1 / 48000))
+    assert take.freqs_hz == pytest.approx(np.fft.rfftfreq(figures.IMPULSE_FFT_SIZE, 1 / 48000))
     for response, actual in zip(diagnostic["responses"], (take.front, take.rear)):
         windowed = np.asarray(response["impulse"])[48:]
         assert take.impulses[response["role"]] == pytest.approx(windowed)
-        expected = np.fft.rfft(windowed, n=PAIR_FFT_SIZE) * np.exp(
+        expected = np.fft.rfft(windowed, n=figures.IMPULSE_FFT_SIZE) * np.exp(
             2j * np.pi * take.freqs_hz * response["clock_shift_samples"] / 48000)
         assert actual == pytest.approx(expected)
     del diagnostic["responses"][1]["pre_guard_samples"]
@@ -314,12 +314,12 @@ def test_repeats_use_mean_magnitudes_and_median_per_take_energy(tmp_path, capsys
     rear, front = rear_stage_response(section, original.freqs_hz)
     curves = [lateral_pose_curve(SimpleNamespace(
         role="summed", freqs_hz=take.freqs_hz, complex_tf=take.front * front + take.rear * rear,
-        validity_floor_hz=None, gating=None, repeat_responses=()), take.coverage_hz) for take in takes]
+        validity_floor_hz=None, gating=None, late_energy=None, repeat_responses=()), take.coverage_hz) for take in takes]
     freqs = curves[0].freqs_hz
     mean_db = np.mean([figures.magnitude_db(curve.complex_tf) for curve in curves], axis=0)
     sampled_front = lateral_pose_curve(SimpleNamespace(
         role="woofer", freqs_hz=original.freqs_hz, complex_tf=original.front * front,
-        validity_floor_hz=None, gating=None, repeat_responses=()), original.coverage_hz)
+        validity_floor_hz=None, gating=None, late_energy=None, repeat_responses=()), original.coverage_hz)
     expected = figures.position_figures(
         freqs, mean_db, reference_db=figures.reference_curve_db(freqs, figures.magnitude_db(sampled_front.complex_tf)),
         band_hz=row["figures_band_hz"], coverage_hz=row["coverage_hz"])
