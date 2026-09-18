@@ -17,10 +17,9 @@ comparison because there is only one played candidate: it says what the two
 woofers do separately and how far their superposition may be trusted, which is
 what the no-sound preview predicts from.
 
-Code computes, the LLM judges: there is no score, no pass mark, no ranking and
-no claim about rear rejection or a polar pattern. Missing evidence carries a
-reason code and never a filled-in figure, and nothing here reads which mover
-placed the microphone.
+Code computes, the LLM judges — see ADR-0325 for what a comparison does and
+does not claim. Missing evidence carries a reason code and never a
+filled-in figure, and nothing here reads which mover placed the microphone.
 """
 
 from __future__ import annotations

@@ -2,19 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The measured symptoms of a rear-stage comparison (issue #5330, slice 1).
+"""The measured symptoms of a rear-stage comparison (issue #5330).
 
 Pure arithmetic on ungated curves: no I/O, no repo state, no knowledge of
 rounds, manifests, candidates or CamillaDSP. The measured view and the
 no-sound preview call the SAME functions, so every input is a plain array on
 the caller's own frequency grid. A SUMMED take's figures read magnitude in dB;
 a PAIR take's read the complex transfer of each segment, because the trust
-number and the polarity are both complex sums. The wall dip these figures read,
-and why a shallower one is not by itself an improvement, is issue #5330; the
-report carries **no score, no pass mark, no ranking, and no claim about rear
-rejection or polar pattern**. A batch freezes one reference curve per
-position (:func:`reference_curve_db`) and one band (:func:`comparison_band`)
-before any candidate is read; each function's docstring carries its contract.
+number and the polarity are both complex sums. A batch freezes one reference
+curve per position (:func:`reference_curve_db`) and one band
+(:func:`comparison_band`) before any candidate is read; each function's
+docstring carries its contract. See ADR-0325 for what a comparison does and
+does not claim.
 
 The rule governing every figure: SHAPE figures (``dip``, ``ripple_db``,
 ``handover.hole_db``) are read on the in-band-mean-removed difference, so
