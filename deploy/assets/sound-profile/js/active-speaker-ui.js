@@ -2,11 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Pure active-speaker setup helpers for /sound/.
-//
-// This module deliberately contains no DOM or fetch state. The large sound
-// profile module owns rendering and IO; this file owns the product vocabulary
-// and step-state policy so the active-crossover flow has one small contract.
+// Reads jts-sub-crossover-bounds on first use; importable without a DOM.
+// Missing bounds fail the caller.
+import { readJsonIsland } from '../../shared/js/dom.js';
 
 export function outputStatusClass(statusValue) {
   if (statusValue === 'valid' ||
@@ -105,14 +103,12 @@ export function nextActionAct(action) {
   }[action.id] || {act: '', step: ''};
 }
 
-// Bass-management crossover corner bounds. These MUST equal
-// jasper.active_speaker.profile.DEFAULT_SUB_CROSSOVER_HZ / SUB_CROSSOVER_HZ_LO /
-// _HI (and jasper.output_topology's SUB_CROSSOVER_HZ_* mirror). Duplicated here
-// only so this DOM-free module stays import-light; the equality is pinned by
-// test_sound_setup.py::test_sub_crossover_bounds_match_python.
-export var DEFAULT_SUB_CROSSOVER_HZ = 80.0;
-export var SUB_CROSSOVER_HZ_LO = 40.0;
-export var SUB_CROSSOVER_HZ_HI = 200.0;
+let cachedSubCrossoverBounds;
+export function subCrossoverBounds() {
+  const bounds = cachedSubCrossoverBounds ?? readJsonIsland('jts-sub-crossover-bounds', null);
+  if (bounds == null) throw new Error('jts-sub-crossover-bounds island missing (served by jasper/web/sound_setup.py:_sound_page_island)');
+  return (cachedSubCrossoverBounds = bounds);
+}
 
 // The single local-subwoofer group, if one is routed. A local sub adds a DAC
 // output lane.
@@ -134,7 +130,7 @@ export function localSubwooferGroup(topology) {
 // validator range-checks it server-side; this only normalizes for display/edit.
 export function subwooferCrossoverFcHz(topology) {
   var group = localSubwooferGroup(topology);
-  if (!group) return DEFAULT_SUB_CROSSOVER_HZ;
+  if (!group) return subCrossoverBounds().default_hz;
   var channels = Array.isArray(group.channels) ? group.channels : [];
   for (var i = 0; i < channels.length; i += 1) {
     var channel = channels[i];
@@ -144,24 +140,23 @@ export function subwooferCrossoverFcHz(topology) {
       break;
     }
   }
-  return DEFAULT_SUB_CROSSOVER_HZ;
+  return subCrossoverBounds().default_hz;
 }
 
 // Clamp a user-entered crossover corner into the safe bass-management band. A
 // blank/non-numeric value falls back to the default; out-of-range values pin to
 // the nearest bound (defense in depth — the server also fail-loud rejects them).
 export function clampSubwooferCrossoverFcHz(value) {
+  const bounds = subCrossoverBounds();
   // Number('') / Number('   ') coerce to 0 (finite), so reject a blank/whitespace
   // entry explicitly before the finite check — a cleared field means "default",
   // not "0 Hz" (which would otherwise pin to the low bound).
   if (typeof value === 'string' && value.trim() === '') {
-    return DEFAULT_SUB_CROSSOVER_HZ;
+    return bounds.default_hz;
   }
   var fc = Number(value);
-  if (!Number.isFinite(fc)) return DEFAULT_SUB_CROSSOVER_HZ;
-  if (fc < SUB_CROSSOVER_HZ_LO) return SUB_CROSSOVER_HZ_LO;
-  if (fc > SUB_CROSSOVER_HZ_HI) return SUB_CROSSOVER_HZ_HI;
-  return fc;
+  if (!Number.isFinite(fc)) return bounds.default_hz;
+  return Math.max(bounds.lo_hz, Math.min(bounds.hi_hz, fc));
 }
 
 // The system-managed bass-management high-pass the routed local subwoofer

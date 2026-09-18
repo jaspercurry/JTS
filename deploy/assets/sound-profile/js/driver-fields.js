@@ -5,9 +5,7 @@
 import { escapeHtml } from "/assets/shared/js/escape.js";
 import { renderInstallation } from "/assets/sound-profile/js/installation.js";
 import {
-  DEFAULT_SUB_CROSSOVER_HZ,
-  SUB_CROSSOVER_HZ_HI,
-  SUB_CROSSOVER_HZ_LO,
+  subCrossoverBounds,
   humanRole,
   subwooferCrossoverFcHz
 } from "/assets/sound-profile/js/active-speaker-ui.js";
@@ -61,6 +59,7 @@ function driverClassGeometryFieldHtml(targetId, setting) {
 // read-only so the vocabulary matches the active-crossover card without exposing
 // a knob the backend ignores.
 function renderSubwooferCrossoverControl(topology) {
+  const bounds = subCrossoverBounds();
   var fc = subwooferCrossoverFcHz(topology);
   return '<div class="driver-settings driver-settings--crossovers">' +
     '<div class="driver-settings__row driver-settings__row--crossover">' +
@@ -70,11 +69,11 @@ function renderSubwooferCrossoverControl(topology) {
       '</div>' +
       '<label class="driver-research__field">' +
         '<span>Crossover point</span>' +
-        '<input type="number" inputmode="numeric" min="' + escapeHtml(String(SUB_CROSSOVER_HZ_LO)) +
-          '" max="' + escapeHtml(String(SUB_CROSSOVER_HZ_HI)) + '" step="1" ' +
+        '<input type="number" inputmode="numeric" min="' + escapeHtml(String(bounds.lo_hz)) +
+          '" max="' + escapeHtml(String(bounds.hi_hz)) + '" step="1" ' +
           'data-sub-crossover-fc value="' +
           escapeHtml(fc == null ? '' : String(Math.round(Number(fc)))) +
-          '" placeholder="' + escapeHtml(String(Math.round(DEFAULT_SUB_CROSSOVER_HZ))) + '"></label>' +
+          '" placeholder="' + escapeHtml(String(Math.round(bounds.default_hz))) + '"></label>' +
       '<label class="driver-research__field">' +
         '<span>Slope</span>' +
         '<input type="text" value="24 dB/oct" readonly aria-readonly="true"></label>' +

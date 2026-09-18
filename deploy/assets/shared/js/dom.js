@@ -136,3 +136,11 @@ export function svg(tag, props, ...children) {
   }
   return el;
 }
+
+export function readJsonIsland(id, fallback) {
+  try {
+    return JSON.parse((document.getElementById(id) || {}).textContent || 'null') || fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
