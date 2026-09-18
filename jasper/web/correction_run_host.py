@@ -64,8 +64,9 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
             # write-once after this, so nothing downstream can put it back, and
             # without it `round_captures._capture_response` refuses every
             # non-``summed`` role. ``regime`` is NOT set alongside as the web
-            # flow's `_retain_lateral_pose` does: the engine's record already
-            # spells the MEASURE_REGIMES vocabulary under that key.
+            # flow's `_retain_lateral_pose` does: a round's record already
+            # carries its plan row's own ``regime``, and `RunManifest.append`
+            # fingerprints that word into each capture set as ``stimulus``.
             fields = {**fields, "branch_diagnostic": result.branch_diagnostic}
         answers[record["take_id"]] = capture, result
         return enrich_capture_record({

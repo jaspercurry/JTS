@@ -344,7 +344,11 @@ SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 # structurally has less of. Measured at 1 m on jts3 round fd97a756ea51, on
 # captures with no glitch, no frame loss, no clipping and 27-28 dB pilot SNR:
 # front sweeps 0.654-0.699 confidence at 0.58-0.88 ms residual, rear sweeps
-# 0.228-0.370 at 4.13-5.10 ms against a room return at +17.7…+21.5 ms.
+# 0.228-0.370 at 4.13-5.10 ms against a room return at +17.7…+21.5 ms. This
+# sits only 0.03 above the xrun cluster above (0.07-0.12) where the shared
+# floor had 2.5x: what prices that is the ANCHORED role keeping 0.3, since a
+# whole-capture event moves both branches, plus ``LOCATE_MIN_CONFIDENCE``
+# underneath for a branch nobody heard at all.
 # Retire this floor and :func:`_unanchored_sweep_roles` the day a branch
 # program emits a pilot pair per branch — the shared numbers above are honest
 # for every role then.
