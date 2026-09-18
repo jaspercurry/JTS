@@ -227,7 +227,7 @@ def rear_document(
         bases.setdefault(candidate, []).append(capture_basis(record))
         # An on-axis reference must be a bearing pose: a non-bearing pose at
         # azimuth 0 (e.g. behind the cabinet) is never the front curve the
-        # measured-dip search assumes (review, PR #5362).
+        # measured-dip search assumes.
         if (row.position_deg == 0 and row.vertical_deg == 0
                 and (record.get("pose_kind") or POSE_KIND_BEARING) == POSE_KIND_BEARING):
             on_axis.add(take.pose_key)
@@ -512,8 +512,8 @@ def _pair_document(
     # One document-level figure, so it reads the MEDIAN of the BEARING
     # positions' gaps that may be built on: a non-bearing position (e.g. a mic
     # behind the cabinet) measures a different physical quantity and must not
-    # blend into this median (review, PR #5362). With none of them confident,
-    # and with no electrical chain to evaluate, it is simply absent.
+    # blend into this median. With none of them confident, and with no
+    # electrical chain to evaluate, it is simply absent.
     held = [gap for key, row in positions.items()
             if (records[key][0].get("pose_kind") or POSE_KIND_BEARING) == POSE_KIND_BEARING
             and (gap := confident_arrival_gap_s(row["arrival_gap"])) is not None]
