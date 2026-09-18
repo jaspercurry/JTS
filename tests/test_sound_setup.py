@@ -27,7 +27,7 @@ from unittest.mock import Mock, call
 import numpy as np
 import pytest
 
-from jasper.active_speaker import playback_route
+from jasper.active_speaker import playback_route, profile as active_profile
 from jasper.active_speaker._common import MANUAL_DRIVER_FIELDS
 from jasper.active_speaker.driver_safety import DRIVER_SAFETY_FIELDS
 from jasper.active_speaker.driver_safety_prompt import _PROMPT_PROVENANCE_KEYS
@@ -902,6 +902,19 @@ def _island_payload(html: str, element_id="sound-page-data") -> dict:
     marker = f'id="{element_id}"'
     start = html.index(">", html.index(marker)) + 1
     return json.loads(html[start : html.index("</script>", start)])
+
+
+@pytest.mark.parametrize("follower", [False, True])
+@pytest.mark.parametrize("page_mode", ["eq", "speaker", "output"])
+def test_sound_page_serves_sub_crossover_bounds(monkeypatch, follower, page_mode):
+    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: follower)
+    assert _island_payload(
+        sound_setup._index_html(page_mode=page_mode).decode(), "jts-sub-crossover-bounds",
+    ) == {
+        "default_hz": active_profile.DEFAULT_SUB_CROSSOVER_HZ,
+        "lo_hz": active_profile.SUB_CROSSOVER_HZ_LO,
+        "hi_hz": active_profile.SUB_CROSSOVER_HZ_HI,
+    }
 
 
 @pytest.mark.parametrize("follower", [False, True])

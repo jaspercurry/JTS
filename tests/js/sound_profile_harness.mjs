@@ -16,6 +16,10 @@ const driverVocabularyFixture = JSON.parse(execFileSync(process.env.PYTHON || "p
   "-c", "import json; from jasper.active_speaker.driver_safety_prompt import driver_field_vocabulary; print(json.dumps(driver_field_vocabulary()))",
 ], {cwd: repoPath("."), encoding: "utf8"}));
 
+const subCrossoverBoundsFixture = JSON.parse(execFileSync(process.env.PYTHON || "python3", [
+  "-c", "import json; from jasper.active_speaker.profile import DEFAULT_SUB_CROSSOVER_HZ, SUB_CROSSOVER_HZ_LO, SUB_CROSSOVER_HZ_HI; print(json.dumps(dict(default_hz=DEFAULT_SUB_CROSSOVER_HZ, lo_hz=SUB_CROSSOVER_HZ_LO, hi_hz=SUB_CROSSOVER_HZ_HI)))",
+], {cwd: repoPath("."), encoding: "utf8"}));
+
 const modulePath = process.argv[2] || "deploy/assets/sound-profile/js/main.js";
 const siblingDir = dirname(modulePath);
 
@@ -31,6 +35,7 @@ const JTSCONFIRM_STUB = [
 const runner = buildFunction(
   [
     { path: repoPath("deploy/assets/shared/js/escape.js") },
+    { path: repoPath("deploy/assets/shared/js/dom.js") },
     { path: repoPath("deploy/assets/shared/js/http.js") },
     { path: repoPath("deploy/assets/shared/js/copy.js") },
     { path: repoPath("deploy/assets/shared/js/frequency-scale.js") },
@@ -519,6 +524,9 @@ function setupHarness(fetchHandler, options = {}) {
   const driverIsland = makeEl('jts-driver-fields');
   driverIsland.textContent = JSON.stringify(options.driverVocabulary || driverVocabularyFixture);
   elements.set('jts-driver-fields', driverIsland);
+  const boundsIsland = makeEl('jts-sub-crossover-bounds');
+  boundsIsland.textContent = JSON.stringify(subCrossoverBoundsFixture);
+  elements.set('jts-sub-crossover-bounds', boundsIsland);
   if (pageMode !== "eq" || options.follower) {
     // The hardware and follower pages omit the content-EQ chrome. Making those
     // ids resolve to null exercises the module's mode guards as the browser does.

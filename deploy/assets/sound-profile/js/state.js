@@ -10,6 +10,8 @@
 // evaluation time, which is safe because the page loads main.js as a deferred
 // module script.
 
+import { readJsonIsland } from '../../shared/js/dom.js';
+
 var ACTIVE_GAIN_EPSILON_DB = 0.05;
 
 var outputTopology = {
@@ -93,13 +95,6 @@ function resetOutputTemplateDraft() {
 }
 
 function el(id) { return document.getElementById(id); }
-function readJsonIsland(id, fallback) {
-  try {
-    return JSON.parse((el(id) || {}).textContent || 'null') || fallback;
-  } catch (e) {
-    return fallback;
-  }
-}
 // The crossover filters and slopes this page may OFFER, served on the island
 // by jasper/web/sound_setup.py:_sound_page_island and owned by the compiler
 // (jasper/active_speaker/profile.py's SUPPORTED_CROSSOVER_TYPES /

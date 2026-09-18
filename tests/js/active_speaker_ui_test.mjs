@@ -2,16 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Unit tests for the pure active-speaker level-match UI helpers.
-//
-// active-speaker-ui.js is a dependency-free ES module, so node can import it
-// directly (no harness/DOM stubbing needed). Run via test_sound_setup.py.
+// Run: node tests/js/active_speaker_ui_test.mjs
 import assert from "node:assert/strict";
 
-import {
-  DEFAULT_SUB_CROSSOVER_HZ,
-  SUB_CROSSOVER_HZ_HI,
-  SUB_CROSSOVER_HZ_LO,
+const bounds = {default_hz: 85, lo_hz: 55, hi_hz: 185};
+globalThis.document = {getElementById: id => id === 'jts-sub-crossover-bounds'
+  ? {textContent: JSON.stringify(bounds)} : null};
+const {
   activeSpeakerStepState,
   clampSubwooferCrossoverFcHz,
   commissionPayloadFailure,
@@ -21,7 +18,7 @@ import {
   localSubwooferGroup,
   subwooferCrossoverBand,
   subwooferCrossoverFcHz,
-} from "../../deploy/assets/sound-profile/js/active-speaker-ui.js";
+} = await import("../../deploy/assets/sound-profile/js/active-speaker-ui.js");
 
 for (const dirty of [false, true]) {
   const ctx = {
@@ -166,7 +163,7 @@ const STEREO_WITH_SUB_UNSET_FC = {
 {
   assert.equal(localSubwooferGroup(STEREO_NO_SUB), null);
   assert.equal(subwooferCrossoverBand(STEREO_NO_SUB), null);
-  assert.equal(subwooferCrossoverFcHz(STEREO_NO_SUB), DEFAULT_SUB_CROSSOVER_HZ);
+  assert.equal(subwooferCrossoverFcHz(STEREO_NO_SUB), bounds.default_hz);
   assert.equal(localSubwooferGroup(null), null);
   assert.equal(subwooferCrossoverBand(null), null);
   assert.equal(subwooferCrossoverBand(undefined), null);
@@ -188,17 +185,17 @@ const STEREO_WITH_SUB_UNSET_FC = {
 
 // Sub present but Fc unset → falls back to the shared default corner.
 {
-  assert.equal(subwooferCrossoverFcHz(STEREO_WITH_SUB_UNSET_FC), DEFAULT_SUB_CROSSOVER_HZ);
+  assert.equal(subwooferCrossoverFcHz(STEREO_WITH_SUB_UNSET_FC), bounds.default_hz);
   const band = subwooferCrossoverBand(STEREO_WITH_SUB_UNSET_FC);
-  assert.equal(band.freq_hz, DEFAULT_SUB_CROSSOVER_HZ);
+  assert.equal(band.freq_hz, bounds.default_hz);
 }
 
 // Clamp keeps the corner inside the safe bass-management band; blank → default.
 {
-  assert.equal(clampSubwooferCrossoverFcHz(""), DEFAULT_SUB_CROSSOVER_HZ);
-  assert.equal(clampSubwooferCrossoverFcHz("not-a-number"), DEFAULT_SUB_CROSSOVER_HZ);
-  assert.equal(clampSubwooferCrossoverFcHz(10), SUB_CROSSOVER_HZ_LO);
-  assert.equal(clampSubwooferCrossoverFcHz(500), SUB_CROSSOVER_HZ_HI);
+  assert.equal(clampSubwooferCrossoverFcHz(""), bounds.default_hz);
+  assert.equal(clampSubwooferCrossoverFcHz("not-a-number"), bounds.default_hz);
+  assert.equal(clampSubwooferCrossoverFcHz(50), bounds.lo_hz);
+  assert.equal(clampSubwooferCrossoverFcHz(190), bounds.hi_hz);
   assert.equal(clampSubwooferCrossoverFcHz(120), 120);
   // An out-of-range stored value is normalized when surfaced as the band.
   const hot = subwooferCrossoverBand({
@@ -207,7 +204,7 @@ const STEREO_WITH_SUB_UNSET_FC = {
         channels: [{ role: "subwoofer", physical_output_index: 2, crossover_fc_hz: 999 }] },
     ],
   });
-  assert.equal(hot.freq_hz, SUB_CROSSOVER_HZ_HI);
+  assert.equal(hot.freq_hz, bounds.hi_hz);
 }
 
 for (const [id, act, step] of [
@@ -333,5 +330,10 @@ assert.equal(nextActionAct({id: 'run_speaker_program'}).program, 'speaker');
     assert.ok(!gateOnly.includes("baseline-reemit"));
   }
 }
+
+globalThis.document = {getElementById: () => null};
+const missingBounds = await import("../../deploy/assets/sound-profile/js/active-speaker-ui.js?missing-bounds");
+assert.throws(() => missingBounds.clampSubwooferCrossoverFcHz(100), /jts-sub-crossover-bounds/);
+assert.equal(clampSubwooferCrossoverFcHz(50), bounds.lo_hz);
 
 console.log(JSON.stringify({ ok: true }));

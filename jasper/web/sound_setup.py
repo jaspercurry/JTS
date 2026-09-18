@@ -32,6 +32,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jasper.active_speaker.driver_safety_prompt import driver_field_vocabulary
+from jasper.active_speaker.profile import (
+    DEFAULT_SUB_CROSSOVER_HZ,
+    SUB_CROSSOVER_HZ_HI,
+    SUB_CROSSOVER_HZ_LO,
+)
 from jasper.log_event import log_event
 from jasper.sound.profile import (
     PROFILE_LIBRARY_PATH,
@@ -165,7 +170,7 @@ def _crossover_child_link(page_mode: str) -> str:
 
 
 def _sound_page_island(*, page_mode: str, follower: bool) -> str:
-    """The one ``sound-page-data`` island every /sound/ shell renders.
+    """Build the page's JSON islands for every /sound/ shell.
 
     The editor's filter and slope pickers are built from the crossover
     vocabulary carried here, read from the compiler rather than restated, so a
@@ -197,7 +202,14 @@ def _sound_page_island(*, page_mode: str, follower: bool) -> str:
                 "default_slope_db_per_octave": DEFAULT_SLOPE_DB_PER_OCTAVE,
             },
         },
-    ) + json_island("jts-driver-fields", driver_field_vocabulary())
+    ) + json_island("jts-driver-fields", driver_field_vocabulary()) + json_island(
+        "jts-sub-crossover-bounds",
+        {
+            "default_hz": DEFAULT_SUB_CROSSOVER_HZ,
+            "lo_hz": SUB_CROSSOVER_HZ_LO,
+            "hi_hz": SUB_CROSSOVER_HZ_HI,
+        },
+    )
 
 
 def _follower_sound_html(
