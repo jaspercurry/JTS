@@ -237,6 +237,32 @@ A shallower dip with a new hole at the hand-over, or with less output, is
 a trade, not a win. Do not average a bad position away. A difference
 smaller than repeat spread is not a result; without repeats, say so.
 
+Read each `packet["rear"]` entry's `comparison` first: `band_hz` and
+`band_source` (the one band every candidate is judged on), `reference` (whose
+curve sets the zero), `level`, and `repeat_spread` (`no_repeats` means no
+difference can be called real). Then each `candidates[]` entry: `role`,
+`change_family` and `changed` (which one control moved), `headroom_change_db`
+(its cost at the same fader), the per-position figures — `dip` (depth below the
+reference, and width), `ripple_db`, `handover.hole_db`, `low_bass.level_db` and
+`change_db`, `band_level_db` (absolute: a quieter candidate is not an
+improvement) — and `across_positions.worst_regression` (which position, which
+figure, by how much, and whether it exceeds the repeat spread). `dip_shift`
+names a dip that is new or moved. Compare candidates at the same positions
+only. `jasper-round-views rear <round>` prints the same entry.
+
+First tune, from the pair take or from an imported fit: give the bass branch a
+Linkwitz-Riley low-pass and the cancellation branch a Linkwitz-Riley high-pass
+at ONE shared corner near 100 Hz; complementary slopes leave no hole at the
+hand-over. Put the cancellation low-pass below c / (4·D), where D is the
+measured front-to-rear arrival gap times the speed of sound. Invert the
+cancellation branch and anchor its delay on that arrival gap. Start its gain at
+0 dB; if the rear reads louder than the front at the low end of the band, use a
+cut-only low shelf, not a flat cut. Keep the bass branch in phase: the bass
+below the hand-over is two woofers plus the wall, and this program does not
+spend it. A corner of 70–80 Hz is a variant, not a default: read
+`low_bass.level_db`, `band_level_db` and `headroom_change_db` before you keep
+it.
+
 The stack plays as composed: room and bass stay in, the same in every
 candidate. After a rear change is adopted, check the room and bass
 responses and refit them if needed.

@@ -78,9 +78,9 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "sweep --scope take": ViewArtifact("window_view.json", (*TAKES_SET, "--take", "<take-id>")),
     "frequency": ViewArtifact(FREQUENCY_VIEW_FILENAME, bookkeeping=(PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR), builder="round_bookkeeping.frequency"),
     # The batch spans one set per played candidate, so this view reads the
-    # round rather than a set; ``jasper-round-views rear`` is not a door yet.
+    # round rather than a set.
     "rear": ViewArtifact(
-        "rear_view.json", producer="jasper-round wait", purposes=(PURPOSE_REAR,),
+        "rear_view.json", purposes=(PURPOSE_REAR,),
         bookkeeping=(PURPOSE_REAR,), builder="round_view_builders.rear", packet="rear",
     ),
     "bass": ViewArtifact("bass_view.json", TAKES_SET, purposes=(PURPOSE_BASS,), bookkeeping=(PURPOSE_BASS,), builder="round_bookkeeping.bass", packet="bass"),
