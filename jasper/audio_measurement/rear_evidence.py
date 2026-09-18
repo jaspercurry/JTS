@@ -140,7 +140,6 @@ def comparison_band(
     geometric_dip_hz: float | None = None,
     section_band_hz: Sequence[float] | None = None,
     handover_hz: float | None = None,
-    min_depth_db: float = DIP_MIN_DEPTH_DB,
 ) -> dict[str, Any]:
     """The ONE band this batch is compared over, chosen once and then held
     for every candidate and position, with its source reported.
@@ -181,7 +180,7 @@ def comparison_band(
         freqs = np.asarray(reference_take[0], dtype=np.float64)
         curve = np.asarray(reference_take[1], dtype=np.float64)
         shape = _figure_level_db(freqs, curve) - reference_curve_db(freqs, curve)
-        dip = _deepest_dip(freqs, shape, search_hz, min_depth_db)
+        dip = _deepest_dip(freqs, shape, search_hz, DIP_MIN_DEPTH_DB)
     lo_ratio, hi_ratio = CANONICAL_SHOULDER_RATIOS
     source: str
     band: tuple[float, float] | None
@@ -211,7 +210,6 @@ def position_figures(
     coverage_hz: Sequence[float],
     handover_hz: float | None = None,
     incumbent: Mapping[str, Any] | None = None,
-    min_depth_db: float = DIP_MIN_DEPTH_DB,
 ) -> dict[str, Any]:
     """One candidate's symptoms at ONE microphone position.
 
@@ -239,7 +237,7 @@ def position_figures(
     window = None if handover_hz is None else _clip(
         (handover_hz * 2.0**-HANDOVER_HALF_OCTAVES, handover_hz * 2.0**HANDOVER_HALF_OCTAVES),
         coverage_hz, coverage_hz[1])
-    dip = _deepest_dip(freqs, shape, band, min_depth_db)
+    dip = _deepest_dip(freqs, shape, band, DIP_MIN_DEPTH_DB)
     return {
         "reason": "", "dip": dip, "dip_shift": _dip_shift(dip, incumbent),
         "ripple_db": float(np.sqrt(np.mean(shape[in_band] ** 2))),
