@@ -17,6 +17,9 @@ from types import SimpleNamespace
 import pytest
 from openai.types.live.client_event_param import ClientEventParam
 from pydantic import TypeAdapter
+from websockets.datastructures import Headers
+from websockets.exceptions import InvalidStatus
+from websockets.http11 import Response
 
 from jasper.tools import ToolRegistry, tool
 from jasper.voice import _base, openai_live_session
@@ -643,6 +646,62 @@ async def test_one_transient_failure_then_success_still_gets_the_turn(monkeypatc
         assert not turn.turn_lost()
         # The open that took clears the outage the failed one recorded.
         assert conn.last_failure_detail() is None
+    finally:
+        if turn is not None:
+            await turn.release()
+        await conn.stop()
+
+
+@pytest.mark.parametrize("retry_succeeds", [True, False])
+async def test_a_handshake_404_is_retried_once_before_it_reads_as_terminal(
+    monkeypatch, caplog, retry_succeeds,
+):
+    """Live's upgrade URL names no model, so a 404 can be an upstream blip.
+
+    `retry_succeeds` picks what the second attempt meets: an open, which
+    the wake must be told nothing about, or another 404, which is the
+    terminal remedy ADR-0215 describes.
+    """
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(openai_live_session, "reconnect_delay", lambda *a, **k: 0.0)
+    socket = LiveSocket()
+    attempts = 0
+
+    def connect():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 2 and retry_succeeds:
+            return socket
+        raise InvalidStatus(Response(404, "Not Found", Headers()))
+
+    cues: list[str] = []
+
+    async def cue_cb(slug: str) -> None:
+        cues.append(slug)
+
+    conn = OpenAILiveConnection(api_key="test", connect=connect)
+    conn.set_failure_escalation_cb(cue_cb)
+    turn = None
+    try:
+        await conn.start(ToolRegistry(), "Be concise.")
+        if retry_succeeds:
+            turn = await conn.acquire_turn()
+        else:
+            with pytest.raises(RuntimeError):
+                await conn.acquire_turn()
+
+        assert attempts == openai_live_session.SESSION_OPEN_ATTEMPTS
+        assert event_fields(caplog, "provider.session_open_retry")["status"] == "404"
+        if retry_succeeds:
+            assert not turn.turn_lost()
+            assert conn._state is ConnectionState.IN_TURN
+            # A retry that took is silent: nothing recorded, nothing said.
+            assert event_records(caplog, "voice.connection.outage") == []
+            assert cues == []
+            assert conn.last_failure_detail() is None
+        else:
+            assert conn.wake_cue() == NEEDS_ATTENTION_CUE_SLUG
+            await wait_until(lambda: cues == [NEEDS_ATTENTION_CUE_SLUG])
     finally:
         if turn is not None:
             await turn.release()
