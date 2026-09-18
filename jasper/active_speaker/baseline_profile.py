@@ -999,6 +999,13 @@ def applied_layers(profile: Mapping[str, Any] | None) -> dict[str, bool]:
     }
 
 
+def applied_layer_names(profile: Mapping[str, Any] | None) -> dict[str, bool]:
+    """``applied_layers``, keyed by its packet-facing layer name instead of purpose."""
+    layers = applied_layers(profile)
+    return {"driver": layers[PURPOSE_SPEAKER], "room": layers[PURPOSE_ROOM],
+            "bass": layers[PURPOSE_BASS], "rear": layers[PURPOSE_REAR]}
+
+
 def profile_driver_corrections(profile: Mapping[str, Any] | None) -> Mapping[str, Any]:
     """One profile's AUTHORITATIVE ``{role: {gain_db, delay_ms, inverted}}``, or ``{}``."""
     if not isinstance(profile, Mapping):

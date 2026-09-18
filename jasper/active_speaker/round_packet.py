@@ -15,7 +15,7 @@ from jasper.audio_measurement.timing_verification import timing_next_action
 from .applied_identity import applied_identity
 from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED, TIMING_NEEDS_MEASUREMENT
 from .alignment_evidence import commissioning_alignment, round_alignment
-from .baseline_profile import profile_linearization
+from .baseline_profile import applied_layer_names
 from .candidate_bank import CandidateBankRefusal
 from .commissioning_experiment import bank_commissioning_experiment
 from .crossover_v2.evidence_packet import build_crossover_evidence_packet
@@ -195,7 +195,6 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     except ROUND_INPUT_ERRORS:
         sources = {}
     profile = sources.get("applied_profile") or {}
-    snapshot = profile.get("recomposition_snapshot") or {}
     limits = {}
     rooms = room_sets(manifest)
     for group in manifest.get("sets", ()):
@@ -226,10 +225,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
               "program": manifest.get("program"), "level": manifest.get("level"),
               "prescriptions": sources.get("candidate", {}).get("analysis", {}).get("evidence", {}).get("prescriptions", {}),
               **({"runs": manifest["runs"]} if "runs" in manifest else {}),
-              "applied": {**(applied_identity(profile) or {}),
-                          "layers": {"driver": profile_linearization(profile),
-                                     "room": snapshot.get("room_correction", profile.get("room_correction")),
-                                     "bass": snapshot.get("bass_extension")}},
+              "applied": {**(applied_identity(profile) or {}), "layers": applied_layer_names(profile)},
               "sets": [{"set_id": g["set_id"], "candidate_id": g["capture_basis"].get("candidate_id"), "base": g.get("base", False),
                         "takes": [{**{key: t.get(key) for key in ("take_id", "pose", "role", "selected", "alignment")},
                                    "screens": t.get("screens", []),

@@ -29,13 +29,12 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from jasper.active_speaker.baseline_profile import applied_layers
+from jasper.active_speaker.baseline_profile import applied_layer_names
 from jasper.active_speaker.branch_chain import rear_stage_response
 from jasper.active_speaker.camilla_yaml import rear_branch_sum_headroom_db
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
 from jasper.active_speaker.measurement_programs import (
-    BRANCH_PAIR_FRONT_REAR, POSE_KIND_BEARING, PURPOSE_BASS, PURPOSE_REAR, PURPOSE_ROOM,
-    PURPOSE_SPEAKER,
+    BRANCH_PAIR_FRONT_REAR, POSE_KIND_BEARING, PURPOSE_REAR,
 )
 from jasper.active_speaker.rear_calibration import (
     changed_section_paths, rear_operating_facts, section_change_family,
@@ -170,9 +169,7 @@ def _declared_geometry(inputs: RoundInputs) -> tuple[Any, Mapping[str, float], s
 
 def _applied_stack(profile: Mapping[str, Any] | None) -> dict[str, bool]:
     """Which layers the played candidates carry, from the packet's own sources."""
-    layers = applied_layers(profile)
-    return {"driver": layers[PURPOSE_SPEAKER], "room": layers[PURPOSE_ROOM],
-            "bass": layers[PURPOSE_BASS], "rear": layers[PURPOSE_REAR]}
+    return applied_layer_names(profile)
 
 
 def _position_rows(

@@ -634,7 +634,7 @@ def test_packet_stats_measure_flatness_about_the_series_mean(tmp_path, window, l
     assert packet["applied"] == {
         "candidate": "a123456789bc" + "0" * 52, "record": "123456789abc", "config_path": "/config.yml",
         "applied_at": applied["applied_at"],
-        "layers": dict(zip(("driver", "room", "bass"), applied["recomposition_snapshot"].values())),
+        "layers": {"driver": True, "room": True, "bass": True, "rear": False},
     }
     match = re.search(r"^Applied: candidate ([0-9a-f]{12}) · record ([0-9a-f]{12}) · (.+)$",
                       (banked.path / INDEX_FILENAME).read_text(), re.MULTILINE)
