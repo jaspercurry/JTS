@@ -355,7 +355,7 @@ DEFAULT_TEMPLATE = MeasureSpec(kind=MEASURE_KIND_CANDIDATE)
 #: The template fields the EXECUTOR assigns per capture, and which a walk
 #: therefore may not state: a stated one would be silently replaced at every
 #: stop and silently kept on the design-axis spec.
-_EXECUTOR_ASSIGNED = ("positions", "pose_prompts", "candidate_id")
+_EXECUTOR_ASSIGNED = ("positions", "pose_prompts", "candidate_id", "branch_target_ids")
 
 
 @dataclass(frozen=True)

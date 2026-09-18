@@ -676,6 +676,24 @@ def test_baseline_pairs_driver_and_room_reads_and_keeps_timing_at_entry(layout, 
         pose.place for pose in program.poses for _ in range(pose.repeats * 2)]
 
 
+def test_a_hand_written_branch_plan_resolves_its_base_entry_as_a_summed_take():
+    """``from_mapping`` is the door ``jasper-round run --plan`` and the wizard's
+    raw POST come through, so it bypasses ``request_for_program``'s "branches
+    needs one saved candidate" guard. The synthesized entry-baseline stop plays
+    the SUMMED regime, so it carries no branch pair either."""
+    plan = ac.AngleCaptureRequest(
+        (ac.AngleStop(0, ac.REGIME_BRANCHES, branch_pair="front_rear"),),
+    )
+    request = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(plan.to_dict())))
+    captures = plan_run.prepare_plan_captures(request, roles_bands=tuple(_roles()))
+
+    entry = next(c for c in captures if c.spec.program_phase == "entry_baseline")
+    assert (entry.stop.regime, entry.stop.branch_pair) == (ac.REGIME_SUMMED, "drivers")
+    assert entry.spec.branch_target_ids == ()
+    assert {c.spec.branch_target_ids for c in captures if c.spec.graph_scope == "candidate_branches"} == {
+        ("woofer", "woofer:rear")}
+
+
 def test_speaker_room_layout_pairs_driver_and_summed_stops_with_entry_timing():
     program = run_program("speaker", "room_quick")
     request = ac.request_for_program(program, mover=ac.MOVER_ARM)

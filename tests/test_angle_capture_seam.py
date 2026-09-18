@@ -1358,8 +1358,10 @@ def test_a_summed_sweep_on_a_walk_with_no_summed_stop_refuses_at_statement_time(
 @pytest.mark.parametrize(
     "identity",
     [{"positions": (7,)}, {"pose_prompts": ("turn it",)},
-     {"candidate_id": "fp-a", "graph_scope": "candidate"}],
-    ids=["positions", "pose_prompts", "candidate_id"],
+     {"candidate_id": "fp-a", "graph_scope": "candidate"},
+     {"candidate_id": "fp-a", "graph_scope": "candidate_branches",
+      "branch_target_ids": ("woofer", "woofer:rear")}],
+    ids=["positions", "pose_prompts", "candidate_id", "branch_target_ids"],
 )
 def test_a_template_carrying_what_the_executor_assigns_refuses(identity: dict) -> None:
     """The template is replayed at every stop, so a pose or candidate stated on it

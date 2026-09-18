@@ -9,7 +9,9 @@ stubs — a value returned to the caller, never a log line and never a raise
 (ruling S12 -- see ADR-0228). A preset is a saved :class:`MeasureSpec` and
 nothing more. The vocabulary is copied from
 :mod:`.contracts` rather than imported from its owners, which cost ~1,100
-modules including ``numpy`` on a 1 GB Pi.
+modules including ``numpy`` on a 1 GB Pi. The two owners this module does
+import — ``output_topology`` (already transitive) and ``measurement_programs``
+(12 further modules) — were measured against that budget first.
 """
 
 from __future__ import annotations
