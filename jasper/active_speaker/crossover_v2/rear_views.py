@@ -17,10 +17,9 @@ comparison because there is only one played candidate: it says what the two
 woofers do separately and how far their superposition may be trusted, which is
 what the no-sound preview predicts from.
 
-Code computes, the LLM judges: there is no score, no pass mark, no ranking and
-no claim about rear rejection or a polar pattern. Missing evidence carries a
-reason code and never a filled-in figure, and nothing here reads which mover
-placed the microphone.
+Code computes, the LLM judges — see ADR-0325 for what a comparison does and
+does not claim. Missing evidence carries a reason code and never a
+filled-in figure, and nothing here reads which mover placed the microphone.
 """
 
 from __future__ import annotations
@@ -30,12 +29,13 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from jasper.active_speaker.baseline_profile import profile_linearization
+from jasper.active_speaker.baseline_profile import applied_layers
 from jasper.active_speaker.branch_chain import rear_stage_response
 from jasper.active_speaker.camilla_yaml import rear_branch_sum_headroom_db
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
 from jasper.active_speaker.measurement_programs import (
-    BRANCH_PAIR_FRONT_REAR, POSE_KIND_BEARING, PURPOSE_REAR,
+    BRANCH_PAIR_FRONT_REAR, POSE_KIND_BEARING, PURPOSE_BASS, PURPOSE_REAR, PURPOSE_ROOM,
+    PURPOSE_SPEAKER,
 )
 from jasper.active_speaker.rear_calibration import (
     changed_section_paths, rear_operating_facts, section_change_family,
@@ -170,14 +170,9 @@ def _declared_geometry(inputs: RoundInputs) -> tuple[Any, Mapping[str, float], s
 
 def _applied_stack(profile: Mapping[str, Any] | None) -> dict[str, bool]:
     """Which layers the played candidates carry, from the packet's own sources."""
-    profile = profile or {}
-    snapshot = profile.get("recomposition_snapshot") or {}
-    return {
-        "driver": bool(profile_linearization(profile)),
-        "room": bool(snapshot.get("room_correction", profile.get("room_correction"))),
-        "bass": bool(snapshot.get("bass_extension")),
-        "rear": bool(snapshot.get("rear_calibration")),
-    }
+    layers = applied_layers(profile)
+    return {"driver": layers[PURPOSE_SPEAKER], "room": layers[PURPOSE_ROOM],
+            "bass": layers[PURPOSE_BASS], "rear": layers[PURPOSE_REAR]}
 
 
 def _position_rows(
@@ -232,7 +227,7 @@ def rear_document(
         bases.setdefault(candidate, []).append(capture_basis(record))
         # An on-axis reference must be a bearing pose: a non-bearing pose at
         # azimuth 0 (e.g. behind the cabinet) is never the front curve the
-        # measured-dip search assumes (review, PR #5362).
+        # measured-dip search assumes.
         if (row.position_deg == 0 and row.vertical_deg == 0
                 and (record.get("pose_kind") or POSE_KIND_BEARING) == POSE_KIND_BEARING):
             on_axis.add(take.pose_key)
@@ -517,8 +512,8 @@ def _pair_document(
     # One document-level figure, so it reads the MEDIAN of the BEARING
     # positions' gaps that may be built on: a non-bearing position (e.g. a mic
     # behind the cabinet) measures a different physical quantity and must not
-    # blend into this median (review, PR #5362). With none of them confident,
-    # and with no electrical chain to evaluate, it is simply absent.
+    # blend into this median. With none of them confident, and with no
+    # electrical chain to evaluate, it is simply absent.
     held = [gap for key, row in positions.items()
             if (records[key][0].get("pose_kind") or POSE_KIND_BEARING) == POSE_KIND_BEARING
             and (gap := confident_arrival_gap_s(row["arrival_gap"])) is not None]

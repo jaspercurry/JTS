@@ -2,19 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The measured symptoms of a rear-stage comparison (issue #5330, slice 1).
+"""The measured symptoms of a rear-stage comparison (issue #5330).
 
 Pure arithmetic on ungated curves: no I/O, no repo state, no knowledge of
 rounds, manifests, candidates or CamillaDSP. The measured view and the
 no-sound preview call the SAME functions, so every input is a plain array on
 the caller's own frequency grid. A SUMMED take's figures read magnitude in dB;
 a PAIR take's read the complex transfer of each segment, because the trust
-number and the polarity are both complex sums. The wall dip these figures read,
-and why a shallower one is not by itself an improvement, is issue #5330; the
-report carries **no score, no pass mark, no ranking, and no claim about rear
-rejection or polar pattern**. A batch freezes one reference curve per
-position (:func:`reference_curve_db`) and one band (:func:`comparison_band`)
-before any candidate is read; each function's docstring carries its contract.
+number and the polarity are both complex sums. A batch freezes one reference
+curve per position (:func:`reference_curve_db`) and one band
+(:func:`comparison_band`) before any candidate is read; each function's
+docstring carries its contract. See ADR-0325 for what a comparison does and
+does not claim.
 
 The rule governing every figure: SHAPE figures (``dip``, ``ripple_db``,
 ``handover.hole_db``) are read on the in-band-mean-removed difference, so
@@ -140,7 +139,6 @@ def comparison_band(
     geometric_dip_hz: float | None = None,
     section_band_hz: Sequence[float] | None = None,
     handover_hz: float | None = None,
-    min_depth_db: float = DIP_MIN_DEPTH_DB,
 ) -> dict[str, Any]:
     """The ONE band this batch is compared over, chosen once and then held
     for every candidate and position, with its source reported.
@@ -181,7 +179,7 @@ def comparison_band(
         freqs = np.asarray(reference_take[0], dtype=np.float64)
         curve = np.asarray(reference_take[1], dtype=np.float64)
         shape = _figure_level_db(freqs, curve) - reference_curve_db(freqs, curve)
-        dip = _deepest_dip(freqs, shape, search_hz, min_depth_db)
+        dip = _deepest_dip(freqs, shape, search_hz, DIP_MIN_DEPTH_DB)
     lo_ratio, hi_ratio = CANONICAL_SHOULDER_RATIOS
     source: str
     band: tuple[float, float] | None
@@ -211,7 +209,6 @@ def position_figures(
     coverage_hz: Sequence[float],
     handover_hz: float | None = None,
     incumbent: Mapping[str, Any] | None = None,
-    min_depth_db: float = DIP_MIN_DEPTH_DB,
 ) -> dict[str, Any]:
     """One candidate's symptoms at ONE microphone position.
 
@@ -239,7 +236,7 @@ def position_figures(
     window = None if handover_hz is None else _clip(
         (handover_hz * 2.0**-HANDOVER_HALF_OCTAVES, handover_hz * 2.0**HANDOVER_HALF_OCTAVES),
         coverage_hz, coverage_hz[1])
-    dip = _deepest_dip(freqs, shape, band, min_depth_db)
+    dip = _deepest_dip(freqs, shape, band, DIP_MIN_DEPTH_DB)
     return {
         "reason": "", "dip": dip, "dip_shift": _dip_shift(dip, incumbent),
         "ripple_db": float(np.sqrt(np.mean(shape[in_band] ** 2))),

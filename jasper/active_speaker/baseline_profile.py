@@ -75,7 +75,7 @@ from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
     candidate_on_declaration, driver_corrections, effective_preset,
 )
-from .measurement_programs import PURPOSE_BASS, PURPOSE_ROOM, PURPOSE_SPEAKER
+from .measurement_programs import PURPOSE_BASS, PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 from .profile import LEVEL_MATCH_AXIS, snapshot_declares_single_branch
 from . import passive_profile as _passive
@@ -995,6 +995,7 @@ def applied_layers(profile: Mapping[str, Any] | None) -> dict[str, bool]:
         PURPOSE_SPEAKER: bool(profile_linearization(profile)),
         PURPOSE_ROOM: bool(snapshot.get("room_correction", profile.get("room_correction"))),
         PURPOSE_BASS: bool(snapshot.get("bass_extension", profile.get("bass_extension"))),
+        PURPOSE_REAR: bool(snapshot.get("rear_calibration")),
     }
 
 

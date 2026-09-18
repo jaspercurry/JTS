@@ -529,6 +529,9 @@ def test_a_pair_round_packets_each_woofer_alone_and_the_trust_number(
     # The frequency view reads the summed analyzer, which refuses a branch
     # take's program, so a pair round banks none — as the real round does.
     assert {r["view"] for r in views if r["status"] == "written"} == {"rear", "inventory"}
+    frequency_row = next(r for r in views if r["view"] == "frequency")
+    assert (frequency_row["status"], frequency_row["reason"]) == (
+        "unavailable", "measurement_analysis_program_unsupported")
     assert json.loads((root / ARTIFACT_BY_VIEW["rear"].artifact).read_text()) == {
         key: value for key, value in entry.items() if key != "out"}
 

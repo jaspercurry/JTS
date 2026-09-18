@@ -269,8 +269,8 @@ cabinet (pose kind `behind`) is what a rejection objective needs: the rear null
 for any document is |F·H_front + R·(H_bass + H_cancel)| at that position,
 predicted from the banked F and R with no sound, while the front positions hold
 the smoothness constraint. Read `superposition_residual_db` behind the cabinet
-(pose kind `behind`) first; a large value there means the prediction cannot be
-trusted at that position.
+first; a large value there means the prediction cannot be trusted at that
+position.
 
 The stack plays as composed: room and bass stay in, the same in every
 candidate. After a rear change is adopted, check the room and bass
