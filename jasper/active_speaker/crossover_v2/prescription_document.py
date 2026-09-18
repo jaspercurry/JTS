@@ -6,8 +6,11 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+import re
+from collections.abc import Iterator, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field
+from itertools import product
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +96,65 @@ def read_prescription_document(raw: Any) -> Mapping[str, Any]:
         if prohibited:
             raise PrescriptionDocumentRefused(blend.PRESCRIPTION_PROHIBITED_FIELD, name, "prohibited fields", evidence={"fields": prohibited})
     return raw
+
+
+def parse_vary_axis(text: str) -> tuple[tuple[str, ...], tuple[Any, ...]]:
+    paths_text, separator, values_text = text.partition("=")
+    paths = tuple(path.strip() for path in paths_text.split(","))
+    if not separator or not all(paths) or not all(token.strip() for token in values_text.split(",")):
+        raise PrescriptionDocumentRefused("prescription_malformed", "sections", "expected PATH[,PATH...]=VALUE[,VALUE...]")
+    values = []
+    for token in values_text.split(","):
+        try:
+            value = json.loads(token)
+        except json.JSONDecodeError:
+            value = token.strip()
+        if isinstance(value, (dict, list)):
+            raise PrescriptionDocumentRefused("prescription_malformed", "sections", "axis values must be JSON scalars")
+        values.append(value)
+    return paths, tuple(values)
+
+
+def _vary_target(sections: Mapping[str, Any], path: str) -> tuple[Any, str | int]:
+    section = path.split(".")[0]
+    node: Any = sections
+    try:
+        for component in path.split("."):
+            match = re.fullmatch(r"([^.[\]]+)(?:\[([0-9]+)\])?", component)
+            if match is None:
+                raise ValueError("expected a dotted key with an optional list index")
+            key, index = match.groups()
+            parent, node = node, node[key]
+            if index is not None:
+                if not isinstance(node, list):
+                    raise TypeError("an index requires a list")
+                key = int(index)
+                parent, node = node, node[key]
+        return parent, key
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise PrescriptionDocumentRefused("prescription_malformed", section if section in sections else "sections",
+                                          f"axis path does not resolve: {path}") from exc
+
+
+def vary_document(
+    document: Mapping[str, Any], axes: Sequence[tuple[tuple[str, ...], tuple[Any, ...]]],
+) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
+    seen: set[str] = set()
+    for paths, _ in axes:
+        for path in paths:
+            _vary_target(document["sections"], path)
+            if path in seen:
+                section = path.split(".")[0]
+                raise PrescriptionDocumentRefused("prescription_malformed", section if section in document["sections"] else "sections",
+                                                  f"axis path is repeated: {path}")
+            seen.add(path)
+    for combination in product(*(values for _, values in axes)):
+        variant = deepcopy(dict(document))
+        values_by_path = {path: value for (paths, _), value in zip(axes, combination) for path in paths}
+        for path, value in values_by_path.items():
+            parent, key = _vary_target(variant["sections"], path)
+            parent[key] = value
+        yield values_by_path, variant
 
 
 def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,

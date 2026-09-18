@@ -24,6 +24,17 @@ from .round_inputs import RoundInputs
 REAR_PREVIEW_NEEDS_PAIR_ROUND = "rear_preview_needs_pair_round"
 
 
+def summary_rows(preview: Mapping[str, Any]) -> dict[str, Any]:
+    return {"headroom_charge_db": preview["stage"]["headroom_charge_db"], "positions": {
+        key: {"trough_fill_db": row["trough_fill_db"],
+              "gradient_residual_db": row["gradient_residual"]["db"],
+              **{name: row["late_energy"][name] for name in ("early_late_change_db", "arrival_shift_ms")},
+              "bands": {f"{band['band_hz'][0]:g}-{band['band_hz'][1]:g}": band["change_db"]
+                        for band in row["bands"]}}
+        for key, row in preview["positions"].items()
+    }}
+
+
 def _rounded(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {key: _rounded(item) for key, item in value.items()}

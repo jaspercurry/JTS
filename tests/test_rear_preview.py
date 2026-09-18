@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -14,10 +15,11 @@ from jasper.active_speaker.branch_chain import rear_stage_response
 from jasper.active_speaker.camilla_yaml import rear_branch_sum_headroom_db
 from jasper.active_speaker.crossover_v2 import rear_preview
 from jasper.active_speaker.crossover_v2.pose_curve import lateral_pose_curve
+from jasper.active_speaker.crossover_v2.prescription_document import read_prescription_document
 from jasper.active_speaker.crossover_v2.rear_views import PAIR_FFT_SIZE, pair_takes
 from jasper.active_speaker.crossover_v2.room_selection import purpose_take_records
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
-from jasper.active_speaker.rear_calibration import diagnostic_seed
+from jasper.active_speaker.rear_calibration import MAX_CHAIN_BOOST_DB, diagnostic_seed
 from jasper.audio_measurement import rear_evidence as figures
 from jasper.audio_measurement.analysis import band_levels_from_magnitude, smooth_fractional_octave
 from jasper.cli import crossover_prescriber
@@ -31,17 +33,89 @@ from tests.test_round_views_rear import (
 __all__ = ["banked_candidates"]
 
 
-def _preview(tmp_path, capsys, sections, root=None):
+def _preview(tmp_path, capsys, sections, root=None, extra=()):
     path = tmp_path / "document.json"
     path.write_text(json.dumps(document("saved", sections)))
     status = crossover_prescriber.main([
-        "judge", "--preview", str(path), *(["--round", str(root)] if root else []),
+        "judge", "--preview", str(path), *(["--round", str(root)] if root else []), *extra,
     ])
     answer = json.loads(capsys.readouterr().out)
     assert (status == 0) == answer["ok"]
     if answer.get("code") == "evidence_unreadable":
         assert status == EXIT_UNREADABLE
     return answer
+
+
+def test_grid_writes_complete_documents_and_full_previews(tmp_path, capsys):
+    root = pair_round(tmp_path)
+    section = diagnostic_seed(48000)
+    section["rear_muted"] = False
+    paths = [f"rear_calibration.rear.{branch}.gain_db" for branch in ("bass", "cancellation")]
+    delay = "rear_calibration.rear.cancellation.delay_ms"
+    directory = tmp_path / "proposals"
+    answer = _preview(tmp_path, capsys, {"rear_calibration": section}, root, (
+        "--vary", f"{','.join(paths)}=-2,-1", "--vary", f"{delay}=0,1", "--out-dir", str(directory)))
+    assert (answer["section"], answer["adopted"], answer["banked"]) == ("rear_calibration", False, False)
+    assert answer["axes"] == [{"paths": paths, "values": [-2, -1]}, {"paths": [delay], "values": [0, 1]}]
+    assert len(answer["variants"]) == 4 and len(list(directory.iterdir())) == 8
+    for index, row in enumerate(answer["variants"], 1):
+        path = Path(row["out"])
+        assert path == directory / f"variant-{index:02d}.json"
+        variant = read_prescription_document(json.loads(path.read_text()))
+        assert variant["sections"]["rear_calibration"]["assumptions"] == section["assumptions"]
+        assert variant["rationale"] == document("saved")["rationale"]
+        assert set(row["values"]) == {*paths, delay}
+        for branch, axis_path in zip(("bass", "cancellation"), paths):
+            assert variant["sections"]["rear_calibration"]["rear"][branch]["gain_db"] == row["values"][axis_path]
+        full = json.loads(path.with_suffix(".preview.json").read_text())
+        single = _preview(tmp_path, capsys, variant["sections"], root)
+        assert full == single
+        assert row["headroom_charge_db"] == full["preview"]["stage"]["headroom_charge_db"]
+        for key, position in row["positions"].items():
+            source = full["preview"]["positions"][key]
+            assert set(position["bands"]) == {"30-60", "60-100", "90-350", "200-300", "350-700", "700-1500", "1500-5000"}
+            assert position["trough_fill_db"] == source["trough_fill_db"]
+            assert position["gradient_residual_db"] == source["gradient_residual"]["db"]
+            for metric in ("early_late_change_db", "arrival_shift_ms"):
+                assert position[metric] == source["late_energy"][metric]
+            for band in source["bands"]:
+                low, high = band["band_hz"]
+                assert position["bands"][f"{low:g}-{high:g}"] == band["change_db"]
+                if band["reason"] == figures.REASON_COVERAGE_SHORT:
+                    assert position["bands"][f"{low:g}-{high:g}"] is None
+
+
+def test_grid_continues_after_a_refused_variant_without_writing_it(tmp_path, capsys):
+    section = diagnostic_seed(48000)
+    section["rear"]["bass"]["filters"] = [{"type": "Biquad", "parameters": {
+        "type": "Peaking", "freq": 120, "q": 1, "gain": 3}}]
+    directory = tmp_path / "proposals"
+    path = "rear_calibration.rear.bass.filters[0].parameters.gain"
+    answer = _preview(tmp_path, capsys, {"rear_calibration": section}, pair_round(tmp_path), (
+        "--vary", f"{path}=3,{MAX_CHAIN_BOOST_DB + 1},4", "--out-dir", str(directory)))
+    rows = answer["variants"]
+    assert len(rows) == 3 and sum(row.get("ok") is False for row in rows) == 1
+    assert (rows[1]["out"], rows[1]["ok"], rows[1]["code"]) == (None, False, "rear_calibration_invalid")
+    assert rows[1]["values"] == {path: MAX_CHAIN_BOOST_DB + 1}
+    assert {path.name for path in directory.iterdir()} == {
+        f"variant-{index:02d}{suffix}" for index in (1, 3) for suffix in (".json", ".preview.json")}
+    assert all(row["positions"] for row in (rows[0], rows[2]))
+
+
+def test_bad_grid_path_refuses_the_call_without_writing(tmp_path, capsys):
+    directory = tmp_path / "proposals"
+    answer = _preview(tmp_path, capsys, {"rear_calibration": diagnostic_seed(48000)}, extra=(
+        "--vary", "rear_calibration.rear_muted=true,false", "--vary", "rear_calibration.missing=1,2",
+        "--out-dir", str(directory)))
+    assert (answer["ok"], answer["code"], answer["section"]) == (False, "prescription_malformed", "rear_calibration")
+    assert not directory.exists()
+
+
+@pytest.mark.parametrize("extra", [["--preview"], ["--out-dir", "proposals"]])
+def test_grid_requires_preview_and_out_dir(extra):
+    with pytest.raises(SystemExit) as caught:
+        crossover_prescriber.main(["judge", "seed.json", "--vary", "room.gain=1,2", *extra])
+    assert caught.value.code == 2
 
 
 @pytest.mark.parametrize("front_gain,filter_gain", [(0.0, 0.0), (-0.51, -6.36), (0.0, 4.0)])

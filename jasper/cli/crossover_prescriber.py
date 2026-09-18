@@ -26,8 +26,9 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
     PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document, preview_prescription_document,
-    preview_room_document, read_prescription_document, saved_base,
+    parse_vary_axis, preview_room_document, read_prescription_document, saved_base, vary_document,
 )
+from jasper.active_speaker.crossover_v2.rear_preview import summary_rows
 from jasper.active_speaker.crossover_v2.round_inputs import (
     banked_round_of, recent_round_sessions, round_inputs, prescription_sources, resolve_set, RoundInputs,
 )
@@ -36,6 +37,7 @@ from jasper.active_speaker.seat_level_reference import seat_level_reference_volu
 from jasper.active_speaker.rear_calibration import compile_rear_stage, diagnostic_seed, read_rear_calibration
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
+from jasper.atomic_io import atomic_write_json
 from jasper.identity.reader import CROSSOVER_PAGE_PATH, SPEAKER_SETUP_PAGE_PATH, read_identity, speaker_url
 
 PROG = "jasper-crossover-prescriber"
@@ -116,6 +118,38 @@ def _document_base(document: Mapping[str, Any], root: Path | None) -> tuple[Bank
     return saved_base() if document["base"] == "saved" else (find_banked_candidate(document["base"], root=root), None)
 
 
+def _preview_document(args: argparse.Namespace, document: Mapping[str, Any]) -> dict[str, Any]:
+    if "rear_calibration" in document["sections"]:
+        return preview_prescription_document(document, round_dir=Path(args.round) if args.round else None)
+    base, _ = _document_base(document, Path(args.root) if args.root else None)
+    return preview_room_document(document, base=base, evidence=_document_evidence(args, document))
+
+
+def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) -> int:
+    axes = [parse_vary_axis(text) for text in args.vary]
+    directory = Path(args.out_dir)
+    rows = []
+    for index, (values, variant) in enumerate(vary_document(document, axes), 1):
+        try:
+            result = _preview_document(args, variant)
+        except PrescriptionDocumentRefused as exc:
+            rows.append({"out": None, "values": values, "ok": False, "code": exc.code, "error": exc.error})
+            continue
+        path = directory / f"variant-{index:02d}.json"
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            atomic_write_json(path, variant)
+            atomic_write_json(path.with_suffix(".preview.json"), result)
+        except OSError as exc:
+            return failed(EXIT_WRITE_FAILED, REASON_UNWRITABLE, str(exc))
+        rows.append({"out": str(path), "values": values,
+                     **(summary_rows(result["preview"]) if result["section"] == "rear_calibration"
+                        else {"preview": result["preview"]})})
+    return answered({"ok": True, "section": "rear_calibration" if "rear_calibration" in document["sections"] else "room",
+                     "axes": [{"paths": paths, "values": values} for paths, values in axes],
+                     "variants": rows, "adopted": False, "banked": False})
+
+
 def _cmd_document(args: argparse.Namespace) -> int:
     try:
         try:
@@ -126,14 +160,10 @@ def _cmd_document(args: argparse.Namespace) -> int:
         if args.base is not None and args.base != document["base"]:
             raise PrescriptionDocumentRefused("composition_base_mismatch", None, "--base and document.base differ")
         root = Path(args.root) if args.root else None
-        if args.command == "judge" and args.preview and "rear_calibration" in document["sections"]:
-            return answered(preview_prescription_document(
-                document, round_dir=Path(args.round) if args.round else None,
-            ))
+        if args.command == "judge" and args.preview:
+            return _cmd_vary_document(args, document) if args.vary else answered(_preview_document(args, document))
         base, base_profile = _document_base(document, root)
         evidence = _document_evidence(args, document)
-        if args.command == "judge" and args.preview:
-            return answered(preview_room_document(document, base=base, evidence=evidence))
         candidate = compose_prescription_document(document, base=base, evidence=evidence,
                                                   base_profile=base_profile)
     except PrescriptionDocumentRefused as exc:
@@ -642,6 +672,8 @@ def build_parser() -> argparse.ArgumentParser:
         else:
             command.set_defaults(base=None)
             command.add_argument("--preview", action="store_true", help="room response, taper margins and residual; for a rear_calibration section with --round <pair round>, the predicted rear figures; banks nothing")
+            command.add_argument("--vary", action="append", metavar="AXIS", help="PATH[,PATH...]=VALUE[,VALUE...] axis; repeat for a Cartesian grid")
+            command.add_argument("--out-dir", metavar="DIR", help="write grid documents and full previews")
         command.add_argument("--root", help="candidate bank root")
         command.set_defaults(func=_cmd_document)
     status = sub.add_parser("status", help="read declared, banked and applied state")
@@ -655,7 +687,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "judge" and args.vary and (not args.preview or not args.out_dir):
+        parser.error("--vary requires --preview and --out-dir")
     if args.command in {"judge", "compose"}:
         args.session_dir = args.round
     result: int = args.func(args)
