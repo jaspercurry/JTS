@@ -6,17 +6,11 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from pathlib import Path
 
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
-from jasper.active_speaker.measurement import (
-    active_summed_targets,
-    load_measurement_state,
-)
 from jasper.audio_hardware import dac as dac_registry
 from jasper.audio_hardware.dac import DacProfile
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
@@ -326,40 +320,6 @@ def standard_design_draft(
         ),
         created_at="2026-06-14T12:00:00Z",
     )
-
-
-def seed_summed_test(
-    topology: OutputTopology,
-    state_path: Path,
-    *,
-    playback_id: str = "summed-playback-1",
-    audio_emitted: bool = True,
-) -> dict:
-    """Seed legacy playback evidence for tests of the persisted-state readers."""
-    state = json.loads(state_path.read_text()) if state_path.exists() else {}
-    target = next(t for t in active_summed_targets(topology) if t["speaker_group_id"] == "mono")
-    state.setdefault("summed_tests", []).append({
-        "summed_test_id": playback_id,
-        "created_at": "2026-06-14T12:02:30Z",
-        "speaker_group_id": "mono",
-        "group_fingerprint": target["group_fingerprint"],
-        "captured": True,
-        "audio_emitted": audio_emitted,
-        "playback_id": playback_id,
-        "backend": "aplay" if audio_emitted else "wav_artifact",
-        "artifact": {
-            "wav_basename": f"tone_{playback_id}.wav",
-            "metadata_basename": f"tone_{playback_id}.json",
-            "target_output_indices": [0, 1],
-            "channel_count": 2,
-        },
-        "target_output_indices": [0, 1],
-        "expected_output_indices": [0, 1],
-        "tone": {"frequency_hz": 2500, "level_dbfs": -72},
-        "issues": [],
-    })
-    state_path.write_text(json.dumps(state))
-    return load_measurement_state(topology, state_path=state_path)
 
 
 def applied_graph_fixture(topology, applied, *, playback_device=None):

@@ -2,19 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Durable active-speaker driver-check and measurement evidence.
-
-This module records the evidence produced by the guided active-crossover flow:
-one measured result per driver, plus the summed playback tests per active
-speaker group. It does not play tones, capture audio, load CamillaDSP, or infer
-acoustic truth from thin evidence. It stores what the UI and operator observed
-so the baseline compiler can decide whether it has enough evidence to proceed.
-
-``summed_validations`` has no writer in this tree; its reader stays because
-commissioned boxes still hold those records, and the summary it feeds
-(`latest_summed_validations`, `latest_summed_pairs_by_group`) is hashed into
-the applied profile's identity by `baseline_profile._source_payload`.
-"""
+"""Durable active-speaker driver-check and measurement evidence."""
 
 from __future__ import annotations
 
@@ -40,11 +28,9 @@ from jasper.output_topology import (
 from ._common import (
     finite_float as _finite_float,
     issue as _issue,
-    region_key as _region_key,
 )
 from .calibration_level import classify_mic_meter
 from .capture_geometry import REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID
-from .profile import ADJACENT_PAIRS_BY_WAY
 from .repeat_admission import MAX_RESERVATIONS
 from .safe_playback import playback_target_signature
 
@@ -62,22 +48,10 @@ DRIVER_OUTCOMES = {
     "too_loud",
 }
 MAX_DRIVER_RECORDS = 48
-MAX_SUMMED_RECORDS = 24
-MAX_SUMMED_TEST_RECORDS = 24
 
 
 def measurement_state_path(path: str | Path | None = None) -> Path:
     return Path(path or os.environ.get(STATE_PATH_ENV) or DEFAULT_STATE_PATH)
-
-
-def _truthy_flag(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
-    return False
 
 
 def _text(value: Any, *, max_chars: int = 240) -> str | None:
@@ -96,81 +70,8 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-# A 2-way group's single crossover region is always woofer<->tweeter — the
-# fixed, installation-independent vocabulary in
-# jasper.active_speaker.profile.ADJACENT_PAIRS_BY_WAY[2] (a 2-way ALWAYS has
-# exactly these two roles and exactly one region joining them). A summed
-# record saved before region identity existed — or by a caller that never
-# stamped one — resolves unambiguously into this one pair on a 2-way; see
-# `_latest_current_summed_records`. A 3-way has two regions and no way to
-# guess which one an unstamped record belongs to, so it is left out of
-# pairing entirely in that case.
-_TWO_WAY_REGION_KEY = _region_key(*ADJACENT_PAIRS_BY_WAY[2][0])
-
-
-def _record_region_key(record: Mapping[str, Any]) -> str | None:
-    """The paired-evidence key ``record`` belongs under, from its own stamp.
-
-    The ``region`` block contains ``{"lower_role", "upper_role", "fc_hz"}``.
-    ``None`` when the record has no resolvable region of its own — the caller
-    decides whether a 2-way legacy fallback applies (see `_TWO_WAY_REGION_KEY`).
-    """
-    region = record.get("region")
-    if not isinstance(region, Mapping):
-        return None
-    lower_role = region.get("lower_role")
-    upper_role = region.get("upper_role")
-    if (
-        isinstance(lower_role, str) and lower_role
-        and isinstance(upper_role, str) and upper_role
-    ):
-        return _region_key(lower_role, upper_role)
-    return None
-
-
-def _record_summed_kind(record: Mapping[str, Any]) -> str | None:
-    """``"in_phase"`` / ``"reverse"`` / ``None`` (no acoustic verdict at all).
-
-    A record with no ``acoustic`` block (the pure operator-listening-check
-    path — no mic-backed verdict) has no polarity kind: it still counts
-    toward ``latest_summed_by_group`` candidacy (a validated blend with no
-    null evidence, same as before this pairing existed) but can never
-    contribute to a region's in-phase/reverse pair.
-    """
-    acoustic = record.get("acoustic")
-    if not isinstance(acoustic, Mapping):
-        return None
-    return "reverse" if _truthy_flag(acoustic.get("expect_null")) else "in_phase"
-
-
-def _record_comparison_scope(record: Mapping[str, Any]) -> tuple[str, str | None]:
-    """Authoritative commissioning-run scope carried by a capture record.
-
-    Modern captures bind their server-normalized placement proof to the
-    active comparison set.  That id is decision evidence (unlike the optional
-    forensic bundle reference), so paired in-phase/reverse captures may use it
-    to prove they came from the same fixed-position commissioning run.  Legacy
-    records have no proof and return the legacy scope; they retain the
-    pre-existing newest-per-polarity fallback within that legacy bucket. A
-    present-but-malformed proof is distinct from legacy evidence and must not
-    authorize any pair.
-    """
-
-    if "placement_proof" not in record or record.get("placement_proof") is None:
-        return "legacy", None
-    proof = record.get("placement_proof")
-    if not isinstance(proof, Mapping):
-        return "invalid", None
-    value = proof.get("comparison_set_id")
-    if not isinstance(value, str) or len(value) != 32:
-        return "invalid", None
-    if not all(ch in "0123456789abcdef" for ch in value):
-        return "invalid", None
-    return "comparison_set", value
-
-
 def _crossover_groups(topology: OutputTopology) -> list[Any]:
-    """The groups that carry an INTER-DRIVER crossover — the summed-check set."""
+    """Return active two-way and three-way speaker groups."""
     return [
         group for group in topology.speaker_groups
         if group.mode in {"active_2_way", "active_3_way"}
@@ -291,7 +192,7 @@ def _summed_fingerprint(
 
 
 def active_summed_targets(topology: OutputTopology) -> list[dict[str, Any]]:
-    """Return active speaker groups that need a summed crossover check."""
+    """Return crossover group targets with roles and fingerprints."""
 
     crossover_groups = _crossover_groups(topology)
     # NOT ``active_driver_targets``: that set is WIDER, and the fingerprint
@@ -329,13 +230,8 @@ def _base_state(path: Path) -> dict[str, Any]:
         "updated_at": None,
         "state_path": str(path),
         "driver_measurements": [],
-        "summed_tests": [],
-        "summed_validations": [],
         "latest_by_target": {},
         "latest_reference_axis_by_target": {},
-        "latest_summed_tests": {},
-        "latest_summed_by_group": {},
-        "latest_summed_pairs_by_group": {},
         "active_comparison_set": None,
         "summary": {},
         "issues": [],
@@ -364,14 +260,6 @@ def _normalise_state(raw: Any, path: Path) -> dict[str, Any]:
     state["driver_measurements"] = _normalise_records(
         raw.get("driver_measurements"),
         limit=MAX_DRIVER_RECORDS,
-    )
-    state["summed_tests"] = _normalise_records(
-        raw.get("summed_tests"),
-        limit=MAX_SUMMED_TEST_RECORDS,
-    )
-    state["summed_validations"] = _normalise_records(
-        raw.get("summed_validations"),
-        limit=MAX_SUMMED_RECORDS,
     )
     return state
 
@@ -521,85 +409,6 @@ def _latest_current_driver_confirmations(
             continue
         latest.setdefault(target_id, record)
     return latest
-
-
-def _latest_current_summed_records(
-    records: list[dict[str, Any]],
-    targets: list[dict[str, Any]],
-) -> tuple[
-    dict[str, dict[str, Any]],
-    dict[str, dict[str, dict[str, dict[str, Any] | None]]],
-    int,
-]:
-    target_by_group = {target["speaker_group_id"]: target for target in targets}
-    latest: dict[str, dict[str, Any]] = {}
-    pairs: dict[str, dict[str, dict[str, dict[str, Any] | None]]] = {}
-    pair_comparison_sets: dict[str, dict[str, tuple[str, str | int | None]]] = {}
-    stale_count = 0
-    for record_index, record in enumerate(reversed(records)):
-        group_id = record.get("speaker_group_id")
-        if not isinstance(group_id, str) or group_id not in target_by_group:
-            continue
-        target = target_by_group[group_id]
-        if record.get("group_fingerprint") != target.get("group_fingerprint"):
-            stale_count += 1
-            continue
-        kind = _record_summed_kind(record)
-        if kind != "reverse":
-            latest.setdefault(group_id, record)
-        region_key = _record_region_key(record)
-        if region_key is None and target.get("mode") == "active_2_way":
-            region_key = _TWO_WAY_REGION_KEY
-        if kind is not None and region_key is not None:
-            scope_kind, comparison_set_id = _record_comparison_scope(record)
-            comparison_scope: tuple[str, str | int | None] = (
-                scope_kind,
-                record_index if scope_kind == "invalid" else comparison_set_id,
-            )
-            group_pair_sets = pair_comparison_sets.setdefault(group_id, {})
-            if region_key not in group_pair_sets:
-                # Records are walked newest-first. The first record for this
-                # region anchors the pair to its commissioning run; an older
-                # run may not fill the missing polarity slot.
-                group_pair_sets[region_key] = comparison_scope
-            elif group_pair_sets[region_key] != comparison_scope:
-                continue
-            region_pairs = pairs.setdefault(group_id, {})
-            slot = region_pairs.setdefault(
-                region_key, {"in_phase": None, "reverse": None}
-            )
-            if scope_kind == "invalid":
-                # Keep an authoritative empty region so 2-way consumers do
-                # not mistake absence for legacy state and fall back to the
-                # flat latest-in-phase compatibility slot.
-                continue
-            if slot[kind] is None:
-                slot[kind] = record
-    return latest, pairs, stale_count
-
-
-def _latest_current_summed_tests(
-    records: list[dict[str, Any]],
-    targets: list[dict[str, Any]],
-) -> tuple[dict[str, dict[str, Any]], int]:
-    target_by_group = {target["speaker_group_id"]: target for target in targets}
-    latest: dict[str, dict[str, Any]] = {}
-    stale_count = 0
-    for record in reversed(records):
-        group_id = record.get("speaker_group_id")
-        if not isinstance(group_id, str) or group_id not in target_by_group:
-            continue
-        target = target_by_group[group_id]
-        if record.get("group_fingerprint") == target.get("group_fingerprint"):
-            latest.setdefault(group_id, record)
-        else:
-            stale_count += 1
-    return latest, stale_count
-
-
-def _record_playback_id(record: Mapping[str, Any]) -> str:
-    value = record.get("summed_test_id") or record.get("playback_id")
-    return str(value or "")
 
 
 def _mic_meter_from(
@@ -786,7 +595,6 @@ def current_driver_floor_evidence(
 
 def _summarise(topology: OutputTopology, state: dict[str, Any]) -> dict[str, Any]:
     driver_targets = active_driver_targets(topology)
-    summed_targets = active_summed_targets(topology)
     (
         latest_by_target,
         latest_reference_axis_by_target,
@@ -799,18 +607,6 @@ def _summarise(topology: OutputTopology, state: dict[str, Any]) -> dict[str, Any
         state.get("driver_measurements", []),
         driver_targets,
     )
-    latest_summed_by_group, latest_summed_pairs_by_group, stale_summed_count = (
-        _latest_current_summed_records(
-            state.get("summed_validations", []),
-            summed_targets,
-        )
-    )
-    latest_summed_tests_by_group, stale_summed_test_count = (
-        _latest_current_summed_tests(
-            state.get("summed_tests", []),
-            summed_targets,
-        )
-    )
     captured_targets = [
         target["target_id"]
         for target in driver_targets
@@ -820,28 +616,7 @@ def _summarise(topology: OutputTopology, state: dict[str, Any]) -> dict[str, Any
         target for target in driver_targets
         if target["target_id"] not in captured_targets
     ]
-    validated_groups: list[str] = []
-    for target in summed_targets:
-        group_id = target["speaker_group_id"]
-        latest_test = latest_summed_tests_by_group.get(group_id, {})
-        latest_validation = latest_summed_by_group.get(group_id, {})
-        if latest_validation.get("validated") is not True:
-            continue
-        if not latest_test:
-            continue
-        if _record_playback_id(latest_validation) != _record_playback_id(latest_test):
-            continue
-        validated_groups.append(group_id)
-    missing_summed = [
-        target for target in summed_targets
-        if target["speaker_group_id"] not in validated_groups
-    ]
     measurements_complete = bool(driver_targets) and not missing_targets
-    summed_complete = (
-        measurements_complete
-        and bool(summed_targets)
-        and not missing_summed
-    )
     return {
         "required_driver_count": len(driver_targets),
         "captured_driver_count": len(captured_targets),
@@ -851,10 +626,6 @@ def _summarise(topology: OutputTopology, state: dict[str, Any]) -> dict[str, Any
         "captured_driver_check_count": len(captured_targets),
         "missing_driver_check_targets": missing_targets,
         "driver_checks_complete": measurements_complete,
-        "required_summed_group_count": len(summed_targets),
-        "validated_summed_group_count": len(validated_groups),
-        "missing_summed_targets": missing_summed,
-        "summed_validation_complete": summed_complete,
         "latest_driver_measurements": latest_by_target,
         "latest_driver_checks": latest_by_target,
         "latest_reference_axis_driver_measurements": (
@@ -866,12 +637,7 @@ def _summarise(topology: OutputTopology, state: dict[str, Any]) -> dict[str, Any
         # that (it intentionally still reflects whichever record is newest,
         # sweep evidence included).
         "latest_driver_confirmations": latest_driver_confirmations_by_target,
-        "latest_summed_tests": latest_summed_tests_by_group,
-        "latest_summed_validations": latest_summed_by_group,
-        "latest_summed_pairs_by_group": latest_summed_pairs_by_group,
         "stale_driver_record_count": stale_driver_count,
-        "stale_summed_test_record_count": stale_summed_test_count,
-        "stale_summed_record_count": stale_summed_count,
     }
 
 
@@ -893,29 +659,14 @@ def _with_summary(topology: OutputTopology, state: dict[str, Any]) -> dict[str, 
                 f"{target['role']} with a quiet test before saving an active baseline"
             ),
         ))
-    for target in summary["missing_summed_targets"]:
-        issues.append(_issue(
-            "warning",
-            "summed_validation_missing",
-            (
-                f"validate the summed crossover for "
-                f"{target['speaker_group_label']} before saving an active baseline"
-            ),
-        ))
-    if (
-        summary["stale_driver_record_count"]
-        or summary["stale_summed_test_record_count"]
-        or summary["stale_summed_record_count"]
-    ):
+    if summary["stale_driver_record_count"]:
         issues.append(_issue(
             "warning",
             "stale_measurement_evidence_ignored",
             "previous measurement evidence no longer matches the saved speaker layout",
         ))
-    if summary["summed_validation_complete"]:
+    if summary["driver_measurements_complete"]:
         status = "ready_for_baseline"
-    elif summary["driver_measurements_complete"]:
-        status = "needs_summed_validation"
     elif summary["required_driver_count"]:
         status = "needs_driver_measurements"
     else:
@@ -927,14 +678,10 @@ def _with_summary(topology: OutputTopology, state: dict[str, Any]) -> dict[str, 
         "latest_reference_axis_by_target": summary[
             "latest_reference_axis_driver_measurements"
         ],
-        "latest_summed_tests": summary["latest_summed_tests"],
-        "latest_summed_by_group": summary["latest_summed_validations"],
-        "latest_summed_pairs_by_group": summary["latest_summed_pairs_by_group"],
         "summary": summary,
         "issues": issues,
         "permissions": {
             "may_record_driver_measurement": True,
-            "may_compile_baseline": summary["summed_validation_complete"],
             "may_not_play_audio": True,
             "may_not_load_camilla": True,
         },

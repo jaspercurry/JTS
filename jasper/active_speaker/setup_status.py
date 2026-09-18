@@ -89,7 +89,7 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 def _newest_commissioning_record(
     measurements: Mapping[str, Any] | None,
 ) -> Mapping[str, Any] | None:
-    """The most recently created driver/summed record, across both maps.
+    """The most recently created driver record.
 
     ``created_at`` is the zero-padded UTC ``_utc_now()`` timestamp everywhere
     it is written (measurement.py), so a plain string comparison sorts
@@ -97,13 +97,10 @@ def _newest_commissioning_record(
     """
     if not isinstance(measurements, Mapping):
         return None
-    candidates: list[Mapping[str, Any]] = []
-    for key in ("latest_by_target", "latest_summed_by_group"):
-        bucket = measurements.get(key)
-        if isinstance(bucket, Mapping):
-            candidates.extend(
-                record for record in bucket.values() if isinstance(record, Mapping)
-            )
+    bucket = measurements.get("latest_by_target")
+    if not isinstance(bucket, Mapping):
+        return None
+    candidates = [record for record in bucket.values() if isinstance(record, Mapping)]
     if not candidates:
         return None
     return max(candidates, key=lambda record: str(record.get("created_at") or ""))

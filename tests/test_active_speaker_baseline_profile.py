@@ -56,7 +56,7 @@ from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import (
     declared_profile_fixture, declared_graph_fixture, standard_design_draft,
-    mono_output_topology, seed_summed_test,
+    mono_output_topology,
     valid_camilla_config as _valid_config,  # noqa: F401 - shared fixture export
 )
 from tests.test_active_speaker_profile import _two_way_preset
@@ -199,7 +199,7 @@ def _measurements(topology: OutputTopology, tmp_path: Path) -> dict:
     for role in ("woofer", "tweeter"):
         output_index = 0 if role == "woofer" else 1
         playback_id = f"playback-{role}"
-        record_driver_measurement(
+        state = record_driver_measurement(
             topology,
             {
                 "speaker_group_id": "mono",
@@ -217,9 +217,7 @@ def _measurements(topology: OutputTopology, tmp_path: Path) -> dict:
             state_path=state_path,
             now=f"2026-06-14T12:0{1 if role == 'woofer' else 2}:00Z",
         )
-    return seed_summed_test(
-        topology, state_path, playback_id="summed-playback-audible"
-    )
+    return state
 
 
 def test_baseline_source_binds_exact_normalized_preview_candidate(

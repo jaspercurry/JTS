@@ -222,49 +222,6 @@ def _write_applied_graph(
     path.write_text(text, encoding="utf-8")
 
 
-def _acoustic_measurement_state(*, summed: bool = True) -> dict:
-    drivers = {}
-    for role in ("woofer", "tweeter"):
-        drivers[f"mono:{role}"] = {
-            "speaker_group_id": "mono",
-            "role": role,
-            "captured": True,
-            "mic_clipping": False,
-            "excitation": {
-                "schema_version": 1,
-                "scope": "sweep_plus_role_varying_commission_gain",
-                "sweep_peak_dbfs": -12.0,
-                "commissioning_gain_db": -40.0,
-                "effective_peak_dbfs": -52.0,
-            },
-            "acoustic": {
-                "verdict": "present",
-                "mic_clipping": False,
-                "overlap_levels": [{"fc_hz": 2000.0, "usable": True}],
-            },
-        }
-    summed_records = {
-        "mono": {
-            "speaker_group_id": "mono",
-            "validated": True,
-            "mic_clipping": False,
-            "acoustic": {
-                "verdict": "blend_ok",
-                "mic_clipping": False,
-            },
-        }
-    } if summed else {}
-    return {
-        "summary": {
-            "required_driver_count": 2,
-            "required_summed_group_count": 1,
-            "summed_validation_complete": summed,
-            "latest_driver_measurements": drivers,
-            "latest_summed_validations": summed_records,
-        }
-    }
-
-
 def test_active_config_path_from_statefile_reads_through_canonical_reader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -693,19 +650,7 @@ def test_commissioning_summary_failed_surfaces_first_blocker_code() -> None:
     assert result["last_failure_code"] == "baseline_profile_apply_failed"
 
 
-def test_commissioning_summary_last_capture_is_the_newest_across_both_maps() -> None:
-    """The newest record (by created_at) across BOTH maps wins, regardless of
-    which map it came from -- and the winning record's `snr_db` is read from
-    its `worst_relevant` SNR entry, not some other field.
-
-    Deliberately absent: that entry's `band_id`. `last_capture` is a compact
-    `/state` household card -- terminal display, not a forensic record -- and
-    should not grow a fifth key. The exact-dict-equality assertion below is
-    what holds that shape, so a fifth key fails here first. Band identity
-    lives on the diagnostic surfaces instead: `{role}_snr_band` on
-    `event=correction.crossover_v2_measure_diag` and in
-    `analysis_diagnostic_summary` (#2613, PR #2618).
-    """
+def test_commissioning_summary_last_capture_is_the_newest_driver_record() -> None:
     measurements = {
         "latest_by_target": {
             "mono:woofer": {
@@ -716,9 +661,7 @@ def test_commissioning_summary_last_capture_is_the_newest_across_both_maps() -> 
                     "snr": {"worst_relevant": {"estimated_snr_db": 22.5}},
                 },
             },
-        },
-        "latest_summed_by_group": {
-            "mono": {
+            "mono:tweeter": {
                 "created_at": "2026-07-11T11:00:00Z",
                 "mic_clipping": True,
                 "acoustic": {
@@ -749,7 +692,7 @@ def test_commissioning_summary_last_capture_none_without_any_record() -> None:
         SimpleNamespace(topology_id="bench_mono"),
         profile=None,
         applied_profile=None,
-        measurements={"latest_by_target": {}, "latest_summed_by_group": {}},
+        measurements={"latest_by_target": {}},
     )
     assert result["last_capture"] is None
 
@@ -768,9 +711,6 @@ def test_commissioning_summary_is_fail_soft_never_raises() -> None:
 
     # Degrades to the safest phase rather than propagating the exception.
     assert result["phase"] == "idle"
-
-
-# --- Overwrite-bug regression (lane E, Slice 2 paired summed evidence) ------
 
 
 def test_setup_binding_uses_the_banked_candidate_and_live_declaration(tmp_path, monkeypatch):

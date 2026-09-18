@@ -152,16 +152,6 @@ def require_sha256_hex(
     )
 
 
-def region_key(lower_role: str, upper_role: str) -> str:
-    """The join key one crossover region's paired evidence is grouped under.
-
-    ``measurement.py`` writes ``latest_summed_pairs_by_group`` keyed by this and
-    ``commissioning_capture.py`` reads it back; the format must match exactly.
-    """
-
-    return f"{lower_role}:{upper_role}"
-
-
 class DriverFields(JsonFields):
     error_type: type[CodedFieldError]
 

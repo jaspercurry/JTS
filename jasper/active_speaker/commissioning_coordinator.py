@@ -219,9 +219,6 @@ def build_commissioning_view(
                           "preview_ready": preview_ready, "driver_floors_declared": safety_ready},
         "driver_spacing_mm": (draft.get("manual_settings") or {}).get("driver_spacing_mm"),
         "driver_checks": checks,
-        "summed_validation": {"complete": bool(summary.get("summed_validation_complete")),
-                              "validated": int(summary.get("validated_summed_group_count") or 0),
-                              "required": int(summary.get("required_summed_group_count") or 0)},
         "test_level": dict((calibration_level or {}).get("test_signal") or {}),
         "runtime": {"commission": dict(commission or {}), "startup_load": dict(startup_load or {})},
     }
