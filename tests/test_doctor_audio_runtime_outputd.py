@@ -205,7 +205,6 @@ def _write_no_lane_active_topology(path: Path) -> None:
                             "identity_verified": True,
                             "startup_muted": True,
                             "protection_required": True,
-                            "protection_status": "present",
                         },
                     ],
                 }

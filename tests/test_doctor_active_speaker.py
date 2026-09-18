@@ -317,7 +317,6 @@ def test_active_speaker_runtime_graph_exits_are_capability_aware(monkeypatch, tm
                     "identity_verified": True,
                     "startup_muted": True,
                     "protection_required": True,
-                    "protection_status": "present",
                 },
             ],
         }],

@@ -170,7 +170,6 @@ def _no_lane_active_two_way():
                         "identity_verified": True,
                         "startup_muted": True,
                         "protection_required": True,
-                        "protection_status": "present",
                     },
                 ],
             }

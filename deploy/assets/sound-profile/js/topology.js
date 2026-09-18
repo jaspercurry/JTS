@@ -288,8 +288,7 @@ function outputChannel(role, index) {
     role: role,
     physical_output_index: index,
     startup_muted: true,
-    protection_required: tweeter,
-    protection_status: 'absent'
+    protection_required: tweeter
   };
 }
 function baseOutputDraft(source) {

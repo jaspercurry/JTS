@@ -92,7 +92,7 @@ class CodedFieldError(ValueError):
 
 def software_guard_needed(groups: Sequence[SpeakerGroup]) -> bool:
     return any(
-        channel.role == "tweeter" and channel.protection_status == "absent"
+        channel.role == "tweeter"
         for group in groups for channel in group.channels
     )
 

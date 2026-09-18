@@ -103,11 +103,6 @@ REQUIRED_ROLES_BY_MODE = {
 SUPPORTED_ROLES = {
     role for roles in REQUIRED_ROLES_BY_MODE.values() for role in roles
 }
-PROTECTION_STATUSES = {"present", "absent"}
-# Legacy spellings on disk load as absent; remove once every box has re-saved its topology.
-_STORED_PROTECTION_STATUSES = PROTECTION_STATUSES | {
-    "required_missing", "software_guard_requested", "not_required", "unknown",
-}
 OUTPUT_STATES = {"unused", "assigned", "blocked"}
 # Pure-data pairing intent recorded at commission time: "is this box meant to
 # run solo, become a wireless follower, or host one?" It seeds later reconciler
@@ -490,11 +485,10 @@ class SpeakerChannel:
     """One speaker role assigned to an optional physical output."""
 
     role: str
-    # No defaults: callers that bypass ``from_mapping`` must make the safety
+    # No default: callers that bypass ``from_mapping`` must make the safety
     # posture explicit instead of silently constructing an unsafe tweeter with
-    # the non-tweeter values.
+    # the non-tweeter value.
     protection_required: bool
-    protection_status: str
     driver_style: str | None = None
     physical_output_index: int | None = None
     human_output_label: str | None = None
@@ -519,12 +513,6 @@ class SpeakerChannel:
             raw.get("protection_required"),
             role == "tweeter",
         )
-        protection_status = _enum(
-            raw.get("protection_status", "absent"),
-            "speaker_groups[].channels[].protection_status",
-            _STORED_PROTECTION_STATUSES,
-        )
-        protection_status = "present" if protection_status == "present" else "absent"
         return cls(
             role=role,
             output_variant=_enum(raw.get("output_variant", "primary"), "output_variant", SUPPORTED_OUTPUT_VARIANTS),
@@ -539,7 +527,6 @@ class SpeakerChannel:
             human_output_label=None,
             startup_muted=_bool(raw.get("startup_muted"), True),
             protection_required=protection_required,
-            protection_status=protection_status,
             crossover_fc_hz=_optional_float(
                 raw.get("crossover_fc_hz"),
                 "speaker_groups[].channels[].crossover_fc_hz",
@@ -560,7 +547,6 @@ class SpeakerChannel:
             "physical_output_index": self.physical_output_index,
             "startup_muted": self.startup_muted,
             "protection_required": self.protection_required,
-            "protection_status": self.protection_status,
         }
         if self.driver_style:
             out["driver_style"] = self.driver_style
@@ -783,15 +769,6 @@ def canonical_fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def dsp_topology_projection(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {key: dsp_topology_projection(item) for key, item in value.items()
-                if key != "protection_status"}
-    if isinstance(value, list):
-        return [dsp_topology_projection(item) for item in value]
-    return value
-
-
 def topology_config_fingerprint(topology: OutputTopology) -> str:
     """Fingerprint only topology fields that determine emitted DSP config.
 
@@ -810,11 +787,11 @@ def topology_config_fingerprint(topology: OutputTopology) -> str:
     at CamillaDSP start costs one parse.
     """
 
-    return canonical_fingerprint(dsp_topology_projection({
+    return canonical_fingerprint({
         "hardware": topology.hardware.to_dict(),
         "speaker_groups": [group.to_dict() for group in topology.speaker_groups],
         "routing": topology.routing.to_dict(),
-    }))
+    })
 
 
 def default_physical_outputs(count: int) -> tuple[PhysicalOutput, ...]:

@@ -163,7 +163,7 @@ def test_startup_load_preflight_blocks_stale_staged_topology(
 ) -> None:
     staged = _staged(tmp_path)
     raw = _topology().to_dict()
-    raw["speaker_groups"][0]["channels"][1]["protection_status"] = "present"
+    raw["speaker_groups"][0]["channels"][1]["physical_output_index"] = 3
     topology = OutputTopology.from_mapping(raw)
 
     report = build_startup_load_preflight(

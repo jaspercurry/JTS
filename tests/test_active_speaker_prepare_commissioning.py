@@ -28,7 +28,7 @@ from tests.test_active_speaker_staging import _valid_config
 
 
 def _topology():
-    return mono_output_topology(protection_status="present")
+    return mono_output_topology()
 
 
 def _prepare(role: str, *, tmp_path: Path, group_id: str = "mono", topology=None):
@@ -127,7 +127,6 @@ def _two_active_group_topology():
                 "identity_verified": True,
                 "startup_muted": True,
                 "protection_required": True,
-                "protection_status": "present",
             },
         ],
     })

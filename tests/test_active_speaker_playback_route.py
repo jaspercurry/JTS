@@ -78,7 +78,6 @@ _TWO_WAY_GROUP = [{
             "identity_verified": True,
             "startup_muted": True,
             "protection_required": True,
-            "protection_status": "present",
         },
     ],
 }]
@@ -347,7 +346,6 @@ def _left_topology() -> OutputTopology:
                         "identity_verified": True,
                         "startup_muted": True,
                         "protection_required": True,
-                        "protection_status": "present",
                     },
                 ],
             }

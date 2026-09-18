@@ -501,7 +501,7 @@ def _mains(*, protected: bool = False) -> list[dict]:
         0,
         **(
             {"protection_required": True,
-             "protection_status": "absent"}
+             }
             if protected
             else {}
         ),
