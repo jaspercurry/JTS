@@ -411,7 +411,7 @@ def _rear_filters_array() -> dict[str, Any]:
 
 def _rear_chain(filters: dict[str, Any]) -> dict[str, Any]:
     return _object({
-        "gain_db": _number(rear_calibration.MIN_CHAIN_GAIN_DB, rear_calibration.MAX_CHAIN_BOOST_DB),
+        "gain_db": _number(rear_calibration.MIN_CHAIN_GAIN_DB, 0.0),
         "inverted": {"type": "boolean"}, "delay_ms": _number(), "muted": {"type": "boolean"},
         "filters": filters,
     }, ["gain_db", "inverted", "delay_ms", "muted", "filters"])
@@ -470,11 +470,11 @@ def _rear() -> dict[str, Any]:
                 "sample_rate_hz / 2 (Nyquist); freq is otherwise required to be > 0"
             ),
             "max_filters_per_chain": rear_calibration.MAX_FILTERS_PER_CHAIN,
-            "chain_gain_db": [rear_calibration.MIN_CHAIN_GAIN_DB, rear_calibration.MAX_CHAIN_BOOST_DB],
+            "chain_gain_db": [rear_calibration.MIN_CHAIN_GAIN_DB, 0.0],
             "chain_gain_rule": (
-                "front, rear.bass and rear.cancellation gain_db lies between "
-                f"{rear_calibration.MIN_CHAIN_GAIN_DB:g} and {rear_calibration.MAX_CHAIN_BOOST_DB:+g} dB; "
-                "a boost is charged to program headroom (ADR-0324), never free"
+                "front, rear.bass and rear.cancellation gain_db is an attenuation between "
+                f"{rear_calibration.MIN_CHAIN_GAIN_DB:g} and 0 dB: a rear chain only attenuates; "
+                "write a rear weight above 1 as front attenuation plus a band boost"
             ),
             "resonant_q_max": rear_calibration.MAX_RESONANT_Q,
             "allpass_q_max": rear_calibration.MAX_ALLPASS_Q,
@@ -484,9 +484,9 @@ def _rear() -> dict[str, Any]:
             "gain_kinds": sorted(rear_calibration.SHELVING),
             "stage_kinds": sorted(rear_calibration.STAGES),
             "gain_rule": (
-                "Peaking, Lowshelf and Highshelf gain lies between the chain floor and "
-                f"{rear_calibration.MAX_CHAIN_BOOST_DB:+g} dB; "
-                "the stage's realised peak is charged to program headroom"
+                "Peaking, Lowshelf and Highshelf gain must not exceed "
+                f"+{rear_calibration.MAX_CHAIN_BOOST_DB:g} dB; "
+                "a boost is charged to program headroom (ADR-0326)"
             ),
             "emitted_delay_rule": (
                 "common_delay_ms + front.delay_ms + a rear branch's own delay_ms must sum to >= 0; "

@@ -752,7 +752,7 @@ def test_rear_calibration_rides_the_candidate_and_reaches_the_emitted_stage():
 
 
 @pytest.mark.parametrize("document,code", [
-    (lambda: _rear_document(front={**diagnostic_seed(48000)["front"], "gain_db": 6.01}),
+    (lambda: _rear_document(front={**diagnostic_seed(48000)["front"], "gain_db": 6.0}),
      "rear_calibration_invalid"),
     (lambda: _rear_document(rear=_fir_rear()), "rear_calibration_mode_unsupported"),
     (_acoustic_rear_document, "rear_calibration_case_unsupported"),

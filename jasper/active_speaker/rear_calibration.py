@@ -102,9 +102,9 @@ def _filters(raw: Any, sample_rate: int, field: str) -> None:
 
 def _chain(raw: Any, sample_rate: int, name: str) -> None:
     chain = _object(raw, {"gain_db", "inverted", "delay_ms", "muted", "filters"}, name)
-    if not MIN_CHAIN_GAIN_DB <= _number(chain["gain_db"], name + ".gain_db") <= MAX_CHAIN_BOOST_DB:
+    if not MIN_CHAIN_GAIN_DB <= _number(chain["gain_db"], name + ".gain_db") <= 0:
         raise RearCalibrationError(
-            f"{name}.gain_db must be between {MIN_CHAIN_GAIN_DB:g} and {MAX_CHAIN_BOOST_DB:+g} dB")
+            f"{name}.gain_db must be an attenuation between {MIN_CHAIN_GAIN_DB:g} and 0 dB")
     _number(chain["delay_ms"], name + ".delay_ms")
     for key in ("inverted", "muted"):
         if type(chain[key]) is not bool:

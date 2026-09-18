@@ -71,11 +71,13 @@ Use it for measurement setup notes (mic distance, ambient noise, dataset id).
 
 ## Front chain, bass branch, cancellation branch (`case == "electrical_dsp"` only)
 
-`front`, `rear.bass`, and `rear.cancellation` are each a **chain**:
+`front`, `rear.bass`, and `rear.cancellation` are each a **chain**. Filters on
+all three chains may boost; the realised peak is charged to program headroom
+(ADR-0326).
 
 | Field | Type / range |
 |---|---|
-| `gain_db` | number, `MIN_CHAIN_GAIN_DB` (`-150`) to `MAX_CHAIN_BOOST_DB` (`+6`) dB for all chains; the realised peak is charged to program headroom (ADR-0326) |
+| `gain_db` | number, an attenuation: `MIN_CHAIN_GAIN_DB` (`-150`) to `0` dB for all chains. Write a rear weight above 1 as front attenuation plus a band boost |
 | `inverted` | bool |
 | `delay_ms` | any finite number. `front.delay_ms` is relative to the stage input; branch `delay_ms` is relative to the front reference. The compiler refuses a branch whose `common_delay_ms + front.delay_ms + branch.delay_ms` is negative — realize a negative relative rear delay by raising `common_delay_ms` instead |
 | `muted` | bool |

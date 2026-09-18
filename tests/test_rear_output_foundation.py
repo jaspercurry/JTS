@@ -509,6 +509,10 @@ def _jts3_document() -> dict:
 
 @pytest.mark.parametrize("document,expected", [
     pytest.param(_branches(), 6.0206, id="two_open_branches_sum_in_phase"),
+    pytest.param(
+        _branches(cancellation=_chain(filters=[_biquad("Peaking", freq=190.0, q=0.996, gain=6.0)])),
+        9.528697248729678, id="a_boosted_filter_is_charged",
+    ),
     pytest.param(_branches(cancellation=_chain(inverted=True)), 0.0, id="an_inverted_twin_cancels"),
     pytest.param(_branches(rear_muted=True), 0.0, id="a_muted_rear_charges_nothing"),
     pytest.param(
@@ -527,13 +531,7 @@ def test_the_rear_charge_is_the_compiled_stages_realised_peak(document, expected
     """The charge is what the stage actually puts above unity, not what two
     branches would sum to if their filters let them both run wide open.
     """
-    assert emit.rear_branch_sum_headroom_db(document) == pytest.approx(expected, abs=0.005)
-
-
-def test_a_boosted_cancellation_chain_is_charged():
-    document = _rear_document()
-    document["rear"]["cancellation"]["gain_db"] = 6.0
-    assert emit.rear_branch_sum_headroom_db(document) >= 6.0 - 0.5
+    assert emit.rear_branch_sum_headroom_db(document) == pytest.approx(expected, abs=1e-3)
 
 
 def test_the_emitted_baseline_absorbs_exactly_the_stages_peak():

@@ -385,7 +385,7 @@ def test_rear_contract_bounds_equal_the_rear_calibration_constants():
     assert schema["additionalProperties"] is False
     bounds = contract["bounds"]
     assert bounds["max_filters_per_chain"] == rear_cal.MAX_FILTERS_PER_CHAIN
-    assert bounds["chain_gain_db"] == [rear_cal.MIN_CHAIN_GAIN_DB, rear_cal.MAX_CHAIN_BOOST_DB]
+    assert bounds["chain_gain_db"] == [rear_cal.MIN_CHAIN_GAIN_DB, 0.0]
     front = schema["properties"]["front"]
     rear = schema["properties"]["rear"]["properties"]
     for chain in (front, rear["bass"], rear["cancellation"]):
@@ -467,8 +467,8 @@ _NYQUIST_HZ = 24000.0
 
     pytest.param(lambda d: d["front"].update(gain_db=rear_cal.MIN_CHAIN_GAIN_DB), True, id="chain_gain_floor_inside"),
     pytest.param(lambda d: d["front"].update(gain_db=rear_cal.MIN_CHAIN_GAIN_DB - 0.01), False, id="chain_gain_floor_outside"),
-    pytest.param(lambda d: d["rear"]["bass"].update(gain_db=rear_cal.MAX_CHAIN_BOOST_DB), True, id="chain_gain_ceiling_inside"),
-    pytest.param(lambda d: d["rear"]["bass"].update(gain_db=rear_cal.MAX_CHAIN_BOOST_DB + 0.01), False, id="chain_gain_ceiling_outside"),
+    pytest.param(lambda d: d["rear"]["bass"].update(gain_db=0.0), True, id="chain_gain_ceiling_inside"),
+    pytest.param(lambda d: d["rear"]["bass"].update(gain_db=0.01), False, id="chain_gain_ceiling_outside"),
 
     pytest.param(lambda d: d["front"].update(filters=[_biquad("Highpass", q=rear_cal.MAX_RESONANT_Q)]),
                  True, id="resonant_q_max_inside"),

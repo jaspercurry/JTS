@@ -70,17 +70,14 @@ def test_fir_replaces_both_branches_without_adding_declared_latency_twice():
         _compile(data)
 
 
-@pytest.mark.parametrize("field,value,accepted", [
-    ("gain_db", 6.0, True), ("gain_db", 6.01, False), ("gain_db", -151, False),
-    ("gain_db", None, False), ("delay_ms", True, False), ("gain_db", "0", False),
-    ("gain_db", float("nan"), False), ("inverted", 1, False),
+@pytest.mark.parametrize("field,value", [
+    ("gain_db", 6.0), ("gain_db", 0.1), ("gain_db", -151),
+    ("gain_db", None), ("delay_ms", True), ("gain_db", "0"),
+    ("gain_db", float("nan")), ("inverted", 1),
 ])
-def test_electrical_values_are_explicit_numbers_and_booleans(field, value, accepted):
+def test_electrical_values_are_explicit_numbers_and_booleans(field, value):
     data = diagnostic_seed(48000)
     data["rear"]["bass"][field] = value
-    if accepted:
-        assert read_rear_calibration(data)["rear"]["bass"][field] == value
-        return
     with pytest.raises(RearCalibrationError):
         read_rear_calibration(data)
 
@@ -136,7 +133,10 @@ def test_cli_seed_and_stage_are_read_only_and_rate_bound(tmp_path, capsys):
     *[({"type": kind, "q": 0.9, "gain": 6.01}, False)
       for kind in ("Peaking", "Lowshelf", "Highshelf")],
 ])
-def test_filter_bounds(params, accepted):
+def test_filter_q_and_gain_bounds(params, accepted):
+    """An all-pass narrower than this rotates the branch sum faster than the
+    headroom grid resolves, so the charge could miss a peak it must bound.
+    """
     data = diagnostic_seed(48000)
     data["rear"]["cancellation"]["filters"] = [
         {"type": "Biquad", "parameters": {"freq": 200, **params}}
