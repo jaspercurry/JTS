@@ -18,7 +18,12 @@ from typing import Any, Collection, Mapping, Sequence
 POSE_KIND_BEARING = "bearing"
 POSE_KIND_SEAT = "seat"
 POSE_KIND_CLOSE = "close"
-POSE_KINDS = (POSE_KIND_BEARING, POSE_KIND_SEAT, POSE_KIND_CLOSE)
+#: A pose behind the cabinet, on axis, ``distance_m`` from the back panel
+#: toward the wall -- the cardioid null the turntable arm cannot reach
+#: (issue #5330). Never a legacy inference target: a behind pose always
+#: states its own purpose.
+POSE_KIND_BEHIND = "behind"
+POSE_KINDS = (POSE_KIND_BEARING, POSE_KIND_SEAT, POSE_KIND_CLOSE, POSE_KIND_BEHIND)
 
 PURPOSE_SPEAKER = "speaker"
 PURPOSE_ROOM = "room"

@@ -220,8 +220,17 @@ def test_a_missing_input_is_refused_by_name(
             },
             "close_az+0.00_el+0.00_d+0.30",
         ),
+        # A behind pose sits at the same (0, 0) bearing as the front pose but
+        # keys apart from it, the same way close and seat do (issue #5330).
+        (
+            {
+                "position_deg": 0, "vertical_deg": 0, "mark_distance_m": 0.1,
+                "pose_kind": "behind", "seat_offset_m": None,
+            },
+            "behind_az+0.00_el+0.00_d+0.10",
+        ),
     ],
-    ids=["bearing", "offset-without-a-kind", "seat", "close"],
+    ids=["bearing", "offset-without-a-kind", "seat", "close", "behind"],
 )
 def test_doc_pose_key_tells_categorized_poses_apart_and_leaves_bearings_alone(
     doc: dict, key: str
