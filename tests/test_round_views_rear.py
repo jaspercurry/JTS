@@ -265,6 +265,21 @@ def _branch_diagnostic(gap_ms: float = _PAIR_GAP_MS) -> dict:
     ]}
 
 
+def test_pair_takes_clamp_the_window_and_skip_incomplete_solos():
+    diagnostic = _branch_diagnostic()
+    diagnostic["responses"] = diagnostic["responses"][:2]
+    diagnostic["responses"][0]["pre_guard_samples"] = 0
+    take, = rear_views.pair_takes([{"branch_diagnostic": diagnostic}])
+    assert all(len(impulse) == _PULSE_SAMPLES for impulse in take.impulses.values())
+    for rate in (None, 0, -1, float("nan"), float("inf"), "48000"):
+        assert rear_views.pair_takes([{"branch_diagnostic": {**diagnostic, "sample_rate_hz": rate}}]) == []
+    for key in ("role", "pre_guard_samples", "impulse"):
+        missing = {**diagnostic, "responses": [
+            {field: value for field, value in response.items() if field != key}
+            for response in diagnostic["responses"]]}
+        assert rear_views.pair_takes([{"branch_diagnostic": missing}]) == []
+
+
 def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                applied: str = BASE_CANDIDATE, diagnostic: bool = True,
                swept_hz: Sequence[float] = SEAT_BAND_HZ, sidecar_curves: bool = True,

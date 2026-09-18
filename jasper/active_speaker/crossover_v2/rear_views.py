@@ -48,6 +48,7 @@ from jasper.audio_measurement.rear_evidence import (
     pair_band_levels, position_figures, rear_polarity, reference_curve_db, repeat_spread,
     shared_radiating_band_hz, superposition_residual_db,
 )
+from jasper.json_fields import finite_float
 
 from .evidence_packet import applied_profile_source
 from .measure_spec import branch_target_ids_for
@@ -196,7 +197,6 @@ def _position_rows(
 
 def rear_document(
     inputs: RoundInputs, *, manifest: Mapping[str, Any], calibration_root: Path | None = None,
-    candidate_source: bool = True,
 ) -> dict[str, Any]:
     """The rear comparison one finished ``rear`` round carries in its packet.
 
@@ -213,7 +213,7 @@ def rear_document(
     """
     pair_set = _pair_set(manifest)
     if pair_set is not None:
-        return _pair_document(inputs, manifest=manifest, pair_set=pair_set, candidate_source=candidate_source)
+        return _pair_document(inputs, manifest=manifest, pair_set=pair_set)
     batch: dict[str, dict[str, list[SeatTake]]] = {}
     bases: dict[str, list[Mapping[str, Any]]] = {}
     on_axis: set[str] = set()
@@ -362,7 +362,6 @@ class PairTake:
     freqs_hz: np.ndarray
     front: np.ndarray
     rear: np.ndarray
-    summed: np.ndarray
     coverage_hz: tuple[float, float]
     impulses: dict[str, np.ndarray]
     clock_shift_samples: dict[str, float]
@@ -374,25 +373,28 @@ def pair_takes(records: Iterable[Mapping[str, Any]]) -> list[PairTake]:
         diagnostic = record.get("branch_diagnostic")
         if not isinstance(diagnostic, Mapping):
             continue
-        responses = {row["role"]: row for row in diagnostic.get("responses", ())}
-        if any(role not in responses or "pre_guard_samples" not in responses[role]
-               for role in PAIR_ROLES):
+        responses = {row.get("role"): row for row in diagnostic.get("responses", ())}
+        roles = PAIR_ROLES[:2]
+        rate = finite_float(diagnostic.get("sample_rate_hz"))
+        if rate is None or rate <= 0 or any(
+            role not in responses or not {"pre_guard_samples", "impulse"} <= responses[role].keys()
+            for role in roles
+        ):
             continue
-        rate = int(diagnostic["sample_rate_hz"])
-        start = int(responses["woofer"]["pre_guard_samples"]) - round(0.005 * rate)
-        end = min(len(responses[role]["impulse"]) for role in PAIR_ROLES)
+        start = max(0, int(responses[PAIR_ROLES[0]]["pre_guard_samples"]) - round(0.005 * rate))
+        end = min(len(responses[role]["impulse"]) for role in roles)
         freqs = np.fft.rfftfreq(PAIR_FFT_SIZE, 1.0 / rate)
         impulses = {role: np.asarray(responses[role]["impulse"], dtype=float)[start:end]
-                    for role in PAIR_ROLES}
+                    for role in roles}
         shifts = {role: float(responses[role].get("clock_shift_samples", 0.0))
-                  for role in PAIR_ROLES}
+                  for role in roles}
         spectra = {role: np.fft.rfft(ir, n=PAIR_FFT_SIZE)
                    * np.exp(2j * np.pi * freqs * shifts[role] / rate)
                    for role, ir in impulses.items()}
-        bands = [responses[role]["band_hz"] for role in PAIR_ROLES]
+        bands = [responses[role]["band_hz"] for role in roles]
         takes.append(PairTake(
-            doc_pose_key(record), record.get("pose_kind") or POSE_KIND_BEARING, rate, freqs,
-            spectra["woofer"], spectra["woofer:rear"], spectra["summed"],
+            doc_pose_key(record), record.get("pose_kind") or POSE_KIND_BEARING, int(rate), freqs,
+            spectra[PAIR_ROLES[0]], spectra[PAIR_ROLES[1]],
             (max(band[0] for band in bands), min(band[1] for band in bands)), impulses, shifts,
         ))
     return takes
@@ -487,7 +489,6 @@ def _composed_source(inputs: RoundInputs, candidate: str) -> dict[str, Any]:
 
 def _pair_document(
     inputs: RoundInputs, *, manifest: Mapping[str, Any], pair_set: Mapping[str, Any],
-    candidate_source: bool,
 ) -> dict[str, Any]:
     """The pair take's evidence: each woofer alone, their sum, and the trust number.
 
@@ -564,8 +565,7 @@ def _pair_document(
                               "candidate_id": candidate, "position": None},
         },
         "candidates": [],
-        "pair": {"candidate_id": candidate,
-                 **({"source": _composed_source(inputs, candidate)} if candidate_source else {}),
+        "pair": {"candidate_id": candidate, "source": _composed_source(inputs, candidate),
                  "positions": positions},
         "stage": {
             **rear_operating_facts(section),

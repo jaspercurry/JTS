@@ -33,7 +33,7 @@ def _rounded(value: Any) -> Any:
 
 
 def _position(takes: list[PairTake], row: Mapping[str, Any],
-              section: Mapping[str, Any], charge: float) -> dict[str, Any]:
+              section: Mapping[str, Any], charge_delta: float) -> dict[str, Any]:
     take = takes[0]
     grid = take.freqs_hz
     rear, front = rear_stage_response(section, grid)
@@ -56,19 +56,20 @@ def _position(takes: list[PairTake], row: Mapping[str, Any],
         handover_hz=operating["handover_hz"],
     ) for name, curve in (("muted", muted_db), ("predicted", predicted_db))}
     dip = symptoms["muted"]["dip"]
-    muted_level_db, predicted_level_db = (smooth_fractional_octave(
+    muted_db, predicted_db = (smooth_fractional_octave(
         freqs, curve, fraction=figures.FIGURE_FRACTION) for curve in (muted_db, predicted_db))
-    change = predicted_level_db - muted_level_db
+    change = predicted_db - muted_db - charge_delta
+    front_db = figures.magnitude_db(front)
     bands = []
     for low, high in figures.LEVEL_BANDS_HZ:
-        electrical = band_levels_from_magnitude(grid, figures.magnitude_db(front), [(low, high)])[0]
+        electrical = band_levels_from_magnitude(grid, front_db, [(low, high)])[0]
         covered = coverage[0] <= low and high <= coverage[1]
-        muted_level, predicted_level = (
-            (band_levels_from_magnitude(freqs, curve, [(low, high)])[0]
-             for curve in (muted_level_db, predicted_level_db)) if covered else (None, None)
-        )
+        muted_level = predicted_level = None
+        if covered:
+            muted_level = band_levels_from_magnitude(freqs, muted_db, [(low, high)])[0]
+            predicted_level = band_levels_from_magnitude(freqs, predicted_db, [(low, high)])[0]
         bands.append({"band_hz": [low, high], "muted_db": muted_level, "predicted_db": predicted_level,
-                      "change_db": None if muted_level is None or predicted_level is None else predicted_level - muted_level - charge,
+                      "change_db": None if muted_level is None or predicted_level is None else predicted_level - muted_level - charge_delta,
                       "front_chain_db": electrical, "reason": "" if covered else figures.REASON_COVERAGE_SHORT})
     energy_keys = (("early_late_change_db", "early_late_db"), ("band_energy_change_db", "energy_db"),
                    ("arrival_shift_ms", "centroid_ms"))
@@ -100,7 +101,7 @@ def preview_rear_section(section: Mapping[str, Any], *, inputs: RoundInputs,
     if not takes:
         raise RoundCapturesRefused(REAR_PREVIEW_NEEDS_PAIR_ROUND, {})
     validated = read_rear_calibration(section, sample_rate=takes[0].sample_rate_hz)
-    view = rear_document(inputs, manifest=manifest, candidate_source=False)
+    view = rear_document(inputs, manifest=manifest)
     grouped: dict[str, list[PairTake]] = {}
     for take in takes:
         grouped.setdefault(take.pose_key, []).append(take)

@@ -11,7 +11,8 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.branch_chain import rear_stage_response
-from jasper.active_speaker.crossover_v2 import rear_preview, rear_views
+from jasper.active_speaker.camilla_yaml import rear_branch_sum_headroom_db
+from jasper.active_speaker.crossover_v2 import rear_preview
 from jasper.active_speaker.crossover_v2.pose_curve import lateral_pose_curve
 from jasper.active_speaker.crossover_v2.rear_views import PAIR_FFT_SIZE, pair_takes
 from jasper.active_speaker.crossover_v2.room_selection import purpose_take_records
@@ -20,6 +21,7 @@ from jasper.active_speaker.rear_calibration import diagnostic_seed
 from jasper.audio_measurement import rear_evidence as figures
 from jasper.audio_measurement.analysis import band_levels_from_magnitude, smooth_fractional_octave
 from jasper.cli import crossover_prescriber
+from jasper.cli._refusal import EXIT_UNREADABLE
 from tests.test_prescription_document import document
 from tests.test_round_views_rear import (
     _PAIR_GAP_MS, _PAIR_LEVEL_GAP_DB, _branch_diagnostic,
@@ -37,22 +39,23 @@ def _preview(tmp_path, capsys, sections, root=None):
     ])
     answer = json.loads(capsys.readouterr().out)
     assert (status == 0) == answer["ok"]
+    if answer.get("code") == "evidence_unreadable":
+        assert status == EXIT_UNREADABLE
     return answer
 
 
 @pytest.mark.parametrize("front_gain,filter_gain", [(0.0, 0.0), (-0.51, -6.36), (0.0, 4.0)])
-def test_muted_document_is_exactly_zero_and_needs_no_base_or_candidate_bank(
+def test_muted_document_is_exactly_zero_and_needs_no_document_base(
     tmp_path, capsys, monkeypatch, banked_candidates, front_gain, filter_gain,
 ):
     root = pair_round(tmp_path, behind_gap_ms=-0.5)
     pair = packet_of(root)[0]["rear"][0]["pair"]
 
     def unavailable(*args, **kwargs):
-        pytest.fail("preview read the candidate bank or saved base")
+        pytest.fail("preview resolved the document base or evidence")
 
     for module, name in ((crossover_prescriber, "saved_base"),
                          (crossover_prescriber, "find_banked_candidate"),
-                         (rear_views, "find_banked_candidate"),
                          (crossover_prescriber, "_document_evidence")):
         monkeypatch.setattr(module, name, unavailable)
     section = diagnostic_seed(48000)
@@ -93,11 +96,16 @@ def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path
     section["front"]["gain_db"] = _PAIR_LEVEL_GAP_DB
     section["rear"]["bass"]["muted"] = True
     section["rear"]["cancellation"].update(gain_db=0.0, delay_ms=0.0)
+    notch = {"type": "Biquad", "parameters": {
+        "type": "Peaking", "freq": 190.0, "q": 3.0, "gain": -12.0}}
+    section["front"]["filters"] = [notch]
+    section["rear"]["cancellation"]["filters"] = [notch]
     if boost_db:
-        section["rear"]["cancellation"]["filters"] = [{"type": "Biquad", "parameters": {
-            "type": "Lowshelf", "freq": 100.0, "q": 0.7, "gain": boost_db}}]
+        section["rear"]["cancellation"]["filters"].append({"type": "Biquad", "parameters": {
+            "type": "Lowshelf", "freq": 100.0, "q": 0.7, "gain": boost_db}})
     preview = _preview(tmp_path, capsys, {"rear_calibration": section}, root)["preview"]
     assert (preview["stage"]["headroom_charge_db"] > 0) == bool(boost_db)
+    charge = rear_branch_sum_headroom_db(section) - rear_branch_sum_headroom_db({**section, "rear_muted": True})
     takes = pair_takes(record for _, record in purpose_take_records(round_inputs(root).session_dir, purpose="rear"))
     for take in takes:
         row = preview["positions"][take.pose_key]
@@ -118,11 +126,12 @@ def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path
             reference.freqs_hz, figures.magnitude_db(reference.complex_tf), fraction=figures.FIGURE_FRACTION)
         display = (sampled.freqs_hz >= row["coverage_hz"][0]) & (sampled.freqs_hz <= min(row["coverage_hz"][1], 5000.0))
         assert row["curve"]["freqs_hz"] == [round(float(hz), 3) for hz in sampled.freqs_hz[display]]
-        assert row["curve"]["change_db"] == pytest.approx(change[display], abs=0.0005)
+        assert row["curve"]["change_db"] == pytest.approx(change[display] - charge, abs=0.0005)
         dip = row["figures"]["muted"]["dip"]
-        if dip:
-            assert row["trough_fill_db"] == pytest.approx(
-                change[np.argmin(abs(sampled.freqs_hz - dip["hz"]))], abs=0.0005)
+        assert dip is not None
+        assert row["trough_fill_db"] == pytest.approx(
+            change[np.argmin(abs(sampled.freqs_hz - dip["hz"]))] - charge, abs=0.0005)
+        assert row["trough_fill_db"] == row["curve"]["change_db"][row["curve"]["freqs_hz"].index(dip["hz"])]
         keep = (take.freqs_hz >= row["coverage_hz"][0]) & (take.freqs_hz <= row["coverage_hz"][1])
         expected_gradient = figures.gradient_residual_db(
             take.freqs_hz[keep], rear[keep] / front[keep],
@@ -169,7 +178,7 @@ def test_pair_takes_share_a_window_and_remove_each_clock_shift():
         response["clock_shift_samples"] = index * 0.75
     take, = pair_takes([{}, {"branch_diagnostic": diagnostic}])
     assert take.freqs_hz == pytest.approx(np.fft.rfftfreq(PAIR_FFT_SIZE, 1 / 48000))
-    for response, actual in zip(diagnostic["responses"], (take.front, take.rear, take.summed)):
+    for response, actual in zip(diagnostic["responses"], (take.front, take.rear)):
         windowed = np.asarray(response["impulse"])[48:]
         assert take.impulses[response["role"]] == pytest.approx(windowed)
         expected = np.fft.rfft(windowed, n=PAIR_FFT_SIZE) * np.exp(

@@ -26,7 +26,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
     PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document, preview_prescription_document,
-    read_prescription_document, saved_base,
+    preview_room_document, read_prescription_document, saved_base,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
     banked_round_of, recent_round_sessions, round_inputs, prescription_sources, resolve_set, RoundInputs,
@@ -126,14 +126,14 @@ def _cmd_document(args: argparse.Namespace) -> int:
         if args.base is not None and args.base != document["base"]:
             raise PrescriptionDocumentRefused("composition_base_mismatch", None, "--base and document.base differ")
         root = Path(args.root) if args.root else None
-        if args.command == "judge" and args.preview:
+        if args.command == "judge" and args.preview and "rear_calibration" in document["sections"]:
             return answered(preview_prescription_document(
                 document, round_dir=Path(args.round) if args.round else None,
-                base_of=lambda: _document_base(document, root)[0],
-                evidence_of=lambda: _document_evidence(args, document),
             ))
         base, base_profile = _document_base(document, root)
         evidence = _document_evidence(args, document)
+        if args.command == "judge" and args.preview:
+            return answered(preview_room_document(document, base=base, evidence=evidence))
         candidate = compose_prescription_document(document, base=base, evidence=evidence,
                                                   base_profile=base_profile)
     except PrescriptionDocumentRefused as exc:

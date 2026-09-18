@@ -124,7 +124,7 @@ FIGURE_REGRESSION_SIGN: Mapping[str, float] = {
 LEVEL_BANDS_HZ = ((30.0, 60.0), (60.0, 100.0), (90.0, 350.0), (200.0, 300.0),
                   (350.0, 700.0), (700.0, 1500.0), (1500.0, 5000.0))
 LATE_ENERGY_BAND_HZ = (90.0, 250.0)
-# These windows were validated on jts3 to 0.107 dB RMS over 53 sweeps; see ADR-0325.
+# Early/late windows of the cardioid-or-fill figure; see ADR-0325.
 EARLY_WINDOW_MS = (0.0, 10.0)
 LATE_WINDOW_MS = (10.0, 40.0)
 CENTROID_WINDOW_MS = (-2.0, 40.0)

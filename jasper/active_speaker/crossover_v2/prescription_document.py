@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -175,7 +175,6 @@ def _section_payload(name: str, section: Mapping[str, Any], rationale: str,
 
 def preview_prescription_document(
     document: Mapping[str, Any], *, round_dir: Path | None,
-    base_of: Callable[[], BankedCandidate], evidence_of: Callable[[], PrescriptionEvidence],
 ) -> dict[str, Any]:
     sections = document["sections"]
     if "rear_calibration" in sections:
@@ -193,10 +192,10 @@ def preview_prescription_document(
             raise PrescriptionDocumentRefused("rear_calibration_invalid", "rear_calibration", str(exc)) from exc
         except RoundCapturesRefused as exc:
             raise PrescriptionDocumentRefused(exc.reason, "rear_calibration", str(exc), evidence=exc.detail) from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PrescriptionDocumentRefused("evidence_unreadable", "rear_calibration", str(exc)) from exc
         return {"ok": True, "section": "rear_calibration", "preview": preview, "adopted": False, "banked": False}
-    if "room" not in sections:
-        raise PrescriptionDocumentRefused("prescription_malformed", "room", "preview requires a room section")
-    return preview_room_document(document, base=base_of(), evidence=evidence_of())
+    raise PrescriptionDocumentRefused("prescription_malformed", "rear_calibration", "preview requires a rear_calibration section")
 
 
 def preview_room_document(document: Mapping[str, Any], *, base: BankedCandidate,
