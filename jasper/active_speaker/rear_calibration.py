@@ -202,6 +202,42 @@ def read_rear_calibration(raw: Any, *, sample_rate: int | None = None) -> dict[s
     return deepcopy(dict(document))
 
 
+#: The coarse family a changed field path falls in, keyed on the leaf field
+#: this document spells; a path on the front chain reads ``front_chain``, an
+#: unmapped leaf ``other``, and several families at once ``multiple``. A
+#: DISCLOSURE for a reader comparing two settings — never a refusal.
+FAMILY_BY_LEAF = {
+    "gain_db": "gain", "gain": "gain",
+    "delay_ms": "delay", "common_delay_ms": "delay",
+    "freq": "band_edge", "order": "band_edge", "q": "band_edge",
+    "muted": "mute", "rear_muted": "mute",
+}
+
+
+def changed_section_paths(now: Any, was: Any, prefix: str = "") -> list[str]:
+    """Every leaf path, dotted with list indices, at which two settings differ."""
+    if isinstance(now, Mapping) and isinstance(was, Mapping):
+        return [path for key in sorted(set(now) | set(was))
+                for path in changed_section_paths(
+                    now.get(key), was.get(key), f"{prefix}.{key}" if prefix else str(key))]
+    if isinstance(now, list) and isinstance(was, list) and len(now) == len(was):
+        return [path for index, (left, right) in enumerate(zip(now, was))
+                for path in changed_section_paths(left, right, f"{prefix}.{index}")]
+    return [] if now == was else [prefix]
+
+
+def section_change_family(paths: Sequence[str]) -> str:
+    """One coarse family for a set of changed paths (:data:`FAMILY_BY_LEAF`)."""
+    families = {
+        "front_chain" if path.startswith(("front", "boundary.front"))
+        else FAMILY_BY_LEAF.get(path.rsplit(".", 1)[-1], "other")
+        for path in paths
+    }
+    if len(families) == 1:
+        return families.pop()
+    return "multiple" if families else ""
+
+
 def _corner_hz(filters: Sequence[Mapping[str, Any]], suffix: str,
                pick: Callable[..., float]) -> float | None:
     """The corner one chain's band-limiting filters settle on, or ``None``.

@@ -23,12 +23,13 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from jasper.active_speaker.angle_capture import BASE_CANDIDATE, candidate_identity
 from jasper.active_speaker.baseline_profile import profile_linearization
 from jasper.active_speaker.camilla_yaml import rear_branch_sum_headroom_db
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
 from jasper.active_speaker.measurement_programs import PURPOSE_REAR
-from jasper.active_speaker.rear_calibration import rear_operating_facts
+from jasper.active_speaker.rear_calibration import (
+    changed_section_paths, rear_operating_facts, section_change_family,
+)
 from jasper.active_speaker.run_manifest import view_sets
 from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
 from jasper.audio_measurement.rear_evidence import (
@@ -49,16 +50,10 @@ ROLE_INCUMBENT = "incumbent"
 ROLE_REAR_MUTED = "rear_muted"
 ROLE_VARIANT = "variant"
 
-#: The coarse family a changed rear-section path falls in, keyed on the leaf
-#: field the document spells; a path on the front chain is ``front_chain``,
-#: an unmapped leaf ``other``, and several families at once ``multiple``. A
-#: DISCLOSURE for the reader — never a refusal, so nothing here stops the view.
-FAMILY_BY_LEAF = {
-    "gain_db": "gain", "gain": "gain",
-    "delay_ms": "delay", "common_delay_ms": "delay",
-    "freq": "band_edge", "order": "band_edge", "q": "band_edge",
-    "muted": "mute", "rear_muted": "mute",
-}
+#: A pose some candidate measured that the batch could not score: the
+#: reference take is missing there, so the position has no frozen zero and no
+#: candidate may be read at it. Disclosed, never dropped.
+REASON_NO_REFERENCE_TAKE = "no_reference_take"
 
 #: The capture facts every candidate in one batch must share for the figures to
 #: mean anything, echoed from the takes' own basis rather than restated.
@@ -66,33 +61,20 @@ LEVEL_FIELDS = ("level_db", "program_id", "loudness_volume_db",
                 "calibration_applied", "calibration_reference")
 
 
-def _changed_paths(now: Any, was: Any, prefix: str = "") -> list[str]:
-    """Every leaf path, dotted with list indices, at which two sections differ."""
-    if isinstance(now, Mapping) and isinstance(was, Mapping):
-        return [path for key in sorted(set(now) | set(was))
-                for path in _changed_paths(now.get(key), was.get(key),
-                                           f"{prefix}.{key}" if prefix else str(key))]
-    if isinstance(now, list) and isinstance(was, list) and len(now) == len(was):
-        return [path for index, (left, right) in enumerate(zip(now, was))
-                for path in _changed_paths(left, right, f"{prefix}.{index}")]
-    return [] if now == was else [prefix]
-
-
-def _change_family(paths: Sequence[str]) -> str:
-    """One coarse family for a candidate's changed paths (:data:`FAMILY_BY_LEAF`)."""
-    families = {
-        "front_chain" if path.startswith(("front", "boundary.front"))
-        else FAMILY_BY_LEAF.get(path.rsplit(".", 1)[-1], "other")
-        for path in paths
-    }
-    if len(families) == 1:
-        return families.pop()
-    return "multiple" if families else ""
-
-
 def _shared(values: Sequence[Any]) -> Any:
     """The one value every take agrees on, or ``None`` when they disagree."""
     return values[0] if values and all(value == values[0] for value in values) else None
+
+
+def _candidate_key(value: Any) -> str:
+    """One key for the candidate a record or a manifest set names.
+
+    The manifest's own ``base`` flag names the incumbent, so the engine never
+    reads the arm's base-candidate spelling: that vocabulary stays front-end
+    side (ADR-0228). A record and its own capture basis therefore agree here by
+    construction — the basis is derived from the record.
+    """
+    return str(value or "")
 
 
 def _mean_curve_db(takes: Sequence[SeatTake], freqs_hz: Any = None) -> tuple[np.ndarray, np.ndarray]:
@@ -112,19 +94,20 @@ def _wall_dip_hz(walls: Mapping[str, float]) -> float | None:
 
 def _rear_sections(
     inputs: RoundInputs, candidates: Sequence[str],
-    *, profile: Mapping[str, Any] | None, profile_reason: str,
+    *, base: str | None, profile: Mapping[str, Any] | None, profile_reason: str,
 ) -> dict[str, tuple[Mapping[str, Any], str]]:
     """Each played candidate's rear section, and why one is unreadable.
 
-    ``base`` is the saved tune, so it comes from the round's own banked applied
-    profile — the snapshot every graph-safety proof recomposes from. A
-    fingerprint comes from the candidate bank, rooted at this round's bank.
+    The ``base`` candidate is the saved tune, so its section comes from the
+    round's own banked applied profile — the snapshot every graph-safety proof
+    recomposes from. Every other candidate is a fingerprint, read from the
+    candidate bank rooted at this round's bank.
     """
     snapshot = (profile or {}).get("recomposition_snapshot") or {}
     bank = banked_round_of(inputs.session_dir)
     found: dict[str, tuple[Mapping[str, Any], str]] = {}
     for candidate in candidates:
-        if candidate == BASE_CANDIDATE:
+        if candidate == base:
             found[candidate] = (snapshot.get("rear_calibration") or {}, profile_reason)
             continue
         try:
@@ -175,8 +158,11 @@ def rear_document(
 
     A batch spans one manifest set per played candidate, so the document is
     keyed on the INCUMBENT's set and every candidate carries its own
-    ``set_id``. Predictions belong to a later preview: nothing here is a
-    modelled value.
+    ``set_id``. Every advertised position is either scored for a candidate or
+    disclosed with a reason: ``positions_unscored`` names one the reference
+    take missed, and ``across_positions.positions_unavailable`` one a
+    candidate itself missed. Predictions belong to a later preview: nothing
+    here is a modelled value.
     """
     batch: dict[str, dict[str, list[SeatTake]]] = {}
     bases: dict[str, list[Mapping[str, Any]]] = {}
@@ -186,14 +172,14 @@ def rear_document(
     ):
         if take is None:
             continue
-        candidate = candidate_identity(str(record.get("candidate_id") or ""))
+        candidate = _candidate_key(record.get("candidate_id"))
         batch.setdefault(candidate, {}).setdefault(take.pose_key, []).append(take)
         bases.setdefault(candidate, []).append(capture_basis(record))
         if row.position_deg == 0 and row.vertical_deg == 0:
             on_axis.add(take.pose_key)
     if not batch:
         raise RoundCapturesRefused(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})
-    sets = {candidate_identity(str(row["capture_basis"].get("candidate_id") or "")): row
+    sets = {_candidate_key(row["capture_basis"].get("candidate_id")): row
             for row in view_sets(manifest)}
     incumbent_id = next((name for name, row in sets.items() if row.get("base")), None)
     if incumbent_id not in batch:
@@ -203,21 +189,22 @@ def rear_document(
             takes.sort(key=lambda take: take.take_id)
 
     profile, profile_reason = applied_profile_source(inputs.applied_profile_path)
-    sections = _rear_sections(inputs, sorted(batch), profile=profile, profile_reason=profile_reason)
+    sections = _rear_sections(inputs, sorted(batch), base=incumbent_id,
+                              profile=profile, profile_reason=profile_reason)
     incumbent_section = sections[incumbent_id][0]
     stage = rear_operating_facts(incumbent_section)
     ceiling = room_ceiling(inputs.session_dir)
     takes = [take for poses in batch.values() for group in poses.values() for take in group]
     coverage_hz = [max(take.band_hz[0] for take in takes),
                    min(ceiling.ceiling_hz, min(take.band_hz[1] for take in takes))]
-    positions = sorted({key for poses in batch.values() for key in poses})
+    captured = sorted({key for poses in batch.values() for key in poses})
 
     muted = sorted(name for name, (section, _) in sections.items()
                    if section.get("rear_muted") is True)
     reference_id = muted[0] if muted else incumbent_id
     zeros: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     reference_on_axis: tuple[np.ndarray, np.ndarray] | None = None
-    for key in positions:
+    for key in captured:
         group = batch[reference_id].get(key)
         if not group:
             continue
@@ -225,6 +212,11 @@ def rear_document(
         zeros[key] = (grid, reference_curve_db(grid, mean_db))
         if key in on_axis and reference_on_axis is None:
             reference_on_axis = (grid, mean_db)
+    # A position is advertised only once the batch froze a zero for it, so the
+    # advertised list IS the key set of every candidate's own figures; a
+    # position the reference missed is named with its reason instead.
+    positions = sorted(zeros)
+    unscored = {key: REASON_NO_REFERENCE_TAKE for key in captured if key not in zeros}
 
     geometry = load_declared_geometry(inputs.declared_geometry_path) if inputs.declared_geometry_path else None
     walls, geometry_reason = geometry.boundary_walls() if geometry else ({}, "geometry_undeclared")
@@ -253,15 +245,16 @@ def rear_document(
     for name in sorted(batch):
         section, section_reason = sections[name]
         changed = ([] if name == incumbent_id or not section
-                   else _changed_paths(section, incumbent_section))
-        charge = rear_branch_sum_headroom_db(section) if section else None
+                   else changed_section_paths(section, incumbent_section))
+        charge = incumbent_charge if name == incumbent_id else (
+            rear_branch_sum_headroom_db(section) if section else None)
         rows = incumbent_rows if name == incumbent_id else _position_rows(
             batch[name], zeros, incumbent=incumbent_rows, **figures)
         candidates.append({
             "candidate_id": name, "set_id": (sets.get(name) or {}).get("set_id"),
             "role": ROLE_INCUMBENT if name == incumbent_id
                     else ROLE_REAR_MUTED if section.get("rear_muted") is True else ROLE_VARIANT,
-            "changed": changed, "change_family": _change_family(changed),
+            "changed": changed, "change_family": section_change_family(changed),
             "section_reason": section_reason,
             "headroom_charge_db": charge,
             "headroom_change_db": None if charge is None or incumbent_charge is None
@@ -282,7 +275,7 @@ def rear_document(
             "reference": {"candidate_id": reference_id,
                           "kind": ROLE_REAR_MUTED if reference_id in muted else ROLE_INCUMBENT,
                           "set_id": (sets.get(reference_id) or {}).get("set_id")},
-            "positions": positions,
+            "positions": positions, "positions_unscored": unscored,
             "level": {
                 "session_db": (manifest.get("level") or {}).get("session"),
                 **{field: _shared([basis.get(field) for basis in observed]) for field in LEVEL_FIELDS},
