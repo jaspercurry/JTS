@@ -49,7 +49,6 @@ from jasper.active_speaker.declaration_vocabulary import (
     supported_declaration_filter_types,
     supported_declaration_slopes_db_per_octave,
 )
-from jasper.active_speaker.path_safety import _startup_muted_by_candidate
 from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology
@@ -63,12 +62,12 @@ from tests.active_speaker_fixtures import (
 from tests.test_active_speaker_profile import _two_way_preset
 
 
-def _topology(*, protection_status: str = "present") -> OutputTopology:
-    return mono_output_topology(protection_status=protection_status)
+def _topology() -> OutputTopology:
+    return mono_output_topology()
 
 
-def _dual_apple_topology(*, protection_status: str = "present") -> OutputTopology:
-    raw = _topology(protection_status=protection_status).to_dict()
+def _dual_apple_topology() -> OutputTopology:
+    raw = _topology().to_dict()
     raw["hardware"] = {
         "device_id": DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
         "device_label": "Dual Apple USB-C DAC 4-channel pair",
@@ -93,14 +92,14 @@ def _dual_apple_topology(*, protection_status: str = "present") -> OutputTopolog
 
 def _three_way_topology() -> OutputTopology:
     return mono_output_topology(
-        mode="active_3_way", protection_status="present",
+        mode="active_3_way",
         topology_id="bench_mono_3way",
     )
 
 
 def _topology_with_subwoofer() -> OutputTopology:
     return mono_output_topology(
-        with_subwoofer=True, protection_status="present",
+        with_subwoofer=True,
         topology_id="bench_mono_with_sub", sub_label="Bench subwoofer",
     )
 
@@ -132,7 +131,6 @@ def _stereo_topology(*, way_count: int) -> OutputTopology:
                     {
                         "startup_muted": True,
                         "protection_required": True,
-                        "protection_status": "present",
                     }
                     if role == "tweeter"
                     else {}
@@ -920,7 +918,7 @@ def test_stage_without_physical_cap_keeps_software_highpass(
     meta = tmp_path / "active_staged.json"
 
     payload = stage_protected_startup_config(
-        _topology(protection_status="absent"),
+        _topology(),
         config_path=out,
         metadata_path=meta,
         validate=_valid_config,
@@ -986,7 +984,7 @@ def test_stage_protected_startup_config_blocks_incomplete_software_guard_evidenc
         corrupt_tweeter_mute,
     )
     payload = stage_protected_startup_config(
-        _topology(protection_status="absent"),
+        _topology(),
         config_path=tmp_path / "active_staged.yml",
         metadata_path=tmp_path / "active_staged.json",
         validate=_valid_config,
@@ -1061,8 +1059,8 @@ def test_stage_protected_startup_config_blocks_unmuted_boot_candidate(
     tmp_path: Path,
 ) -> None:
     # Crash-recovery guard, blocking direction: if the staged boot config is NOT
-    # fully muted, staging must fail closed. Use a physically-protected topology
-    # so the software guard is not computed and only the fully-muted gate fires —
+    # fully muted, staging must fail closed. Unmuting a NON-tweeter output keeps
+    # the software tweeter guard passing, so only the fully-muted gate fires —
     # isolating this guard from the software-guard path.
     original_emit = staging_mod.emit_active_speaker_commissioning_config
 
@@ -1090,7 +1088,7 @@ def test_stage_protected_startup_config_blocks_unmuted_boot_candidate(
         unmute_one_output,
     )
     payload = stage_protected_startup_config(
-        _topology(protection_status="present"),
+        _topology(),
         config_path=tmp_path / "active_staged.yml",
         metadata_path=tmp_path / "active_staged.json",
         validate=_valid_config,
@@ -1105,8 +1103,7 @@ def test_stage_protected_startup_config_blocks_unmuted_boot_candidate(
     assert payload["status"] == "blocked"
     assert muted_gate["passed"] is False
     assert "staged_config_not_fully_muted" in codes
-    # Physical protection: the software guard never ran, so this is the gate that
-    # caught the unmuted output.
+    # The woofer output is the one unmuted, so this is the gate that caught it.
     assert "software_tweeter_guard_incomplete" not in codes
 
 
@@ -1141,29 +1138,6 @@ def test_software_guard_evidence_blocks_audible_tweeter_output() -> None:
 
     assert evidence["checks"]["startup_muted"] is False
     assert evidence["passed"] is False
-
-
-def test_physical_protection_staged_config_reads_as_muted_via_fallback(
-    tmp_path: Path,
-) -> None:
-    # A physically-protected candidate carries no software_guard block, so
-    # path_safety._startup_muted_by_candidate falls back to scanning the staged
-    # YAML. The single-audio-path commissioning config mutes via per-output
-    # `as_out{idx}_commission_mute`; the fallback must read that as "startup
-    # muted" or a physically-protected speaker's startup-load preflight would
-    # wrongly report the boot config as unmuted.
-    out = tmp_path / "active_staged.yml"
-    payload = stage_protected_startup_config(
-        _topology(protection_status="present"),
-        config_path=out,
-        metadata_path=tmp_path / "active_staged.json",
-        validate=_valid_config,
-        created_at="2026-06-03T12:00:00Z",
-    )
-
-    assert payload["status"] == "staged"
-    assert payload["software_guard"] == {}  # physical protection: no software guard
-    assert _startup_muted_by_candidate(payload) is True
 
 
 def test_all_commission_mutes_engaged_requires_pipeline_wiring() -> None:

@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping
 
-from jasper.output_topology import OutputTopology, OutputTopologyError, canonical_fingerprint, dsp_topology_projection
+from jasper.output_topology import OutputTopology, OutputTopologyError, canonical_fingerprint
 from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, issue as _issue
 from .driver_protection import (
     LOW_LIMIT_DECLARED,
@@ -63,7 +63,7 @@ def crossover_preview_fingerprint(
     if design_draft is not None and design_draft.get("status") not in {"not_saved", "unreadable"}:
         design = {
             "status": design_draft.get("status"),
-            "topology": dsp_topology_projection(design_draft.get("topology")),
+            "topology": design_draft.get("topology"),
             "operator_inputs": design_draft.get("operator_inputs"),
             "driver_research": design_draft.get("driver_research"),
             "manual_settings": _manual_crossover_settings(design_draft),
@@ -80,7 +80,7 @@ def crossover_preview_fingerprint(
             "design_draft_fingerprint": design_fingerprint,
         },
         "drivers": preview.get("drivers"),
-        "groups": dsp_topology_projection(preview.get("groups")),
+        "groups": preview.get("groups"),
         "permissions": {
             "may_explain": True,
             "may_prepare_protected_startup_config": preview.get("status") == "ready_for_protected_staging",

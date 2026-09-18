@@ -313,11 +313,9 @@ def test_direct_channel_construction_requires_explicit_protection_state() -> Non
     channel = SpeakerChannel(
         role="tweeter",
         protection_required=True,
-        protection_status="absent",
     )
 
     assert channel.protection_required is True
-    assert channel.protection_status == "absent"
 
 
 def test_persisted_status_hint_cannot_override_derived_status() -> None:
@@ -336,12 +334,11 @@ def test_persisted_status_hint_cannot_override_derived_status() -> None:
     assert topology.to_dict()["status"] == "draft"
 
 
-@pytest.mark.parametrize("stored, expected", [
-    ("present", "present"), ("absent", "absent"),
-    ("required_missing", "absent"), ("software_guard_requested", "absent"),
-    ("not_required", "absent"), ("unknown", "absent"),
+@pytest.mark.parametrize("stored", [
+    "present", "absent", "required_missing", "software_guard_requested",
+    "not_required", "unknown",
 ])
-def test_stored_tweeter_protection_loads_as_declaration(tmp_path, stored, expected):
+def test_stored_tweeter_protection_status_loads_and_is_dropped(tmp_path, stored):
     raw = _topology(groups=[{
         "id": "mono", "label": "Mono", "kind": "mono", "mode": "active_2_way",
         "channels": [
@@ -356,9 +353,11 @@ def test_stored_tweeter_protection_loads_as_declaration(tmp_path, stored, expect
 
     loaded = load_output_topology_strict(path)
 
-    assert loaded.speaker_groups[0].channels[1].protection_status == expected
     assert loaded.status == "valid"
     assert loaded.schema_version == 1
+    assert "protection_status" not in (
+        loaded.to_dict()["speaker_groups"][0]["channels"][1]
+    )
     assert path.read_bytes() == before
 
 
@@ -495,7 +494,6 @@ def _verified_channel(role: str, index: int) -> dict:
     }
     if role == "tweeter":
         channel["protection_required"] = True
-        channel["protection_status"] = "present"
     return channel
 
 
@@ -1310,7 +1308,6 @@ def _dual_apple_active_topology() -> OutputTopology:
                     "physical_output_index": tweeter,
                     "identity_verified": True,
                     "protection_required": True,
-                    "protection_status": "present",
                     "startup_muted": True,
                 },
             ],
@@ -1358,12 +1355,12 @@ def test_composite_repin_keeps_the_design_and_repins_only_the_swapped_child() ->
     assert [group.mode for group in after.speaker_groups] == ["active_2_way"] * 2
     assert [
         (channel.role, channel.driver_style, channel.physical_output_index,
-         channel.protection_status, channel.startup_muted)
+         channel.startup_muted)
         for group in after.speaker_groups
         for channel in group.channels
     ] == [
         (channel.role, channel.driver_style, channel.physical_output_index,
-         channel.protection_status, channel.startup_muted)
+         channel.startup_muted)
         for group in before.speaker_groups
         for channel in group.channels
     ]

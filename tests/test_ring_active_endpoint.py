@@ -114,7 +114,6 @@ def _active_group(kind: str, mode: str, start: int) -> dict:
             channel.update({
                 "startup_muted": True,
                 "protection_required": True,
-                "protection_status": "absent",
             })
         channels.append(channel)
     return {

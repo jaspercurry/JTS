@@ -196,7 +196,6 @@ def topology_target_signature(topology: OutputTopology) -> list[dict[str, Any]]:
                 "physical_output_index": channel.physical_output_index,
                 "startup_muted": bool(channel.startup_muted),
                 "protection_required": bool(channel.protection_required),
-                "protection_status": channel.protection_status,
             })
     return sorted(targets, key=lambda item: (item["speaker_group_id"], item["role"], item.get("output_variant", "primary")))
 
@@ -218,7 +217,6 @@ def staged_target_signature(staged_config: dict[str, Any]) -> list[dict[str, Any
             "physical_output_index": raw.get("physical_output_index"),
             "startup_muted": bool(raw.get("startup_muted")),
             "protection_required": bool(raw.get("protection_required")),
-            "protection_status": raw.get("protection_status"),
         })
     return sorted(
         out,
@@ -464,8 +462,7 @@ def _startup_muted_by_candidate(staged_config: dict[str, Any]) -> bool:
     # Most complete + precise signal: the staging `staged_candidate_fully_muted`
     # gate verified every per-output mute is a -120 dB hard mute AND wired into
     # the pipeline before this config could reach status "staged". Prefer it
-    # whenever the metadata carries it (covers physically-protected candidates,
-    # which have no software-guard block).
+    # whenever the metadata carries it.
     gate = _required_gate_passed(staged_config, "staged_candidate_fully_muted")
     if gate is not None:
         return gate

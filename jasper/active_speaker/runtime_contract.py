@@ -304,7 +304,6 @@ class OutputAssignment:
     physical_output_index: int | None
     startup_muted: bool
     protection_required: bool
-    protection_status: str
     output_variant: str = "primary"
 
     @property
@@ -332,7 +331,6 @@ class OutputAssignment:
             "physical_output_index": self.physical_output_index,
             "startup_muted": self.startup_muted,
             "protection_required": self.protection_required,
-            "protection_status": self.protection_status,
             "roleful": self.roleful,
             "protected": self.protected,
         }
@@ -498,7 +496,6 @@ def _assignment(group: SpeakerGroup, channel: SpeakerChannel) -> OutputAssignmen
         physical_output_index=channel.physical_output_index,
         startup_muted=bool(channel.startup_muted),
         protection_required=bool(channel.protection_required),
-        protection_status=channel.protection_status,
     )
 
 

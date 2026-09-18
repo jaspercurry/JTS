@@ -21,7 +21,10 @@ from jasper.active_speaker import (
     write_path_safety_evidence,
 )
 from jasper.active_speaker.calibration_level import calibration_level_payload
-from jasper.active_speaker.path_safety import _startup_muted_by_candidate
+from jasper.active_speaker.path_safety import (
+    _startup_muted_by_candidate,
+    software_guard_ready_for_startup,
+)
 from jasper.active_speaker.staging import stage_protected_startup_config
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import (
@@ -247,6 +250,20 @@ def test_write_path_safety_evidence_persists_probe_payload(tmp_path: Path) -> No
     path = write_path_safety_evidence(evidence, path=tmp_path / "path_safety.json")
 
     assert path.read_text(encoding="utf-8").startswith("{\n")
+
+
+def test_a_tweeter_topology_always_needs_software_guard_evidence(
+    tmp_path: Path,
+) -> None:
+    # Unconditional by construction: a tweeter is the whole condition, so no
+    # saved topology can declare the startup-load guard away.
+    topology = _topology()
+    staged = _staged(tmp_path)
+
+    assert software_guard_ready_for_startup(topology, staged) is True
+    assert software_guard_ready_for_startup(
+        topology, {**staged, "software_guard": {}}
+    ) is False
 
 
 def test_startup_muted_prefers_fully_muted_gate_over_text_scan(tmp_path: Path) -> None:

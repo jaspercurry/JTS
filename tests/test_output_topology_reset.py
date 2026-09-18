@@ -62,7 +62,7 @@ def _active_topology() -> OutputTopology:
                 {"role": "woofer", "physical_output_index": 0},
                 {"role": "tweeter", "physical_output_index": 1,
                  "startup_muted": True, "protection_required": True,
-                 "protection_status": "present"},
+                 },
             ],
         }],
     })

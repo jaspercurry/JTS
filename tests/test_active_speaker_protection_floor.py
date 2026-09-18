@@ -506,7 +506,6 @@ def test_a_non_tweeter_declared_floor_grows_no_clamp_and_no_refusal(
         if channel.role == "woofer"
     )
     assert woofer_channel.protection_required is False
-    assert woofer_channel.protection_status == "absent"
 
     preview = _preview(
         topology,

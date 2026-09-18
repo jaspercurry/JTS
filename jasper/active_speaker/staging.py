@@ -472,7 +472,6 @@ def _target_outputs_for_groups(
                 "human_output_label": channel.human_output_label,
                 "startup_muted": channel.startup_muted,
                 "protection_required": channel.protection_required,
-                "protection_status": channel.protection_status,
             })
     return target_outputs
 

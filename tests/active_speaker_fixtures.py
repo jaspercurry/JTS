@@ -42,7 +42,6 @@ def mono_output_topology(
     identity_verified: bool = True,
     tweeter_verified: bool | None = None,
     tweeter_output: int | None = None,
-    protection_status: str = "absent",
     topology_id: str = "bench_mono",
     topology_name: str = "Bench mono cabinet",
     group_label: str = "Mono cabinet",
@@ -72,7 +71,6 @@ def mono_output_topology(
                 "identity_verified": resolved_tweeter_verified,
                 "startup_muted": True,
                 "protection_required": True,
-                "protection_status": protection_status,
             },
         ]
     elif mode == "active_3_way":
@@ -95,7 +93,6 @@ def mono_output_topology(
                 "identity_verified": resolved_tweeter_verified,
                 "startup_muted": True,
                 "protection_required": True,
-                "protection_status": protection_status,
             },
         ]
     elif mode == "full_range_passive":

@@ -212,7 +212,6 @@ def _active_group(kind: str, mode: str, start: int) -> dict:
             channel.update({
                 "startup_muted": True,
                 "protection_required": True,
-                "protection_status": "absent",
             })
         channels.append(channel)
     return {
@@ -307,7 +306,6 @@ def _staged_metadata(topology: OutputTopology, path: Path) -> dict:
                 "physical_output_index": channel.physical_output_index,
                 "startup_muted": channel.startup_muted,
                 "protection_required": channel.protection_required,
-                "protection_status": channel.protection_status,
             })
     return {
         "status": "staged",
@@ -3962,7 +3960,6 @@ def _innomaker_active_2way() -> OutputTopology:
                     "identity_verified": True,
                     "startup_muted": True,
                     "protection_required": True,
-                    "protection_status": "absent",
                 },
             ],
         }],

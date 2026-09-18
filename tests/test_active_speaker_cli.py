@@ -1220,7 +1220,6 @@ def test_runtime_safe_graph_cli_names_capability_aware_exits(
                     "identity_verified": True,
                     "startup_muted": True,
                     "protection_required": True,
-                    "protection_status": "present",
                 },
             ],
         }],

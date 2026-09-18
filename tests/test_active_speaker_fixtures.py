@@ -30,13 +30,11 @@ def test_mono_output_topology_pins_guarded_two_way_defaults() -> None:
     tweeter = group["channels"][1]
     assert tweeter["startup_muted"] is True
     assert tweeter["protection_required"] is True
-    assert tweeter["protection_status"] == "absent"
 
 
 def test_mono_output_topology_preserves_hardware_variants() -> None:
     topology = mono_output_topology(
         tweeter_output=2,
-        protection_status="absent",
         topology_name="Bench mono",
         group_label="Mono speaker",
         device_id="unregistered_lab_dac",
@@ -54,7 +52,6 @@ def test_mono_output_topology_preserves_hardware_variants() -> None:
     assert "card_id" not in raw["hardware"]
     assert raw["hardware"]["clock_domain_id"] == "device:unregistered_lab_dac"
     assert tweeter["physical_output_index"] == 2
-    assert tweeter["protection_status"] == "absent"
 
 
 @pytest.mark.parametrize(
@@ -89,7 +86,6 @@ def test_mono_output_topology_preserves_optional_subwoofer_shape() -> None:
             "physical_output_index": 2,
                 "startup_muted": True,
             "protection_required": False,
-            "protection_status": "absent",
             "human_output_label": "DAC output 3",
         }
     ]

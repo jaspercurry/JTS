@@ -64,7 +64,6 @@ def _staged_anchor_for(topology, staged_path):
                 "physical_output_index": channel.physical_output_index,
                 "startup_muted": bool(channel.startup_muted),
                 "protection_required": bool(channel.protection_required),
-                "protection_status": channel.protection_status,
             }
             for group in topology.speaker_groups
             for channel in group.channels

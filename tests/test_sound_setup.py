@@ -1402,7 +1402,6 @@ def test_active_speaker_stop_payload_survives_level_reset_failure(
 
 def _active_speaker_mono_topology_payload(
     *,
-    protection_status: str,
     card_id: str | None = "DAC8",
     identity_verified: bool = False,
 ) -> dict:
@@ -1412,7 +1411,6 @@ def _active_speaker_mono_topology_payload(
         "physical_output_index": 1,
         "startup_muted": True,
         "protection_required": True,
-        "protection_status": protection_status,
     }
     if identity_verified:
         woofer["identity_verified"] = True
@@ -1686,7 +1684,6 @@ def _innomaker_topology_payload(*, active: bool, subwoofer: bool = False) -> dic
                         "identity_verified": True,
                         "startup_muted": True,
                         "protection_required": True,
-                        "protection_status": "present",
                     },
                 ],
             }
@@ -1831,7 +1828,7 @@ def test_a_roleful_layout_on_a_dac_without_an_active_lane_is_refused(
 def test_layout_save_refuses_active_route_over_capacity(monkeypatch, tmp_path, caplog, subwoofer_supported, assigned):
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    payload = _active_speaker_mono_topology_payload(protection_status="present")
+    payload = _active_speaker_mono_topology_payload()
     payload["hardware"]["device_id"] = "hifiberry_dac8x"
     payload["hardware"]["physical_output_count"] = 8
     payload["speaker_groups"] = [{
@@ -2039,7 +2036,6 @@ def test_topology_save_parks_before_replacing_saved_layout(
 @pytest.mark.parametrize("applied", [False, True])
 def test_topology_resave_converges_without_parking(monkeypatch, tmp_path, caplog, applied):
     raw = _active_speaker_mono_topology_payload(
-        protection_status="absent",
     )
     save_output_topology(OutputTopology.from_mapping(raw))
     prior_path = str(tmp_path / "baseline.yml")
@@ -2317,14 +2313,14 @@ def test_driver_research_prompt_refuses_a_target_without_a_model(monkeypatch, mo
         })
 
 
-def test_draft_and_preview_preserve_unprotected_topology(
+def test_draft_and_preview_preserve_the_saved_topology(
     monkeypatch,
     tmp_path: Path,
 ):
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
 
     sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload(protection_status="absent")
+        _active_speaker_mono_topology_payload()
     )
     path = paths["JASPER_OUTPUT_TOPOLOGY_PATH"]
     before = path.read_bytes(), path.stat().st_mtime_ns
@@ -2337,7 +2333,7 @@ def test_draft_and_preview_preserve_unprotected_topology(
         item for item in filters
         if item["role"] == "tweeter"
     )
-    assert tweeter_filter["channel"]["protection_status"] == "absent"
+    assert tweeter_filter["channel"]["protection_required"] is True
 
 
 def _record_dac8x() -> None:
@@ -2705,7 +2701,6 @@ def _dual_apple_stereo_topology_raw(*, identity_verified: bool = True) -> dict:
             "physical_output_index": tweeter,
             "startup_muted": True,
             "protection_required": True,
-            "protection_status": "present",
         }
         if identity_verified:
             woofer_channel["identity_verified"] = True
@@ -2897,7 +2892,6 @@ def test_sound_output_topology_save_accepts_a_cross_child_speaker_group(
                         "physical_output_index": 2,
                         "startup_muted": True,
                         "protection_required": True,
-                        "protection_status": "present",
                     },
                 ],
             },
@@ -3619,7 +3613,7 @@ def test_active_speaker_crossover_preview_get_tracks_draft_without_preview_file(
 ):
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     sound_setup._save_output_topology_payload(_active_speaker_mono_topology_payload(
-        protection_status="absent", card_id=None, identity_verified=True,
+        card_id=None, identity_verified=True,
     ))
     _save_active_speaker_design_and_preview()
     handler_cls = sound_setup._make_handler(
@@ -5492,7 +5486,6 @@ def _ported_dual_apple_topology_raw() -> dict:
                     "identity_verified": True,
                     "startup_muted": True,
                     "protection_required": True,
-                    "protection_status": "present",
                 },
             ],
         }
@@ -5606,13 +5599,11 @@ def test_repin_endpoint_keeps_the_design_and_drops_drift_evidence(
         (group.id, group.kind, group.mode) for group in saved.speaker_groups
     ] == [(group.id, group.kind, group.mode) for group in before.speaker_groups]
     assert [
-        (channel.role, channel.driver_style, channel.physical_output_index,
-         channel.protection_status)
+        (channel.role, channel.driver_style, channel.physical_output_index)
         for group in saved.speaker_groups
         for channel in group.channels
     ] == [
-        (channel.role, channel.driver_style, channel.physical_output_index,
-         channel.protection_status)
+        (channel.role, channel.driver_style, channel.physical_output_index)
         for group in before.speaker_groups
         for channel in group.channels
     ]
