@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 
 from pathlib import Path
 
 import pytest
 
+from jasper.active_speaker.calibration_level import classify_mic_meter
 from jasper.active_speaker.measurement import (
     active_driver_targets,
     active_summed_targets,
@@ -18,10 +20,9 @@ from jasper.active_speaker.measurement import (
     current_driver_floor_evidence,
     load_measurement_state,
     record_driver_measurement,
-    record_summed_validation,
     start_active_comparison_set,
 )
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.output_topology import OutputTopology
 from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import mono_output_topology, seed_summed_test
 
@@ -36,55 +37,6 @@ def _topology(
         tweeter_verified=tweeter_verified,
         topology_name="Bench mono",
     )
-
-
-def _three_way_topology() -> OutputTopology:
-    """A mono 3-way matching ``tests.test_active_speaker_profile``'s
-    ``_three_way_preset(layout="mono")``: woofer=output 0, mid=output 1,
-    tweeter=output 2, crossovers at 350 Hz (woofer/mid) and 2500 Hz
-    (mid/tweeter)."""
-    return OutputTopology.from_mapping({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_mono_3way",
-        "name": "Bench mono 3-way",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-            "card_id": "DAC8",
-        },
-        "speaker_groups": [
-            {
-                "id": "mono",
-                "label": "Mono cabinet",
-                "kind": "mono",
-                "mode": "active_3_way",
-                "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "mid",
-                        "physical_output_index": 1,
-                        "identity_verified": True,
-                    },
-                    {
-                        "role": "tweeter",
-                        "physical_output_index": 2,
-                        "identity_verified": True,
-                        "startup_muted": True,
-                        "protection_required": True,
-                        "protection_status": "absent",
-                    },
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "mono"},
-    })
 
 
 def _safe_session(
@@ -498,254 +450,6 @@ def test_latest_wrong_driver_result_removes_confirmed_driver_role(
     ) == []
 
 
-def test_summed_validation_waits_for_all_driver_measurements(
-    tmp_path: Path,
-) -> None:
-    topology = _topology()
-    state_path = tmp_path / "measurements.json"
-
-    blocked = record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -39,
-        },
-        state_path=state_path,
-        now="2026-06-14T12:00:00Z",
-    )
-
-    assert blocked["summary"]["summed_validation_complete"] is False
-    assert blocked["summary"]["latest_summed_validations"]["mono"][
-        "validated"
-    ] is False
-    assert "summed_validation_driver_measurements_missing" in {
-        issue["code"]
-        for issue in blocked["summary"]["latest_summed_validations"]["mono"]["issues"]
-    }
-
-    for role in ("woofer", "tweeter"):
-        output_index = 0 if role == "woofer" else 1
-        playback_id = f"playback-{role}"
-        record_driver_measurement(
-            topology,
-            {
-                "speaker_group_id": "mono",
-                "role": role,
-                "outcome": "heard_correct_driver",
-                "observed_mic_dbfs": -42,
-                "playback_id": playback_id,
-            },
-            safe_session=_safe_session(
-                role=role,
-                output_index=output_index,
-                playback_id=playback_id,
-            ),
-            state_path=state_path,
-            now=f"2026-06-14T12:0{1 if role == 'woofer' else 2}:00Z",
-        )
-    missing_test = record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -40,
-            "polarity": "normal",
-            "delay_ms": 0,
-        },
-        state_path=state_path,
-        now="2026-06-14T12:03:00Z",
-    )
-
-    assert missing_test["summary"]["summed_validation_complete"] is False
-    assert "summed_validation_test_missing" in {
-        issue["code"]
-        for issue in missing_test["summary"]["latest_summed_validations"]["mono"][
-            "issues"
-        ]
-    }
-
-    seed_summed_test(
-        topology,
-        state_path,
-        playback_id="summed-playback-artifact",
-        audio_emitted=False,
-    )
-    artifact_only = record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -40,
-            "polarity": "normal",
-            "delay_ms": 0,
-            "summed_test_id": "summed-playback-artifact",
-        },
-        state_path=state_path,
-        now="2026-06-14T12:03:30Z",
-    )
-
-    assert artifact_only["summary"]["summed_validation_complete"] is False
-    assert "summed_validation_audio_missing" in {
-        issue["code"]
-        for issue in artifact_only["summary"]["latest_summed_validations"]["mono"][
-            "issues"
-        ]
-    }
-
-    seed_summed_test(topology, state_path, playback_id="summed-playback-audible")
-    ready = record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -40,
-            "polarity": "normal",
-            "delay_ms": 0,
-            "summed_test_id": "summed-playback-audible",
-        },
-        state_path=state_path,
-        now="2026-06-14T12:04:00Z",
-    )
-
-    assert ready["status"] == "ready_for_baseline"
-    assert ready["summary"]["driver_measurements_complete"] is True
-    assert ready["summary"]["summed_validation_complete"] is True
-    assert ready["permissions"]["may_compile_baseline"] is True
-
-    reloaded = load_measurement_state(topology, state_path=state_path)
-    assert reloaded["status"] == "ready_for_baseline"
-    assert reloaded["summary"]["summed_validation_complete"] is True
-    assert reloaded["summary"]["latest_summed_validations"]["mono"][
-        "validated"
-    ] is True
-
-    superseded = seed_summed_test(
-        topology,
-        state_path,
-        playback_id="summed-playback-newer",
-    )
-
-    assert superseded["status"] == "needs_summed_validation"
-    assert superseded["summary"]["summed_validation_complete"] is False
-    assert superseded["summary"]["validated_summed_group_count"] == 0
-    assert superseded["permissions"]["may_compile_baseline"] is False
-    assert (
-        superseded["summary"]["latest_summed_tests"]["mono"]["summed_test_id"]
-        == "summed-playback-newer"
-    )
-    assert (
-        superseded["summary"]["latest_summed_validations"]["mono"]["summed_test_id"]
-        == "summed-playback-audible"
-    )
-
-
-def test_summed_validation_accepts_operator_check_after_audible_test_without_mic(
-    tmp_path: Path,
-) -> None:
-    topology = _topology()
-    state_path = tmp_path / "measurements.json"
-    for role in ("woofer", "tweeter"):
-        output_index = 0 if role == "woofer" else 1
-        playback_id = f"playback-{role}"
-        record_driver_measurement(
-            topology,
-            {
-                "speaker_group_id": "mono",
-                "role": role,
-                "outcome": "heard_correct_driver",
-                "playback_id": playback_id,
-            },
-            safe_session=_safe_session(
-                role=role,
-                output_index=output_index,
-                playback_id=playback_id,
-            ),
-            state_path=state_path,
-            now=f"2026-06-14T12:0{1 if role == 'woofer' else 2}:00Z",
-        )
-    seed_summed_test(topology, state_path, playback_id="summed-playback-audible")
-
-    no_operator_check = record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "summed_test_id": "summed-playback-audible",
-        },
-        state_path=state_path,
-        now="2026-06-14T12:03:00Z",
-    )
-    latest = no_operator_check["summary"]["latest_summed_validations"]["mono"]
-    assert latest["validated"] is False
-    assert latest["operator_listening_check"] is False
-    assert "summed_validation_mic_missing" in {
-        issue["code"] for issue in latest["issues"]
-    }
-
-    operator_check = record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "summed_test_id": "summed-playback-audible",
-            "operator_listening_check": True,
-        },
-        state_path=state_path,
-        now="2026-06-14T12:04:00Z",
-    )
-    latest = operator_check["summary"]["latest_summed_validations"]["mono"]
-
-    assert operator_check["status"] == "ready_for_baseline"
-    assert operator_check["summary"]["summed_validation_complete"] is True
-    assert operator_check["permissions"]["may_compile_baseline"] is True
-    assert latest["validated"] is True
-    assert latest["operator_listening_check"] is True
-    assert latest["observed_mic_dbfs"] is None
-    assert latest["acoustic"] is None
-    assert "summed_validation_mic_missing" in {
-        issue["code"] for issue in latest["issues"]
-    }
-
-
-def test_summed_validation_accepts_backend_driver_target_proof(
-    tmp_path: Path,
-) -> None:
-    topology = _topology()
-    state_path = tmp_path / "measurements.json"
-
-    seed_summed_test(
-        topology,
-        state_path,
-        playback_id="summed-playback-revalidate",
-    )
-    payload = record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -40,
-            "polarity": "normal",
-            "delay_ms": 0,
-            "summed_test_id": "summed-playback-revalidate",
-        },
-        state_path=state_path,
-        driver_target_proof_complete=True,
-        now="2026-06-14T12:05:00Z",
-    )
-
-    latest = payload["summary"]["latest_summed_validations"]["mono"]
-    assert latest["validated"] is True
-    assert latest["driver_target_proof_complete"] is True
-    assert "summed_validation_driver_measurements_missing" not in {
-        issue["code"] for issue in latest["issues"]
-    }
-    # The low-level measurement summary still describes raw measurement state;
-    # profile compilation composes this validation with the backend proof.
-    assert payload["summary"]["driver_measurements_complete"] is False
-    assert payload["summary"]["summed_validation_complete"] is False
-
-
 def test_driver_measurement_requires_accepted_floor_result_for_same_target(
     tmp_path: Path,
 ) -> None:
@@ -994,29 +698,6 @@ def test_driver_measurement_records_optional_bundle_ref(tmp_path: Path) -> None:
     reloaded = load_measurement_state(topology, state_path=state_path)
     assert reloaded["driver_measurements"][-2]["bundle"] == bundle_ref
     assert reloaded["driver_measurements"][-1]["bundle"] is None
-
-
-def test_summed_validation_records_optional_bundle_ref(tmp_path: Path) -> None:
-    topology = _topology()
-    state_path = tmp_path / "measurements.json"
-    seed_summed_test(topology, state_path)
-    bundle_ref = {"session_id": "sess-2", "artifact_path": "summed/y.wav"}
-
-    state = record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "operator_listening_check": True,
-            "summed_test_id": "summed-playback-1",
-        },
-        bundle_ref=bundle_ref,
-        state_path=state_path,
-        now="2026-06-14T12:03:00Z",
-    )
-
-    record = state["summed_validations"][-1]
-    assert record["bundle"] == bundle_ref
 
 
 def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
@@ -1277,452 +958,216 @@ def test_start_active_comparison_set_raises_before_persisting_emits_no_event(
     assert not event_records(caplog, "correction.crossover_session_started")
 
 
-# --- Paired summed evidence (lane E, Slice 2: "Retain both normal- and
-# reverse-polarity summed evidence per crossover region") --------------------
+# --- Paired summed evidence. Nothing in this tree writes `summed_validations`,
+# but commissioned boxes still hold these records and every
+# `load_measurement_state` re-derives its summary from them, so these tests
+# seed the state file by hand. ----------------------------------------------
 
 
-def _summed_acoustic(
+def _seed_summed_record(
+    topology: OutputTopology,
+    state_path: Path,
     *,
-    null_depth_db: float,
-    expect_null: bool,
-    calibrated: bool = True,
+    kind: str | None,
+    created_at: str,
+    region: dict | None = None,
+    placement_proof: dict | None = None,
+    group_id: str = "mono",
 ) -> dict:
-    return {
-        "verdict": "blend_ok",
-        "null_depth_db": null_depth_db,
-        "expect_null": expect_null,
-        "calibrated": calibrated,
+    """Append one summed-validation record to the state file on disk.
+
+    Every key below is one a deployed box's record carries; the reader chain
+    under test resolves records of exactly this shape. ``kind`` is the polarity
+    a mic-backed ``acoustic`` block carries (``"in_phase"``/``"reverse"``) or
+    ``None`` for the pure operator-listening-check record, which has no
+    acoustic block at all.
+    """
+    loaded = load_measurement_state(topology, state_path=state_path)
+    target = next(
+        candidate for candidate in active_summed_targets(topology)
+        if candidate["speaker_group_id"] == group_id
+    )
+    latest_test = loaded["summary"]["latest_summed_tests"].get(group_id, {})
+    record = {
+        "validation_id": uuid.uuid4().hex,
+        "created_at": created_at,
+        "speaker_group_id": group_id,
+        "group_fingerprint": target["group_fingerprint"],
+        "outcome": "blend_ok",
+        "validated": True,
+        "operator_listening_check": kind is None,
+        "summed_test_id": latest_test.get("summed_test_id"),
+        "summed_test": dict(latest_test),
+        "driver_target_proof_complete": True,
+        "observed_mic_dbfs": -40.0,
+        "mic_clipping": False,
+        "mic_meter": classify_mic_meter(observed_dbfs=-40.0, clipping=False),
+        "acoustic": None if kind is None else {
+            "verdict": "blend_ok",
+            "null_depth_db": 22.0 if kind == "reverse" else 2.0,
+            "expect_null": kind == "reverse",
+            "calibrated": True,
+        },
+        "excitation": None,
+        "placement_proof": placement_proof,
+        "polarity": "normal",
+        "delay_ms": 0.0,
+        "delay_target_role": None,
+        "notes": None,
+        "issues": [],
+        "bundle": None,
+        "region": region,
     }
+    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    state.setdefault("summed_validations", []).append(record)
+    state_path.write_text(json.dumps(state))
+    return record
 
 
-def test_reverse_capture_does_not_overwrite_in_phase_latest(tmp_path: Path) -> None:
-    """The overwrite-bug regression this lane fixes: before pairing existed,
-    ``latest_summed_by_group`` kept only ONE record per group regardless of
-    polarity, so a reverse-polarity capture recorded after an in-phase one
-    silently replaced it (both can read outcome='blend_ok'/validated=True --
-    a formed reverse null IS the pass for a reverse capture). Both are now
-    retained distinctly in latest_summed_pairs_by_group, while
-    latest_summed_by_group / latest_summed_validations keep resolving to the
-    IN-PHASE record specifically."""
-    topology = _topology()
-    state_path = tmp_path / "measurements.json"
-    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
-
-    in_phase = record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -40,
-            "summed_test_id": "summed-playback-1",
-            "polarity": "normal",
-            "delay_ms": 0.0,
-            "acoustic": _summed_acoustic(null_depth_db=2.0, expect_null=False),
-        },
-        state_path=state_path,
-        driver_target_proof_complete=True,
-        now="2026-07-11T12:00:00Z",
-    )
-    in_phase_record = in_phase["summed_validations"][-1]
-    assert in_phase_record["validated"] is True
-
-    reverse = record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -55,
-            "summed_test_id": "summed-playback-1",
-            "polarity": "normal",
-            "delay_ms": 0.0,
-            "acoustic": _summed_acoustic(null_depth_db=22.0, expect_null=True),
-        },
-        state_path=state_path,
-        driver_target_proof_complete=True,
-        now="2026-07-11T12:01:00Z",
-    )
-    reverse_record = reverse["summed_validations"][-1]
-    # Same shape as the bug this pins: both read validated=True.
-    assert reverse_record["validated"] is True
-
-    # The fix: latest_summed_by_group (== summary's latest_summed_validations,
-    # the SAME object) still resolves to the IN-PHASE record.
-    assert (
-        reverse["latest_summed_by_group"]["mono"]["validation_id"]
-        == in_phase_record["validation_id"]
-    )
-    assert (
-        reverse["summary"]["latest_summed_validations"]["mono"]["validation_id"]
-        == in_phase_record["validation_id"]
-    )
-
-    # Both polarities are retained, distinctly, in the paired evidence (2-way
-    # legacy-fallback region key, since neither raw dict stamped "region").
-    pair = reverse["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
-    assert pair["in_phase"]["validation_id"] == in_phase_record["validation_id"]
-    assert pair["reverse"]["validation_id"] == reverse_record["validation_id"]
-
-    # Reloading from disk re-derives the same (fresh-computed, not stored)
-    # summary shape.
-    reloaded = load_measurement_state(topology, state_path=state_path)
-    assert (
-        reloaded["latest_summed_by_group"]["mono"]["validation_id"]
-        == in_phase_record["validation_id"]
-    )
-    reloaded_pair = reloaded["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
-    assert reloaded_pair["reverse"]["validation_id"] == reverse_record["validation_id"]
-
-
-def test_in_phase_capture_after_reverse_does_not_lose_the_reverse_pair_slot(
-    tmp_path: Path,
+@pytest.mark.parametrize("first_kind", ["in_phase", "reverse"])
+def test_summed_pair_keeps_both_polarities_in_either_capture_order(
+    tmp_path: Path, first_kind: str,
 ) -> None:
-    """Symmetric to the above: capturing in-phase AFTER reverse must not
-    clear the already-recorded reverse evidence out of the pair."""
+    """Both polarities read outcome='blend_ok'/validated=True -- a formed
+    reverse null IS the pass for a reverse capture -- so neither may overwrite
+    the other in the pair, whichever was captured first, while the flat latest
+    slot keeps resolving to the IN-PHASE record."""
     topology = _topology()
     state_path = tmp_path / "measurements.json"
     seed_summed_test(topology, state_path, playback_id="summed-playback-1")
+    second_kind = "reverse" if first_kind == "in_phase" else "in_phase"
 
-    reverse = record_summed_validation(
+    first = _seed_summed_record(
         topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -55,
-            "summed_test_id": "summed-playback-1",
-            "acoustic": _summed_acoustic(null_depth_db=22.0, expect_null=True),
-        },
-        state_path=state_path,
-        driver_target_proof_complete=True,
-        now="2026-07-11T12:00:00Z",
+        state_path,
+        kind=first_kind,
+        created_at="2026-07-11T12:00:00Z",
     )
-    reverse_record = reverse["summed_validations"][-1]
-    # Before an in-phase capture exists at all, latest_summed_by_group has
-    # nothing usable for this group yet -- a reverse-only capture never
-    # counts as the flat "latest" slot.
-    assert "mono" not in reverse["latest_summed_by_group"]
+    after_first = load_measurement_state(topology, state_path=state_path)
+    if first_kind == "in_phase":
+        assert after_first["latest_summed_by_group"]["mono"]["validation_id"] == (
+            first["validation_id"]
+        )
+    else:
+        assert "mono" not in after_first["latest_summed_by_group"]
 
-    in_phase = record_summed_validation(
+    second = _seed_summed_record(
         topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -40,
-            "summed_test_id": "summed-playback-1",
-            "acoustic": _summed_acoustic(null_depth_db=2.0, expect_null=False),
-        },
-        state_path=state_path,
-        driver_target_proof_complete=True,
-        now="2026-07-11T12:01:00Z",
+        state_path,
+        kind=second_kind,
+        created_at="2026-07-11T12:01:00Z",
     )
-    in_phase_record = in_phase["summed_validations"][-1]
+    by_kind = {first_kind: first, second_kind: second}
+    state = load_measurement_state(topology, state_path=state_path)
 
-    assert (
-        in_phase["latest_summed_by_group"]["mono"]["validation_id"]
-        == in_phase_record["validation_id"]
-    )
-    pair = in_phase["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
-    assert pair["in_phase"]["validation_id"] == in_phase_record["validation_id"]
-    assert pair["reverse"]["validation_id"] == reverse_record["validation_id"]
+    # latest_summed_by_group is the SAME object as the summary's
+    # latest_summed_validations.
+    for latest in (
+        state["latest_summed_by_group"]["mono"],
+        state["summary"]["latest_summed_validations"]["mono"],
+    ):
+        assert latest["validation_id"] == by_kind["in_phase"]["validation_id"]
+
+    # Neither record stamped a region: a 2-way resolves into its one
+    # woofer<->tweeter region.
+    pair = state["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    assert pair["in_phase"]["validation_id"] == by_kind["in_phase"]["validation_id"]
+    assert pair["reverse"]["validation_id"] == by_kind["reverse"]["validation_id"]
 
 
-def _comparison_proof(comparison_set_id: str) -> dict[str, str]:
-    return {"comparison_set_id": comparison_set_id}
-
-
-def test_paired_summed_evidence_never_crosses_comparison_sets(
-    tmp_path: Path,
+@pytest.mark.parametrize("fresh_kind", ["in_phase", "reverse"])
+def test_summed_pair_never_borrows_the_missing_polarity_from_another_run(
+    tmp_path: Path, fresh_kind: str,
 ) -> None:
-    """A fresh run cannot borrow the missing polarity from an older run.
-
-    The microphone may have moved between runs, so combining run B's in-phase
-    response with run A's reverse response would fabricate a same-position
-    null margin. The newest record anchors the region to its comparison set.
-    """
+    """The microphone may have moved between commissioning runs, so filling the
+    fresh run's empty polarity slot from an older run would fabricate a
+    same-position null margin. The newest record anchors the region to its own
+    comparison set."""
     topology = _topology()
     state_path = tmp_path / "measurements.json"
     seed_summed_test(topology, state_path, playback_id="summed-playback-1")
+    older_kind = "reverse" if fresh_kind == "in_phase" else "in_phase"
     run_a = "a" * 32
     run_b = "b" * 32
 
-    for expect_null, depth, created_at in (
-        (False, 2.0, "2026-07-11T12:00:00Z"),
-        (True, 24.0, "2026-07-11T12:01:00Z"),
-    ):
-        record_summed_validation(
-            topology,
-            {
-                "speaker_group_id": "mono",
-                "outcome": "blend_ok",
-                "observed_mic_dbfs": -40,
-                "summed_test_id": "summed-playback-1",
-                "acoustic": _summed_acoustic(
-                    null_depth_db=depth, expect_null=expect_null,
-                ),
-                "placement_proof": _comparison_proof(run_a),
-            },
-            state_path=state_path,
-            driver_target_proof_complete=True,
-            now=created_at,
-        )
-
-    fresh = record_summed_validation(
+    _seed_summed_record(
         topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -41,
-            "summed_test_id": "summed-playback-1",
-            "acoustic": _summed_acoustic(
-                null_depth_db=3.0, expect_null=False,
-            ),
-            "placement_proof": _comparison_proof(run_b),
-        },
-        state_path=state_path,
-        driver_target_proof_complete=True,
-        now="2026-07-11T12:02:00Z",
+        state_path,
+        kind=older_kind,
+        placement_proof={"comparison_set_id": run_a},
+        created_at="2026-07-11T12:00:00Z",
+    )
+    fresh = _seed_summed_record(
+        topology,
+        state_path,
+        kind=fresh_kind,
+        placement_proof={"comparison_set_id": run_b},
+        created_at="2026-07-11T12:01:00Z",
     )
 
-    pair = fresh["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
-    assert pair["in_phase"]["placement_proof"]["comparison_set_id"] == run_b
-    assert pair["reverse"] is None
+    state = load_measurement_state(topology, state_path=state_path)
+    pair = state["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
+    assert pair[fresh_kind]["validation_id"] == fresh["validation_id"]
+    assert pair[fresh_kind]["placement_proof"]["comparison_set_id"] == run_b
+    assert pair[older_kind] is None
 
 
-def test_reverse_only_new_run_does_not_fall_back_to_old_in_phase(
+def test_malformed_placement_proof_never_pairs_as_legacy_evidence(
     tmp_path: Path,
 ) -> None:
-    """The pair object exists for run B, so consumers must see its missing side.
-
-    In particular, ``commissioning_capture._resolve_region_pair`` must not use
-    the flat latest-in-phase compatibility slot from run A beside run B's
-    reverse capture.
-    """
-    topology = _topology()
-    state_path = tmp_path / "measurements.json"
-    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
-    run_a = "a" * 32
-    run_b = "b" * 32
-
-    record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -40,
-            "summed_test_id": "summed-playback-1",
-            "acoustic": _summed_acoustic(
-                null_depth_db=2.0, expect_null=False,
-            ),
-            "placement_proof": _comparison_proof(run_a),
-        },
-        state_path=state_path,
-        driver_target_proof_complete=True,
-        now="2026-07-11T12:00:00Z",
-    )
-    fresh = record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -55,
-            "summed_test_id": "summed-playback-1",
-            "acoustic": _summed_acoustic(
-                null_depth_db=25.0, expect_null=True,
-            ),
-            "placement_proof": _comparison_proof(run_b),
-        },
-        state_path=state_path,
-        driver_target_proof_complete=True,
-        now="2026-07-11T12:01:00Z",
-    )
-
-    pair = fresh["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
-    assert pair["in_phase"] is None
-    assert pair["reverse"]["placement_proof"]["comparison_set_id"] == run_b
-
-
-def test_malformed_modern_proof_never_falls_into_the_legacy_pair_bucket(
-    tmp_path: Path,
-) -> None:
-    """Corrupt/migrated modern evidence must fail closed, not look legacy."""
+    """Corrupt or half-migrated modern evidence fails closed: the region stays
+    present but empty, so a 2-way consumer cannot mistake absence for legacy
+    state and fall back to the flat latest-in-phase slot."""
     topology = _topology()
     state_path = tmp_path / "measurements.json"
     seed_summed_test(topology, state_path, playback_id="summed-playback-1")
 
-    for expect_null, depth, created_at in (
-        (False, 2.0, "2026-07-11T12:00:00Z"),
-        (True, 24.0, "2026-07-11T12:01:00Z"),
-    ):
-        record_summed_validation(
+    for minute, kind in enumerate(("in_phase", "reverse")):
+        _seed_summed_record(
             topology,
-            {
-                "speaker_group_id": "mono",
-                "outcome": "blend_ok",
-                "observed_mic_dbfs": -40,
-                "summed_test_id": "summed-playback-1",
-                "acoustic": _summed_acoustic(
-                    null_depth_db=depth, expect_null=expect_null,
-                ),
-            },
-            state_path=state_path,
-            driver_target_proof_complete=True,
-            now=created_at,
+            state_path,
+            kind=kind,
+            created_at=f"2026-07-11T12:0{minute}:00Z",
         )
-
-    fresh = record_summed_validation(
+    _seed_summed_record(
         topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -41,
-            "summed_test_id": "summed-playback-1",
-            "acoustic": _summed_acoustic(
-                null_depth_db=3.0, expect_null=False,
-            ),
-            "placement_proof": {"comparison_set_id": "not-a-valid-id"},
-        },
-        state_path=state_path,
-        driver_target_proof_complete=True,
-        now="2026-07-11T12:02:00Z",
+        state_path,
+        kind="in_phase",
+        placement_proof={"comparison_set_id": "not-a-valid-id"},
+        created_at="2026-07-11T12:02:00Z",
     )
 
-    assert fresh["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"] == {
+    state = load_measurement_state(topology, state_path=state_path)
+    assert state["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"] == {
         "in_phase": None,
         "reverse": None,
     }
 
 
-def test_summed_validation_persists_valid_region(tmp_path: Path) -> None:
-    topology = _topology()
-    state_path = tmp_path / "measurements.json"
-    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
-
-    state = record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -40,
-            "summed_test_id": "summed-playback-1",
-            "acoustic": _summed_acoustic(null_depth_db=2.0, expect_null=False),
-            "region": {
-                "lower_role": "woofer",
-                "upper_role": "tweeter",
-                "fc_hz": 1600.0,
-            },
-        },
-        state_path=state_path,
-        driver_target_proof_complete=True,
-    )
-
-    record = state["summed_validations"][-1]
-    assert record["region"] == {
-        "lower_role": "woofer",
-        "upper_role": "tweeter",
-        "fc_hz": 1600.0,
-    }
-    pair = state["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
-    assert pair["in_phase"]["region"] == record["region"]
-
-
 @pytest.mark.parametrize(
-    "malformed_region",
-    [
-        None,
-        {},
-        "not a mapping",
-        {"lower_role": "woofer"},  # missing upper_role/fc_hz
-        {"lower_role": "woofer", "upper_role": "tweeter", "fc_hz": 0},  # non-positive
-        {"lower_role": "woofer", "upper_role": "tweeter", "fc_hz": "nan"},
-        {"lower_role": "", "upper_role": "tweeter", "fc_hz": 1600.0},  # empty role
-        {"lower_role": "woofer", "upper_role": 5, "fc_hz": 1600.0},  # non-string role
-    ],
+    ("mode", "kind"),
+    [("active_3_way", "in_phase"), ("active_2_way", None)],
+    ids=["three_way_without_region", "operator_only_without_acoustic"],
 )
-def test_summed_validation_rejects_malformed_region(
-    tmp_path: Path, malformed_region,
+def test_unpairable_record_still_counts_as_the_latest(
+    tmp_path: Path, mode: str, kind: str | None,
 ) -> None:
-    topology = _topology()
+    """Two records that resolve to no region pair: one with no region stamp on
+    a 3-way (two candidate regions, nothing to disambiguate them) and one with
+    no acoustic block at all (no polarity). Both stay eligible for
+    latest_summed_by_group; neither creates a pairs entry."""
+    topology = mono_output_topology(mode=mode, topology_name="Bench mono")
     state_path = tmp_path / "measurements.json"
     seed_summed_test(topology, state_path, playback_id="summed-playback-1")
 
-    state = record_summed_validation(
+    record = _seed_summed_record(
         topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -40,
-            "summed_test_id": "summed-playback-1",
-            "acoustic": _summed_acoustic(null_depth_db=2.0, expect_null=False),
-            "region": malformed_region,
-        },
-        state_path=state_path,
-        driver_target_proof_complete=True,
+        state_path,
+        kind=kind,
+        created_at="2026-07-11T12:00:00Z",
     )
 
-    record = state["summed_validations"][-1]
-    assert record["region"] is None
-    # Still pairs -- via the 2-way legacy fallback, since a malformed region
-    # is treated exactly like an absent one.
-    pair = state["latest_summed_pairs_by_group"]["mono"]["woofer:tweeter"]
-    assert pair["in_phase"]["validation_id"] == record["validation_id"]
-
-
-def test_legacy_region_less_record_on_three_way_stays_out_of_pairs(
-    tmp_path: Path,
-) -> None:
-    """A region-less record (no ``region`` stamped -- e.g. saved before this
-    migration) has no unambiguous home on a 3-way (two candidate regions), so
-    it is excluded from latest_summed_pairs_by_group entirely. It still
-    counts toward latest_summed_by_group candidacy when in-phase, unchanged
-    from prior behavior."""
-    topology = _three_way_topology()
-    state_path = tmp_path / "measurements.json"
-    state = record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -40,
-            "acoustic": _summed_acoustic(null_depth_db=2.0, expect_null=False),
-        },
-        state_path=state_path,
-        driver_target_proof_complete=True,
-    )
-
-    record = state["summed_validations"][-1]
-    assert record["region"] is None
-    assert state["latest_summed_by_group"]["mono"]["validation_id"] == (
-        record["validation_id"]
-    )
-    # No region key can be inferred on a 3-way -- no pairs entry at all.
-    assert state["latest_summed_pairs_by_group"].get("mono", {}) == {}
-
-
-def test_operator_only_record_counts_as_in_phase_but_never_pairs(
-    tmp_path: Path,
-) -> None:
-    """A pure operator-listening-check record (no acoustic block at all) has
-    no polarity kind: it stays eligible for latest_summed_by_group (a
-    validated blend with no null evidence, unchanged from before pairing
-    existed) but can never contribute to a region's in-phase/reverse pair."""
-    topology = _topology()
-    state_path = tmp_path / "measurements.json"
-    seed_summed_test(topology, state_path, playback_id="summed-playback-1")
-
-    state = record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "summed_test_id": "summed-playback-1",
-            "operator_listening_check": True,
-        },
-        state_path=state_path,
-        driver_target_proof_complete=True,
-    )
-
-    record = state["summed_validations"][-1]
-    assert record["acoustic"] is None
-    assert record["validated"] is True
+    state = load_measurement_state(topology, state_path=state_path)
     assert state["latest_summed_by_group"]["mono"]["validation_id"] == (
         record["validation_id"]
     )

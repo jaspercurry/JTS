@@ -5,23 +5,15 @@
 """Durable active-speaker driver-check and measurement evidence.
 
 This module records the evidence produced by the guided active-crossover flow:
-one measured result per driver and one summed crossover validation per active
+one measured result per driver, plus the summed playback tests per active
 speaker group. It does not play tones, capture audio, load CamillaDSP, or infer
 acoustic truth from thin evidence. It stores what the UI and operator observed
 so the baseline compiler can decide whether it has enough evidence to proceed.
 
-**Paired summed evidence (Slice 2).** A summed crossover region can be
-measured twice at the same fixed position — once in-phase (a correct
-crossover sums flat) and once with one driver deliberately reversed (a
-correct crossover then cancels deeply). Both readings are real, distinct
-evidence, but `record_summed_validation` -> `_summarise` used to keep only
-ONE "latest" record per group regardless of polarity, so a reverse-polarity
-capture recorded after an in-phase one silently overwrote it (and vice
-versa) in every downstream summary field. `latest_summed_by_group` /
-`latest_summed_validations` are now defined as the latest IN-PHASE record
-per group specifically (see `_latest_current_summed_records`); paired
-evidence — both polarities, keyed by crossover region — lives alongside it
-in `latest_summed_pairs_by_group`.
+``summed_validations`` has no writer in this tree; its reader stays because
+commissioned boxes still hold those records, and the summary it feeds
+(`latest_summed_validations`, `latest_summed_pairs_by_group`) is hashed into
+the applied profile's identity by `baseline_profile._source_payload`.
 """
 
 from __future__ import annotations
@@ -67,12 +59,6 @@ DRIVER_OUTCOMES = {
     "heard_correct_driver",
     "heard_wrong_driver",
     "silent",
-    "too_loud",
-}
-SUMMED_OUTCOMES = {
-    "blend_ok",
-    "needs_adjustment",
-    "polarity_or_delay_problem",
     "too_loud",
 }
 MAX_DRIVER_RECORDS = 48
@@ -125,10 +111,9 @@ _TWO_WAY_REGION_KEY = _region_key(*ADJACENT_PAIRS_BY_WAY[2][0])
 def _record_region_key(record: Mapping[str, Any]) -> str | None:
     """The paired-evidence key ``record`` belongs under, from its own stamp.
 
-    The ``region`` block contains ``{"lower_role", "upper_role", "fc_hz"}``,
-    validated in `record_summed_validation`. ``None`` when the record has no
-    resolvable region of its own — the caller decides whether a 2-way legacy
-    fallback applies (see `_TWO_WAY_REGION_KEY`).
+    The ``region`` block contains ``{"lower_role", "upper_role", "fc_hz"}``.
+    ``None`` when the record has no resolvable region of its own — the caller
+    decides whether a 2-way legacy fallback applies (see `_TWO_WAY_REGION_KEY`).
     """
     region = record.get("region")
     if not isinstance(region, Mapping):
@@ -182,28 +167,6 @@ def _record_comparison_scope(record: Mapping[str, Any]) -> tuple[str, str | None
     if not all(ch in "0123456789abcdef" for ch in value):
         return "invalid", None
     return "comparison_set", value
-
-
-def _valid_region(value: Any) -> dict[str, Any] | None:
-    """Validate a caller-supplied ``region`` block before persisting it.
-
-    ``value`` contains two non-empty role strings (``lower_role``, ``upper_role``)
-    and a finite, positive ``fc_hz``. Anything else (missing,
-    malformed, unresolvable-fc ``None``) persists as ``None`` rather than a
-    half-formed region a pair reader could misfile.
-    """
-    if not isinstance(value, Mapping):
-        return None
-    lower_role = value.get("lower_role")
-    upper_role = value.get("upper_role")
-    fc_hz = _finite_float(value.get("fc_hz"))
-    if (
-        isinstance(lower_role, str) and lower_role
-        and isinstance(upper_role, str) and upper_role
-        and fc_hz is not None and fc_hz > 0
-    ):
-        return {"lower_role": lower_role, "upper_role": upper_role, "fc_hz": fc_hz}
-    return None
 
 
 def _crossover_groups(topology: OutputTopology) -> list[Any]:
@@ -356,13 +319,6 @@ def _target_lookup(topology: OutputTopology) -> dict[str, dict[str, Any]]:
 
 def _group_ids(topology: OutputTopology) -> set[str]:
     return {group.id for group in _crossover_groups(topology)}
-
-
-def _summed_lookup(topology: OutputTopology) -> dict[str, dict[str, Any]]:
-    return {
-        target["speaker_group_id"]: target
-        for target in active_summed_targets(topology)
-    }
 
 
 def _base_state(path: Path) -> dict[str, Any]:
@@ -978,7 +934,6 @@ def _with_summary(topology: OutputTopology, state: dict[str, Any]) -> dict[str, 
         "issues": issues,
         "permissions": {
             "may_record_driver_measurement": True,
-            "may_record_summed_validation": summary["driver_measurements_complete"],
             "may_compile_baseline": summary["summed_validation_complete"],
             "may_not_play_audio": True,
             "may_not_load_camilla": True,
@@ -1389,169 +1344,6 @@ def record_driver_measurement(
         *persisted.get("driver_measurements", []),
         record,
     ][-MAX_DRIVER_RECORDS:]
-    persisted["updated_at"] = record["created_at"]
-    out = _with_summary(topology, persisted)
-    _write_state(path, out)
-    return out
-
-
-def record_summed_validation(
-    topology: OutputTopology,
-    raw: Mapping[str, Any],
-    *,
-    calibration_level: Mapping[str, Any] | None = None,
-    bundle_ref: Mapping[str, Any] | None = None,
-    state_path: str | Path | None = None,
-    driver_target_proof_complete: bool = False,
-    now: str | None = None,
-) -> dict[str, Any]:
-    """Persist one summed crossover validation observation.
-
-    ``bundle_ref``, when supplied, is stored verbatim on the record as
-    ``bundle`` — the same ``{session_id, artifact_path}`` join key
-    :func:`record_driver_measurement` stores. See its docstring.
-
-    ``raw["region"]``, when supplied, is the crossover region this capture
-    belongs to (``{"lower_role", "upper_role", "fc_hz"}``). Validated through
-    :func:`_valid_region` and stored as ``region``, or ``None`` when absent or malformed —
-    never a half-formed region a pair reader could misfile. See
-    :func:`_latest_current_summed_records` for how region + polarity
-    (``acoustic.expect_null``) combine into paired evidence.
-    """
-
-    path = measurement_state_path(state_path)
-    state = load_measurement_state(topology, state_path=path)
-    group_id = _text(raw.get("speaker_group_id"), max_chars=80) or ""
-    outcome = (_text(raw.get("outcome"), max_chars=40) or "").lower()
-    operator_listening_check = _truthy_flag(raw.get("operator_listening_check"))
-    observed, clipping, meter = _mic_meter_from(raw, calibration_level)
-    summary = state.get("summary") if isinstance(state.get("summary"), dict) else {}
-    summed_target = _summed_lookup(topology).get(group_id)
-    latest_tests = (
-        summary.get("latest_summed_tests")
-        if isinstance(summary.get("latest_summed_tests"), Mapping)
-        else {}
-    )
-    latest_test = latest_tests.get(group_id) if isinstance(latest_tests, Mapping) else None
-    requested_test_id = (
-        _text(raw.get("summed_test_id"), max_chars=120)
-        or _text(raw.get("playback_id"), max_chars=120)
-    )
-    issues: list[dict[str, str]] = []
-    if summed_target is None:
-        issues.append(_issue(
-            "blocker",
-            "summed_validation_group_unknown",
-            "summed validation target is not in the saved output topology",
-        ))
-    if outcome not in SUMMED_OUTCOMES:
-        issues.append(_issue(
-            "blocker",
-            "summed_validation_outcome_invalid",
-            "summed validation outcome is unsupported",
-        ))
-    if (
-        not summary.get("driver_measurements_complete")
-        and not driver_target_proof_complete
-    ):
-        issues.append(_issue(
-            "blocker",
-            "summed_validation_driver_measurements_missing",
-            "measure each driver before validating the summed crossover",
-        ))
-    if not isinstance(latest_test, Mapping) or not latest_test.get("captured"):
-        issues.append(_issue(
-            "blocker",
-            "summed_validation_test_missing",
-            "run a combined-driver test before recording whether the crossover blends",
-        ))
-    elif not requested_test_id:
-        issues.append(_issue(
-            "blocker",
-            "summed_validation_test_id_missing",
-            "combined crossover validation must reference the latest combined test",
-        ))
-    elif requested_test_id not in {
-        str(latest_test.get("summed_test_id") or ""),
-        str(latest_test.get("playback_id") or ""),
-    }:
-        issues.append(_issue(
-            "blocker",
-            "summed_validation_test_stale",
-            "run the combined-driver test again before recording this result",
-        ))
-    elif latest_test.get("audio_emitted") is not True:
-        issues.append(_issue(
-            "blocker",
-            "summed_validation_audio_missing",
-            "combined crossover validation requires an audible combined-driver test",
-        ))
-    if observed is None:
-        issues.append(_issue(
-            "warning",
-            "summed_validation_mic_missing",
-            "no microphone reading was captured for acoustic tuning",
-        ))
-    if meter.get("status") in {"clipping", "too_loud"}:
-        issues.append(_issue(
-            "warning",
-            "summed_validation_mic_out_of_range",
-            "microphone reading is too loud or clipping",
-        ))
-    validated = (
-        not any(issue["severity"] == "blocker" for issue in issues)
-        and outcome == "blend_ok"
-        and (operator_listening_check or observed is not None)
-        and meter.get("status") not in {"clipping", "too_loud"}
-    )
-    record = {
-        "validation_id": uuid.uuid4().hex,
-        "created_at": now or _utc_now(),
-        "speaker_group_id": group_id,
-        "group_fingerprint": (
-            summed_target.get("group_fingerprint") if summed_target else None
-        ),
-        "outcome": outcome,
-        "validated": validated,
-        "operator_listening_check": operator_listening_check,
-        "summed_test_id": requested_test_id,
-        "summed_test": dict(latest_test) if isinstance(latest_test, Mapping) else {},
-        "driver_target_proof_complete": bool(driver_target_proof_complete),
-        "observed_mic_dbfs": observed,
-        "mic_clipping": clipping,
-        "mic_meter": meter,
-        # Optional mic-backed summed-crossover verdict block (driver_acoustics)
-        # when the sweep+analyze path recorded this; None for the operator path.
-        "acoustic": (
-            dict(raw["acoustic"])
-            if isinstance(raw.get("acoustic"), Mapping)
-            else None
-        ),
-        "excitation": (
-            dict(raw["excitation"])
-            if isinstance(raw.get("excitation"), Mapping)
-            else None
-        ),
-        "placement_proof": (
-            dict(raw["placement_proof"])
-            if isinstance(raw.get("placement_proof"), Mapping)
-            else None
-        ),
-        "polarity": _text(raw.get("polarity"), max_chars=40) or "normal",
-        "delay_ms": _finite_float(raw.get("delay_ms")),
-        "delay_target_role": (
-            _text(raw.get("delay_target_role"), max_chars=40) or None
-        ),
-        "notes": _text(raw.get("notes"), max_chars=1000),
-        "issues": issues,
-        "bundle": dict(bundle_ref) if isinstance(bundle_ref, Mapping) else None,
-        "region": _valid_region(raw.get("region")),
-    }
-    persisted = _normalise_state(state, path)
-    persisted["summed_validations"] = [
-        *persisted.get("summed_validations", []),
-        record,
-    ][-MAX_SUMMED_RECORDS:]
     persisted["updated_at"] = record["created_at"]
     out = _with_summary(topology, persisted)
     _write_state(path, out)

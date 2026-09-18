@@ -40,7 +40,6 @@ from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_desig
 from jasper.active_speaker.crossover_contract import legacy_manual_preservation_state
 from jasper.active_speaker.measurement import (
     record_driver_measurement,
-    record_summed_validation,
 )
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
@@ -218,19 +217,8 @@ def _measurements(topology: OutputTopology, tmp_path: Path) -> dict:
             state_path=state_path,
             now=f"2026-06-14T12:0{1 if role == 'woofer' else 2}:00Z",
         )
-    seed_summed_test(topology, state_path, playback_id="summed-playback-audible")
-    return record_summed_validation(
-        topology,
-        {
-            "speaker_group_id": "mono",
-            "outcome": "blend_ok",
-            "observed_mic_dbfs": -40.0,
-            "polarity": "normal",
-            "delay_ms": 0.0,
-            "summed_test_id": "summed-playback-audible",
-        },
-        state_path=state_path,
-        now="2026-06-14T12:03:00Z",
+    return seed_summed_test(
+        topology, state_path, playback_id="summed-playback-audible"
     )
 
 
