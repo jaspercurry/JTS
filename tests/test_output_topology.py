@@ -46,6 +46,7 @@ from jasper.output_topology import (
     clear_topology_fingerprint_stamp,
     read_topology_fingerprint_stamp,
     topology_config_fingerprint,
+    topology_fingerprint_stamp,
     write_topology_fingerprint_stamp,
     topology_is_passive_mains,
     topology_is_subless_passive_mains,
@@ -1626,6 +1627,17 @@ def test_the_config_fingerprint_moves_for_config_and_nothing_else(
     changed = topology_config_fingerprint(mutate(topology))
 
     assert (changed != topology_config_fingerprint(topology)) is moves
+
+
+def test_the_stamp_version_moves_with_the_fingerprint_projection() -> None:
+    """The canary the whole bump discipline rests on: jasper-camilla's gate
+    compares stamps only within one version, so a projection change that kept
+    the old version would compare two hashes of different things and read a code
+    change as a wiring change. This literal moving means the projection moved —
+    bump `TOPOLOGY_STAMP_VERSION` with it, do not re-pin alone."""
+    assert topology_fingerprint_stamp(_fingerprint_topology()) == (
+        "v1:d19c8e21ed816bd01714eec33475c7d435ed97bbcbd4392eb144bfebc0badcc9"
+    )
 
 
 def test_a_stamp_nobody_could_write_or_retire_says_so(

@@ -1755,6 +1755,32 @@ def topology_lock_path(path: str | Path | None = None) -> Path:
 STATEFILE_TOPOLOGY_STAMP_SUFFIX = ".topology"
 STATEFILE_UNPROVED_STAMP_SUFFIX = ".topology.unproved"
 
+# Digests compare only within one version. The gate compares two fingerprints of
+# the SAME topology, so a code change to what `topology_config_fingerprint`
+# hashes moves whichever stamp the new build wrote and not the other, and that
+# would read as a wiring change nobody made. Bump with that projection: the
+# literal pinned in tests/test_output_topology.py fails until you do. Goes with
+# the gate (ADR-0283).
+TOPOLOGY_STAMP_VERSION = 1
+
+
+def topology_stamp_version(stamp: str) -> str:
+    """Which projection minted one stamp.
+
+    An unprefixed stamp is version 1's: the prefix landed while the projection
+    it names was still 1, so those digests compare. Duplicated in
+    ``deploy/bin/jasper-camilla-topology-gate``, which does the comparing.
+    """
+
+    version, separator, _digest = stamp.partition(":")
+    return version if separator else "v1"
+
+
+def topology_fingerprint_stamp(topology: OutputTopology) -> str:
+    """The value both gate stamps carry: this topology, and what hashed it."""
+
+    return f"v{TOPOLOGY_STAMP_VERSION}:{topology_config_fingerprint(topology)}"
+
 
 def statefile_topology_stamp_path(statefile_path: str | Path) -> Path:
     """Where the fingerprint a written statefile was PROVED against lives."""
@@ -1855,7 +1881,7 @@ def stamp_statefile_topology(
         return
     write_topology_fingerprint_stamp(
         statefile_topology_stamp_path(statefile_path),
-        topology_config_fingerprint(topology),
+        topology_fingerprint_stamp(topology),
     )
 
 
@@ -1886,7 +1912,7 @@ def stamp_statefile_convergence(
     if proved:
         clear_topology_fingerprint_stamp(stamp)
         return
-    write_topology_fingerprint_stamp(stamp, topology_config_fingerprint(topology))
+    write_topology_fingerprint_stamp(stamp, topology_fingerprint_stamp(topology))
 
 
 @dataclass(frozen=True)

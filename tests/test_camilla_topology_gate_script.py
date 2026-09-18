@@ -69,6 +69,13 @@ class _Gate:
         ("a" * 64, "a" * 64, True),
         # The topology moved and nothing proved a graph for it.
         ("b" * 64, "a" * 64, False),
+        # The same pair in the versioned form this build writes.
+        ("v1:" + "b" * 64, "v1:" + "a" * 64, False),
+        # One stamp of each form on a box deployed across the prefix landing.
+        # An unprefixed stamp IS version 1's, so these digests are of the same
+        # projection and the verdict is the digests', not the prefix's.
+        ("v1:" + "b" * 64, "a" * 64, False),
+        ("v1:" + "a" * 64, "a" * 64, True),
         # Unknown is not mismatch, on either side and however it is unknown.
         (None, "a" * 64, True),
         ("b" * 64, None, True),
@@ -91,6 +98,73 @@ def test_only_two_known_and_different_fingerprints_refuse_the_start(
     else:
         assert result.returncode in SKIP_BAND
         assert gate.record.exists()
+
+
+@pytest.mark.parametrize(
+    ("unproved", "proved"),
+    [
+        ("v2:" + "b" * 64, "v1:" + "a" * 64),
+        # Equal hex across a bump is not "matches" either: two projections
+        # measuring different things can agree by accident and say nothing.
+        ("v2:" + "a" * 64, "v1:" + "a" * 64),
+    ],
+)
+def test_only_a_projection_bump_makes_two_stamps_incomparable(
+    tmp_path: Path, unproved: str, proved: str,
+) -> None:
+    """Stamps of ONE projection compare by digest, whatever their prefix; only a
+    bump — a code change to what the fingerprint hashes — makes two digests
+    measurements of different things. Then neither their difference nor their
+    equality is a verdict, so the start is allowed and the allow line names the
+    two versions it declined to compare."""
+    gate = _Gate(tmp_path)
+    gate.stamp(unproved, proved)
+
+    result = gate.run()
+
+    assert result.returncode == ALLOW
+    assert not gate.record.exists()
+    assert "reason=stamp_version_mismatch" in result.stderr
+    assert "stamp_versions=v2/v1" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("unproved", "proved", "status"),
+    [
+        # A projection bump: two digests of different things, so the gate
+        # compared nothing and only the stamps say so.
+        ("v2:" + "b" * 64, "v1:" + "a" * 64, "warn"),
+        # A box deployed across the prefix landing: an unprefixed stamp is
+        # version 1's, so this IS one projection and the gate did compare.
+        ("v1:" + "a" * 64, "a" * 64, "ok"),
+    ],
+)
+def test_the_doctor_row_shows_a_gate_that_compared_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    unproved: str, proved: str, status: str,
+) -> None:
+    """An allow writes no /run record, so the stamps beside the statefile are
+    the only place a gate that could not compare them is visible."""
+    from jasper.cli.doctor import audio_runtime_camilla as camilla_doctor
+
+    gate = _Gate(tmp_path)
+    gate.stamp(unproved, proved)
+    assert gate.run().returncode == ALLOW
+    monkeypatch.setenv("JASPER_CAMILLA_TOPOLOGY_GATE_STATE", str(gate.record))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(gate.statefile))
+
+    row = camilla_doctor.check_camilla_topology_gate()
+
+    assert row.status == status
+    assert row.reason == (
+        camilla_doctor.REASON_CAMILLA_TOPOLOGY_STAMP_VERSION_SKEW
+        if status == "warn" else ""
+    )
+
+    # What a convergence that writes a statefile leaves: the unproved stamp
+    # retired, one projection left, nothing for the row to report.
+    gate.stamp(None, unproved)
+    assert camilla_doctor.check_camilla_topology_gate().status == "ok"
 
 
 def test_the_refusal_record_reads_back_as_the_doctor_row_it_feeds(
