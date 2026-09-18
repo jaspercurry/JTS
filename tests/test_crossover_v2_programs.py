@@ -623,7 +623,7 @@ def test_a_driver_take_the_plan_host_composes_honours_the_declared_cooldown(way)
     same program it composed before the declaration was consulted.
     """
     from jasper.active_speaker.crossover_v2.capture_plan import (
-        _program_duration_ms, build_inline_session_spec,
+        CAPTURE_ENTRY_MARGIN_MS, _program_duration_ms, build_inline_session_spec,
     )
     from jasper.active_speaker.excitation_safety_plan import declared_minimum_cooldown_s
     from jasper.audio_measurement.program import (
@@ -680,6 +680,18 @@ def test_a_driver_take_the_plan_host_composes_honours_the_declared_cooldown(way)
     assert (grown_ms > 0) is (way == 1)
     assert grown_ms == pytest.approx(
         _program_duration_ms(program) - _program_duration_ms(undeclared), abs=50)
+
+    # And no announced window ends before the program it records: every entry
+    # the plan budgets is composed in the shape ``compose_plan_program`` plays,
+    # pilot pair and courtesy prelude included.
+    plan = build_inline_session_spec(
+        [(c.spec, c.resolved(request).prompt, "trial") for c in captures],
+        roles_bands=roles, fc_hz=FC_HZ, safety_profile=safety, role_targets=targets,
+        acknowledgement_binding="a" * 32, retries_per_pose=0).capture_plan
+    for capture, entry in zip(captures, plan.entries):
+        played = compose_plan_program(host, capture.spec, None, context=context)
+        assert entry.duration_ms >= (
+            _program_duration_ms(played) + CAPTURE_ENTRY_MARGIN_MS - 50), entry.kind_label
 
 
 @pytest.mark.parametrize("repeats, cooldown_s, refusal_by_phase", [
