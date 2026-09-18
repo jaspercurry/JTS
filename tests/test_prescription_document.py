@@ -80,7 +80,8 @@ def test_vary_axis_parses_coupled_paths_and_scalar_values(text, paths, values):
     assert [type(value) for value in parsed_values] == [type(value) for value in values]
 
 
-@pytest.mark.parametrize("text", ["room.gain", "=1", "room.gain=", "room.gain,=1", "room.gain=[]", "room.gain={}"])
+@pytest.mark.parametrize("text", ["room.gain", "=1", "room.gain=", "room.gain,=1", "room.gain=[]", "room.gain={}",
+                                 "room.gain=1,,2", "room.gain=,"])
 def test_malformed_vary_axis_is_refused(text):
     with pytest.raises(PrescriptionDocumentRefused) as caught:
         parse_vary_axis(text)
@@ -108,12 +109,13 @@ def test_vary_document_copies_the_seed_and_expands_axes_in_product_order():
     ("missing.gain", "sections"), ("room.missing", "room"), ("room.filters[1].gain", "room"),
     ("room.filters[-1].gain", "room"), ("room.filters[0].gain.value", "room"), ("room.filters.gain", "room"),
     ("room.filters[0].gain[0]", "room"), ("room..gain", "room"),
+    ("room.filters[0].gain", "room"), ("room.filters,room.filters", "room"),
 ])
 def test_vary_document_checks_all_paths_before_yielding(path, section):
     seed = document("saved", {"room": {"filters": [{"gain": 0}]}})
     variants = vary_document(seed, [parse_vary_axis("room.filters[0].gain=1,2"), parse_vary_axis(f"{path}=3")])
     with pytest.raises(PrescriptionDocumentRefused) as caught:
-        next(variants)
+        list(variants)
     assert (caught.value.code, caught.value.section) == ("prescription_malformed", section)
     assert seed["sections"]["room"]["filters"] == [{"gain": 0}]
 

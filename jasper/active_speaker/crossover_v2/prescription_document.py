@@ -101,7 +101,7 @@ def read_prescription_document(raw: Any) -> Mapping[str, Any]:
 def parse_vary_axis(text: str) -> tuple[tuple[str, ...], tuple[Any, ...]]:
     paths_text, separator, values_text = text.partition("=")
     paths = tuple(path.strip() for path in paths_text.split(","))
-    if not separator or not all(paths) or not values_text.strip():
+    if not separator or not all(paths) or not all(token.strip() for token in values_text.split(",")):
         raise PrescriptionDocumentRefused("prescription_malformed", "sections", "expected PATH[,PATH...]=VALUE[,VALUE...]")
     values = []
     for token in values_text.split(","):
@@ -139,9 +139,15 @@ def _vary_target(sections: Mapping[str, Any], path: str) -> tuple[Any, str | int
 def vary_document(
     document: Mapping[str, Any], axes: Sequence[tuple[tuple[str, ...], tuple[Any, ...]]],
 ) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
+    seen: set[str] = set()
     for paths, _ in axes:
         for path in paths:
             _vary_target(document["sections"], path)
+            if path in seen:
+                section = path.split(".")[0]
+                raise PrescriptionDocumentRefused("prescription_malformed", section if section in document["sections"] else "sections",
+                                                  f"axis path is repeated: {path}")
+            seen.add(path)
     for combination in product(*(values for _, values in axes)):
         variant = deepcopy(dict(document))
         values_by_path = {path: value for (paths, _), value in zip(axes, combination) for path in paths}
