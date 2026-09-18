@@ -24,8 +24,9 @@ filled-in figure, and nothing here reads which mover placed the microphone.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -83,6 +84,8 @@ REASON_SEGMENT_MISSING = "pair_segment_missing"
 #: then both together. The two solo identities come from the ONE owner of what a
 #: ``front_rear`` branch pair excites, in the channel order it plays them.
 PAIR_ROLES = (*branch_target_ids_for(BRANCH_PAIR_FRONT_REAR, ()), "summed")
+# 1.46 Hz bins keep the 1/6-octave figures honest at 30 Hz.
+PAIR_FFT_SIZE = 32768
 
 #: The capture facts every candidate in one batch must share for the figures to
 #: mean anything, echoed from the takes' own basis rather than restated.
@@ -351,6 +354,52 @@ def _pair_set(manifest: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return by_role.get(PAIR_ROLES[-1]) if set(PAIR_ROLES) <= set(by_role) else None
 
 
+@dataclass(frozen=True)
+class PairTake:
+    pose_key: str
+    pose_kind: str
+    sample_rate_hz: int
+    freqs_hz: np.ndarray
+    front: np.ndarray
+    rear: np.ndarray
+    coverage_hz: tuple[float, float]
+    impulses: dict[str, np.ndarray]
+    clock_shift_samples: dict[str, float]
+
+
+def pair_takes(records: Iterable[Mapping[str, Any]]) -> list[PairTake]:
+    takes = []
+    for record in records:
+        diagnostic = record.get("branch_diagnostic")
+        if not isinstance(diagnostic, Mapping):
+            continue
+        responses = {row.get("role"): row for row in diagnostic.get("responses", ())}
+        roles = PAIR_ROLES[:2]
+        rate = finite_float(diagnostic.get("sample_rate_hz"))
+        if rate is None or rate <= 0 or any(
+            role not in responses or not {"pre_guard_samples", "impulse"} <= responses[role].keys()
+            for role in roles
+        ):
+            continue
+        start = max(0, int(responses[PAIR_ROLES[0]]["pre_guard_samples"]) - round(0.005 * rate))
+        end = min(len(responses[role]["impulse"]) for role in roles)
+        freqs = np.fft.rfftfreq(PAIR_FFT_SIZE, 1.0 / rate)
+        impulses = {role: np.asarray(responses[role]["impulse"], dtype=float)[start:end]
+                    for role in roles}
+        shifts = {role: float(responses[role].get("clock_shift_samples", 0.0))
+                  for role in roles}
+        spectra = {role: np.fft.rfft(ir, n=PAIR_FFT_SIZE)
+                   * np.exp(2j * np.pi * freqs * shifts[role] / rate)
+                   for role, ir in impulses.items()}
+        bands = [responses[role]["band_hz"] for role in roles]
+        takes.append(PairTake(
+            doc_pose_key(record), record.get("pose_kind") or POSE_KIND_BEARING, int(rate), freqs,
+            spectra[PAIR_ROLES[0]], spectra[PAIR_ROLES[1]],
+            (max(band[0] for band in bands), min(band[1] for band in bands)), impulses, shifts,
+        ))
+    return takes
+
+
 def _pair_segments(
     record: Mapping[str, Any], manifest: Mapping[str, Any],
 ) -> tuple[np.ndarray, dict[str, np.ndarray], tuple[float, float]] | None:
@@ -380,31 +429,6 @@ def _pair_segments(
              min(band[1] for _, _, band in parsed.values())))
 
 
-def _pair_impulses(
-    records: Sequence[Mapping[str, Any]],
-) -> tuple[list[tuple[Any, Any, float]], float | None]:
-    """Each repeat's two solo impulses and their rear-minus-front clock shift.
-
-    The analyzer removed that drift from the complex phase but the banked
-    impulse still carries it, so the gap estimate divides it out itself.
-    """
-    repeats: list[tuple[Any, Any, float]] = []
-    rate: float | None = None
-    front, rear, _summed = PAIR_ROLES
-    for record in records:
-        diagnostic = record.get("branch_diagnostic")
-        if not isinstance(diagnostic, Mapping):
-            continue
-        banked = {str(row.get("role")): row for row in diagnostic.get("responses") or ()}
-        if front not in banked or rear not in banked:
-            continue
-        rate = rate or finite_float(diagnostic.get("sample_rate_hz"))
-        repeats.append((banked[front].get("impulse"), banked[rear].get("impulse"),
-                        (finite_float(banked[rear].get("clock_shift_samples")) or 0.0)
-                        - (finite_float(banked[front].get("clock_shift_samples")) or 0.0)))
-    return repeats, rate
-
-
 def _pair_position(
     records: Sequence[Mapping[str, Any]], manifest: Mapping[str, Any], *, ceiling_hz: float,
 ) -> tuple[dict[str, Any], np.ndarray] | None:
@@ -426,7 +450,11 @@ def _pair_position(
     bands = pair_band_levels(grid, front_tf=front, rear_tf=rear, pair_tf=summed,
                              coverage_hz=coverage_hz)
     band_hz = [bands[0]["band_hz"][0], bands[-1]["band_hz"][1]] if bands else None
-    repeats, rate = _pair_impulses(records)
+    takes = pair_takes(records)
+    repeats = [(take.impulses[PAIR_ROLES[0]], take.impulses[PAIR_ROLES[1]],
+                take.clock_shift_samples[PAIR_ROLES[1]] - take.clock_shift_samples[PAIR_ROLES[0]])
+               for take in takes]
+    rate = takes[0].sample_rate_hz if takes else 0
     gap = arrival_gap_ms(
         repeats if rate else (), sample_rate_hz=int(rate or 0),
         band_hz=shared_radiating_band_hz(grid, front_tf=front, rear_tf=rear, band_hz=swept_hz),

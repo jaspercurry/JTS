@@ -65,21 +65,25 @@ def lateral_evidence_grid_hz() -> np.ndarray:
     )
 
 
+def nearest_native_bins(freqs: np.ndarray, grid: np.ndarray) -> np.ndarray:
+    """Indices of the nearest native bins; ties use the lower bin."""
+    # ``searchsorted`` + a one-step comparison is the nearest native bin on a
+    # monotonically increasing rfft grid, without materialising an N x M
+    # distance matrix: the analysis grid is hundreds of thousands of bins.
+    right = np.searchsorted(freqs, grid).clip(1, freqs.size - 1)
+    left = right - 1
+    return np.where(
+        np.abs(grid - freqs[left]) <= np.abs(freqs[right] - grid), left, right
+    )
+
+
 def lateral_pose_curve(
     response: Any, band_hz: tuple[float, float],
 ) -> LateralPoseCurve:
     """Sample one analyzed driver response onto the shared basis."""
     freqs = np.asarray(response.freqs_hz, dtype=np.float64)
     tf = np.asarray(response.complex_tf, dtype=np.complex128)
-    # ``searchsorted`` + a one-step comparison is the nearest native bin on a
-    # monotonically increasing rfft grid, without materialising an N x M
-    # distance matrix: the analysis grid is hundreds of thousands of bins.
-    grid = lateral_evidence_grid_hz()
-    right = np.searchsorted(freqs, grid).clip(1, freqs.size - 1)
-    left = right - 1
-    take = np.where(
-        np.abs(grid - freqs[left]) <= np.abs(freqs[right] - grid), left, right
-    )
+    take = nearest_native_bins(freqs, lateral_evidence_grid_hz())
     return LateralPoseCurve(
         role=str(response.role),
         freqs_hz=freqs[take],

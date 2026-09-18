@@ -152,7 +152,7 @@ and `ROOM_TAPER_OCTAVES` implements. Do not end correction at a sharp edge.
 Check the whole composed response, since overlapping filters add.
 
 `jasper-crossover-prescriber judge --preview` answers limits and predicted
-residual without banking a candidate. It previews the room section only.
+residual without banking a candidate. It previews a room section, or a `rear_calibration` section against `--round <pair round>`.
 Good means median residual under the seat spread, no boost into a dip that
 changes with position, and a response that respects the ceiling. A preview
 can settle which document to measure; it cannot prove the sound of an

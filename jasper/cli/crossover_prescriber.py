@@ -25,8 +25,8 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
-    PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document, preview_room_document,
-    read_prescription_document, saved_base,
+    PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document, preview_prescription_document,
+    preview_room_document, read_prescription_document, saved_base,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
     banked_round_of, recent_round_sessions, round_inputs, prescription_sources, resolve_set, RoundInputs,
@@ -112,6 +112,10 @@ def _room_median(source: Path | Mapping[str, Any]) -> tuple[RoomMedian, str]:
         raise RoomPrescriptionRefused(ROOM_MEDIAN_UNAVAILABLE, str(exc)) from exc
 
 
+def _document_base(document: Mapping[str, Any], root: Path | None) -> tuple[BankedCandidate, Mapping[str, Any] | None]:
+    return saved_base() if document["base"] == "saved" else (find_banked_candidate(document["base"], root=root), None)
+
+
 def _cmd_document(args: argparse.Namespace) -> int:
     try:
         try:
@@ -122,11 +126,11 @@ def _cmd_document(args: argparse.Namespace) -> int:
         if args.base is not None and args.base != document["base"]:
             raise PrescriptionDocumentRefused("composition_base_mismatch", None, "--base and document.base differ")
         root = Path(args.root) if args.root else None
-        base_profile = None
-        if document["base"] == "saved":
-            base, base_profile = saved_base()
-        else:
-            base = find_banked_candidate(document["base"], root=root)
+        if args.command == "judge" and args.preview and "rear_calibration" in document["sections"]:
+            return answered(preview_prescription_document(
+                document, round_dir=Path(args.round) if args.round else None,
+            ))
+        base, base_profile = _document_base(document, root)
         evidence = _document_evidence(args, document)
         if args.command == "judge" and args.preview:
             return answered(preview_room_document(document, base=base, evidence=evidence))
@@ -637,7 +641,7 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--base", required=True, metavar="FINGERPRINT|saved")
         else:
             command.set_defaults(base=None)
-            command.add_argument("--preview", action="store_true", help="room response, taper margins and residual; banks nothing")
+            command.add_argument("--preview", action="store_true", help="room response, taper margins and residual; for a rear_calibration section with --round <pair round>, the predicted rear figures; banks nothing")
         command.add_argument("--root", help="candidate bank root")
         command.set_defaults(func=_cmd_document)
     status = sub.add_parser("status", help="read declared, banked and applied state")
