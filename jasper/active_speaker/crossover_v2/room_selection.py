@@ -74,6 +74,37 @@ def _take(row: Measurement, record: Mapping[str, Any]) -> SeatTake | None:
         gating if isinstance(gating, bool) else None, (lo, hi),
     )
 
+def analyzed_purpose_takes(
+    bundle_dir: Path, *, purpose: str = PURPOSE_ROOM,
+    take_ids: tuple[str, ...] | None = None, calibration_root: Path | None = None,
+) -> list[tuple[Measurement, Mapping[str, Any], SeatTake | None]]:
+    """This round's lateral takes of ONE measurement purpose, each with the
+    summed curve this reader can use, or ``None`` when it has none.
+
+    The analyzer skips a capture with no WAV, so a ``None`` take is a
+    disclosure its caller carries; it is never a shorter round.
+    """
+    documents = {record_path(row): (row, record) for row, record in measurement_documents(bundle_dir)
+                 if take_ids is None or record.get("take_id") in take_ids}
+    analyzed: set[str] = set()
+    for measurement in analyzed_measurements(bundle_dir, calibration_root=calibration_root, paths=documents):
+        row, _ = documents[measurement.record_path]
+        analyzed.add(measurement.record_path)
+        documents[measurement.record_path] = row, measurement.document()
+    rows: list[tuple[Measurement, Mapping[str, Any], SeatTake | None]] = []
+    for path, (row, record) in documents.items():
+        try:
+            resolved = resolved_measurement_purpose(
+                record.get("measurement_purpose"), record.get("pose_kind") or POSE_KIND_BEARING,
+            )
+        except ValueError:
+            continue
+        if row.phase != PHASE_LATERAL or resolved != purpose:
+            continue
+        rows.append((row, record, _take(row, record) if path in analyzed else None))
+    return rows
+
+
 def select_seat_takes(
     bundle_dir: Path, *, capture_id: str | None = None,
     take_ids: tuple[str, ...] | None = None, basis: Mapping[str, Any] | None = None,
@@ -84,52 +115,38 @@ def select_seat_takes(
     Unknown identity stays unknown. Within a set, use the newest readable
     take per physical pose and disclose older and unusable records.
     """
-    groups: dict[str, list[tuple[Measurement, Mapping[str, Any]]]] = {}
+    groups: dict[str, list[tuple[Measurement, Mapping[str, Any], SeatTake | None]]] = {}
     bases: dict[str, dict[str, Any]] = {}
-    documents = {record_path(row): (row, record) for row, record in measurement_documents(bundle_dir)
-                 if take_ids is None or record.get("take_id") in take_ids}
-    analyzed: set[str] = set()
-    for measurement in analyzed_measurements(bundle_dir, calibration_root=calibration_root, paths=documents):
-        row, _ = documents[measurement.record_path]
-        analyzed.add(measurement.record_path)
-        documents[measurement.record_path] = row, measurement.document()
-    for row, record in documents.values():
-        try:
-            purpose = resolved_measurement_purpose(
-                record.get("measurement_purpose"), record.get("pose_kind") or POSE_KIND_BEARING,
-            )
-        except ValueError:
-            continue
-        if row.phase != PHASE_LATERAL or purpose != PURPOSE_ROOM:
-            continue
+    for row, record, take in analyzed_purpose_takes(
+        bundle_dir, purpose=PURPOSE_ROOM, take_ids=take_ids, calibration_root=calibration_root,
+    ):
         row_basis = dict(basis) if basis is not None else capture_basis(record)
         key = "manifest" if take_ids is not None else json_fingerprint(row_basis)
         bases[key] = row_basis
-        groups.setdefault(key, []).append((row, record))
+        groups.setdefault(key, []).append((row, record, take))
     matches = [
         key for key, rows in groups.items()
-        if capture_id is None or any(record.get("take_id") == capture_id for _, record in rows)
+        if capture_id is None or any(record.get("take_id") == capture_id for _, record, _ in rows)
     ]
     if (capture_id is not None and not matches) or len(matches) > 1:
         raise RoundCapturesRefused(
             REFUSE_ROOM_CAPTURE if not matches else REFUSE_ROOM_SELECTION,
             {"capture_id": capture_id, "groups": [
-                {"basis": bases[key], "capture_ids": [record.get("take_id") for _, record in rows]}
+                {"basis": bases[key], "capture_ids": [record.get("take_id") for _, record, _ in rows]}
                 for key, rows in groups.items()
             ]},
         )
     if not matches:
         return SeatSelection((), {})
     key, = matches
-    rows = sorted(groups[key], key=lambda pair: (
-        pair[0].captured_at or "", finite_float(pair[1].get("attempt")) or 0, pair[0].path,
+    rows = sorted(groups[key], key=lambda item: (
+        item[0].captured_at or "", finite_float(item[1].get("attempt")) or 0, item[0].path,
     ), reverse=True)
     latest: dict[str, SeatTake] = {}
     # The analyzer skips a capture with no WAV; disclose it within its selected group.
     omitted = []
     repeats: list[str] = []
-    for row, record in rows:
-        take = _take(row, record) if record_path(row) in analyzed else None
+    for row, record, take in rows:
         take_id = str(record.get("take_id") or row.path)
         if take is None:
             omitted.append({"take_id": take_id, "record": row.path, "reason": SEAT_UNUSABLE})
@@ -149,6 +166,6 @@ def select_seat_takes(
         "observed_levels_db": [
             {"take_id": record.get("take_id"), "level_db": record.get("level_db"),
              "main_volume_db": (record.get("provenance") or {}).get("main_volume_db")}
-            for _, record in rows if record.get("take_id") in selected_ids
+            for _, record, _ in rows if record.get("take_id") in selected_ids
         ],
     })

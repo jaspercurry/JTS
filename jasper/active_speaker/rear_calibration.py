@@ -4,11 +4,12 @@
 """Acoustic-task handoff and a CamillaDSP stage; no devices, storage or apply."""
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 import hashlib
+import math
 import struct
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -199,6 +200,81 @@ def read_rear_calibration(raw: Any, *, sample_rate: int | None = None) -> dict[s
     else:
         raise RearCalibrationError("rear.mode must be branches or fir")
     return deepcopy(dict(document))
+
+
+#: The coarse family a changed field path falls in, keyed on the leaf field
+#: this document spells; a path on the front chain reads ``front_chain``, an
+#: unmapped leaf ``other``, and several families at once ``multiple``. A
+#: DISCLOSURE for a reader comparing two settings — never a refusal.
+FAMILY_BY_LEAF = {
+    "gain_db": "gain", "gain": "gain",
+    "delay_ms": "delay", "common_delay_ms": "delay",
+    "freq": "band_edge", "order": "band_edge", "q": "band_edge",
+    "muted": "mute", "rear_muted": "mute",
+}
+
+
+def changed_section_paths(now: Any, was: Any, prefix: str = "") -> list[str]:
+    """Every leaf path, dotted with list indices, at which two settings differ."""
+    if isinstance(now, Mapping) and isinstance(was, Mapping):
+        return [path for key in sorted(set(now) | set(was))
+                for path in changed_section_paths(
+                    now.get(key), was.get(key), f"{prefix}.{key}" if prefix else str(key))]
+    if isinstance(now, list) and isinstance(was, list) and len(now) == len(was):
+        return [path for index, (left, right) in enumerate(zip(now, was))
+                for path in changed_section_paths(left, right, f"{prefix}.{index}")]
+    return [] if now == was else [prefix]
+
+
+def section_change_family(paths: Sequence[str]) -> str:
+    """One coarse family for a set of changed paths (:data:`FAMILY_BY_LEAF`)."""
+    families = {
+        "front_chain" if path.startswith(("front", "boundary.front"))
+        else FAMILY_BY_LEAF.get(path.rsplit(".", 1)[-1], "other")
+        for path in paths
+    }
+    if len(families) == 1:
+        return families.pop()
+    return "multiple" if families else ""
+
+
+def _corner_hz(filters: Sequence[Mapping[str, Any]], suffix: str,
+               pick: Callable[..., float]) -> float | None:
+    """The corner one chain's band-limiting filters settle on, or ``None``.
+
+    A pass direction is read off the filter type's own name, which
+    :data:`BIQUADS` and :data:`COMBOS` already fix, so there is no second
+    vocabulary of high- and low-pass shapes. Several filters in one direction
+    pass what the steepest of them passes: ``pick`` is ``max`` for a high-pass
+    and ``min`` for a low-pass.
+    """
+    corners = [float(item["parameters"]["freq"]) for item in filters
+               if str(item["parameters"].get("type") or "").endswith(suffix)]
+    return pick(corners) if corners else None
+
+
+def rear_operating_facts(document: Mapping[str, Any] | None) -> dict[str, Any]:
+    """What a validated branches document OPERATES at, for a measured report.
+
+    ``band_hz`` is the cancellation branch's own pass band, ``bass_lowpass_hz``
+    the bass branch's corner, and ``handover_hz`` the geometric mean of that
+    corner and the cancellation high-pass — where the bass branch hands over to
+    the inverted one. A filter the document does not carry yields ``None``:
+    nothing here is estimated, and an acoustic-targets or ``fir`` document
+    names no corners at all.
+    """
+    rear = (document or {}).get("rear") or {}
+    if (document or {}).get("case") != "electrical_dsp" or rear.get("mode") != "branches":
+        return {"band_hz": None, "bass_lowpass_hz": None, "handover_hz": None}
+    highpass = _corner_hz(rear["cancellation"]["filters"], "Highpass", max)
+    lowpass = _corner_hz(rear["cancellation"]["filters"], "Lowpass", min)
+    bass_lowpass = _corner_hz(rear["bass"]["filters"], "Lowpass", min)
+    return {
+        "band_hz": None if highpass is None or lowpass is None else [highpass, lowpass],
+        "bass_lowpass_hz": bass_lowpass,
+        "handover_hz": None if highpass is None or bass_lowpass is None
+                       else math.sqrt(highpass * bass_lowpass),
+    }
 
 
 def diagnostic_seed(sample_rate: int) -> dict[str, Any]:
