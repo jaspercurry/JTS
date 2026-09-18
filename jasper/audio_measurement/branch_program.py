@@ -6,11 +6,12 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import replace
 from typing import Mapping
 
-from .program import ExcitationProgram, KIND_SWEEP, _finalize, _silence
+from .program import (
+    ExcitationProgram, KIND_SWEEP, _cooldown_pad, _cooldown_samples, _finalize,
+)
 
 
 def is_branch_program(program: ExcitationProgram) -> bool:
@@ -48,18 +49,15 @@ def build_branch_program(summed: ExcitationProgram, branch_channels: Mapping[str
                 if seg.channel is not None else seg
                 for seg in summed.segments if seg.start_sample < sweep.start_sample]
     cursor = sweep.start_sample
-    cooldown = math.ceil(cooldown_s * summed.sample_rate_hz)
+    cooldown = _cooldown_samples(cooldown_s, summed.sample_rate_hz)
     excited_end: dict[int, int] = {}
     # The two exact repeats let the existing drift reader fit the recording clock.
     for name, role in (("sweep_w", first), ("sweep_t", second),
                        ("sweep_w_rep", first), ("sweep_t_rep", second),
                        ("sweep_verify", "summed")):
         channels = (0, 1) if role == "summed" else (branch_channels[role],)
-        ready = max((excited_end[channel] + cooldown for channel in channels
-                     if channel in excited_end), default=cursor)
-        if ready > cursor:
-            segments.append(_silence(f"cooldown_{name}", cursor, ready - cursor))
-            cursor = ready
+        cursor = _cooldown_pad(segments, cursor, excited_end,
+                               name=name, channels=channels, cooldown_n=cooldown)
         if role == "summed":
             segments.extend(replace(sweep, segment_id=name if channel == 0 else "sum_companion",
                                     start_sample=cursor, channel=channel, role=None)

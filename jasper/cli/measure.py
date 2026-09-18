@@ -485,6 +485,7 @@ def _bind_compose(
     from jasper.active_speaker.bass_stimulus import build_bass_program  # lazy: hardware execution loads numerical analysis
     from jasper.active_speaker.crossover_v2.composition import bind_program_composer
     from jasper.active_speaker.crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS
+    from jasper.active_speaker.excitation_safety_plan import declared_minimum_cooldown_s
     from jasper.active_speaker.measurement_emit import measurement_graph_evidence
     from jasper.active_speaker.crossover_v2.programs import SessionExcitation  # lazy: optional measurement runtime
     from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
@@ -495,6 +496,7 @@ def _bind_compose(
         roles=box.roles_bands, caps_dbfs=box.caps_dbfs,
         session_volume_db=box.session_volume_db, fc_hz=box.fc_hz,
         sweep_duration_limits_s=box.sweep_duration_limits_s,
+        minimum_cooldown_s=declared_minimum_cooldown_s(box.safety_profile, box.role_targets),
     )
 
     def program_for_spec(spec: Any, stimulus_dbfs: float | None) -> Any:

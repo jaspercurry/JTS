@@ -1232,6 +1232,10 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     # fit, so an offline rebuild can replay a fitted round instead of
     # refusing PROGRAM_NOT_REPRODUCIBLE.
     "measure_sweep_durations_s",
+    # Deliberate widening (#5342), on the terms above: the declared cooldown
+    # this round's MEASURE was spaced by. Without it an offline rebuild of a
+    # spaced round composes unspaced and cannot reproduce its program id.
+    "minimum_cooldown_s",
     # The way back's pointer: the measured candidate the applied graph
     # displaced, written by ``observe_apply_success`` and carried forward
     # unconditionally by every ordinary persist (the deferred VERIFY re-arm

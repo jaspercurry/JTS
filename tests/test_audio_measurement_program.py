@@ -168,6 +168,40 @@ def test_measure_program_layout_is_n3_interleaved_repeats_bit_identical():
         assert prog.segment(seg_id).channel == 1
 
 
+@pytest.mark.parametrize("roles, cooldown_s, pads", [
+    (_roles(), 0.0, ()),
+    (_roles(), 2.0, ()),
+    ([RoleBand("full_range", 0, FrequencyBand(150.0, 20000.0))], 0.0, ()),
+    ([RoleBand("full_range", 0, FrequencyBand(150.0, 20000.0))], 2.0,
+     ("cooldown_sweep_w_rep", "cooldown_sweep_w_rep2")),
+    # A fractional sample count: the pad rounds UP, as the door's own compare does.
+    ([RoleBand("full_range", 0, FrequencyBand(150.0, 20000.0))], 2.000001,
+     ("cooldown_sweep_w_rep", "cooldown_sweep_w_rep2")),
+])
+def test_measure_spaces_same_driver_sweeps_by_the_declared_cooldown(roles, cooldown_s, pads):
+    """A driver's own repeats must sit ``cooldown_s`` apart end-to-start (#5342) —
+    the per-target rule ``program_admission`` grades and ``build_branch_program``
+    already composes to. A 2-way's interleaved cycles clear any ordinary
+    declaration, so its program stays byte-identical; a wide-band 1-way's MESM
+    gap is about 1.39 s, so it pays exactly the difference.
+    """
+    gains = {rb.role: -11.0 for rb in roles}
+    unpadded = build_measure_program(gains, roles)
+    program = build_measure_program(gains, roles, cooldown_s=cooldown_s)
+
+    assert tuple(s.segment_id for s in program.segments
+                 if s.segment_id.startswith("cooldown_")) == pads
+    assert (program.program_id == unpadded.program_id) is (pads == ())
+    cooldown_n = math.ceil(cooldown_s * PROGRAM_SAMPLE_RATE_HZ)
+    for rb in roles:
+        run = sorted((s for s in program.segments
+                      if s.kind == KIND_SWEEP and s.channel == rb.channel),
+                     key=lambda s: s.start_sample)
+        assert len(run) == 3
+        assert min(b.start_sample - a.start_sample - a.n_samples
+                   for a, b in zip(run, run[1:])) >= cooldown_n
+
+
 def test_measure_repeat_count_is_configurable():
     # repeat_count=1: one cycle, no repeats at all — a degenerate but valid
     # composition (distinct from the pre-#1668 asymmetric "woofer repeats

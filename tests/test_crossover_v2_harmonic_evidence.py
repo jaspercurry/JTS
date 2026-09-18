@@ -638,6 +638,50 @@ def test_a_banked_duration_fit_reproduces_without_a_search():
     assert prelude is False
 
 
+def test_a_banked_cooldown_reproduces_a_spaced_one_way_round():
+    """A 1-way round spaced by its declared cooldown (#5342) replays, and a
+    snapshot from before the field still replays the 2-way it banked.
+
+    The cooldown is READ like the duration fit, never searched: the padding is
+    what makes the program's own bytes, so a round that banked it must compose
+    at exactly that number and one that did not must compose at zero.
+    """
+    from jasper.active_speaker.crossover_v2 import priors
+    from jasper.active_speaker.crossover_v2.programs import (
+        PILOT_LEVEL_DELTA_DB, courtesy_prelude_for_phase,
+    )
+
+    # A 1-way round banks the single role ``banked_roles`` resolves for it.
+    roles = (RoleBand("full_range", 0, FrequencyBand(150.0, 20000.0)),)
+    bands = {"full_range": (150.0, 20000.0)}
+    spaced = build_measure_program(
+        {"full_range": -6.0}, roles, downstream_gain_db=-20.0,
+        leading_pilot_gains_db=(-6.0 - PILOT_LEVEL_DELTA_DB, -6.0),
+        leading_pilot_role="full_range",
+        courtesy_prelude=courtesy_prelude_for_phase("measure"),
+        cooldown_s=2.0,
+    )
+    state = _state(
+        gain_plan_db={"full_range": -6.0},
+        candidate={"program_id": spaced.program_id},
+        measure_sweep_durations_s=priors.measure_sweep_durations_s(spaced),
+        minimum_cooldown_s=2.0,
+    )
+    rebuilt, downstream, prelude = he.rebuild_measure_program(state, bands)
+    assert rebuilt.program_id == spaced.program_id
+    assert downstream == pytest.approx(-20.0)
+    assert prelude is False
+
+    # An old snapshot has no such field, and the 2-way it banked never paid one.
+    program = _fitted_program_at(-20.0)
+    old = _state(
+        candidate={"program_id": program.program_id},
+        measure_sweep_durations_s=priors.measure_sweep_durations_s(program),
+    )
+    assert "minimum_cooldown_s" not in old
+    assert he.rebuild_measure_program(old, he_bands())[0].program_id == program.program_id
+
+
 def test_a_duration_fitted_round_that_predates_banking_still_names_its_cause():
     """No replay capability is lost: the honest refusal from before this fix
     stands, unchanged, for a round that never banked its realized durations —

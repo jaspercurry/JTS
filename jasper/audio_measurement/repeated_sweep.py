@@ -12,7 +12,9 @@ from typing import Any
 import numpy as np
 
 from .alignment import correlation, parabolic_peak
-from .program import ExcitationProgram, KIND_SUMMED_SWEEP, _finalize, _silence
+from .program import (
+    ExcitationProgram, KIND_SUMMED_SWEEP, _cooldown_samples, _finalize, _silence,
+)
 
 
 # In-band repeat RMS differed by 0.06–0.24 dB on the two-microphone corpus.
@@ -46,7 +48,8 @@ def repeat_summed_program(
     sweep, tail = program.segment("sweep_verify"), program.segment("tail")
     segments = [segment for segment in program.segments if segment.start_sample < sweep.start_sample]
     cursor = sweep.start_sample
-    gap = max(quiet_samples, math.ceil(cooldown_s * program.sample_rate_hz) - tail.n_samples)
+    gap = max(quiet_samples,
+              _cooldown_samples(cooldown_s, program.sample_rate_hz) - tail.n_samples)
     for index in range(passes):
         name = sweep.segment_id if index == 0 else f"{sweep.segment_id}_repeat_{index}"
         if index and gap > quiet_samples:

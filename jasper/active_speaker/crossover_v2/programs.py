@@ -27,7 +27,9 @@ from jasper.audio_measurement.program import (
 
 from jasper.audio_measurement.branch_program import build_branch_program
 
-from ..excitation_safety_plan import declared_minimum_cooldown_s
+from ..excitation_safety_plan import (
+    ExcitationSafetyPlanError, declared_minimum_cooldown_s,
+)
 from .measure_spec import branch_channels_for
 from .journey import (
     PHASE_CHECK,
@@ -173,6 +175,8 @@ class SessionExcitation:
     #: at its nominal.
     sweep_duration_limits_s: Mapping[str, float]
     summed_sweep_band_hz: tuple[float, float] | None = None
+    #: LAST because callers construct this dataclass positionally.
+    minimum_cooldown_s: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "roles", tuple(self.roles))
@@ -245,6 +249,7 @@ class SessionExcitation:
             leading_pilot_gains_db=self.pilot_gains(gains[self.leading_pilot_role]),
             leading_pilot_role=self.leading_pilot_role,
             courtesy_prelude=courtesy_prelude_for_phase(PHASE_MEASURE),
+            cooldown_s=self.minimum_cooldown_s,
         )
 
     def verify_program(
@@ -372,8 +377,18 @@ def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Map
 
 def predictive_program_for_spec(context: Any) -> Callable[[Any], ExcitationProgram]:
     # Gain changes preserve segment count; preview can precede the CHECK level solve.
-    excitation = SessionExcitation(context.roles_bands, context.driver_caps_dbfs, 0.0, context.fc_hz,
-                                   context.driver_sweep_duration_limits_s)
+    try:
+        cooldown_s = declared_minimum_cooldown_s(
+            context.safety_profile, context.role_targets)
+    except ExcitationSafetyPlanError:
+        # A preview of a plan whose targets are not resolved yet estimates the
+        # unspaced length rather than refusing: nothing here is played, and
+        # every door that plays resolves this strictly.
+        cooldown_s = 0.0
+    excitation = SessionExcitation(
+        context.roles_bands, context.driver_caps_dbfs, 0.0, context.fc_hz,
+        context.driver_sweep_duration_limits_s, minimum_cooldown_s=cooldown_s,
+    )
     return partial(program_for_spec, excitation=excitation,
                    gain_plan_db={r.role: BASE_STIMULUS_PEAK_DBFS for r in excitation.roles},
                    safety_profile=context.safety_profile, role_targets=context.role_targets)

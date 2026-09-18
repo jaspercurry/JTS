@@ -133,6 +133,11 @@ class V2ConductorSnapshot:
     # conductor recomposes it from ``gain_plan_db``. ``None`` before MEASURE is
     # composed (#2923).
     measure_sweep_durations_s: Mapping[str, float] | None = None
+    # The declared cooldown MEASURE was spaced by (#5342), banked for the same
+    # reason as the durations above: a continuous float no search grid reaches.
+    # ``0.0`` on rounds banked before this field — also what an unspaced
+    # program composes at, so an old snapshot replays unchanged.
+    minimum_cooldown_s: float = 0.0
     candidate_fingerprint: str | None = None
     # The ordered phases THIS session actually runs — the subset of
     # ``CAPTURE_PHASES`` its ``index_phase_map`` addresses, which the
@@ -153,6 +158,7 @@ class V2ConductorSnapshot:
                 dict(self.measure_sweep_durations_s)
                 if self.measure_sweep_durations_s else None
             ),
+            "minimum_cooldown_s": self.minimum_cooldown_s,
             "candidate_fingerprint": self.candidate_fingerprint,
             "session_phases": list(self.session_phases),
             "attempt_history": [item.to_dict() for item in self.attempt_history],
@@ -968,6 +974,7 @@ def build_conductor_state(
         "measure_sweep_durations_s": (
             dict(measure_sweep_durations_s) if measure_sweep_durations_s else None
         ),
+        "minimum_cooldown_s": float(getattr(snap, "minimum_cooldown_s", 0.0) or 0.0),
         # Journey state. The conductor is the sole lifecycle owner and the host
         # serializes its snapshot verbatim; `/state` projects only the last
         # decision, never the full history.
