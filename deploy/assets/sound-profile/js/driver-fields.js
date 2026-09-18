@@ -211,9 +211,7 @@ function renderDriverSafetyLimits(targetId, setting, evidence) {
       '<label class="driver-research__field"><span>Low-pass family / equivalent</span>' +
         '<input type="text" data-manual-driver="' + escapeHtml(targetId) + '" data-manual-field="required_lowpass_family_or_equivalent" value="' + escapeHtml(setting.required_lowpass_family_or_equivalent || '') + '" placeholder="equivalent or steeper"></label>',
     level_duration_limits: driverSafetyNumberField(targetId, setting, 'max_effective_peak_dbfs', 'Profile peak ceiling', {max: 0, placeholder: 'dBFS'}) +
-      driverSafetyNumberField(targetId, setting, 'max_sweep_duration_s', 'Longest sweep', {min: 0.1, placeholder: 'seconds'}) +
-      driverSafetyNumberField(targetId, setting, 'max_repeat_count', 'Most sweeps per measurement', {min: 1, max: 16, step: 1, placeholder: 'count'}) +
-      driverSafetyNumberField(targetId, setting, 'minimum_cooldown_s', 'Silence between sweeps', {min: 0, placeholder: 'seconds'})
+      driverSafetyNumberField(targetId, setting, 'max_sweep_duration_s', 'Longest sweep', {min: 0.1, placeholder: 'seconds'})
   };
   return '<section class="driver-research__advanced-group">' +
     '<div><h5 class="setting-row__title">Protection and measurement limits</h5>' +

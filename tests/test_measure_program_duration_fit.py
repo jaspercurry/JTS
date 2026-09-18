@@ -59,7 +59,6 @@ def _profile_and_targets(
     *,
     woofer_max_sweep_s: float = 4,
     tweeter_max_sweep_s: float = 6,
-    minimum_cooldown_s: float = 0,
 ):
     """A confirmed profile over the two bands above.
 
@@ -74,8 +73,6 @@ def _profile_and_targets(
         return {
             "max_effective_peak_dbfs": peak,
             "max_sweep_duration_s": max_sweep_s,
-            "max_repeat_count": 3,
-            "minimum_cooldown_s": minimum_cooldown_s,
         }
 
     settings = {
@@ -281,16 +278,16 @@ def test_the_declaration_the_research_prompt_asks_for_composes_admissibly():
     """The fleet case, not one box's declaration.
 
     ``driver_safety``'s research prompt instructs the LLM verbatim: "Send
-    max_sweep_duration_s 4, max_repeat_count 3, minimum_cooldown_s 2 unless a
-    datasheet says stricter", and its RESULT SHAPE exemplar hard-codes the same
-    triple. Composed against ``DEFAULT_WOOFER_SWEEP_S``, which is exactly 4.0,
+    max_sweep_duration_s at the role's protocol ceiling ... unless a datasheet
+    says stricter", and its RESULT SHAPE exemplar hard-codes the same number.
+    Composed against ``DEFAULT_WOOFER_SWEEP_S``, which is exactly 4.0,
     that declaration collides on any woofer band whose 4 s request rounds up --
     so every box commissioned through the standard prompt was exposed, not just
     jts3. After the fit the prompt's recommended 4 is harmless by construction,
     which is why no prompt change rides along with it.
     """
     topology, profile, targets = _profile_and_targets(
-        woofer_max_sweep_s=4, tweeter_max_sweep_s=4, minimum_cooldown_s=2,
+        woofer_max_sweep_s=4, tweeter_max_sweep_s=4,
     )
     limits = _limits_for(profile, targets)
     assert limits == {"woofer": 4.0, "tweeter": 4.0}
@@ -407,7 +404,7 @@ def test_the_production_composer_admits_the_shape_it_actually_plays():
     )
 
     topology, profile, targets = _profile_and_targets(
-        woofer_max_sweep_s=4, tweeter_max_sweep_s=4, minimum_cooldown_s=2,
+        woofer_max_sweep_s=4, tweeter_max_sweep_s=4,
     )
     limits = _limits_for(profile, targets)
     sv = session_measurement_volume_db(profile, targets.values())

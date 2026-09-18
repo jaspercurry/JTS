@@ -527,7 +527,7 @@ def test_prepared_summed_captures_use_the_stop_purpose_band(purpose, size):
     excitation = _excitation(CAPS, {"woofer": 4.0, "tweeter": 4.0})
     host = SimpleNamespace(_excitation=excitation)
     _, safety, targets = _profile_and_targets(woofer_floor=20, woofer_upper=4000,
-                                               max_sweep_duration_s=4, minimum_cooldown_s=2)
+                                               max_sweep_duration_s=4)
     context = SimpleNamespace(safety_profile=safety, role_targets=targets)
     for capture in captures:
         spec = capture.spec

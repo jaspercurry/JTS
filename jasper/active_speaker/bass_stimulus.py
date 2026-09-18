@@ -15,11 +15,16 @@ from jasper.audio_measurement.repeated_sweep import repeat_summed_program
 from jasper.audio_measurement.sweep_levels import sweep_band_sample_ranges
 
 from .bass_fit import REFERENCE_BAND_HZ
-from .excitation_safety_plan import ACTIVE_DRIVER_MAX_REPEAT_COUNT, effective_sweep_duration_limit_s
+from .excitation_safety_plan import effective_sweep_duration_limit_s
 from .measurement_bass import BASS_BANDS_HZ
 
 if TYPE_CHECKING:
     from .crossover_v2.programs import SessionExcitation
+
+
+#: Passes, and the silence between two of them (seconds).
+BASS_PASSES = 3
+BASS_PASS_GAP_S = 2.0
 
 
 class BassStimulusRefused(ValueError):
@@ -40,12 +45,8 @@ def build_bass_program(
     if "woofer" not in role_targets or {role.role for role in excitation.roles} != target_roles:
         raise BassStimulusRefused("bass_stimulus_targets_missing")
     try:
-        driven = [targets[fingerprint] for fingerprint in role_targets.values()]
         woofer = targets[role_targets["woofer"]]
         floor, ceiling = float(woofer["hard_excitation_band_hz"][0]), float(stimulus["ceiling_hz"])
-        limits = [target["level_duration_limits"] for target in driven]
-        passes = min(ACTIVE_DRIVER_MAX_REPEAT_COUNT, *(limit["max_repeat_count"] for limit in limits))
-        cooldown = max(float(limit["minimum_cooldown_s"]) for limit in limits)
         durations = {role: effective_sweep_duration_limit_s(safety_profile, fingerprint)
                      for role, fingerprint in role_targets.items()}
     except (KeyError, TypeError, ValueError) as exc:
@@ -64,4 +65,5 @@ def build_bass_program(
     quiet = max(math.ceil(PILOT_AMBIENT_WINDOW_S * single.sample_rate_hz),
                 5 * max(stop - start for _, _, start, stop in ranges),
                 math.ceil(required_pre_guard_s(sweep) * single.sample_rate_hz))
-    return repeat_summed_program(single, passes=passes, quiet_samples=quiet, cooldown_s=cooldown)
+    return repeat_summed_program(single, passes=BASS_PASSES, quiet_samples=quiet,
+                                 cooldown_s=BASS_PASS_GAP_S)

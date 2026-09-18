@@ -91,8 +91,6 @@ def _manual_settings() -> dict:
                 "level_duration_limits": {
                     "max_effective_peak_dbfs": -24,
                     "max_sweep_duration_s": 4,
-                    "max_repeat_count": 3,
-                    "minimum_cooldown_s": 1,
                 },
                 "cabinet": {
                     "enclosure_kind": "sealed",
@@ -117,8 +115,6 @@ def _manual_settings() -> dict:
                 "level_duration_limits": {
                     "max_effective_peak_dbfs": -65,
                     "max_sweep_duration_s": 3,
-                    "max_repeat_count": 2,
-                    "minimum_cooldown_s": 0,
                 },
                 "cabinet": {
                     "enclosure_kind": "sealed",
@@ -153,8 +149,6 @@ def _research_result(request: dict) -> dict:
                 "level_duration_limits": {
                     "max_effective_peak_dbfs": -24,
                     "max_sweep_duration_s": 4,
-                    "max_repeat_count": 3,
-                    "minimum_cooldown_s": 1,
                 },
                 "cabinet": {
                     "enclosure_kind": "sealed",
@@ -177,8 +171,6 @@ def _research_result(request: dict) -> dict:
                 "level_duration_limits": {
                     "max_effective_peak_dbfs": -65,
                     "max_sweep_duration_s": 3,
-                    "max_repeat_count": 2,
-                    "minimum_cooldown_s": 0,
                 },
                 "cabinet": {
                     "enclosure_kind": "sealed",
@@ -318,9 +310,7 @@ def test_prompt_recommends_the_roles_protocol_sweep_ceiling(role) -> None:
     expected = DRIVER_SWEEP_DURATIONS_S.get(role, DEFAULT_DRIVER_SWEEP_DURATION_S)
     assert ceilings[role if role in DRIVER_SWEEP_DURATIONS_S else "roles"] == expected
     example = json.loads(_prompt_result_shape(prompt))["drivers"][0]
-    assert example["level_duration_limits"] == {
-        "max_sweep_duration_s": expected, "max_repeat_count": 3, "minimum_cooldown_s": 2,
-    }
+    assert example["level_duration_limits"] == {"max_sweep_duration_s": expected}
     assert example["field_provenance"]["level_duration_limits"]["confidence"] == "low"
 
 
@@ -481,12 +471,7 @@ def test_prompt_asks_only_for_fields_with_a_consumer() -> None:
         "sources",
     ):
         assert f'"{kept}"' in result_shape
-    for sub_key in (
-        "max_sweep_duration_s",
-        "max_repeat_count",
-        "minimum_cooldown_s",
-    ):
-        assert sub_key in result_shape
+    assert "max_sweep_duration_s" in result_shape
     # `max_effective_peak_dbfs` is deliberately NOT in the result shape. It is
     # the one datasheet fact in that object, and the template's own number was
     # the class default -- so the shape taught the assistant to send a figure
@@ -1687,16 +1672,11 @@ def test_prompt_result_shape_template_is_storable_not_gate_refused(
         if item["kind"] == "highpass"
     )
     assert highpass["cutoff_hz"] == float(driver["recommended_highpass_hz"])
-    # The three protocol limit fields survive normalisation (the original null
-    # defect). The fourth, `max_effective_peak_dbfs`, is absent by design since
+    # The protocol limit field survives normalisation (the original null
+    # defect). Its sibling `max_effective_peak_dbfs` is absent by design since
     # the 2026-08-23 ruling -- and the computed profile has no blocker, which is
     # the half of that ruling this test is the guard for.
-    for field in (
-        "max_sweep_duration_s",
-        "max_repeat_count",
-        "minimum_cooldown_s",
-    ):
-        assert driver["level_duration_limits"].get(field) is not None
+    assert driver["level_duration_limits"].get("max_sweep_duration_s") is not None
     assert "max_effective_peak_dbfs" not in driver["level_duration_limits"]
 
 
@@ -2112,8 +2092,6 @@ def _cx120_safety(role: str, *, tweeter_peak_dbfs: float = -65) -> dict:
             "level_duration_limits": {
                 "max_effective_peak_dbfs": -20,
                 "max_sweep_duration_s": 4,
-                "max_repeat_count": 3,
-                "minimum_cooldown_s": 2,
             },
             "cabinet": {
                 "enclosure_kind": "sealed",
@@ -2141,8 +2119,6 @@ def _cx120_safety(role: str, *, tweeter_peak_dbfs: float = -65) -> dict:
                 else {"max_effective_peak_dbfs": tweeter_peak_dbfs}
             ),
             "max_sweep_duration_s": 4,
-            "max_repeat_count": 3,
-            "minimum_cooldown_s": 2,
         },
         "cabinet": {
             "enclosure_kind": "sealed",
@@ -2208,8 +2184,6 @@ def _cx120_research(request: dict, *, estimating: bool) -> dict:
             safety["level_duration_limits"] = {
                 "max_effective_peak_dbfs": None,
                 "max_sweep_duration_s": None,
-                "max_repeat_count": None,
-                "minimum_cooldown_s": None,
             }
         drivers.append({
             "target_id": target["target_id"],
@@ -2485,14 +2459,11 @@ def test_prompt_asks_for_a_published_level_limit_or_none_at_all() -> None:
         # no-headroom bound, refused at the parse
         # (``_normalise_level_duration_limits``: "must be <= 0"), which is why
         # it cannot be expressed as an issue code here. What remains in this
-        # object are the three protocol numbers, and a reply that omits one is
-        # still incomplete however well sourced it is.
+        # object is the one protocol number, and a reply that omits it is still
+        # incomplete however well sourced it is.
         (
             "level_duration_limits",
-            {
-                "max_repeat_count": 3,
-                "minimum_cooldown_s": 2,
-            },
+            {"max_effective_peak_dbfs": -20},
             "tweeter:max_sweep_duration_s_missing",
         ),
         # Nesting: a measurement band reaching outside the hard excitation

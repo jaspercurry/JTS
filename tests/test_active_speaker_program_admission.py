@@ -63,7 +63,6 @@ def _profile_and_targets(
     woofer_measurement_floor: float | None = None,
     woofer_highpass: float | None = None,
     woofer_upper: float = 20_000,
-    minimum_cooldown_s: float = 0,
 ):
     """Asymmetric caps by default (woofer 0.0, tweeter -65): the realistic
     2-way shape whose ~65 dB spread is exactly what the (fixed) session-volume
@@ -74,8 +73,6 @@ def _profile_and_targets(
         return {
             "max_effective_peak_dbfs": peak,
             "max_sweep_duration_s": max_sweep_duration_s,
-            "max_repeat_count": 3,
-            "minimum_cooldown_s": minimum_cooldown_s,
         }
 
     common = {

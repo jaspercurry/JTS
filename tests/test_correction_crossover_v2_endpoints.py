@@ -6133,8 +6133,8 @@ def _inline_context() -> V2ConductorContext:
         safety_profile={"targets": [{
             "role": role, "target_fingerprint": f"fp-{role}",
             "hard_excitation_band_hz": [20, 4000] if role == "woofer" else [300, 20000],
-            "level_duration_limits": {"max_sweep_duration_s": 6.0, "max_repeat_count": 3,
-                                      "minimum_cooldown_s": 2.0, "max_effective_peak_dbfs": CAPS[role]},
+            "level_duration_limits": {"max_sweep_duration_s": 6.0,
+                                      "max_effective_peak_dbfs": CAPS[role]},
             "required_protection_filters": [{
                 "kind": kind, "cutoff_hz": cutoff,
                 "minimum_slope_db_per_octave": 24.0,
