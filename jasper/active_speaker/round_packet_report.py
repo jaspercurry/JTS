@@ -116,6 +116,9 @@ def rear_lines(entries: Sequence[Mapping[str, Any]], target: Path) -> list[str]:
     reference and repeat spread, then one line per candidate naming its
     changed control family, headroom cost and worst pooled regression.
     ``jasper-round-views rear`` reads the same entries back."""
+    def number(value: float | None) -> str:
+        return f"{value:.1f}" if value is not None else "null"
+
     lines: list[str] = []
     for entry in entries:
         comparison = entry["comparison"]
@@ -123,7 +126,8 @@ def rear_lines(entries: Sequence[Mapping[str, Any]], target: Path) -> list[str]:
         band_repr = f"{band[0]:g}–{band[1]:g} Hz" if band else "null"
         reference = comparison["reference"]
         spread = comparison["repeat_spread"]
-        spread_repr = spread["reason"] or json.dumps(spread["spread_db"], sort_keys=True)
+        spread_repr = spread["reason"] or json.dumps(
+            {key: number(value) for key, value in spread["spread_db"].items()}, sort_keys=True)
         lines.append(
             f"rear {_short_id(entry['set_id'])}: band {band_repr} ({comparison['band_source']}); "
             f"reference {reference['kind']} {_short_id(reference['candidate_id'])}; "
@@ -138,11 +142,11 @@ def rear_lines(entries: Sequence[Mapping[str, Any]], target: Path) -> list[str]:
                 exceeds = worst["exceeds_repeat_spread"]
                 exceeds_word = "unknown" if exceeds is None else ("yes" if exceeds else "no")
                 worst_repr = (f"{worst['position']} {worst['figure']} "
-                             f"{json.dumps(worst['change_db'])} dB exceeds_repeat_spread={exceeds_word}")
+                             f"{number(worst['change_db'])} dB exceeds_repeat_spread={exceeds_word}")
             lines.append(
                 f"  {_short_id(candidate['candidate_id'])} {candidate['role']}: "
                 f"change_family={candidate['change_family'] or 'none'}; "
-                f"headroom_change_db={json.dumps(candidate['headroom_change_db'])}; "
+                f"headroom_change_db={number(candidate['headroom_change_db'])}; "
                 f"worst_regression={worst_repr}"
             )
     lines.append(shlex.join(["jasper-round-views", "rear", str(target)]))
@@ -177,7 +181,7 @@ def packet_index(
     poses = list(dict.fromkeys(_pose_token(t["pose"]) for group in packet["sets"] for t in group["takes"]))
     lines = [f"# {packet['round_id']} · {packet['program']}",
              f"Measured: poses {'; '.join(poses)}; level: {json.dumps(packet['level'])}",
-             f"Applied: candidate {str(packet['applied']['candidate'] or '')[:12]} · record {packet['applied']['record']} · "
+             f"Applied: candidate {_short_id(packet['applied']['candidate'])} · record {packet['applied']['record']} · "
              f"{json.dumps(packet['applied']['layers'], separators=(',', ':'))}",
              f"Result: {packet['result']}; reason: {packet['reason']}"]
     for pair in packet.get("alignment", ()):
