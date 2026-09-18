@@ -506,6 +506,19 @@ def test_impulse_energy_windows_follow_the_own_peak():
     }, abs=1e-6)
 
 
+def test_impulse_late_energy_windows_follow_the_own_peak():
+    impulse = np.zeros(48000)
+    impulse[14400], impulse[15360] = 1.0, 0.5
+
+    figures = rear_evidence.impulse_late_energy(impulse, sample_rate_hz=48000)
+
+    # Band-pass ringing crosses the peak and both windows; unfiltered pulse ratios do not apply.
+    assert figures == pytest.approx({
+        "t0_ms": 4.9792, "early_late_db": 2.2304,
+        "energy_db": -21.8354, "centroid_ms": 6.5617,
+    }, abs=1e-4)
+
+
 def test_band_limited_impulse_preserves_the_in_band_transfer():
     freqs = np.fft.rfftfreq(32768, 1 / 48000)
     band = rear_evidence.LATE_ENERGY_BAND_HZ

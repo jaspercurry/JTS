@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -54,6 +54,7 @@ class LateralPoseCurve:
     gate_window_ms: float | None = None
     floor_source: str | None = None
     trusted_floor_hz: float | None = None
+    late_energy: Mapping[str, float] | None = None
 
 
 def lateral_evidence_grid_hz() -> np.ndarray:
@@ -93,6 +94,7 @@ def lateral_pose_curve(
         trusted_floor_hz=(response.gating or {}).get("f_trusted_hz"),
         gate_window_ms=(response.gating or {}).get("window_ms"),
         floor_source=(response.gating or {}).get("floor_source"),
+        late_energy=getattr(response, "late_energy", None),
         repeat_curves=tuple(
             lateral_pose_curve(occurrence, band_hz)
             for occurrence in response.repeat_responses
@@ -141,6 +143,7 @@ def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
         "trusted_floor_hz": curve.trusted_floor_hz,
         "gate_window_ms": curve.gate_window_ms,
         "floor_source": curve.floor_source,
+        "late_energy": curve.late_energy,
         "smoothing_fractional_octave": 0,
         "repeat_curves": [
             pose_curve_record(repeat) for repeat in curve.repeat_curves

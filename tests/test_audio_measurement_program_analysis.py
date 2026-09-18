@@ -5287,6 +5287,23 @@ def test_verify_summed_response_and_ripple():
     assert res.summed_ripple_db < 3.0
 
 
+def test_verify_summed_late_energy_retains_the_room_reflection():
+    prog = build_verify_program(FC_HZ, sweep_band_hz=(20, 20000), sweep_s=1.5)
+    figures = []
+    for reflection in (0.0, 0.5):
+        ir = np.zeros(SR)
+        ir[200], ir[200 + round(0.020 * SR)] = 1.0, reflection
+        capture = _synthesize(prog, woofer_ir=ir, tweeter_ir=ir, noise=0.0)
+        response = analyze_program_capture(prog, capture, SR).summed_response
+        assert response is not None
+        assert response.late_energy is not None
+        figures.append(response.late_energy)
+
+    # The 90–250 Hz band-pass spreads pulse energy across the measurement windows.
+    assert figures[1]["early_late_db"] == pytest.approx(2.2304, abs=0.5)
+    assert figures[0]["early_late_db"] > figures[1]["early_late_db"]
+
+
 # --------------------------------------------------------------------------- #
 # flatness-verify (#1668 PR-D) was RETIRED by the flat-linearization plan's
 # PR-5 (the spec-curve SSOT). ``_flatness_tracking`` graded ONE capture on its

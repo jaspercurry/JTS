@@ -155,6 +155,19 @@ def impulse_energy_figures(ir: Any, *, sample_rate_hz: int) -> dict[str, float]:
             "centroid_ms": float(np.sum(time_ms[held] * energy[held])) / total}
 
 
+def impulse_late_energy(ir: np.ndarray, *, sample_rate_hz: int) -> dict[str, float]:
+    peak = int(np.argmax(np.abs(ir)))
+    # The 5 ms pre / 350 ms post window matches the validated banked branch impulses.
+    start = max(0, peak - round(0.005 * sample_rate_hz))
+    stop = min(ir.size, peak + round(0.350 * sample_rate_hz))
+    n = 32768
+    spectrum = np.fft.rfft(ir[start:stop], n=n)
+    impulse = band_limited_impulse(
+        np.fft.rfftfreq(n, 1 / sample_rate_hz), spectrum, LATE_ENERGY_BAND_HZ,
+    )
+    return impulse_energy_figures(impulse, sample_rate_hz=sample_rate_hz)
+
+
 def reference_curve_db(freqs_hz: Any, curve_db: Any) -> np.ndarray:
     """The frozen zero for one microphone position: the one-octave trend of
     the batch's reference take there. It only sets the zero, so
