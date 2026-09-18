@@ -137,6 +137,7 @@ def test_available_programs_is_the_sorted_registry() -> None:
         ("close", "spot"),
         ("front_rear", "express"),
         ("rear", "express"),
+        ("rear", "pair"),
         ("rear", "wide"),
         ("room", "arm"),
         ("room", "cloud"),
@@ -150,10 +151,11 @@ def test_available_programs_is_the_sorted_registry() -> None:
     )
     rows = [mp.program(program_id, size) for program_id, size in choices]
     assert tuple((row.program_id, row.size) for row in rows) == choices
-    # Two branch rows, and only their ids tell them apart to the session.
+    # Three branch rows, and only their ids tell them apart to the session.
     assert {(row.program_id, row.branch_pair) for row in rows
             if row.regime == mp.REGIME_BRANCHES} == {
         ("branches", mp.BRANCH_PAIR_DRIVERS), ("front_rear", mp.BRANCH_PAIR_FRONT_REAR),
+        ("rear", mp.BRANCH_PAIR_FRONT_REAR),
     }
 
 
@@ -298,10 +300,36 @@ def test_rear_gate_exemption_matches_room() -> None:
     assert mp.gate_exemption(mp.PURPOSE_REAR) == mp.gate_exemption(mp.PURPOSE_ROOM) == SEAT_EXEMPT
 
 
-def test_rear_summed_capture_is_valid_but_per_driver_is_refused() -> None:
-    assert mp.validated_capture_purpose(mp.PURPOSE_REAR, mp.POSE_KIND_BEARING, mp.REGIME_SUMMED) == mp.PURPOSE_REAR
-    with pytest.raises(ValueError):
-        mp.validated_capture_purpose(mp.PURPOSE_REAR, mp.POSE_KIND_BEARING, mp.REGIME_PER_DRIVER)
+@pytest.mark.parametrize("purpose,regime,supported", [
+    (mp.PURPOSE_REAR, mp.REGIME_SUMMED, True),
+    (mp.PURPOSE_REAR, mp.REGIME_BRANCHES, True),
+    (mp.PURPOSE_REAR, mp.REGIME_PER_DRIVER, False),
+    (mp.PURPOSE_REAR, mp.REGIME_NEAR_FIELD, False),
+    (mp.PURPOSE_ROOM, mp.REGIME_BRANCHES, False),
+    (mp.PURPOSE_SPEAKER, mp.REGIME_BRANCHES, True),
+])
+def test_only_rear_joins_speaker_in_the_branches_regime(purpose, regime, supported) -> None:
+    """Rear is the one non-speaker purpose whose take reads each branch solo."""
+    if supported:
+        assert mp.validated_capture_purpose(purpose, mp.POSE_KIND_BEARING, regime) == purpose
+    else:
+        with pytest.raises(ValueError):
+            mp.validated_capture_purpose(purpose, mp.POSE_KIND_BEARING, regime)
+
+
+def test_the_rear_pair_row_reuses_the_express_layout_and_the_proven_front_rear_pair() -> None:
+    """The pair take is the rear express geometry, played as two branches
+    (issue #5330). Naming it leaves the default rear size alone."""
+    row = mp.program("rear", "pair")
+
+    assert (row.purpose, row.regime, row.branch_pair) == (
+        mp.PURPOSE_REAR, mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR)
+    assert row.poses is mp.program("rear", "express").poses
+    assert row.mover is None and row.room_sweep is False
+    assert mp.program("rear").size == "express"
+    resolved = mp.run_program("rear", "rear/pair")
+    assert (resolved.size, resolved.regime, resolved.branch_pair) == (
+        "pair", mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR)
 
 
 @pytest.mark.parametrize("mover", [None, "arm", "human"])

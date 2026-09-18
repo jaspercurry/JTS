@@ -71,16 +71,26 @@ def resolved_measurement_purpose(purpose: str | None, kind: str) -> str:
         raise ValueError(f"a pose kind must be one of {POSE_KINDS}, got {kind!r}") from None
 
 
+#: The capture modes the runner supports per purpose. A rear comparison reads
+#: each woofer solo as well as their sum, so it is the one non-speaker purpose
+#: a :data:`REGIME_BRANCHES` take may carry (issue #5330).
+_REGIMES_BY_PURPOSE = {
+    PURPOSE_SPEAKER: (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES),
+    PURPOSE_ROOM: (REGIME_SUMMED,),
+    PURPOSE_BASS: (REGIME_SUMMED, REGIME_NEAR_FIELD),
+    PURPOSE_REFERENCE: (REGIME_SUMMED,),
+    PURPOSE_REAR: (REGIME_SUMMED, REGIME_BRANCHES),
+}
+
+
 def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> str:
     """Resolve purpose and validate the capture mode supported by the runner."""
     resolved = resolved_measurement_purpose(purpose, kind)
     if regime not in REGIMES:
         raise ValueError(f"a measurement regime must be one of {REGIMES}, got {regime!r}")
-    if regime == REGIME_NEAR_FIELD:
-        if resolved != PURPOSE_BASS:
-            raise ValueError("near-field program captures require purpose bass")
-    elif resolved != PURPOSE_SPEAKER and regime != REGIME_SUMMED:
-        raise ValueError(f"{resolved} measurements require the summed regime")
+    supported = _REGIMES_BY_PURPOSE[resolved]
+    if regime not in supported:
+        raise ValueError(f"{resolved} measurements require one of {supported}, got {regime!r}")
     return resolved
 
 

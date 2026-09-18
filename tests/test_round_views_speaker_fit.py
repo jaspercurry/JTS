@@ -702,6 +702,28 @@ def test_packet_fits_only_drivers_and_keeps_refusal_codes(speaker_round, tmp_pat
     assert {take["role"] for group in packet["sets"] for take in group["takes"]} == {"summed", "woofer", "tweeter"}
 
 
+@pytest.mark.parametrize("program,roles_fitted", [("speaker", {"woofer"}), ("rear/pair", set())])
+def test_only_a_speaker_purpose_take_earns_a_packet_fit(speaker_round, program, roles_fitted):
+    """A fit is gated speaker evidence. The same branch pair measured for a rear
+    comparison is read ungated and proposes no driver filters (issue #5330).
+    """
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    row = next(row for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    groups = []
+    for role in ("woofer", "woofer:rear", "summed"):
+        group = manifest_set([(row.path, record)], set_id=role)
+        group["capture_basis"].update(role=role)
+        group["takes"][0].update(role=role)
+        groups.append(group)
+    write_manifest(root, program=program, groups=groups)
+
+    packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
+
+    assert {fit["role"] for fit in packet["fits"]} == roles_fitted
+
+
 @pytest.mark.parametrize("pose_count,candidate_count,cloud_planned,verifies", [
     (1, 1, True, True), (2, 2, True, True), (3, 3, True, True), (3, 1, True, True), (3, 3, False, False),
 ])
