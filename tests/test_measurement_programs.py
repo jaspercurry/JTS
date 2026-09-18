@@ -139,6 +139,7 @@ def test_available_programs_is_the_sorted_registry() -> None:
         ("front_rear", "express"),
         ("rear", "express"),
         ("rear", "pair"),
+        ("rear", "pair_behind"),
         ("rear", "wide"),
         ("room", "arm"),
         ("room", "cloud"),
@@ -331,6 +332,23 @@ def test_the_rear_pair_row_reuses_the_express_layout_and_the_proven_front_rear_p
     resolved = mp.run_program("rear", "rear/pair")
     assert (resolved.size, resolved.regime, resolved.branch_pair) == (
         "pair", mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR)
+
+
+def test_the_rear_pair_behind_row_places_the_microphone_at_the_wall_null() -> None:
+    """The pair-behind take is the same front/rear branch pair, with a human
+    mover pinned so the microphone can stand at the 180 deg null the arm
+    cannot reach (issue #5330)."""
+    row = mp.program("rear", "pair_behind")
+
+    assert (row.purpose, row.regime, row.branch_pair, row.mover) == (
+        mp.PURPOSE_REAR, mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR, "human")
+    assert [(pose.azimuth_deg, pose.elevation_deg, pose.repeats) for pose in row.poses] == [
+        (0, 0, 2), (180, 0, 2),
+    ]
+    assert mp.program("rear").size == "express"
+    resolved = mp.run_program("rear", "rear/pair_behind")
+    assert (resolved.size, resolved.regime, resolved.branch_pair, resolved.mover) == (
+        "pair_behind", mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR, "human")
 
 
 @pytest.mark.parametrize("mover", [None, "arm", "human"])
