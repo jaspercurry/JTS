@@ -33,7 +33,6 @@ from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.rear_calibration import diagnostic_seed
 from jasper.active_speaker.round_bank import _bookkeeping
 from jasper.active_speaker.round_packet import write_round_packet
-from jasper.active_speaker.round_packet_report import INDEX_FILENAME
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
@@ -461,8 +460,8 @@ def test_a_pair_round_packets_each_woofer_alone_and_the_trust_number(
     assert entry["stage"]["band_hz"] == _CANCELLATION_BAND_HZ
     assert isinstance(entry["stage"]["gradient_residual_db"], float)
     # One candidate, so no figure spread for a difference to be real against.
+    # How the index renders that line is pinned with the other index cases.
     assert comparison["repeat_spread"]["reason"] == REASON_NO_COMPARISON
-    assert f"repeat_spread {REASON_NO_COMPARISON}" in (root / INDEX_FILENAME).read_text()
     assert {r["view"] for r in views if r["status"] == "written"} == {
         "rear", "frequency", "inventory"}
     assert json.loads((root / ARTIFACT_BY_VIEW["rear"].artifact).read_text()) == {
