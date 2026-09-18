@@ -35,6 +35,7 @@ from ._supervisor import (
     await_connected,
     failure_detail,
     hand_off_first_connect,
+    is_network_down,
     provider_code,
     request_planned_reopen,
     request_unplanned_reopen,
@@ -747,15 +748,22 @@ class BaseLiveConnection:
                 self._set_state(ConnectionState.FAILED)
             hand_off_first_connect(self, e, literals=self._secret_literals())
 
-    async def _open_session(self) -> None:
+    async def _open_session(
+        self, *, will_retry: Callable[[Exception], bool] | None = None,
+    ) -> None:
         """Open a session, recording the outcome on the outage tracker.
 
         Every session open funnels through here, so the tracker follows
-        the live connection by construction."""
+        the live connection by construction. ``will_retry`` names the
+        failures the caller is about to try again itself: those stay off
+        the tracker, so a retry that succeeds announces no outage."""
         try:
             await self._open_session_attempt()
         except Exception as e:  # noqa: BLE001
-            self._outage.on_failure(e, literals=self._secret_literals())
+            # `network_down` escalation counts consecutive failures, so those
+            # stay on the tracker even when retried.
+            if will_retry is None or not will_retry(e) or is_network_down(e):
+                self._outage.on_failure(e, literals=self._secret_literals())
             raise
         self._outage.on_recovery()
 

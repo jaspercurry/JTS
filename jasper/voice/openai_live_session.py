@@ -20,7 +20,7 @@ from typing import Any, AsyncIterator
 from ..backoff import reconnect_delay
 from ..log_event import log_event
 from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn, ToolCall, upsample_16k_to_24k
-from ._supervisor import is_transient, openai_error_is_terminal
+from ._supervisor import http_status, is_transient, openai_error_is_terminal
 from ._tasks import await_cleanup_owned
 from .session import AudioOutChunk, ConnectionState, TurnCapture, TurnUsage
 
@@ -541,6 +541,17 @@ class OpenAILiveConnection(BaseLiveConnection):
                     raise error_cls(self._redacted(exc)) from None
                 raise
 
+    def _retry_open(self, exc: Exception, attempt: int) -> bool:
+        """Whether one more session open is worth this wake's time.
+
+        Live's upgrade path is constant and the model rides in
+        `session.start`, so a handshake 404 cannot mean the missing model
+        ADR-0215 reads it as — retry it once before that terminal
+        handling applies."""
+        if attempt >= SESSION_OPEN_ATTEMPTS or self._stopping.is_set():
+            return False
+        return is_transient(exc) or http_status(exc) == 404
+
     async def _open_session_for_turn(self) -> OpenAILiveTurn:
         """Each attempt gets its own turn, because tearing a half-open
         session down marks the turn it was opened for lost.
@@ -553,15 +564,15 @@ class OpenAILiveConnection(BaseLiveConnection):
             turn = OpenAILiveTurn(self, time.monotonic())
             self._active_turn = turn
             try:
-                await self._open_session()
+                await self._open_session(will_retry=lambda exc: self._retry_open(exc, attempt))
             except Exception as exc:  # noqa: BLE001
-                if (
-                    attempt >= SESSION_OPEN_ATTEMPTS
-                    or self._stopping.is_set()
-                    or not is_transient(exc)
-                ):
+                if not self._retry_open(exc, attempt):
                     raise
                 self._on_reconnect_attempt_failed(exc, attempt, True)
+                log_event(
+                    logger, "provider.session_open_retry", provider=self.PROVIDER_NAME,
+                    attempt=attempt, status=http_status(exc),
+                )
                 await self._teardown_session()
                 await self._sleep(reconnect_delay(attempt, transient=True))
             else:
