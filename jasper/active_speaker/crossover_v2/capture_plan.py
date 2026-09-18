@@ -39,7 +39,7 @@ from ..excitation_safety_plan import (
     ExcitationSafetyPlanError, declared_minimum_cooldown_s,
 )
 from ..measurement_programs import (
-    POSE_KIND_BEARING, POSE_KIND_CLOSE, POSE_KIND_SEAT,
+    POSE_KIND_BEARING, POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT,
     gate_exemption, pose_place, resolved_measurement_purpose,
 )
 from . import contracts as _contracts
@@ -235,7 +235,7 @@ class CloudPositionPrompt:
     vertical_offset_cm: float = 0.0
     #: The pose's category (ADR-0260); a ``seat`` row states
     #: ``seat_offset_m`` ``(right, forward, up)`` from the head centre, a
-    #: ``close`` row its own ``distance_m``; ``None`` is the mark.
+    #: ``close`` or ``behind`` row its own ``distance_m``; ``None`` is the mark.
     kind: str = POSE_KIND_BEARING
     distance_m: float | None = None
     seat_offset_m: tuple[float, float, float] | None = None
@@ -588,6 +588,12 @@ def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
             prompt,
             headline=f"Put the microphone {distance:g} m from the baffle on the design axis.",
             detail="Close enough that the room drops out of the read; pointed at the speaker.",
+        )
+    if prompt.kind == POSE_KIND_BEHIND:
+        return replace(
+            prompt,
+            headline=f"Put the microphone {distance:g} m behind the cabinet, on the axis.",
+            detail="Between the back panel and the wall, at woofer height, pointed at the back panel.",
         )
     degrees_ = position_angle_deg(prompt)
     elevation = position_elevation_deg(prompt)

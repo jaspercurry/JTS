@@ -805,6 +805,15 @@ def test_a_rise_on_the_design_axis_does_not_say_LEAVE_the_microphone(
     )
 
 
+def test_a_behind_prompt_reads_differently_from_the_bearing_at_the_same_azimuth() -> None:
+    """Behind and bearing share (0, 0) but are different physical places, so
+    the household must not read the same instruction for both (issue #5330)."""
+    bearing = ac.pose_at_angle(0)
+    behind = ac.pose_at_angle(0, kind=mp.POSE_KIND_BEHIND, distance_m=0.1)
+
+    assert behind.text != bearing.text
+
+
 # --------------------------------------------------------------------------- #
 # 6. the program door: a named table becomes a walk, and nothing else does
 # --------------------------------------------------------------------------- #

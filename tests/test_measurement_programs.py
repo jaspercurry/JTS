@@ -334,21 +334,33 @@ def test_the_rear_pair_row_reuses_the_express_layout_and_the_proven_front_rear_p
         "pair", mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR)
 
 
-def test_the_rear_pair_behind_row_places_the_microphone_at_the_wall_null() -> None:
+def test_the_rear_pair_behind_row_places_the_microphone_behind_the_cabinet() -> None:
     """The pair-behind take is the same front/rear branch pair, with a human
-    mover pinned so the microphone can stand at the 180 deg null the arm
-    cannot reach (issue #5330)."""
+    mover pinned so the microphone can stand behind the cabinet, at the
+    cardioid null the arm cannot reach (issue #5330). Behind is a pose KIND,
+    on axis at ``distance_m`` from the back panel -- never a 180 deg bearing,
+    which the tangent geometry ceiling refuses regardless of mover."""
     row = mp.program("rear", "pair_behind")
 
     assert (row.purpose, row.regime, row.branch_pair, row.mover) == (
         mp.PURPOSE_REAR, mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR, "human")
-    assert [(pose.azimuth_deg, pose.elevation_deg, pose.repeats) for pose in row.poses] == [
-        (0, 0, 2), (180, 0, 2),
+    assert [(pose.azimuth_deg, pose.elevation_deg, pose.kind, pose.distance_m, pose.repeats)
+            for pose in row.poses] == [
+        (0, 0, mp.POSE_KIND_BEARING, None, 2),
+        (0, 0, mp.POSE_KIND_BEHIND, 0.1, 2),
     ]
     assert mp.program("rear").size == "express"
     resolved = mp.run_program("rear", "rear/pair_behind")
     assert (resolved.size, resolved.regime, resolved.branch_pair, resolved.mover) == (
         "pair_behind", mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR, "human")
+    behind_pose, = (pose for pose in resolved.poses if pose.kind == mp.POSE_KIND_BEHIND)
+    assert behind_pose.distance_m == 0.1
+
+
+def test_a_behind_pose_states_its_own_distance_from_the_back_panel() -> None:
+    """A behind pose carries no seat offset; its distance validates like a
+    close pose's (issue #5330)."""
+    assert mp.validated_pose(mp.POSE_KIND_BEHIND, None, 0.1) == (None, 0.1)
 
 
 @pytest.mark.parametrize("mover", [None, "arm", "human"])
