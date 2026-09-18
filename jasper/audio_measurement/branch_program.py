@@ -10,7 +10,7 @@ from dataclasses import replace
 from typing import Mapping
 
 from .program import (
-    ExcitationProgram, KIND_SWEEP, _cooldown_pad, _cooldown_samples, _finalize,
+    ExcitationProgram, KIND_SWEEP, _cooldown_pad, _finalize, cooldown_samples,
 )
 
 
@@ -49,7 +49,7 @@ def build_branch_program(summed: ExcitationProgram, branch_channels: Mapping[str
                 if seg.channel is not None else seg
                 for seg in summed.segments if seg.start_sample < sweep.start_sample]
     cursor = sweep.start_sample
-    cooldown = _cooldown_samples(cooldown_s, summed.sample_rate_hz)
+    cooldown = cooldown_samples(cooldown_s, summed.sample_rate_hz)
     excited_end: dict[int, int] = {}
     # The two exact repeats let the existing drift reader fit the recording clock.
     for name, role in (("sweep_w", first), ("sweep_t", second),

@@ -456,7 +456,7 @@ def _sweep_meta(
     )
 
 
-def _cooldown_samples(cooldown_s: float, sample_rate: int) -> int:
+def cooldown_samples(cooldown_s: float, sample_rate: int) -> int:
     """A declared cooldown as samples, rounded UP the way the door's own
     comparison does (``program_admission``): a rounded-down pad lands one
     sample short of the gap that admission then refuses."""
@@ -969,7 +969,7 @@ def build_measure_program(
         )
         return seg
 
-    cooldown_n = _cooldown_samples(cooldown_s, PROGRAM_SAMPLE_RATE_HZ)
+    cooldown_n = cooldown_samples(cooldown_s, PROGRAM_SAMPLE_RATE_HZ)
     excited_end: dict[int, int] = {}
 
     for cycle in range(repeat_count):
