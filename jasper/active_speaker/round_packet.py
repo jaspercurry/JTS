@@ -253,7 +253,9 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
 
 
 def wait_answer(banked: BankedRound, result: Mapping[str, Any], *, verbose: bool) -> dict[str, Any]:
-    return {"result": result.get("result"), "reason": result.get("reason"), "round_dir": str(banked.path),
+    packet_path = banked.path / PACKET_FILENAME
+    packet = json.loads(packet_path.read_text()) if packet_path.is_file() else {}
+    return {"result": result.get("result"), "reason": result.get("reason") or packet.get("reason"), "round_dir": str(banked.path),
             "packet": str(banked.path / PACKET_FILENAME),
             "picture": str(banked.path / PICTURE_FILENAME) if (banked.path / PICTURE_FILENAME).is_file() else None,
             **({"views": banked.provenance.get("views", [])} if verbose else {})}

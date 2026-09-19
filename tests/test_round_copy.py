@@ -4,7 +4,7 @@
 import pytest
 
 from jasper.active_speaker.crossover_v2.refusal_copy import CAPTURE_QUALITY_REFUSAL_CODES, refusal_copy_for
-from jasper.active_speaker.round_copy import RUN_ENDED, round_lines, coverage_lines, round_verdict
+from jasper.active_speaker.round_copy import RUN_ENDED, round_lines, coverage_lines, pose_name, round_verdict
 
 
 @pytest.mark.parametrize("facts, pending, expected", [
@@ -71,3 +71,15 @@ def test_post_round_coverage_keeps_packet_words():
     assert coverage_lines(packet, manifest) == ["Measured: 1 take.",
         "Waived: +20°.", "Unqualified band (woofer): below 250 Hz.",
         "packet disclosure", "Measure timing again"]
+
+
+def test_unmeasured_poses_are_distinct_and_counted_once():
+    poses = [{"deg": 0, "kind": "bearing"}, {"deg": 0, "kind": "behind"}]
+    manifest = {"not_measured": [{"pose": pose, "reason": "user_stopped"} for pose in poses for _ in range(2)]}
+    lines = coverage_lines({}, manifest)[1:]
+    assert len(lines) == 2
+    assert pose_name(poses[0]) != pose_name(poses[1])
+    for pose, line in zip(poses, lines, strict=True):
+        assert pose["kind"] in pose_name(pose)
+        assert pose_name(pose) in line
+        assert "2" in line
