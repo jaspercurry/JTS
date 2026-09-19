@@ -80,6 +80,8 @@ SUB_CROSSOVER_HZ_HI = BASS_MANAGEMENT_CORNER_HZ_HI
 SUPPORTED_GROUP_KINDS = {"left", "right", "mono", "subwoofer"}
 MAIN_GROUP_KINDS = frozenset(SUPPORTED_GROUP_KINDS) - {"subwoofer"}
 PASSIVE_MAIN_MODE = "full_range_passive"
+# Roles run low to high: the first has no lower crossover edge, consecutive
+# roles cross over, and a way-count view assumes one mode per way count.
 MAIN_DRIVER_ROLES_BY_MODE = {
     PASSIVE_MAIN_MODE: ("full_range",),
     "active_2_way": ("woofer", "tweeter"),
