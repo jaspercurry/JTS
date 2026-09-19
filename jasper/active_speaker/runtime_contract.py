@@ -43,8 +43,10 @@ from jasper.log_event import log_event
 
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.output_topology import (
+    LOWEST_DRIVER_ROLE_BY_MAIN_MODE,
     SUB_CROSSOVER_HZ_HI,
     SUB_CROSSOVER_HZ_LO,
+    WAY_COUNT_BY_MAIN_MODE,
     OutputTopology,
     OutputTopologyError,
     SpeakerChannel,
@@ -1677,15 +1679,8 @@ def _post_split_delay_evidence(
     return total_ms, tuple(sorted(invalid))
 
 
-_WAY_COUNT_BY_MAIN_MODE = {
-    "full_range_passive": 1,
-    "active_2_way": 2,
-    "active_3_way": 3,
-}
-
-
 def _crossover_directions(assignment: OutputAssignment) -> tuple[str, ...] | None:
-    way_count = _WAY_COUNT_BY_MAIN_MODE.get(assignment.speaker_mode)
+    way_count = WAY_COUNT_BY_MAIN_MODE.get(assignment.speaker_mode)
     if way_count is None:
         return None
     if way_count == 1 and assignment.role == "full_range":
@@ -2443,7 +2438,7 @@ def _baseline_commissioning_pair(
     if len(group_ids) != 1 or len(modes) != 1:
         return None
     mode = next(iter(modes))
-    way_count = _WAY_COUNT_BY_MAIN_MODE.get(mode)
+    way_count = WAY_COUNT_BY_MAIN_MODE.get(mode)
     if way_count not in {2, 3}:
         return None
     roles = {item.role for item in exact}
@@ -2551,7 +2546,7 @@ def _assignment_by_output(contract: OutputContract) -> dict[int, OutputAssignmen
     out: dict[int, OutputAssignment] = {}
     for item in contract.assignments:
         if item.physical_output_index is not None and (
-            item.roleful or _LOWEST_MAIN_ROLE_BY_MODE.get(item.speaker_mode) == "full_range"
+            item.roleful or LOWEST_DRIVER_ROLE_BY_MAIN_MODE.get(item.speaker_mode) == "full_range"
         ):
             out[item.physical_output_index] = item
     return out
@@ -2563,17 +2558,6 @@ def _required_roleful_indexes(contract: OutputContract) -> set[int]:
         for item in contract.roleful_assignments
         if item.physical_output_index is not None
     }
-
-
-# The lowest (woofer / full-range) driver role per main mode — the driver that
-# carries the bass-management high-pass. Mirrors profile.LOWEST_DRIVER_ROLE_BY_WAY
-# but keyed by the topology's speaker_mode (the verifier re-derives independently
-# of the emitter's preset, so it does not import that table).
-_LOWEST_MAIN_ROLE_BY_MODE = {
-    "full_range_passive": "full_range",
-    "active_2_way": "woofer",
-    "active_3_way": "woofer",
-}
 
 
 def _subwoofer_output_indexes(contract: OutputContract) -> set[int]:
@@ -2598,7 +2582,7 @@ def _mains_lowest_driver_indexes(contract: OutputContract) -> set[int]:
             continue
         if item.speaker_kind == "subwoofer" or item.speaker_mode == "subwoofer":
             continue
-        if _LOWEST_MAIN_ROLE_BY_MODE.get(item.speaker_mode) == item.role:
+        if LOWEST_DRIVER_ROLE_BY_MAIN_MODE.get(item.speaker_mode) == item.role:
             out.add(int(item.physical_output_index))
     return out
 
@@ -2801,7 +2785,7 @@ def _active_graph_evidence(
     active_way_counts = {
         way_count
         for item in contract.assignments
-        if (way_count := _WAY_COUNT_BY_MAIN_MODE.get(item.speaker_mode)) is not None
+        if (way_count := WAY_COUNT_BY_MAIN_MODE.get(item.speaker_mode)) is not None
     }
     expected_split = (
         f"split_active_{next(iter(active_way_counts))}way"

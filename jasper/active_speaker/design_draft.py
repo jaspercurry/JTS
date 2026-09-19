@@ -22,9 +22,8 @@ from typing import Any, Mapping
 from jasper.atomic_io import atomic_write_text
 from jasper.json_fields import CodedFieldError
 from jasper.json_fields import utc_now_iso as _utc_now
-from jasper.output_topology import OutputTopology
+from jasper.output_topology import ADJACENT_PAIRS_BY_MAIN_MODE, OutputTopology
 from ._common import (
-    ACTIVE_CROSSOVER_ROLE_PAIRS,
     DRIVER_CLASSES,
     LEGACY_DROPPED_DRIVER_FIELDS,
     MANUAL_CANDIDATE_FIELDS,
@@ -774,7 +773,7 @@ def _candidate_roles(candidates: list[dict[str, Any]]) -> set[frozenset[str]]:
 def _active_crossover_pairs(topology: OutputTopology) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     for group in topology.speaker_groups:
-        for pair in ACTIVE_CROSSOVER_ROLE_PAIRS.get(group.mode, ()):
+        for pair in ADJACENT_PAIRS_BY_MAIN_MODE.get(group.mode, ()):
             if pair not in pairs:
                 pairs.append(pair)
     return pairs
