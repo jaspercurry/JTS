@@ -183,6 +183,8 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
     if result["status"] != "terminal":
         return failed(EXIT_REFUSED if result["status"] == "failed" else EXIT_UNREADABLE,
                       str(result["reason"]), result)
+    if result.get("captured") is False:
+        return failed(EXIT_REFUSED, str(result.get("code") or "run_not_live"), result)
     session_dir = _round_session_dir(args.run)
     if not session_dir:
         return failed(EXIT_UNREADABLE, "capture_bundle_unavailable", result)

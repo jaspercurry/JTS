@@ -142,6 +142,9 @@ class WizardClient:
         if live_id and live_id != run_id:
             return 409, {"code": "run_not_current", "run_id": run_id, "current_run_id": live_id}
         if not live_id:
+            if capture.get("status") in SESSION_ENDED_STATUSES:
+                return http, {"run_id": run_id, "status": capture["status"],
+                              "code": capture.get("code"), "captured": False}
             capture = {"status": "starting"}
         progress = capture.get("run") or {}
         return http, {"run_id": run_id, **progress,
