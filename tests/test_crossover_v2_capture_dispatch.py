@@ -23,7 +23,7 @@ from jasper.audio_measurement import snr_policy
 from jasper.audio_measurement.frame_ledger import FrameLedger
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.program_analysis.model import (
-    SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
+    SWEEP_LOCATE_CONFIDENCE_FLOOR, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     AnchorEvidence, DriftEstimate, GainPlan, MeasurementPriors, ProgramAnalysis,
 )
 from jasper.audio_measurement.quality_model import DRIVER
@@ -133,15 +133,48 @@ def test_integrity_verdict(phase, changes, code, next, charge):
         assert verdict.next_gain_db == -33.0
 
 
+#: One ``rear/pair`` take as jts3 round fd97a756ea51 take_0003 measured it, in
+#: program order: segment, branch, locate confidence, residual in ms at 48 kHz.
+#: The leading pilot pair sits on the front branch, so the rear is unanchored.
+TAKE_0003_SWEEPS = (
+    ("sweep_w", "front", 0.6982, 0.58),
+    ("sweep_t", "rear", 0.2376, 4.13),
+    ("sweep_w_rep", "front", 0.6954, 0.85),
+    ("sweep_t_rep", "rear", 0.2403, 5.104),
+)
+
+
+def _pair_take(*, rear_role="woofer:rear", branches=True):
+    return _analysis(
+        locations=tuple(replace(_loc(segment, confidence=confidence,
+                                     residual_samples=residual_ms * cd.REQUIRED_SAMPLE_RATE_HZ / 1000),
+                                role="woofer" if branch == "front" else rear_role)
+                        for segment, branch, confidence, residual_ms in TAKE_0003_SWEEPS),
+        pilots=(_snr_pilot("woofer", 30.0),),
+        branch_diagnostic={"responses": [{"role": rear_role}]} if branches else None,
+    )
+
+
+@pytest.mark.parametrize(("rear_role", "branches", "on_schedule"), [
+    ("woofer:rear", True, True),
+    ("tweeter", True, True),
+    ("woofer", True, False),
+    ("tweeter", False, False),
+])
+def test_only_a_branch_programs_unanchored_branch_is_judged_on_its_own_path(rear_role, branches, on_schedule):
+    analysis = _pair_take(rear_role=rear_role, branches=branches)
+    assert cd._sweep_schedule_ok(analysis, cd.REQUIRED_SAMPLE_RATE_HZ) is on_schedule
+
+
 @pytest.mark.parametrize("role", ["woofer", "woofer:rear", "tweeter"])
 @pytest.mark.parametrize("branches", [False, True])
 @pytest.mark.parametrize("direction", [-1, 1])
-def test_sweep_schedule_is_absolute_for_every_role(role, branches, direction):
+def test_sweep_schedule_is_absolute_for_anchored_roles(role, branches, direction):
     residual = direction * (SWEEP_SCHEDULE_RESIDUAL_CEILING_MS * cd.REQUIRED_SAMPLE_RATE_HZ / 1000 + 1)
-    locations = tuple(replace(_loc(segment_id, confidence=0.12, residual_samples=residual), role=role)
+    locations = tuple(replace(_loc(segment_id, confidence=SWEEP_LOCATE_CONFIDENCE_FLOOR, residual_samples=residual), role=role)
                       for segment_id in ("sweep_w", "sweep_w_rep"))
     analysis = _analysis(
-        locations=locations, pilots=(_snr_pilot("woofer", 30.0),),
+        locations=locations, pilots=(_snr_pilot(role, 30.0),),
         branch_diagnostic={"responses": [{"role": role}]} if branches else None,
     )
     verdict = cd.assess(analysis, phase="measure", gain_db=GAINS)
@@ -149,7 +182,7 @@ def test_sweep_schedule_is_absolute_for_every_role(role, branches, direction):
     assert (verdict.next, verdict.charge) == ("retake_same", "speaker")
     assert verdict.evidence["guard"] == "sweep_schedule"
     assert verdict.evidence["schedule_residual_ms_worst"] == pytest.approx(residual / cd.REQUIRED_SAMPLE_RATE_HZ * 1000)
-    assert verdict.evidence["locate_confidence_min"] == 0.12
+    assert verdict.evidence["locate_confidence_min"] == SWEEP_LOCATE_CONFIDENCE_FLOOR
 
 
 @pytest.mark.parametrize("diagnostic", [None, {"responses": [{"role": "woofer:rear"}]}])

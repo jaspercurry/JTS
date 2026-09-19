@@ -60,9 +60,8 @@ class ConfiguredPathConditioningError(ValueError):
 GLITCH_RESIDUAL_SAMPLES = 1.5
 MAX_DRIFT_PPM = 500.0
 
-# Floor on `SegmentLocation.confidence` below which a located sweep is not
-# evidence (~0.03 fits a confident-looking multi-thousand-sample step from
-# noise).
+# Confidence floor for VERIFY summed sweeps, drift step fits, and anchor witnesses;
+# also routes a failed sweep schedule to locate failure instead of a glitch retry.
 SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 
 # How many TIMES more present the winning anchor hypothesis's witness must

@@ -20,7 +20,7 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.audio_measurement.program_analysis.check import alignment_snr_gain_adjustment
 from jasper.audio_measurement.program_analysis.model import (
     DRIVER_SNR_ALIGNMENT_KEY, GAIN_MAX_DIGITAL_PEAK_DBFS, PILOT_MIN_SNR_DB,
-    SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, MeasurementPriors, ProgramAnalysis,
+    SWEEP_LOCATE_CONFIDENCE_FLOOR, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, MeasurementPriors, ProgramAnalysis,
 )
 from jasper.audio_measurement.program_analysis.summary import driver_alignment_snr_verdict, driver_snr_verdict
 from jasper.active_speaker.profile import spl_raise_bound_db_spl
@@ -224,6 +224,9 @@ def _assess_recording(
         return quiet(reasons.REASON_ANCHOR_TOO_QUIET, charge="speaker" if gains else "operator")
     if analysis.mic_meter_status in {"low", "too_quiet"}:
         return quiet(reasons.REASON_PILOT_LEVEL_COLLAPSE)
+    schedule_ok = _sweep_schedule_ok(analysis, sample_rate)
+    if not schedule_ok and float(evidence["locate_confidence_min"]) < SWEEP_LOCATE_CONFIDENCE_FLOOR:
+        return refuse(reasons.REASON_LOCATE_FAILED)
     integrity = analysis.capture_integrity
     if integrity is not None and INTEGRITY_CHECK_SWEEP_HEARD in integrity.failed:
         return quiet(reasons.REASON_LOCATE_FAILED)
@@ -232,7 +235,7 @@ def _assess_recording(
         return refuse(reasons.REASON_CLIPPED, next="retake_quieter", charge="speaker", targets=targets)
     if analysis.glitch_detected or (analysis.discontinuity_samples or 0) != 0 or (integrity and integrity.failed):
         return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge="speaker")
-    if not _sweep_schedule_ok(analysis, sample_rate):
+    if not schedule_ok:
         evidence["guard"] = "sweep_schedule"
         return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge="speaker")
     if analysis.linearity_ok is False:
@@ -309,15 +312,32 @@ def ripple_reservation_due(
     return predicted_ripple_db > disclosure_threshold_db
 
 
-def _sweep_schedule_ok(analysis: ProgramAnalysis, sample_rate_hz: int) -> bool:
-    """Residual samples use the caller's program rate; capture analysis rejects
-    a WAV at a different rate before locating segments.
+def _unanchored_sweep_roles(analysis: ProgramAnalysis) -> frozenset[str | None]:
+    """Sweep roles a branch program's leading pilot pair does NOT anchor.
+
+    Empty for every other program, and whenever no pilot named a role at all,
+    which keeps both rungs below at their shared thresholds rather than
+    inventing an exemption.
     """
+    anchored = {pilot.role for pilot in analysis.pilots}
+    if analysis.branch_diagnostic is None or not anchored:
+        return frozenset()
+    return frozenset(loc.role for loc in analysis.locations
+                     if loc.kind == KIND_SWEEP and loc.role not in anchored)
+
+
+def _sweep_schedule_ok(analysis: ProgramAnalysis, sample_rate_hz: int) -> bool:
+    """Check sweep timing against the schedule, or the first sweep for an unanchored role."""
     sweeps = [loc for loc in analysis.locations if loc.kind == KIND_SWEEP]
     if not sweeps:
         return True
+    unanchored = _unanchored_sweep_roles(analysis)
+    reference: dict[str | None, float] = {}
     for loc in sweeps:
-        residual_ms = abs(loc.residual_samples) / sample_rate_hz * 1000.0
+        if loc.role in unanchored:
+            reference.setdefault(loc.role, loc.residual_samples)
+    for loc in sweeps:
+        residual_ms = abs(loc.residual_samples - reference.get(loc.role, 0.0)) / sample_rate_hz * 1000.0
         if residual_ms > SWEEP_SCHEDULE_RESIDUAL_CEILING_MS:
             return False
     return True

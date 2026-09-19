@@ -20,7 +20,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_REGISTRY,
+    REASON_LOCATE_FAILED, REASON_PILOT_LEVEL_COLLAPSE, REASON_REGISTRY,
 )
 from jasper.active_speaker.crossover_v2.diagnostics import PILOT_SNR_UNUSABLE_DB, _worst_pilot_snr_db
 from jasper.active_speaker.crossover_v2.capture_dispatch import (
@@ -161,41 +161,27 @@ def test_heard_sweeps_on_schedule_are_accepted():
     assert _run_phase(c, 2, 2)["accepted"] is True
 
 
-def test_buried_measure_capture_reads_too_quiet_not_glitched():
-    """D3 (#1838), the whole field shape at once: session
-    cap_-Us10xORVNlFa_dgi-sP7g's MEASURE played 33 dB below flat, so its
-    pilots sank under their SNR floor, its sweeps located at 0.03, the
-    mis-located sweeps produced a 1018-sample residual, and the residual
-    tripped `glitch_detected` on noise.
-
-    Every one of those is downstream of one cause: nobody could hear the
-    capture. With the glitch branch second in the ladder the household was
-    told "capture glitched", the flow silently re-armed the same unwinnable
-    level, and the session burned 120 s of dead air into a CaptureTimeout.
-    The verdict has to name the level.
-
-    The pilots are given real confidence on purpose: they WERE located that
-    evening (the SNR guard read 11.22 dB against a 12.38 dB floor, which it
-    could only do on a located pair), and they are what let the capture past
-    the first `_stimulus_locate_ok` gate.
-    """
+@pytest.mark.parametrize("glitch", [False, True])
+@pytest.mark.parametrize(("pilot_snr_ok", "confidence", "code"), [
+    (False, 0.0298, REASON_PILOT_LEVEL_COLLAPSE),
+    (True, 0.15, REASON_LOCATE_FAILED),
+])
+def test_buried_measure_capture_reads_too_quiet_not_glitched(glitch, pilot_snr_ok, confidence, code):
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     fakes.measure = lambda program: _measure_analysis(
-        program,
-        pilot_snr_ok=False,
-        glitch=True,
+        program, pilot_snr_ok=pilot_snr_ok, glitch=glitch,
         sweep_locations=(
             _loc("pilot_woofer_lo", kind="pilot", confidence=0.5),
             _loc("pilot_woofer_hi", kind="pilot", confidence=0.6),
-            _loc("sweep_w", confidence=0.0298, residual_samples=1018.0),
-            _loc("sweep_t", confidence=0.0298, residual_samples=1018.0),
-            _loc("sweep_w_rep", confidence=0.0298, residual_samples=1018.0),
+            *(_loc(segment, confidence=confidence, residual_samples=21.2e-3 * program.sample_rate_hz)
+              for segment in ("sweep_w", "sweep_t", "sweep_w_rep")),
         ),
     )
     verdict = _run_phase(c, 2, 2)
-    assert verdict["code"] == "pilot_level_collapse"
+    assert verdict["code"] == code
+    assert (verdict["next"], verdict["charge"]) == ("fix_and_retake", "operator")
     assert not verdict.get("auto_retry")
 
 
