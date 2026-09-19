@@ -17,7 +17,7 @@ import — ``output_topology`` (already transitive) and ``measurement_programs``
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
