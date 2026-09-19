@@ -23,7 +23,14 @@ from jasper.camilla_emit import (
     BASS_MANAGEMENT_CROSSOVER_ORDER,
 )
 from jasper.json_fields import CodedFieldError, JsonFields
-from jasper.output_topology import OUTPUT_VARIANT_SCHEMA_VERSION, SUPPORTED_OUTPUT_VARIANTS
+from jasper.output_topology import (
+    ADJACENT_PAIRS_BY_MAIN_MODE,
+    LOWEST_DRIVER_ROLE_BY_MAIN_MODE,
+    MAIN_DRIVER_ROLES_BY_MODE,
+    OUTPUT_VARIANT_SCHEMA_VERSION,
+    SUPPORTED_OUTPUT_VARIANTS,
+    WAY_COUNT_BY_MAIN_MODE,
+)
 
 SCHEMA_VERSION = 1
 ACTIVE_PRESET_KIND = "jts_active_speaker_preset"
@@ -43,29 +50,13 @@ ACTIVE_BASELINE_KIND = "jts_speaker_baseline_profile"
 LEVEL_MATCH_AXIS = "design_axis_0deg"
 
 DRIVER_ROLES_BY_WAY: dict[int, tuple[str, ...]] = {
-    # 1-way is the passive main: a single full-range driver per side, with no
-    # inter-driver crossover region. A local subwoofer is optional — when one is
-    # present bass management splits the full-range program into a sub low-pass
-    # and a complementary mains high-pass.
-    1: ("full_range",),
-    2: ("woofer", "tweeter"),
-    3: ("woofer", "mid", "tweeter"),
+    WAY_COUNT_BY_MAIN_MODE[mode]: roles for mode, roles in MAIN_DRIVER_ROLES_BY_MODE.items()
 }
 ADJACENT_PAIRS_BY_WAY: dict[int, tuple[tuple[str, str], ...]] = {
-    # A 1-way main has no inter-driver crossover region; its only crossover is the
-    # bass-management split shared with the local subwoofer (see LocalSubwoofer).
-    1: (),
-    2: (("woofer", "tweeter"),),
-    3: (("woofer", "mid"), ("mid", "tweeter")),
+    WAY_COUNT_BY_MAIN_MODE[mode]: pairs for mode, pairs in ADJACENT_PAIRS_BY_MAIN_MODE.items()
 }
-# The lowest (woofer / full-range) driver of each side. When a local subwoofer is
-# present this driver carries the complementary bass-management high-pass — the
-# upper half of the single crossover whose lower half is the sub low-pass. It is
-# the role with no LOWER crossover edge (no region names it as the upper driver).
 LOWEST_DRIVER_ROLE_BY_WAY: dict[int, str] = {
-    1: "full_range",
-    2: "woofer",
-    3: "woofer",
+    WAY_COUNT_BY_MAIN_MODE[mode]: role for mode, role in LOWEST_DRIVER_ROLE_BY_MAIN_MODE.items()
 }
 
 # Local-subwoofer bass-management crossover corner. BOUND TO the one shared

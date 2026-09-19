@@ -73,33 +73,25 @@ MISSING_SOURCE = "missing"
 
 DUAL_APPLE_ACTIVE_DEVICE_ID = DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 
-# Bass-management corner bounds (Hz) for a user-settable subwoofer crossover.
-# BOUND TO the one shared corner definition (jasper.camilla_emit) — a
-# stdlib-only leaf this import-cheap module CAN depend on, unlike
-# active_speaker, which would be circular: active_speaker imports
-# output_topology.
+# Hz; active_speaker imports this module, so shared bounds live in camilla_emit.
 SUB_CROSSOVER_HZ_LO = BASS_MANAGEMENT_CORNER_HZ_LO
 SUB_CROSSOVER_HZ_HI = BASS_MANAGEMENT_CORNER_HZ_HI
 
 SUPPORTED_GROUP_KINDS = {"left", "right", "mono", "subwoofer"}
-SUPPORTED_GROUP_MODES = {
-    "full_range_passive",
-    "active_2_way",
-    "active_3_way",
-    "subwoofer",
-}
-# The listening (non-subwoofer) group kinds, and the mode that means "one
-# full-range driver per side, no active crossover". MAIN_GROUP_KINDS is DERIVED,
-# not re-listed: a fifth supported kind must land on one side of the main/sub
-# line deliberately, not by silently dropping out of the passive predicates.
 MAIN_GROUP_KINDS = frozenset(SUPPORTED_GROUP_KINDS) - {"subwoofer"}
 PASSIVE_MAIN_MODE = "full_range_passive"
-REQUIRED_ROLES_BY_MODE = {
-    "full_range_passive": ("full_range",),
+MAIN_DRIVER_ROLES_BY_MODE = {
+    PASSIVE_MAIN_MODE: ("full_range",),
     "active_2_way": ("woofer", "tweeter"),
     "active_3_way": ("woofer", "mid", "tweeter"),
-    "subwoofer": ("subwoofer",),
 }
+WAY_COUNT_BY_MAIN_MODE = {mode: len(roles) for mode, roles in MAIN_DRIVER_ROLES_BY_MODE.items()}
+ADJACENT_PAIRS_BY_MAIN_MODE = {
+    mode: tuple(zip(roles, roles[1:])) for mode, roles in MAIN_DRIVER_ROLES_BY_MODE.items()
+}
+LOWEST_DRIVER_ROLE_BY_MAIN_MODE = {mode: roles[0] for mode, roles in MAIN_DRIVER_ROLES_BY_MODE.items()}
+REQUIRED_ROLES_BY_MODE = {**MAIN_DRIVER_ROLES_BY_MODE, "subwoofer": ("subwoofer",)}
+SUPPORTED_GROUP_MODES = set(REQUIRED_ROLES_BY_MODE)
 SUPPORTED_ROLES = {
     role for roles in REQUIRED_ROLES_BY_MODE.values() for role in roles
 }

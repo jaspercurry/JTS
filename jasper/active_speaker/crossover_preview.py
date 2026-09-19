@@ -2,20 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build a no-audio active-speaker crossover preview.
-
-The preview is the deterministic bridge from a saved design draft to a future
-protected startup config. It proposes bounded filter intent only: no CamillaDSP
-YAML, no config load, no playback authority, and no sound.
-"""
+"""Build a no-audio active-speaker crossover preview."""
 
 from __future__ import annotations
 
 import math
 from typing import Any, Mapping
 
-from jasper.output_topology import OutputTopology, OutputTopologyError, canonical_fingerprint
-from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, issue as _issue
+from jasper.output_topology import ADJACENT_PAIRS_BY_MAIN_MODE, OutputTopology, OutputTopologyError, canonical_fingerprint
+from ._common import issue as _issue
 from .driver_protection import (
     LOW_LIMIT_DECLARED,
     PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
@@ -558,7 +553,7 @@ def build_crossover_preview(
                     )
                 )
         for group in topology.speaker_groups:
-            pairs = ACTIVE_CROSSOVER_ROLE_PAIRS.get(group.mode, ())
+            pairs = ADJACENT_PAIRS_BY_MAIN_MODE.get(group.mode, ())
             if not pairs:
                 continue
             crossovers = [

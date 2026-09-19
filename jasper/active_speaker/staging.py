@@ -29,6 +29,8 @@ from jasper.camilla_config_contract import (
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.output_topology import (
+    ADJACENT_PAIRS_BY_MAIN_MODE,
+    WAY_COUNT_BY_MAIN_MODE,
     OutputTopology,
     SpeakerChannel,
     SpeakerGroup,
@@ -36,7 +38,7 @@ from jasper.output_topology import (
     subwoofer_speaker_groups,
 )
 
-from ._common import ACTIVE_CROSSOVER_ROLE_PAIRS, gate as _gate, issue as _issue, software_guard_needed as _software_guard_needed
+from ._common import gate as _gate, issue as _issue, software_guard_needed as _software_guard_needed
 from .camilla_yaml import (
     COMMISSIONING_FILTER_MODE,
     COMMISSIONING_HEADROOM_DB,
@@ -617,7 +619,7 @@ def _preset_from_crossover_preview(
     active_modes = {
         str(group.get("mode"))
         for group in preview_groups
-        if str(group.get("mode")) in ACTIVE_CROSSOVER_ROLE_PAIRS
+        if ADJACENT_PAIRS_BY_MAIN_MODE.get(str(group.get("mode")))
     }
     if len(active_modes) != 1:
         issues.append(_issue(
@@ -627,7 +629,7 @@ def _preset_from_crossover_preview(
         ))
         return None, issues, gates
     mode = next(iter(active_modes))
-    way_count = len(ACTIVE_CROSSOVER_ROLE_PAIRS[mode]) + 1
+    way_count = WAY_COUNT_BY_MAIN_MODE[mode]
 
     kinds = {str(group.get("kind")) for group in preview_groups}
     if kinds == {"mono"} and len(preview_groups) == 1:
@@ -721,11 +723,7 @@ def _preset_from_crossover_preview(
                 ))
 
     regions: list[CrossoverRegion] = []
-    for lower_role, upper_role in (
-        (("woofer", "tweeter"),)
-        if way_count == 2
-        else (("woofer", "mid"), ("mid", "tweeter"))
-    ):
+    for lower_role, upper_role in ADJACENT_PAIRS_BY_MAIN_MODE[mode]:
         value = crossover_values.get((lower_role, upper_role))
         if value is None:
             issues.append(_issue(

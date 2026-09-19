@@ -22,11 +22,6 @@ REGION_FC_MATCH_TOLERANCE_HZ = 1e-6
 BASELINE_TOPOLOGY_CHANGED = "active_baseline_topology_changed"
 
 
-ACTIVE_CROSSOVER_ROLE_PAIRS: dict[str, tuple[tuple[str, str], ...]] = {
-    "active_2_way": (("woofer", "tweeter"),),
-    "active_3_way": (("woofer", "mid"), ("mid", "tweeter")),
-}
-
 DRIVER_CLASSES: tuple[str, ...] = (
     "compression_horn",
     "soft_dome",
