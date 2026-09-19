@@ -28,7 +28,6 @@ from .model import (
     INTEGRITY_CHECK_FRAME_LEDGER,
     INTEGRITY_CHECK_CAPTURE_OVERRUN,
     INTEGRITY_CHECK_REPEAT_EPSILON,
-    INTEGRITY_CHECK_REPEAT_LEVEL,
     INTEGRITY_CHECK_SWEEP_HEARD,
     INTEGRITY_CHECK_SWEEP_SCHEDULE,
     INTEGRITY_CHECK_WITHIN_ROLE_DESYNC,
@@ -186,7 +185,6 @@ def _verify_capture_integrity(
             checks.append(IntegrityCheck("zero_fill_runs", INTEGRITY_FAIL if zero_runs else INTEGRITY_PASS))
     for name, input_code, unavailable in (
         (INTEGRITY_CHECK_REPEAT_EPSILON, "epsilon_out_of_bound", _INTEGRITY_NO_REPEAT_PAIR),
-        (INTEGRITY_CHECK_REPEAT_LEVEL, "repeat_level_disagree", _INTEGRITY_NO_REPEAT_PAIR),
         (INTEGRITY_CHECK_WITHIN_ROLE_DESYNC, "residual_desync", _INTEGRITY_NO_REPEAT_PAIR),
         (INTEGRITY_CHECK_DISCONTINUITY_STEP, "timeline_slip", _INTEGRITY_STEP_NEEDS_MORE_SWEEPS),
     ):

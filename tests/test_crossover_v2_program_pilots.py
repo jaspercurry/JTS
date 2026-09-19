@@ -2,21 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""W5a composer extension: leading pilot pairs + woofer-repeat level agreement.
-
-docs/historical/crossover-measurement-productization-design.md §5.2: every MEASURE and
-VERIFY program also opens with a short two-level pilot pair so EACH capture
-carries its own linearity evidence, and MEASURE acceptance additionally
-requires the woofer repeat pair to agree in level within ±0.3 dB (a
-gain-riding detector complementing the timing baselines). A repeat-level
-failure REUSES the ``drift_baselines_disagree`` verdict (``glitch_detected``)
-— never a new user-facing code.
-
-Fixture style mirrors tests/test_audio_measurement_program_analysis.py:
-captures are composed by convolving each program channel with a synthetic
-band-passed driver IR, then perturbed (AGC on the hi pilot, a level step on
-the repeat sweep).
-"""
+"""Leading pilot pairs and repeat-level evidence."""
 from __future__ import annotations
 
 import json
@@ -25,7 +11,7 @@ import math
 
 import numpy as np
 import pytest
-from scipy.signal import fftconvolve
+from scipy.signal import fftconvolve, resample_poly
 
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
@@ -46,7 +32,6 @@ from jasper.audio_measurement.program_analysis import (
     INTEGRITY_CHECK_FRAME_LEDGER,
     INTEGRITY_CHECK_CAPTURE_OVERRUN,
     INTEGRITY_CHECK_REPEAT_EPSILON,
-    INTEGRITY_CHECK_REPEAT_LEVEL,
     INTEGRITY_CHECK_SWEEP_HEARD,
     INTEGRITY_CHECK_SWEEP_SCHEDULE,
     INTEGRITY_CHECK_WITHIN_ROLE_DESYNC,
@@ -54,7 +39,6 @@ from jasper.audio_measurement.program_analysis import (
     INTEGRITY_NOT_EVALUATED,
     INTEGRITY_PASS,
     PILOT_MIN_SNR_DB,
-    REPEAT_LEVEL_TOLERANCE_DB,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     CaptureIntegrity,
@@ -482,67 +466,25 @@ def test_late_started_capture_clips_the_ambient_window_never_slides_it(
         assert res.pilots[0].snr_db == math.inf
 
 
-# --- analysis: woofer-repeat level agreement ------------------------------------
-#
-# The gate is first-vs-LAST located woofer occurrence (sweep-composition
-# PR-A, #1668 — see `_estimate_drift`'s docstring): under the N=3 default the
-# LAST occurrence is "sweep_w_rep2", not "sweep_w_rep" (the middle one) — the
-# three tests below perturb "sweep_w_rep2" so they keep exercising the gate
-# that actually runs against the shipped default, not a middle repeat the
-# gate does not see (that coverage gap is a named, deferred scope note, not
-# a bug — see the same docstring's "Scope note").
-
-
-def test_repeat_level_step_is_flagged_as_glitch():
-    """A >±0.3 dB level step between the woofer's first and last sweeps ⇒
-    glitch verdict.
-
-    Timing is untouched (pure amplitude scale on the repeat window), so the
-    drift baselines agree — the LEVEL check alone must trip, and it reuses the
-    same ``glitch_detected`` verdict (⇒ ``drift_baselines_disagree`` reason,
-    §5.2)."""
+@pytest.mark.parametrize("delta_db,clock_slip", [(0.15, False), (1.0, False), (1.0, True)])
+def test_repeat_level_delta_is_disclosed_but_clock_glitches_remain(delta_db, clock_slip):
     prog = _measure_program()
     cap = _synthesize(prog)
     rep = prog.segment("sweep_w_rep2")
     start = GLOBAL_OFFSET + rep.start_sample
-    cap[start:start + rep.n_samples] *= 10.0 ** (-1.0 / 20.0)  # 1 dB quieter
+    cap[start:start + rep.n_samples] *= 10.0 ** (-delta_db / 20.0)
+    if clock_slip:
+        cap = resample_poly(cap, 1001, 1000)
     res = analyze_program_capture(
         prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
     )
     assert res.drift is not None
-    # The timing baselines still agree — the level detector is what fires.
-    assert abs(res.drift.epsilon_ppm) < 100.0
-    assert res.glitch_detected is True
+    assert res.drift.repeat_level_delta_db == pytest.approx(delta_db, abs=0.01)
+    assert ("epsilon_out_of_bound" in res.drift.glitch_inputs) is clock_slip
+    assert res.drift.glitch_detected is res.glitch_detected is clock_slip
 
 
-def test_repeat_level_within_tolerance_is_clean():
-    prog = _measure_program()
-    cap = _synthesize(prog)
-    rep = prog.segment("sweep_w_rep2")
-    start = GLOBAL_OFFSET + rep.start_sample
-    delta_db = REPEAT_LEVEL_TOLERANCE_DB * 0.5
-    cap[start:start + rep.n_samples] *= 10.0 ** (-delta_db / 20.0)
-    res = analyze_program_capture(
-        prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
-    )
-    assert res.glitch_detected is False
-
-
-def test_repeat_level_lf_transient_does_not_false_reject():
-    """A brief sub-band (60 Hz) room-mode-style transient spikes one sweep's
-    full-band single-sample PEAK without moving its in-band RMS — the fixed
-    estimator must not false-reject it.
-
-    Root cause (2026-07-20, real hardware): two Dayton iMM-6C and UMIK-2
-    MEASURE captures each showed two genuinely-identical woofer sweeps 0.64 dB
-    apart by full-band peak (a low-frequency room mode below the woofer's own
-    150 Hz band dominates the raw single-sample peak) but only 0.06-0.24 dB
-    apart by in-band RMS — see `REPEAT_LEVEL_TOLERANCE_DB`'s comment. This
-    fixture reproduces that shape synthetically: the transient sits at 60 Hz,
-    below the woofer's declared [150, 6000] Hz band, so `_band_power`'s
-    FFT bandpass mask filters it out of the in-band RMS estimate entirely
-    while it still dominates `_peak_dbfs`'s raw sample max.
-    """
+def test_repeat_level_uses_in_band_rms():
     prog = _measure_program()
     cap = _synthesize(prog)
     rep = prog.segment("sweep_w_rep2")
@@ -556,40 +498,11 @@ def test_repeat_level_lf_transient_does_not_false_reject():
         prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
     )
     by_id = {loc.segment_id: loc for loc in res.locations}
-    # SegmentLocation.peak_dbfs is the untouched full-band peak (still used
-    # for clip-run reporting / the pilot gain-solve reference) — confirms the
-    # OLD estimator would have tripped the glitch on this same capture.
-    old_style_delta = abs(by_id["sweep_w"].peak_dbfs - by_id["sweep_w_rep2"].peak_dbfs)
-    assert old_style_delta > REPEAT_LEVEL_TOLERANCE_DB
+    peak_delta = abs(by_id["sweep_w"].peak_dbfs - by_id["sweep_w_rep2"].peak_dbfs)
+    assert peak_delta > 0.3
+    assert res.drift is not None
+    assert res.drift.repeat_level_delta_db < peak_delta / 10
     assert res.glitch_detected is False
-
-
-def test_repeat_level_gate_stays_woofer_anchored_middle_and_tweeter_steps_pass():
-    """Pins the scope note in `_estimate_drift`'s docstring (sweep-composition
-    PR-A, #1668): the level gate is woofer first-vs-LAST only. A level step
-    confined to the woofer's MIDDLE repeat, or to any tweeter occurrence
-    (never covered by this gate, before or after #1668), must NOT trip
-    ``glitch_detected`` — deferred to a future PR's G2 hardening, not a bug
-    here."""
-    prog = _measure_program()
-
-    cap_middle = _synthesize(prog)
-    middle = prog.segment("sweep_w_rep")  # occurrence 2 of 3 -- not first/last
-    start = GLOBAL_OFFSET + middle.start_sample
-    cap_middle[start:start + middle.n_samples] *= 10.0 ** (-1.0 / 20.0)
-    res_middle = analyze_program_capture(
-        prog, cap_middle, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
-    )
-    assert res_middle.glitch_detected is False
-
-    cap_tweeter = _synthesize(prog)
-    tweeter_last = prog.segment("sweep_t_rep2")
-    start = GLOBAL_OFFSET + tweeter_last.start_sample
-    cap_tweeter[start:start + tweeter_last.n_samples] *= 10.0 ** (-1.0 / 20.0)
-    res_tweeter = analyze_program_capture(
-        prog, cap_tweeter, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
-    )
-    assert res_tweeter.glitch_detected is False
 
 
 def test_measure_predicted_sum_travels_for_verify():
@@ -769,7 +682,6 @@ def test_verify_clean_capture_records_a_real_integrity_verdict():
         INTEGRITY_CHECK_SWEEP_SCHEDULE: INTEGRITY_PASS,
         INTEGRITY_CHECK_CLIPPED_RUN: INTEGRITY_PASS,
         INTEGRITY_CHECK_REPEAT_EPSILON: INTEGRITY_NOT_EVALUATED,
-        INTEGRITY_CHECK_REPEAT_LEVEL: INTEGRITY_NOT_EVALUATED,
         INTEGRITY_CHECK_WITHIN_ROLE_DESYNC: INTEGRITY_NOT_EVALUATED,
         INTEGRITY_CHECK_DISCONTINUITY_STEP: INTEGRITY_NOT_EVALUATED,
     }

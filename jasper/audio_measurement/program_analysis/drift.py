@@ -27,7 +27,6 @@ from .model import (
     GLITCH_RESIDUAL_SAMPLES,
     logger,
     MAX_DRIFT_PPM,
-    REPEAT_LEVEL_TOLERANCE_DB,
     SegmentLocation,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
 )
@@ -194,14 +193,7 @@ def _estimate_drift(
         for r in resids:
             max_residual = max(max_residual, abs(r - mean))
 
-    # Woofer-repeat LEVEL agreement (design §5.2): first and last sweeps are
-    # bit-identical, so a clean capture reproduces the same level. Measured
-    # band-relative in-band RMS, never full-band peak — two hardware mics
-    # measured identical sweeps 0.64 dB apart by peak but only 0.06-0.24 dB
-    # apart by in-band RMS. A larger delta REUSES the
-    # drift-baselines-disagree verdict rather than a new code.
     repeat_level_delta_db = 0.0
-    repeat_level_disagrees = False
     if w1 is not None and w2 is not None:
         level_seg_w = primary
         if level_seg_w.f1_hz is None or level_seg_w.f2_hz is None:
@@ -215,7 +207,6 @@ def _estimate_drift(
         level_w1 = _band_rms_dbfs(w1_samples, sample_rate, level_seg_w.f1_hz, level_seg_w.f2_hz)
         level_w2 = _band_rms_dbfs(w2_samples, sample_rate, level_seg_w.f1_hz, level_seg_w.f2_hz)
         repeat_level_delta_db = abs(level_w1 - level_w2)
-        repeat_level_disagrees = repeat_level_delta_db > REPEAT_LEVEL_TOLERANCE_DB
 
     # Per-role diagnostics; NEVER gates `glitch_detected` (only the woofer pair does).
     per_role_epsilon_ppm: dict[str, float] = {}
@@ -238,7 +229,6 @@ def _estimate_drift(
         for name, tripped in (
             ("epsilon_out_of_bound", abs(epsilon) * 1e6 > MAX_DRIFT_PPM),
             ("residual_desync", max_residual > GLITCH_RESIDUAL_SAMPLES),
-            ("repeat_level_disagree", repeat_level_disagrees),
             (GLITCH_INPUT_TIMELINE_SLIP, slip_rejects_capture(slip_fit)),
         )
         if tripped and (kind == KIND_SWEEP or name == GLITCH_INPUT_TIMELINE_SLIP)

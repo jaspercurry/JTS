@@ -234,15 +234,23 @@ def test_clip_auto_retry_comes_from_the_registry_without_a_gain_target(phase):
     assert result["auto_retry"] is True
 
 
-@pytest.mark.parametrize("frame_loss", [False, True])
-def test_a_mic_bump_costs_the_operator_but_frame_loss_costs_the_speaker(frame_loss):
-    result = cd.assess(_analysis(
-        glitch_detected=True, pilot_snr_ok=not frame_loss,
-        drift=DriftEstimate(30.0, 0.2, True, glitch_inputs=("repeat_level_disagree",)),
+@pytest.mark.parametrize("glitch_inputs,frame_loss", [
+    ((), False), (("epsilon_out_of_bound",), False), ((), True),
+])
+def test_repeat_level_is_published_but_clock_and_frame_loss_still_refuse(glitch_inputs, frame_loss):
+    drift = DriftEstimate(1000.0 if glitch_inputs else 30.0, 0.2, bool(glitch_inputs),
+                          repeat_level_delta_db=0.533, glitch_inputs=glitch_inputs)
+    analysis = _analysis(
+        glitch_detected=drift.glitch_detected, drift=drift, pilot_snr_ok=not frame_loss,
         frame_ledger=FrameLedger(received_frames=128, declared_frames=256 if frame_loss else 128),
-    ), phase="measure")
-    assert result.charge == ("speaker" if frame_loss else "operator")
-    assert not result.ok and result.next == "retake_same"
+    )
+    result = cd.assess(analysis, phase="measure")
+    refused = bool(glitch_inputs) or frame_loss
+    assert result.ok is not refused
+    assert result.fault == ("drift_baselines_disagree" if refused else None)
+    assert result.next == ("retake_same" if refused else "accept")
+    assert result.charge == ("speaker" if refused else "none")
+    assert result.evidence["repeat_level_delta_db"] == analysis_json(analysis)["repeat_level_delta_db"] == 0.533
 
 
 @pytest.mark.parametrize("phase", PHASES)
