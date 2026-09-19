@@ -1345,7 +1345,7 @@ async def test_take_composer_uses_installed_scope_gain_and_all_programs_remain_a
             config_dir=str(tmp_path), topology=topology, safety_profile=safety, role_targets=targets,
             graph_yaml=lambda: graphs[scope], level_reference_yaml=graphs["candidate"], roles=excitation.roles)
         played = await compose(spec=spec, level_db=fader)
-        reference = programs(spec)
+        reference = programs(replace(spec, scope_gains_db={}))
         if phase != "measure":
             fields = event_fields(caplog, "active_speaker.scope_level")
             assert (fields["scope"], fields["phase"]) == (scope, phase)

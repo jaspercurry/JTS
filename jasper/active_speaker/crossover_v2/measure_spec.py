@@ -188,7 +188,9 @@ class MeasureSpec:
     #: capture, which is what keeps their graphs byte-identical.
     level_matched: bool = False
     graph_scope: str = GRAPH_SCOPE_DRIVERS
-    scope_gains_db: Mapping[str, float] | None = field(default_factory=dict)
+    #: Per-target level offsets of this take's graph against the level anchor's
+    #: graph. None: no reference is known, so blind pilots keep their fixed cut.
+    scope_gains_db: Mapping[str, float] | None = None
     program_phase: str = ""
     stimulus: Mapping[str, Any] | None = None
     #: The two measurement target ids a ``candidate_branches`` take excites, in
