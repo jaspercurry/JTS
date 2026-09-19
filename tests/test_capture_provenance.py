@@ -465,6 +465,8 @@ def _drive_one_capture(
     played = []
 
     class Graph(FakeGraph):
+        level_reference_yaml = ROUTING_GRAPH_YAML
+
         async def install(self, *args):
             fingerprint = await super().install(*args)
             selected_scope = self.scopes[-1][0] if self.scopes else "drivers"
@@ -519,7 +521,7 @@ def _drive_one_capture(
         capture_session_id="cap_provenance_probe",
         topology=object(), preset=object(), role_channels={"woofer": 0, "tweeter": 1},
         playback_device="hw:Test", safety_profile={}, role_targets={},
-        session_volume_db=-20.0, provenance=recorder,
+        session_volume_db=-20.0, provenance=recorder, roles=(),
         program_for_phase=lambda phase: program,
     )
     spec = MeasureSpec(

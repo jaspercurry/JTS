@@ -18,7 +18,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2.programs import CHECK_PROBE_BACKOFF_DB
 from jasper.active_speaker.crossover_v2_flow import ALIGNMENT_CONFIDENCE_TRUST_FLOOR, CrossoverV2Session
 from jasper.active_speaker.crossover_v2.programs import GAIN_CAP_BACKOFF_DB, PILOT_LEVEL_DELTA_DB
 from jasper.active_speaker.crossover_v2.planning import analysis_json as _analysis_json
@@ -138,7 +137,7 @@ def test_check_pilot_pairs_preserve_delta_and_degrade_honestly():
     t_lo = check.segment("pilot_tweeter_lo")
     assert t_hi.gain_db < BASE_STIMULUS_PEAK_DBFS
     assert t_hi.gain_db - t_lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
-    assert t_hi.effective_peak_dbfs == pytest.approx(-65.0 - GAIN_CAP_BACKOFF_DB - CHECK_PROBE_BACKOFF_DB)
+    assert t_hi.effective_peak_dbfs == pytest.approx(-65.0 - GAIN_CAP_BACKOFF_DB)
 
 
 def test_verify_pilot_pair_preserves_delta_after_clamp():
@@ -260,7 +259,7 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition(tmp_pat
         driver_spacing_m=0.15,
     )
     t_hi = c.program_for_phase(PHASE_CHECK).segment("pilot_tweeter_hi")
-    assert t_hi.effective_peak_dbfs == pytest.approx(-33.2 - GAIN_CAP_BACKOFF_DB - CHECK_PROBE_BACKOFF_DB)
+    assert t_hi.effective_peak_dbfs == pytest.approx(-33.2 - GAIN_CAP_BACKOFF_DB)
     # And the play-time gate (same declared mapping, as bind_production_play
     # now threads it) admits what the conductor composed.
     wav = tmp_path / "check.wav"

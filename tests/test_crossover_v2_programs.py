@@ -42,6 +42,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2 import journey
@@ -49,11 +50,12 @@ from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.angle_capture import request_for_program
 from jasper.active_speaker.measurement_programs import program as measurement_program
+from jasper.active_speaker.measurement_level import scope_gains_db
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.crossover_v2.capture_plan import CloudPositionPrompt, room_sweep_band_hz
 from jasper.active_speaker.crossover_v2 import programs
 from jasper.active_speaker.crossover_v2.programs import (
-    CHECK_PROBE_BACKOFF_DB,
     COURTESY_PRELUDE_PHASES,
     GROUP_SUMMED_SWEEP_PHASES,
     SUMMED_SWEEP_PHASES,
@@ -64,6 +66,7 @@ from jasper.active_speaker.crossover_v2.programs import (
     program_for_phase,
 )
 from jasper.audio_measurement.program import KIND_COURTESY_TONE, RoleBand
+from jasper.cli.measure import _bind_compose
 from jasper.web.correction_run_host import compose_plan_program
 from tests.test_active_speaker_program_admission import _profile_and_targets
 
@@ -146,6 +149,24 @@ def test_the_verify_program_is_the_one_that_shipped():
     assert ex.verify_program().program_id == GOLDEN_DEEP_CAP["verify"]
 
 
+@pytest.mark.parametrize("phase,scope,stimulus,expected", [
+    ("check", "drivers", None, "10176b8954f70c90c8a8203a45fcbfbdd18d3046a76d6ef11aa315d350632470"),
+    ("check", "drivers", -30.0, "10176b8954f70c90c8a8203a45fcbfbdd18d3046a76d6ef11aa315d350632470"),
+    ("check", "drivers", -60.0, "1334611ae7010a92bdfa550c3a90399d0927fb53d4cc4d5b3d82d056521f72f6"),
+    ("measure", "drivers", None, GOLDEN_UNANNOUNCED["measure"]),
+    ("verify", "timing", None, GOLDEN_DEEP_CAP["verify"]),
+    ("cloud_verify", "timing", None, GOLDEN_UNANNOUNCED["cloud"]),
+    ("verify", "candidate_branches", None, "b137f0fed1bed00e698d009782a39c5bad9de8096d5e7b2007ba1c4ab3fed7b3"),
+])
+def test_without_a_level_reference_programs_keep_their_shipped_identity(phase, scope, stimulus, expected):
+    spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope, scope_gains_db=None,
+                       candidate_id="trial" if scope != "drivers" else "",
+                       branch_target_ids=("woofer", "tweeter") if scope == "candidate_branches" else ())
+    program = programs.program_for_spec(spec, _excitation(CAPS), GAIN_PLAN_DB, stimulus,
+                                        safety_profile={}, role_targets={})
+    assert program.program_id == expected
+
+
 @pytest.mark.parametrize("caps", [CAPS, {"woofer": 0.0, "tweeter": 0.0}])
 @pytest.mark.parametrize("extra_backoff_db", [-3.0, 0.0, 6.0])
 def test_check_pilots_do_not_exceed_the_summed_pilot_pair(caps, extra_backoff_db):
@@ -159,7 +180,7 @@ def test_check_pilots_do_not_exceed_the_summed_pilot_pair(caps, extra_backoff_db
     }
 
     assert all(
-        segment.gain_db <= summed[segment.segment_id.rsplit("_", 1)[-1]] - CHECK_PROBE_BACKOFF_DB
+        segment.gain_db <= summed[segment.segment_id.rsplit("_", 1)[-1]]
         for segment in check.stimulus_segments()
         if segment.kind == "pilot"
     )
@@ -168,6 +189,64 @@ def test_check_pilots_do_not_exceed_the_summed_pilot_pair(caps, extra_backoff_db
             ex.check_program().segment(segment.segment_id).gain_db - max(0.0, extra_backoff_db))
         for segment in check.stimulus_segments() if segment.kind == "pilot"
     )
+
+
+@pytest.mark.parametrize("headroom", [0.0, 3.1, 5.61])
+@pytest.mark.parametrize("phase,scope", [("check", "drivers"), ("measure", "drivers"), ("verify", "timing")])
+def test_scope_gains_correct_blind_levels_and_preserve_the_measured_plan(headroom, phase, scope):
+    def graph(headroom, trim, cut):
+        return yaml.safe_dump({
+            "devices": {"samplerate": 48000, "capture": {"channels": 2}},
+            "filters": {
+                "headroom": {"type": "Gain", "parameters": {"gain": -headroom}},
+                "trim": {"type": "Gain", "parameters": {"gain": trim}},
+                "linearization": {"type": "Biquad", "parameters": {
+                    "type": "Peaking", "freq": 1000.0, "q": 30.0, "gain": cut}},
+            },
+            "pipeline": [
+                {"type": "Filter", "channels": [0, 1], "names": ["headroom"]},
+                {"type": "Filter", "channels": [0], "names": ["linearization"]},
+                {"type": "Filter", "channels": [1], "names": ["trim"]},
+            ],
+        })
+    topology, _, _ = _profile_and_targets()
+    excitation = _excitation({"woofer": 0.0, "tweeter": 0.0})
+    candidate, drivers = graph(headroom, -21.3, -8.0), graph(0.0, 0.0, 0.0)
+    gain = scope_gains_db(drivers, candidate, excitation.roles, topology=topology)
+    assert gain == pytest.approx({"woofer": headroom, "tweeter": headroom + 21.3}, abs=0.3)
+    assert scope_gains_db(candidate, candidate, excitation.roles, topology=topology) == {"woofer": 0, "tweeter": 0}
+    quieter = scope_gains_db(candidate, drivers, excitation.roles, topology=topology)
+    assert quieter == pytest.approx({role: -db for role, db in gain.items()})
+    spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope,
+                       candidate_id="trial" if scope != "drivers" else "")
+    def compose(gain):
+        return programs.program_for_spec(replace(spec, scope_gains_db=gain), excitation, GAIN_PLAN_DB,
+                                         safety_profile={}, role_targets={})
+    unchanged, lowered = compose({}), compose(gain)
+    assert compose(quieter).program_id == unchanged.program_id
+    if phase == "measure":
+        assert lowered.program_id == unchanged.program_id
+    for before, after in zip(unchanged.stimulus_segments(), lowered.stimulus_segments()):
+        backoff = 0 if phase == "measure" else gain[before.role] if phase == "check" else max(gain.values())
+        assert before.effective_peak_dbfs - after.effective_peak_dbfs == pytest.approx(backoff)
+
+
+@pytest.mark.parametrize("stimulus_dbfs", [None, -18.0])
+def test_cli_blind_measure_gains_include_only_positive_scope_backoff(monkeypatch, stimulus_dbfs):
+    excitation = _excitation({"woofer": 0.0, "tweeter": 0.0})
+    box = SimpleNamespace(
+        roles_bands=excitation.roles, caps_dbfs=excitation.caps_dbfs,
+        session_volume_db=excitation.session_volume_db, fc_hz=excitation.fc_hz,
+        sweep_duration_limits_s={}, topology=None, safety_profile={}, role_targets={}, declared_sensitivities={})
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.composition.bind_program_composer",
+                        lambda **kw: kw["program_for_spec"])
+    compose = _bind_compose(box=box, store=None, session_id="test", cam_factory=None,
+                            config_dir="", graph=SimpleNamespace(installed_graph_yaml=None, level_reference_yaml="reference"))
+    spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure")
+    reference = compose(spec, stimulus_dbfs)
+    played = compose(replace(spec, scope_gains_db={"woofer": -2.0, "tweeter": 21.3}), stimulus_dbfs)
+    for before, after in zip(reference.stimulus_segments(), played.stimulus_segments()):
+        assert before.gain_db - after.gain_db == pytest.approx(21.3 if before.role == "tweeter" else 0.0)
 
 
 def test_only_the_prelude_moved_under_the_shipped_measure_program(monkeypatch):

@@ -24,6 +24,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from types import SimpleNamespace
+import yaml
+from jasper.active_speaker.crossover_v2.composition import bind_program_composer
+from tests.test_active_speaker_program_admission import _profile_and_targets
+from tests.crossover_v2_fixtures import _roles
 
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_BASELINE
@@ -738,6 +743,7 @@ async def test_shared_composer_mints_each_take_and_proves_graph_inside_play_lock
         store=Store(), capture_session_id="same-pose", cam_factory=Cam,
         config_dir=str(tmp_path), topology=None, safety_profile={}, role_targets={},
         before_play=before_play, graph_yaml=lambda: graph,
+        level_reference_yaml=graph, roles=(),
         graph_evidence_for_spec=lambda spec: {"bass_extension": {"low_boost_db": 4.0}, "rear_calibration": {"rear_muted": False}},
     )
     spec = MeasureSpec(
@@ -755,3 +761,33 @@ async def test_shared_composer_mints_each_take_and_proves_graph_inside_play_lock
     with pytest.raises(ProgramPlaybackError):
         await program_playback.play_program(second.program, session_volume_plan=_Plan(), **second.seams)
     assert events.count("play") == 1
+
+
+@pytest.mark.parametrize("fault", ["bypassed", "undefined_filter", "samplerate", "shelf_width"])
+async def test_scope_evaluator_failure_is_a_typed_unplayed_take(tmp_path, fault):
+
+    config = {"devices": {"samplerate": 48000, "capture": {"channels": 2}},
+              "filters": {"gain": {"type": "Gain", "parameters": {"gain": -3.0}}},
+              "pipeline": [{"type": "Filter", "channels": [0, 1], "names": ["gain"]}]}
+    reference = yaml.safe_dump(config)
+    if fault == "bypassed":
+        config["pipeline"][0]["bypassed"] = True
+    elif fault == "undefined_filter":
+        config["filters"] = {}
+    elif fault == "samplerate":
+        config["devices"]["samplerate"] = 44100
+    else:
+        config["filters"]["gain"] = {"type": "Biquad", "parameters": {
+            "type": "Lowshelf", "freq": 1000, "gain": -3, "slope": 1}}
+    compose = bind_program_composer(
+        program_for_spec=lambda *_: pytest.fail("invalid graph composed a program"),
+        store=SimpleNamespace(bundle_dir=tmp_path), capture_session_id="refused",
+        cam_factory=lambda: None, config_dir=str(tmp_path), topology=_profile_and_targets()[0],
+        safety_profile={}, role_targets={}, graph_yaml=lambda: yaml.safe_dump(config),
+        level_reference_yaml=reference, roles=_roles())
+    outcome = await ProgramPlaybackTransaction(compose=compose, session_volume_plan=_Plan()).run(
+        spec=MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="check"),
+        position_deg=None, prompt="", level_db=-20, stimulus_dbfs=None)
+    assert (outcome.stage_reached, outcome.incident, outcome.played) == (STAGE_READY, STIMULUS_NOT_COMPOSED, False)
+    assert outcome.playback.emission == "not_started"
+    assert list(tmp_path.iterdir()) == []

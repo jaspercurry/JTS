@@ -106,11 +106,13 @@ class MeasurementSessionGraph:
         self,
         *,
         emit: EmitYaml,
+        level_reference_yaml: str | None,
         cam_factory: CamFactory,
         writer_lock: WriterLock,
         confirm_live: ConfirmLive,
         emit_scoped: EmitScopedYaml | None = None,
     ) -> None:
+        self.level_reference_yaml = level_reference_yaml
         self._emit = emit
         self._emit_scoped = emit_scoped
         self._scope = GRAPH_SCOPE_DRIVERS

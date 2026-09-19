@@ -1188,3 +1188,18 @@ def test_relative_response_allows_candidate_filters_before_an_unchanged_limiter(
     )
     assert result.usable_by_role["woofer"].tolist() == [True]
     assert abs(result.responses_by_role["woofer"][0]) > 1.0
+
+
+@pytest.mark.parametrize("shape,expected", [
+    ("Allpass", -1.0), ("ButterworthHighpass", 1j / np.sqrt(2)),
+    ("ButterworthLowpass", -1j / np.sqrt(2)),
+])
+def test_complex_transfer_models_compiled_rear_filters(shape, expected):
+    params = {"type": shape, "freq": 1000.0, **({"q": 0.5} if shape == "Allpass" else {"order": 2})}
+    config = {"devices": _devices(), "filters": {"rear": {
+        "type": "Biquad" if shape == "Allpass" else "BiquadCombo", "parameters": params}},
+        "mixers": _passthru_mixer(), "pipeline": [
+            {"type": "Mixer", "name": "passthru"},
+            {"type": "Filter", "channels": [0], "names": ["rear"]}]}
+    response = complex_channel_transfer(config, np.array([1000.0]), input_weights={0: 1}, output_channels={"rear": 0})
+    assert response["rear"] == pytest.approx([expected])

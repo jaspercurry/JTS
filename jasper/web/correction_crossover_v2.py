@@ -734,6 +734,7 @@ def prepare_v2_session(
             safety_profile=context.safety_profile,
             role_targets=context.role_targets,
             session_volume_db=context.session_volume_db,
+            roles=context.roles_bands,
             protection_sections_by_role=(
                 None if verify_only else protection_sections
             ),

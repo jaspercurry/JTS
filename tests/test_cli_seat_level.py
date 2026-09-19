@@ -139,7 +139,7 @@ def box(tmp_path, monkeypatch):
         state.events.append("graph")
     async def restore():
         state.events.append("restore_graph")
-    graph = SimpleNamespace(installed_graph_yaml=lambda: "accepted graph",
+    graph = SimpleNamespace(installed_graph_yaml=lambda: "accepted graph", level_reference_yaml="accepted graph",
                             install=install, restore=restore)
     candidate = _candidate(preset=_rear_pair("mono")[0], bass_extension=BASS_EXTENSION,
                            rear_calibration=_rear_document())
