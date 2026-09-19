@@ -373,7 +373,7 @@ channel's true peak ≤ its driver's admitted cap, and out-of-segment channel
 energy below a floor** — that is what makes the attestation about the
 artifact rather than about intentions; the static graph's target filter +
 caps remain the structural backstop. Playback re-admits both facts from a
-fresh readback exactly as today (`admitted_playback`). Sweep legs reuse
+fresh readback. Sweep legs reuse
 `sweep.synchronized_swept_sine`; inter-sweep gaps come from the MESM rule
 (gap ≥ expected IR length + harmonic pre-ring for the preceding sweep's
 band).

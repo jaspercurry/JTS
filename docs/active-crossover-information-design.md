@@ -237,8 +237,6 @@ The common session is
 graph, volume, records, and playback. CLI and web entry points are adapters;
 analysis and candidate tools own their outputs outside the capture lifetime.
 
-[GeneratedExcitationWav](../jasper/audio_measurement/admitted_playback.py)
-keeps stored generation/WAV identities and their integrity checks readable.
 The one-use `play_admitted_wav` control adapter is retired. Current measurement
 access uses `TuningSession.measure` through
 [program_playback.py](../jasper/active_speaker/program_playback.py), with fresh

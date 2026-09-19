@@ -865,7 +865,7 @@ Captured so they're off the table for the landing work:
   to a single deeper minimum, avoiding lobe-hopping and buying margin under
   1.5 dB — but it's hardware-gated and needs the excitation-admission
   reconciliation the adversarial review flagged (the widened sweep is
-  currently refused by `admit_excitation` unless the admitted band widens
+  currently refused unless the admitted band widens
   too). **Sequence:** build T2 (offline-provable) → controlled hardware
   VERIFY → add fix 4 if T2 alone is marginal; do both for the robust end
   state. The reviewed fix1+fix3 increment stays on `claude/xover-measure-fix`
