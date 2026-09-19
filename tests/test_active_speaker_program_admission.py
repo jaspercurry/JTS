@@ -588,26 +588,9 @@ def test_solved_gain_at_a_deep_driver_cap_is_admitted_in_the_effective_frame():
     assert facts["woofer"].peak_within_cap
 
 
-def test_refused_program_log_names_the_refusing_segment(caplog):
-    """The refusal log names the failing comparison, both sides of it.
-
-    Every field asserted here is computed by ``_evaluate_program`` regardless;
-    before this it was discarded at the log line, leaving only the aggregate
-    ``program_segment_outside_limits`` — which cannot distinguish a level
-    breach from a band escape from a duration overrun, and which
-    ``_map_safety_plan_error`` also returns as its catch-all for a plan that
-    raised for a third reason. The band and the duration each carry their own
-    limit inline (``band=…/permitted=…``, ``dur=…/max=…``) so the line says
-    which comparison failed rather than leaving it to be re-derived; the
-    effective peak's limit is the per-role cap in ``role_caps_dbfs``.
-    """
-    import logging
-
-    caplog.set_level(logging.WARNING, logger="jasper.active_speaker.program_admission")
+def test_refused_program_publishes_binding_comparison(caplog):
     topology, profile, targets = _profile_and_targets()
     sv = session_measurement_volume_db(profile, targets.values())
-    # A tweeter segment driven past its own -65 cap in the EFFECTIVE frame:
-    # -40.0 + sv (-20.0) = -60.0 dBFS, 5 dB over.
     prog = _measure_program(sv, gains={"woofer": -6.0, "tweeter": -40.0})
     adm = _admit(
         prog, topology=topology, safety_profile=profile,
@@ -615,29 +598,17 @@ def test_refused_program_log_names_the_refusing_segment(caplog):
     )
     assert not adm.allowed
     assert ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS in adm.refusals
-
-    line = next(
-        record.getMessage()
-        for record in caplog.records
-        if "event=active_speaker.program_admission" in record.getMessage()
-        and "result=refused" in record.getMessage()
-    )
-    assert "segments_refused=" in line
-    assert "sweep_t:tweeter" in line
-    assert "eff=-60.000" in line
-    # Each request value beside the limit it was judged against. The permitted
-    # band is the tweeter's resolved excitation band; the duration limit is
-    # `min(declared max_sweep_duration_s (6), driver_sweep_duration_s (4.0))`.
-    assert "band=1600.0-10000.0/permitted=1500.0-20000.0" in line
-    assert "dur=2.9997/max=4.0000" in line
-    assert "active_excitation_request_outside_limits" in line
-    # The cap it was judged against, and the term whose omission made the
-    # 2026-08-23 triage compare a digital gain with an effective-peak ceiling.
-    assert "tweeter=-65.000" in line
-    assert f"session_volume_db={sv:.3f}" in line
-    # The field is what was REFUSED: the woofer's segments passed, so naming
-    # them here would be noise a triage has to filter back out by hand.
-    assert "sweep_w" not in line
+    code = "active_excitation_request_outside_level"
+    for segment in adm.to_dict()["segments"]:
+        assert segment["refusals"] == ([code] if segment["role"] == "tweeter" else [])
+        assert segment["refusal_detail"] == (
+            {code: {"requested": -60.0, "limit": -65.0}}
+            if segment["role"] == "tweeter" else {}
+        )
+    fields, = event_field_maps(caplog, "active_speaker.program_admission")
+    assert fields["result"] == "refused"
+    assert fields["segment_refusals"] == code
+    assert float(fields["session_volume_db"]) == sv
 
 
 def test_declared_sweep_duration_equal_to_the_composed_length_refuses_every_measure():
@@ -1135,12 +1106,17 @@ def test_summed_segment_refusal_codes_and_fields(tmp_path, caplog, failed):
         assert field["program_id"] == program.program_id
         assert field["phase"] == program.phase
         assert field["refusals"].split(",") == [reason.value for reason in admission.refusals]
-        assert field["session_volume_db"] == "-20.000"
-        assert field["role_caps_dbfs"] == f"woofer=0.000,tweeter={'-30.000' if 'level' in failed else '0.000'}"
-        segments = field["segments_refused"].split(";")
-        assert len(segments) == sum(not segment.execution_allowed for segment in admission.segments)
-        entry = next(item for item in segments if item.startswith("sweep_verify:tweeter:"))
-        assert entry.endswith("|".join(sweep.refusals))
+        assert float(field["session_volume_db"]) == -20
+        assert field["segment_refusals"].split(",") == list(sweep.refusals)
+    published = next(segment for segment in admission.to_dict()["segments"]
+                     if segment["segment_id"] == sweep.segment_id and segment["role"] == sweep.role)
+    expected = {
+        "low": {"requested": [20, 20000], "limit": [1500, 20000]},
+        "level": {"requested": -26.0, "limit": -30.0},
+        "duration": {"requested": program.segment("sweep_verify").n_samples / 48000, "limit": 1.0},
+    }
+    assert published["refusal_detail"] == {codes[code]: expected[code] for code in failed}
+
 
 
 CARDIOID_TAKE = {"woofer": 0, "woofer:rear": 1}
