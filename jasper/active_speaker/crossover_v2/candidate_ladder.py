@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from itertools import combinations
 from pathlib import Path
-from typing import Any, Iterator, Mapping, NamedTuple
+from typing import Any, Iterator, Mapping, NamedTuple, Sequence
 
 import numpy as np
 
@@ -57,21 +57,26 @@ _Poses = dict[tuple[int, int], _Roles]
 
 
 def _pose_curves(session_dir: Path, frequency_path: Path) -> Iterator[
-    tuple[int | None, int, str | None, str, list[Mapping[str, Any]] | None]
+    tuple[int | None, int, str | None, str, Sequence[Mapping[str, Any]] | None]
 ]:
     if frequency_path.is_file():
         run = frequency_run_from_view(json.loads(frequency_path.read_text()))
+        rows = []
         for curve in run.series:
             fields = curve.details
-            if fields.get("phase") == PHASE_LATERAL:
-                pose = fields["position"]
-                yield (pose.get("deg"), pose.get("vertical_deg") or 0,
-                       fields.get("candidate_id"), f"{frequency_path}#{fields['take_id']}",
-                       [curve.to_dict()])
-    else:
-        for row in bundle_measurements(session_dir, phase=PHASE_LATERAL):
-            yield (row.position_deg, row.vertical_deg, row.candidate_id, row.path,
-                   read_take_curves(take_artifact_path(session_dir, row.path), phase=PHASE_LATERAL))
+            pose, take_id = fields.get("position"), fields.get("take_id")
+            if (fields.get("phase") != PHASE_LATERAL or not isinstance(pose, Mapping)
+                or pose.get("deg") is None or not take_id):
+                continue
+            rows.append((pose["deg"], pose.get("vertical_deg") or 0,
+                         fields.get("candidate_id"), f"{frequency_path}#{take_id}",
+                         [curve.to_dict()]))
+        if rows:
+            yield from rows
+            return
+    for row in bundle_measurements(session_dir, phase=PHASE_LATERAL):
+        yield (row.position_deg, row.vertical_deg, row.candidate_id, row.path,
+               read_take_curves(take_artifact_path(session_dir, row.path), phase=PHASE_LATERAL))
 
 
 def _read_poses(session_dir: Path, frequency_path: Path) -> tuple[_Poses, int]:
@@ -93,11 +98,7 @@ def _read_poses(session_dir: Path, frequency_path: Path) -> tuple[_Poses, int]:
             if not role or parsed is None:
                 continue
             freqs_hz, magnitude_db, swept_hz = parsed
-            # ``parse_curve_magnitude`` proves the FREQUENCIES finite, never
-            # the levels: a bin at a perfect cancellation banks -inf, and one
-            # of those would make every scalar below NaN and then fail the
-            # strict writer -- costing the operator the whole round for one
-            # bin. Dropped here, once, so ``bins`` reports what was compared.
+            # In-record curves can carry -inf at a perfect cancellation.
             finite = np.isfinite(magnitude_db)
             if not np.any(finite):
                 continue

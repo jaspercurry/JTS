@@ -713,6 +713,7 @@ def test_candidates_reads_every_pose_and_window_of_a_banked_trial(request, tmp_p
                 f"{candidate}-{position}", candidate=candidate, phase="lateral",
                 gating_applied=False, measurement_purpose="room", position_deg=position,
                 vertical_deg=0, mark_distance_m=1.0,
+                capture_gain_db=6.0 if candidate == "candidate-b" else 0.0,
             ))
             record = json.loads(gate_sweep.take_artifact_path(bundle, record_id).read_text())
             assert "curves" not in record
@@ -744,7 +745,10 @@ def test_candidates_reads_every_pose_and_window_of_a_banked_trial(request, tmp_p
             assert [(d["a"], d["b"]) for d in row["deltas"]] == list(combinations(candidates, 2))
             for delta in row["deltas"]:
                 assert delta["bins"] > 0
-                assert [delta[k] for k in ("level_offset_db", "mean_abs_db", "max_abs_db", "rms_db")] == pytest.approx([0] * 4)
+                assert [delta[k] for k in ("mean_abs_db", "max_abs_db", "rms_db")] == pytest.approx([0] * 3, abs=0.05)
+                if table["position_deg"] == 0 and row["window"] == "gated" and delta["a"] == "candidate-a":
+                    assert delta["b"] == "candidate-b"
+                    assert delta["level_offset_db"] == pytest.approx(-6.0, abs=0.05)
 
 
 @pytest.mark.parametrize("failure", [False, True])

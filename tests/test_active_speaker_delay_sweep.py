@@ -172,6 +172,8 @@ def test_curves_that_cannot_span_the_shoulders_carry_refusal_fields(
             ),
             inverted_role="tweeter",
         )
+    message = payload["detail"].pop("message")
+    assert isinstance(message, str) and message
     assert payload["detail"] == refusal.value.detail
     assert err.strip(), "an operator running this by hand gets a line on stderr"
 
@@ -182,6 +184,7 @@ def test_a_bundle_with_no_round_refuses_before_it_reads_anything(
     code, payload, err = _propose(tmp_path, capsys)
     assert code == 1
     assert payload["reason"] == "delay_landscape_no_round"
+    assert isinstance(payload["detail"], str) and payload["detail"]
 
 
 def test_delay_landscape_counts_separate_driver_takes_without_pairing_them(tmp_path, capsys) -> None:
@@ -195,7 +198,10 @@ def test_delay_landscape_counts_separate_driver_takes_without_pairing_them(tmp_p
     code, payload, err = _propose(bundle, capsys)
     assert code == 1
     assert payload["reason"] == "delay_landscape_no_banked_curves"
+    message = payload["detail"].pop("message")
+    assert isinstance(message, str) and message
     assert payload["detail"] == {
+        "bundle_dir": str(bundle),
         "phases_searched": [PHASE_MEASURE, PHASE_LATERAL],
         "roles_required": ["woofer", "tweeter"],
         "takes_seen": 2,

@@ -264,7 +264,7 @@ def select_pose_curve_pair(
     raised take cannot stand in for a measurement at mark height.
     """
     if search_detail is not None:
-        search_detail.update(phases_searched=list(phases), roles_required=list(roles),
+        search_detail.update(bundle_dir=str(bundle_dir), phases_searched=list(phases), roles_required=list(roles),
                              takes_seen=0, roles_per_take={}, poses=[])
     for row, document in reversed(list(measurement_documents(bundle_dir))):
         if (row.phase not in phases or row.vertical_deg != vertical_deg

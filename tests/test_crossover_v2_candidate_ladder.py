@@ -23,6 +23,9 @@ from jasper.active_speaker.crossover_v2.candidate_ladder import (
     candidate_ladder,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.frequency_view import (
+    FREQUENCY_VIEW_FILENAME, FrequencyRun, FrequencySeries, build_frequency_view,
+)
 
 from tests.crossover_v2_banked_round import bank_measure_round
 # The banked-take writer the round-views suite already owns, consumed rather
@@ -81,6 +84,28 @@ def test_the_ladder_pairs_the_configs_one_pose_played_and_locates_the_gap(tmp_pa
     assert delta["level_offset_db"] == pytest.approx(0.0)
     assert delta["mean_abs_db"] == pytest.approx(2.0 / grid.size)
     assert [row["candidate_id"] for row in role["candidates"]] == ["cfg-a", "cfg-b"]
+
+
+@pytest.mark.parametrize("fields", [
+    {}, {"phase": "lateral", "position": None}, {"phase": "lateral"},
+    {"phase": "lateral", "position": {"deg": 7}},
+], ids=["no-lateral-series", "null-position", "missing-position", "missing-take-id"])
+def test_in_record_ladder_survives_a_view_without_pose_takes(tmp_path, fields):
+    round_dir = tmp_path / "r1"
+    grid = np.array([500.0, 1000.0, 4000.0])
+    for index, candidate in enumerate(("cfg-a", "cfg-b")):
+        _bank_lateral_pose(
+            round_dir / "bundle" / "sess1", take_id=f"lateral_{index:02d}_a01",
+            position_deg=7, candidate_id=candidate,
+            curves=[_summed_curve(grid, np.array([0.0, 0.0, 2.0 * index]))],
+        )
+    expected = _ladder(round_dir)
+    average = FrequencySeries("average", "Average", "measurement", tuple(grid), (0.0,) * 3,
+                              details={"phase_deg": [0.0] * 3, **fields})
+    view = build_frequency_view(FrequencyRun("speaker", "speaker", (average,)))
+    (round_dir / FREQUENCY_VIEW_FILENAME).write_text(json.dumps(view))
+    assert _ladder(round_dir) == expected
+    assert expected["tables"][0]["played"] == ["cfg-a", "cfg-b"]
 
 
 def test_explicit_base_graph_remains_in_the_candidate_comparison(tmp_path):

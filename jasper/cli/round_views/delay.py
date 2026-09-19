@@ -78,7 +78,9 @@ def _landscape_from_bank(args: argparse.Namespace) -> BankedLandscape:
             pair=pair,
             search_detail=search_detail,
         )
-    except DelayLandscapeError:
+    except DelayLandscapeError as exc:
+        if exc.detail:
+            exc.detail["message"] = str(exc)
         raise
     except _ROUND_TOOL_ERRORS as exc:
         raise StageFailed(EXIT_UNREADABLE, exc) from exc

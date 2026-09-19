@@ -796,9 +796,10 @@ def summed_capture_bundle(tmp_path, request):
     signal += np.random.default_rng(8).normal(0, 1e-8, signal.size)
     raw = np.column_stack([signal, np.zeros(signal.size)])
 
-    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, capture_gap_frames=0, **fields):
+    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, capture_gap_frames=0, capture_gain_db=0.0, **fields):
         anchor = 800 + program.segment("sweep_verify").start_sample
         samples = np.delete(raw, np.s_[anchor - capture_gap_frames:anchor], axis=0)
+        samples *= 10 ** (capture_gain_db / 20)
         recording = WiredRecording(
             ((samples * (2 ** 31 - 1)).astype("<i4").tobytes(),), len(samples),
             0, 0, False, program.sample_rate_hz, 2,
