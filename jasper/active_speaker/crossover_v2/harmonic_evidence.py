@@ -301,28 +301,10 @@ def round_bands_hz(
 def rebuild_measure_program(
     state: Mapping[str, Any], bands: Mapping[str, tuple[float, float]]
 ):
-    """The round's MEASURE program, verified against its banked ``program_id``.
+    """Return (program, downstream gain, prelude), proved by the banked id.
 
-    Returns ``(program, downstream_gain_db, courtesy_prelude)``. Raises
-    :class:`HarmonicEvidenceRefused` when no grid point reproduces the id — a
-    reconstruction that cannot prove itself must not be read, because every
-    harmonic offset derives from the sweep ``L`` this program carries.
-
-    **Two unbanked parameters are solved here, not asserted:** the session
-    volume, and the courtesy prelude, whose MEASURE value CHANGED when #2715
-    replaced the flat ``COURTESY_PRELUDE_ENABLED`` global with the per-phase
-    ``courtesy_prelude_for_phase`` (``True`` before it, ``False`` after). The
-    prelude moves the program bytes, so a corpus banked either side of that
-    commit reproduces under exactly one of the two values. The shipped rule is
-    tried FIRST, and the search is safe in both directions because the
-    ``program_id`` hash is what accepts it: a wrong prelude cannot match.
-
-    **A third parameter — the duration fit (#2921) — is READ, never solved**,
-    a fitted sweep's realized length being a continuous float no grid could
-    reach. A round that banked it (:func:`_banked_sweep_durations_s`) is
-    composed at EXACTLY that length; one that did not, or that banked
-    something unusable, composes at nominal, and the refusal below keeps "did
-    not bank" and "banked something unusable" apart.
+    Solve unbanked volume and prelude; use banked sweep durations when present.
+    Refuse an unproved reconstruction: harmonic offsets depend on its sweep L.
     """
     from jasper.audio_measurement.program import (
         FrequencyBand,
@@ -980,27 +962,21 @@ def read_round_harmonics(
             },
         )
 
-    manifest = next((capture["sidecar"].get("program") for capture in captures
-                     if capture["sidecar"].get("graph_scope") == "candidate_branches"), None)
-    if manifest is None:
-        program, downstream_db, prelude = rebuild_measure_program(state, round_bands_hz(state, bands))
-    else:
-        program = ExcitationProgram.from_dict(manifest)
-        sweep = program.segment("sweep_w")
-        downstream_db = sweep.effective_peak_dbfs - sweep.gain_db
-        prelude = any(segment.kind == KIND_COURTESY_TONE for segment in program.segments)
-    program_sha256 = None
-    if any(
-        isinstance(capture["sidecar"].get("provenance"), Mapping)
-        and isinstance(capture["sidecar"]["provenance"].get("stimulus"), Mapping)
-        and capture["sidecar"]["provenance"]["stimulus"].get("wav_sha256")
-        for capture in captures
-    ):
-        with tempfile.TemporaryDirectory(prefix="jts-harmonics-") as temporary:
-            rendered = Path(temporary) / "program.wav"
-            write_program_wav(rendered, program)
-            program_sha256 = sha256_file(rendered)
+    measure = None
 
+    def program_for(sidecar):
+        nonlocal measure
+        if sidecar.get("graph_scope") == "candidate_branches":
+            program = ExcitationProgram.from_dict(sidecar["program"])
+            sweep = program.segment("sweep_w")
+            downstream_db = sweep.effective_peak_dbfs - sweep.gain_db
+            prelude = any(segment.kind == KIND_COURTESY_TONE for segment in program.segments)
+            return program, downstream_db, prelude
+        if measure is None:
+            measure = rebuild_measure_program(state, round_bands_hz(state, bands))
+        return measure
+
+    program_hashes: dict[str, str] = {}
     calibration, calibration_note = _calibration_for(captures, calibration_text)
 
     blocks: list[dict[str, Any]] = []
@@ -1017,8 +993,18 @@ def read_round_harmonics(
             "wav_sha256_12": sha12,
             "position_deg": capture["sidecar"].get("position_deg"),
         }
+        sidecar = capture["sidecar"]
+        program, downstream_db, prelude = program_for(sidecar)
+        provenance = sidecar.get("provenance")
+        stimulus = provenance.get("stimulus") if isinstance(provenance, Mapping) else None
+        if isinstance(stimulus, Mapping) and stimulus.get("wav_sha256"):
+            if program.program_id not in program_hashes:
+                with tempfile.TemporaryDirectory(prefix="jts-harmonics-") as temporary:
+                    rendered = Path(temporary) / "program.wav"
+                    write_program_wav(rendered, program)
+                    program_hashes[program.program_id] = sha256_file(rendered)
         proof, reason = _capture_program_identity(
-            capture["sidecar"], program, state, program_sha256,
+            sidecar, program, state, program_hashes.get(program.program_id),
         )
         try:
             if not reason:
@@ -1052,10 +1038,14 @@ def read_round_harmonics(
             })
             continue
         seen[actual] = capture["take_id"]
-        # The count rides on a PASS too, not only on a refusal: a capture whose
-        # sidecar carried one of the five gate fields passed a much weaker gate
-        # than one that carried all five.
-        read.append({**take, "identity": proof, "fidelity_fields_compared": compared})
+        read.append({**take, "identity": proof, "fidelity_fields_compared": compared,
+                     "program": {
+                         "program_id": program.program_id,
+                         "solved_downstream_gain_db": (
+                             downstream_db if proof["program_id_status"] == "matched" else None
+                         ),
+                         "solved_courtesy_prelude": prelude,
+                     }})
         if disclosure:
             disclosures.append({"wav_sha256_12": sha12, "note": disclosure})
         by_role: dict[str, list] = {}
@@ -1094,18 +1084,12 @@ def read_round_harmonics(
         "round_dir": round_dir.name,
         "orders": list(orders),
         "program": {
-            "program_id": program.program_id,
-            "solved_downstream_gain_db": (
-                downstream_db if all(take["identity"]["program_id_status"] == "matched" for take in read) else None
-            ),
-            "solved_courtesy_prelude": prelude,
+            **{key: value if all(take["program"][key] == value for take in read) else None
+               for key, value in read[0]["program"].items()},
             "crossover_fc_hz": round(fc_hz, 1),
             "state_capture_session_id": _state_capture_session_id(state),
         },
         "captures": {
-            # WHICH captures this reading is of, and by what rule they were chosen.
-            # Published because the drive levels below come from the rebuilt program
-            # rather than from each capture.
             "scope": scope,
             "n_read": len(read),
             "n_refused": len(refused),
