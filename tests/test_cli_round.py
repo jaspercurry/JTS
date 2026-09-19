@@ -603,12 +603,12 @@ def _run_opener(capture):
 @pytest.mark.parametrize("status", ["awaiting_join", "running", *sorted(wc.SESSION_ENDED_STATUSES)])
 @pytest.mark.parametrize("session_id", [None, "run-1"])
 def test_stop_cancels_only_live_runs(status, session_id, monkeypatch, capsys):
-    opener = _run_opener({"status": status, "session_id": session_id})
+    opener = _run_opener({"status": status, "session_id": session_id, "code": "user_stopped"})
     answer = {"capture": {"session_id": "run-1", "status": "stopping"}}
     opener.pages[wc.CAPTURE_CANCEL_PATH] = json.dumps(answer)
     code, body = _run(["stop", "--run", "run-1"], opener, monkeypatch, capsys)
     assert opener.requests[0].full_url.endswith(wc.STATUS_PATH)
-    if status in wc.SESSION_ENDED_STATUSES:
+    if status in wc.SESSION_ENDED_STATUSES and (session_id or status == "stopped"):
         assert code == cli.EXIT_REFUSED and body["code"] == "run_not_live"
         assert body["detail"]["http"] == 409
         assert not opener.posts()
@@ -667,7 +667,7 @@ def test_named_run_never_reads_or_releases_a_different_run(verb, monkeypatch, ca
 @pytest.mark.parametrize("captures,status,reason,result,polls,elapsed", [
     ([None, {"status": "complete", "run": {"status": "complete"}},
       {"session_id": "run-1", "status": "complete", "run": {"status": "complete"}}],
-     "terminal", None, None, 2, 5),
+     "terminal", None, "complete", 3, 15),
     ([{"session_id": "run-2", "status": "running"}],
      "failed", "run_not_current", None, 1, 0),
     ([{}], "timed_out", "wait_timeout", None, 4, 20),
@@ -707,9 +707,10 @@ def test_wait_publishes_operator_stop_reason(tmp_path):
 
 
 @pytest.mark.parametrize("status", ["stopped", "failed", "complete", "awaiting_join", "running"])
-def test_wizard_client_without_session_keeps_ended_status(status):
-    ended = status in wc.SESSION_ENDED_STATUSES
-    opener = _run_opener({"session_id": None, "status": status, "code": "user_stopped"})
+@pytest.mark.parametrize("reason", [None, "user_stopped"])
+def test_wizard_client_without_session_keeps_ended_status(status, reason):
+    ended = status == "stopped" and reason is not None
+    opener = _run_opener({"session_id": None, "status": status, "code": reason})
     client = wc.WizardClient(opener=opener)
     http, report = client.run_status("run-1")
     assert http == 200
@@ -736,7 +737,8 @@ def test_never_joined_end_reports_own_reason(verb, reason, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_round_session_dir", lookup)
     code, body = _run([verb, "--run", "run-1", *(["--timeout", "0"] if verb == "wait" else [])],
                       opener, monkeypatch, capsys)
-    expected = {"run_id": "run-1", "status": "stopped", "code": reason, "captured": False}
+    expected = {"run_id": "run-1", "status": "stopped", "result": None, "pending": None,
+                "current": None, "code": reason, "faults": [], "captured": False}
     if verb == "wait":
         assert code == cli.EXIT_REFUSED
         assert body == {"status": "refused", "reason": reason,
