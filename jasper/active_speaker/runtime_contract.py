@@ -1066,8 +1066,20 @@ def _flat_mono_fold_proved(text: str, fold_output: int) -> bool:
         return False
     if _truthy_bool(steps[0].get("bypassed")):
         return False
+    return _mixer_output_proved(payload, _MASTER_GAIN_MIXER, fold_output, mono_sum_sources())
+
+
+def _mixer_output_proved(
+    payload: dict[str, Any], mixer_name: str | None, output: int,
+    sources: Sequence[tuple[int, float, bool]],
+) -> bool:
+    steps = [step for step in payload.get("pipeline", [])
+             if isinstance(step, dict) and step.get("type") == "Mixer"
+             and step.get("name") == mixer_name]
+    if len(steps) != 1 or _truthy_bool(steps[0].get("bypassed")):
+        return False
     mixers = payload.get("mixers")
-    mixer = mixers.get(_MASTER_GAIN_MIXER) if isinstance(mixers, dict) else None
+    mixer = mixers.get(mixer_name) if isinstance(mixers, dict) else None
     if not isinstance(mixer, dict):
         return False
     mapping = mixer.get("mapping")
@@ -1078,17 +1090,17 @@ def _flat_mono_fold_proved(text: str, fold_output: int) -> bool:
         for entry in mapping
         if isinstance(entry, dict)
         and type(entry.get("dest")) is int
-        and entry["dest"] == fold_output
+        and entry["dest"] == output
     ]
     if len(entries) != 1 or _truthy_bool(entries[0].get("mute")):
         return False
-    sources = entries[0].get("sources")
     expected = {
-        channel: (gain_db, inverted) for channel, gain_db, inverted in mono_sum_sources()
+        channel: (gain_db, inverted) for channel, gain_db, inverted in sources
     }
-    if not isinstance(sources, list) or len(sources) != len(expected):
+    feeds = entries[0].get("sources")
+    if not isinstance(feeds, list) or len(feeds) != len(expected):
         return False
-    for source in sources:
+    for source in feeds:
         if not isinstance(source, dict) or _truthy_bool(source.get("mute")):
             return False
         channel = source.get("channel")
@@ -1676,6 +1688,8 @@ def _crossover_directions(assignment: OutputAssignment) -> tuple[str, ...] | Non
     way_count = _WAY_COUNT_BY_MAIN_MODE.get(assignment.speaker_mode)
     if way_count is None:
         return None
+    if way_count == 1 and assignment.role == "full_range":
+        return ()
     directions: list[str] = []
     for lower_role, upper_role in ADJACENT_PAIRS_BY_WAY[way_count]:
         if assignment.role == lower_role:
@@ -2536,7 +2550,9 @@ def _baseline_commissioning_isolation_issues(
 def _assignment_by_output(contract: OutputContract) -> dict[int, OutputAssignment]:
     out: dict[int, OutputAssignment] = {}
     for item in contract.assignments:
-        if item.physical_output_index is not None and item.roleful:
+        if item.physical_output_index is not None and (
+            item.roleful or _LOWEST_MAIN_ROLE_BY_MODE.get(item.speaker_mode) == "full_range"
+        ):
             out[item.physical_output_index] = item
     return out
 
@@ -2663,8 +2679,8 @@ def _active_graph_evidence(
             "active graph contains an unproved processing step",
         )], "safe": False}
 
-    required_indexes = _required_roleful_indexes(contract)
     by_output = _assignment_by_output(contract)
+    required_indexes = set(by_output)
     required_count = max(required_indexes) + 1 if required_indexes else 0
     split = summary.get("active_split") if isinstance(summary.get("active_split"), dict) else {}
     split_channels = split.get("mixer_output_channels")
@@ -2808,6 +2824,20 @@ def _active_graph_evidence(
                 "one active split and no post-split mixer"
             ),
         ))
+    for index, assignment in by_output.items():
+        if assignment.roleful:
+            continue
+        sources = (
+            mono_sum_sources() if contract.main_layout == "mono"
+            else [(0 if assignment.speaker_kind == "left" else 1, 0.0, False)]
+        )
+        if (any(_truthy_bool(step.get("bypassed"))
+                for step in payload.get("pipeline") or [] if isinstance(step, dict))
+                or not _mixer_output_proved(payload, expected_split, index, sources)):
+            issues.append(_issue(
+                "blocker", "active_graph_output_routing_unproven",
+                f"Passive main output {index + 1} does not preserve its program feed",
+            ))
     unmuted_outputs = (
         set(graph_indexes)
         if is_baseline_like and not is_baseline_commissioning

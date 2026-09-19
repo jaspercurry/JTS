@@ -17,6 +17,7 @@ from jasper.audio_measurement.sweep_levels import sweep_band_sample_ranges
 from .bass_fit import REFERENCE_BAND_HZ
 from .excitation_safety_plan import effective_sweep_duration_limit_s
 from .measurement_bass import BASS_BANDS_HZ
+from .profile import ActiveSpeakerConfigError, lowest_driver_role
 
 if TYPE_CHECKING:
     from .crossover_v2.programs import SessionExcitation
@@ -39,20 +40,24 @@ def build_bass_program(
     extra_backoff_db: float = 0.0, courtesy_prelude: bool = True,
 ) -> ExcitationProgram:
     targets = {target["target_fingerprint"]: target for target in safety_profile.get("targets", ())}
-    # role_targets keys are measurement target ids (ADR-0316): a rear variant
-    # is a second physical target of the SAME acoustic role, not a third one.
+    # See ADR-0316: rear variants share the primary driver's acoustic role.
     target_roles = {target_id.split(":", 1)[0] for target_id in role_targets}
-    if "woofer" not in role_targets or {role.role for role in excitation.roles} != target_roles:
+    roles = {role.role for role in excitation.roles}
+    try:
+        bass_role = lowest_driver_role(len(roles))
+    except ActiveSpeakerConfigError as exc:
+        raise BassStimulusRefused("bass_stimulus_targets_missing") from exc
+    if bass_role not in role_targets or roles != target_roles:
         raise BassStimulusRefused("bass_stimulus_targets_missing")
     try:
-        woofer = targets[role_targets["woofer"]]
-        floor, ceiling = float(woofer["hard_excitation_band_hz"][0]), float(stimulus["ceiling_hz"])
+        target = targets[role_targets[bass_role]]
+        floor, ceiling = float(target["hard_excitation_band_hz"][0]), float(stimulus["ceiling_hz"])
         durations = {role: effective_sweep_duration_limit_s(safety_profile, fingerprint)
                      for role, fingerprint in role_targets.items()}
     except (KeyError, TypeError, ValueError) as exc:
         raise BassStimulusRefused("bass_stimulus_caps_missing") from exc
     if (not 0 < floor <= REFERENCE_BAND_HZ[0] < REFERENCE_BAND_HZ[1] < ceiling
-            or ceiling > float(woofer["hard_excitation_band_hz"][1])):
+            or ceiling > float(target["hard_excitation_band_hz"][1])):
         raise BassStimulusRefused("bass_stimulus_band_outside_limits")
     single = replace(excitation, summed_sweep_band_hz=(floor, ceiling), sweep_duration_limits_s=durations).verify_program(
         sweep_s=min(durations.values()), extra_backoff_db=extra_backoff_db,

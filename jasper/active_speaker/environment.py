@@ -432,12 +432,13 @@ def classify_camilla_config_text(text: str) -> dict[str, Any]:
             )
         )
 
-    if playback_channels is not None and playback_channels < 2:
+    minimum_channels = 1 if split["way_count"] == 1 else 2
+    if playback_channels is not None and playback_channels < minimum_channels:
         issues.append(
             _issue(
                 "blocker",
                 "playback_channels_too_low",
-                f"CamillaDSP playback has {playback_channels} channel(s); expected at least 2",
+                f"CamillaDSP playback has {playback_channels} channel(s); expected at least {minimum_channels}",
             )
         )
 

@@ -33,6 +33,9 @@ from jasper.active_speaker.camilla_yaml import (
     driver_linearization_taper_name,
 )
 from jasper.active_speaker.environment import CAMILLA_CLASS_ACTIVE_PARKED
+from jasper.active_speaker.commission_wiring import resolve_capture_preset
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
+from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
 from jasper.camilla_emit import MONO_SUM_GAIN_DB, mono_sum_sources
 from jasper.active_speaker.runtime_contract import (
     ACTIVE_DRIVER_DOMAIN_SOURCE,
@@ -82,6 +85,7 @@ from tests._camilla_readback_double import (
     camilla_default_filled,
 )
 from tests._log_events import event_fields, event_records
+from tests.active_speaker_fixtures import mono_output_topology, passive_stereo_output_topology
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
@@ -2069,6 +2073,53 @@ def _classify_baseline(text: str):
 def _dump_baseline(base: str, payload: dict) -> str:
     source = next(line for line in base.splitlines() if line.startswith("# Source:"))
     return f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+
+
+@pytest.mark.parametrize("layout", ["mono", "stereo"])
+@pytest.mark.parametrize("scope", ["candidate", "timing"])
+@pytest.mark.parametrize("path,value,code", [
+    ((), None, None),
+    (("devices", "volume_limit"), None, "volume_limit_missing"),
+    (("devices", "volume_limit"), 1.0, "volume_limit_positive"),
+    (("pipeline",), None, "active_graph_output_routing_unproven"),
+    (("pipeline", 2, "channels", -1), None, "active_baseline_driver_chain_missing"),
+    (("mixers", "split_active_1way", "mapping"), [], "active_graph_output_routing_unproven"),
+    (("mixers", "split_active_1way", "mapping", 0, "sources", 0, "gain"), 1.0, "active_graph_output_routing_unproven"),
+    (("mixers", "split_active_1way", "mapping", 0, "sources", 0, "mute"), True, "active_graph_output_routing_unproven"),
+    (("pipeline", 1, "bypassed"), True, "active_graph_output_routing_unproven"),
+    (("pipeline", 2, "bypassed"), True, "active_graph_output_routing_unproven"),
+    (("filters", "as_full_range_baseline_gain", "parameters", "gain"), 1.0, "active_output_gain_positive"),
+    (("filters", "as_full_range_baseline_limiter", "parameters", "clip_limit"), 1.0, "active_baseline_limiter_invalid"),
+    (("filters", "active_baseline_headroom", "parameters", "gain"), 1.0, "active_baseline_headroom_invalid"),
+    (("filters", "as_out0_commission_mute"), {"type": "Gain", "parameters": {"gain": -1, "mute": True}}, "active_graph_commission_mute_not_hard_mute"),
+    (("mixers", "split_active_1way", "channels", "out"), 0, "active_graph_output_count_mismatch"),
+    (("mixers", "split_active_1way", "channels", "out"), 3, "active_graph_unmutes_unknown_outputs"),
+])
+def test_passive_tuning_graph_keeps_the_active_proof(layout, scope, path, value, code):
+    topology = (mono_output_topology(mode="full_range_passive") if layout == "mono"
+                else passive_stereo_output_topology())
+    preset = resolve_capture_preset(topology)
+    profile = MeasurementGraphProfile(preset, topology, {"full_range": 0}, ACTIVE_PCM)
+    candidate = MeasuredCrossoverCandidate(
+        program_id="way1", analysis={"source": "prescribed"}, source_preset=preset,
+        role_attenuations_db={"full_range": 0.0},
+    )
+    text = compile_tuning_graph(profile, candidate=candidate, scope=scope)
+    if path:
+        payload = yaml.safe_load(text)
+        payload = _without(payload, path) if value is None else _replacing(payload, path, value)
+        text = _dump_baseline(text, payload)
+    graph = classify_bass_extension_graph(
+        topology, evidence_source="desired", graph_text=text, applied_baseline_state={},
+    )
+    assert graph.allowed is (code is None)
+    if code:
+        assert code in _baseline_codes(graph)
+    else:
+        assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+        assert graph.issues == ()
+        assert graph.details["required_outputs"] == ([0] if layout == "mono" else [0, 1])
+        assert graph.details["unmuted_roles"] == ["full_range"]
 
 
 # --- #1668 CD-horn linearization: Lowshelf-led + trailing-taper re-proof -----
