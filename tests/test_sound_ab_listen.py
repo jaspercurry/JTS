@@ -55,11 +55,11 @@ def test_round_levels_and_bounds(tmp_path, monkeypatch, case):
                 (path.parent / "packet.json").write_text(json.dumps({"program": str(i)}))
                 (path.parent / "provenance.json").write_text(json.dumps({"banked_at_utc": str(i)}))
     reads = []
-    original = Path.read_text
-    def read(path, *args, **kwargs):
-        reads.append(path)
-        return original(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "read_text", read)
+    original = ab.read_json_mapping
+    def read(path):
+        reads.append(Path(path))
+        return original(path)
+    monkeypatch.setattr(ab, "read_json_mapping", read)
     rounds = ab.ab_listen_state_payload(tmp_path)["rounds"]
     view_reads = [p for p in reads if p.name == "frequency_view.json"]
     assert len(view_reads) <= ab.MAX_FILES

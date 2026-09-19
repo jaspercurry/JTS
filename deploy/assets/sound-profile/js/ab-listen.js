@@ -10,6 +10,8 @@ export const trimSteps = (levelDb, otherLevelDb, stepDb) =>
 export const targetPercent = (basePercent, steps) => Math.max(1, basePercent + steps);
 export const startKey = (blind, random) => blind && random >= 0.5 ? 'B' : 'A';
 export const canStart = (volume, steps) => !volume.muted && steps.every(step => volume.percent + step >= 2);
+// Volume leads whenever the target percent is lower, so the louder tune never
+// plays — not even for one flip — at the volume matched to the quieter one.
 export function flipOrder(current, target, forceApply = false) {
   const volume = current.percent === target.percent ? [] : ['volume'];
   const apply = !forceApply && current.fingerprint === target.fingerprint ? [] : ['apply'];
@@ -34,9 +36,9 @@ export function initAbListen() {
     type: 'button', className: primary ? 'btn--primary' : 'btn--ghost',
     dataset: {act}, disabled: busy || disabled
   }, text);
-  function select(title, value, options, change) {
-    return h('div.field', {}, h('label', {htmlFor: 'ab-' + title}, title === 'Round' ? 'Trial round' : 'Tune ' + title),
-      h('select', {id: 'ab-' + title, disabled: busy || running, onchange: change},
+  function select(name, label, value, options, change) {
+    return h('div.field', {}, h('label', {htmlFor: 'ab-' + name}, label),
+      h('select', {id: 'ab-' + name, disabled: busy || running, onchange: change},
         options.map(([id, text]) => h('option', {value: id, selected: id === value}, text))));
   }
   function chooseRound(id) {
@@ -52,10 +54,10 @@ export function initAbListen() {
     else if (!round) nodes.push(h('p.form-hint', {}, 'No trial round with two tunes yet.'));
     else {
       if (!blind) {
-        if (data.rounds.length > 1) nodes.push(select('Round', round.round_id,
+        if (data.rounds.length > 1) nodes.push(select('Round', 'Trial round', round.round_id,
           data.rounds.map(r => [r.round_id, [r.round_id, r.program, r.banked_at].filter(Boolean).join(' · ')]),
           e => { chooseRound(e.target.value); draw(); }));
-        for (const key of ['A', 'B']) nodes.push(select(key, pair[key].fingerprint,
+        for (const key of ['A', 'B']) nodes.push(select(key, 'Tune ' + key, pair[key].fingerprint,
           round.tunes.map(t => [t.fingerprint, name(t)]),
           e => { pair[key] = round.tunes.find(t => t.fingerprint === e.target.value); draw(); }));
         const louder = pair.A.level_db > pair.B.level_db ? 'A' : 'B';
@@ -82,9 +84,7 @@ export function initAbListen() {
   }
   function failure(err) {
     const body = err.body || {};
-    const issue = body.issue;
-    return [body.error || (typeof issue === 'string' ? issue : issue?.message) || err.message,
-      body.next_action].filter(Boolean).join(' ');
+    return [body.error || body.issue?.message || err.message, body.next_action?.label].filter(Boolean).join(' ');
   }
   async function volume(percent) {
     await postJSON('/volume/set', {percent});
@@ -94,18 +94,16 @@ export function initAbListen() {
     const target = {fingerprint: pair[key].fingerprint, percent};
     const previous = current.percent;
     for (const action of flipOrder(current, target, forceApply)) {
-      if (action === 'volume') await volume(percent);
-      else {
-        try {
-          const body = await postJSON(data.apply_path, {expected_candidate_fingerprint: target.fingerprint});
-          if (body.status !== 'applied') throw Object.assign(new Error('Tune was not applied.'), {body});
-          current.fingerprint = target.fingerprint;
-        } catch (err) {
-          if (current.percent !== previous) {
-            try { await volume(previous); } catch (restore) { error = failure(err) + ' ' + failure(restore); }
-          }
-          throw err;
+      if (action === 'volume') { await volume(percent); continue; }
+      try {
+        const body = await postJSON(data.apply_path, {expected_candidate_fingerprint: target.fingerprint});
+        if (body.status !== 'applied') throw Object.assign(new Error('Tune was not applied.'), {body});
+        current.fingerprint = target.fingerprint;
+      } catch (err) {
+        if (current.percent !== previous) {
+          try { await volume(previous); } catch (restore) { error = failure(err) + ' ' + failure(restore); }
         }
+        throw err;
       }
     }
   }

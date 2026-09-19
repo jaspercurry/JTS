@@ -14,8 +14,10 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
+from jasper.active_speaker.frequency_view import SCHEMA as FREQUENCY_VIEW_SCHEMA
 from jasper.active_speaker.passive_profile import measured_candidate_fingerprint
 from jasper.active_speaker.wizard_client import APPLY_PATH
+from jasper.atomic_io import read_json_mapping
 from jasper.volume_curve import configured_volume_floor_db, percent_to_db
 
 LEVEL_BAND_HZ = (40.0, 16000.0)  # Same band as sound.profile.loudness_compensation_db.
@@ -45,8 +47,8 @@ def _tunes(view: dict[str, Any]) -> list[dict[str, Any]]:
             if math.isfinite(level):
                 poses[fp][pose].append(level)
                 bases[fp] = bases.get(fp, False) or bool(series.get("base"))
-    shared = set.intersection(*(set(p) for p in poses.values())) if poses else set()
-    if len(poses) < 2 or not shared:
+    shared = set.intersection(*map(set, poses.values())) if len(poses) > 1 else set()
+    if not shared:
         return []
     return [{"fingerprint": fp, "base": bases[fp],
              "level_db": round(mean(mean(pose[p]) for p in shared), 3)}
@@ -59,13 +61,6 @@ def ab_listen_state_payload(campaign_root: Path | None = None) -> dict[str, Any]
 
     campaign_root = campaign_root if campaign_root is not None else DEFAULT_CAMPAIGN_ROOT
 
-    def read(path: Path) -> dict[str, Any]:
-        try:
-            value = json.loads(path.read_text())
-            return value if isinstance(value, dict) else {}
-        except (OSError, ValueError):
-            return {}
-
     paths = []
     for path in campaign_root.glob("*/frequency_view.json"):
         try:
@@ -76,16 +71,16 @@ def ab_listen_state_payload(campaign_root: Path | None = None) -> dict[str, Any]
     for mtime, path in sorted(paths, reverse=True)[:MAX_FILES]:
         if len(rounds) >= MAX_ROUNDS:
             break
-        view = read(path)
-        if view.get("schema") != "jts_frequency_view/1":
+        view = read_json_mapping(path) or {}
+        if view.get("schema") != FREQUENCY_VIEW_SCHEMA:
             continue
         try:
             tunes = _tunes(view)
         except (AttributeError, TypeError):
             continue
         if tunes:
-            packet = read(path.parent / "packet.json")
-            provenance = read(path.parent / "provenance.json")
+            packet = read_json_mapping(path.parent / "packet.json") or {}
+            provenance = read_json_mapping(path.parent / "provenance.json") or {}
             rounds.append({"round_id": path.parent.name, "program": packet.get("program"),
                            "banked_at": provenance.get("banked_at_utc") or
                            datetime.fromtimestamp(mtime, timezone.utc).isoformat(),
