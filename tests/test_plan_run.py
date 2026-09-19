@@ -967,14 +967,13 @@ async def test_ladder_caps_from_previous_measured_window(tmp_path, box, rung_spl
     request = ac.AngleCaptureRequest((ac.AngleStop(0, ac.REGIME_SUMMED, purpose="bass"),))
     facts = ready_facts(request, commissioning_stop_db_spl=stop, program_ids_for=lambda _: ("bass-sweep",))
     anchor_stimulus = {"program_id": "broadband-sweep", "wav_sha256": "anchor-wav"}
-    facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record,
-        "reference_volume_db": -22.23, "measured_db_spl": 74.23,
+    facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record, "reference_volume_db": -22.23, "measured_db_spl": 74.23,
         "target": {"target_db_spl": 75, "tolerance_db": tolerance},
         "stimulus": anchor_stimulus}))
     rung_spl.update({level: {"loudest_half_second_db_spl": half, "max_window_db_spl": peak,
                             "ceiling_db_spl": stop}
                     for level, half, peak in ((-31.46, 66.22, 71.11), (-21.46, 76.04, 80.53))})
-    ladder = preflight_levels(request, facts, spl="82,65,75")
+    ladder = preflight_levels(request, facts, "-14.46,-31.46,-21.46")
     fakes, gate = FakeSeams(), AnsweredGate()
     packet = RoundPacket(RunManifest("ladder", _Store(fakes.records)), json.loads(json.dumps(ladder.to_dict())))
 
@@ -1013,10 +1012,9 @@ async def test_opener_cap_survives_plan_serialization_at_each_pose(tmp_path, box
 
     request = ac.AngleCaptureRequest(tuple(ac.AngleStop(angle, ac.REGIME_SUMMED, purpose="bass") for angle in (0, 20)))
     facts = ready_facts(request, program_ids_for=lambda _: ("bass-sweep",))
-    facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record,
-        "reference_volume_db": -22.23, "measured_db_spl": 74.23}))
+    facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record, "reference_volume_db": -22.23, "measured_db_spl": 74.23}))
     rung_spl[-22.23] = {"loudest_half_second_db_spl": 75, "max_window_db_spl": 80, "ceiling_db_spl": 85}
-    preview = preflight_levels(request, facts, spl="84,85")
+    preview = preflight_levels(request, facts, "-12.46,-11.46")
     received = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(preview.plan.to_dict())))
     ladder = preflight_levels(received, facts)
     fakes, gate = FakeSeams(), AnsweredGate()
@@ -1043,7 +1041,7 @@ async def test_blocked_rung_persists_its_measurement_failure(tmp_path, box, rung
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     request = ac.AngleCaptureRequest((ac.AngleStop(0, ac.REGIME_SUMMED, purpose="bass"),))
-    ladder = preflight_levels(request, ready_facts(request), spl="65,75")
+    ladder = preflight_levels(request, ready_facts(request), "-28,-18")
     rung_spl[-28] = {"loudest_half_second_db_spl": 66.22, "max_window_db_spl": window, "ceiling_db_spl": 85}
     fakes, gate = FakeSeams(), AnsweredGate()
     packet = RoundPacket(RunManifest("ladder", _Store(fakes.records)), json.loads(json.dumps(ladder.to_dict())))
