@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Judge and compose prescription documents; serve contracts and read status."""
+"""Judge and compose prescription documents; serve contracts and report applied layers, last banked rounds and the next program."""
 from __future__ import annotations
 
 import argparse
@@ -14,6 +14,9 @@ from typing import Any
 
 from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed, read_source_bytes
 from .round_views._common import RoundSetRefused, add_set_argument, context_artifacts
+from jasper.active_speaker.applied_identity import applied_identity
+from jasper.active_speaker.baseline_profile import applied_layer_names, load_applied_baseline_profile_state
+from jasper.active_speaker.commissioning_coordinator import next_program_action, programs_for_topology
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
 from jasper.active_speaker.crossover_declaration import preset_crossover_geometry
 from jasper.active_speaker.crossover_v2.blend_prescription import BlendPrescriptionRefused, read_prescription_bytes
@@ -30,15 +33,16 @@ from jasper.active_speaker.crossover_v2.prescription_document import (
 )
 from jasper.active_speaker.crossover_v2.rear_preview import summary_rows
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    banked_round_of, recent_round_sessions, round_inputs, prescription_sources, resolve_set, RoundInputs,
+    banked_round_of, latest_banked_rounds, recent_round_sessions, round_inputs, prescription_sources, resolve_set, RoundInputs,
 )
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.measurement_programs import prescription_sections
-from jasper.active_speaker.seat_level_reference import seat_level_reference_volume_db
+from jasper.active_speaker.seat_level_reference import load_seat_level_reference, seat_level_reference_volume_db
 from jasper.active_speaker.rear_calibration import compile_rear_stage, diagnostic_seed, read_rear_calibration
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
 from jasper.atomic_io import atomic_write_json
+from jasper.output_topology import load_output_topology
 from jasper.identity.reader import CROSSOVER_PAGE_PATH, SPEAKER_SETUP_PAGE_PATH, read_identity, speaker_url
 
 PROG = "jasper-crossover-prescriber"
@@ -486,12 +490,8 @@ def _banked_section(
 def _applied_section(
     packet: dict[str, Any] | None, packet_error: str
 ) -> dict[str, Any]:
-    """The packet's two BLEND records — and they answer different questions.
-
-    ``from_round_receipt`` is what the round said it derived from;
-    ``from_applied_profile`` is what the speaker is playing now. They should
-    agree, and the packet reports both rather than reconciling them. The third,
-    ``incumbent.linearization``, is not surfaced here yet (#2863 follow-up).
+    """Keep the round receipt and applied profile BLEND records separate;
+    incumbent.linearization is not surfaced yet (#2863 follow-up).
     """
     block = _block(packet, "incumbent")
     from_receipt = _incumbent_record(block.get("from_round_receipt"), packet_error)
@@ -569,6 +569,7 @@ def status_document(
     session_dir: str | None,
     evidence: list[str],
     state: str | None,
+    applied_profile_path: Path | None = None,
 ) -> dict[str, Any]:
     """Read retained evidence and candidate status."""
     sections = _status_sections(packet, packet_error)
@@ -595,6 +596,16 @@ def status_document(
     # A level nobody measured is what a session rides without one, so the
     # banked value itself is published rather than a warning about its absence.
     seat_level_db = seat_level_reference_volume_db()
+    level = load_seat_level_reference() or {}
+    profile = load_applied_baseline_profile_state(applied_profile_path)
+    identity = applied_identity(profile) or {}
+    programs = programs_for_topology(load_output_topology())
+    banked = latest_banked_rounds(identity, programs=programs)
+    action = next_program_action(profile, identity, banked, programs=programs)
+    sections["applied"].update(
+        layers=applied_layer_names(profile), candidate_fingerprint=identity.get("candidate"),
+        reference_volume_db=seat_level_db, leveled_db_spl=level.get("measured_db_spl"),
+    )
     return {
         "speaker": {
             "hostname": read_identity().hostname,
@@ -611,7 +622,10 @@ def status_document(
         "seat_level_reference_volume_db": seat_level_db,
         "reading_order": [{key: value for key, value in entry.items() if key != "name"}
                           for entry in reading_order()],
-        "next": _next_commands(
+        "last_banked": {name: {key: banked[name][key] for key in ("round_id", "banked_at", "status")}
+                        if name in banked else None for name in programs},
+        "next": {key: action[key] for key in ("program", "reason_code")},
+        "next_commands": _next_commands(
             sections, packet_error=packet_error, seat_level_db=seat_level_db,
             session_dir=session_dir, evidence=evidence, state=state,
         ),
@@ -630,9 +644,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     """
     packet: dict[str, Any] | None = None
     packet_error = ""
-    if args.session_dir is None:
-        packet_error = "round_not_selected"
-    else:
+    if args.session_dir is not None:
         try:
             packet = _load_packet(args)
         except (CrossoverEvidencePacketError, OSError) as exc:
@@ -642,6 +654,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         packet, packet_error,
         session_dir=args.session_dir,
         evidence=[args.session_dir] if args.session_dir else [], state=args.state,
+        applied_profile_path=Path(args.applied_profile) if args.applied_profile else None,
     ))
 
 
@@ -677,7 +690,7 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--out-dir", metavar="DIR", help="write grid documents and full previews")
         command.add_argument("--root", help="candidate bank root")
         command.set_defaults(func=_cmd_document)
-    status = sub.add_parser("status", help="read declared, banked and applied state")
+    status = sub.add_parser("status", help="read applied layers, last banked rounds and the next program; optionally inspect a round")
     status.add_argument("session_dir", nargs="?")
     for name in ("state", "drivers", "applied-profile", "repeat-floor", "declared-geometry"):
         status.add_argument(f"--{name}")

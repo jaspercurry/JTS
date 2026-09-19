@@ -23,12 +23,22 @@ from __future__ import annotations
 from tests.run_manifest_fixture import write_manifest
 
 import json
+import os
+from dataclasses import replace
 import shlex
 import shutil
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from jasper.active_speaker import baseline_profile
+from jasper.active_speaker.applied_identity import applied_identity
+from jasper.active_speaker.commissioning_coordinator import build_commissioning_view
+from jasper.json_fields import parse_utc_iso
+from tests.active_speaker_fixtures import mono_output_topology
+from tests.test_active_speaker_commissioning_coordinator import _applied_anchor
+from tests.test_round_inputs import _bank_packet
 
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
@@ -65,6 +75,7 @@ def bank(tmp_path, monkeypatch) -> Path:
     """The candidate bank this suite reads: never the one on the box running
     pytest, whose contents would move the report and the cycle it offers."""
     root = tmp_path / "sessions"
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(tmp_path / "unset-applied.json"))
     monkeypatch.setattr(
         "jasper.active_speaker.bundles.sessions_dir", lambda: root
     )
@@ -75,6 +86,7 @@ def bank(tmp_path, monkeypatch) -> Path:
 def _known_hostname(monkeypatch):
     """Every test names the speaker, so none of them reads the laptop's env."""
     monkeypatch.setenv("JASPER_HOSTNAME", "jts3.local")
+    monkeypatch.setattr(cli, "load_output_topology", mono_output_topology)
 
 
 def _speaker_dirs(
@@ -140,7 +152,7 @@ def test_status_and_inventory_find_notes_and_current_evidence(
     assert status["latest_agent_note"] == {
         "path": str(note), "present": True, "bytes": note.stat().st_size,
     }
-    assert [shlex.split(command)[1] for command in status["next"][:3]] == [
+    assert [shlex.split(command)[1] for command in status["next_commands"][:3]] == [
         "inventory", "classify-features", "contract",
     ]
     assert round_views.main(["inventory", str(current)]) == 0
@@ -457,8 +469,8 @@ def test_the_bank_lists_candidates_but_leaves_the_tournament_shortlist_unstaged(
         "delay_role": "tweeter",
     }
     assert all("measurable" not in record for record in listed.values())
-    assert "jasper-round run --help" in payload["next"]
-    assert not any(" stage " in command for command in payload["next"])
+    assert "jasper-round run --help" in payload["next_commands"]
+    assert not any(" stage " in command for command in payload["next_commands"])
 
 
 def test_a_session_that_walked_nothing_says_so_rather_than_going_quiet():
@@ -625,14 +637,65 @@ def test_bare_status_leaves_evidence_unselected_when_history_is_empty(capsys):
 
     assert code == cli.EXIT_OK
     assert payload["packet_fingerprint"] is None
-    assert payload["packet_error"] == "round_not_selected"
+    assert payload["packet_error"] is None
     assert payload["selected_round"] is None
     assert payload["recent_rounds"] == []
     assert payload["banked"]["available"] is False
-    assert payload["banked"]["reason"] == payload["packet_error"]
     # Nothing to run against a speaker with no session: the page that runs one
     # is the handoff, and this verb never invents a command it cannot spell.
-    assert payload["next"] == ["jasper-seat-level"]
+    assert payload["next_commands"] == ["jasper-seat-level"]
+
+
+@pytest.mark.parametrize("rear,layers,rounds,expected", [
+    (False, (), {}, ("speaker", "never_measured")),
+    (True, ("speaker",), {"speaker": 1}, ("rear", "never_measured")),
+    (False, ("speaker", "bass", "room"), {"speaker": 1, "room": 2, "bass": 3}, ("room", "upstream_changed")),
+    (False, ("speaker", "bass", "room"), {"speaker": 1, "bass": 2, "room": 3}, ("speaker", "complete")),
+    (False, (), {"speaker": 1}, ("speaker", "round_available")),
+])
+def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, capsys, rear, layers, rounds, expected):
+    topology = mono_output_topology()
+    if rear:
+        group, = topology.speaker_groups
+        channel = replace(group.channels[0], output_variant="rear", physical_output_index=2)
+        topology = replace(topology, speaker_groups=(replace(group, channels=(*group.channels, channel)),))
+    monkeypatch.setattr(cli, "load_output_topology", lambda: topology)
+    profile = _applied_anchor(layers=layers)
+    path = tmp_path / "applied.json"
+    path.write_text(json.dumps({**profile, "artifact_schema_version": baseline_profile.SCHEMA_VERSION,
+                               "kind": baseline_profile.BASELINE_PROFILE_KIND}))
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(path))
+    programs = ("speaker", "rear", "bass", "room") if rear else ("speaker", "bass", "room")
+    recent = {}
+    for name, age in rounds.items():
+        directory = tmp_path / "campaigns" / name
+        _bank_packet(directory, applied_identity(profile), name)
+        timestamp = parse_utc_iso(profile["applied_at"]) + age
+        os.utime(directory, (timestamp, timestamp))
+        recent[name] = {"round_dir": str(directory), "started_at": timestamp}
+    level = tmp_path / "level.json"
+    monkeypatch.setenv(_SEAT_LEVEL_STATE_PATH_ENV, str(level))
+    _bank_reference(level, -9.0)
+    packet_builder = []
+    monkeypatch.setattr(cli, "build_crossover_evidence_packet", lambda *a, **kw: packet_builder.append(kw))
+    before = _tree(tmp_path)
+
+    code, payload = _status([], capsys)
+
+    assert code == cli.EXIT_OK
+    assert payload["packet_error"] is None
+    assert payload["applied"]["layers"] == {"driver": "speaker" in layers, "rear": "rear" in layers,
+                                            "bass": "bass" in layers, "room": "room" in layers}
+    assert payload["applied"]["candidate_fingerprint"] == "saved-speaker"
+    assert payload["applied"]["reference_volume_db"] == payload["seat_level_reference_volume_db"] == -9.0
+    assert payload["applied"]["leveled_db_spl"] == 77.4
+    assert payload["last_banked"] == {name: {"round_id": name, "banked_at": recent[name]["started_at"],
+                                            "status": "partial"} if name in rounds else None for name in programs}
+    assert payload["next"] == dict(zip(("program", "reason_code"), expected))
+    web_action = build_commissioning_view(topology, applied_profile=profile, recent_rounds=recent)["next_action"]
+    assert payload["next"] == {key: web_action[key] for key in ("program", "reason_code")}
+    assert packet_builder == []
+    assert _tree(tmp_path) == before
 
 
 @pytest.mark.parametrize("count", [2, 35])
@@ -660,7 +723,7 @@ def test_bare_status_offers_bounded_live_and_banked_history_without_selecting(
     code, payload = _status([], capsys)
 
     assert code == cli.EXIT_OK
-    assert payload["packet_error"] == "round_not_selected"
+    assert payload["packet_error"] is None
     assert payload["packet_fingerprint"] is None
     assert payload["selected_round"] is None
     assert payload["banked"]["available"] is False
@@ -732,7 +795,7 @@ def test_a_missing_classification_names_the_instrument_that_banks_it(
     # The BUNDLE that verb takes, resolved through the reader the packet used,
     # not the round tree this one was pointed at.
     bundle = round_inputs_mod.round_inputs(session).session_dir
-    assert f"jasper-round-views classify-features {bundle}" in payload["next"]
+    assert f"jasper-round-views classify-features {bundle}" in payload["next_commands"]
 
 
 def test_both_prescription_classes_are_offered_when_both_have_a_bound(
@@ -750,7 +813,7 @@ def test_both_prescription_classes_are_offered_when_both_have_a_bound(
     assert payload["banked"]["classification"]["available"] is True
     # The next verb, carrying the flag this report was read with: a rebuild
     # without it resolves --drivers against the machine and answers differently.
-    assert f"{cli.PROG} contract --round {session}" in payload["next"]
+    assert f"{cli.PROG} contract --round {session}" in payload["next_commands"]
 
 
 def test_a_round_with_no_region_says_a_blend_document_has_no_bound(
@@ -844,8 +907,8 @@ def test_the_state_file_is_asked_for_only_when_it_was_not_supplied(tmp_path, cap
 
     # Runnable as printed: the flag carries the file that was named, and is
     # absent when none was — a placeholder path would refuse on the read.
-    assert f"{cli.PROG} contract --round {session}" in without["next"]
-    assert f"{cli.PROG} contract --round {session}" in with_state["next"]
+    assert f"{cli.PROG} contract --round {session}" in without["next_commands"]
+    assert f"{cli.PROG} contract --round {session}" in with_state["next_commands"]
 
 
 def test_the_banked_seat_level_reference_is_published_either_way(
@@ -863,7 +926,7 @@ def test_the_banked_seat_level_reference_is_published_either_way(
     _, without = _status([str(session)], capsys)
 
     assert without["seat_level_reference_volume_db"] is None
-    assert any("jasper-seat-level" in command for command in without["next"])
+    assert any("jasper-seat-level" in command for command in without["next_commands"])
 
     path = tmp_path / "seat-level-reference.json"
     monkeypatch.setenv(_SEAT_LEVEL_STATE_PATH_ENV, str(path))
@@ -872,7 +935,7 @@ def test_the_banked_seat_level_reference_is_published_either_way(
     _, banked = _status([str(session)], capsys)
 
     assert banked["seat_level_reference_volume_db"] == -9.0
-    assert not any("jasper-seat-level" in command for command in banked["next"])
+    assert not any("jasper-seat-level" in command for command in banked["next_commands"])
 
 
 # --------------------------------------------------------------------------- #
@@ -900,6 +963,8 @@ _STATUS_DOCUMENT_KEYS = {
     "seat_level_reference_volume_db",
     "reading_order",
     "next",
+    "next_commands",
+    "last_banked",
 }
 
 

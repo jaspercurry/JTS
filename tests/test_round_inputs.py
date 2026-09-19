@@ -4,12 +4,25 @@
 import json
 import os
 from pathlib import Path
+from datetime import datetime, timezone
 
 import pytest
 
 from jasper.active_speaker import bundles
+from jasper.active_speaker.applied_identity import applied_identity
+from jasper.active_speaker.commissioning_coordinator import next_program_action
+from jasper.atomic_io import atomic_write_json
+from jasper.json_fields import parse_utc_iso
+from tests.test_active_speaker_commissioning_coordinator import _applied_anchor
 from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
+
+
+def _bank_packet(directory, identity, program, **fields):
+    (directory / "bundle" / directory.name).mkdir(parents=True)
+    (directory / "packet.json").write_text(json.dumps({
+        "applied": identity, "program": f"{program}/full", "result": "partial", **fields,
+    }))
 
 
 @pytest.mark.parametrize("has_room", [False, True])
@@ -29,23 +42,19 @@ def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp
     monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
     for index in range(40):
         directory = root / f"{index:02}"
-        (directory / "bundle" / str(index)).mkdir(parents=True)
         banked_identity = {**identity}
         if index > 37 and applied_at is None:
             banked_identity["candidate" if index == 39 else "record"] = "other"
-        (directory / "packet.json").write_text(json.dumps({
-            "applied": banked_identity, "program": f"{programs[index % len(programs)]}/full", "result": "partial",
-            "alignment_verdict": alignment, "next_action": next_action,
-            "room": [{"median": {"n_positions": 3}}] if has_room else [],
-        }))
+        _bank_packet(directory, banked_identity, programs[index % len(programs)],
+                     alignment_verdict=alignment, next_action=next_action,
+                     room=[{"median": {"n_positions": 3}}] if has_room else [])
         if applied_at is not None:
             os.utime(directory, (index, index))
-    opens = 0
+    opens = {}
     original_open = Path.open
 
     def counted_open(path, *args, **kwargs):
-        nonlocal opens
-        opens += 1
+        opens[path.name] = opens.get(path.name, 0) + 1
         return original_open(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", counted_open)
@@ -56,11 +65,46 @@ def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp
     hits = {**hits, **({"room": max(hits.values())} if has_room and hits and "room" in wanted else {})}
     assert found == {name: {"round_dir": str(root / f"{index:02}"),
                             "started_at": (root / f"{index:02}").stat().st_mtime,
+                            "round_id": f"{index:02}", "status": "partial",
+                            "banked_at": (root / f"{index:02}").stat().st_mtime,
                             **({"alignment_verdict": alignment, "next_action": next_action}
                                if name == "speaker" else {})}
                      for name, index in hits.items()}
-    assert opens <= limit
-    if applied_at is not None:
-        assert opens == 2
-    if len(found) == len(wanted):
-        assert opens <= len(wanted) + 2
+    assert opens.get("packet.json", 0) <= limit
+    assert opens.get("provenance.json", 0) <= opens.get("packet.json", 0)
+
+
+@pytest.mark.parametrize("timestamp_source", ["provenance", "finalized_at", "started_at", "session"])
+def test_rewriting_old_packet_preserves_banked_order_and_next_action(tmp_path, monkeypatch, timestamp_source):
+    monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
+    profile = _applied_anchor(layers=RUNNABLE_PROGRAMS)
+    identity = applied_identity(profile)
+    base = parse_utc_iso(identity["applied_at"])
+    for age, name in enumerate(("speaker-old", "speaker", "rear", "bass", "room"), 1):
+        directory = tmp_path / "campaigns" / name
+        timestamp = base + age
+        fields = ({"session": {"started_at": timestamp}} if timestamp_source == "session" else
+                  {timestamp_source: timestamp} if timestamp_source != "provenance" else
+                  {"finalized_at": timestamp + 100, "started_at": timestamp + 200})
+        _bank_packet(directory, identity, name.split("-")[0], **fields)
+        if timestamp_source == "provenance":
+            (directory / "provenance.json").write_text(json.dumps({
+                "banked_at_utc": datetime.fromtimestamp(timestamp, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }))
+        os.utime(directory, (timestamp, timestamp))
+    before = latest_banked_rounds(identity)
+    action = next_program_action(profile, identity, before, programs=RUNNABLE_PROGRAMS)
+    assert tuple(before) == ("room", "bass", "rear", "speaker")
+    assert before["speaker"]["round_id"] == "speaker"
+    assert before["room"]["banked_at"] == before["room"]["started_at"] == base + 5
+    assert (action["program"], action["reason_code"]) == ("speaker", "complete")
+
+    old = tmp_path / "campaigns" / "speaker-old"
+    packet = old / "packet.json"
+    atomic_write_json(packet, json.loads(packet.read_text()))
+    os.utime(old, (base + 300, base + 300))
+
+    after = latest_banked_rounds(identity)
+    assert after == before
+    assert tuple(after) == tuple(before)
+    assert next_program_action(profile, identity, after, programs=RUNNABLE_PROGRAMS) == action

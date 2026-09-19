@@ -7,7 +7,7 @@ from dataclasses import replace
 
 from jasper.active_speaker import baseline_profile, commissioning_experiment
 from jasper.active_speaker.applied_identity import applied_identity
-from jasper.active_speaker.commissioning_coordinator import _next_program_action, load_commissioning_view
+from jasper.active_speaker.commissioning_coordinator import next_program_action, load_commissioning_view
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 from jasper.active_speaker.tuning_handoff import PROGRAM_ENTRIES
 from jasper.cli.round import build_parser
@@ -73,25 +73,26 @@ def _applied_baseline_profile(**overrides) -> dict:
             "permissions": {"may_compile": True, "may_apply": False}, "issues": [], **overrides}
 
 
-@pytest.mark.parametrize("status,current,action,enabled,program,layers,rounds", [
-    ("needs_layout", "layout", "declare_speaker", True, None, (), ()),
-    ("needs_driver_values", "research", "save_driver_values", True, None, (), ()),
-    ("needs_driver_safety_profile", "research", "save_driver_values", True, None, (), ()),
-    ("needs_first_experiment", "experiment", "run_speaker_program", True, "speaker", (), ()),
-    ("ready_to_save_profile", "profile", "apply_candidate", True, None, (), ()),
-    ("blocked", "profile", "apply_candidate", False, None, (), ()),
-    ("applied", "profile", "run_program", True, "speaker", ("speaker",), ()),
-    ("not_required", "layout", "run_program", True, "bass", (), ()),
-    ("applied", "profile", "copy_prompt", True, "speaker", (), (("speaker", 1),)),
-    ("applied", "profile", "run_program", True, "speaker", (), (("speaker", 0),)),
-    ("applied", "profile", "run_program", True, "bass", ("speaker",), (("speaker", 1),)),
-    ("applied", "profile", "copy_prompt", True, "room", ("speaker", "bass"), (("room", 1),)),
-    ("applied", "profile", "run_program", True, "bass", ("speaker", "room"), (("room", 1),)),
-    ("applied", "profile", "copy_prompt", True, "bass", ("speaker", "room"), (("bass", 1),)),
-    ("applied", "profile", "run_program", True, "speaker", ("speaker", "room", "bass"), (("speaker", 1),)),
-    ("not_required", "layout", "copy_prompt", True, "bass", (), (("bass", 1),)),
+@pytest.mark.parametrize("status,current,action,enabled,program,layers,rounds,reason_code", [
+    ("needs_layout", "layout", "declare_speaker", True, None, (), (), None),
+    ("needs_driver_values", "research", "save_driver_values", True, None, (), (), None),
+    ("needs_driver_safety_profile", "research", "save_driver_values", True, None, (), (), None),
+    ("needs_first_experiment", "experiment", "run_speaker_program", True, "speaker", (), (), None),
+    ("ready_to_save_profile", "profile", "apply_candidate", True, None, (), (), None),
+    ("blocked", "profile", "apply_candidate", False, None, (), (), None),
+    ("applied", "profile", "run_program", True, "speaker", ("speaker",), (), None),
+    ("not_required", "layout", "run_program", True, "bass", (), (), None),
+    ("applied", "profile", "copy_prompt", True, "speaker", (), (("speaker", 1),), None),
+    ("applied", "profile", "run_program", True, "speaker", (), (("speaker", 0),), None),
+    ("applied", "profile", "run_program", True, "bass", ("speaker",), (("speaker", 1),), None),
+    ("applied", "profile", "copy_prompt", True, "room", ("speaker", "bass"), (("room", 1),), None),
+    ("applied", "profile", "run_program", True, "bass", ("speaker", "room"), (("room", 1),), None),
+    ("applied", "profile", "copy_prompt", True, "bass", ("speaker", "room"), (("bass", 1),), None),
+    ("applied", "profile", "run_program", True, "speaker", ("speaker", "room", "bass"), (("speaker", 1),), None),
+    ("not_required", "layout", "copy_prompt", True, "bass", (), (("bass", 1),), None),
+    ("applied", "profile", "run_program", True, "speaker", (), (("speaker", -1),), "layer_not_applied"),
 ])
-def test_every_commissioning_state_has_one_next_action(status, current, action, enabled, program, layers, rounds):
+def test_every_commissioning_state_has_one_next_action(status, current, action, enabled, program, layers, rounds, reason_code):
     draft = _ready_design()
     topology = passive_stereo_output_topology() if status == "not_required" else _topology()
     if status == "needs_layout":
@@ -115,6 +116,8 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
     assert view["status"] == status
     assert (view["next_action"]["id"], view["next_action"]["enabled"], view["next_action"].get("program")) == (
         action, enabled, program)
+    if reason_code is not None:
+        assert view["next_action"]["reason_code"] == reason_code
     assert "command" not in view["next_action"]
     assert view["combined_groups"] == []
     if action == "apply_candidate":
@@ -138,7 +141,7 @@ def test_program_order_consumers(consumer):
     elif consumer == "handoff":
         order = tuple(entry["id"] for entry in PROGRAM_ENTRIES)
     else:
-        order = tuple(_next_program_action(
+        order = tuple(next_program_action(
             _applied_anchor(layers=RUNNABLE_PROGRAMS[:index]), {},
             {"speaker": {"round_dir": "/bank/speaker", "started_at": 1}}, programs=RUNNABLE_PROGRAMS,
         )["program"] for index in range(len(RUNNABLE_PROGRAMS)))
@@ -171,7 +174,7 @@ def test_room_repeats_after_newer_upstream_round(upstream, age, room_applied):
     layers = RUNNABLE_PROGRAMS if room_applied else RUNNABLE_PROGRAMS[:-1]
     rounds = {"room": {"round_dir": "/bank/room", "started_at": 1},
               upstream: {"round_dir": "/bank/upstream", "started_at": age}}
-    action = _next_program_action(_applied_anchor(layers=layers), {}, rounds, programs=RUNNABLE_PROGRAMS)
+    action = next_program_action(_applied_anchor(layers=layers), {}, rounds, programs=RUNNABLE_PROGRAMS)
     expected = ("run_program", "room") if age > 1 else (
         ("run_program", "speaker") if room_applied else ("copy_prompt", "room"))
     assert (action["id"], action["program"]) == expected
