@@ -33,6 +33,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     banked_round_of, recent_round_sessions, round_inputs, prescription_sources, resolve_set, RoundInputs,
 )
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
+from jasper.active_speaker.measurement_programs import prescription_sections
 from jasper.active_speaker.seat_level_reference import seat_level_reference_volume_db
 from jasper.active_speaker.rear_calibration import compile_rear_stage, diagnostic_seed, read_rear_calibration
 from jasper.active_speaker.tuning_docs import reading_order
@@ -47,16 +48,14 @@ REASON_UNWRITABLE = "output_unwritable"
 
 
 def reset_prescription_document(
-    *, keep_timing: bool, trims_db: Mapping[str, float] | None,
+    *, keep_timing: bool, trims_db: Mapping[str, float] | None, program: str | None = None,
 ) -> dict[str, Any]:
-    sections: dict[str, dict[str, Any]] = {
-        name: {} for name in ("driver", "blend", "alignment", "room", "bass")
+    sections: dict[str, Any] = {
+        name: None if name == "rear_calibration" else {}
+        for name in prescription_sections(program) if not (keep_timing and name == "alignment")
     }
-    sections["driver"] = {"filters": []}
-    if trims_db:
-        sections["driver"]["pinned_trim_db"] = dict(trims_db)
-    if keep_timing:
-        sections.pop("alignment")
+    if "driver" in sections:
+        sections["driver"] = {"filters": [], **({"pinned_trim_db": dict(trims_db)} if trims_db else {})}
     return {"kind": "jts_prescription", "schema": 1, "base": "saved",
             "sections": sections, "rationale": "Reset the applied tuning layers."}
 

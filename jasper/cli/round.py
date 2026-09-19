@@ -236,7 +236,7 @@ def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
         corrections = applied.get("corrections") or {}
         trims_db = {role: values["gain_db"] for role, values in corrections.items()}
         document = reset_prescription_document(
-            keep_timing=args.keep_timing, trims_db=trims_db,
+            keep_timing=args.keep_timing, trims_db=trims_db, program=args.program,
         )
         candidate = compose_prescription_document(document, base=base, base_profile=applied)
         published = publish_authored_candidate(candidate)
@@ -313,15 +313,19 @@ def build_parser() -> argparse.ArgumentParser:
     _connection_args(apply)
     apply.add_argument("fingerprint", help="banked candidate fingerprint")
     apply.set_defaults(func=_cmd_apply)
-    reset = sub.add_parser("reset", help="clear applied tuning layers")
+    reset = sub.add_parser("reset", help="reset one program or all tuning")
     _connection_args(reset)
-    reset.add_argument("--keep-timing", action="store_true", help="keep saved timing and its provenance")
+    reset.add_argument("--program", choices=RUNNABLE_PROGRAMS, help="reset only this program; omitted resets everything")
+    reset.add_argument("--keep-timing", action="store_true", help="keep saved timing and its provenance (all tuning or speaker only)")
     reset.set_defaults(func=_cmd_reset)
     return parser
 
 
 def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "reset" and args.keep_timing and args.program not in (None, "speaker"):
+        parser.error("--keep-timing requires resetting everything or --program speaker")
     if args.command == "run" and args.dry_run and not _is_loopback_name(urlsplit(args.base_url).hostname or ""):
         from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY  # lazy: refused run copy
         return failed(EXIT_REFUSED, "dry_run_requires_local_host", REASON_REGISTRY["dry_run_requires_local_host"].message)

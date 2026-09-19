@@ -399,6 +399,19 @@ _TRIAL_PROGRAMS = {
     None: (PURPOSE_ROOM, "room_quick", None),
 }
 
+_PROGRAM_SECTIONS = {
+    PURPOSE_SPEAKER: ("driver", "blend", "alignment"),
+    PURPOSE_REAR: ("rear_calibration",),
+    PURPOSE_BASS: ("bass",),
+    PURPOSE_ROOM: ("room",),
+}
+
+
+def prescription_sections(purpose: str | None = None) -> tuple[str, ...]:
+    """The prescription sections one program owns; every program's when ``purpose`` is None."""
+    return tuple(section for owner, sections in _PROGRAM_SECTIONS.items()
+                 if purpose is None or owner == purpose for section in sections)
+
 # Compatibility values derived from the config, which remains their owner.
 ANCHOR_REPEATS = _PROGRAMS[("baseline", "full")].poses[0].repeats
 SEAT_OFFSET_M = max(
