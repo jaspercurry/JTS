@@ -242,9 +242,9 @@ def recent_round_sessions(session_dir: Path | None = None, *, limit: int = 32) -
 
 def latest_banked_rounds(
     identity: Mapping[str, Any], session_dir: Path | None = None, *, limit: int = 32,
-    programs: tuple[str, ...] = RUNNABLE_PROGRAMS,
+    programs: tuple[str, ...] = RUNNABLE_PROGRAMS, include_stale: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Latest packet per program and applied identity within a bounded recent window."""
+    """Latest packet per program within a bounded window; current identity by default."""
     from jasper.active_speaker.round_packet_report import PACKET_FILENAME  # lazy: packet report imports this reader
 
     applied_at = parse_utc_iso(str(identity.get("applied_at") or ""))
@@ -254,7 +254,8 @@ def latest_banked_rounds(
             continue
         packet = _read_json_mapping(directory / PACKET_FILENAME) or {}
         applied = packet.get("applied") or {}
-        if any(applied.get(key) != identity.get(key) for key in ("candidate", "record")):
+        stale = any(applied.get(key) != identity.get(key) for key in ("candidate", "record"))
+        if stale and not include_stale:
             continue
         try:
             purpose = run_purpose(packet.get("program"))
@@ -267,11 +268,12 @@ def latest_banked_rounds(
             finite_float(packet.get("finalized_at")), finite_float(packet.get("started_at")),
             finite_float((packet.get("session") or {}).get("started_at")),
         ) if value is not None), modified_at)
-        if applied_at is not None and banked_at <= applied_at:
+        stale = stale or (applied_at is not None and banked_at <= applied_at)
+        if stale and not include_stale:
             continue
         record = {"round_dir": str(directory), "started_at": banked_at,
                   "round_id": packet.get("round_id") or directory.name,
-                  "banked_at": banked_at, "status": packet.get("result")}
+                  "banked_at": banked_at, "status": packet.get("result"), "stale": stale}
         for name in (purpose, PURPOSE_ROOM) if packet.get("room") else (purpose,):
             prior = found.get(name)
             if name in programs and (prior is None or (banked_at, str(directory)) >

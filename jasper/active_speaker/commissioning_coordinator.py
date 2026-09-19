@@ -119,13 +119,13 @@ def next_program_action(
     """Choose from the latest banked round per program for this applied identity."""
     from .baseline_profile import applied_layers  # lazy: baseline imports measurement
 
+    layers = applied_layers(profile)
     baseline = {"id": "run_program", "enabled": True,
                 "program": programs[0], "label": _MEASURE_LABELS[programs[0]],
-                "reason_code": "never_measured"}
+                "reason_code": "complete" if all(layers[name] for name in programs) else "never_measured"}
     # Plan #5073 §2 rule (a): no round for this identity means measure the baseline first.
     if not recent_rounds:
         return baseline
-    layers = applied_layers(profile)
     room_at = finite_float((recent_rounds.get(PURPOSE_ROOM) or {}).get("started_at"))
     room_stale = room_at is not None and any(
         (finite_float((recent_rounds.get(name) or {}).get("started_at")) or 0) > room_at

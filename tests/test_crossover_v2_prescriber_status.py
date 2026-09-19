@@ -646,14 +646,17 @@ def test_bare_status_leaves_evidence_unselected_when_history_is_empty(capsys):
     assert payload["next_commands"] == ["jasper-seat-level"]
 
 
+@pytest.mark.parametrize("stale_kind", [None, "candidate", "record", "applied_at"])
 @pytest.mark.parametrize("rear,layers,rounds,expected", [
     (False, (), {}, ("speaker", "never_measured")),
     (True, ("speaker",), {"speaker": 1}, ("rear", "never_measured")),
     (False, ("speaker", "bass", "room"), {"speaker": 1, "room": 2, "bass": 3}, ("room", "upstream_changed")),
-    (False, ("speaker", "bass", "room"), {"speaker": 1, "bass": 2, "room": 3}, ("speaker", "complete")),
+    (False, ("speaker", "bass", "room"), {"speaker": 1, "bass": 2, "room": 3}, (None, "complete")),
+    (False, ("speaker", "bass", "room"), {}, (None, "complete")),
+    (True, ("speaker", "rear", "bass", "room"), {}, (None, "complete")),
     (False, (), {"speaker": 1}, ("speaker", "round_available")),
 ])
-def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, capsys, rear, layers, rounds, expected):
+def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, capsys, rear, layers, rounds, expected, stale_kind):
     topology = mono_output_topology()
     if rear:
         group, = topology.speaker_groups
@@ -666,11 +669,16 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
                                "kind": baseline_profile.BASELINE_PROFILE_KIND}))
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(path))
     programs = ("speaker", "rear", "bass", "room") if rear else ("speaker", "bass", "room")
+    if stale_kind:
+        expected = (None, "complete") if set(programs) <= set(layers) else ("speaker", "never_measured")
     recent = {}
     for name, age in rounds.items():
         directory = tmp_path / "campaigns" / name
-        _bank_packet(directory, applied_identity(profile), name)
-        timestamp = parse_utc_iso(profile["applied_at"]) + age
+        identity = applied_identity(profile)
+        if stale_kind in {"candidate", "record"}:
+            identity[stale_kind] = "previous"
+        _bank_packet(directory, identity, name)
+        timestamp = parse_utc_iso(profile["applied_at"]) + (age - 100 if stale_kind == "applied_at" else age)
         os.utime(directory, (timestamp, timestamp))
         recent[name] = {"round_dir": str(directory), "started_at": timestamp}
     level = tmp_path / "level.json"
@@ -690,10 +698,15 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
     assert payload["applied"]["reference_volume_db"] == payload["seat_level_reference_volume_db"] == -9.0
     assert payload["applied"]["leveled_db_spl"] == 77.4
     assert payload["last_banked"] == {name: {"round_id": name, "banked_at": recent[name]["started_at"],
-                                            "status": "partial"} if name in rounds else None for name in programs}
+                                            "status": "partial", "stale": bool(stale_kind)}
+                                      if name in rounds else None for name in programs}
     assert payload["next"] == dict(zip(("program", "reason_code"), expected))
-    web_action = build_commissioning_view(topology, applied_profile=profile, recent_rounds=recent)["next_action"]
-    assert payload["next"] == {key: web_action[key] for key in ("program", "reason_code")}
+    web_action = build_commissioning_view(topology, applied_profile=profile,
+                                          recent_rounds={} if stale_kind else recent)["next_action"]
+    assert web_action["program"] == (expected[0] or programs[0])
+    assert web_action["reason_code"] == expected[1]
+    assert web_action["id"] == ("copy_prompt" if expected[1] == "round_available" else "run_program")
+    assert web_action["enabled"] is True
     assert packet_builder == []
     assert _tree(tmp_path) == before
 

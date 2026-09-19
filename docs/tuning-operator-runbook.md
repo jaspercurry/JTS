@@ -8,6 +8,11 @@ Register the wired microphone with `jasper-mic-calibration`; set its capture con
 
 First run `jasper-crossover-prescriber status` without a round. Read `applied`,
 `last_banked`, and `next` for the current layers, recent rounds, and next program.
+`last_banked` keeps the latest round per applicable program: `round_id`, `banked_at`,
+`status`, and `stale`. `stale: true` means its applied identity differs or it was
+banked at or before the last apply; only current rounds guide the next action.
+When all applicable layers are applied and none is stale, `next` is
+`{"program": null, "reason_code": "complete"}`.
 `next_commands` lists commands; add a round path for its evidence.
 
 Run the tuning programs in order: speaker → rear → bass → room (skip rear if there is no rear driver).

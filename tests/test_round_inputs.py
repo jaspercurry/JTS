@@ -65,7 +65,7 @@ def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp
     hits = {**hits, **({"room": max(hits.values())} if has_room and hits and "room" in wanted else {})}
     assert found == {name: {"round_dir": str(root / f"{index:02}"),
                             "started_at": (root / f"{index:02}").stat().st_mtime,
-                            "round_id": f"{index:02}", "status": "partial",
+                            "round_id": f"{index:02}", "status": "partial", "stale": False,
                             "banked_at": (root / f"{index:02}").stat().st_mtime,
                             **({"alignment_verdict": alignment, "next_action": next_action}
                                if name == "speaker" else {})}
@@ -98,6 +98,12 @@ def test_rewriting_old_packet_preserves_banked_order_and_next_action(tmp_path, m
     assert before["speaker"]["round_id"] == "speaker"
     assert before["room"]["banked_at"] == before["room"]["started_at"] == base + 5
     assert (action["program"], action["reason_code"]) == ("speaker", "complete")
+
+    stale = tmp_path / "campaigns" / "speaker-stale"
+    _bank_packet(stale, {**identity, "candidate": "previous"}, "speaker", finalized_at=base + 6)
+    history = latest_banked_rounds(identity, include_stale=True)
+    assert (history["speaker"]["round_id"], history["speaker"]["stale"]) == ("speaker-stale", True)
+    assert history["room"]["stale"] is False
 
     old = tmp_path / "campaigns" / "speaker-old"
     packet = old / "packet.json"
