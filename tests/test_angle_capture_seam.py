@@ -888,8 +888,9 @@ def test_a_program_beyond_the_arms_reach_refuses_at_statement_time() -> None:
         (mp.program("tournament", "express"), ("fp-a", "fp-b")),
         (mp.program("tournament", "full"), ("fp-a", "fp-b", "fp-c")),
         (mp.program("baseline", "express"), ("fp-a", "fp-b")),
+        (mp.program("rear", "behind"), ("base", "fp-a", "muted")),
     ],
-    ids=["no-cycle", "one-pose", "three-poses", "with-repeats"],
+    ids=["no-cycle", "one-pose", "three-poses", "with-repeats", "rear-behind"],
 )
 def test_candidates_expand_pose_major_candidate_minor(
     program: mp.MeasurementProgram, candidates: tuple[str, ...],
@@ -912,7 +913,7 @@ def test_candidates_expand_pose_major_candidate_minor(
     assert len(request.stops) > 0
     runs = [
         key for key, _ in itertools.groupby(
-            (s.angle_deg, s.elevation_deg) for s in request.stops
+            s.place for s in request.stops
         )
     ]
     assert len(runs) == len(program.poses)
@@ -1117,7 +1118,7 @@ def test_a_seat_stop_is_stated_from_the_head_not_the_mark() -> None:
 @pytest.mark.parametrize("elevation", [0, 10])
 def test_position_gate_names_the_behind_pose_without_changing_the_action_body(elevation):
     request = ac.request_for_program(mp.program("rear", "pair_behind"), candidates=("rear-candidate",))
-    front, _, behind, _ = ac.resolve_request(request)
+    front, behind = ac.resolve_request(request)
     gate = PositionGate()
     actions = [gate.invitation(SimpleNamespace(screen={**capture_plan.position_screen_keys(stop.prompt),
                capture_plan.POSITION_VERTICAL_DEG_KEY: str(elevation)}))["actions"][0]

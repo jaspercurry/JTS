@@ -38,9 +38,9 @@ ROWS = {f'{name}/{size}': row for (name, size), row in load_programs().items()
 LEVEL_DB = -23.0
 SENSITIVITIES = {'woofer': 84.0, 'tweeter': 109.2, 'mid': 90.0, 'full_range': 87.0}
 PLAN_REFUSALS = {
-    'one_way_passive': {'branches/express', 'front_rear/express', 'rear/pair', 'rear/pair_behind'},
-    'two_way_active': {'front_rear/express', 'rear/pair', 'rear/pair_behind'},
-    'three_way_active': {'branches/express', 'front_rear/express', 'rear/pair', 'rear/pair_behind'},
+    'one_way_passive': {'branches/express', 'front_rear/express', 'rear/express', 'rear/wide', 'rear/behind', 'rear/pair', 'rear/pair_behind'},
+    'two_way_active': {'front_rear/express', 'rear/express', 'rear/wide', 'rear/behind', 'rear/pair', 'rear/pair_behind'},
+    'three_way_active': {'branches/express', 'front_rear/express', 'rear/express', 'rear/wide', 'rear/behind', 'rear/pair', 'rear/pair_behind'},
     'cardioid': set(),
 }
 KNOWN_GAPS = {
@@ -100,7 +100,7 @@ def _outcome(speaker, row):
     selected = run_program(ROWS[row].purpose, row)
     request = request_for_program(
         selected, mover=selected.mover or 'human', level=LevelPolicy(level_db=LEVEL_DB),
-        candidates=(speaker.candidate.fingerprint,) if selected.regime == 'branches' else (),
+        candidates=(speaker.candidate.fingerprint,) if selected.regime == 'branches' else ('base', speaker.candidate.fingerprint) if selected.purpose == 'rear' else (),
     )
     report = preflight(request, ready_facts(
         request, candidates={speaker.candidate.fingerprint: speaker.candidate},
