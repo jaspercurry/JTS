@@ -1217,7 +1217,7 @@ def pose_batch_screens(
                 POSITION_BATCH_START_KEY: str(indexes[offsets[0]]),
                 POSITION_BATCH_SIZE_KEY: str(len(offsets)),
                 POSITION_BATCH_CONFIG_KEY: str(ordinal),
-                "progress": f"Config {ordinal} of {len(offsets)} — keep the mic still.",
+                "progress": f"Measurement {ordinal} of {len(offsets)} at this position — keep the mic still.",
             }
     return screens
 

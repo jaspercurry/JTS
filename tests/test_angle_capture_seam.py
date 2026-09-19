@@ -1253,6 +1253,8 @@ def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
     for offset, entry in enumerate(entries):
         assert entry.screen[POSITION_BATCH_CONFIG_KEY] == str(offset % 2 + 1)
         assert entry.screen[POSITION_BATCH_SIZE_KEY] == "2"
+        assert entry.screen[POSITION_BATCH_START_KEY] == str(plan.entries.index(entry) - offset % 2 + 1)
+        assert str(offset % 2 + 1) in entry.screen["progress"] and "2" in entry.screen["progress"]
         assert entry.screen["auto_advance"] == (capture_plan.AUTO_ADVANCE_TAP if offset % 2 == 0 else capture_plan.AUTO_ADVANCE_COUNTDOWN)
     assert len({e.screen[POSITION_BATCH_START_KEY] for e in entries}) == program.mic_move_count
 

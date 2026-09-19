@@ -46,9 +46,9 @@ def round_capture(capture: Mapping[str, Any], verdict: str, *, advertise_capture
     facts = capture.get("run") or {}
     result = {"capture": dict(capture) if advertise_capture else None, "round_lines": round_status(capture),
               "verdict_text": round_verdict(facts, verdict)}
-    if not facts.get("pose_details"):
+    if capture.get("join") or not facts.get("pose_details"):
         return result
-    held = capture.get("join") or capture.get("position_pending") or {}
+    held = capture.get("position_pending") or {}
     live = capture.get("status") not in SESSION_ENDED_STATUSES
     actions = [a for a in held.get("actions", ()) if a["id"] != "retake"] + [
         retake_action(), {"id": "reset_round", "label": "Reset the round", "endpoint": CAPTURE_CANCEL_PATH, "body": {}},

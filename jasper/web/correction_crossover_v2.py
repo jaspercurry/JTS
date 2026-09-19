@@ -696,7 +696,7 @@ def prepare_v2_session(
         evidence_store.publish_json_artifact(f"crossover_v2/{capture_session_id}/plan.json", request.to_dict())
         schedule = preview_schedule(request, captures, context)
         if position_gate:
-            position_gate.publish({**schedule, "pose": 1})
+            position_gate.publish(schedule)
 
     held: v2evidence._HeldSession | None = None
 
