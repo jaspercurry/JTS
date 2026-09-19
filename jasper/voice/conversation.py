@@ -78,8 +78,10 @@ async def continuous_watchdog(
             return "connection_lost"
         if accepted_at < speech_started and turn.backend_completed_at < speech_started:
             deadline = last_speech + FIRST_ANSWER_SEC
+            wait = "first_answer"
         else:
             deadline = followup_seconds + max(last_speech, accepted_at, drain_at)
+            wait = "followup"
             if (
                 speech_started <= turn.backend_completed_at
                 and accepted_at < turn.backend_completed_at
@@ -95,20 +97,21 @@ async def continuous_watchdog(
         if now >= deadline:
             return _resolved(
                 "followup_timeout", now, last_speech, accepted_at,
-                drain_at, pending, turn, deadline,
+                drain_at, pending, turn, deadline, wait=wait,
             )
 
 
 def _resolved(
     reason, now, last_speech, accepted_at, drain_at, pending, turn, deadline,
-    writing_since=0.0,
+    writing_since=0.0, *, wait=None,
 ):
     """Disambiguate a follow-up close from a playout stall in the turn timeline.
 
     Zero anchors mean absent; negative ages mean scheduled future playout.
     """
     log_event(
-        logger, "voice.turn_deadline", reason=reason,
+        logger, "voice.turn_deadline", reason=reason, wait=wait,
+        activity_age_ms=int((now - turn.last_activity_at()) * 1000),
         last_speech_age_ms=int((now - last_speech) * 1000),
         accepted_age_ms=int((now - accepted_at) * 1000) if accepted_at else None,
         drain_age_ms=int((now - drain_at) * 1000) if drain_at else None,
