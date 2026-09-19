@@ -98,7 +98,7 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
     return choices
 
 
-def _programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
+def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
     passive = topology_is_subless_passive_mains(topology)
     rear = cardioid_cabinet_channels(
         (channel.role, channel.output_variant, channel.physical_output_index)
@@ -109,7 +109,7 @@ def _programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
                  if not (name == PURPOSE_SPEAKER and passive or name == PURPOSE_REAR and rear is None))
 
 
-def _next_program_action(
+def next_program_action(
     profile: Mapping[str, Any] | None,
     identity: Mapping[str, Any],
     recent_rounds: Mapping[str, Mapping[str, Any]],
@@ -120,7 +120,8 @@ def _next_program_action(
     from .baseline_profile import applied_layers  # lazy: baseline imports measurement
 
     baseline = {"id": "run_program", "enabled": True,
-                "program": programs[0], "label": _MEASURE_LABELS[programs[0]]}
+                "program": programs[0], "label": _MEASURE_LABELS[programs[0]],
+                "reason_code": "never_measured"}
     # Plan #5073 §2 rule (a): no round for this identity means measure the baseline first.
     if not recent_rounds:
         return baseline
@@ -137,8 +138,11 @@ def _next_program_action(
     if (not layers[program] and not (program == PURPOSE_ROOM and room_stale)
             and (finite_float(round_.get("started_at")) or 0) > applied_at):
         return {"id": "copy_prompt", "label": f"Copy the {program} prompt", "enabled": True,
-                "program": program, "round_dir": round_["round_dir"]}
-    return {**baseline, "program": program, "label": _MEASURE_LABELS[program]}
+                "program": program, "round_dir": round_["round_dir"], "reason_code": "round_available"}
+    reason = ("upstream_changed" if program == PURPOSE_ROOM and room_stale else
+              "complete" if all(layers[name] for name in programs) else
+              "layer_not_applied" if round_ else "never_measured")
+    return {**baseline, "program": program, "label": _MEASURE_LABELS[program], "reason_code": reason}
 
 
 def build_commissioning_view(
@@ -161,7 +165,7 @@ def build_commissioning_view(
 
     draft, preview, review = design_draft or {}, crossover_preview or {}, baseline_profile or {}
     summary = (measurements or {}).get("summary") or {}
-    programs = _programs_for_topology(topology) if programs is None else programs
+    programs = programs_for_topology(topology) if programs is None else programs
     passive = PURPOSE_SPEAKER not in programs
     has_layout = bool(topology.speaker_groups)
     design_ready = passive or draft.get("status") == "ready_for_review"
@@ -199,7 +203,7 @@ def build_commissioning_view(
                    "layout" if passive else "profile")
     if profile_applied or (has_layout and passive):
         status = "applied" if profile_applied else VIEW_STATUS_NOT_REQUIRED
-        action = _next_program_action(applied_profile, applied, recent_rounds or {},
+        action = next_program_action(applied_profile, applied, recent_rounds or {},
                                       programs=programs)
     elif not has_layout:
         status = "needs_layout"
@@ -282,7 +286,7 @@ def load_commissioning_view(
             experiment = commissioning_experiment_summary(commissioning_candidate(topology, design_draft))
         except (OSError, ValueError, LookupError):
             pass
-    programs = _programs_for_topology(topology)
+    programs = programs_for_topology(topology)
     return build_commissioning_view(
         topology,
         design_draft=design_draft,

@@ -7,7 +7,7 @@ from dataclasses import replace
 
 from jasper.active_speaker import baseline_profile, commissioning_experiment
 from jasper.active_speaker.applied_identity import applied_identity
-from jasper.active_speaker.commissioning_coordinator import _next_program_action, load_commissioning_view
+from jasper.active_speaker.commissioning_coordinator import next_program_action, load_commissioning_view
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 from jasper.active_speaker.tuning_handoff import PROGRAM_ENTRIES
 from jasper.cli.round import build_parser
@@ -138,7 +138,7 @@ def test_program_order_consumers(consumer):
     elif consumer == "handoff":
         order = tuple(entry["id"] for entry in PROGRAM_ENTRIES)
     else:
-        order = tuple(_next_program_action(
+        order = tuple(next_program_action(
             _applied_anchor(layers=RUNNABLE_PROGRAMS[:index]), {},
             {"speaker": {"round_dir": "/bank/speaker", "started_at": 1}}, programs=RUNNABLE_PROGRAMS,
         )["program"] for index in range(len(RUNNABLE_PROGRAMS)))
@@ -171,7 +171,7 @@ def test_room_repeats_after_newer_upstream_round(upstream, age, room_applied):
     layers = RUNNABLE_PROGRAMS if room_applied else RUNNABLE_PROGRAMS[:-1]
     rounds = {"room": {"round_dir": "/bank/room", "started_at": 1},
               upstream: {"round_dir": "/bank/upstream", "started_at": age}}
-    action = _next_program_action(_applied_anchor(layers=layers), {}, rounds, programs=RUNNABLE_PROGRAMS)
+    action = next_program_action(_applied_anchor(layers=layers), {}, rounds, programs=RUNNABLE_PROGRAMS)
     expected = ("run_program", "room") if age > 1 else (
         ("run_program", "speaker") if room_applied else ("copy_prompt", "room"))
     assert (action["id"], action["program"]) == expected

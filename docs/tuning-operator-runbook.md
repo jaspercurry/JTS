@@ -6,6 +6,10 @@ Register the wired microphone with `jasper-mic-calibration`; set its capture con
 
 ## The loop
 
+First run `jasper-crossover-prescriber status` without a round. Read `applied`,
+`last_banked`, and `next` for the current layers, recent rounds, and next program.
+`next_commands` lists commands; add a round path for its evidence.
+
 Run the tuning programs in order: speaker → rear → bass → room (skip rear if there is no rear driver).
 Re-run room after any upstream change, even when round history is unavailable.
 
@@ -50,7 +54,7 @@ Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibr
 | `jasper-seat-level` | Play the room/bass summed measurement sweep and adjust the fader until the calibrated mic's loudest half-second (loudest_half_second_db_spl) reads the target; bank the session gain. PRECONDITION: `amixer -c <card>` shows the mic's capture control at 100%, where its Sens Factor is quoted, or every absolute SPL is wrong by the shortfall. | measured | `jasper/cli/seat_level.py` |
 | `jasper-angle-capture serve` | Serve the microphone arm against the daemon's position gate. | mutating (`serve` moves the arm) | `jasper/cli/angle_capture.py` |
 | `jasper-measure` | Measure this speaker once, bank the takes, print their ids | measured | `jasper/cli/measure.py` |
-| `jasper-crossover-prescriber rear-calibration\|contract\|judge\|compose\|status` | Judge and compose prescription documents; serve contracts and read status. | advisory (judge, contract and status read; compose banks a candidate) | `jasper/cli/crossover_prescriber.py` |
+| `jasper-crossover-prescriber rear-calibration\|contract\|judge\|compose\|status` | Judge and compose prescription documents; serve contracts and report applied layers, last banked rounds and the next program. | advisory (judge, contract and status read; compose banks a candidate) | `jasper/cli/crossover_prescriber.py` |
 | `jasper-round run\|trial\|placed\|stop\|status\|wait\|apply\|reset` | Run a plan at --spl dB SPL or --levels fader dB, bank its packet, commission a speaker and apply candidates. | mutating-with-gates (`run`/`trial`/`placed`/`stop`/`wait`/`apply`/`reset` write; `status` reads) | `jasper/cli/round.py` |
 | `jasper-round-views entry [speaker]\|frozen [speaker]\|repeat [all]\|repeat-floor [all]\|candidates [all]\|agreement [room/speaker]\|co-metrics [room/speaker]\|directivity [room/speaker]\|per-seat [room/speaker]\|cloud-binding [speaker]\|forward-model [speaker]\|sweep [all]\|frequency [all]\|distortion [speaker]\|dsp-replay [all]\|dsp-levels [all]\|classify-features [speaker]\|findings [all]\|close-reference [speaker]\|delay-landscape [speaker]\|delay-confirm [speaker]\|room [room]\|room-grade [room]\|bass [bass]\|bass-compare [bass]\|bass-fit-table [bass]\|rear [rear]\|inventory [all]\|speaker-fit [speaker]` | Read measured round evidence, including repeat --set spread across takes. Answers use stdout; detailed reports use files. | advisory (analysis views save artifacts) | `jasper/cli/round_views/__init__.py` |
 | `jasper-null` | Play the summed reverse null and bank one row per coordinate. Measures only; grades nothing. | measured | `jasper/cli/null_door.py` |

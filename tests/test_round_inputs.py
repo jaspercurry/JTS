@@ -12,6 +12,13 @@ from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 
 
+def _bank_packet(directory, identity, program, **fields):
+    (directory / "bundle" / directory.name).mkdir(parents=True)
+    (directory / "packet.json").write_text(json.dumps({
+        "applied": identity, "program": f"{program}/full", "result": "partial", **fields,
+    }))
+
+
 @pytest.mark.parametrize("has_room", [False, True])
 @pytest.mark.parametrize("programs,limit,hits,applied_at,wanted", [
     (RUNNABLE_PROGRAMS, 32, {"speaker": 36, "rear": 37, "bass": 34, "room": 35}, None, None),
@@ -29,15 +36,12 @@ def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp
     monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
     for index in range(40):
         directory = root / f"{index:02}"
-        (directory / "bundle" / str(index)).mkdir(parents=True)
         banked_identity = {**identity}
         if index > 37 and applied_at is None:
             banked_identity["candidate" if index == 39 else "record"] = "other"
-        (directory / "packet.json").write_text(json.dumps({
-            "applied": banked_identity, "program": f"{programs[index % len(programs)]}/full", "result": "partial",
-            "alignment_verdict": alignment, "next_action": next_action,
-            "room": [{"median": {"n_positions": 3}}] if has_room else [],
-        }))
+        _bank_packet(directory, banked_identity, programs[index % len(programs)],
+                     alignment_verdict=alignment, next_action=next_action,
+                     room=[{"median": {"n_positions": 3}}] if has_room else [])
         if applied_at is not None:
             os.utime(directory, (index, index))
     opens = 0
@@ -56,6 +60,8 @@ def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp
     hits = {**hits, **({"room": max(hits.values())} if has_room and hits and "room" in wanted else {})}
     assert found == {name: {"round_dir": str(root / f"{index:02}"),
                             "started_at": (root / f"{index:02}").stat().st_mtime,
+                            "round_id": f"{index:02}", "status": "partial",
+                            "banked_at": (root / f"{index:02}").stat().st_mtime,
                             **({"alignment_verdict": alignment, "next_action": next_action}
                                if name == "speaker" else {})}
                      for name, index in hits.items()}

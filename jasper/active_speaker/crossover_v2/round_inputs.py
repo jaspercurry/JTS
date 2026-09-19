@@ -262,15 +262,18 @@ def latest_banked_rounds(
             purpose = run_purpose(packet.get("program"))
         except ValueError:
             continue
+        record = {"round_dir": str(directory), "started_at": modified_at,
+                  "round_id": packet.get("round_id") or directory.name,
+                  "banked_at": modified_at, "status": packet.get("result")}
         if purpose in programs and purpose not in found:
             found[purpose] = {
-                "round_dir": str(directory), "started_at": modified_at,
+                **record,
                 **({"alignment_verdict": packet.get("alignment_verdict"),
                     "next_action": packet.get("next_action")}
                    if purpose == PURPOSE_SPEAKER else {}),
             }
         if PURPOSE_ROOM in programs and packet.get("room") and PURPOSE_ROOM not in found:
-            found[PURPOSE_ROOM] = {"round_dir": str(directory), "started_at": modified_at}
+            found[PURPOSE_ROOM] = dict(record)
         if len(found) == len(programs):
             break
     return found
