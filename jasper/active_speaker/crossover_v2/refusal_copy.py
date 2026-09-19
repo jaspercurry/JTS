@@ -318,11 +318,6 @@ def locate_failed_message(pilot_heard: bool | None) -> str:
     * ``False`` / ``None`` — the pilot failed too, or there is no pilot
       evidence, so the level/microphone reading is supported or unknown. The
       registry holds this rendering.
-
-    Keyed on the EVIDENCE, not on which gate fired: the three call sites
-    (:func:`_stimulus_locate_ok`, :func:`_sweep_locate_confidence_ok`, VERIFY's
-    ``summed_sweep_heard``) are all locate-confidence floors reading the same
-    field, so keying on the site would give one situation two sentences.
     """
     diagnosis = locate_failed_diagnosis(pilot_heard)
     if pilot_heard:

@@ -23,6 +23,7 @@ from jasper.audio_measurement import snr_policy
 from jasper.audio_measurement.frame_ledger import FrameLedger
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.program_analysis.model import (
+    SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     AnchorEvidence, DriftEstimate, GainPlan, MeasurementPriors, ProgramAnalysis,
 )
 from jasper.audio_measurement.quality_model import DRIVER
@@ -106,6 +107,9 @@ def test_check_run_host_reads_mute_once(monkeypatch, muted):
 @pytest.mark.parametrize("phase", PHASES)
 @pytest.mark.parametrize(("changes", "code", "next", "charge"), [
     ({"locations": ()}, refusal_copy.REASON_LOCATE_FAILED, "fix_and_retake", "operator"),
+    ({"locations": (replace(_loc("sweep_w"), role="woofer"),
+                    replace(_loc("sweep_t", confidence=cd.LOCATE_MIN_CONFIDENCE / 2), role="tweeter"))},
+     refusal_copy.REASON_LOCATE_FAILED, "fix_and_retake", "operator"),
     ({"anchor_ambiguous": True}, refusal_copy.REASON_ANCHOR_AMBIGUOUS, "fix_and_retake", "operator"),
     ({"anchor": AnchorEvidence(corroborated=False)}, refusal_copy.REASON_ANCHOR_TOO_QUIET, "fix_and_retake", "speaker"),
     ({"locations": (_loc("sweep_w", clipped=True),)}, refusal_copy.REASON_CLIPPED, "retake_quieter", "speaker"),
@@ -129,65 +133,23 @@ def test_integrity_verdict(phase, changes, code, next, charge):
         assert verdict.next_gain_db == -33.0
 
 
-#: One ``rear/pair`` take as jts3 round fd97a756ea51 take_0003 measured it, in
-#: program order: segment, branch, locate confidence, residual in ms at 48 kHz.
-#: The leading pilot pair sits on the front branch, so the rear is unanchored.
-TAKE_0003_SWEEPS = (
-    ("sweep_w", "front", 0.6982, 0.58),
-    ("sweep_t", "rear", 0.2376, 4.13),
-    ("sweep_w_rep", "front", 0.6954, 0.85),
-    ("sweep_t_rep", "rear", 0.2403, 5.104),
-)
-#: One ``event=outputd.xrun``'s worth of inserted samples — 8.3 ms at 48 kHz.
-XRUN_SPLICE_SAMPLES = 400.0
-
-
-def _pair_take(*, rear_role="woofer:rear", branches=True, splice_after=None):
-    shift = 0.0
-    locations = []
-    for segment_id, branch, confidence, residual_ms in TAKE_0003_SWEEPS:
-        locations.append(replace(_loc(
-            segment_id, confidence=confidence,
-            residual_samples=residual_ms * cd.REQUIRED_SAMPLE_RATE_HZ / 1000.0 + shift,
-        ), role="woofer" if branch == "front" else rear_role))
-        if segment_id == splice_after:
-            shift = XRUN_SPLICE_SAMPLES
-    return _analysis(
-        locations=tuple(locations), pilots=(_snr_pilot("woofer", 30.0),),
-        branch_diagnostic={"responses": [{"role": rear_role}]} if branches else None,
+@pytest.mark.parametrize("role", ["woofer", "woofer:rear", "tweeter"])
+@pytest.mark.parametrize("branches", [False, True])
+@pytest.mark.parametrize("direction", [-1, 1])
+def test_sweep_schedule_is_absolute_for_every_role(role, branches, direction):
+    residual = direction * (SWEEP_SCHEDULE_RESIDUAL_CEILING_MS * cd.REQUIRED_SAMPLE_RATE_HZ / 1000 + 1)
+    locations = tuple(replace(_loc(segment_id, confidence=0.12, residual_samples=residual), role=role)
+                      for segment_id in ("sweep_w", "sweep_w_rep"))
+    analysis = _analysis(
+        locations=locations, pilots=(_snr_pilot("woofer", 30.0),),
+        branch_diagnostic={"responses": [{"role": role}]} if branches else None,
     )
-
-
-@pytest.mark.parametrize(("rear_role", "branches", "accepted"), [
-    ("woofer:rear", True, True),
-    ("tweeter", True, True),
-    ("woofer", True, False),
-    ("tweeter", False, False),
-])
-def test_only_a_branch_programs_unanchored_branch_is_judged_on_its_own_path(rear_role, branches, accepted):
-    """The exemption keys on the PROGRAM's shape, never on the driver: the same
-    numbers on the anchored branch, or on a program that built no branch
-    diagnostic, stay refused.
-    """
-    verdict = cd.assess(_pair_take(rear_role=rear_role, branches=branches),
-                        phase="measure", gain_db=GAINS)
-    assert verdict.ok is accepted
-    assert verdict.fault == (None if accepted else refusal_copy.REASON_LOCATE_FAILED)
-    # Judging a role against its own slot must not edit what was measured.
-    assert verdict.evidence["schedule_residual_ms_worst"] == pytest.approx(5.104, abs=1e-3)
-    assert verdict.evidence["locate_confidence_min"] == pytest.approx(0.2376)
-
-
-@pytest.mark.parametrize("splice_after", ["sweep_w", "sweep_w_rep"])
-def test_a_spliced_xrun_still_refuses_a_branch_take(splice_after):
-    """A splice anywhere in the take moves at least one sweep off its OWN
-    branch's slot — after the anchored branch's first sweep, or between the
-    unanchored branch's two.
-    """
-    verdict = cd.assess(_pair_take(splice_after=splice_after), phase="measure", gain_db=GAINS)
+    verdict = cd.assess(analysis, phase="measure", gain_db=GAINS)
     assert not verdict.ok and verdict.fault == refusal_copy.REASON_DRIFT_BASELINES_DISAGREE
     assert (verdict.next, verdict.charge) == ("retake_same", "speaker")
     assert verdict.evidence["guard"] == "sweep_schedule"
+    assert verdict.evidence["schedule_residual_ms_worst"] == pytest.approx(residual / cd.REQUIRED_SAMPLE_RATE_HZ * 1000)
+    assert verdict.evidence["locate_confidence_min"] == 0.12
 
 
 @pytest.mark.parametrize("diagnostic", [None, {"responses": [{"role": "woofer:rear"}]}])
