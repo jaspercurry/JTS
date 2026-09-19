@@ -23,6 +23,7 @@ from jasper.audio_measurement.program_analysis.model import (
 )
 from jasper.audio_measurement.program_analysis.summary import driver_alignment_snr_verdict, driver_snr_verdict
 from jasper.active_speaker.profile import spl_raise_bound_db_spl
+from jasper.active_speaker.program_failure import read_output_volume
 from .sweep_spec import REQUIRED_SAMPLE_RATE_HZ
 from jasper.json_fields import finite_float
 
@@ -78,6 +79,12 @@ def assess(
     prior_verdict: TakeVerdict | None = None, **kwargs: Any,
 ) -> TakeVerdict:
     verdict = prior_verdict if prior_verdict is not None else _assess_recording(analysis, **kwargs)
+    if verdict.fault == reasons.REASON_LOCATE_FAILED:
+        output_volume = read_output_volume()
+        if output_volume.get("muted") is True:
+            verdict = replace(verdict, fault=reasons.REASON_MEASUREMENT_OUTPUT_MUTED,
+                              next="stop", charge="none", next_gain_db=None,
+                              evidence={**verdict.evidence, **output_volume})
     verdict = replace(verdict, screens=pilot_screens(analysis, program=kwargs.get("program")))
     if level_verdict is None:
         return verdict

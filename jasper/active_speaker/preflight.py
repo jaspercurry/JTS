@@ -22,7 +22,7 @@ from .angle_capture import (
 )
 from .crossover_v2.contracts import CrossoverV2FlowError
 from .crossover_v2.measure_spec import branch_target_ids_for
-from .crossover_v2.refusal_copy import REASON_REGISTRY, REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT, REASON_WALK_BRANCH_PAIR_UNDECLARED
+from .crossover_v2.refusal_copy import REASON_REGISTRY, REASON_MEASUREMENT_OUTPUT_MUTED, REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT, REASON_WALK_BRANCH_PAIR_UNDECLARED
 from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs,
     compile_candidate_config, prove_candidate_config,
@@ -73,6 +73,7 @@ class PreflightFacts:
     program_ids_for: Callable[[AngleCaptureRequest], tuple[str, ...]] | None = None
     declared_target_ids: tuple[str, ...] | None = None
     roles_bands: tuple[RoleBand, ...] = ()
+    output_volume: Mapping[str, float | bool] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,10 @@ class PreflightReport:
 def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: bool = False,
               previous_rung: Sequence[Mapping[str, Any]] | None = None) -> PreflightReport:
     issues = list(facts.issues)
+    # Remove when measurement owns an explicit household-authorized unmute.
+    if facts.output_volume.get("muted") is True:
+        code = REASON_MEASUREMENT_OUTPUT_MUTED
+        issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence=facts.output_volume))
     admission: dict[str, Any] = {"basis": "pending_measurement" if defer_rung else "anchor"}
 
     def add(code: str, detail: str, *, blocking: bool = True) -> None:

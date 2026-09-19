@@ -6,7 +6,7 @@ import ast
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -25,12 +25,14 @@ from jasper.audio_measurement.program_analysis.model import (
     AnchorEvidence, DriftEstimate, GainPlan, MeasurementPriors, ProgramAnalysis,
 )
 from jasper.audio_measurement.quality_model import DRIVER
+from jasper.platform import control_client
 from tests.crossover_v2_fixtures import (
     FakeSeams, _alignment, _conductor, _driver_response, _loc, _measure_analysis, _run_phase,
     _snr_pilot, plan_context,
 )
 from jasper.cli.measure import _ran
 from tests.engine_twin import FakeSeams as EngineSeams, open_session
+from tests.test_plan_run import AnsweredGate, _run_gated, _walk
 
 PHASES = ("check", "measure", "verify")
 GAINS = {"woofer": -30.0, "tweeter": -30.0}
@@ -45,6 +47,24 @@ def _analysis(**changes):
         driver_responses=(_driver_response("woofer", 8.0),),
         gain_plan=GainPlan(gain_db=GAINS, predicted_peak_dbfs=-30.0, snr_floor_ok=True),
     ), **changes)
+
+
+@pytest.mark.parametrize("muted", [True, False, None])
+async def test_not_heard_take_stops_only_when_output_is_muted(monkeypatch, muted):
+    response = control_client.ControlResponse(200, b'{"muted": true, "percent": 0}' if muted else b'{"muted": false, "percent": 35}')
+    read = Mock(return_value=response, side_effect=control_client.ControlError() if muted is None else None)
+    monkeypatch.setattr(control_client, "get", read)
+    analyses = iter((_analysis(locations=()), _analysis()))
+    gate = AnsweredGate()
+    result, fakes = await _run_gated(_walk([0]), gate=gate, analyze=lambda *_: next(analyses))
+    read.assert_called_once_with("/volume")
+    assert len(fakes.play.rungs) == (1 if muted else 2)
+    assert result.reason == ("measurement_output_muted" if muted else "")
+    fault = next(row for row in gate.progress if row.get("fault"))
+    assert (fault["fault"], fault["next_action"]) == (
+        ("measurement_output_muted", "stop") if muted else ("locate_failed", "fix_and_retake"))
+    if muted:
+        assert len(gate.grants) == 1
 
 
 @pytest.mark.parametrize("phase", PHASES)
