@@ -12,6 +12,7 @@ import numpy as np
 from scipy.signal import correlate, resample_poly
 
 from jasper.audio_measurement.alignment import _bandlimit
+from jasper.audio_measurement.branch_program import is_branch_program
 from jasper.audio_measurement.program import (
     ExcitationProgram,
     KIND_SUMMED_SWEEP,
@@ -115,6 +116,39 @@ def _stimulus_shape(segment: ProgramSegment) -> tuple[float | None, float | None
     return (segment.f1_hz, segment.f2_hz, segment.n_samples)
 
 
+def _score_anchor_witness(
+    witness: ProgramSegment, candidates: list[ProgramSegment], capture: np.ndarray,
+    sample_rate: int, arrival: int, stimuli: dict[str, np.ndarray],
+) -> tuple[tuple[float, float, ProgramSegment, int], tuple[float, float, ProgramSegment, int], bool]:
+    witness_stim = stimuli.get(witness.segment_id)
+    if witness_stim is None:
+        witness_stim = segment_stimulus(witness)
+        stimuli[witness.segment_id] = witness_stim
+    scored: list[tuple[float, float, ProgramSegment, int]] = []
+    for seg in candidates:
+        offset = arrival - seg.start_sample
+        _located, confidence, presence = _locate_in_window(
+            capture, witness_stim, offset + witness.start_sample,
+            witness.n_samples, sample_rate=sample_rate,
+        )
+        scored.append((presence, confidence, seg, offset))
+    # Presence measures similarity; confidence alone can rank empty windows highly.
+    # `max` keeps the first candidate on an exact tie.
+    best_index, best = max(enumerate(scored), key=lambda item: item[1][0])
+    runner_up = max(
+        (row for index, row in enumerate(scored) if index != best_index),
+        key=lambda item: item[0],
+    )
+    # Two candidates above the floor with presence within the ratio: the argmax
+    # carries no information. Multiplication, so a zero runner-up presence resolves.
+    ambiguous = (
+        best[1] >= SWEEP_LOCATE_CONFIDENCE_FLOOR
+        and runner_up[1] >= SWEEP_LOCATE_CONFIDENCE_FLOOR
+        and best[0] < runner_up[0] * ANCHOR_DISCRIMINATION_RATIO
+    )
+    return best, runner_up, ambiguous
+
+
 def _resolve_anchor(
     program: ExcitationProgram,
     capture: np.ndarray,
@@ -158,6 +192,9 @@ def _resolve_anchor(
     than a genuine witness reading does, an argmax between them is a coin
     flip. The returned evidence carries that ambiguity and whether the
     witness corroborated the anchor at all.
+
+    Branch programs try equally long witnesses in schedule order only on
+    ambiguity; if none resolves it, the first witness's evidence stands.
     """
     shape = _stimulus_shape(first)
     candidates = [
@@ -181,29 +218,24 @@ def _resolve_anchor(
     if len(candidates) < 2 or witness is None:
         return first, arrival - first.start_sample, None
 
+    best, second, ambiguous = _score_anchor_witness(
+        witness, candidates, capture, sample_rate, arrival, stimuli,
+    )
+    witnesses_tried = 1
+    if ambiguous and is_branch_program(program):
+        for alternate in program.segments:
+            if (alternate == witness or alternate.kind not in STIMULUS_KINDS
+                    or alternate.n_samples != witness.n_samples or _stimulus_shape(alternate) == shape):
+                continue
+            witnesses_tried += 1
+            resolved = _score_anchor_witness(alternate, candidates, capture, sample_rate, arrival, stimuli)
+            if not resolved[2]:
+                witness, (best, second, ambiguous) = alternate, resolved
+                break
+    best_presence, best_confidence, best_seg, best_offset = best
+    runner_up_presence, runner_up, runner_up_seg, runner_up_offset = second
     assert witness.f1_hz is not None and witness.f2_hz is not None
-    witness_stim = stimuli.get(witness.segment_id)
-    if witness_stim is None:
-        witness_stim = segment_stimulus(witness)
-        stimuli[witness.segment_id] = witness_stim
-    scored: list[tuple[float, float, ProgramSegment, int]] = []
-    for seg in candidates:
-        offset = arrival - seg.start_sample
-        _located, confidence, presence = _locate_in_window(
-            capture, witness_stim, offset + witness.start_sample,
-            witness.n_samples, sample_rate=sample_rate,
-        )
-        scored.append((presence, confidence, seg, offset))
-    # Ranked on PRESENCE, not peakedness margin (see docstring); the margin
-    # is still read at `corroborated` below. `max` keeps the FIRST maximum
-    # so an exact tie holds the structurally first candidate.
-    best_index, (best_presence, best_confidence, best_seg, best_offset) = max(
-        enumerate(scored), key=lambda item: item[1][0]
-    )
-    runner_up_presence, runner_up, runner_up_seg, runner_up_offset = max(
-        (row for index, row in enumerate(scored) if index != best_index),
-        key=lambda item: item[0],
-    )
+    witness_stim = stimuli[witness.segment_id]
     # Filtering can prove the timeline but inflates empty-window presence,
     # so ranking and ambiguity keep the full-band scores.
     _, band_confidence, _ = _locate_in_window(
@@ -214,18 +246,6 @@ def _resolve_anchor(
     corroborated = max(best_confidence, band_confidence) >= SWEEP_LOCATE_CONFIDENCE_FLOOR
     if not corroborated:
         best_seg, best_offset = first, arrival - first.start_sample
-    # Corroboration alone is not discrimination: two candidates both above
-    # the floor with presence within ANCHOR_DISCRIMINATION_RATIO of each
-    # other means the argmax carries no information (CHECK's witness has a
-    # same-shape twin one gap later). The commitment is left unchanged, but
-    # flagged un-attributed so a consuming phase refuses it as retriable.
-    # Multiplication rather than subtraction so a zero runner-up presence
-    # resolves rather than divides by zero.
-    ambiguous = (
-        best_confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
-        and runner_up >= SWEEP_LOCATE_CONFIDENCE_FLOOR
-        and best_presence < runner_up_presence * ANCHOR_DISCRIMINATION_RATIO
-    )
     corrected = best_seg.segment_id != first.segment_id
     # One line per analyzed capture, naming the losing interpretation too —
     # a reader triaging an ambiguous anchor needs to know which timeline
@@ -242,6 +262,7 @@ def _resolve_anchor(
         program_id=program.program_id,
         anchor=best_seg.segment_id,
         witness=witness.segment_id,
+        witnesses_tried=witnesses_tried,
         candidates=len(candidates),
         presence=round(best_presence, 6),
         runner_up_presence=round(runner_up_presence, 6),

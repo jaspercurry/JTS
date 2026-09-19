@@ -977,6 +977,33 @@ def test_ambiguity_needs_BOTH_readings_corroborated(
     assert anchor.ambiguous is ambiguous
 
 
+@pytest.mark.parametrize("runner_up_confidence", [.1, .4])
+def test_check_keeps_its_first_witness_and_three_locates(monkeypatch, caplog, runner_up_confidence):
+    program = _incident_program()
+    first = program.segment("pilot_woofer_lo")
+    witness = program.segment("pilot_tweeter_lo")
+    calls = []
+    scores = iter((.4, runner_up_confidence, .8))
+
+    def locate(capture, stim, scheduled, n, *, sample_rate, band_hz=None):
+        calls.append((scheduled, band_hz is not None))
+        return scheduled, next(scores), .5
+
+    monkeypatch.setattr(locate_mod, "_locate_in_window", locate)
+    with caplog.at_level("INFO", logger=_ANALYSIS_LOGGER):
+        anchor, offset, evidence = locate_mod._resolve_anchor(
+            program, np.zeros(1), SR, first.start_sample, first, {},
+        )
+    assert anchor == first and offset == 0
+    assert evidence.ambiguous is (runner_up_confidence == .4)
+    assert calls == [(witness.start_sample, False),
+                     (witness.start_sample + first.start_sample - program.segment("pilot_woofer_hi").start_sample, False),
+                     (witness.start_sample, True)]
+    fields = event_fields(caplog, "program_analysis.anchor")
+    assert fields["witness"] == witness.segment_id
+    assert fields["witnesses_tried"] == "1"
+
+
 @pytest.mark.parametrize(
     "band",
     [
