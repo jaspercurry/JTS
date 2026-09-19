@@ -35,7 +35,7 @@ def ready_facts(plan, **changes):
                             "stimulus": {"program_id": "fixture-sweep"},
                             "mic_sensitivity": {"sens_factor_db": -12.0, "serial": "1234"}},
                            MicSensitivity(-12.0, 18.0, "1234")),
-        commissioning_stop_db_spl=85.0, mover=plan.mover, rig_clear_attested=True, applied_bass_extension={},
+        commissioning_stop_db_spl=85.0, mover=plan.mover, applied_bass_extension={},
         program_ids_for=lambda _plan: ("fixture-sweep",),
     ), **changes)
 
@@ -92,8 +92,7 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: {})
     monkeypatch.setattr(preflight_live, "candidate_from_applied_profile", lambda *a: SimpleNamespace(bass_extension={}))
     monkeypatch.setattr(preflight_live.candidate_bank, "find_banked_candidate", lambda _: SimpleNamespace(candidate=candidate))
-    monkeypatch.setattr(arm_walk.TurntableMover, "available", lambda self: True)
-    facts = preflight_live.read_preflight_facts(plan, rig_clear_attested=True)
+    facts = preflight_live.read_preflight_facts(plan)
     assert facts.declared_target_ids == tuple(role_targets)
     missing = tuple(sorted({"woofer", "woofer:rear"} - role_targets.keys())) if name in {"rear", "front_rear"} else ()
     invalid_pairs = (tuple(role.role for role in roles),) if name == "branches" and len(roles) != 2 else ()
@@ -431,13 +430,21 @@ def test_pilot_floor_only_checks_programs_with_pilots(level_db, disclosed, purpo
         }
 
 
-@pytest.mark.parametrize("mover,attested,available", [
-    ("human", False, False), ("arm", False, True), ("arm", True, False), ("arm", True, True),
+@pytest.mark.parametrize("mover,attested,blocking", [
+    ("arm", None, False), ("arm", False, True), ("arm", True, False), ("human", False, False),
 ])
-def test_live_preflight_discovers_only_the_arm(monkeypatch, mover, attested, available):
+def test_rig_clear_attestation_is_only_required_when_asked(mover, attested, blocking):
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), mover=mover)
+    report = preflight(plan, ready_facts(plan, rig_clear_attested=attested))
+    assert report.blocking is blocking
+    assert [issue.code for issue in report.issues] == (["walk_rig_clear_not_attested"] if blocking else [])
+
+
+@pytest.mark.parametrize("attested,available", [(None, True), (False, False), (True, True)])
+def test_live_preflight_accepts_facts_without_discovery(monkeypatch, attested, available):
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), mover="arm")
     ready = ready_facts(plan)
-    detect = Mock(return_value=available)
+    detect = Mock(side_effect=AssertionError)
     monkeypatch.setattr(arm_walk.TurntableMover, "available", detect)
     monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
@@ -446,8 +453,7 @@ def test_live_preflight_discovers_only_the_arm(monkeypatch, mover, attested, ava
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(
         plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"),
-        rig_clear_attested=attested,
+        rig_clear_attested=attested, mover_available=available,
     )
-    assert facts.rig_clear_attested is attested
-    assert facts.mover_available is (available if mover == "arm" else True)
-    assert detect.call_count == (1 if mover == "arm" else 0)
+    assert facts.rig_clear_attested is attested and facts.mover_available is available
+    detect.assert_not_called()

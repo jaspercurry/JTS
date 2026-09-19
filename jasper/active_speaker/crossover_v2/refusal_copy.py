@@ -128,6 +128,7 @@ REASON_WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 REASON_WALK_MOVER_MISMATCH = "walk_mover_mismatch"
 REASON_WALK_RIG_CLEAR_NOT_ATTESTED = "walk_rig_clear_not_attested"
 REASON_WALK_MOVER_UNAVAILABLE = "walk_mover_unavailable"
+REASON_ARM_PARK_UNCONFIRMED = "arm_park_unconfirmed"
 REASON_WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 REASON_WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
 REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT = "run_level_pilots_under_ambient"
@@ -820,6 +821,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_WALK_RIG_CLEAR_NOT_ATTESTED, TEMPLATE_HARD_STOP, 0, "",
         "Confirm that the arm's full sweep path is clear with --attest-rig-clear.",
         next_action={"id": "attest_rig_clear", "label": "Check the full sweep path and attest"},
+    ),
+    REASON_ARM_PARK_UNCONFIRMED: ReasonSpec(
+        REASON_ARM_PARK_UNCONFIRMED, TEMPLATE_HARD_STOP, 0, "",
+        "Check the arm and its parked journal row before starting another round.",
+        next_action={"id": "check_arm_park", "label": "Check the arm park"},
     ),
     REASON_WALK_MOVER_UNAVAILABLE: ReasonSpec(
         REASON_WALK_MOVER_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",

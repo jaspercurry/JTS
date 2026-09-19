@@ -947,8 +947,8 @@ sudo -n /opt/jasper/.venv/bin/jasper-round run \
 
 The person must check the full sweep path before making the explicit
 `--attest-rig-clear` statement. The flag is required for each arm round,
-including `trial`. A dry run needs `--wait` too; it checks discovery and the
-attestation before opening a session or serial link. No second process is
+including `trial`. A dry run needs neither `--wait` nor the statement; the CLI
+checks discovery without opening a session or serial link. No second process is
 needed. The command uses one Python interpreter with an arm thread and a
 separate wizard client. Both clients use the same `--base-url` and `--hostname`.
 The default address is loopback and needs no OS-user login to the wizard.
@@ -970,13 +970,15 @@ person's attestation; a power sign voids it.
 Normal completion, a wait timeout, Ctrl-C, and `jasper-round stop --run <id>`
 from another shell all stop the arm thread and join it. The thread parks in
 `ArmWalk.run()`'s `finally`. Before joining, the caller waits for the park to
-finish; this avoids Python 3.12's interrupted-join fault. Each cleanup wait uses
-the adapter timeout plus the park settle plus 30 seconds. If that limit
-expires, the command raises an error;
-the non-daemon thread still keeps the process alive until it finishes.
+finish; this avoids Python 3.12's interrupted-join fault. The budget covers an
+in-flight serve, park, adapter retries, HTTP calls, and settles. A second
+finish call returns the cached answer without waiting. If the budget expires,
+the command prints one unreadable answer with `arm_park_unconfirmed`; the
+non-daemon thread keeps the process alive until it finishes.
 A failed park is recorded, never reported as a verified return to zero.
 
-The wait answer includes `arm.exit` from `EXIT_NAMES` and `arm.summary`.
+The wait answer includes `arm.exit` and `arm.summary`; a worker fault also
+includes its exception type in `arm.error_type`.
 On a refused or unreadable wait, those fields are in `detail.arm`.
 SIGINT, SIGTERM, and SIGHUP exit with `128 + signum` after cleanup. The first
 signal disarms the handlers so a second signal cannot interrupt parking.
@@ -984,20 +986,7 @@ The `event=arm_walk.up` log includes `rig_clear_attested=true`. Read the
 `event=arm_walk.parked` row after the round; only `ok=true` proves the park.
 Progress is logged at INFO and failures at ERROR.
 
-`jasper-angle-capture serve` remains a **debugging verb only**, for an operator
-who needs a separate gate process or a JSONL trail:
-
-```sh
-sudo -n /opt/jasper/.venv/bin/jasper-angle-capture serve \
-    --attest-rig-clear --trail /tmp/arm-walk.jsonl
-```
-
-Start that debug gate before opening its session. It serves one session, then
-parks and exits. Its `--tool`, timing, and trail flags are described by `--help`.
-Do not run it beside a run-owned arm. The debug gate accepts a terminal status
-only after it has seen a live session, because the wizard retains the previous
-session's final status. A rejected release means capture did not start; an
-unreachable status endpoint is reported as `status_unreachable`.
+`jasper-round run --mover arm --attest-rig-clear --wait` owns the arm, and the retired `jasper-angle-capture serve` stays only until that path is proven on hardware and is then deleted. Never start `serve` next to a waited arm round: two walkers would drive one arm.
 
 ---
 

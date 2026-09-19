@@ -429,7 +429,7 @@ def arm_runtime(monkeypatch):
         worker.join = Mock(wraps=worker.join)
         threads.append(worker)
         return worker
-    monkeypatch.setattr(cli.threading, "Thread", thread)
+    monkeypatch.setattr(aw.threading, "Thread", thread)
     pause = threading.Event()
     def sleep(seconds):
         clock.sleep(seconds)
@@ -440,8 +440,10 @@ def arm_runtime(monkeypatch):
     session = Mock(side_effect=lambda **kw: LiveThen(_COMPLETE))
     monkeypatch.setattr(aw, "LoopbackSession", session)
     monkeypatch.setattr(aw, "Trail", lambda: trail)
+    install = Mock(wraps=aw.install_park_on_signals)
+    monkeypatch.setattr(aw, "install_park_on_signals", install)
     with _own_signals():
-        yield SimpleNamespace(mover=mover, trail=trail, threads=threads, factory=factory, session=session)
+        yield SimpleNamespace(install=install, mover=mover, trail=trail, threads=threads, factory=factory, session=session)
 
 
 @pytest.fixture
@@ -1067,7 +1069,7 @@ def test_remote_dry_run_refuses_before_reading_local_facts(monkeypatch, capsys, 
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsys, dry_run, arm_plan_answer):
     opener = _opener(session='{"session_id": "run-1"}')
-    code, body = _run(["run", "--program", "bass", "--level-db", "-25", "--wait", "--attest-rig-clear", *(["--dry-run"] if dry_run else [])],
+    code, body = _run(["run", "--program", "bass", "--level-db", "-25", *(["--dry-run"] if dry_run else ["--wait", "--attest-rig-clear"])],
                       opener, monkeypatch, capsys)
     body = body if dry_run else body["schedule"]
     assert code == 0 and body["mic_moves"] == 1
@@ -1092,7 +1094,7 @@ def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, noise_dbf
 
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
     opener = _opener()
-    code, body = _run(["run", "--program", program, "--dry-run", "--wait", "--attest-rig-clear"],
+    code, body = _run(["run", "--program", program, "--dry-run"],
                       opener, monkeypatch, capsys)
     assert code == (0 if levels else 1)
     assert body["dry_run"] is True
@@ -1119,7 +1121,7 @@ def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, c
 
     for mover in ("arm", "human"):
         code, _ = _run(
-            ["run", "--program", "speaker", "--mover", mover, "--dry-run", "--wait", "--attest-rig-clear"],
+            ["run", "--program", "speaker", "--mover", mover, "--dry-run"],
             _opener(), monkeypatch, capsys,
         )
         assert code == 0
@@ -1271,7 +1273,6 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
 @pytest.mark.parametrize("source", ["flags", "plan"])
 @pytest.mark.parametrize("dry_run,attested,available,reason", [
     (False, False, True, "walk_rig_clear_not_attested"),
-    (True, False, True, "walk_rig_clear_not_attested"),
     (False, True, False, "walk_mover_unavailable"),
     (True, True, False, "walk_mover_unavailable"),
 ])
@@ -1280,7 +1281,7 @@ def test_arm_preflight_refuses_before_opening(
 ):
     arm_runtime.mover.available.return_value = available
     def facts(plan, **kw):
-        return ready_facts(plan, **kw, mover_available=aw.TurntableMover().available())
+        return ready_facts(plan, **kw)
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
     flags = ["--poses", "0", "--mover", "arm"]
     if source == "plan":
@@ -1327,7 +1328,7 @@ def test_run_owns_arm_until_parked(ending, preflight_ready, arm_runtime, monkeyp
                     return original_wait(timeout)
                 value.wait = wait_for_park
             return value
-        monkeypatch.setattr(cli.threading, "Event", event)
+        monkeypatch.setattr(aw.threading, "Event", event)
     trail = arm_runtime.trail
     emit = trail.emit
     def record(action, **kw):
@@ -1368,12 +1369,48 @@ def test_run_owns_arm_until_parked(ending, preflight_ready, arm_runtime, monkeyp
         assert set(arm) == {"exit", "summary"}
         if ending in {"complete", "stopped"}:
             assert arm["exit"] == ("ok" if ending == "complete" else "session_stopped")
-    assert json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["attest_rig_clear"] is True
+    assert "attest_rig_clear" not in json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)
     worker, = arm_runtime.threads
     assert not worker.daemon and not worker.is_alive()
-    worker.join.assert_called_with(timeout=aw.TurntableMover.timeout_s + aw.PARK_SETTLE_S + 30)
+    worker.join.assert_called_once_with()
     assert arm_runtime.mover.moves[-1] == 0
     assert trail.one("parked")["ok"] is True
     assert trail.one("up")["rig_clear_attested"] is True
     arm_runtime.factory.assert_called_with(attest_rig_clear=True)
     arm_runtime.session.assert_called_once_with(host_header="jts.local", base_url="http://127.0.0.1:8080")
+    arm_runtime.install.assert_called_once_with()
+
+
+@pytest.mark.parametrize("flags", [[], ["--mover", "arm"]])
+def test_arm_dry_run_needs_neither_wait_nor_attestation(flags, preflight_ready, arm_runtime, monkeypatch, capsys):
+    opener = _opener()
+    code, body = _run(["run", "--program", "bass", "--dry-run", *flags], opener, monkeypatch, capsys)
+    assert code == 0 and body["dry_run"] is True
+    assert "walk_rig_clear_not_attested" not in {issue["code"] for issue in body["issues"]}
+    assert body["levels"] and not opener.requests and not arm_runtime.threads
+    arm_runtime.mover.available.assert_called_once_with()
+    arm_runtime.install.assert_not_called()
+
+
+@pytest.mark.parametrize("mover", ["arm", "human"])
+def test_cli_discovers_only_the_resolved_arm(mover, preflight_ready, arm_runtime, monkeypatch, capsys):
+    code, _ = _run(["run", "--program", "speaker", "--dry-run", "--mover", mover], _opener(), monkeypatch, capsys)
+    assert code == 0
+    assert arm_runtime.mover.available.call_count == int(mover == "arm")
+
+
+def test_arm_park_timeout_prints_one_unreadable_answer(preflight_ready, arm_runtime, monkeypatch, capsys):
+    original_enter = aw.RunOwnedArm.__enter__
+    def enter(arm):
+        original_enter(arm)
+        monkeypatch.setattr(arm._finished, "wait", Mock(return_value=False))
+        return arm
+    monkeypatch.setattr(aw.RunOwnedArm, "__enter__", enter)
+    monkeypatch.setattr(cli, "wait_for_round", lambda *a, **kw: {"status": "terminal", "captured": True})
+    code, body = _run(["run", "--poses", "0", "--mover", "arm", "--wait", "--attest-rig-clear"],
+                      _opener(session='{"session_id": "run-1"}'), monkeypatch, capsys)
+    assert code == 2 and body["code"] == body["reason"] == "arm_park_unconfirmed"
+    assert body["status"] == "unreadable" and body["detail"]["arm"]["exit"] == "arm_park_unconfirmed"
+    for worker in arm_runtime.threads:
+        worker.join(2)
+        assert not worker.is_alive()

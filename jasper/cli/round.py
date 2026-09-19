@@ -11,7 +11,6 @@ import logging
 import math
 import re
 import sys
-import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 from urllib.parse import urlsplit
@@ -116,16 +115,16 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
                       })
     except (ValueError, OSError, CrossoverV2FlowError) as exc:
         return failed(EXIT_REFUSED, getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
-    if report.plan.mover == MOVER_ARM and not args.wait:
+    if report.plan.mover == MOVER_ARM and not args.wait and not args.dry_run:
         build_parser().error("--mover arm requires --wait")
     if args.dry_run:
         answered({"verb": "run", "dry_run": args.dry_run, **report.to_dict()})
         return EXIT_REFUSED if report.blocking else EXIT_OK
     if report.blocking:
-        issue = next(issue for issue in report.issues if issue.blocking)
+        issue = report.blocking_issue
         return failed(EXIT_REFUSED, issue.code, report.to_dict(),
                       code=issue.code, next_action=issue.next_action)
-    http, payload = client.open_session(report.plan.to_dict(), rig_clear_attested=args.attest_rig_clear)
+    http, payload = client.open_session(report.plan.to_dict())
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
                                "run_refused", {"http": http}, payload)
@@ -142,38 +141,12 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
 
         logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
         arm_walk.install_park_on_signals()
-        stop_event = threading.Event()
-        finished = threading.Event()
-        trail = arm_walk.Trail()
-        walk = arm_walk.ArmWalk(
+        with arm_walk.RunOwnedArm(
             arm_walk.TurntableMover(attest_rig_clear=args.attest_rig_clear),
             arm_walk.LoopbackSession(host_header=args.hostname, base_url=args.base_url),
-            arm_walk.WalkConfig(), trail=trail, should_stop=stop_event.is_set,
-        )
-        code = arm_walk.EXIT_REFUSED
-        def serve_arm() -> None:
-            nonlocal code
-            try:
-                code = walk.run()
-            except SystemExit as exc:
-                code = int(exc.code) if isinstance(exc.code, int) else arm_walk.EXIT_REFUSED
-            finally:
-                trail.close()
-                finished.set()
-        thread = threading.Thread(target=serve_arm, name="round-arm", daemon=False)
-        def finish_arm() -> dict[str, Any]:
-            stop_event.set()
-            timeout = arm_walk.TurntableMover.timeout_s + arm_walk.PARK_SETTLE_S + 30
-            # CPython 3.12 can mark an interrupted join stopped before the worker exits.
-            if not finished.wait(timeout):
-                raise TimeoutError("arm thread has not finished parking")
-            thread.join(timeout=timeout)
-            return {"arm": {"exit": arm_walk.EXIT_NAMES[code], "summary": walk.summary()}}
-        thread.start()
-        try:
-            return _cmd_wait(client, args, finish_arm=finish_arm)
-        finally:
-            finish_arm()
+            arm_walk.WalkConfig(),
+        ) as arm:
+            return _cmd_wait(client, args, finish_arm=arm.finish)
     return _answer(args.command, "Run ready; place the microphone to start.",
                    **_run_links(run_id),
                    shape="trial" if report.plan.candidates else "measure",
@@ -247,6 +220,8 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace, *,
     result = wait_for_round(client, run_id=args.run, timeout_s=args.timeout, on_progress=show_progress)
     arm = finish_arm()
     result.update(arm)
+    if arm.get("arm", {}).get("exit") == "arm_park_unconfirmed":
+        return failed(EXIT_UNREADABLE, "arm_park_unconfirmed", result, code="arm_park_unconfirmed")
     if result["status"] != "terminal":
         return failed(EXIT_REFUSED if result["status"] == "failed" else EXIT_UNREADABLE,
                       str(result["reason"]), result)
@@ -397,11 +372,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command in ("run", "trial") and args.mover == MOVER_ARM:
-        if not args.wait:
-            parser.error("--mover arm requires --wait")
-        from jasper.active_speaker import arm_walk  # lazy: arm-only
-        arm_walk.install_park_on_signals()
+    if args.command in ("run", "trial") and args.mover == MOVER_ARM and not args.dry_run and not args.wait:
+        parser.error("--mover arm requires --wait")
     if args.command == "reset" and args.keep_timing and args.program not in (None, "speaker"):
         parser.error("--keep-timing requires resetting everything or --program speaker")
     if args.command == "run" and args.dry_run and not _is_loopback_name(urlsplit(args.base_url).hostname or ""):

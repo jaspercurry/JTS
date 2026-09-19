@@ -68,7 +68,7 @@ class PreflightFacts:
     anchor: AnchorFacts
     commissioning_stop_db_spl: float | None
     mover: str
-    rig_clear_attested: bool = False
+    rig_clear_attested: bool | None = None
     mover_available: bool = True
     issues: tuple[PreflightIssue, ...] = ()
     summed_pilot_band_hz: tuple[float, float] | None = None
@@ -143,7 +143,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
         add(getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
         valid_shape = False
     if facts.mover == MOVER_ARM:
-        for allowed, code in ((facts.rig_clear_attested, "walk_rig_clear_not_attested"),
+        for allowed, code in ((facts.rig_clear_attested is not False, "walk_rig_clear_not_attested"),
                               (facts.mover_available, "walk_mover_unavailable")):
             if not allowed:
                 add(code, REASON_REGISTRY[code].message)
