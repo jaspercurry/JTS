@@ -18,7 +18,7 @@ from tests.test_prescription_contract import round_bank as round_bank
 from tests.test_prescription_contract import bass_packet as bass_packet
 from tests.test_active_speaker_audition import _applied_profile
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
-from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.active_speaker.profile import ActiveSpeakerPreset, SIDES_BY_LAYOUT
 from jasper.bass_extension.dynamic_graph import validated_base_graph
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
 from tests.test_crossover_v2_blend_prescription import _receipt, _document as blend_document
@@ -31,6 +31,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
 )
 from jasper.active_speaker.crossover_v2.blend_prescription import prescription_sha256
 from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
+from jasper.active_speaker.crossover_v2 import room_prescription
 import yaml
 
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
@@ -123,10 +124,18 @@ def test_vary_document_checks_all_paths_before_yielding(path, section):
 def test_room_grid_preserves_the_full_preview(base, bank, evidence, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(crossover_prescriber, "_document_evidence", lambda *args: evidence)
     seed = tmp_path / "room.json"
-    seed.write_text(json.dumps(document(base.fingerprint, {"room": room_document(filters=[{"freq": 277, "q": 1, "gain": -3}])})))
+    prescription = document(base.fingerprint, {"room": room_document(filters=[{"freq": 277, "q": 1, "gain": -3}])})
+    seed.write_text(json.dumps(prescription))
     args = ["judge", "--preview", str(seed), "--root", str(bank)]
     assert crossover_prescriber.main(args) == 0
     single = json.loads(capsys.readouterr().out)
+    assert single["sections"] == ["room"]
+    assert single["preview"] == room_prescription.preview_room_prescription(
+        {"rationale": prescription["rationale"], **prescription["sections"]["room"]},
+        room_median=room_prescription.read_room_median(evidence.sources["room_median"]),
+        room_median_sha256=evidence.room_median_sha256, round_id=evidence.round_id,
+        sides=SIDES_BY_LAYOUT[base.candidate.source_preset.channel_map.layout],
+    )
     out_dir = tmp_path / "variants"
     assert crossover_prescriber.main([*args, "--vary", "room.sides.mono[0].gain=-3,-6", "--out-dir", str(out_dir)]) == 0
     answer = json.loads(capsys.readouterr().out)

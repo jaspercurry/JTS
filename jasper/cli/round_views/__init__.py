@@ -39,11 +39,9 @@ from ._common import (
     default_out,
     refused_by_name,
 )
-from .forward_model import ACCEPTANCE_RUNS
 from jasper.active_speaker.round_bookkeeping import run_bookkeeping as run_bookkeeping
 
 __all__ = [
-    "ACCEPTANCE_RUNS",
     "ARTIFACT_BY_VIEW",
     "AUTHORITY_TIER",
     "EXIT_OK",
@@ -63,7 +61,7 @@ __all__ = [
 #: The view families, in the order their subcommands are offered; the runbook's
 #: generated tool menu renders that order (ADR-0204).
 _FAMILIES = tuple(import_module(f".{name}", __name__) for name in (
-    "grades", "repeat", "candidates", "seats", "cloud_binding", "forward_model", "sweeps",
+    "grades", "repeat", "candidates", "seats", "cloud_binding", "sweeps",
     "frequency", "distortion", "dsp_replay", "classify_features", "findings", "close_reference",
     "delay", "room", "room_grade", "bass", "rear", "inventory", "speaker_fit",
 ))

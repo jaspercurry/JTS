@@ -138,6 +138,7 @@ def test_muted_document_is_exactly_zero_and_needs_no_document_base(
         "type": "Peaking", "freq": 190.14, "q": 0.996, "gain": filter_gain}}]
     answer = _preview(tmp_path, capsys, {"rear_calibration": section}, root)
     assert (answer["section"], answer["adopted"], answer["banked"]) == ("rear_calibration", False, False)
+    assert answer["sections"] == ["rear_calibration"]
     preview = answer["preview"]
     assert preview["stage"]["pair_candidate_id"] == pair["candidate_id"]
     assert sorted(row["repeats"] for row in preview["positions"].values()) == [1, 1, 1, 2]

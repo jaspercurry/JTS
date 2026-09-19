@@ -29,7 +29,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
     PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document, preview_prescription_document,
-    parse_vary_axis, preview_room_document, read_prescription_document, saved_base, vary_document,
+    parse_vary_axis, preview_kind, read_prescription_document, saved_base, vary_document,
 )
 from jasper.active_speaker.crossover_v2.rear_preview import summary_rows
 from jasper.active_speaker.crossover_v2.round_inputs import (
@@ -98,7 +98,7 @@ def _document_evidence(args: argparse.Namespace, document: Mapping[str, Any]) ->
         resolve_set(inputs, args.set)
     sources = prescription_sources(inputs, set_id=args.set)
     packet: dict[str, Any] = {}
-    if not getattr(args, "preview", False) and inputs is not None and (sections.get("driver") or sections.get("blend")):
+    if inputs is not None and (sections.get("driver") or sections.get("blend")):
         packet = _load_packet(args, inputs=inputs)
     try:
         sha = _room_median(sources.get("room_median", {}))[1] if sections.get("room") else ""
@@ -122,13 +122,23 @@ def _document_base(document: Mapping[str, Any], root: Path | None) -> tuple[Bank
 
 
 def _preview_document(args: argparse.Namespace, document: Mapping[str, Any]) -> dict[str, Any]:
-    if "rear_calibration" in document["sections"]:
-        return preview_prescription_document(document, round_dir=Path(args.round) if args.round else None)
-    base, _ = _document_base(document, Path(args.root) if args.root else None)
-    return preview_room_document(document, base=base, evidence=_document_evidence(args, document))
+    kind = preview_kind(document)
+    base, evidence, capture_id = None, None, None
+    try:
+        if kind != "rear_calibration":
+            base, _ = _document_base(document, Path(args.root) if args.root else None)
+            evidence = _document_evidence(args, document)
+        if kind == "emitted_graph" and args.round:
+            capture_id = resolve_set(round_inputs(Path(args.round)), args.set).take_id(args.take)
+    except RoundSetRefused as exc:
+        section = "driver" if "driver" in document["sections"] else "blend" if kind == "emitted_graph" else kind
+        raise PrescriptionDocumentRefused(exc.reason, section, str(exc), evidence=exc.detail) from exc
+    return preview_prescription_document(document, round_dir=Path(args.round) if args.round else None,
+                                         base=base, evidence=evidence, capture_id=capture_id)
 
 
 def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) -> int:
+    kind = preview_kind(document)
     axes = [parse_vary_axis(text) for text in args.vary]
     directory = Path(args.out_dir)
     rows = []
@@ -147,8 +157,9 @@ def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) ->
             return failed(EXIT_WRITE_FAILED, REASON_UNWRITABLE, str(exc))
         rows.append({"out": str(path), "values": values,
                      **(summary_rows(result["preview"]) if result["section"] == "rear_calibration"
+                        else {"summary": result["preview"]["summary"]} if result["section"] == "emitted_graph"
                         else {"preview": result["preview"]})})
-    return answered({"ok": True, "section": "rear_calibration" if "rear_calibration" in document["sections"] else "room",
+    return answered({"ok": True, "section": kind,
                      "axes": [{"paths": paths, "values": values} for paths, values in axes],
                      "variants": rows, "adopted": False, "banked": False})
 
@@ -682,12 +693,12 @@ def build_parser() -> argparse.ArgumentParser:
         command = sub.add_parser(verb, help="judge every section and preview resolution" if verb == "judge" else "judge, prove and bank one candidate")
         command.add_argument("document", metavar="DOC")
         command.add_argument("--round", dest="round", metavar="DIR")
-        add_set_argument(command)
+        add_set_argument(command, take=verb == "judge")
         if verb == "compose":
             command.add_argument("--base", required=True, metavar="FINGERPRINT|saved")
         else:
             command.set_defaults(base=None)
-            command.add_argument("--preview", action="store_true", help="room response, taper margins and residual; for a rear_calibration section with --round <pair round>, the predicted rear figures; banks nothing")
+            command.add_argument("--preview", action="store_true", help="predict driver/blend with --round <branch diagnostic round>, room with --round <room round>, or rear_calibration with --round <pair round>; banks nothing")
             command.add_argument("--vary", action="append", metavar="AXIS", help="PATH[,PATH...]=VALUE[,VALUE...] axis; repeat for a Cartesian grid")
             command.add_argument("--out-dir", metavar="DIR", help="write grid documents and full previews")
         command.add_argument("--root", help="candidate bank root")
