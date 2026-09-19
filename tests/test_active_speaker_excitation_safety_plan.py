@@ -45,13 +45,6 @@ def _profile_and_targets(
 ):
     topology = mono_output_topology(mode=mode)
 
-    # #2603: a driver's low limit has one declared owner, and every other
-    # low-limit field derives from it. This fixture's tweeter never was
-    # internally coherent -- it declared a 500 Hz hard floor under a 5000 Hz
-    # protective high-pass -- which the old rules allowed because the two
-    # numbers answered to different checks. ``tweeter_low_limit_hz`` is now the
-    # single declared number, and the tweeter's hard floor and protective
-    # high-pass both follow it, so what each test varies stays visible.
     def _driver(role: str, peak: float, required_filters: list) -> dict:
         role_hard = hard_band or [500, 20_000]
         if role == "tweeter":
@@ -75,9 +68,6 @@ def _profile_and_targets(
             ),
             "measurement_band_hz": measurement_band or [500, 10_000],
             "level_duration_limits": {
-                # ``None`` omits the key -- since the 2026-08-23 ruling that is
-                # the ordinary shape, and it is how a target says it has no
-                # published level limit.
                 **({} if peak is None else {"max_effective_peak_dbfs": peak}),
                 "max_sweep_duration_s": 4,
             },
@@ -291,17 +281,24 @@ def test_safety_plan_derives_closed_request_for_shared_admission():
         PreparedDriverExcitationPlan()
 
 
-def test_outside_limits_remains_blocked():
+@pytest.mark.parametrize("overrides, expected", [
+    ({"f1_hz": 10}, (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_BAND,)),
+    ({"commissioning_gain_db": -40}, (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LEVEL,)),
+    ({"duration_s": 5}, (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_DURATION,)),
+    ({"repeat_count": 4}, (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_REPEATS,)),
+    ({"f1_hz": 10, "duration_s": 5}, (
+        ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_BAND,
+        ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_DURATION,
+    )),
+    ({"duration_s": 3, "repeat_count": 2}, ()),
+    ({"f1_hz": 20, "f2_hz": 20_000, "commissioning_gain_db": -45}, ()),
+])
+def test_request_refusals_name_each_binding_fact(overrides, expected):
     topology, profile, targets = _profile_and_targets()
-    requested = _requested(
-        targets["tweeter"]["target_fingerprint"],
-        duration_s=5,
-    )
+    requested = _requested(targets["woofer"]["target_fingerprint"], **overrides)
     prepared = prepare_driver_excitation_plan(topology, profile, requested)
-    assert prepared.execution_allowed is False
-    assert prepared.refusals == (
-        ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LIMITS,
-    )
+    assert prepared.execution_allowed is (not expected)
+    assert prepared.refusals == expected
 
 
 def test_closed_generator_rejects_positive_gain():

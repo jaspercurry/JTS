@@ -67,7 +67,25 @@ class ExcitationSafetyPlanError(ValueError):
 class ExcitationSafetyPlanRefusal(str, Enum):
     MEASUREMENT_INPUTS_INVALID = "active_excitation_measurement_inputs_invalid"
     TARGET_NOT_CURRENT = "active_excitation_target_not_current"
-    REQUEST_OUTSIDE_LIMITS = "active_excitation_request_outside_limits"
+    REQUEST_OUTSIDE_BAND = "active_excitation_request_outside_band"
+    REQUEST_OUTSIDE_LEVEL = "active_excitation_request_outside_level"
+    REQUEST_OUTSIDE_DURATION = "active_excitation_request_outside_duration"
+    REQUEST_OUTSIDE_REPEATS = "active_excitation_request_outside_repeats"
+
+
+def _request_refusals(
+    request: ExcitationRequest, limits: ExcitationLimits,
+) -> tuple[ExcitationSafetyPlanRefusal, ...]:
+    return tuple(code for code, outside in (
+        (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_BAND,
+         not request.band.is_subset_of(limits.permitted_band)),
+        (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LEVEL,
+         request.effective_peak_dbfs > limits.maximum_effective_peak_dbfs),
+        (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_DURATION,
+         request.duration_s > limits.maximum_duration_s),
+        (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_REPEATS,
+         request.repeat_count > limits.maximum_repeat_count),
+    ) if outside)
 
 
 def _sha256(value: Any, *, field: str) -> str:
@@ -265,17 +283,7 @@ class PreparedDriverExcitationPlan(FingerprintedRecord):
             raise ExcitationSafetyPlanError(
                 ExcitationSafetyPlanRefusal.TARGET_NOT_CURRENT.value
             )
-        outside_limits = bool(
-            not request.band.is_subset_of(limits.permitted_band)
-            or request.effective_peak_dbfs > limits.maximum_effective_peak_dbfs
-            or request.duration_s > limits.maximum_duration_s
-            or request.repeat_count > limits.maximum_repeat_count
-        )
-        expected_refusals = (
-            (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LIMITS,)
-            if outside_limits
-            else ()
-        )
+        expected_refusals = _request_refusals(request, limits)
         if (
             type(refusals) is not tuple
             or any(not isinstance(reason, ExcitationSafetyPlanRefusal) for reason in refusals)
@@ -796,21 +804,10 @@ def prepare_driver_excitation_plan(
         authority_fingerprint=limits.fingerprint,
         excitation_plan_fingerprint=plan_fingerprint,
     )
-    outside_limits = bool(
-        not requested_plan.band.is_subset_of(permitted_band)
-        or requested_plan.effective_peak_dbfs > maximum_peak
-        or requested_plan.duration_s > maximum_duration
-        or requested_plan.repeat_count > ACTIVE_DRIVER_MAX_REPEAT_COUNT
-    )
-    refusals = (
-        (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LIMITS,)
-        if outside_limits
-        else ()
-    )
     return PreparedDriverExcitationPlan._from_preparation(
         topology=topology,
         requested_plan=requested_plan,
         limits=limits,
         request=request,
-        refusals=refusals,
+        refusals=_request_refusals(request, limits),
     )

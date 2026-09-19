@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import math
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
@@ -109,6 +109,7 @@ class SegmentAdmission:
     effective_peak_dbfs: float
     execution_allowed: bool
     refusals: tuple[str, ...]
+    refusal_detail: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -119,6 +120,7 @@ class SegmentAdmission:
             "effective_peak_dbfs": self.effective_peak_dbfs,
             "execution_allowed": self.execution_allowed,
             "refusals": list(self.refusals),
+            "refusal_detail": dict(self.refusal_detail),
         }
 
 
@@ -410,11 +412,6 @@ def _evaluate_program(
     refusals: list[ProgramAdmissionRefusal] = []
     segments: list[SegmentAdmission] = []
     channels: list[ChannelFacts] = []
-    # ``(permitted_lo_hz, permitted_hi_hz, maximum_duration_s)`` per segment:
-    # the LIMIT side of two comparisons below, which `SegmentAdmission` does not
-    # carry because it records what was REQUESTED. Read only by the refusal log;
-    # a segment whose plan raised gets no entry and its limits are omitted.
-    segment_limits: dict[tuple[str, str], tuple[float, float, float]] = {}
 
     try:
         channel_roles = _channel_roles(program)
@@ -473,11 +470,6 @@ def _evaluate_program(
             )
             continue
         segments.append(_segment_admission(segment, prepared))
-        segment_limits[segment.segment_id, role] = (
-            prepared.limits.permitted_band.lower_hz,
-            prepared.limits.permitted_band.upper_hz,
-            prepared.limits.maximum_duration_s,
-        )
         if not prepared.execution_allowed:
             refusals.append(ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS)
 
@@ -538,50 +530,27 @@ def _evaluate_program(
         channels=tuple(channels),
         refusals=unique_refusals,
     )
-    _log_program_refusal(program, admission, segment_limits,
-                         {facts.role: facts.cap_dbfs for facts in channels})
+    _log_program_refusal(admission)
     return admission
 
 
-def _log_program_refusal(
-    program: ExcitationProgram,
-    admission: ProgramAdmission,
-    segment_limits: Mapping[tuple[str, str], tuple[float, float, float]],
-    role_caps_dbfs: Mapping[str, float],
-) -> None:
+def _log_program_refusal(admission: ProgramAdmission) -> None:
     if admission.allowed:
         return
-    durations_s = {
-        segment.segment_id: segment.n_samples / program.sample_rate_hz
-        for segment in program.stimulus_segments()
-    }
-    refused_text: list[str] = []
-    for refused in admission.segments:
-        if not refused.refusals:
-            continue
-        limits = segment_limits.get((refused.segment_id, refused.role))
-        permitted = f"/permitted={limits[0]:.1f}-{limits[1]:.1f}" if limits else ""
-        max_duration = f"/max={limits[2]:.4f}" if limits else ""
-        refused_text.append(
-            f"{refused.segment_id}:{refused.role}"
-            f":eff={refused.effective_peak_dbfs:.3f}"
-            f":band={refused.band[0]:.1f}-{refused.band[1]:.1f}{permitted}"
-            f":dur={durations_s.get(refused.segment_id, 0.0):.4f}{max_duration}"
-            f":{'|'.join(refused.refusals)}"
-        )
     log_event(
         logger, "active_speaker.program_admission", level=logging.WARNING,
-        result="refused", program_id=program.program_id, phase=program.phase,
+        result="refused", program_id=admission.program_id, phase=admission.phase,
         refusals=",".join(reason.value for reason in admission.refusals),
-        segments_refused=";".join(refused_text),
-        role_caps_dbfs=",".join(f"{role}={cap:.3f}" for role, cap in role_caps_dbfs.items()),
-        session_volume_db=f"{admission.session_volume_db:.3f}",
+        segment_refusals=",".join(dict.fromkeys(
+            code for segment in admission.segments for code in segment.refusals)),
+        session_volume_db=admission.session_volume_db,
     )
 
 
 def _segment_admission(
     segment: ProgramSegment, prepared: PreparedDriverExcitationPlan
 ) -> SegmentAdmission:
+    request, limits = prepared.request, prepared.limits
     return SegmentAdmission(
         segment_id=segment.segment_id,
         role=segment.role or "",
@@ -590,6 +559,17 @@ def _segment_admission(
         effective_peak_dbfs=float(prepared.requested_plan.effective_peak_dbfs),
         execution_allowed=prepared.execution_allowed,
         refusals=tuple(reason.value for reason in prepared.refusals),
+        refusal_detail={code.value: {"requested": value, "limit": limit} for code, value, limit in (
+            (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_BAND,
+             [request.band.lower_hz, request.band.upper_hz],
+             [limits.permitted_band.lower_hz, limits.permitted_band.upper_hz]),
+            (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LEVEL,
+             request.effective_peak_dbfs, limits.maximum_effective_peak_dbfs),
+            (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_DURATION,
+             request.duration_s, limits.maximum_duration_s),
+            (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_REPEATS,
+             request.repeat_count, limits.maximum_repeat_count),
+        ) if code in prepared.refusals},
     )
 
 
@@ -775,8 +755,6 @@ def readmit_summed_program_from_wav(
             if source["channel"] != channels[target_id] or source["gain"] != 0 or source.get("inverted", False) or source.get("mute", False):
                 return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
     input_caps: list[float] = []
-    role_caps: dict[str, float] = {}
-    segment_limits: dict[tuple[str, str], tuple[float, float, float]] = {}
     bass_channels = set(graph.details.get("bass_output_channels", ()))
     descriptor = graph.details.get("bass_extension")
     bass_boost_db = dynamic_bass_gain_reserve_db(DynamicBassDescriptor(**descriptor)) if descriptor else 0.0
@@ -817,7 +795,6 @@ def readmit_summed_program_from_wav(
         # Reserve the maximum lift; admission remains valid across Aux updates.
         boost_db = bass_boost_db if output in bass_channels else 0.0
         input_caps.append(cap - boost_db)
-        role_caps[target_id] = cap
         requirements = declared[fingerprint]["required_protection_filters"]
         for requirement in requirements:
             if not protection_requirement_present(
@@ -847,8 +824,12 @@ def readmit_summed_program_from_wav(
             assert segment.channel is not None
             segments.append(SegmentAdmission(
                 segment.segment_id, target_id, segment.channel, (low, high), peak, allowed, reasons,
+                refusal_detail={code: {"requested": value, "limit": limit} for code, value, limit in (
+                    ("segment_band_low", [low, high], [band.lower_hz, band.upper_hz]),
+                    ("segment_level", peak, cap),
+                    ("segment_duration", segment.n_samples / program.sample_rate_hz, duration),
+                ) if code in failed},
             ))
-            segment_limits[segment.segment_id, target_id] = (band.lower_hz, band.upper_hz, duration)
             if not allowed:
                 refusals.append(ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS)
     channel_facts = []
@@ -863,5 +844,5 @@ def readmit_summed_program_from_wav(
         program.program_id, program.phase, session_volume_db,
         tuple(segments), tuple(channel_facts), tuple(dict.fromkeys(refusals)),
     )
-    _log_program_refusal(program, admission, segment_limits, role_caps)
+    _log_program_refusal(admission)
     return admission
