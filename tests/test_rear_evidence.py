@@ -470,6 +470,8 @@ def test_the_gradient_residual_reads_the_applied_ratio_against_the_gap(ratio, ex
     residual = rear_evidence.gradient_residual_db(FREQS_HZ, applied, gap_s, (40.0, 200.0))
 
     assert residual < -60.0 if expected_db is None else residual == pytest.approx(expected_db)
+    assert rear_evidence.gradient_residual_db(
+        FREQS_HZ, applied, -gap_s, (40.0, 200.0)) == pytest.approx(residual)
     assert rear_evidence.gradient_residual_db(FREQS_HZ, applied, None, (40.0, 200.0)) is None
     assert rear_evidence.gradient_residual_db(FREQS_HZ, applied, gap_s, None) is None
 
