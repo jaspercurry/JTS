@@ -10,6 +10,7 @@ from itertools import product
 from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.program_analysis.check import _ambient_rows_in_band, _snr_floor_ok
+from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.json_fields import finite_float
@@ -20,7 +21,8 @@ from .angle_capture import (
     REGIME_BRANCHES, candidate_identity, walk_price,
 )
 from .crossover_v2.contracts import CrossoverV2FlowError
-from .crossover_v2.refusal_copy import REASON_REGISTRY, REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT
+from .crossover_v2.measure_spec import branch_target_ids_for
+from .crossover_v2.refusal_copy import REASON_REGISTRY, REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT, REASON_WALK_BRANCH_PAIR_UNDECLARED
 from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs,
     compile_candidate_config, prove_candidate_config,
@@ -69,6 +71,8 @@ class PreflightFacts:
     summed_pilot_band_hz: tuple[float, float] | None = None
     applied_bass_extension: Mapping[str, Any] | None = None
     program_ids_for: Callable[[AngleCaptureRequest], tuple[str, ...]] | None = None
+    declared_target_ids: tuple[str, ...] | None = None
+    roles_bands: tuple[RoleBand, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -134,6 +138,20 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
     if captures > MAX_CAPTURE_PLAN_ATTEMPTS or (valid_shape and plan.retries_per_pose > MAX_CAPTURE_PLAN_ATTEMPTS):
         add(WALK_OVER_CAPTURE_CAPACITY, f"captures={captures}, retries_per_pose={plan.retries_per_pose}; limit={MAX_CAPTURE_PLAN_ATTEMPTS}")
         valid_shape = False
+
+    # Remove when branch plans can only name two distinct declared targets.
+    if valid_shape and facts.declared_target_ids is not None:
+        pairs = {branch_target_ids_for(capture.branch_pair, facts.roles_bands)
+                 for capture in plan.stops if capture.regime == REGIME_BRANCHES}
+        missing = tuple(sorted({target for pair in pairs for target in pair} - set(facts.declared_target_ids)))
+        invalid_pairs = tuple(sorted(pair for pair in pairs if len(pair) != 2 or len(set(pair)) != 2 or not all(pair)))
+        if missing or invalid_pairs:
+            code = REASON_WALK_BRANCH_PAIR_UNDECLARED
+            issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence={
+                "missing_target_ids": missing, "declared_target_ids": facts.declared_target_ids,
+                "invalid_branch_target_ids": invalid_pairs,
+            }))
+            return PreflightReport(plan, tuple(issues), (), {}, facts.commissioning_stop_db_spl)
 
     scopes: dict[str, str] = {}
     bass_extensions: dict[str, Mapping[str, Any]] = {}
