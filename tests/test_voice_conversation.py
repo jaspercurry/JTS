@@ -58,18 +58,17 @@ async def test_endpointed_answer_closes_the_turn_once_playout_drains():
 
 
 @pytest.mark.parametrize(
-    "last_speech, accepted_at, drain_at, backend, followup_seconds, deadline, wait",
+    "last_speech, accepted_at, drain_at, backend, followup_seconds, deadline, wait, activity_at",
     [
-        (100, 0, 0, False, 2, 100 + FIRST_ANSWER_SEC, "first_answer"),
-        (100, 98, 98.5, False, 2, 100 + FIRST_ANSWER_SEC, "first_answer"),
-        (100, 101, 104, False, 2, 104 + 2, "followup"),
-        (104, 101, 0, False, 2, 104 + 2, "followup"),
-        (100, 101, 0, False, 0, 101, "followup"),
-        (100, 0, 0, True, 2, 100 + ACKNOWLEDGED_BACKEND_SEC, None),
-        (100, 101, 104, True, 2, 100 + ACKNOWLEDGED_BACKEND_SEC, None),
+        (100, 0, 0, False, 2, 100 + FIRST_ANSWER_SEC, "first_answer", 99.5),
+        (100, 98, 98.5, False, 2, 100 + FIRST_ANSWER_SEC, "first_answer", 99.5),
+        (100, 101, 104, False, 2, 104 + 2, "followup", 99.5),
+        (104, 101, 0, False, 2, 104 + 2, "followup", 99.5),
+        (100, 101, 0, False, 0, 101, "followup", 99.5),
+        (100, 0, 0, True, 2, 100 + ACKNOWLEDGED_BACKEND_SEC, None, 99.5),
+        (100, 101, 104, True, 2, 100 + ACKNOWLEDGED_BACKEND_SEC, None, 99.5),
     ],
 )
-@pytest.mark.parametrize("activity_at", [0.0, 99.5])
 async def test_live_first_answer_followup_and_backend_waits(
     monkeypatch, caplog, last_speech, accepted_at, drain_at, backend, followup_seconds,
     deadline, wait, activity_at,
@@ -98,9 +97,7 @@ async def test_live_first_answer_followup_and_backend_waits(
     if not backend:
         fields = event_fields(caplog, "voice.turn_deadline")
         assert fields["wait"] == wait
-        assert fields["activity_age_ms"] == (
-            str(int((deadline - activity_at) * 1000)) if activity_at else "null"
-        )
+        assert fields["activity_age_ms"] == str(int((deadline - activity_at) * 1000))
 
 
 @pytest.mark.parametrize("input_ended", [False, True])

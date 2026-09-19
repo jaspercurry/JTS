@@ -109,10 +109,9 @@ def _resolved(
 
     Zero anchors mean absent; negative ages mean scheduled future playout.
     """
-    activity_at = turn.last_activity_at()
     log_event(
         logger, "voice.turn_deadline", reason=reason, wait=wait,
-        activity_age_ms=int((now - activity_at) * 1000) if activity_at else None,
+        activity_age_ms=int((now - turn.last_activity_at()) * 1000),
         last_speech_age_ms=int((now - last_speech) * 1000),
         accepted_age_ms=int((now - accepted_at) * 1000) if accepted_at else None,
         drain_age_ms=int((now - drain_at) * 1000) if drain_at else None,

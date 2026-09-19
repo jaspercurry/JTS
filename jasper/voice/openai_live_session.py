@@ -632,7 +632,7 @@ class OpenAILiveConnection(BaseLiveConnection):
         try:
             async for raw in self._session:
                 event = raw if isinstance(raw, dict) else raw.model_dump()
-                turn._event_counts[event["type"]] += 1
+                turn._event_counts[str(event["type"])] += 1
                 if event["type"] == "session.started":
                     self._started.set()
                 elif event["type"] == "error":
