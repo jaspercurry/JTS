@@ -302,4 +302,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0325](0325-rear-program-compares-measured-symptoms-and-previews-by-superposition.md) | The rear program compares measured symptoms and previews by superposition | accepted |
 | [0326](0326-rear-stage-may-boost-within-the-headroom-charge.md) | The rear stage may boost, bounded, because the headroom charge pays for it | rear-weight sentence amended by 0327 |
 | [0327](0327-rear-weight-is-a-boost-on-both-rear-branches.md) | The rear weight is a boost on both rear branches, never front attenuation | accepted |
-| [0328](0328-the-measurement-band-is-the-audio-band.md) | The measurement band is the audio band; a woofer's low edge is not a damage limit | accepted |
+| [0328](0328-the-measurement-band-is-the-audio-band.md) | The measurement band is the audio band; the only protective band edge is a high-frequency driver's floor | accepted |

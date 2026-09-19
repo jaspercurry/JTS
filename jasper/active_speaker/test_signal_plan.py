@@ -14,6 +14,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from jasper.audio_measurement.room_boundary import AUDIO_BAND_TOP_HZ as AUDIO_BAND_TOP_HZ
+
 from ._common import issue as _issue
 from .driver_protection import (
     driver_protection_payload,

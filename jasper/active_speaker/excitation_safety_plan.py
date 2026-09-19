@@ -28,13 +28,13 @@ from jasper.audio_measurement.excitation_admission import (
     ExcitationRequest,
     FrequencyBand,
 )
-from jasper.audio_measurement.program import VERIFY_F_HI_HZ
 from jasper.json_fields import finite_float
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
 from ._common import require_sha256_hex
 from .driver_protection import (
+    FULL_RANGE_ROLES,
     HIGH_FREQUENCY_ROLES,
     LOW_FREQUENCY_ROLES,
     derive_hf_measurement_ceiling_dbfs,
@@ -42,6 +42,7 @@ from .driver_protection import (
 )
 from .measurement import active_driver_targets
 from .test_signal_plan import (
+    AUDIO_BAND_TOP_HZ,
     MAX_DRIVER_TEST_FREQUENCY_HZ,
     MIN_DRIVER_TEST_FREQUENCY_HZ,
     driver_sweep_duration_s,
@@ -559,10 +560,11 @@ def resolve_driver_excitation_ceilings(
     ``declared_sensitivities`` is optional; without it the proven-HP path keeps
     the class-default ceiling and logs the skip.
 
-    Low-frequency roles start at ``MIN_DRIVER_TEST_FREQUENCY_HZ``; other roles
+    All but high-frequency roles start at ``MIN_DRIVER_TEST_FREQUENCY_HZ``; those
     start at ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0], measurement_band[0])``,
     excluding ``measurement_band[0]`` only for proven-HP high-frequency roles.
-    High-frequency roles end at ``VERIFY_F_HI_HZ``; other roles end at
+    High-frequency and full-range roles end at
+    ``min(MAX_DRIVER_TEST_FREQUENCY_HZ, AUDIO_BAND_TOP_HZ)``; other roles end at
     ``min(MAX_DRIVER_TEST_FREQUENCY_HZ, hard_band[1])``. The declared analysis
     window stays unchanged. See ADR-0328.
     """
@@ -588,9 +590,9 @@ def resolve_driver_excitation_ceilings(
             ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
         )
     lower = MIN_DRIVER_TEST_FREQUENCY_HZ
-    if role not in LOW_FREQUENCY_ROLES:
+    if role in HIGH_FREQUENCY_ROLES:
         lower = max(lower, float(hard_band[0]))
-        if not (program_admission and role in HIGH_FREQUENCY_ROLES):
+        if not program_admission:
             lower = max(lower, float(measurement_band[0]))
     if role in HIGH_FREQUENCY_ROLES and lower < float(measurement_band[0]):
         log_event(
@@ -601,8 +603,9 @@ def resolve_driver_excitation_ceilings(
             declared_measurement_floor_hz=f"{float(measurement_band[0]):.1f}",
             excitation_floor_hz=f"{lower:.1f}",
         )
-    upper = (VERIFY_F_HI_HZ if role in HIGH_FREQUENCY_ROLES
-             else min(MAX_DRIVER_TEST_FREQUENCY_HZ, float(hard_band[1])))
+    upper = min(MAX_DRIVER_TEST_FREQUENCY_HZ,
+                AUDIO_BAND_TOP_HZ if role in HIGH_FREQUENCY_ROLES | FULL_RANGE_ROLES
+                else float(hard_band[1]))
     permitted_band = FrequencyBand(lower, upper)
     maximum_peak, level_provenance = declared_level_ceiling_dbfs(target)
     # Supersede-the-seed rule (ADR-0227 §9): only on the proven-HP path, only for

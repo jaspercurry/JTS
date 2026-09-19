@@ -394,11 +394,10 @@ def test_a_way1_verify_capture_grades_through_the_shipped_path():
     assert analysis.verify_tracking_curve is not None
     measure_sweep = conductor.program_for_phase(PHASE_MEASURE).segment("sweep_w")
     verify_sweep = conductor.program_for_phase(PHASE_VERIFY).segment("sweep_verify")
-    assert verify_sweep.f1_hz == measure_sweep.f1_hz == 45.0
-    assert verify_sweep.f2_hz == measure_sweep.f2_hz == 18000.0
-    assert analysis.summed_response.validity_floor_hz > measure_sweep.f1_hz
+    assert verify_sweep.f1_hz == WAY1_BAND.lower_hz < measure_sweep.f1_hz == 150.0
+    assert verify_sweep.f2_hz == measure_sweep.f2_hz == WAY1_BAND.upper_hz
     assert analysis.verify_tracking["tracking_band_hz"] == [
-        analysis.summed_response.validity_floor_hz, measure_sweep.f2_hz,
+        measure_sweep.f1_hz, measure_sweep.f2_hz,
     ]
     # R18 declines by SHAPE, never by a missing corner.
     assert analysis.verify_absolute == {

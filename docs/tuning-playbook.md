@@ -136,7 +136,7 @@ curve. The ceiling follows the highest trusted floor from the round's gated
 summed or driver takes, with its source take and any pure-room fallback
 disclosed. The clamp and room/speaker ownership remain defined in ADR-0256
 (`0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md`).
-Summed measurement sweeps use the resolved 20 Hz–20 kHz audio band (ADR-0328); room prescriptions still start at the evidence floor, `coverage_hz[0]`.
+Full-speaker sweeps use the resolved 20 Hz–20 kHz audio band (ADR-0328); room prescriptions still start at the evidence floor, `coverage_hz[0]`.
 Seats are ungated so room reflections remain in the response.
 
 The cut floor varies by frequency with the cross-position sigma. A large

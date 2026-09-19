@@ -586,7 +586,9 @@ def test_skipped_derivation_logs_named_role(caplog):
 @pytest.mark.parametrize("role", ["woofer", "mid", "subwoofer", "tweeter", "full_range"])
 @pytest.mark.parametrize("program_admission", [False, True])
 @pytest.mark.parametrize("hard_upper, expected_upper", [(12000, 12000), (20000, 20000), (30000, 23000)])
-def test_excitation_band_uses_audio_edges_and_keeps_interior_limits(role, program_admission, hard_upper, expected_upper):
+@pytest.mark.parametrize("global_max", [18000, 23000])
+def test_excitation_band_uses_audio_edges_and_keeps_interior_limits(monkeypatch, role, program_admission, hard_upper, expected_upper, global_max):
+    monkeypatch.setattr("jasper.active_speaker.excitation_safety_plan.MAX_DRIVER_TEST_FREQUENCY_HZ", global_max)
     target = {
         "role": role, "target_id": f"mono:{role}", "target_fingerprint": "f" * 64,
         "hard_excitation_band_hz": [45, hard_upper],
@@ -596,10 +598,9 @@ def test_excitation_band_uses_audio_edges_and_keeps_interior_limits(role, progra
     band, _cap = resolve_driver_excitation_ceilings(
         {"targets": [target]}, "f" * 64, program_admission=program_admission,
     )
-    expected_lower = 20 if role in {"woofer", "mid", "subwoofer"} else (
-        45 if role == "tweeter" and program_admission else 60)
+    expected_lower = (45 if program_admission else 60) if role == "tweeter" else 20
     assert (band.lower_hz, band.upper_hz) == (
-        expected_lower, 20000 if role == "tweeter" else expected_upper)
+        expected_lower, min(global_max, 20000 if role in {"tweeter", "full_range"} else expected_upper))
 
 
 _JTS3_TWEETER = {"hard_band": [1600, 20_000], "measurement_band": [2000, 18_000],
@@ -742,11 +743,7 @@ def test_resolve_driver_measurement_band_hz_raises_on_unknown_target():
         resolve_driver_measurement_band_hz(profile, "not-a-real-fingerprint")
 
 
-def test_a_full_range_sweep_never_reaches_below_its_declared_low_limit():
-    """A ``full_range`` driver has no crossover high-pass under it, so its
-    declared minimum recommended crossover frequency is the only thing between
-    a sweep and the suspension. The projection and the resolver sit in
-    different modules, so their composition is pinned rather than assumed."""
+def test_a_full_range_sweep_uses_audio_edges_after_low_limit_projection():
     declared_floor_hz = 80.0
     target = apply_driver_low_limit(
         {
@@ -766,4 +763,5 @@ def test_a_full_range_sweep_never_reaches_below_its_declared_low_limit():
 
     band, _ceiling = resolve_driver_excitation_ceilings({"targets": [target]}, "f" * 64)
 
-    assert band.lower_hz >= declared_floor_hz
+    assert target["hard_excitation_band_hz"][0] == declared_floor_hz
+    assert (band.lower_hz, band.upper_hz) == (20.0, 20000.0)
