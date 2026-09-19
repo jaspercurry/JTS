@@ -56,7 +56,7 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
         except OSError:
             pass
     if args.plan:
-        if any(getattr(args, key) is not None for key in ("program", "poses", "candidates", "repeats", "mover", "level_db", "levels", "spl")):
+        if any(getattr(args, key) is not None for key in ("program", "poses", "candidates", "repeats", "mover", "level_db")):
             raise ValueError("a plan document already states its run parameters")
         document = read_json_source(args.plan)
         if not isinstance(document, dict):
@@ -74,7 +74,7 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
         raise ValueError("candidates must name a fingerprint or base")
     if not candidates and (program.purpose, program.regime) == (PURPOSE_REAR, REGIME_BRANCHES):
         candidates = (_rear_cleared_candidate(),)
-    operator_level = any(value is not None for value in (args.level_db, args.levels, args.spl))
+    operator_level = args.level_db is not None
     level, level_source = default_run_level(program, state_path=seat_level_reference_state_path())
     request = request_for_program(
         program, candidates=candidates,
@@ -83,5 +83,4 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
         mover=args.mover or program.mover or "human",
     )
     facts = read_preflight_facts(request)
-    levels = args.levels if args.levels is not None else (program.levels if args.level_db is None and args.spl is None else None)
-    return preflight_levels(request, facts, levels, spl=args.spl)
+    return preflight_levels(request, facts, program.levels if args.level_db is None else None)

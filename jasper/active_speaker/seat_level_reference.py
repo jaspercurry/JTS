@@ -283,9 +283,6 @@ class ResolvedLevel:
     leveled_at: str = ""
     target_db_spl: float = DEFAULT_TARGET_DB_SPL
 
-    def fader_db_for(self, db_spl: float) -> float:
-        return self.reference_volume_db + (db_spl - self.anchor_db_spl)
-
     def db_spl_at(self, fader_db: float) -> float:
         return self.anchor_db_spl + (fader_db - self.reference_volume_db)
 

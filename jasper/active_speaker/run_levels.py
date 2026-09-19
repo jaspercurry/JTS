@@ -101,27 +101,14 @@ def _ladder(plans: Sequence[AngleCaptureRequest], facts: PreflightFacts) -> Leve
     return LevelLadder(tuple(reports), facts)
 
 
-def _comma_floats(text: str) -> tuple[float, ...]:
-    return tuple(float(value) for value in text.split(","))
-
-
 def preflight_levels(plan: AngleCaptureRequest, facts: PreflightFacts,
-                     levels: str | None = None, *, spl: str | None = None) -> PreflightReport | LevelLadder:
-    if spl is not None:
-        if levels is not None or plan.levels is not None or plan.level.level_db is not None:
-            raise ValueError("spl requires a plan without levels or level-db")
-        requested = _comma_floats(spl)
-        report = preflight(plan, facts)
-        anchor = report.plan.level.resolved
-        if anchor is None:
-            return report
-        plan = replace(report.plan, levels=tuple(anchor.fader_db_for(value) for value in requested))
+                     levels: str | None = None) -> PreflightReport | LevelLadder:
     if levels is not None:
         if not isinstance(levels, str) or plan.level.level_db is not None:
             raise ValueError("levels require a plan without level-db")
         if levels == "auto":
             return level_ladder(plan, facts)
-        plan = replace(plan, levels=_comma_floats(levels))
+        plan = replace(plan, levels=tuple(float(value) for value in levels.split(",")))
     if plan.levels is None:
         return preflight(plan, facts)
     return _ladder(tuple(replace(plan, levels=None, level=replace(plan.level, level_db=value))
