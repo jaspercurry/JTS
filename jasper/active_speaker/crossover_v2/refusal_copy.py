@@ -64,6 +64,7 @@ REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
 # `capture_dispatch.assess`.
 REASON_ANCHOR_AMBIGUOUS = "anchor_ambiguous"
 REASON_ANCHOR_TOO_QUIET = "anchor_too_quiet"
+REASON_PILOT_STEP_IMPLAUSIBLE = "pilot_step_implausible"
 REASON_CLIPPED = "clipped"
 REASON_MEASURE_GAIN_ADJUSTED = "measure_gain_adjusted"
 REASON_LEVEL_DRIFT_AT_SESSION_GAIN = "level_drift_at_session_gain"
@@ -576,13 +577,20 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_ANCHOR_AMBIGUOUS: _retriable_reason(
         REASON_ANCHOR_AMBIGUOUS, TEMPLATE_FIX_AND_RETRY, 1,
-        # About the RECORDING and not the speaker: this code fires when the
-        # evidence does not identify which driver played what, so naming a
-        # cause in the speaker would be an over-claim. Re-recording clears it,
-        # because the anchor collapse is a property of one take.
+        # About the RECORDING and not the speaker: naming a cause in the
+        # speaker would be an over-claim. Re-recording clears it, because the
+        # anchor collapse is a property of one take.
         RetryableReasonCopy(
             "JTS couldn't line that recording up with the test tones it played.",
             "Try that measurement again.",
+        ),
+        capture_quality=True,
+    ),
+    REASON_PILOT_STEP_IMPLAUSIBLE: _retriable_reason(
+        REASON_PILOT_STEP_IMPLAUSIBLE, TEMPLATE_FIX_AND_RETRY, 1,
+        RetryableReasonCopy(
+            "The two level-check tones did not differ by the programmed step, so this recording cannot be trusted.",
+            "Take it again.",
         ),
         capture_quality=True,
     ),

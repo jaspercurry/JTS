@@ -213,7 +213,7 @@ def _assess_recording(
     if evidence["anchor_ambiguous"]:
         return refuse(reasons.REASON_ANCHOR_AMBIGUOUS)
     if analysis.delta_implausible:
-        return (refuse(reasons.REASON_ANCHOR_AMBIGUOUS) if analysis.pilot_snr_ok is True
+        return (refuse(reasons.REASON_PILOT_STEP_IMPLAUSIBLE) if analysis.pilot_snr_ok is True
                 else quiet(reasons.REASON_SNR_FLOOR))
     if phase == "check" and analysis.channel_map_ok is False:
         return refuse(reasons.REASON_CHANNEL_MAP_MISMATCH, next="stop", charge="none", ok=True)
@@ -222,15 +222,13 @@ def _assess_recording(
     # Retire when locate can resolve the timeline without a corroborating witness.
     if anchor is not None and anchor.corroborated is False:
         return quiet(reasons.REASON_ANCHOR_TOO_QUIET, charge="speaker" if gains else "operator")
-    if analysis.mic_meter_status in {"low", "too_quiet"}:
-        return quiet(reasons.REASON_PILOT_LEVEL_COLLAPSE)
     schedule_ok = _sweep_schedule_ok(analysis, sample_rate)
     if not schedule_ok and sweep_confidence_min is not None and sweep_confidence_min < SWEEP_LOCATE_CONFIDENCE_FLOOR:
         return quiet(reasons.REASON_LOCATE_FAILED)
     integrity = analysis.capture_integrity
     if integrity is not None and INTEGRITY_CHECK_SWEEP_HEARD in integrity.failed:
         return quiet(reasons.REASON_LOCATE_FAILED)
-    if _any_sweep_clipped(analysis) or analysis.mic_meter_status == "clipping":
+    if _any_sweep_clipped(analysis):
         targets = {role: gain - CLIP_RETRY_BACKOFF_DB for role, gain in gains.items()}
         return refuse(reasons.REASON_CLIPPED, next="retake_quieter", charge="speaker", targets=targets)
     if analysis.glitch_detected or (analysis.discontinuity_samples or 0) != 0 or (integrity and integrity.failed):
