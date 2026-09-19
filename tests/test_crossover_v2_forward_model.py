@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Exact capture reconstruction, candidate forecasts, and measured comparisons."""
+"""Exact capture reconstruction and candidate forecasts."""
 
 import json
 import shutil
@@ -26,13 +26,11 @@ from jasper.active_speaker.crossover_v2.capture_prediction import (
 )
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.forward_model import (
-    ACCEPTANCE_JUDGED,
     ACCEPTANCE_NOT_RUN,
     ForwardModelError,
     PredictedSum,
     predicted_minus_measured_db,
 )
-from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
 from jasper.active_speaker.crossover_v2.position_cycle import parse_curve_complex
 from jasper.active_speaker.crossover_v2.round_captures import (
     REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
@@ -88,39 +86,6 @@ def _banked(role: str, tf: np.ndarray, freqs: np.ndarray, band=BAND) -> dict:
         "magnitude_db": [float(db) for db in 20.0 * np.log10(np.abs(tf))],
         "phase_deg": [float(deg) for deg in np.degrees(np.angle(tf))],
     }
-
-
-def _bank_take(
-    tmp_path: Path,
-    curves,
-    *,
-    phase: str = PHASE_MEASURE,
-    position_deg: int = 0,
-    take_id: str = "p0_a01",
-) -> Path:
-    """A bundle carrying one banked take, at the path the store writes.
-
-    No index file: ``bundle_measurements`` rescans the take files on disk,
-    which is what a hand-built fixture like this one relies on.
-    """
-
-    positions = (
-        tmp_path / EVIDENCE_ROOT / "artifacts" / "crossover_v2" / "capture-1"
-        / "positions"
-    )
-    positions.mkdir(parents=True, exist_ok=True)
-    (positions / f"{take_id}.json").write_text(
-        json.dumps({
-            "schema_version": 1,
-            "kind": POSITION_EVIDENCE_KIND,
-            "phase": phase,
-            "take_id": take_id,
-            "position_deg": position_deg,
-            "curves": curves,
-        }),
-        encoding="utf-8",
-    )
-    return tmp_path
 
 
 def _translated(ir: np.ndarray, samples: int) -> np.ndarray:
@@ -377,35 +342,13 @@ def test_prediction_changes_compose_on_the_reconstructed_complex_branches(
     )
 
 
-@pytest.mark.parametrize(
-    "capture_id, shape_floor_db",
-    [("new-level", 0.0), ("new-shape", 1.0)],
-)
-def test_the_comparison_keeps_raw_level_error_separate_from_shape_error(
-    diagnostic_round: Path, capture_id: str, shape_floor_db: float,
-) -> None:
-    basis = read_diagnostic(diagnostic_round, "old", 7.0)
-    measured = read_diagnostic(diagnostic_round, capture_id, 7.0)
-
-    comparison = compare_transfer(basis, predict_transfer(basis, {}), measured)
-
-    assert comparison["raw_rms_db"] > 5.0
-    assert comparison["raw_max_abs_db"] >= comparison["raw_rms_db"]
-    assert comparison["max_abs_db"] >= shape_floor_db
-    assert comparison["phase"]["status"] == "unavailable"
-    if capture_id == "new-level":
-        assert comparison["level_offset_db"] == pytest.approx(20 * np.log10(2))
-        assert comparison["rms_db"] == pytest.approx(0.0, abs=1e-10)
-        assert comparison["raw_rms_db"] == pytest.approx(20 * np.log10(2))
-
-
 def test_phase_error_excludes_the_same_recordings_weak_cancellations(
     diagnostic_round: Path,
 ) -> None:
     basis = read_diagnostic(diagnostic_round, "old", 7.0)
     transfer = predict_transfer(basis, {}) * np.exp(1j * np.radians(12.0))
 
-    phase = compare_transfer(basis, transfer, basis)["phase"]
+    phase = compare_transfer(basis, transfer)["phase"]
 
     assert phase["status"] == "available"
     assert phase["rms_deg"] == pytest.approx(12.0)
@@ -502,48 +445,46 @@ def test_prediction_reconstructs_selected_physical_branches(diagnostic_round):
         response["role"] = identities[response["role"]]
     path.write_text(json.dumps(document))
     with pytest.raises(RoundCapturesRefused) as caught:
-        capture_prediction(diagnostic_round, capture_id="old", window_ms=7.0)
+        read_diagnostic(diagnostic_round, "old", 7.0)
     assert caught.value.reason == round_captures.REFUSE_CAPTURE_UNREADABLE
-    summary = capture_prediction(diagnostic_round, capture_id="old", window_ms=7.0,
-                                 branch_roles=("left:woofer", "left:woofer:rear"))["summary"]
-    assert summary["branches"] == ["left:woofer", "left:woofer:rear"]
-    assert summary["comparison_kind"] == "same_take_reconstruction"
-    assert summary["reconstruction"]["raw_rms_db"] < 1e-8
-    assert summary["reconstruction"]["phase"]["rms_deg"] < 1e-8
+    basis = read_diagnostic(diagnostic_round, "old", 7.0,
+                            branch_roles=("left:woofer", "left:woofer:rear"))
+    assert basis.branches == ("left:woofer", "left:woofer:rear")
+    reconstruction = compare_transfer(basis, predict_transfer(basis, {}))
+    assert reconstruction["raw_rms_db"] < 1e-8
+    assert reconstruction["phase"]["rms_deg"] < 1e-8
     with pytest.raises(ForwardModelError) as caught:
-        capture_prediction(diagnostic_round, capture_id="old", branch_roles=("left:woofer", "left:woofer"))
+        read_diagnostic(diagnostic_round, "old", 7.0, branch_roles=("left:woofer", "left:woofer"))
     assert caught.value.detail["field"] == "branch_roles"
 
 
 @pytest.mark.parametrize("override", [False, True])
-def test_the_forecast_is_unjudged_until_the_exact_changed_candidate_take_exists(
+def test_the_forecast_is_unjudged_and_keeps_its_identity_when_relocated(
     diagnostic_round: Path, tmp_path: Path, tuning_profile, override: bool,
 ) -> None:
     source = _trial_candidate(tuning_profile, trim=-3.0, gain=-2.0)
     target = _trial_candidate(tuning_profile, trim=-5.0, gain=4.0)
     _bind_candidate_take(diagnostic_round, "old", source, tuning_profile)
-    _bind_candidate_take(diagnostic_round, "new-shape", target, tuning_profile)
     bundle = diagnostic_round / "bundle/b0"
-    groups = []
-    for name in ("old", "new-shape"):
-        path = bundle / "summed" / f"summed_{name}.json"
-        document = json.loads(path.read_text())
-        extra = dict(document, take_id=f"{name}-off", position_id=f"{name}-off", position_deg=15.0,
-                     wav_path=f"summed/summed_{name}-off.wav")
-        extra_path = path.with_stem(f"summed_{name}-off")
-        extra_path.write_text(json.dumps(extra))
-        shutil.copyfile(path.with_suffix(".wav"), extra_path.with_suffix(".wav"))
-        groups.append(manifest_set([(str(path.relative_to(bundle)), document),
-                                    (str(extra_path.relative_to(bundle)), extra)], set_id=name))
-    write_manifest(diagnostic_round, groups=groups)
-    source_id, measured_id = ("old-off", "new-shape-off") if override else ("old", "new-shape")
-    forecast = capture_prediction(diagnostic_round, capture_id=source_id, window_ms=7.0,
+    path = bundle / "summed/summed_old.json"
+    document = json.loads(path.read_text())
+    extra = dict(document, take_id="old-off", position_id="old-off", position_deg=15.0,
+                 wav_path="summed/summed_old-off.wav")
+    extra_path = path.with_stem("summed_old-off")
+    extra_path.write_text(json.dumps(extra))
+    shutil.copyfile(path.with_suffix(".wav"), extra_path.with_suffix(".wav"))
+    write_manifest(diagnostic_round, groups=[manifest_set([
+        (str(path.relative_to(bundle)), document),
+        (str(extra_path.relative_to(bundle)), extra),
+    ], set_id="old")])
+    source_id = "old-off" if override else "old"
+    forecast = capture_prediction(diagnostic_round, capture_id=source_id,
                                   candidate=target, basis_candidate=source)
     assert forecast["summary"]["basis"]["capture_id"] == source_id
     assert forecast["summary"]["candidate_id"] == target.fingerprint
-    assert forecast["summary"]["comparison_kind"] == "unmeasured_forecast"
     assert forecast["summary"]["acceptance"]["status"] == ACCEPTANCE_NOT_RUN
-    assert forecast["summary"]["measured"] is None
+    assert "predicted_minus_measured" not in forecast
+    assert not {"measured", "predicted_minus_measured", "comparison_kind", "comparison_context", "forecast_binding"} & forecast["summary"].keys()
     fingerprint = forecast["summary"]["prediction_fingerprint"]
     assert fingerprint
     assert forecast["relative_graph"]["usable_bins_by_role"]["woofer"] > 0
@@ -560,50 +501,10 @@ def test_the_forecast_is_unjudged_until_the_exact_changed_candidate_take_exists(
     canonical.parent.mkdir(parents=True, exist_ok=True)
     canonical.write_text(json.dumps(document))
     source_record.unlink()
-    judged = capture_prediction(relocated, capture_id=source_id, window_ms=7.0,
-                                candidate=target, basis_candidate=source,
-                                measured_round=diagnostic_round, measured_capture_id=measured_id,
-                                expected_prediction_fingerprint=fingerprint)
-    assert judged["summary"]["basis"]["record_path"] != forecast["summary"]["basis"]["record_path"]
-    assert judged["summary"]["prediction_fingerprint"] == fingerprint
-    assert judged["summary"]["forecast_binding"] == {
-        "status": "matched",
-        "expected_prediction_fingerprint": fingerprint,
-    }
-    assert judged["summary"]["comparison_kind"] == "changed_candidate"
-    assert judged["summary"]["acceptance"]["status"] == ACCEPTANCE_JUDGED
-    assert judged["summary"]["measured"]["capture_id"] == measured_id
-    assert judged["predicted_minus_measured"]["compared_points"] > 0
-
-
-def test_the_comparison_refuses_a_different_forecast(diagnostic_round, tuning_profile):
-    source = _trial_candidate(tuning_profile)
-    target = _trial_candidate(tuning_profile, trim=-5.0, gain=4.0)
-    _bind_candidate_take(diagnostic_round, "old", source, tuning_profile)
-    _bind_candidate_take(diagnostic_round, "new-shape", target, tuning_profile)
-    with pytest.raises(ForwardModelError) as caught:
-        capture_prediction(diagnostic_round, capture_id="old", candidate=target, basis_candidate=source,
-                           measured_capture_id="new-shape", expected_prediction_fingerprint="0" * 64)
-    assert caught.value.refusal_reason == "forward_model_forecast_mismatch"
-    assert caught.value.detail["actual_prediction_fingerprint"]
-
-
-def test_a_same_candidate_repeat_refuses_a_changed_played_graph(
-    diagnostic_round: Path, tuning_profile,
-) -> None:
-    source = _trial_candidate(tuning_profile)
-    changed = _trial_candidate(tuning_profile, trim=-5.0, gain=4.0)
-    _bind_candidate_take(diagnostic_round, "old", source, tuning_profile)
-    _bind_candidate_take(diagnostic_round, "new-level", changed, tuning_profile)
-    path = diagnostic_round / "bundle" / "b0" / "summed" / "summed_new-level.json"
-    document = json.loads(path.read_text())
-    document["candidate_id"] = source.fingerprint
-    path.write_text(json.dumps(document))
-
-    with pytest.raises(ForwardModelError) as caught:
-        capture_prediction(diagnostic_round, capture_id="old", measured_capture_id="new-level", window_ms=7.0)
-    assert caught.value.refusal_reason == "forward_model_graph_mismatch"
-    assert caught.value.detail["measured_capture_id"] == "new-level"
+    relocated_forecast = capture_prediction(relocated, capture_id=source_id,
+                                            candidate=target, basis_candidate=source)
+    assert relocated_forecast["summary"]["basis"]["record_path"] != forecast["summary"]["basis"]["record_path"]
+    assert relocated_forecast["summary"]["prediction_fingerprint"] == fingerprint
 
 
 # --------------------------------------------------------------------------- #
@@ -705,7 +606,7 @@ def test_preview_matches_the_old_forward_model_exactly(emitted_preview, capsys):
     base = find_banked_candidate(source.fingerprint, root=Path(args.root))
     composed = judge_prescription_document(doc, base=base, evidence=crossover_prescriber._document_evidence(args, doc))
     assert composed.fingerprint != target.fingerprint
-    golden = capture_prediction(Path(args.round), capture_id="old", candidate=target, basis_candidate=source, window_ms=7.0)
+    golden = capture_prediction(Path(args.round), capture_id="old", candidate=target, basis_candidate=source)
     assert crossover_prescriber.main(argv) == 0
     preview = json.loads(capsys.readouterr().out)["preview"]
     assert preview["kind"] == "jts_capture_prediction"
