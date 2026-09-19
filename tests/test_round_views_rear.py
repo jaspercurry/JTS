@@ -478,7 +478,7 @@ def test_rear_views_banked_behind_trial(summed_capture_bundle, covered_bands, tm
             else:
                 assert band["change_db"] is band["level_db"] is band["reference_db"] is None
                 assert band["reason"] == REASON_COVERAGE_SHORT
-        assert behind["curve"]["change_db"] == pytest.approx([expected] * len(behind["curve"]["freqs_hz"]), abs=0.01)
+        assert set(behind) == set(front) | {"trough_fill_db", "bands"}
         assert candidate["repeats"] == dict.fromkeys(positions, 1)
 
 

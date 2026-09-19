@@ -211,8 +211,6 @@ def _position_rows(
                 "band_hz": list(band), "level_db": None, "reference_db": None, "change_db": None,
                 "reason": REASON_COVERAGE_SHORT if key in reference_curve else REASON_NO_COMPARISON,
             }) for band in LEVEL_BANDS_HZ]
-            rows[key]["curve"] = {"freqs_hz": grid.tolist(), "magnitude_db": curve_db.tolist(),
-                                  "reference_db": reference_db.tolist(), "change_db": (curve_db - reference_db).tolist()}
     return rows
 
 

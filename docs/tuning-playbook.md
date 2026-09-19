@@ -343,6 +343,7 @@ After a preview predicts the wall-ward null, play the candidates:
 `jasper-round run --program rear --poses rear/behind --candidates base,<a>,<b>,<rear-muted>`
 uses two person-held poses, in front and behind the cabinet. Read the `behind`
 row's per-band `change_db` against rear-muted next to the preview's.
+The full trial curves are in `frequency_view.json` (the `frequency` view).
 
 To judge the cardioid by ear, flip between it and a fair "off". A rear-muted
 copy alone is not fair: the rear stage also changes the bass at the mic, so
