@@ -698,6 +698,13 @@ def test_wait_uses_live_capture_identity(captures, status, reason, result, polls
     assert not opener.posts()
 
 
+def test_wait_publishes_operator_stop_reason(tmp_path):
+    banked = round_bank.BankedRound(tmp_path, {})
+    (tmp_path / "packet.json").write_text(json.dumps({"result": "partial", "reason": "user_stopped"}))
+    answer = round_packet.wait_answer(banked, {"result": "failed", "reason": None}, verbose=False)
+    assert answer["reason"] == "user_stopped"
+
+
 @pytest.mark.parametrize("verb", ["wait", "run", "trial"])
 @pytest.mark.parametrize("timeout", ["--timeout", "--timeout-s"])
 @pytest.mark.parametrize("verbose", [False, True])

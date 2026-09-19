@@ -17,7 +17,8 @@ RUN_ENDED = "This run has ended. Choose a pose set to start the next one."
 def pose_name(pose: Mapping[str, Any]) -> str:
     from .crossover_v2.frequency_view import position_label  # lazy: keeps the CLI parser numpy-free
 
-    return position_label({"position_deg": pose.get("deg", 0), "vertical_deg": pose.get("elevation_deg", 0)})
+    label = position_label({"position_deg": pose.get("deg", 0), "vertical_deg": pose.get("elevation_deg", 0)})
+    return f"{pose['kind']}: {label}" if pose.get("kind") else label
 
 
 def pose_line(facts: Mapping[str, Any]) -> str:
@@ -94,9 +95,16 @@ def coverage_lines(packet: Mapping[str, Any], manifest: Mapping[str, Any]) -> li
     if poses:
         lines += ["Measured poses: " + "; ".join(poses) + ".",
                   "Measured roles: " + ", ".join(sorted({t["role"] for t in takes if t.get("role")})) + "."]
-    lines += [f"Waived: {pose_name(row['pose'])}." if row["reason"] == "complete_requested" else
-              f"Not measured: {pose_name(row['pose'])}. {refusal_copy_for(row['reason'])[0]}"
-              for row in manifest.get("not_measured", ())]
+    missing: dict[str, list[str]] = {}
+    for row in manifest.get("not_measured", ()):
+        missing.setdefault(json.dumps(row["pose"], sort_keys=True), []).append(row["reason"])
+    for pose, reasons in missing.items():
+        name = pose_name(json.loads(pose))
+        count_label = f" ({len(reasons)} planned captures)" if len(reasons) > 1 else ""
+        prefix = "Waived" if set(reasons) == {"complete_requested"} else "Not measured"
+        details = " ".join(refusal_copy_for(reason)[0] for reason in dict.fromkeys(reasons)
+                           if reason != "complete_requested")
+        lines.append(f"{prefix}: {name}{count_label}. {details}".rstrip())
     lines += list(dict.fromkeys(f"Unqualified band ({t['role']}): below {t['trusted_floor_hz']:g} Hz."
                                for t in takes if t.get("trusted_floor_hz") is not None))
     lines += [str(line) for line in packet.get("disclosures", ())]
