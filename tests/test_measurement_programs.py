@@ -137,6 +137,7 @@ def test_available_programs_is_the_sorted_registry() -> None:
         ("branches", "express"),
         ("close", "spot"),
         ("front_rear", "express"),
+        ("rear", "behind"),
         ("rear", "express"),
         ("rear", "pair"),
         ("rear", "pair_behind"),
@@ -334,27 +335,21 @@ def test_the_rear_pair_row_reuses_the_express_layout_and_the_proven_front_rear_p
         "pair", mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR)
 
 
-def test_the_rear_pair_behind_row_places_the_microphone_behind_the_cabinet() -> None:
-    """The pair-behind take is the same front/rear branch pair, with a human
-    mover pinned so the microphone can stand behind the cabinet, at the
-    cardioid null the arm cannot reach (issue #5330). Behind is a pose KIND,
-    on axis at ``distance_m`` from the back panel -- never a 180 deg bearing,
-    which the tangent geometry ceiling refuses regardless of mover."""
-    row = mp.program("rear", "pair_behind")
-
-    assert (row.purpose, row.regime, row.branch_pair, row.mover) == (
-        mp.PURPOSE_REAR, mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR, "human")
+@pytest.mark.parametrize("size,regime,pair", [
+    ("pair_behind", mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR),
+    ("behind", mp.REGIME_SUMMED, mp.BRANCH_PAIR_DRIVERS),
+])
+def test_rear_behind_rows_place_the_microphone_behind_the_cabinet(size, regime, pair) -> None:
+    row = mp.program("rear", size)
+    assert (row.layout, row.purpose, row.regime, row.branch_pair, row.mover) == (
+        "rear_behind", mp.PURPOSE_REAR, regime, pair, "human")
     assert [(pose.azimuth_deg, pose.elevation_deg, pose.kind, pose.distance_m, pose.repeats)
             for pose in row.poses] == [
-        (0, 0, mp.POSE_KIND_BEARING, None, 2),
-        (0, 0, mp.POSE_KIND_BEHIND, 0.1, 2),
+        (0, 0, mp.POSE_KIND_BEARING, None, 1),
+        (0, 0, mp.POSE_KIND_BEHIND, 0.1, 1),
     ]
     assert mp.program("rear").size == "express"
-    resolved = mp.run_program("rear", "rear/pair_behind")
-    assert (resolved.size, resolved.regime, resolved.branch_pair, resolved.mover) == (
-        "pair_behind", mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR, "human")
-    behind_pose, = (pose for pose in resolved.poses if pose.kind == mp.POSE_KIND_BEHIND)
-    assert behind_pose.distance_m == 0.1
+    assert mp.run_program("rear", f"rear/{size}") == row
 
 
 def test_a_behind_pose_states_its_own_distance_from_the_back_panel() -> None:

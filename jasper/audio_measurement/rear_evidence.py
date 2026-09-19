@@ -189,15 +189,16 @@ def late_energy_change(
     }
 
 
-def upper_band_levels(
+def band_level_changes(
     freqs_hz: Any, curve_db: Any, *, reference_db: Any, coverage_hz: Sequence[float],
+    bands_hz: Sequence[tuple[float, float]] = UPPER_BANDS_HZ,
 ) -> list[dict[str, Any]]:
-    """Levels above the rear stage's own band: candidate against REAR-MUTED on the same grid;
+    """Candidate levels against REAR-MUTED on the same grid;
     power means of the 1/6-octave level. ``coverage_hz`` is the swept band,
     not the room-clamped coverage; a band not wholly inside it or without
     bins on this grid is absent."""
     freqs = np.asarray(freqs_hz, dtype=np.float64)
-    bands = [band for band in UPPER_BANDS_HZ
+    bands = [band for band in bands_hz
              if band[0] >= coverage_hz[0] and band[1] <= coverage_hz[1]
              and _band(freqs, band).size]
     if not bands:

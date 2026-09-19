@@ -570,7 +570,7 @@ def test_late_energy_change_uses_each_sides_median(candidate_count, reference_co
 def test_upper_band_levels_compare_only_wholly_covered_bands(ceiling, bands):
     freqs = np.geomspace(20, 5000, 600)
 
-    rows = rear_evidence.upper_band_levels(
+    rows = rear_evidence.band_level_changes(
         freqs, np.full_like(freqs, 2.0), reference_db=np.zeros_like(freqs), coverage_hz=(20, ceiling),
     )
 

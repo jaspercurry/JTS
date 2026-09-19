@@ -27,7 +27,7 @@ from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs,
     compile_candidate_config, prove_candidate_config,
 )
-from .measurement_programs import PURPOSE_BASS
+from .measurement_programs import BRANCH_PAIR_FRONT_REAR, PURPOSE_BASS, PURPOSE_REAR
 from .profile import SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
 from .seat_level_reference import (
     AnchorFacts, LevelUnresolved, RungMeasurementUnavailable, SeatLevelTargetError, check_target_capture_dbfs, resolve_anchor_level,
@@ -144,10 +144,12 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
         add(WALK_OVER_CAPTURE_CAPACITY, f"captures={captures}, retries_per_pose={plan.retries_per_pose}; limit={MAX_CAPTURE_PLAN_ATTEMPTS}")
         valid_shape = False
 
-    # Remove when branch plans can only name two distinct declared targets.
+    # Remove when plans can only name declared capture targets.
     if valid_shape and facts.declared_target_ids is not None:
         pairs = {branch_target_ids_for(capture.branch_pair, facts.roles_bands)
                  for capture in plan.stops if capture.regime == REGIME_BRANCHES}
+        if any(capture.purpose == PURPOSE_REAR for capture in plan.stops):
+            pairs.add(branch_target_ids_for(BRANCH_PAIR_FRONT_REAR, facts.roles_bands))
         missing = tuple(sorted({target for pair in pairs for target in pair} - set(facts.declared_target_ids)))
         invalid_pairs = tuple(sorted(pair for pair in pairs if len(pair) != 2 or len(set(pair)) != 2 or not all(pair)))
         if missing or invalid_pairs:
