@@ -905,6 +905,7 @@ class AnchorEvidence:
     # Capture time minus program time, in milliseconds.
     shift_ms: float | None = None
     witness_residual_ms: float | None = None
+    # Two-pilot arbitration only; the sweep-witness path has one hypothesis, so no runner-up.
     runner_up_presence: float | None = None
     runner_up_confidence: float | None = None
     witnesses_tried: int | None = None
