@@ -155,6 +155,29 @@ def _pair_take(*, rear_role="woofer:rear", branches=True):
     )
 
 
+@pytest.mark.parametrize("rear_role", ["woofer:rear", None])
+@pytest.mark.parametrize("anchor", [None, AnchorEvidence(), AnchorEvidence(
+    presence=.5, confidence=.9, runner_up_presence=.01, runner_up_confidence=.4, witnesses_tried=2,
+)])
+def test_take_carries_anchor_margin_and_each_roles_sweep_confidence(rear_role, anchor):
+    analysis = _pair_take(rear_role=rear_role)
+    analysis = replace(analysis, anchor=anchor, locations=(*analysis.locations,
+        replace(_loc("pilot", kind="pilot", confidence=.1), role="woofer"),
+        _loc("sum", kind="summed_sweep", confidence=.12)))
+    evidence = cd.assess(analysis, phase="measure", gain_db=GAINS).evidence
+    assert {key: value for key, value in evidence.items() if key.startswith("locate_confidence.")} == {
+        "locate_confidence.woofer": .6954, f"locate_confidence.{rear_role or 'summed'}": .2376,
+    }
+    assert evidence["locate_confidence_min"] == .1
+    anchor_figures = {key: evidence[key] for key in (
+        "anchor_runner_up_presence", "anchor_runner_up_confidence", "anchor_witnesses_tried",
+    ) if key in evidence}
+    assert anchor_figures == ({
+        "anchor_runner_up_presence": .01, "anchor_runner_up_confidence": .4, "anchor_witnesses_tried": 2.0,
+    } if anchor and anchor.witnesses_tried is not None else {})
+    assert all(type(value) is float for value in anchor_figures.values())
+
+
 @pytest.mark.parametrize(("rear_role", "branches", "on_schedule"), [
     ("woofer:rear", True, True),
     ("tweeter", True, True),

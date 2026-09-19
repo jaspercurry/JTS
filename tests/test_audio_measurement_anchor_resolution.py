@@ -996,6 +996,11 @@ def test_check_keeps_its_first_witness_and_three_locates(monkeypatch, caplog, ru
         )
     assert anchor == first and offset == 0
     assert evidence.ambiguous is (runner_up_confidence == .4)
+    assert np.isfinite(evidence.runner_up_presence)
+    assert evidence.runner_up_presence == .5 and evidence.runner_up_presence <= evidence.presence
+    assert np.isfinite(evidence.runner_up_confidence)
+    assert evidence.runner_up_confidence == runner_up_confidence
+    assert evidence.witnesses_tried == 1
     assert calls == [(witness.start_sample, False),
                      (witness.start_sample + first.start_sample - program.segment("pilot_woofer_hi").start_sample, False),
                      (witness.start_sample, True)]

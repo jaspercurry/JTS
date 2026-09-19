@@ -47,6 +47,7 @@ def test_anchor_tries_scheduled_witnesses_only_until_one_discriminates(monkeypat
     assert evidence.ambiguous is (deciding_witness is None)
     assert evidence.presence == (.01 if deciding_witness is None else .8)
     assert evidence.confidence == (.4 if deciding_witness is None else .9)
+    assert evidence.witnesses_tried == tried
     assert calls == [
         (seg.start_sample + shift, False)
         for seg in witnesses[:tried] for shift in (0, -spacing)

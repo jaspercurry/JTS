@@ -281,6 +281,8 @@ def _resolve_anchor(
     return best_seg, best_offset, AnchorEvidence(
         ambiguous=ambiguous, presence=float(best_presence),
         confidence=float(best_confidence), corroborated=bool(corroborated),
+        runner_up_presence=float(runner_up_presence), runner_up_confidence=float(runner_up),
+        witnesses_tried=witnesses_tried,
     )
 
 
