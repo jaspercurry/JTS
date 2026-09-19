@@ -600,8 +600,9 @@ def status_document(
     profile = load_applied_baseline_profile_state(applied_profile_path)
     identity = applied_identity(profile) or {}
     programs = programs_for_topology(load_output_topology())
-    banked = latest_banked_rounds(identity, programs=programs)
-    action = next_program_action(profile, identity, banked, programs=programs)
+    action = next_program_action(profile, identity, latest_banked_rounds(identity, programs=programs),
+                                 programs=programs)
+    banked = latest_banked_rounds(identity, programs=programs, include_stale=True)
     sections["applied"].update(
         layers=applied_layer_names(profile), candidate_fingerprint=identity.get("candidate"),
         reference_volume_db=seat_level_db, leveled_db_spl=level.get("measured_db_spl"),
@@ -622,9 +623,10 @@ def status_document(
         "seat_level_reference_volume_db": seat_level_db,
         "reading_order": [{key: value for key, value in entry.items() if key != "name"}
                           for entry in reading_order()],
-        "last_banked": {name: {key: banked[name][key] for key in ("round_id", "banked_at", "status")}
+        "last_banked": {name: {key: banked[name][key] for key in ("round_id", "banked_at", "status", "stale")}
                         if name in banked else None for name in programs},
-        "next": {key: action[key] for key in ("program", "reason_code")},
+        "next": {"program": None if action["reason_code"] == "complete" else action["program"],
+                 "reason_code": action["reason_code"]},
         "next_commands": _next_commands(
             sections, packet_error=packet_error, seat_level_db=seat_level_db,
             session_dir=session_dir, evidence=evidence, state=state,
