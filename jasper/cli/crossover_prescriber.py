@@ -30,7 +30,7 @@ from jasper.active_speaker.crossover_v2.prescription_document import (
 )
 from jasper.active_speaker.crossover_v2.rear_preview import summary_rows
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    banked_round_of, recent_round_sessions, round_inputs, prescription_sources, resolve_set, RoundInputs, RoundViewsError,
+    banked_round_of, recent_round_sessions, round_inputs, prescription_sources, resolve_set, RoundInputs,
 )
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.seat_level_reference import seat_level_reference_volume_db
@@ -176,7 +176,7 @@ def _cmd_document(args: argparse.Namespace) -> int:
         print(json.dumps(PrescriptionDocumentRefused(exc.code, None, exc.detail).to_dict(), sort_keys=True))
         return EXIT_REFUSED
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
-        code = exc.code if isinstance(exc, RoundViewsError) and exc.code else REASON_UNREADABLE
+        code = getattr(exc, "code", REASON_UNREADABLE)
         print(json.dumps(PrescriptionDocumentRefused(code, None, str(exc)).to_dict(), sort_keys=True))
         return EXIT_UNREADABLE
     answer = {"ok": True, "code": None, "section": None, "next_action": None, "error": None,
@@ -240,7 +240,7 @@ def _cmd_contract(args: argparse.Namespace) -> int:
     except RoundSetRefused as exc:
         return failed(EXIT_REFUSED, exc.reason, exc.detail)
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
-        code = exc.code if isinstance(exc, RoundViewsError) and exc.code else REASON_UNREADABLE
+        code = getattr(exc, "code", REASON_UNREADABLE)
         return failed(EXIT_UNREADABLE, code, str(exc))
     if args.out:
         try:

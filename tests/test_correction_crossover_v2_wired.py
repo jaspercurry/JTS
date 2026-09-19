@@ -867,8 +867,8 @@ async def test_host_retake_after_budget_exhaustion_keeps_its_code(monkeypatch, t
 
 @pytest.mark.parametrize("caller,code,template", [
     (arm_walk.EXIT_STUCK, "arm_host_stuck", "hard_stop"),
-    (arm_walk.EXIT_MOVE_FAILED, "move_failed", "hard_stop"),
-    (arm_walk.EXIT_TERMINATED_PARKED, "terminated_parked", "hard_stop"),
+    (arm_walk.EXIT_MOVE_FAILED, "move_failed", "session_restart"),
+    (arm_walk.EXIT_TERMINATED_PARKED, "terminated_parked", "session_restart"),
     (arm_walk.EXIT_INTERRUPTED_PARKED, "user_stopped", "session_restart"),
     ("human", "user_stopped", "session_restart"),
 ])

@@ -64,7 +64,6 @@ class RoundPacket:
                 "finalized": self.finalized,
                 "status": "complete" if self.finalized and measured else "partial",
                 "reason": self.manifest.reason or (issues[0]["code"] if issues and not measured else ""),
-                "evidence": self.manifest.evidence or first.get("evidence", {}),
                 "honoured": {**first["honoured"], **{
                     key: sum(run["honoured"][key] for run in runs)
                     for key in ("mic_moves", "stops_planned", "takes_measured", "takes_refused")}},

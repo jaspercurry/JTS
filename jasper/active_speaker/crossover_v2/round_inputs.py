@@ -92,11 +92,10 @@ def round_artifact_dir(session_dir: Path) -> tuple[Path | None, str]:
 
 
 class RoundViewsError(CrossoverEvidencePacketError):
-    """A round view could not be read."""
-
     def __init__(self, message: str, *, code: str | None = None) -> None:
         super().__init__(message)
-        self.code = code
+        if code is not None:
+            self.code = code
 
 
 @dataclass(frozen=True)

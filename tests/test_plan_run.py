@@ -385,8 +385,12 @@ def test_incomplete_take_obeys_verdict_and_accounts_for_remaining_stops(monkeypa
     assert all(stop["reason"] == REASON_CLIPPED for stop in result.not_measured)
 
 
-@pytest.mark.parametrize("failure", [None, SeamFailure, RuntimeError, asyncio.CancelledError])
-def test_timing_excludes_placement_and_all_exits_publish_terminal_state(monkeypatch, failure):
+@pytest.mark.parametrize("failure,code,reason", [
+    (None, None, ""), (SeamFailure, None, "seam_failed"), (asyncio.CancelledError, None, "cancelled"),
+    *[(RuntimeError, code, "internal_error") for code in (None, "unknown_refusal", 7, [])],
+    (RuntimeError, "session_level_not_ready", "session_level_not_ready"),
+])
+def test_timing_excludes_placement_and_all_exits_publish_terminal_state(monkeypatch, failure, code, reason):
     now = 0.0
     class MovingGate(AnsweredGate):
         def gate(self, *args):
@@ -398,7 +402,9 @@ def test_timing_excludes_placement_and_all_exits_publish_terminal_state(monkeypa
             nonlocal now
             now += 5.0
             if failure:
-                raise failure()
+                exc = failure()
+                exc.code = code
+                raise exc
             return await super().run(**kwargs)
     gate, fakes = MovingGate(), FakeSeams(play=TimedPlay())
     store = _Store(fakes.records)
@@ -419,6 +425,7 @@ def test_timing_excludes_placement_and_all_exits_publish_terminal_state(monkeypa
     assert terminal["wall_s"] == [5.0]
     assert terminal["status"] == gate.published()["run"]["status"] == expected
     assert terminal["finalized"] is True
+    assert terminal["reason"] == reason
     assert gate.published()["pending"] is None
     if failure:
         assert gate.published()["run"]["fault"] == terminal["reason"]
@@ -1239,10 +1246,10 @@ async def test_run_host_banks_admission_failure_code_and_segments(monkeypatch, t
         else:
             await run
             play.assert_not_awaited()
-            assert manifest.takes[0]["quality"]["evidence"]["admission"] == admission.to_dict()
         await packet.finish()
         assert packet.runs["run"]["reason"] == "program_admission_refused"
         assert all(row["reason"] == "program_admission_refused" for row in manifest.not_measured)
     saved = store.snapshots[-1]
     assert saved["reason"] == "program_admission_refused"
-    assert saved["evidence"]["admission"] == admission.to_dict()
+    if site == "transaction":
+        assert saved["sets"][0]["takes"][0]["quality"]["evidence"]["admission"] == admission.to_dict()

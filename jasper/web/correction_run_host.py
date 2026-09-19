@@ -225,7 +225,6 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
             classified = classify_program_failure(exc)
             manifest.reason = (classified[0] if classified else getattr(exc, "code", None)) or REASON_INTERNAL_ERROR
             manifest.detail = exception_detail(exc)
-            manifest.evidence = getattr(exc, "evidence", {})
             raise
         finally:
             door.opened = bound.door.opened if bound else None

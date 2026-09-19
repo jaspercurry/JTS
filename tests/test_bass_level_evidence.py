@@ -4,7 +4,7 @@
 import copy
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -13,6 +13,7 @@ from jasper.active_speaker.bass_fit import BASS_GRID_POINTS, fit_bass_shape
 from jasper.active_speaker.bass_level_evidence import bass_level_evidence
 from jasper.active_speaker.bass_table import fit_bass_table
 from jasper.active_speaker.bass_table_report import bass_table_rows
+from jasper.active_speaker.crossover_v2.round_inputs import RoundViewsError
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
 from jasper.active_speaker.round_packet import finish_bass_packet
 from jasper.active_speaker.round_packet_report import INDEX_FILENAME, bass_table_markdown
@@ -416,3 +417,7 @@ def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path,
             [round(band[key], 1) if band[key] is not None else None for key in ("prescribed_boost_db", "value_db")]
             for band in row["realized_boost_db"]]
     assert json.loads((tmp_path / "packet.json").read_text())["bass_table"] == payload
+    finish_bass_packet(tmp_path, manifest, join_levels=Mock(side_effect=RoundViewsError("missing inputs")))
+    assert json.loads((tmp_path / "packet.json").read_text())["bass_table"] == {
+        "status": "unavailable", "code": "bass_fit_inputs_missing", "error_type": "RoundViewsError",
+    }

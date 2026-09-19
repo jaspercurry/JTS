@@ -38,7 +38,6 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.web.correction_run_host import bind_run_door, compose_plan_program, publish_round_packet
-from jasper.active_speaker.program_failure import classify_program_failure as classify_program_failure
 from jasper.active_speaker.commission_wiring import commissioning_spl_ceiling_db
 from jasper.active_speaker.plan_run import RunSignals, PlanCapture, prepare_plan_captures, preview_schedule
 from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints

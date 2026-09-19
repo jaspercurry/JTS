@@ -426,6 +426,8 @@ ARM_STOP_COPY = {
 ARM_STOP_REASONS = frozenset(ARM_STOP_COPY) | {REASON_ARM_HOST_STUCK, REASON_INTERNAL_ERROR}
 
 
+# The §5.10 table, as data. The envelope and the session both read it, so
+# copy and budget never drift between the verdict and its screen.
 REASON_REGISTRY: dict[str, ReasonSpec] = {
     "dry_run_requires_local_host": ReasonSpec("dry_run_requires_local_host", TEMPLATE_HARD_STOP, 0, "",
         "Dry-run reads this machine's facts. Run it on the speaker."),
@@ -654,9 +656,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_CAPTURE_TIMEOUT: ReasonSpec(
         REASON_CAPTURE_TIMEOUT, TEMPLATE_SESSION_RESTART, 0, "",
-        # The old link is dead once the session collapses, so the copy must not
-        # say "open the link again" — that link and its QR are gone. Start
-        # over mints a FRESH session from this page.
         "The measurement link timed out. Start over from this page to measure "
         "again — the quick microphone check runs first.",
     ),
@@ -668,18 +667,18 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     "program_admission_refused": ReasonSpec(
         "program_admission_refused", TEMPLATE_HARD_STOP, 0, "",
         "The speaker's safety limits refused this sweep. Nothing was played for the refused sweep. "
-        "Check the refused segments in the round evidence and correct the sweep band, level or length before retrying.",
+        "Correct the sweep band, level or length before retrying.",
     ),
     "session_level_not_ready": ReasonSpec(
-        "session_level_not_ready", TEMPLATE_HARD_STOP, 0, "",
+        "session_level_not_ready", TEMPLATE_SESSION_RESTART, 0, "",
         "The measurement volume was not ready. Nothing was played for this sweep. "
         "Check the speaker's volume status, then start the measurement again.",
     ),
     "program_play_failed": ReasonSpec(
-        "program_play_failed", TEMPLATE_HARD_STOP, 0, "",
+        "program_play_failed", TEMPLATE_SESSION_RESTART, 0, "",
         "The speaker could not play the measurement program. Check the playback status before retrying.",
     ),
-    **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", message + " The remaining poses were not measured.")
+    **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message + " The remaining poses were not measured.")
        for code, message in ARM_STOP_COPY.items()},
     REASON_PROGRAM_UNPLAYABLE: ReasonSpec(
         REASON_PROGRAM_UNPLAYABLE, TEMPLATE_HARD_STOP, 0, "",
