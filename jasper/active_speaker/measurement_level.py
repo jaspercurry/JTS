@@ -13,7 +13,7 @@ import yaml
 from jasper.audio_measurement.program import RoleBand
 from jasper.output_topology import OutputTopology, measurement_target_id
 
-from .branch_peak import complex_channel_transfer
+from .graph_transfer import complex_channel_transfer
 from .measurement import active_driver_targets
 
 

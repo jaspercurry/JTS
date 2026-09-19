@@ -12,7 +12,7 @@ import yaml
 from jasper.active_speaker import branch_chain
 from jasper.active_speaker import camilla_yaml as emit
 from jasper.active_speaker import graph_safety as gs
-from jasper.active_speaker.branch_peak import complex_channel_transfer
+from jasper.active_speaker.graph_transfer import complex_channel_transfer
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.path_safety import staged_target_signature, topology_target_signature
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, SpeakerBaselineProfile

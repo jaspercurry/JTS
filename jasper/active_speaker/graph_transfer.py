@@ -28,20 +28,20 @@ _MODELLED_COMBO_TYPES = frozenset({
     "LinkwitzRileyHighpass", "LinkwitzRileyLowpass", "ButterworthHighpass", "ButterworthLowpass",
 })
 
-class BranchPeakError(RuntimeError):
+class GraphTransferError(RuntimeError):
     """The graph has no exactly modelled transfer."""
 
 
 def _finite(value: Any, what: str) -> float:
     number = finite_float(value)
     if number is None:
-        raise BranchPeakError(f"{what} must be a finite number, got {value!r}")
+        raise GraphTransferError(f"{what} must be a finite number, got {value!r}")
     return number
 
 
 def _mapping(value: Any, what: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise BranchPeakError(f"{what} is not a mapping")
+        raise GraphTransferError(f"{what} is not a mapping")
     return value
 
 
@@ -50,13 +50,13 @@ def _delay_seconds(params: Mapping[str, Any], name: str) -> float:
     subsample = params.get("subsample")
     if subsample not in (None, False):
         if subsample is True:
-            raise BranchPeakError(
+            raise GraphTransferError(
                 f"filter {name!r} uses a subsample Delay, whose allpass is not modelled"
             )
-        raise BranchPeakError(f"filter {name!r} has invalid subsample {subsample!r}")
+        raise GraphTransferError(f"filter {name!r} has invalid subsample {subsample!r}")
     delay = _finite(params.get("delay"), f"filter {name!r} delay")
     if delay < 0.0:
-        raise BranchPeakError(f"filter {name!r} has a negative delay")
+        raise GraphTransferError(f"filter {name!r} has a negative delay")
     unit = str(params.get("unit") or "ms")
     if unit == "samples":
         requested_samples = delay
@@ -67,7 +67,7 @@ def _delay_seconds(params: Mapping[str, Any], name: str) -> float:
     elif unit == "mm":
         requested_samples = delay * RESPONSE_SAMPLE_RATE_HZ / 343_000.0
     else:
-        raise BranchPeakError(f"filter {name!r} delays in {unit!r}")
+        raise GraphTransferError(f"filter {name!r} delays in {unit!r}")
     # CamillaDSP's default Delay is a delay line rounded to the nearest full
     # sample. The request is non-negative, so floor(x + 0.5) matches Rust's
     # f64::round rule at half-sample ties.
@@ -87,14 +87,14 @@ def _filter_records(
     for name in names:
         spec = filters.get(name)
         if not isinstance(spec, Mapping):
-            raise BranchPeakError(f"pipeline names filter {name!r}, which is undefined")
+            raise GraphTransferError(f"pipeline names filter {name!r}, which is undefined")
         kind = str(spec.get("type") or "")
         if kind not in _MODELLED_FILTER_TYPES:
-            raise BranchPeakError(f"filter {name!r} is a {kind or 'typeless'} filter")
+            raise GraphTransferError(f"filter {name!r} is a {kind or 'typeless'} filter")
         params = _mapping(spec.get("parameters"), f"filter {name!r} parameters")
         if kind == "Limiter":
             if not allow_limiter_passthrough:
-                raise BranchPeakError(
+                raise GraphTransferError(
                     f"filter {name!r} is nonlinear and has no complex transfer"
                 )
             continue
@@ -109,7 +109,7 @@ def _filter_records(
             elif gain_scale == "linear":
                 linear = gain
             else:
-                raise BranchPeakError(
+                raise GraphTransferError(
                     f"filter {name!r} uses gain scale {gain_scale!r}"
                 )
             if params.get("inverted") is True:
@@ -122,14 +122,14 @@ def _filter_records(
         if kind == "BiquadCombo":
             combo = str(params.get("type") or "")
             if combo not in _MODELLED_COMBO_TYPES:
-                raise BranchPeakError(f"filter {name!r} is a {combo!r} combo")
+                raise GraphTransferError(f"filter {name!r} is a {combo!r} combo")
             order = params.get("order")
             if isinstance(order, bool) or not isinstance(order, int) or order < 1:
-                raise BranchPeakError(f"filter {name!r} has order {order!r}")
+                raise GraphTransferError(f"filter {name!r} has order {order!r}")
             if combo.startswith("LinkwitzRiley") and order % 2:
                 # LR order N is two cascaded Butterworths of N/2; odd N has
                 # no such pair.
-                raise BranchPeakError(
+                raise GraphTransferError(
                     f"filter {name!r} has odd Linkwitz-Riley order {order}"
                 )
             _finite(params.get("freq"), f"filter {name!r} freq")
@@ -137,12 +137,12 @@ def _filter_records(
             continue
         shape = str(params.get("type") or "")
         if shape not in _MODELLED_BIQUAD_TYPES:
-            raise BranchPeakError(f"filter {name!r} is a {shape!r} biquad")
+            raise GraphTransferError(f"filter {name!r} is a {shape!r} biquad")
         # A bandwidth/slope width cannot use the evaluator's default q.
         if not isinstance(params.get("q"), (int, float)) or isinstance(
             params.get("q"), bool
         ):
-            raise BranchPeakError(
+            raise GraphTransferError(
                 f"filter {name!r} is a {shape} biquad with no numeric q "
                 f"(got {params.get('q')!r}); a bandwidth/slope width is not "
                 "modelled"
@@ -187,16 +187,16 @@ def _pipeline_operations(
     mixers = mixers if isinstance(mixers, Mapping) else {}
     pipeline = config.get("pipeline")
     if not isinstance(pipeline, list):
-        raise BranchPeakError("the applied config carries no pipeline list")
+        raise GraphTransferError("the applied config carries no pipeline list")
 
     operations: list[tuple[str, Any]] = []
     width = int(capture_channels)
     for index, step in enumerate(pipeline):
         if not isinstance(step, Mapping):
-            raise BranchPeakError(f"pipeline step {index} is not a mapping")
+            raise GraphTransferError(f"pipeline step {index} is not a mapping")
         if step.get("bypassed") is True:
             # Refuse rather than trust a second bypass semantics to stay true.
-            raise BranchPeakError(f"pipeline step {index} is bypassed")
+            raise GraphTransferError(f"pipeline step {index} is bypassed")
         if dynamic_bass_at_rest and str(step.get("name", "")).startswith(DYNAMIC_BASS_PREFIX):
             continue
         kind = str(step.get("type") or "")
@@ -219,11 +219,11 @@ def _pipeline_operations(
             name = str(step.get("name") or "")
             mixer = mixers.get(name)
             if not isinstance(mixer, Mapping):
-                raise BranchPeakError(f"pipeline step {index} names mixer {name!r}")
+                raise GraphTransferError(f"pipeline step {index} names mixer {name!r}")
             width, mapping = mixer_mapping(mixer, width, name)
             operations.append(("mixer", (width, mapping)))
             continue
-        raise BranchPeakError(f"pipeline step {index} is a {kind or 'typeless'} step")
+        raise GraphTransferError(f"pipeline step {index} is a {kind or 'typeless'} step")
     return operations, width
 
 
@@ -251,18 +251,18 @@ def complex_channel_transfer(
     import numpy as np  # lazy: keep NumPy off admission/status imports until analysis is needed
 
     if not isinstance(config, Mapping):
-        raise BranchPeakError("the applied config is not a mapping")
+        raise GraphTransferError("the applied config is not a mapping")
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     if freqs.ndim != 1 or not freqs.size or not np.all(np.isfinite(freqs)):
-        raise BranchPeakError("frequencies must be a non-empty finite vector")
+        raise GraphTransferError("frequencies must be a non-empty finite vector")
     if np.any(freqs < 0.0):
-        raise BranchPeakError("frequencies must be non-negative")
+        raise GraphTransferError("frequencies must be non-negative")
     devices = _mapping(config.get("devices"), "devices")
     rate = devices.get("samplerate")
     if isinstance(rate, bool) or not isinstance(rate, int):
-        raise BranchPeakError(f"devices.samplerate is {rate!r}")
+        raise GraphTransferError(f"devices.samplerate is {rate!r}")
     if int(rate) != RESPONSE_SAMPLE_RATE_HZ:
-        raise BranchPeakError(
+        raise GraphTransferError(
             f"the graph runs at {rate} Hz; the shared filter evaluator models "
             f"{RESPONSE_SAMPLE_RATE_HZ} Hz"
         )
@@ -273,22 +273,22 @@ def complex_channel_transfer(
         or not isinstance(capture_channels, int)
         or capture_channels < 1
     ):
-        raise BranchPeakError(
+        raise GraphTransferError(
             f"devices.capture.channels is {capture_channels!r}"
         )
     if not input_weights:
-        raise BranchPeakError("no input channel weights were declared")
+        raise GraphTransferError("no input channel weights were declared")
     spectra = [np.zeros(freqs.shape, dtype=np.complex128) for _ in range(capture_channels)]
     for channel, weight in input_weights.items():
         if isinstance(channel, bool) or not isinstance(channel, int):
-            raise BranchPeakError(f"input channel is {channel!r}")
+            raise GraphTransferError(f"input channel is {channel!r}")
         if not 0 <= channel < capture_channels:
-            raise BranchPeakError(
+            raise GraphTransferError(
                 f"input channel {channel} is outside capture width {capture_channels}"
             )
         value = complex(weight)
         if not (math.isfinite(value.real) and math.isfinite(value.imag)):
-            raise BranchPeakError(f"input channel {channel} has a non-finite weight")
+            raise GraphTransferError(f"input channel {channel} has a non-finite weight")
         spectra[channel] = np.full(freqs.shape, value, dtype=np.complex128)
 
     operations, playback_channels = _pipeline_operations(
@@ -312,9 +312,9 @@ def complex_channel_transfer(
     result: dict[Any, Any] = {}
     for key, channel in output_channels.items():
         if isinstance(channel, bool) or not isinstance(channel, int):
-            raise BranchPeakError(f"{key} names output channel {channel!r}")
+            raise GraphTransferError(f"{key} names output channel {channel!r}")
         if not 0 <= channel < playback_channels:
-            raise BranchPeakError(
+            raise GraphTransferError(
                 f"{key} names output channel {channel} of {playback_channels}"
             )
         result[key] = spectra[channel].copy()
@@ -330,7 +330,7 @@ def _step_channels(step: Mapping[str, Any], width: int, index: int) -> tuple[int
     if isinstance(raw, list):
         found = [c for c in raw if isinstance(c, int) and not isinstance(c, bool)]
         if len(found) != len(raw):
-            raise BranchPeakError(f"pipeline step {index} has a non-integer channel")
+            raise GraphTransferError(f"pipeline step {index} has a non-integer channel")
     elif isinstance(raw, int) and not isinstance(raw, bool):
         found = [int(raw)]
     else:
@@ -340,10 +340,10 @@ def _step_channels(step: Mapping[str, Any], width: int, index: int) -> tuple[int
         elif raw is None and channel is None:
             found = list(range(width))
         else:
-            raise BranchPeakError(f"pipeline step {index} has no readable channels")
+            raise GraphTransferError(f"pipeline step {index} has no readable channels")
     for channel in found:
         if not 0 <= channel < width:
-            raise BranchPeakError(
+            raise GraphTransferError(
                 f"pipeline step {index} touches channel {channel} of {width}"
             )
     return tuple(found)
@@ -358,17 +358,17 @@ def mixer_mapping(
     for what in ("in", "out"):
         value = channels.get(what)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise BranchPeakError(f"mixer {name!r} has channels.{what} {value!r}")
+            raise GraphTransferError(f"mixer {name!r} has channels.{what} {value!r}")
         counts[what] = int(value)
     channels_in, channels_out = counts["in"], counts["out"]
     if channels_in != width:
-        raise BranchPeakError(
+        raise GraphTransferError(
             f"mixer {name!r} takes {channels_in} channels where the pipeline "
             f"carries {width}"
         )
     mapping_raw = mixer.get("mapping")
     if not isinstance(mapping_raw, list):
-        raise BranchPeakError(f"mixer {name!r} carries no mapping list")
+        raise GraphTransferError(f"mixer {name!r} carries no mapping list")
     mapping: list[tuple[int, list[tuple[int, complex]]]] = []
     for entry in mapping_raw:
         entry = _mapping(entry, f"mixer {name!r} mapping entry")
@@ -376,12 +376,12 @@ def mixer_mapping(
             continue
         dest = entry.get("dest")
         if isinstance(dest, bool) or not isinstance(dest, int):
-            raise BranchPeakError(f"mixer {name!r} has dest {dest!r}")
+            raise GraphTransferError(f"mixer {name!r} has dest {dest!r}")
         if not 0 <= int(dest) < channels_out:
-            raise BranchPeakError(f"mixer {name!r} maps to dest {dest} out of range")
+            raise GraphTransferError(f"mixer {name!r} maps to dest {dest} out of range")
         sources_raw = entry.get("sources")
         if not isinstance(sources_raw, list):
-            raise BranchPeakError(f"mixer {name!r} dest {dest} carries no sources")
+            raise GraphTransferError(f"mixer {name!r} dest {dest} carries no sources")
         sources: list[tuple[int, complex]] = []
         for source in sources_raw:
             source = _mapping(source, f"mixer {name!r} source")
@@ -389,9 +389,9 @@ def mixer_mapping(
                 continue
             channel = source.get("channel")
             if isinstance(channel, bool) or not isinstance(channel, int):
-                raise BranchPeakError(f"mixer {name!r} has source channel {channel!r}")
+                raise GraphTransferError(f"mixer {name!r} has source channel {channel!r}")
             if not 0 <= int(channel) < width:
-                raise BranchPeakError(
+                raise GraphTransferError(
                     f"mixer {name!r} reads channel {channel} of {width}"
                 )
             gain_scale = str(source.get("scale") or "dB")
@@ -401,7 +401,7 @@ def mixer_mapping(
             elif gain_scale == "linear":
                 linear = gain
             else:
-                raise BranchPeakError(f"mixer {name!r} uses gain scale {gain_scale!r}")
+                raise GraphTransferError(f"mixer {name!r} uses gain scale {gain_scale!r}")
             if source.get("inverted") is True:
                 linear = -linear
             sources.append((int(channel), complex(linear)))
