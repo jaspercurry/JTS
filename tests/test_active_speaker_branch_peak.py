@@ -447,3 +447,34 @@ def test_summed_alignment_evaluates_the_emitted_shelf_q():
         ["shelf"], filters, np.geomspace(20.0, 20000.0, 4096),
     )
     assert np.max(20.0 * np.log10(abs(response))) > 6.3
+
+
+@pytest.mark.parametrize("shape,passband_hz", [
+    (None, 250.0), ("LinkwitzRileyLowpass", 250.0), ("LinkwitzRileyHighpass", 4000.0),
+])
+def test_complex_transfer_pins_split_gain_limiter_passthrough_and_lr4(shape, passband_hz):
+    config = {
+        "devices": _devices(), "mixers": _split_mixer(),
+        "filters": {"xo": {"type": "BiquadCombo", "parameters": {
+            "type": shape, "freq": 1000.0, "order": 4,
+        }}} if shape else {},
+        "pipeline": [{"type": "Mixer", "name": "split_active_2way"}],
+    }
+    if shape:
+        config["pipeline"].append({"type": "Filter", "channels": [0], "names": ["xo"]})
+    freqs = np.array([1000.0, passband_hz])
+    kwargs = {
+        "input_weights": {0: 1.0, 1: 1.0} if shape else {0: 1.0},
+        "output_channels": {"out": 0}, "allow_limiter_passthrough": True,
+    }
+    response = complex_channel_transfer(config, freqs, **kwargs)["out"]
+    assert abs(response[0]) == pytest.approx(0.5, abs=1e-3)
+    assert 20 * np.log10(abs(response[1])) == pytest.approx(
+        0.0 if shape else MONO_SUM_GAIN_DB, abs=0.05,
+    )
+    config["filters"]["limiter"] = {"type": "Limiter", "parameters": {
+        "soft_clip": True, "clip_limit": -1.0,
+    }}
+    config["pipeline"].append({"type": "Filter", "channels": [0], "names": ["limiter"]})
+    limited = complex_channel_transfer(config, freqs, **kwargs)["out"]
+    assert np.allclose(limited, response)
