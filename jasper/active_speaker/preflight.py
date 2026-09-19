@@ -22,14 +22,13 @@ from .angle_capture import (
 )
 from .crossover_v2.contracts import CrossoverV2FlowError
 from .crossover_v2.measure_spec import branch_target_ids_for
-from .crossover_v2.refusal_copy import REASON_REGISTRY, REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT
+from .crossover_v2.refusal_copy import REASON_REGISTRY, REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT, REASON_WALK_BRANCH_PAIR_UNDECLARED
 from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs,
     compile_candidate_config, prove_candidate_config,
 )
 from .measurement_programs import PURPOSE_BASS
 from .profile import SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
-from .program_admission import ProgramAdmissionRefusal
 from .seat_level_reference import (
     AnchorFacts, LevelUnresolved, RungMeasurementUnavailable, SeatLevelTargetError, check_target_capture_dbfs, resolve_anchor_level,
     measured_rung_admission, rung_lift_bound_db, stimulus_mismatch, validate_commissioning_spl,
@@ -140,25 +139,18 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
         add(WALK_OVER_CAPTURE_CAPACITY, f"captures={captures}, retries_per_pose={plan.retries_per_pose}; limit={MAX_CAPTURE_PLAN_ATTEMPTS}")
         valid_shape = False
 
-    # Remove when plans can only name targets from the speaker declaration.
+    # Remove when branch plans can only name two distinct declared targets.
     if valid_shape and facts.declared_target_ids is not None:
-        named = {role for role in (plan.template.inverted_role, plan.template.delayed_role) if role}
-        invalid_pairs = set()
-        for capture in plan.stops:
-            targets = (branch_target_ids_for(capture.branch_pair, facts.roles_bands)
-                       if capture.regime == REGIME_BRANCHES else tuple(band.role for band in facts.roles_bands))
-            named.update(targets)
-            if capture.regime == REGIME_BRANCHES and (len(targets) != 2 or len(set(targets)) != 2 or not all(targets)):
-                invalid_pairs.add(targets)
-        missing = tuple(sorted(named.difference(facts.declared_target_ids)))
+        pairs = {branch_target_ids_for(capture.branch_pair, facts.roles_bands)
+                 for capture in plan.stops if capture.regime == REGIME_BRANCHES}
+        missing = tuple(sorted({target for pair in pairs for target in pair} - set(facts.declared_target_ids)))
+        invalid_pairs = tuple(sorted(pair for pair in pairs if len(pair) != 2 or len(set(pair)) != 2 or not all(pair)))
         if missing or invalid_pairs:
-            code = ProgramAdmissionRefusal.TARGET_NOT_MAPPED.value
-            missing_label = ", ".join(missing) if missing else "pair of two distinct declared targets"
-            issues.append(replace(PreflightIssue.from_code(code,
-                f"This speaker has no {missing_label} to measure, so this measurement does not apply to it."), evidence={
-                    "missing_target_ids": missing, "declared_target_ids": facts.declared_target_ids,
-                    "invalid_branch_target_ids": tuple(sorted(invalid_pairs)),
-                }))
+            code = REASON_WALK_BRANCH_PAIR_UNDECLARED
+            issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence={
+                "missing_target_ids": missing, "declared_target_ids": facts.declared_target_ids,
+                "invalid_branch_target_ids": invalid_pairs,
+            }))
             return PreflightReport(plan, tuple(issues), (), {}, facts.commissioning_stop_db_spl)
 
     scopes: dict[str, str] = {}

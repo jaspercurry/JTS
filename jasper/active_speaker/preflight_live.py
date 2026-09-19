@@ -75,7 +75,7 @@ def read_preflight_facts(
         if pilot.f1_hz is not None and pilot.f2_hz is not None:
             pilot_band = (pilot.f1_hz, pilot.f2_hz)
     def program_ids(request: AngleCaptureRequest) -> tuple[str, ...]:
-        if context is None or request.level.volume_db is None or not hasattr(context, "roles_bands"):
+        if context is None or request.level.volume_db is None:
             return ()
         excitation = SessionExcitation(
             roles=context.roles_bands, caps_dbfs=context.driver_caps_dbfs,
@@ -86,11 +86,10 @@ def read_preflight_facts(
         if any(capture.spec.graph_scope == "drivers" for capture in captures):
             return ()
         safety_profile = getattr(context, "safety_profile", {})
-        role_targets = getattr(context, "role_targets", {})
         programs = []
         for capture in captures:
             program = compose_summed_program(excitation, capture.spec,
-                safety_profile=safety_profile, role_targets=role_targets)
+                safety_profile=safety_profile, role_targets=context.role_targets)
             if capture.spec.graph_scope == "candidate_branches":
                 program = build_branch_program(program, branch_channels_for(capture.spec))
             programs.append(program.program_id)
@@ -103,6 +102,6 @@ def read_preflight_facts(
         commissioning_stop_db_spl=stop, mover=plan.mover, issues=tuple(issues),
         applied_bass_extension=applied_bass_extension,
         program_ids_for=program_ids,
-        declared_target_ids=tuple(context.role_targets) if context is not None and hasattr(context, "role_targets") else None,
-        roles_bands=tuple(getattr(context, "roles_bands", ())),
+        declared_target_ids=tuple(context.role_targets) if context is not None else None,
+        roles_bands=context.roles_bands if context is not None else (),
     )

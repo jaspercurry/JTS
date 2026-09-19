@@ -6096,7 +6096,8 @@ def test_session_duplicate_levels_returns_shared_bad_request(monkeypatch):
 def _ready_inline(monkeypatch):
     from jasper.active_speaker import preflight_live
     from tests.test_preflight import ready_facts
-    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kwargs: ready_facts(plan))
+    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kwargs: ready_facts(
+        plan, declared_target_ids=tuple(kwargs["context"].role_targets), roles_bands=kwargs["context"].roles_bands))
 
 
 def _inline_context() -> V2ConductorContext:
