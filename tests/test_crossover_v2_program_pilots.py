@@ -626,17 +626,6 @@ def test_verify_courtesy_prelude_clean_capture_still_passes():
     assert res.summed_ripple_db is not None
 
 
-# --- VERIFY capture integrity (issue #1971) -----------------------------------
-#
-# Before this, ``glitch_detected`` was structurally False on EVERY verify-shaped
-# analysis: it came from ``_estimate_drift``, which needs a repeat pair a mono
-# summed sweep does not have, and the flow's two splice gates
-# (``_sweep_schedule_ok`` / ``_sweep_locate_confidence_ok``) both filter
-# ``KIND_SWEEP`` while VERIFY's sweep is ``KIND_SUMMED_SWEEP``. The checks
-# below are the substitutes the 2026-07-31 P0 repeat-floor bench had to
-# assemble by hand.
-
-
 def _unreported_ledger(received_frames: int = 1_000_000):
     """The frame ledger of a capture whose page sent no report (issue #2094).
 
@@ -833,10 +822,6 @@ def test_unheard_sweep_leaves_the_schedule_check_not_evaluated():
 
 
 def test_sweep_exactly_at_the_confidence_floor_is_heard():
-    """``>=`` at the floor -- the same direction ``_sweep_locate_confidence_ok``
-    trusts it. The two copies are pinned equal by
-    tests/test_measurement_integrity_floor_contracts.py, so their comparison
-    senses have to agree too or the shared number means two things."""
     prog = _verify_pilot_program()
     integrity = _verify_capture_integrity(prog, SR, [
         _sweep_location(confidence=SWEEP_LOCATE_CONFIDENCE_FLOOR, residual=0.0),

@@ -200,7 +200,6 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import (
     _gate_trusted_band_hz,
     _gate_window_ms,
     _pilot_transfer_by_role,
-    _sweep_locate_confidence_ok,
     _sweep_schedule_ok,
 )
 
@@ -2088,7 +2087,6 @@ class CrossoverV2Session:
                 pilot_snr_ok=analysis.pilot_snr_ok,
                 linearity_ok=analysis.linearity_ok,
                 glitch_detected=bool(analysis.glitch_detected),
-                sweep_locate_confidence_ok=_sweep_locate_confidence_ok(analysis),
                 sweep_schedule_ok=_sweep_schedule_ok(
                     analysis, program.sample_rate_hz
                 ),
@@ -2232,15 +2230,12 @@ class CrossoverV2Session:
     ) -> PhaseVerdict:
         """One prompted position: light per-capture QC, then the group check."""
         response = analysis.summed_response
-        # All SEVEN screens are stated though this ladder reads three: a fact about the
-        # capture is the caller's to state, and two are vacuous for a cloud position.
         kind = _spatial.cloud_position_screens(
             _spatial.CaptureScreens(
                 stimulus_located=_stimulus_locate_ok(analysis),
                 pilot_snr_ok=analysis.pilot_snr_ok,
                 linearity_ok=analysis.linearity_ok,
                 glitch_detected=bool(analysis.glitch_detected),
-                sweep_locate_confidence_ok=_sweep_locate_confidence_ok(analysis),
                 sweep_schedule_ok=_sweep_schedule_ok(
                     analysis, self._verify_program.sample_rate_hz
                 ),
