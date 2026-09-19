@@ -661,13 +661,9 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         ordinal = None
         if durable_complete:
             terminal = CAPTURE_COMPLETE
-            if phase == PHASE_DONE:
-                verdict = "Tuning confirmed."
-            else:
+            if phase != PHASE_DONE:
                 ordinal = series_position_from_state(v2).ordinal
-                verdict = f"Measurement complete (round {ordinal}); the LLM continues from here."
-        else:
-            verdict = "Measurement complete." if terminal == CAPTURE_COMPLETE else "Measurement stopped."
+        verdict = RUN_ENDED if terminal == CAPTURE_COMPLETE else "Measurement stopped."
         return _envelope(
             screen="finished", active_step="verify", terminal_status=str(terminal), round_ordinal=ordinal,
             verdict=verdict, next_action=_reset_action(), status=status, advertise_capture=False,

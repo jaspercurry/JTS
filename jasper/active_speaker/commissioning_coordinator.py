@@ -92,7 +92,7 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
                     request = request_for_program(plan, mover=plan.mover or "human")
                     captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
                     facts = preview_schedule(request, captures, context)
-                    choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start the round",
+                    choice.update(lines=round_lines(facts), action={"id": "run_program", "label": f"Start a new round: {choice['label']}",
                                   "endpoint": "/sound/speaker/crossover/v2/session", "body": {"plan": request.to_dict()}})
         choices.append(choice)
     return choices

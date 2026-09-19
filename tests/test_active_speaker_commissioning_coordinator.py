@@ -4,8 +4,13 @@
 import argparse
 import re
 from dataclasses import replace
+from types import SimpleNamespace
 
-from jasper.active_speaker import baseline_profile, commissioning_experiment
+from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+from jasper.active_speaker.round_copy import RUN_ENDED
+from tests.crossover_v2_fixtures import _roles
+
+from jasper.active_speaker import baseline_profile, commissioning_experiment, commissioning_coordinator as coordinator
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.commissioning_coordinator import next_program_action, load_commissioning_view
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
@@ -315,3 +320,19 @@ def test_household_experiment_reads_packet_alignment(monkeypatch, tmp_path, pack
     assert view["first_experiment"]["alignment"] == {"status": status, "reason": reason}
     assert view["first_experiment"]["candidate_fingerprint"] == (candidate.fingerprint if packet else None)
     assert view["first_experiment"]["complete"] is bool(packet)
+
+
+@pytest.mark.parametrize("selected_id", ["rear/express", "speaker/mark"])
+def test_finished_round_names_the_next_pose_set(monkeypatch, selected_id):
+    context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
+                              driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context", lambda *a, **kw: context)
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}})
+    status = {"active": True, "setup": {"active": True, "status": "ready"},
+              "capture": {"status": "complete", "run": {"status": "complete", "poses": 1}}}
+    choices = coordinator.round_choices(status, selected_id)
+    env = build_crossover_envelope_v2({**status, "round_choices": choices})
+    action = next(c["action"] for c in env["round_choices"] if c["id"] == selected_id)
+    assert selected_id in action["label"]
+    assert action["body"]["plan"]["program"] == selected_id
+    assert (env["screen"], env["terminal_status"], env["verdict_text"]) == ("finished", "complete", RUN_ENDED)

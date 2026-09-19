@@ -55,7 +55,7 @@ from .restore_wait import resilient_restore
 from .measurement_programs import BRANCH_PAIR_DRIVERS, POSE_KIND_BEARING, PURPOSE_SPEAKER
 from .crossover_v2.programs import predictive_program_for_spec
 from .run_manifest import RunManifest
-from .round_copy import PLACE_MICROPHONE
+from .round_copy import PLACE_MICROPHONE, take_counts
 
 from jasper.audio_measurement.calibration import resolve_mic_sensitivity
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
@@ -229,11 +229,11 @@ HUMAN_MOVE_ALLOWANCE_S = 30
 
 def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], program_for_spec: Callable[[MeasureSpec], ExcitationProgram],
                    *, mover: str, program: str = "") -> dict[str, Any]:
-    poses, pose_sweeps, work_sweeps = [], [], []
+    poses, pose_sweeps, work_sweeps, measurements_per_pose = [], [], [], []
     for _, batch in groupby(captures, key=lambda capture: capture[0]["place"]):
         details: list[dict[str, Any]] = []
         keys = []
-        for pose, spec in batch:
+        for measurement, (pose, spec) in enumerate(batch, 1):
             if not details:
                 poses.append(dict(pose))
             excitation = program_for_spec(spec)
@@ -248,10 +248,12 @@ def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], pr
         for key, row in zip(keys, details):
             seen[key] += 1
             row.update(repeat=seen[key], repeats=totals[key])
+        measurements_per_pose.append(measurement)
         pose_sweeps.append(details)
     rows = [row for pose_rows in pose_sweeps for row in pose_rows]
     counts = [len(pose_rows) for pose_rows in pose_sweeps]
     return {"program": program, "mover": mover, "poses": len(poses), "pose_details": poses,
+            "measurements": len(captures), "measurements_per_pose": measurements_per_pose,
             "sweeps_per_pose": counts, "sweeps": len(rows), "work_sweeps": work_sweeps,
             "timing_sweeps": sum(row["scope"] == "timing" and row["kind"] == KIND_SUMMED_SWEEP for row in rows),
             "preparation_sweeps": sum(row["kind"] == KIND_PILOT for row in rows),
@@ -526,14 +528,14 @@ async def _run(
             notices = {}
             if retry:
                 reason = retry.fault or ("operator" if retry.next == "fix_and_retake" and retry.charge == "operator" else None)
-                notices = dict(retake_sweep=before + 1, retake_pose=item.pose_index + 1, retake_action=retry.next,
+                notices = dict(retake_measurement=offset + 1, retake_sweep=before + 1, retake_pose=item.pose_index + 1, retake_action=retry.next,
                                retake_sweep_end=before + sweep_offsets[offset + 1] - sweep_offsets[offset],
                                **({"retake_reason": reason} if reason else {}),
                                **({"level_raise_dbfs": retry.next_gain_db} if retry.next == "retake_louder" else {}))
             progress = {**schedule, **notices, "pose": item.pose_index + 1,
                         "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
-                        "budget": ledger.to_payload(), "sweep": before + 1}
+                        "budget": ledger.to_payload(), "sweep": before + 1, "measurement": offset + 1}
             entry = item.entry
             if retry and retry.next == "fix_and_retake" and retry.fault and entry:
                 entry = SimpleNamespace(screen={**entry.screen, "body": f"{REASON_REGISTRY[retry.fault].message} {PLACE_MICROPHONE}"})
@@ -679,7 +681,7 @@ async def _run(
             if gate:
                 gate.abandon_hold()
                 gate.publish({**progress, "status": manifest.status, "manifest": manifest.path,
-                              "level": manifest.level, "takes": manifest.takes_measured, "not_measured": manifest.takes_skipped,
+                              "level": manifest.level, **take_counts(manifest.to_dict()), "not_measured": manifest.takes_skipped,
                               "fault": manifest.reason or (verdict.fault if verdict else None),
                               "next_action": "accept" if manifest.status == "complete" else "stop"})
             log_event(logger, "active_speaker.plan_run", status=manifest.status, reason=manifest.reason,
