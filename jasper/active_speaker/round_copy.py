@@ -19,7 +19,7 @@ PLACE_MICROPHONE = "Place the microphone. Confirm it is placed to play this pose
 
 def pose_name(pose: Mapping[str, Any]) -> str:
     placement = {POSE_KIND_BEHIND: "behind the speaker", POSE_KIND_CLOSE: "close to the speaker",
-                 POSE_KIND_SEAT: "at the seat"}.get(pose.get("kind"))
+                 POSE_KIND_SEAT: "at the seat"}.get(str(pose.get("kind") or ""))
     if placement:
         return placement
     from .crossover_v2.frequency_view import position_label  # lazy: only bearing poses need angle words; keeps the CLI parser numpy-free
