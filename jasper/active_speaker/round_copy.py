@@ -12,7 +12,7 @@ from typing import Any, Mapping
 from .measurement_programs import POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT
 
 CHOOSE_PROGRAM = "Choose a pose set, then start the round."
-RUN_ENDED = "The round is complete. Nothing more will play unless you start a new round."
+RUN_ENDED = "The round is complete. No more sound plays until a new round starts."
 PLACE_MICROPHONE = "Place the microphone. Confirm it is placed to play this pose's measurements."
 
 
@@ -80,14 +80,14 @@ def take_counts(document: Mapping[str, Any]) -> dict[str, int]:
 
 
 def measured_line(count: int, retakes: int = 0) -> str:
-    return f"Measured: {count} kept {'take' if count == 1 else 'takes'}; {retakes} retaken."
+    return f"Measured: {count} kept {'take' if count == 1 else 'takes'}. Retakes: {retakes}."
 
 
 def coverage_lines(packet: Mapping[str, Any], manifest: Mapping[str, Any]) -> list[str]:
     from .crossover_v2.refusal_copy import refusal_copy_for  # lazy: keeps the CLI parser numpy-free
 
     takes = [t for g in packet.get("sets", ()) for t in g["takes"] if t["selected"]]
-    counts = take_counts(manifest if "sets" in manifest else packet)
+    counts = take_counts(manifest)
     lines = [measured_line(counts["takes"], counts["retakes"])]
     poses = list(dict.fromkeys(pose_name(t["pose"]) for t in takes if t.get("pose")))
     if poses:

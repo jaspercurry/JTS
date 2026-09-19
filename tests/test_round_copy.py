@@ -60,7 +60,7 @@ def test_pre_round_lines_count_the_supplied_schedule():
 def test_post_round_coverage_keeps_packet_words():
     packet = {"sets": [{"takes": [{"take_id": "a", "role": "woofer", "selected": True, "trusted_floor_hz": 250}]}],
               "next_action": {"label": "Measure timing again"}, "disclosures": ["packet disclosure"]}
-    manifest = {"not_measured": [{"pose": {"deg": 20}, "reason": "complete_requested"}]}
+    manifest = {"sets": packet["sets"], "not_measured": [{"pose": {"deg": 20}, "reason": "complete_requested"}]}
     lines = coverage_lines(packet, manifest)
     assert re.findall(r"\d+", " ".join(lines[:3])) == ["1", "0", "20", "250"]
     assert lines[-2:] == [*packet["disclosures"], packet["next_action"]["label"]]
