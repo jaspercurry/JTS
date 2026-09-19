@@ -33,7 +33,6 @@ import {
   clampSubwooferCrossoverFcHz,
   nextActionAct,
   timingStatusLine,
-  commissionPayloadFailure,
   defaultActiveSpeakerStep,
   humanRole,
   levelMatchSummary,
@@ -1882,10 +1881,6 @@ import {
       '<div class="active-speaker-actions active-speaker-profile-actions">' +
         '<button type="button" class="btn btn--ghost" data-act="save-apply-baseline-profile"' +
           ((busy || !canFinish) ? ' disabled' : '') + '>' + escapeHtml(actionLabel) + '</button></div>';
-    if (profile.previous_candidate_fingerprint) {
-      actions += '<button type="button" class="btn" data-act="restore-baseline-profile"' +
-        (activeSpeaker.commissionBusy ? ' disabled' : '') + '>Restore previous tune</button>';
-    }
     return '<div class="output-card output-card--baseline-profile">' +
       '<div class="output-card__head"><div><p class="output-card__title">Active speaker profile</p>' +
         '<p class="setting-row__hint">Your active speaker profile, built from the checked crossover and assigned outputs.</p></div>' +
@@ -2482,7 +2477,6 @@ import {
     else if (act === 'parse-driver-research') { parseDriverResearchImport(); }
     else if (act === 'save-driver-design') { saveDriverResearchDraft(); }
     else if (act === 'save-apply-baseline-profile') { saveAndApplyBaselineProfile(); }
-    else if (act === 'restore-baseline-profile') { restoreBaselineProfile(); }
     else if (act === 'copy-tuning-handoff') { copyTuningHandoffPrompt(t.getAttribute('data-program')); }
     else if (act === 'toggle-volume-floor-tone') {
       if (volumeFloorTone.active) stopVolumeFloorTone();
@@ -3538,28 +3532,6 @@ import {
       status('Could not save and apply active profile: ' + e.message, true);
     }
     render();
-  }
-  async function restoreBaselineProfile() {
-    patchActiveSpeaker({commissionBusy: 'Restoring previous tune'});
-    render();
-    try {
-      var payload = await postJSON('./active-speaker/baseline-profile/restore', {});
-      var failure = commissionPayloadFailure(payload);
-      if (failure) throw new Error(failure);
-      if (payload.measurements) patchActiveSpeaker({measurements: payload.measurements});
-      if (payload.output_topology) ingestOutputTopology(payload);
-      await refreshCommissioningView();
-      var applied = payload.status === 'applied';
-      status(applied ? 'Previous tune restored.' : 'Previous tune was not restored.', !applied);
-      if (applied) await runActiveSpeakerAction({}, async function() {
-        patchActiveSpeaker({baselineProfile: await fetchActiveSpeakerBaselineProfile()});
-      });
-    } catch (e) {
-      status(String(e.message || e), true);
-    } finally {
-      patchActiveSpeaker({commissionBusy: ''});
-      render();
-    }
   }
   async function fetchActiveSpeakerMeasurements() {
     return await getJSON('./active-speaker/measurements');

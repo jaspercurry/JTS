@@ -97,7 +97,6 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         "needs_recovery": needs_recovery,
         "applied": bool(state and state.get("applied")),
         "applied_identity": identity,
-        "previous_candidate_fingerprint": rollback_candidate(state, identity=identity),
         "session_id": session_id,
         "attempts_loop": {
             "store_count": store_count,

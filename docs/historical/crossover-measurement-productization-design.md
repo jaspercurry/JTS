@@ -301,16 +301,7 @@ misfires the linearity ratio on noise rather than AGC behavior).
   (a different gate manufactures overlay differences that aren't driver
   alignment). Target-tracking is displayed but does not gate. **On fail: the
   applied graph stays in force** (it is proof-checked safe regardless); the
-  user is offered Re-verify (capture again), Re-measure (back to MEASURE,
-  evidence replaced), or Restore previous (the existing apply-rollback
-  path), with one specific reason shown — ANY failure code surfacing once
-  VERIFY is reached (not just the two VERIFY-specific reasons) renders this
-  same screen, because the candidate is already applied by that point and
-  the household is entitled to the Undo affordance regardless of which
-  check failed (W6.7 — a run-7 `agc_behavioral_fail` mid-VERIFY had
-  rendered the ordinary fix_and_retry screen instead, hiding Undo).
-  Rendered as the before/after overlay; pairs with the existing A/B
-  affordances as the user's proof.
+  user is offered Re-verify (capture again), Re-measure (back to MEASURE).
 
 User cost: place the mic once, ~3 phone taps + review/apply, **~2–3 minutes**.
 **Only the first capture of a session requires a tap:** an accepted CHECK
@@ -322,14 +313,7 @@ mic-displacement event between MEASURE and VERIFY. (The shipped
 `CapturePlanEntry.screen` field already carries per-entry presentation;
 this is a page policy, not a protocol change.)
 
-The VERIFY fail screen leads with one default — "Try again" (internally:
-re-verify once, then re-measure) — plus "Undo (restore previous sound)";
-the explicit Re-verify / Re-measure / Restore trio lives behind the expert
-disclosure. *(Superseded 2026-08-31: the product-level Undo verb was
-removed — the way back is "Go back to the previous tuning", a
-republish-then-apply of the prior candidate; see
-[crossover-v2-engine-design.md](crossover-v2-engine-design.md) invariant 8.
-The Undo/restore affordances in this section read historically.)* The ±0.3 dB repeat-agreement and drift-agreement thresholds are
+The ±0.3 dB repeat-agreement and drift-agreement thresholds are
 provisional constants to be re-derived from W6 bench distributions; a
 repeat-level failure reuses the `drift_baselines_disagree` reason code —
 never a new user-facing code.
@@ -631,7 +615,7 @@ replaces only advice that is no longer available:
 | `locate_failed` | any capture | 1 | keyed on the pilot since #2085: pilot heard ⇒ "could hear the speaker, couldn't line up the test tones — try again", naming no cause (neither level nor capture damage is established); pilot unheard or unmeasured ⇒ "couldn't hear the speaker — check volume/mic" |
 | `relay_timeout` / session death | any | new session | re-open link; CHECK restarts (evidence invalidated) |
 | `volume_unresolved` | session | — | existing `volume_recovery` screen |
-| `verify_out_of_tolerance` | VERIFY | 2 (re-verify) | offer Re-verify / Re-measure / Restore previous |
+| `verify_out_of_tolerance` | VERIFY | 2 (re-verify) | offer Re-verify / Re-measure |
 
 ### 5.11 Scope boundaries (non-goals & doors)
 

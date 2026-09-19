@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from jasper.active_speaker.crossover_v2 import durable_state as v2durable
 from jasper.web import correction_crossover_v2_state as v2state
-from jasper.web.correction_crossover_v2_status import rollback_candidate
 
 import logging
 from typing import Any, Awaitable, Callable, Mapping
@@ -37,20 +36,15 @@ async def apply_candidate(
     candidate: MeasuredCrossoverCandidate | str | None = None, *,
     camilla_factory: Callable[[], Any],
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
-    previous: bool = False,
 ) -> dict[str, Any]:
     from jasper.active_speaker.linearization_fit import HEADROOM_COST_BASIS_UNKNOWN  # lazy: NumPy is needed only when applying
 
-    from_saved_draft = candidate is None and not previous
+    from_saved_draft = candidate is None
     expected = candidate if isinstance(candidate, str) else ""
     prepared: dict[str, Any] = {}
     measurements: Mapping[str, Any] = {}
     async with dsp_writer_lock(baseline_profile.baseline_config_path().parent, source="active_speaker_baseline_apply"):
         try:
-            if previous:
-                candidate = rollback_candidate(v2state.load_v2_state())
-                if candidate is None:
-                    raise CrossoverV2Refused("no previous candidate", code="previous_profile_unavailable")
             selected = find_banked_candidate(candidate).candidate if isinstance(candidate, str) else candidate
             topology = load_output_topology()
             draft = load_design_draft(topology=topology)
@@ -134,4 +128,4 @@ async def apply_candidate(
 
 def handle_v2_apply(raw: Mapping[str, Any], run_async: Any, camilla_factory: Any) -> dict[str, Any]:
     return run_async(apply_candidate(str(raw.get("expected_candidate_fingerprint") or "").strip(),
-                                    camilla_factory=camilla_factory, previous=raw.get("previous") is True))
+                                    camilla_factory=camilla_factory))
