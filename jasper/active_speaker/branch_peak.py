@@ -247,7 +247,7 @@ def _step_transfer(
     if compiled_response:
         response = scale * camilla_filter_response(biquads, freqs)
     else:
-        # Peak ceilings use linearization-domain shelf Q; transfer comparisons use emitted Q.
+        # The peak path keeps record-based evaluation unchanged; complex_channel_transfer evaluates emitted filters.
         records = [dict(biquad_type=p["type"], freq=p["freq"], q=p["q"], gain=p.get("gain") or 0.0)
                    for f in biquads if f["type"] == "Biquad" for p in (f["parameters"],)]
         sections = [CrossoverSection(fc_hz=p["freq"], order=p["order"], highpass=p["type"].endswith("Highpass"))

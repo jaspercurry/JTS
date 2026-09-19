@@ -47,7 +47,7 @@ VOLUME_STATE = "session_volume.json"
 @pytest.fixture(autouse=True)
 def applied_reference(monkeypatch):
     candidate = MeasuredCrossoverCandidate(program_id="test", analysis={"measurement_status": "unmeasured"}, role_attenuations_db={"woofer": 0, "tweeter": 0}, source_preset=_preset())
-    monkeypatch.setattr("jasper.active_speaker.crossover_v2.door.status_banked_candidate",
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.door.find_banked_candidate",
                         lambda *a, **kw: SimpleNamespace(candidate=candidate))
 
 

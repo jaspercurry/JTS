@@ -336,7 +336,7 @@ def speaker(tmp_path, monkeypatch, banked_session_level):
     monkeypatch.setattr(measure, "_analyze_take", lambda *a: ProgramAnalysis(
         phase="verify", program_id="test", locations=(_loc("sweep"),)))
     reference = MeasuredCrossoverCandidate(program_id="test", analysis={"measurement_status": "unmeasured"}, role_attenuations_db={"woofer": 0, "tweeter": 0}, source_preset=_preset())
-    monkeypatch.setattr(door_module, "status_banked_candidate", lambda *a, **kw: SimpleNamespace(candidate=reference))
+    monkeypatch.setattr(door_module, "find_banked_candidate", lambda *a, **kw: SimpleNamespace(candidate=reference))
     monkeypatch.setattr(measure, "_bind_compose", lambda **kw: _compose)
     monkeypatch.setattr(measure, "read_box_declaration", _declaration)
     capture_factory.side_effect = _capture

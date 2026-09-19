@@ -17,6 +17,8 @@ import contextlib
 import hashlib
 import logging
 import json
+from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import Mock
 from pathlib import Path
 
@@ -26,10 +28,12 @@ import yaml
 from jasper.active_speaker import program_playback
 from jasper.active_speaker import baseline_profile, candidate_bank, candidate_parts
 from jasper.active_speaker.crossover_v2 import door
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+from jasper.active_speaker.crossover_v2.programs import SessionExcitation, program_for_spec
 from jasper.active_speaker.measurement_emit import MeasurementGraphRefused, compile_tuning_graph
-from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
+from jasper.active_speaker.measurement_level import scope_gains_db
 from tests.test_active_speaker_measurement_door import _profile
-from jasper.active_speaker.crossover_v2.composition import bind_program_playback_seams
+from jasper.active_speaker.crossover_v2.composition import bind_program_composer, bind_program_playback_seams
 from jasper.active_speaker.crossover_v2.session_graph import (
     MeasurementSessionGraph,
     SessionGraphError,
@@ -39,7 +43,8 @@ from jasper.active_speaker.crossover_v2.tuning_scope import COMPARABILITY_BOUNDA
 from jasper.camilla import CamillaUnavailable
 from jasper.sound.profile import build_sound_filters
 from tests._log_events import event_fields, event_records, parse_event
-from tests.crossover_v2_fixtures import FakeCam
+from tests.active_speaker_fixtures import standard_design_draft
+from tests.crossover_v2_fixtures import FakeCam, _roles
 from tests.test_crossover_v2_tuning_scope import FLAT, SAVED, household_graph
 from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile
 
@@ -751,35 +756,64 @@ def test_an_unnameable_entry_graph_makes_no_comparison_at_all(tmp_path):
     assert graph.comparability_boundary is False
 
 
-@pytest.mark.parametrize("state", ["absent", "missing_artifact", "applied"])
-def test_level_reference_is_read_only_and_resolved_before_graph_install(tmp_path, monkeypatch, state):
-
+@pytest.mark.parametrize("state", ["explicit", "absent", "missing_path", "stale_path", "bank_missing", "undeclared"])
+async def test_level_reference_is_read_only_and_resolved_before_graph_install(tmp_path, monkeypatch, state):
     profile = _profile()
-    candidate = MeasuredCrossoverCandidate(program_id="test", analysis={"measurement_status": "unmeasured"}, role_attenuations_db={"woofer": 0, "tweeter": 0}, source_preset=profile.preset)
-    artifact = tmp_path / "candidate.json"
-    if state == "applied":
+    draft = standard_design_draft(profile.topology, tweeter_gain_db=-21.3)
+    declared = candidate_parts.candidate_from_design_draft(profile.topology, draft)
+    profile = replace(profile, preset=declared.source_preset)
+    candidate = replace(declared, role_attenuations_db={"woofer": -2, "tweeter": -10})
+    bank = tmp_path / "sessions"
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(bank))
+    if state in {"missing_path", "stale_path"}:
+        artifact = bank / "banked/evidence/v1/artifacts/crossover_v2/take/candidate.json"
+        artifact.parent.mkdir(parents=True)
         artifact.write_text(json.dumps(candidate.to_dict()))
     applied = None if state == "absent" else {
-        "status": "applied", "candidate_artifact_path": str(artifact),
+        "status": "applied",
         "source": {"measured_candidate_fingerprint": candidate.fingerprint},
     }
+    if state == "stale_path":
+        applied["candidate_artifact_path"] = str(tmp_path / "stale.json")
     read = Mock(return_value=applied)
+    read_draft = Mock(return_value={} if state == "undeclared" else draft)
     publish, migrate, cam = Mock(), Mock(), Mock()
     monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", read)
+    monkeypatch.setattr(door, "load_design_draft", read_draft)
     monkeypatch.setattr(candidate_bank, "publish_authored_candidate", publish)
+    monkeypatch.setattr(candidate_parts, "publish_authored_candidate", publish)
     monkeypatch.setattr(candidate_parts, "_migrate_applied_candidate", migrate)
-    if state == "applied":
-        graph = door.bind_measurement_graph(profile, camilla_factory=cam, config_dir=tmp_path)
-        read.return_value = None
-        assert graph.level_reference_yaml == compile_tuning_graph(profile, candidate)
-        graph.graph_yaml()
-        assert graph.level_reference_yaml == compile_tuning_graph(profile, candidate)
-    else:
+    if state == "undeclared":
         with pytest.raises(MeasurementGraphRefused) as refused:
             door.bind_measurement_graph(profile, camilla_factory=cam, config_dir=tmp_path)
         assert refused.value.code == "measurement_baseline_unavailable"
-        assert refused.value.__cause__.code == "composition_saved_tune_unavailable"
-    read.assert_called_once_with()
+        assert refused.value.__cause__.issues[0]["code"] == "crossover_preview_not_ready"
+        cam.assert_not_called()
+    else:
+        graph = door.bind_measurement_graph(profile, camilla_factory=cam, config_dir=tmp_path,
+                                            candidate=candidate if state == "explicit" else None)
+        expected = declared if state in {"absent", "bank_missing"} else candidate
+        reference = compile_tuning_graph(profile, expected)
+        assert graph.level_reference_yaml == reference
+        cam.assert_not_called()
+        graph.select_scope("drivers", "")
+        roles = tuple(_roles())
+        excitation = SessionExcitation(roles, {role.role: 0 for role in roles}, -16.7, 2500, {})
+        gains = scope_gains_db(graph.graph_yaml(), reference, roles, topology=profile.topology)
+        compose = bind_program_composer(
+            program_for_spec=lambda spec, stimulus: program_for_spec(
+                spec, excitation, None, stimulus, safety_profile={}, role_targets={}),
+            store=SimpleNamespace(bundle_dir=tmp_path, identify_artifact=lambda _: None),
+            capture_session_id="check", cam_factory=cam, config_dir=str(tmp_path),
+            topology=profile.topology, safety_profile={}, role_targets={}, roles=roles,
+            graph_yaml=graph.graph_yaml, level_reference_yaml=graph.level_reference_yaml)
+        read.return_value = read_draft.return_value = None
+        composed = await compose(spec=MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="check"),
+                                 level_db=-16.7)
+        for before, after in zip(excitation.check_program().stimulus_segments(), composed.program.stimulus_segments(), strict=True):
+            assert after.gain_db == pytest.approx(before.gain_db - max(0, gains[before.role]))
+        assert graph.level_reference_yaml == reference
+    assert read.call_count == (0 if state == "explicit" else 1)
+    assert read_draft.call_count == (1 if state in {"absent", "bank_missing", "undeclared"} else 0)
     publish.assert_not_called()
     migrate.assert_not_called()
-    cam.assert_not_called()
