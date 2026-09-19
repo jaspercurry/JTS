@@ -100,7 +100,7 @@ def status_payload() -> dict[str, Any]:
     applied = load_applied_baseline_profile_state()
     payload["applied_profile"] = applied
     identity = applied_identity(applied)
-    recent = latest_banked_rounds(identity) if identity is not None else {}
+    recent = latest_banked_rounds(identity, programs=("speaker",)) if identity is not None else {}
     payload["timing"] = timing_status_lines(applied, recent.get("speaker"))
     # v2 session state (Wave 5a). Fail-soft: an unreadable v2 state must
     # never take down the whole status surface.

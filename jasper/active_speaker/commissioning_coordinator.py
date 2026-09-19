@@ -98,19 +98,27 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
     return choices
 
 
+def _programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
+    passive = topology_is_subless_passive_mains(topology)
+    rear = cardioid_cabinet_channels(
+        (channel.role, channel.output_variant, channel.physical_output_index)
+        for group in topology.speaker_groups for channel in group.channels
+        if channel.physical_output_index is not None
+    )
+    return tuple(name for name in RUNNABLE_PROGRAMS
+                 if not (name == PURPOSE_SPEAKER and passive or name == PURPOSE_REAR and rear is None))
+
+
 def _next_program_action(
     profile: Mapping[str, Any] | None,
     identity: Mapping[str, Any],
     recent_rounds: Mapping[str, Mapping[str, Any]],
     *,
-    passive: bool = False,
-    has_rear: bool = False,
+    programs: tuple[str, ...],
 ) -> dict[str, Any]:
     """Choose from the latest banked round per program for this applied identity."""
     from .baseline_profile import applied_layers  # lazy: baseline imports measurement
 
-    programs = tuple(name for name in RUNNABLE_PROGRAMS
-                     if not (name == PURPOSE_SPEAKER and passive or name == PURPOSE_REAR and not has_rear))
     baseline = {"id": "run_program", "enabled": True,
                 "program": programs[0], "label": _MEASURE_LABELS[programs[0]]}
     # Plan #5073 §2 rule (a): no round for this identity means measure the baseline first.
@@ -147,12 +155,14 @@ def build_commissioning_view(
     applied_profile_verdict: str = "",
     first_experiment: Mapping[str, Any] | None = None,
     recent_rounds: Mapping[str, Mapping[str, Any]] | None = None,
+    programs: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     from .baseline_profile import APPLIED_PROFILE_DISPLACED, reviewed_candidate_refusal  # lazy: baseline imports measurement
 
     draft, preview, review = design_draft or {}, crossover_preview or {}, baseline_profile or {}
     summary = (measurements or {}).get("summary") or {}
-    passive = topology_is_subless_passive_mains(topology)
+    programs = _programs_for_topology(topology) if programs is None else programs
+    passive = PURPOSE_SPEAKER not in programs
     has_layout = bool(topology.speaker_groups)
     design_ready = passive or draft.get("status") == "ready_for_review"
     preview_ready = passive or preview.get("status") == "ready_for_protected_staging"
@@ -189,13 +199,8 @@ def build_commissioning_view(
                    "layout" if passive else "profile")
     if profile_applied or (has_layout and passive):
         status = "applied" if profile_applied else VIEW_STATUS_NOT_REQUIRED
-        rear = cardioid_cabinet_channels(
-            (channel.role, channel.output_variant, channel.physical_output_index)
-            for group in topology.speaker_groups for channel in group.channels
-            if channel.physical_output_index is not None
-        )
         action = _next_program_action(applied_profile, applied, recent_rounds or {},
-                                      passive=passive, has_rear=rear is not None)
+                                      programs=programs)
     elif not has_layout:
         status = "needs_layout"
         action = {"id": "declare_speaker", "label": "Declare the speaker", "enabled": True,
@@ -277,6 +282,7 @@ def load_commissioning_view(
             experiment = commissioning_experiment_summary(commissioning_candidate(topology, design_draft))
         except (OSError, ValueError, LookupError):
             pass
+    programs = _programs_for_topology(topology)
     return build_commissioning_view(
         topology,
         design_draft=design_draft,
@@ -287,7 +293,8 @@ def load_commissioning_view(
         baseline_profile=baseline,
         calibration_level=calibration_level,
         applied_profile=applied,
-        recent_rounds=latest_banked_rounds(applied_identity(applied) or {}),
+        recent_rounds=latest_banked_rounds(applied_identity(applied) or {}, programs=programs),
+        programs=programs,
         first_experiment=experiment,
         applied_profile_verdict=read_applied_profile_verdict(applied),
     )

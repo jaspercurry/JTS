@@ -7,7 +7,7 @@ Register the wired microphone with `jasper-mic-calibration`; set its capture con
 ## The loop
 
 Run the tuning programs in order: speaker → rear → bass → room (skip rear if there is no rear driver).
-Re-run room after any upstream change.
+Re-run room after any upstream change, even when round history is unavailable.
 
 1. Run `jasper-round run --program <speaker|rear|bass|room>` for a measurement, or `jasper-round trial <fp>` to compare a whole document with base. Use `--candidates a,b,c` to compare two or three candidates at each pose before the mic moves. See the playbook's Document section. Use `run --dry-run` to inspect a custom plan without sound.
 2. Join at each pose. With `--mover human`, open the returned page, follow its pose prompt, and use its in-place, Retake, or Done action. With `--mover arm`, run `jasper-angle-capture serve`. With `--mover confirmed`, call `jasper-round placed --run <id>` only after the person confirms placement. End a run nobody joins with `jasper-round stop --run <id>`.

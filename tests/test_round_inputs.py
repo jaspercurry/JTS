@@ -13,13 +13,15 @@ from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 
 
 @pytest.mark.parametrize("has_room", [False, True])
-@pytest.mark.parametrize("programs,limit,hits,applied_at", [
-    (RUNNABLE_PROGRAMS, 32, {"speaker": 36, "rear": 37, "bass": 34, "room": 35}, None),
-    (("speaker",), 32, {"speaker": 37}, None),
-    (RUNNABLE_PROGRAMS, 2, {}, None),
-    (("speaker",), 32, {"speaker": 39}, "1970-01-01T00:00:37Z"),
+@pytest.mark.parametrize("programs,limit,hits,applied_at,wanted", [
+    (RUNNABLE_PROGRAMS, 32, {"speaker": 36, "rear": 37, "bass": 34, "room": 35}, None, None),
+    (("speaker", "bass", "room"), 32, {"speaker": 36, "bass": 37, "room": 35}, None, ("speaker", "bass", "room")),
+    (("speaker",), 32, {"speaker": 37}, None, None),
+    (("speaker",), 32, {"speaker": 37}, None, ("speaker",)),
+    (RUNNABLE_PROGRAMS, 2, {}, None, None),
+    (("speaker",), 32, {"speaker": 39}, "1970-01-01T00:00:37Z", None),
 ])
-def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp_path, programs, limit, hits, applied_at, has_room):
+def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp_path, programs, limit, hits, applied_at, wanted, has_room):
     identity = {"candidate": "saved-speaker", "record": "abcdef012345", "applied_at": applied_at}
     alignment = {"saved": {"delay_us": 22}, "verification": {"residual_rms_db": .4, "repeat_noise_db": .2}}
     next_action = {"id": "continue"}
@@ -48,8 +50,10 @@ def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp
 
     monkeypatch.setattr(Path, "open", counted_open)
     session_dir = root / "39" / "bundle" / "39" if limit == 2 else None
-    found = latest_banked_rounds(identity, session_dir=session_dir, limit=limit)
-    hits = {**hits, **({"room": max(hits.values())} if has_room and hits else {})}
+    kwargs = {"programs": wanted} if wanted is not None else {}
+    found = latest_banked_rounds(identity, session_dir=session_dir, limit=limit, **kwargs)
+    wanted = RUNNABLE_PROGRAMS if wanted is None else wanted
+    hits = {**hits, **({"room": max(hits.values())} if has_room and hits and "room" in wanted else {})}
     assert found == {name: {"round_dir": str(root / f"{index:02}"),
                             "started_at": (root / f"{index:02}").stat().st_mtime,
                             **({"alignment_verdict": alignment, "next_action": next_action}
@@ -58,5 +62,5 @@ def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp
     assert opens <= limit
     if applied_at is not None:
         assert opens == 2
-    if len(found) == len(RUNNABLE_PROGRAMS):
-        assert opens <= len(RUNNABLE_PROGRAMS) + 2
+    if len(found) == len(wanted):
+        assert opens <= len(wanted) + 2

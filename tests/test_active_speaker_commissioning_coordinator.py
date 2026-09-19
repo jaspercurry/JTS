@@ -140,7 +140,7 @@ def test_program_order_consumers(consumer):
     else:
         order = tuple(_next_program_action(
             _applied_anchor(layers=RUNNABLE_PROGRAMS[:index]), {},
-            {"speaker": {"round_dir": "/bank/speaker", "started_at": 1}}, has_rear=True,
+            {"speaker": {"round_dir": "/bank/speaker", "started_at": 1}}, programs=RUNNABLE_PROGRAMS,
         )["program"] for index in range(len(RUNNABLE_PROGRAMS)))
     assert tuple(order) == RUNNABLE_PROGRAMS == ("speaker", "rear", "bass", "room")
 
@@ -171,7 +171,7 @@ def test_room_repeats_after_newer_upstream_round(upstream, age, room_applied):
     layers = RUNNABLE_PROGRAMS if room_applied else RUNNABLE_PROGRAMS[:-1]
     rounds = {"room": {"round_dir": "/bank/room", "started_at": 1},
               upstream: {"round_dir": "/bank/upstream", "started_at": age}}
-    action = _next_program_action(_applied_anchor(layers=layers), {}, rounds, has_rear=True)
+    action = _next_program_action(_applied_anchor(layers=layers), {}, rounds, programs=RUNNABLE_PROGRAMS)
     expected = ("run_program", "room") if age > 1 else (
         ("run_program", "speaker") if room_applied else ("copy_prompt", "room"))
     assert (action["id"], action["program"]) == expected
@@ -218,14 +218,14 @@ def test_loaded_commissioning_view_uses_banked_rounds(monkeypatch, tmp_path):
     profile = _applied_anchor(layers=())
     identities = []
 
-    def recent(identity):
-        identities.append(identity)
+    def recent(identity, *, programs):
+        identities.append((identity, programs))
         return {"speaker": {"round_dir": "/bank/speaker", "started_at": parse_utc_iso(profile["applied_at"]) + 1}}
 
     monkeypatch.setattr(round_inputs, "latest_banked_rounds", recent)
     monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda: profile)
     view = load_commissioning_view(topology)
-    assert identities == [applied_identity(profile)]
+    assert identities == [(applied_identity(profile), ("speaker", "bass", "room"))]
     assert view["next_action"]["id"] == "copy_prompt"
     assert view["next_action"]["program"] == "speaker"
     assert view["next_action"]["round_dir"] == "/bank/speaker"

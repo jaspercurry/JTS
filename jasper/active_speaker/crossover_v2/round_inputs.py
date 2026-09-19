@@ -242,6 +242,7 @@ def recent_round_sessions(session_dir: Path | None = None, *, limit: int = 32) -
 
 def latest_banked_rounds(
     identity: Mapping[str, Any], session_dir: Path | None = None, *, limit: int = 32,
+    programs: tuple[str, ...] = RUNNABLE_PROGRAMS,
 ) -> dict[str, dict[str, Any]]:
     """Latest packet per program and applied identity within a bounded recent window."""
     from jasper.active_speaker.round_packet_report import PACKET_FILENAME  # lazy: packet report imports this reader
@@ -261,16 +262,16 @@ def latest_banked_rounds(
             purpose = run_purpose(packet.get("program"))
         except ValueError:
             continue
-        if purpose in RUNNABLE_PROGRAMS and purpose not in found:
+        if purpose in programs and purpose not in found:
             found[purpose] = {
                 "round_dir": str(directory), "started_at": modified_at,
                 **({"alignment_verdict": packet.get("alignment_verdict"),
                     "next_action": packet.get("next_action")}
                    if purpose == PURPOSE_SPEAKER else {}),
             }
-        if packet.get("room") and PURPOSE_ROOM not in found:
+        if PURPOSE_ROOM in programs and packet.get("room") and PURPOSE_ROOM not in found:
             found[PURPOSE_ROOM] = {"round_dir": str(directory), "started_at": modified_at}
-        if len(found) == len(RUNNABLE_PROGRAMS):
+        if len(found) == len(programs):
             break
     return found
 
