@@ -678,13 +678,21 @@ def test_status_reads_progress_once(monkeypatch, capsys):
     assert len(opener.requests) == 1
 
 
-def test_status_prints_composed_sweep_lines(capsys):
-    progress = {"pose": 2, "poses": 3, "sweep": 4, "sweeps_per_pose": [7, 7, 7], "pose_details": [{}, {}, {}], "role": "tweeter", "repeat": 2, "repeats": 3}
+@pytest.mark.parametrize("verb", ["status", "wait"])
+def test_commands_print_composed_measurement_lines(capsys, monkeypatch, verb):
+    progress = {"measurement": 2, "measurements": 3, "pose": 2, "poses": 3, "sweep": 4, "sweeps_per_pose": [7, 7, 7], "pose_details": [{}, {}, {}], "role": "tweeter", "repeat": 2, "repeats": 3}
     client = SimpleNamespace(run_status=lambda run_id: (200, progress))
-    assert cli._cmd_status(client, SimpleNamespace(run="run-1")) == 0
+    if verb == "status":
+        assert cli._cmd_status(client, SimpleNamespace(run="run-1")) == 0
+    else:
+        monkeypatch.setattr(cli, "wait_for_round", lambda *a, on_progress, **kw: (
+            on_progress(progress), {"status": "terminal", "captured": False})[1])
+        assert cli._cmd_wait(client, SimpleNamespace(run="run-1", timeout=1)) == 1
     output = capsys.readouterr()
-    assert output.err.splitlines() == round_lines(progress)
-    assert json.loads(output.out) == progress
+    lines = round_lines(progress)
+    assert output.err.splitlines()[:len(lines)] == lines
+    if verb == "status":
+        assert json.loads(output.out) == progress
 
 
 @pytest.mark.parametrize("verb", ["status", "placed", "stop", "wait"])

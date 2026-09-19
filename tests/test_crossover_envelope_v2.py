@@ -29,7 +29,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     verify_inconclusive_message,
 )
 from jasper.active_speaker.flat_spec import evaluate_flat_spec, spec_flatness_gauge
-from jasper.active_speaker.round_copy import round_lines
+from jasper.active_speaker.round_copy import RUN_ENDED, round_lines
 
 V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "verify")
 
@@ -37,7 +37,7 @@ V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "verify")
 @pytest.mark.parametrize("placed, terminal", [(False, False), (True, False), (True, True)])
 def test_round_lines_and_pose_actions_come_from_the_coordinator(placed, terminal):
     facts = {"pose": 2, "poses": 3, "mover": "human", "sweep": 4, "sweeps_per_pose": [7, 7, 7],
-             "role": "tweeter", "repeat": 2, "repeats": 3,
+             "role": "tweeter", "repeat": 2, "repeats": 3, "measurement": 2, "measurements": 3,
              "pose_details": [{}, {"deg": -20, "elevation_deg": 0}, {}]}
     action = {"id": "position_ready", "label": "", "endpoint": "/placed", "body": {"index": 3, "attempt": 1}}
     if terminal:
@@ -47,6 +47,8 @@ def test_round_lines_and_pose_actions_come_from_the_coordinator(placed, terminal
     env = build_crossover_envelope_v2({**_status(phase="measure"), "capture": capture})
     assert env["round_lines"] == round_lines(facts, pending=not placed)
     if terminal:
+        assert env["verdict_text"] == RUN_ENDED
+        assert env["terminal_status"] == "complete"
         assert env["pending"] is None and not env["busy"]
         assert env["capture"] is None and env["next_action"]
         return
@@ -177,6 +179,7 @@ def test_durable_completion_survives_an_empty_capture_slot(phase, receipt, curre
     })
     assert (env["screen"], env["terminal_status"], env["phase"]) == ("finished", "complete", phase)
     assert env["round_ordinal"] == (None if phase == "done" else current_ordinal)
+    assert env["verdict_text"] == RUN_ENDED
     assert env["next_action"]["id"] == "reset"
     assert env["action_note"] is None
 

@@ -1153,10 +1153,22 @@ async def test_manifest_stamps_watch_levels_and_uses_accepted_medians():
 
 
 @pytest.mark.parametrize("retry", [False, True])
-def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry):
+@pytest.mark.parametrize("trial", [0, 8, 9])
+def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry, trial):
     roles = ["summed", "woofer", "tweeter", "woofer", "tweeter", "woofer", "tweeter"]
-    segments = tuple(SimpleNamespace(role=role, kind="sweep", start_sample=0, n_samples=4) for role in roles)
+    roles = ["summed"] * 3 if trial else roles
+    segments = tuple(SimpleNamespace(role=role, kind="pilot" if trial and n != 1 else "sweep", start_sample=0, n_samples=4)
+                     for n, role in enumerate(roles))
+    request = (replace(_walk([0], ("fp-a", "fp-b", "fp-c", "fp-d")), repeats=2) if trial == 8 else
+               _walk([0, -20, 20], ("fp-a", "fp-b", "fp-c")) if trial == 9 else _walk([0, -20, 20]))
+    counts = [8] if trial == 8 else [3, 3, 3] if trial == 9 else [1, 1, 1]
+    captures = plan_run.prepare_plan_captures(request)
     program = SimpleNamespace(phase="measure", sample_rate_hz=1, stimulus_segments=lambda: segments)
+    if trial:
+        context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
+                                  driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+        preview = plan_run.preview_schedule(request, captures, context)
+        assert (preview["measurements"], preview["measurements_per_pose"], preview["sweeps"]) == (trial, counts, trial * 3)
     gate = AnsweredGate()
     original = FakePlay.run
     async def play(self, **kwargs):
@@ -1168,20 +1180,30 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry):
         return await plan_run.playback_observer.get()(program, emitted)
     monkeypatch.setattr(FakePlay, "run", play)
     verdicts = iter(([TakeVerdict(False, "snr_floor", next="retake_louder", next_gain_db=-12, charge="speaker")]
-                     if retry else []) + [TakeVerdict(True)] * 3)
+                     if retry else []) + [TakeVerdict(True)] * len(captures))
     monkeypatch.setattr(plan_run, "assess", lambda *a, **kw: next(verdicts))
     door = plan_run.RunDoor(AsyncExitStack(), lambda *a: None, None, None, 90, program_for_spec=lambda spec: program)
-    result, _ = asyncio.run(_run_gated(_walk([0, -20, 20]), gate=gate, door=door))
+    result, _ = asyncio.run(_run_gated(request, gate=gate, door=door))
     live = [p for p in gate.progress if p.get("role")]
     assert result.status == "complete"
-    assert [(p["sweep"], p["role"], p["repeat"], p["repeats"]) for p in live[:7]] == [
-        (1, "summed", 1, 1), (2, "woofer", 1, 3), (3, "tweeter", 1, 3),
-        (4, "woofer", 2, 3), (5, "tweeter", 2, 3), (6, "woofer", 3, 3), (7, "tweeter", 3, 3)]
-    assert live[0]["sweeps_per_pose"] == [7, 7, 7]
-    assert live[0]["estimated_seconds"] == 21 * 4 + 3 * plan_run.HUMAN_MOVE_ALLOWANCE_S
-    assert {p["pose"] for p in live} == {1, 2, 3}
+    if not trial:
+        assert [(p["sweep"], p["role"], p["repeat"], p["repeats"]) for p in live[:7]] == [
+            (1, "summed", 1, 1), (2, "woofer", 1, 3), (3, "tweeter", 1, 3),
+            (4, "woofer", 2, 3), (5, "tweeter", 2, 3), (6, "woofer", 3, 3), (7, "tweeter", 3, 3)]
+    assert live[0]["measurements_per_pose"] == counts
+    assert live[0]["measurements"] == sum(counts)
+    assert live[0]["sweeps_per_pose"] == [n * len(roles) for n in counts]
+    assert live[0]["estimated_seconds"] == sum(counts) * len(roles) * 4 + len(counts) * plan_run.HUMAN_MOVE_ALLOWANCE_S
+    assert {p["pose"] for p in live} == set(range(1, len(counts) + 1))
+    assert live[-1]["measurement"] == sum(counts)
+    assert {p["measurement"] for p in live} == set(range(1, sum(counts) + 1))
+    assert gate.progress[-1]["takes"] == sum(counts)
+    assert gate.progress[-1]["retakes"] == int(retry)
     if retry:
-        assert any(p.get("retake_reason") == "snr_floor" and p["level_raise_dbfs"] == -12 for p in live) and all("retake_reason" not in p for p in live if p["pose"] > 1)
+        retried = [p for p in live if p.get("retake_reason")]
+        assert {p["retake_measurement"] for p in retried} == {1}
+        assert {p["measurement"] for p in retried} == {1}
+        assert all(p["level_raise_dbfs"] == -12 for p in retried)
     else:
         assert all("retake_reason" not in p for p in live)
 
@@ -1193,6 +1215,8 @@ def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timin
     request = ac.request_for_program(measurement_program("tournament", "full"), repeats=repeats)
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     facts = plan_run.preview_schedule(request, captures, context)
+    assert facts["measurements"] == len(captures)
+    assert sum(facts["measurements_per_pose"]) == len(captures)
     assert facts["sweeps_per_pose"] == counts
     assert facts["timing_sweeps"] == timing
     assert facts["preparation_sweeps"] == preparation

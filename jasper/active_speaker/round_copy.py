@@ -6,15 +6,14 @@ from __future__ import annotations
 
 import json
 import math
-from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping
 
 from .measurement_programs import POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT
 
 CHOOSE_PROGRAM = "Choose a pose set, then start the round."
-RUN_ENDED = "This run has ended. Choose a pose set to start the next one."
-PLACE_MICROPHONE = "Place the microphone. Confirm it is placed to play this pose's sweeps."
+RUN_ENDED = "The round is complete. Nothing more will play unless you start a new round."
+PLACE_MICROPHONE = "Place the microphone. Confirm it is placed to play this pose's measurements."
 
 
 def pose_name(pose: Mapping[str, Any]) -> str:
@@ -30,11 +29,14 @@ def pose_name(pose: Mapping[str, Any]) -> str:
 
 def pose_line(facts: Mapping[str, Any]) -> str:
     pose = facts["pose_details"][facts["pose"] - 1]
-    return f"Pose {facts['pose']} of {facts['poses']}: {pose_name(pose)} ({facts['mover']})."
+    counts = facts.get("measurements_per_pose") or []
+    end = sum(counts[:facts["pose"]])
+    span = f", measurements {end - counts[facts['pose'] - 1] + 1}–{end}" if counts else ""
+    return f"Pose {facts['pose']} of {facts['poses']}{span}: {pose_name(pose)} ({facts['mover']})."
 
 
 def round_verdict(facts: Mapping[str, Any], verdict: str) -> str:
-    return "" if facts.get("poses") else verdict
+    return "" if facts.get("poses") and not facts.get("status") else verdict
 
 
 def round_lines(facts: Mapping[str, Any], *, pending: bool = False) -> list[str]:
@@ -42,62 +44,51 @@ def round_lines(facts: Mapping[str, Any], *, pending: bool = False) -> list[str]
 
     lines = []
     if facts.get("status") in {"complete", "partial", "cancelled", "failed", "stopped"}:
-        lines = [measured_line(facts.get("takes", 0)), f"Not measured: {facts.get('not_measured', 0)} planned captures."]
+        lines = [measured_line(facts.get("takes", 0), facts.get("retakes", 0)), f"Not measured: {facts.get('not_measured', 0)} planned measurements."]
         if facts.get("packet_error"):
             lines.append("The round packet could not be saved. Run jasper-round wait to try again.")
         return lines
-    counts = facts.get("sweeps_per_pose") or []
+    counts = facts.get("measurements_per_pose") or []
     if counts and not facts.get("pose"):
         lines.append(f"Pose set {facts['program']}: {facts['poses']} poses ({facts['mover']}).")
-        lines.append("Sweeps per pose: " + ", ".join(str(n) for n in counts) + f"; {facts['sweeps']} sweeps in total.")
-        for index, sweeps in enumerate(facts["pose_sweeps"], 1):
-            groups = Counter((row["role"], row["kind"]) for row in sweeps)
-            parts = [f"{n} {role} {'preparation ' if kind == 'pilot' else ''}{'sweep' if n == 1 else 'sweeps'}"
-                     for (role, kind), n in groups.items()]
-            lines.append(f"Pose {index}: " + "; ".join(parts) + ".")
-        repeats = sorted({s["repeats"] for pose in facts["pose_sweeps"] for s in pose
-                          if s["phase"] == "measure" and s["kind"] == "sweep"})
-        if repeats:
-            lines.append("/".join(str(n) for n in repeats) + " repeats per driver, to measure the noise floor.")
-        if facts.get("timing_sweeps"):
-            lines.append(f"Timing sweeps at 0°: {facts['timing_sweeps']} (included in the totals).")
-        if facts.get("preparation_sweeps"):
-            lines.append(f"Preparation sweeps: {facts['preparation_sweeps']} (included in the totals).")
-        lines += ["A sweep that is too quiet can be taken again louder.",
+        lines.append("Measurements per pose: " + ", ".join(str(n) for n in counts) + f"; {facts['measurements']} measurements in total.")
+        lines += ["A measurement that is too quiet can be taken again louder.",
                   f"Allow about {math.ceil(facts['estimated_seconds'] / 60)} minutes, plus time for retakes."]
     if facts.get("pose") and facts.get("pose_details"):
         if pending:
             lines += [pose_line(facts), PLACE_MICROPHONE]
         elif facts.get("role"):
-            kind = " preparation" if facts.get("sweep_kind") == "pilot" else ""
-            lines.append(f"Pose {facts['pose']} of {facts['poses']}, sweep {facts['sweep']} of {counts[facts['pose'] - 1]}: "
-                         f"{facts['role']}{kind} repeat {facts['repeat']} of {facts['repeats']}.")
+            lines.append(f"Measurement {facts['measurement']} of {facts['measurements']}, pose {facts['pose']} of {facts['poses']}.")
             lines.append("Keep the microphone still until the tone stops.")
         else:
-            lines += [pose_line(facts), "Preparing this pose's sweeps."]
+            lines += [pose_line(facts), "Preparing this pose's measurements."]
     if facts.get("retake_reason") == "operator":
         lines.append(f"Pose {facts['retake_pose']}: you asked to redo this pose.")
     elif facts.get("retake_reason"):
         reason = refusal_copy_for(facts["retake_reason"])[0]
         louder = " louder" if facts.get("retake_action") == "retake_louder" else ""
-        first, last = facts["retake_sweep"], facts.get("retake_sweep_end", facts["retake_sweep"])
-        sweep = f"sweeps {first}–{last}" if first != last else f"sweep {first}"
-        lines.append(f"Pose {facts['retake_pose']}, {sweep}: {reason} Taking it again{louder}.")
+        lines.append(f"Pose {facts['retake_pose']}, measurement {facts['retake_measurement']}: {reason} Taking it again{louder}.")
     if facts.get("level_raise_dbfs") is not None:
-        lines.append(f"Raising the sweep level to {facts['level_raise_dbfs']:g} dBFS.")
+        lines.append(f"Raising the measurement level to {facts['level_raise_dbfs']:g} dBFS.")
     return lines + ([PLACE_MICROPHONE] if pending and not facts.get("pose") else [])
 
 
-def measured_line(count: int) -> str:
-    return f"Measured: {count} {'take' if count == 1 else 'takes'}."
+def take_counts(document: Mapping[str, Any]) -> dict[str, int]:
+    takes = [t for group in document.get("sets", ()) for t in group["takes"]]
+    return {"takes": len({t["take_id"] for t in takes if t["selected"]}),
+            "retakes": len({t["take_id"] for t in takes if t.get("attempt", 1) > 1})}
+
+
+def measured_line(count: int, retakes: int = 0) -> str:
+    return f"Measured: {count} kept {'take' if count == 1 else 'takes'}; {retakes} retaken."
 
 
 def coverage_lines(packet: Mapping[str, Any], manifest: Mapping[str, Any]) -> list[str]:
     from .crossover_v2.refusal_copy import refusal_copy_for  # lazy: keeps the CLI parser numpy-free
 
     takes = [t for g in packet.get("sets", ()) for t in g["takes"] if t["selected"]]
-    count = len({t["take_id"] for t in takes})
-    lines = [measured_line(count)]
+    counts = take_counts(manifest if "sets" in manifest else packet)
+    lines = [measured_line(counts["takes"], counts["retakes"])]
     poses = list(dict.fromkeys(pose_name(t["pose"]) for t in takes if t.get("pose")))
     if poses:
         lines += ["Measured poses: " + "; ".join(poses) + ".",
@@ -107,7 +98,7 @@ def coverage_lines(packet: Mapping[str, Any], manifest: Mapping[str, Any]) -> li
         missing.setdefault(json.dumps(row["pose"], sort_keys=True), []).append(row["reason"])
     for pose, reasons in missing.items():
         name = pose_name(json.loads(pose))
-        count_label = f" ({len(reasons)} planned captures)" if len(reasons) > 1 else ""
+        count_label = f" ({len(reasons)} planned measurements)" if len(reasons) > 1 else ""
         prefix = "Waived" if set(reasons) == {"complete_requested"} else "Not measured"
         details = " ".join(refusal_copy_for(reason)[0] for reason in dict.fromkeys(reasons)
                            if reason != "complete_requested")

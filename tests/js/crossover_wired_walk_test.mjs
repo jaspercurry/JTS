@@ -10,7 +10,7 @@
 // capture session, whose phone owns the tap.
 
 import strict from "node:assert/strict";
-import { crossoverMainModule } from "./_dom.mjs";
+import { CROSSOVER_IDS, crossoverMainModule } from "./_dom.mjs";
 
 // The reported count is DERIVED, never typed: a hand-bumped literal drifts from
 // what ran, and the Python bridge only checks it is >= 1.
@@ -33,6 +33,8 @@ const posted = [];
 // tests/js/crossover_position_diagram_test.mjs and
 // tests/js/crossover_units_test.mjs) -- those stub through unchanged.
 const { elements, render } = await crossoverMainModule({
+  ids: [...CROSSOVER_IDS, "crossover-round-lines", "crossover-round-choice", "crossover-round-select",
+    "crossover-round-summary", "crossover-round-start"],
   extraStubs: {
     getJSON: async () => nextEnvelope,
     postJSON: async (path, body) => {
@@ -326,5 +328,28 @@ for (const mover of ["arm", "confirmed"]) {
   assert.equal(walkAction().children.length, 0);
   assertWiredStatus();
 }
+
+for (const measurement of [1, 3, 3, 8]) {
+  const lines = [`Measurement ${measurement} of 8`];
+  render(envelope(null, {busy: true, round_lines: lines}));
+  assert.deepEqual(elements.get("crossover-round-lines").children.map(node => node.textContent), lines);
+}
+const nextChoice = {
+  id: "rear/express", label: "rear/express", default: true,
+  lines: ["next pose set"],
+  action: {id: "run_program", label: "rear/express", endpoint: "/next-round", body: {plan: {program: "rear/express"}}},
+};
+const finished = envelope(null, {
+  screen: "finished", terminal_status: "complete", verdict_text: "complete",
+  round_lines: ["9 kept; 1 retaken"], round_choices: [nextChoice],
+});
+render(finished);
+assert.equal(elements.get("crossover-verdict").textContent, finished.verdict_text);
+assert.deepEqual(elements.get("crossover-round-lines").children.map(node => node.textContent), finished.round_lines);
+const start = elements.get("crossover-round-start").children[0];
+assert.equal(start.textContent, nextChoice.action.label);
+nextEnvelope = envelope(null);
+await start.click();
+assert.deepEqual(posted.at(-1), {path: nextChoice.action.endpoint, body: nextChoice.action.body});
 
 console.log(JSON.stringify({ ok: true, passed }));
