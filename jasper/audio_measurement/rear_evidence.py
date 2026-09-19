@@ -419,6 +419,8 @@ def pair_band_levels(
               (("front_db", front_tf), ("rear_db", rear_tf), ("pair_sum_db", pair_tf))}
     return [{"band_hz": [band[0], band[1]],
              **{name: values[index] for name, values in levels.items()},
+             "superposition_residual_db": superposition_residual_db(
+                 freqs, front_tf=front_tf, rear_tf=rear_tf, pair_tf=pair_tf, band_hz=band),
              "level_gap_db": levels["rear_db"][index] - levels["front_db"][index]}
             for index, band in enumerate(bands)]
 
@@ -583,17 +585,18 @@ def gradient_residual_db(
 
     The band mean of ``20*log10|H_rear/H_front + exp(-jωτ)|``. A first-order
     gradient feeds the rear woofer the front's own signal inverted and delayed
-    by the pair's acoustic gap, so an ideal ratio is ``-exp(-jωτ)`` and the sum
+    by the gap magnitude, so an ideal ratio is ``-exp(-jωτ)`` and the sum
     inside the log cancels. A DIAGNOSTIC of the document, not a target and not
     a measurement: it assumes the two woofers radiate the same acoustic
     response, which only matched drivers in one cabinet approximately do.
+    The sign of a measured gap only tells which side the microphone stood on.
     ``None`` when the gap is unavailable or the band holds no bins.
     """
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     inside = np.empty(0, dtype=int) if band_hz is None else _band(freqs, band_hz)
     if arrival_gap_s is None or not inside.size:
         return None
-    ideal = np.exp(-2j * np.pi * freqs[inside] * float(arrival_gap_s))
+    ideal = np.exp(-2j * np.pi * freqs[inside] * abs(float(arrival_gap_s)))
     return float(np.mean(magnitude_db(np.asarray(rear_stage_ratio, dtype=np.complex128)[inside] + ideal)))
 
 
