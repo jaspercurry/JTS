@@ -23,13 +23,16 @@ from unittest.mock import Mock
 import pytest
 import yaml
 
-from jasper.active_speaker import round_bank, round_packet, wizard_client as wc
+from jasper import output_topology
+from jasper.active_speaker import candidate_bank, graph_safety, round_bank, round_packet, wizard_client as wc
 from jasper.active_speaker.angle_capture import AngleCaptureRequest
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_bank import publish_authored_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_design_draft
 from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.crossover_v2.prescription_document import judge_prescription_document
+from jasper.active_speaker.crossover_v2 import prescription_document as prescription_document_mod
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment, compile_candidate_config
 from jasper.active_speaker.design_draft import load_design_draft
 from jasper.web import correction_crossover_v2_apply as v2apply
 from jasper.active_speaker.crossover_v2.evidence_packet import CrossoverEvidencePacketError
@@ -37,13 +40,15 @@ from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, rou
 from jasper.active_speaker.measurement_programs import run_program
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
-from jasper.cli import _run_request, round as cli
+from jasper.cli import _run_request, crossover_prescriber, round as cli
 from jasper.cli._refusal import STATUS_BY_CODE
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
 from tests.crossover_v2_banked_round import bank_measure_round
 from tests.run_manifest_fixture import write_manifest
-from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profile, _room_candidate
+from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, tuning_profile as tuning_profile, _room_candidate
+from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
+from tests.test_rear_output_foundation import _rear_document, _rear_pair
 from tests.test_preflight import ready_facts
 from tests.test_arm_walk import FakeWalkClock
 from tests.test_correction_crossover_v2_endpoints import _FakeApplyCam, _seed_baseline_apply_environment
@@ -217,24 +222,34 @@ def test_apply_sends_no_explicit_host_header_by_default(monkeypatch, capsys):
     assert all(not request.has_header("Host") for request in opener.requests)
 
 
-@pytest.mark.parametrize("keep_timing", [False, True])
-def test_reset_composes_and_applies_the_selected_timing_scope(
-    keep_timing, monkeypatch, capsys, tmp_path, isolated_candidate_bank,
+@pytest.mark.parametrize("cardioid", [False, True])
+@pytest.mark.parametrize("program,keep_timing,sections", [
+    (None, False, {"driver", "blend", "alignment", "rear_calibration", "bass", "room"}),
+    (None, True, {"driver", "blend", "rear_calibration", "bass", "room"}),
+    ("speaker", False, {"driver", "blend", "alignment"}),
+    ("speaker", True, {"driver", "blend"}),
+    ("rear", False, {"rear_calibration"}),
+    ("bass", False, {"bass"}),
+    ("room", False, {"room"}),
+])
+def test_reset_composes_and_applies_the_selected_scope(
+    program, keep_timing, sections, cardioid, monkeypatch, capsys, tmp_path, isolated_candidate_bank,
 ):
-    """saved_base() serves the one pre-apply read (its own binding in
-    prescription_document); round.py's post-apply timing read is a second,
-    separate read (baseline_profile's binding). A single-item side_effect on
-    each binding fails loudly if either is read again, pinning that the
-    compose step no longer hides a third read through the unmonitored one."""
-    from jasper.active_speaker import baseline_profile, candidate_bank
-    from jasper.active_speaker.crossover_v2 import prescription_document as prescription_document_mod
-    from jasper.cli import crossover_prescriber
-    from jasper import output_topology
-
     topology, _ = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    base = publish_authored_candidate(
-        candidate_from_design_draft(topology, load_design_draft(topology=topology))
-    )
+    preset = None
+    if cardioid:
+        preset, topology = _rear_pair("mono")
+    base = publish_authored_candidate(replace(_candidate(
+        preset=preset, alignment=MeasuredCrossoverAlignment(22, "tweeter", "keep"),
+        linearization={"tweeter": {"filters": [
+            {"biquad_type": "Peaking", "freq": 4000, "q": 1, "gain": -1},
+        ]}}, room_correction=_room_correction(), bass_extension=BASS_EXTENSION,
+        rear_calibration=_rear_document() if cardioid else {},
+    ), analysis={"measurement_status": "unmeasured"},
+        blend_correction=[{"biquad_type": "Peaking", "freq": 1000, "q": 1, "gain": -1}]))
+    base = publish_authored_candidate(judge_prescription_document(
+        document(base.fingerprint), base=base, base_profile={},
+    ))
     trims_db = base.candidate.role_attenuations_db
     timing = {"delay_us": 22, "polarity": "normal", "provenance": "measured"}
     applied = {"status": "applied", "source": {"measured_candidate_fingerprint": base.fingerprint},
@@ -242,7 +257,8 @@ def test_reset_composes_and_applies_the_selected_timing_scope(
         {"corrections": {role: {"gain_db": db} for role, db in trims_db.items()}}
         if trims_db else {}
     )}
-    persisted = {"timing": timing} if keep_timing else {}
+    timing_kept = "alignment" not in sections
+    persisted = {"timing": timing} if timing_kept else {}
     pre_apply_read = Mock(side_effect=[applied])
     post_apply_read = Mock(side_effect=[persisted])
     monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state", pre_apply_read)
@@ -251,20 +267,42 @@ def test_reset_composes_and_applies_the_selected_timing_scope(
     real_compose = crossover_prescriber.compose_prescription_document
     composed_with: dict = {}
     def _spy_compose(document, *, base, evidence=None, base_profile=None):
+        composed_with["document"] = document
         composed_with["base_profile"] = base_profile
         return real_compose(document, base=base, evidence=evidence, base_profile=base_profile)
     monkeypatch.setattr(crossover_prescriber, "compose_prescription_document", _spy_compose)
 
     opener = _opener()
-    code, body = _run(["reset", *(["--keep-timing"] if keep_timing else [])],
+    code, body = _run(["reset", *(["--program", program] if program else []),
+                      *(["--keep-timing"] if keep_timing else [])],
                       opener, monkeypatch, capsys)
 
     assert code == cli.EXIT_OK, body
     candidate = candidate_bank.find_banked_candidate(body["candidate_fingerprint"]).candidate
     assert candidate.role_attenuations_db == base.candidate.role_attenuations_db
-    assert candidate.linearization == {}
-    assert body["timing"] == {"saved": keep_timing,
-                              "provenance": "measured" if keep_timing else None}
+    assert set(composed_with["document"]["sections"]) == sections
+    for section, field in (("driver", "linearization"), ("blend", "blend_correction"),
+                           ("alignment", "alignment"), ("rear_calibration", "rear_calibration"),
+                           ("bass", "bass_extension"), ("room", "room_correction"), ("topology", "source_preset")):
+        if section not in sections:
+            assert json.dumps(candidate.to_dict().get(field), sort_keys=True) == json.dumps(
+                base.candidate.to_dict().get(field), sort_keys=True)
+        elif section == "alignment":
+            assert candidate.alignment == MeasuredCrossoverAlignment()
+        else:
+            assert not getattr(candidate, field)
+    if "driver" in sections:
+        assert composed_with["document"]["sections"]["driver"]["pinned_trim_db"] == trims_db
+    if "rear_calibration" in sections:
+        assert composed_with["document"]["sections"]["rear_calibration"] is None
+        if cardioid:
+            graph = yaml.safe_load(compile_candidate_config(candidate, playback_device="null"))
+            assert graph_safety.output_terminally_muted(
+                graph, graph_safety.view_from_yaml_dict(graph), 2,
+                mute_name="as_out2_rear_pending_mute", mute_gain_db=-120.0,
+            )
+    assert body["timing"] == {"saved": timing_kept,
+                              "provenance": "measured" if timing_kept else None}
     assert body["trims_db"] == trims_db
     assert pre_apply_read.call_count == 1
     assert post_apply_read.call_count == 1
@@ -272,6 +310,15 @@ def test_reset_composes_and_applies_the_selected_timing_scope(
     assert [json.loads(request.data) for request in opener.posts()] == [
         {"expected_candidate_fingerprint": candidate.fingerprint},
     ]
+
+
+@pytest.mark.parametrize("program", ["rear", "bass", "room"])
+def test_reset_keep_timing_requires_timing_in_scope(program):
+    opener = _opener()
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["reset", "--program", program, "--keep-timing"], opener=opener)
+    assert caught.value.code == 2
+    assert not opener.requests
 
 
 @pytest.mark.parametrize("source", ["saved", "measured"])

@@ -13,7 +13,7 @@ Register the wired microphone with `jasper-mic-calibration`; set its capture con
 5. Author one prescription document. Run `jasper-crossover-prescriber judge <doc> --round <round-dir> --set <set-id>`, then `compose <doc> --base <fingerprint|saved> --round <round-dir> --set <set-id>`.
 6. Trial the composed fingerprint with the same loop. Then run `jasper-round apply <fingerprint>`. Apply requires a banked complete trial of that graph, intact trial evidence, matching identity, and a proved layer stack. Its verification dimensions are advice, not another gate.
 
-Use `jasper-round reset` to reset all tuning while keeping the measured level-match trims, or add `--keep-timing` to also keep timing. Timing is the physical arrival difference between the drivers. Once measured with confidence it does not change with EQ, room or bass work. Reset it only if you moved or replaced a driver, changed the enclosure, or changed the crossover so much that you want a fresh read. This reset verb is the only way to re-measure timing.
+Use `jasper-round reset` to reset everything, including the rear stage, or `jasper-round reset --program {speaker,rear,bass,room}` to reset one program. Both keep the measured level-match trims. Add `--keep-timing` only for everything or `--program speaker`. Timing is the physical arrival difference between drivers. Reset it only after a driver, enclosure, or major crossover change that needs a fresh read.
 
 ## Speaker
 
