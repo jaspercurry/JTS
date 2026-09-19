@@ -15,6 +15,7 @@ import base64
 import json
 import logging
 import time
+from collections import Counter
 from typing import Any, AsyncIterator
 
 from ..backoff import reconnect_delay
@@ -134,6 +135,7 @@ class OpenAILiveTurn(BaseLiveTurn):
         self._response_ids = {}
         self._calls = {}
         self._counted_responses = set()
+        self._event_counts: Counter[str] = Counter()
         self.backend_pending = False
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
@@ -283,6 +285,7 @@ class OpenAILiveTurn(BaseLiveTurn):
             "quiet_played": self._quiet_played,
             "quiet_discarded": self._quiet_discarded,
             "input_catchup_ms": round(self._input_caught_up * 1000),
+            "event_counts": ",".join(f"{kind}:{count}" for kind, count in sorted(self._event_counts.items())),
         }
 
     async def on_event(self, event: dict) -> None:
@@ -629,6 +632,7 @@ class OpenAILiveConnection(BaseLiveConnection):
         try:
             async for raw in self._session:
                 event = raw if isinstance(raw, dict) else raw.model_dump()
+                turn._event_counts[event["type"]] += 1
                 if event["type"] == "session.started":
                     self._started.set()
                 elif event["type"] == "error":

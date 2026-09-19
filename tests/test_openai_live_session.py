@@ -886,6 +886,23 @@ async def test_stop_does_not_wait_out_a_dial_that_is_still_hanging(
         await acquire
 
 
+async def test_turn_ended_counts_received_event_types(caplog):
+    caplog.set_level(logging.INFO)
+    async with live_turn() as turn:
+        for event in [
+            output_audio(QUIET_PCM),
+            {"type": "session.input_transcript.delta", "delta": "private words", "start_ms": 0, "end_ms": 100},
+            backend("private-id", "response.created", response={"id": "private-response"}),
+            output_audio(QUIET_PCM),
+        ]:
+            await turn._conn._session.events.put(event)
+        await wait_until(lambda: turn._quiet_discarded == 2)
+    assert event_fields(caplog, "provider.turn_ended")["event_counts"] == (
+        "response.event:1,session.closed:1,session.input_transcript.delta:1,"
+        "session.output_audio.delta:2,session.started:1"
+    )
+
+
 @pytest.mark.parametrize("gap_sec, played, discarded", [
     (0.0, 1, 0),
     (SILENCE_BRIDGE_SEC, 1, 0),

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -23,6 +24,7 @@ from jasper.voice.session import AudioOutChunk
 from jasper.voice import conversation, openai_live_session, turn_playback
 from tests._async_wait import wait_signalled, wait_until
 from tests._live_turn_fake import FakeLiveTurn
+from tests._log_events import event_fields
 from tests._playout import FakeTts
 from tests._wake_loop import wake_loop_for_tests
 from tests.usage_store_fixtures import FakeUsageStore
@@ -56,22 +58,26 @@ async def test_endpointed_answer_closes_the_turn_once_playout_drains():
 
 
 @pytest.mark.parametrize(
-    "last_speech, accepted_at, drain_at, backend, followup_seconds, deadline",
+    "last_speech, accepted_at, drain_at, backend, followup_seconds, deadline, wait",
     [
-        (100, 0, 0, False, 2, 100 + FIRST_ANSWER_SEC),
-        (100, 98, 98.5, False, 2, 100 + FIRST_ANSWER_SEC),
-        (100, 101, 104, False, 2, 104 + 2),
-        (104, 101, 0, False, 2, 104 + 2),
-        (100, 101, 0, False, 0, 101),
-        (100, 0, 0, True, 2, 100 + ACKNOWLEDGED_BACKEND_SEC),
-        (100, 101, 104, True, 2, 100 + ACKNOWLEDGED_BACKEND_SEC),
+        (100, 0, 0, False, 2, 100 + FIRST_ANSWER_SEC, "first_answer"),
+        (100, 98, 98.5, False, 2, 100 + FIRST_ANSWER_SEC, "first_answer"),
+        (100, 101, 104, False, 2, 104 + 2, "followup"),
+        (104, 101, 0, False, 2, 104 + 2, "followup"),
+        (100, 101, 0, False, 0, 101, "followup"),
+        (100, 0, 0, True, 2, 100 + ACKNOWLEDGED_BACKEND_SEC, None),
+        (100, 101, 104, True, 2, 100 + ACKNOWLEDGED_BACKEND_SEC, None),
     ],
 )
+@pytest.mark.parametrize("activity_at", [0.0, 99.5])
 async def test_live_first_answer_followup_and_backend_waits(
-    monkeypatch, last_speech, accepted_at, drain_at, backend, followup_seconds, deadline,
+    monkeypatch, caplog, last_speech, accepted_at, drain_at, backend, followup_seconds,
+    deadline, wait, activity_at,
 ):
+    caplog.set_level(logging.INFO)
     now = deadline - WATCHDOG_POLL_SEC
     turn = FakeLiveTurn()
+    monkeypatch.setattr(turn, "last_activity_at", lambda: activity_at)
     turn.backend_pending = backend
     tts = FakeTts()
     tts.expected_drain_at = lambda: drain_at
@@ -89,6 +95,12 @@ async def test_live_first_answer_followup_and_backend_waits(
     )
     assert now == deadline
     assert reason == ("response_stalled" if backend else "followup_timeout")
+    if not backend:
+        fields = event_fields(caplog, "voice.turn_deadline")
+        assert fields["wait"] == wait
+        assert fields["activity_age_ms"] == (
+            str(int((deadline - activity_at) * 1000)) if activity_at else "null"
+        )
 
 
 @pytest.mark.parametrize("input_ended", [False, True])
