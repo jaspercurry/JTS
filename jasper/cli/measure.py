@@ -482,6 +482,7 @@ def _bind_compose(
     config_dir: str, graph: Any, measurement_profile: Any = None,
 ) -> Any:
     from jasper.active_speaker.crossover_v2.composition import bind_program_composer
+    from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK  # lazy: optional measurement runtime
     from jasper.active_speaker.measurement_emit import measurement_graph_evidence
     from jasper.active_speaker.crossover_v2.programs import SessionExcitation, program_for_spec as compose_program  # lazy: optional measurement runtime
     from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
@@ -495,7 +496,12 @@ def _bind_compose(
     )
 
     def program_for_spec(spec: Any, stimulus_dbfs: float | None) -> Any:
-        return compose_program(spec, excitation, {role.role: BASE_STIMULUS_PEAK_DBFS for role in box.roles_bands},
+        gains = None
+        if spec.graph_scope == "drivers" and spec.program_phase != PHASE_CHECK:
+            peak = BASE_STIMULUS_PEAK_DBFS if stimulus_dbfs is None else stimulus_dbfs
+            gains = {role.role: peak - max(0.0, spec.scope_gains_db.get(role.role, 0.0)) for role in excitation.roles}
+            stimulus_dbfs = None
+        return compose_program(spec, excitation, gains,
                                stimulus_dbfs, safety_profile=box.safety_profile, role_targets=box.role_targets)
 
     async def before_play(spec: Any, program: Any, artifact: Any, phase: str) -> None:
@@ -523,6 +529,7 @@ def _bind_compose(
         declared_sensitivities=box.declared_sensitivities,
         before_play=before_play, graph_yaml=graph.installed_graph_yaml,
         level_reference_yaml=lambda: graph.level_reference_yaml,
+        roles=excitation.roles,
         graph_evidence_for_spec=evidence_for_spec,
     )
 

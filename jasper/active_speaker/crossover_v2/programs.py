@@ -110,7 +110,8 @@ class NoProgramForPhaseError(RuntimeError):
 def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_dbfs: float | None = None, *,
                            safety_profile: Mapping[str, Any], role_targets: Mapping[str, str]) -> ExcitationProgram:
     excitation = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)
-    backoff = max(0.0, spec.scope_gain_db)
+    backoff = max(0.0, max((gain for role, gain in spec.scope_gains_db.items()
+                           if not spec.branch_target_ids or role in spec.branch_target_ids), default=0.0))
     if stimulus_dbfs is not None:
         backoff += BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs
     if spec.stimulus is not None:
@@ -189,7 +190,8 @@ class SessionExcitation:
         """This session's pilot pair."""
         return pilot_gains(hi_gain_db)
 
-    def check_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
+    def check_program(self, *, extra_backoff_db: float = 0.0,
+                      scope_gains_db: Mapping[str, float] | None = None) -> ExcitationProgram:
         """Probe at the summed base, with paired backoff for the graph and retries."""
         summed_base = self._summed_gain()
         role_base = {
@@ -200,7 +202,7 @@ class SessionExcitation:
                     self.caps_dbfs.get(rb.role, 0.0),
                 ),
                 summed_base,
-            ) - max(0.0, extra_backoff_db)
+            ) - max(0.0, extra_backoff_db) - max(0.0, (scope_gains_db or {}).get(rb.role, 0.0))
             for rb in self.roles
         }
         return build_check_program(
@@ -340,8 +342,8 @@ def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Map
         program = excitation.check_program()
         peak = max(segment.gain_db for segment in program.stimulus_segments())
         return excitation.check_program(
-            extra_backoff_db=max(0.0, spec.scope_gain_db)
-            + (0.0 if stimulus_dbfs is None else peak - stimulus_dbfs))
+            extra_backoff_db=0.0 if stimulus_dbfs is None else peak - stimulus_dbfs,
+            scope_gains_db=spec.scope_gains_db)
     if spec.graph_scope == "drivers":
         gains = gain_plan_db
         if not gains:
@@ -349,7 +351,7 @@ def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Map
         if stimulus_dbfs is not None and stimulus_dbfs != max(gains.values()):
             delta = stimulus_dbfs - max(gains.values())
             gains = {role: gain + delta for role, gain in gains.items()}
-        return excitation.measure_program(gains, extra_backoff_db=max(0.0, spec.scope_gain_db))
+        return excitation.measure_program(gains)
     program = compose_summed_program(excitation, spec, stimulus_dbfs,
                                      safety_profile=safety_profile, role_targets=role_targets)
     if spec.graph_scope == "candidate_branches":

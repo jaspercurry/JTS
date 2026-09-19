@@ -50,7 +50,7 @@ from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.angle_capture import request_for_program
 from jasper.active_speaker.measurement_programs import program as measurement_program
-from jasper.active_speaker.measurement_level import scope_gain_db
+from jasper.active_speaker.measurement_level import scope_gains_db
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.crossover_v2.capture_plan import CloudPositionPrompt, room_sweep_band_hz
@@ -66,6 +66,7 @@ from jasper.active_speaker.crossover_v2.programs import (
     program_for_phase,
 )
 from jasper.audio_measurement.program import KIND_COURTESY_TONE, RoleBand
+from jasper.cli.measure import _bind_compose
 from jasper.web.correction_run_host import compose_plan_program
 from tests.test_active_speaker_program_admission import _profile_and_targets
 
@@ -174,7 +175,7 @@ def test_check_pilots_do_not_exceed_the_summed_pilot_pair(caps, extra_backoff_db
 
 @pytest.mark.parametrize("headroom", [0.0, 3.1, 5.61])
 @pytest.mark.parametrize("phase,scope", [("check", "drivers"), ("measure", "drivers"), ("verify", "timing")])
-def test_scope_gain_prices_the_loudest_path_and_never_raises_a_program(headroom, phase, scope):
+def test_scope_gains_correct_blind_levels_and_preserve_the_measured_plan(headroom, phase, scope):
     def graph(headroom, trim, cut):
         return yaml.safe_dump({
             "devices": {"capture": {"channels": 2}},
@@ -182,29 +183,52 @@ def test_scope_gain_prices_the_loudest_path_and_never_raises_a_program(headroom,
                 "headroom": {"type": "Gain", "parameters": {"gain": -headroom}},
                 "trim": {"type": "Gain", "parameters": {"gain": trim}},
                 "linearization": {"type": "Biquad", "parameters": {
-                    "type": "Highshelf", "freq": 1.0, "q": 0.707, "gain": cut}},
+                    "type": "Peaking", "freq": 1000.0, "q": 30.0, "gain": cut}},
             },
             "pipeline": [
-                {"type": "Filter", "channels": [0, 1], "names": ["headroom", "linearization"]},
+                {"type": "Filter", "channels": [0, 1], "names": ["headroom"]},
+                {"type": "Filter", "channels": [0], "names": ["linearization"]},
                 {"type": "Filter", "channels": [1], "names": ["trim"]},
             ],
         })
-    candidate, drivers = graph(headroom, -3.0, -8.0), graph(0.0, 0.0, 0.0)
-    gain = scope_gain_db(drivers, candidate, (20.0, 20000.0))
-    assert gain == pytest.approx(headroom + 8.0, abs=0.2)
-    assert scope_gain_db(candidate, candidate, (20.0, 20000.0)) == 0.0
-    quieter = scope_gain_db(candidate, drivers, (20.0, 20000.0))
-    assert quieter == pytest.approx(-gain)
+    topology, _, _ = _profile_and_targets()
+    excitation = _excitation({"woofer": 0.0, "tweeter": 0.0})
+    candidate, drivers = graph(headroom, -21.3, -8.0), graph(0.0, 0.0, 0.0)
+    gain = scope_gains_db(drivers, candidate, excitation.roles, topology=topology)
+    assert gain == pytest.approx({"woofer": headroom, "tweeter": headroom + 21.3}, abs=0.3)
+    assert scope_gains_db(candidate, candidate, excitation.roles, topology=topology) == {"woofer": 0, "tweeter": 0}
+    quieter = scope_gains_db(candidate, drivers, excitation.roles, topology=topology)
+    assert quieter == pytest.approx({role: -db for role, db in gain.items()})
     spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope,
                        candidate_id="trial" if scope != "drivers" else "")
-    excitation = _excitation({"woofer": 0.0, "tweeter": 0.0})
     def compose(gain):
-        return programs.program_for_spec(replace(spec, scope_gain_db=gain), excitation, GAIN_PLAN_DB,
+        return programs.program_for_spec(replace(spec, scope_gains_db=gain), excitation, GAIN_PLAN_DB,
                                          safety_profile={}, role_targets={})
-    unchanged, lowered = compose(0.0), compose(gain)
+    unchanged, lowered = compose({}), compose(gain)
     assert compose(quieter).program_id == unchanged.program_id
+    if phase == "measure":
+        assert lowered.program_id == unchanged.program_id
     for before, after in zip(unchanged.stimulus_segments(), lowered.stimulus_segments()):
-        assert before.effective_peak_dbfs - after.effective_peak_dbfs == pytest.approx(gain)
+        backoff = 0 if phase == "measure" else gain[before.role] if phase == "check" else max(gain.values())
+        assert before.effective_peak_dbfs - after.effective_peak_dbfs == pytest.approx(backoff)
+
+
+@pytest.mark.parametrize("stimulus_dbfs", [None, -18.0])
+def test_cli_blind_measure_gains_include_only_positive_scope_backoff(monkeypatch, stimulus_dbfs):
+    excitation = _excitation({"woofer": 0.0, "tweeter": 0.0})
+    box = SimpleNamespace(
+        roles_bands=excitation.roles, caps_dbfs=excitation.caps_dbfs,
+        session_volume_db=excitation.session_volume_db, fc_hz=excitation.fc_hz,
+        sweep_duration_limits_s={}, topology=None, safety_profile={}, role_targets={}, declared_sensitivities={})
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.composition.bind_program_composer",
+                        lambda **kw: kw["program_for_spec"])
+    compose = _bind_compose(box=box, store=None, session_id="test", cam_factory=None,
+                            config_dir="", graph=SimpleNamespace(installed_graph_yaml=None))
+    spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure")
+    reference = compose(spec, stimulus_dbfs)
+    played = compose(replace(spec, scope_gains_db={"woofer": -2.0, "tweeter": 21.3}), stimulus_dbfs)
+    for before, after in zip(reference.stimulus_segments(), played.stimulus_segments()):
+        assert before.gain_db - after.gain_db == pytest.approx(21.3 if before.role == "tweeter" else 0.0)
 
 
 def test_only_the_prelude_moved_under_the_shipped_measure_program(monkeypatch):

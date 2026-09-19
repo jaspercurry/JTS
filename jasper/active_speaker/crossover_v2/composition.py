@@ -18,7 +18,7 @@ from dataclasses import replace
 from functools import partial
 from itertools import count
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 
 from .playback_transaction import PlaybackTransaction
 from .program_transaction import (
@@ -30,7 +30,7 @@ from .program_transaction import (
 from .session_seams import EngineSeams, RecordStore, VolumeClaim
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from jasper.audio_measurement.program import ExcitationProgram
+    from jasper.audio_measurement.program import ExcitationProgram, RoleBand
 
 __all__ = [
     "bind_engine_seams",
@@ -187,6 +187,7 @@ def bind_program_composer(
     before_play: Callable[[Any, Any, Any, str], Awaitable[None]] | None = None,
     graph_yaml: Callable[[], str],
     level_reference_yaml: Callable[[], str] | None = None,
+    roles: Sequence[RoleBand] = (),
     graph_evidence_for_spec: Callable[[Any], Mapping[str, Any]] | None = None,
 ) -> Compose:
     """Render each take once and bind admission, locked graph proof and playback.
@@ -209,12 +210,11 @@ def bind_program_composer(
         if not expected_graph:
             raise ValueError("playback has no installed measurement graph")
         if level_reference_yaml is not None:
-            from ..measurement_level import scope_gain_db  # lazy: numerical analysis at composition
-            from jasper.audio_measurement.program import SUMMED_SWEEP_BAND_HZ  # lazy: measurement runtime
+            from ..measurement_level import scope_gains_db  # lazy: numerical analysis at composition
 
-            gain = (0.0 if spec.graph_scope == "candidate" else scope_gain_db(
-                expected_graph, level_reference_yaml(), spec.sweep_band_hz or SUMMED_SWEEP_BAND_HZ))
-            spec = replace(spec, scope_gain_db=gain)
+            gains = ({} if spec.graph_scope == "candidate" else scope_gains_db(
+                expected_graph, level_reference_yaml(), roles, topology=topology))
+            spec = replace(spec, scope_gains_db=gains)
         program = program_for_spec(spec, stimulus_dbfs)
         phase = spec.program_phase or program.phase
         wav_rel = (

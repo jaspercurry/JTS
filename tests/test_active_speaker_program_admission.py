@@ -31,7 +31,7 @@ from jasper.active_speaker.crossover_v2.composition import bind_program_composer
 from jasper.active_speaker.driver_safety import compute_driver_safety_profile
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph, emit_measurement_graph, measurement_graph_evidence
-from jasper.active_speaker.measurement_level import scope_gain_db
+from jasper.active_speaker.measurement_level import scope_gains_db
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import (
@@ -1328,19 +1328,26 @@ async def test_take_composer_uses_installed_scope_gain_and_all_programs_remain_a
     for phase, scope in [("check", "drivers"), ("measure", "drivers"), ("verify", "timing"), ("verify", "candidate")]:
         spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope,
                            candidate_id=candidate.fingerprint if scope != "drivers" else "")
-        gain = scope_gain_db(graphs[scope], graphs["candidate"], (20., 20000.))
-        expected = {"drivers": 8.526323 if rear else 2.915623,
-                    "timing": 1.561123 if rear else 0.684715, "candidate": 0.0}
-        assert gain == pytest.approx(expected[scope], abs=0.00001)
+        gain = scope_gains_db(graphs[scope], graphs["candidate"], excitation.roles, topology=topology)
+        expected = {"drivers": {"woofer": 7.437108 if rear else 1.826408,
+                                "tweeter": 8.738569 if rear else 3.127869},
+                    "timing": {"woofer": 0.542875, "tweeter": 0.081768},
+                    "candidate": {"woofer": 0.0, "tweeter": 0.0}}[scope]
+        if rear and scope != "candidate":
+            expected["woofer:rear"] = expected["woofer"] if scope == "timing" else 0.0
+        assert gain == pytest.approx(expected, abs=0.00001)
         compose = bind_program_composer(
             program_for_spec=lambda spec, level: programs(spec, stimulus_dbfs=level),
             store=store, capture_session_id="level", cam_factory=lambda: None,
             config_dir=str(tmp_path), topology=topology, safety_profile=safety, role_targets=targets,
-            graph_yaml=lambda: graphs[scope], level_reference_yaml=lambda: graphs["candidate"])
+            graph_yaml=lambda: graphs[scope], level_reference_yaml=lambda: graphs["candidate"], roles=excitation.roles)
         played = await compose(spec=spec, level_db=fader)
         reference = programs(spec)
+        if phase == "measure":
+            assert reference.program_id == played.program.program_id
         for before, after in zip(reference.stimulus_segments(), played.program.stimulus_segments()):
-            assert before.effective_peak_dbfs - after.effective_peak_dbfs == pytest.approx(max(0, gain))
+            backoff = 0 if phase == "measure" else gain[before.role] if phase == "check" else max(gain.values())
+            assert before.effective_peak_dbfs - after.effective_peak_dbfs == pytest.approx(max(0, backoff))
         kwargs = dict(topology=topology, safety_profile=safety, role_targets=targets, session_volume_db=fader)
         if scope == "drivers":
             admission = readmit_program_from_wav(played.program, tmp_path / paths[-1], **kwargs)

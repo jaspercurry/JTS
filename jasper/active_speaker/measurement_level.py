@@ -6,18 +6,24 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any, Mapping
+from typing import Sequence
 
 import numpy as np
 import yaml
 
 from jasper.bass_extension.dynamic_graph import PREFIX as DYNAMIC_BASS_PREFIX
+from jasper.audio_measurement.program import RoleBand
+from jasper.output_topology import OutputTopology, measurement_target_id
 
 from .branch_chain import camilla_filter_response
 from .branch_peak import BranchPeakError, _mixer_mapping, _step_channels, _step_transfer
+from .measurement import active_driver_targets
 
 
-def _broadband_gain_db(graph: Mapping[str, Any], freqs: np.ndarray) -> float:
+@lru_cache(maxsize=32)
+def _path_responses(graph_text: str, band_hz: tuple[float, float]) -> np.ndarray:
+    graph = yaml.safe_load(graph_text)
+    freqs = np.geomspace(*band_hz, 2048)
     width = graph["devices"]["capture"]["channels"]
     responses = np.ones((width, len(freqs)), dtype=np.complex128)
     filters = graph["filters"]
@@ -41,21 +47,36 @@ def _broadband_gain_db(graph: Mapping[str, Any], freqs: np.ndarray) -> float:
                 responses[channel] *= response
         else:
             raise BranchPeakError(f"unsupported measurement step: {step['type']}")
-    return float(10 * np.log10(np.max(np.mean(abs(responses) ** 2, axis=1))))
+    return abs(responses)
 
 
-@lru_cache(maxsize=32)
-def scope_gain_db(graph_text_for_scope: str, graph_text_for_candidate: str,
-                  band_hz: tuple[float, float]) -> float:
-    """Difference of loudest-output mean powers, in dB, at equal energy per octave.
+def scope_gains_db(graph_text_for_scope: str, graph_text_for_candidate: str,
+                   roles: Sequence[RoleBand], *, topology: OutputTopology) -> dict[str, float]:
+    """Median path-gain ratios in each role's band, keyed by measurement target.
 
     Coherent unity inputs cover summed and separately routed role programs.
     Limiters are pass-through here; their level caps remain with admission.
     """
+    gains = {role.role: 0.0 for role in roles}
     if graph_text_for_scope == graph_text_for_candidate:
-        return 0.0
-    # Log-bin centres give each octave the same weight without endpoint bias.
-    edges = np.geomspace(*band_hz, 2049)
-    freqs = np.sqrt(edges[:-1] * edges[1:])
-    return (_broadband_gain_db(yaml.safe_load(graph_text_for_scope), freqs)
-            - _broadband_gain_db(yaml.safe_load(graph_text_for_candidate), freqs))
+        return gains
+    targets = active_driver_targets(topology)
+    for role in roles:
+        band = (role.band.lower_hz, role.band.upper_hz)
+        scope, candidate = (_path_responses(text, band)
+                            for text in (graph_text_for_scope, graph_text_for_candidate))
+        channels: dict[str, list[int]] = {}
+        for target in targets:
+            name = measurement_target_id(target["role"], target.get("output_variant", "primary"))
+            if target["role"] == role.role or name == role.role:
+                channels.setdefault(name, []).append(target["output_index"])
+        for name, outputs in channels.items():
+            live = [ch for ch in outputs if ch < min(len(scope), len(candidate))
+                    and np.any(scope[ch]) and np.any(candidate[ch])]
+            if not live:
+                gains[name] = 0.0
+                continue
+            numerator, denominator = scope[live].max(axis=0), candidate[live].max(axis=0)
+            audible = (numerator > 0) & (denominator > 0)
+            gains[name] = float(np.median(20 * np.log10(numerator[audible] / denominator[audible])))
+    return gains

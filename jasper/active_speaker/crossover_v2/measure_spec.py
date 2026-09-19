@@ -17,7 +17,7 @@ import — ``output_topology`` (already transitive) and ``measurement_programs``
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
@@ -188,7 +188,7 @@ class MeasureSpec:
     #: capture, which is what keeps their graphs byte-identical.
     level_matched: bool = False
     graph_scope: str = GRAPH_SCOPE_DRIVERS
-    scope_gain_db: float = 0.0
+    scope_gains_db: Mapping[str, float] = field(default_factory=dict)
     program_phase: str = ""
     stimulus: Mapping[str, Any] | None = None
     #: The two measurement target ids a ``candidate_branches`` take excites, in
