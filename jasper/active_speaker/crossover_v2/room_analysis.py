@@ -94,9 +94,8 @@ class RoomComposition:
 
 def room_composition(sides: Mapping[str, Sequence[Mapping[str, Any]]], median: RoomMedian,
                      floor_db: np.ndarray) -> RoomComposition:
-    # Coverage limits filter centres; the room policy still bounds their tails.
-    grid = np.unique(np.concatenate((composed_grid((ROOM_FLOOR_HZ, median.ceiling_hz), median.freqs_hz),
-                                     median.freqs_hz, [ROOM_FLOOR_HZ, median.ceiling_hz])))
+    band = (median.band_hz[0], median.ceiling_hz)
+    grid = np.unique(np.concatenate((composed_grid(band, median.freqs_hz), median.freqs_hz, band)))
     floor = np.maximum(
         np.interp(grid, median.freqs_hz, floor_db),
         cut_floor_db(None if median.spread_db is None else 0.0, grid, median.ceiling_hz),

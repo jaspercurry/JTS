@@ -221,17 +221,14 @@ def grade_room_median(
     compared = None
     if incumbent is not None:
         comparison, compared = _comparison_arrays(median, incumbent)
-    for index, (low, high, mask) in enumerate(band_masks(median.freqs_hz, median.ceiling_hz)):
+    for low, high, mask in band_masks(median.freqs_hz, median.ceiling_hz):
         if incumbent is None or compared is None:
             now = _array_metrics(median.median_db, median.spread_db, mask)
             was = None
             compared_hz = None
         else:
             grid, now_curve, was_curve, now_spread, was_spread = compared
-            compared_mask = (grid >= low) & (
-                (grid <= high) if index == len(band_masks(grid, median.ceiling_hz)) - 1
-                else (grid < high)
-            )
+            compared_mask = (grid >= low) & ((grid <= high) if high == median.ceiling_hz else (grid < high))
             now = _array_metrics(now_curve, now_spread, compared_mask)
             was = _array_metrics(was_curve, was_spread, compared_mask)
             compared_freqs = grid[compared_mask]
