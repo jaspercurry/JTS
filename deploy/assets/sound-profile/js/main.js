@@ -1602,7 +1602,7 @@ import {
           ? renderStepNotRequiredCard(
               'profile',
               'This speaker does not use an active speaker profile.')
-          : renderBaselineProfileCard() + renderAbListenCard(),
+          : renderBaselineProfileCard() + (followerMode ? '' : renderAbListenCard()),
         ''
       ) +
       (((activeSpeaker.commissioningView || {}).next_action || {}).id === 'copy_prompt' ? '' : renderTuningHandoffCard()) +

@@ -8,9 +8,11 @@ import { getJSON, postJSON } from "/assets/shared/js/http.js";
 export const trimSteps = (levelDb, otherLevelDb, stepDb) =>
   Math.min(0, Math.round((otherLevelDb - levelDb) / stepDb));
 export const targetPercent = (basePercent, steps) => Math.max(1, basePercent + steps);
-export function flipOrder(current, target) {
+export const startKey = (blind, random) => blind && random >= 0.5 ? 'B' : 'A';
+export const canStart = (volume, steps) => !volume.muted && steps.every(step => volume.percent + step >= 2);
+export function flipOrder(current, target, forceApply = false) {
   const volume = current.percent === target.percent ? [] : ['volume'];
-  const apply = current.fingerprint === target.fingerprint ? [] : ['apply'];
+  const apply = !forceApply && current.fingerprint === target.fingerprint ? [] : ['apply'];
   return target.percent < current.percent ? [...volume, ...apply] : [...apply, ...volume];
 }
 
@@ -25,6 +27,7 @@ export function initAbListen() {
   abMountedCard = card;
   let data, round, pair, current, basePercent, running = false, busy = false, blind = null, error = '';
   const label = key => blind ? blind[key] : key;
+  const stepsFor = key => trimSteps(pair[key].level_db, pair[key === 'A' ? 'B' : 'A'].level_db, data.volume_step_db);
   const name = tune => tune.fingerprint.slice(0, 8) + (tune.base ? ' · base' : '') +
     (tune.fingerprint === current?.fingerprint ? ' · applied' : '');
   const button = (act, text, primary = false, disabled = false) => h('button.btn', {
@@ -32,7 +35,7 @@ export function initAbListen() {
     dataset: {act}, disabled: busy || disabled
   }, text);
   function select(title, value, options, change) {
-    return h('div.field', {}, h('label', {htmlFor: 'ab-' + title}, title),
+    return h('div.field', {}, h('label', {htmlFor: 'ab-' + title}, title === 'Round' ? 'Trial round' : 'Tune ' + title),
       h('select', {id: 'ab-' + title, disabled: busy || running, onchange: change},
         options.map(([id, text]) => h('option', {value: id, selected: id === value}, text))));
   }
@@ -57,23 +60,24 @@ export function initAbListen() {
           e => { pair[key] = round.tunes.find(t => t.fingerprint === e.target.value); draw(); }));
         const louder = pair.A.level_db > pair.B.level_db ? 'A' : 'B';
         const diff = Math.abs(pair.A.level_db - pair.B.level_db);
-        const steps = -trimSteps(pair[louder].level_db, pair[louder === 'A' ? 'B' : 'A'].level_db, data.volume_step_db);
+        const steps = -stepsFor(louder);
         nodes.push(h('p.form-hint', {}, `${louder} is ${diff.toFixed(2)} dB louder. It plays ${steps} volume ` +
           `step${steps === 1 ? '' : 's'} (${(steps * data.volume_step_db).toFixed(2)} dB) lower. ` +
           `Difference left: ${Math.abs(diff - steps * data.volume_step_db).toFixed(2)} dB.`));
       }
       if (running) {
         const playing = Object.keys(pair).find(k => pair[k].fingerprint === current.fingerprint);
-        nodes.push(h('span.badge.badge--ok', {}, playing ? 'Playing ' + label(playing) +
+        nodes.push(h('span.badge.badge--ok', {role: 'status'}, playing ? 'Playing ' + label(playing) +
           (blind ? '' : ' · ' + pair[playing].fingerprint.slice(0, 8)) : 'Selected tune has not started'),
           h('div.form-actions', {}, button('flip', busy ? 'Switching…' : 'Flip to ' + label(playing === 'A' ? 'B' : 'A'), true), button('end', 'End')),
-          h('div.setting-row', {}, h('span', {}, 'Blind'), h('label.toggle', {},
-            h('input', {type: 'checkbox', checked: !!blind, disabled: busy, 'attr:aria-label': 'Blind',
-              onchange: e => { blind = e.target.checked ? (Math.random() < 0.5 ? {A: 'X', B: 'Y'} : {A: 'Y', B: 'X'}) : null; draw(); }}),
-            h('span.track'))));
+          h('p.form-hint', {}, 'End puts tune A and your volume back.'));
       } else nodes.push(button('start', busy ? 'Starting…' : 'Start', true, pair.A === pair.B));
+      nodes.push(h('div.setting-row', {}, h('span', {}, 'Blind'), h('label.toggle', {},
+        h('input', {type: 'checkbox', checked: !!blind, disabled: busy || (running && !blind), 'attr:aria-label': 'Blind',
+          onchange: e => { blind = e.target.checked ? (Math.random() < 0.5 ? {A: 'X', B: 'Y'} : {A: 'Y', B: 'X'}) : null; draw(); }}),
+        h('span.track'))));
     }
-    if (error) nodes.push(h('p.banner.banner--error', {role: 'status'}, error));
+    if (error) nodes.push(h('p.banner.banner--danger', {role: 'status'}, error));
     card.replaceChildren(...nodes);
   }
   function failure(err) {
@@ -86,10 +90,10 @@ export function initAbListen() {
     await postJSON('/volume/set', {percent});
     current.percent = percent;
   }
-  async function move(key, percent) {
+  async function move(key, percent, forceApply) {
     const target = {fingerprint: pair[key].fingerprint, percent};
     const previous = current.percent;
-    for (const action of flipOrder(current, target)) {
+    for (const action of flipOrder(current, target, forceApply)) {
       if (action === 'volume') await volume(percent);
       else {
         try {
@@ -115,10 +119,19 @@ export function initAbListen() {
         current = {fingerprint: data.applied_fingerprint};
         if (data.rounds.length) chooseRound(data.rounds[0].round_id);
       } else {
-        if (act === 'start') { basePercent = (await getJSON('/volume')).percent; current.percent = basePercent; running = true; }
-        const key = act === 'flip' && current.fingerprint === pair.A.fingerprint ? 'B' : 'A';
-        const steps = trimSteps(pair[key].level_db, pair[key === 'A' ? 'B' : 'A'].level_db, data.volume_step_db);
-        await move(key, act === 'end' ? basePercent : targetPercent(basePercent, steps));
+        const live = await getJSON('/volume');
+        if (act === 'start') {
+          if (!canStart(live, [stepsFor('A'), stepsFor('B')])) {
+            throw new Error(live.muted ? 'Unmute the speaker before starting.' : 'Raise the volume before starting.');
+          }
+          basePercent = live.percent; current.percent = basePercent; running = true;
+        } else if (!live.muted) {
+          basePercent += live.percent - current.percent;
+          current.percent = live.percent;
+        }
+        const key = act === 'start' ? startKey(!!blind, Math.random()) :
+          act === 'flip' && current.fingerprint === pair.A.fingerprint ? 'B' : 'A';
+        await move(key, act === 'end' ? basePercent : targetPercent(basePercent, stepsFor(key)), act === 'start' && !!blind);
         if (act === 'end') { running = false; blind = null; }
       }
     } catch (err) { error = error || failure(err); }

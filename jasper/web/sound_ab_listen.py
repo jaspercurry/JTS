@@ -14,9 +14,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.passive_profile import measured_candidate_fingerprint
-from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT
 from jasper.active_speaker.wizard_client import APPLY_PATH
 from jasper.volume_curve import configured_volume_floor_db, percent_to_db
 
@@ -55,14 +53,13 @@ def _tunes(view: dict[str, Any]) -> list[dict[str, Any]]:
             for fp, pose in poses.items()]
 
 
-def ab_listen_state_payload(campaign_root: Path = DEFAULT_CAMPAIGN_ROOT) -> dict[str, Any]:
-    opened = 0
+def ab_listen_state_payload(campaign_root: Path | None = None) -> dict[str, Any]:
+    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: numpy import chain
+    from jasper.active_speaker.round_bank import DEFAULT_CAMPAIGN_ROOT  # lazy: numpy import chain
+
+    campaign_root = campaign_root if campaign_root is not None else DEFAULT_CAMPAIGN_ROOT
 
     def read(path: Path) -> dict[str, Any]:
-        nonlocal opened
-        if opened >= MAX_FILES:
-            return {}
-        opened += 1
         try:
             value = json.loads(path.read_text())
             return value if isinstance(value, dict) else {}
@@ -76,8 +73,8 @@ def ab_listen_state_payload(campaign_root: Path = DEFAULT_CAMPAIGN_ROOT) -> dict
         except OSError:
             continue
     rounds: list[dict[str, Any]] = []
-    for mtime, path in sorted(paths, reverse=True):
-        if opened >= MAX_FILES or len(rounds) >= MAX_ROUNDS:
+    for mtime, path in sorted(paths, reverse=True)[:MAX_FILES]:
+        if len(rounds) >= MAX_ROUNDS:
             break
         view = read(path)
         if view.get("schema") != "jts_frequency_view/1":
@@ -99,6 +96,5 @@ def ab_listen_state_payload(campaign_root: Path = DEFAULT_CAMPAIGN_ROOT) -> dict
         "applied_fingerprint": measured_candidate_fingerprint(applied.get("source")) or None,
         "apply_path": APPLY_PATH,
         "volume_step_db": percent_to_db(51, floor_db=floor) - percent_to_db(50, floor_db=floor),
-        "level_band_hz": list(LEVEL_BAND_HZ),
         "rounds": rounds,
     }

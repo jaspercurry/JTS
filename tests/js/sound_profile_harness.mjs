@@ -4396,6 +4396,7 @@ async function testFollowerModeRendersLocalDriverUi() {
     }
   }
   for (const forbidden of [
+    'id="ab-listen-card"',
     "Create custom profile",
     "Try a stock profile",
     "data-act=\"new-draft\"",
