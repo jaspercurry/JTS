@@ -396,16 +396,21 @@ _TRIAL_PROGRAMS = {
     "rear_calibration": (PURPOSE_REAR, "rear_express", None),
     "bass": (PURPOSE_BASS, "bass_axis", None),
     "room": (PURPOSE_ROOM, "seat_express", "room_quick"),
-    "driver": (PURPOSE_SPEAKER, "room_quick", None),
-    "blend": (PURPOSE_SPEAKER, "room_quick", None),
-    "alignment": (PURPOSE_SPEAKER, "room_quick", None),
     None: (PURPOSE_ROOM, "room_quick", None),
+}
+
+_PROGRAM_SECTIONS = {
+    PURPOSE_SPEAKER: ("driver", "blend", "alignment"),
+    PURPOSE_REAR: ("rear_calibration",),
+    PURPOSE_BASS: ("bass",),
+    PURPOSE_ROOM: ("room",),
 }
 
 
 def prescription_sections(purpose: str | None = None) -> tuple[str, ...]:
-    return tuple(section for section, (owner, _, _) in _TRIAL_PROGRAMS.items()
-                 if section is not None and (purpose is None or owner == purpose))
+    """The prescription sections one program owns; every program's when ``purpose`` is None."""
+    return tuple(section for owner, sections in _PROGRAM_SECTIONS.items()
+                 if purpose is None or owner == purpose for section in sections)
 
 # Compatibility values derived from the config, which remains their owner.
 ANCHOR_REPEATS = _PROGRAMS[("baseline", "full")].poses[0].repeats
@@ -467,7 +472,5 @@ def trial_program(sections: Collection[str], mover: str | None = None) -> Measur
     """Rear precedes bass precedes room, then driver/alignment/blend/topology or a carried document."""
     purpose, layout, arm_layout = next(value for section, value in _TRIAL_PROGRAMS.items()
                                      if section is None or section in sections)
-    if purpose == PURPOSE_SPEAKER:
-        purpose = PURPOSE_ROOM
     selected = run_program(purpose, arm_layout if mover == "arm" and arm_layout else layout)
     return replace(selected, mover=mover or selected.mover)
