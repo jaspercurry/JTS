@@ -28,6 +28,7 @@ from jasper.audio_measurement.excitation_admission import (
     ExcitationRequest,
     FrequencyBand,
 )
+from jasper.audio_measurement.room_boundary import AUDIO_BAND_TOP_HZ
 from jasper.json_fields import finite_float
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
@@ -42,7 +43,6 @@ from .driver_protection import (
 )
 from .measurement import active_driver_targets
 from .test_signal_plan import (
-    AUDIO_BAND_TOP_HZ,
     MAX_DRIVER_TEST_FREQUENCY_HZ,
     MIN_DRIVER_TEST_FREQUENCY_HZ,
     driver_sweep_duration_s,

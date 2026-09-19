@@ -65,15 +65,18 @@ required protection filter exist.
 
 ## Consequences
 
-- Every summed sweep covers 20 Hz–20 kHz on every layout, so the room, rear
-  and bass readings share one range and the room median always reaches the
-  room floor. The cost is named: the same sweep duration over more octaves is
-  about 1.5 dB less signal per octave on the summed sweep.
+- Every summed sweep covers 20 Hz–20 kHz on every layout that declares a
+  high-frequency or full-range driver (every layout the product models), so
+  the room, rear and bass readings share one range and the room median always
+  reaches the room floor. The cost is named: the same sweep duration over more
+  octaves is about 1.5 dB less signal per octave on the summed sweep.
 - The `speaker` program can run on the cardioid: its rear woofer needs no
   low-pass proof to receive a measurement-level full-band sweep.
 - Summed `program_id`s change, so a summed round banked before this ADR
-  cannot be replayed bit-for-bit by a tool that re-composes its program;
-  per-driver MEASURE programs are unchanged.
+  cannot be replayed bit-for-bit by a tool that re-composes its program.
+  A per-driver MEASURE program is unchanged unless its top-owning driver
+  declared a top below 20 kHz: that driver's sweep now ends at 20 kHz, so its
+  `program_id` changes the same way.
 - The refusals that remain on the measurement path are level, duration, a
   missing DECLARED protection filter, a high-frequency segment below its
   floor, and the SPL stop; a refused segment names which one it hit.
