@@ -28,6 +28,7 @@ import json
 from dataclasses import replace
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -1111,6 +1112,19 @@ def test_a_seat_stop_is_stated_from_the_head_not_the_mark() -> None:
             mp.POSE_KIND_SEAT, 0, None,
         )
         assert geometry.seat_offset_m == pose.seat_offset_m
+
+
+def test_position_gate_names_the_behind_pose_without_changing_the_action_body():
+    request = ac.request_for_program(mp.program("rear", "pair_behind"), candidates=("rear-candidate",))
+    front, _, behind, _ = ac.resolve_request(request)
+    gate = PositionGate()
+    actions = [gate.invitation(SimpleNamespace(screen=capture_plan.position_screen_keys(stop.prompt)))["actions"][0]
+               for stop in (front, behind)]
+    assert [action["id"] for action in actions] == ["position_ready", "position_ready"]
+    assert actions[0]["label"] != actions[1]["label"]
+    assert actions[0]["body"] == actions[1]["body"] == {
+        "index": 1, "attempt": 1, "degrees": 0, "vertical_deg": 0,
+    }
 
 
 def test_a_close_stop_is_a_bearing_at_its_own_distance() -> None:

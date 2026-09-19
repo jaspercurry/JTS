@@ -1184,6 +1184,7 @@ def _entry_advance(shape: V2PlanShape | None) -> dict[str, str]:
 #: vertical stops sit at 0° bearing and would otherwise publish as design-axis
 #: captures.
 POSITION_DEG_KEY = "position_deg"
+POSITION_KIND_KEY = "position_kind"
 POSITION_VERTICAL_DEG_KEY = "position_vertical_deg"
 POSITION_ROLE_KEY = "position_role"
 POSITION_BATCH_START_KEY = "position_batch_start"
@@ -1244,7 +1245,7 @@ def position_screen_keys(
 ) -> dict[str, str]:
     """One pose as the TARGET the gate reads back off an entry.
 
-    The only writer of :data:`POSITION_DEG_KEY` and its two companions, so a
+    The only writer of :data:`POSITION_DEG_KEY` and its companions, so a
     gated entry built anywhere (a plan entry, a standalone walk's take) states
     its target in one vocabulary. ``None`` is the design axis.
     """
@@ -1255,6 +1256,7 @@ def position_screen_keys(
         POSITION_DEG_KEY: str(degrees),
         **({POSITION_VERTICAL_DEG_KEY: str(vertical)} if vertical else {}),
         POSITION_ROLE_KEY: role,
+        **({POSITION_KIND_KEY: prompt.kind} if prompt is not None and prompt.kind != POSE_KIND_BEARING else {}),
     }
 
 

@@ -15,11 +15,13 @@ from typing import Any, Callable
 from jasper.log_event import log_event
 
 from ..movers import MOVER_HUMAN
+from ..round_copy import pose_name
 from .capture_plan import (
     POSITION_BATCH_CONFIG_KEY,
     POSITION_BATCH_SIZE_KEY,
     POSITION_BATCH_START_KEY,
     POSITION_DEG_KEY,
+    POSITION_KIND_KEY,
     POSITION_ROLE_KEY,
     POSITION_VERTICAL_DEG_KEY,
     elevation_clause,
@@ -168,8 +170,9 @@ class PositionGate:
             "mover": self._mover,
             "actions": [
                 {"id": "position_ready",
-                 "label": ("Microphone is on the design axis (0°)" if target == 0
-                           else f"Microphone is at {target:+d}°") + rise,
+                 "label": (f"Microphone is {pose_name({'kind': screen[POSITION_KIND_KEY]})}" if screen.get(POSITION_KIND_KEY)
+                           else ("Microphone is on the design axis (0°)" if target == 0
+                                 else f"Microphone is at {target:+d}°") + rise),
                  "endpoint": POSITION_READY_ENDPOINT,
                  "body": {"index": index, "attempt": attempt, "degrees": target,
                           "vertical_deg": vertical}},

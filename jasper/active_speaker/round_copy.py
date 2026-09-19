@@ -17,6 +17,9 @@ RUN_ENDED = "This run has ended. Choose a pose set to start the next one."
 def pose_name(pose: Mapping[str, Any]) -> str:
     from .crossover_v2.frequency_view import position_label  # lazy: keeps the CLI parser numpy-free
 
+    placement = {"behind": "behind the speaker", "close": "close to the speaker", "seat": "at the seat"}.get(pose.get("kind"))
+    if placement:
+        return placement
     label = position_label({"position_deg": pose.get("deg", 0), "vertical_deg": pose.get("elevation_deg", 0)})
     return f"{pose['kind']}: {label}" if pose.get("kind") else label
 
