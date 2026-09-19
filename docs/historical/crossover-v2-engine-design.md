@@ -404,6 +404,19 @@ host-adjacent, and renaming them would rewrite a durable shape for cosmetics.
    candidate whose crossover differs from what `/sound` declares. Journal:
    `event=correction.crossover_v2_banked_candidate_found`,
    `…_candidate_republished`, `…_republish_refused` with a machine `code=`.
+8. **The way back is the normal path.** Configs get applied; an earlier
+   config gets applied the same way: any banked candidate can be made live
+   again via republish-then-apply (invariant 7's door, then the apply door
+   with every admission gate it always runs). The one durable pointer is
+   `previous_candidate_fingerprint` — the measured candidate the applied
+   graph displaced, recorded by `observe_apply_success` and carried
+   *unconditionally* across every snapshot, so the wizard's way-back action
+   and the round's automatic revert survive a VERIFY re-arm. It is a pointer,
+   never a promise: the bank re-verifies the artifact on republish, and the
+   apply transaction re-proves the recomposed config. There is no separate
+   restore engine, no anchor vocabulary, and no `/sound` declaration undo —
+   a revert IS an apply, and writes the declaration the same way any apply
+   does.
 9. **The walked-away guarantee.** `SessionVolumePlan` holds one measurement
    window with an abort target, a wall-clock ceiling and a restore-once latch
    drained by close, session death, or the ceiling. **Each stage arms its own
