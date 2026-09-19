@@ -360,27 +360,21 @@ def resolve_conductor_context(
     radiating_diameter_mm_by_role = _resolve_radiating_diameter_by_role(draft)
     roles_bands = []
     caps: dict[str, float] = {}
+    bands = {}
+    for target_id, fingerprint in role_targets.items():
+        try:
+            bands[target_id], caps[target_id] = resolve_driver_excitation_ceilings(
+                safety_profile, fingerprint, program_admission=True,
+                declared_sensitivities=declared_sensitivities,
+            )
+        except (ExcitationSafetyPlanError, ValueError) as exc:
+            raise CrossoverV2Refused(
+                f"the {target_id}'s safe excitation limits could not be resolved"
+            ) from exc
     sweep_duration_limits_s: dict[str, float] = {}
     measurement_bands: dict[str, tuple[float, float]] = {}
     for channel, role in enumerate(roles):
         try:
-            # program_admission=True: this context exists solely to serve the
-            # admission-gated CHECK/MEASURE programs, whose channel routing
-            # carries each driver's crossover filter (the tweeter's protective
-            # HP included) by construction — the proven-HP path, the same
-            # justification as session_volume_plan. Without it the ADR-0227 §9
-            # derived HF ceiling is inert exactly where it matters: these
-            # context caps clamp every composed level (CHECK pilot bases,
-            # MEASURE back_off_gain, VERIFY min(caps)).
-            band, cap = resolve_driver_excitation_ceilings(
-                safety_profile,
-                role_targets[role],
-                program_admission=True,
-                declared_sensitivities=declared_sensitivities,
-            )
-            # The DURATION half of the same confirmed limits, off the same
-            # target and under the same refusal copy. The composer must be
-            # HANDED this number, never derive a second one (#2921).
             sweep_duration_limits_s[role] = effective_sweep_duration_limit_s(
                 safety_profile, role_targets[role],
             )
@@ -397,8 +391,7 @@ def resolve_conductor_context(
             )
         except (ExcitationSafetyPlanError, ValueError):
             pass
-        roles_bands.append(RoleBand(role, channel, band))
-        caps[role] = float(cap)
+        roles_bands.append(RoleBand(role, channel, bands[role]))
     # ``None`` is "this speaker declares no corner", never a corner at zero —
     # see ``crossover_v2.priors`` and ``build_verify_program``.
     fc_hz = (

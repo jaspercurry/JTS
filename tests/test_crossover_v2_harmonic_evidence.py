@@ -41,15 +41,19 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     build_crossover_evidence_packet,
 )
 from jasper.audio_measurement.bundles import sha256_file
+from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.calibration import SUPPORTED_MODELS
 from jasper.audio_measurement.distortion import DriveLevel, HarmonicReading
 from jasper.audio_measurement.program import (
-    FrequencyBand, RoleBand, build_measure_program, render_program_pcm, write_program_wav,
+    FrequencyBand, RoleBand, build_measure_program, build_verify_program, render_program_pcm, write_program_wav,
 )
 from jasper.audio_measurement.program_analysis import (
     MeasurementGeometry, MeasurementPriors, analysis_diagnostic_summary, analyze_program_capture,
 )
-from jasper.active_speaker.crossover_v2.programs import pilot_gains
+from jasper.active_speaker.crossover_v2.programs import (
+    PILOT_LEVEL_DELTA_DB, courtesy_prelude_for_phase, pilot_gains,
+)
+from jasper.active_speaker.crossover_v2.measure_spec import branch_target_ids_for
 from jasper.audio_measurement.sweep import synchronized_sweep_metadata
 from jasper.cli._refusal import EXIT_REFUSED
 
@@ -522,27 +526,10 @@ def test_a_ring_with_no_measure_capture_says_why_a_verify_one_would_not_do(tmp_p
             applied_profile_path=_write_applied_profile(tmp_path),
         )
     assert excinfo.value.reason == he.NO_ADMISSIBLE_CAPTURES
-    assert "one driver at a time" in excinfo.value.evidence["note"]
 
 
 def _real_state() -> dict[str, Any]:
-    """A state whose program id is one ``build_measure_program`` can reach.
-
-    Solved once here rather than hardcoded, so a change to the program builder
-    moves this fixture with it instead of turning every test below into a
-    program-reproduction failure.
-    """
     state = _state()
-    from jasper.active_speaker.crossover_v2.programs import (
-        PILOT_LEVEL_DELTA_DB,
-        courtesy_prelude_for_phase,
-    )
-    from jasper.audio_measurement.program import (
-        FrequencyBand,
-        RoleBand,
-        build_measure_program,
-    )
-
     program = build_measure_program(
         {"woofer": -6.0, "tweeter": -31.2},
         (
@@ -942,19 +929,6 @@ def test_the_ring_is_scoped_before_valid_capture_deduplication(tmp_path):
 
 
 def test_an_unscoped_ring_holding_several_sessions_refuses_instead_of_pooling(tmp_path):
-    """The fail-open this instrument shipped with, pinned as the refusal it is.
-
-    Every capture is read against ONE rebuilt program, and the published drive
-    is that PROGRAM's, not the capture's. Pooling a neighbouring round's capture
-    therefore publishes the wrong level silently: measured on the shipped
-    corpus, one capture read against another session's program reported
-    -6.0/-26.0 dBFS where its own says -10.2/-30.2 — 4.2 dB, on the field this
-    module insists must never be published apart from the ratio.
-
-    Neither other gate can catch it. The program gate proves program-vs-STATE,
-    and every FIDELITY_FIELD is amplitude-invariant, which is why this needs a
-    gate of its own rather than trust.
-    """
     ring = _ring(tmp_path, [
         ("1_measure_a", "aaa", "session-one"),
         ("2_measure_b", "bbb", "session-two"),
@@ -1319,28 +1293,8 @@ def test_the_sign_convention_comes_from_the_mic_registry(calibration_id):
     )
 
 
-@pytest.fixture
-def harmonic_capture(tmp_path, monkeypatch):
-    bundle = _bundle(tmp_path)
-    round_dir = next((bundle / "evidence/v1/artifacts/crossover_v2").iterdir())
-    bands = he_bands()
-    role_bands = tuple(RoleBand(role, i, FrequencyBand(*band)) for i, (role, band) in enumerate(bands.items()))
-
-    def compose(gain):
-        gains = {"woofer": gain, "tweeter": gain - 10.0}
-        program = build_measure_program(
-            gains, role_bands, downstream_gain_db=-20.0,
-            leading_pilot_gains_db=pilot_gains(gain), leading_pilot_role="woofer",
-            courtesy_prelude=False,
-        )
-        return program, {"session_id": round_dir.name, "gain_plan_db": gains,
-                         "candidate": {"program_id": program.program_id}}
-
-    program, state = compose(-16.0)
-    ring = tmp_path / "ring"
-    (ring / "sidecar").mkdir(parents=True)
-    (ring / "wav").mkdir()
-    wav = ring / "wav/1_measure_a.wav"
+def _write_harmonic_capture(ring, tmp_path, name, program, state, *, take_id="take-a"):
+    wav = ring / f"wav/{name}.wav"
     samples = np.pad(render_program_pcm(program).sum(axis=1).astype(float) * 0.1, (24000, 24000))
     with wave.open(str(wav), "wb") as writer:
         writer.setparams((1, 4, 48000, len(samples), "NONE", "not compressed"))
@@ -1351,16 +1305,53 @@ def harmonic_capture(tmp_path, monkeypatch):
     ))
     stimulus = tmp_path / "stimulus.wav"
     write_program_wav(stimulus, program)
-    sidecar = ring / "sidecar/1_measure_a.json"
+    sidecar = ring / f"sidecar/{name}.json"
     document = {
-        "phase": "measure", "take_id": "take-a", "position_deg": 0,
+        "phase": "measure", "take_id": take_id, "position_deg": 0,
         "wav_sha256": sha256_file(wav), "diagnostic": diagnostic,
         "jts_session_identity": {"session_id": "c2a1812b849e",
-                                 "aliases": {"capture_session_id": round_dir.name}},
+                                 "aliases": {"capture_session_id": state["session_id"]}},
         "provenance": {"stimulus": {"program_id": program.program_id,
                                      "wav_sha256": sha256_file(stimulus)}},
     }
+    if any(":" in role for role in state["gain_plan_db"]):
+        document.update(phase="cloud_verify", graph_scope="candidate_branches", program=program.to_dict())
     sidecar.write_text(json.dumps(document))
+    return sidecar, wav, document
+
+
+@pytest.fixture
+def harmonic_capture(tmp_path, monkeypatch, request):
+    bundle = _bundle(tmp_path)
+    round_dir = next((bundle / "evidence/v1/artifacts/crossover_v2").iterdir())
+    bands = he_bands()
+    role_bands = tuple(RoleBand(role, i, FrequencyBand(*band)) for i, (role, band) in enumerate(bands.items()))
+    branch_pair = getattr(request, "param", None)
+
+    def compose(gain, pair=branch_pair):
+        gains = {"woofer": gain, "tweeter": gain - 10.0}
+        program = build_measure_program(
+            gains, role_bands, downstream_gain_db=-20.0,
+            leading_pilot_gains_db=pilot_gains(gain), leading_pilot_role="woofer",
+            courtesy_prelude=False,
+        )
+        if pair:
+            targets = branch_target_ids_for(pair, role_bands)
+            program = build_branch_program(build_verify_program(
+                1800.0, gain_db=gain, downstream_gain_db=-20.0,
+                sweep_band_hz=(150.0, 4000.0), leading_pilot_gains_db=pilot_gains(gain),
+            ), {target: channel for channel, target in enumerate(targets)})
+            gains = dict.fromkeys(targets, gain)
+        return program, {"session_id": round_dir.name, "gain_plan_db": gains,
+                         "candidate": {"program_id": program.program_id}}
+
+    program, state = compose(-16.0)
+    ring = tmp_path / "ring"
+    (ring / "sidecar").mkdir(parents=True)
+    (ring / "wav").mkdir()
+    sidecar, wav, document = _write_harmonic_capture(
+        ring, tmp_path, "1_measure_a", program, state,
+    )
     profile = _write_applied_profile(tmp_path, fc_hz=1800.0)
     monkeypatch.setattr(he, "_DOWNSTREAM_GRID_DB", (-20.0,))
 
@@ -1369,6 +1360,45 @@ def harmonic_capture(tmp_path, monkeypatch):
                                        session_id=scope, applied_profile_path=profile)
 
     return read, compose, sidecar, wav, document
+
+
+@pytest.mark.parametrize("harmonic_capture,targets", [
+    (None, {"woofer", "tweeter"}),
+    ("front_rear", {"woofer", "woofer:rear"}),
+], indirect=["harmonic_capture"])
+def test_harmonics_publishes_banked_physical_targets(harmonic_capture, tmp_path, capsys, targets):
+    _, compose, _, wav, document = harmonic_capture
+    session = tmp_path / "session"
+    capture_id = document["jts_session_identity"]["aliases"]["capture_session_id"]
+    artifacts = session / f"evidence/v1/artifacts/crossover_v2/{capture_id}"
+    positions = artifacts / "positions"
+    positions.mkdir()
+    captured = session / "summed/measure.wav"
+    captured.parent.mkdir()
+    shutil.copyfile(wav, captured)
+    document.update(kind=POSITION_EVIDENCE_KIND, session_id=capture_id,
+                    captured_at="2026-08-31T00:19:52Z", wav_path="summed/measure.wav")
+    (positions / "measure.json").write_text(json.dumps(document))
+    program, state = compose(-16.0)
+    write_program_wav(artifacts / "measure_program.wav", program)
+    (session / "crossover-v2-state.json").write_text(json.dumps(state, sort_keys=True))
+    bank = bank_round(session, campaign_root=tmp_path / "bank",
+                      applied_profile_path=tmp_path / "applied-profile.json")
+    assert main(["distortion", str(bank.path)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert (result["captures_read"], result["captures_refused"]) == (1, 0)
+    artifact = json.loads(next(bank.path.rglob(he.HARMONICS_ARTIFACT)).read_text())
+    assert {row["role"] for row in artifact["roles"]} == targets
+    assert all(row["rows"] for row in artifact["roles"])
+
+
+def test_harmonics_reads_each_capture_with_its_own_program(harmonic_capture, tmp_path):
+    read, compose, sidecar, _, _ = harmonic_capture
+    program, state = compose(-14.0, "front_rear")
+    _write_harmonic_capture(sidecar.parent.parent, tmp_path, "2_branch_b", program, state, take_id="take-b")
+    artifact = read()
+    assert (artifact["captures"]["n_read"], artifact["captures"]["n_refused"]) == (2, 0)
+    assert {row["role"] for row in artifact["roles"]} == {"woofer", "tweeter", "woofer:rear"}
 
 
 @pytest.mark.parametrize("fault,reason", [

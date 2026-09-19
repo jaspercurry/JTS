@@ -25,7 +25,7 @@ import numpy as np
 
 from jasper.attribution.session_identity import ALIAS_CAPTURE_SESSION_ID, SESSION_IDENTITY_KEY
 from jasper.audio_measurement.bundles import sha256_file
-from jasper.audio_measurement.program import write_program_wav
+from jasper.audio_measurement.program import ExcitationProgram, KIND_COURTESY_TONE, write_program_wav
 
 from jasper.active_speaker.round_bank import CAPTURE_RING_DIR, bundle_session_id
 from .round_inputs import banked_round_of, round_inputs
@@ -268,16 +268,10 @@ def _banked_sweep_durations_s(
 
 
 def banked_roles(state: Mapping[str, Any]) -> tuple[str, ...]:
-    """WHICH branches this round swept, read off its own banked gain plan.
-
-    ``DRIVER_ROLES_BY_WAY`` resolved against the roles the plan names. Empty
-    when the bank names no roles, or a set no speaker shape declares; every
-    caller turns that into a refusal by name.
-    """
+    """Declared target IDs, retaining the channel order of legacy role plans."""
     gains = state.get("gain_plan_db")
-    banked = set(gains) if isinstance(gains, Mapping) else set()
-    roles = DRIVER_ROLES_BY_WAY.get(len(banked), ())
-    return roles if set(roles) == banked else ()
+    banked = tuple(gains) if isinstance(gains, Mapping) else ()
+    return next((roles for roles in DRIVER_ROLES_BY_WAY.values() if set(roles) == set(banked)), banked)
 
 
 def round_bands_hz(
@@ -307,28 +301,10 @@ def round_bands_hz(
 def rebuild_measure_program(
     state: Mapping[str, Any], bands: Mapping[str, tuple[float, float]]
 ):
-    """The round's MEASURE program, verified against its banked ``program_id``.
+    """Return (program, downstream gain, prelude), proved by the banked id.
 
-    Returns ``(program, downstream_gain_db, courtesy_prelude)``. Raises
-    :class:`HarmonicEvidenceRefused` when no grid point reproduces the id — a
-    reconstruction that cannot prove itself must not be read, because every
-    harmonic offset derives from the sweep ``L`` this program carries.
-
-    **Two unbanked parameters are solved here, not asserted:** the session
-    volume, and the courtesy prelude, whose MEASURE value CHANGED when #2715
-    replaced the flat ``COURTESY_PRELUDE_ENABLED`` global with the per-phase
-    ``courtesy_prelude_for_phase`` (``True`` before it, ``False`` after). The
-    prelude moves the program bytes, so a corpus banked either side of that
-    commit reproduces under exactly one of the two values. The shipped rule is
-    tried FIRST, and the search is safe in both directions because the
-    ``program_id`` hash is what accepts it: a wrong prelude cannot match.
-
-    **A third parameter — the duration fit (#2921) — is READ, never solved**,
-    a fitted sweep's realized length being a continuous float no grid could
-    reach. A round that banked it (:func:`_banked_sweep_durations_s`) is
-    composed at EXACTLY that length; one that did not, or that banked
-    something unusable, composes at nominal, and the refusal below keeps "did
-    not bank" and "banked something unusable" apart.
+    Solve unbanked volume and prelude; use banked sweep durations when present.
+    Refuse an unproved reconstruction: harmonic offsets depend on its sweep L.
     """
     from jasper.audio_measurement.program import (
         FrequencyBand,
@@ -516,7 +492,7 @@ def _crossover_fc_hz(
 def _bind_measure_captures(
     dumps_dir: Path, *, unscoped_omissions: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Bind MEASURE sidecars and disclose omissions without a round identity."""
+    """Bind solo-sweep captures and disclose omissions without a round identity."""
     bound: list[dict[str, Any]] = []
     unscoped = unscoped_omissions if unscoped_omissions is not None else []
     for sidecar_path in sorted(dumps_dir.glob(RING_SIDECAR_GLOB)):
@@ -529,7 +505,7 @@ def _bind_measure_captures(
         if not isinstance(doc, Mapping) or not isinstance(doc.get("phase"), str) or not doc["phase"]:
             unscoped.append({"sidecar": sidecar_path.name, "reason": "sidecar_malformed"})
             continue
-        if doc["phase"] != PHASE_MEASURE:
+        if doc["phase"] != PHASE_MEASURE and doc.get("graph_scope") != "candidate_branches":
             continue
         sha = doc.get("wav_sha256")
         sha = sha if isinstance(sha, str) else ""
@@ -962,7 +938,6 @@ def read_round_harmonics(
     orders = tuple(int(order) for order in orders)
     applied_profile, profile_reason = applied_profile_source(applied_profile_path)
     fc_hz = _crossover_fc_hz(applied_profile, profile_reason)
-    program, downstream_db, prelude = rebuild_measure_program(state, bands)
     unscoped_omissions: list[dict[str, str]] = []
     banked = _bind_measure_captures(dumps_dir, unscoped_omissions=unscoped_omissions)
     omissions = {"n_unscoped_omissions": len(unscoped_omissions),
@@ -981,27 +956,27 @@ def read_round_harmonics(
                 "scope": scope,
                 **omissions,
                 "note": (
-                    "harmonics are read from the per-driver MEASURE program, "
-                    "whose sweeps are one driver at a time; a summed VERIFY "
-                    "capture cannot attribute a harmonic to a driver. The scope "
-                    "above says what was looked for: a ring holding captures "
-                    "only from OTHER sessions lands here too"
+                    "harmonics require per-driver or branch solo sweeps; "
+                    "a mono summed capture cannot attribute a harmonic to a target"
                 ),
             },
         )
 
-    program_sha256 = None
-    if any(
-        isinstance(capture["sidecar"].get("provenance"), Mapping)
-        and isinstance(capture["sidecar"]["provenance"].get("stimulus"), Mapping)
-        and capture["sidecar"]["provenance"]["stimulus"].get("wav_sha256")
-        for capture in captures
-    ):
-        with tempfile.TemporaryDirectory(prefix="jts-harmonics-") as temporary:
-            rendered = Path(temporary) / "program.wav"
-            write_program_wav(rendered, program)
-            program_sha256 = sha256_file(rendered)
+    measure = None
 
+    def program_for(sidecar):
+        nonlocal measure
+        if sidecar.get("graph_scope") == "candidate_branches":
+            program = ExcitationProgram.from_dict(sidecar["program"])
+            sweep = program.segment("sweep_w")
+            downstream_db = sweep.effective_peak_dbfs - sweep.gain_db
+            prelude = any(segment.kind == KIND_COURTESY_TONE for segment in program.segments)
+            return program, downstream_db, prelude
+        if measure is None:
+            measure = rebuild_measure_program(state, round_bands_hz(state, bands))
+        return measure
+
+    program_hashes: dict[str, str] = {}
     calibration, calibration_note = _calibration_for(captures, calibration_text)
 
     blocks: list[dict[str, Any]] = []
@@ -1018,8 +993,18 @@ def read_round_harmonics(
             "wav_sha256_12": sha12,
             "position_deg": capture["sidecar"].get("position_deg"),
         }
+        sidecar = capture["sidecar"]
+        program, downstream_db, prelude = program_for(sidecar)
+        provenance = sidecar.get("provenance")
+        stimulus = provenance.get("stimulus") if isinstance(provenance, Mapping) else None
+        if isinstance(stimulus, Mapping) and stimulus.get("wav_sha256"):
+            if program.program_id not in program_hashes:
+                with tempfile.TemporaryDirectory(prefix="jts-harmonics-") as temporary:
+                    rendered = Path(temporary) / "program.wav"
+                    write_program_wav(rendered, program)
+                    program_hashes[program.program_id] = sha256_file(rendered)
         proof, reason = _capture_program_identity(
-            capture["sidecar"], program, state, program_sha256,
+            sidecar, program, state, program_hashes.get(program.program_id),
         )
         try:
             if not reason:
@@ -1053,10 +1038,14 @@ def read_round_harmonics(
             })
             continue
         seen[actual] = capture["take_id"]
-        # The count rides on a PASS too, not only on a refusal: a capture whose
-        # sidecar carried one of the five gate fields passed a much weaker gate
-        # than one that carried all five.
-        read.append({**take, "identity": proof, "fidelity_fields_compared": compared})
+        read.append({**take, "identity": proof, "fidelity_fields_compared": compared,
+                     "program": {
+                         "program_id": program.program_id,
+                         "solved_downstream_gain_db": (
+                             downstream_db if proof["program_id_status"] == "matched" else None
+                         ),
+                         "solved_courtesy_prelude": prelude,
+                     }})
         if disclosure:
             disclosures.append({"wav_sha256_12": sha12, "note": disclosure})
         by_role: dict[str, list] = {}
@@ -1095,18 +1084,12 @@ def read_round_harmonics(
         "round_dir": round_dir.name,
         "orders": list(orders),
         "program": {
-            "program_id": program.program_id,
-            "solved_downstream_gain_db": (
-                downstream_db if all(take["identity"]["program_id_status"] == "matched" for take in read) else None
-            ),
-            "solved_courtesy_prelude": prelude,
+            **{key: value if all(take["program"][key] == value for take in read) else None
+               for key, value in read[0]["program"].items()},
             "crossover_fc_hz": round(fc_hz, 1),
             "state_capture_session_id": _state_capture_session_id(state),
         },
         "captures": {
-            # WHICH captures this reading is of, and by what rule they were chosen.
-            # Published because the drive levels below come from the rebuilt program
-            # rather than from each capture.
             "scope": scope,
             "n_read": len(read),
             "n_refused": len(refused),
@@ -1142,7 +1125,7 @@ def read_bundle_harmonics(
         raise HarmonicEvidenceRefused(STATE_UNREADABLE, {})
     artifact = read_round_harmonics(
         round_dir, bundle_dir / CAPTURE_RING_DIR, state,
-        round_bands_hz(state, band_overrides),
+        band_overrides,
         session_id=bundle_session_id(bundle_dir),
         calibration_text=calibration_path.read_text() if calibration_path else None,
         applied_profile_path=inputs.applied_profile_path,

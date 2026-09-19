@@ -17,7 +17,8 @@ pytestmark = pytest.mark.usefixtures("banked_session_level", "isolated_candidate
 import yaml
 from scipy.io import wavfile
 
-from jasper.active_speaker import camilla_yaml
+from jasper.active_speaker import camilla_yaml, commission_wiring, design_draft
+from jasper.active_speaker.crossover_v2 import conductor_context
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.output_topology import measurement_target_id
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
@@ -972,6 +973,46 @@ def test_cardioid_timing_admits_full_band_without_rear_lowpass(tmp_path, monkeyp
     assert {segment.role for segment in admission.segments} == {"woofer", "woofer:rear", "tweeter"}
     assert all(segment.band == (20, 20000) for segment in admission.segments
                if segment.segment_id == "sweep_verify")
+
+
+def test_cardioid_composer_respects_the_rear_target_cap(tmp_path, monkeypatch):
+    topology, safety, targets = _profile_and_targets(
+        rear=True, woofer_peak=-30, tweeter_peak=-30,
+        woofer_floor=40, woofer_highpass=40, max_sweep_duration_s=4,
+    )
+    rear = next(target for target in safety["targets"]
+                if target["target_fingerprint"] == targets["woofer:rear"])
+    rear["level_duration_limits"]["max_effective_peak_dbfs"] = -36
+    preset = _rear_pair("mono")[0]
+    monkeypatch.setattr(design_draft, "load_design_draft", lambda **kw: {"driver_safety_profile": safety})
+    monkeypatch.setattr(conductor_context, "ensure_crossover_preview_ready", lambda draft: None)
+    monkeypatch.setattr(commission_wiring, "resolve_capture_preset", lambda topology: preset)
+    context = conductor_context.resolve_conductor_context({
+        "active": True, "targets": {"drivers": active_driver_targets(topology)},
+    }, topology=topology)
+    program = SessionExcitation(
+        roles=context.roles_bands, caps_dbfs=context.driver_caps_dbfs,
+        session_volume_db=context.session_volume_db, fc_hz=context.fc_hz,
+        sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
+    ).verify_program()
+    assert context.driver_caps_dbfs == {"woofer": -30, "tweeter": -30, "woofer:rear": -36}
+    assert max(segment.effective_peak_dbfs for segment in program.stimulus_segments()) <= -36
+    profile = MeasurementGraphProfile(
+        preset, topology, context.role_channels, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets),
+    )
+    candidate = replace(_trial_candidate(profile), rear_calibration=_rear_document())
+    graph = compile_tuning_graph(profile, scope="candidate", candidate=candidate)
+    wav = tmp_path / "rear-cap.wav"
+    write_program_wav(wav, program)
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=graph, topology=topology, safety_profile=safety,
+        role_targets=context.role_targets, session_volume_db=context.session_volume_db,
+        declared_sensitivities=context.declared_sensitivities,
+        graph_evidence=measurement_graph_evidence(scope="candidate", candidate=candidate),
+    )
+    assert admission.allowed, admission.to_dict()
+    assert admission.channels[0].cap_dbfs == -36
 
 
 @pytest.mark.parametrize("low_hz", [10, 20, 40, 60])
