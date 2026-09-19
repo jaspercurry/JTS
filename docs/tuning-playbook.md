@@ -151,6 +151,20 @@ Taper the limit over one-third octave below the ceiling, as ADR-0256 directs
 and `ROOM_TAPER_OCTAVES` implements. Do not end correction at a sharp edge.
 Check the whole composed response, since overlapping filters add.
 
+Shape the cut to the feature. Read each `persistence.features[]` row's
+`band_hz` and `width_octaves` before you choose a Q. A room peak wider than
+about half an octave is usually several modes side by side; one bell wide
+enough to cover it also takes 1–3 dB from the half octave on each side. Put
+two or three narrower bells (Q 5–8) across the feature's band as a second
+candidate, preview both shapes, and compare the predicted residual inside the
+band AND in the half octave either side; trial the best two. On jts3 two Q 7
+bells at 54 and 59 Hz cut a 47–67 Hz peak as much as one Q 3.5 bell
+(−4.5 against −4.9 dB) while the shoulders lost 0–1 dB instead of 1–3 dB.
+A bell's skirt is electrical, so it is the same at every position: a change
+beside the feature that differs between positions is noise or the room, not
+the filter. Near the sweep's low edge, where the level is 10–15 dB down, a
+single take can swing ±4 dB.
+
 `jasper-crossover-prescriber judge --preview` answers limits and predicted
 residual without banking a candidate; `--vary PATH[,PATH]=v1,v2 --out-dir DIR` expands a seed over a grid and previews every variant. It previews a room section, or a `rear_calibration` section against `--round <pair round>`.
 Good means median residual under the seat spread, no boost into a dip that
