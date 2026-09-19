@@ -2,21 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Canonical, fail-closed artifacts for two-boundary excitation admission.
-
-The persisted admission payload remains the frozen schema-version-1
-``ExcitationAdmission``.  Boundary and provenance are carried by its
-``ArtifactIdentity``: a new, exclusive admission-authority directory has a
-canonical contract marker, and generation/playback decisions occupy distinct
-versioned path roles inside it.
-
-Feature hosts retain target policy, graph readback, writer locking, playback,
-capture, and bundle-manifest ownership.  This module imports or retains none of
-those hosts.  Its value-based playback recheck is deliberately pure; the owning
-playback adapter must issue current limits/protection under its live guard and
-call the recheck immediately before persisting/playing.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -28,26 +13,17 @@ import stat
 import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import fsync_directory
 from jasper.log_event import log_event
 
 from .evidence_identity import ArtifactIdentity
-from .excitation_admission import (
-    ExcitationAdmission,
-    ExcitationLimits,
-    ProtectionEvidence,
-    admit_excitation,
-)
 
 ADMISSION_ARTIFACT_CONTRACT_VERSION = 1
 ADMISSION_AUTHORITY_KIND = "jts_excitation_admission_authority"
 ADMISSION_AUTHORITY_MARKER = "admission_authority.json"
-ADMISSION_PATH_ROOT = f"admission/v{ADMISSION_ARTIFACT_CONTRACT_VERSION}"
-GENERATION_PATH_PREFIX = f"{ADMISSION_PATH_ROOT}/generation"
-PLAYBACK_PATH_PREFIX = f"{ADMISSION_PATH_ROOT}/playback"
 MAX_ADMISSION_ARTIFACT_BYTES = 64 * 1024
 ADMISSION_FILE_MODE = 0o640
 # No SUID/SGID bits: a hardened unit (RestrictSUIDSGID=) refuses a requested
@@ -76,16 +52,11 @@ class AdmissionArtifactErrorCode(StrEnum):
     AUTHORITY_ALREADY_EXISTS = "admission_authority_already_exists"
     AUTHORITY_MISSING = "admission_authority_missing"
     AUTHORITY_INVALID = "admission_authority_invalid"
-    ARTIFACT_PATH_INVALID = "admission_artifact_path_invalid"
-    ARTIFACT_PATH_CONFLICT = "admission_artifact_path_conflict"
     ARTIFACT_MISSING = "admission_artifact_missing"
     ARTIFACT_READ_FAILED = "admission_artifact_read_failed"
     ARTIFACT_NOT_REGULAR = "admission_artifact_not_regular"
     ARTIFACT_TOO_LARGE = "admission_artifact_too_large"
-    ARTIFACT_INTEGRITY_MISMATCH = "admission_artifact_integrity_mismatch"
-    ARTIFACT_NOT_CANONICAL = "admission_artifact_not_canonical"
     ARTIFACT_MALFORMED = "admission_artifact_malformed"
-    ARTIFACT_NOT_ALLOWED = "admission_artifact_not_allowed"
     ARTIFACT_PERSIST_FAILED = "admission_artifact_persist_failed"
     ARTIFACT_PERSIST_OUTCOME_UNKNOWN = "admission_artifact_persist_outcome_unknown"
 
@@ -125,82 +96,6 @@ class AdmissionAuthority:
         ):
             raise ValueError("authority marker identity is inconsistent")
         object.__setattr__(self, "directory", directory)
-
-
-@dataclass(frozen=True, slots=True)
-class GenerationAdmissionArtifact:
-    """One verified allowed decision in the versioned generation path role."""
-
-    authority: AdmissionAuthority
-    admission_id: str
-    admission: ExcitationAdmission
-    artifact: ArtifactIdentity
-
-    def __post_init__(self) -> None:
-        _validate_admission_artifact(
-            self.authority,
-            self.admission_id,
-            self.admission,
-            self.artifact,
-            role="generation",
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class PlaybackAdmissionArtifact:
-    """Final verified playback decision tied to its generation artifact."""
-
-    generation: GenerationAdmissionArtifact
-    admission: ExcitationAdmission
-    artifact: ArtifactIdentity
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.generation, GenerationAdmissionArtifact):
-            raise ValueError("generation must be a GenerationAdmissionArtifact")
-        _validate_admission_artifact(
-            self.generation.authority,
-            self.generation.admission_id,
-            self.admission,
-            self.artifact,
-            role="playback",
-        )
-        if (
-            self.admission.request != self.generation.admission.request
-            or self.admission.limits != self.generation.admission.limits
-        ):
-            raise ValueError(
-                "playback admission must retain its generation request and limits"
-            )
-        if self.artifact.fingerprint == self.generation.artifact.fingerprint:
-            raise ValueError("playback and generation artifacts must be distinct")
-
-
-@dataclass(frozen=True, slots=True)
-class PlaybackAdmissionResult:
-    """One current recheck and its artifact when allowed."""
-
-    decision: ExcitationAdmission
-    artifact: PlaybackAdmissionArtifact | None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.decision, ExcitationAdmission):
-            raise ValueError("decision must be an ExcitationAdmission")
-        if self.artifact is not None and not isinstance(
-            self.artifact, PlaybackAdmissionArtifact
-        ):
-            raise ValueError("artifact must be a PlaybackAdmissionArtifact or None")
-        if self.decision.allowed != (self.artifact is not None):
-            raise ValueError("only an allowed playback decision has an artifact")
-        if self.artifact is not None and self.artifact.admission != self.decision:
-            raise ValueError("playback artifact must contain the returned decision")
-
-    @property
-    def allowed(self) -> bool:
-        return self.artifact is not None
-
-    @property
-    def refusal_codes(self) -> tuple[str, ...]:
-        return tuple(reason.value for reason in self.decision.refusal_reasons)
 
 
 class _PublishOutcomeUnknown(OSError):
@@ -247,14 +142,6 @@ def _canonical_json(value: object) -> bytes:
     ).encode("utf-8")
 
 
-def canonical_admission_bytes(admission: ExcitationAdmission) -> bytes:
-    """Return the frozen compact bytes used by capture/receipt identities."""
-
-    if not isinstance(admission, ExcitationAdmission):
-        raise ValueError("admission must be an ExcitationAdmission")
-    return _canonical_json(admission.to_dict())
-
-
 def _strict_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -281,32 +168,6 @@ def _parse_json_object(raw: bytes, *, artifact: str) -> dict[str, Any]:
             f"{artifact} must be a JSON object",
         )
     return payload
-
-
-def parse_canonical_admission_bytes(raw: bytes) -> ExcitationAdmission:
-    """Parse only exact canonical schema-v1 admission bytes."""
-
-    if not isinstance(raw, bytes):
-        raise ValueError("admission artifact must be bytes")
-    if len(raw) > MAX_ADMISSION_ARTIFACT_BYTES:
-        raise AdmissionArtifactError(
-            AdmissionArtifactErrorCode.ARTIFACT_TOO_LARGE,
-            "admission artifact exceeds the bounded size limit",
-        )
-    payload = _parse_json_object(raw, artifact="admission artifact")
-    try:
-        admission = ExcitationAdmission.from_dict(payload)
-    except ValueError as exc:
-        raise AdmissionArtifactError(
-            AdmissionArtifactErrorCode.ARTIFACT_MALFORMED,
-            f"admission artifact is invalid: {exc}",
-        ) from exc
-    if canonical_admission_bytes(admission) != raw:
-        raise AdmissionArtifactError(
-            AdmissionArtifactErrorCode.ARTIFACT_NOT_CANONICAL,
-            "admission artifact bytes are not canonical",
-        )
-    return admission
 
 
 def _authority_payload(bundle_kind: str, bundle_id: str) -> dict[str, Any]:
@@ -472,81 +333,6 @@ def _write_once(path: Path, payload: bytes, *, root: Path) -> None:
         raise AssertionError("admission artifact was not published")
 
 
-def admission_artifact_relative_path(role: str, admission_id: str) -> str:
-    """Return the canonical role path after validating the shared admission id."""
-
-    _identifier(admission_id, field="admission_id")
-    if role not in {"generation", "playback"}:
-        raise ValueError("unsupported admission artifact role")
-    prefix = GENERATION_PATH_PREFIX if role == "generation" else PLAYBACK_PATH_PREFIX
-    return f"{prefix}/{admission_id}.json"
-
-
-def _admission_id_from_path(relative_path: str, *, role: str) -> str:
-    path = PurePosixPath(relative_path)
-    expected_parent = PurePosixPath(
-        GENERATION_PATH_PREFIX if role == "generation" else PLAYBACK_PATH_PREFIX
-    )
-    if path.parent != expected_parent or path.suffix != ".json":
-        raise AdmissionArtifactError(
-            AdmissionArtifactErrorCode.ARTIFACT_PATH_INVALID,
-            f"admission artifact is not in the versioned {role} path role",
-        )
-    try:
-        return _identifier(path.stem, field="admission_id")
-    except ValueError as exc:
-        raise AdmissionArtifactError(
-            AdmissionArtifactErrorCode.ARTIFACT_PATH_INVALID,
-            str(exc),
-        ) from exc
-
-
-def _artifact_path(authority: AdmissionAuthority, artifact: ArtifactIdentity) -> Path:
-    if (
-        artifact.bundle_kind != authority.bundle_kind
-        or artifact.bundle_id != authority.bundle_id
-    ):
-        raise AdmissionArtifactError(
-            AdmissionArtifactErrorCode.ARTIFACT_INTEGRITY_MISMATCH,
-            "admission artifact belongs to another authority",
-        )
-    root = authority.directory.resolve()
-    target = root / artifact.relative_path
-    try:
-        target.parent.resolve().relative_to(root)
-    except (OSError, ValueError) as exc:
-        raise AdmissionArtifactError(
-            AdmissionArtifactErrorCode.ARTIFACT_PATH_INVALID,
-            "admission artifact path escapes its authority directory",
-        ) from exc
-    return target
-
-
-def _validate_admission_artifact(
-    authority: AdmissionAuthority,
-    admission_id: str,
-    admission: ExcitationAdmission,
-    artifact: ArtifactIdentity,
-    *,
-    role: str,
-) -> None:
-    if not isinstance(authority, AdmissionAuthority):
-        raise ValueError("authority must be an AdmissionAuthority")
-    _identifier(admission_id, field="admission_id")
-    if not isinstance(admission, ExcitationAdmission) or not admission.allowed:
-        raise ValueError("persisted admission must be an allowed ExcitationAdmission")
-    if not isinstance(artifact, ArtifactIdentity):
-        raise ValueError("artifact must be an ArtifactIdentity")
-    if _admission_id_from_path(artifact.relative_path, role=role) != admission_id:
-        raise ValueError("artifact path does not match admission_id")
-    _artifact_path(authority, artifact)
-    raw = canonical_admission_bytes(admission)
-    if artifact.sha256 != hashlib.sha256(raw).hexdigest() or artifact.byte_size != len(
-        raw
-    ):
-        raise ValueError("artifact identity does not match canonical admission bytes")
-
-
 def create_admission_authority(
     directory: str | Path,
     *,
@@ -681,296 +467,4 @@ def open_admission_authority(
         bundle_id=identifier,
         marker=marker,
         fingerprint=payload["fingerprint"],
-    )
-
-
-def _verify_authority(authority: AdmissionAuthority) -> AdmissionAuthority:
-    if not isinstance(authority, AdmissionAuthority):
-        raise ValueError("authority must be an AdmissionAuthority")
-    verified = open_admission_authority(
-        authority.directory,
-        expected_bundle_kind=authority.bundle_kind,
-        expected_bundle_id=authority.bundle_id,
-    )
-    if verified != authority:
-        raise AdmissionArtifactError(
-            AdmissionArtifactErrorCode.AUTHORITY_INVALID,
-            "admission authority changed after it was opened",
-        )
-    return verified
-
-
-def _persist_error(
-    authority: AdmissionAuthority,
-    *,
-    admission_id: str,
-    role: str,
-    code: AdmissionArtifactErrorCode,
-    detail: str,
-) -> AdmissionArtifactError:
-    log_event(
-        logger,
-        "audio_measurement.excitation_admission",
-        boundary=role,
-        result="failed",
-        failure_code=code.value,
-        bundle_id=authority.bundle_id,
-        admission_id=admission_id,
-        level=logging.WARNING,
-    )
-    return AdmissionArtifactError(code, detail)
-
-
-def _read_admission(
-    authority: AdmissionAuthority,
-    artifact: ArtifactIdentity,
-    *,
-    role: str,
-) -> tuple[str, ExcitationAdmission]:
-    _verify_authority(authority)
-    admission_id = _admission_id_from_path(artifact.relative_path, role=role)
-    raw = _read_bounded_regular_file(
-        _artifact_path(authority, artifact),
-        max_bytes=MAX_ADMISSION_ARTIFACT_BYTES,
-    )
-    if (
-        len(raw) != artifact.byte_size
-        or hashlib.sha256(raw).hexdigest() != artifact.sha256
-    ):
-        raise AdmissionArtifactError(
-            AdmissionArtifactErrorCode.ARTIFACT_INTEGRITY_MISMATCH,
-            "admission artifact content does not match its identity",
-        )
-    admission = parse_canonical_admission_bytes(raw)
-    if not admission.allowed:
-        raise AdmissionArtifactError(
-            AdmissionArtifactErrorCode.ARTIFACT_NOT_ALLOWED,
-            "refused admission is not authority",
-        )
-    return admission_id, admission
-
-
-def _persist_admission(
-    authority: AdmissionAuthority,
-    *,
-    admission_id: str,
-    role: str,
-    admission: ExcitationAdmission,
-) -> ArtifactIdentity:
-    _verify_authority(authority)
-    if not isinstance(admission, ExcitationAdmission) or not admission.allowed:
-        raise AdmissionArtifactError(
-            AdmissionArtifactErrorCode.ARTIFACT_NOT_ALLOWED,
-            "a refused admission cannot be persisted as authority",
-        )
-    relative_path = admission_artifact_relative_path(role, admission_id)
-    raw = canonical_admission_bytes(admission)
-    artifact = ArtifactIdentity(
-        bundle_kind=authority.bundle_kind,
-        bundle_id=authority.bundle_id,
-        relative_path=relative_path,
-        sha256=hashlib.sha256(raw).hexdigest(),
-        byte_size=len(raw),
-    )
-    path = _artifact_path(authority, artifact)
-    try:
-        _write_once(path, raw, root=authority.directory.resolve())
-    except FileExistsError as exc:
-        raise _persist_error(
-            authority,
-            admission_id=admission_id,
-            role=role,
-            code=AdmissionArtifactErrorCode.ARTIFACT_PATH_CONFLICT,
-            detail="admission artifact path already exists",
-        ) from exc
-    except _PublishOutcomeUnknown as exc:
-        raise _persist_error(
-            authority,
-            admission_id=admission_id,
-            role=role,
-            code=AdmissionArtifactErrorCode.ARTIFACT_PERSIST_OUTCOME_UNKNOWN,
-            detail="admission artifact publish outcome is unknown",
-        ) from exc
-    except OSError as exc:
-        raise _persist_error(
-            authority,
-            admission_id=admission_id,
-            role=role,
-            code=AdmissionArtifactErrorCode.ARTIFACT_PERSIST_FAILED,
-            detail=f"could not persist admission artifact: {exc}",
-        ) from exc
-    try:
-        loaded_id, loaded = _read_admission(authority, artifact, role=role)
-    except AdmissionArtifactError as exc:
-        raise _persist_error(
-            authority,
-            admission_id=admission_id,
-            role=role,
-            code=AdmissionArtifactErrorCode.ARTIFACT_PERSIST_OUTCOME_UNKNOWN,
-            detail=f"published admission artifact could not be verified: {exc.detail}",
-        ) from exc
-    if loaded_id != admission_id or loaded != admission:
-        raise _persist_error(
-            authority,
-            admission_id=admission_id,
-            role=role,
-            code=AdmissionArtifactErrorCode.ARTIFACT_PERSIST_OUTCOME_UNKNOWN,
-            detail="published admission artifact readback changed",
-        )
-    log_event(
-        logger,
-        "audio_measurement.excitation_admission",
-        boundary=role,
-        result="persisted",
-        bundle_id=authority.bundle_id,
-        admission_id=admission_id,
-        artifact_sha256=artifact.sha256,
-    )
-    return artifact
-
-
-def persist_generation_admission(
-    authority: AdmissionAuthority,
-    *,
-    admission_id: str,
-    admission: ExcitationAdmission,
-) -> GenerationAdmissionArtifact:
-    """Persist one allowed pre-generation decision at its enforced path role."""
-
-    artifact = _persist_admission(
-        authority,
-        admission_id=admission_id,
-        role="generation",
-        admission=admission,
-    )
-    return GenerationAdmissionArtifact(
-        authority=authority,
-        admission_id=admission_id,
-        admission=admission,
-        artifact=artifact,
-    )
-
-
-def read_generation_admission(
-    authority: AdmissionAuthority,
-    artifact: ArtifactIdentity,
-) -> GenerationAdmissionArtifact:
-    """Strictly resolve one generation-role admission artifact."""
-
-    admission_id, admission = _read_admission(
-        authority,
-        artifact,
-        role="generation",
-    )
-    return GenerationAdmissionArtifact(
-        authority=authority,
-        admission_id=admission_id,
-        admission=admission,
-        artifact=artifact,
-    )
-
-
-def readmit_excitation_for_playback(
-    generation_admission: ExcitationAdmission,
-    *,
-    current_limits: ExcitationLimits,
-    current_protection_evidence: ProtectionEvidence,
-) -> ExcitationAdmission:
-    """Purely recompute the exact request against caller-issued current values."""
-
-    if not isinstance(generation_admission, ExcitationAdmission):
-        raise ValueError("generation_admission must be an ExcitationAdmission")
-    if not generation_admission.allowed:
-        raise ValueError("generation admission must be allowed")
-    if not isinstance(current_limits, ExcitationLimits):
-        raise ValueError("current_limits must be ExcitationLimits")
-    if not isinstance(current_protection_evidence, ProtectionEvidence):
-        raise ValueError("current_protection_evidence must be ProtectionEvidence")
-    return admit_excitation(
-        generation_admission.request,
-        current_limits,
-        protection_evidence=current_protection_evidence,
-    )
-
-
-def readmit_and_persist_playback_admission(
-    authority: AdmissionAuthority,
-    generation: GenerationAdmissionArtifact,
-    *,
-    current_limits: ExcitationLimits,
-    current_protection_evidence: ProtectionEvidence,
-) -> PlaybackAdmissionResult:
-    """Re-read generation, recompute current admission, and persist if allowed."""
-
-    if not isinstance(generation, GenerationAdmissionArtifact):
-        raise ValueError("generation must be a GenerationAdmissionArtifact")
-    verified_generation = read_generation_admission(authority, generation.artifact)
-    if verified_generation != generation:
-        raise AdmissionArtifactError(
-            AdmissionArtifactErrorCode.ARTIFACT_INTEGRITY_MISMATCH,
-            "generation admission changed before playback re-admission",
-        )
-    decision = readmit_excitation_for_playback(
-        verified_generation.admission,
-        current_limits=current_limits,
-        current_protection_evidence=current_protection_evidence,
-    )
-    if not decision.allowed:
-        log_event(
-            logger,
-            "audio_measurement.excitation_admission",
-            boundary="playback",
-            result="refused",
-            bundle_id=authority.bundle_id,
-            admission_id=generation.admission_id,
-            refusal_codes=",".join(reason.value for reason in decision.refusal_reasons),
-        )
-        return PlaybackAdmissionResult(decision=decision, artifact=None)
-    artifact = _persist_admission(
-        authority,
-        admission_id=generation.admission_id,
-        role="playback",
-        admission=decision,
-    )
-    playback = PlaybackAdmissionArtifact(
-        generation=verified_generation,
-        admission=decision,
-        artifact=artifact,
-    )
-    return PlaybackAdmissionResult(decision=decision, artifact=playback)
-
-
-def read_playback_admission(
-    authority: AdmissionAuthority,
-    generation: GenerationAdmissionArtifact,
-    artifact: ArtifactIdentity,
-) -> PlaybackAdmissionArtifact:
-    """Strictly resolve a playback artifact tied to one generation artifact."""
-
-    if not isinstance(generation, GenerationAdmissionArtifact):
-        raise ValueError("generation must be a GenerationAdmissionArtifact")
-    verified_generation = read_generation_admission(authority, generation.artifact)
-    if verified_generation != generation:
-        raise AdmissionArtifactError(
-            AdmissionArtifactErrorCode.ARTIFACT_INTEGRITY_MISMATCH,
-            "generation admission changed before playback artifact resolution",
-        )
-    admission_id, admission = _read_admission(authority, artifact, role="playback")
-    if admission_id != generation.admission_id:
-        raise AdmissionArtifactError(
-            AdmissionArtifactErrorCode.ARTIFACT_INTEGRITY_MISMATCH,
-            "playback artifact is tied to another generation admission",
-        )
-    if (
-        admission.request != verified_generation.admission.request
-        or admission.limits != verified_generation.admission.limits
-    ):
-        raise AdmissionArtifactError(
-            AdmissionArtifactErrorCode.ARTIFACT_INTEGRITY_MISMATCH,
-            "playback artifact does not retain its generation request and limits",
-        )
-    return PlaybackAdmissionArtifact(
-        generation=verified_generation,
-        admission=admission,
-        artifact=artifact,
     )

@@ -765,7 +765,6 @@ cannot read; `pipeline_reference_closure_errors` for dangling references;
 the tweeter/sub protection predicates), topology/runtime conformance via
 `jasper.active_speaker.runtime_contract.classify_camilla_graph` /
 `safe_graph_for_current_topology`, excitation bounds via
-`jasper.audio_measurement.excitation_admission.admit_excitation` and
 program admission, and the ceiling via `jasper/dsp_apply.py`'s
 `validate_camilla_config` — with two fail-open holes the workbench must
 close: a missing `camilladsp` binary yields `ok_to_apply=True` (a dev-box
