@@ -55,10 +55,6 @@ def _cmd_entry(args: argparse.Namespace) -> int:
             args.command, out=written, graded=False, reason=grade.reason,
             line=f"entry-state: NOT GRADED — {grade.reason}",
         )
-    # `is False` / `is None`, never a bare truthiness test, for exactly the
-    # reason `seats._cmd_agreement` states: an UNEVALUABLE band (no
-    # non-excluded bin survived) is not a failing one, and collapsing them
-    # would report a band nobody could measure as one that measured badly.
     n_failed = sum(1 for band in report.bands if band.within_target is False)
     n_unevaluable = sum(1 for band in report.bands if band.within_target is None)
     ordinal = "?" if grade.round_ordinal is None else grade.round_ordinal

@@ -80,8 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "WHEN NOT TO USE\n"
             "  - frozen/repeat-floor need MULTIPLE round directories\n"
-            "    (a baseline plus a target, or two-or-more rounds);\n"
-            "    entry/per-seat/agreement grade a single round\n"
+            "    (a baseline plus a target, or two-or-more rounds).\n"
             "\n"
             "EXAMPLES\n"
             "  jasper-round-views frequency captures/.../session-1/round-3\n"
