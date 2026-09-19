@@ -215,14 +215,14 @@ def bind_program_composer(
         expected_graph = graph_yaml()
         if not expected_graph:
             raise ValueError("playback has no installed measurement graph")
-        from ..branch_peak import BranchPeakError  # lazy: numerical analysis at composition
+        from ..graph_transfer import GraphTransferError  # lazy: numerical analysis at composition
         from ..measurement_emit import MeasurementGraphRefused  # lazy: measurement runtime
         from ..measurement_level import scope_gains_db  # lazy: numerical analysis at composition
 
         try:
             gains = (None if level_reference_yaml is None else {} if spec.graph_scope == "candidate" else scope_gains_db(
                 expected_graph, level_reference_yaml, roles, topology=topology))
-        except BranchPeakError as exc:
+        except GraphTransferError as exc:
             raise MeasurementGraphRefused("measurement_scope_gain_unavailable", str(exc)) from exc
         spec = replace(spec, scope_gains_db=gains)
         program = program_for_spec(spec, stimulus_dbfs)

@@ -10,7 +10,7 @@ import math
 import numpy as np
 import pytest
 
-from jasper.active_speaker.branch_peak import BranchPeakError, complex_channel_transfer
+from jasper.active_speaker.graph_transfer import GraphTransferError, complex_channel_transfer
 from jasper.active_speaker.crossover_v2 import summed_alignment
 from jasper.active_speaker.crossover_v2.graph_prediction import (
     GraphPredictionError,
@@ -114,7 +114,7 @@ def test_camilladsp_readback_spellings_are_accepted():
 
 
 def _refuses(config, *, output_channels=None):
-    with pytest.raises(BranchPeakError):
+    with pytest.raises(GraphTransferError):
         complex_channel_transfer(
             config, np.array([1000.0]), input_weights={0: 1},
             output_channels={"a": 0} if output_channels is None else output_channels,
@@ -306,7 +306,7 @@ def test_complex_transfer_refuses_a_subsample_delay_allpass():
             {"type": "Filter", "channels": [0], "names": ["delay"]},
         ],
     }
-    with pytest.raises(BranchPeakError):
+    with pytest.raises(GraphTransferError):
         complex_channel_transfer(
             config, np.asarray([1000.0]),
             input_weights={0: 1.0}, output_channels={"woofer": 0},

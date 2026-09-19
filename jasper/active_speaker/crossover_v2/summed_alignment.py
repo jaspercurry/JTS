@@ -14,7 +14,7 @@ from typing import Any, Callable, Mapping, cast
 
 import numpy as np
 
-from jasper.active_speaker.branch_peak import BranchPeakError, filter_transfer, mixer_mapping
+from jasper.active_speaker.graph_transfer import GraphTransferError, filter_transfer, mixer_mapping
 from jasper.active_speaker.camilla_yaml import driver_baseline_gain_name, driver_delay_name
 from jasper.active_speaker.graph_safety import view_from_camilla_dict
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
@@ -75,7 +75,7 @@ def reference_from_graph(
             correction = np.divide(transfer, configured, out=np.zeros_like(transfer), where=abs(configured) > 1e-12)
             transfers[role] = cast(Callable[[np.ndarray], np.ndarray], partial(np.interp, xp=freqs_hz, fp=correction))
         return SummedAlignmentReference(freqs_hz, magnitude_db, transfers, band_hz)
-    except (KeyError, TypeError, ValueError, BranchPeakError):
+    except (KeyError, TypeError, ValueError, GraphTransferError):
         return _unreadable("unsupported_graph")
 
 

@@ -12,8 +12,8 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from jasper.active_speaker.branch_peak import (
-    BranchPeakError,
+from jasper.active_speaker.graph_transfer import (
+    GraphTransferError,
     complex_channel_transfer,
 )
 
@@ -204,7 +204,7 @@ def relative_branch_response(
                 "non_finite": int(np.count_nonzero(in_band & ~finite)),
                 "source_near_zero": int(np.count_nonzero(in_band & finite & near_zero)),
             }
-    except BranchPeakError as exc:
+    except GraphTransferError as exc:
         raise GraphPredictionError(str(exc)) from exc
     return RelativeGraphResponse(
         freqs_hz=freqs,
