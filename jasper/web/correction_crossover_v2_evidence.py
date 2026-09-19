@@ -1039,6 +1039,7 @@ def bind_production_play(
         safety_profile=safety_profile, role_targets=role_targets,
         declared_sensitivities=declared_sensitivities,
         before_play=_before_play, graph_yaml=session_graph.installed_graph_yaml,
+        level_reference_yaml=lambda: session_graph.level_reference_yaml,
         graph_evidence_for_spec=lambda spec: measurement_graph_evidence(scope=spec.graph_scope, candidate_id=spec.candidate_id),
     )
 

@@ -465,6 +465,8 @@ def _drive_one_capture(
     played = []
 
     class Graph(FakeGraph):
+        level_reference_yaml = ROUTING_GRAPH_YAML
+
         async def install(self, *args):
             fingerprint = await super().install(*args)
             selected_scope = self.scopes[-1][0] if self.scopes else "drivers"

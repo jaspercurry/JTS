@@ -22,7 +22,6 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from jasper.active_speaker.crossover_v2.programs import courtesy_prelude_for_phase
 from jasper.cli._logging import CLI_LOG_FORMAT
 from jasper.cli._refusal import (
     EXIT_OK as EXIT_OK,
@@ -482,11 +481,9 @@ def _bind_compose(
     *, box: BoxDeclaration, store: Any, session_id: str, cam_factory: Any,
     config_dir: str, graph: Any, measurement_profile: Any = None,
 ) -> Any:
-    from jasper.active_speaker.bass_stimulus import build_bass_program  # lazy: hardware execution loads numerical analysis
     from jasper.active_speaker.crossover_v2.composition import bind_program_composer
-    from jasper.active_speaker.crossover_v2.measure_spec import GRAPH_SCOPE_DRIVERS
     from jasper.active_speaker.measurement_emit import measurement_graph_evidence
-    from jasper.active_speaker.crossover_v2.programs import SessionExcitation  # lazy: optional measurement runtime
+    from jasper.active_speaker.crossover_v2.programs import SessionExcitation, program_for_spec as compose_program  # lazy: optional measurement runtime
     from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
     from jasper.active_speaker.program_playback import ProgramPlaybackError
     from jasper.active_speaker.volume_latch import MeasurementFaderDrift, hold_fader_at
@@ -498,15 +495,8 @@ def _bind_compose(
     )
 
     def program_for_spec(spec: Any, stimulus_dbfs: float | None) -> Any:
-        peak = BASE_STIMULUS_PEAK_DBFS if stimulus_dbfs is None else stimulus_dbfs
-        if spec.stimulus is not None:
-            return build_bass_program(excitation, spec.stimulus, safety_profile=box.safety_profile,
-                                      role_targets=box.role_targets, extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - peak,
-                                      courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase))
-        if spec.graph_scope == GRAPH_SCOPE_DRIVERS:
-            return excitation.measure_program({role.role: peak for role in box.roles_bands})
-        summed = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)
-        return summed.verify_program(extra_backoff_db=BASE_STIMULUS_PEAK_DBFS - peak, sweep_s=spec.sweep_s)
+        return compose_program(spec, excitation, {role.role: BASE_STIMULUS_PEAK_DBFS for role in box.roles_bands},
+                               stimulus_dbfs, safety_profile=box.safety_profile, role_targets=box.role_targets)
 
     async def before_play(spec: Any, program: Any, artifact: Any, phase: str) -> None:
         cam = cam_factory()
@@ -532,6 +522,7 @@ def _bind_compose(
         safety_profile=box.safety_profile, role_targets=box.role_targets,
         declared_sensitivities=box.declared_sensitivities,
         before_play=before_play, graph_yaml=graph.installed_graph_yaml,
+        level_reference_yaml=lambda: graph.level_reference_yaml,
         graph_evidence_for_spec=evidence_for_spec,
     )
 

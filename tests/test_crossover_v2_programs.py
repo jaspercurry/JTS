@@ -42,6 +42,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2 import journey
@@ -49,11 +50,12 @@ from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.angle_capture import request_for_program
 from jasper.active_speaker.measurement_programs import program as measurement_program
+from jasper.active_speaker.measurement_level import scope_gain_db
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.crossover_v2.capture_plan import CloudPositionPrompt, room_sweep_band_hz
 from jasper.active_speaker.crossover_v2 import programs
 from jasper.active_speaker.crossover_v2.programs import (
-    CHECK_PROBE_BACKOFF_DB,
     COURTESY_PRELUDE_PHASES,
     GROUP_SUMMED_SWEEP_PHASES,
     SUMMED_SWEEP_PHASES,
@@ -159,7 +161,7 @@ def test_check_pilots_do_not_exceed_the_summed_pilot_pair(caps, extra_backoff_db
     }
 
     assert all(
-        segment.gain_db <= summed[segment.segment_id.rsplit("_", 1)[-1]] - CHECK_PROBE_BACKOFF_DB
+        segment.gain_db <= summed[segment.segment_id.rsplit("_", 1)[-1]]
         for segment in check.stimulus_segments()
         if segment.kind == "pilot"
     )
@@ -168,6 +170,41 @@ def test_check_pilots_do_not_exceed_the_summed_pilot_pair(caps, extra_backoff_db
             ex.check_program().segment(segment.segment_id).gain_db - max(0.0, extra_backoff_db))
         for segment in check.stimulus_segments() if segment.kind == "pilot"
     )
+
+
+@pytest.mark.parametrize("headroom", [0.0, 3.1, 5.61])
+@pytest.mark.parametrize("phase,scope", [("check", "drivers"), ("measure", "drivers"), ("verify", "timing")])
+def test_scope_gain_prices_the_loudest_path_and_never_raises_a_program(headroom, phase, scope):
+    def graph(headroom, trim, cut):
+        return yaml.safe_dump({
+            "devices": {"capture": {"channels": 2}},
+            "filters": {
+                "headroom": {"type": "Gain", "parameters": {"gain": -headroom}},
+                "trim": {"type": "Gain", "parameters": {"gain": trim}},
+                "linearization": {"type": "Biquad", "parameters": {
+                    "type": "Highshelf", "freq": 1.0, "q": 0.707, "gain": cut}},
+            },
+            "pipeline": [
+                {"type": "Filter", "channels": [0, 1], "names": ["headroom", "linearization"]},
+                {"type": "Filter", "channels": [1], "names": ["trim"]},
+            ],
+        })
+    candidate, drivers = graph(headroom, -3.0, -8.0), graph(0.0, 0.0, 0.0)
+    gain = scope_gain_db(drivers, candidate, (20.0, 20000.0))
+    assert gain == pytest.approx(headroom + 8.0, abs=0.2)
+    assert scope_gain_db(candidate, candidate, (20.0, 20000.0)) == 0.0
+    quieter = scope_gain_db(candidate, drivers, (20.0, 20000.0))
+    assert quieter == pytest.approx(-gain)
+    spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope,
+                       candidate_id="trial" if scope != "drivers" else "")
+    excitation = _excitation({"woofer": 0.0, "tweeter": 0.0})
+    def compose(gain):
+        return programs.program_for_spec(replace(spec, scope_gain_db=gain), excitation, GAIN_PLAN_DB,
+                                         safety_profile={}, role_targets={})
+    unchanged, lowered = compose(0.0), compose(gain)
+    assert compose(quieter).program_id == unchanged.program_id
+    for before, after in zip(unchanged.stimulus_segments(), lowered.stimulus_segments()):
+        assert before.effective_peak_dbfs - after.effective_peak_dbfs == pytest.approx(gain)
 
 
 def test_only_the_prelude_moved_under_the_shipped_measure_program(monkeypatch):

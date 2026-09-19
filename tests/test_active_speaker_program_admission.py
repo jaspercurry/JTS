@@ -9,6 +9,8 @@ import asyncio
 from copy import deepcopy
 import logging
 from dataclasses import replace
+from functools import partial
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -23,10 +25,13 @@ from jasper.active_speaker.crossover_v2 import conductor_context
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.output_topology import measurement_target_id
-from jasper.active_speaker.crossover_v2.programs import SessionExcitation
+from jasper.active_speaker.crossover_v2.programs import SessionExcitation, program_for_spec
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+from jasper.active_speaker.crossover_v2.composition import bind_program_composer
 from jasper.active_speaker.driver_safety import compute_driver_safety_profile
 from jasper.active_speaker.measurement import active_driver_targets
-from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph, measurement_graph_evidence
+from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph, emit_measurement_graph, measurement_graph_evidence
+from jasper.active_speaker.measurement_level import scope_gain_db
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import (
@@ -55,6 +60,7 @@ from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, _trial_candidate
 from tests.test_crossover_v2_session_graph import FakeCam, _entry, _graph as _session_graph
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
+from tests.crossover_v2_fixtures import _preset
 
 
 def _profile_and_targets(
@@ -1295,3 +1301,51 @@ def test_a_measurement_program_graph_is_refused_by_its_own_name(tmp_path):
         excited_target_ids=frozenset(CARDIOID_TAKE),
     )
     assert {issue["code"] for issue in result.issues} == {"active_graph_program_shape_unproven"}
+
+
+@pytest.mark.parametrize("rear", [False, True])
+@pytest.mark.parametrize("fader", [-16.7, -23.0, -30.0])
+@pytest.mark.asyncio
+async def test_take_composer_uses_installed_scope_gain_and_all_programs_remain_admitted(tmp_path, rear, fader):
+    topology, safety, targets = _profile_and_targets(
+        rear=rear, woofer_floor=30, woofer_upper=4000, tweeter_peak=0, max_sweep_duration_s=4)
+    profile = MeasurementGraphProfile(
+        _rear_pair("mono")[0] if rear else _preset(), topology,
+        {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets))
+    candidate = replace(_trial_candidate(profile, gain=-8),
+                        rear_calibration=_rear_document() if rear else {})
+    graphs = {"candidate": compile_tuning_graph(profile, candidate),
+              "drivers": emit_measurement_graph(profile),
+              "timing": compile_tuning_graph(profile, candidate, scope="timing")}
+    excitation = SessionExcitation(tuple(_roles()), {"woofer": 0, "tweeter": 0}, fader, 1600,
+                                   {"woofer": 4, "tweeter": 4})
+    gains = {"woofer": -12, "tweeter": -12}
+    programs = partial(program_for_spec, excitation=excitation, gain_plan_db=gains,
+                       safety_profile=safety, role_targets=targets)
+    paths = []
+    store = SimpleNamespace(bundle_dir=tmp_path, identify_artifact=lambda path: paths.append(path))
+    for phase, scope in [("check", "drivers"), ("measure", "drivers"), ("verify", "timing"), ("verify", "candidate")]:
+        spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope,
+                           candidate_id=candidate.fingerprint if scope != "drivers" else "")
+        gain = scope_gain_db(graphs[scope], graphs["candidate"], (20., 20000.))
+        expected = {"drivers": 8.526323 if rear else 2.915623,
+                    "timing": 1.561123 if rear else 0.684715, "candidate": 0.0}
+        assert gain == pytest.approx(expected[scope], abs=0.00001)
+        compose = bind_program_composer(
+            program_for_spec=lambda spec, level: programs(spec, stimulus_dbfs=level),
+            store=store, capture_session_id="level", cam_factory=lambda: None,
+            config_dir=str(tmp_path), topology=topology, safety_profile=safety, role_targets=targets,
+            graph_yaml=lambda: graphs[scope], level_reference_yaml=lambda: graphs["candidate"])
+        played = await compose(spec=spec, level_db=fader)
+        reference = programs(spec)
+        for before, after in zip(reference.stimulus_segments(), played.program.stimulus_segments()):
+            assert before.effective_peak_dbfs - after.effective_peak_dbfs == pytest.approx(max(0, gain))
+        kwargs = dict(topology=topology, safety_profile=safety, role_targets=targets, session_volume_db=fader)
+        if scope == "drivers":
+            admission = readmit_program_from_wav(played.program, tmp_path / paths[-1], **kwargs)
+        else:
+            admission = readmit_summed_program_from_wav(
+                played.program, tmp_path / paths[-1], graph_yaml=graphs[scope],
+                graph_evidence=measurement_graph_evidence(scope=scope, candidate=candidate), **kwargs)
+        assert admission.allowed, admission.refusals

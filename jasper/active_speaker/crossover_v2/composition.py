@@ -14,6 +14,7 @@ constructs the same engine and must not pull the web host in.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from functools import partial
 from itertools import count
 from pathlib import Path
@@ -185,6 +186,7 @@ def bind_program_composer(
     declared_sensitivities: Mapping[str, float] | None = None,
     before_play: Callable[[Any, Any, Any, str], Awaitable[None]] | None = None,
     graph_yaml: Callable[[], str],
+    level_reference_yaml: Callable[[], str] | None = None,
     graph_evidence_for_spec: Callable[[Any], Mapping[str, Any]] | None = None,
 ) -> Compose:
     """Render each take once and bind admission, locked graph proof and playback.
@@ -203,10 +205,17 @@ def bind_program_composer(
         *, spec: Any, position_deg: int | None = None, prompt: str = "",
         level_db: float, stimulus_dbfs: float | None = None,
     ) -> ProgramForStimulus:
-        program = program_for_spec(spec, stimulus_dbfs)
         expected_graph = graph_yaml()
         if not expected_graph:
             raise ValueError("playback has no installed measurement graph")
+        if level_reference_yaml is not None:
+            from ..measurement_level import scope_gain_db  # lazy: numerical analysis at composition
+            from jasper.audio_measurement.program import SUMMED_SWEEP_BAND_HZ  # lazy: measurement runtime
+
+            gain = (0.0 if spec.graph_scope == "candidate" else scope_gain_db(
+                expected_graph, level_reference_yaml(), spec.sweep_band_hz or SUMMED_SWEEP_BAND_HZ))
+            spec = replace(spec, scope_gain_db=gain)
+        program = program_for_spec(spec, stimulus_dbfs)
         phase = spec.program_phase or program.phase
         wav_rel = (
             f"crossover_v2/{capture_session_id}/"

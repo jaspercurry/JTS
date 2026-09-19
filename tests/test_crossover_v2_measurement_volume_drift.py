@@ -665,6 +665,7 @@ def _drive(
         door, "bind_measurement_graph",
         lambda *a, **kw: SimpleNamespace(
             installed_graph_yaml=lambda: "devices: {samplerate: 48000}\n",
+            level_reference_yaml="devices: {samplerate: 48000}\n",
         ),
     )
     v2volume.set_volume_plan_for_tests(plan)
