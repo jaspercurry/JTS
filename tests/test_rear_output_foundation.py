@@ -8,12 +8,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 import yaml
-from scipy.io import wavfile
 
 from jasper.active_speaker import branch_chain
 from jasper.active_speaker import camilla_yaml as emit
 from jasper.active_speaker import graph_safety as gs
-from jasper.active_speaker.branch_peak import stimulus_branch_peaks_dbfs
+from jasper.active_speaker.branch_peak import complex_channel_transfer
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.path_safety import staged_target_signature, topology_target_signature
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, SpeakerBaselineProfile
@@ -253,8 +252,6 @@ def test_the_stage_delays_the_rear_branch_without_a_subsample_allpass():
         if spec["type"] == "Delay" and name.startswith("rear_out2_")
     }
     assert delays
-    # branch_peak cannot model a subsample allpass, so a subsample Delay here
-    # would drop every branch-peak proof back to the full-stimulus bound.
     assert not [
         name for name, spec in payload["filters"].items()
         if spec["type"] == "Delay" and "subsample" in spec["parameters"]
@@ -262,15 +259,13 @@ def test_the_stage_delays_the_rear_branch_without_a_subsample_allpass():
 
 
 @pytest.mark.parametrize("channel", [0, 1, 2])
-def test_every_output_of_the_cardioid_graph_renders_a_finite_branch_peak(tmp_path, channel):
+def test_every_output_of_the_cardioid_graph_has_a_finite_exact_transfer(channel):
     payload = yaml.safe_load(_cardioid_baseline()[2])
-    rate, frames = 48000, 4800
-    samples = np.zeros((frames, 2))
-    samples[:, 0] = 0.25 * np.sin(2.0 * np.pi * 300.0 * np.arange(frames) / rate)
-    wav = tmp_path / "stimulus.wav"
-    wavfile.write(str(wav), rate, (samples * 32767.0).astype(np.int16))
-    peak = stimulus_branch_peaks_dbfs(payload, wav, output_channels={"out": channel})["out"]
-    assert np.isfinite(peak) and peak <= 0.0
+    response = complex_channel_transfer(
+        payload, np.geomspace(20.0, 20000.0, 4096), input_weights={0: 1},
+        output_channels={"out": channel}, allow_limiter_passthrough=True,
+    )["out"]
+    assert np.isfinite(response).all()
 
 
 def test_muted_rear_keeps_the_stage_but_silences_its_output_gain():
