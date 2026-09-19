@@ -123,7 +123,7 @@ def _assess_recording(
         ceilings = capped_gain_ceilings(caps_dbfs, session_volume_db, ceilings)
     anchor, drift, alignment = analysis.anchor, analysis.drift, analysis.alignment
     sample_rate = program.sample_rate_hz if program else REQUIRED_SAMPLE_RATE_HZ
-    schedule_residual_ms, _ = _sweep_schedule_diag_fields(analysis, sample_rate)
+    schedule_residual_ms, sweep_confidence_min = _sweep_schedule_diag_fields(analysis, sample_rate)
     stimuli = [loc for loc in analysis.locations if loc.kind in STIMULUS_KINDS]
     evidence: dict[str, float | bool | str] = {
         "mic_meter_status": analysis.mic_meter_status or "unmeasured",
@@ -225,8 +225,8 @@ def _assess_recording(
     if analysis.mic_meter_status in {"low", "too_quiet"}:
         return quiet(reasons.REASON_PILOT_LEVEL_COLLAPSE)
     schedule_ok = _sweep_schedule_ok(analysis, sample_rate)
-    if not schedule_ok and float(evidence["locate_confidence_min"]) < SWEEP_LOCATE_CONFIDENCE_FLOOR:
-        return refuse(reasons.REASON_LOCATE_FAILED)
+    if not schedule_ok and sweep_confidence_min is not None and sweep_confidence_min < SWEEP_LOCATE_CONFIDENCE_FLOOR:
+        return quiet(reasons.REASON_LOCATE_FAILED)
     integrity = analysis.capture_integrity
     if integrity is not None and INTEGRITY_CHECK_SWEEP_HEARD in integrity.failed:
         return quiet(reasons.REASON_LOCATE_FAILED)

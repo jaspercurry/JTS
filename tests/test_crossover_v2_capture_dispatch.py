@@ -185,6 +185,39 @@ def test_sweep_schedule_is_absolute_for_anchored_roles(role, branches, direction
     assert verdict.evidence["locate_confidence_min"] == SWEEP_LOCATE_CONFIDENCE_FLOOR
 
 
+@pytest.mark.parametrize(("sweep_confidence", "pilot_confidence", "ceiling", "code", "next", "charge", "target"), [
+    (0.70, 0.12, -20.0, refusal_copy.REASON_DRIFT_BASELINES_DISAGREE, "retake_same", "speaker", None),
+    (0.70, 0.70, -20.0, refusal_copy.REASON_DRIFT_BASELINES_DISAGREE, "retake_same", "speaker", None),
+    (0.15, 0.70, -20.0, refusal_copy.REASON_LOCATE_FAILED, "retake_louder", "speaker", -20.0),
+    (0.15, 0.70, -30.0, refusal_copy.REASON_LOCATE_FAILED, "fix_and_retake", "operator", None),
+])
+def test_failed_schedule_routes_by_sweep_confidence_and_available_gain(
+    sweep_confidence, pilot_confidence, ceiling, code, next, charge, target,
+):
+    band = snr_policy.band_snr_verdicts(
+        decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -40}],
+        noise_bands=[{"band_id": "mid", "level_dbfs": -70}], noise_floor_dbfs_scalar=None,
+        relevant_hz=(1000, 4000), model=DRIVER,
+    )
+    analysis = _analysis(
+        locations=(_loc("pilot_woofer_lo", "pilot", confidence=pilot_confidence),
+                   *(_loc(segment, confidence=sweep_confidence, residual_samples=-26e-3 * cd.REQUIRED_SAMPLE_RATE_HZ)
+                     for segment in ("sweep_w", "sweep_t", "sweep_w_rep"))),
+        driver_responses=(replace(_driver_response("woofer", 8.0), snr={"alignment": band}),),
+    )
+    verdict = cd.assess(analysis, phase="measure", gain_db=GAINS, gain_ceiling_db={"woofer": ceiling})
+    assert not verdict.ok and verdict.fault == code
+    assert (verdict.next, verdict.charge, verdict.next_gain_db) == (next, charge, target)
+    assert verdict.gain_targets == ({} if target is None else {"woofer": target})
+    assert verdict.evidence["locate_confidence_min"] == min(sweep_confidence, pilot_confidence)
+    assert verdict.evidence["schedule_residual_ms_worst"] == pytest.approx(-26.0)
+    if code == refusal_copy.REASON_DRIFT_BASELINES_DISAGREE:
+        assert verdict.evidence["guard"] == "sweep_schedule"
+    else:
+        assert verdict.evidence["alignment.woofer.alignment_level_db"] == -30.0
+        assert verdict.evidence["alignment.woofer.alignment_snr_shortfall_db"] == 5.0
+
+
 @pytest.mark.parametrize("diagnostic", [None, {"responses": [{"role": "woofer:rear"}]}])
 def test_a_round_banks_the_branch_diagnostic_its_analysis_carried(diagnostic):
     """``round_captures._capture_response`` refuses every non-``summed`` role
