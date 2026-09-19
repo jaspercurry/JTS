@@ -6,7 +6,10 @@ Register the wired microphone with `jasper-mic-calibration`; set its capture con
 
 ## The loop
 
-1. Run `jasper-round run --program <speaker|room|bass>` for a measurement, or `jasper-round trial <fp>` to compare a whole document with base. Use `--candidates a,b,c` to compare two or three candidates at each pose before the mic moves. See the playbook's Document section. Use `run --dry-run` to inspect a custom plan without sound.
+Run the tuning programs in order: speaker → rear → bass → room (skip rear if there is no rear driver).
+Re-run room after any upstream change.
+
+1. Run `jasper-round run --program <speaker|rear|bass|room>` for a measurement, or `jasper-round trial <fp>` to compare a whole document with base. Use `--candidates a,b,c` to compare two or three candidates at each pose before the mic moves. See the playbook's Document section. Use `run --dry-run` to inspect a custom plan without sound.
 2. Join at each pose. With `--mover human`, open the returned page, follow its pose prompt, and use its in-place, Retake, or Done action. With `--mover arm`, run `jasper-angle-capture serve`. With `--mover confirmed`, call `jasper-round placed --run <id>` only after the person confirms placement. End a run nobody joins with `jasper-round stop --run <id>`.
 3. Run `jasper-round wait --run <id>`. Read `index.md` first; the packet holds applied layers, set limits, series statistics, and a fit for each selected Speaker take and role. Add `--verbose` to see the view results. Use `status` to inspect progress without granting placement.
 4. Select evidence by set. `speaker-fit`, `room`, and `repeat` use `jasper-round-views <verb> <round-dir> --set <set-id>`. Use `jasper-round-views sweep <round-dir> --scope round --set <set-id>`. Use `jasper-round-views bass-fit-table <round-dir…> --candidate <candidate.json>`. `inventory` lists exact available commands.
@@ -19,15 +22,21 @@ Use `jasper-round reset` to reset all tuning while keeping the measured level-ma
 
 `speaker/mark` takes two measurements at the design mark; full-speaker sweeps cover 20 Hz–20 kHz from the resolved driver bands (ADR-0328). Driver caps still bind the fader. Use `speaker-fit`, `repeat`, and `sweep`; measure the composed full graph before apply.
 
-## Room
+## Rear
 
-Room defaults to `room/seat`: the three `seat_express` poses with the human mover, summed and ungated through the applied candidate, including its applied bass extension; room is off only when the run composes a candidate without it. Follow the page prompts; use Retake or Done there. `room/arm` keeps the three `room_quick` bearings for smoke tests. A room candidate trial uses the seat set; `trial <fp> --mover arm` selects the smoke set. The commissioning stop still applies. The room layer stops at the applied speaker's trusted floor, clamped to room bounds. Use `room` for the document and trial at the same poses.
+`jasper-round run --program rear --dry-run` shows the rear measurement plan without sound.
+
+Run `jasper-round run --program rear` for the declared rear woofer. Follow the [playbook’s Rear recipe](tuning-playbook.md#rear) to compose and trial candidates and read the packet.
 
 ## Bass
 
 `jasper-round run --program bass --dry-run` lists the session level and offsets −5, −10, and −15 dB without sound. Each level uses the banked ambient bands to check SNR over the bass target band. An explicit `--level-db L --dry-run` checks only that level.
 
 `jasper-round run --program bass` (or `jasper-round trial <fp>` for a bass candidate) runs the admissible level ladder at one pose under one hold, and `wait` joins the levels into the packet. `--level-db L` keeps one level, whose packet carries its bass view without a join.
+
+## Room
+
+Room defaults to `room/seat`: the three `seat_express` poses with the human mover, summed and ungated through the applied candidate, including its applied bass extension; room is off only when the run composes a candidate without it. Follow the page prompts; use Retake or Done there. `room/arm` keeps the three `room_quick` bearings for smoke tests. A room candidate trial uses the seat set; `trial <fp> --mover arm` selects the smoke set. The commissioning stop still applies. The room layer stops at the applied speaker's trusted floor, clamped to room bounds. Use `room` for the document and trial at the same poses.
 
 ## Evidence and recovery
 

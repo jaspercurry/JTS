@@ -10,14 +10,13 @@ from typing import Any, Mapping
 
 from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.json_fields import finite_float, parse_utc_iso
-from jasper.output_topology import OutputTopology, topology_is_subless_passive_mains
+from jasper.output_topology import OutputTopology, cardioid_cabinet_channels, topology_is_subless_passive_mains
 from .driver_safety import driver_floor_issues
 from .applied_identity import applied_identity
 from .capture_status import SESSION_ENDED_STATUSES
-from .measurement_programs import PURPOSE_BASS, PURPOSE_ROOM, PURPOSE_SPEAKER
+from .measurement_programs import PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, available_programs, program
 from .wizard_client import APPLY_PATH, CAPTURE_CANCEL_PATH
 from .round_copy import round_lines, packet_lines, round_verdict
-from .measurement_programs import available_programs, program
 
 COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
 VIEW_STATUS_NOT_REQUIRED = "not_required"
@@ -27,7 +26,8 @@ COMMISSIONING_STEP_PAGE_TITLES = {
     "experiment": "First speaker experiment",
     "profile": "Apply speaker profile",
 }
-_MEASURE_LABELS = {PURPOSE_SPEAKER: "Measure the baseline", PURPOSE_ROOM: "Measure the room", PURPOSE_BASS: "Measure bass"}
+_MEASURE_LABELS = {name: f"Measure {name}" for name in RUNNABLE_PROGRAMS}
+_MEASURE_LABELS.update(speaker="Measure the baseline", room="Measure the room", rear="Measure the rear woofer")
 
 
 def round_status(capture: Mapping[str, Any]) -> list[str]:
@@ -104,21 +104,30 @@ def _next_program_action(
     recent_rounds: Mapping[str, Mapping[str, Any]],
     *,
     passive: bool = False,
+    has_rear: bool = False,
 ) -> dict[str, Any]:
     """Choose from the latest banked round per program for this applied identity."""
     from .baseline_profile import applied_layers  # lazy: baseline imports measurement
 
-    programs = (PURPOSE_ROOM, PURPOSE_BASS) if passive else (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS)
+    programs = tuple(name for name in RUNNABLE_PROGRAMS
+                     if not (name == PURPOSE_SPEAKER and passive or name == PURPOSE_REAR and not has_rear))
     baseline = {"id": "run_program", "enabled": True,
                 "program": programs[0], "label": _MEASURE_LABELS[programs[0]]}
     # Plan #5073 §2 rule (a): no round for this identity means measure the baseline first.
     if not recent_rounds:
         return baseline
     layers = applied_layers(profile)
-    program = next((program for program in programs if not layers[program]), programs[0])
+    room_at = finite_float((recent_rounds.get(PURPOSE_ROOM) or {}).get("started_at"))
+    room_stale = room_at is not None and any(
+        (finite_float((recent_rounds.get(name) or {}).get("started_at")) or 0) > room_at
+        for name in programs if name != PURPOSE_ROOM
+    )
+    program = next((name for name in programs if not layers[name]
+                    or name == PURPOSE_ROOM and room_stale), programs[0])
     round_ = recent_rounds.get(program) or {}
     applied_at = parse_utc_iso(str(identity.get("applied_at") or "")) or 0
-    if not layers[program] and (finite_float(round_.get("started_at")) or 0) > applied_at:
+    if (not layers[program] and not (program == PURPOSE_ROOM and room_stale)
+            and (finite_float(round_.get("started_at")) or 0) > applied_at):
         return {"id": "copy_prompt", "label": f"Copy the {program} prompt", "enabled": True,
                 "program": program, "round_dir": round_["round_dir"]}
     return {**baseline, "program": program, "label": _MEASURE_LABELS[program]}
@@ -180,7 +189,13 @@ def build_commissioning_view(
                    "layout" if passive else "profile")
     if profile_applied or (has_layout and passive):
         status = "applied" if profile_applied else VIEW_STATUS_NOT_REQUIRED
-        action = _next_program_action(applied_profile, applied, recent_rounds or {}, passive=passive)
+        rear = cardioid_cabinet_channels(
+            (channel.role, channel.output_variant, channel.physical_output_index)
+            for group in topology.speaker_groups for channel in group.channels
+            if channel.physical_output_index is not None
+        )
+        action = _next_program_action(applied_profile, applied, recent_rounds or {},
+                                      passive=passive, has_rear=rear is not None)
     elif not has_layout:
         status = "needs_layout"
         action = {"id": "declare_speaker", "label": "Declare the speaker", "enabled": True,

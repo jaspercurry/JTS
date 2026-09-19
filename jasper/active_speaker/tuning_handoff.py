@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.identity.reader import (
     CROSSOVER_PAGE_PATH,
@@ -73,23 +74,21 @@ _REAR_PROMPT_LINES = (
     "a person any bearing.",
 )
 
-#: The single source of each program's title, description and any extra
-#: prompt lines. The id set must equal measurement_programs.RUNNABLE_PROGRAMS
-#: (test_program_entries_cover_exactly_the_runnable_programs).
-PROGRAM_ENTRIES = (
-    {"id": "speaker", "title": "Speaker", "description": "Fit the drivers and align their crossover.",
+_PROGRAM_DETAILS = {
+    "speaker": {"title": "Speaker", "description": "Fit the drivers and align their crossover.",
      "extra_prompt_lines": ()},
-    {"id": "room", "title": "Room", "description": "Fit the listening area and keep the saved Speaker tune.",
+    "room": {"title": "Room", "description": "Fit the listening area and keep the saved Speaker tune.",
      "extra_prompt_lines": ()},
-    {"id": "bass", "title": "Bass",
+    "bass": {"title": "Bass",
      "description": "Add low bass that eases back as volume or bass demand rises. Keep Speaker and Room.",
      "extra_prompt_lines": ()},
-    {"id": "rear", "title": "Rear woofer (cardioid)", "description": (
+    "rear": {"title": "Rear woofer (cardioid)", "description": (
         "Compare rear-woofer settings at the same positions: the applied tune, the same tune "
         "with the rear muted, and one to three variants that each change one control family. "
         "Keep Speaker, Room and Bass."
      ), "extra_prompt_lines": _REAR_PROMPT_LINES},
-)
+}
+PROGRAM_ENTRIES = tuple({"id": name, **_PROGRAM_DETAILS[name]} for name in RUNNABLE_PROGRAMS)
 
 
 def _program_entry(program_id: str) -> dict[str, Any]:
@@ -127,6 +126,8 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
         (f"Latest round directory: {latest_round}" if latest_round
          else f"Latest round directory: find it with {ORIENTATION_COMMAND}"),
         "",
+        f"Run the tuning programs in order: {' → '.join(RUNNABLE_PROGRAMS)} (skip rear if there is no rear driver).",
+        "Re-run room after any upstream change.",
         f"Program: {entry['title']}",
         entry["description"],
         f"Run: sudo {_BIN}/jasper-round run --program {program_id}",

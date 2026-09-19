@@ -32,10 +32,8 @@ PURPOSE_REFERENCE = "reference"
 PURPOSE_REAR = "rear"
 PURPOSES = (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REFERENCE, PURPOSE_REAR)
 
-#: The purposes a caller may pick by name (``jasper-round run --program``):
-#: every purpose except ``reference``, which the close/spot program alone
-#: reaches (:func:`program`), never a named ``--program`` choice.
-RUNNABLE_PROGRAMS = (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR)
+#: Tuning order; reference is reached only through the close/spot program.
+RUNNABLE_PROGRAMS = (PURPOSE_SPEAKER, PURPOSE_REAR, PURPOSE_BASS, PURPOSE_ROOM)
 
 REGIME_PER_DRIVER = "per_driver"
 REGIME_SUMMED = "summed"

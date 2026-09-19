@@ -1,12 +1,16 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
+import argparse
 import re
 from dataclasses import replace
 
 from jasper.active_speaker import baseline_profile, commissioning_experiment
 from jasper.active_speaker.applied_identity import applied_identity
-from jasper.active_speaker.commissioning_coordinator import load_commissioning_view
+from jasper.active_speaker.commissioning_coordinator import _next_program_action, load_commissioning_view
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
+from jasper.active_speaker.tuning_handoff import PROGRAM_ENTRIES
+from jasper.cli.round import build_parser
 from jasper.active_speaker.crossover_v2 import round_inputs
 from jasper.cli.doctor import active_speaker as doctor
 from jasper.doctor_contract import check_row
@@ -52,6 +56,7 @@ def _applied_anchor(basename: str = "candidate_f7e9.yml", *, layers=("speaker",)
             "linearization": {"tweeter": [{"type": "Peaking"}]} if "speaker" in layers else {},
             "room_correction": {"filters": [{"gain_db": -2}]} if "room" in layers else {},
             "bass_extension": {"enabled": True} if "bass" in layers else {},
+            "rear_calibration": {"mode": "cardioid"} if "rear" in layers else {},
         },
         "blend_correction": [{"type": "Peaking"}],
         "config": {
@@ -76,15 +81,15 @@ def _applied_baseline_profile(**overrides) -> dict:
     ("ready_to_save_profile", "profile", "apply_candidate", True, None, (), ()),
     ("blocked", "profile", "apply_candidate", False, None, (), ()),
     ("applied", "profile", "run_program", True, "speaker", ("speaker",), ()),
-    ("not_required", "layout", "run_program", True, "room", (), ()),
+    ("not_required", "layout", "run_program", True, "bass", (), ()),
     ("applied", "profile", "copy_prompt", True, "speaker", (), (("speaker", 1),)),
     ("applied", "profile", "run_program", True, "speaker", (), (("speaker", 0),)),
-    ("applied", "profile", "run_program", True, "room", ("speaker",), (("speaker", 1),)),
-    ("applied", "profile", "copy_prompt", True, "room", ("speaker",), (("room", 1),)),
+    ("applied", "profile", "run_program", True, "bass", ("speaker",), (("speaker", 1),)),
+    ("applied", "profile", "copy_prompt", True, "room", ("speaker", "bass"), (("room", 1),)),
     ("applied", "profile", "run_program", True, "bass", ("speaker", "room"), (("room", 1),)),
     ("applied", "profile", "copy_prompt", True, "bass", ("speaker", "room"), (("bass", 1),)),
     ("applied", "profile", "run_program", True, "speaker", ("speaker", "room", "bass"), (("speaker", 1),)),
-    ("not_required", "layout", "copy_prompt", True, "room", (), (("room", 1),)),
+    ("not_required", "layout", "copy_prompt", True, "bass", (), (("bass", 1),)),
 ])
 def test_every_commissioning_state_has_one_next_action(status, current, action, enabled, program, layers, rounds):
     draft = _ready_design()
@@ -121,6 +126,55 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
         assert view["next_action"]["method"] == "GET"
     _assert_household_safe(view["next_action"]["label"], "action")
     assert {"driver_values", "driver_checks"} <= view.keys()
+
+
+@pytest.mark.parametrize("consumer", ["cli", "handoff", "coordinator"])
+def test_program_order_consumers(consumer):
+    if consumer == "cli":
+        commands = next(action for action in build_parser()._actions
+                        if isinstance(action, argparse._SubParsersAction))
+        order = next(action.choices for action in commands.choices["run"]._actions
+                     if action.dest == "program")
+    elif consumer == "handoff":
+        order = tuple(entry["id"] for entry in PROGRAM_ENTRIES)
+    else:
+        order = tuple(_next_program_action(
+            _applied_anchor(layers=RUNNABLE_PROGRAMS[:index]), {},
+            {"speaker": {"round_dir": "/bank/speaker", "started_at": 1}}, has_rear=True,
+        )["program"] for index in range(len(RUNNABLE_PROGRAMS)))
+    assert tuple(order) == RUNNABLE_PROGRAMS == ("speaker", "rear", "bass", "room")
+
+
+@pytest.mark.parametrize("rear", [False, True])
+@pytest.mark.parametrize("banked", [False, True])
+def test_next_program_follows_declared_rear_target(rear, banked):
+    topology = _topology()
+    if rear:
+        group, = topology.speaker_groups
+        channel = replace(group.channels[0], output_variant="rear", physical_output_index=2)
+        topology = replace(topology, speaker_groups=(replace(group, channels=(*group.channels, channel)),))
+    sequence = ("speaker", "rear", "bass", "room") if rear else ("speaker", "bass", "room")
+    for index in range(1, len(sequence)):
+        profile = _applied_anchor(layers=sequence[:index])
+        rounds = {sequence[index - 1]: {"round_dir": "/bank/previous", "started_at": 1}}
+        if banked:
+            rounds[sequence[index]] = {"round_dir": "/bank/current",
+                                       "started_at": parse_utc_iso(profile["applied_at"]) + 1}
+        action = build_commissioning_view(topology, applied_profile=profile, recent_rounds=rounds)["next_action"]
+        assert (action["id"], action["program"]) == ("copy_prompt" if banked else "run_program", sequence[index])
+
+
+@pytest.mark.parametrize("upstream", ["speaker", "rear", "bass"])
+@pytest.mark.parametrize("age", [0, 1, 2])
+@pytest.mark.parametrize("room_applied", [False, True])
+def test_room_repeats_after_newer_upstream_round(upstream, age, room_applied):
+    layers = RUNNABLE_PROGRAMS if room_applied else RUNNABLE_PROGRAMS[:-1]
+    rounds = {"room": {"round_dir": "/bank/room", "started_at": 1},
+              upstream: {"round_dir": "/bank/upstream", "started_at": age}}
+    action = _next_program_action(_applied_anchor(layers=layers), {}, rounds, has_rear=True)
+    expected = ("run_program", "room") if age > 1 else (
+        ("run_program", "speaker") if room_applied else ("copy_prompt", "room"))
+    assert (action["id"], action["program"]) == expected
 
 
 def _assert_household_safe(text: str, where: str) -> None:

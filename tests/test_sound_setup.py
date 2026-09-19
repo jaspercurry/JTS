@@ -5754,16 +5754,6 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
     assert len(prompt.split()) < 250
 
 
-def test_program_entries_cover_exactly_the_runnable_programs():
-    """One entry per runnable program: no gap, no entry for a non-runnable id."""
-    from jasper.active_speaker import tuning_handoff
-    from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
-
-    ids = [entry["id"] for entry in tuning_handoff.PROGRAM_ENTRIES]
-    assert len(ids) == len(RUNNABLE_PROGRAMS)
-    assert set(ids) == set(RUNNABLE_PROGRAMS)
-
-
 def test_tuning_handoff_prompt_for_rear_adds_the_trial_commands(monkeypatch):
     """Rear alone carries the trial/packet guidance, naming the real commands."""
     from jasper.active_speaker import tuning_handoff

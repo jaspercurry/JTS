@@ -9,13 +9,14 @@ import pytest
 
 from jasper.active_speaker import bundles
 from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 
 
 @pytest.mark.parametrize("has_room", [False, True])
 @pytest.mark.parametrize("programs,limit,hits,applied_at", [
-    (("speaker", "room", "bass"), 32, {"speaker": 36, "room": 37, "bass": 35}, None),
+    (RUNNABLE_PROGRAMS, 32, {"speaker": 36, "rear": 37, "bass": 34, "room": 35}, None),
     (("speaker",), 32, {"speaker": 37}, None),
-    (("speaker", "room", "bass"), 2, {}, None),
+    (RUNNABLE_PROGRAMS, 2, {}, None),
     (("speaker",), 32, {"speaker": 39}, "1970-01-01T00:00:37Z"),
 ])
 def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp_path, programs, limit, hits, applied_at, has_room):
@@ -57,5 +58,5 @@ def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp
     assert opens <= limit
     if applied_at is not None:
         assert opens == 2
-    if len(found) == 3:
-        assert opens <= 5
+    if len(found) == len(RUNNABLE_PROGRAMS):
+        assert opens <= len(RUNNABLE_PROGRAMS) + 2
