@@ -40,7 +40,8 @@ from jasper.log_event import log_event
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
 from jasper.output_topology import OutputTopology, measurement_target_id
 
-from .camilla_yaml import STARTUP_MUTE_GAIN_DB, output_commission_mute_name
+from .camilla_names import output_commission_mute_name
+from .camilla_yaml import STARTUP_MUTE_GAIN_DB
 from .graph_safety import (
     output_terminally_muted,
     protection_requirement_present,

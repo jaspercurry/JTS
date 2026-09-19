@@ -55,6 +55,15 @@ from jasper.output_topology import cardioid_cabinet_channels, measurement_target
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
+from .camilla_names import (
+    baseline_protection_name, bass_management_hp_name,
+    driver_baseline_gain_name, driver_baseline_limiter_name, driver_delay_name,
+    driver_limiter_name, driver_linearization_peak_name,
+    driver_linearization_shelf_name, driver_linearization_taper_name,
+    name_token, output_commission_mute_name, protective_tweeter_hp_name,
+    sub_baseline_gain_name, sub_baseline_limiter_name, sub_lowpass_name,
+    sub_startup_limiter_name,
+)
 from .driver_protection import (
     format_protection_hz,
     protection_highpass_floor_satisfied,
@@ -157,7 +166,6 @@ ACTIVE_PROGRAM_BAKE_SOURCE = (
 # here.
 DRIVER_DOMAIN_PROGRAM_CHANNELS = ("left", "right", "mono")
 
-_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
 _PROGRAM_PROTECTION_RE = re.compile(r"^as_(woofer|tweeter)_program_protection_([0-9]+)$")
 
 
@@ -236,11 +244,6 @@ def protected_neutral_program_origin(
         and all(channel_sets) and not channel_sets[0] & channel_sets[1]
         and set.union(*channel_sets) == set(range(output_count))
     )
-
-
-def _name_token(value: str) -> str:
-    token = _SAFE_NAME_RE.sub("_", value).strip("_").lower()
-    return token or "unnamed"
 
 
 def _yaml_string(value: str, field_name: str) -> str:
@@ -899,43 +902,19 @@ def _crossover_filter_name(
     highpass: bool,
 ) -> str:
     suffix = "hp" if highpass else "lp"
-    return f"as_{_name_token(role)}_{_name_token(region.id)}_{suffix}"
-
-
-def _driver_delay_name(role: str) -> str:
-    return f"as_{_name_token(role)}_delay"
+    return f"as_{name_token(role)}_{name_token(region.id)}_{suffix}"
 
 
 def _driver_mute_name(role: str) -> str:
-    return f"as_{_name_token(role)}_startup_mute"
-
-
-def _driver_limiter_name(role: str) -> str:
-    return f"as_{_name_token(role)}_startup_limiter"
-
-
-def _driver_baseline_gain_name(role: str) -> str:
-    return f"as_{_name_token(role)}_baseline_gain"
-
-
-def _driver_baseline_limiter_name(role: str) -> str:
-    return f"as_{_name_token(role)}_baseline_limiter"
+    return f"as_{name_token(role)}_startup_mute"
 
 
 def _room_peq_name(index: int) -> str:
     return f"room_peq_{index}"
 
 
-def _protective_tweeter_hp_name(role: str) -> str:
-    return f"as_{_name_token(role)}_protective_hp"
-
-
 def _program_protection_name(role: str, index: int) -> str:
-    return f"as_{_name_token(role)}_program_protection_{index}"
-
-
-def baseline_protection_name(role: str, index: int, highpass: bool) -> str:
-    return f"as_{_name_token(role)}_declared_protection_{index}_{'hp' if highpass else 'lp'}"
+    return f"as_{name_token(role)}_program_protection_{index}"
 
 
 def _add_baseline_protection(
@@ -978,55 +957,16 @@ def _add_baseline_protection(
             for step in graph["pipeline"]:
                 if step["type"] == "Filter" and set(step["channels"]) == channels:
                     names = step["names"]
-                    if _driver_baseline_limiter_name(role) in names:
+                    if driver_baseline_limiter_name(role) in names:
                         original = f"names: [{', '.join(names)}]"
-                        names.insert(names.index(_driver_delay_name(role)), name)
+                        names.insert(names.index(driver_delay_name(role)), name)
                         pipeline_yaml = pipeline_yaml.replace(original, f"names: [{', '.join(names)}]")
             added += 1
     return filter_yaml, pipeline_yaml
 
 
-# --- local-subwoofer + bass-management filter names ---------------------------
-# The sub output carries an LR4 low-pass (band-limit) + non-positive baseline
-# gain + soft-clip limiter (excursion); the mains' lowest driver carries the
-# complementary LR4 high-pass (bass management).
-
-
-def _sub_lowpass_name() -> str:
-    return "as_sub_lowpass"
-
-
-def _sub_baseline_gain_name() -> str:
-    return "as_sub_baseline_gain"
-
-
-def _sub_baseline_limiter_name() -> str:
-    return "as_sub_baseline_limiter"
-
-
 def _sub_startup_mute_name() -> str:
     return "as_sub_startup_mute"
-
-
-def _sub_startup_limiter_name() -> str:
-    return "as_sub_startup_limiter"
-
-
-def _bass_management_hp_name(role: str) -> str:
-    """The complementary mains bass-management high-pass on the lowest driver."""
-    return f"as_{_name_token(role)}_bass_mgmt_hp"
-
-
-# --- public filter-name vocabulary -------------------------------------------
-# The emitter owns the spelling of every filter name it writes; the verification
-# side imports THESE aliases rather than a literal, so a rename cannot silently
-# desync a safety verifier from the graph it inspects.
-driver_mute_name = _driver_mute_name
-driver_limiter_name = _driver_limiter_name
-driver_delay_name = _driver_delay_name
-driver_baseline_gain_name = _driver_baseline_gain_name
-driver_baseline_limiter_name = _driver_baseline_limiter_name
-protective_tweeter_hp_name = _protective_tweeter_hp_name
 
 
 def crossover_highpass_for_role(
@@ -1044,14 +984,6 @@ def crossover_highpass_for_role(
     return None
 
 
-# Local-sub + bass-management aliases (same emitter-owned-spelling contract).
-sub_lowpass_name = _sub_lowpass_name
-sub_baseline_gain_name = _sub_baseline_gain_name
-sub_baseline_limiter_name = _sub_baseline_limiter_name
-sub_startup_mute_name = _sub_startup_mute_name
-sub_startup_limiter_name = _sub_startup_limiter_name
-bass_management_hp_name = _bass_management_hp_name
-
 # The inter-speaker channel-select mixer name, owned by the shared leaf
 # (jasper.camilla_emit) and re-exported so the active-speaker verifier has one
 # import point.
@@ -1068,18 +1000,18 @@ def _protective_tweeter_hp_frequency(
 def _driver_filter_chain(preset: ActiveSpeakerPreset, role: str) -> list[str]:
     names: list[str] = []
     if _bass_management_active(preset, role):
-        names.append(_bass_management_hp_name(role))
+        names.append(bass_management_hp_name(role))
     protective_freq = _protective_tweeter_hp_frequency(preset, role)
     if protective_freq is not None:
-        names.append(_protective_tweeter_hp_name(role))
+        names.append(protective_tweeter_hp_name(role))
     for region in _ordered_regions(preset):
         if region.lower_driver == role:
             names.append(_crossover_filter_name(role, region, highpass=False))
         if region.upper_driver == role:
             names.append(_crossover_filter_name(role, region, highpass=True))
-    names.append(_driver_delay_name(role))
+    names.append(driver_delay_name(role))
     names.append(_driver_mute_name(role))
-    names.append(_driver_limiter_name(role))
+    names.append(driver_limiter_name(role))
     return names
 
 
@@ -1102,7 +1034,7 @@ def _driver_baseline_filter_chain(
     # high-passed at the sub crossover corner before its own chain. The sub
     # low-pass at the same corner is the complementary lower half.
     if _bass_management_active(preset, role):
-        names.append(_bass_management_hp_name(role))
+        names.append(bass_management_hp_name(role))
     for region in _ordered_regions(preset):
         if region.lower_driver == role:
             names.append(_crossover_filter_name(role, region, highpass=False))
@@ -1113,9 +1045,9 @@ def _driver_baseline_filter_chain(
     names.extend(
         _driver_linearization_chain_names(linearization or {}, role)
     )
-    names.append(_driver_delay_name(role))
-    names.append(_driver_baseline_gain_name(role))
-    names.append(_driver_baseline_limiter_name(role))
+    names.append(driver_delay_name(role))
+    names.append(driver_baseline_gain_name(role))
+    names.append(driver_baseline_limiter_name(role))
     return names
 
 
@@ -1124,9 +1056,9 @@ def _sub_baseline_filter_chain(
     """The local-sub baseline lane: band-limit (LR4 low-pass), then the same
     per-driver protection a main gets (non-positive gain + soft-clip limiter)."""
     return [
-        _sub_lowpass_name(),
-        _sub_baseline_gain_name(),
-        _sub_baseline_limiter_name(),
+        sub_lowpass_name(),
+        sub_baseline_gain_name(),
+        sub_baseline_limiter_name(),
     ]
 
 
@@ -1156,19 +1088,19 @@ def _emit_filter_definitions(
         protective_freq = _protective_tweeter_hp_frequency(preset, role)
         if protective_freq is not None:
             lines.extend(emit_linkwitz_riley(
-                _protective_tweeter_hp_name(role),
+                protective_tweeter_hp_name(role),
                 highpass=True,
                 freq_hz=protective_freq,
                 order=4,
             ))
-        lines.extend(_emit_delay_filter(_driver_delay_name(role)))
+        lines.extend(_emit_delay_filter(driver_delay_name(role)))
         lines.extend(emit_gain_filter(
             _driver_mute_name(role),
             STARTUP_MUTE_GAIN_DB,
             mute=True,
         ))
         lines.extend(_emit_limiter_filter(
-            _driver_limiter_name(role),
+            driver_limiter_name(role),
             clip_limit_db=limiter_clip_limit_db,
             soft_clip=True,
         ))
@@ -1268,21 +1200,6 @@ LINEARIZATION_BIQUAD_TYPES = _LINEARIZATION_BIQUAD_TYPES
 # ``SHELF_Q`` for the formula and the upstream test that pins it.
 
 
-def _driver_linearization_shelf_name(role: str) -> str:
-    return f"as_{_name_token(role)}_linearization_shelf"
-
-
-def _driver_linearization_peak_name(role: str, index: int) -> str:
-    return f"as_{_name_token(role)}_linearization_peak_{index}"
-
-
-def _driver_linearization_taper_name(role: str) -> str:
-    # The CD-horn stage's optional TRAILING Highshelf taper. A distinct name
-    # from the leading shelf so a Lowshelf-led backbone and its taper can
-    # coexist in one chain without a duplicate filter name.
-    return f"as_{_name_token(role)}_linearization_taper"
-
-
 def _linearization_slot(
     index: int, count: int, filters: Sequence[Mapping[str, Any]],
 ) -> str:
@@ -1308,12 +1225,6 @@ def _linearization_slot(
         return "taper"
     return "peak"
 
-
-# Public aliases: the runtime-safety verifier re-proves the linearization stage
-# against the EMITTED graph text and must spell these names identically.
-driver_linearization_shelf_name = _driver_linearization_shelf_name
-driver_linearization_peak_name = _driver_linearization_peak_name
-driver_linearization_taper_name = _driver_linearization_taper_name
 
 # Public alias: a gate outside this module that admits a shelf must answer
 # "would the emitter accept this list" before it does, so the per-driver
@@ -1425,12 +1336,6 @@ def _blend_correction_name(index: int) -> str:
     return f"as_blend_{index}"
 
 
-# Public alias, matching the linearization name helpers above: the runtime
-# safety verifier re-proves this stage against the EMITTED graph text and must
-# spell the names identically rather than re-deriving the format.
-blend_correction_name = _blend_correction_name
-
-
 def _validated_blend_correction(
     blend_correction: Sequence[Mapping[str, Any]] | None,
 ) -> list[dict[str, Any]]:
@@ -1517,12 +1422,12 @@ def _driver_linearization_chain_names(
     for i in range(count):
         slot = _linearization_slot(i, count, filters)
         if slot == "shelf":
-            names.append(_driver_linearization_shelf_name(role))
+            names.append(driver_linearization_shelf_name(role))
         elif slot == "taper":
-            names.append(_driver_linearization_taper_name(role))
+            names.append(driver_linearization_taper_name(role))
         else:
             peak_index += 1
-            names.append(_driver_linearization_peak_name(role, peak_index))
+            names.append(driver_linearization_peak_name(role, peak_index))
     return names
 
 
@@ -1549,14 +1454,14 @@ def _emit_driver_linearization_definitions(
             slot = _linearization_slot(i, count, filters)
             if slot == "shelf":
                 spec = FilterSpec(
-                    name=_driver_linearization_shelf_name(role),
+                    name=driver_linearization_shelf_name(role),
                     biquad_type=entry["biquad_type"],
                     freq=entry["freq"],
                     gain=entry["gain"],
                 )
             elif slot == "taper":
                 spec = FilterSpec(
-                    name=_driver_linearization_taper_name(role),
+                    name=driver_linearization_taper_name(role),
                     biquad_type="Highshelf",
                     freq=entry["freq"],
                     gain=entry["gain"],
@@ -1564,7 +1469,7 @@ def _emit_driver_linearization_definitions(
             else:
                 peak_index += 1
                 spec = FilterSpec(
-                    name=_driver_linearization_peak_name(role, peak_index),
+                    name=driver_linearization_peak_name(role, peak_index),
                     biquad_type="Peaking",
                     freq=entry["freq"],
                     gain=entry["gain"],
@@ -1615,14 +1520,14 @@ def _emit_baseline_driver_definitions(
         delay_ms = _correction_value(corrections, role, "delay_ms", 0.0)
         gain_db = _correction_value(corrections, role, "gain_db", 0.0)
         inverted = _correction_bool(corrections, role, "inverted")
-        lines.extend(_emit_delay_filter(_driver_delay_name(role), delay_ms=delay_ms))
+        lines.extend(_emit_delay_filter(driver_delay_name(role), delay_ms=delay_ms))
         lines.extend(emit_gain_filter(
-            _driver_baseline_gain_name(role),
+            driver_baseline_gain_name(role),
             gain_db,
             inverted=inverted,
         ))
         lines.extend(_emit_limiter_filter(
-            _driver_baseline_limiter_name(role),
+            driver_baseline_limiter_name(role),
             clip_limit_db=limiter_clip_limit_db,
             soft_clip=True,
         ))
@@ -1646,7 +1551,7 @@ def _emit_bass_management_hp_definition(preset: ActiveSpeakerPreset) -> list[str
     if sub is None:
         return []
     return emit_linkwitz_riley(
-        _bass_management_hp_name(lowest_driver_role(preset.way_count)),
+        bass_management_hp_name(lowest_driver_role(preset.way_count)),
         highpass=True,
         freq_hz=sub.crossover_fc_hz,
         order=SUB_CROSSOVER_ORDER,
@@ -1665,13 +1570,13 @@ def _emit_sub_startup_definitions(
     limiter are still present so an un-muting path arms a protected output."""
     return [
         *emit_linkwitz_riley(
-            _sub_lowpass_name(),
+            sub_lowpass_name(),
             highpass=False,
             freq_hz=crossover_fc_hz,
             order=SUB_CROSSOVER_ORDER,
         ),
         *_emit_limiter_filter(
-            _sub_startup_limiter_name(),
+            sub_startup_limiter_name(),
             clip_limit_db=limiter_clip_limit_db,
             soft_clip=True,
         ),
@@ -1682,8 +1587,8 @@ def _emit_sub_startup_definitions(
 def _sub_startup_filter_chain() -> list[str]:
     """The local-sub startup lane: band-limit, limiter, then the hard mute."""
     return [
-        _sub_lowpass_name(),
-        _sub_startup_limiter_name(),
+        sub_lowpass_name(),
+        sub_startup_limiter_name(),
         _sub_startup_mute_name(),
     ]
 
@@ -1701,13 +1606,13 @@ def _emit_sub_commissioning_definitions(
     excursion limiter stay so the output is protected when the mute is lifted."""
     return [
         *emit_linkwitz_riley(
-            _sub_lowpass_name(),
+            sub_lowpass_name(),
             highpass=False,
             freq_hz=crossover_fc_hz,
             order=SUB_CROSSOVER_ORDER,
         ),
         *_emit_limiter_filter(
-            _sub_startup_limiter_name(),
+            sub_startup_limiter_name(),
             clip_limit_db=limiter_clip_limit_db,
             soft_clip=True,
         ),
@@ -1721,8 +1626,8 @@ def _sub_commissioning_filter_chain() -> list[str]:
     exactly one physical output is excited through the real graph; the low-pass
     and limiter stay so the output is protected when that mute is lifted."""
     return [
-        _sub_lowpass_name(),
-        _sub_startup_limiter_name(),
+        sub_lowpass_name(),
+        sub_startup_limiter_name(),
     ]
 
 
@@ -1740,14 +1645,14 @@ def _emit_sub_baseline_definitions(
     """
     return [
         *emit_linkwitz_riley(
-            _sub_lowpass_name(),
+            sub_lowpass_name(),
             highpass=False,
             freq_hz=crossover_fc_hz,
             order=SUB_CROSSOVER_ORDER,
         ),
-        *emit_gain_filter(_sub_baseline_gain_name(), 0.0),
+        *emit_gain_filter(sub_baseline_gain_name(), 0.0),
         *_emit_limiter_filter(
-            _sub_baseline_limiter_name(),
+            sub_baseline_limiter_name(),
             clip_limit_db=limiter_clip_limit_db,
             soft_clip=True,
         ),
@@ -2254,15 +2159,6 @@ pipeline:
     return yaml
 
 
-def output_commission_mute_name(index: int) -> str:
-    """The per-physical-output commission-mute filter name for ``index``.
-
-    Public because the protected-staging software guard references these by
-    index to prove a driver's output is muted: the emitter owns the spelling.
-    """
-    return f"as_out{index}_commission_mute"
-
-
 def emit_active_speaker_parked_config(
     *,
     output_count: int,
@@ -2466,16 +2362,16 @@ def _commissioning_driver_filter_chain(
     """
     if protection_sections_by_role is not None:
         return [
-            *([_driver_delay_name(role)] if role in measurement_delay_roles else []),
+            *([driver_delay_name(role)] if role in measurement_delay_roles else []),
             *(
                 _program_protection_name(role, index)
                 for index, _section in enumerate(protection_sections_by_role[role])
             ),
-            _driver_limiter_name(role),
+            driver_limiter_name(role),
         ]
     excluded = {_driver_mute_name(role)}
     if filter_mode == APPLIED_RESPONSE_FILTER_MODE:
-        excluded.add(_protective_tweeter_hp_name(role))
+        excluded.add(protective_tweeter_hp_name(role))
     return [name for name in _driver_filter_chain(preset, role) if name not in excluded]
 
 
@@ -2528,7 +2424,7 @@ def _emit_commissioning_filter_definitions(
                     f"measurement delay for {role!r} is not finite: {delay_us!r}"
                 )
             lines.extend(_emit_delay_filter(
-                _driver_delay_name(role), delay_ms=value / 1000.0,
+                driver_delay_name(role), delay_ms=value / 1000.0,
             ))
     for region in (() if protection_sections_by_role is not None else _ordered_regions(preset)):
         lines.extend(emit_linkwitz_riley(
@@ -2559,15 +2455,15 @@ def _emit_commissioning_filter_definitions(
         protective_freq = _protective_tweeter_hp_frequency(preset, role)
         if filter_mode == COMMISSIONING_FILTER_MODE and protective_freq is not None:
             lines.extend(emit_linkwitz_riley(
-                _protective_tweeter_hp_name(role),
+                protective_tweeter_hp_name(role),
                 highpass=True,
                 freq_hz=protective_freq,
                 order=4,
             ))
         if protection_sections_by_role is None:
-            lines.extend(_emit_delay_filter(_driver_delay_name(role)))
+            lines.extend(_emit_delay_filter(driver_delay_name(role)))
         lines.extend(_emit_limiter_filter(
-            _driver_limiter_name(role),
+            driver_limiter_name(role),
             clip_limit_db=limiter_clip_limit_db,
             soft_clip=True,
         ))
@@ -3173,7 +3069,7 @@ def _assert_measurement_delays_bound(
         try:
             prove_static_delay_binding(
                 parsed,
-                delay_filter_name=_driver_delay_name(role),
+                delay_filter_name=driver_delay_name(role),
                 channels=channels,
                 delay_us=float(delay_us),
             )
@@ -3230,7 +3126,7 @@ def _assert_program_graph_proven(
         view,
         channels=tweeter_set,
         hp_name=tweeter_hp_name,
-        limiter_name=_driver_limiter_name("tweeter"),
+        limiter_name=driver_limiter_name("tweeter"),
         limiter_clip_ceiling_db=STARTUP_LIMITER_CLIP_LIMIT_DB,
     )
     if unprotected or not highpass_ok or not guard_ok:

@@ -40,7 +40,7 @@ from .camilla_yaml import (
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
 )
-from .graph_evidence import driver_limiter_name
+from .camilla_names import driver_limiter_name
 from .safe_playback import (
     arm_safe_playback_session,
     load_safe_playback_state,

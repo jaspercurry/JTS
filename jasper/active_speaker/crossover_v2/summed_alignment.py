@@ -15,7 +15,7 @@ from typing import Any, Callable, Mapping, cast
 import numpy as np
 
 from jasper.active_speaker.graph_transfer import GraphTransferError, filter_transfer, mixer_mapping
-from jasper.active_speaker.camilla_yaml import driver_baseline_gain_name, driver_delay_name
+from jasper.active_speaker.camilla_names import driver_baseline_gain_name, driver_delay_name
 from jasper.active_speaker.graph_safety import view_from_camilla_dict
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
 from jasper.audio_measurement.program import ExcitationProgram

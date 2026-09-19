@@ -17,7 +17,7 @@ from typing import Any
 
 import yaml
 
-from jasper.active_speaker.camilla_yaml import driver_baseline_limiter_name
+from jasper.active_speaker.camilla_names import driver_baseline_limiter_name
 from jasper.active_speaker.graph_safety import view_from_emitted_text
 
 ALLOWED_FILTER_TYPES: frozenset[str] = frozenset(
