@@ -19,7 +19,7 @@ from ..candidate_bank import CandidateBankRefusal, find_banked_candidate
 from ..design_draft import load_design_draft
 from ..measured_crossover_candidate import MeasuredCrossoverCandidate
 from ..measurement_emit import (
-    MeasurementGraphProfile, MeasurementGraphRefused, TuningGraphScope, compile_tuning_graph,
+    MeasurementGraphProfile, TuningGraphScope, compile_tuning_graph,
     emit_measurement_graph,
 )
 from ..restore_wait import resilient_restore
@@ -305,7 +305,7 @@ def bind_measurement_graph(
     def emit_scoped(scope: str, candidate_id: str, branch_channels: Mapping[str, int]) -> str:
         selected = None
         if scope in CANDIDATE_SCOPES:
-            selected = (reference if candidate_id == reference.fingerprint else
+            selected = (reference if reference is not None and candidate_id == reference.fingerprint else
                         candidate if candidate is not None else find_banked_candidate(candidate_id).candidate)
         return compile_tuning_graph(
             profile,
@@ -325,8 +325,11 @@ def bind_measurement_graph(
         else:
             reference = candidate
         reference_yaml = emit_scoped("candidate", reference.fingerprint, {})
-    except (CandidateBankRefusal, OSError, ValueError) as exc:
-        raise MeasurementGraphRefused("measurement_baseline_unavailable", str(exc)) from exc
+    except (CandidateBankRefusal, OSError, ValueError):
+        if candidate is not None:
+            raise
+        reference = reference_yaml = None
+        log_event(logger, "active_speaker.level_reference", result="unavailable")
 
     graph = MeasurementSessionGraph(
         level_reference_yaml=reference_yaml,

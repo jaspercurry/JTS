@@ -47,6 +47,9 @@ from .journey import (
 #: exactly-at-cap plan by one ulp.
 GAIN_CAP_BACKOFF_DB = 0.01
 
+# Without a graph-to-anchor gain reference, blind pilots keep a conservative cut.
+CHECK_PROBE_BACKOFF_DB = 12.0
+
 #: The two pilot levels are this far apart (matches the CHECK behavioral check).
 PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[0])
 
@@ -110,7 +113,7 @@ class NoProgramForPhaseError(RuntimeError):
 def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_dbfs: float | None = None, *,
                            safety_profile: Mapping[str, Any], role_targets: Mapping[str, str]) -> ExcitationProgram:
     excitation = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)
-    backoff = max(0.0, max((gain for role, gain in spec.scope_gains_db.items()
+    backoff = max(0.0, max((gain for role, gain in (spec.scope_gains_db or {}).items()
                            if not spec.branch_target_ids or role in spec.branch_target_ids), default=0.0))
     if stimulus_dbfs is not None:
         backoff += BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs
@@ -339,10 +342,11 @@ def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Map
                      stimulus_dbfs: float | None = None, *, safety_profile: Mapping[str, Any],
                      role_targets: Mapping[str, str]) -> ExcitationProgram:
     if spec.program_phase == PHASE_CHECK:
-        program = excitation.check_program()
+        fallback = CHECK_PROBE_BACKOFF_DB if spec.scope_gains_db is None else 0.0
+        program = excitation.check_program(extra_backoff_db=fallback)
         peak = max(segment.gain_db for segment in program.stimulus_segments())
         return excitation.check_program(
-            extra_backoff_db=0.0 if stimulus_dbfs is None else peak - stimulus_dbfs,
+            extra_backoff_db=fallback + (0.0 if stimulus_dbfs is None else max(0.0, peak - stimulus_dbfs)),
             scope_gains_db=spec.scope_gains_db)
     if spec.graph_scope == "drivers":
         gains = gain_plan_db

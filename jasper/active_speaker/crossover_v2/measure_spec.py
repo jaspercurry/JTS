@@ -188,7 +188,7 @@ class MeasureSpec:
     #: capture, which is what keeps their graphs byte-identical.
     level_matched: bool = False
     graph_scope: str = GRAPH_SCOPE_DRIVERS
-    scope_gains_db: Mapping[str, float] = field(default_factory=dict)
+    scope_gains_db: Mapping[str, float] | None = field(default_factory=dict)
     program_phase: str = ""
     stimulus: Mapping[str, Any] | None = None
     #: The two measurement target ids a ``candidate_branches`` take excites, in

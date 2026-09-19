@@ -192,7 +192,7 @@ def bind_program_composer(
     declared_sensitivities: Mapping[str, float] | None = None,
     before_play: Callable[[Any, Any, Any, str], Awaitable[None]] | None = None,
     graph_yaml: Callable[[], str],
-    level_reference_yaml: str,
+    level_reference_yaml: str | None,
     roles: Sequence[RoleBand],
     graph_evidence_for_spec: Callable[[Any], Mapping[str, Any]] | None = None,
 ) -> Compose:
@@ -220,7 +220,7 @@ def bind_program_composer(
         from ..measurement_level import scope_gains_db  # lazy: numerical analysis at composition
 
         try:
-            gains = ({} if spec.graph_scope == "candidate" else scope_gains_db(
+            gains = (None if level_reference_yaml is None else {} if spec.graph_scope == "candidate" else scope_gains_db(
                 expected_graph, level_reference_yaml, roles, topology=topology))
         except BranchPeakError as exc:
             raise MeasurementGraphRefused("measurement_scope_gain_unavailable", str(exc)) from exc

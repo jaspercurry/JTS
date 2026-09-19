@@ -149,6 +149,24 @@ def test_the_verify_program_is_the_one_that_shipped():
     assert ex.verify_program().program_id == GOLDEN_DEEP_CAP["verify"]
 
 
+@pytest.mark.parametrize("phase,scope,stimulus,expected", [
+    ("check", "drivers", None, "10176b8954f70c90c8a8203a45fcbfbdd18d3046a76d6ef11aa315d350632470"),
+    ("check", "drivers", -30.0, "10176b8954f70c90c8a8203a45fcbfbdd18d3046a76d6ef11aa315d350632470"),
+    ("check", "drivers", -60.0, "1334611ae7010a92bdfa550c3a90399d0927fb53d4cc4d5b3d82d056521f72f6"),
+    ("measure", "drivers", None, GOLDEN_UNANNOUNCED["measure"]),
+    ("verify", "timing", None, GOLDEN_DEEP_CAP["verify"]),
+    ("cloud_verify", "timing", None, GOLDEN_UNANNOUNCED["cloud"]),
+    ("verify", "candidate_branches", None, "b137f0fed1bed00e698d009782a39c5bad9de8096d5e7b2007ba1c4ab3fed7b3"),
+])
+def test_without_a_level_reference_programs_keep_their_shipped_identity(phase, scope, stimulus, expected):
+    spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope, scope_gains_db=None,
+                       candidate_id="trial" if scope != "drivers" else "",
+                       branch_target_ids=("woofer", "tweeter") if scope == "candidate_branches" else ())
+    program = programs.program_for_spec(spec, _excitation(CAPS), GAIN_PLAN_DB, stimulus,
+                                        safety_profile={}, role_targets={})
+    assert program.program_id == expected
+
+
 @pytest.mark.parametrize("caps", [CAPS, {"woofer": 0.0, "tweeter": 0.0}])
 @pytest.mark.parametrize("extra_backoff_db", [-3.0, 0.0, 6.0])
 def test_check_pilots_do_not_exceed_the_summed_pilot_pair(caps, extra_backoff_db):

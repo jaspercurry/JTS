@@ -499,7 +499,7 @@ def _bind_compose(
         gains = None
         if spec.graph_scope == "drivers" and spec.program_phase != PHASE_CHECK:
             peak = BASE_STIMULUS_PEAK_DBFS if stimulus_dbfs is None else stimulus_dbfs
-            gains = {role.role: peak - max(0.0, spec.scope_gains_db.get(role.role, 0.0)) for role in excitation.roles}
+            gains = {role.role: peak - max(0.0, (spec.scope_gains_db or {}).get(role.role, 0.0)) for role in excitation.roles}
             stimulus_dbfs = None
         return compose_program(spec, excitation, gains,
                                stimulus_dbfs, safety_profile=box.safety_profile, role_targets=box.role_targets)

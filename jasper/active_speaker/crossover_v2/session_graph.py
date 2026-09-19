@@ -106,7 +106,7 @@ class MeasurementSessionGraph:
         self,
         *,
         emit: EmitYaml,
-        level_reference_yaml: str,
+        level_reference_yaml: str | None,
         cam_factory: CamFactory,
         writer_lock: WriterLock,
         confirm_live: ConfirmLive,

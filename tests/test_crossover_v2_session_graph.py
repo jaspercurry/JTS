@@ -756,8 +756,9 @@ def test_an_unnameable_entry_graph_makes_no_comparison_at_all(tmp_path):
     assert graph.comparability_boundary is False
 
 
-@pytest.mark.parametrize("state", ["explicit", "absent", "missing_path", "stale_path", "bank_missing", "undeclared"])
-async def test_level_reference_is_read_only_and_resolved_before_graph_install(tmp_path, monkeypatch, state):
+@pytest.mark.parametrize("state", ["explicit", "invalid_explicit", "absent", "missing_path", "stale_path", "bank_missing", "undeclared"])
+async def test_level_reference_is_read_only_and_resolved_before_graph_install(tmp_path, monkeypatch, caplog, state):
+    caplog.set_level(logging.INFO)
     profile = _profile()
     draft = standard_design_draft(profile.topology, tweeter_gain_db=-21.3)
     declared = candidate_parts.candidate_from_design_draft(profile.topology, draft)
@@ -783,36 +784,44 @@ async def test_level_reference_is_read_only_and_resolved_before_graph_install(tm
     monkeypatch.setattr(candidate_bank, "publish_authored_candidate", publish)
     monkeypatch.setattr(candidate_parts, "publish_authored_candidate", publish)
     monkeypatch.setattr(candidate_parts, "_migrate_applied_candidate", migrate)
-    if state == "undeclared":
+    if state == "invalid_explicit":
         with pytest.raises(MeasurementGraphRefused) as refused:
-            door.bind_measurement_graph(profile, camilla_factory=cam, config_dir=tmp_path)
-        assert refused.value.code == "measurement_baseline_unavailable"
-        assert refused.value.__cause__.issues[0]["code"] == "crossover_preview_not_ready"
+            door.bind_measurement_graph(profile, camilla_factory=cam, config_dir=tmp_path,
+                                        candidate=replace(candidate, source_preset=_profile().preset))
+        assert refused.value.code == "measurement_candidate_speaker_mismatch"
+        assert not event_records(caplog, "active_speaker.level_reference")
+        read.assert_not_called()
+        read_draft.assert_not_called()
         cam.assert_not_called()
-    else:
-        graph = door.bind_measurement_graph(profile, camilla_factory=cam, config_dir=tmp_path,
-                                            candidate=candidate if state == "explicit" else None)
-        expected = declared if state in {"absent", "bank_missing"} else candidate
-        reference = compile_tuning_graph(profile, expected)
-        assert graph.level_reference_yaml == reference
-        cam.assert_not_called()
-        graph.select_scope("drivers", "")
-        roles = tuple(_roles())
-        excitation = SessionExcitation(roles, {role.role: 0 for role in roles}, -16.7, 2500, {})
-        gains = scope_gains_db(graph.graph_yaml(), reference, roles, topology=profile.topology)
-        compose = bind_program_composer(
-            program_for_spec=lambda spec, stimulus: program_for_spec(
-                spec, excitation, None, stimulus, safety_profile={}, role_targets={}),
-            store=SimpleNamespace(bundle_dir=tmp_path, identify_artifact=lambda _: None),
-            capture_session_id="check", cam_factory=cam, config_dir=str(tmp_path),
-            topology=profile.topology, safety_profile={}, role_targets={}, roles=roles,
-            graph_yaml=graph.graph_yaml, level_reference_yaml=graph.level_reference_yaml)
-        read.return_value = read_draft.return_value = None
-        composed = await compose(spec=MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="check"),
-                                 level_db=-16.7)
-        for before, after in zip(excitation.check_program().stimulus_segments(), composed.program.stimulus_segments(), strict=True):
-            assert after.gain_db == pytest.approx(before.gain_db - max(0, gains[before.role]))
-        assert graph.level_reference_yaml == reference
+        return
+    graph = door.bind_measurement_graph(profile, camilla_factory=cam, config_dir=tmp_path,
+                                        candidate=candidate if state == "explicit" else None)
+    expected = declared if state in {"absent", "bank_missing"} else candidate
+    reference = None if state == "undeclared" else compile_tuning_graph(profile, expected)
+    assert graph.level_reference_yaml == reference
+    cam.assert_not_called()
+    graph.select_scope("drivers", "")
+    roles = tuple(_roles())
+    excitation = SessionExcitation(roles, {role.role: 0 for role in roles}, -16.7, 2500, {})
+    gains = ({role.role: 12.0 for role in roles} if reference is None else
+             scope_gains_db(graph.graph_yaml(), reference, roles, topology=profile.topology))
+    compose = bind_program_composer(
+        program_for_spec=lambda spec, stimulus: program_for_spec(
+            spec, excitation, None, stimulus, safety_profile={}, role_targets={}),
+        store=SimpleNamespace(bundle_dir=tmp_path, identify_artifact=lambda _: None),
+        capture_session_id="check", cam_factory=cam, config_dir=str(tmp_path),
+        topology=profile.topology, safety_profile={}, role_targets={}, roles=roles,
+        graph_yaml=graph.graph_yaml, level_reference_yaml=graph.level_reference_yaml)
+    read.return_value = read_draft.return_value = None
+    composed = await compose(spec=MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="check"),
+                             level_db=-16.7)
+    for before, after in zip(excitation.check_program().stimulus_segments(), composed.program.stimulus_segments(), strict=True):
+        assert after.gain_db == pytest.approx(before.gain_db - max(0, gains[before.role]))
+    assert graph.level_reference_yaml == reference
+    events = event_records(caplog, "active_speaker.level_reference")
+    assert len(events) == (1 if state == "undeclared" else 0)
+    if events:
+        assert event_fields(caplog, "active_speaker.level_reference")["result"] == "unavailable"
     assert read.call_count == (0 if state == "explicit" else 1)
     assert read_draft.call_count == (1 if state in {"absent", "bank_missing", "undeclared"} else 0)
     publish.assert_not_called()
