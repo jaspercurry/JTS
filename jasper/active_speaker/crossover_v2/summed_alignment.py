@@ -14,7 +14,7 @@ from typing import Any, Callable, Mapping, cast
 
 import numpy as np
 
-from jasper.active_speaker.branch_peak import BranchPeakError, mixer_mapping, filter_transfer
+from jasper.active_speaker.branch_peak import BranchPeakError, filter_transfer, mixer_mapping
 from jasper.active_speaker.camilla_yaml import driver_baseline_gain_name, driver_delay_name
 from jasper.active_speaker.graph_safety import view_from_camilla_dict
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
@@ -55,7 +55,8 @@ def reference_from_graph(
         for step in graph.get("pipeline", ()):
             if step["type"] != "Mixer":
                 continue
-            _, mapping = mixer_mapping(mixer := graph["mixers"][step["name"]], mixer["channels"]["in"], step["name"])
+            mixer = graph["mixers"][step["name"]]
+            _, mapping = mixer_mapping(mixer, mixer["channels"]["in"], step["name"])
             if any(gain.real < 0 for dest, sources in mapping
                    if dest in output_channels.values() for _, gain in sources):
                 return _unreadable("mixer_polarity")
