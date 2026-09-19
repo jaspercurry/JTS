@@ -44,6 +44,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.angle_capture import request_for_program
 from jasper.active_speaker.measurement_programs import program as measurement_program
 from jasper.active_speaker.plan_run import prepare_plan_captures
@@ -60,8 +61,7 @@ from jasper.active_speaker.crossover_v2.programs import (
     courtesy_prelude_for_phase,
     program_for_phase,
 )
-from jasper.audio_measurement.program import KIND_COURTESY_TONE
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.program import KIND_COURTESY_TONE, RoleBand
 from jasper.web.correction_run_host import compose_plan_program
 from tests.test_active_speaker_program_admission import _profile_and_targets
 
@@ -73,7 +73,6 @@ from tests.crossover_v2_fixtures import (
     FakeSeams,
     _preset,
     _roles,
-    _roles_way1,
 )
 
 #: The solved per-driver gains a CHECK pass would hand MEASURE.
@@ -523,11 +522,14 @@ def test_summed_sweep_fits_the_tightest_role_duration(limit, band, requested_s):
 def test_prepared_summed_captures_use_the_stop_purpose_band(purpose, size):
     layout = measurement_program(purpose, size)
     request = request_for_program(layout, mover=layout.mover or "human")
-    captures = prepare_plan_captures(request, roles_bands=_roles())
-    excitation = _excitation(CAPS, {"woofer": 4.0, "tweeter": 4.0})
+    _, safety, targets = _profile_and_targets(woofer_floor=30, woofer_upper=4000,
+                                             max_sweep_duration_s=4)
+    roles = tuple(RoleBand(role, channel, resolve_driver_excitation_ceilings(
+        safety, fingerprint, program_admission=True)[0])
+        for channel, (role, fingerprint) in enumerate(targets.items()))
+    captures = prepare_plan_captures(request, roles_bands=roles)
+    excitation = replace(_excitation(CAPS, {"woofer": 4.0, "tweeter": 4.0}), roles=roles)
     host = SimpleNamespace(_excitation=excitation)
-    _, safety, targets = _profile_and_targets(woofer_floor=20, woofer_upper=4000,
-                                               max_sweep_duration_s=4)
     context = SimpleNamespace(safety_profile=safety, role_targets=targets)
     for capture in captures:
         spec = capture.spec
@@ -536,7 +538,7 @@ def test_prepared_summed_captures_use_the_stop_purpose_band(purpose, size):
         program = compose_plan_program(host, spec, None, context=context)
         sweeps = [s for s in program.stimulus_segments() if s.kind == "summed_sweep"]
         stop_purpose = capture.stop.purpose or purpose
-        expected = {"speaker": (150, 20000), "room": (150, 20000), "bass": (20, 1100)}[stop_purpose]
+        expected = {"speaker": (20, 20000), "room": (20, 20000), "bass": (30, 1100)}[stop_purpose]
         assert len(sweeps) == (3 if purpose == "bass" else 1)
         assert all((sweep.f1_hz, sweep.f2_hz) == expected for sweep in sweeps)
         assert spec.sweep_band_hz == (expected if stop_purpose == "room" else ())
@@ -606,8 +608,12 @@ def test_per_driver_measure_keeps_declared_bands_with_a_room_session():
 
 
 @pytest.mark.parametrize("floor", [20.0, 30.0, 45.0])
-def test_summed_room_band_respects_declared_band(floor):
-    roles = [replace(_roles_way1()[0], band=FrequencyBand(floor, 18000.0))]
+def test_summed_room_band_reads_resolved_driver_bands(floor):
+    _, safety, targets = _profile_and_targets(woofer_floor=floor, woofer_upper=4000)
+    next(target for target in safety["targets"] if target["role"] == "tweeter")["hard_excitation_band_hz"][1] = 18000
+    roles = [RoleBand(role, channel, resolve_driver_excitation_ceilings(
+        safety, fingerprint, program_admission=True)[0])
+        for channel, (role, fingerprint) in enumerate(targets.items())]
     assert room_sweep_band_hz(
         roles, (CloudPositionPrompt("room", purpose="room"),)
-    ) == (floor, 18000.0)
+    ) == (20.0, 20000.0)

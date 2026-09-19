@@ -820,7 +820,6 @@ def readmit_summed_program_from_wav(
         boost_db = bass_boost_db if output in bass_channels else 0.0
         input_caps.append(cap - boost_db)
         requirements = declared[fingerprint]["required_protection_filters"]
-        protected_floor_hz = float(declared[fingerprint]["hard_excitation_band_hz"][0])
         for requirement in requirements:
             if not protection_requirement_present(
                 view, output_index=output, allowed_channels=same_role_outputs, requirement=requirement,
@@ -833,9 +832,9 @@ def readmit_summed_program_from_wav(
             if branches and segment.channel != branch_channel:
                 continue
             low, high = segment_emitted_band_hz(segment)
-            low_ok = low >= MIN_DRIVER_TEST_FREQUENCY_HZ and (low >= protected_floor_hz or any(
+            low_ok = low >= MIN_DRIVER_TEST_FREQUENCY_HZ and (low >= band.lower_hz or any(
                 requirement["kind"] == "highpass"
-                and requirement["cutoff_hz"] >= protected_floor_hz
+                and requirement["cutoff_hz"] >= band.lower_hz
                 for requirement in requirements
             ))
             high_ok = high <= band.upper_hz or any(
@@ -851,16 +850,25 @@ def readmit_summed_program_from_wav(
                 },
             )
             peak = float(segment.gain_db) + session_volume_db + boost_db
-            allowed = (
-                low_ok and high_ok and peak <= cap
-                and segment.n_samples / program.sample_rate_hz <= duration
-            )
-            reasons = () if allowed else (ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS.value,)
+            failed = tuple(code for code, passed in (
+                ("segment_band_low", low_ok), ("segment_band_high", high_ok),
+                ("segment_level", peak <= cap),
+                ("segment_duration", segment.n_samples / program.sample_rate_hz <= duration),
+            ) if not passed)
+            allowed = not failed
+            reasons = (ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS.value, *failed) if failed else ()
             assert segment.channel is not None
             segments.append(SegmentAdmission(
                 segment.segment_id, target_id, segment.channel, (low, high), peak, allowed, reasons,
             ))
             if not allowed:
+                log_event(
+                    logger, "active_speaker.program_admission_segment", level=logging.WARNING,
+                    segment_id=segment.segment_id, role=target_id, band_hz=(low, high),
+                    peak_dbfs=peak, cap_dbfs=cap,
+                    duration_s=segment.n_samples / program.sample_rate_hz, duration_limit_s=duration,
+                    failed=",".join(code.rsplit("_", 1)[-1] for code in failed),
+                )
                 refusals.append(ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS)
     channel_facts = []
     for channel in range(program.channels):

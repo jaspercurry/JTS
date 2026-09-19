@@ -827,7 +827,7 @@ def build_measure_program(
     channels = 1 + max(rb.channel for rb in roles)
 
     def _band(rb: RoleBand) -> tuple[float, float]:
-        f1, f2 = _intersect_band(rb.band, MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ)
+        f1, f2 = _intersect_band(rb.band, rb.band.lower_hz, MEASURE_SWEEP_F_HI_HZ)
         # Defense in depth: MEASURE_SWEEP_F_HI_HZ < Nyquist today (#1668).
         nyquist_hz = PROGRAM_SAMPLE_RATE_HZ / 2.0
         if not f2 < nyquist_hz:

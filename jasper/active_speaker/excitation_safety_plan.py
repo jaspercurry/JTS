@@ -28,6 +28,7 @@ from jasper.audio_measurement.excitation_admission import (
     ExcitationRequest,
     FrequencyBand,
 )
+from jasper.audio_measurement.program import VERIFY_F_HI_HZ
 from jasper.json_fields import finite_float
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
@@ -548,8 +549,8 @@ def resolve_driver_excitation_ceilings(
     Shared math with no authority of its own: admission re-derives and
     re-validates these same ceilings against the actual requested plan.
 
-    ``program_admission`` marks the PROVEN protective-HP path (operator ruling,
-    2026-07-19). Callers whose excitation rides a graph carrying the driver's
+    ``program_admission`` marks the proven protective-HP path. Callers whose
+    excitation rides a graph carrying the driver's
     crossover high-pass by construction pass ``True``, so a high-frequency
     driver's ceiling derives from a low-frequency sibling's declared cap and the
     two declared sensitivities rather than sitting at the naked-tone class
@@ -558,20 +559,12 @@ def resolve_driver_excitation_ceilings(
     ``declared_sensitivities`` is optional; without it the proven-HP path keeps
     the class-default ceiling and logs the skip.
 
-    Band-edge asymmetry (#1668): the UPPER permitted edge is
-    ``min(MAX_DRIVER_TEST_FREQUENCY_HZ, hard_band[1])`` — ``measurement_band[1]``
-    is deliberately EXCLUDED, being analysis-window metadata rather than a
-    protection boundary.
-
-    Low-side asymmetry, PROVEN-HP HIGH-FREQUENCY ROLES ONLY (#1654): the lower
-    edge is normally ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0],
-    measurement_band[0])`` and stays that for every low-frequency role and every
-    naked-tone caller, where ``measurement_band[0]`` is a real EXCURSION hedge.
-    On the proven-HP path a high-frequency role reaches the sub-window region
-    ATTENUATED by the crossover high-pass, so the floor becomes
-    ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0])`` — otherwise a candidate
-    below the analysis floor is scored on a mask excluding its own handoff. Only
-    the DERIVED excitation floor moves; ``measurement_band`` is untouched.
+    Low-frequency roles start at ``MIN_DRIVER_TEST_FREQUENCY_HZ``; other roles
+    start at ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0], measurement_band[0])``,
+    excluding ``measurement_band[0]`` only for proven-HP high-frequency roles.
+    High-frequency roles end at ``VERIFY_F_HI_HZ``; other roles end at
+    ``min(MAX_DRIVER_TEST_FREQUENCY_HZ, hard_band[1])``. The declared analysis
+    window stays unchanged. See ADR-0328.
     """
 
     target = _target_for_request(safety_profile, target_fingerprint)
@@ -594,17 +587,12 @@ def resolve_driver_excitation_ceilings(
         raise ExcitationSafetyPlanError(
             ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
         )
-    # measurement_band[0] binds the lower edge for every role and path EXCEPT a
-    # high-frequency role on the proven-HP path — see "Low-side asymmetry" in
-    # this function's docstring.
-    lower_edges = [MIN_DRIVER_TEST_FREQUENCY_HZ, float(hard_band[0])]
-    if not (program_admission and role in HIGH_FREQUENCY_ROLES):
-        lower_edges.append(float(measurement_band[0]))
-    lower = max(lower_edges)
-    if lower < float(measurement_band[0]):
-        # Named so a triage can see the driver was deliberately excited BELOW
-        # its declared analysis window, and to what. Logged only when the
-        # widening actually moves the floor.
+    lower = MIN_DRIVER_TEST_FREQUENCY_HZ
+    if role not in LOW_FREQUENCY_ROLES:
+        lower = max(lower, float(hard_band[0]))
+        if not (program_admission and role in HIGH_FREQUENCY_ROLES):
+            lower = max(lower, float(measurement_band[0]))
+    if role in HIGH_FREQUENCY_ROLES and lower < float(measurement_band[0]):
         log_event(
             logger,
             "active_speaker.excitation_floor_widened_to_hard_band",
@@ -613,12 +601,8 @@ def resolve_driver_excitation_ceilings(
             declared_measurement_floor_hz=f"{float(measurement_band[0]):.1f}",
             excitation_floor_hz=f"{lower:.1f}",
         )
-    # measurement_band[1] is deliberately NOT part of this min(): the hard band
-    # and global ceiling are the only upper-edge protection boundaries.
-    upper = min(
-        MAX_DRIVER_TEST_FREQUENCY_HZ,
-        float(hard_band[1]),
-    )
+    upper = (VERIFY_F_HI_HZ if role in HIGH_FREQUENCY_ROLES
+             else min(MAX_DRIVER_TEST_FREQUENCY_HZ, float(hard_band[1])))
     permitted_band = FrequencyBand(lower, upper)
     maximum_peak, level_provenance = declared_level_ceiling_dbfs(target)
     # Supersede-the-seed rule (ADR-0227 §9): only on the proven-HP path, only for

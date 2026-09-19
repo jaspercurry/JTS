@@ -270,12 +270,13 @@ class SessionExcitation:
         leading_pilots: bool = True,
     ) -> ExcitationProgram:
         gain = self._summed_gain(extra_backoff_db)
+        band = measurement_band_hz(self.roles)
         return build_verify_program(
             self.fc_hz,
             roles=self.roles,
             sweep_duration_limits_s=self.sweep_duration_limits_s,
-            measurement_band_hz=measurement_band_hz(self.roles),
-            sweep_band_hz=self.summed_sweep_band_hz,
+            measurement_band_hz=band,
+            sweep_band_hz=self.summed_sweep_band_hz or band,
             gain_db=gain,
             downstream_gain_db=self.session_volume_db,
             leading_pilot_gains_db=self.pilot_gains(gain) if leading_pilots else None,

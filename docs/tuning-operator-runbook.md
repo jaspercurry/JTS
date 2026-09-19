@@ -17,7 +17,7 @@ Use `jasper-round reset` to reset all tuning while keeping the measured level-ma
 
 ## Speaker
 
-`speaker/mark` takes two measurements at the design mark. Driver caps still bind the fader. Use `speaker-fit`, `repeat`, and `sweep`; measure the composed full graph before apply.
+`speaker/mark` takes two measurements at the design mark; summed measurement sweeps cover 20 Hz–20 kHz from the resolved driver bands (ADR-0328). Driver caps still bind the fader. Use `speaker-fit`, `repeat`, and `sweep`; measure the composed full graph before apply.
 
 ## Room
 
