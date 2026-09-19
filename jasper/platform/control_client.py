@@ -271,6 +271,12 @@ def post(
     )
 
 
+def get_volume(
+    *, base_url: str = DEFAULT_BASE_URL, timeout: float = DEFAULT_TIMEOUT
+) -> ControlResponse:
+    return get("/volume", base_url=base_url, timeout=timeout)
+
+
 def get_state(
     *, base_url: str = DEFAULT_BASE_URL, timeout: float = DEFAULT_TIMEOUT
 ) -> dict:

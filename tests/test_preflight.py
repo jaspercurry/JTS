@@ -4,6 +4,7 @@
 
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -18,6 +19,7 @@ from jasper.active_speaker.seat_level_reference import AnchorFacts
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.program import FrequencyBand, RoleBand
 from jasper.output_topology import measurement_target_id
+from jasper.platform import control_client
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_rear_output_foundation import _rear_pair
 from tests.test_crossover_v2_tuning_scope import (
@@ -36,6 +38,31 @@ def ready_facts(plan, **changes):
         commissioning_stop_db_spl=85.0, mover=plan.mover, applied_bass_extension={},
         program_ids_for=lambda _plan: ("fixture-sweep",),
     ), **changes)
+
+
+@pytest.mark.parametrize("muted", [True, False, None])
+def test_preflight_output_mute(monkeypatch, muted):
+    response = control_client.ControlResponse(200, b'{"muted": true, "percent": 0}' if muted else b'{"muted": false, "percent": 35}')
+    read = Mock(return_value=response, side_effect=control_client.ControlError() if muted is None else None)
+    monkeypatch.setattr(control_client, "get", read)
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
+    ready = ready_facts(plan)
+    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
+    context = SimpleNamespace(topology=None, roles_bands=(), role_targets={},
+        preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
+    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    report = preflight(plan, replace(ready, output_volume=facts.output_volume))
+    read.assert_called_once_with("/volume", base_url=control_client.DEFAULT_BASE_URL, timeout=control_client.DEFAULT_TIMEOUT)
+    assert report.blocking is (muted is True)
+    if muted:
+        issue, = report.issues
+        assert issue.code == "measurement_output_muted" and issue.blocking
+        assert issue.evidence == {"muted": True, "household_percent": 0}
+        assert issue.next_action["id"] == "raise_volume"
+        assert REASON_REGISTRY[issue.code].retry_budget == 0
+    else:
+        assert report.issues == ()
 
 
 @pytest.mark.parametrize("layout,name,size", [

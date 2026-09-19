@@ -86,6 +86,7 @@ REASON_PROGRAM_PLAN_SHAPE_INVALID = "program_plan_shape_invalid"
 # Terminal: the re-assert has already been tried and could not be confirmed.
 # NOT ``volume_unresolved``, whose subject is the RESTORE path.
 REASON_MEASUREMENT_VOLUME_DRIFT = "measurement_volume_drift"
+REASON_MEASUREMENT_OUTPUT_MUTED = "measurement_output_muted"
 REASON_MEASUREMENT_GRAPH_UNAVAILABLE = "measurement_graph_unavailable"
 # The program PLAYED; the offline evidence math refused. §4.2 divides the
 # emitted measurement protection back out of the capture, and on a
@@ -705,6 +706,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "measuring, so it stopped rather than record a measurement it cannot "
         "trust. Try measuring again; if it keeps happening, restart the "
         "speaker from the system page.",
+    ),
+    REASON_MEASUREMENT_OUTPUT_MUTED: ReasonSpec(
+        REASON_MEASUREMENT_OUTPUT_MUTED, TEMPLATE_HARD_STOP, 0, "",
+        "The speaker is muted. Raise the speaker volume above zero, then measure again.",
+        next_action={"id": "raise_volume", "label": "Raise speaker volume above zero", "href": "/sound/"},
     ),
     REASON_PROTECTION_SWEEP_TOO_LOW: ReasonSpec(
         REASON_PROTECTION_SWEEP_TOO_LOW, TEMPLATE_HARD_STOP, 0, "",

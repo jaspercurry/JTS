@@ -31,6 +31,7 @@ CLIENT_PATHS = [
     "/state",
     "/system/snapshot",
     "/healthz",
+    "/volume",
     "/volume/adjust",
     "/volume/set",
     "/cue/play",

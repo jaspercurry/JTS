@@ -3,6 +3,10 @@
 
 """Classify measurement failures for HTTP hosts and banked runs."""
 
+import logging
+
+from jasper.log_event import log_event
+from jasper.platform import control_client
 from .crossover_v2.capture_plan import PlanShapeError
 from .crossover_v2.contracts import CrossoverV2FlowError
 from .crossover_v2.program_transaction import (
@@ -21,6 +25,22 @@ from .session_volume_plan import SessionVolumePlanError
 from .volume_latch import MeasurementFaderDrift
 from jasper.audio_measurement.program_analysis import ConfiguredPathConditioningError
 from jasper.audio_measurement.wired_capture import WiredSplCeilingExceeded
+
+
+def read_output_volume() -> dict[str, float | bool]:
+    try:
+        response = control_client.get_volume()
+        state = response.json() if response.ok else None
+    except (control_client.ControlError, ValueError):
+        return {}
+    if not isinstance(state, dict) or not isinstance(state.get("muted"), bool):
+        return {}
+    evidence = {"muted": state["muted"]}
+    if isinstance(state.get("percent"), (int, float)):
+        evidence["household_percent"] = state["percent"]
+    if evidence["muted"]:
+        log_event(logging.getLogger(__name__), "active_speaker.measurement_output_muted", **evidence)
+    return evidence
 
 
 def classify_program_failure(exc: BaseException) -> tuple[str, tuple[str, ...]] | None:

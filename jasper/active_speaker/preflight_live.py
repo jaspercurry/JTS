@@ -24,6 +24,7 @@ from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 from .measured_crossover_candidate import MeasuredCrossoverCandidate
 from .preflight import PreflightFacts, PreflightIssue
+from .program_failure import read_output_volume
 from .run_levels import prepare_level_captures
 from .seat_level_reference import AnchorFacts, load_seat_level_reference
 
@@ -96,6 +97,7 @@ def read_preflight_facts(
         return tuple(programs)
 
     return PreflightFacts(
+        output_volume=read_output_volume(),
         candidates=candidates, mic_present=device is not None,
         mic_identified=bool(device is not None and device.model_key),
         anchor=anchor, summed_pilot_band_hz=pilot_band,
