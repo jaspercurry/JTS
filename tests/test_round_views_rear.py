@@ -546,6 +546,8 @@ def test_a_pair_round_packets_each_woofer_alone_and_the_trust_number(
     assert [band["front_db"] for band in row["bands"]] == pytest.approx(
         [0.0] * len(row["bands"]), abs=1e-6)
     assert (row["superposition_residual_db"], row["reason"]) == (pytest.approx(0.0, abs=0.01), "")
+    assert [band["superposition_residual_db"] for band in row["bands"]] == pytest.approx(
+        [0.0] * len(row["bands"]), abs=0.01)
     assert row["arrival_gap"]["ms"] == pytest.approx(_PAIR_GAP_MS, abs=0.05)
     assert (row["arrival_gap"]["n_repeats"], row["arrival_gap"]["at_edge"]) == (2, False)
     assert row["arrival_gap"]["repeat_spread_us"] == pytest.approx(0.0, abs=1.0)

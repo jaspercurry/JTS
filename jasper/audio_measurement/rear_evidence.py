@@ -419,6 +419,8 @@ def pair_band_levels(
               (("front_db", front_tf), ("rear_db", rear_tf), ("pair_sum_db", pair_tf))}
     return [{"band_hz": [band[0], band[1]],
              **{name: values[index] for name, values in levels.items()},
+             "superposition_residual_db": superposition_residual_db(
+                 freqs, front_tf=front_tf, rear_tf=rear_tf, pair_tf=pair_tf, band_hz=band),
              "level_gap_db": levels["rear_db"][index] - levels["front_db"][index]}
             for index, band in enumerate(bands)]
 

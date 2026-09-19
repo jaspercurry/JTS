@@ -366,6 +366,20 @@ def test_the_trust_number_is_the_error_the_played_sum_carries(error_db):
     assert residual == pytest.approx(abs(error_db), abs=1e-6)
 
 
+@pytest.mark.parametrize("bins_per_band", [2, 3, 12])
+def test_pair_band_residuals_disclose_local_error_and_sparse_bins(bins_per_band):
+    freqs = np.concatenate([np.linspace(24.0, 26.0, bins_per_band),
+                            np.linspace(30.0, 33.0, bins_per_band)])
+    transfers = {"front_tf": np.ones_like(freqs), "rear_tf": np.ones_like(freqs),
+                 "pair_tf": np.repeat([2.0, 2.0 * 10.0 ** (3.0 / 20.0)], bins_per_band)}
+
+    rows = rear_evidence.pair_band_levels(freqs, coverage_hz=(22.0, 36.0), **transfers)
+
+    assert len(rows) == 2
+    assert [row["superposition_residual_db"] for row in rows] == (
+        [None, None] if bins_per_band < 3 else pytest.approx([0.0, 3.0], abs=0.05))
+
+
 def test_a_band_too_narrow_to_read_answers_empty_rather_than_a_figure():
     """Each pair figure has its own band gate, and each says nothing rather
     than reading one: no whole third-octave band, fewer than three bins for the
