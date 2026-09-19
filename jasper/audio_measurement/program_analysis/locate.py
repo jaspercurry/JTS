@@ -222,6 +222,7 @@ def _resolve_anchor(
         witness, candidates, capture, sample_rate, arrival, stimuli,
     )
     witnesses_tried = 1
+    # CHECK's pilot_tweeter_hi is 1.3003 s after its witness vs 1.3048 s pilot spacing: 4.5 ms within ±30 ms can confirm the wrong anchor.
     if ambiguous and is_branch_program(program):
         for alternate in program.segments:
             if (alternate == witness or alternate.kind not in STIMULUS_KINDS

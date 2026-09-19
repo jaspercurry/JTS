@@ -33,6 +33,7 @@ from jasper.active_speaker.program_playback import ProgramPlaybackRefused
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramForStimulus, ProgramPlaybackTransaction
 from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
+from jasper.active_speaker.round_copy import PLACE_MICROPHONE
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
@@ -84,6 +85,7 @@ class AnsweredGate(PositionGate):
     def __init__(self):
         super().__init__()
         self.grants = []
+        self.pending = []
         self.progress = []
 
     def publish(self, progress):
@@ -95,6 +97,7 @@ class AnsweredGate(PositionGate):
             super().gate(index, attempt, entry)
         except CaptureBeginDeferred:
             pending = self.published()["pending"]
+            self.pending.append(pending)
             held = (pending["index"], pending["attempt"])
             self.grants.append(held)
             self.release(*held)
@@ -284,6 +287,8 @@ def test_fix_and_retake_needs_a_fresh_same_pose_grant(monkeypatch):
     gate = AnsweredGate()
     result, _ = asyncio.run(_run_gated(_walk([0], ("fp-a", "fp-b")), gate=gate))
     assert gate.grants == [(1, 1), (1, 2)]
+    assert REASON_REGISTRY[REASON_ANCHOR_AMBIGUOUS].message in gate.pending[1]["prompt"]["body"]
+    assert PLACE_MICROPHONE in gate.pending[1]["prompt"]["body"]
     assert result.status == "complete"
     assert any(row["fault"] == REASON_ANCHOR_AMBIGUOUS and row["next_action"] == "fix_and_retake" for row in gate.progress)
 
