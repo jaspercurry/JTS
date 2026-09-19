@@ -577,6 +577,9 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_ANCHOR_AMBIGUOUS: _retriable_reason(
         REASON_ANCHOR_AMBIGUOUS, TEMPLATE_FIX_AND_RETRY, 1,
+        # About the RECORDING and not the speaker: naming a cause in the
+        # speaker would be an over-claim. Re-recording clears it, because the
+        # anchor collapse is a property of one take.
         RetryableReasonCopy(
             "JTS couldn't line that recording up with the test tones it played.",
             "Try that measurement again.",

@@ -811,13 +811,12 @@ def test_the_impossible_delta_alone_turns_that_verdict_into_a_retake(monkeypatch
     the household to check its wiring, even when the anchor's own correlation
     was confident -- not just near-tied.
 
-    The conductor ruling on this PR's rung 2 (routing `delta_implausible`
-    through `anchor_ambiguous` only while `pilot_snr_ok` is `True`) changes
-    WHICH retake code this exact fixture gets: this incident's own woofer
-    pilot reads `pilot_snr_ok=False` (the mis-anchored window landed on a
-    quieter stretch than the true pilot), so it now resolves to `snr_floor`,
-    not `anchor_ambiguous` -- the snr-floor rung's copy is actionable and a
-    retake in a quieter room also cures the mis-anchoring, so it wins.
+    `delta_implausible` answers `pilot_step_implausible` only while
+    `pilot_snr_ok` is `True`. This incident's own woofer pilot reads
+    `pilot_snr_ok=False` (the mis-anchored window landed on a quieter stretch
+    than the true pilot), so it resolves to `snr_floor` -- the snr-floor
+    rung's copy is actionable and a retake in a quieter room also cures the
+    mis-anchoring, so it wins.
     """
     _use_full_band_locators(monkeypatch)
     prog = _incident_program()
@@ -830,11 +829,9 @@ def test_the_impossible_delta_alone_turns_that_verdict_into_a_retake(monkeypatch
     kind = cd.assess(replace(analysis, anchor_ambiguous=False,
                              anchor=replace(analysis.anchor, ambiguous=False)), phase="check").fault
     assert analysis.pilot_snr_ok is False, (
-        "premise: this is the pilot_snr_ok=False shape the ruling repoints -- "
-        "see test_an_impossible_delta_is_asked_before_the_wiring_verdict_"
-        "even_with_a_confident_anchor (tests/test_crossover_v2_capture_"
-        "dispatch.py) for the pilot_snr_ok=True shape that still resolves "
-        "to anchor_ambiguous"
+        "premise: this is the pilot_snr_ok=False shape -- test_integrity_verdict "
+        "(tests/test_crossover_v2_capture_dispatch.py) pins the pilot_snr_ok=True "
+        "shape, which resolves to pilot_step_implausible"
     )
     assert kind == "snr_floor"
 
