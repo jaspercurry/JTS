@@ -29,7 +29,7 @@ from jasper.audio_measurement.wired_capture import WiredSplCeilingExceeded
 
 def read_output_volume() -> dict[str, float | bool]:
     try:
-        response = control_client.get("/volume")
+        response = control_client.get_volume()
         state = response.json() if response.ok else None
     except (control_client.ControlError, ValueError):
         return {}

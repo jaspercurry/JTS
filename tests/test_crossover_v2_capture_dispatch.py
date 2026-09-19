@@ -16,6 +16,7 @@ from jasper.active_speaker.alignment_evidence import round_alignment
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.run_manifest import RunManifest
+from jasper.active_speaker.program_failure import read_output_volume
 from jasper.audio_measurement.wired_capture import WiredCaptureAnswer
 from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
 from jasper.audio_measurement import snr_policy
@@ -38,6 +39,13 @@ PHASES = ("check", "measure", "verify")
 GAINS = {"woofer": -30.0, "tweeter": -30.0}
 
 
+@pytest.fixture(autouse=True)
+def output_volume_unknown(monkeypatch):
+    read = Mock(return_value={})
+    monkeypatch.setattr(cd, "read_output_volume", read)
+    return read
+
+
 def _analysis(**changes):
     return replace(ProgramAnalysis(
         phase="measure", program_id="take", locations=(_loc("sweep_w"),),
@@ -53,11 +61,12 @@ def _analysis(**changes):
 async def test_not_heard_take_stops_only_when_output_is_muted(monkeypatch, muted):
     response = control_client.ControlResponse(200, b'{"muted": true, "percent": 0}' if muted else b'{"muted": false, "percent": 35}')
     read = Mock(return_value=response, side_effect=control_client.ControlError() if muted is None else None)
-    monkeypatch.setattr(control_client, "get", read)
-    analyses = iter((_analysis(locations=()), _analysis()))
+    monkeypatch.setattr(control_client, "get_volume", read)
+    monkeypatch.setattr(cd, "read_output_volume", read_output_volume)
+    analyses = iter((_analysis(locations=(), pilot_snr_ok=False), _analysis()))
     gate = AnsweredGate()
     result, fakes = await _run_gated(_walk([0]), gate=gate, analyze=lambda *_: next(analyses))
-    read.assert_called_once_with("/volume")
+    read.assert_called_once_with()
     assert len(fakes.play.rungs) == (1 if muted else 2)
     assert result.reason == ("measurement_output_muted" if muted else "")
     fault = next(row for row in gate.progress if row.get("fault"))
@@ -65,6 +74,33 @@ async def test_not_heard_take_stops_only_when_output_is_muted(monkeypatch, muted
         ("measurement_output_muted", "stop") if muted else ("locate_failed", "fix_and_retake"))
     if muted:
         assert len(gate.grants) == 1
+        assert all(take["screens"] == [] for take in result.takes)
+
+
+@pytest.mark.parametrize("muted", [True, False, None])
+def test_check_run_host_reads_mute_once(monkeypatch, muted):
+    read = Mock(return_value={} if muted is None else {"muted": muted})
+    monkeypatch.setattr(cd, "read_output_volume", read)
+    conductor = _conductor(FakeSeams(check=lambda _: _analysis(locations=(), pilot_snr_ok=False)),
+                           index_phase_map={1: "check"})
+    manifest = RunManifest("check", SimpleNamespace(bank=AsyncMock(return_value="manifest")))
+    manifest.begin({"index": 1, "candidate_id": "base", "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}},
+                   attempt=1, pose_index=0)
+    records = SimpleNamespace(enrich=None, after_bank=None)
+    analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
+    spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="check")
+    program = compose_plan_program(conductor, spec, None, context=plan_context())
+    record = {"take_id": "take-1", "index": 1, "attempt": 1, "phase": "check", "program": program.to_dict()}
+    records.enrich(WiredCaptureAnswer(wav=b"", program=program.to_dict()), record)
+    records.after_bank(record, record["take_id"])
+    verdict = assessor(analyze(record, record["take_id"]), phase="check", program=program)
+    read.assert_called_once_with()
+    assert (verdict.fault, verdict.next) == (
+        ("measurement_output_muted", "stop") if muted else ("locate_failed", "fix_and_retake"))
+    if muted:
+        assert verdict.screens == []
+    else:
+        assert [screen["code"] for screen in verdict.screens] == ["pilot_level_collapse"]
 
 
 @pytest.mark.parametrize("phase", PHASES)

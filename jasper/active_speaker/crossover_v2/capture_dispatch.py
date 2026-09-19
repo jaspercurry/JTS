@@ -79,13 +79,15 @@ def assess(
     prior_verdict: TakeVerdict | None = None, **kwargs: Any,
 ) -> TakeVerdict:
     verdict = prior_verdict if prior_verdict is not None else _assess_recording(analysis, **kwargs)
-    if verdict.fault == reasons.REASON_LOCATE_FAILED:
+    # Removal condition: see the output mute guard in preflight.py.
+    if prior_verdict is None and verdict.fault == reasons.REASON_LOCATE_FAILED:
         output_volume = read_output_volume()
         if output_volume.get("muted") is True:
             verdict = replace(verdict, fault=reasons.REASON_MEASUREMENT_OUTPUT_MUTED,
                               next="stop", charge="none", next_gain_db=None,
                               evidence={**verdict.evidence, **output_volume})
-    verdict = replace(verdict, screens=pilot_screens(analysis, program=kwargs.get("program")))
+    verdict = replace(verdict, screens=[] if verdict.fault == reasons.REASON_MEASUREMENT_OUTPUT_MUTED
+                      else pilot_screens(analysis, program=kwargs.get("program")))
     if level_verdict is None:
         return verdict
     verdict = replace(verdict, evidence={**verdict.evidence, **level_verdict.evidence})

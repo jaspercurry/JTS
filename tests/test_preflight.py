@@ -53,7 +53,7 @@ def test_preflight_output_mute(monkeypatch, muted):
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
     report = preflight(plan, replace(ready, output_volume=facts.output_volume))
-    read.assert_called_once_with("/volume")
+    read.assert_called_once_with("/volume", base_url=control_client.DEFAULT_BASE_URL, timeout=control_client.DEFAULT_TIMEOUT)
     assert report.blocking is (muted is True)
     if muted:
         issue, = report.issues
