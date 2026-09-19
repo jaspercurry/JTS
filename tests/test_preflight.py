@@ -282,13 +282,13 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     assert preflight(plan, facts).blocking is (descriptor is None)
 
 
-@pytest.mark.parametrize("level_db,has_ambient,blocked", [(-24.809, True, False), (-34.809, True, True), (-34.809, False, False)])
+@pytest.mark.parametrize("level_db,has_ambient,disclosed", [(-24.809, True, False), (-34.809, True, True), (-34.809, False, False)])
 @pytest.mark.parametrize("fc_hz,band,ambient_row,floor", [
     (2000, (200, 800), (160, 350, -68.4), -43.4),
     (625, (200, 250), (160, 350, -68.4), -43.4),
     (None, (550, 800), (350, 1000, -71.3), -46.3),
 ])
-def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambient, blocked, fc_hz, band, ambient_row, floor):
+def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambient, disclosed, fc_hz, band, ambient_row, floor):
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), level=LevelPolicy(level_db=level_db))
     anchor = ready_facts(plan).anchor
     sensitivity = replace(anchor.sensitivity, sens_factor_db=-12.07)
@@ -308,11 +308,11 @@ def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambie
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
     assert facts.summed_pilot_band_hz == (band if has_ambient else None)
     outcome = preflight(plan, facts)
-    assert outcome.blocking is blocked
+    assert not outcome.blocking
     assert preflight(outcome.plan, facts) == outcome
-    if blocked:
+    if disclosed:
         issue, = outcome.to_dict()["issues"]
-        assert issue["code"] == "run_level_pilots_under_ambient"
+        assert (issue["code"], issue["blocking"]) == ("run_level_pilots_under_ambient", False)
         assert issue["next_action"]
         lo, hi, dbfs = ambient_row
         assert issue["evidence"] == {
@@ -334,10 +334,9 @@ def test_pilot_floor_only_checks_programs_with_pilots(level_db, disclosed, purpo
         "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": -60},
                                        {"band_hz": [200, 800], "level_dbfs": -60}]}}))
     report = preflight(plan, facts)
-    assert report.blocking is (disclosed and "room" in purposes)
-    assert len(report.issues) == int(disclosed and "room" in purposes)
+    assert (report.blocking, len(report.issues)) == (False, int(disclosed and "room" in purposes))
     for issue in report.issues:
-        assert (issue.code, issue.blocking) == ("run_level_pilots_under_ambient", True)
+        assert (issue.code, issue.blocking) == ("run_level_pilots_under_ambient", False)
         assert issue.evidence == {
             "level_db": -38, "predicted_pilot_capture_dbfs": pytest.approx(-47.9897, abs=0.01),
             "pilot_band_hz": (200, 800),

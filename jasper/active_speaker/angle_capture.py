@@ -107,7 +107,6 @@ __all__ = [
     "LevelPolicy",
     "BASE_CANDIDATE",
     "candidate_identity",
-    "WALK_REPEATS_UNSUPPORTED_YET",
     "WALK_SCHEMA_VERSION_UNSUPPORTED",
     "AngleStop",
     "AngleCaptureRequest",
@@ -135,7 +134,6 @@ __all__ = [
     "WALK_COMMISSIONING_STOP_UNSET",
     "WALK_STIMULUS_NOT_ACCEPTED",
     "WALK_OVER_CAPTURE_CAPACITY",
-    "WALK_LATERAL_GROUP_ALREADY_PLANNED",
     "WALK_STOP_NO_LONGER_VALID",
     "WALK_TEMPLATE_NOT_ACCEPTED",
     "WALK_DELAY_NOT_ACCEPTED",
@@ -965,8 +963,6 @@ WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
 
 WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
-# Remove when W1-13 hosts run_plan in the wizard.
-WALK_REPEATS_UNSUPPORTED_YET = "walk_repeats_unsupported_yet"
 
 #: The walk states an SPL ceiling and no microphone sensitivity resolves, so
 #: nothing could turn a recording into dB SPL to watch it. Decided beside the
@@ -990,10 +986,6 @@ WALK_STIMULUS_NOT_ACCEPTED = "walk_stimulus_not_accepted"
 
 #: The composed session would need more capture blob indexes than exist.
 WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
-
-#: The session already plans a lateral group. Raised by the CALLER; this
-#: module does not read session flags.
-WALK_LATERAL_GROUP_ALREADY_PLANNED = "walk_lateral_group_already_planned"
 
 #: A banked stop no longer satisfies this module's own contract (a
 #: hand-edited angle, an unknown regime or mover). The spool re-raises
@@ -1037,12 +1029,10 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_OVER_MOVER_ENVELOPE,
     WALK_LEVEL_POLICY_INVALID,
     WALK_SCHEMA_VERSION_UNSUPPORTED,
-    WALK_REPEATS_UNSUPPORTED_YET,
     WALK_SPL_CALIBRATION_REQUIRED,
     WALK_COMMISSIONING_STOP_UNSET,
     WALK_STIMULUS_NOT_ACCEPTED,
     WALK_OVER_CAPTURE_CAPACITY,
-    WALK_LATERAL_GROUP_ALREADY_PLANNED,
     WALK_STOP_NO_LONGER_VALID,
     WALK_TEMPLATE_NOT_ACCEPTED,
     WALK_POLARITY_NOT_ACCEPTED,
@@ -1090,8 +1080,6 @@ def session_lateral_walk(
     """
     from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
-    if request.repeats != 1:
-        raise LateralWalkRefused(WALK_REPEATS_UNSUPPORTED_YET, "the wizard supports one take per stop")
     off_regime = sorted({
         stop.regime for stop in request.stops if stop.regime != REGIME_PER_DRIVER
     })

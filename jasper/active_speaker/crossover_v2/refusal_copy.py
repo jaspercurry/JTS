@@ -129,12 +129,10 @@ REASON_WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
 REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT = "run_level_pilots_under_ambient"
 REASON_VOLUME_RESTORE_DEFERRED = "volume_restore_deferred"
 REASON_WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
-REASON_WALK_REPEATS_UNSUPPORTED_YET = "walk_repeats_unsupported_yet"
 REASON_MEASURE_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
 REASON_WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
 REASON_WALK_STIMULUS_NOT_ACCEPTED = "walk_stimulus_not_accepted"
 REASON_WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
-REASON_WALK_LATERAL_GROUP_ALREADY_PLANNED = "walk_lateral_group_already_planned"
 REASON_WALK_STOP_NO_LONGER_VALID = "walk_stop_no_longer_valid"
 REASON_WALK_TEMPLATE_NOT_ACCEPTED = "walk_template_not_accepted"
 REASON_WALK_POLARITY_NOT_ACCEPTED = "walk_polarity_not_accepted"
@@ -838,12 +836,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         next_action={"id": "new_measurement_session", "label": "Start a new measurement after playback settles",
                      "href": "/sound/speaker/crossover/"},
     ),
-    REASON_WALK_REPEATS_UNSUPPORTED_YET: ReasonSpec(
-        REASON_WALK_REPEATS_UNSUPPORTED_YET, TEMPLATE_HARD_STOP, 0, "",
-        'Use one take per position in the guided measurement.',
-        next_action={"id": 'correct_walk_repeats', "label": 'Set one take per position',
-                     "href": '/sound/speaker/crossover/'},
-    ),
     REASON_WALK_SCHEMA_VERSION_UNSUPPORTED: ReasonSpec(
         REASON_WALK_SCHEMA_VERSION_UNSUPPORTED, TEMPLATE_HARD_STOP, 0, "",
         'Submit the measurement plan in the current request format.',
@@ -876,13 +868,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         'This plan has more recordings than one session can hold. Split the positions across '
         'separate sessions.',
         next_action={"id": 'split_walk', "label": 'Split the measurement plan',
-                     "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_WALK_LATERAL_GROUP_ALREADY_PLANNED: ReasonSpec(
-        REASON_WALK_LATERAL_GROUP_ALREADY_PLANNED, TEMPLATE_HARD_STOP, 0, "",
-        'This session already has a plan for these positions. Start a new session for the new '
-        'plan.',
-        next_action={"id": 'new_measurement_session', "label": 'Start a new session',
                      "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_STOP_NO_LONGER_VALID: ReasonSpec(
