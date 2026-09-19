@@ -101,6 +101,7 @@ from .sound_active_speaker import (  # noqa: F401 - resolved by name
     _active_speaker_rear_calibration_seed_payload,
     _active_speaker_tuning_handoff_payload,
 )
+from .sound_ab_listen import ab_listen_state_payload as _ab_listen_state_payload  # noqa: F401 - resolved by name
 from .sound_seat_level import (  # noqa: F401 - resolved by name
     seat_level_status_payload as _seat_level_status_payload,
 )
@@ -354,6 +355,7 @@ _GET_ROUTES = {
         "_active_speaker_rear_calibration_seed_payload",
         "sound.active_speaker_rear_calibration_seed",
     ),
+    "/ab-listen/state": ("_ab_listen_state_payload", "sound.ab_listen_state"),
     "/active-speaker/seat-level/status": (
         "_seat_level_status_payload",
         "sound.active_speaker_seat_level_status",

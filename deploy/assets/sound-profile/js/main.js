@@ -25,6 +25,7 @@ import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
 import { wireCopyButtons } from "/assets/shared/js/copy.js";
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
+import { initAbListen, renderAbListenCard } from "/assets/sound-profile/js/ab-listen.js";
 import { initSeatLevel, isSeatLevelRunning, renderSeatLevelCard, stopSeatLevel } from "/assets/sound-profile/js/seat-level.js";
 import { rearCalibrationBank, rearCalibrationSeed, rearCalibrationValidate, renderRearCalibrationPanel, setRearCalibrationText } from "/assets/sound-profile/js/rear-calibration.js";
 import { applyInstallationToSetting, installationFromSetting } from "/assets/sound-profile/js/installation.js";
@@ -507,6 +508,7 @@ import {
       '<div class="saved-stack"><section class="active-speaker-setup">' +
       renderNextActionCard() + renderOutputTopologySetup() + '</section></div>';
     initSeatLevel();
+    initAbListen();
   }
 
   function renderOutput() {
@@ -1600,7 +1602,7 @@ import {
           ? renderStepNotRequiredCard(
               'profile',
               'This speaker does not use an active speaker profile.')
-          : renderBaselineProfileCard(),
+          : renderBaselineProfileCard() + (followerMode ? '' : renderAbListenCard()),
         ''
       ) +
       (((activeSpeaker.commissioningView || {}).next_action || {}).id === 'copy_prompt' ? '' : renderTuningHandoffCard()) +
