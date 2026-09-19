@@ -140,7 +140,7 @@ def test_program_refusal_reaches_the_wizard_as_copy_not_a_slug():
         ),
         (
             _refused(ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP),
-            REASON_PROGRAM_UNPLAYABLE,
+            "program_admission_refused",
         ),
         (ProgramPlaybackError("no current DSP config to restore"), REASON_PROGRAM_UNPLAYABLE),
         (ProgramAdmissionError("program must be an ExcitationProgram"), REASON_PROGRAM_UNPLAYABLE),
@@ -156,9 +156,7 @@ def test_whole_program_family_is_mapped_at_the_wizard_boundary(exc, expected_cod
     runner classifies must also be mapped here, or the next one to fire leaks
     its own programmer string."""
 
-    assert refusal_envelope(exc)["error"] == (
-        REASON_REGISTRY[expected_code].message
-    )
+    assert refusal_envelope(exc)["code"] == expected_code
 
 
 def test_non_program_exceptions_still_fall_through_unchanged():
@@ -184,7 +182,7 @@ def test_classifier_preserves_refusal_identity_and_slugs():
         _refused(ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP)
     )
     assert over_cap == (
-        REASON_PROGRAM_UNPLAYABLE, ("program_channel_peak_over_cap",)
+        "program_admission_refused", ("program_channel_peak_over_cap",)
     )
 
     # A mixed refusal keeps the specific screen — the confirmation is the one

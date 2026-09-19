@@ -87,6 +87,7 @@ class RunManifest:
     wall_s: list[float] = field(default_factory=list)
     reason: str = ""
     detail: str = ""
+    evidence: dict[str, Any] = field(default_factory=dict)
     stopped_at: Mapping[str, int] | None = None
     cancelled: bool = False
     finalized: bool = False
@@ -260,6 +261,6 @@ class RunManifest:
             "sets": [{**group, "takes": [take | {"selected": take["take_id"] in chosen}
                                          for take in group["takes"]]} for group in self._sets.values()],
             "status": self.status, "finalized": self.finalized,
-            "reason": self.reason, "detail": self.detail, "stopped_at": self.stopped_at,
+            "reason": self.reason, "detail": self.detail, "evidence": self.evidence, "stopped_at": self.stopped_at,
             "not_measured": self.not_measured, "attempts": self.attempts, "wall_s": self.wall_s,
         }

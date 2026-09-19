@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from jasper.audio_measurement.playback import PlaybackObservation
 
@@ -88,6 +88,7 @@ class PlaybackOutcome:
     wav_path: str = ""
     playback: PlaybackObservation = field(default_factory=PlaybackObservation)
     detail: str = ""
+    evidence: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.stage_reached not in _STAGE_RANK:

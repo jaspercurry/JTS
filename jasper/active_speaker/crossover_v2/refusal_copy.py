@@ -73,10 +73,6 @@ REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 REASON_LOCATE_FAILED = "locate_failed"
 REASON_CAPTURE_TIMEOUT = "capture_timeout"
 REASON_VOLUME_UNRESOLVED = "volume_unresolved"
-# The play seam refused or failed the program (safety re-admission over-cap, a
-# graph-restore failure, a session program error) — distinct from a capture
-# transport death (``capture_timeout``). Terminal: a play-time refusal is a bug,
-# a tampered readback, or a genuinely infeasible profile.
 REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
 # #2059: a plan-shape request the household's link/client sent that this build
 # does not recognize -- an unknown tier, or a position count outside its
@@ -414,8 +410,22 @@ def _retriable_reason(
     )
 
 
-# The §5.10 table, as data. The envelope and the session both read it, so copy
-# and budget never drift between the verdict and its screen.
+ARM_STOP_COPY = {
+    "power_void": "The turntable reported a power fault. Check its power supply and saved zero before restarting.",
+    "move_failed": "The turntable could not move. Check its connection and arm trail; close any other turntable command before restarting.",
+    "session_failed": "The measurement session failed. Check the run status before restarting.",
+    "idle_ceiling": "The turntable stopped waiting for a position request. Check the run status before restarting.",
+    "settle_floor": "The turntable did not get enough time to settle. Check the settle time before restarting.",
+    "refused": "The turntable could not use this run setup. Check the mover and run settings before restarting.",
+    "release_rejected": "The speaker did not accept the turntable position. Check the run status before restarting.",
+    "status_unreachable": "The turntable could not read the speaker status. Check the hostname and connection before restarting.",
+    "session_stopped": "The measurement session stopped. Check the run status before restarting.",
+    "hangup_parked": "The turntable host lost its terminal connection. Check the connection and arm position before restarting.",
+    "terminated_parked": "The turntable host received a termination signal. Check the host and arm position before restarting.",
+}
+ARM_STOP_REASONS = frozenset(ARM_STOP_COPY) | {REASON_ARM_HOST_STUCK, REASON_INTERNAL_ERROR}
+
+
 REASON_REGISTRY: dict[str, ReasonSpec] = {
     "dry_run_requires_local_host": ReasonSpec("dry_run_requires_local_host", TEMPLATE_HARD_STOP, 0, "",
         "Dry-run reads this machine's facts. Run it on the speaker."),
@@ -483,6 +493,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
            ("crossover_below_declared_protection_floor", "raise_crossover", "Raise the crossover to the declared driver protection floor."),
            ("baseline_graph_safety_proof_failed", "speaker_setup", "Review the protected speaker graph."),
        )},
+    "round_not_found": ReasonSpec("round_not_found", TEMPLATE_HARD_STOP, 0, "", "Select a banked round or live session directory."),
     "round_manifest_missing": ReasonSpec("round_manifest_missing", TEMPLATE_HARD_STOP, 0, "", "Bank the run manifest with this round."),
     "round_manifest_unfinalized": ReasonSpec("round_manifest_unfinalized", TEMPLATE_HARD_STOP, 0, "", "Wait for the run to finish."),
     "round_set_unknown": ReasonSpec("round_set_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a set listed in the run manifest."),
@@ -654,6 +665,22 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "JTS could not confirm the listening volume was restored. Recover the "
         "safe volume before continuing.",
     ),
+    "program_admission_refused": ReasonSpec(
+        "program_admission_refused", TEMPLATE_HARD_STOP, 0, "",
+        "The speaker's safety limits refused this sweep. Nothing was played for the refused sweep. "
+        "Check the refused segments in the round evidence and correct the sweep band, level or length before retrying.",
+    ),
+    "session_level_not_ready": ReasonSpec(
+        "session_level_not_ready", TEMPLATE_HARD_STOP, 0, "",
+        "The measurement volume was not ready. Nothing was played for this sweep. "
+        "Check the speaker's volume status, then start the measurement again.",
+    ),
+    "program_play_failed": ReasonSpec(
+        "program_play_failed", TEMPLATE_HARD_STOP, 0, "",
+        "The speaker could not play the measurement program. Check the playback status before retrying.",
+    ),
+    **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", message + " The remaining poses were not measured.")
+       for code, message in ARM_STOP_COPY.items()},
     REASON_PROGRAM_UNPLAYABLE: ReasonSpec(
         REASON_PROGRAM_UNPLAYABLE, TEMPLATE_HARD_STOP, 0, "",
         "JTS could not play the measurement signal within the speaker's safe "

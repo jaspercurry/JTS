@@ -10,7 +10,7 @@ import json
 from copy import deepcopy
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 from types import SimpleNamespace
 
 import pytest
@@ -28,12 +28,16 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS,
     REASON_SPL_CEILING_EXCEEDED, TakeVerdict,
 )
+from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdmissionRefusal, SegmentAdmission
+from jasper.active_speaker.program_playback import ProgramPlaybackRefused
+from jasper.active_speaker.crossover_v2.program_transaction import ProgramForStimulus, ProgramPlaybackTransaction
 from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.volume_owner import ClaimKind, volume_owner
+from jasper.web import correction_run_host
 from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor, _loc, _verify_analysis, _roles
 from tests.crossover_v2_banked_round import bank_seat_round
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, SeamFailure, open_session
@@ -1187,3 +1191,58 @@ def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timin
     assert facts["sweeps"] == sum(counts)
     timing_rows = [row for row in facts["pose_sweeps"][0] if row["kind"] == "summed_sweep"]
     assert [(row["repeat"], row["repeats"]) for row in timing_rows] == [(n, repeats) for n in range(1, repeats + 1)]
+
+
+@pytest.mark.parametrize("site", ["transaction", "executor", "ladder"])
+async def test_run_host_banks_admission_failure_code_and_segments(monkeypatch, tmp_path, box, site):
+    from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
+
+    admission = ProgramAdmission("verify", "verify", -23, (
+        SegmentAdmission("summed-1", "summed", 0, (20, 20000), -23, False, ()),
+    ), (), (ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS,))
+    failure = ProgramPlaybackRefused(admission)
+    fakes = FakeSeams()
+    store = _Store(fakes.records)
+    outer = RunManifest("packet", store)
+    gate = AnsweredGate()
+    if site == "ladder":
+        monkeypatch.setattr(correction_run_host, "bind_plan_analysis", lambda *a, **kw: (None, None))
+        monkeypatch.setattr(correction_run_host, "resolved_household_sensitivity", lambda _: None)
+        monkeypatch.setattr(correction_run_host, "run_levels", AsyncMock(side_effect=failure))
+        _, _, _, execute = correction_run_host.bind_run_door(
+            host=None, device=None, evidence_store=None, manifest=outer, production=fakes,
+            conductor=None, refs={}, trims={}, ceiling_s=30, ceiling_db_spl=85,
+            camilla_factory=lambda: box, verify_only=False,
+            ladder=SimpleNamespace(admissible=[None], plan=SimpleNamespace(levels=(-23,)), to_dict=lambda: {}),
+        )
+        with pytest.raises(ProgramPlaybackRefused):
+            await execute(None, gate=gate, signals=plan_run.RunSignals(), captures=())
+    else:
+        packet = RoundPacket(outer, {})
+        manifest = RunManifest("run", packet)
+        if site == "transaction":
+            play = AsyncMock()
+            prepared = ProgramForStimulus(SimpleNamespace(program_id="verify", phase="verify"), {
+                "readmit": AsyncMock(return_value=admission), "play_wav": play, "writer_lock": Mock(),
+            })
+            monkeypatch.setattr(fakes.play, "run", ProgramPlaybackTransaction(
+                compose=lambda **kw: prepared, session_volume_plan=SimpleNamespace(assert_ready=Mock()),
+            ).run)
+        else:
+            monkeypatch.setattr(fakes.play, "run", AsyncMock(side_effect=failure))
+        door = _run_door(tmp_path, box, fakes, manifest)
+        request = replace(_walk([0, 20]), level=ac.LevelPolicy(resolved=ac.ResolvedLevel(75, -20, "1234")))
+        run = plan_run.run_plan(request, door=door, manifest=manifest, analyze=_analysis, gate=gate, aborts=_ABORTS)
+        if site == "executor":
+            with pytest.raises(ProgramPlaybackRefused):
+                await run
+        else:
+            await run
+            play.assert_not_awaited()
+            assert manifest.takes[0]["quality"]["evidence"]["admission"] == admission.to_dict()
+        await packet.finish()
+        assert packet.runs["run"]["reason"] == "program_admission_refused"
+        assert all(row["reason"] == "program_admission_refused" for row in manifest.not_measured)
+    saved = store.snapshots[-1]
+    assert saved["reason"] == "program_admission_refused"
+    assert saved["evidence"]["admission"] == admission.to_dict()

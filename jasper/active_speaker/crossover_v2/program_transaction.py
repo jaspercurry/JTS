@@ -232,6 +232,7 @@ class ProgramPlaybackTransaction:
 
         wav_path = ""
         stage, incident = STAGE_RESTORE, ""
+        evidence: dict[str, Any] = {}
         try:
             if self._capture is None:
                 await _play()
@@ -250,7 +251,8 @@ class ProgramPlaybackTransaction:
         except SessionVolumePlanError:
             stage, incident = STAGE_READY, STIMULUS_LEVEL_NOT_READY
             observation = PlaybackObservation(emission="not_started")
-        except ProgramPlaybackRefused:
+        except ProgramPlaybackRefused as exc:
+            evidence = exc.evidence
             stage, incident = STAGE_READY, STIMULUS_ADMISSION_REFUSED
             observation = PlaybackObservation(emission="not_started")
         except StimulusCaptureStopped:
@@ -273,7 +275,7 @@ class ProgramPlaybackTransaction:
             )
         return PlaybackOutcome(
             stage_reached=stage, incident=incident, wav_path=wav_path,
-            playback=observation,
+            playback=observation, evidence=evidence,
         )
 
 

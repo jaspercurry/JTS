@@ -135,6 +135,7 @@ class StimulusOutcome:
     incident: str = ""
     playback: PlaybackObservation = field(default_factory=PlaybackObservation)
     detail: str = ""
+    evidence: dict[str, Any] = field(default_factory=dict)
 
     @property
     def banked(self) -> bool:
@@ -520,7 +521,7 @@ class TuningSession:
         return StimulusOutcome(
             position_deg=bearing, stimulus_dbfs=stimulus_dbfs,
             level_db=proven_level_db, record_id=record_id, incident=incident,
-            playback=outcome.playback, detail=outcome.detail,
+            playback=outcome.playback, detail=outcome.detail, evidence=outcome.evidence,
         )
 
     async def _proven_level(self) -> float | None:

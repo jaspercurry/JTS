@@ -57,7 +57,7 @@ from jasper.log_event import log_event
 from .angle_capture import ARM_ENVELOPE_DEG
 from .movers import MOVER_ARM
 from .crossover_v2.position_gate import POSITION_READY_ENDPOINT as POSITION_READY_PATH
-from .crossover_v2.refusal_copy import REASON_ARM_HOST_STUCK, REASON_USER_STOPPED
+from .crossover_v2.refusal_copy import REASON_ARM_HOST_STUCK, REASON_INTERNAL_ERROR, REASON_USER_STOPPED
 from .capture_status import SESSION_ENDED_STATUSES as SESSION_ENDED_STATUSES
 from .poll_backoff import next_poll_s
 from .wizard_client import CAPTURE_CANCEL_PATH as CAPTURE_CANCEL_PATH, STATUS_PATH, WizardClient
@@ -559,11 +559,19 @@ class ArmWalk:
         aborted line reads the exception off ``sys.exc_info`` rather than binding it,
         keeping it on its way out.
         """
-        code = EXIT_OK
+        reason = REASON_INTERNAL_ERROR
         verdict_reached = False
         try:
             code = self._walk()
+            reason = {EXIT_OK: EXIT_NAMES[EXIT_IDLE_CEILING], EXIT_STUCK: REASON_ARM_HOST_STUCK}.get(code, EXIT_NAMES[code])
             verdict_reached = True
+        except KeyboardInterrupt:
+            reason = REASON_USER_STOPPED
+            raise
+        except SystemExit as signal_exit:
+            reason = (REASON_USER_STOPPED if signal_exit.code == EXIT_INTERRUPTED_PARKED else
+                      EXIT_NAMES.get(signal_exit.code, REASON_INTERNAL_ERROR) if isinstance(signal_exit.code, int) else REASON_INTERNAL_ERROR)
+            raise
         finally:
             if not verdict_reached:
                 exc = sys.exc_info()[1]
@@ -572,7 +580,7 @@ class ArmWalk:
                     level=logging.ERROR,
                     error=f"{type(exc).__name__}: {exc}" if exc else "no verdict",
                 )
-            self._park(REASON_ARM_HOST_STUCK if code == EXIT_STUCK else REASON_USER_STOPPED)
+            self._park(reason)
         return code
 
     # -- the loop ----------------------------------------------------------- #
@@ -794,7 +802,7 @@ class ArmWalk:
             ok=ok, status=status, reason=reason,
         )
 
-    def _park(self, reason: str = REASON_USER_STOPPED) -> None:
+    def _park(self, reason: str = REASON_INTERNAL_ERROR) -> None:
         """Home the arm and verify the MAGNITUDE. Idempotent; never raises.
 
         Cancels the box's own v2 capture session first, best-effort: a park

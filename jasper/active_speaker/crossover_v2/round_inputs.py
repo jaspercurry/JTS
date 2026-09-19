@@ -94,6 +94,10 @@ def round_artifact_dir(session_dir: Path) -> tuple[Path | None, str]:
 class RoundViewsError(CrossoverEvidencePacketError):
     """A round view could not be read."""
 
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
 
 @dataclass(frozen=True)
 class RoundInputs:
@@ -183,7 +187,7 @@ def round_inputs(path: Path) -> RoundInputs:
         )
     raise RoundViewsError(
         f"{path}: neither a banked round (no bundle/ directory) nor a live "
-        f"session bundle (no info.json)"
+        f"session bundle (no info.json)", code="round_not_found"
     )
 
 

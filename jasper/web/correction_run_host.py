@@ -4,6 +4,8 @@
 """Bind banked captures to the program analyzer and legacy preparation effects."""
 from __future__ import annotations
 
+from jasper.active_speaker.program_failure import classify_program_failure
+
 from jasper.web import correction_crossover_v2_volume as v2volume
 
 from dataclasses import replace
@@ -220,8 +222,10 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                 manifest.reason = signals.stop_reason if signals.stop.is_set() else "complete_requested"
             return replace(results[-1], reason=packet.to_dict()["reason"]) if results and not manifest.reason else manifest
         except BaseException as exc:  # noqa: BLE001 - preserve the partial packet before host failure publication
-            manifest.reason = getattr(exc, "code", None) or REASON_INTERNAL_ERROR
+            classified = classify_program_failure(exc)
+            manifest.reason = (classified[0] if classified else getattr(exc, "code", None)) or REASON_INTERNAL_ERROR
             manifest.detail = exception_detail(exc)
+            manifest.evidence = getattr(exc, "evidence", {})
             raise
         finally:
             door.opened = bound.door.opened if bound else None
