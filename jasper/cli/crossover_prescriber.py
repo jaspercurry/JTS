@@ -176,7 +176,8 @@ def _cmd_document(args: argparse.Namespace) -> int:
         print(json.dumps(PrescriptionDocumentRefused(exc.code, None, exc.detail).to_dict(), sort_keys=True))
         return EXIT_REFUSED
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
-        print(json.dumps(PrescriptionDocumentRefused(REASON_UNREADABLE, None, str(exc)).to_dict(), sort_keys=True))
+        code = getattr(exc, "code", REASON_UNREADABLE)
+        print(json.dumps(PrescriptionDocumentRefused(code, None, str(exc)).to_dict(), sort_keys=True))
         return EXIT_UNREADABLE
     answer = {"ok": True, "code": None, "section": None, "next_action": None, "error": None,
               "candidate_fingerprint": candidate.fingerprint,
@@ -239,7 +240,8 @@ def _cmd_contract(args: argparse.Namespace) -> int:
     except RoundSetRefused as exc:
         return failed(EXIT_REFUSED, exc.reason, exc.detail)
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
-        return failed(EXIT_UNREADABLE, REASON_UNREADABLE, str(exc))
+        code = getattr(exc, "code", REASON_UNREADABLE)
+        return failed(EXIT_UNREADABLE, code, str(exc))
     if args.out:
         try:
             Path(args.out).write_text(payload, encoding="utf-8")

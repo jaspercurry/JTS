@@ -26,6 +26,8 @@ import pytest
 import numpy as np
 from jasper.active_speaker.angle_capture import LevelPolicy, ResolvedLevel
 from jasper.active_speaker.arm_walk import CAPTURE_CANCEL_PATH, LoopbackSession
+from jasper.active_speaker import arm_walk
+from tests.test_arm_walk import FakeMover, _walk as arm_run
 from jasper.active_speaker.plan_run import RunSignals
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
 from jasper.active_speaker.run_manifest import RunManifest
@@ -864,7 +866,11 @@ async def test_host_retake_after_budget_exhaustion_keeps_its_code(monkeypatch, t
 
 
 @pytest.mark.parametrize("caller,code,template", [
-    ("arm", "arm_host_stuck", "hard_stop"), ("human", "user_stopped", "session_restart"),
+    (arm_walk.EXIT_STUCK, "arm_host_stuck", "hard_stop"),
+    (arm_walk.EXIT_MOVE_FAILED, "move_failed", "session_restart"),
+    (arm_walk.EXIT_TERMINATED_PARKED, "terminated_parked", "session_restart"),
+    (arm_walk.EXIT_INTERRUPTED_PARKED, "user_stopped", "session_restart"),
+    ("human", "user_stopped", "session_restart"),
 ])
 def test_capture_cancel_reason_reaches_the_executor_manifest(monkeypatch, tmp_path, box, caller, code, template):
     def dispatch(path, *, data=None, headers=None):
@@ -880,10 +886,22 @@ def test_capture_cancel_reason_reaches_the_executor_manifest(monkeypatch, tmp_pa
 
     class CancellingGate(AnsweredGate):
         def gate(self, index, attempt, entry):
-            if caller == "arm":
-                client.cancel("arm_host_stuck")
-            else:
+            if caller == "human":
                 dispatch(CAPTURE_CANCEL_PATH, data=b"{}")
+            else:
+                arm = arm_run(FakeMover(move_ok=False), client)
+                if caller == arm_walk.EXIT_MOVE_FAILED:
+                    monkeypatch.setattr(client, "poll", lambda: arm_walk.Poll(
+                        arm_walk.Pending(1, 1, 20, "summed"), True, mover="arm"))
+                    assert arm.run() == caller
+                elif caller >= arm_walk.SIGNAL_EXIT_BASE:
+                    monkeypatch.setattr(arm, "_walk", Mock(side_effect=SystemExit(caller)))
+                    with pytest.raises(SystemExit) as stopped:
+                        arm.run()
+                    assert stopped.value.code == caller
+                else:
+                    monkeypatch.setattr(arm, "_walk", lambda: caller)
+                    assert arm.run() == caller
             super().gate(index, attempt, entry)
 
     runner, session, _, manifest, signals, _ = _plan_host(monkeypatch, tmp_path, box, gate=CancellingGate())

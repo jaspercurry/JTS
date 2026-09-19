@@ -48,6 +48,7 @@ class ProgramPlaybackRefused(ProgramPlaybackError):
         reasons = ",".join(reason.value for reason in admission.refusals)
         super().__init__(f"program re-admission refused: {reasons}")
         self.admission = admission
+        self.evidence = {"admission": admission.to_dict()}
 
 
 @dataclass(frozen=True)

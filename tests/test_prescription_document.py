@@ -740,3 +740,32 @@ def test_a_refused_rear_calibration_names_its_section(rear_base, section, code):
             document(rear_base.fingerprint, {"rear_calibration": section()}), base=rear_base)
 
     assert (caught.value.code, caught.value.section) == (code, "rear_calibration")
+
+
+@pytest.mark.parametrize("verb", ["judge", "compose", "contract"])
+@pytest.mark.parametrize("round_kind,expected,exit_code", [
+    ("missing", "round_not_found", 2), ("empty", "round_not_found", 2),
+    ("malformed", "evidence_unreadable", 2), ("io", "evidence_unreadable", 2),
+])
+def test_cli_names_missing_round_separately_from_read_faults(base, bank, tmp_path, capsys, monkeypatch,
+                                                           verb, round_kind, expected, exit_code):
+    path = tmp_path / "prescription.json"
+    path.write_text(json.dumps(document(base.fingerprint)))
+    round_path = tmp_path / "round"
+    if round_kind == "empty":
+        round_path.mkdir()
+    elif round_kind == "malformed":
+        (round_path / "bundle").mkdir(parents=True)
+    elif round_kind == "io":
+        def unreadable(_path):
+            raise PermissionError()
+        monkeypatch.setattr(crossover_prescriber, "round_inputs", unreadable)
+    args = [verb, "--round", str(round_path)]
+    if verb != "contract":
+        args += [str(path), "--root", str(bank)]
+    if verb == "compose":
+        args += ["--base", base.fingerprint]
+    assert crossover_prescriber.main(args) == exit_code
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["reason" if verb == "contract" else "code"] == expected
+    assert len(banked_candidates(root=bank)) == 1

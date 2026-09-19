@@ -950,16 +950,16 @@ def test_close_awaitable_releases_an_unsubmitted_coroutine():
 @pytest.mark.parametrize("code", [None, "unknown_refusal", "seat_anchor_unusable"])
 @pytest.mark.parametrize("explicit", [False, True])
 def test_refusal_envelope_preserves_codes_and_classifies_at_most_once(code, explicit, monkeypatch):
-    from jasper.web import correction_crossover_v2 as host
+    from jasper.active_speaker import program_failure  # lazy: numpy import cost
 
     classified = []
-    classify = host.classify_program_failure
+    classify = program_failure.classify_program_failure
 
     def once(exc):
         classified.append(exc)
         return classify(exc)
 
-    monkeypatch.setattr(host, "classify_program_failure", once)
+    monkeypatch.setattr(program_failure, "classify_program_failure", once)
     exc = ValueError("request")
     if code is not None:
         exc.code = code

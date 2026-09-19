@@ -151,9 +151,8 @@ def refusal_envelope(
     from jasper.active_speaker.crossover_v2.refusal_copy import (  # lazy: numpy import cost
         CrossoverV2Refused, REASON_INTERNAL_ERROR, refusal_copy_for,
     )
-    from jasper.web.correction_crossover_v2 import (  # lazy: measurement service import cost
-        CrossoverV2LocalSeamError, classify_program_failure,
-    )
+    from jasper.active_speaker.program_failure import classify_program_failure  # lazy: numpy import cost
+    from jasper.web.correction_crossover_v2 import CrossoverV2LocalSeamError  # lazy: measurement service import cost
 
     if exc is not None:
         code = getattr(exc, "code", None) or getattr(exc, "reason", None)

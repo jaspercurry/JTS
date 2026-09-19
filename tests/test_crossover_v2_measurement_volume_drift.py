@@ -43,7 +43,7 @@ from jasper.audio_measurement.program import (
     build_check_program,
     build_verify_program,
 )
-from jasper.web import correction_crossover_v2 as v2host
+from jasper.active_speaker.program_failure import classify_program_failure
 
 from tests._log_events import event_field_maps, event_fields, event_records
 
@@ -252,7 +252,7 @@ def test_the_drift_refusal_is_classified_as_its_own_reason():
         REASON_PROGRAM_UNPLAYABLE,
     )
 
-    classified = v2host.classify_program_failure(
+    classified = classify_program_failure(
         MeasurementFaderDrift(
             expected_db=DECLARED_DB, observed_db=HOUSEHOLD_DB, context="capture:check"
         )

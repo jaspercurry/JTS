@@ -51,6 +51,7 @@ from jasper.audio_measurement.wired_capture import (
     WiredCaptureError, WiredSplCeilingExceeded, WiredSplMonitor,
 )
 from jasper.active_speaker.program_playback import ProgramPlaybackError
+from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdmissionRefusal
 from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
 from jasper.audio_measurement.playback import (
     PlaybackError, PlaybackFailureCode, PlaybackCleanupState, PlaybackObservation,
@@ -74,16 +75,6 @@ class _Plan:
             raise SessionVolumePlanError("no measurement volume is open")
 
 
-class _Admission:
-    def __init__(self, allowed: bool) -> None:
-        self.allowed = allowed
-        self.refusals: tuple[Any, ...] = () if allowed else (_Reason(),)
-
-
-class _Reason:
-    value = "not_admitted"
-
-
 class _Seams:
     """`play_program`'s three injected seams, each able to fail on cue."""
 
@@ -105,8 +96,9 @@ class _Seams:
             "writer_lock": self._writer_lock,
         }
 
-    async def _readmit(self) -> _Admission:
-        return _Admission(self.admitted)
+    async def _readmit(self) -> ProgramAdmission:
+        return ProgramAdmission("prog-1", "measure", LEVEL_DB, (), (),
+                                () if self.admitted else (ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS,))
 
     async def _play_wav(self) -> Any:
         self.played += 1

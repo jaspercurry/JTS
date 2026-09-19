@@ -50,6 +50,7 @@ from .crossover_v2.refusal_copy import (
 from .crossover_v2.session import TuningSession
 from .crossover_v2.spatial import analysis_curve_records
 from .crossover_v2.planning import analysis_json
+from .program_failure import classify_program_failure
 from .restore_wait import resilient_restore
 from .measurement_programs import BRANCH_PAIR_DRIVERS, POSE_KIND_BEARING, PURPOSE_SPEAKER
 from .crossover_v2.programs import predictive_program_for_spec
@@ -443,6 +444,11 @@ async def _run(
             ledger.spend(ledger.charge)
         ledger.admitted += 1
 
+    def failure_reason(exc: BaseException) -> str:
+        classified = classify_program_failure(exc)
+        code = classified[0] if classified else getattr(exc, "code", None)
+        return code if isinstance(code, str) and code in REASON_REGISTRY else REASON_INTERNAL_ERROR
+
     def attempt_records() -> list[tuple[Mapping[str, Any], str]]:
         return manifest.pending_records or [({"take_id": manifest.allocate_take_id()}, "")]
 
@@ -589,7 +595,8 @@ async def _run(
                     else:
                         incident = next((s.incident for s in outcome.stimuli if s.incident), "")
                         assessed = TakeVerdict(False, fault=incident if incident in REASON_REGISTRY else REASON_INTERNAL_ERROR,
-                                               next="stop", evidence={"incident": incident})
+                                               next="stop", evidence={"incident": incident,
+                                                                       **next((s.evidence for s in outcome.stimuli if s.evidence), {})})
                     if not outcome.complete:
                         incident = str(record.get("incident") or next((s.incident for s in outcome.stimuli if s.incident), ""))
                         assessed = replace(assessed, ok=False,
@@ -652,7 +659,7 @@ async def _run(
         if not manifest.reason:
             manifest.reason, manifest.detail = exc.reason, exc.detail
     except BaseException as exc:  # noqa: BLE001 - finalize failure evidence, then propagate unchanged
-        manifest.reason = manifest.reason or REASON_INTERNAL_ERROR
+        manifest.reason = manifest.reason or failure_reason(exc)
         manifest.detail = manifest.detail or exception_detail(exc)
         raise
     finally:
@@ -663,7 +670,7 @@ async def _run(
                 if not manifest.reason:
                     manifest.reason, manifest.detail = exc.reason, exc.detail
             except BaseException as exc:  # noqa: BLE001 - preserve cleanup failures after finalizing
-                manifest.reason = manifest.reason or REASON_INTERNAL_ERROR
+                manifest.reason = manifest.reason or failure_reason(exc)
                 manifest.detail = manifest.detail or exception_detail(exc)
                 raise
         finally:

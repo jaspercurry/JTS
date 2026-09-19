@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from jasper.active_speaker.crossover_v2 import refusal_copy
+from jasper.active_speaker.program_failure import classify_program_failure
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
 
@@ -140,14 +141,10 @@ def test_program_refusal_reaches_the_wizard_as_copy_not_a_slug():
         ),
         (
             _refused(ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP),
-            REASON_PROGRAM_UNPLAYABLE,
+            "program_admission_refused",
         ),
         (ProgramPlaybackError("no current DSP config to restore"), REASON_PROGRAM_UNPLAYABLE),
         (ProgramAdmissionError("program must be an ExcitationProgram"), REASON_PROGRAM_UNPLAYABLE),
-        # A message the live f-string can actually produce: the bounds are
-        # MIN/MAX_CLOUD_MEASURE_POSITIONS (6..12 today), and 9 is the shipped
-        # DEFAULT, so the previous literal ("must be 3..7, got 9") described a
-        # refusal that cannot happen and read as a captured real message.
         (CrossoverV2FlowError("cloud_measure_positions must be 6..12, got 14"), REASON_PROGRAM_UNPLAYABLE),
     ],
 )
@@ -156,9 +153,8 @@ def test_whole_program_family_is_mapped_at_the_wizard_boundary(exc, expected_cod
     runner classifies must also be mapped here, or the next one to fire leaks
     its own programmer string."""
 
-    assert refusal_envelope(exc)["error"] == (
-        REASON_REGISTRY[expected_code].message
-    )
+    assert refusal_envelope(exc)["code"] == expected_code
+    assert expected_code in REASON_REGISTRY
 
 
 def test_non_program_exceptions_still_fall_through_unchanged():
@@ -173,23 +169,23 @@ def test_non_program_exceptions_still_fall_through_unchanged():
 
 
 def test_classifier_preserves_refusal_identity_and_slugs():
-    profile = v2host.classify_program_failure(
+    profile = classify_program_failure(
         _refused(ProgramAdmissionRefusal.MEASUREMENT_INPUTS_INVALID)
     )
     assert profile == (
         REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID, ("program_measurement_inputs_invalid",)
     )
 
-    over_cap = v2host.classify_program_failure(
+    over_cap = classify_program_failure(
         _refused(ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP)
     )
     assert over_cap == (
-        REASON_PROGRAM_UNPLAYABLE, ("program_channel_peak_over_cap",)
+        "program_admission_refused", ("program_channel_peak_over_cap",)
     )
 
     # A mixed refusal keeps the specific screen — the confirmation is the one
     # the household can act on, and every other slug still rides out.
-    mixed = v2host.classify_program_failure(_refused(
+    mixed = classify_program_failure(_refused(
         ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP,
         ProgramAdmissionRefusal.MEASUREMENT_INPUTS_INVALID,
     ))
@@ -203,8 +199,8 @@ def test_classifier_returns_none_outside_the_program_family():
     """"Not mine" must be distinguishable from "mine, program_unplayable" — the
     capture mapper's fall-through depends on it."""
 
-    assert v2host.classify_program_failure(ValueError("device mismatch")) is None
-    assert v2host.classify_program_failure(TimeoutError("read timed out")) is None
+    assert classify_program_failure(ValueError("device mismatch")) is None
+    assert classify_program_failure(TimeoutError("read timed out")) is None
 
 
 def test_classifier_gives_a_wired_spl_ceiling_trip_its_own_code():
@@ -219,7 +215,7 @@ def test_classifier_gives_a_wired_spl_ceiling_trip_its_own_code():
     ceiling_trip = StimulusCaptureStopped(
         "spl_ceiling_exceeded", "measured above ceiling", PlaybackObservation(),
     )
-    assert v2host.classify_program_failure(ceiling_trip) == (
+    assert classify_program_failure(ceiling_trip) == (
         REASON_SPL_CEILING_EXCEEDED, (),
     )
 
@@ -227,7 +223,7 @@ def test_classifier_gives_a_wired_spl_ceiling_trip_its_own_code():
     other_stop = StimulusCaptureStopped(
         "wired_capture_failed", "mic vanished", PlaybackObservation(),
     )
-    assert v2host.classify_program_failure(other_stop) is None
+    assert classify_program_failure(other_stop) is None
 
 
 def test_classifier_preserves_typed_conditioning_slug():
@@ -241,7 +237,7 @@ def test_classifier_preserves_typed_conditioning_slug():
     # measurement signal within the speaker's safe limits", and the program
     # played fine — the offline evidence math refused. The slug still rides out
     # in the detail so the journal and state stay correlatable.
-    assert v2host.classify_program_failure(exc) == (
+    assert classify_program_failure(exc) == (
         REASON_PROTECTION_NOT_SEPARABLE, (ILL_CONDITIONED_PROTECTION_DEEMBEDDING,),
     )
     assert REASON_PROTECTION_NOT_SEPARABLE != REASON_PROGRAM_UNPLAYABLE
@@ -263,8 +259,8 @@ def test_the_two_conditioning_branches_name_two_different_levers():
     floor = ConfiguredPathConditioningError(
         "P below -12 dB for tweeter", protection_floor=True,
     )
-    ratio_code, ratio_slugs = v2host.classify_program_failure(ratio)
-    floor_code, floor_slugs = v2host.classify_program_failure(floor)
+    ratio_code, ratio_slugs = classify_program_failure(ratio)
+    floor_code, floor_slugs = classify_program_failure(floor)
     assert ratio_code == REASON_PROTECTION_NOT_SEPARABLE
     assert floor_code == REASON_PROTECTION_SWEEP_TOO_LOW
     assert ratio_slugs == floor_slugs == (ILL_CONDITIONED_PROTECTION_DEEMBEDDING,)
@@ -418,7 +414,7 @@ def test_graph_refusal_retains_its_classifier_code():
     from jasper.active_speaker.measurement_emit import MeasurementGraphRefused
 
     exc = MeasurementGraphRefused("measurement_candidate_speaker_mismatch", "candidate-1")
-    assert v2host.classify_program_failure(exc) == (exc.reason, ())
+    assert classify_program_failure(exc) == (exc.reason, ())
 
 
 @pytest.mark.parametrize("missing", ["level_duration_limits", "measurement_band_hz", "hard_excitation_band_hz", "required_protection_filters"])

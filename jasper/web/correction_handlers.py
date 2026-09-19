@@ -18,7 +18,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from ..active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_ARM_HOST_STUCK, REASON_USER_STOPPED
+from ..active_speaker.crossover_v2.refusal_copy import ARM_STOP_REASONS, CrossoverV2Refused, REASON_USER_STOPPED
 from ..platform.systemd import no_hold
 
 from . import correction_capture, correction_runtime
@@ -41,7 +41,7 @@ def _handle_crossover_capture_cancel(raw: dict[str, Any] | None = None) -> dict[
     """
 
     reason = (raw or {}).get("reason", REASON_USER_STOPPED)
-    if reason not in (REASON_USER_STOPPED, REASON_ARM_HOST_STUCK):
+    if reason not in (REASON_USER_STOPPED, *ARM_STOP_REASONS):
         raise BadRequest("unknown capture stop reason")
     try:
         capture = correction_capture._request_capture_stop("crossover_v2:", reason)
