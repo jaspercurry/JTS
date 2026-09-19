@@ -40,10 +40,10 @@ boundary in neither direction.
 """
 from __future__ import annotations
 
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.capture_dispatch import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR as FLOW_LOCATE_CONFIDENCE_FLOOR,
 )
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.capture_dispatch import (
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS as FLOW_SCHEDULE_RESIDUAL_CEILING_MS,
 )
 from jasper.audio_measurement.program_analysis import (

@@ -19,13 +19,9 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.programs import CHECK_PROBE_BACKOFF_DB
-from jasper.active_speaker.crossover_v2_flow import (
-    ALIGNMENT_CONFIDENCE_TRUST_FLOOR,
-    GAIN_CAP_BACKOFF_DB,
-    PILOT_LEVEL_DELTA_DB,
-    CrossoverV2Session,
-    _analysis_json,
-)
+from jasper.active_speaker.crossover_v2_flow import ALIGNMENT_CONFIDENCE_TRUST_FLOOR, CrossoverV2Session
+from jasper.active_speaker.crossover_v2.programs import GAIN_CAP_BACKOFF_DB, PILOT_LEVEL_DELTA_DB
+from jasper.active_speaker.crossover_v2.planning import analysis_json as _analysis_json
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.mic_meter import (
     MIC_USABLE_MAX_DBFS,
@@ -547,7 +543,9 @@ def test_check_pilot_delta_is_the_delta_measure_pilots_actually_use():
     `PILOT_LEVEL_DELTA_DB`). If the
     two ever diverged the floor would be mis-sized in silence, so pin them
     equal at the composers that produce them."""
-    from jasper.active_speaker.crossover_v2_flow import PILOT_LEVEL_DELTA_DB
+    from jasper.active_speaker.crossover_v2.programs import (  # lazy: avoid measurement-stack import cost on unused paths
+        PILOT_LEVEL_DELTA_DB,
+    )
 
     fakes = FakeSeams()
     fakes.check = _check_analysis_with_solves

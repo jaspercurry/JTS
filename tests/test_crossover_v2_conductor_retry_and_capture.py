@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import pytest
 from dataclasses import replace
+from jasper.active_speaker.crossover_v2 import admission
+from jasper.active_speaker.crossover_v2 import capture_plan
+from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_VERIFY
 from jasper.active_speaker.crossover_v2 import refusal_copy
@@ -23,16 +26,16 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
     locate_failed_diagnosis,
 )
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.capture_plan import (
     AUTO_ADVANCE_COUNTDOWN,
     AUTO_ADVANCE_COUNTDOWN_S,
     AUTO_ADVANCE_TAP,
     CLOUD_POSITION_PROMPTS,
-    CrossoverV2Session,
-    CrossoverV2FlowError,
     build_v2_capture_plan,
     build_v2_cloud_index_phase_map,
 )
+from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
+from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.audio_measurement import gating
 from jasper.audio_measurement import snr_policy
 from jasper.audio_measurement.program_analysis.model import DRIVER_SNR_ALIGNMENT_KEY
@@ -171,7 +174,7 @@ def test_every_retriable_reason_has_one_structured_diagnosis_source():
     for code, spec in retriable.items():
         assert spec.retry_copy is not None, code
         assert (spec.message or spec.banner) == spec.retry_copy.message, code
-        assert flow.reason_diagnosis(code, spec), code
+        assert refusal_copy.reason_diagnosis(code, spec), code
 
 
 @pytest.mark.parametrize(
@@ -189,10 +192,10 @@ def test_non_special_reasons_keep_their_diagnosis_on_the_final_extra(
     fakes.check = lambda program: _check_analysis(program, **analysis_kwargs)
     c = _conductor(fakes)
 
-    for attempt in range(1, flow.MAX_EXTRA_ATTEMPTS_PER_POSITION + 2):
+    for attempt in range(1, admission.MAX_EXTRA_ATTEMPTS_PER_POSITION + 2):
         verdict = _run_phase(c, 1, attempt)
 
-    diagnosis = flow.reason_diagnosis(
+    diagnosis = refusal_copy.reason_diagnosis(
         expected_code, REASON_REGISTRY[expected_code]
     )
     assert verdict["code"] == expected_code
@@ -213,7 +216,7 @@ def test_verify_inconclusive_keeps_its_measured_reflection_at_exhaustion():
         floor_source=gating.FLOOR_MEASURED,
     )
 
-    for attempt in range(3, 3 + flow.MAX_EXTRA_ATTEMPTS_PER_POSITION + 1):
+    for attempt in range(3, 3 + admission.MAX_EXTRA_ATTEMPTS_PER_POSITION + 1):
         verdict = _run_phase(c, 3, attempt)
 
     diagnosis = refusal_copy.verify_inconclusive_diagnosis(True)
@@ -233,7 +236,7 @@ def test_speaker_retries_have_a_total_bound_and_keep_the_operator_budget(fault):
     for retry in range(bound + 1):
         result = _run_phase(c, 2, retry + 2)
         assert result["attempts"]["by_household"] == 0
-        assert result["attempts"]["left"] == min(flow.MAX_EXTRA_ATTEMPTS_PER_POSITION, bound - retry)
+        assert result["attempts"]["left"] == min(admission.MAX_EXTRA_ATTEMPTS_PER_POSITION, bound - retry)
         assert result["attempts"]["by_speaker"] == retry
         assert result.get("terminal", False) is (retry == bound)
     assert result["next"] == "stop" and not result["auto_retry"]
@@ -263,7 +266,7 @@ def test_a_group_that_cannot_reach_the_floor_ends_honestly_not_with_retry_copy()
     fakes.verify = lambda program: _verify_analysis(
         program, locate_confidence=0.0, pilot_snr_ok=True,
     )
-    for _ in range(flow.MAX_EXTRA_ATTEMPTS_PER_POSITION + 1):
+    for _ in range(admission.MAX_EXTRA_ATTEMPTS_PER_POSITION + 1):
         verdict = _run_phase(c, index, attempt)
         attempt += 1
         assert verdict["accepted"] is False
@@ -304,17 +307,17 @@ def test_no_exhaustion_refusal_ever_carries_a_reasons_try_again_copy():
     while the refusal publishes something else entirely."""
     retriable = [
         code for code in REASON_REGISTRY
-        if code not in flow.NON_RETRIABLE_CODES
+        if code not in refusal_copy.NON_RETRIABLE_CODES
     ]
     assert retriable, "fixture sanity: the registry has retriable codes"
 
     fakes = FakeSeams()
     fakes.check = lambda program: _check_analysis(program, locate_confidence=0.01)
     c = _conductor(fakes)
-    for attempt in range(1, flow.MAX_EXTRA_ATTEMPTS_PER_POSITION + 2):
+    for attempt in range(1, admission.MAX_EXTRA_ATTEMPTS_PER_POSITION + 2):
         assert _run_phase(c, 1, attempt)["accepted"] is False
     with pytest.raises(CaptureBeginRefused) as excinfo:
-        c.authorize_begin(1, flow.MAX_EXTRA_ATTEMPTS_PER_POSITION + 2)
+        c.authorize_begin(1, admission.MAX_EXTRA_ATTEMPTS_PER_POSITION + 2)
     published = excinfo.value.user_message
 
     assert "try again" not in published.lower()
@@ -671,14 +674,14 @@ def test_a_verify_pose_banks_its_angle_axis_and_distance_as_fields():
     # The shipped pose set, read back off the records rather than off the
     # table: the design axis first, then the four sides.
     assert [m["position_deg"] for m in retained] == [
-        flow.position_angle_deg(p) for p in flow.CLOUD_VERIFY_POSE_PROMPTS
+        capture_plan.position_angle_deg(p) for p in capture_plan.CLOUD_VERIFY_POSE_PROMPTS
     ] == [0, -7, 7, -22, 22]
     assert {m["position_axis"] for m in retained} == {"horizontal"}
-    assert {m["mark_distance_m"] for m in retained} == {flow.MARK_DISTANCE_M}
+    assert {m["mark_distance_m"] for m in retained} == {spatial.MARK_DISTANCE_M}
     # The prompt stays — it is the human instruction — but it is no longer the
     # only place the geometry lives.
     assert [m["prompt"] for m in retained] == [
-        p.text for p in flow.CLOUD_VERIFY_POSE_PROMPTS
+        p.text for p in capture_plan.CLOUD_VERIFY_POSE_PROMPTS
     ]
     assert all(m["prompt"] for m in retained)
 
@@ -698,17 +701,17 @@ def test_a_vertical_seat_states_its_elevation_and_still_banks_no_bearing():
     gave, so it states the axis and leaves the angle ``None``.
     """
     vertical = [
-        p for p in CLOUD_POSITION_PROMPTS if p.role == flow.POSITION_ROLE_XOVR
+        p for p in CLOUD_POSITION_PROMPTS if p.role == spatial.POSITION_ROLE_XOVR
     ]
-    geometries = [flow.position_geometry(p) for p in vertical]
+    geometries = [capture_plan.position_geometry(p) for p in vertical]
 
     assert {g.axis for g in geometries} == {"vertical"}
     assert {g.degrees for g in geometries} == {None}
-    assert {g.mark_distance_m for g in geometries} == {flow.MARK_DISTANCE_M}
+    assert {g.mark_distance_m for g in geometries} == {spatial.MARK_DISTANCE_M}
     assert [g.vertical_deg for g in geometries] == [7, -7, 22, -22]
     for prompt in vertical:
         with pytest.raises(CrossoverV2FlowError):
-            flow.position_angle_deg(prompt)
+            capture_plan.position_angle_deg(prompt)
 
 
 def test_the_compound_retake_rung_states_the_rise_it_asks_for():
@@ -719,21 +722,21 @@ def test_the_compound_retake_rung_states_the_rise_it_asks_for():
     its elevation to 0 would claim mark height for a microphone the household
     was told to raise, and would pair that take against a mark-height baseline.
     """
-    rung_2 = flow.CloudPositionPrompt(
-        flow.CLOUD_GEOMETRY_RETRY_PROMPTS[1],
-        offset_cm=flow.GEOMETRY_RETRY_OFFSET_CM,
-        role=flow.POSITION_ROLE_OFFAX,
+    rung_2 = capture_plan.CloudPositionPrompt(
+        capture_plan.CLOUD_GEOMETRY_RETRY_PROMPTS[1],
+        offset_cm=capture_plan.GEOMETRY_RETRY_OFFSET_CM,
+        role=spatial.POSITION_ROLE_OFFAX,
         vertical_sign=1,
-        vertical_offset_cm=flow.CLOUD_GEOMETRY_RETRY_RISE_CM[1],
+        vertical_offset_cm=capture_plan.CLOUD_GEOMETRY_RETRY_RISE_CM[1],
     )
-    geometry = flow.position_geometry(rung_2)
+    geometry = capture_plan.position_geometry(rung_2)
 
-    assert flow.CLOUD_GEOMETRY_RETRY_RISE_CM[1] > 0
+    assert capture_plan.CLOUD_GEOMETRY_RETRY_RISE_CM[1] > 0
     assert geometry.vertical_deg == 17
     # Its lateral distance is the wider one and is NOT what the rise came from.
-    assert flow.GEOMETRY_RETRY_OFFSET_CM != flow.CLOUD_GEOMETRY_RETRY_RISE_CM[1]
+    assert capture_plan.GEOMETRY_RETRY_OFFSET_CM != capture_plan.CLOUD_GEOMETRY_RETRY_RISE_CM[1]
     # Rung 1 is at mark height and says so.
-    assert flow.CLOUD_GEOMETRY_RETRY_RISE_CM[0] == 0.0
+    assert capture_plan.CLOUD_GEOMETRY_RETRY_RISE_CM[0] == 0.0
 
 
 def test_a_raised_seat_joins_no_bearing_set_the_walk_already_had():
@@ -747,13 +750,13 @@ def test_a_raised_seat_joins_no_bearing_set_the_walk_already_had():
     filtering for an ``int`` bearing, so a raised seat is excluded there and
     included, AS LABELLED, everywhere a seat is listed.
     """
-    geometries = [flow.position_geometry(p) for p in CLOUD_POSITION_PROMPTS]
+    geometries = [capture_plan.position_geometry(p) for p in CLOUD_POSITION_PROMPTS]
     bearings = [g.degrees for g in geometries if isinstance(g.degrees, int)]
 
     assert bearings == [-7, 7, -22, 22, -14, 14, -31]
     assert [
-        flow.position_angle_deg(p) for p in CLOUD_POSITION_PROMPTS
-        if p.role != flow.POSITION_ROLE_XOVR
+        capture_plan.position_angle_deg(p) for p in CLOUD_POSITION_PROMPTS
+        if p.role != spatial.POSITION_ROLE_XOVR
     ] == bearings
     # Every lateral seat is at mark height, so the new field says nothing new
     # about any of them — which is why an old bundle missing it reads as 0.

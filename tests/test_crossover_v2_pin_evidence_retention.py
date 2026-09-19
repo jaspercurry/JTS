@@ -21,14 +21,15 @@ What follows is the boundary those leave open.
 
 from __future__ import annotations
 
-from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import capture_plan
+from jasper.active_speaker.crossover_v2 import programs
 from jasper.active_speaker.crossover_v2.journey import (
     GROUP_PHASES,
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_LATERAL,
 )
-from jasper.active_speaker.crossover_v2_flow import build_v2_cloud_index_phase_map
+from jasper.active_speaker.crossover_v2.capture_plan import build_v2_cloud_index_phase_map
 from jasper.attribution.position_evidence import position_evidence_block
 
 from tests.test_attribution_persistence import _combined, _records
@@ -133,7 +134,7 @@ def test_the_lateral_walk_keeps_its_own_retention_and_never_enters_a_cloud_group
     )
     _run_phase(conductor, 1, 1)
     _run_phase(conductor, 2, 1)
-    poses = len(flow.LATERAL_POSE_PROMPTS)
+    poses = len(capture_plan.LATERAL_POSE_PROMPTS)
     for index in range(3, 3 + poses):
         _run_phase(conductor, index, 1)
 
@@ -147,7 +148,7 @@ def test_the_lateral_walk_keeps_its_own_retention_and_never_enters_a_cloud_group
     assert conductor.group_geometry(PHASE_LATERAL) is None
 
     # And it is not one of the summed-sweep groups the combiner does own.
-    assert PHASE_LATERAL not in flow.SUMMED_SWEEP_PHASES
+    assert PHASE_LATERAL not in programs.SUMMED_SWEEP_PHASES
     assert GROUP_PHASES == frozenset(
         {PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_LATERAL}
     )

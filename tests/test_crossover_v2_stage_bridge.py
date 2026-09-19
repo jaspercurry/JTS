@@ -79,7 +79,7 @@ import pytest
 from tests._async_wait import wait_signalled
 from tests.test_plan_run import fake_program_baselines
 
-from jasper.active_speaker import commission_wiring, crossover_v2_flow, delta_probe
+from jasper.active_speaker import commission_wiring, delta_probe
 from jasper.active_speaker import session_volume_plan as session_volume_plan_mod
 from jasper.active_speaker import design_draft
 from jasper.active_speaker import excitation_safety_plan as excitation_safety_plan_mod
@@ -1082,7 +1082,7 @@ def test_an_anchored_verdict_is_re_gradable_from_the_store_alone(monkeypatch):
         # probe refuses an anchor measured through another program, so a
         # placeholder here would exercise that refusal instead of the bridge.
         program_id=conductor.program_for_phase(
-            crossover_v2_flow.PHASE_VERIFY
+            journey.PHASE_VERIFY
         ).program_id,
         reference_mark="design_axis_mark",
         curve=ResponseCurve(freqs, (predicted - commanded) + anchor_db),

@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import pytest
-from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2 import (
     intervention as iv,
 )
@@ -19,12 +19,10 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
 )
 
-from jasper.active_speaker.crossover_v2_flow import (
-    LINEARIZATION_TRIM_SANITY_MARGIN_DB,
-    CLAIM_FAIL,
-    CLAIM_NOT_EVALUATED,
+from jasper.active_speaker.crossover_v2.intervention import LINEARIZATION_TRIM_SANITY_MARGIN_DB
+from jasper.active_speaker.crossover_v2.contracts import CLAIM_FAIL, CLAIM_NOT_EVALUATED, CLAIM_PASS
+from jasper.active_speaker.crossover_v2.verification import (
     CLAIM_NO_PER_BRANCH_CAPTURE,
-    CLAIM_PASS,
     verify_absolute_tolerance_db,
 )
 from jasper.audio_measurement import gating
@@ -532,7 +530,7 @@ def test_absolute_tolerance_is_derived_from_the_spec_table_not_chosen():
         tol for lo, hi, tol in flat_spec.SPEC_BANDS if lo < 4000.0 and 1000.0 < hi
     )
     # It is NOT the model-tracking tolerance wearing a different name.
-    assert verify_absolute_tolerance_db([1000.0, 4000.0]) != flow.VERIFY_TOLERANCE_DB
+    assert verify_absolute_tolerance_db([1000.0, 4000.0]) != contracts.VERIFY_TOLERANCE_DB
     # A region the spec table declines to grade yields no bar at all, and the
     # claim is recorded not-evaluated rather than held to an invented one.
     assert verify_absolute_tolerance_db([17_000.0, 20_000.0]) is None

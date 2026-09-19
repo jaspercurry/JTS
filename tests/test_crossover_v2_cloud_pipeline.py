@@ -46,11 +46,8 @@ from jasper.active_speaker.crossover_v2.spatial import (
 from jasper.active_speaker.crossover_v2.verification import (
     ECHO_BAND_HF_REGIME_FLOOR_HZ,
 )
-from jasper.active_speaker.crossover_v2_flow import (
-    _derive_cloud_echo_band_hz,
-    _per_band_flatness_log_field,
-    assemble_cloud_group_result,
-)
+from jasper.active_speaker.crossover_v2_flow import _derive_cloud_echo_band_hz, assemble_cloud_group_result
+from jasper.active_speaker.crossover_v2.verification import _per_band_flatness_log_field
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand

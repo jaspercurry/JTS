@@ -52,16 +52,14 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.capture_plan import (
     V2_FIRST_BEGIN_TIMEOUT_S,
-    CrossoverV2Session,
-    V2FlowSeams,
-    V2RecordPublishers,
     build_v2_cloud_index_phase_map,
     build_v2_session_spec,
     build_v2_verify_session_spec,
     v2_first_begin_timeout_s,
 )
+from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams, V2RecordPublishers
 from jasper.active_speaker import crossover_envelope_v2 as v2projection
 
 import jasper.capture_protocol as capture_protocol
@@ -2895,7 +2893,7 @@ def _no_sweep_state(*, fc_selection=None):
     ``test_crossover_v2_lateral_evidence.py``.
     """
     from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.capture_plan import (  # lazy: avoid measurement-stack import cost on unused paths
         STAGE1_INCLUDES_ENTRY_BASELINE,
     )
 

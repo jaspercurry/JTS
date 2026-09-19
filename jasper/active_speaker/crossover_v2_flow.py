@@ -46,7 +46,6 @@ from jasper.active_speaker.camilla_yaml import role_polarity
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.crossover_v2 import accountability as _accountability
 from jasper.active_speaker.crossover_v2 import admission as _admission
-from jasper.active_speaker.crossover_v2 import candidates as _candidates
 from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
 from jasper.active_speaker.crossover_v2 import capture_plan as _plan
 from jasper.active_speaker.crossover_v2 import commanded as _commanded
@@ -64,14 +63,10 @@ from jasper.active_speaker.crossover_v2.summed_alignment import cached_session_r
 from jasper.active_speaker.crossover_v2 import verification as _verification
 from jasper.active_speaker.crossover_v2 import contracts as _contracts
 from jasper.active_speaker.crossover_v2.contracts import (
-    ENTRY_GRAPH_FINGERPRINT_UNKNOWN as _ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
     REFERENCE_MARK_DESIGN_AXIS as _REFERENCE_MARK_DESIGN_AXIS,
 )
 
-from jasper.active_speaker.crossover_v2.intervention import (
-    LINEARIZATION_TRIM_SANITY_MARGIN_DB,
-    plan_linearization,
-)
+from jasper.active_speaker.crossover_v2.intervention import plan_linearization
 from jasper.active_speaker.crossover_v2.plan_assembly import JournalRecord, LinearizationPlan
 from jasper.active_speaker.crossover_v2.measure_spec import (
     GRAPH_SCOPE_DRIVERS, MeasureSpec, branch_channels_for,
@@ -98,7 +93,6 @@ from jasper.audio_measurement.program import (
     RoleBand,
 )
 from jasper.audio_measurement.program_analysis import (
-    INTEGRITY_CHECK_SWEEP_HEARD,
     MEASURE_PAIR_SINGLE_DRIVER,
     AppliedAlignment,
     GainPlan,
@@ -111,95 +105,52 @@ from jasper.active_speaker.crossover_v2.capture_source import (
 )
 from jasper.log_event import log_event
 
+from jasper.active_speaker.crossover_v2.admission import (
+    ATTEMPT_INITIATOR_SPEAKER,
+    MAX_EXTRA_ATTEMPTS_PER_POSITION,
+    SlotAttempts,
+)
+from jasper.active_speaker.crossover_v2.candidates import (
+    CloudFitEvidence as _CloudFitEvidence,
+    LinearizationState as _LinearizationState,
+)
+from jasper.active_speaker.crossover_v2.capture_dispatch import (
+    VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
+    _any_sweep_clipped,
+    _stimulus_locate_ok,
+)
+from jasper.active_speaker.crossover_v2.capture_plan import (
+    CLOUD_GEOMETRY_RETRY_PROMPTS,
+    CLOUD_GEOMETRY_RETRY_RISE_CM,
+    CLOUD_POSITION_PROMPTS,
+    CloudPositionPrompt,
+    GEOMETRY_RETRY_OFFSET_CM,
+    LATERAL_POSE_PROMPTS,
+    _pose,
+    position_angle_deg,
+    position_elevation_deg,
+    position_geometry,
+    verify_pose_table,
+)
+from jasper.active_speaker.crossover_v2.contracts import (
+    ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+    CLAIM_FAIL,
+    CrossoverV2FlowError,
+    VERIFY_TOLERANCE_DB,
+)
+from jasper.active_speaker.crossover_v2.durable_state import V2ConductorSnapshot, attempt_record_from_verify
+from jasper.active_speaker.crossover_v2.spatial import (
+    LateralPose,
+    MARK_DISTANCE_M,
+    POSITION_ROLE_OFFAX,
+    _CloudPosition,
+    _geometry_verdict_from_combined,
+    _primary_sweep_bands,
+)
+from jasper.active_speaker.crossover_v2.verification import _per_band_flatness_log_field
+
 logger = logging.getLogger(__name__)
 
-# --- phase vocabulary (owned by crossover_v2.journey) ----------------------
-
-ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED = (
-    _contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED
-)
-
-SUMMED_SWEEP_PHASES = _programs.SUMMED_SWEEP_PHASES
-
-ENTRY_GRAPH_FINGERPRINT_UNKNOWN = _ENTRY_GRAPH_FINGERPRINT_UNKNOWN
-
-MAX_EXTRA_ATTEMPTS_PER_POSITION = _admission.MAX_EXTRA_ATTEMPTS_PER_POSITION
-ATTEMPT_INITIATOR_HOUSEHOLD = _admission.ATTEMPT_INITIATOR_HOUSEHOLD
-ATTEMPT_INITIATOR_SPEAKER = _admission.ATTEMPT_INITIATOR_SPEAKER
-
-# --- the walk this session will do (see crossover_v2.capture_plan) ---------
-# READ-ONLY doors: patching a name here rebinds this module only.
-AUTO_ADVANCE_COUNTDOWN = _plan.AUTO_ADVANCE_COUNTDOWN
-AUTO_ADVANCE_COUNTDOWN_S = _plan.AUTO_ADVANCE_COUNTDOWN_S
-AUTO_ADVANCE_TAP = _plan.AUTO_ADVANCE_TAP
-CAPTURE_ENTRY_MARGIN_MS = _plan.CAPTURE_ENTRY_MARGIN_MS
-CAPTURE_PLAN_MAX_ATTEMPTS = _plan.CAPTURE_PLAN_MAX_ATTEMPTS
-CLOUD_GEOMETRY_RETRY_PROMPTS = _plan.CLOUD_GEOMETRY_RETRY_PROMPTS
-CLOUD_GEOMETRY_RETRY_RISE_CM = _plan.CLOUD_GEOMETRY_RETRY_RISE_CM
-CLOUD_POSITION_PROMPTS = _plan.CLOUD_POSITION_PROMPTS
-CLOUD_RETAKE_ALLOWANCE = _plan.CLOUD_RETAKE_ALLOWANCE
-CLOUD_VERIFY_POSE_PROMPTS = _plan.CLOUD_VERIFY_POSE_PROMPTS
-CLOUD_WALK_SHAPE_TAIL = _plan.CLOUD_WALK_SHAPE_TAIL
-CLOUD_WALK_SHAPE_TAIL_POST_APPLY = _plan.CLOUD_WALK_SHAPE_TAIL_POST_APPLY
-CloudPositionPrompt = _plan.CloudPositionPrompt
-DEFAULT_CLOUD_MEASURE_POSITIONS = _contracts.DEFAULT_CLOUD_MEASURE_POSITIONS
-DEFAULT_CLOUD_VERIFY_POSITIONS = _plan.DEFAULT_CLOUD_VERIFY_POSITIONS
-GEOMETRY_RETRY_OFFSET_CM = _plan.GEOMETRY_RETRY_OFFSET_CM
-LATERAL_MARK_PROMPT = _plan.LATERAL_MARK_PROMPT
-LATERAL_MARK_RETURN_PROMPT = _plan.LATERAL_MARK_RETURN_PROMPT
-LATERAL_POSE_PROMPTS = _plan.LATERAL_POSE_PROMPTS
-MARK_DISTANCE_M = _spatial.MARK_DISTANCE_M
-MAX_CLOUD_MEASURE_POSITIONS = _plan.MAX_CLOUD_MEASURE_POSITIONS
-MIN_CLOUD_MEASURE_POSITIONS = _plan.MIN_CLOUD_MEASURE_POSITIONS
-MIN_CLOUD_OFFSET_CM = _plan.MIN_CLOUD_OFFSET_CM
-MIN_CLOUD_VERIFY_POSITIONS = _plan.MIN_CLOUD_VERIFY_POSITIONS
-POSITION_DEG_KEY = _plan.POSITION_DEG_KEY
-POSITION_ROLES = _spatial.POSITION_ROLES
-POSITION_ROLE_KEY = _plan.POSITION_ROLE_KEY
-POSITION_ROLE_OFFAX = _spatial.POSITION_ROLE_OFFAX
-POSITION_ROLE_ONAX = _spatial.POSITION_ROLE_ONAX
-POSITION_ROLE_XOVR = _spatial.POSITION_ROLE_XOVR
-REVERIFY_NO_REWALK_HEADLINE = _plan.REVERIFY_NO_REWALK_HEADLINE
-STAGE1_INCLUDES_ENTRY_BASELINE = _plan.STAGE1_INCLUDES_ENTRY_BASELINE
-V2PlanShape = _plan.V2PlanShape
-V2_FIRST_BEGIN_TIMEOUT_S = _plan.V2_FIRST_BEGIN_TIMEOUT_S
-VERIFY_ANCHOR_HOLD_MESSAGE = _plan.VERIFY_ANCHOR_HOLD_MESSAGE
-WALL_CLOCK_CEILING_PER_ENTRY_S = _plan.WALL_CLOCK_CEILING_PER_ENTRY_S
-WIDE_OFFSET_MIN_CM = _plan.WIDE_OFFSET_MIN_CM
-_LATERAL_POSE_OFFSETS_CM = _plan._LATERAL_POSE_OFFSETS_CM
-_min_positions_for_two_wide_offsets = _plan._min_positions_for_two_wide_offsets
-_pose = _plan._pose
-_program_duration_ms = _plan._program_duration_ms
-announced_capture_indexes = _plan.announced_capture_indexes
-build_v2_capture_plan = _plan.build_v2_capture_plan
-build_v2_cloud_index_phase_map = _plan.build_v2_cloud_index_phase_map
-build_v2_session_spec = _plan.build_v2_session_spec
-build_v2_verify_capture_plan = _plan.build_v2_verify_capture_plan
-build_v2_verify_index_phase_map = _plan.build_v2_verify_index_phase_map
-build_v2_verify_session_spec = _plan.build_v2_verify_session_spec
-capture_progress_label = _plan.capture_progress_label
-cloud_capture_target = _plan.cloud_capture_target
-cloud_geometry_retry_reach_cm = _plan.cloud_geometry_retry_reach_cm
-cloud_plan_max_attempts = _plan.cloud_plan_max_attempts
-cloud_walk_reach_cm = _plan.cloud_walk_reach_cm
-cloud_walk_reach_cm_of = _plan.cloud_walk_reach_cm_of
-cloud_walk_shape = _plan.cloud_walk_shape
-format_position_distance = _plan.format_position_distance
-position_angle_deg = _plan.position_angle_deg
-position_elevation_deg = _plan.position_elevation_deg
-position_geometry = _plan.position_geometry
-remote_position_prompt = _plan.remote_position_prompt
-resolve_plan_shape = _plan.resolve_plan_shape
-session_wall_clock_ceiling_s = _plan.session_wall_clock_ceiling_s
-stage1_base_entries = _plan.stage1_base_entries
-stage1_plan_max_attempts = _plan.stage1_plan_max_attempts
-v2_first_begin_timeout_s = _plan.v2_first_begin_timeout_s
-verify_pose_table = _plan.verify_pose_table
-walk_shape_for = _plan.walk_shape_for
-wall_clock_ceiling_s = _plan.wall_clock_ceiling_s
-
-
-# Substituting one of these names here binds only for readers inside this module.
 
 from jasper.active_speaker.crossover_v2 import refusal_copy as _reasons
 from jasper.active_speaker.crossover_v2.refusal_copy import (
@@ -218,9 +169,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     reason_message,
 )
 
-from jasper.active_speaker.crossover_v2.spatial import (
-    GEOMETRY_RETRY_POSITIONS as GEOMETRY_RETRY_POSITIONS,
-)
+from jasper.active_speaker.crossover_v2.spatial import GEOMETRY_RETRY_POSITIONS
 
 #: dB of pooled spec residual (``flat_spec.spec_convergence_residual``), RAW
 #: pre-fit against LINEARIZED predicted sum; 0.5 is the model's own measured
@@ -245,22 +194,14 @@ def _prescribed_roles(candidate: Any) -> tuple[str, ...]:
     )
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import (
-    SWEEP_LOCATE_CONFIDENCE_FLOOR as SWEEP_LOCATE_CONFIDENCE_FLOOR,
-    SWEEP_SCHEDULE_RESIDUAL_CEILING_MS as SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
-    _gate_disclosure as _gate_disclosure,
-    _gate_entanglement_floor as _gate_entanglement_floor,
-    _gate_floor_source as _gate_floor_source,
-    _gate_moved_rms_db as _gate_moved_rms_db,
-    _gate_record as _gate_record,
-    _gate_reflection_delay_ms as _gate_reflection_delay_ms,
-    _gate_trusted_band_hz as _gate_trusted_band_hz,
-    _gate_window_ms as _gate_window_ms,
-    _pilot_by_role as _pilot_by_role,
-    _pilot_diag_fields as _pilot_diag_fields,
-    _pilot_transfer_by_role as _pilot_transfer_by_role,
-    _sweep_locate_confidence_ok as _sweep_locate_confidence_ok,
-    _sweep_schedule_diag_fields as _sweep_schedule_diag_fields,
-    _sweep_schedule_ok as _sweep_schedule_ok,
+    _gate_entanglement_floor,
+    _gate_floor_source,
+    _gate_record,
+    _gate_trusted_band_hz,
+    _gate_window_ms,
+    _pilot_transfer_by_role,
+    _sweep_locate_confidence_ok,
+    _sweep_schedule_ok,
 )
 
 
@@ -293,14 +234,6 @@ def _declared_first_bounce_s(distance_m: float | None) -> float | None:
 
 # --- tuning constants -----------------------------------------------------
 
-GAIN_CAP_BACKOFF_DB = _programs.GAIN_CAP_BACKOFF_DB
-PILOT_LEVEL_DELTA_DB = _programs.PILOT_LEVEL_DELTA_DB
-LOCATE_MIN_CONFIDENCE = _dispatch.LOCATE_MIN_CONFIDENCE
-VERIFY_TOLERANCE_DB = _contracts.VERIFY_TOLERANCE_DB
-
-
-verify_absolute_tolerance_db = _verification.verify_absolute_tolerance_db
-
 
 # The prescribed on-axis mic distance the parallax correction assumes (§5.2).
 MEASUREMENT_DISTANCE_M = 1.0
@@ -314,38 +247,13 @@ ALIGNMENT_CONFIDENCE_TRUST_FLOOR = 0.6
 # ADR-0181.
 MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB = 15.0
 
-# Measurement-honesty gate G3, dB: how far VERIFY's leading pilot-pair transfer
-# may step between attempts before the recorder itself is suspect. See
-# ADR-0182.
-VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = _dispatch.VERIFY_PILOT_TRANSFER_STEP_CEILING_DB
-
-CrossoverV2FlowError = _contracts.CrossoverV2FlowError
-
 
 # --- pure helpers (fixture-testable in isolation) --------------------------
-
-
-back_off_gain = _programs.back_off_gain
-
-
-alignment_to_candidate_fields = _planning.alignment_to_candidate_fields
 
 
 def _measure_sufficient(take: _dispatch.TakeVerdict, analysis: ProgramAnalysis) -> bool:
     return take.ok and (not analysis.driver_responses or analysis.measure_pair_not_evaluated is not None
                         or take.capabilities["delay_estimate"])
-
-
-_analysis_json = _planning.analysis_json
-
-
-_stimulus_locate_ok = _dispatch._stimulus_locate_ok
-
-
-_any_sweep_clipped = _dispatch._any_sweep_clipped
-
-
-_per_band_flatness_log_field = _verification._per_band_flatness_log_field
 
 
 def _capture_wav_sha256(result: Any) -> str | None:
@@ -355,15 +263,6 @@ def _capture_wav_sha256(result: Any) -> str | None:
     if not isinstance(wav, (bytes, bytearray)):
         return None
     return hashlib.sha256(bytes(wav)).hexdigest()
-
-
-CLAIM_PASS = _contracts.CLAIM_PASS
-CLAIM_FAIL = _contracts.CLAIM_FAIL
-CLAIM_NOT_EVALUATED = _contracts.CLAIM_NOT_EVALUATED
-CLAIM_NO_PER_BRANCH_CAPTURE = _verification.CLAIM_NO_PER_BRANCH_CAPTURE
-
-PILOT_SNR_UNUSABLE_DB = _diagnostics.PILOT_SNR_UNUSABLE_DB
-_worst_pilot_snr_db = _diagnostics._worst_pilot_snr_db
 
 
 # --- seams + snapshot -----------------------------------------------------
@@ -473,32 +372,6 @@ class V2FlowSeams:
     applied_boosts: Callable[[], bool] | None = None
 
 
-V2ConductorSnapshot = _durable_state.V2ConductorSnapshot
-attempt_history_from_state = _durable_state.attempt_history_from_state
-attempt_record_from_verify = _durable_state.attempt_record_from_verify
-
-
-# One prompted position's attempt ledger (owner ruling #2086). Kept importable
-# from the flow: the endpoints and capture-sequence suites name it here.
-SlotAttempts = _admission.SlotAttempts
-
-
-_CloudPosition = _spatial._CloudPosition
-
-
-# R16's lateral evidence types (plan §4.4). Kept importable from the flow —
-# ``_primary_sweep_bands`` included — because the R16/R17 suites name them here.
-LATERAL_EVIDENCE_BAND_HZ = _spatial.LATERAL_EVIDENCE_BAND_HZ
-LATERAL_EVIDENCE_POINTS_PER_OCTAVE = _spatial.LATERAL_EVIDENCE_POINTS_PER_OCTAVE
-LateralPose = _spatial.LateralPose
-lateral_evidence_grid_hz = _spatial.lateral_evidence_grid_hz
-_primary_sweep_bands = _spatial._primary_sweep_bands
-
-
-cloud_position_capture = _spatial.cloud_position_capture
-_geometry_verdict_from_combined = _spatial._geometry_verdict_from_combined
-
-
 def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
     """Combine a closed group, and journal a combiner failure."""
     result = _spatial.combine_cloud_positions(positions)
@@ -557,11 +430,6 @@ def assemble_cloud_group_result(
             level=logging.WARNING, **answer.diagnostics,
         )
     return answer.result
-
-
-# --- what one candidate build produced (see crossover_v2.candidates) -------
-_CloudFitEvidence = _candidates.CloudFitEvidence
-_LinearizationState = _candidates.LinearizationState
 
 
 def spec_report_for_predicted_sum(predicted_sum: Any) -> Any:
@@ -3590,50 +3458,12 @@ class CrossoverV2Session:
         return plan
 
 
-_role_transfers = _priors.role_transfers
-
-
 __all__ = [
     "CrossoverV2Session",
-    "CrossoverV2FlowError",
-    "INTEGRITY_CHECK_SWEEP_HEARD",
-    "build_v2_capture_plan",
-    "build_v2_session_spec",
-    "build_v2_verify_capture_plan",
-    "build_v2_verify_session_spec",
-    "V2ConductorSnapshot",
     "V2FlowSeams",
     "V2RecordPublishers",
-    "ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED",
-    "attempt_history_from_state",
-    "attempt_record_from_verify",
-    "V2PlanShape",
-    "resolve_plan_shape",
-    "capture_progress_label",
-    "REVERIFY_NO_REWALK_HEADLINE",
-    "stage1_base_entries",
-    "stage1_plan_max_attempts",
-    "LATERAL_POSE_PROMPTS",
-    "CLOUD_VERIFY_POSE_PROMPTS",
-    "verify_pose_table",
-    "position_geometry",
-    "LATERAL_EVIDENCE_BAND_HZ",
-    "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",
-    "LateralPose",
-    "lateral_evidence_grid_hz",
-    "STAGE1_INCLUDES_ENTRY_BASELINE",
-    "CAPTURE_PLAN_MAX_ATTEMPTS",
-    "V2_FIRST_BEGIN_TIMEOUT_S",
-    "v2_first_begin_timeout_s",
     "ALIGNMENT_CONFIDENCE_TRUST_FLOOR",
     "MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB",
-    "SWEEP_SCHEDULE_RESIDUAL_CEILING_MS",
-    "SWEEP_LOCATE_CONFIDENCE_FLOOR",
-    "VERIFY_PILOT_TRANSFER_STEP_CEILING_DB",
-    "alignment_to_candidate_fields",
-    "back_off_gain",
-    "verify_absolute_tolerance_db",
-    "LINEARIZATION_TRIM_SANITY_MARGIN_DB",
     "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",
     "PRESCRIBED_NON_WORSENING_DB",
     "spec_report_for_predicted_sum",

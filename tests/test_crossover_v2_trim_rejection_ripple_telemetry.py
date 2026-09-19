@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker.crossover_v2 import intervention as iv
 from jasper.active_speaker.crossover_v2.contracts import (
     CandidateAcousticContext,
@@ -86,7 +86,7 @@ def _walked_to_measure():
     conductor = _conductor(fakes)
     _run_phase(conductor, 1, 1)
     analysis = _eligible_measure_analysis(
-        conductor.program_for_phase(flow.PHASE_MEASURE)
+        conductor.program_for_phase(journey.PHASE_MEASURE)
     )
     # A distinctive raw ripple, so "did this field come from the RAW branches"
     # is answerable by looking at the number.
@@ -102,7 +102,7 @@ def _walked_to_measure():
 
 def _planner_request(conductor, analysis) -> iv.LinearizationRequest:
     """The planner's inputs, built the way the conductor builds them."""
-    program = conductor.program_for_phase(flow.PHASE_MEASURE)
+    program = conductor.program_for_phase(journey.PHASE_MEASURE)
     seg_w, seg_t = program.segment("sweep_w"), program.segment("sweep_t")
     return iv.request_from_analysis(
         analysis,

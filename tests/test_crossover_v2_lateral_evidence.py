@@ -17,7 +17,10 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import angle_capture as ac
-from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import capture_plan
+from jasper.active_speaker.crossover_v2 import contracts
+from jasper.active_speaker.crossover_v2 import pose_curve
+from jasper.active_speaker.crossover_v2 import programs
 from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import spatial
@@ -33,17 +36,19 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_LOCATE_FAILED,
     REASON_PILOT_LEVEL_COLLAPSE,
 )
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.spatial import (
     POSITION_ROLE_OFFAX,
     POSITION_ROLE_ONAX,
     POSITION_ROLE_XOVR,
     LateralPose,
+)
+from jasper.active_speaker.crossover_v2.capture_plan import (
     build_v2_capture_plan,
     build_v2_cloud_index_phase_map,
     build_v2_session_spec,
-    lateral_evidence_grid_hz,
     resolve_plan_shape,
 )
+from jasper.active_speaker.crossover_v2.pose_curve import lateral_evidence_grid_hz
 from jasper.audio_measurement.program import KIND_SWEEP
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
@@ -61,7 +66,7 @@ from tests.crossover_v2_fixtures import (
     _run_phase,
 )
 
-LATERAL_COUNT = len(flow.LATERAL_POSE_PROMPTS)
+LATERAL_COUNT = len(capture_plan.LATERAL_POSE_PROMPTS)
 FIRST_LATERAL_INDEX = 3
 LAST_LATERAL_INDEX = FIRST_LATERAL_INDEX + LATERAL_COUNT - 1
 
@@ -93,9 +98,9 @@ def test_the_walk_is_derived_from_the_cloud_table_and_bracketed_by_the_mark():
     by PREDICATE off ``CLOUD_POSITION_PROMPTS`` so the two tables cannot state
     different distances, and bracketed by the two at-mark poses.
     """
-    poses = flow.LATERAL_POSE_PROMPTS
-    assert poses[0] is flow.LATERAL_MARK_PROMPT
-    assert poses[-1] is flow.LATERAL_MARK_RETURN_PROMPT
+    poses = capture_plan.LATERAL_POSE_PROMPTS
+    assert poses[0] is capture_plan.LATERAL_MARK_PROMPT
+    assert poses[-1] is capture_plan.LATERAL_MARK_RETURN_PROMPT
     assert [p.offset_cm for p in poses] == [0.0, 12.0, 12.0, 40.0, 40.0, 0.0]
     assert [p.role for p in poses] == [
         POSITION_ROLE_ONAX, POSITION_ROLE_ONAX, POSITION_ROLE_ONAX,
@@ -115,21 +120,21 @@ def test_the_walk_is_derived_from_the_cloud_table_and_bracketed_by_the_mark():
     # rule), and the at-mark rows never quote one.
     for pose in poses:
         if pose.offset_cm:
-            assert flow.format_position_distance(pose.offset_cm) in pose.headline
+            assert capture_plan.format_position_distance(pose.offset_cm) in pose.headline
         else:
             assert "cm)" not in pose.headline
     # Mutation of the import-time guard: drop one 40 cm row from the cloud
     # table and the derived walk is lopsided, so the guard's count must fire.
     survivors = tuple(
-        p for p in flow.CLOUD_POSITION_PROMPTS
+        p for p in capture_plan.CLOUD_POSITION_PROMPTS
         if not (p.offset_cm == 40.0 and "LEFT" in p.headline)
     )
-    derived = (flow.LATERAL_MARK_PROMPT,) + tuple(
+    derived = (capture_plan.LATERAL_MARK_PROMPT,) + tuple(
         p for p in survivors
         if p.role != POSITION_ROLE_XOVR
-        and float(p.offset_cm) in flow._LATERAL_POSE_OFFSETS_CM
-    ) + (flow.LATERAL_MARK_RETURN_PROMPT,)
-    assert len(derived) != 2 * len(flow._LATERAL_POSE_OFFSETS_CM) + 2
+        and float(p.offset_cm) in capture_plan._LATERAL_POSE_OFFSETS_CM
+    ) + (capture_plan.LATERAL_MARK_RETURN_PROMPT,)
+    assert len(derived) != 2 * len(capture_plan._LATERAL_POSE_OFFSETS_CM) + 2
 
 
 # --- the shipped stage-1 shape --------------------------------------------------
@@ -150,7 +155,7 @@ def _stage1(**flags):
 def _shipped_flags():
     return dict(
         include_lateral=False,
-        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+        include_entry_baseline=capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
 
 
@@ -169,21 +174,21 @@ def test_stage_1_is_the_pinned_three_capture_shape():
     half of the promise that the walk MACHINERY an operator's staged angle walk
     runs is untouched.
     """
-    assert flow.STAGE1_INCLUDES_ENTRY_BASELINE is True
+    assert capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE is True
 
     index_phase, plan, spec = _stage1(**_shipped_flags())
 
     # Stage 1 stated in full: the anchor pair, then #2291's entry baseline. The
     # pre-apply cloud stays off on its own separate flag, as it has since R15.
     assert index_phase == {
-        1: PHASE_CHECK, 2: PHASE_MEASURE, 3: flow.PHASE_ENTRY_BASELINE,
+        1: PHASE_CHECK, 2: PHASE_MEASURE, 3: journey.PHASE_ENTRY_BASELINE,
     }
     assert [e.kind_label for e in plan.entries] == [
         "check", "measure", "entry_baseline",
     ]
     assert plan.capture_target == 3
-    assert plan.max_attempts == 3 + flow.CLOUD_RETAKE_ALLOWANCE
-    assert flow.stage1_base_entries(resolve_plan_shape()) == 3
+    assert plan.max_attempts == 3 + capture_plan.CLOUD_RETAKE_ALLOWANCE
+    assert capture_plan.stage1_base_entries(resolve_plan_shape()) == 3
 
     # No pose reaches the wire — this plan is what the phone renders.
     raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
@@ -219,7 +224,7 @@ def test_a_walk_still_builds_r17s_shape_byte_for_byte():
     ``include_lateral=True`` is asked of the builders directly, which is what
     ``prepare_v2_session`` itself does once it has taken a staged walk.
     """
-    poses = len(flow.LATERAL_POSE_PROMPTS)
+    poses = len(capture_plan.LATERAL_POSE_PROMPTS)
     index_phase, plan, spec = _stage1(
         **{**_shipped_flags(), "include_lateral": True}
     )
@@ -227,13 +232,13 @@ def test_a_walk_still_builds_r17s_shape_byte_for_byte():
     assert index_phase == (
         {1: PHASE_CHECK, 2: PHASE_MEASURE}
         | {index: PHASE_LATERAL for index in range(3, 3 + poses)}
-        | {3 + poses: flow.PHASE_ENTRY_BASELINE}
+        | {3 + poses: journey.PHASE_ENTRY_BASELINE}
     )
     assert [e.kind_label for e in plan.entries] == [
         "check", "measure", *["lateral"] * poses, "entry_baseline",
     ]
     assert plan.capture_target == 3 + poses
-    assert plan.max_attempts == 3 + poses + flow.CLOUD_RETAKE_ALLOWANCE
+    assert plan.max_attempts == 3 + poses + capture_plan.CLOUD_RETAKE_ALLOWANCE
 
     raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
     # RE-DERIVED 2026-08-18 (session trims), same cause and same byte length as
@@ -308,13 +313,13 @@ def test_stage_1_walks_the_poses_with_the_anchors_own_program_duration():
     kinds = [entry.kind_label for entry in plan.entries]
     assert kinds == ["check", "measure"] + ["lateral"] * LATERAL_COUNT
     measure_entry = plan.entries[1]
-    for entry, prompt in zip(plan.entries[2:], flow.LATERAL_POSE_PROMPTS):
+    for entry, prompt in zip(plan.entries[2:], capture_plan.LATERAL_POSE_PROMPTS):
         # A pose replays the MEASURE program, so its budget is MEASURE's — a
         # phone sized for the summed sweep would stop recording mid-pose.
         assert entry.duration_ms == measure_entry.duration_ms
         assert entry.screen["title"] == prompt.headline
-        assert entry.screen["auto_advance"] == flow.AUTO_ADVANCE_TAP
-        assert entry.screen["progress"] == flow.capture_progress_label(
+        assert entry.screen["auto_advance"] == capture_plan.AUTO_ADVANCE_TAP
+        assert entry.screen["progress"] == capture_plan.capture_progress_label(
             entry.index + 1, plan.capture_target
         )
     assert plan.capture_target == 2 + LATERAL_COUNT
@@ -335,7 +340,7 @@ def test_the_index_phase_map_and_the_emitted_entries_agree():
 def test_the_retry_budget_grows_with_lateral_entries():
     shape = resolve_plan_shape()
     baseline = build_v2_capture_plan(_roles(), FC_HZ, plan_shape=shape)
-    assert baseline.max_attempts == baseline.capture_target + flow.CLOUD_RETAKE_ALLOWANCE
+    assert baseline.max_attempts == baseline.capture_target + capture_plan.CLOUD_RETAKE_ALLOWANCE
     walked = build_v2_capture_plan(_roles(), FC_HZ, plan_shape=shape, include_lateral=True)
     assert walked.capture_target == baseline.capture_target + LATERAL_COUNT
     assert walked.max_attempts == baseline.max_attempts + LATERAL_COUNT
@@ -397,7 +402,7 @@ def test_a_pose_replays_the_anchors_own_program_object():
     _walk(c, through=FIRST_LATERAL_INDEX)
     assert c.program_for_phase(PHASE_LATERAL) is c.program_for_phase(PHASE_MEASURE)
     # …and therefore is NOT the summed sweep every cloud position plays.
-    assert PHASE_LATERAL not in flow.SUMMED_SWEEP_PHASES
+    assert PHASE_LATERAL not in programs.SUMMED_SWEEP_PHASES
 
 
 # --- retained evidence --------------------------------------------------------
@@ -418,7 +423,7 @@ def test_each_pose_retains_both_branches_on_the_shared_basis_with_its_identity()
         s.role: (s.f1_hz, s.f2_hz)
         for s in program.segments if s.kind == KIND_SWEEP and s.role
     }
-    for pose, prompt in zip(poses, flow.LATERAL_POSE_PROMPTS):
+    for pose, prompt in zip(poses, capture_plan.LATERAL_POSE_PROMPTS):
         assert pose.prompt == prompt.text
         assert pose.role == prompt.role
         assert pose.offset_cm == prompt.offset_cm
@@ -458,7 +463,7 @@ def test_the_retained_band_reads_the_sweep_segment_not_a_pilot():
     program = c.program_for_phase(PHASE_LATERAL)
     pilots = [s for s in program.segments if s.kind == "pilot" and s.role]
     assert pilots, "the fixture must actually carry a leading pilot pair"
-    honest = flow._primary_sweep_bands(program)
+    honest = spatial._primary_sweep_bands(program)
     # Today's coupling, stated rather than relied on.
     assert (pilots[0].f1_hz, pilots[0].f2_hz) == honest[pilots[0].role]
     # Break it: a pilot whose band is a narrow tone. The reader must still
@@ -472,7 +477,7 @@ def test_the_retained_band_reads_the_sweep_segment_not_a_pilot():
         if s.kind == "pilot" and s.role else s
         for s in program.segments
     ))
-    assert flow._primary_sweep_bands(mutated) == honest
+    assert spatial._primary_sweep_bands(mutated) == honest
     for curve in c.lateral_poses[0].curves:
         assert curve.band_hz == honest[curve.role]
 
@@ -634,7 +639,7 @@ def test_the_resampler_really_does_raise_on_an_empty_axis():
     for a reason that no longer exists.
     """
     with pytest.raises(IndexError):
-        flow.lateral_pose_curve(_empty_axis_response("woofer"), (100.0, 20000.0))
+        pose_curve.lateral_pose_curve(_empty_axis_response("woofer"), (100.0, 20000.0))
 
 
 @pytest.mark.parametrize(
@@ -709,7 +714,7 @@ def test_a_screened_out_pose_refuses_before_any_curve_is_built(
 
 def test_the_evidence_basis_is_a_bounded_log_grid():
     grid = lateral_evidence_grid_hz()
-    lo, hi = flow.LATERAL_EVIDENCE_BAND_HZ
+    lo, hi = pose_curve.LATERAL_EVIDENCE_BAND_HZ
     assert grid[0] == pytest.approx(lo)
     assert grid[-1] == pytest.approx(hi)
     ratios = grid[1:] / grid[:-1]
@@ -718,7 +723,7 @@ def test_the_evidence_basis_is_a_bounded_log_grid():
     # the grid lands exactly on both band edges — so this is a bound, not an
     # equality, because that is what is actually true.
     per_octave = math.log(2.0) / math.log(ratios[0])
-    nominal = flow.LATERAL_EVIDENCE_POINTS_PER_OCTAVE
+    nominal = pose_curve.LATERAL_EVIDENCE_POINTS_PER_OCTAVE
     assert abs(per_octave - nominal) / nominal < 0.01
     # Bounded: a few thousand complex values, not the analysis grid's hundreds
     # of thousands.
@@ -849,7 +854,7 @@ def test_an_evidence_pose_banks_the_stated_prompt_not_the_ratified_table():
     ]
     # The ratified table is a DIFFERENT walk, so this cannot pass by accident.
     assert [p.text for p in prompts] != [
-        p.text for p in flow.LATERAL_POSE_PROMPTS[: len(prompts)]
+        p.text for p in capture_plan.LATERAL_POSE_PROMPTS[: len(prompts)]
     ]
 
 
@@ -1014,5 +1019,5 @@ def test_a_session_refuses_an_incoherent_lateral_declaration(kwargs, fragment):
     """Fail-closed at construction, because what a mistake reaches is a walk
     banked at poses the microphone never visited. The refusal is the flow's own
     error, so a caller that already handles session construction handles this."""
-    with pytest.raises(flow.CrossoverV2FlowError, match=fragment):
+    with pytest.raises(contracts.CrossoverV2FlowError, match=fragment):
         _lateral_conductor(FakeSeams(), **kwargs)

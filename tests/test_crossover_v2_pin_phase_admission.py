@@ -89,4 +89,4 @@ def test_the_tripwire_looks_in_every_module_that_carries_the_rule(site, phases):
 
 def test_checks_own_linearity_rule_is_deliberately_not_the_plain_one():
     assert refusal_copy.REASON_NOISY_ROOM_LINEARITY != REASON_AGC_BEHAVIORAL_FAIL
-    assert refusal_copy.REASON_NOISY_ROOM_LINEARITY in flow.REASON_REGISTRY
+    assert refusal_copy.REASON_NOISY_ROOM_LINEARITY in refusal_copy.REASON_REGISTRY

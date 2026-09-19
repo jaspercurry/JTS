@@ -55,7 +55,7 @@ from jasper.active_speaker.branch_chain import (
     CrossoverSection,
     crossover_response_complex,
 )
-from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker.crossover_v2 import commanded as cmd
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_MIN_BINS,
@@ -921,7 +921,7 @@ def _entry_baseline(session, measured_pre):
     from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
 
     return EntryBaseline(
-        program_id=session.program_for_phase(flow.PHASE_VERIFY).program_id,
+        program_id=session.program_for_phase(journey.PHASE_VERIFY).program_id,
         reference_mark=REFERENCE_MARK_DESIGN_AXIS,
         curve=ResponseCurve(FREQS_HZ, measured_pre),
         excluded=tuple(False for _ in FREQS_HZ),

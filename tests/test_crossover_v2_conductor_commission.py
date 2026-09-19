@@ -11,7 +11,7 @@ import re
 import pytest
 import yaml
 from dataclasses import replace
-from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import capture_plan
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_VERIFY,
@@ -20,7 +20,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.programs import courtesy_prelude_for_phase
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.capture_plan import (
     AUTO_ADVANCE_TAP,
     CAPTURE_ENTRY_MARGIN_MS,
     CAPTURE_PLAN_MAX_ATTEMPTS,
@@ -31,14 +31,9 @@ from jasper.active_speaker.crossover_v2_flow import (
     MIN_CLOUD_MEASURE_POSITIONS,
     MIN_CLOUD_OFFSET_CM,
     MIN_CLOUD_VERIFY_POSITIONS,
-    POSITION_ROLE_ONAX,
-    POSITION_ROLES,
-    PILOT_LEVEL_DELTA_DB,
     REVERIFY_NO_REWALK_HEADLINE,
     WIDE_OFFSET_MIN_CM,
     VERIFY_ANCHOR_HOLD_MESSAGE,
-    CrossoverV2Session,
-    CrossoverV2FlowError,
     _program_duration_ms,
     _pose,
     build_v2_capture_plan,
@@ -48,6 +43,10 @@ from jasper.active_speaker.crossover_v2_flow import (
     format_position_distance,
     resolve_plan_shape,
 )
+from jasper.active_speaker.crossover_v2.spatial import POSITION_ROLE_ONAX, POSITION_ROLES
+from jasper.active_speaker.crossover_v2.programs import PILOT_LEVEL_DELTA_DB
+from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
+from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.audio_measurement.program import (
     KIND_COURTESY_TONE,
 )
@@ -478,7 +477,7 @@ def test_capture_plan_duration_matches_courtesy_prelude_program_exactly():
     shipped = build_v2_capture_plan(
         _roles(), FC_HZ,
         include_lateral=False,
-        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+        include_entry_baseline=capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
     baseline = next(e for e in shipped.entries if e.kind_label == "entry_baseline")
     assert baseline.duration_ms == verify.duration_ms

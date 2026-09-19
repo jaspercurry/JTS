@@ -10,7 +10,7 @@ import math
 import types
 import pytest
 from dataclasses import replace
-from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import admission
 from jasper.active_speaker.crossover_envelope_v2 import crossover_v2_phase
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION
 from jasper.active_speaker.crossover_v2.journey import (
@@ -22,14 +22,13 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
 )
-from jasper.active_speaker.crossover_v2_flow import (
-    PILOT_SNR_UNUSABLE_DB,
+from jasper.active_speaker.crossover_v2.diagnostics import PILOT_SNR_UNUSABLE_DB, _worst_pilot_snr_db
+from jasper.active_speaker.crossover_v2.capture_dispatch import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
-    CrossoverV2Session,
-    _worst_pilot_snr_db,
-    alignment_to_candidate_fields,
 )
+from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
+from jasper.active_speaker.crossover_v2.planning import alignment_to_candidate_fields
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_OK,
@@ -309,7 +308,9 @@ def test_stimulus_locate_floor_is_per_role_not_per_capture():
     more coarsely by design, so the rule is "every role had at least one
     stimulus we could find", not "every segment was easy to find".
     """
-    from jasper.active_speaker.crossover_v2_flow import _stimulus_locate_ok
+    from jasper.active_speaker.crossover_v2.capture_dispatch import (  # lazy: avoid measurement-stack import cost on unused paths
+        _stimulus_locate_ok,
+    )
 
     def _analysis(locations):
         return types.SimpleNamespace(locations=locations)
@@ -344,7 +345,7 @@ def test_stimulus_locate_floor_is_per_role_not_per_capture():
 
 @pytest.mark.parametrize(("fault", "code", "charge", "budget"), [
     ({"glitch_detected": True}, "drift_baselines_disagree", "speaker", MAX_AUTOMATIC_RETAKES_PER_POSITION),
-    ({"linearity_ok": False}, "agc_behavioral_fail", "operator", flow.MAX_EXTRA_ATTEMPTS_PER_POSITION),
+    ({"linearity_ok": False}, "agc_behavioral_fail", "operator", admission.MAX_EXTRA_ATTEMPTS_PER_POSITION),
 ])
 def test_check_faults_exhaust_only_the_responsible_attempt_budget(fault, code, charge, budget):
     fakes = FakeSeams()
@@ -356,7 +357,7 @@ def test_check_faults_exhaust_only_the_responsible_attempt_budget(fault, code, c
         assert verdict["attempts"]["by_household"] == (extra if charge == "operator" else 0)
         assert verdict["attempts"]["by_speaker"] == (extra if charge == "speaker" else 0)
         assert verdict["attempts"]["left"] == min(
-            flow.MAX_EXTRA_ATTEMPTS_PER_POSITION - verdict["attempts"]["by_household"],
+            admission.MAX_EXTRA_ATTEMPTS_PER_POSITION - verdict["attempts"]["by_household"],
             MAX_AUTOMATIC_RETAKES_PER_POSITION - extra)
 
     assert verdict["next"] == "stop"

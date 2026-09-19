@@ -24,6 +24,7 @@ import pytest
 pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml as yaml_lib
 
+from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker import (
     commission_wiring,
     crossover_v2_flow,
@@ -79,7 +80,7 @@ def test_the_way1_stage_one_walk_names_one_role_and_ends_on_the_entry_baseline()
 
 
 def test_a_three_role_session_is_still_refused():
-    with pytest.raises(crossover_v2_flow.CrossoverV2FlowError):
+    with pytest.raises(contracts.CrossoverV2FlowError):
         crossover_v2_flow.CrossoverV2Session(
             session_id="cap_way1_three",
             source_preset=_one_way_preset(),

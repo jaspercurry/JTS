@@ -29,7 +29,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.audio_measurement import program_analysis
 from jasper.audio_measurement.gating import FLOOR_SEARCH_BOUND
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import pose_curve, spatial
@@ -285,7 +285,7 @@ def test_a_sweep_nobody_could_hear_is_a_level_problem_not_a_glitch():
     selected: inverting this membership test left 21 tests green.
     """
     screen = spatial.entry_baseline_screens(
-        _Analysis(integrity=_failed(flow.INTEGRITY_CHECK_SWEEP_HEARD)),
+        _Analysis(integrity=_failed(program_analysis.INTEGRITY_CHECK_SWEEP_HEARD)),
         stimulus_located=True,
         reference_mark=REFERENCE_MARK_DESIGN_AXIS,
     )
@@ -294,7 +294,7 @@ def test_a_sweep_nobody_could_hear_is_a_level_problem_not_a_glitch():
     assert screen.measured is None
     assert screen.integrity_payload == {
         "capture_integrity": _failed(
-            flow.INTEGRITY_CHECK_SWEEP_HEARD
+            program_analysis.INTEGRITY_CHECK_SWEEP_HEARD
         ).to_dict()
     }
 
@@ -1150,7 +1150,7 @@ def test_a_close_with_no_take_never_asks_for_a_retake():
     """
     warranted = dict(
         locked=True, thin_evidence=False, retries_used=0,
-        budget=flow.GEOMETRY_RETRY_POSITIONS, group_already_closed=False,
+        budget=spatial.GEOMETRY_RETRY_POSITIONS, group_already_closed=False,
     )
 
     assert spatial.geometry_retake(**warranted, have_take_to_replace=True)
@@ -1216,7 +1216,7 @@ def test_only_the_lateral_walk_can_stand_on_nothing():
 def test_every_screen_kind_has_a_household_sentence():
     """Every spatial screen maps to a registered household reason."""
     assert set(refusal_copy.SCREEN_KIND_REASONS) == set(spatial.SCREEN_KINDS)
-    assert set(refusal_copy.SCREEN_KIND_REASONS.values()) <= flow.REASON_REGISTRY.keys()
+    assert set(refusal_copy.SCREEN_KIND_REASONS.values()) <= refusal_copy.REASON_REGISTRY.keys()
 
 
 def test_an_unrecognised_kind_is_loud_rather_than_silent(caplog):
@@ -1229,14 +1229,14 @@ def test_an_unrecognised_kind_is_loud_rather_than_silent(caplog):
     imprecisely for one release.
     """
     with caplog.at_level("INFO"):
-        code = flow._screen_refusal_code("a_kind_from_the_future")
+        code = refusal_copy._screen_refusal_code("a_kind_from_the_future")
 
     unmapped = [
         r for r in caplog.records
         if "crossover_v2_screen_kind_unmapped" in r.getMessage()
     ]
     assert [r.levelname for r in unmapped] == ["ERROR"]
-    assert code == flow.REASON_LOCATE_FAILED
+    assert code == refusal_copy.REASON_LOCATE_FAILED
 
 
 def test_the_declared_kinds_are_the_ones_the_ladders_can_return():

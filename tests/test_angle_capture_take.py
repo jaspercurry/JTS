@@ -29,7 +29,7 @@ from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import candidate_bank
-from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import capture_plan
 from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLE_TWEETER,
     MEASURE_KIND_CANDIDATE,
@@ -57,11 +57,11 @@ _MEASURE_INDEX = 2
 
 
 def _hand_shape():
-    return flow.resolve_plan_shape()
+    return capture_plan.resolve_plan_shape()
 
 
 def _arm_shape():
-    return dataclasses.replace(flow.resolve_plan_shape(), externally_positioned=True)
+    return dataclasses.replace(capture_plan.resolve_plan_shape(), externally_positioned=True)
 
 
 #: A measurement mic whose registry row names the channel an SPL watch reads.
@@ -85,10 +85,10 @@ def test_the_shipped_stage_1_still_plans_no_lateral_group():
     the shipped map is the 3-entry shape and the walk's indexes are not in
     it. This is the control every claim below rests on.
     """
-    shipped = flow.build_v2_cloud_index_phase_map(
+    shipped = capture_plan.build_v2_cloud_index_phase_map(
         plan_shape=_hand_shape(),
         include_lateral=False,
-        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+        include_entry_baseline=capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
     assert PHASE_LATERAL not in shipped.values()
     assert len(shipped) == 3
@@ -147,7 +147,7 @@ def test_a_complete_graph_trial_refuses_walk_overlays(overlay, candidate_id):
 
 
 def _seat_index_phases(prompts):
-    return flow.build_v2_cloud_index_phase_map(
+    return capture_plan.build_v2_cloud_index_phase_map(
         plan_shape=_hand_shape(),
         include_lateral=True, lateral_prompts=prompts,
     )

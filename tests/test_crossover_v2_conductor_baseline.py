@@ -13,7 +13,10 @@ import numpy as np
 import pytest
 from dataclasses import replace
 from typing import Any
-from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker import branch_chain
+from jasper.active_speaker.crossover_v2 import contracts
+from jasper.active_speaker.crossover_v2 import durable_state
+from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2.contracts import REFERENCE_MARK_DESIGN_AXIS
 from jasper.active_speaker.crossover_v2.round_evidence import (
     MEASURED_BENEFIT_MARGIN_DB,
@@ -22,13 +25,10 @@ from jasper.active_speaker.crossover_v2.round_evidence import (
 from jasper.active_speaker.crossover_v2.durable_state import (
     PROVENANCE_REALIZED, AttemptIntegrity, AttemptRecord,
 )
-from jasper.active_speaker.crossover_v2_flow import (
-    GAIN_CAP_BACKOFF_DB,
-    MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB,
-    CrossoverV2FlowError,
-    alignment_delay_search_bounds_us,
-    back_off_gain,
-)
+from jasper.active_speaker.crossover_v2.programs import GAIN_CAP_BACKOFF_DB, back_off_gain
+from jasper.active_speaker.crossover_v2_flow import MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB
+from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
+from jasper.active_speaker.crossover_v2.alignment_prescription import alignment_delay_search_bounds_us
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_DONE,
@@ -139,7 +139,7 @@ def test_accepted_apply_verify_writes_model_error_exactly_once():
     assert written[0] == {
         "speaker_id": "speaker-a",
         "attempt_id": "candidate-a",
-        "metric": flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        "metric": contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
         "predicted_db": 0.0,
         "realized_db": 0.9,
         "context": {
@@ -203,7 +203,7 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
     history = (
         AttemptRecord(
             attempt_id="candidate-base",
-            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+            metric=contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
             provenance=PROVENANCE_REALIZED,
             sitting_id=SESSION,
             integrity=AttemptIntegrity(comparable=True),
@@ -212,7 +212,7 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
         ),
         AttemptRecord(
             attempt_id="candidate-previous",
-            metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+            metric=contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
             provenance=PROVENANCE_REALIZED,
             sitting_id=SESSION,
             integrity=AttemptIntegrity(comparable=True),
@@ -225,7 +225,7 @@ def test_changed_recovery_verify_cannot_split_store_and_journey_truth(
     record_model_error(
         speaker_id="speaker-a",
         attempt_id="candidate-current",
-        metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        metric=contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
         predicted_db=0.0,
         realized_db=0.9,
         path=path,
@@ -384,7 +384,7 @@ def test_the_banked_sitting_survives_the_durable_state_round_trip():
     """
     record = AttemptRecord(
         attempt_id="candidate-a",
-        metric=flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        metric=contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
         provenance=PROVENANCE_REALIZED,
         sitting_id="the_session_that_measured_it",
         integrity=AttemptIntegrity(comparable=True),
@@ -392,7 +392,7 @@ def test_the_banked_sitting_survives_the_durable_state_round_trip():
     )
     assert record.to_dict()["sitting_id"] == "the_session_that_measured_it"
 
-    restored = flow.attempt_history_from_state(
+    restored = durable_state.attempt_history_from_state(
         {"attempts_loop": {"history": [record.to_dict()]}}
     )
     assert [item.sitting_id for item in restored] == [
@@ -409,12 +409,12 @@ def test_a_pre_2081_persisted_row_restores_as_unrecorded_not_as_a_match():
     """
     legacy_row = {
         "attempt_id": "candidate-old",
-        "metric": flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+        "metric": contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
         "provenance": PROVENANCE_REALIZED,
         "integrity": {"comparable": True, "reasons": []},
         "grade_db": 4.0,
     }
-    restored = flow.attempt_history_from_state(
+    restored = durable_state.attempt_history_from_state(
         {"attempts_loop": {"history": [legacy_row]}}
     )
     assert len(restored) == 1
@@ -600,7 +600,7 @@ def test_predicted_ripple_reservation_clears_when_a_retake_is_clean():
     fakes.measure = lambda program: _measure_analysis(
         program, predicted_ripple_db=9.0,
     )
-    c._rearm_measure_after_transient(flow.PhaseVerdict(False, next="retake_same"))
+    c._rearm_measure_after_transient(refusal_copy.PhaseVerdict(False, next="retake_same"))
     _run_phase(c, 2, 2)
     assert c.measure_ripple_reservation is None
 
@@ -654,8 +654,8 @@ def test_measure_priors_compose_configured_path_from_ssots_and_freeze_input():
     raw = _two_way_preset()
     raw["crossover_regions"][0]["upper_polarity"] = "inverted"
     preset = ActiveSpeakerPreset.from_mapping(raw)
-    woofer = flow.CrossoverSection(6000.0, 4, False)
-    tweeter = flow.CrossoverSection(300.0, 4, True)
+    woofer = branch_chain.CrossoverSection(6000.0, 4, False)
+    tweeter = branch_chain.CrossoverSection(300.0, 4, True)
     supplied = {"woofer": [woofer], "tweeter": [tweeter]}
     c = _conductor(
         FakeSeams(), source_preset=preset,

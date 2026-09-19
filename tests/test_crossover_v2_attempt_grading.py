@@ -11,6 +11,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
+from jasper.active_speaker.crossover_v2 import durable_state
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.durable_state import (
     MAX_ATTEMPT_HISTORY, AttemptIntegrity,
@@ -118,7 +119,7 @@ def test_history_retention_does_not_limit_further_human_started_experiments():
 
 
 def test_an_accepted_but_incomparable_record_is_not_banked_into_history(monkeypatch):
-    real_from_verify = flow.attempt_record_from_verify
+    real_from_verify = durable_state.attempt_record_from_verify
 
     def _incomparable_record(*args, **kwargs):
         record = real_from_verify(*args, **kwargs)
