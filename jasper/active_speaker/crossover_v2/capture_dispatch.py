@@ -233,9 +233,7 @@ def _assess_recording(
         targets = {role: gain - CLIP_RETRY_BACKOFF_DB for role, gain in gains.items()}
         return refuse(reasons.REASON_CLIPPED, next="retake_quieter", charge="speaker", targets=targets)
     if analysis.glitch_detected or (analysis.discontinuity_samples or 0) != 0 or (integrity and integrity.failed):
-        charge: TakeCharge = ("operator" if drift and drift.glitch_inputs == ("repeat_level_disagree",)
-                              and not analysis.discontinuity_samples else "speaker")
-        return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge=charge)
+        return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge="speaker")
     if not _sweep_schedule_ok(analysis, sample_rate):
         evidence["guard"] = "sweep_schedule"
         return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge="speaker")

@@ -15,10 +15,6 @@ from .alignment import correlation, parabolic_peak
 from .program import ExcitationProgram, KIND_SUMMED_SWEEP, _finalize, _silence
 
 
-# In-band repeat RMS differed by 0.06–0.24 dB on the two-microphone corpus.
-REPEAT_LEVEL_TOLERANCE_DB = 0.3
-
-
 @dataclass(frozen=True)
 class SummedPassAlignment:
     method: str

@@ -16,7 +16,6 @@ import numpy as np
 from jasper.audio_measurement.frame_ledger import FrameLedger, LOST_AT_CAPTURE_OVERRUN
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.quality_model import DRIVER
-from jasper.audio_measurement.repeated_sweep import REPEAT_LEVEL_TOLERANCE_DB as REPEAT_LEVEL_TOLERANCE_DB
 from jasper.audio_measurement.repeated_sweep import SummedPassAlignment
 
 
@@ -100,7 +99,6 @@ INTEGRITY_CHECK_SWEEP_SCHEDULE = "summed_sweep_schedule"
 INTEGRITY_CHECK_CLIPPED_RUN = "clipped_run"
 # Repeat checks share the MEASURE bounds (DriftEstimate.glitch_inputs).
 INTEGRITY_CHECK_REPEAT_EPSILON = "repeat_epsilon"
-INTEGRITY_CHECK_REPEAT_LEVEL = "repeat_level_agreement"
 INTEGRITY_CHECK_WITHIN_ROLE_DESYNC = "within_role_desync"
 INTEGRITY_CHECK_DISCONTINUITY_STEP = "discontinuity_step"
 
@@ -576,13 +574,7 @@ class CaptureIntegrity:
 class DriftEstimate:
     """In-capture clock-drift estimate + the glitch verdict (design §5.6.3).
 
-    ``repeat_level_delta_db`` is the woofer-repeat in-band-RMS level
-    disagreement, one of the three glitch inputs. ``per_role_epsilon_ppm``
-    is diagnostic only (never gated — only the woofer pair decides
-    ``glitch_detected``), empty for a role with <2 occurrences.
-    ``glitch_inputs`` names which of the four bounds tripped
-    (``epsilon_out_of_bound``/``residual_desync``/``repeat_level_disagree``/
-    ``timeline_slip``), empty on a clean capture.
+    ``repeat_level_delta_db`` and ``per_role_epsilon_ppm`` are diagnostic only.
 
     ``discontinuity_samples``/``discontinuity_after_segment`` describe a
     single timeline step: signed size in samples (positive => LATE) and the

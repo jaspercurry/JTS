@@ -144,6 +144,7 @@ def analysis_json(
         "kind": "jts_program_analysis_evidence",
         "program_id": analysis.program_id,
         "epsilon_ppm": round(float(drift.epsilon_ppm), 3) if drift else None,
+        "repeat_level_delta_db": drift.repeat_level_delta_db if drift else None,
         "glitch_detected": bool(analysis.glitch_detected),
         "delay_us": round(float(align.delay_us), 3) if align and not (cand and cand.timing_verdict == TIMING_NEEDS_MEASUREMENT) else None,
         "alignment_status": align.status if align else None,
