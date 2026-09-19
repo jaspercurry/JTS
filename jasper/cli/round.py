@@ -76,6 +76,10 @@ def _wizard_failure(exit_code: int, reason: str, detail: dict, payload: Any) -> 
     )
 
 
+def _run_links(run_id: str) -> dict[str, str]:
+    return dict(run_id=run_id, link=speaker_url(CROSSOVER_PAGE_PATH), status_url=speaker_url(STATUS_PATH))
+
+
 def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
     from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError  # lazy: run-only
     from ._run_request import resolve_run  # lazy: run-only measurement imports
@@ -103,11 +107,11 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
     if not isinstance(capture, dict) or not isinstance(run_id, str) or not run_id:
         return failed(EXIT_UNREADABLE, "run_answer_invalid", payload)
     if args.wait:
+        print(json.dumps(_run_links(run_id)), file=sys.stderr, flush=True)
         args.run = run_id
         return _cmd_wait(client, args)
     return _answer(args.command, "Run ready; place the microphone to start.",
-                   run_id=run_id, link=speaker_url(CROSSOVER_PAGE_PATH),
-                   status_url=speaker_url(STATUS_PATH),
+                   **_run_links(run_id),
                    shape="trial" if report.plan.candidates else "measure",
                    first_prompt=capture.get("first_prompt"), schedule=report.to_dict())
 
@@ -186,7 +190,7 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
     if banked is None:
         return failed(EXIT_REFUSED if isinstance(error, RoundBankError) else EXIT_WRITE_FAILED,
                       error.reason if isinstance(error, RoundBankError) else "write_failed", str(error))
-    return answered(wait_answer(banked, result, verbose=args.verbose),
+    return answered({**wait_answer(banked, result, verbose=args.verbose), **_run_links(args.run)},
                     "\n".join([f"Run banked at {banked.path}", *packet_lines(str(banked.path))]), sort_keys=False)
 
 

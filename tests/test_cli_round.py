@@ -714,6 +714,19 @@ def test_wait_banks_and_returns_packet(preflight_ready, bank_trial, monkeypatch,
     argv = ["wait", "--run", "run-1"] if verb == "wait" else ["run", "--program", "room", "--poses", "seat_express", "--wait"]
     if verb == "trial":
         argv = ["trial", bank_trial({"room": "document"}), "--wait"]
+    links = {"run_id": "run-1", "link": f"http://jts3.local{cli.CROSSOVER_PAGE_PATH}",
+             "status_url": f"http://jts3.local{wc.STATUS_PATH}"}
+    wait = cli.wait_for_round
+
+    def wait_after_links(*args, **kwargs):
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        if verb != "wait":
+            assert len(captured.err.splitlines()) == 1
+            assert all(value in captured.err for value in links.values())
+        return wait(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "wait_for_round", wait_after_links)
     (tmp_path / "frequency.png").touch()
     code, body = _run([*argv, timeout, "0", *(["--verbose"] if verbose else [])], opener, monkeypatch, capsys)
     assert code == 0 and calls == [(tmp_path, {
@@ -722,6 +735,7 @@ def test_wait_banks_and_returns_packet(preflight_ready, bank_trial, monkeypatch,
     assert list(body)[:5] == ["result", "reason", "round_dir", "packet", "picture"]
     assert body == {"result": "complete", "reason": None, "round_dir": str(tmp_path),
                     "packet": str(tmp_path / "packet.json"), "picture": str(tmp_path / "frequency.png"),
+                    **links,
                     **({"views": views} if verbose else {})}
 
 
