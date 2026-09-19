@@ -42,7 +42,7 @@ const runner = buildFunction(
     ...[
       "eq-math.js", "active-speaker-ui.js", "state.js", "format.js",
       "eq-curve.js", "topology.js", "driver-model.js", "installation.js", "driver-fields.js",
-      "seat-level.js", "rear-calibration.js",
+      "seat-level.js", "rear-calibration.js", "ab-listen.js",
     ].map((name) => ({ path: join(siblingDir, name) })),
     { path: modulePath, rewrite: [JTSCONFIRM_STUB] },
   ],
@@ -69,8 +69,14 @@ function classList() {
   };
 }
 
+globalThis.Node = class { static [Symbol.hasInstance](value) { return !!value?._listeners; } };
+
 function makeEl(id) {
   return {
+    children: [], dataset: {},
+    appendChild(node) { this.children.push(node); return node; },
+    replaceChildren(...nodes) { this.children = nodes; },
+    replaceWith(node) { Object.assign(this, node); },
     id, innerHTML: "", textContent: "", className: "", value: "", checked: false,
     attrs: {}, style: {}, _listeners: {}, _listenerCapture: {}, classList: classList(),
     setAttribute(k, v) { this.attrs[k] = String(v); },
@@ -576,6 +582,7 @@ function setupHarness(fetchHandler, options = {}) {
         return node;
       },
     },
+    createTextNode(text) { return {textContent: text}; },
     createElement(tagName) {
       const node = makeEl(String(tagName || "").toLowerCase());
       node.tagName = String(tagName || "").toUpperCase();

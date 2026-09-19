@@ -338,6 +338,19 @@ drives it negative while the front positions hold their figures. Read
 `superposition_residual_db` behind the cabinet first; a large value there
 means the prediction cannot be trusted at that position.
 
+To judge the cardioid by ear, flip between it and a fair "off". A rear-muted
+copy alone is not fair: the rear stage also changes the bass at the mic, so
+the ear judges tone and level, not the pattern. Write a second document
+with `rear_muted: true` and `front.filters` (Peaking or Lowshelf, inside
+the +6 dB chain cap) that put its previewed curve on tune A's from 30 to
+350 Hz at the 0° position (`judge --preview`, `figures.predicted`; `--vary`
+the filter gains), `compose` it, and trial both in ONE round:
+`jasper-round trial <A fp> --candidates base,<A fp>,<off fp> --wait`. Keep
+the pair when `low_bass` and `band_level_db` agree within about 1 dB at the
+repeated bearing. The A/B listen card on `/sound/speaker/` takes both tunes
+from that round, turns the louder one down by their measured level
+difference (40 Hz–16 kHz; it never adds gain), and flips between them.
+
 The stack plays as composed: room and bass stay in, the same in every
 candidate. After a rear change is adopted, check the room and bass
 responses and refit them if needed.
