@@ -33,7 +33,8 @@ from jasper.active_speaker.crossover_v2.record_index import measurement_document
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEHIND
 from jasper.active_speaker.rear_calibration import diagnostic_seed
-from jasper.active_speaker.round_bank import _bookkeeping
+from jasper.active_speaker.round_bank import _bookkeeping, bank_round
+from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.round_packet import write_round_packet
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW
 from jasper.audio_measurement.branch_program import build_branch_program
@@ -41,7 +42,7 @@ from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.rear_evidence import (
-    BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP, POLARITY_INVERTED,
+    BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP, POLARITY_INVERTED, LEVEL_BANDS_HZ,
     REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_REPEATS,
 )
 from jasper.cli import round_views
@@ -52,6 +53,7 @@ from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.room_median_fixture import analyzed_room_documents as analyzed_room_documents
 from tests.test_active_speaker_audition import _applied_profile
 from tests.test_active_speaker_runtime_contract import _active_topology
+from tests.test_crossover_v2_frequency_view import summed_capture_bundle as summed_capture_bundle
 
 #: The declared cabinet, and the wall bounce it predicts (ADR-0317): a rigid
 #: image source one excess path length away nulls at ``c / 4d``.
@@ -430,6 +432,54 @@ def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banke
         "rear", "frequency", "inventory"}
     assert json.loads((root / ARTIFACT_BY_VIEW["rear"].artifact).read_text()) == {
         key: value for key, value in entry.items() if key != "out"}
+
+
+@pytest.mark.parametrize("summed_capture_bundle,covered_bands", [(20000, 7), (200, 2)], indirect=["summed_capture_bundle"])
+def test_rear_views_banked_behind_trial(summed_capture_bundle, covered_bands, tmp_path, banked_candidates, monkeypatch):
+    bundle, _, _, bank = summed_capture_bundle
+    monkeypatch.setattr(room_selection, "analyzed_measurements", measurement_analysis.analyzed_measurements)
+    gains = {BASE_CANDIDATE: -3.0, _VARIANT: -6.0, _MUTED: 0.0}
+    for candidate, gain in gains.items():
+        for kind, distance in (("bearing", 1.0), ("behind", 0.1)):
+            asyncio.run(bank(f"{candidate}-{kind}", candidate=candidate, measurement_purpose="rear", phase="lateral",
+                             pose_kind=kind, mark_distance_m=distance, vertical_deg=0,
+                             capture_gain_db=gain if kind == "behind" else 0.0, gating_applied=False))
+    groups = []
+    records = [(row.path, record) for row, record in measurement_documents(bundle)]
+    for candidate in gains:
+        group = manifest_set([(path, record) for path, record in records
+                              if record["candidate_id"] == candidate], set_id=candidate)
+        group["base"] = candidate == BASE_CANDIDATE
+        groups.append(group)
+    write_manifest(bundle, program="rear/behind", groups=groups)
+    _round_environment(bundle, applied=_SECTIONS[BASE_CANDIDATE])
+    mark_state(bundle, "applied")
+    banked = bank_round(bundle, campaign_root=tmp_path / "bank", view_runner=round_views.run_bookkeeping,
+                        applied_profile_path=bundle / "applied-profile.json",
+                        declared_geometry_path=bundle / "declared-geometry.json")
+    entry, = json.loads((banked.path / "packet.json").read_text())["rear"]
+    assert entry["comparison"]["reference"]["candidate_id"] == _MUTED
+    assert entry["comparison"]["positions_unscored"] == {}
+    for candidate in entry["candidates"]:
+        positions = candidate["positions"]
+        behind, = (row for key, row in positions.items() if key.startswith("behind_"))
+        front, = (row for key, row in positions.items() if not key.startswith("behind_"))
+        assert set(front) == {"reason", "dip", "dip_shift", "ripple_db", "handover", "low_bass",
+                              "band_level_db", "late_energy", "upper_bands"}
+        assert behind["reason"] == rear_views.REASON_NON_BEARING
+        assert all(behind[key] is None for key in (
+            "dip", "dip_shift", "ripple_db", "handover", "low_bass", "band_level_db", "trough_fill_db"))
+        assert [row["band_hz"] for row in behind["bands"]] == [list(band) for band in LEVEL_BANDS_HZ]
+        expected = gains[candidate["candidate_id"]]
+        for index, band in enumerate(behind["bands"]):
+            if index < covered_bands:
+                assert band["change_db"] == pytest.approx(expected, abs=0.01)
+                assert band["level_db"] - band["reference_db"] == pytest.approx(expected, abs=0.01)
+            else:
+                assert band["change_db"] is band["level_db"] is band["reference_db"] is None
+                assert band["reason"] == REASON_COVERAGE_SHORT
+        assert behind["curve"]["change_db"] == pytest.approx([expected] * len(behind["curve"]["freqs_hz"]), abs=0.01)
+        assert candidate["repeats"] == dict.fromkeys(positions, 1)
 
 
 def test_a_position_the_reference_missed_is_disclosed_rather_than_dropped(

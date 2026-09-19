@@ -68,7 +68,7 @@ def test_preflight_output_mute(monkeypatch, muted):
 @pytest.mark.parametrize("layout,name,size", [
     (layout, name, size)
     for layout in ("full_range_passive", "active_2_way", "active_3_way", "cardioid")
-    for name, size in (("rear", "pair"), ("rear", "pair_behind"), ("front_rear", "express"), ("branches", "express"))
+    for name, size in (("rear", "express"), ("rear", "wide"), ("rear", "behind"), ("rear", "pair"), ("rear", "pair_behind"), ("front_rear", "express"), ("branches", "express"))
 ] + [("active_2_way", name, size) for name, size in (("speaker", "mark"), ("room", "arm"), ("bass", "axis"))])
 def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile, layout, name, size):
     topology = _rear_pair("mono")[1] if layout == "cardioid" else mono_output_topology(mode=layout)

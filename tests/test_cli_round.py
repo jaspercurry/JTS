@@ -38,6 +38,7 @@ from jasper.web import correction_capture, correction_crossover_v2_apply as v2ap
 from jasper.active_speaker.crossover_v2.evidence_packet import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
 from jasper.active_speaker.measurement_programs import run_program
+from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
 from jasper.cli import _run_request, crossover_prescriber, round as cli
@@ -596,6 +597,33 @@ def test_run_repeats_replace_each_pose_count(preflight_ready, bank_trial, monkey
         pose.place: (pose.repeats if repeats is None else repeats) + selected.room_sweep
         for pose in selected.poses
     }
+
+
+@pytest.mark.parametrize("repeats", [None, 2])
+def test_rear_behind_dry_run_counts_each_candidate_at_both_poses(monkeypatch, capsys, repeats):
+    preset, topology = _rear_pair("mono")
+    candidates = [_candidate(preset=preset, rear_calibration=_rear_document(rear_muted=muted),
+                             program_id=f"rear-{index}") for index, muted in enumerate((False, False, True))]
+    bank = {candidate.fingerprint: candidate for candidate in candidates}
+    monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan: ready_facts(
+        plan, candidates=bank, declared_target_ids=tuple(
+            output_topology.measurement_target_id(t["role"], t.get("output_variant", "primary"))
+            for t in active_driver_targets(topology))))
+    names = ("base", *bank)
+    assert len(names) == 4
+    argv = ["run", "--program", "rear", "--poses", "rear/behind", "--candidates", ",".join(names), "--dry-run"]
+    if repeats is not None:
+        argv += ["--repeats", str(repeats)]
+    opener = _opener()
+    code, body = _run(argv, opener, monkeypatch, capsys)
+    assert code == 0 and body["dry_run"] is True and body["issues"] == []
+    assert not opener.requests
+    poses = run_program("rear", "rear/behind").poses
+    assert Counter((tuple(row["pose"]), row["candidate_id"]) for row in body["schedule"]) == {
+        (pose.place, name): repeats or 1 for pose in poses for name in names}
+    assert {row["regime"] for row in body["schedule"]} == {"summed"}
+    assert body["mic_moves"] == 2
+    assert len(body["schedule"]) == 8 * (repeats or 1)
 
 
 def _run_opener(capture):

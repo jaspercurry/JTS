@@ -43,10 +43,10 @@ from jasper.active_speaker.rear_calibration import (
 from jasper.active_speaker.run_manifest import view_sets
 from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
 from jasper.audio_measurement.rear_evidence import (
-    BAND_SOURCE_COVERAGE, IMPULSE_FFT_SIZE, REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, across_positions,
+    BAND_SOURCE_COVERAGE, IMPULSE_FFT_SIZE, LEVEL_BANDS_HZ, REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, across_positions,
     arrival_gap_ms, comparison_band, confident_arrival_gap_s, gradient_residual_db,
     late_energy_change, pair_band_levels, position_figures, rear_polarity, reference_curve_db,
-    repeat_spread, shared_radiating_band_hz, superposition_residual_db, upper_band_levels,
+    repeat_spread, shared_radiating_band_hz, superposition_residual_db, band_level_changes,
 )
 from jasper.json_fields import finite_float
 
@@ -75,6 +75,7 @@ ROLE_PAIR = "pair"
 #: reference take is missing there, so the position has no frozen zero and no
 #: candidate may be read at it. Disclosed, never dropped.
 REASON_NO_REFERENCE_TAKE = "no_reference_take"
+REASON_NON_BEARING = "non_bearing_pose"
 
 #: A pose whose pair take did not bank all three segments on one grid, so
 #: neither woofer alone nor their sum can be read there.
@@ -178,7 +179,7 @@ def _position_rows(
     reference_late: Mapping[str, Sequence[Mapping[str, float]]],
     reference_curve: Mapping[str, np.ndarray],
     *, band_hz: Sequence[float] | None, coverage_hz: Sequence[float], handover_hz: float | None,
-    swept_hz: Sequence[float], incumbent: Mapping[str, Any] | None = None,
+    swept_hz: Sequence[float], bearing: set[str], incumbent: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One candidate's figures at every position the batch froze a zero for."""
     rows: dict[str, Any] = {}
@@ -188,16 +189,30 @@ def _position_rows(
         grid, reference_db = zeros[key]
         _, curve_db = _mean_curve_db(takes, grid)
         rows[key] = position_figures(
-            grid, curve_db, reference_db=reference_db, band_hz=band_hz, coverage_hz=coverage_hz,
+            grid, curve_db, reference_db=reference_db,
+            band_hz=band_hz if key in bearing else None, coverage_hz=coverage_hz,
             handover_hz=handover_hz,
             incumbent=None if incumbent is None else incumbent.get(key),
         )
         rows[key]["late_energy"] = late_energy_change(
             [take.late_energy for take in takes if take.late_energy], reference_late.get(key, []),
         )
-        rows[key]["upper_bands"] = upper_band_levels(
+        rows[key]["upper_bands"] = band_level_changes(
             grid, curve_db, reference_db=reference_curve[key], coverage_hz=swept_hz,
         ) if key in reference_curve else []
+        if key not in bearing:
+            rows[key].update(reason=REASON_NON_BEARING, trough_fill_db=None)
+            measured = band_level_changes(
+                grid, curve_db, reference_db=reference_curve[key], coverage_hz=swept_hz,
+                bands_hz=LEVEL_BANDS_HZ,
+            ) if key in reference_curve else []
+            by_band = {tuple(row["band_hz"]): row for row in measured}
+            rows[key]["bands"] = [by_band.get(band, {
+                "band_hz": list(band), "level_db": None, "reference_db": None, "change_db": None,
+                "reason": REASON_COVERAGE_SHORT if key in reference_curve else REASON_NO_COMPARISON,
+            }) for band in LEVEL_BANDS_HZ]
+            rows[key]["curve"] = {"freqs_hz": grid.tolist(), "magnitude_db": curve_db.tolist(),
+                                  "reference_db": reference_db.tolist(), "change_db": (curve_db - reference_db).tolist()}
     return rows
 
 
@@ -223,6 +238,7 @@ def rear_document(
     batch: dict[str, dict[str, list[SeatTake]]] = {}
     bases: dict[str, list[Mapping[str, Any]]] = {}
     on_axis: set[str] = set()
+    bearing: set[str] = set()
     for row, record, take in analyzed_purpose_takes(
         inputs.session_dir, purpose=PURPOSE_REAR, calibration_root=calibration_root,
     ):
@@ -231,6 +247,8 @@ def rear_document(
         candidate = _candidate_key(record.get("candidate_id"))
         batch.setdefault(candidate, {}).setdefault(take.pose_key, []).append(take)
         bases.setdefault(candidate, []).append(capture_basis(record))
+        if (record.get("pose_kind") or POSE_KIND_BEARING) == POSE_KIND_BEARING:
+            bearing.add(take.pose_key)
         # An on-axis reference must be a bearing pose: a non-bearing pose at
         # azimuth 0 (e.g. behind the cabinet) is never the front curve the
         # measured-dip search assumes.
@@ -271,7 +289,7 @@ def rear_document(
         if not group:
             continue
         grid, mean_db = _mean_curve_db(group)
-        zeros[key] = (grid, reference_curve_db(grid, mean_db))
+        zeros[key] = (grid, reference_curve_db(grid, mean_db) if key in bearing else mean_db)
         if muted:
             reference_late[key] = [take.late_energy for take in group if take.late_energy]
             reference_curve[key] = mean_db
@@ -291,15 +309,15 @@ def rear_document(
     )
     figures = {
         "band_hz": band["band_hz"], "coverage_hz": coverage_hz, "handover_hz": stage["handover_hz"],
-        "swept_hz": swept_hz,
+        "swept_hz": swept_hz, "bearing": bearing,
     }
     incumbent_rows = _position_rows(
         batch[incumbent_id], zeros, reference_late, reference_curve, **figures)
     # The repeated pose is the only thing a difference may be called
     # inconclusive against, so the batch's spread is the incumbent's there.
-    repeated = max(batch[incumbent_id], key=lambda key: (len(batch[incumbent_id][key]), key))
+    repeated = max(batch[incumbent_id], key=lambda key: (len(batch[incumbent_id][key]), key in bearing, key))
     repeats: list[Mapping[str, Any]] = []
-    if repeated in zeros:
+    if repeated in zeros and repeated in bearing:
         grid, reference_db = zeros[repeated]
         repeats = [position_figures(grid, np.interp(grid, take.freqs_hz, take.magnitude_db),
                                     reference_db=reference_db, band_hz=band["band_hz"],
