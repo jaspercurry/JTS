@@ -815,9 +815,9 @@ def readmit_summed_program_from_wav(
             ))
             peak = float(segment.gain_db) + session_volume_db + boost_db
             failed = tuple(code for code, passed in (
-                ("segment_band_low", low_ok),
-                ("segment_level", peak <= cap),
-                ("segment_duration", segment.n_samples / program.sample_rate_hz <= duration),
+                (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_BAND.value, low_ok),
+                (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LEVEL.value, peak <= cap),
+                (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_DURATION.value, segment.n_samples / program.sample_rate_hz <= duration),
             ) if not passed)
             allowed = not failed
             reasons = (ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS.value, *failed) if failed else ()
@@ -825,9 +825,9 @@ def readmit_summed_program_from_wav(
             segments.append(SegmentAdmission(
                 segment.segment_id, target_id, segment.channel, (low, high), peak, allowed, reasons,
                 refusal_detail={code: {"requested": value, "limit": limit} for code, value, limit in (
-                    ("segment_band_low", [low, high], [band.lower_hz, band.upper_hz]),
-                    ("segment_level", peak, cap),
-                    ("segment_duration", segment.n_samples / program.sample_rate_hz, duration),
+                    (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_BAND.value, [low, high], [band.lower_hz, band.upper_hz]),
+                    (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LEVEL.value, peak, cap),
+                    (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_DURATION.value, segment.n_samples / program.sample_rate_hz, duration),
                 ) if code in failed},
             ))
             if not allowed:
