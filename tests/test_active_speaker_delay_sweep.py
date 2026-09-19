@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Behaviour pins for the delay-landscape door onto a banked round.
-
-Three questions, one altitude each: does the door read the bank the store
-actually wrote, does it hand the operator a line they can run, and does a
-refusal reach them as the refusing module's own sentence.
-"""
+"""Read banked delay curves, publish confirmation commands and refusal fields."""
 
 import json
 import math
@@ -154,13 +149,9 @@ def test_confirmation_commands_carry_the_proposed_coordinates(tmp_path, capsys, 
         assert Path(args.bundle_dir) == bundle
 
 
-def test_curves_that_cannot_span_the_shoulders_refuse_verbatim(
+def test_curves_that_cannot_span_the_shoulders_carry_refusal_fields(
     tmp_path, capsys,
 ) -> None:
-    """The refusal IS the output. A bank swept only above Fc cannot carry a
-    null at Fc, and the sentence the operator needs is the one
-    `delay_landscape` wrote — printed through, never re-spelled here."""
-
     bundle = _bank(tmp_path, curves=[
         _curve("woofer", band=(2000.0, 12000.0)),
         _curve("tweeter", band=(2000.0, 12000.0)),
@@ -171,9 +162,6 @@ def test_curves_that_cannot_span_the_shoulders_refuse_verbatim(
     assert payload["status"] == "refused"
     assert payload["reason"] == REFUSAL_FC_OUTSIDE_OVERLAP
 
-    # Verbatim, pinned against the module that owns the sentence rather than
-    # against a copy of its wording: re-word the refusal there and this still
-    # holds, but swallow or paraphrase it here and it does not.
     with pytest.raises(DelayLandscapeError) as refusal:
         compute_landscape(
             _curve("woofer", band=(2000.0, 12000.0)),
@@ -184,7 +172,7 @@ def test_curves_that_cannot_span_the_shoulders_refuse_verbatim(
             ),
             inverted_role="tweeter",
         )
-    assert payload["detail"] == str(refusal.value)
+    assert payload["detail"] == refusal.value.detail
     assert err.strip(), "an operator running this by hand gets a line on stderr"
 
 
@@ -196,15 +184,27 @@ def test_a_bundle_with_no_round_refuses_before_it_reads_anything(
     assert payload["reason"] == "delay_landscape_no_round"
 
 
-def test_a_take_carrying_one_role_is_not_half_an_answer(tmp_path, capsys) -> None:
+def test_delay_landscape_counts_separate_driver_takes_without_pairing_them(tmp_path, capsys) -> None:
     """Both transfers are summed against each other, so they must ride ONE
     take: curves from two captures would be summed across whatever moved
     between them."""
 
     bundle = _bank(tmp_path, curves=[_curve("woofer")])
+    _bank(tmp_path, curves=[_curve("tweeter")], phase=PHASE_LATERAL,
+          take_id="p1_a01")
     code, payload, err = _propose(bundle, capsys)
     assert code == 1
     assert payload["reason"] == "delay_landscape_no_banked_curves"
+    assert payload["detail"] == {
+        "phases_searched": [PHASE_MEASURE, PHASE_LATERAL],
+        "roles_required": ["woofer", "tweeter"],
+        "takes_seen": 2,
+        "roles_per_take": {
+            "crossover_v2/capture-1/positions/p0_a01.json": {"woofer": 1},
+            "crossover_v2/capture-1/positions/p1_a01.json": {"tweeter": 1},
+        },
+        "poses": [{"position_deg": 0, "vertical_deg": 0}],
+    }
 
 
 @pytest.mark.parametrize(

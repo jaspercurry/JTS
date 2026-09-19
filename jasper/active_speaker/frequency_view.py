@@ -172,6 +172,22 @@ def build_frequency_view(
     }
 
 
+def frequency_run_from_view(document: Mapping[str, Any]) -> FrequencyRun:
+    """Read one saved frequency view through the shared series contract."""
+    if len(document["runs"]) != 1:
+        raise FrequencyViewError("as an input, a frequency view must contain one run")
+    raw = document["runs"][0]
+    curves = []
+    for item in raw["series"]:
+        fields = dict(item)
+        fields["series_id"] = fields.pop("id")
+        if (curve := frequency_series(**fields)) is not None:
+            curves.append(curve)
+    return FrequencyRun(id=raw["id"], label=raw.get("label", ""),
+                        measurement_family=raw["measurement_family"], series=tuple(curves),
+                        metadata=raw.get("metadata", {}))
+
+
 def manifest_frequency_run(manifest: Mapping[str, Any]) -> FrequencyRun:
     from .frequency_plot import prepare_plot_curve  # lazy: numerical display import cost
 

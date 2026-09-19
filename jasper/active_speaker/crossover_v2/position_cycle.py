@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, NamedTuple
@@ -252,6 +253,7 @@ class PoseCurvePair(NamedTuple):
 def select_pose_curve_pair(
     bundle_dir: Path, *, phases: tuple[str, ...], position_deg: int | None,
     roles: tuple[str, str], vertical_deg: int = 0, take_path: str | None = None,
+    search_detail: dict[str, Any] | None = None,
 ) -> PoseCurvePair | None:
     """Newest matching take, with both curves and their recorded request facts.
 
@@ -261,12 +263,22 @@ def select_pose_curve_pair(
     Height stays part of the pose even when the bearing is unspecified: a newer
     raised take cannot stand in for a measurement at mark height.
     """
+    if search_detail is not None:
+        search_detail.update(phases_searched=list(phases), roles_required=list(roles),
+                             takes_seen=0, roles_per_take={}, poses=[])
     for row, document in reversed(list(measurement_documents(bundle_dir))):
         if (row.phase not in phases or row.vertical_deg != vertical_deg
             or (position_deg is not None and row.position_deg != position_deg)
             or (take_path is not None and row.path != take_path)):
             continue
         curves = _take_curves(document)
+        if search_detail is not None:
+            search_detail["takes_seen"] += 1
+            search_detail["roles_per_take"][row.path] = dict(Counter(
+                str(curve.get("role") or "") for curve in curves or []))
+            pose = {"position_deg": row.position_deg, "vertical_deg": row.vertical_deg}
+            if pose not in search_detail["poses"]:
+                search_detail["poses"].append(pose)
         if curves is None:
             continue
         by_role = {str(curve.get("role")): curve for curve in curves}

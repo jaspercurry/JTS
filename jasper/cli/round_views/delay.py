@@ -28,7 +28,7 @@ from jasper.active_speaker.crossover_v2.delay_landscape import (
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
 from jasper.active_speaker.delay_sweep import sweep_spec
-from jasper.cli._refusal import EXIT_UNREADABLE, StageFailed, stage
+from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE, StageFailed, failed, stage
 
 from ..null_door import NULL_RUNS_DIR
 from ._common import (
@@ -52,10 +52,12 @@ def _landscape_from_bank(args: argparse.Namespace) -> BankedLandscape:
             bundle = inputs.session_dir
             if args.fc_hz is None:
                 args.fc_hz = profile_crossover_fc_hz(applied_profile_source(inputs.applied_profile_path)[0])
+        search_detail: dict[str, Any] = {}
         pair = select_pose_curve_pair(
             bundle, phases=(args.phase,) if args.phase else (PHASE_MEASURE, PHASE_LATERAL),
             position_deg=args.position_deg, roles=(args.lower_role, args.upper_role),
             take_path=args.take_path,
+            search_detail=search_detail,
         )
         if pair is not None:
             args.phase, args.position_deg = pair.take.phase, pair.take.position_deg
@@ -74,6 +76,7 @@ def _landscape_from_bank(args: argparse.Namespace) -> BankedLandscape:
             ),
             inverted_role=args.inverted_role,
             pair=pair,
+            search_detail=search_detail,
         )
     except DelayLandscapeError:
         raise
@@ -106,7 +109,7 @@ def _cmd_delay_landscape(args: argparse.Namespace) -> int:
     try:
         landscape, take_path, composition = _landscape_from_bank(args)
     except DelayLandscapeError as exc:
-        return refused_by_name(exc.refusal_reason, str(exc))
+        return failed(EXIT_REFUSED, exc.refusal_reason, exc.detail or str(exc))
 
     payload = {
         "status": "proposed",
@@ -133,7 +136,7 @@ def _cmd_delay_confirm(args: argparse.Namespace) -> int:
     try:
         landscape, take_path, composition = _landscape_from_bank(args)
     except DelayLandscapeError as exc:
-        return refused_by_name(exc.refusal_reason, str(exc))
+        return failed(EXIT_REFUSED, exc.refusal_reason, exc.detail or str(exc))
 
     if composition == "complete_tune_measured":
         return refused_by_name("delay_confirm_graph_mismatch", "These curves include the complete tune. Compare complete candidate variants with tournament; neutral jasper-null rows cannot confirm residual tune changes.")

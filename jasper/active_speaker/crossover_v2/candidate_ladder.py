@@ -2,30 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""A/B/C at one held pose: what each config measured, and where they differ.
-
-The candidate cycle holds ONE pose and swaps the graph under it
-(:func:`~.evidence_packet._candidates_block`'s own words), so takes sharing a
-pose and differing in ``candidate_id`` differ by CONFIG and by nothing else.
-This reads them back through the two readers that already exist —
-:func:`~.record_index.bundle_measurements` selects and
-:func:`~.position_cycle.read_take_curves` decides — and reduces each pose to
-scalars: every candidate's curve against its own median level, and every
-pair's delta over the span both actually measured.
-
-The ladder is WITHIN one round, never across N: comparing two rounds means the
-microphone moved between them, which is
-:func:`~.round_views.repeatability_spread`'s question and a different one.
-That instrument reports spread as NOISE and must not be widened to carry
-config identity — a metric that means "spread" cannot also mean "difference".
-"""
+"""Compare candidates within one held pose and window, never across rounds."""
 
 from __future__ import annotations
 
 import json
 from itertools import combinations
 from pathlib import Path
-from typing import Any, Mapping, NamedTuple
+from typing import Any, Iterator, Mapping, NamedTuple
 
 import numpy as np
 
@@ -37,6 +21,7 @@ from .position_cycle import (
 )
 from .record_index import bundle_measurements
 from .round_inputs import RoundInputs
+from ..frequency_view import FREQUENCY_VIEW_FILENAME, frequency_run_from_view
 
 __all__ = [
     "REFUSE_NO_LADDER",
@@ -67,25 +52,39 @@ class _Curve(NamedTuple):
     band_hz: tuple[float, float]
 
 
-#: ``{(position_deg, vertical_deg): {role: {candidate_id: curve}}}``.
-_Poses = dict[tuple[int, int], dict[str, dict[str, _Curve]]]
+_Roles = dict[tuple[str, str], dict[str, _Curve]]
+_Poses = dict[tuple[int, int], _Roles]
 
 
-def _read_poses(session_dir: Path) -> tuple[_Poses, int]:
-    """Latest retained curve per pose, role and named candidate."""
+def _pose_curves(session_dir: Path, frequency_path: Path) -> Iterator[
+    tuple[int | None, int, str | None, str, list[Mapping[str, Any]] | None]
+]:
+    if frequency_path.is_file():
+        run = frequency_run_from_view(json.loads(frequency_path.read_text()))
+        for curve in run.series:
+            fields = curve.details
+            if fields.get("phase") == PHASE_LATERAL:
+                pose = fields["position"]
+                yield (pose.get("deg"), pose.get("vertical_deg") or 0,
+                       fields.get("candidate_id"), f"{frequency_path}#{fields['take_id']}",
+                       [curve.to_dict()])
+    else:
+        for row in bundle_measurements(session_dir, phase=PHASE_LATERAL):
+            yield (row.position_deg, row.vertical_deg, row.candidate_id, row.path,
+                   read_take_curves(take_artifact_path(session_dir, row.path), phase=PHASE_LATERAL))
+
+
+def _read_poses(session_dir: Path, frequency_path: Path) -> tuple[_Poses, int]:
+    """Latest retained curve per pose, role, window and named candidate."""
     poses: _Poses = {}
-    unattributed = 0
-    for row in bundle_measurements(session_dir, phase=PHASE_LATERAL):
-        if row.position_deg is None:
+    unattributed = set()
+    for position, vertical, config_id, take_path, curves in _pose_curves(session_dir, frequency_path):
+        if position is None:
             continue
-        by_role = poses.setdefault((row.position_deg, row.vertical_deg), {})
-        config_id = row.candidate_id
+        by_role = poses.setdefault((position, vertical), {})
         if not config_id:
-            unattributed += 1
+            unattributed.add(take_path)
             continue
-        curves = read_take_curves(
-            take_artifact_path(session_dir, row.path), phase=PHASE_LATERAL
-        )
         if curves is None:
             continue
         for curve in curves:
@@ -103,8 +102,8 @@ def _read_poses(session_dir: Path) -> tuple[_Poses, int]:
             if not np.any(finite):
                 continue
             freqs_hz, magnitude_db = freqs_hz[finite], magnitude_db[finite]
-            by_role.setdefault(role, {})[config_id] = _Curve(
-                row.path, freqs_hz, magnitude_db,
+            by_role.setdefault((role, str(curve.get("window") or "")), {})[config_id] = _Curve(
+                take_path, freqs_hz, magnitude_db,
                 # The DECLARED sweep clamped to the grid actually banked. What
                 # the intersection below spans is then covered by every
                 # curve's own bins, so resampling one onto another can never
@@ -113,7 +112,7 @@ def _read_poses(session_dir: Path) -> tuple[_Poses, int]:
                 (max(swept_hz[0], float(freqs_hz.min())),
                  min(swept_hz[1], float(freqs_hz.max()))),
             )
-    return poses, unattributed
+    return poses, len(unattributed)
 
 
 def _deviation(freqs_hz: np.ndarray, deviation_db: np.ndarray) -> dict[str, Any]:
@@ -174,7 +173,7 @@ def _pair_delta(
     }
 
 
-def _named(by_role: dict[str, dict[str, _Curve]]) -> list[str]:
+def _named(by_role: _Roles) -> list[str]:
     """Every candidate one pose named, whatever role it was read through."""
     return sorted({
         candidate_id
@@ -230,9 +229,9 @@ def _tables(poses: _Poses) -> list[dict[str, Any]]:
             # configs WERE played here and refusing that as "no ladder" would
             # send the operator to an instrument for a different question.
             "roles": [
-                {"role": role, **table}
-                for role in sorted(by_role)
-                if (table := _role_table(by_role[role])) is not None
+                {"role": role, **({"window": window} if window else {}), **table}
+                for role, window in sorted(by_role)
+                if (table := _role_table(by_role[role, window])) is not None
             ],
         })
     return tables
@@ -246,22 +245,23 @@ def _worst(tables: list[dict[str, Any]]) -> dict[str, Any]:
     answer rather than a refusal.
     """
     deltas = [
-        (delta, table, role["role"])
+        (delta, table, role)
         for table in tables
         for role in table["roles"]
         for delta in role["deltas"]
     ]
     nothing: dict[str, Any] = {}
-    delta, table, role_name = max(
+    delta, table, role = max(
         deltas, key=lambda row: row[0]["max_abs_db"],
-        default=(nothing, nothing, None),
+        default=(nothing, nothing, nothing),
     )
     return {
         "pairs": len(deltas),
         "max_abs_delta_db": delta.get("max_abs_db"),
         "max_abs_delta_hz": delta.get("max_abs_hz"),
         "max_abs_delta_between": [delta["a"], delta["b"]] if delta else [],
-        "max_abs_delta_role": role_name,
+        "max_abs_delta_role": role.get("role"),
+        "max_abs_delta_window": role.get("window"),
         "max_abs_delta_position_deg": table.get("position_deg"),
         "max_abs_delta_vertical_deg": table.get("vertical_deg"),
     }
@@ -277,7 +277,7 @@ def candidate_ladder(round_dir: Path, inputs: RoundInputs) -> dict[str, Any]:
     carrying the counts that tell a round which walked no ladder apart from one
     whose takes named no config.
     """
-    poses, unattributed = _read_poses(inputs.session_dir)
+    poses, unattributed = _read_poses(inputs.session_dir, round_dir / FREQUENCY_VIEW_FILENAME)
     tables = _tables(poses)
     if not tables:
         raise CandidateLadderRefused(REFUSE_NO_LADDER, {

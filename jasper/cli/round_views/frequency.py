@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 
 from jasper.active_speaker.crossover_v2.frequency_view import frequency_run
-from jasper.active_speaker.frequency_view import FrequencyRun, frequency_series
+from jasper.active_speaker.frequency_view import SCHEMA, frequency_run_from_view
 from jasper.active_speaker.frequency_plot import DEFAULT_REF_BAND_HZ
 from jasper.active_speaker.measurement_archive import (
     ArchivedMeasurement,
@@ -67,22 +67,8 @@ def _frequency_source(
         document = json.loads(path.read_text())
         if not isinstance(document, dict):
             raise ValueError(f"{path}: expected one JSON object")
-        if document.get("schema") == "jts_frequency_view/1":
-            if len(document["runs"]) != 1:
-                raise ValueError("as an input, a frequency view must contain one run")
-            raw = document["runs"][0]
-            curves = []
-            for item in raw["series"]:
-                fields = dict(item)
-                fields["series_id"] = fields.pop("id")
-                curve = frequency_series(**fields)
-                if curve is not None:
-                    curves.append(curve)
-            return FrequencyRun(
-                id=raw["id"], label=raw.get("label", ""),
-                measurement_family=raw["measurement_family"], series=tuple(curves),
-                metadata=raw.get("metadata", {}),
-            )
+        if document.get("schema") == SCHEMA:
+            return frequency_run_from_view(document)
         run = frequency_run_from_documents(
             run_id=path.stem, documents=(document,),
         )

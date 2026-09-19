@@ -14,6 +14,7 @@ import json
 import re
 import hashlib
 import wave
+from itertools import combinations
 from unittest.mock import Mock
 
 import numpy as np
@@ -28,6 +29,7 @@ from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.frequency_view import FrequencyRun, build_frequency_view, frequency_series
 from jasper.active_speaker.measurement_analysis import analyze_measurement_bundle
 from jasper.active_speaker.crossover_v2 import gate_sweep
+from jasper.cli.round_views import main as round_views_main
 from jasper.active_speaker.round_bookkeeping import run_bookkeeping
 from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
 from jasper.active_speaker.crossover_v2.position_cycle import (
@@ -44,7 +46,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import round_program_dir
 from jasper.attribution.session_identity import read_session_identity
 from jasper.active_speaker.round_packet import INDEX_FILENAME
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
-from tests.run_manifest_fixture import write_manifest
+from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.test_crossover_v2_frequency_view import summed_capture_bundle  # noqa: F401
 from jasper.active_speaker import measurement_programs
 from jasper.active_speaker.measurement_programs import bookkeeping_views
@@ -698,6 +700,51 @@ def test_banked_candidate_has_gated_and_ungated_sum(request, tmp_path, monkeypat
         "value": pytest.approx(float(np.std(band))),
     }
     assert all(p.read_bytes() == content for p, content in before.items())
+
+
+def test_candidates_reads_every_pose_and_window_of_a_banked_trial(request, tmp_path):
+    bundle, _, _, bank = request.getfixturevalue("summed_capture_bundle")
+    candidates = ("baseline-fp", "candidate-a", "candidate-b")
+    groups = []
+    for candidate in candidates:
+        records = []
+        for position in (-20, 0, 20):
+            record_id = asyncio.run(bank(
+                f"{candidate}-{position}", candidate=candidate, phase="lateral",
+                gating_applied=False, measurement_purpose="room", position_deg=position,
+                vertical_deg=0, mark_distance_m=1.0,
+            ))
+            record = json.loads(gate_sweep.take_artifact_path(bundle, record_id).read_text())
+            assert "curves" not in record
+            records.append((record_id, record))
+        group = manifest_set(records)
+        group["base"] = candidate == candidates[0]
+        for take in group["takes"]:
+            take["role"] = "summed"
+        groups.append(group)
+    write_manifest(bundle, program="room", groups=groups)
+    mark_state(bundle, "applied")
+    root = bank_round(bundle, campaign_root=tmp_path / "bank", view_runner=run_bookkeeping,
+                      **_ssot(tmp_path, present=False)).path
+    view = json.loads((root / "frequency_view.json").read_text())
+    for wav in root.rglob("*.wav"):
+        wav.unlink()
+    assert round_views_main(["candidates", str(root)]) == 0
+    document = json.loads((root / "candidates.json").read_text())
+    assert document["summary"]["candidates"] == list(candidates)
+    assert (document["summary"]["poses"], document["summary"]["pairs"]) == (3, 18)
+    assert [table["position_deg"] for table in document["tables"]] == [-20, 0, 20]
+    for table in document["tables"]:
+        assert table["played"] == list(candidates)
+        assert {row["window"] for row in table["roles"]} == {
+            curve["window"] for curve in view["runs"][0]["series"]} == {"gated", "ungated"}
+        for row in table["roles"]:
+            assert row["role"] == "summed"
+            assert [c["candidate_id"] for c in row["candidates"]] == list(candidates)
+            assert [(d["a"], d["b"]) for d in row["deltas"]] == list(combinations(candidates, 2))
+            for delta in row["deltas"]:
+                assert delta["bins"] > 0
+                assert [delta[k] for k in ("level_offset_db", "mean_abs_db", "max_abs_db", "rms_db")] == pytest.approx([0] * 4)
 
 
 @pytest.mark.parametrize("failure", [False, True])
