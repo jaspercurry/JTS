@@ -652,8 +652,8 @@ def test_bare_status_leaves_evidence_unselected_when_history_is_empty(capsys):
     (True, ("speaker",), {"speaker": 1}, ("rear", "never_measured")),
     (False, ("speaker", "bass", "room"), {"speaker": 1, "room": 2, "bass": 3}, ("room", "upstream_changed")),
     (False, ("speaker", "bass", "room"), {"speaker": 1, "bass": 2, "room": 3}, (None, "complete")),
-    (False, ("speaker", "bass", "room"), {}, (None, "complete")),
-    (True, ("speaker", "rear", "bass", "room"), {}, (None, "complete")),
+    (False, ("speaker", "bass", "room"), {}, ("speaker", "never_measured")),
+    (True, ("speaker", "rear", "bass", "room"), {}, ("speaker", "never_measured")),
     (False, (), {"speaker": 1}, ("speaker", "round_available")),
 ])
 def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, capsys, rear, layers, rounds, expected, stale_kind):
@@ -670,7 +670,7 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(path))
     programs = ("speaker", "rear", "bass", "room") if rear else ("speaker", "bass", "room")
     if stale_kind:
-        expected = (None, "complete") if set(programs) <= set(layers) else ("speaker", "never_measured")
+        expected = ("speaker", "never_measured")
     recent = {}
     for name, age in rounds.items():
         directory = tmp_path / "campaigns" / name
