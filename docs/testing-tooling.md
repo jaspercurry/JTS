@@ -936,77 +936,68 @@ The run uses the same preflight for documents and CLI-built plans.
 
 ## Lab-arm walk harness
 
-`jasper-angle-capture serve`
-([`jasper/cli/angle_capture.py`](../jasper/cli/angle_capture.py), loop in
-[`arm_walk.py`](../jasper/active_speaker/arm_walk.py)) is what actually WALKS a
-live measurement session with the lab turntable arm: the session publishes
-`relay.position_pending` and holds every begin until something POSTs
-`/sound/speaker/crossover/v2/position-ready`, and the turntable adapter moves the
-microphone.
-
-Runs **on the speaker**, in the foreground, one run per walk:
+`jasper-round run --mover arm --attest-rig-clear --wait` starts the session,
+serves its position gate, and parks the arm before returning its wait answer.
+Run it on the speaker as root, in the foreground:
 
 ```sh
-# stage the walk first (angle-walk door, above), then start this, THEN open the
-# session — the first poll is what checks a walk is still waiting.
-sudo -u pi /opt/jasper/.venv/bin/jasper-angle-capture serve \
-    --mover turntable --attest-rig-clear \
-    --trail /tmp/arm-walk.jsonl
+sudo -n /opt/jasper/.venv/bin/jasper-round run \
+    --poses 0 --mover arm --attest-rig-clear --wait
 ```
 
-- **`pi` is the identity, not a habit**: the adapter opens a serial port, and
-  `pi` is what the shipped turntable unit runs as (`User=pi` plus `dialout`).
-  With no `--hostname`, the client sends no explicit `Host:` header, so it is
-  derived from `--base-url` (loopback here); the wizard's management-host
-  guard accepts loopback IPs. `--hostname` overrides it and is rarely needed.
-- One turn of the loop: poll → power preflight → move → measured settle (30 s
-  default) → `position-ready`. The adapter runs as a **subprocess** at
-  `/opt/jasper/experiments/usb-turntable/jts_turntable.py` (`--tool` points at a
-  checkout), never as an import.
-- **Attestation, not a nanny.** The adapter wants two `--confirm-*` flags per
-  move, which no unattended caller can honestly answer, so the operator answers
-  once with `--attest-rig-clear`; a power sign is the one thing that voids it,
-  because a power event is exactly when the saved zero may have stopped being
-  the acoustic axis.
+The person must check the full sweep path before making the explicit
+`--attest-rig-clear` statement. The flag is required for each arm round,
+including `trial`. A dry run needs `--wait` too; it checks discovery and the
+attestation before opening a session or serial link. No second process is
+needed. The command uses one Python interpreter with an arm thread and a
+separate wizard client. Both clients use the same `--base-url` and `--hostname`.
+The default address is loopback and needs no OS-user login to the wizard.
 
-**Safety invariants, each pinned by a test in
-[`tests/test_arm_walk.py`](../tests/test_arm_walk.py):**
+The adapter still runs as a subprocess at
+`/opt/jasper/experiments/usb-turntable/jts_turntable.py`. Root must be able to
+detect it. A loop polls the session, checks power, moves, settles for 30 seconds,
+and sends `position-ready`. The adapter's confirmation flags come from the
+person's attestation; a power sign voids it.
 
-| invariant | what it does |
+| Check | Effect |
 |---|---|
-| power before every WALK move | any current flag, since-boot flag, or unreadable reading voids the run — stop, park, `power_void`. The PARK's own move is deliberately not re-checked (the walk is often parking *because* of a power sign); it still passes the adapter's own preflight |
-| ±45° clamp | belt-and-braces over the adapter's refusal, so an out-of-envelope target is NAMED here instead of surfacing as a subprocess failure |
-| park and verify on every exit | clean finish, exception, or any of `PARK_ON_SIGNALS`. The check is a MAGNITUDE — the readback's sign is negated upstream |
-| `set-zero` is unreachable | `power`, `stop`, `position` and `offset` are the complete verb set |
-| the settle never goes under 10 s | refused at configuration AND checked against the settle actually MEASURED |
+| Power before each walk move | Current flags, since-boot flags, or an unreadable result stop the walk and trigger parking; the adapter also checks power for the park move |
+| ±45° envelope | Refuses a target outside the arm's range |
+| Park and verify on exit | Requests 0° and checks the offset magnitude |
+| `set-zero` unreachable | Only `detect`, `power`, `stop`, `position`, and `offset` are allowed |
+| Settle floor of 10 seconds | Checks both the configured and measured settle |
 
-**The stall NAME is the contract, not a number.** `serve` exits the shared
-`0/1/3` every tool in the menu does; the loop's own distinct verdict per failure
-class (`EXIT_NAMES`) rides out as the refusal record's `reason`, on stdout and
-in the stderr sentence. Three are worth knowing before a run:
+Normal completion, a wait timeout, Ctrl-C, and `jasper-round stop --run <id>`
+from another shell all stop the arm thread and join it. The thread parks in
+`ArmWalk.run()`'s `finally`. Before joining, the caller waits for the park to
+finish; this avoids Python 3.12's interrupted-join fault. Each cleanup wait uses
+the adapter timeout plus the park settle plus 30 seconds. If that limit
+expires, the command raises an error;
+the non-daemon thread still keeps the process alive until it finishes.
+A failed park is recorded, never reported as a verified return to zero.
 
-- **A walk ends when its session does** (clean, `session_stopped`,
-  `session_failed`, read off the same poll's `relay.status`) — but a terminal
-  status is only this walk's verdict once it has read its session LIVE. The
-  wizard keeps ONE relay slot and keeps the FINISHED session's block in it, and
-  a walk is launched BEFORE its session opens, so round N+1's first polls read
-  round N's terminal block.
-- **A release is a request, and `release_rejected` is the session saying no** —
-  a `409`, `403`, `400` or a POST that never arrived all mean *no capture began*.
-- **`status_unreachable` is almost always the wrong `--hostname`**; a single
-  unreadable poll is absorbed, a whole `unreadable_ceiling_s` of them is its own
-  named stall.
+The wait answer includes `arm.exit` from `EXIT_NAMES` and `arm.summary`.
+On a refused or unreadable wait, those fields are in `detail.arm`.
+SIGINT, SIGTERM, and SIGHUP exit with `128 + signum` after cleanup. The first
+signal disarms the handlers so a second signal cannot interrupt parking.
+The `event=arm_walk.up` log includes `rig_clear_attested=true`. Read the
+`event=arm_walk.parked` row after the round; only `ok=true` proves the park.
+Progress is logged at INFO and failures at ERROR.
 
-**A signal stops the walk once — and SIGHUP is one of them**, since a remote
-walk is stopped by its ssh transport going away and Python's default for SIGHUP
-is death with no unwinding. SIGTERM/SIGINT/SIGHUP becomes the `SystemExit` whose
-unwind IS the park, and the handler disarms itself on that first fire so a
-second signal cannot abandon the arm mid-park; signal endings exit
-`128 + signum`. **Observability**: `event=arm_walk.*` (`pending`, `moved`,
-`released`, `release_rejected`, `power_void`, `stuck`, `status_unreachable`,
-`session_ended`, `session_failed`, `parked`, …) — failures at
-`ERROR`, progress at `INFO` — with the same fields as the `--trail` JSONL rows,
-from one call site.
+`jasper-angle-capture serve` remains a **debugging verb only**, for an operator
+who needs a separate gate process or a JSONL trail:
+
+```sh
+sudo -n /opt/jasper/.venv/bin/jasper-angle-capture serve \
+    --attest-rig-clear --trail /tmp/arm-walk.jsonl
+```
+
+Start that debug gate before opening its session. It serves one session, then
+parks and exits. Its `--tool`, timing, and trail flags are described by `--help`.
+Do not run it beside a run-owned arm. The debug gate accepts a terminal status
+only after it has seen a live session, because the wizard retains the previous
+session's final status. A rejected release means capture did not start; an
+unreachable status endpoint is reported as `status_unreachable`.
 
 ---
 

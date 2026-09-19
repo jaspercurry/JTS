@@ -23,6 +23,7 @@ from .crossover_v2.measure_spec import branch_channels_for
 from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 from .measured_crossover_candidate import MeasuredCrossoverCandidate
+from .movers import MOVER_ARM
 from .preflight import PreflightFacts, PreflightIssue
 from .program_failure import read_output_volume
 from .run_levels import prepare_level_captures
@@ -31,7 +32,12 @@ from .seat_level_reference import AnchorFacts, load_seat_level_reference
 
 def read_preflight_facts(
     plan: AngleCaptureRequest, *, context: Any = None, device: Any = None,
+    rig_clear_attested: bool = False,
 ) -> PreflightFacts:
+    mover_available = True
+    if plan.mover == MOVER_ARM:
+        from .arm_walk import TurntableMover  # lazy: arm-only
+        mover_available = TurntableMover().available()
     issues: list[PreflightIssue] = []
     if context is None:
         try:
@@ -97,6 +103,7 @@ def read_preflight_facts(
         return tuple(programs)
 
     return PreflightFacts(
+        rig_clear_attested=rig_clear_attested, mover_available=mover_available,
         output_volume=read_output_volume(),
         candidates=candidates, mic_present=device is not None,
         mic_identified=bool(device is not None and device.model_key),

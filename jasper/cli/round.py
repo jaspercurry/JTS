@@ -7,18 +7,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 import re
 import sys
+import threading
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 from urllib.parse import urlsplit
 
 from jasper.net.http_security import _is_loopback_name
 from jasper.json_fields import age_seconds, parse_utc_iso
 
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
-from jasper.active_speaker.movers import MOVERS
+from jasper.active_speaker.movers import MOVER_ARM, MOVERS
 from jasper.active_speaker.round_copy import round_lines, packet_lines
 from jasper.active_speaker.wizard_client import (
     CSRF_PAGE_PATH, STATUS_PATH, REASON_ANSWER_LOST,
@@ -26,6 +28,7 @@ from jasper.active_speaker.wizard_client import (
 )
 from jasper.identity.reader import CROSSOVER_PAGE_PATH, speaker_url
 
+from ._logging import CLI_LOG_FORMAT
 from ._refusal import (
     EXIT_OK as EXIT_OK,
     EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed,
@@ -33,7 +36,7 @@ from ._refusal import (
 
 PROG = "jasper-round"
 DEFAULT_TIMEOUT_S = 900.0
-AUTHORITY_TIER = "mutating-with-gates (`run`/`trial`/`placed`/`stop`/`wait`/`apply`/`reset` write; `status` reads)"
+AUTHORITY_TIER = "mutating-with-gates (`run`/`trial`/`placed`/`stop`/`wait`/`apply`/`reset` write; `run`/`trial` may move the arm; `status` reads)"
 LOST_ANSWER_ADVICE = "the apply may have taken effect; read the live candidate before trying again"
 _BEARING_LIST = re.compile(r"-\d+(\.\d+)?(,[+-]?\d+(\.\d+)?)*")
 
@@ -113,12 +116,16 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
                       })
     except (ValueError, OSError, CrossoverV2FlowError) as exc:
         return failed(EXIT_REFUSED, getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
+    if report.plan.mover == MOVER_ARM and not args.wait:
+        build_parser().error("--mover arm requires --wait")
     if args.dry_run:
         answered({"verb": "run", "dry_run": args.dry_run, **report.to_dict()})
         return EXIT_REFUSED if report.blocking else EXIT_OK
     if report.blocking:
-        return failed(EXIT_REFUSED, report.issues[0].code, report.to_dict())
-    http, payload = client.open_session(report.plan.to_dict())
+        issue = next(issue for issue in report.issues if issue.blocking)
+        return failed(EXIT_REFUSED, issue.code, report.to_dict(),
+                      code=issue.code, next_action=issue.next_action)
+    http, payload = client.open_session(report.plan.to_dict(), rig_clear_attested=args.attest_rig_clear)
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
                                "run_refused", {"http": http}, payload)
@@ -129,7 +136,44 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
     if args.wait:
         print(json.dumps(_run_links(run_id)), file=sys.stderr, flush=True)
         args.run = run_id
-        return _cmd_wait(client, args)
+        if report.plan.mover != MOVER_ARM:
+            return _cmd_wait(client, args)
+        from jasper.active_speaker import arm_walk  # lazy: arm-only
+
+        logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
+        arm_walk.install_park_on_signals()
+        stop_event = threading.Event()
+        finished = threading.Event()
+        trail = arm_walk.Trail()
+        walk = arm_walk.ArmWalk(
+            arm_walk.TurntableMover(attest_rig_clear=args.attest_rig_clear),
+            arm_walk.LoopbackSession(host_header=args.hostname, base_url=args.base_url),
+            arm_walk.WalkConfig(), trail=trail, should_stop=stop_event.is_set,
+        )
+        code = arm_walk.EXIT_REFUSED
+        def serve_arm() -> None:
+            nonlocal code
+            try:
+                code = walk.run()
+            except SystemExit as exc:
+                code = int(exc.code) if isinstance(exc.code, int) else arm_walk.EXIT_REFUSED
+            finally:
+                trail.close()
+                finished.set()
+        thread = threading.Thread(target=serve_arm, name="round-arm", daemon=False)
+        def finish_arm() -> dict[str, Any]:
+            stop_event.set()
+            timeout = arm_walk.TurntableMover.timeout_s + arm_walk.PARK_SETTLE_S + 30
+            # CPython 3.12 can mark an interrupted join stopped before the worker exits.
+            if not finished.wait(timeout):
+                raise TimeoutError("arm thread has not finished parking")
+            thread.join(timeout=timeout)
+            return {"arm": {"exit": arm_walk.EXIT_NAMES[code], "summary": walk.summary()}}
+        thread.start()
+        try:
+            return _cmd_wait(client, args, finish_arm=finish_arm)
+        finally:
+            finish_arm()
     return _answer(args.command, "Run ready; place the microphone to start.",
                    **_run_links(run_id),
                    shape="trial" if report.plan.candidates else "measure",
@@ -186,7 +230,8 @@ def _cmd_status(client: WizardClient, args: argparse.Namespace) -> int:
                               f"leveled {age_seconds(stamp) / 3600:.1f}h ago, reused") if session and stamp is not None else "")
 
 
-def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
+def _cmd_wait(client: WizardClient, args: argparse.Namespace, *,
+              finish_arm: Callable[[], dict[str, Any]] = lambda: {}) -> int:
     from jasper.active_speaker.round_bank import (  # lazy: banking imports analysis
         RoundBankError, finish_round,
     )
@@ -200,6 +245,8 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
             print("\n".join(lines), file=sys.stderr)
             previous_lines = lines
     result = wait_for_round(client, run_id=args.run, timeout_s=args.timeout, on_progress=show_progress)
+    arm = finish_arm()
+    result.update(arm)
     if result["status"] != "terminal":
         return failed(EXIT_REFUSED if result["status"] == "failed" else EXIT_UNREADABLE,
                       str(result["reason"]), result)
@@ -211,8 +258,9 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace) -> int:
     banked, error = finish_round(Path(session_dir))
     if banked is None:
         return failed(EXIT_REFUSED if isinstance(error, RoundBankError) else EXIT_WRITE_FAILED,
-                      error.reason if isinstance(error, RoundBankError) else "write_failed", str(error))
-    return answered({**wait_answer(banked, result, verbose=args.verbose), **_run_links(args.run)},
+                      error.reason if isinstance(error, RoundBankError) else "write_failed",
+                      {"error": str(error), **arm} if arm else str(error))
+    return answered({**wait_answer(banked, result, verbose=args.verbose), **_run_links(args.run), **arm},
                     "\n".join([f"Run banked at {banked.path}", *packet_lines(str(banked.path))]), sort_keys=False)
 
 
@@ -307,6 +355,8 @@ def build_parser() -> argparse.ArgumentParser:
     timeout_args.add_argument("--timeout", "--timeout-s", type=_timeout, default=DEFAULT_TIMEOUT_S, help="wait limit in seconds")
     run_args = _RoundSubparser(add_help=False, parents=[timeout_args])
     _connection_args(run_args)
+    run_args.add_argument("--attest-rig-clear", action="store_true",
+                          help="state that the arm's full sweep path is clear for this run")
     run_args.add_argument("--wait", action="store_true", help="wait for completion and bank the round with its packet")
     run_args.add_argument("--candidates", help="comma-separated fingerprints (or base); supplied means trial")
     run_args.add_argument("--level-db", type=float, help="one absolute run fader level in dB; overrides the program's level default")
@@ -347,6 +397,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command in ("run", "trial") and args.mover == MOVER_ARM:
+        if not args.wait:
+            parser.error("--mover arm requires --wait")
+        from jasper.active_speaker import arm_walk  # lazy: arm-only
+        arm_walk.install_park_on_signals()
     if args.command == "reset" and args.keep_timing and args.program not in (None, "speaker"):
         parser.error("--keep-timing requires resetting everything or --program speaker")
     if args.command == "run" and args.dry_run and not _is_loopback_name(urlsplit(args.base_url).hostname or ""):

@@ -590,7 +590,8 @@ def prepare_v2_session(
                 "a new session"
             )
         context = resolve_conductor_context(status)
-        facts = preflight_live.read_preflight_facts(request, context=context)
+        facts = preflight_live.read_preflight_facts(
+            request, context=context, rig_clear_attested=raw.get("attest_rig_clear") is True)
         report = preflight_levels(request, facts)
         issue = next((issue for issue in report.issues if issue.blocking), None)
         if issue is not None:

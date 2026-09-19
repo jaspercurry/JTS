@@ -21,6 +21,7 @@ import contextlib
 import importlib.util
 import io
 import json
+from types import SimpleNamespace
 import logging
 import os
 import signal
@@ -217,7 +218,7 @@ class LiveThen:
         return 200, '{"ok": true}'
 
 
-def _walk(mover, session, *, clock=None, trail=None, **cfg):
+def _walk(mover, session, *, clock=None, trail=None, should_stop=lambda: False, **cfg):
     clock = clock or FakeWalkClock()
     config = aw.WalkConfig(**{
         "settle_s": 30.0, "poll_s": 3.0, "idle_ceiling_s": 60.0,
@@ -225,7 +226,7 @@ def _walk(mover, session, *, clock=None, trail=None, **cfg):
     })
     return aw.ArmWalk(
         mover, session, config,
-        trail=trail,
+        trail=trail, should_stop=should_stop,
         clock=clock.now, sleep=clock.sleep,
     )
 
@@ -710,6 +711,7 @@ def test_the_adapter_is_a_subprocess_and_never_an_import(module):
 
 
 def test_no_adapter_verb_this_module_emits_can_redefine_zero():
+    assert "detect" in aw._TOOL_SUBCOMMANDS
     assert "set-zero" not in aw._TOOL_SUBCOMMANDS
     with pytest.raises(AssertionError):
         aw.TurntableMover(attest_rig_clear=True)._invoke("set-zero")
@@ -1498,3 +1500,28 @@ class _Proc:
         self.stdout = stdout
         self.stderr = stderr
         self.returncode = returncode
+
+
+@pytest.mark.parametrize("after_sleep", [False, True])
+def test_stop_request_parks_and_records_attestation(after_sleep):
+    mover, trail, clock = FakeMover(), _RecordingTrail(), FakeWalkClock()
+    session = FakeSession([_IN_FLIGHT_QUIET])
+    walk = _walk(mover, session, clock=clock, trail=trail,
+                 should_stop=lambda: not after_sleep or clock.now() > 1000)
+    with pytest.raises(SystemExit) as exc:
+        walk.run()
+    assert exc.value.code == aw.EXIT_TERMINATED_PARKED
+    assert mover.moves == [0]
+    assert trail.one("parked")["ok"] is True
+    assert trail.one("up")["rig_clear_attested"] is True
+
+
+@pytest.mark.parametrize("payload,available", [({"ok": True}, True), ({"ok": False}, False), ({}, False)])
+def test_mover_discovery_uses_detect(payload, available):
+    calls = []
+    def run(argv, **kw):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+    mover = aw.TurntableMover(run=run)
+    assert mover.available() is available
+    assert [call[3:] for call in calls] == [["detect"]]

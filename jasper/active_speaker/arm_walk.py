@@ -102,7 +102,7 @@ _VENDOR_RETRY_S = 1.0
 
 #: Every adapter verb this module may emit. ``set-zero`` is deliberately
 #: absent: no automated walk may redefine the saved acoustic-axis zero.
-_TOOL_SUBCOMMANDS = frozenset({"power", "stop", "position", "offset"})
+_TOOL_SUBCOMMANDS = frozenset({"detect", "power", "stop", "position", "offset"})
 
 
 # --------------------------------------------------------------------------- #
@@ -367,6 +367,10 @@ class TurntableMover:
             return code, payload
         raise AssertionError("vendor retry loop exhausted")
 
+    def available(self) -> bool:
+        _, payload = self._invoke("detect")
+        return bool(payload.get("ok"))
+
     def power(self) -> PowerVerdict:
         _, payload = self._invoke("power")
         return parse_power(payload)
@@ -536,9 +540,11 @@ class ArmWalk:
         config: WalkConfig,
         *,
         trail: Trail | None = None,
+        should_stop: Callable[[], bool] = lambda: False,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        self._should_stop = should_stop
         self._mover = mover
         self._session = session
         self._config = config
@@ -601,6 +607,7 @@ class ArmWalk:
         first = self._poll()
         self._trail.emit(
             "up",
+            rig_clear_attested=True,
             settle_s=cfg.settle_s,
             settle_floor_s=SETTLE_FLOOR_S,
             envelope_deg=ARM_ENVELOPE_DEG,
@@ -622,6 +629,8 @@ class ArmWalk:
         first_poll = True
         interval_s = cfg.poll_s
         while True:
+            if self._should_stop():
+                raise SystemExit(EXIT_TERMINATED_PARKED)
             poll = self._poll()
             if poll.ended and self._saw_session:
                 return self._session_ended(poll)
@@ -687,6 +696,8 @@ class ArmWalk:
             interval_s = next_poll_s(interval_s, changed=changed, initial_s=cfg.poll_s)
             first_poll = False
             self._sleep(interval_s)
+            if self._should_stop():
+                raise SystemExit(EXIT_TERMINATED_PARKED)
 
     def _serve(self, pending: Pending) -> int | None:
         """Move, settle, release. ``None`` means the walk continues."""

@@ -2361,14 +2361,16 @@ def test_session_requires_an_inline_v3_plan(body):
     assert envelope["next_action"]
 
 
-def test_session_open_refuses_the_preflight_candidate_code(monkeypatch):
+@pytest.mark.parametrize("attestation", [None, False, True, "true", 1])
+@pytest.mark.parametrize("mover", ["human", "arm"])
+def test_session_open_refuses_the_preflight_candidate_code(monkeypatch, attestation, mover):
     from jasper.active_speaker import preflight_live
     from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_SUMMED
     from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
     from tests.test_preflight import ready_facts
 
     name = "unbanked"
-    request = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name),), candidates=(name,))
+    request = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name),), candidates=(name,), mover=mover)
     v2volume.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     monkeypatch.setattr(v2volume, "reconcile_session_volume_for_new_session", lambda *_: None)
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: SimpleNamespace(
@@ -2377,11 +2379,12 @@ def test_session_open_refuses_the_preflight_candidate_code(monkeypatch):
     monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda *_: pytest.fail("bundle opened before preflight"))
     monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", lambda: object())
     monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda *args, **kwargs: ready_facts(
-        request,
+        request, rig_clear_attested=kwargs["rig_clear_attested"],
     ))
+    body = {"plan": request.to_dict(), **({"attest_rig_clear": attestation} if attestation is not None else {})}
     with pytest.raises(refusal_copy.CrossoverV2Refused) as exc:
-        v2host.prepare_v2_session({"plan": request.to_dict()}, status={}, run_async=None, camilla_factory=None)
-    assert exc.value.code == "not_found"
+        v2host.prepare_v2_session(body, status={}, run_async=None, camilla_factory=None)
+    assert exc.value.code == ("walk_rig_clear_not_attested" if mover == "arm" and attestation is not True else "not_found")
     assert refusal_copy_for(exc.value.code)[1]
 
 

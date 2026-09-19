@@ -130,8 +130,9 @@ class WizardClient:
         status, block = self.status_envelope()
         return block if status == 200 else {}
 
-    def open_session(self, plan: Mapping[str, Any]) -> tuple[int, Any]:
-        return self.post_json(SESSION_PATH, {"plan": dict(plan)})
+    def open_session(self, plan: Mapping[str, Any], *, rig_clear_attested: bool = False) -> tuple[int, Any]:
+        return self.post_json(SESSION_PATH, {"plan": dict(plan),
+                              **({"attest_rig_clear": True} if rig_clear_attested else {})})
 
     def run_status(self, run_id: str) -> tuple[int, dict[str, Any]]:
         http, block = self.status_envelope()

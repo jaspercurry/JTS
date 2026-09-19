@@ -14,6 +14,8 @@ from copy import deepcopy
 from types import SimpleNamespace
 import subprocess
 import sys
+import threading
+import signal
 import urllib.error
 from dataclasses import replace
 from functools import partial
@@ -24,8 +26,8 @@ import pytest
 import yaml
 
 from jasper import output_topology
-from jasper.active_speaker import candidate_bank, graph_safety, round_bank, round_packet, wizard_client as wc
-from jasper.active_speaker.angle_capture import AngleCaptureRequest
+from jasper.active_speaker import arm_walk as aw, candidate_bank, graph_safety, round_bank, round_packet, wizard_client as wc
+from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_bank import publish_authored_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_design_draft
@@ -51,7 +53,10 @@ from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, tuning_profile 
 from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
 from tests.test_preflight import ready_facts
-from tests.test_arm_walk import FakeWalkClock
+from tests.test_arm_walk import (
+    FakeMover, FakeSession, FakeWalkClock, LiveThen, _COMPLETE, _STOPPED,
+    _IN_FLIGHT_QUIET, _RecordingTrail, _own_signals,
+)
 from tests.test_correction_crossover_v2_endpoints import _FakeApplyCam, _seed_baseline_apply_environment
 from tests.test_prescription_document import document, timing_evidence
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
@@ -413,6 +418,40 @@ def test_an_apply_whose_answer_is_lost_is_not_a_wizard_refusal(
     assert receipt["detail"]["http"] == 0
 
 
+@pytest.fixture(autouse=True)
+def arm_runtime(monkeypatch):
+    mover, trail, clock = FakeMover(), _RecordingTrail(), FakeWalkClock()
+    monkeypatch.setattr(mover, "available", Mock(return_value=True), raising=False)
+    threads = []
+    real_thread = threading.Thread
+    def thread(**kw):
+        worker = real_thread(**kw)
+        worker.join = Mock(wraps=worker.join)
+        threads.append(worker)
+        return worker
+    monkeypatch.setattr(cli.threading, "Thread", thread)
+    pause = threading.Event()
+    def sleep(seconds):
+        clock.sleep(seconds)
+        pause.wait(.001)
+    monkeypatch.setattr(aw, "ArmWalk", partial(aw.ArmWalk, clock=clock.now, sleep=sleep))
+    factory = Mock(return_value=mover, timeout_s=aw.TurntableMover.timeout_s)
+    monkeypatch.setattr(aw, "TurntableMover", factory)
+    session = Mock(side_effect=lambda **kw: LiveThen(_COMPLETE))
+    monkeypatch.setattr(aw, "LoopbackSession", session)
+    monkeypatch.setattr(aw, "Trail", lambda: trail)
+    with _own_signals():
+        yield SimpleNamespace(mover=mover, trail=trail, threads=threads, factory=factory, session=session)
+
+
+@pytest.fixture
+def arm_plan_answer(monkeypatch):
+    def wait(client, args, **kw):
+        plan = _run_request.resolve_run(args)
+        return cli.answered({"verb": args.command, "shape": "trial" if plan.plan.candidates else "measure", "schedule": plan.to_dict()})
+    monkeypatch.setattr(cli, "_cmd_wait", wait)
+
+
 @pytest.fixture
 def preflight_ready(monkeypatch):
     monkeypatch.setattr(_run_request, "read_preflight_facts", ready_facts)
@@ -428,7 +467,7 @@ def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
         publish_authored_candidate(candidate)
         candidates[candidate.fingerprint] = candidate
         monkeypatch.setattr(_run_request, "read_preflight_facts",
-                            lambda plan: ready_facts(plan, candidates=candidates))
+                            lambda plan, **kw: ready_facts(plan, **kw, candidates=candidates))
         return candidate.fingerprint
     return bank
 
@@ -445,12 +484,12 @@ def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
 ])
 def test_trial_uses_authored_section_and_keeps_candidates_at_each_pose(
     bank_trial, banked_session_level, monkeypatch, capsys, sections, program,
-    layout, default_mover, mover,
+    layout, default_mover, mover, arm_plan_answer,
 ):
     resolution = dict.fromkeys(("driver", "blend", "alignment", "topology", "room", "bass"), "base")
     fingerprint = bank_trial({**resolution, **dict.fromkeys(sections, "document")})
     opener = _opener(session='{"session_id": "trial-1"}')
-    argv = ["trial", fingerprint, *(["--mover", mover] if mover else [])]
+    argv = ["trial", fingerprint, "--wait", "--attest-rig-clear", *(["--mover", mover] if mover else [])]
     code, body = _run(argv, opener, monkeypatch, capsys)
     if mover == "human" and default_mover == "arm":
         assert code == 1 and body["reason"] == "walk_mover_mismatch"
@@ -474,14 +513,14 @@ def test_trial_uses_authored_section_and_keeps_candidates_at_each_pose(
 
 
 @pytest.mark.parametrize("mover", ["human", "arm"])
-def test_declared_trial_uses_the_design_mark_speaker_experiment(isolated_candidate_bank, monkeypatch, capsys, mover):
+def test_declared_trial_uses_the_design_mark_speaker_experiment(isolated_candidate_bank, monkeypatch, capsys, mover, arm_plan_answer):
     topology = mono_output_topology()
     candidate = candidate_from_design_draft(topology, standard_design_draft(topology))
     banked = publish_authored_candidate(candidate)
     monkeypatch.setattr(_run_request, "read_preflight_facts",
-                        lambda plan: ready_facts(plan, candidates={candidate.fingerprint: candidate}))
+                        lambda plan, **kw: ready_facts(plan, **kw, candidates={candidate.fingerprint: candidate}))
     opener = _opener(session='{"session_id": "first-experiment"}')
-    code, body = _run(["trial", banked.fingerprint, "--mover", mover], opener, monkeypatch, capsys)
+    code, body = _run(["trial", banked.fingerprint, "--mover", mover, "--wait", "--attest-rig-clear"], opener, monkeypatch, capsys)
     assert code == 0, body
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
     assert plan.program == "speaker/mark" and plan.mover == mover
@@ -495,19 +534,19 @@ def test_declared_trial_uses_the_design_mark_speaker_experiment(isolated_candida
     (("driver", "room", "bass"), "bass/axis"),
     (("rear_calibration", "bass", "room"), "rear/express"),
 ])
-def test_trial_selects_program_by_section_precedence(bank_trial, monkeypatch, capsys, sections, program):
+def test_trial_selects_program_by_section_precedence(bank_trial, monkeypatch, capsys, sections, program, arm_plan_answer):
     fingerprint = bank_trial(dict.fromkeys(sections, "document"))
     opener = _opener(session='{"session_id": "whole-document"}')
-    code, body = _run(["trial", fingerprint], opener, monkeypatch, capsys)
+    code, body = _run(["trial", fingerprint, "--wait", "--attest-rig-clear"], opener, monkeypatch, capsys)
     assert code == 0 and body["shape"] == "trial"
     assert json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]["program"] == program
 
 
-def test_trial_posts_explicit_candidates(bank_trial, monkeypatch, capsys):
+def test_trial_posts_explicit_candidates(bank_trial, monkeypatch, capsys, arm_plan_answer):
     first = bank_trial({"driver": "document"})
     second = bank_trial({"driver": "document", "blend": "document"})
     opener = _opener(session='{"session_id": "variants"}')
-    code, _ = _run(["trial", first, "--candidates", f"{second},base,{first}"], opener, monkeypatch, capsys)
+    code, _ = _run(["trial", first, "--wait", "--attest-rig-clear", "--candidates", f"{second},base,{first}"], opener, monkeypatch, capsys)
     assert code == 0
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
     assert plan.candidates == (second, "base", first)
@@ -605,8 +644,8 @@ def test_rear_behind_dry_run_counts_each_candidate_at_both_poses(monkeypatch, ca
     candidates = [_candidate(preset=preset, rear_calibration=_rear_document(rear_muted=muted),
                              program_id=f"rear-{index}") for index, muted in enumerate((False, False, True))]
     bank = {candidate.fingerprint: candidate for candidate in candidates}
-    monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan: ready_facts(
-        plan, candidates=bank, declared_target_ids=tuple(
+    monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan, **kw: ready_facts(
+        plan, **kw, candidates=bank, declared_target_ids=tuple(
             output_topology.measurement_target_id(t["role"], t.get("output_variant", "primary"))
             for t in active_driver_targets(topology))))
     names = ("base", *bank)
@@ -924,8 +963,8 @@ def test_a_rear_pair_run_composes_its_own_candidate_only_when_none_is_named(
                         lambda: {"status": "applied",
                                  "source": {"measured_candidate_fingerprint": applied.fingerprint}})
     monkeypatch.setattr(output_topology, "load_output_topology_strict", lambda: topology)
-    monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan: ready_facts(
-        plan, candidates={name: candidate_bank.find_banked_candidate(name).candidate
+    monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan, **kw: ready_facts(
+        plan, **kw, candidates={name: candidate_bank.find_banked_candidate(name).candidate
                           for name in plan.candidates}))
     argv = ["run", "--program", "rear", "--poses", "rear/pair",
             *(["--candidates", applied.fingerprint] if named else [])]
@@ -959,7 +998,7 @@ def test_wait_does_not_bank_before_capture_cleanup(state, monkeypatch, capsys):
     (["--program", "room", "--mover", "arm"], "walk_mover_mismatch"),
 ])
 def test_run_shape_refusal_is_json(preflight_ready, argv, reason, monkeypatch, capsys):
-    code, body = _run(["run", *argv], _opener(), monkeypatch, capsys)
+    code, body = _run(["run", "--wait", *argv], _opener(), monkeypatch, capsys)
     assert code == 1
     assert body["reason"] == reason
 
@@ -990,7 +1029,7 @@ def test_capture_slot_keeps_the_run_id_through_completion(monkeypatch):
 
 def test_trial_posts_the_named_composed_candidate(tuning_profile, monkeypatch, capsys):
     candidate = _room_candidate(tuning_profile)
-    monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan: ready_facts(plan, candidates={candidate.fingerprint: candidate}))
+    monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan, **kw: ready_facts(plan, **kw, candidates={candidate.fingerprint: candidate}))
     opener = _opener(session='{"session_id": "trial-1"}')
     code, body = _run(["run", "--program", "room", "--candidates", candidate.fingerprint], opener, monkeypatch, capsys)
     assert code == 0 and body["shape"] == "trial"
@@ -1026,9 +1065,9 @@ def test_remote_dry_run_refuses_before_reading_local_facts(monkeypatch, capsys, 
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsys, dry_run):
+def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsys, dry_run, arm_plan_answer):
     opener = _opener(session='{"session_id": "run-1"}')
-    code, body = _run(["run", "--program", "bass", "--level-db", "-25", *(["--dry-run"] if dry_run else [])],
+    code, body = _run(["run", "--program", "bass", "--level-db", "-25", "--wait", "--attest-rig-clear", *(["--dry-run"] if dry_run else [])],
                       opener, monkeypatch, capsys)
     body = body if dry_run else body["schedule"]
     assert code == 0 and body["mic_moves"] == 1
@@ -1044,8 +1083,8 @@ def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsy
     ("bass", None, []),
 ])
 def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, noise_dbfs, levels):
-    def facts(plan):
-        ready = ready_facts(plan)
+    def facts(plan, **kw):
+        ready = ready_facts(plan, **kw)
         if noise_dbfs is None:
             return replace(ready, anchor=replace(ready.anchor, record={}))
         return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record,
@@ -1053,7 +1092,7 @@ def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, noise_dbf
 
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
     opener = _opener()
-    code, body = _run(["run", "--program", program, "--dry-run"],
+    code, body = _run(["run", "--program", program, "--dry-run", "--wait", "--attest-rig-clear"],
                       opener, monkeypatch, capsys)
     assert code == (0 if levels else 1)
     assert body["dry_run"] is True
@@ -1067,9 +1106,9 @@ def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, noise_dbf
 def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, capsys):
     seen = []
 
-    def facts(plan):
+    def facts(plan, **kw):
         seen.append(plan.mover)
-        return ready_facts(plan)
+        return ready_facts(plan, **kw)
 
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
     code, body = _run(
@@ -1080,7 +1119,7 @@ def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, c
 
     for mover in ("arm", "human"):
         code, _ = _run(
-            ["run", "--program", "speaker", "--mover", mover, "--dry-run"],
+            ["run", "--program", "speaker", "--mover", mover, "--dry-run", "--wait", "--attest-rig-clear"],
             _opener(), monkeypatch, capsys,
         )
         assert code == 0
@@ -1116,8 +1155,8 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     join = Mock(wraps=bass_table_inputs.join_bass_rounds)
     monkeypatch.setattr(bass_table_inputs, "join_bass_rounds", join)
     publish_authored_candidate(candidate)
-    def facts(plan):
-        ready = ready_facts(plan, candidates={candidate.fingerprint: candidate})
+    def facts(plan, **kw):
+        ready = ready_facts(plan, **kw, candidates={candidate.fingerprint: candidate})
         return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record,
             "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": noise}]}}))
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
@@ -1198,7 +1237,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     monkeypatch.setattr(round_bank, "bank_round", lambda path, **kw: bank(path, campaign_root=tmp_path / "campaigns", **kw))
     monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
     argv = ["trial", candidate.fingerprint] if verb == "trial" else ["run", "--program", "bass", "--layout", "bass_axis"]
-    code, body = _run([*argv, *flags, "--wait"], opener, monkeypatch, capsys)
+    code, body = _run([*argv, *flags, "--wait", "--attest-rig-clear"], opener, monkeypatch, capsys)
     assert code == 0, body
     expected = [(level, "lateral") for level in sorted(levels) for _ in range(2 if verb == "trial" else 1)]
     if len(levels) == 1:
@@ -1227,3 +1266,114 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     assert packet["bass_table"].get("schema") == "jts_bass_run_table/1", packet["bass_table"]
     table, = packet["bass_table"]["tables"]
     assert sorted(row["level_key"]["level_db"] for row in table["levels"]) == sorted(levels)
+
+
+@pytest.mark.parametrize("source", ["flags", "plan"])
+@pytest.mark.parametrize("dry_run,attested,available,reason", [
+    (False, False, True, "walk_rig_clear_not_attested"),
+    (True, False, True, "walk_rig_clear_not_attested"),
+    (False, True, False, "walk_mover_unavailable"),
+    (True, True, False, "walk_mover_unavailable"),
+])
+def test_arm_preflight_refuses_before_opening(
+    source, dry_run, attested, available, reason, arm_runtime, monkeypatch, capsys, tmp_path,
+):
+    arm_runtime.mover.available.return_value = available
+    def facts(plan, **kw):
+        return ready_facts(plan, **kw, mover_available=aw.TurntableMover().available())
+    monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
+    flags = ["--poses", "0", "--mover", "arm"]
+    if source == "plan":
+        plan = AngleCaptureRequest((AngleStop(0, "summed"),), mover="arm")
+        path = tmp_path / "arm-plan.json"
+        path.write_text(json.dumps(plan.to_dict()))
+        flags = ["--plan", str(path)]
+    opener = _opener()
+    code, body = _run(["run", *flags, "--wait",
+                      *(["--attest-rig-clear"] if attested else []),
+                      *(["--dry-run"] if dry_run else [])], opener, monkeypatch, capsys)
+    assert code == 1
+    assert (body["issues"][0]["code"] if dry_run else body["code"]) == reason
+    assert not opener.posts()
+    assert not arm_runtime.mover.moves and not arm_runtime.threads
+
+
+@pytest.mark.parametrize("command", ["run", "trial"])
+def test_arm_requires_wait(command, monkeypatch, capsys):
+    opener = _opener()
+    with pytest.raises(SystemExit) as exc:
+        cli.main([command, *([_FINGERPRINT] if command == "trial" else []),
+                  "--mover", "arm", "--attest-rig-clear"], opener=opener)
+    assert exc.value.code == 2
+    assert capsys.readouterr().out == ""
+    assert not opener.requests
+
+
+@pytest.mark.parametrize("ending", ["complete", "stopped", "timeout", "interrupt", "signal", "park_signal"])
+def test_run_owns_arm_until_parked(ending, preflight_ready, arm_runtime, monkeypatch, capsys):
+    started, ended = threading.Event(), threading.Event()
+    if ending == "park_signal":
+        real_event = threading.Event
+        events = []
+        def event():
+            value = real_event()
+            events.append(value)
+            if len(events) == 2:
+                original_wait = value.wait
+                def wait_for_park(timeout=None):
+                    value.wait = original_wait
+                    assert not arm_runtime.threads[0].join.called
+                    signal.raise_signal(signal.SIGINT)
+                    return original_wait(timeout)
+                value.wait = wait_for_park
+            return value
+        monkeypatch.setattr(cli.threading, "Event", event)
+    trail = arm_runtime.trail
+    emit = trail.emit
+    def record(action, **kw):
+        emit(action, **kw)
+        if action == "up":
+            started.set()
+    monkeypatch.setattr(trail, "emit", record)
+    monkeypatch.setattr(trail, "close", ended.set)
+    if ending in {"complete", "stopped"}:
+        arm_runtime.session.side_effect = lambda **kw: LiveThen(_COMPLETE if ending == "complete" else _STOPPED)
+    else:
+        arm_runtime.session.side_effect = lambda **kw: FakeSession([_IN_FLIGHT_QUIET])
+    def wait(*args, **kw):
+        assert started.wait(2)
+        if ending in {"complete", "stopped"}:
+            assert ended.wait(2)
+            return {"status": "terminal", "captured": ending == "complete"}
+        if ending == "interrupt":
+            raise KeyboardInterrupt
+        if ending == "signal":
+            raise SystemExit(aw.EXIT_INTERRUPTED_PARKED)
+        return {"status": "timeout", "reason": "wait_timeout"}
+    monkeypatch.setattr(cli, "wait_for_round", wait)
+    monkeypatch.setattr(cli, "_round_session_dir", lambda _: "/bank")
+    monkeypatch.setattr(round_bank, "finish_round", lambda _: (SimpleNamespace(path=Path("/bank")), None))
+    monkeypatch.setattr(round_packet, "wait_answer", lambda *a, **kw: {"round_dir": "/bank"})
+    monkeypatch.setattr(cli, "packet_lines", lambda _: [])
+    argv = ["run", "--poses", "0", "--mover", "arm", "--wait", "--attest-rig-clear",
+            "--base-url", "http://127.0.0.1:8080", "--hostname", "jts.local"]
+    opener = _opener(session='{"session_id": "run-1"}')
+    if ending in {"interrupt", "signal", "park_signal"}:
+        with pytest.raises(KeyboardInterrupt if ending == "interrupt" else SystemExit):
+            cli.main(argv, opener=opener)
+    else:
+        code, body = _run(argv, opener, monkeypatch, capsys)
+        assert code == {"complete": 0, "stopped": 1, "timeout": 2}[ending]
+        arm = body["arm"] if ending == "complete" else body["detail"]["arm"]
+        assert set(arm) == {"exit", "summary"}
+        if ending in {"complete", "stopped"}:
+            assert arm["exit"] == ("ok" if ending == "complete" else "session_stopped")
+    assert json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["attest_rig_clear"] is True
+    worker, = arm_runtime.threads
+    assert not worker.daemon and not worker.is_alive()
+    worker.join.assert_called_with(timeout=aw.TurntableMover.timeout_s + aw.PARK_SETTLE_S + 30)
+    assert arm_runtime.mover.moves[-1] == 0
+    assert trail.one("parked")["ok"] is True
+    assert trail.one("up")["rig_clear_attested"] is True
+    arm_runtime.factory.assert_called_with(attest_rig_clear=True)
+    arm_runtime.session.assert_called_once_with(host_header="jts.local", base_url="http://127.0.0.1:8080")

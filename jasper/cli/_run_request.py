@@ -62,7 +62,7 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
         if not isinstance(document, dict):
             raise ValueError("plan must be an object")
         request = AngleCaptureRequest.from_mapping(document)
-        return preflight_levels(request, read_preflight_facts(request))
+        return preflight_levels(request, read_preflight_facts(request, rig_clear_attested=args.attest_rig_clear))
     program = run_program(args.program or "speaker", args.poses)
     if args.repeats is not None:
         try:
@@ -82,5 +82,5 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
         level_source="operator" if operator_level else level_source,
         mover=args.mover or program.mover or "human",
     )
-    facts = read_preflight_facts(request)
+    facts = read_preflight_facts(request, rig_clear_attested=args.attest_rig_clear)
     return preflight_levels(request, facts, program.levels if args.level_db is None else None)
