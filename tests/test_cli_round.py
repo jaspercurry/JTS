@@ -34,7 +34,7 @@ from jasper.active_speaker.crossover_v2.prescription_document import judge_presc
 from jasper.active_speaker.crossover_v2 import prescription_document as prescription_document_mod
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment, compile_candidate_config
 from jasper.active_speaker.design_draft import load_design_draft
-from jasper.web import correction_crossover_v2_apply as v2apply
+from jasper.web import correction_capture, correction_crossover_v2_apply as v2apply
 from jasper.active_speaker.crossover_v2.evidence_packet import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
 from jasper.active_speaker.measurement_programs import run_program
@@ -601,13 +601,14 @@ def _run_opener(capture):
 
 
 @pytest.mark.parametrize("status", ["awaiting_join", "running", *sorted(wc.SESSION_ENDED_STATUSES)])
-def test_stop_cancels_only_live_runs(status, monkeypatch, capsys):
-    opener = _run_opener({"status": status})
+@pytest.mark.parametrize("session_id", [None, "run-1"])
+def test_stop_cancels_only_live_runs(status, session_id, monkeypatch, capsys):
+    opener = _run_opener({"status": status, "session_id": session_id, "code": "user_stopped"})
     answer = {"capture": {"session_id": "run-1", "status": "stopping"}}
     opener.pages[wc.CAPTURE_CANCEL_PATH] = json.dumps(answer)
     code, body = _run(["stop", "--run", "run-1"], opener, monkeypatch, capsys)
     assert opener.requests[0].full_url.endswith(wc.STATUS_PATH)
-    if status in wc.SESSION_ENDED_STATUSES:
+    if status in wc.SESSION_ENDED_STATUSES and (session_id or status == "stopped"):
         assert code == cli.EXIT_REFUSED and body["code"] == "run_not_live"
         assert body["detail"]["http"] == 409
         assert not opener.posts()
@@ -703,6 +704,49 @@ def test_wait_publishes_operator_stop_reason(tmp_path):
     (tmp_path / "packet.json").write_text(json.dumps({"result": "partial", "reason": "user_stopped"}))
     answer = round_packet.wait_answer(banked, {"result": "failed", "reason": None}, verbose=False)
     assert answer["reason"] == "user_stopped"
+
+
+@pytest.mark.parametrize("status", ["stopped", "failed", "complete", "awaiting_join", "running"])
+@pytest.mark.parametrize("reason", [None, "user_stopped"])
+def test_wizard_client_without_session_keeps_ended_status(status, reason):
+    ended = status == "stopped" and reason is not None
+    opener = _run_opener({"session_id": None, "status": status, "code": reason})
+    client = wc.WizardClient(opener=opener)
+    http, report = client.run_status("run-1")
+    assert http == 200
+    assert report["status"] == (status if ended else "starting")
+    assert report["code"] == ("user_stopped" if ended else None)
+    if ended:
+        opener.requests.clear()
+        clock = FakeWalkClock(max_sleeps=0)
+        answer = wc.wait_for_round(client, run_id="run-1", timeout_s=20,
+                                   now=clock.now, sleep=clock.sleep)
+        assert answer == {**report, "status": "terminal"}
+        assert len(opener.requests) == 1
+
+
+@pytest.mark.parametrize("verb", ["wait", "status"])
+@pytest.mark.parametrize("reason", ["user_stopped", "capture_clipped"])
+def test_never_joined_end_reports_own_reason(verb, reason, monkeypatch, capsys):
+    monkeypatch.setattr(correction_capture, "_capture_slot", None)
+    monkeypatch.setattr(correction_capture, "_pending_capture",
+                        (SimpleNamespace(label="crossover_v2:session"), None))
+    stopped = correction_capture._request_capture_stop("crossover_v2:", reason)
+    opener = _run_opener({**stopped, "session_id": None})
+    lookup = Mock(side_effect=AssertionError("no capture bundle"))
+    monkeypatch.setattr(cli, "_round_session_dir", lookup)
+    code, body = _run([verb, "--run", "run-1", *(["--timeout", "0"] if verb == "wait" else [])],
+                      opener, monkeypatch, capsys)
+    expected = {"run_id": "run-1", "status": "stopped", "result": None, "pending": None,
+                "current": None, "code": reason, "faults": [], "captured": False}
+    if verb == "wait":
+        assert code == cli.EXIT_REFUSED
+        assert body == {"status": "refused", "reason": reason,
+                        "detail": {**expected, "status": "terminal"}}
+    else:
+        assert code == cli.EXIT_OK and body == expected
+    lookup.assert_not_called()
+    assert len(opener.requests) == 1
 
 
 @pytest.mark.parametrize("verb", ["wait", "run", "trial"])

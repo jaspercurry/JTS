@@ -212,7 +212,7 @@ def _request_capture_stop(kind_prefix: str, reason: str = REASON_USER_STOPPED) -
         if not active_matches and _pending_capture is not None and _pending_capture[0].label.startswith(kind_prefix):
             kind, _ = _pending_capture
             _pending_capture = None
-            stopped = {"status": CAPTURE_STOPPED, "kind": kind.label}
+            stopped = {"status": CAPTURE_STOPPED, "kind": kind.label, "code": reason}
             if not capture or capture.get("status") not in _CAPTURE_IN_FLIGHT_STATUSES:
                 _capture_slot = stopped
             return stopped
