@@ -123,42 +123,31 @@ def prediction_record(basis: DiagnosticBasis, transfer: np.ndarray) -> Predicted
     )
 
 
-def compare_transfer(basis: DiagnosticBasis, transfer: np.ndarray, measured: DiagnosticBasis) -> dict:
+def compare_transfer(basis: DiagnosticBasis, transfer: np.ndarray) -> dict:
     predicted = prediction_record(basis, transfer)
-    actual = measured.transfers["summed"]
+    actual = basis.transfers["summed"]
     delta = predicted_minus_measured_db(
-        predicted, measured.freqs_hz, 20 * np.log10(np.maximum(abs(actual), 1e-12)),
-        band_hz=measured.band_hz,
+        predicted, basis.freqs_hz, 20 * np.log10(np.maximum(abs(actual), 1e-12)),
+        band_hz=basis.band_hz,
     )
     raw = np.asarray(delta["delta_db"]) + delta["level_offset_db"]
     delta.update(raw_rms_db=float(np.sqrt(np.mean(raw**2))), raw_max_abs_db=float(np.max(abs(raw))))
-    same_take = basis.source["capture_fingerprint"] == measured.source["capture_fingerprint"]
-    level_reasons = [] if same_take else ["separate_capture_gain_unverified"]
-    for key in ("main_volume_db", "session_volume_db"):
-        source_level = (basis.document.get("provenance") or {}).get(key)
-        measured_level = (measured.document.get("provenance") or {}).get(key)
-        if not same_take and (source_level is None or measured_level is None):
-            level_reasons.append(f"{key}_missing")
-        elif source_level != measured_level:
-            level_reasons.append(f"{key}_changed")
     delta["level_comparability"] = {
-        "verified": same_take, "reasons": level_reasons,
+        "verified": True, "reasons": [],
         "raw_metrics": "observed level differences; configuration-only attribution requires comparable capture gain and volume",
     }
-    delta["phase"] = {"status": "unavailable", "reason": "separate recordings have no shared absolute time origin"}
-    if same_take and np.array_equal(basis.freqs_hz, measured.freqs_hz):
-        # Deep cancellations and weak bins cannot support a confident phase error.
-        reference = np.sum([abs(basis.transfers[role]) for role in basis.branches], axis=0)
-        reliable = (np.minimum(abs(transfer), abs(actual)) > np.max(reference) * 1e-3)
-        reliable &= np.minimum(abs(transfer), abs(actual)) > reference * .01
-        phase = np.degrees(np.angle(transfer * actual.conjugate()))
-        delta["phase"] = {
-            "status": "available" if np.any(reliable) else "unavailable",
-            "rms_deg": float(np.sqrt(np.mean(phase[reliable]**2))) if np.any(reliable) else None,
-            "max_abs_deg": float(np.max(abs(phase[reliable]))) if np.any(reliable) else None,
-            "included_points": int(np.sum(reliable)), "excluded_points": int(np.sum(~reliable)),
-            "limits": "exclude below -60 dB of peak branch sum or -40 dB relative cancellation; SNR is not established",
-        }
+    # Deep cancellations and weak bins cannot support a confident phase error.
+    reference = np.sum([abs(basis.transfers[role]) for role in basis.branches], axis=0)
+    reliable = (np.minimum(abs(transfer), abs(actual)) > np.max(reference) * 1e-3)
+    reliable &= np.minimum(abs(transfer), abs(actual)) > reference * .01
+    phase = np.degrees(np.angle(transfer * actual.conjugate()))
+    delta["phase"] = {
+        "status": "available" if np.any(reliable) else "unavailable",
+        "rms_deg": float(np.sqrt(np.mean(phase[reliable]**2))) if np.any(reliable) else None,
+        "max_abs_deg": float(np.max(abs(phase[reliable]))) if np.any(reliable) else None,
+        "included_points": int(np.sum(reliable)), "excluded_points": int(np.sum(~reliable)),
+        "limits": "exclude below -60 dB of peak branch sum or -40 dB relative cancellation; SNR is not established",
+    }
     return delta
 
 
@@ -187,9 +176,7 @@ def _relative(source, target, basis, channels, source_inputs, target_inputs) -> 
         raise ForwardModelError(str(exc), detail={"capture_id": basis.source["capture_id"], "field": "relative_graph"}) from exc
 
 
-def _metric_summary(delta: Mapping[str, Any] | None) -> dict | None:
-    if delta is None:
-        return None
+def _metric_summary(delta: Mapping[str, Any]) -> dict:
     return {key: delta[key] for key in (
         "compared_band_hz", "compared_points", "level_offset_db", "rms_db",
         "max_abs_db", "raw_rms_db", "raw_max_abs_db", "phase",
@@ -198,22 +185,14 @@ def _metric_summary(delta: Mapping[str, Any] | None) -> dict | None:
 
 
 def capture_prediction(
-    round_dir: Path, *, capture_id: str, window_ms: float | None = None,
+    round_dir: Path, *, capture_id: str,
     candidate: MeasuredCrossoverCandidate | None = None,
-    basis_candidate: MeasuredCrossoverCandidate | None = None, measured_round: Path | None = None,
-    measured_capture_id: str | None = None,
-    expected_prediction_fingerprint: str | None = None,
-    branch_roles: tuple[str, str] = DEFAULT_BRANCHES,
+    basis_candidate: MeasuredCrossoverCandidate | None = None,
 ) -> dict[str, Any]:
-    if measured_round is not None and measured_capture_id is None:
-        raise ForwardModelError("comparison requires an exact capture", detail={"required": "measured_capture_id"})
-    if expected_prediction_fingerprint is not None and measured_capture_id is None:
-        raise ForwardModelError("an expected prediction fingerprint requires a measured capture", detail={"required": "measured_capture_id"})
-    basis = read_diagnostic(round_dir, capture_id, REFERENCE_RUNG_MS if window_ms is None else window_ms, branch_roles=branch_roles)
+    basis = read_diagnostic(round_dir, capture_id, REFERENCE_RUNG_MS)
     reconstruction_tf = predict_transfer(basis, {})
-    reconstruction = compare_transfer(basis, reconstruction_tf, basis)
+    reconstruction = compare_transfer(basis, reconstruction_tf)
     changes = None
-    channels: dict[str, int] = {}
     if candidate is not None:
         try:
             source_candidate = (
@@ -249,61 +228,14 @@ def capture_prediction(
             raise ForwardModelError("source candidate lookup is only needed with --candidate-json")
         transfer = reconstruction_tf
     predicted = prediction_record(basis, transfer)
-    measured = None
-    comparison = None
-    context = None
-    if measured_capture_id is not None:
-        measured = read_diagnostic(measured_round or round_dir, measured_capture_id, basis.window["window_ms"], branch_roles=branch_roles)
-        expected_candidate = candidate.fingerprint if candidate is not None else basis.source["candidate_id"]
-        if not expected_candidate or measured.source["candidate_id"] != expected_candidate:
-            raise ForwardModelError("comparison take does not name the predicted candidate", reason="forward_model_candidate_mismatch", detail={
-                "capture_id": measured_capture_id, "expected_candidate_id": expected_candidate, "actual_candidate_id": measured.source["candidate_id"],
-            })
-        pose_fields = ("position_deg", "vertical_deg", "mark_distance_m", "pose_kind", "seat_offset_m")
-        if any(basis.document.get(key) != measured.document.get(key) for key in pose_fields):
-            raise ForwardModelError("comparison take has a different declared microphone pose", reason="forward_model_pose_mismatch", detail={
-                "basis_capture_id": capture_id, "measured_capture_id": measured_capture_id,
-                "changed_fields": [key for key in pose_fields if basis.document.get(key) != measured.document.get(key)],
-            })
-        if changes is not None:
-            def input_weights(read):
-                records = {r["role"]: r for r in read.document["branch_diagnostic"]["responses"]}
-                return {role: {int(records[role]["input_channel"]): 1.0} for role in channels}
-            observed = _relative(
-                _recorded_graph(basis), _recorded_graph(measured), basis, channels,
-                input_weights(basis), input_weights(measured),
-            )
-            for role in channels:
-                planned = changes.responses_by_role[role][valid]
-                if not np.all(observed.usable_by_role[role]) or not np.allclose(observed.responses_by_role[role], planned, rtol=1e-6, atol=1e-8):
-                    raise ForwardModelError("recorded graph change differs from the predicted complete candidate change", reason="forward_model_graph_mismatch", detail={
-                        "role": role, "basis_capture_id": capture_id, "measured_capture_id": measured_capture_id,
-                    })
-        elif json_fingerprint(_recorded_graph(basis)) != json_fingerprint(_recorded_graph(measured)):
-            raise ForwardModelError("a same-candidate repeat requires the same played graph", reason="forward_model_graph_mismatch", detail={
-                "basis_capture_id": capture_id, "measured_capture_id": measured_capture_id,
-            })
-        comparison = compare_transfer(basis, transfer, measured)
-        level_keys = ("main_volume_db", "session_volume_db")
-        context = {
-            "basis_volume_db": {key: (basis.document.get("provenance") or {}).get(key) for key in level_keys},
-            "measured_volume_db": {key: (measured.document.get("provenance") or {}).get(key) for key in level_keys},
-            "pose": {key: basis.document.get(key) for key in pose_fields},
-            "limitation": "Declared pose equality does not prove unchanged placement or capture gain. Level error includes any such change.",
-        }
     summary = {
         "basis": basis.source, "candidate_id": candidate.fingerprint if candidate is not None else basis.source["candidate_id"],
-        "measured": measured.source if measured is not None else None,
         "window": dict(basis.window),
         "branches": list(basis.branches),
         "reconstruction": _metric_summary(reconstruction),
-        "predicted_minus_measured": _metric_summary(comparison),
         "acceptance": acceptance_block(
-            str(measured.captures["summed"].record_path) if measured is not None
-            else str(basis.captures["summed"].record_path) if candidate is None else None
+            str(basis.captures["summed"].record_path) if candidate is None else None
         ),
-        "comparison_kind": "changed_candidate" if measured is not None and candidate is not None else "same_candidate_repeat" if measured is not None else "unmeasured_forecast" if candidate is not None else "same_take_reconstruction",
-        "comparison_context": context,
         "limits": "Reconstruction checks this take only. Forecast assumes linear operation and unchanged setup; inspect window sensitivity. Magnitude errors can be dominated by low-SNR cancellation bins. This result does not authorize or block playback.",
     }
     summary["prediction_fingerprint"] = json_fingerprint({
@@ -311,25 +243,15 @@ def capture_prediction(
         "window": basis.window,
         "prediction": {key: value for key, value in predicted.to_dict().items() if key != "take_path"},
     })
-    if expected_prediction_fingerprint is not None and expected_prediction_fingerprint != summary["prediction_fingerprint"]:
-        raise ForwardModelError("the comparison does not match the saved prediction fingerprint", reason="forward_model_forecast_mismatch", detail={
-            "expected_prediction_fingerprint": expected_prediction_fingerprint,
-            "actual_prediction_fingerprint": summary["prediction_fingerprint"],
-        })
-    summary["forecast_binding"] = {
-        "status": "matched" if expected_prediction_fingerprint is not None else "not_requested",
-        "expected_prediction_fingerprint": expected_prediction_fingerprint,
-    }
     return {
         "schema_version": 1, "kind": "jts_capture_prediction", "summary": summary,
         "prediction": predicted.to_dict(), "reconstruction": reconstruction,
-        "predicted_minus_measured": comparison,
         "relative_graph": changes.to_dict() if changes is not None else None,
         "limitations": [
             "Reconstruction tests this take; a changed-candidate forecast needs its own recording.",
             "Predictions assume linear operation and unchanged speaker, placement and capture chain.",
             "A finite window can change filter transients; inspect window sensitivity before narrow correction.",
-            "Fixed base protection and device settings are held; observed graph changes are checked when comparing.",
+            "Fixed base protection and device settings are held.",
             "No score or mismatch here vetoes a safe experiment.",
         ],
     }

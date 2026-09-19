@@ -530,9 +530,9 @@ def test_neutral_adapter_requires_an_honest_display_reference():
         )
 
 
-@pytest.mark.parametrize("compared", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
 def test_frequency_cli_reads_capture_prediction_evidence(
-    tmp_path: Path, compared: bool, monkeypatch,
+    tmp_path: Path, legacy: bool,
 ) -> None:
     basis = {
         "capture_id": "basis-take",
@@ -561,13 +561,11 @@ def test_frequency_cli_reads_capture_prediction_evidence(
         "summary": {
             "basis": basis,
             "candidate_id": "target-candidate",
-            "measured": measured if compared else None,
             "window": {
                 "window_ms": 7.0,
                 "validity_floor_hz": 286.0,
                 "trusted_floor_hz": 572.0,
             },
-            "comparison_kind": "changed_candidate" if compared else "unmeasured_forecast",
             "limits": "Forecast assumes unchanged setup.",
         },
         "prediction": {
@@ -582,11 +580,17 @@ def test_frequency_cli_reads_capture_prediction_evidence(
             "measured_db": [-19.0, -18.0, -17.0],
             "level_offset_db": 1.0,
         },
-        "predicted_minus_measured": comparison if compared else None,
         "limitations": ["No score authorizes playback."],
     }
-    source = tmp_path / f"prediction-{compared}.json"
-    output = tmp_path / f"frequency-{compared}.json"
+    if legacy:
+        document["predicted_minus_measured"] = comparison
+        document["summary"].update(
+            measured=measured, comparison_kind="changed_candidate",
+            predicted_minus_measured=comparison, comparison_context={},
+            forecast_binding={"status": "matched"},
+        )
+    source = tmp_path / f"prediction-{legacy}.json"
+    output = tmp_path / f"frequency-{legacy}.json"
     source.write_text(json.dumps(document))
 
     assert round_views_main([
@@ -594,25 +598,14 @@ def test_frequency_cli_reads_capture_prediction_evidence(
     ]) == 0
     [run] = json.loads(output.read_text())["runs"]
 
-    labels = [series["label"] for series in run["series"]]
-    assert labels == [
-        *([] if compared else ["Forecast predicted response"]),
-        "Reconstruction predicted response",
-        "Reconstruction measured response",
-        *(
-            ["Prediction comparison predicted response", "Prediction comparison measured response"]
-            if compared else []
-        ),
-        "Reconstruction level-aligned difference (predicted − measured)",
-        *(
-            ["Prediction comparison level-aligned difference (predicted − measured)"]
-            if compared else []
-        ),
+    assert [series["id"] for series in run["series"]] == [
+        "prediction:predicted", "reconstruction:predicted",
+        "reconstruction:measured", "reconstruction:difference",
     ]
     responses = [series for series in run["series"] if series["role"] != "difference"]
     assert len({series["reference_db"] for series in responses}) == 1
     reconstruction = {series["id"]: series for series in run["series"]}
-    predicted_id = "comparison:predicted" if compared else "prediction:predicted"
+    predicted_id = "prediction:predicted"
     forecast = reconstruction[predicted_id]
     assert forecast["candidate_id"] == "target-candidate"
     assert forecast["basis_capture_id"] == "basis-take"
@@ -622,46 +615,10 @@ def test_frequency_cli_reads_capture_prediction_evidence(
     assert reconstruction["reconstruction:predicted"]["magnitude_db"][0] - reconstruction["reconstruction:measured"]["magnitude_db"][0] == 1.0
     assert reconstruction["reconstruction:difference"]["reference_db"] == 0.0
     assert reconstruction["reconstruction:difference"]["level_offset_db"] == 1.0
-    assert reconstruction["reconstruction:difference"]["measured_capture_id"] == "basis-take"
     assert reconstruction["reconstruction:difference"]["display"]["deviation_db"] == [0.0, 0.0, 0.0]
     assert run["metadata"]["summary"]["basis"] == basis
     assert run["metadata"]["summary"]["candidate_id"] == "target-candidate"
-    assert run["metadata"]["summary"]["measured"] == (
-        measured if compared else None
-    )
     assert run["metadata"]["summary"]["window"]["window_ms"] == 7.0
-    assert run["metadata"]["summary"]["limits"] == (
-        "Forecast assumes unchanged setup."
-    )
-
-    if compared:
-        predicted = reconstruction["comparison:predicted"]
-        observed = reconstruction["comparison:measured"]
-        assert predicted["reference_db"] == observed["reference_db"]
-        assert predicted["display"]["deviation_db"][0] - observed["display"]["deviation_db"][0] == 5.0
-        assert observed["capture_id"] == "measured-take"
-        assert observed["candidate_id"] == "target-candidate"
-        difference = reconstruction["comparison:difference"]
-        assert difference["measured_capture_id"] == "measured-take"
-        assert difference["measured_graph_fingerprint"] == "measured-graph"
-        assert difference["measured_take_path"] == "/captures/measured.json"
-
-        figure = pytest.importorskip("matplotlib.figure")
-        figures = []
-        monkeypatch.setattr(figure.Figure, "savefig", lambda fig, *a, **kw: figures.append(fig))
-        render_frequency_view(json.loads(output.read_text()), tmp_path / "prediction.png")
-        evidence = " ".join(figures[0].axes[-1].texts[0].get_text().split())
-        assert "basis take: basis-take | candidate: target-candidate | basis graph: basis-graph" in evidence
-        assert "measured-take | candidate: target-candidate | graph: measured-graph" in evidence
-        assert "measured take: measured-take" in evidence
-        assert "measured graph: measured-graph" in evidence
-
-        narrower = json.loads(json.dumps(document))
-        narrower["predicted_minus_measured"]["compared_band_hz"] = [1000.0, 2000.0]
-        narrow_run = frequency_run_from_documents(
-            run_id="narrow", documents=(narrower,),
-        )
-        assert "prediction:predicted" in {series.id for series in narrow_run.series}
 
 
 def test_legacy_capture_prediction_exposes_no_invented_response_curves():
@@ -684,9 +641,6 @@ def test_legacy_capture_prediction_exposes_no_invented_response_curves():
     assert [series.id for series in run.series] == [
         "prediction:predicted", "reconstruction:difference",
     ]
-    assert run.metadata["summary"]["limits"] == (
-        "Comparison response arrays were not retained."
-    )
 
 
 def test_archive_combines_stored_summary_with_direct_records(tmp_path, monkeypatch):

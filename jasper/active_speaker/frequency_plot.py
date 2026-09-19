@@ -145,12 +145,6 @@ def render_frequency_view(
             take = curve.get("basis_capture_id") or curve["id"]
             graph = curve.get("basis_graph_fingerprint") or "not recorded"
             identity = f"basis take: {take} | candidate: {candidate} | basis graph: {graph}"
-            if curve.get("measured_capture_id"):
-                measured_graph = curve.get("measured_graph_fingerprint") or "not recorded"
-                identity += (
-                    f" | measured take: {curve['measured_capture_id']}"
-                    f" | measured graph: {measured_graph}"
-                )
         else:
             take = curve.get("take_id") or curve.get("capture_id") or curve["id"]
             graph = curve.get("graph_fingerprint") or meta.get("applied_graph_fingerprint") or "not recorded"

@@ -106,34 +106,20 @@ def frequency_run_from_capture_prediction(
     summary = document.get("summary")
     summary = summary if isinstance(summary, Mapping) else {}
     basis = summary.get("basis")
-    measured = summary.get("measured")
     window = summary.get("window")
     window = window if isinstance(window, Mapping) else {}
     candidate_id = summary.get("candidate_id")
     basis_candidate = basis.get("candidate_id") if isinstance(basis, Mapping) else None
     prediction = document.get("prediction")
     prediction_path = prediction.get("take_path") if isinstance(prediction, Mapping) else None
-    comparisons = (
-        ("reconstruction", "Reconstruction", document.get("reconstruction")),
-        ("comparison", "Prediction comparison", document.get("predicted_minus_measured")),
-    )
-    duplicate_name = next(
-        (name for name, _, comparison in comparisons
-         if (name != "reconstruction" or candidate_id == basis_candidate)
-         and _same_prediction(prediction, comparison)),
-        None,
-    )
+    reconstruction = document.get("reconstruction")
+    duplicate = candidate_id == basis_candidate and _same_prediction(prediction, reconstruction)
 
     responses: list[FrequencySeries] = []
     differences: list[FrequencySeries] = []
     top = _series(
         "prediction:predicted",
-        (
-            "Forecast predicted response"
-            if summary.get("comparison_kind")
-            in {"unmeasured_forecast", "changed_candidate"}
-            else "Prediction response"
-        ),
+        "Forecast predicted response",
         prediction,
         "predicted_db",
         "sum_band_hz",
@@ -141,53 +127,35 @@ def frequency_run_from_capture_prediction(
         window,
         visible=True,
     )
-    if top is not None and duplicate_name is None:
+    if top is not None and not duplicate:
         responses.append(top)
 
-    for name, title, comparison in comparisons:
-        if not isinstance(comparison, Mapping):
-            continue
+    if isinstance(reconstruction, Mapping):
         predicted_identity = _identity(
-            basis,
-            basis_candidate if name == "reconstruction" else candidate_id,
-            comparison.get("take_path"),
-            prediction=True,
+            basis, basis_candidate, reconstruction.get("take_path"), prediction=True,
         )
-        measured_source = basis if name == "reconstruction" else measured
         measured_identity = _identity(
-            measured_source,
-            (
-                basis_candidate
-                if name == "reconstruction"
-                else measured.get("candidate_id") if isinstance(measured, Mapping) else None
-            ),
-            measured_source.get("record_path")
-            if isinstance(measured_source, Mapping) else None,
+            basis, basis_candidate,
+            basis.get("record_path") if isinstance(basis, Mapping) else None,
         )
         for role, identity in (
             ("predicted", predicted_identity),
             ("measured", measured_identity),
         ):
             item = _series(
-                f"{name}:{role}", f"{title} {role} response", comparison,
+                f"reconstruction:{role}", f"Reconstruction {role} response", reconstruction,
                 f"{role}_db", "compared_band_hz", identity, window,
-                visible=role == "predicted" and name == duplicate_name,
+                visible=role == "predicted" and duplicate,
             )
             if item is not None:
                 responses.append(item)
-        difference_identity = {
-            **predicted_identity,
-            "measured_capture_id": measured_identity.get("capture_id"),
-            "measured_graph_fingerprint": measured_identity.get("graph_fingerprint"),
-            "measured_take_path": measured_identity.get("take_path"),
-        }
         difference = _series(
-            f"{name}:difference",
-            f"{title} level-aligned difference (predicted − measured)",
-            comparison,
+            "reconstruction:difference",
+            "Reconstruction level-aligned difference (predicted − measured)",
+            reconstruction,
             "delta_db",
             "compared_band_hz",
-            difference_identity,
+            predicted_identity,
             window,
             reference_db=0.0,
         )
