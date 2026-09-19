@@ -283,9 +283,11 @@ def test_the_realization_tolerance_must_be_a_positive_number(tolerance):
 def test_realization_grades_the_same_key_the_flow_grades():
     """The comparator name is shared, not re-chosen."""
 
-    from jasper.active_speaker import crossover_v2_flow
+    from jasper.active_speaker.crossover_v2 import (  # lazy: avoid measurement-stack import cost on unused paths
+        contracts,
+    )
 
-    assert TRACKING_COMPARATOR_KEY == crossover_v2_flow.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED
+    assert TRACKING_COMPARATOR_KEY == contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED
 
 
 @pytest.mark.parametrize(

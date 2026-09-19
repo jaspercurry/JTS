@@ -517,8 +517,10 @@ def prepare_v2_session(
         series_position_from_state,
     )
     from jasper.active_speaker.crossover_v2.programs import measurement_band_hz
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2_flow import (  # lazy: avoid measurement-stack import cost on unused paths
         CrossoverV2Session,
+    )
+    from jasper.active_speaker.crossover_v2.durable_state import (  # lazy: avoid measurement-stack import cost on unused paths
         attempt_history_from_state,
     )
 
@@ -566,7 +568,7 @@ def prepare_v2_session(
         from jasper.active_speaker.crossover_v2.journey import (
             LATERAL_CONSUMER_FORWARD_MODEL,
         )
-        from jasper.active_speaker.crossover_v2_flow import (
+        from jasper.active_speaker.crossover_v2.durable_state import (  # lazy: avoid measurement-stack import cost on unused paths
             V2ConductorSnapshot,
         )
 

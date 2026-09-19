@@ -153,9 +153,11 @@ def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = Fals
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_VERIFY_CROSSOVER_REGION,
     )
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.contracts import (  # lazy: avoid measurement-stack import cost on unused paths
         CLAIM_FAIL,
         CLAIM_PASS,
+    )
+    from jasper.active_speaker.crossover_v2_flow import (  # lazy: avoid measurement-stack import cost on unused paths
         PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
     )
     from jasper.active_speaker.crossover_v2.accountability import LEDGER_NOT_AN_IMPROVEMENT

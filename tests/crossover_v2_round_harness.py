@@ -29,7 +29,7 @@ from jasper.web import correction_crossover_v2_state as v2state
 from typing import Any
 
 from jasper.active_speaker import baseline_profile as baseline_profile_mod
-from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.crossover_v2.round_evidence import (
     EntryBaseline,
@@ -81,7 +81,7 @@ def _install_entry_baseline(conductor: Any, *, scale: float) -> EntryBaseline:
     """
     measured = measured_response_from_analysis(
         _verify_analysis(
-            conductor.program_for_phase(flow.PHASE_VERIFY), summed_db=_in_room_summed_db() * scale,
+            conductor.program_for_phase(journey.PHASE_VERIFY), summed_db=_in_room_summed_db() * scale,
         ),
         reference_mark=REFERENCE_MARK_DESIGN_AXIS,
     )
@@ -201,7 +201,7 @@ def _post_apply_analysis(conductor: Any, *, scale: float = 1.0, max_db: float = 
     ``VERIFY_TOLERANCE_DB`` is an accepted capture with a MATCHED realization.
     """
     return _verify_analysis(
-        conductor.program_for_phase(flow.PHASE_VERIFY),
+        conductor.program_for_phase(journey.PHASE_VERIFY),
         max_db=max_db,
         summed_db=_in_room_summed_db() * scale,
     )
@@ -238,7 +238,7 @@ def _consume_verify(
     :meth:`_consume_verify` documents.
     """
     return conductor._consume_verify(
-        index, attempt, analysis, result, phase=flow.PHASE_VERIFY,
+        index, attempt, analysis, result, phase=journey.PHASE_VERIFY,
     )
 
 

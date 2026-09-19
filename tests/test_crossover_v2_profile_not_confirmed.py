@@ -28,7 +28,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
     REASON_SPL_CEILING_EXCEEDED,
 )
-from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
+from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.active_speaker.driver_safety import (
     compute_driver_safety_profile,
 )

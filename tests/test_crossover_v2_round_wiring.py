@@ -26,6 +26,10 @@ import pytest
 
 from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.boost_protection import BOOST_OVER_DECLARED_BOUND, read_boost_finding
+from jasper.active_speaker.crossover_v2 import durable_state
+from jasper.active_speaker.crossover_v2 import journey
+from jasper.active_speaker.crossover_v2 import refusal_copy
+from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS,
@@ -45,9 +49,7 @@ from jasper.active_speaker.crossover_v2.verification import (
     HEADROOM_REACHABLE,
     Verdict,
 )
-from jasper.active_speaker.crossover_v2_flow import (
-    ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-)
+from jasper.active_speaker.crossover_v2.contracts import ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_status as v2status
@@ -714,7 +716,7 @@ def test_the_model_error_store_banks_the_tracking_number_not_the_ledger_grade(
         ),
     )
 
-    real_record_from_verify = flow.attempt_record_from_verify
+    real_record_from_verify = durable_state.attempt_record_from_verify
 
     def _record_with_a_different_grade(analysis, *, attempt_id, sitting_id):
         record = real_record_from_verify(
@@ -952,7 +954,7 @@ def _full_stage_2(monkeypatch) -> tuple[Any, list[int]]:
         camilla_factory=lambda: SimpleNamespace(), verify_only=True,
     )
     conductor, _state = _open_prepared(monkeypatch, prepared)
-    assert flow.PHASE_CLOUD_VERIFY in conductor.session_phases, (
+    assert journey.PHASE_CLOUD_VERIFY in conductor.session_phases, (
         "this session must plan a post-apply cloud, or it is not the Full "
         "shape and grades at the other trigger"
     )
@@ -977,7 +979,7 @@ def _cloud_verify_indexes(conductor: Any) -> tuple[int, ...]:
     plan = conductor._journey.plan
     return tuple(
         i for i in range(1, 32)
-        if plan.phase_for_index(i) == flow.PHASE_CLOUD_VERIFY
+        if plan.phase_for_index(i) == journey.PHASE_CLOUD_VERIFY
     )
 
 
@@ -992,7 +994,7 @@ def _walk_post_apply_cloud(conductor: Any, *, scale: float = 1.0) -> Any:
     verdict = None
     for attempt, index in enumerate(_cloud_verify_indexes(conductor), start=2):
         verdict = conductor._consume_cloud_position(
-            flow.PHASE_CLOUD_VERIFY, index, attempt,
+            journey.PHASE_CLOUD_VERIFY, index, attempt,
             _post_apply_analysis(conductor, scale=scale),
             SimpleNamespace(wav=b"fake-wav"),
         )
@@ -1046,7 +1048,7 @@ def test_the_full_tier_grades_its_round_at_the_post_apply_cloud_close(
     verdict = _walk_post_apply_cloud(conductor)
 
     assert verdict.accepted is True
-    assert verdict.payload["group_complete"] == flow.PHASE_CLOUD_VERIFY
+    assert verdict.payload["group_complete"] == journey.PHASE_CLOUD_VERIFY
     evaluation = conductor.round_evaluation
     assert evaluation is not None, "the cloud close did not grade the round"
     # #2602's HEADLINE CASE, end to end: the Full tier walks a post-apply
@@ -1127,7 +1129,7 @@ def test_exactly_one_of_the_two_round_triggers_fires_in_any_session(
     _install_entry_baseline(express, scale=1.5)
     _install_applied_graph(monkeypatch, boosts=False)
 
-    assert flow.PHASE_CLOUD_VERIFY not in express._journey.plan.phases
+    assert journey.PHASE_CLOUD_VERIFY not in express._journey.plan.phases
     assert _consume_verify(express, _post_apply_analysis(express)).accepted
     assert express.round_evaluation is not None, "Express grades at VERIFY"
 
@@ -1136,7 +1138,7 @@ def test_exactly_one_of_the_two_round_triggers_fires_in_any_session(
     full, _full_attempts = _full_stage_2(monkeypatch)
     _install_entry_baseline(full, scale=1.5)
 
-    assert flow.PHASE_CLOUD_VERIFY in full._journey.plan.phases
+    assert journey.PHASE_CLOUD_VERIFY in full._journey.plan.phases
     assert _consume_verify(full, _post_apply_analysis(full)).accepted
     assert full.round_evaluation is None, "Full does not grade at VERIFY"
 
@@ -2142,7 +2144,7 @@ def test_the_position_role_reaches_the_combiners_own_input_struct():
         ),
     )
 
-    capture = flow.cloud_position_capture(position)
+    capture = spatial.cloud_position_capture(position)
 
     assert capture.position_id == "p_onax"
     assert capture.role == "onax"
@@ -2163,7 +2165,7 @@ def test_a_position_that_declares_no_role_carries_an_empty_one():
         ),
     )
 
-    assert flow.cloud_position_capture(position).role == ""
+    assert spatial.cloud_position_capture(position).role == ""
 
 
 @pytest.mark.parametrize("probe_verdict", [None, *sorted(DELTA_PROBE_ADVISE_AGAINST_KEEP_VERDICTS)])
@@ -2250,7 +2252,7 @@ def test_measured_excess_boost_restores_once_and_discloses_the_result(
     assert protection["finding_recorded"] is (failure != "bank")
     assert len(attempts) == (0 if failure in ("unavailable", "displaced") else 1)
     assert live["config"]["sha256"] == (previous_sha if restored else "a" * 64)
-    assert conductor._grade_round_once(flow.PhaseVerdict(True)).payload["protection"] == protection
+    assert conductor._grade_round_once(refusal_copy.PhaseVerdict(True)).payload["protection"] == protection
     first_count = len(attempts)
     _flow_seams(conductor).restore_boost("a" * 16)
     assert len(attempts) == first_count

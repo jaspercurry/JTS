@@ -57,17 +57,18 @@ import time
 
 import pytest
 
+from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
     TRANSIENT_AUTO_RETRY_CODES,
 )
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.capture_dispatch import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
     VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
-    CrossoverV2Session,
 )
+from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
 from jasper.audio_measurement.program_analysis import (
@@ -427,7 +428,9 @@ def test_the_gate_record_banks_each_number_its_sentence_narrates_or_a_null(
     which ``GateDisclosure.reflection_delay_ms`` calls meaningless to a reader
     on its own. 15.73 - 10.40, never 15.73.
     """
-    from jasper.active_speaker.crossover_v2_flow import _gate_record
+    from jasper.active_speaker.crossover_v2.capture_dispatch import (  # lazy: avoid measurement-stack import cost on unused paths
+        _gate_record,
+    )
     from jasper.audio_measurement import gate_disclosure as gd
     from tests.crossover_v2_fixtures import _driver_response_diag
 
@@ -470,7 +473,9 @@ def test_a_gate_record_carries_the_declared_room_floor_and_says_it_is_declared(
     the same capture publishes a floor AND the word that says the operator's
     tape measure produced it — never a word that would let it read as measured.
     """
-    from jasper.active_speaker.crossover_v2_flow import _gate_record
+    from jasper.active_speaker.crossover_v2.capture_dispatch import (  # lazy: avoid measurement-stack import cost on unused paths
+        _gate_record,
+    )
     from jasper.audio_measurement import gating
     from jasper.audio_measurement.measurement_geometry import declared_first_bounce_s
     from tests.crossover_v2_fixtures import _driver_response_diag
@@ -504,7 +509,9 @@ def test_two_seats_of_one_rig_publish_different_floors_for_their_distances(tmp_p
     number on both rows would hide that the seats are not equally trustworthy
     down low.
     """
-    from jasper.active_speaker.crossover_v2_flow import _gate_record
+    from jasper.active_speaker.crossover_v2.capture_dispatch import (  # lazy: avoid measurement-stack import cost on unused paths
+        _gate_record,
+    )
     from jasper.audio_measurement import gating
     from jasper.audio_measurement.measurement_geometry import declared_first_bounce_s
     from tests.crossover_v2_fixtures import _driver_response_diag
@@ -551,7 +558,7 @@ def test_a_hand_edited_geometry_file_reads_as_unknown_instead_of_ending_the_roun
     response = dataclasses.replace(_driver_response_diag("summed"), gating=block)
 
     assert flow._declared_first_bounce_s(1.0) is None
-    record = flow._gate_record(
+    record = capture_dispatch._gate_record(
         response, declared_first_bounce_s=flow._declared_first_bounce_s(1.0)
     )
     assert record is not None

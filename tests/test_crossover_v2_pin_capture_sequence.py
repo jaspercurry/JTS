@@ -6,12 +6,10 @@
 
 from __future__ import annotations
 
-from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import durable_state
 from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
-from jasper.active_speaker.crossover_v2_flow import (
-    MAX_EXTRA_ATTEMPTS_PER_POSITION,
-    CrossoverV2Session,
-)
+from jasper.active_speaker.crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
+from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
 
 from tests.crossover_v2_fixtures import (
     CAPS,
@@ -126,5 +124,5 @@ def test_the_ledger_is_reachable_only_through_the_conductors_own_memory():
     characterization above rather than leaving it stale.
     """
 
-    assert "slot_attempts" not in flow.V2ConductorSnapshot.__dataclass_fields__
+    assert "slot_attempts" not in durable_state.V2ConductorSnapshot.__dataclass_fields__
     assert isinstance(_conductor(FakeSeams())._slot_attempts, dict)

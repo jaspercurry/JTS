@@ -16,6 +16,8 @@ from dataclasses import replace
 
 import pytest
 
+from jasper.active_speaker.crossover_v2 import capture_plan
+from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import admission
@@ -76,7 +78,7 @@ def test_an_overspent_meter_still_raises_the_flows_own_error(monkeypatch):
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     slot = c._slot_of_index(1)
-    c._slot_attempts[slot] = flow.SlotAttempts(admitted=1, by_household=3)
+    c._slot_attempts[slot] = admission.SlotAttempts(admitted=1, by_household=3)
 
     monkeypatch.setattr(
         flow._admission, "assess_begin",
@@ -87,7 +89,7 @@ def test_an_overspent_meter_still_raises_the_flows_own_error(monkeypatch):
         ),
     )
 
-    with pytest.raises(flow.CrossoverV2FlowError) as excinfo:
+    with pytest.raises(contracts.CrossoverV2FlowError) as excinfo:
         c.authorize_begin(1, 2)
     assert isinstance(excinfo.value.__cause__, admission.AttemptOverspendError)
 
@@ -97,15 +99,15 @@ def _exhausted_non_retriable(code: str):
     a condition no further take can clear — the state the precedence turns on."""
     c = _conductor(FakeSeams())
     slot = c._slot_of_index(1)
-    c._slot_attempts[slot] = flow.SlotAttempts(
-        admitted=1 + flow.MAX_EXTRA_ATTEMPTS_PER_POSITION,
-        by_household=flow.MAX_EXTRA_ATTEMPTS_PER_POSITION,
+    c._slot_attempts[slot] = admission.SlotAttempts(
+        admitted=1 + admission.MAX_EXTRA_ATTEMPTS_PER_POSITION,
+        by_household=admission.MAX_EXTRA_ATTEMPTS_PER_POSITION,
     )
     c._last_reason[slot] = code
     return c
 
 
-@pytest.mark.parametrize("code", sorted(flow.NON_RETRIABLE_CODES))
+@pytest.mark.parametrize("code", sorted(refusal_copy.NON_RETRIABLE_CODES))
 def test_a_non_retriable_code_outranks_a_spent_meter(code):
     """Which of two true conditions the household is told about.
 
@@ -131,9 +133,9 @@ def test_a_non_retriable_code_outranks_a_spent_meter(code):
     with pytest.raises(CaptureBeginRefused) as excinfo:
         c.authorize_begin(1, 9)
 
-    spec = flow.REASON_REGISTRY[code]
+    spec = refusal_copy.REASON_REGISTRY[code]
     assert excinfo.value.code == code
-    assert excinfo.value.user_message == flow.reason_message(code, spec)
+    assert excinfo.value.user_message == refusal_copy.reason_message(code, spec)
     assert "JTS measured this spot" not in excinfo.value.user_message
 
 
@@ -148,11 +150,11 @@ def test_every_begin_decision_kind_is_handled(caplog):
     fire for a kind with no arm, so this guard cannot be vacuous.
     """
     c = _conductor(FakeSeams())
-    c._slot_attempts[c._slot_of_index(1)] = flow.SlotAttempts(admitted=1)
+    c._slot_attempts[c._slot_of_index(1)] = admission.SlotAttempts(admitted=1)
 
     with caplog.at_level("INFO"):
         for kind in sorted(admission.DECISION_KINDS):
-            decision = admission.BeginDecision(kind, code=flow.REASON_LOCATE_FAILED)
+            decision = admission.BeginDecision(kind, code=refusal_copy.REASON_LOCATE_FAILED)
             with pytest.MonkeyPatch.context() as mp:
                 mp.setattr(flow._admission, "assess_begin", lambda **_: decision)
                 try:
@@ -178,7 +180,7 @@ def test_an_unrecognised_begin_decision_kind_refuses_rather_than_admits(caplog):
     """
     c = _conductor(FakeSeams())
     slot = c._slot_of_index(1)
-    c._slot_attempts[slot] = flow.SlotAttempts(admitted=1)
+    c._slot_attempts[slot] = admission.SlotAttempts(admitted=1)
 
     with caplog.at_level("INFO"), pytest.MonkeyPatch.context() as mp:
         mp.setattr(
@@ -190,7 +192,7 @@ def test_an_unrecognised_begin_decision_kind_refuses_rather_than_admits(caplog):
 
     unmapped = event_records(caplog, UNMAPPED_EVENT)
     assert [r.levelname for r in unmapped] == ["ERROR"]
-    assert excinfo.value.code == flow.REASON_LOCATE_FAILED
+    assert excinfo.value.code == refusal_copy.REASON_LOCATE_FAILED
     # Not admitted: no extra charged, the meter did not advance, nothing armed.
     assert c._slot_attempts[slot].admitted == 1
     assert c._slot_attempts[slot].extras_used == 0
@@ -224,23 +226,6 @@ def test_the_declared_kinds_are_the_ones_assess_begin_can_return():
     }
 
     assert produced == set(admission.DECISION_KINDS)
-
-
-def test_the_flow_and_the_module_name_one_ledger():
-    """The re-exports are the SAME objects, not a second definition.
-
-    Two suites import ``SlotAttempts`` and ``MAX_EXTRA_ATTEMPTS_PER_POSITION``
-    from the flow while the ledger itself now lives in ``admission``. Identity
-    is what makes that safe: a copy could drift, and a ledger built through one
-    name would not be the ledger the other name's bound checks.
-    """
-    assert flow.SlotAttempts is admission.SlotAttempts
-    assert (
-        flow.MAX_EXTRA_ATTEMPTS_PER_POSITION
-        is admission.MAX_EXTRA_ATTEMPTS_PER_POSITION
-    )
-    assert flow.ATTEMPT_INITIATOR_HOUSEHOLD is admission.ATTEMPT_INITIATOR_HOUSEHOLD
-    assert flow.ATTEMPT_INITIATOR_SPEAKER is admission.ATTEMPT_INITIATOR_SPEAKER
 
 
 # --------------------------------------------------------------------------- #
@@ -536,7 +521,7 @@ def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
 
 
 def _lateral_conductor(fakes):
-    return _conductor(fakes, index_phase_map=flow.build_v2_cloud_index_phase_map(
+    return _conductor(fakes, index_phase_map=capture_plan.build_v2_cloud_index_phase_map(
         include_lateral=True,
     ))
 
@@ -585,7 +570,7 @@ def test_the_conductor_passes_the_group_ness_port_rather_than_resolving_it(monke
         lambda self, phase: asked.append(phase) or real(phase),
     )
 
-    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+    verdict = refusal_copy.PhaseVerdict(False, code=refusal_copy.REASON_LOCATE_FAILED)
     settled = c._resolve_spent_slot(PHASE_LATERAL, index, slot, verdict)
 
     assert settled is verdict, "a slot with tries left must settle nothing"
@@ -612,7 +597,7 @@ def test_the_conductor_passes_the_unwalked_port_rather_than_resolving_it(monkeyp
         type(c), "_retained_group_indexes", lambda self, phase: {index},
     )
 
-    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+    verdict = refusal_copy.PhaseVerdict(False, code=refusal_copy.REASON_LOCATE_FAILED)
     settled = c._resolve_spent_slot(PHASE_LATERAL, index, slot, verdict)
 
     assert settled.payload["kept_earlier_take"] is True
@@ -634,7 +619,7 @@ def test_every_settle_kind_is_handled(caplog, half, declared):
     with caplog.at_level("INFO"):
         for kind in sorted(declared):
             c = _settled_conductor(index)
-            verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+            verdict = refusal_copy.PhaseVerdict(False, code=refusal_copy.REASON_LOCATE_FAILED)
             with pytest.MonkeyPatch.context() as mp:
                 mp.setattr(flow._admission, half, lambda kind=kind, **_: kind)
                 c._resolve_spent_slot(
@@ -651,7 +636,7 @@ def test_every_settle_kind_is_handled(caplog, half, declared):
 def test_an_unrecognised_settle_kind_ends_the_phase_rather_than_retrying(caplog):
     index = 3
     c = _settled_conductor(index)
-    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+    verdict = refusal_copy.PhaseVerdict(False, code=refusal_copy.REASON_LOCATE_FAILED)
 
     with caplog.at_level("INFO"), pytest.MonkeyPatch.context() as mp:
         mp.setattr(
@@ -674,7 +659,7 @@ def test_an_unrecognised_settle_kind_ends_the_phase_rather_than_retrying(caplog)
 def test_an_unrecognised_group_settle_kind_ends_the_phase_rather_than_advancing(caplog):
     index = 3
     c = _settled_conductor(index)
-    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+    verdict = refusal_copy.PhaseVerdict(False, code=refusal_copy.REASON_LOCATE_FAILED)
 
     with caplog.at_level("INFO"), pytest.MonkeyPatch.context() as mp:
         mp.setattr(
@@ -693,16 +678,16 @@ def test_an_unrecognised_group_settle_kind_ends_the_phase_rather_than_advancing(
     assert index not in c._group_unresolved[PHASE_LATERAL]
 
 
-@pytest.mark.parametrize("code", sorted(flow.NON_RETRIABLE_CODES))
+@pytest.mark.parametrize("code", sorted(refusal_copy.NON_RETRIABLE_CODES))
 def test_a_non_retriable_capture_verdict_rides_out_terminal(code):
     c = _lateral_conductor(FakeSeams())
     index = 3
     slot = c._slot_of_index(index)
 
-    c._slot_attempts[slot] = flow.SlotAttempts(admitted=1)
+    c._slot_attempts[slot] = admission.SlotAttempts(admitted=1)
 
     settled = c._resolve_spent_slot(
-        PHASE_LATERAL, index, slot, flow.PhaseVerdict(False, code=code),
+        PHASE_LATERAL, index, slot, refusal_copy.PhaseVerdict(False, code=code),
     )
 
     assert settled.payload["terminal"] is True
@@ -720,7 +705,7 @@ def test_the_flow_states_the_condition_inputs_the_ladder_needs():
     c = _lateral_conductor(FakeSeams())
     index = 3
     slot = c._slot_of_index(index)
-    c._slot_attempts[slot] = flow.SlotAttempts(admitted=1)
+    c._slot_attempts[slot] = admission.SlotAttempts(admitted=1)
     seen: list[dict] = []
 
     with pytest.MonkeyPatch.context() as mp:
@@ -730,19 +715,19 @@ def test_the_flow_states_the_condition_inputs_the_ladder_needs():
         )
         c._resolve_spent_slot(
             PHASE_LATERAL, index, slot,
-            flow.PhaseVerdict(False, code=refusal_copy.REASON_CHANNEL_MAP_MISMATCH),
+            refusal_copy.PhaseVerdict(False, code=refusal_copy.REASON_CHANNEL_MAP_MISMATCH),
         )
 
     assert seen[0]["code"] == refusal_copy.REASON_CHANNEL_MAP_MISMATCH
-    assert seen[0]["non_retriable"] is flow.NON_RETRIABLE_CODES
+    assert seen[0]["non_retriable"] is refusal_copy.NON_RETRIABLE_CODES
 
 
 def test_a_retriable_rejection_on_a_fresh_slot_still_offers_the_retry():
     c = _lateral_conductor(FakeSeams())
     index = 3
     slot = c._slot_of_index(index)
-    c._slot_attempts[slot] = flow.SlotAttempts(admitted=1)
-    verdict = flow.PhaseVerdict(False, code=flow.REASON_LOCATE_FAILED)
+    c._slot_attempts[slot] = admission.SlotAttempts(admitted=1)
+    verdict = refusal_copy.PhaseVerdict(False, code=refusal_copy.REASON_LOCATE_FAILED)
 
     settled = c._resolve_spent_slot(PHASE_LATERAL, index, slot, verdict)
 

@@ -15,9 +15,7 @@ statistic was retired as invalidated (PR #2717, #2711), and the P2 complex-summa
 model consumes each angle's transfer function directly.
 
 This module never constructs :data:`~.crossover_v2.journey.PHASE_LATERAL` -- it returns
-poses and refusals, the session host tags indexes with a phase. Dependency direction: a
-sibling of :mod:`jasper.active_speaker.crossover_v2_flow` that imports FROM it, not
-under ``crossover_v2/`` (whose modules forbid importing the flow).
+poses and refusals, the session host tags indexes with a phase.
 """
 
 from __future__ import annotations
@@ -70,24 +68,26 @@ from .crossover_v2.spatial import (
     POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL,
 )
-from .crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.spatial import (
     MARK_DISTANCE_M,
-    POSITION_DEG_KEY,
-    POSITION_ROLE_KEY,
     POSITION_ROLE_OFFAX,
     POSITION_ROLE_ONAX,
+)
+from jasper.active_speaker.crossover_v2.capture_plan import (
+    POSITION_DEG_KEY,
+    POSITION_ROLE_KEY,
     WIDE_OFFSET_MIN_CM,
     AUTO_ADVANCE_COUNTDOWN,
     AUTO_ADVANCE_COUNTDOWN_S,
     AUTO_ADVANCE_TAP,
     CloudPositionPrompt,
-    CrossoverV2FlowError,
     announced_capture_indexes,
     position_angle_deg,
     remote_position_prompt,
     stage1_plan_max_attempts,
     wall_clock_ceiling_s,
 )
+from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 
 __all__ = [
     "REGIME_PER_DRIVER",

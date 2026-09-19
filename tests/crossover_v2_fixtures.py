@@ -28,6 +28,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import intervention as iv
 from jasper.active_speaker.crossover_v2.contracts import (
@@ -44,15 +45,17 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
+from jasper.active_speaker.crossover_v2.capture_dispatch import SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
 from jasper.active_speaker.crossover_v2_flow import (
-    SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     CrossoverV2Session,
     V2FlowSeams,
     V2RecordPublishers,
+    spec_report_for_predicted_sum,
+)
+from jasper.active_speaker.crossover_v2.capture_plan import (
     build_v2_cloud_index_phase_map,
     build_v2_verify_index_phase_map,
     resolve_plan_shape,
-    spec_report_for_predicted_sum,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement import gating
@@ -679,7 +682,7 @@ def _conductor(
     # imports this helper). Every other session is a stage 2, which production
     # only ever reaches carrying a baseline stage 1 already took.
     if not supplied_baseline and (
-        flow.PHASE_ENTRY_BASELINE not in conductor.session_phases
+        journey.PHASE_ENTRY_BASELINE not in conductor.session_phases
     ):
         conductor._measure_entry_baseline = _fixture_entry_baseline(conductor)
     return conductor

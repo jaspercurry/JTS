@@ -36,7 +36,9 @@ from tests.test_plan_run import banked_program_baselines  # noqa: F401
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker.seat_level_reference import ResolvedLevel
-from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import capture_plan
+from jasper.active_speaker.crossover_v2 import contracts
+from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_VERIFY,
     PHASE_LATERAL,
@@ -91,7 +93,7 @@ def test_pose_at_angle_is_the_exact_inverse_of_position_angle_deg() -> None:
     """
     for degrees in range(-ac.MAX_ANGLE_DEG, ac.MAX_ANGLE_DEG + 1):
         pose = ac.pose_at_angle(degrees)
-        assert flow.position_angle_deg(pose) == degrees, degrees
+        assert capture_plan.position_angle_deg(pose) == degrees, degrees
 
 
 def test_pose_at_angle_reproduces_the_shipped_bearings() -> None:
@@ -121,22 +123,22 @@ def test_pose_role_derives_from_the_shipped_wide_class() -> None:
     """
     inside = ac.pose_at_angle(7)
     outside = ac.pose_at_angle(22)
-    assert inside.offset_cm < flow.WIDE_OFFSET_MIN_CM <= outside.offset_cm
-    assert inside.role == flow.POSITION_ROLE_ONAX and not inside.wide
-    assert outside.role == flow.POSITION_ROLE_OFFAX and outside.wide
+    assert inside.offset_cm < capture_plan.WIDE_OFFSET_MIN_CM <= outside.offset_cm
+    assert inside.role == spatial.POSITION_ROLE_ONAX and not inside.wide
+    assert outside.role == spatial.POSITION_ROLE_OFFAX and outside.wide
 
 
 @pytest.mark.parametrize("bad", [90, -90, 81, -81, 180])
 def test_pose_at_angle_refuses_an_unmeasurable_bearing(bad: int) -> None:
     """The tangent's own bound, refused loudly rather than banked absurdly."""
-    with pytest.raises(flow.CrossoverV2FlowError, match="design axis"):
+    with pytest.raises(contracts.CrossoverV2FlowError, match="design axis"):
         ac.pose_at_angle(bad)
 
 
 @pytest.mark.parametrize("bad", [7.5, "7"])
 def test_angle_stop_refuses_a_non_whole_degree(bad: object) -> None:
     """Whole degrees is the resolution the placement is honest at."""
-    with pytest.raises(flow.CrossoverV2FlowError):
+    with pytest.raises(contracts.CrossoverV2FlowError):
         ac.AngleStop(angle_deg=bad, regime=ac.REGIME_PER_DRIVER)  # type: ignore[arg-type]
 
 
@@ -158,7 +160,7 @@ _TRUNCATING = [7.9, -7.9, 0.4, "45", None]
 @pytest.mark.parametrize("bad", _TRUNCATING)
 def test_every_door_refuses_a_non_whole_degree(door: object, bad: object) -> None:
     """No constructor rounds, truncates, or parses its way to an angle."""
-    with pytest.raises(flow.CrossoverV2FlowError):
+    with pytest.raises(contracts.CrossoverV2FlowError):
         door(bad)  # type: ignore[operator]
 
 
@@ -172,7 +174,7 @@ def test_a_fractional_angle_never_becomes_an_on_axis_capture(door: object) -> No
     recording "an offset the microphone never had". A silent 0 is therefore
     worse than a loud refusal, not a lenient version of it.
     """
-    with pytest.raises(flow.CrossoverV2FlowError):
+    with pytest.raises(contracts.CrossoverV2FlowError):
         door(0.4)  # type: ignore[operator]
 
 
@@ -188,7 +190,7 @@ def test_every_door_accepts_a_numpy_integer(door: object) -> None:
     stop = ac.resolve_request(request)[0]
     assert stop.angle_deg == 45
     assert type(stop.angle_deg) is int
-    assert flow.position_angle_deg(stop.prompt) == 45
+    assert capture_plan.position_angle_deg(stop.prompt) == 45
 
 
 @pytest.mark.parametrize("door", _DOORS)
@@ -199,18 +201,18 @@ def test_every_door_refuses_floats_and_bools(door: object, bad: object) -> None:
     `True` would otherwise sail through as a perfectly valid +1 deg bearing --
     a real angle and an obvious caller error at the same time.
     """
-    with pytest.raises(flow.CrossoverV2FlowError):
+    with pytest.raises(contracts.CrossoverV2FlowError):
         door(bad)  # type: ignore[operator]
 
 
 def test_angle_stop_and_pose_share_the_numpy_and_bool_rules() -> None:
     """The other two doors agree with the constructors -- one validator, not three."""
     assert ac.AngleStop(np.int64(22), ac.REGIME_SUMMED).angle_deg == 22
-    assert flow.position_angle_deg(ac.pose_at_angle(np.int64(22))) == 22
+    assert capture_plan.position_angle_deg(ac.pose_at_angle(np.int64(22))) == 22
     for bad in (np.float64(22.0), True, 22.5, "22"):
-        with pytest.raises(flow.CrossoverV2FlowError):
+        with pytest.raises(contracts.CrossoverV2FlowError):
             ac.AngleStop(bad, ac.REGIME_SUMMED)  # type: ignore[arg-type]
-        with pytest.raises(flow.CrossoverV2FlowError):
+        with pytest.raises(contracts.CrossoverV2FlowError):
             ac.pose_at_angle(bad)  # type: ignore[arg-type]
 
 
@@ -281,17 +283,17 @@ def test_arbitrary_angles_are_reachable() -> None:
     derived from two hard-coded cm offsets behind an import-time length guard.
     """
     stop, = ac.resolve_request(ac.per_driver_at([45]))
-    assert flow.position_angle_deg(stop.prompt) == 45
-    shipped = {flow.position_angle_deg(p) for p in flow.LATERAL_POSE_PROMPTS}
+    assert capture_plan.position_angle_deg(stop.prompt) == 45
+    shipped = {capture_plan.position_angle_deg(p) for p in capture_plan.LATERAL_POSE_PROMPTS}
     assert 45 not in shipped
 
 
 def test_empty_and_unknown_requests_are_refused() -> None:
-    with pytest.raises(flow.CrossoverV2FlowError, match="at least one stop"):
+    with pytest.raises(contracts.CrossoverV2FlowError, match="at least one stop"):
         ac.AngleCaptureRequest(stops=())
-    with pytest.raises(flow.CrossoverV2FlowError, match="mover"):
+    with pytest.raises(contracts.CrossoverV2FlowError, match="mover"):
         ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED),), mover="robot")
-    with pytest.raises(flow.CrossoverV2FlowError, match="regime"):
+    with pytest.raises(contracts.CrossoverV2FlowError, match="regime"):
         ac.AngleStop(0, "sine")
 
 
@@ -395,10 +397,10 @@ def test_the_string_and_protractor_combination_is_reachable() -> None:
     """
     stop, = ac.resolve_request(ac.per_driver_at([22], mover=ac.MOVER_HUMAN))
     assert "22" in stop.prompt.headline                       # degrees...
-    assert stop.screen["auto_advance"] == flow.AUTO_ADVANCE_TAP  # ...and a tap
+    assert stop.screen["auto_advance"] == capture_plan.AUTO_ADVANCE_TAP  # ...and a tap
     # The shipped hand-walked pose at the same place states centimetres instead.
     shipped_at_40cm = next(
-        p for p in flow.LATERAL_POSE_PROMPTS if p.offset_cm == 40.0
+        p for p in capture_plan.LATERAL_POSE_PROMPTS if p.offset_cm == 40.0
     )
     assert "22" not in shipped_at_40cm.headline
 
@@ -413,8 +415,8 @@ def test_human_mover_taps_and_declares_no_position() -> None:
     to a question this seam cannot see.
     """
     for stop in ac.resolve_request(ac.both_at([0, 22])):
-        assert stop.screen == {"auto_advance": flow.AUTO_ADVANCE_TAP}
-        assert flow.POSITION_DEG_KEY not in stop.screen
+        assert stop.screen == {"auto_advance": capture_plan.AUTO_ADVANCE_TAP}
+        assert capture_plan.POSITION_DEG_KEY not in stop.screen
 
 
 def test_arm_mover_pairs_the_countdown_with_the_position_gate() -> None:
@@ -426,10 +428,10 @@ def test_arm_mover_pairs_the_countdown_with_the_position_gate() -> None:
     ``V2PlanShape.positions_gated`` exists to say apart from this one.
     """
     for stop in ac.resolve_request(ac.both_at([0, -22], mover=ac.MOVER_ARM)):
-        assert stop.screen["auto_advance"] == flow.AUTO_ADVANCE_COUNTDOWN
-        assert stop.screen["countdown_s"] == str(flow.AUTO_ADVANCE_COUNTDOWN_S)
-        assert stop.screen[flow.POSITION_DEG_KEY] == str(stop.angle_deg)
-        assert stop.screen[flow.POSITION_ROLE_KEY] == stop.prompt.role
+        assert stop.screen["auto_advance"] == capture_plan.AUTO_ADVANCE_COUNTDOWN
+        assert stop.screen["countdown_s"] == str(capture_plan.AUTO_ADVANCE_COUNTDOWN_S)
+        assert stop.screen[capture_plan.POSITION_DEG_KEY] == str(stop.angle_deg)
+        assert stop.screen[capture_plan.POSITION_ROLE_KEY] == stop.prompt.role
 
 
 def test_the_gate_angle_is_read_back_off_the_pose() -> None:
@@ -440,7 +442,7 @@ def test_the_gate_angle_is_read_back_off_the_pose() -> None:
     """
     for stop in ac.resolve_request(ac.per_driver_at([0, 7, -7, 22, -22, 45],
                                                     mover=ac.MOVER_ARM)):
-        assert int(stop.screen[flow.POSITION_DEG_KEY]) == flow.position_angle_deg(
+        assert int(stop.screen[capture_plan.POSITION_DEG_KEY]) == capture_plan.position_angle_deg(
             stop.prompt
         )
 
@@ -457,7 +459,7 @@ def test_a_resolved_stop_banks_in_the_shipped_record_shape() -> None:
     record = cloud_position_record(
         position_id="angle_01", phase="measure", index=stop.index, attempt=1,
         prompt=stop.prompt.text, wide=stop.prompt.wide, role=stop.prompt.role,
-        geometry=flow.position_geometry(stop.prompt),
+        geometry=capture_plan.position_geometry(stop.prompt),
         captured_at=0.0, session_id="s", gate_window_ms=None,
         gate_floor_source=None, gate_disclosure=None, gate_moved_rms_db=None,
         gate_reflection_delay_ms=None,
@@ -469,14 +471,14 @@ def test_a_resolved_stop_banks_in_the_shipped_record_shape() -> None:
     )
     assert record["take_id"] == "angle_01_a01"
     assert record["wide"] is True
-    assert record["role"] == flow.POSITION_ROLE_OFFAX
+    assert record["role"] == spatial.POSITION_ROLE_OFFAX
     assert record["prompt"] == stop.prompt.text and record["prompt"]
     # The bearing the stop was RESOLVED at is the bearing the record banks —
     # ONE derivation off the pose, so a staged angle walk cannot bank a spot
     # that disagrees with the one it asked for.
-    assert record["position_deg"] == flow.position_angle_deg(stop.prompt) == 22
+    assert record["position_deg"] == capture_plan.position_angle_deg(stop.prompt) == 22
     assert record["position_axis"] == "horizontal"
-    assert record["mark_distance_m"] == flow.MARK_DISTANCE_M
+    assert record["mark_distance_m"] == spatial.MARK_DISTANCE_M
 
 
 def test_announced_indexes_delegates_to_the_shipped_owner() -> None:
@@ -489,7 +491,7 @@ def test_announced_indexes_delegates_to_the_shipped_owner() -> None:
     """
     request = ac.both_at(_SHIPPED_ANGLES)
     assert ac.announced_indexes(request) == ()
-    assert ac.announced_indexes(request) == flow.announced_capture_indexes(
+    assert ac.announced_indexes(request) == capture_plan.announced_capture_indexes(
         ac.index_phase_map(request)
     )
 
@@ -538,10 +540,10 @@ def test_the_arc_removes_the_inverse_square_confound() -> None:
     """
     for degrees in (0, 7, -7, 22, -22, 45):
         pose = ac.pose_at_angle(degrees)
-        radius_m = math.hypot(pose.offset_cm / 100.0, flow.MARK_DISTANCE_M)
-        chord_radius_m = math.hypot(0.40, flow.MARK_DISTANCE_M)
+        radius_m = math.hypot(pose.offset_cm / 100.0, spatial.MARK_DISTANCE_M)
+        chord_radius_m = math.hypot(0.40, spatial.MARK_DISTANCE_M)
         assert radius_m == pytest.approx(
-            flow.MARK_DISTANCE_M / math.cos(math.radians(abs(degrees))), abs=1e-9
+            spatial.MARK_DISTANCE_M / math.cos(math.radians(abs(degrees))), abs=1e-9
         )
         # the shipped 40 cm slide is the confound this replaces
         assert chord_radius_m == pytest.approx(1.077, abs=0.001)
@@ -571,9 +573,9 @@ def test_a_composed_walk_is_the_stops_in_order_as_poses() -> None:
         base_entries=3,
     )
     assert len(prompts) == len(_SHIPPED_ANGLES)
-    assert [flow.position_angle_deg(p) for p in prompts] == list(_SHIPPED_ANGLES)
+    assert [capture_plan.position_angle_deg(p) for p in prompts] == list(_SHIPPED_ANGLES)
     # Poses, not stops: what the plan builders and the conductor consume.
-    assert all(isinstance(p, flow.CloudPositionPrompt) for p in prompts)
+    assert all(isinstance(p, capture_plan.CloudPositionPrompt) for p in prompts)
 
 
 def test_a_summed_stop_refuses_rather_than_being_measured_per_driver() -> None:
@@ -651,10 +653,10 @@ def test_composing_a_walk_returns_poses_and_no_journey_vocabulary() -> None:
         ac.per_driver_at([0, 22]), externally_positioned=False, base_entries=3,
     )
     assert isinstance(prompts, tuple)
-    assert [type(p) for p in prompts] == [flow.CloudPositionPrompt] * 2
+    assert [type(p) for p in prompts] == [capture_plan.CloudPositionPrompt] * 2
     # A pose carries geometry and copy, and nothing that names a journey.
     assert not (
-        {f.name for f in dataclasses.fields(flow.CloudPositionPrompt)}
+        {f.name for f in dataclasses.fields(capture_plan.CloudPositionPrompt)}
         & {"phase", "index", "program_phase"}
     )
 
@@ -676,9 +678,9 @@ def test_elevation_round_trips_and_leaves_the_bearing_alone(angle_deg: int) -> N
     """
     for elevation in range(-ac.MAX_ELEVATION_DEG, ac.MAX_ELEVATION_DEG + 1):
         pose = ac.pose_at_angle(angle_deg, elevation)
-        assert flow.position_elevation_deg(pose) == elevation, elevation
-        assert flow.position_angle_deg(pose) == angle_deg, elevation
-        assert pose.role != flow.POSITION_ROLE_XOVR
+        assert capture_plan.position_elevation_deg(pose) == elevation, elevation
+        assert capture_plan.position_angle_deg(pose) == angle_deg, elevation
+        assert pose.role != spatial.POSITION_ROLE_XOVR
 
 
 @pytest.mark.parametrize(
@@ -731,8 +733,8 @@ def test_a_person_may_be_asked_to_raise_within_reach(elevation_deg: int) -> None
     stop, = ac.resolve_request(request)
 
     assert stop.elevation_deg == elevation_deg
-    assert flow.position_elevation_deg(stop.prompt) == elevation_deg
-    assert flow.position_angle_deg(stop.prompt) == 22
+    assert capture_plan.position_elevation_deg(stop.prompt) == elevation_deg
+    assert capture_plan.position_angle_deg(stop.prompt) == 22
 
 
 @pytest.mark.parametrize("angle_deg", [0, 7, -22])
@@ -927,10 +929,10 @@ def _candidate_batch_plan():
         request, externally_positioned=False, base_entries=2,
         supported_summed_candidates=True,
     )
-    return flow.build_v2_session_spec(
+    return capture_plan.build_v2_session_spec(
         _ROLES_BANDS, _FC_HZ,
         acknowledgement_binding="candidate-batch-test",
-        plan_shape=dataclasses.replace(flow.resolve_plan_shape(), hand_released_positions=True),
+        plan_shape=dataclasses.replace(capture_plan.resolve_plan_shape(), hand_released_positions=True),
         include_lateral=True,
         lateral_prompts=prompts,
         lateral_candidate_ids=tuple(stop.candidate_id for stop in request.stops),
@@ -978,7 +980,7 @@ def test_three_configs_at_three_poses_use_three_placement_grants():
         assert entry.screen[POSITION_BATCH_START_KEY] == str(index - offset % 3)
         assert entry.screen["candidate_id"] == ("", "fp-a", "fp-b")[offset % 3]
         if offset % 3:
-            assert entry.screen["auto_advance"] == flow.AUTO_ADVANCE_COUNTDOWN
+            assert entry.screen["auto_advance"] == capture_plan.AUTO_ADVANCE_COUNTDOWN
     assert len(grants) == len(set(grants)) == 3
     gate.abandon_hold()
     assert gate.published()["current"] is None
@@ -1087,7 +1089,7 @@ def test_an_arm_reaches_bearings_at_the_mark_and_nothing_else(
 )
 def test_a_stop_refuses_a_kind_it_cannot_state(fields: dict) -> None:
     """A stop states a place completely or refuses -- never half of one."""
-    with pytest.raises(flow.CrossoverV2FlowError):
+    with pytest.raises(contracts.CrossoverV2FlowError):
         ac.AngleStop(0, ac.REGIME_SUMMED, **fields)
 
 
@@ -1104,7 +1106,7 @@ def test_a_seat_stop_is_stated_from_the_head_not_the_mark() -> None:
     assert len(stops) == len({stop.prompt.text for stop in stops}) == 7
     assert not any(stop.prompt.at_mark for stop in stops)
     for stop, pose in zip(stops, program.poses):
-        geometry = flow.position_geometry(stop.prompt)
+        geometry = capture_plan.position_geometry(stop.prompt)
         assert (geometry.kind, geometry.degrees, geometry.mark_distance_m) == (
             mp.POSE_KIND_SEAT, 0, None,
         )
@@ -1114,13 +1116,13 @@ def test_a_seat_stop_is_stated_from_the_head_not_the_mark() -> None:
 def test_a_close_stop_is_a_bearing_at_its_own_distance() -> None:
     """The close reference is on the design axis, at a standoff it declares."""
     stop, = ac.resolve_request(ac.request_for_program(mp.program("close", "spot")))
-    geometry = flow.position_geometry(stop.prompt)
+    geometry = capture_plan.position_geometry(stop.prompt)
 
     assert (geometry.kind, geometry.degrees, geometry.seat_offset_m) == (
         mp.POSE_KIND_CLOSE, 0, None,
     )
     assert geometry.mark_distance_m == mp.CLOSE_DISTANCE_M
-    assert flow.position_angle_deg(stop.prompt) == 0
+    assert capture_plan.position_angle_deg(stop.prompt) == 0
 
 
 #: The four sentences ``baseline/express`` prompts, transcribed from a walk
@@ -1185,7 +1187,7 @@ def test_the_shipped_programs_resolve_exactly_as_before(
         mp.program("baseline", "express"), candidates=candidates,
     )
     stops = tuple(stop for stop in ac.resolve_request(request) if candidates or stop.regime == ac.REGIME_PER_DRIVER)
-    geometries = [flow.position_geometry(stop.prompt) for stop in stops]
+    geometries = [capture_plan.position_geometry(stop.prompt) for stop in stops]
 
     assert [
         (stop.angle_deg, stop.elevation_deg, stop.regime, stop.program_phase,
@@ -1240,9 +1242,9 @@ def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
     program = mp.program("room", size)
     request = ac.request_for_program(program, mover=program.mover or ac.MOVER_HUMAN, candidates=("base", "room-fp"))
     prompts = tuple(s.prompt for s in ac.resolve_request(request))
-    plan = flow.build_v2_session_spec(
+    plan = capture_plan.build_v2_session_spec(
         _ROLES_BANDS, _FC_HZ, acknowledgement_binding="room-position-test",
-        plan_shape=dataclasses.replace(flow.resolve_plan_shape(), hand_released_positions=True),
+        plan_shape=dataclasses.replace(capture_plan.resolve_plan_shape(), hand_released_positions=True),
         include_lateral=True, lateral_prompts=prompts,
         lateral_candidate_ids=tuple(s.candidate_id for s in request.stops),
     ).capture_plan
@@ -1251,7 +1253,7 @@ def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
     for offset, entry in enumerate(entries):
         assert entry.screen[POSITION_BATCH_CONFIG_KEY] == str(offset % 2 + 1)
         assert entry.screen[POSITION_BATCH_SIZE_KEY] == "2"
-        assert entry.screen["auto_advance"] == (flow.AUTO_ADVANCE_TAP if offset % 2 == 0 else flow.AUTO_ADVANCE_COUNTDOWN)
+        assert entry.screen["auto_advance"] == (capture_plan.AUTO_ADVANCE_TAP if offset % 2 == 0 else capture_plan.AUTO_ADVANCE_COUNTDOWN)
     assert len({e.screen[POSITION_BATCH_START_KEY] for e in entries}) == program.mic_move_count
 
 
@@ -1505,7 +1507,7 @@ def test_a_branch_row_names_its_pair_through_the_round_trip_and_onto_the_spec(ro
 
 
 def test_only_a_branches_stop_may_name_a_branch_pair():
-    with pytest.raises(flow.CrossoverV2FlowError):
+    with pytest.raises(contracts.CrossoverV2FlowError):
         ac.AngleStop(0, ac.REGIME_SUMMED, branch_pair=mp.BRANCH_PAIR_FRONT_REAR)
 
 
@@ -1582,14 +1584,14 @@ def test_stop_specs_places_the_banked_baseline_without_opening_it(monkeypatch):
 
 @pytest.mark.parametrize("stops", [1, 24, 33, 99, 110, 111, 120, 121, 128, 129, 140])
 def test_the_capacity_gate_admits_exactly_what_the_plan_accepts(stops):
-    shape = flow.resolve_plan_shape()
-    base_entries = len(flow.build_v2_cloud_index_phase_map(
+    shape = capture_plan.resolve_plan_shape()
+    base_entries = len(capture_plan.build_v2_cloud_index_phase_map(
         plan_shape=shape, include_lateral=False,
-        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+        include_entry_baseline=capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE,
     ))
-    plan = flow.build_v2_capture_plan(
+    plan = capture_plan.build_v2_capture_plan(
         _ROLES_BANDS, _FC_HZ, plan_shape=shape, include_lateral=True,
-        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+        include_entry_baseline=capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE,
         lateral_prompts=tuple(ac.pose_at_angle(0) for _ in range(stops)),
     )
     try:

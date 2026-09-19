@@ -305,7 +305,9 @@ def test_flow_error_reaching_the_500_arm_is_copy_not_a_programmer_string(
         REASON_PROGRAM_UNPLAYABLE,
         REASON_REGISTRY,
     )
-    from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
+    from jasper.active_speaker.crossover_v2.contracts import (  # lazy: avoid measurement-stack import cost on unused paths
+        CrossoverV2FlowError,
+    )
 
     monkeypatch.setattr(
         _common, "guard_mutating_request", lambda handler: True

@@ -43,6 +43,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from jasper.active_speaker.crossover_v2 import contracts
+from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.angle_capture import request_for_program
@@ -182,7 +184,7 @@ def test_only_the_prelude_moved_under_the_shipped_measure_program(monkeypatch):
 
     monkeypatch.setattr(
         programs, "COURTESY_PRELUDE_PHASES",
-        frozenset(COURTESY_PRELUDE_PHASES | {flow.PHASE_MEASURE}),
+        frozenset(COURTESY_PRELUDE_PHASES | {journey.PHASE_MEASURE}),
     )
 
     assert ex.measure_program(GAIN_PLAN_DB).program_id == GOLDEN_DEEP_CAP["measure"]
@@ -219,14 +221,14 @@ def test_the_conductor_composes_through_the_same_owner():
     c = _conductor(CAPS)
     ex = _excitation(CAPS)
 
-    assert c.program_for_phase(flow.PHASE_CHECK).program_id == ex.check_program().program_id
-    assert c.program_for_phase(flow.PHASE_VERIFY).program_id == GOLDEN_DEEP_CAP["verify"]
+    assert c.program_for_phase(journey.PHASE_CHECK).program_id == ex.check_program().program_id
+    assert c.program_for_phase(journey.PHASE_VERIFY).program_id == GOLDEN_DEEP_CAP["verify"]
     assert (
-        c.program_for_phase(flow.PHASE_MEASURE).program_id
+        c.program_for_phase(journey.PHASE_MEASURE).program_id
         == GOLDEN_UNANNOUNCED["measure"]
     )
     assert (
-        c.program_for_phase(flow.PHASE_CLOUD_VERIFY).program_id
+        c.program_for_phase(journey.PHASE_CLOUD_VERIFY).program_id
         == GOLDEN_UNANNOUNCED["cloud"]
     )
 
@@ -335,13 +337,13 @@ def test_the_compared_pair_gets_the_same_object():
     composer that returned a fresh-but-equal program today and drifted tomorrow.
     """
     c = _conductor(CAPS)
-    verify = c.program_for_phase(flow.PHASE_VERIFY)
+    verify = c.program_for_phase(journey.PHASE_VERIFY)
 
     for phase in sorted(SUMMED_SWEEP_PHASES - GROUP_SUMMED_SWEEP_PHASES):
         assert c.program_for_phase(phase) is verify
 
-    assert flow.PHASE_ENTRY_BASELINE in SUMMED_SWEEP_PHASES
-    assert flow.PHASE_ENTRY_BASELINE not in GROUP_SUMMED_SWEEP_PHASES
+    assert journey.PHASE_ENTRY_BASELINE in SUMMED_SWEEP_PHASES
+    assert journey.PHASE_ENTRY_BASELINE not in GROUP_SUMMED_SWEEP_PHASES
 
 
 def test_every_position_group_gets_the_same_object():
@@ -352,20 +354,20 @@ def test_every_position_group_gets_the_same_object():
     difference nothing downstream can see.
     """
     c = _conductor(CAPS)
-    cloud = c.program_for_phase(flow.PHASE_CLOUD_MEASURE)
+    cloud = c.program_for_phase(journey.PHASE_CLOUD_MEASURE)
 
     for phase in sorted(GROUP_SUMMED_SWEEP_PHASES):
         assert c.program_for_phase(phase) is cloud
 
-    assert cloud is not c.program_for_phase(flow.PHASE_VERIFY)
+    assert cloud is not c.program_for_phase(journey.PHASE_VERIFY)
     assert GROUP_SUMMED_SWEEP_PHASES < SUMMED_SWEEP_PHASES
 
 
 def test_a_lateral_pose_replays_the_measure_object_verbatim():
     c = _conductor(CAPS)
 
-    assert c.program_for_phase(flow.PHASE_LATERAL) is c.program_for_phase(
-        flow.PHASE_MEASURE
+    assert c.program_for_phase(journey.PHASE_LATERAL) is c.program_for_phase(
+        journey.PHASE_MEASURE
     )
 
 
@@ -374,7 +376,7 @@ def test_measure_before_the_gain_solve_refuses_rather_than_guessing():
     ex = _excitation(CAPS)
     with pytest.raises(NoProgramForPhaseError):
         program_for_phase(
-            flow.PHASE_MEASURE,
+            journey.PHASE_MEASURE,
             check=ex.check_program(),
             measure=None,
             verify=ex.verify_program(),
@@ -412,10 +414,10 @@ def test_the_capture_that_opens_a_session_is_announced():
     """
     c = _conductor(CAPS)
 
-    assert _has_prelude(c.program_for_phase(flow.PHASE_CHECK))
-    assert _has_prelude(c.program_for_phase(flow.PHASE_VERIFY))
-    assert courtesy_prelude_for_phase(flow.PHASE_CHECK)
-    assert courtesy_prelude_for_phase(flow.PHASE_VERIFY)
+    assert _has_prelude(c.program_for_phase(journey.PHASE_CHECK))
+    assert _has_prelude(c.program_for_phase(journey.PHASE_VERIFY))
+    assert courtesy_prelude_for_phase(journey.PHASE_CHECK)
+    assert courtesy_prelude_for_phase(journey.PHASE_VERIFY)
 
 
 def test_a_capture_the_household_began_inside_a_running_session_is_not():
@@ -429,8 +431,8 @@ def test_a_capture_the_household_began_inside_a_running_session_is_not():
     c = _conductor(CAPS)
 
     for phase in (
-        flow.PHASE_MEASURE, flow.PHASE_LATERAL,
-        flow.PHASE_CLOUD_MEASURE, flow.PHASE_CLOUD_VERIFY,
+        journey.PHASE_MEASURE, journey.PHASE_LATERAL,
+        journey.PHASE_CLOUD_MEASURE, journey.PHASE_CLOUD_VERIFY,
     ):
         assert not _has_prelude(c.program_for_phase(phase)), phase
         assert not courtesy_prelude_for_phase(phase), phase
@@ -446,11 +448,11 @@ def test_the_entry_baseline_is_announced_because_its_twin_is():
     """
     c = _conductor(CAPS)
 
-    assert _has_prelude(c.program_for_phase(flow.PHASE_ENTRY_BASELINE))
-    assert c.program_for_phase(flow.PHASE_ENTRY_BASELINE) is c.program_for_phase(
-        flow.PHASE_VERIFY
+    assert _has_prelude(c.program_for_phase(journey.PHASE_ENTRY_BASELINE))
+    assert c.program_for_phase(journey.PHASE_ENTRY_BASELINE) is c.program_for_phase(
+        journey.PHASE_VERIFY
     )
-    assert flow.PHASE_ENTRY_BASELINE in COURTESY_PRELUDE_PHASES
+    assert journey.PHASE_ENTRY_BASELINE in COURTESY_PRELUDE_PHASES
 
 
 def test_the_conductor_translates_the_refusal_into_its_own_error():
@@ -467,8 +469,8 @@ def test_the_conductor_translates_the_refusal_into_its_own_error():
         driver_spacing_m=0.15,
     )
 
-    with pytest.raises(flow.CrossoverV2FlowError):
-        c.program_for_phase(flow.PHASE_MEASURE)
+    with pytest.raises(contracts.CrossoverV2FlowError):
+        c.program_for_phase(journey.PHASE_MEASURE)
 
 
 # --------------------------------------------------------------------------- #
@@ -487,14 +489,6 @@ def test_the_declarations_cannot_be_mutated_after_construction():
         ex.caps_dbfs["tweeter"] = 0.0  # type: ignore[index]
     with pytest.raises(Exception):
         ex.session_volume_db = 0.0  # type: ignore[misc]
-
-
-def test_the_flow_re_exports_resolve_to_the_one_definition():
-    """Every moved name keeps its old import path, pointing at the new owner."""
-    assert flow.back_off_gain is programs.back_off_gain
-    assert flow.SUMMED_SWEEP_PHASES is programs.SUMMED_SWEEP_PHASES
-    assert flow.GAIN_CAP_BACKOFF_DB == programs.GAIN_CAP_BACKOFF_DB
-    assert flow.PILOT_LEVEL_DELTA_DB == programs.PILOT_LEVEL_DELTA_DB
 
 
 @pytest.mark.parametrize("limit", [1.0, 2.0, 4.0])

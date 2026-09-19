@@ -115,12 +115,8 @@ from jasper.active_speaker.crossover_v2 import intervention as iv
 from jasper.active_speaker.crossover_v2.intervention import (
     rounded_band_hz as _rounded_band_hz,
 )
-from jasper.active_speaker.crossover_v2_flow import (
-    LINEARIZATION_TRIM_SANITY_MARGIN_DB,
-    CrossoverV2Session,
-    V2FlowSeams,
-    V2RecordPublishers,
-)
+from jasper.active_speaker.crossover_v2.intervention import LINEARIZATION_TRIM_SANITY_MARGIN_DB
+from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams, V2RecordPublishers
 from jasper.active_speaker.linearization_fit import LinearizationFilter, LinearizationFit
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.excitation_admission import FrequencyBand

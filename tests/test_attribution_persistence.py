@@ -45,10 +45,8 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2_flow import (
-    assemble_cloud_group_result,
-    cloud_position_capture,
-)
+from jasper.active_speaker.crossover_v2_flow import assemble_cloud_group_result
+from jasper.active_speaker.crossover_v2.spatial import cloud_position_capture
 from jasper.attribution.findings import (
     EVIDENCE_STORE_BUNDLE,
     EvidenceRef,
@@ -1357,7 +1355,9 @@ def test_the_persisted_block_alone_answers_p2_on_the_s0_corpus() -> None:
 def _s0_cloud_positions(session_dir) -> list:
     """The S0 leg reassembled the way the live conductor assembles a group."""
 
-    from jasper.active_speaker.crossover_v2_flow import _CloudPosition
+    from jasper.active_speaker.crossover_v2.spatial import (  # lazy: avoid measurement-stack import cost on unused paths
+        _CloudPosition,
+    )
 
     positions = []
     ids = sorted(corpus.S0_MAIN_TWEETER_HEIGHT + corpus.S0_MAIN_HAND_WIDTH_LOW)

@@ -36,24 +36,28 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.active_speaker import angle_capture as ac
+from jasper.active_speaker.crossover_v2 import capture_plan
+from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     CrossoverV2Refused,
     REASON_REGISTRY,
 )
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.capture_plan import (
     AUTO_ADVANCE_COUNTDOWN,
     AUTO_ADVANCE_TAP,
     POSITION_DEG_KEY,
     POSITION_ROLE_KEY,
-    POSITION_ROLE_OFFAX,
-    POSITION_ROLE_ONAX,
-    POSITION_ROLE_XOVR,
-    CrossoverV2FlowError,
     build_v2_capture_plan,
     build_v2_verify_capture_plan,
     position_angle_deg,
 )
+from jasper.active_speaker.crossover_v2.spatial import (
+    POSITION_ROLE_OFFAX,
+    POSITION_ROLE_ONAX,
+    POSITION_ROLE_XOVR,
+)
+from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginDeferred,
     CaptureBeginRefused,
@@ -114,7 +118,7 @@ def _stage1_of(shape):
         flow._DISPLAY_FC_HZ,
         plan_shape=shape,
         include_lateral=False,
-        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+        include_entry_baseline=capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
 
 
@@ -143,7 +147,7 @@ def _entry(degrees, role=POSITION_ROLE_ONAX):
 
 
 def test_the_angle_is_derived_from_the_offset_and_signed_by_the_bearing():
-    for prompt in flow.CLOUD_POSITION_PROMPTS + flow.LATERAL_POSE_PROMPTS:
+    for prompt in capture_plan.CLOUD_POSITION_PROMPTS + capture_plan.LATERAL_POSE_PROMPTS:
         if prompt.role == POSITION_ROLE_XOVR:
             continue
         degrees = position_angle_deg(prompt)
@@ -157,7 +161,7 @@ def test_the_angle_is_derived_from_the_offset_and_signed_by_the_bearing():
         # The magnitude really is the bearing to that offset, not a table.
         expected = round(
             math.degrees(
-                math.atan2(prompt.offset_cm / 100.0, flow.MARK_DISTANCE_M)
+                math.atan2(prompt.offset_cm / 100.0, spatial.MARK_DISTANCE_M)
             )
         )
         assert abs(degrees) == expected
@@ -170,23 +174,23 @@ def test_an_unsigned_lateral_pose_is_refused_as_loudly_as_a_vertical_one():
     would have been told to stay put for a capture the plan believed was 75 cm
     off-axis, and the evidence would have recorded an offset the microphone
     never had."""
-    unsigned = flow.CloudPositionPrompt(
+    unsigned = capture_plan.CloudPositionPrompt(
         headline="Same measurement, wider spot.",
-        offset_cm=flow.GEOMETRY_RETRY_OFFSET_CM,
+        offset_cm=capture_plan.GEOMETRY_RETRY_OFFSET_CM,
         role=POSITION_ROLE_OFFAX,
     )
     assert unsigned.lateral_sign == 0
     with pytest.raises(CrossoverV2FlowError, match="declares no side"):
         position_angle_deg(unsigned)
     # An at-mark pose is unsigned too, and that one is genuinely 0°.
-    assert position_angle_deg(flow.LATERAL_MARK_PROMPT) == 0
+    assert position_angle_deg(capture_plan.LATERAL_MARK_PROMPT) == 0
 
 
 def test_a_vertical_pose_has_no_bearing_and_says_so():
     """Silently answering 0° would aim a positioner at the mark while the plan
     believed it had sampled the crossover axis."""
     vertical = next(
-        p for p in flow.CLOUD_POSITION_PROMPTS if p.role == POSITION_ROLE_XOVR
+        p for p in capture_plan.CLOUD_POSITION_PROMPTS if p.role == POSITION_ROLE_XOVR
     )
     with pytest.raises(CrossoverV2FlowError, match="no horizontal bearing"):
         position_angle_deg(vertical)

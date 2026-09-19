@@ -26,6 +26,8 @@ from dataclasses import replace
 
 import pytest
 
+from jasper.active_speaker.crossover_v2 import contracts
+from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import intervention as iv
@@ -52,7 +54,7 @@ def _walked_to_measure():
     fakes.measure = lambda program: _eligible_measure_analysis(program)
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    analysis = _eligible_measure_analysis(c.program_for_phase(flow.PHASE_MEASURE))
+    analysis = _eligible_measure_analysis(c.program_for_phase(journey.PHASE_MEASURE))
     return c, analysis
 
 
@@ -99,7 +101,7 @@ def test_the_request_carries_the_measure_programs_own_sweep_bands():
     speaker was never swept over.
     """
     c, analysis = _walked_to_measure()
-    program = c.program_for_phase(flow.PHASE_MEASURE)
+    program = c.program_for_phase(journey.PHASE_MEASURE)
     seg_w, seg_t = program.segment("sweep_w"), program.segment("sweep_t")
 
     seen: list[iv.LinearizationRequest] = []
@@ -481,8 +483,8 @@ def test_a_split_section_set_refuses_before_the_missing_measure_program():
     """
     _walked, analysis = _walked_to_measure()
     fresh = _conductor(FakeSeams())
-    with pytest.raises(flow.CrossoverV2FlowError):
-        fresh.program_for_phase(flow.PHASE_MEASURE)
+    with pytest.raises(contracts.CrossoverV2FlowError):
+        fresh.program_for_phase(journey.PHASE_MEASURE)
 
     with pytest.raises(NoCrossoverSectionsError):
         fresh._plan_linearization(
@@ -499,11 +501,11 @@ def test_a_split_section_set_refuses_before_the_missing_measure_program():
 def test_the_no_candidate_refusal_is_not_the_same_as_its_fallback():
     c, analysis = _walked_to_measure()
 
-    with pytest.raises(flow.CrossoverV2FlowError):
+    with pytest.raises(contracts.CrossoverV2FlowError):
         c._build_candidate(replace(analysis, candidate=None))
 
     assert classify_program_failure(
-        flow.CrossoverV2FlowError("MEASURE analysis produced no candidate")
+        contracts.CrossoverV2FlowError("MEASURE analysis produced no candidate")
     ) == (refusal_copy.REASON_PROGRAM_UNPLAYABLE, ())
     for fallback in (AttributeError("NoneType"), TypeError("NoneType"), ValueError("x")):
         assert classify_program_failure(fallback) is None

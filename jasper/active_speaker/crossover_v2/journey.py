@@ -8,8 +8,6 @@ Two facts, one owner each: where the round is (the phase walk, as one frozen
 plan plus the round's position in it) and what a stage can do (the capability
 declarations). This module runs no DSP, reads no file, renders nothing and
 emits no journal line — every question here is bookkeeping over plain data.
-The flow imports the phase vocabulary below and re-exports it, so every
-``from ...crossover_v2_flow import PHASE_CHECK`` resolves to this module.
 """
 
 from __future__ import annotations

@@ -16,9 +16,9 @@ from jasper.active_speaker.crossover_v2 import (
 )
 from jasper.active_speaker.crossover_v2_flow import (
     PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
-    _analysis_json,
     spec_report_for_predicted_sum,
 )
+from jasper.active_speaker.crossover_v2.planning import analysis_json as _analysis_json
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
 )

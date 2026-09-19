@@ -327,12 +327,6 @@ def test_no_sections_means_no_map_rather_than_an_empty_one():
     assert priors.role_transfers({}) == {}
 
 
-def test_the_flow_re_export_resolves_to_the_one_definition():
-    from jasper.active_speaker import crossover_v2_flow as flow
-
-    assert flow._role_transfers is priors.role_transfers
-
-
 # --------------------------------------------------------------------------- #
 # 5. what the conductor's delegates actually hand over
 #
@@ -381,7 +375,7 @@ def test_measure_is_handed_the_room_floor_and_the_declared_delay_bounds():
     #1830 — a shipped instrument reading nothing). Without the second the
     flatness search has no declared magnitude window to centre its lobe in.
     """
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.alignment_prescription import (  # lazy: avoid measurement-stack import cost on unused paths
         alignment_delay_search_bounds_us,
     )
 
@@ -613,9 +607,9 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(monkeypatch,
 
 @pytest.mark.parametrize("available", [True, False])
 def test_two_measure_attempts_share_reference_until_baseline_changes(available):
+    from jasper.active_speaker.crossover_v2 import journey  # lazy: avoid measurement-stack import cost outside this test
     from unittest.mock import Mock
 
-    from jasper.active_speaker import crossover_v2_flow as flow
     from tests.crossover_v2_fixtures import FakeSeams, _capture, _conductor, _run_phase
 
     fakes = FakeSeams()
@@ -631,7 +625,7 @@ def test_two_measure_attempts_share_reference_until_baseline_changes(available):
     conductor._measure_entry_baseline = replace(conductor._measure_entry_baseline, artifact_ref="changed")
     assert conductor._measure_priors().summed_alignment is reference
     assert seam.call_count == 2
-    assert fakes.analyzed[-1][0] == flow.PHASE_MEASURE
+    assert fakes.analyzed[-1][0] == journey.PHASE_MEASURE
 
 
 @pytest.mark.parametrize("position, vertical", [(0, 0), (-20, 0), (20, 0), (0, 20)])

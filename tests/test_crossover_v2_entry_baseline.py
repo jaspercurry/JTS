@@ -59,7 +59,9 @@ from typing import Any
 import pytest
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
-from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import capture_plan
+from jasper.active_speaker.crossover_v2 import contracts
+from jasper.audio_measurement import program_analysis
 from jasper.active_speaker.crossover_v2 import journey, position_cycle, priors
 from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
 from jasper.active_speaker.crossover_v2.journey import (
@@ -69,7 +71,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.active_speaker.crossover_v2.contracts import REFERENCE_MARK_DESIGN_AXIS
 from jasper.active_speaker.crossover_v2.programs import SUMMED_SWEEP_PHASES
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.capture_plan import (
     build_v2_capture_plan,
     build_v2_cloud_index_phase_map,
     resolve_plan_shape,
@@ -129,7 +131,7 @@ def _stage_1_map() -> dict[int, str]:
         plan_shape=resolve_plan_shape(),
 
         include_lateral=False,
-        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+        include_entry_baseline=capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
 
 
@@ -143,7 +145,7 @@ def _baseline_only_conductor(fakes: FakeSeams, **kwargs):
     return _conductor(
         fakes,
         index_phase_map={1: PHASE_ENTRY_BASELINE},
-        accepted_phases=(flow.PHASE_CHECK, flow.PHASE_MEASURE),
+        accepted_phases=(journey.PHASE_CHECK, journey.PHASE_MEASURE),
         **kwargs,
     )
 
@@ -175,7 +177,7 @@ def _failed_integrity() -> CaptureIntegrity:
     return CaptureIntegrity(
         checks=(
             IntegrityCheck(
-                name=flow.INTEGRITY_CHECK_SWEEP_HEARD, status=INTEGRITY_FAIL,
+                name=program_analysis.INTEGRITY_CHECK_SWEEP_HEARD, status=INTEGRITY_FAIL,
             ),
         ),
     )
@@ -198,7 +200,7 @@ def test_stage_1_plans_exactly_one_entry_baseline_and_it_is_last():
         _roles(), FC_HZ, plan_shape=resolve_plan_shape(),
 
         include_lateral=False,
-        include_entry_baseline=flow.STAGE1_INCLUDES_ENTRY_BASELINE,
+        include_entry_baseline=capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE,
     )
     labels = [entry.kind_label for entry in plan.entries]
 
@@ -490,7 +492,7 @@ def test_an_unnamed_entry_graph_degrades_to_a_word_rather_than_a_crash():
     conductor.consume_capture(1, 1, _capture())
 
     baseline = conductor.measure_entry_baseline
-    assert baseline.graph_fingerprint == flow.ENTRY_GRAPH_FINGERPRINT_UNKNOWN
+    assert baseline.graph_fingerprint == contracts.ENTRY_GRAPH_FINGERPRINT_UNKNOWN
     assert EntryBaseline.from_dict(baseline.to_dict()) == baseline
 
 
@@ -518,7 +520,7 @@ def test_a_raising_fingerprint_seam_is_survived_the_same_way():
     assert outcome["accepted"] is True
     assert (
         conductor.measure_entry_baseline.graph_fingerprint
-        == flow.ENTRY_GRAPH_FINGERPRINT_UNKNOWN
+        == contracts.ENTRY_GRAPH_FINGERPRINT_UNKNOWN
     )
 
 
@@ -546,7 +548,7 @@ def test_a_seam_that_answers_with_nothing_gets_the_same_word():
 
     assert outcome["accepted"] is True
     baseline = conductor.measure_entry_baseline
-    assert baseline.graph_fingerprint == flow.ENTRY_GRAPH_FINGERPRINT_UNKNOWN
+    assert baseline.graph_fingerprint == contracts.ENTRY_GRAPH_FINGERPRINT_UNKNOWN
     assert EntryBaseline.from_dict(baseline.to_dict()) == baseline
 
 
@@ -661,7 +663,7 @@ def test_a_measuring_session_replaces_the_baseline_rather_than_inheriting_one(
 
     _conductor_1, state = _stage_1(monkeypatch)
 
-    assert flow.PHASE_MEASURE in state["session_phases"]
+    assert journey.PHASE_MEASURE in state["session_phases"]
     assert state["verify_priors"]["entry_baseline"] is None
 
 

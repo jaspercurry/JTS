@@ -107,7 +107,7 @@ def test_the_registered_mic_is_resolved_when_one_is_present(tmp_path):
 
 
 def _real_verify_spec():
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.capture_plan import (  # lazy: avoid measurement-stack import cost on unused paths
         build_v2_verify_session_spec,
     )
 
