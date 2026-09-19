@@ -73,19 +73,27 @@ class ExcitationSafetyPlanRefusal(str, Enum):
     REQUEST_OUTSIDE_REPEATS = "active_excitation_request_outside_repeats"
 
 
+def request_limit_rows(
+    request: ExcitationRequest, limits: ExcitationLimits,
+) -> tuple[tuple[ExcitationSafetyPlanRefusal, float | list[float], float | list[float], bool], ...]:
+    return (
+        (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_BAND,
+         [request.band.lower_hz, request.band.upper_hz],
+         [limits.permitted_band.lower_hz, limits.permitted_band.upper_hz],
+         not request.band.is_subset_of(limits.permitted_band)),
+        (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LEVEL, request.effective_peak_dbfs, limits.maximum_effective_peak_dbfs,
+         request.effective_peak_dbfs > limits.maximum_effective_peak_dbfs),
+        (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_DURATION, request.duration_s, limits.maximum_duration_s,
+         request.duration_s > limits.maximum_duration_s),
+        (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_REPEATS, request.repeat_count, limits.maximum_repeat_count,
+         request.repeat_count > limits.maximum_repeat_count),
+    )
+
+
 def _request_refusals(
     request: ExcitationRequest, limits: ExcitationLimits,
 ) -> tuple[ExcitationSafetyPlanRefusal, ...]:
-    return tuple(code for code, outside in (
-        (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_BAND,
-         not request.band.is_subset_of(limits.permitted_band)),
-        (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LEVEL,
-         request.effective_peak_dbfs > limits.maximum_effective_peak_dbfs),
-        (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_DURATION,
-         request.duration_s > limits.maximum_duration_s),
-        (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_REPEATS,
-         request.repeat_count > limits.maximum_repeat_count),
-    ) if outside)
+    return tuple(code for code, _, _, outside in request_limit_rows(request, limits) if outside)
 
 
 def _sha256(value: Any, *, field: str) -> str:

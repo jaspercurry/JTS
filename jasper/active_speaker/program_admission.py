@@ -59,6 +59,7 @@ from .excitation_safety_plan import (
     PreparedDriverExcitationPlan,
     RequestedDriverExcitationPlan,
     prepare_driver_excitation_plan,
+    request_limit_rows,
     require_driver_measurement_inputs,
     resolve_driver_excitation_ceilings,
     effective_sweep_duration_limit_s,
@@ -550,7 +551,6 @@ def _log_program_refusal(admission: ProgramAdmission) -> None:
 def _segment_admission(
     segment: ProgramSegment, prepared: PreparedDriverExcitationPlan
 ) -> SegmentAdmission:
-    request, limits = prepared.request, prepared.limits
     return SegmentAdmission(
         segment_id=segment.segment_id,
         role=segment.role or "",
@@ -559,17 +559,9 @@ def _segment_admission(
         effective_peak_dbfs=float(prepared.requested_plan.effective_peak_dbfs),
         execution_allowed=prepared.execution_allowed,
         refusals=tuple(reason.value for reason in prepared.refusals),
-        refusal_detail={code.value: {"requested": value, "limit": limit} for code, value, limit in (
-            (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_BAND,
-             [request.band.lower_hz, request.band.upper_hz],
-             [limits.permitted_band.lower_hz, limits.permitted_band.upper_hz]),
-            (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LEVEL,
-             request.effective_peak_dbfs, limits.maximum_effective_peak_dbfs),
-            (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_DURATION,
-             request.duration_s, limits.maximum_duration_s),
-            (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_REPEATS,
-             request.repeat_count, limits.maximum_repeat_count),
-        ) if code in prepared.refusals},
+        refusal_detail={code.value: {"requested": value, "limit": limit}
+                        for code, value, limit, outside in request_limit_rows(prepared.request, prepared.limits)
+                        if outside},
     )
 
 
@@ -814,21 +806,19 @@ def readmit_summed_program_from_wav(
                 for requirement in requirements
             ))
             peak = float(segment.gain_db) + session_volume_db + boost_db
-            failed = tuple(code for code, passed in (
-                (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_BAND.value, low_ok),
-                (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LEVEL.value, peak <= cap),
-                (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_DURATION.value, segment.n_samples / program.sample_rate_hz <= duration),
-            ) if not passed)
+            rows = (
+                (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_BAND.value, [low, high], [band.lower_hz, band.upper_hz], low_ok),
+                (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LEVEL.value, peak, cap, peak <= cap),
+                (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_DURATION.value, segment.n_samples / program.sample_rate_hz, duration, segment.n_samples / program.sample_rate_hz <= duration),
+            )
+            failed = tuple(code for code, _, _, passed in rows if not passed)
             allowed = not failed
             reasons = (ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS.value, *failed) if failed else ()
             assert segment.channel is not None
             segments.append(SegmentAdmission(
                 segment.segment_id, target_id, segment.channel, (low, high), peak, allowed, reasons,
-                refusal_detail={code: {"requested": value, "limit": limit} for code, value, limit in (
-                    (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_BAND.value, [low, high], [band.lower_hz, band.upper_hz]),
-                    (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LEVEL.value, peak, cap),
-                    (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_DURATION.value, segment.n_samples / program.sample_rate_hz, duration),
-                ) if code in failed},
+                refusal_detail={code: {"requested": value, "limit": limit}
+                                for code, value, limit, passed in rows if not passed},
             ))
             if not allowed:
                 refusals.append(ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS)
