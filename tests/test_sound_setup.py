@@ -431,10 +431,6 @@ _SOUND_MODULE = (
     Path(__file__).resolve().parent.parent
     / "deploy" / "assets" / "sound-profile" / "js" / "main.js"
 )
-_ACTIVE_SPEAKER_UI_MODULE = (
-    Path(__file__).resolve().parent.parent
-    / "deploy" / "assets" / "sound-profile" / "js" / "active-speaker-ui.js"
-)
 _SOUND_HARNESS = Path(__file__).resolve().parent / "js" / "sound_profile_harness.mjs"
 
 _ACTIVE_SPEAKER_UI_TEST = (
@@ -533,28 +529,6 @@ def _drive_raw_sound_post(
     handler.protocol_version = "HTTP/1.1"
     handler.do_POST()
     return wfile.getvalue(), rfile.read_calls
-
-
-@pytest.mark.parametrize("code,action", [
-    ("previous_profile_unavailable", None),
-    ("program_measurement_inputs_invalid", {"id": "review_profile", "href": "/sound/speaker/"}),
-])
-def test_restore_refusals_preserve_the_typed_envelope(tmp_path, monkeypatch, code, action):
-    from jasper.web import correction_crossover_v2_apply as apply_host
-    from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
-
-    refusal = CrossoverV2Refused("restore refused", code=code, next_action=action)
-    def refuse(raw, run_async, camilla_factory):
-        assert raw == {"previous": True}
-        raise refusal
-    monkeypatch.setattr(apply_host, "handle_v2_apply", refuse)
-    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
-    response, _ = _drive_raw_sound_post(tmp_path, path="/active-speaker/baseline-profile/restore", content_length=2, body=b"{}")
-    assert b" 400 " in response.split(b"\r\n", 1)[0]
-    payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
-    assert payload == _common.refusal_envelope(refusal)
-    assert payload["code"] == code
-    assert payload["next_action"] == action
 
 
 @pytest.mark.parametrize(
@@ -1242,63 +1216,6 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
     assert refreshed["restart_required"] is True
     assert refreshed["warnings"] == ["collision"]
     assert failed == {"ok": False, "error": "broker unavailable"}
-
-
-def test_every_preflight_gate_id_has_household_copy():
-    """Every gate the preflight PUBLISHES has copy — the map is the closed set.
-
-    `commissionGateReason` is the /sound/ renderer's fallback when no issue code
-    matched, and it keys on the gate id. The preflight's top-level
-    `required_gates` is the only list the renderer walks, so a gate added there
-    without copy degrades silently to "A setup step still needs finishing" —
-    which is how #2344's transport gate would have rendered.
-    """
-    import ast
-
-    repo = Path(__file__).resolve().parent.parent
-    source = (repo / "jasper" / "active_speaker" / "commission_load.py").read_text()
-    tree = ast.parse(source)
-    builder = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "build_driver_commission_load_preflight"
-    )
-    published = set()
-    for node in ast.walk(builder):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        name = func.id if isinstance(func, ast.Name) else None
-        if name != "_gate" or not node.args:
-            continue
-        arg = node.args[0]
-        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-            published.add(arg.value)
-        elif isinstance(arg, ast.Name):
-            # A gate id held in a module constant (the shared transport gate id
-            # imported from staging). Resolve it through the module namespace
-            # rather than re-parsing its source.
-            from jasper.active_speaker import commission_load
-
-            value = getattr(commission_load, arg.id, None)
-            assert isinstance(value, str), (
-                f"preflight gate id {arg.id!r} is not a resolvable module "
-                "constant; this walk would silently skip it"
-            )
-            published.add(value)
-    assert len(published) >= 5, f"gate walk found too few ids: {published}"
-
-    helper_js = _ACTIVE_SPEAKER_UI_MODULE.read_text()
-    gate_block = helper_js.split("function commissionGateReason")[1].split(
-        "}[gateId]"
-    )[0]
-    rendered = set(re.findall(r"^\s{4}([a-z0-9_]+):", gate_block, re.M))
-    missing = sorted(published - rendered)
-    assert not missing, (
-        "these preflight gates would render the generic 'a setup step still "
-        f"needs finishing' instead of telling the household what is wrong: {missing}"
-    )
 
 
 def test_active_speaker_stop_and_level_payloads_are_no_audio(

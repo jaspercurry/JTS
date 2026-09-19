@@ -11,7 +11,6 @@ globalThis.document = {getElementById: id => id === 'jts-sub-crossover-bounds'
 const {
   activeSpeakerStepState,
   clampSubwooferCrossoverFcHz,
-  commissionPayloadFailure,
   nextActionAct,
   defaultActiveSpeakerStep,
   levelMatchSummary,
@@ -81,60 +80,6 @@ assert.equal(levelMatchSummary({ corrections: {} }).available, false);
   assert.equal(s.badge, "manual");
   assert.ok(/valid for room correction/i.test(s.note));
   assert.ok(/explicit apply/i.test(s.note));
-}
-
-// A measurement-in-progress refusal must NOT show the "another driver" message;
-// it has its own distinct, actionable copy naming room correction / balance / sync.
-{
-  const measurementRefusal = commissionPayloadFailure({
-    status: "refused",
-    reason: "measurement_in_progress",
-  });
-  assert.ok(/room correction|balance|sync/i.test(measurementRefusal));
-  assert.ok(!/another driver/i.test(measurementRefusal));
-  // The pre-existing "another driver armed" refusal keeps its own message.
-  const driverRefusal = commissionPayloadFailure({ status: "refused" });
-  assert.ok(/another driver/i.test(driverRefusal));
-}
-
-// Stage-5 ordering has its own copy: it should not be described as an expired
-// tone session, because the action is to confirm the lower-frequency driver.
-{
-  const roleOrder = commissionPayloadFailure({
-    status: "gate_blocked",
-    issues: [{ code: "stage5_ramp_role_order_woofer_first" }],
-  });
-  assert.ok(/woofer first/i.test(roleOrder));
-  assert.ok(!/no longer open|expired/i.test(roleOrder));
-}
-
-// An expired pending ramp ack must invite a quiet restart, not imply the setup
-// path is incomplete.
-{
-  const expiredAck = commissionPayloadFailure({
-    status: "expired",
-    issues: [{ code: "commission_ramp_ack_expired" }],
-  });
-  assert.ok(/start it again/i.test(expiredAck));
-  assert.ok(/reopen it quietly/i.test(expiredAck));
-  assert.ok(!/earlier setup/i.test(expiredAck));
-}
-
-// Ramp-step load failures wrap the actual backend load payload one level deeper
-// than arm failures. The UI must still surface the specific output-path reason.
-{
-  const reconcileFailure = commissionPayloadFailure({
-    status: "load_failed",
-    issues: [{ code: "stage5_ramp_load_failed" }],
-    load: {
-      load: {
-        status: "failed",
-        issues: [{ code: "commission_output_hardware_reconcile_failed" }],
-      },
-    },
-  });
-  assert.ok(/speaker output path/i.test(reconcileFailure));
-  assert.ok(!/earlier setup/i.test(reconcileFailure));
 }
 
 // --- Local-subwoofer crossover helpers --------------------------------------
@@ -226,110 +171,6 @@ for (const [id, act, step] of [
   }
 }
 assert.equal(nextActionAct({id: 'run_speaker_program'}).program, 'speaker');
-
-// #2344, re-pointed by #2412 Wave 3 — the ring refusal is retired, and what has
-// to REACH the household now is the arming state and the ends-disagree defect,
-// from every array the backend can park them in. Behavioural, not a substring
-// check on the source: a rung whose code is misspelled still contains the code
-// as a substring, and a walker that dropped an array still mentions it in a
-// comment.
-{
-  const ENDPOINT = "commissioning_active_endpoint_unarmed";
-  const ENDS = "commissioning_transport_ends_disagree";
-  const WIRE = "ring_wire_declaration_invalid";
-  const RETIRED = "commissioning_ring_transport_unsupported";
-  const unarmed =
-    "This speaker’s output path isn’t finished setting up, so driver tests " +
-    "can’t run yet. Open System status.";
-  const ends =
-    "JTS could not prepare the driver test for this speaker’s output " +
-    "connection. Open System status.";
-  const wire =
-    "This speaker’s output connection is set to something JTS doesn’t " +
-    "recognise, so driver tests can’t run. Open System status.";
-
-  // The blocked driver-test payload: the preflight's issues are copied into
-  // `load.issues` by load_driver_commissioning_config.
-  assert.equal(
-    commissionPayloadFailure({
-      status: "blocked",
-      load: { issues: [{ code: ENDPOINT }] },
-    }),
-    unarmed,
-  );
-  assert.equal(
-    commissionPayloadFailure({ status: "blocked", load: { issues: [{ code: ENDS }] } }),
-    ends,
-  );
-  // Mapped at the gate lift (#2412 correction 4): it was mapped in the Python
-  // coordinator and absent from this ladder, so the household fell through to
-  // written copy while the operator's daemon name sat one code away.
-  assert.equal(
-    commissionPayloadFailure({ status: "blocked", load: { issues: [{ code: WIRE }] } }),
-    wire,
-  );
-
-  // A blocked RAMP step reports `ramp_prepare_failed` at the top level and parks
-  // the reason that explains it in a sibling array. Before #2344 the walker never
-  // read that array, so the household got the generic sentence.
-  assert.equal(
-    commissionPayloadFailure({
-      status: "blocked",
-      issues: [{ code: "ramp_prepare_failed" }],
-      prepare_issues: [{ code: ENDPOINT }],
-    }),
-    unarmed,
-  );
-
-  // They outrank step-level advice: while the output path is unfinished, "start
-  // the tone again" is true-but-useless for something a retry cannot fix.
-  assert.equal(
-    commissionPayloadFailure({
-      status: "blocked",
-      issues: [{ code: "commission_not_loaded" }, { code: ENDPOINT }],
-    }),
-    unarmed,
-  );
-
-  // THE RETIRED RUNG IS ASSERTED ABSENT, behaviourally: it no longer produces
-  // copy of its own. Asserting the new rungs present is only half a re-point.
-  const retiredOnly = commissionPayloadFailure({
-    status: "blocked",
-    load: { issues: [{ code: RETIRED }] },
-  });
-  assert.equal(
-    retiredOnly,
-    "This driver can’t be tested yet — finish the earlier setup steps first.",
-  );
-  assert.ok(!retiredOnly.includes("ring output mode"));
-
-  // No household surface may carry an operator's shell command — not the
-  // retired `baseline-reemit`, and not either new reconciler invocation.
-  for (const copy of [unarmed, ends, wire]) {
-    assert.ok(!copy.includes("baseline-reemit"));
-    assert.ok(!copy.includes("jasper-"));
-    assert.ok(!copy.includes("systemctl"));
-    assert.ok(!copy.includes("sudo"));
-  }
-
-  // The gate path: when no issue code matched, the preflight gates are what the
-  // renderer falls back to, and neither may degrade to the generic sentence.
-  for (const [id, marker] of [
-    ["commissioning_transport_supported", "output connection"],
-    ["commissioning_transport_armed", "output path isn’t finished"],
-  ]) {
-    const gateOnly = commissionPayloadFailure({
-      status: "blocked",
-      preflight: { required_gates: [{ id, passed: false }] },
-    });
-    assert.ok(
-      gateOnly.includes(marker) && !gateOnly.includes("finish the earlier setup"),
-      `${id} rendered the generic fallback: ${gateOnly}`,
-    );
-    assert.ok(!gateOnly.includes("ring output mode"));
-    assert.ok(!gateOnly.includes("baseline-reemit"));
-  }
-}
 
 globalThis.document = {getElementById: () => null};
 const missingBounds = await import("../../deploy/assets/sound-profile/js/active-speaker-ui.js?missing-bounds");

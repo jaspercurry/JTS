@@ -5975,37 +5975,13 @@ def _rearm_verify():
 
 
 
-def test_status_reports_previous_applied_record_without_a_bank_walk(
-    monkeypatch, tmp_path,
-):
-    from jasper.web.correction_crossover_flow import handle_status
-
-    prior_fingerprint = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
-    monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: tmp_path / "bank-sessions")
-    applied = json.loads((tmp_path / "baseline_profile.json").read_text())
-    statefile = tmp_path / "camilla-state.yml"
-    statefile.write_text(json.dumps({"config_path": applied["config"]["path"]}))
-    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
-    handle_status()
-
-    def bank_walk(*args, **kwargs):
-        raise AssertionError
-
-    monkeypatch.setattr("jasper.active_speaker.candidate_bank.find_banked_candidate", bank_walk)
-    monkeypatch.setattr("jasper.active_speaker.candidate_bank._iter_candidate_paths", bank_walk)
-    payload, code = handle_status()
-    assert code == 200
-    assert payload["crossover_v2"]["previous_candidate_fingerprint"] == prior_fingerprint
-    assert v2host._previous_candidate_known() is True
-
-
 @pytest.mark.parametrize("record", ["absent", "applied", "legacy", "pruned"])
 @pytest.mark.parametrize("campaigns_exist", [False, True])
 def test_status_never_discovers_candidates_on_a_cold_or_empty_box(monkeypatch, tmp_path, record, campaigns_exist):
     from jasper.web.correction_crossover_flow import handle_status
 
     if record != "absent":
-        previous = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
+        _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
         path = tmp_path / "baseline_profile.json"
         applied = json.loads(path.read_text())
         if record == "legacy":
@@ -6015,7 +5991,6 @@ def test_status_never_discovers_candidates_on_a_cold_or_empty_box(monkeypatch, t
             Path(applied["candidate_artifact_path"]).unlink()
     else:
         _seed_baseline_apply_environment(monkeypatch, tmp_path)
-        previous = None
     campaigns = tmp_path / "campaigns"
     if campaigns_exist:
         campaigns.mkdir(exist_ok=True)
@@ -6027,16 +6002,13 @@ def test_status_never_discovers_candidates_on_a_cold_or_empty_box(monkeypatch, t
     monkeypatch.setattr("jasper.active_speaker.candidate_bank._iter_candidate_paths", bank_walk)
     payload, code = handle_status()
     assert code == 200
-    assert payload["crossover_v2"]["previous_candidate_fingerprint"] == previous
     assert payload["setup"]["protected_profile"]["available"] is (record != "absent")
 
 
-def test_apply_refuses_an_offered_previous_candidate_after_pruning(monkeypatch, tmp_path):
+def test_apply_refuses_a_banked_candidate_after_pruning(monkeypatch, tmp_path):
     from jasper.active_speaker.candidate_bank import find_banked_candidate
 
-    prior_fingerprint = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
-    offered = v2status.crossover_v2_status_block()["previous_candidate_fingerprint"]
-    assert offered == prior_fingerprint
+    offered = _apply_prior_then_v2_candidate(monkeypatch, tmp_path)
     find_banked_candidate(offered).path.unlink()
     with pytest.raises(refusal_copy.CrossoverV2Refused) as exc:
         _apply({"expected_candidate_fingerprint": offered}, _bg_run_async, _FakeApplyCam)

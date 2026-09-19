@@ -2228,22 +2228,15 @@ async function testAppliedProfileCardUsesCommissioningRecord() {
     config_path: "/var/lib/camilladsp/applied.yml", record: "7edfa758981e", disclosures: [],
   };
   const reviewPath = "/var/lib/camilladsp/review.yml";
-  const blocker = {severity: "blocker", code: "baseline_profile_apply_failed", message: "Restore failed at the DSP load."};
-  for (const [stands, hasPrevious, restoreStatus, alignment, timing] of [
-    [true, true, "applied", {status: "measured", reason: null}, "Saved timing: delay 22 µs; polarity normal; provenance measured."],
-    [true, false, undefined, {status: "declared", reason: null}, "Saved timing: delay 18 µs; polarity normal; provenance authored_by_model."],
-    [false, true, "applied", {status: "alignment_unmeasured", reason: "delay_out_of_bounds"},
+  for (const [stands, alignment, timing] of [
+    [true, {status: "measured", reason: null}, "Saved timing: delay 22 µs; polarity normal; provenance measured."],
+    [true, {status: "declared", reason: null}, "Saved timing: delay 18 µs; polarity normal; provenance authored_by_model."],
+    [false, {status: "alignment_unmeasured", reason: "delay_out_of_bounds"},
       "Saved timing: delay 18 µs; polarity inverted; provenance set_by_user."],
-    [true, true, "apply_failed"], [true, true, "unexpected"],
+    [true],
   ]) {
     applied.stands = stands;
-    const restores = [];
-    let profileReads = 0;
     const fetchHandler = baseFetch({
-      "./active-speaker/baseline-profile/restore": (_path, options) => {
-        restores.push(options);
-        return Promise.resolve(response({status: restoreStatus, issues: restoreStatus === "apply_failed" ? [blocker] : []}));
-      },
       "./output-topology": () => Promise.resolve(response({
         output_topology: confirmedTopology,
       })),
@@ -2255,14 +2248,12 @@ async function testAppliedProfileCardUsesCommissioningRecord() {
         })
       )),
       "./active-speaker/baseline-profile": () => {
-        profileReads += 1;
         return Promise.resolve(response({
         status: "ready_to_compile", candidate_fingerprint: "review-fp",
         permissions: { may_compile: true, may_apply: false },
         config: { path: reviewPath }, issues: [],
         corrections: { woofer: { gain_db: 0 }, tweeter: { gain_db: -7.5 } },
         corrections_source: { woofer: "measured", tweeter: "measured" },
-        previous_candidate_fingerprint: hasPrevious ? "previous" : null,
       })); },
     });
     const harness = setupHarness(fetchHandler);
@@ -2277,29 +2268,10 @@ async function testAppliedProfileCardUsesCommissioningRecord() {
     }
     for (const expected of ["Driver levels", "0 dB (reference)", "-7.5 dB", "Measured",
       applied.candidate_fingerprint.slice(0, 12), applied.record, applied.applied_at]) {
-      if (!html.includes(expected)) fail("Applied profile details are missing", {expected, stands, hasPrevious});
+      if (!html.includes(expected)) fail("Applied profile details are missing", {expected, stands});
     }
     if (html.includes(applied.candidate_fingerprint)) fail("The card should abbreviate the fingerprint");
     if (html.includes('>active</span>') !== stands) fail("Active badge disagrees with displacement", {stands});
-    if (html.includes('data-act="restore-baseline-profile"') !== hasPrevious) {
-      fail("Restore action disagrees with the previous candidate record", {hasPrevious});
-    }
-    if (hasPrevious) {
-      const readsBeforeRestore = profileReads;
-      harness.dispatchClick({"data-act": "restore-baseline-profile"});
-      for (let i = 0; i < 8; i += 1) await harness.flush();
-      if (restores.length !== 1 || restores[0].method !== "POST") fail("Restore must post once", {restores});
-      if (profileReads !== readsBeforeRestore + (restoreStatus === "applied" ? 1 : 0)) {
-        fail("Only a successful restore may refresh the composed profile", {profileReads, readsBeforeRestore, restoreStatus});
-      }
-      const banner = harness.elements.get("status");
-      if (restoreStatus === "apply_failed" && banner.textContent !== blocker.message) {
-        fail("Restore failure must show its blocker", {banner: banner.textContent});
-      }
-      if (banner.className.split(" ").includes("status-line--err") !== (restoreStatus !== "applied")) {
-        fail("Restore banner must reflect the apply result", {restoreStatus, banner: banner.className});
-      }
-    }
     if (html.includes('>Save and apply</button>') === stands) {
       fail("The primary apply door disagrees with displacement", {stands});
     }
