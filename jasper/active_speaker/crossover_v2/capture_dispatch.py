@@ -124,7 +124,14 @@ def _assess_recording(
     anchor, drift, alignment = analysis.anchor, analysis.drift, analysis.alignment
     sample_rate = program.sample_rate_hz if program else REQUIRED_SAMPLE_RATE_HZ
     schedule_residual_ms, sweep_confidence_min = _sweep_schedule_diag_fields(analysis, sample_rate)
-    stimuli = [loc for loc in analysis.locations if loc.kind in STIMULUS_KINDS]
+    stimuli = []
+    locate_confidences: dict[str, float] = {}
+    for loc in analysis.locations:
+        if loc.kind in STIMULUS_KINDS:
+            stimuli.append(loc)
+        if loc.kind == KIND_SWEEP:
+            key = f"locate_confidence.{loc.role or 'summed'}"
+            locate_confidences[key] = min(locate_confidences.get(key, loc.confidence), loc.confidence)
     evidence: dict[str, float | bool | str] = {
         "mic_meter_status": analysis.mic_meter_status or "unmeasured",
         "anchor_ambiguous": analysis.anchor_ambiguous or bool(anchor and anchor.ambiguous),
@@ -135,6 +142,9 @@ def _assess_recording(
     figures = {
         "anchor_presence": anchor.presence if anchor else None,
         "anchor_confidence": anchor.confidence if anchor else None,
+        "anchor_runner_up_presence": anchor.runner_up_presence if anchor else None,
+        "anchor_runner_up_confidence": anchor.runner_up_confidence if anchor else None,
+        "anchor_witnesses_tried": anchor.witnesses_tried if anchor else None,
         "anchor_corroborated": anchor.corroborated if anchor else None,
         "anchor_shift_ms": anchor.shift_ms if anchor else None,
         "anchor_witness_residual_ms": anchor.witness_residual_ms if anchor else None,
@@ -145,6 +155,7 @@ def _assess_recording(
         "discontinuity_samples": analysis.discontinuity_samples,
         "peak_dbfs": max((loc.peak_dbfs for loc in stimuli), default=None),
         "locate_confidence_min": min((loc.confidence for loc in stimuli), default=None),
+        **locate_confidences,
     }
     evidence.update({key: value if isinstance(value, bool) else float(value)
                      for key, value in figures.items() if value is not None})
