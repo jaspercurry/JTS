@@ -615,11 +615,7 @@ def test_check_diag_logs_full_numbers_on_rejection_too(caplog):
     assert fields["tweeter_snr_db"] == "15.0"
 
 
-def test_check_diag_names_which_rung_2_signal_fired(caplog):
-    """#2647's SHOULD-FIX: the shared ``anchor_ambiguous`` code cannot say
-    which of the two independent tells fired. The structured fields must,
-    down to which driver's delta was the implausible one.
-    """
+def test_check_diag_names_implausible_pilot_step_before_channel_map(caplog):
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
     fakes = FakeSeams()
     fakes.check = lambda program: ProgramAnalysis(
@@ -639,9 +635,9 @@ def test_check_diag_names_which_rung_2_signal_fired(caplog):
     c = _conductor(fakes)
     verdict = _run_phase(c, 1, 1)
     assert verdict["accepted"] is False
-    assert verdict["code"] == "anchor_ambiguous"
+    assert verdict["code"] == "pilot_step_implausible"
     fields = event_fields(caplog, "correction.crossover_v2_check_diag")
-    assert fields["code"] == "anchor_ambiguous"
+    assert fields["code"] == "pilot_step_implausible"
     assert fields["anchor_ambiguous"] == "false"
     assert fields["delta_implausible"] == "true"
     assert fields["woofer_delta_implausible"] == "true"

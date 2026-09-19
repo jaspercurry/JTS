@@ -111,6 +111,8 @@ def test_check_run_host_reads_mute_once(monkeypatch, muted):
                     replace(_loc("sweep_t", confidence=cd.LOCATE_MIN_CONFIDENCE / 2), role="tweeter"))},
      refusal_copy.REASON_LOCATE_FAILED, "fix_and_retake", "operator"),
     ({"anchor_ambiguous": True}, refusal_copy.REASON_ANCHOR_AMBIGUOUS, "fix_and_retake", "operator"),
+    ({"delta_implausible": True, "pilot_snr_ok": True}, refusal_copy.REASON_PILOT_STEP_IMPLAUSIBLE, "fix_and_retake", "operator"),
+    ({"delta_implausible": True, "pilot_snr_ok": False}, refusal_copy.REASON_SNR_FLOOR, "fix_and_retake", "operator"),
     ({"anchor": AnchorEvidence(corroborated=False)}, refusal_copy.REASON_ANCHOR_TOO_QUIET, "fix_and_retake", "speaker"),
     ({"locations": (_loc("sweep_w", clipped=True),)}, refusal_copy.REASON_CLIPPED, "retake_quieter", "speaker"),
     ({"glitch_detected": True}, refusal_copy.REASON_DRIFT_BASELINES_DISAGREE, "retake_same", "speaker"),
@@ -119,8 +121,6 @@ def test_check_run_host_reads_mute_once(monkeypatch, muted):
     ({"discontinuity_samples": -1066.7}, refusal_copy.REASON_DRIFT_BASELINES_DISAGREE, "retake_same", "speaker"),
     ({"locations": (_loc("sweep_w", residual_samples=1200.0),)}, refusal_copy.REASON_DRIFT_BASELINES_DISAGREE, "retake_same", "speaker"),
     ({"linearity_ok": False}, refusal_copy.REASON_AGC_BEHAVIORAL_FAIL, "fix_and_retake", "operator"),
-    ({"mic_meter_status": "clipping"}, refusal_copy.REASON_CLIPPED, "retake_quieter", "speaker"),
-    ({"mic_meter_status": "too_quiet"}, refusal_copy.REASON_PILOT_LEVEL_COLLAPSE, "fix_and_retake", "operator"),
 ])
 def test_integrity_verdict(phase, changes, code, next, charge):
     verdict = cd.assess(_analysis(**changes), phase=phase, gain_db=GAINS)
@@ -244,12 +244,12 @@ def test_a_round_banks_the_branch_diagnostic_its_analysis_carried(diagnostic):
 
 
 @pytest.mark.parametrize("phase", PHASES)
-@pytest.mark.parametrize("status", [None, "unmeasured", "too_loud"])
-def test_absent_clipping_and_unknown_meter_evidence_do_not_refuse(phase, status):
+@pytest.mark.parametrize("status", [None, "unmeasured", "too_loud", "too_quiet", "low"])
+def test_mic_meter_grade_is_a_disclosure(phase, status):
     verdict = cd.assess(_analysis(mic_meter_status=status), phase=phase)
     assert verdict.ok and verdict.fault is None
     assert verdict.evidence["mic_meter_status"] == (status or "unmeasured")
-    assert verdict.capabilities["mic_level"] is (status == "too_loud")
+    assert verdict.capabilities["mic_level"] is (status in {"too_loud", "too_quiet", "low"})
 
 
 @pytest.mark.parametrize("phase", ["check", "verify"])
@@ -489,7 +489,6 @@ def test_quiet_pilot_explains_a_false_glitch(phase):
 @pytest.mark.parametrize(("changes", "code"), [
     ({"channel_map_ok": False, "pilot_snr_ok": False}, refusal_copy.REASON_CHANNEL_MAP_MISMATCH),
     ({"gain_plan": None}, refusal_copy.REASON_SNR_FLOOR),
-    ({"delta_implausible": True}, refusal_copy.REASON_ANCHOR_AMBIGUOUS),
     ({"linearity_ok": False, "gain_plan": GainPlan(GAINS, -30.0, False)}, refusal_copy.REASON_NOISY_ROOM_LINEARITY),
 ])
 def test_check_gates(changes, code):
