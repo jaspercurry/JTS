@@ -1832,14 +1832,6 @@ def test_unlocatable_sweeps_report_unresolved_not_a_fabricated_discontinuity(
     overridden, isolating the new precondition from the fit math it guards.
     Trusted, this input resolves +64.00 (that pinned test); untrusted, it
     must report the sentinel instead of ANY number, right or wrong.
-
-    The 0.3 / 0.2999 cases pin that the gate is a strict ``confidence <
-    FLOOR`` — the floor value ITSELF is trusted, not merely "somewhere
-    below 0.3" — matching `crossover_v2_flow._sweep_locate_confidence_ok`'s
-    exact negation (``confidence >= FLOOR``) at the same threshold. See
-    `test_locate_confidence_floors_agree` in
-    tests/test_measurement_integrity_floor_contracts.py for the
-    cross-module value pin these two gates share.
     """
     prog = build_measure_program(
         {"woofer": -11.0, "tweeter": -13.0}, _roles(),

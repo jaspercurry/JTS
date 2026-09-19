@@ -64,10 +64,8 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
     TRANSIENT_AUTO_RETRY_CODES,
 )
-from jasper.active_speaker.crossover_v2.capture_dispatch import (
-    SWEEP_LOCATE_CONFIDENCE_FLOOR,
-    VERIFY_PILOT_TRANSFER_STEP_CEILING_DB,
-)
+from jasper.active_speaker.crossover_v2.capture_dispatch import VERIFY_PILOT_TRANSFER_STEP_CEILING_DB
+from jasper.audio_measurement.program_analysis.model import SWEEP_LOCATE_CONFIDENCE_FLOOR
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames

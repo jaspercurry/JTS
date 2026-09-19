@@ -74,8 +74,6 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "PRESCRIBED_NON_WORSENING_DB",
     ),
     "capture_dispatch": (
-        "SWEEP_LOCATE_CONFIDENCE_FLOOR",
-        "SWEEP_SCHEDULE_RESIDUAL_CEILING_MS",
         "_gate_disclosure",
         "_gate_floor_source",
         "_gate_record",
@@ -83,7 +81,6 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "_pilot_by_role",
         "_pilot_diag_fields",
         "_pilot_transfer_by_role",
-        "_sweep_locate_confidence_ok",
         "_sweep_schedule_diag_fields",
         "_sweep_schedule_ok",
     ),

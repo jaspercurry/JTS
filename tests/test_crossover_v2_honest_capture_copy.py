@@ -47,10 +47,8 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     locate_failed_message,
     reason_message,
 )
-from jasper.active_speaker.crossover_v2.capture_dispatch import (
-    LOCATE_MIN_CONFIDENCE,
-    SWEEP_LOCATE_CONFIDENCE_FLOOR,
-)
+from jasper.active_speaker.crossover_v2.capture_dispatch import LOCATE_MIN_CONFIDENCE
+from jasper.audio_measurement.program_analysis.model import SWEEP_LOCATE_CONFIDENCE_FLOOR
 from jasper.active_speaker.crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from jasper.web import correction_crossover_v2_status as v2status
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginRefused

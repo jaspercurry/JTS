@@ -19,7 +19,8 @@ from jasper.audio_measurement.program_analysis import (
 )
 from jasper.audio_measurement.program_analysis.check import alignment_snr_gain_adjustment
 from jasper.audio_measurement.program_analysis.model import (
-    DRIVER_SNR_ALIGNMENT_KEY, GAIN_MAX_DIGITAL_PEAK_DBFS, PILOT_MIN_SNR_DB, MeasurementPriors, ProgramAnalysis,
+    DRIVER_SNR_ALIGNMENT_KEY, GAIN_MAX_DIGITAL_PEAK_DBFS, PILOT_MIN_SNR_DB,
+    SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, MeasurementPriors, ProgramAnalysis,
 )
 from jasper.audio_measurement.program_analysis.summary import driver_alignment_snr_verdict, driver_snr_verdict
 from jasper.active_speaker.profile import spl_raise_bound_db_spl
@@ -223,9 +224,6 @@ def _assess_recording(
         return quiet(reasons.REASON_ANCHOR_TOO_QUIET, charge="speaker" if gains else "operator")
     if analysis.mic_meter_status in {"low", "too_quiet"}:
         return quiet(reasons.REASON_PILOT_LEVEL_COLLAPSE)
-    if not _sweep_locate_confidence_ok(analysis):
-        evidence["guard"] = "sweep_locate_confidence"
-        return quiet(reasons.REASON_LOCATE_FAILED)
     integrity = analysis.capture_integrity
     if integrity is not None and INTEGRITY_CHECK_SWEEP_HEARD in integrity.failed:
         return quiet(reasons.REASON_LOCATE_FAILED)
@@ -311,136 +309,15 @@ def ripple_reservation_due(
     return predicted_ripple_db > disclosure_threshold_db
 
 
-# --------------------------------------------------------------------------- #
-# the capture-integrity predicates, and the two MEASURE thresholds two of
-# them read.
-#
-# Private on purpose, and re-exported from the flow under these exact spellings
-# because the session calls them by those names; the precedent is ``fc_sweep``'s
-# ``_fc_rejection``.
-# --------------------------------------------------------------------------- #
-
-# Measurement-honesty gate G2: an ``event=outputd.xrun`` playback glitch shifted
-# a MEASURE capture's three sweeps −25…−28 ms off their SCHEDULED slot at
-# per-segment locate confidence 0.07-0.12, while the measured clean corpus's
-# WORST capture ran ≤1.5 ms residual at ≥0.6926 confidence — and
-# ``glitch_detected`` stayed False, because the repeat-pair drift check is
-# structurally blind to a uniform whole-capture shift. Both thresholds carry
-# wide margin on both sides of those two clusters.
-#
-# The two are read by DIFFERENT gates: the residual ceiling by
-# ``_sweep_schedule_ok`` (a glitch — silent auto-retry), the confidence floor by
-# ``_sweep_locate_confidence_ok`` (too quiet — no retry).
-#
-# Both have a deliberate twin one layer down —
-# ``program_analysis.SWEEP_SCHEDULE_RESIDUAL_CEILING_MS`` /
-# ``SWEEP_LOCATE_CONFIDENCE_FLOOR`` — applying the SAME two judgments to VERIFY's
-# ``KIND_SUMMED_SWEEP``, a segment kind neither gate here filters for. They are
-# duplicated rather than imported because they judge different segment kinds
-# through different gates and bench work may settle them at different values;
-# tests/test_measurement_integrity_floor_contracts.py pins the pair, so a
-# deliberate move of either number must update BOTH copies and that test.
-SWEEP_SCHEDULE_RESIDUAL_CEILING_MS = 5.0
-SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
-
-# ``branch_program.build_branch_program`` emits its leading pilot pair on ONE
-# branch, so ``_global_offset`` anchors the timeline on that branch alone: the
-# other branch's steady acoustic delay lands in ``residual_samples``, and the
-# peakedness ``alignment.alignment_at`` scores as ``confidence`` is a
-# direct-to-late-room ratio, which a rear-firing driver 0.2 m from a wall
-# structurally has less of. Measured at 1 m on jts3 round fd97a756ea51, on
-# captures with no glitch, no frame loss, no clipping and 27-28 dB pilot SNR:
-# front sweeps 0.654-0.699 confidence at 0.58-0.88 ms residual, rear sweeps
-# 0.228-0.370 at 4.13-5.10 ms against a room return at +17.7…+21.5 ms. This
-# sits only 0.03 above the xrun cluster above (0.07-0.12) where the shared
-# floor had 2.5x: what prices that is the ANCHORED role keeping 0.3, since a
-# whole-capture event moves both branches, plus ``LOCATE_MIN_CONFIDENCE``
-# underneath for a branch nobody heard at all.
-# Retire this floor and :func:`_unanchored_sweep_roles` the day a branch
-# program emits a pilot pair per branch — the shared numbers above are honest
-# for every role then.
-BRANCH_LOCATE_CONFIDENCE_FLOOR = 0.15
-
-
-def _unanchored_sweep_roles(analysis: ProgramAnalysis) -> frozenset[str | None]:
-    """Sweep roles a branch program's leading pilot pair does NOT anchor.
-
-    Empty for every other program, and whenever no pilot named a role at all,
-    which keeps both rungs below at their shared thresholds rather than
-    inventing an exemption.
-    """
-    anchored = {pilot.role for pilot in analysis.pilots}
-    if analysis.branch_diagnostic is None or not anchored:
-        return frozenset()
-    return frozenset(loc.role for loc in analysis.locations
-                     if loc.kind == KIND_SWEEP and loc.role not in anchored)
-
-
-def _sweep_locate_confidence_ok(analysis: ProgramAnalysis) -> bool:
-    """False when a MEASURE sweep was only weakly located — i.e. too quiet.
-
-    Split out of :func:`_sweep_schedule_ok` by D3 (#1838): a sweep whose
-    RESIDUAL is out of bounds landed off its scheduled slot and is a genuine
-    capture glitch worth retrying, while a sweep the locator could barely find
-    is a capture too quiet to hear, whose fix is the level or the mic. In one
-    session the sweeps located at 0.0298 against this 0.3 floor, the mis-located
-    sweeps produced a 1018-sample residual, and the residual tripped
-    ``glitch_detected`` — so the flow silently re-armed the same unwinnable
-    level.
-
-    Same ``KIND_SWEEP`` domain as :func:`_sweep_schedule_ok`: the leading pilot
-    pair's short, quiet windows locate coarsely by design and would manufacture
-    spurious fires. VERIFY's ``KIND_SUMMED_SWEEP`` is judged one layer down by
-    ``program_analysis._verify_capture_integrity`` (#1971).
-
-    A branch program's UNANCHORED branch is held to
-    :data:`BRANCH_LOCATE_CONFIDENCE_FLOOR` instead, for the reason stated there;
-    every other program, and the anchored branch, keep the shared floor.
-    """
-    unanchored = _unanchored_sweep_roles(analysis)
-    return all(
-        loc.confidence >= (BRANCH_LOCATE_CONFIDENCE_FLOOR if loc.role in unanchored
-                           else SWEEP_LOCATE_CONFIDENCE_FLOOR)
-        for loc in analysis.locations
-        if loc.kind == KIND_SWEEP
-    )
-
-
 def _sweep_schedule_ok(analysis: ProgramAnalysis, sample_rate_hz: int) -> bool:
-    """False when a MEASURE sweep landed off its scheduled slot
-    (measurement-honesty gate G2 — the xrun detector; see
-    :data:`SWEEP_SCHEDULE_RESIDUAL_CEILING_MS` for the evidence).
-
-    Since D3 (#1838) this is the RESIDUAL half of G2 only; the locate-confidence
-    half is :func:`_sweep_locate_confidence_ok`, which runs earlier.
-
-    ``sample_rate_hz`` is the CALLER's own MEASURE program rate, not something
-    read off ``analysis``: ``analyze_program_capture`` hard-refuses a capture
-    whose sample rate disagrees with the program's, and the capture spec fixes
-    every capture at ``REQUIRED_SAMPLE_RATE_HZ`` (48 kHz), so no resampling ever
-    runs between the WAV and this analysis and ``residual_samples`` is always in
-    that domain.
-
-    Filtered to ``KIND_SWEEP`` only, mirroring ``_estimate_drift``'s exclusion of
-    the leading pilot pair. No sweeps at all passes — ``_stimulus_locate_ok``
-    runs earlier and already covers "nothing usable in this capture".
-
-    On a branch program each UNANCHORED role is judged against its OWN first
-    sweep rather than the shared slot: an xrun still moves one sweep off its
-    place, while a branch's steady acoustic delay does not (see
-    :data:`BRANCH_LOCATE_CONFIDENCE_FLOOR`). The anchored branch keeps the
-    absolute test, so a whole-capture shift still fires here.
+    """Residual samples use the caller's program rate; capture analysis rejects
+    a WAV at a different rate before locating segments.
     """
     sweeps = [loc for loc in analysis.locations if loc.kind == KIND_SWEEP]
     if not sweeps:
         return True
-    unanchored = _unanchored_sweep_roles(analysis)
-    reference: dict[str | None, float] = {}
     for loc in sweeps:
-        if loc.role in unanchored:
-            reference.setdefault(loc.role, loc.residual_samples)
-    for loc in sweeps:
-        residual_ms = abs(loc.residual_samples - reference.get(loc.role, 0.0)) / sample_rate_hz * 1000.0
+        residual_ms = abs(loc.residual_samples) / sample_rate_hz * 1000.0
         if residual_ms > SWEEP_SCHEDULE_RESIDUAL_CEILING_MS:
             return False
     return True
@@ -450,7 +327,7 @@ def _sweep_schedule_diag_fields(
     analysis: ProgramAnalysis, sample_rate_hz: int,
 ) -> tuple[float | None, float | None]:
     """``(sweep_residual_ms_worst, sweep_locate_confidence_min)`` — diagnostic
-    only, over the SAME ``KIND_SWEEP`` domain the two gates above use, and never
+    only, over the ``KIND_SWEEP`` domain the schedule check uses, and never
     itself a verdict. ``sweep_residual_ms_worst`` is the SIGNED residual (not its
     magnitude) of whichever sweep has the largest absolute residual, so a
     reviewer sees which direction the schedule broke. ``(None, None)`` when there
@@ -710,9 +587,6 @@ def _stimulus_locate_ok(analysis: ProgramAnalysis) -> bool:
     10 dB under its loud side and locates more coarsely. One confidently-located
     stimulus says "this driver was heard"; zero does not. Role-less stimuli (a
     summed sweep) group together under the same rule.
-
-    The stricter per-SWEEP floor MEASURE also applies is
-    :func:`_sweep_locate_confidence_ok`.
     """
     by_role: dict[str | None, float] = {}
     for loc in analysis.locations:

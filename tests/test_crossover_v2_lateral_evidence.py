@@ -18,6 +18,7 @@ import pytest
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker.crossover_v2 import capture_plan
+from jasper.active_speaker.crossover_v2.capture_dispatch import LOCATE_MIN_CONFIDENCE
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2 import pose_curve
 from jasper.active_speaker.crossover_v2 import programs
@@ -645,16 +646,12 @@ def test_the_resampler_really_does_raise_on_an_empty_axis():
 @pytest.mark.parametrize(
     "rung,mutate,expected_code",
     [
-        # Confidence 0.2 clears LOCATE_MIN_CONFIDENCE (0.1) and fails
-        # SWEEP_LOCATE_CONFIDENCE_FLOOR (0.3): a MID-ladder rung, so this proves
-        # the whole ladder runs before the build rather than only that the first
-        # check short-circuits.
         (
-            "sweep_locate_confidence",
+            "stimulus_locate",
             lambda a: replace(
                 a,
                 locations=tuple(
-                    replace(loc, confidence=0.2) for loc in a.locations
+                    replace(loc, confidence=LOCATE_MIN_CONFIDENCE / 2) for loc in a.locations
                 ),
             ),
             REASON_LOCATE_FAILED,

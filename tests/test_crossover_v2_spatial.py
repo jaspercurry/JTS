@@ -67,7 +67,6 @@ def _screens(**overrides) -> spatial.CaptureScreens:
         "pilot_snr_ok": True,
         "linearity_ok": True,
         "glitch_detected": False,
-        "sweep_locate_confidence_ok": True,
         "sweep_schedule_ok": True,
         "any_sweep_clipped": False,
     }
@@ -104,35 +103,7 @@ def test_a_cloud_position_names_the_room_before_it_names_the_phone():
     assert kind == spatial.SCREEN_PILOT_LEVEL_COLLAPSE
 
 
-def test_a_lateral_pose_names_too_quiet_before_it_names_glitched():
-    """Issue #1838 D3, on the lateral ladder — and the SAME rule, one layer on.
-
-    A sweep the locator could barely find is a capture too quiet to hear, and a
-    quiet sweep CAUSES the residual that trips ``glitch_detected``: in session
-    ``cap_-Us10xORVNlFa_dgi-sP7g`` the sweeps located at 0.0298 against a 0.3
-    floor and the mis-located sweeps then produced a 1018-sample residual. So
-    the two fail together by mechanism, not by coincidence, and ordering the
-    confidence check first is what makes the reported cause the real one — a
-    glitch verdict silently re-arms the same unwinnable level.
-
-    Mutation-selected: swapping these two rungs left 28 tests green.
-    """
-    kind = spatial.lateral_pose_screens(
-        _screens(sweep_locate_confidence_ok=False, glitch_detected=True),
-    )
-
-    assert kind == spatial.SCREEN_LOCATE_FAILED
-
-
 def test_a_lateral_pose_names_the_room_before_the_schedule_or_the_clip():
-    """The same #1810 precedence, against the two rungs BELOW it on this ladder.
-
-    The cloud ladder has three rungs, so its pilot-before-linearity test covers
-    its whole ordering claim. The lateral ladder has seven, and a capture too
-    quiet to hear can trip the schedule residual and the clip detector as
-    easily as the linearity screen — so the room verdict has to outrank all
-    three, not just the one the shorter ladder happens to share.
-    """
     kind = spatial.lateral_pose_screens(
         _screens(
             pilot_snr_ok=False, sweep_schedule_ok=False,
@@ -153,7 +124,7 @@ def test_a_take_nothing_located_is_named_that_whatever_else_is_wrong():
     """
     broken = _screens(
         stimulus_located=False, pilot_snr_ok=False, linearity_ok=False,
-        glitch_detected=True, sweep_locate_confidence_ok=False,
+        glitch_detected=True,
         sweep_schedule_ok=False, any_sweep_clipped=True,
     )
 
@@ -207,11 +178,6 @@ def test_no_screen_may_be_left_unstated():
     does read it, the caller was never asked, so the default answers for a
     capture nobody looked at. It would silently never fire while reading as
     covered from both ends.
-
-    The four that regressed this way once (``glitch_detected``,
-    ``sweep_locate_confidence_ok``, ``sweep_schedule_ok``, ``any_sweep_clipped``)
-    are named rather than counted, because the failure mode is one field
-    quietly acquiring a default, not the total changing.
     """
     import dataclasses
 
@@ -219,7 +185,7 @@ def test_no_screen_may_be_left_unstated():
 
     assert set(fields) == {
         "stimulus_located", "pilot_snr_ok", "linearity_ok", "glitch_detected",
-        "sweep_locate_confidence_ok", "sweep_schedule_ok", "any_sweep_clipped",
+        "sweep_schedule_ok", "any_sweep_clipped",
     }
     defaulted = [
         name for name, f in fields.items()
