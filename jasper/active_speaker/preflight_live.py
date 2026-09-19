@@ -103,4 +103,6 @@ def read_preflight_facts(
         commissioning_stop_db_spl=stop, mover=plan.mover, issues=tuple(issues),
         applied_bass_extension=applied_bass_extension,
         program_ids_for=program_ids,
+        declared_target_ids=tuple(context.role_targets) if context is not None and hasattr(context, "role_targets") else None,
+        roles_bands=tuple(getattr(context, "roles_bands", ())),
     )

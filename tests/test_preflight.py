@@ -7,13 +7,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_SUMMED
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
+from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_SUMMED, request_for_program
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, TEMPLATE_HARD_STOP
+from jasper.active_speaker.measurement import active_driver_targets
+from jasper.active_speaker.measurement_programs import program
 from jasper.active_speaker.preflight import PreflightFacts, preflight
+from jasper.active_speaker.program_admission import ProgramAdmissionRefusal
+from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker import candidate_parts, preflight_live
 from jasper.active_speaker.seat_level_reference import AnchorFacts
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.program import FrequencyBand, RoleBand
+from jasper.output_topology import measurement_target_id
+from tests.active_speaker_fixtures import mono_output_topology
+from tests.test_rear_output_foundation import _rear_pair
 from tests.test_crossover_v2_tuning_scope import (
     BASS_EXTENSION, _room_candidate, tuning_profile as tuning_profile,
 )
@@ -30,6 +37,57 @@ def ready_facts(plan, **changes):
         commissioning_stop_db_spl=85.0, mover=plan.mover, applied_bass_extension={},
         program_ids_for=lambda _plan: ("fixture-sweep",),
     ), **changes)
+
+
+@pytest.mark.parametrize("layout,name,size", [
+    (layout, name, size)
+    for layout in ("full_range_passive", "active_2_way", "active_3_way", "cardioid")
+    for name, size in (("rear", "pair"), ("rear", "pair_behind"), ("front_rear", "express"), ("branches", "express"))
+] + [("active_2_way", name, size) for name, size in (("speaker", "mark"), ("room", "arm"), ("bass", "axis"))])
+def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile, layout, name, size):
+    topology = _rear_pair("mono")[1] if layout == "cardioid" else mono_output_topology(mode=layout)
+    targets = active_driver_targets(topology)
+    role_targets = {measurement_target_id(t["role"], t.get("output_variant", "primary")): t["target_fingerprint"]
+                    for t in targets}
+    roles = tuple(RoleBand(t["role"], index, FrequencyBand(20, 20000)) for index, t in enumerate(targets)
+                  if t.get("output_variant", "primary") == "primary")
+    candidate = _room_candidate(tuning_profile)
+    selected = program(name, size)
+    plan = request_for_program(selected, mover=selected.mover or "human",
+                               candidates=(candidate.fingerprint,) if name in {"rear", "front_rear", "branches"} else ())
+    ready = ready_facts(plan)
+    context = SimpleNamespace(topology=topology, roles_bands=roles, role_targets=role_targets,
+        preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
+    monkeypatch.setattr(preflight_live, "conductor_status", lambda: {})
+    monkeypatch.setattr(preflight_live, "resolve_conductor_context", lambda _: context)
+    monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2"))
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
+    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
+    monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: {})
+    monkeypatch.setattr(preflight_live, "candidate_from_applied_profile", lambda *a: SimpleNamespace(bass_extension={}))
+    monkeypatch.setattr(preflight_live.candidate_bank, "find_banked_candidate", lambda _: SimpleNamespace(candidate=candidate))
+    facts = preflight_live.read_preflight_facts(plan)
+    assert facts.declared_target_ids == tuple(role_targets)
+    missing = tuple(sorted({"woofer", "woofer:rear"} - role_targets.keys())) if name in {"rear", "front_rear"} else ()
+    invalid_pairs = (tuple(role.role for role in roles),) if name == "branches" and len(roles) != 2 else ()
+    blocked = bool(missing or invalid_pairs)
+
+    def program_ids(_plan):
+        assert not blocked
+        return ("fixture-sweep",)
+
+    report = preflight_levels(plan, replace(facts, program_ids_for=program_ids))
+    assert report.blocking is blocked
+    if blocked:
+        issue, = report.issues
+        assert issue.code == ProgramAdmissionRefusal.TARGET_NOT_MAPPED.value
+        assert issue.blocking
+        assert issue.evidence == {"missing_target_ids": missing, "declared_target_ids": tuple(role_targets),
+                                  "invalid_branch_target_ids": invalid_pairs}
+        assert REASON_REGISTRY[issue.code].template == TEMPLATE_HARD_STOP
+        assert REASON_REGISTRY[issue.code].retry_budget == 0
+    else:
+        assert report.issues == ()
 
 
 @pytest.mark.parametrize("change,code", [

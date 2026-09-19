@@ -15,6 +15,7 @@ from jasper.audio_measurement.frame_ledger import LOST_AT_CAPTURE_OVERRUN
 from jasper.log_event import log_event
 
 from ..boost_protection import BOOST_OVER_DECLARED_BOUND
+from ..program_admission import ProgramAdmissionRefusal
 from . import spatial as _spatial
 from .spatial import GEOMETRY_RETRY_POSITIONS
 
@@ -429,6 +430,9 @@ ARM_STOP_REASONS = frozenset(ARM_STOP_COPY) | {REASON_ARM_HOST_STUCK, REASON_INT
 # The §5.10 table, as data. The envelope and the session both read it, so
 # copy and budget never drift between the verdict and its screen.
 REASON_REGISTRY: dict[str, ReasonSpec] = {
+    ProgramAdmissionRefusal.TARGET_NOT_MAPPED.value: ReasonSpec(
+        ProgramAdmissionRefusal.TARGET_NOT_MAPPED.value, TEMPLATE_HARD_STOP, 0, "",
+        "This speaker has no matching target to measure, so this measurement does not apply to it."),
     "dry_run_requires_local_host": ReasonSpec("dry_run_requires_local_host", TEMPLATE_HARD_STOP, 0, "",
         "Dry-run reads this machine's facts. Run it on the speaker."),
     **{code: ReasonSpec(code, TEMPLATE_FIX_AND_RETRY, 0, "", message)
