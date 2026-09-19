@@ -130,11 +130,11 @@ def test_inventory_groups_and_orders_the_program(tmp_path, capsys, program, firs
 
 @pytest.mark.parametrize("program,excluded", [
     ("speaker", {"bass", "bass-compare", "bass-fit-table"}),
-    ("room", {"entry", "frozen", "cloud-binding", "forward-model", "delay-landscape",
+    ("room", {"entry", "frozen", "cloud-binding", "delay-landscape",
               "delay-confirm", "close-reference", "distortion", "classify-features",
               "bass", "bass-compare", "bass-fit-table"}),
     ("bass", {"entry", "frozen", "per-seat", "agreement", "co-metrics", "directivity",
-              "cloud-binding", "forward-model", "delay-landscape", "delay-confirm",
+              "cloud-binding", "delay-landscape", "delay-confirm",
               "close-reference", "distortion", "classify-features", "room", "room-grade"}),
 ])
 def test_inventory_excludes_views_for_other_programs(tmp_path, capsys, program, excluded):
@@ -185,8 +185,6 @@ def test_registered_view_producer_tokens_are_accepted(view, takes):
 @pytest.mark.parametrize("argv", [
     ["windows", "round"], ["gate-sweep", "round"], ["spec-sweep", "round"],
     ["sweep", "round", "--scope", "take", "--capture-id", "take"],
-    ["forward-model", "round", "--capture-id", "take"],
-    ["forward-model", "round", "--measured-capture-id", "take"],
     ["room", "round", "--capture-id", "take"],
     ["room-grade", "round", "--room-median", "median.json"],
     ["room-grade", "round", "--baseline-room-median", "median.json"],
@@ -369,12 +367,10 @@ def _run(capsys, argv):
     return json.loads(capsys.readouterr().out)
 
 
-@pytest.mark.parametrize("view", ["forward-model", "bass-compare"])
-def test_single_take_views_refuse_an_ambiguous_set(two_sets, capsys, view):
+def test_single_take_views_refuse_an_ambiguous_set(two_sets, capsys):
     root, manifest = two_sets
     first, second = (group["set_id"] for group in manifest["sets"])
-    argv = ([view, str(root), "--set", first] if view == "forward-model" else
-            [view, str(root), str(root), "--before-set", first, "--after-set", second, "--change", "candidate"])
+    argv = ["bass-compare", str(root), str(root), "--before-set", first, "--after-set", second, "--change", "candidate"]
     assert main(argv) == 1
     answer = json.loads(capsys.readouterr().out)
     assert answer["reason"] == "round_take_selection_required"

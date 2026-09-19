@@ -31,6 +31,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
 )
 from jasper.active_speaker.crossover_v2.blend_prescription import prescription_sha256
 from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
+from jasper.audio_measurement.evidence_identity import json_fingerprint
 import yaml
 
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
@@ -127,6 +128,8 @@ def test_room_grid_preserves_the_full_preview(base, bank, evidence, tmp_path, mo
     args = ["judge", "--preview", str(seed), "--root", str(bank)]
     assert crossover_prescriber.main(args) == 0
     single = json.loads(capsys.readouterr().out)
+    assert single["sections"] == ["room"]
+    assert json_fingerprint(single["preview"]) == "74e81fef4dd21b6fb8ded742b45a49879f44b61e7337db8cc59b8aa3d3d4133a"
     out_dir = tmp_path / "variants"
     assert crossover_prescriber.main([*args, "--vary", "room.sides.mono[0].gain=-3,-6", "--out-dir", str(out_dir)]) == 0
     answer = json.loads(capsys.readouterr().out)

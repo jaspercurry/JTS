@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from itertools import product
@@ -36,6 +36,8 @@ from . import blend_prescription as blend
 from . import driver_prescription as driver
 from . import room_prescription as room
 from . import topology_prescription as topology
+from .capture_prediction import capture_prediction
+from .forward_model import ForwardModelError
 from .evidence_packet import packet_feature_classifications, packet_positional_evidence
 from .prescription_contract import contract_digests, contract_json, prescription_contracts
 from .refusal_copy import refusal_copy_for
@@ -235,47 +237,83 @@ def _section_payload(name: str, section: Mapping[str, Any], rationale: str,
     return section
 
 
-def preview_prescription_document(
-    document: Mapping[str, Any], *, round_dir: Path | None,
-) -> dict[str, Any]:
-    sections = document["sections"]
-    if "rear_calibration" in sections:
-        if "room" in sections:
-            raise PrescriptionDocumentRefused("prescription_malformed", "rear_calibration",
-                                              "preview takes one section: room or rear_calibration")
-        if round_dir is None:
-            raise PrescriptionDocumentRefused("evidence_unreadable", "rear_calibration",
-                                              "a rear preview needs --round <pair round>")
-        inputs = round_inputs(round_dir)
-        try:
-            preview = preview_rear_section(sections["rear_calibration"], inputs=inputs,
-                                           manifest=read_run_manifest(inputs))
-        except rear_calibration.RearCalibrationError as exc:
-            raise PrescriptionDocumentRefused("rear_calibration_invalid", "rear_calibration", str(exc)) from exc
-        except RoundCapturesRefused as exc:
-            raise PrescriptionDocumentRefused(exc.reason, "rear_calibration", str(exc), evidence=exc.detail) from exc
-        except (KeyError, TypeError, ValueError) as exc:
-            raise PrescriptionDocumentRefused("evidence_unreadable", "rear_calibration", str(exc)) from exc
-        return {"ok": True, "section": "rear_calibration", "preview": preview, "adopted": False, "banked": False}
-    raise PrescriptionDocumentRefused("prescription_malformed", "rear_calibration", "preview requires a rear_calibration section")
-
-
-def preview_room_document(document: Mapping[str, Any], *, base: BankedCandidate,
-                          evidence: PrescriptionEvidence) -> dict[str, Any]:
-    section = document["sections"].get("room")
-    if not section:
-        raise PrescriptionDocumentRefused("prescription_malformed", "room", "preview requires a room section")
-    contracts = prescription_contracts(**{**evidence.sources, "candidate": base.candidate.to_dict()})
+def _preview_emitted_graph(document: Mapping[str, Any], *, round_dir: Path,
+                           base: BankedCandidate, evidence: PrescriptionEvidence,
+                           capture_id: str) -> dict[str, Any]:
+    composed = judge_prescription_document(document, base=base, evidence=evidence)
+    section = "driver" if "driver" in document["sections"] else "blend"
     try:
-        preview = room.preview_room_prescription(
-            _section_payload("room", section, document["rationale"], contracts),
-            room_median=room.read_room_median(evidence.sources.get("room_median", {})),
-            room_median_sha256=evidence.room_median_sha256, round_id=evidence.round_id,
-            sides=SIDES_BY_LAYOUT[base.candidate.source_preset.channel_map.layout],
-        )
+        return capture_prediction(round_dir, capture_id=capture_id,
+                                  candidate=composed, basis_candidate=base.candidate)
+    except ForwardModelError as exc:
+        raise PrescriptionDocumentRefused(exc.refusal_reason, section, str(exc), evidence=exc.detail) from exc
+    except RoundCapturesRefused as exc:
+        raise PrescriptionDocumentRefused(exc.reason, section, str(exc), evidence=exc.detail) from exc
+
+
+_PREVIEW_ROWS: dict[str, tuple[set[str], Callable[..., dict[str, Any]]]] = {
+    "rear_calibration": ({"rear_calibration"}, preview_rear_section),
+    "room": ({"room"}, room.preview_room_prescription),
+    "emitted_graph": ({"driver", "blend"}, _preview_emitted_graph),
+}
+
+
+def preview_kind(document: Mapping[str, Any]) -> str:
+    sections = set(document["sections"])
+    if "bass" in sections:
+        raise PrescriptionDocumentRefused("prescription_malformed", "bass", "bass has no preview model")
+    for kind, (names, _) in _PREVIEW_ROWS.items():
+        if sections & names:
+            if sections <= names:
+                return kind
+            raise PrescriptionDocumentRefused("prescription_malformed", sorted(sections & names)[0],
+                                              "preview sections must use one model")
+    raise PrescriptionDocumentRefused("prescription_malformed", None, "no preview model for these sections")
+
+
+def preview_prescription_document(
+    document: Mapping[str, Any], *, round_dir: Path | None, base: BankedCandidate | None = None,
+    evidence: PrescriptionEvidence | None = None, capture_id: str | None = None,
+) -> dict[str, Any]:
+    kind = preview_kind(document)
+    _, preview_function = _PREVIEW_ROWS[kind]
+    sections = document["sections"]
+    payload: Any = document
+    kwargs: dict[str, Any]
+    try:
+        if kind == "rear_calibration":
+            if round_dir is None:
+                raise PrescriptionDocumentRefused("evidence_unreadable", kind, "a rear preview needs --round <pair round>")
+            inputs = round_inputs(round_dir)
+            payload = sections[kind]
+            kwargs = {"inputs": inputs, "manifest": read_run_manifest(inputs)}
+        else:
+            if kind == "emitted_graph" and (round_dir is None or capture_id is None):
+                raise PrescriptionDocumentRefused("evidence_unreadable", "driver" if "driver" in sections else "blend",
+                                                  "a driver/blend preview needs --round <diagnostic round>")
+            assert base is not None and evidence is not None
+            if kind == "room":
+                if not sections[kind]:
+                    raise PrescriptionDocumentRefused("prescription_malformed", kind, "preview requires a room section")
+                contracts = prescription_contracts(**{**evidence.sources, "candidate": base.candidate.to_dict()})
+                payload = _section_payload(kind, sections[kind], document["rationale"], contracts)
+                kwargs = {"room_median": room.read_room_median(evidence.sources.get("room_median", {})),
+                          "room_median_sha256": evidence.room_median_sha256, "round_id": evidence.round_id,
+                          "sides": SIDES_BY_LAYOUT[base.candidate.source_preset.channel_map.layout]}
+            else:
+                kwargs = {"round_dir": round_dir, "base": base, "evidence": evidence, "capture_id": capture_id}
+        preview = preview_function(payload, **kwargs)
     except room.RoomPrescriptionRefused as exc:
-        raise PrescriptionDocumentRefused(exc.reason, "room", exc.detail, evidence=exc.evidence) from exc
-    return {"ok": True, "section": "room", "preview": preview, "adopted": False, "banked": False}
+        raise PrescriptionDocumentRefused(exc.reason, kind, exc.detail, evidence=exc.evidence) from exc
+    except rear_calibration.RearCalibrationError as exc:
+        raise PrescriptionDocumentRefused("rear_calibration_invalid", kind, str(exc)) from exc
+    except RoundCapturesRefused as exc:
+        raise PrescriptionDocumentRefused(exc.reason, kind, str(exc), evidence=exc.detail) from exc
+    except PrescriptionDocumentRefused:
+        raise
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PrescriptionDocumentRefused("evidence_unreadable", kind, str(exc)) from exc
+    return {"ok": True, "section": kind, "sections": sorted(sections), "preview": preview, "adopted": False, "banked": False}
 
 
 def _refused_section(code: str) -> str | None:

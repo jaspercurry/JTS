@@ -16,9 +16,9 @@ import numpy as np
 from jasper.audio_measurement.alignment import fractional_shift
 from jasper.audio_measurement.gating import f_trusted_floor_hz, f_valid_floor_hz
 from jasper.audio_measurement.evidence_identity import json_fingerprint
-from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate, load_candidate_artifact
+from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
 from jasper.active_speaker.commissioning_admission import parse_running_graph
-from jasper.active_speaker.measured_crossover_candidate import compile_candidate_config
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, compile_candidate_config
 
 from .forward_model import ForwardModelError, PredictedSum, acceptance_block, predicted_minus_measured_db
 from .gate_sweep import N_FFT, PHASE_GATE_LEAD_MS, REFERENCE_RUNG_MS, gated_segment
@@ -162,13 +162,6 @@ def compare_transfer(basis: DiagnosticBasis, transfer: np.ndarray, measured: Dia
     return delta
 
 
-def _candidate(path: Path):
-    candidate = load_candidate_artifact(path)
-    if candidate is None:
-        raise OSError(f"{path}: no intact complete candidate")
-    return candidate
-
-
 def _recorded_graph(basis: DiagnosticBasis) -> Mapping[str, Any]:
     graph = (basis.document.get("provenance") or {}).get("graph") or {}
     config = graph.get("config")
@@ -206,8 +199,8 @@ def _metric_summary(delta: Mapping[str, Any] | None) -> dict | None:
 
 def capture_prediction(
     round_dir: Path, *, capture_id: str, window_ms: float | None = None,
-    candidate_path: Path | None = None, basis_candidate_path: Path | None = None,
-    candidate_root: Path | None = None, measured_round: Path | None = None,
+    candidate: MeasuredCrossoverCandidate | None = None,
+    basis_candidate: MeasuredCrossoverCandidate | None = None, measured_round: Path | None = None,
     measured_capture_id: str | None = None,
     expected_prediction_fingerprint: str | None = None,
     branch_roles: tuple[str, str] = DEFAULT_BRANCHES,
@@ -219,15 +212,13 @@ def capture_prediction(
     basis = read_diagnostic(round_dir, capture_id, REFERENCE_RUNG_MS if window_ms is None else window_ms, branch_roles=branch_roles)
     reconstruction_tf = predict_transfer(basis, {})
     reconstruction = compare_transfer(basis, reconstruction_tf, basis)
-    candidate = None
     changes = None
     channels: dict[str, int] = {}
-    if candidate_path is not None:
-        candidate = _candidate(candidate_path)
+    if candidate is not None:
         try:
             source_candidate = (
-                _candidate(basis_candidate_path) if basis_candidate_path is not None
-                else find_banked_candidate(basis.source["candidate_id"], root=candidate_root).candidate
+                basis_candidate if basis_candidate is not None
+                else find_banked_candidate(basis.source["candidate_id"]).candidate
             )
         except CandidateBankRefusal as exc:
             raise ForwardModelError("source candidate lookup failed", reason="forward_model_source_candidate_unavailable", detail={
@@ -254,7 +245,7 @@ def capture_prediction(
         basis = replace(basis, freqs_hz=basis.freqs_hz[valid], transfers={role: tf[valid] for role, tf in basis.transfers.items()})
         transfer = predict_transfer(basis, {role: tf[valid] for role, tf in changes.responses_by_role.items()})
     else:
-        if basis_candidate_path is not None or candidate_root is not None:
+        if basis_candidate is not None:
             raise ForwardModelError("source candidate lookup is only needed with --candidate-json")
         transfer = reconstruction_tf
     predicted = prediction_record(basis, transfer)

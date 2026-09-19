@@ -260,7 +260,6 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "candidates": lambda r: ["candidates", str(r.measured)],
     "cloud-binding": lambda r: ["cloud-binding", str(r.measured)],
     "speaker-fit": "answer-only fit inputs are covered in test_round_views_speaker_fit",
-    "forward-model": _NO_CAPTURES,
     "sweep": _NO_CAPTURES,
     "frequency": lambda r: ["frequency", str(r.measured)],
     "distortion": _NO_CAPTURES,
