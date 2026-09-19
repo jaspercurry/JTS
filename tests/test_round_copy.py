@@ -4,7 +4,8 @@
 import pytest
 
 from jasper.active_speaker.crossover_v2.refusal_copy import CAPTURE_QUALITY_REFUSAL_CODES, refusal_copy_for
-from jasper.active_speaker.round_copy import RUN_ENDED, round_lines, coverage_lines, pose_name, round_verdict
+from jasper.active_speaker.round_copy import PLACE_MICROPHONE, RUN_ENDED, round_lines, coverage_lines, pose_name, round_verdict
+from jasper.active_speaker.commissioning_coordinator import round_status
 
 
 @pytest.mark.parametrize("facts, pending, expected", [
@@ -62,6 +63,7 @@ def test_pre_round_lines_count_the_supplied_schedule():
         "3 repeats per driver, to measure the noise floor.",
         "A sweep that is too quiet can be taken again louder.",
         "Allow about 3 minutes, plus time for retakes."]
+    assert round_status({"run": facts, "join": {"mover": "human"}}) == round_lines(facts) + [PLACE_MICROPHONE]
 
 
 def test_post_round_coverage_keeps_packet_words():

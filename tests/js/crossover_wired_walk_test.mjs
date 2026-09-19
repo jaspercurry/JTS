@@ -175,7 +175,7 @@ render(envelope({
   position_current: batchCurrent(2),
 }));
 assert.equal(walk().hidden, false);
-assert.ok(/2.*3/.test(elements.get("crossover-walk-progress").textContent));
+assert.equal(elements.get("crossover-walk-progress").textContent, batchCurrent(2).prompt.progress);
 // The pose is the same spot for every config in the batch, so the headline the
 // household is holding the microphone against must not move under them.
 assert.equal(elements.get("crossover-walk-headline").textContent, PROMPT.title);
@@ -186,7 +186,7 @@ render(envelope({
   source: "wired",
   position_current: batchCurrent(3),
 }));
-assert.ok(/3.*3/.test(elements.get("crossover-walk-progress").textContent));
+assert.equal(elements.get("crossover-walk-progress").textContent, batchCurrent(3).prompt.progress);
 
 // -- the NEXT pose: its own hold, its own button, no leftover progress ------- //
 // The gate drops the executed entry when a fresh hold opens, so the batch's

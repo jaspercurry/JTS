@@ -172,7 +172,7 @@ class PositionGate:
                 {"id": "position_ready",
                  "label": (f"Microphone is {pose_name({'kind': screen[POSITION_KIND_KEY]})}" if screen.get(POSITION_KIND_KEY)
                            else ("Microphone is on the design axis (0°)" if target == 0
-                                 else f"Microphone is at {target:+d}°") + rise),
+                                 else f"Microphone is at {target:+d}°")) + rise,
                  "endpoint": POSITION_READY_ENDPOINT,
                  "body": {"index": index, "attempt": attempt, "degrees": target,
                           "vertical_deg": vertical}},

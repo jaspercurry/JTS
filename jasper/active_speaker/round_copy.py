@@ -10,16 +10,20 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping
 
+from .measurement_programs import POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT
+
 CHOOSE_PROGRAM = "Choose a pose set, then start the round."
 RUN_ENDED = "This run has ended. Choose a pose set to start the next one."
+PLACE_MICROPHONE = "Place the microphone. Confirm it is placed to play this pose's sweeps."
 
 
 def pose_name(pose: Mapping[str, Any]) -> str:
-    from .crossover_v2.frequency_view import position_label  # lazy: keeps the CLI parser numpy-free
-
-    placement = {"behind": "behind the speaker", "close": "close to the speaker", "seat": "at the seat"}.get(pose.get("kind"))
+    placement = {POSE_KIND_BEHIND: "behind the speaker", POSE_KIND_CLOSE: "close to the speaker",
+                 POSE_KIND_SEAT: "at the seat"}.get(pose.get("kind"))
     if placement:
         return placement
+    from .crossover_v2.frequency_view import position_label  # lazy: only bearing poses need angle words; keeps the CLI parser numpy-free
+
     label = position_label({"position_deg": pose.get("deg", 0), "vertical_deg": pose.get("elevation_deg", 0)})
     return f"{pose['kind']}: {label}" if pose.get("kind") else label
 
@@ -63,7 +67,7 @@ def round_lines(facts: Mapping[str, Any], *, pending: bool = False) -> list[str]
                   f"Allow about {math.ceil(facts['estimated_seconds'] / 60)} minutes, plus time for retakes."]
     if facts.get("pose") and facts.get("pose_details"):
         if pending:
-            lines += [pose_line(facts), "Place the microphone. Confirm it is placed to play this pose's sweeps."]
+            lines += [pose_line(facts), PLACE_MICROPHONE]
         elif facts.get("role"):
             kind = " preparation" if facts.get("sweep_kind") == "pilot" else ""
             lines.append(f"Pose {facts['pose']} of {facts['poses']}, sweep {facts['sweep']} of {counts[facts['pose'] - 1]}: "
@@ -81,7 +85,7 @@ def round_lines(facts: Mapping[str, Any], *, pending: bool = False) -> list[str]
         lines.append(f"Pose {facts['retake_pose']}, {sweep}: {reason} Taking it again{louder}.")
     if facts.get("level_raise_dbfs") is not None:
         lines.append(f"Raising the sweep level to {facts['level_raise_dbfs']:g} dBFS.")
-    return lines
+    return lines + ([PLACE_MICROPHONE] if pending and not facts.get("pose") else [])
 
 
 def measured_line(count: int) -> str:

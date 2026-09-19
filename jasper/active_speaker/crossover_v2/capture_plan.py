@@ -1245,9 +1245,7 @@ def position_screen_keys(
 ) -> dict[str, str]:
     """One pose as the TARGET the gate reads back off an entry.
 
-    The only writer of :data:`POSITION_DEG_KEY` and its companions, so a
-    gated entry built anywhere (a plan entry, a standalone walk's take) states
-    its target in one vocabulary. ``None`` is the design axis.
+    Shares :data:`POSITION_DEG_KEY` and :data:`POSITION_ROLE_KEY` with ``angle_capture._screen_policy``; ``None`` is the design axis.
     """
     degrees = position_angle_deg(prompt) if prompt is not None else 0
     vertical = position_elevation_deg(prompt) if prompt is not None else 0
