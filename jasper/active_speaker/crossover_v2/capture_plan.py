@@ -1184,6 +1184,7 @@ def _entry_advance(shape: V2PlanShape | None) -> dict[str, str]:
 #: vertical stops sit at 0° bearing and would otherwise publish as design-axis
 #: captures.
 POSITION_DEG_KEY = "position_deg"
+POSITION_KIND_KEY = "position_kind"
 POSITION_VERTICAL_DEG_KEY = "position_vertical_deg"
 POSITION_ROLE_KEY = "position_role"
 POSITION_BATCH_START_KEY = "position_batch_start"
@@ -1217,7 +1218,7 @@ def pose_batch_screens(
                 POSITION_BATCH_START_KEY: str(indexes[offsets[0]]),
                 POSITION_BATCH_SIZE_KEY: str(len(offsets)),
                 POSITION_BATCH_CONFIG_KEY: str(ordinal),
-                "progress": f"Config {ordinal} of {len(offsets)} — keep the mic still.",
+                "progress": f"Measurement {ordinal} of {len(offsets)} at this position — keep the mic still.",
             }
     return screens
 
@@ -1244,9 +1245,7 @@ def position_screen_keys(
 ) -> dict[str, str]:
     """One pose as the TARGET the gate reads back off an entry.
 
-    The only writer of :data:`POSITION_DEG_KEY` and its two companions, so a
-    gated entry built anywhere (a plan entry, a standalone walk's take) states
-    its target in one vocabulary. ``None`` is the design axis.
+    Shares :data:`POSITION_DEG_KEY` and :data:`POSITION_ROLE_KEY` with ``angle_capture._screen_policy``; ``None`` is the design axis.
     """
     degrees = position_angle_deg(prompt) if prompt is not None else 0
     vertical = position_elevation_deg(prompt) if prompt is not None else 0
@@ -1255,6 +1254,7 @@ def position_screen_keys(
         POSITION_DEG_KEY: str(degrees),
         **({POSITION_VERTICAL_DEG_KEY: str(vertical)} if vertical else {}),
         POSITION_ROLE_KEY: role,
+        **({POSITION_KIND_KEY: prompt.kind} if prompt is not None and prompt.kind != POSE_KIND_BEARING else {}),
     }
 
 

@@ -274,6 +274,7 @@ def _pending_payload(kind: CaptureKind) -> dict[str, Any]:
     return {"status": "awaiting_join", "kind": kind.label, "session_id": kind.session_id,
             "url": "/sound/speaker/crossover/", "first_prompt": dict(kind.join_entry.screen),
             "join": kind.position_gate.invitation(kind.join_entry) if kind.position_gate else None,
+            "run": kind.position_gate.published().get("run") if kind.position_gate else None,
             "index": 1, "attempt": 1}
 
 

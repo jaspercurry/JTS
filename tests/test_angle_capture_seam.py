@@ -28,6 +28,7 @@ import json
 from dataclasses import replace
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -1113,6 +1114,23 @@ def test_a_seat_stop_is_stated_from_the_head_not_the_mark() -> None:
         assert geometry.seat_offset_m == pose.seat_offset_m
 
 
+@pytest.mark.parametrize("elevation", [0, 10])
+def test_position_gate_names_the_behind_pose_without_changing_the_action_body(elevation):
+    request = ac.request_for_program(mp.program("rear", "pair_behind"), candidates=("rear-candidate",))
+    front, _, behind, _ = ac.resolve_request(request)
+    gate = PositionGate()
+    actions = [gate.invitation(SimpleNamespace(screen={**capture_plan.position_screen_keys(stop.prompt),
+               capture_plan.POSITION_VERTICAL_DEG_KEY: str(elevation)}))["actions"][0]
+               for stop in (front, behind)]
+    assert [action["id"] for action in actions] == ["position_ready", "position_ready"]
+    assert actions[0]["label"] != actions[1]["label"]
+    assert actions[0]["body"] == actions[1]["body"] == {
+        "index": 1, "attempt": 1, "degrees": 0, "vertical_deg": elevation,
+    }
+    if elevation:
+        assert all(action["label"].endswith(capture_plan.elevation_clause(elevation)) for action in actions)
+
+
 def test_a_close_stop_is_a_bearing_at_its_own_distance() -> None:
     """The close reference is on the design axis, at a standoff it declares."""
     stop, = ac.resolve_request(ac.request_for_program(mp.program("close", "spot")))
@@ -1253,6 +1271,8 @@ def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
     for offset, entry in enumerate(entries):
         assert entry.screen[POSITION_BATCH_CONFIG_KEY] == str(offset % 2 + 1)
         assert entry.screen[POSITION_BATCH_SIZE_KEY] == "2"
+        assert entry.screen[POSITION_BATCH_START_KEY] == str(plan.entries.index(entry) - offset % 2 + 1)
+        assert str(offset % 2 + 1) in entry.screen["progress"] and "2" in entry.screen["progress"]
         assert entry.screen["auto_advance"] == (capture_plan.AUTO_ADVANCE_TAP if offset % 2 == 0 else capture_plan.AUTO_ADVANCE_COUNTDOWN)
     assert len({e.screen[POSITION_BATCH_START_KEY] for e in entries}) == program.mic_move_count
 
