@@ -55,6 +55,7 @@ from .restore_wait import resilient_restore
 from .measurement_programs import BRANCH_PAIR_DRIVERS, POSE_KIND_BEARING, PURPOSE_SPEAKER
 from .crossover_v2.programs import predictive_program_for_spec
 from .run_manifest import RunManifest
+from .round_copy import PLACE_MICROPHONE
 
 from jasper.audio_measurement.calibration import resolve_mic_sensitivity
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
@@ -535,7 +536,7 @@ async def _run(
                         "budget": ledger.to_payload(), "sweep": before + 1}
             entry = item.entry
             if retry and retry.next == "fix_and_retake" and retry.fault and entry:
-                entry = SimpleNamespace(screen={**entry.screen, "body": REASON_REGISTRY[retry.fault].message})
+                entry = SimpleNamespace(screen={**entry.screen, "body": f"{REASON_REGISTRY[retry.fault].message} {PLACE_MICROPHONE}"})
             take_started: float | None = None
             try:
                 if signals.stop.is_set():
