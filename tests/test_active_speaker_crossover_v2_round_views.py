@@ -31,6 +31,8 @@ from jasper.active_speaker.crossover_v2.round_views import (
     agreement_table,
     audibility_co_metrics,
     cloud_binding_view,
+    default_agreement_lo_hz,
+    directivity_view,
     entry_state_grade,
     frozen_reference_grade,
     BankedRound,
@@ -1067,7 +1069,7 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     missing = rows["directivity.json"]
     assert missing["present"] is False
     assert missing["bytes"] is None
-    assert missing["produced_by"] == f"jasper-round-views directivity {round_dir}"
+    assert missing["produced_by"] == f"jasper-round-views per-seat {round_dir} --include directivity"
     assert missing["producer_needs_more_than_this_round"] is False
     assert missing["path"] == str(round_dir / "directivity.json")
     # The producer it named writes the artifact it named as missing.
@@ -1475,20 +1477,11 @@ def test_entry_grades_the_only_round_shape_that_banks_an_entry_baseline(tmp_path
     [
         pytest.param(["per-seat"], id="per_seat"),
         pytest.param(["repeat"], id="repeat"),
-        pytest.param(["agreement"], id="agreement"),
-        pytest.param(["co-metrics"], id="co_metrics"),
     ],
 )
 def test_the_position_graded_views_still_refuse_a_round_with_no_cloud_group(
     tmp_path, capsys, argv,
 ):
-    """Relaxing the LOADER must not make the four position views answer.
-
-    Each of these grades cloud seats against the round's own spec, and a
-    stage-1 round banked neither. The refusal moved to the view that requires
-    them; what a caller must never get is an empty table that reads as a
-    graded round with nothing wrong in it.
-    """
     from jasper.cli import round_views as cli
 
     round_dir = bank_measure_round(tmp_path)
@@ -1837,7 +1830,7 @@ def test_the_cli_counts_an_unevaluable_band_apart_from_a_failing_one(tmp_path, c
 #: fixture drives them all, so the ANSWER's shape is pinned once here rather
 #: than re-asserted verb by verb.
 _SINGLE_ROUND_VIEWS = (
-    "entry", "per-seat", "agreement", "co-metrics", "directivity",
+    "entry", "per-seat",
     "cloud-binding", "sweep --scope verdict", "frequency", "inventory",
 )
 
@@ -2068,68 +2061,6 @@ def test_audibility_co_metrics_discloses_an_absent_on_axis_position(tmp_path):
 
     assert result.on_axis is None
     assert result.on_axis_reason
-
-
-def test_cli_co_metrics_writes_the_result(tmp_path):
-    from jasper.cli.round_views import main
-
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    rc = main(["co-metrics", str(round_dir)])
-    assert rc == 0
-    payload = json.loads((round_dir / "audibility_co_metrics.json").read_text())
-    assert payload["on_axis"]["nbd_db"] == pytest.approx(0.0, abs=1e-9)
-    assert payload["on_axis"]["sm_r2"] == pytest.approx(1.0, abs=1e-9)
-    assert payload["pooled_window"] is None
-    assert payload["pooled_window_reason"]
-
-
-# --------------------------------------------------------------------------- #
-# measured per-angle directivity (#3865)
-# --------------------------------------------------------------------------- #
-
-
-def test_cli_directivity_writes_the_per_angle_table(tmp_path):
-    """Three bearings through ``main``, and the band split adds back up.
-
-    ``d_i = level_offset_db + shape_i`` is the whole contract of the split, so
-    it is checked at the bin the band itself named as its worst.
-    """
-    from jasper.cli.round_views import main
-
-    round_dir = _make_round_dir(
-        tmp_path, "r1",
-        position_curves={
-            "cloud_verify_02": ("onax", _flat_curve()),
-            "cloud_verify_04": ("offax", _flat_curve(offset_db=-3.0, ripple_db=1.0)),
-            "cloud_verify_06": ("offax", _flat_curve(offset_db=-6.0)),
-        },
-        position_degrees={
-            "cloud_verify_02": 0.0, "cloud_verify_04": 30.0, "cloud_verify_06": 45.0,
-        },
-    )
-
-    assert main(["directivity", str(round_dir)]) == 0
-
-    table = json.loads((round_dir / "directivity.json").read_text())["directivity"]
-    assert table["evaluable"] is True
-    assert table["angles_recorded"] is True
-    assert table["reference_position_ids"] == ["cloud_verify_02"]
-    assert [row["degrees"] for row in table["rows"]] == [0.0, 30.0, 45.0]
-
-    flat_off_axis = next(row for row in table["rows"] if row["degrees"] == 45.0)
-    assert flat_off_axis["level_offset_db"] == pytest.approx(-6.0, abs=1e-9)
-
-    freqs = np.asarray(table["freqs_hz"], dtype=float)
-    rippled = next(row for row in table["rows"] if row["degrees"] == 30.0)
-    assert len(rippled["bands"]) == len(flat_spec.SPEC_BANDS)
-    for band in rippled["bands"]:
-        assert band["evaluable"] is True
-        worst = int(np.argmin(np.abs(freqs - band["shape_max_hz"])))
-        assert rippled["normalized_db"][worst] == pytest.approx(
-            band["level_offset_db"] + band["shape_max_db"], abs=1e-9,
-        )
 
 
 # --------------------------------------------------------------------------- #
@@ -2834,7 +2765,7 @@ def test_findings_answers_a_round_that_banked_none_rather_than_refusing(
 
 
 @pytest.mark.parametrize("has_verify,has_axis", [(True, True), (False, True), (False, False)])
-def test_selected_seat_views_share_preparation_and_keep_standalone_results(
+def test_selected_seat_views_share_preparation_and_write_artifact_payloads(
     tmp_path, monkeypatch, capsys, has_verify, has_axis,
 ):
     from jasper.cli.round_views import main, seats
@@ -2845,10 +2776,19 @@ def test_selected_seat_views_share_preparation_and_keep_standalone_results(
     })
     if has_verify:
         _bank_verify_measured(round_dir, measured_db=_flat_curve(ripple_db=1))
-    expected = {}
-    for view in ("per-seat", "agreement", "directivity", "co-metrics"):
-        assert main([view, str(round_dir)]) == 0
-        expected[view] = json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())
+    banked = load_banked_round(round_dir)
+    curves = per_seat_curves(banked, verify_pose_curve(banked).curve)
+    lo = default_agreement_lo_hz(banked)
+    expected = {
+        "agreement": {
+            "round_dir": str(round_dir), "banked": True,
+            "seats": [seat.position_id for seat in curves], "swept_band_hz": [lo, 16000.0],
+            "feature_db": 0.4, "testify_db": 0.4,
+            "features": [row.to_dict() for row in agreement_table(curves, GRID, lo_hz=lo, hi_hz=16000.0)],
+        },
+        "directivity": {"round_dir": str(round_dir), "banked": True, "directivity": directivity_view(banked).to_dict()},
+        "co-metrics": audibility_co_metrics(banked).to_dict(),
+    }
     calls = {}
     for name in ("_load_round", "verify_pose_curve", "per_seat_curves"):
         original = getattr(seats, name)
@@ -2860,7 +2800,10 @@ def test_selected_seat_views_share_preparation_and_keep_standalone_results(
         "per-seat", str(round_dir), "--include", "agreement", "directivity", "co-metrics",
     ]) == 0
     results = json.loads(capsys.readouterr().out)["results"]
-    assert {view: json.loads(Path(row["out"]).read_text()) for view, row in results.items()} == expected
+    assert {view: json.loads(Path(results[view]["out"]).read_text()) for view in expected} == expected
+    assert [Path(results[view]["out"]).name for view in expected] == [
+        "agreement.json", "directivity.json", "audibility_co_metrics.json",
+    ]
     assert calls == {"_load_round": 1, "verify_pose_curve": 1, "per_seat_curves": 1}
     for row in results.values():
         assert row["sources"]["bundle"] == str(round_dir / "bundle/sess1")
@@ -2928,7 +2871,7 @@ def test_inventory_commands_preserve_path_tokens_and_required_inputs(tmp_path, c
     assert main(["inventory", str(round_dir)]) == 0
     rows = {row["artifact"]: row for row in json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())["artifacts"]}
     command = shlex.split(rows["directivity.json"]["next_command"])
-    assert command == ["jasper-round-views", "directivity", str(round_dir)]
+    assert command == ["jasper-round-views", "per-seat", str(round_dir), "--include", "directivity"]
     assert main(command[1:]) == 0
     assert (round_dir / "directivity.json").is_file()
     distortion = rows["harmonic_distortion.json"]

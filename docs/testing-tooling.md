@@ -865,14 +865,11 @@ jasper-round-views entry <round-dir>
 jasper-round-views frozen <baseline-round-dir> <target-round-dir>
 
 # every banked position plus the VERIFY pose on one comparable basis (each curve
-# as its own deviation from its own median level)
-jasper-round-views per-seat <round-dir>
+# as its own deviation from its own median level), plus feature testimony
+jasper-round-views per-seat <round-dir> --include agreement
 
 # session-to-session spread of the pooled honest figures — the stop criterion
 jasper-round-views repeat <round-dir> [<round-dir> ...]
-
-# per-seat sign/magnitude testimony for every feature in the trusted sweep
-jasper-round-views agreement <round-dir>
 ```
 
 - **Input shapes.** Every subcommand reads either a *banked round directory*

@@ -31,8 +31,7 @@ class ViewArtifact(NamedTuple):
     ``in_artifact_dir`` marks the views the evidence PACKET reads: those file
     into the round's own artifact directory, the only path that reader looks
     at, rather than beside the round where an operator reads the rest.
-    ``producer`` names the command for an artifact this tool does NOT write;
-    ``None`` means the key is the subcommand that writes it.
+    ``producer`` overrides the command; otherwise the key names the subcommand.
     ``bookkeeping`` names the purposes whose round publishes this view by
     itself, in :data:`BOOKKEEPING_ORDER`, through ``builder`` — this package's
     ``<module>.<function>`` answering ``(payload, provenance fields)``;
@@ -52,11 +51,7 @@ class ViewArtifact(NamedTuple):
     @property
     def per_set(self) -> bool: return "<set-id>" in self.takes
 
-#: The artifacts a round carries, declared once: the subcommands take their
-#: default output path from this table and ``inventory`` names each one's
-#: producer from the same one, so there is no second list to drift.
-#: ``repeat-floor`` is absent because it publishes to ``--install`` or
-#: ``--out`` instead of beside the round.
+#: ``repeat-floor`` publishes to ``--install`` or ``--out``, not beside the round.
 ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "inventory": ViewArtifact("inventory.json", TAKES_SET, bookkeeping=(PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR), builder="round_bookkeeping.inventory"),
     "run-manifest": ViewArtifact(RUN_MANIFEST_FILENAME, in_artifact_dir=True, producer="plan_run.run_plan"),
@@ -68,9 +63,9 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "per-seat": ViewArtifact("per_seat.json", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
     "repeat": ViewArtifact("repeatability.json", TAKES_BEFORE_ANOTHER),
     "candidates": ViewArtifact("candidates.json"),
-    "agreement": ViewArtifact("agreement.json", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
-    "co-metrics": ViewArtifact("audibility_co_metrics.json", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
-    "directivity": ViewArtifact("directivity.json", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
+    "agreement": ViewArtifact("agreement.json", (TAKES_THIS_ROUND, "--include", "agreement"), producer="jasper-round-views per-seat", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
+    "co-metrics": ViewArtifact("audibility_co_metrics.json", (TAKES_THIS_ROUND, "--include", "co-metrics"), producer="jasper-round-views per-seat", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
+    "directivity": ViewArtifact("directivity.json", (TAKES_THIS_ROUND, "--include", "directivity"), producer="jasper-round-views per-seat", purposes=(PURPOSE_ROOM, PURPOSE_SPEAKER)),
     "cloud-binding": ViewArtifact("cloud_binding.json", purposes=(PURPOSE_SPEAKER,)),
     "forward-model": ViewArtifact("forward_model.json", TAKES_SET, purposes=(PURPOSE_SPEAKER,)),
     "sweep --scope verdict": ViewArtifact("spec_gate_sensitivity.json", TAKES_SET),

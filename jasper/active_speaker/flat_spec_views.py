@@ -642,16 +642,14 @@ def directivity_table(
     *,
     reference_role: str,
 ) -> DirectivityTable:
-    """Every position's curve normalised to the on-axis reference, as a
-    table: departure from the per-bin power mean of the ``reference_role``
+    """Departure from the per-bin power mean of the ``reference_role``
     positions, split per graded band into a level difference and residual
     shape. A shared trim changes neither. All positions
     must share one frequency axis; a mismatched one is a not-evaluated
     row, never resampled. No ``reference_role`` position leaves the table
     ``evaluable=False`` with every position still listed (UNSAMPLED, never
     an implied flat reference).
-
-    Consumed by ``jasper-round-views directivity`` (#3865).
+    Consumed by ``jasper-round-views per-seat <round-dir> --include directivity``.
     """
     reference = [p for p in positions if p.role == reference_role]
     if not reference:

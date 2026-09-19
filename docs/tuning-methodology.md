@@ -84,10 +84,10 @@ to sneak in a new corner with old protection limits.
 
 For a different base design, consider declared protection first, then off-axis
 response and driver spacing. Directivity is how output changes with angle.
-`directivity` can compare measured coverage; missing vertical poses cannot
-establish vertical behavior. Use the round's speed of sound in wavelength and
-path-delay calculations. A geometry estimate is a prior to test, not acoustic
-proof or a veto on a safe experiment.
+`per-seat <round-dir> --include directivity` compares measured coverage.
+Missing vertical poses cannot establish vertical behavior. Use the round's
+speed of sound for wavelength and path delay. Geometry estimates guide tests;
+they are not acoustic proof or a veto on safe experiments.
 
 ## 4. Time alignment
 
@@ -191,9 +191,8 @@ not solve the target problem.
 filters address shape. Read `graded_lo_hz` and `graded_hi_hz`, not nominal band
 edges. `evaluable=false` means not graded, never passed.
 
-Compare on-axis and relevant off-axis sums for the stated goal. `co-metrics`
-provides another view of broad smoothness; it is advisory, not a compulsory
-single score. Label predictions, measured changes, and interpretation separately.
+`per-seat <round-dir> --include co-metrics` compares on-axis and off-axis
+smoothness; it is advisory. Label predictions, measurements, and interpretation.
 If several parts changed together, their individual causes are unresolved.
 
 ## 8. Voicing and listening
