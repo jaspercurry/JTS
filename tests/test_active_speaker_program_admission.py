@@ -18,7 +18,9 @@ import yaml
 from scipy.io import wavfile
 
 from jasper.active_speaker import camilla_yaml, commission_wiring, design_draft
+from jasper.active_speaker.commission_wiring import resolve_capture_preset
 from jasper.active_speaker.crossover_v2 import conductor_context
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.output_topology import measurement_target_id
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
@@ -58,6 +60,7 @@ from tests.test_rear_output_foundation import _rear_document, _rear_pair
 def _profile_and_targets(
     *,
     rear: bool = False,
+    passive: bool = False,
     layout: str = "mono",
     woofer_peak: float = 0.0,
     tweeter_peak: float = -65.0,
@@ -70,7 +73,9 @@ def _profile_and_targets(
     """Asymmetric caps by default (woofer 0.0, tweeter -65): the realistic
     2-way shape whose ~65 dB spread is exactly what the (fixed) session-volume
     derivation must handle — symmetric fixtures masked the min/max inversion."""
-    topology = _rear_pair(layout)[1] if rear else mono_output_topology()
+    topology = _rear_pair(layout)[1] if rear else mono_output_topology(
+        mode="full_range_passive" if passive else "active_2_way",
+    )
 
     def _limits(peak):
         return {
@@ -125,8 +130,9 @@ def _profile_and_targets(
                 },
             },
     ]
-    # One entry per PHYSICAL target; a rear woofer shares its role's model and
-    # declared limits (ADR-0316 / plan 6.3) but owns its own target id.
+    if passive:
+        drivers = [{**drivers[0], "role": "full_range"}]
+    # See ADR-0316: rear variants share limits but own a target id.
     by_role = {entry["role"]: entry for entry in drivers}
     drivers = [{**by_role[target["role"]], "target_id": target["target_id"]}
                for target in active_driver_targets(topology)]
@@ -146,6 +152,38 @@ def _roles(woofer_band=(500.0, 1600.0), tweeter_band=(1600.0, 10_000.0)):
         RoleBand("woofer", 0, FrequencyBand(*woofer_band)),
         RoleBand("tweeter", 1, FrequencyBand(*tweeter_band)),
     ]
+
+
+@pytest.mark.parametrize("scope", ["candidate", "timing"])
+def test_way1_summed_full_band_is_admitted(tmp_path, scope):
+    topology, safety, targets = _profile_and_targets(
+        passive=True, woofer_floor=30, woofer_highpass=30, max_sweep_duration_s=4,
+    )
+    preset = resolve_capture_preset(topology)
+    profile = MeasurementGraphProfile(
+        preset, topology, {"full_range": 0}, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets),
+    )
+    candidate = MeasuredCrossoverCandidate(
+        program_id="way1", analysis={"source": "prescribed"}, source_preset=preset,
+        role_attenuations_db={"full_range": 0.0},
+    )
+    program = SessionExcitation(
+        (RoleBand("full_range", 0, FrequencyBand(20, 20000)),), {"full_range": 0},
+        -20, None, {"full_range": 4}, (20, 20000),
+    ).verify_program()
+    wav = tmp_path / "way1.wav"
+    write_program_wav(wav, program)
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=compile_tuning_graph(profile, candidate=candidate, scope=scope),
+        topology=topology, safety_profile=safety, role_targets=targets, session_volume_db=-20,
+        graph_evidence=measurement_graph_evidence(scope=scope, candidate=candidate),
+    )
+    assert admission.allowed
+    assert admission.refusals == ()
+    assert {segment.role for segment in admission.segments} == {"full_range"}
+    sweep = program.segment("sweep_verify")
+    assert (sweep.f1_hz, sweep.f2_hz) == (20, 20000)
 
 
 def _measure_program(session_volume_db, roles=None, gains=None, courtesy_prelude=False):

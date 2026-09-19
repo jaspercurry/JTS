@@ -11,7 +11,7 @@ import pytest
 from scipy.io import wavfile
 
 from jasper.active_speaker.angle_capture import request_for_program
-from jasper.active_speaker.bass_stimulus import BASS_PASSES, build_bass_program
+from jasper.active_speaker.bass_stimulus import BASS_PASSES, BassStimulusRefused, build_bass_program
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
@@ -27,7 +27,8 @@ from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import ProgramAdmissionRefusal, readmit_summed_program_from_wav
 from jasper.audio_measurement.distortion import required_pre_guard_s, segment_sweep_meta
-from jasper.audio_measurement.program import KIND_PILOT, KIND_SUMMED_SWEEP, _finalize, render_program_pcm, write_program_wav
+from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.program import KIND_PILOT, KIND_SUMMED_SWEEP, RoleBand, _finalize, render_program_pcm, write_program_wav
 from jasper.audio_measurement.program_analysis import MeasurementGeometry, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, analyze_program_capture
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.repeated_sweep import align_summed_capture, average_summed_capture, repeat_summed_program, sweep_ambient_id
@@ -57,6 +58,33 @@ def _bass(fixture, **kwargs):
     _, safety, targets, excitation = fixture
     return build_bass_program(excitation, program("bass").stimulus,
                               safety_profile=safety, role_targets=targets, **kwargs)
+
+
+@pytest.mark.parametrize("floor", [20, 30])
+def test_way1_bass_uses_the_full_range_declared_floor(floor):
+    topology, safety, targets = _profile_and_targets(
+        passive=True, woofer_floor=floor, woofer_peak=-8, max_sweep_duration_s=4,
+    )
+    excitation = SessionExcitation(
+        (RoleBand("full_range", 0, FrequencyBand(20, 20000)),), {"full_range": -8},
+        -20, None, {"full_range": 4}, (20, 20000),
+    )
+    bass = _bass((topology, safety, targets, excitation))
+    assert {(s.f1_hz, s.f2_hz) for s in bass.segments if s.kind == KIND_SUMMED_SWEEP} == {(floor, 1100)}
+
+
+def test_two_way_bass_program_is_unchanged(bass_fixture):
+    assert _bass(bass_fixture).program_id == "2aa938eac1f5e3cf558383d247eba5d045c196e402ba4cd603add3635964912b"
+
+
+@pytest.mark.parametrize("roles", [(), ("full_range",), ("woofer", "tweeter")])
+def test_bass_without_a_lowest_main_target_is_refused(bass_fixture, roles):
+    excitation = replace(bass_fixture[3], roles=tuple(RoleBand(role, i, FrequencyBand(20, 20000))
+                                                   for i, role in enumerate(roles)))
+    with pytest.raises(BassStimulusRefused) as exc:
+        build_bass_program(excitation, program("bass").stimulus,
+                           safety_profile=bass_fixture[1], role_targets={})
+    assert exc.value.code == "bass_stimulus_targets_missing"
 
 
 def _replay(bass, raw, tmp_path, monkeypatch):
