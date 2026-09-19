@@ -246,7 +246,7 @@ The loop of record is one pair take, previews, one trial.
    --wait` plays, at each bearing, the front woofer alone, the rear woofer
    alone and both, on one clock, with the rear stage cleared. Read its
    `packet["rear"][].pair.positions[*]`: `superposition_residual_db` (the
-   trust number — the position predicts well when it is small),
+   trust number),
    `arrival_gap` (the measured rear-minus-front gap and its confidence) and
    `rear_polarity`. This round is the model; everything after it is
    computation until the trial.
@@ -335,8 +335,10 @@ the cabinet, halfway to the wall at woofer height. Its `behind` position is
 a peer row in the pair block and in every preview: there `change_db` in the
 cancellation band is the predicted wall-ward null, and a real cardioid
 drives it negative while the front positions hold their figures. Read
-`superposition_residual_db` behind the cabinet first; a large value there
-means the prediction cannot be trusted at that position.
+`bands[].superposition_residual_db` in the bands your document acts on
+(the cancellation band), not only the whole-band scalar.
+A low band below the first room mode can carry rumble without hurting
+the model in the cancellation band.
 
 To judge the cardioid by ear, flip between it and a fair "off". A rear-muted
 copy alone is not fair: the rear stage also changes the bass at the mic, so
