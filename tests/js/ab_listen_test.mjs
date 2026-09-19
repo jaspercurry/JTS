@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import { h, loadEsm, repoPath } from './_loader.mjs';
 let live = {percent: 50, muted: true};
+let refusal = null;
 const calls = [];
 const card = {children: [], replaceChildren(...nodes) { this.children = nodes; },
   addEventListener(_event, fn) { this.click = fn; }};
@@ -14,7 +15,11 @@ globalThis.__abTest = {
     applied_fingerprint: 'a', apply_path: '/apply', volume_step_db: 0.5,
     rounds: [{round_id: 'round', tunes: [
       {fingerprint: 'a', base: true, level_db: -20}, {fingerprint: 'b', level_db: -19}]}]},
-  postJSON: async (path, body) => { calls.push([path, body]); return {status: 'applied'}; }
+  postJSON: async (path, body) => {
+    calls.push([path, body]);
+    if (refusal && path === '/apply') throw Object.assign(new Error('refused'), {body: refusal});
+    return {status: 'applied'};
+  }
 };
 const {trimSteps, targetPercent, flipOrder, startKey, canStart, initAbListen} = await loadEsm(
   repoPath('deploy/assets/sound-profile/js/ab-listen.js'), {stripImports: true,
@@ -64,6 +69,12 @@ assert.equal(toggle().props.disabled, true);
 live.percent = 40;
 await click('flip');
 assert.deepEqual(calls.splice(0), [['/volume/set', {percent: 38}], ['/apply', {expected_candidate_fingerprint: 'b'}]]);
+refusal = {error: 'Refused.', next_action: {id: 'x', label: 'Measure again', href: '/x'}};
+live.percent = 38;
+await click('flip');
+refusal = null;
+assert.deepEqual(calls.splice(0), [['/apply', {expected_candidate_fingerprint: 'a'}]]);
+assert.deepEqual(nodes().find(n => n.tag === 'p.banner.banner--danger').children, ['Refused. Measure again']);
 live.percent = 35;
 await click('end');
 assert.deepEqual(calls.splice(0), [['/apply', {expected_candidate_fingerprint: 'a'}], ['/volume/set', {percent: 37}]]);
