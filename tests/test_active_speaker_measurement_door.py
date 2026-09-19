@@ -17,6 +17,7 @@ from jasper.web import correction_crossover_v2_evidence as v2evidence
 
 import asyncio
 from typing import Any
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,6 +29,7 @@ from jasper.active_speaker.crossover_v2.door import (
     measurement_door,
 )
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 from jasper.active_speaker.session_volume_plan import (
     SessionVolumePlan,
     live_measurement_session,
@@ -40,6 +42,13 @@ from tests.test_cli_measure import HOUSEHOLD_DB, FakeCam
 
 ENTRY_CONFIG = "entry.yml"
 VOLUME_STATE = "session_volume.json"
+
+
+@pytest.fixture(autouse=True)
+def applied_reference(monkeypatch):
+    candidate = MeasuredCrossoverCandidate(program_id="test", analysis={"measurement_status": "unmeasured"}, role_attenuations_db={"woofer": 0, "tweeter": 0}, source_preset=_preset())
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.door.status_banked_candidate",
+                        lambda *a, **kw: SimpleNamespace(candidate=candidate))
 
 
 @pytest.fixture
@@ -440,7 +449,7 @@ def test_the_wizard_emits_through_the_shared_home(tmp_path, monkeypatch, inverte
         topology=profile.topology, preset=profile.preset,
         role_channels=profile.role_channels,
         playback_device=profile.playback_device,
-        safety_profile={}, role_targets={}, session_volume_db=-20.0,
+        safety_profile={}, role_targets={}, session_volume_db=-20.0, roles=(),
         protection_sections_by_role=profile.protection_sections_by_role,
         program_for_phase=lambda phase: None,
     )

@@ -10,7 +10,6 @@ import hashlib
 import json
 import logging
 from contextlib import AbstractAsyncContextManager
-from functools import cached_property
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
@@ -107,11 +106,13 @@ class MeasurementSessionGraph:
         self,
         *,
         emit: EmitYaml,
+        level_reference_yaml: str,
         cam_factory: CamFactory,
         writer_lock: WriterLock,
         confirm_live: ConfirmLive,
         emit_scoped: EmitScopedYaml | None = None,
     ) -> None:
+        self.level_reference_yaml = level_reference_yaml
         self._emit = emit
         self._emit_scoped = emit_scoped
         self._scope = GRAPH_SCOPE_DRIVERS
@@ -205,13 +206,6 @@ class MeasurementSessionGraph:
         if self._installed_yaml is None:
             raise SessionGraphError("no measurement graph is installed")
         return self._submitted_yaml.get(self._installed_yaml, self._installed_yaml)
-
-    @cached_property
-    def level_reference_yaml(self) -> str:
-        from ..candidate_parts import baseline_candidate_id  # lazy: candidate parts imports measurement emit
-
-        assert self._emit_scoped is not None
-        return self._emit_scoped("candidate", baseline_candidate_id(), {})
 
     async def install(
         self,

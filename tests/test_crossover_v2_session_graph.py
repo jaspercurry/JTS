@@ -16,12 +16,19 @@ import asyncio
 import contextlib
 import hashlib
 import logging
+import json
+from unittest.mock import Mock
 from pathlib import Path
 
 import pytest
 import yaml
 
 from jasper.active_speaker import program_playback
+from jasper.active_speaker import baseline_profile, candidate_bank, candidate_parts
+from jasper.active_speaker.crossover_v2 import door
+from jasper.active_speaker.measurement_emit import MeasurementGraphRefused, compile_tuning_graph
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
+from tests.test_active_speaker_measurement_door import _profile
 from jasper.active_speaker.crossover_v2.composition import bind_program_playback_seams
 from jasper.active_speaker.crossover_v2.session_graph import (
     MeasurementSessionGraph,
@@ -74,7 +81,7 @@ def _graph(cam, *, tmp_path, emits=None, emit_scoped=None):
             cam.ops.append("unlock")
 
     graph = MeasurementSessionGraph(
-        emit=_emit,
+        emit=_emit, level_reference_yaml=GRAPH,
         cam_factory=lambda: cam,
         writer_lock=_lock,
         confirm_live=_confirm,
@@ -742,3 +749,37 @@ def test_an_unnameable_entry_graph_makes_no_comparison_at_all(tmp_path):
     assert banked == ""
     assert graph.entry_scope_fingerprint == ""
     assert graph.comparability_boundary is False
+
+
+@pytest.mark.parametrize("state", ["absent", "missing_artifact", "applied"])
+def test_level_reference_is_read_only_and_resolved_before_graph_install(tmp_path, monkeypatch, state):
+
+    profile = _profile()
+    candidate = MeasuredCrossoverCandidate(program_id="test", analysis={"measurement_status": "unmeasured"}, role_attenuations_db={"woofer": 0, "tweeter": 0}, source_preset=profile.preset)
+    artifact = tmp_path / "candidate.json"
+    if state == "applied":
+        artifact.write_text(json.dumps(candidate.to_dict()))
+    applied = None if state == "absent" else {
+        "status": "applied", "candidate_artifact_path": str(artifact),
+        "source": {"measured_candidate_fingerprint": candidate.fingerprint},
+    }
+    read = Mock(return_value=applied)
+    publish, migrate, cam = Mock(), Mock(), Mock()
+    monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", read)
+    monkeypatch.setattr(candidate_bank, "publish_authored_candidate", publish)
+    monkeypatch.setattr(candidate_parts, "_migrate_applied_candidate", migrate)
+    if state == "applied":
+        graph = door.bind_measurement_graph(profile, camilla_factory=cam, config_dir=tmp_path)
+        read.return_value = None
+        assert graph.level_reference_yaml == compile_tuning_graph(profile, candidate)
+        graph.graph_yaml()
+        assert graph.level_reference_yaml == compile_tuning_graph(profile, candidate)
+    else:
+        with pytest.raises(MeasurementGraphRefused) as refused:
+            door.bind_measurement_graph(profile, camilla_factory=cam, config_dir=tmp_path)
+        assert refused.value.code == "measurement_baseline_unavailable"
+        assert refused.value.__cause__.code == "composition_saved_tune_unavailable"
+    read.assert_called_once_with()
+    publish.assert_not_called()
+    migrate.assert_not_called()
+    cam.assert_not_called()

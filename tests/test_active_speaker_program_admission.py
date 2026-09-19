@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 from copy import deepcopy
 import logging
 from dataclasses import replace
@@ -54,7 +55,7 @@ from jasper.audio_measurement.program import (
     render_program_pcm,
     write_program_wav,
 )
-from tests._log_events import event_field_maps, event_records
+from tests._log_events import event_field_maps, event_fields, event_records
 from tests.active_speaker_fixtures import mono_output_topology, isolated_candidate_bank as isolated_candidate_bank
 from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, _trial_candidate
@@ -1306,7 +1307,7 @@ def test_a_measurement_program_graph_is_refused_by_its_own_name(tmp_path):
 @pytest.mark.parametrize("rear", [False, True])
 @pytest.mark.parametrize("fader", [-16.7, -23.0, -30.0])
 @pytest.mark.asyncio
-async def test_take_composer_uses_installed_scope_gain_and_all_programs_remain_admitted(tmp_path, rear, fader):
+async def test_take_composer_uses_installed_scope_gain_and_all_programs_remain_admitted(tmp_path, rear, fader, caplog):
     topology, safety, targets = _profile_and_targets(
         rear=rear, woofer_floor=30, woofer_upper=4000, tweeter_peak=0, max_sweep_duration_s=4)
     profile = MeasurementGraphProfile(
@@ -1325,7 +1326,9 @@ async def test_take_composer_uses_installed_scope_gain_and_all_programs_remain_a
                        safety_profile=safety, role_targets=targets)
     paths = []
     store = SimpleNamespace(bundle_dir=tmp_path, identify_artifact=lambda path: paths.append(path))
+    caplog.set_level(logging.INFO, logger="jasper.active_speaker.crossover_v2.composition")
     for phase, scope in [("check", "drivers"), ("measure", "drivers"), ("verify", "timing"), ("verify", "candidate")]:
+        caplog.clear()
         spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope,
                            candidate_id=candidate.fingerprint if scope != "drivers" else "")
         gain = scope_gains_db(graphs[scope], graphs["candidate"], excitation.roles, topology=topology)
@@ -1340,9 +1343,15 @@ async def test_take_composer_uses_installed_scope_gain_and_all_programs_remain_a
             program_for_spec=lambda spec, level: programs(spec, stimulus_dbfs=level),
             store=store, capture_session_id="level", cam_factory=lambda: None,
             config_dir=str(tmp_path), topology=topology, safety_profile=safety, role_targets=targets,
-            graph_yaml=lambda: graphs[scope], level_reference_yaml=lambda: graphs["candidate"], roles=excitation.roles)
+            graph_yaml=lambda: graphs[scope], level_reference_yaml=graphs["candidate"], roles=excitation.roles)
         played = await compose(spec=spec, level_db=fader)
         reference = programs(spec)
+        if phase != "measure":
+            fields = event_fields(caplog, "active_speaker.scope_level")
+            assert (fields["scope"], fields["phase"]) == (scope, phase)
+            assert ast.literal_eval(fields["scope_gains_db"]) == ({} if scope == "candidate" else gain)
+        else:
+            assert not event_records(caplog, "active_speaker.scope_level")
         if phase == "measure":
             assert reference.program_id == played.program.program_id
         for before, after in zip(reference.stimulus_segments(), played.program.stimulus_segments()):

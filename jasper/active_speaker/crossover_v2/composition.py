@@ -14,12 +14,16 @@ constructs the same engine and must not pull the web host in.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from functools import partial
 from itertools import count
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 
+from jasper.log_event import log_event
+
+from .journey import PHASE_CHECK
 from .playback_transaction import PlaybackTransaction
 from .program_transaction import (
     Compose, playback_observer,
@@ -31,6 +35,8 @@ from .session_seams import EngineSeams, RecordStore, VolumeClaim
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program import ExcitationProgram, RoleBand
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "bind_engine_seams",
@@ -186,8 +192,8 @@ def bind_program_composer(
     declared_sensitivities: Mapping[str, float] | None = None,
     before_play: Callable[[Any, Any, Any, str], Awaitable[None]] | None = None,
     graph_yaml: Callable[[], str],
-    level_reference_yaml: Callable[[], str] | None = None,
-    roles: Sequence[RoleBand] = (),
+    level_reference_yaml: str,
+    roles: Sequence[RoleBand],
     graph_evidence_for_spec: Callable[[Any], Mapping[str, Any]] | None = None,
 ) -> Compose:
     """Render each take once and bind admission, locked graph proof and playback.
@@ -209,14 +215,20 @@ def bind_program_composer(
         expected_graph = graph_yaml()
         if not expected_graph:
             raise ValueError("playback has no installed measurement graph")
-        if level_reference_yaml is not None:
-            from ..measurement_level import scope_gains_db  # lazy: numerical analysis at composition
+        from ..branch_peak import BranchPeakError  # lazy: numerical analysis at composition
+        from ..measurement_emit import MeasurementGraphRefused  # lazy: measurement runtime
+        from ..measurement_level import scope_gains_db  # lazy: numerical analysis at composition
 
+        try:
             gains = ({} if spec.graph_scope == "candidate" else scope_gains_db(
-                expected_graph, level_reference_yaml(), roles, topology=topology))
-            spec = replace(spec, scope_gains_db=gains)
+                expected_graph, level_reference_yaml, roles, topology=topology))
+        except BranchPeakError as exc:
+            raise MeasurementGraphRefused("measurement_scope_gain_unavailable", str(exc)) from exc
+        spec = replace(spec, scope_gains_db=gains)
         program = program_for_spec(spec, stimulus_dbfs)
         phase = spec.program_phase or program.phase
+        if phase == PHASE_CHECK or spec.graph_scope != GRAPH_SCOPE_DRIVERS:
+            log_event(logger, "active_speaker.scope_level", scope=spec.graph_scope, phase=phase, scope_gains_db=gains)
         wav_rel = (
             f"crossover_v2/{capture_session_id}/"
             f"{phase}_{next(ordinals):02d}_program.wav"

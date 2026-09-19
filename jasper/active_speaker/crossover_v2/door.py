@@ -15,10 +15,10 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, cast
 from jasper.log_event import log_event
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
-from ..candidate_bank import find_banked_candidate
+from ..candidate_bank import CandidateBankRefusal, find_banked_candidate, status_banked_candidate
 from ..measured_crossover_candidate import MeasuredCrossoverCandidate
 from ..measurement_emit import (
-    MeasurementGraphProfile, TuningGraphScope, compile_tuning_graph,
+    MeasurementGraphProfile, MeasurementGraphRefused, TuningGraphScope, compile_tuning_graph,
     emit_measurement_graph,
 )
 from ..restore_wait import resilient_restore
@@ -295,13 +295,16 @@ def bind_measurement_graph(
     """Bind neutral driver and complete tuning graphs to one session owner."""
     from jasper.dsp_apply import dsp_writer_lock
 
+    from ..baseline_profile import load_applied_baseline_profile_state  # lazy: baseline compilation imports the door
+
     from .composition import confirm_graph_is_live
     from .session_graph import MeasurementSessionGraph
 
     def emit_scoped(scope: str, candidate_id: str, branch_channels: Mapping[str, int]) -> str:
         selected = None
         if scope in CANDIDATE_SCOPES:
-            selected = candidate if candidate is not None else find_banked_candidate(candidate_id).candidate
+            selected = (reference if candidate_id == reference.fingerprint else
+                        candidate if candidate is not None else find_banked_candidate(candidate_id).candidate)
         return compile_tuning_graph(
             profile,
             scope=cast(TuningGraphScope, scope),
@@ -309,7 +312,18 @@ def bind_measurement_graph(
             branch_channels=branch_channels,
         )
 
+    try:
+        reference = candidate
+        if reference is None:
+            applied = load_applied_baseline_profile_state() or {}
+            fingerprint = (applied.get("source") or {}).get("measured_candidate_fingerprint", "")
+            reference = status_banked_candidate(fingerprint, applied_profile=applied).candidate
+        reference_yaml = emit_scoped("candidate", reference.fingerprint, {})
+    except (CandidateBankRefusal, OSError, ValueError) as exc:
+        raise MeasurementGraphRefused("measurement_baseline_unavailable", str(exc)) from exc
+
     graph = MeasurementSessionGraph(
+        level_reference_yaml=reference_yaml,
         emit=partial(emit_measurement_graph, profile),
         emit_scoped=emit_scoped,
         cam_factory=camilla_factory,

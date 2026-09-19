@@ -32,6 +32,7 @@ import math
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from jasper.bass_extension.dynamic_graph import PREFIX as DYNAMIC_BASS_PREFIX
 from jasper.json_fields import finite_float
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
 
@@ -55,14 +56,12 @@ _MODELLED_FILTER_TYPES = frozenset({"Biquad", "BiquadCombo", "Delay", "Gain", "L
 # Biquad shapes the shared RBJ evaluator implements; anything outside falls through to
 # that evaluator's `Peaking` default, so it refuses instead.
 _MODELLED_BIQUAD_TYPES = frozenset(
-    {"Lowpass", "Highpass", "Notch", "Lowshelf", "Highshelf", "Peaking"}
+    {"Lowpass", "Highpass", "Notch", "Lowshelf", "Highshelf", "Peaking", "Allpass"}
 )
 
-# BiquadCombo shapes branch_chain.crossover_response_complex realises.
-_MODELLED_COMBO_TYPES = {
-    "LinkwitzRileyHighpass": True,
-    "LinkwitzRileyLowpass": False,
-}
+_MODELLED_COMBO_TYPES = frozenset({
+    "LinkwitzRileyHighpass", "LinkwitzRileyLowpass", "ButterworthHighpass", "ButterworthLowpass",
+})
 
 class BranchPeakError(RuntimeError):
     """This graph or stimulus cannot be rendered exactly. Fail-conservative at the call site:
@@ -144,15 +143,10 @@ def _filter_records(
     names: Sequence[str], filters: Mapping[str, Any],
     *,
     allow_limiter_passthrough: bool = True,
-) -> tuple[list[dict[str, Any]], list[Any], complex, float]:
-    """One pipeline step's names reduced to ``(biquads, sections, scale, delay_s)``. A transfer
-    function is a product, so the four accumulators may be collected in any order and
-    multiplied once.
-    """
-    from jasper.active_speaker.branch_chain import CrossoverSection
-
-    biquads: list[dict[str, Any]] = []
-    sections: list[Any] = []
+    compiled_response: bool = False,
+) -> tuple[list[Mapping[str, Any]], complex, float]:
+    """Validated Camilla filters, gain and delay for one pipeline step."""
+    biquads: list[Mapping[str, Any]] = []
     scale = 1.0 + 0.0j
     delay_s = 0.0
     for name in names:
@@ -194,28 +188,23 @@ def _filter_records(
             continue
         if kind == "BiquadCombo":
             combo = str(params.get("type") or "")
-            if combo not in _MODELLED_COMBO_TYPES:
+            if combo not in _MODELLED_COMBO_TYPES or (not compiled_response and not combo.startswith("LinkwitzRiley")):
                 raise BranchPeakError(f"filter {name!r} is a {combo!r} combo")
             order = params.get("order")
-            if isinstance(order, bool) or not isinstance(order, int) or order < 2:
+            if isinstance(order, bool) or not isinstance(order, int) or order < 1:
                 raise BranchPeakError(f"filter {name!r} has order {order!r}")
-            if order % 2:
+            if combo.startswith("LinkwitzRiley") and order % 2:
                 # LR order N is two cascaded Butterworths of N/2; odd N has
                 # no such pair.
                 raise BranchPeakError(
                     f"filter {name!r} has odd Linkwitz-Riley order {order}"
                 )
-            sections.append(
-                CrossoverSection(
-                    fc_hz=_finite(params.get("freq"), f"filter {name!r} freq"),
-                    order=int(order),
-                    highpass=_MODELLED_COMBO_TYPES[combo],
-                )
-            )
+            _finite(params.get("freq"), f"filter {name!r} freq")
+            biquads.append(spec)
             continue
         # Biquad
         shape = str(params.get("type") or "")
-        if shape not in _MODELLED_BIQUAD_TYPES:
+        if shape not in _MODELLED_BIQUAD_TYPES or (shape == "Allpass" and not compiled_response):
             raise BranchPeakError(f"filter {name!r} is a {shape!r} biquad")
         # A shelf/bell may spell its width as ``bandwidth``/``slope`` instead
         # of ``q``; reading the absent ``q`` as the evaluator's 1.0 default
@@ -229,21 +218,17 @@ def _filter_records(
                 f"(got {params.get('q')!r}); a bandwidth/slope width is not "
                 "modelled"
             )
-        biquads.append(
-            {
-                "biquad_type": shape,
-                "freq": _finite(params.get("freq"), f"filter {name!r} freq"),
-                "q": _finite(params.get("q"), f"filter {name!r} q"),
-                "gain": float(params.get("gain") or 0.0),
-            }
-        )
-    return biquads, sections, scale, delay_s
+        _finite(params.get("freq"), f"filter {name!r} freq")
+        _finite(params.get("q"), f"filter {name!r} q")
+        biquads.append(spec)
+    return biquads, scale, delay_s
 
 
 def _step_transfer(
     names: Sequence[str], filters: Mapping[str, Any], freqs: Any,
     *,
     allow_limiter_passthrough: bool = True,
+    compiled_response: bool = False,
 ) -> tuple[Any, float]:
     """``(complex response across freqs, seconds of delay it adds)``. Delay is returned, not
     checked here: the overlap bounds a whole BRANCH, accumulated per channel in
@@ -251,19 +236,23 @@ def _step_transfer(
     """
     import numpy as np
 
-    from jasper.active_speaker.branch_chain import (
-        chain_response,
-        crossover_response_complex,
+    from jasper.active_speaker.branch_chain import (  # lazy: NumPy cost belongs to numerical analysis
+        CrossoverSection, camilla_filter_response, chain_response, crossover_response_complex,
     )
 
-    biquads, sections, scale, delay_s = _filter_records(
+    biquads, scale, delay_s = _filter_records(
         names, filters, allow_limiter_passthrough=allow_limiter_passthrough,
+        compiled_response=compiled_response,
     )
-    response = np.full(freqs.shape, scale, dtype=np.complex128)
-    if biquads:
-        response = response * chain_response(biquads, freqs)
-    if sections:
-        response = response * crossover_response_complex(freqs, sections)
+    if compiled_response:
+        response = scale * camilla_filter_response(biquads, freqs)
+    else:
+        # Peak ceilings use linearization-domain shelf Q; transfer comparisons use emitted Q.
+        records = [dict(biquad_type=p["type"], freq=p["freq"], q=p["q"], gain=p.get("gain") or 0.0)
+                   for f in biquads if f["type"] == "Biquad" for p in (f["parameters"],)]
+        sections = [CrossoverSection(fc_hz=p["freq"], order=p["order"], highpass=p["type"].endswith("Highpass"))
+                    for f in biquads if f["type"] == "BiquadCombo" for p in (f["parameters"],)]
+        response = scale * chain_response(records, freqs) * crossover_response_complex(freqs, sections)
     if delay_s:
         response = response * np.exp(-2j * np.pi * freqs * delay_s)
     return response, delay_s
@@ -285,6 +274,8 @@ def _pipeline_operations(
     config: Mapping[str, Any], freqs: Any, capture_channels: int,
     *,
     allow_limiter_passthrough: bool = True,
+    dynamic_bass_at_rest: bool = False,
+    compiled_response: bool = False,
 ) -> tuple[list[tuple[str, Any]], int]:
     """The applied pipeline reduced to ordered spectrum operations, plus the ending channel
     count (playback width requested output indexes are validated against).
@@ -308,15 +299,21 @@ def _pipeline_operations(
         if step.get("bypassed") is True:
             # Refuse rather than trust a second bypass semantics to stay true.
             raise BranchPeakError(f"pipeline step {index} is bypassed")
+        if dynamic_bass_at_rest and str(step.get("name", "")).startswith(DYNAMIC_BASS_PREFIX):
+            continue
         kind = str(step.get("type") or "")
         if kind == "Filter":
-            channels = _step_channels(step, width, index)
             names = [str(name) for name in step.get("names") or [] if name is not None]
+            if dynamic_bass_at_rest:
+                names = [name for name in names if not name.startswith(DYNAMIC_BASS_PREFIX)]
+            if dynamic_bass_at_rest and not names:
+                continue
+            channels = _step_channels(step, width, index)
             if not names:
                 continue
             response, delay_s = _step_transfer(
                 names, filters, freqs,
-                allow_limiter_passthrough=allow_limiter_passthrough,
+                allow_limiter_passthrough=allow_limiter_passthrough, compiled_response=compiled_response,
             )
             for channel in channels:
                 delays[channel] += delay_s
@@ -349,6 +346,7 @@ def complex_channel_transfer(
     input_weights: Mapping[int, complex],
     output_channels: Mapping[Any, int],
     allow_limiter_passthrough: bool = False,
+    dynamic_bass_at_rest: bool = False,
 ) -> dict[Any, Any]:
     """Complex transfer from one declared input mixture to named outputs.
 
@@ -361,7 +359,8 @@ def complex_channel_transfer(
 
     Limiters have no linear transfer. They refuse by default. A caller may
     treat them as pass-through only after proving the compared graphs carry the
-    same limiter semantics and placement.
+    same limiter semantics and placement. Dynamic bass is unity at rest;
+    ``dynamic_bass_at_rest`` excludes its runtime gain from a static comparison.
     """
     import numpy as np  # lazy: keep NumPy off admission/status imports until analysis is needed
 
@@ -409,6 +408,7 @@ def complex_channel_transfer(
     operations, playback_channels = _pipeline_operations(
         config, freqs, capture_channels,
         allow_limiter_passthrough=allow_limiter_passthrough,
+        dynamic_bass_at_rest=dynamic_bass_at_rest, compiled_response=True,
     )
     for kind, payload in operations:
         if kind == "filter":

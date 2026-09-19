@@ -528,7 +528,7 @@ def _bind_compose(
         safety_profile=box.safety_profile, role_targets=box.role_targets,
         declared_sensitivities=box.declared_sensitivities,
         before_play=before_play, graph_yaml=graph.installed_graph_yaml,
-        level_reference_yaml=lambda: graph.level_reference_yaml,
+        level_reference_yaml=graph.level_reference_yaml,
         roles=excitation.roles,
         graph_evidence_for_spec=evidence_for_spec,
     )

@@ -163,7 +163,7 @@ def test_bass_capture_program_agrees_across_surfaces(bass_fixture, monkeypatch, 
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.composition.bind_program_composer",
                         lambda **kw: kw["program_for_spec"])
     compose = _bind_compose(box=box, store=None, session_id="test", cam_factory=None,
-                            config_dir="", graph=SimpleNamespace(installed_graph_yaml=None))
+                            config_dir="", graph=SimpleNamespace(installed_graph_yaml=None, level_reference_yaml="reference"))
     assert compose(capture.spec, None).program_id == played.program_id
     plan = build_inline_session_spec(
         [(capture.spec, capture.resolved(request).prompt, "trial")],

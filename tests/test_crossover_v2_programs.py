@@ -178,7 +178,7 @@ def test_check_pilots_do_not_exceed_the_summed_pilot_pair(caps, extra_backoff_db
 def test_scope_gains_correct_blind_levels_and_preserve_the_measured_plan(headroom, phase, scope):
     def graph(headroom, trim, cut):
         return yaml.safe_dump({
-            "devices": {"capture": {"channels": 2}},
+            "devices": {"samplerate": 48000, "capture": {"channels": 2}},
             "filters": {
                 "headroom": {"type": "Gain", "parameters": {"gain": -headroom}},
                 "trim": {"type": "Gain", "parameters": {"gain": trim}},
@@ -223,7 +223,7 @@ def test_cli_blind_measure_gains_include_only_positive_scope_backoff(monkeypatch
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.composition.bind_program_composer",
                         lambda **kw: kw["program_for_spec"])
     compose = _bind_compose(box=box, store=None, session_id="test", cam_factory=None,
-                            config_dir="", graph=SimpleNamespace(installed_graph_yaml=None))
+                            config_dir="", graph=SimpleNamespace(installed_graph_yaml=None, level_reference_yaml="reference"))
     spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure")
     reference = compose(spec, stimulus_dbfs)
     played = compose(replace(spec, scope_gains_db={"woofer": -2.0, "tweeter": 21.3}), stimulus_dbfs)

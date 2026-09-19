@@ -4483,7 +4483,7 @@ def test_web_binding_carries_declared_protection_and_the_same_graph(monkeypatch,
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
 
     bound = {}
-    graph = SimpleNamespace(installed_graph_yaml=lambda: "graph")
+    graph = SimpleNamespace(installed_graph_yaml=lambda: "graph", level_reference_yaml="graph")
     def bind_graph(profile, **kwargs):
         bound["profile"], bound["graph_dir"] = profile, kwargs["config_dir"]
         return graph
@@ -4498,7 +4498,7 @@ def test_web_binding_carries_declared_protection_and_the_same_graph(monkeypatch,
         evidence_store=SimpleNamespace(bundle_dir=tmp_path), capture_session_id="capture",
         topology=None, preset=None, role_channels={"woofer": 0, "tweeter": 1},
         playback_device="null", safety_profile={}, role_targets={},
-        session_volume_db=-20, protection_sections_by_role=protection,
+        session_volume_db=-20, protection_sections_by_role=protection, roles=(),
     )
     assert play.graph is graph and play.compose == "composer"
     assert bound["profile"].protection_sections_by_role is protection
