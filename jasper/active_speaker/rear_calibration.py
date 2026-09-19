@@ -304,8 +304,8 @@ def compile_rear_stage(document: Mapping[str, Any], *, front_channel: int, rear_
     ``document`` must already be through :func:`read_rear_calibration`: the
     caller's read is where the document is bound to ITS sample rate. Rear branch
     delays are relative to the front reference. FIR coefficients replace both
-    branches; their declared latency is reported, never added twice. Delays are
-    whole-sample, which the branch-peak render can model exactly.
+    branches; their declared latency is reported, never added twice.
+    The graph walker models whole-sample delays exactly and refuses subsample delays.
     """
     data = document
     if data["case"] != "electrical_dsp":
