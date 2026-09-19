@@ -199,14 +199,14 @@ def _position_rows(
         )
         rows[key]["upper_bands"] = band_level_changes(
             grid, curve_db, reference_db=reference_curve[key], coverage_hz=swept_hz,
-        ) if key in reference_curve else []
+        ) if key in bearing and key in reference_curve else []
         if key not in bearing:
             rows[key].update(reason=REASON_NON_BEARING, trough_fill_db=None)
             measured = band_level_changes(
                 grid, curve_db, reference_db=reference_curve[key], coverage_hz=swept_hz,
                 bands_hz=LEVEL_BANDS_HZ,
             ) if key in reference_curve else []
-            by_band = {tuple(row["band_hz"]): row for row in measured}
+            by_band = {tuple(row["band_hz"]): {**row, "reason": ""} for row in measured}
             rows[key]["bands"] = [by_band.get(band, {
                 "band_hz": list(band), "level_db": None, "reference_db": None, "change_db": None,
                 "reason": REASON_COVERAGE_SHORT if key in reference_curve else REASON_NO_COMPARISON,

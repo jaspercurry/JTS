@@ -466,13 +466,21 @@ def test_rear_views_banked_behind_trial(summed_capture_bundle, covered_bands, tm
         front, = (row for key, row in positions.items() if not key.startswith("behind_"))
         assert set(front) == {"reason", "dip", "dip_shift", "ripple_db", "handover", "low_bass",
                               "band_level_db", "late_energy", "upper_bands"}
+        assert [band["band_hz"] for band in front["upper_bands"]] == (
+            [list(band) for band in LEVEL_BANDS_HZ[-3:]] if covered_bands == 7 else [])
+        for band in front["upper_bands"]:
+            assert set(band) == {"band_hz", "level_db", "reference_db", "change_db"}
+            assert band["change_db"] == pytest.approx(0.0, abs=0.01)
+        assert behind["upper_bands"] == []
         assert behind["reason"] == rear_views.REASON_NON_BEARING
         assert all(behind[key] is None for key in (
             "dip", "dip_shift", "ripple_db", "handover", "low_bass", "band_level_db", "trough_fill_db"))
         assert [row["band_hz"] for row in behind["bands"]] == [list(band) for band in LEVEL_BANDS_HZ]
         expected = gains[candidate["candidate_id"]]
         for index, band in enumerate(behind["bands"]):
+            assert set(band) == {"band_hz", "level_db", "reference_db", "change_db", "reason"}
             if index < covered_bands:
+                assert band["reason"] == ""
                 assert band["change_db"] == pytest.approx(expected, abs=0.01)
                 assert band["level_db"] - band["reference_db"] == pytest.approx(expected, abs=0.01)
             else:
