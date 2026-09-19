@@ -2,18 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compare the configs one round played at a held pose.
-
-* ``candidates <round-dir>`` — this round's lateral takes grouped by
-  ``candidate_id`` at each pose that played more than one, per candidate the
-  deviation of its own curve from its own median level, and per pair the delta
-  between them over the band both were swept across. Writes
-  ``candidates.json``. A round no pose of which played two candidates is
-  refused by name: one config at a pose is a repeat, and ``repeat`` is the
-  instrument that measures those, as spread.
-  :mod:`~jasper.active_speaker.crossover_v2.candidate_ladder` owns every
-  number below.
-"""
+"""Compare candidates at each held pose and frequency-view window."""
 
 from __future__ import annotations
 
@@ -76,7 +65,7 @@ def _cmd_candidates(args: argparse.Namespace) -> int:
 def add_parser(sub: argparse._SubParsersAction) -> None:
     candidates = sub.add_parser(
         "candidates",
-        help="compare the configs this round played at each held pose, pair by pair",
+        help="compare candidates at each held pose and window; read banked frequency curves or in-record curves",
     )
     candidates.add_argument(
         "round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP

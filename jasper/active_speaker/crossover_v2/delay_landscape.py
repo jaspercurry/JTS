@@ -83,11 +83,11 @@ class DelayLandscapeError(ValueError):
         message: str,
         *,
         reason: str = REFUSAL_UNSUPPORTED,
-        detail: Mapping[str, float] | None = None,
+        detail: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.refusal_reason = reason
-        self.detail: dict[str, float] = dict(detail or {})
+        self.detail = dict(detail or {})
 
 
 def _curve(
@@ -452,6 +452,7 @@ def landscape_from_bank(
     spec: NullWalkSpec,
     inverted_role: str,
     pair: PoseCurvePair | None,
+    search_detail: Mapping[str, Any] | None = None,
 ) -> BankedLandscape:
     """The banked landscape both operator verbs read.
 
@@ -475,6 +476,7 @@ def landscape_from_bank(
         raise DelayLandscapeError(
             f"{bundle_dir}: no matching take carries both driver curves",
             reason=REFUSAL_NO_BANKED_CURVES,
+            detail=search_detail,
         )
     landscape = compute_landscape(
         pair.lower, pair.upper, spec=spec, inverted_role=inverted_role,

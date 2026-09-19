@@ -100,10 +100,21 @@ below for when to include it. A refusal names the crossed bound; correct that fi
 
 Trial the whole document with two or three candidates: the fitted totals and
 one or two variants. Use `jasper-round trial <FP> --candidates <FP>,<variant-FP>`;
-`base` is also allowed. Compare them in one trial and apply the winner.
+`base` is also allowed. Read `jasper-round-views candidates <round-dir>` and
+its `candidates.json`: each pose has pairwise deltas per role. `window` is present
+only when reading the frequency view. `level_offset_db` is median A minus median B on A's grid;
+`mean_abs_db`, `max_abs_db`, `max_abs_hz`, and `rms_db` describe the remaining
+shape difference over `band_hz`, with `bins` giving the count. Base keeps its
+fingerprint. These numbers do not rank candidates or establish a repeat floor.
+Compare them in one trial and apply the winner.
 The trial's packet is the verification; no separate verify round is needed.
 
 ## Timing
+
+`delay-landscape` needs both driver curves on one take. Its
+`delay_landscape_no_banked_curves` detail lists `phases_searched`, `takes_seen`,
+`roles_required`, `roles_per_take` counts, `poses`, `bundle_dir`, and `message`. Separate driver takes
+cannot supply this sum.
 
 Timing is geometry. Measure it once with confidence, save its provenance, and keep it until the user resets it. Leave `alignment` out of a document unless the user asked for a new measurement or an explicit value. Reset only for a moved or replaced driver, a changed enclosure, or a crossover change large enough to need a fresh read.
 
