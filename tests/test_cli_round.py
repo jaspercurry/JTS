@@ -578,10 +578,14 @@ def test_run_refuses_local_state_permission_fault(path_owner, dry_run, monkeypat
     assert not opener.requests
 
 
+@pytest.mark.parametrize("program,layout", [("speaker", "baseline_express"), ("rear", "rear/pair_behind")])
 @pytest.mark.parametrize("repeats", [None, 1, 2])
-def test_run_repeats_replace_each_pose_count(preflight_ready, monkeypatch, capsys, repeats):
+def test_run_repeats_replace_each_pose_count(preflight_ready, bank_trial, monkeypatch, capsys, program, layout, repeats):
     opener = _opener(session=json.dumps({"capture": {"session_id": "run-1"}}))
-    argv = ["run", "--program", "speaker", "--poses", "baseline_express"]
+    argv = ["run", "--program", program, "--poses", layout]
+    if program == "rear":
+        argv += ["--candidates", bank_trial({"rear_calibration": "document"})]
+    selected = run_program(program, layout)
     if repeats is not None:
         argv += ["--repeats", str(repeats)]
     code, _ = _run(argv, opener, monkeypatch, capsys)
@@ -589,8 +593,8 @@ def test_run_repeats_replace_each_pose_count(preflight_ready, monkeypatch, capsy
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
     assert plan.repeats == 1
     assert Counter(stop.place for stop in plan.stops) == {
-        pose.place: (pose.repeats if repeats is None else repeats) + 1
-        for pose in run_program("speaker", "baseline_express").poses
+        pose.place: (pose.repeats if repeats is None else repeats) + selected.room_sweep
+        for pose in selected.poses
     }
 
 

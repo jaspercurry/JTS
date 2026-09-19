@@ -79,7 +79,7 @@
       {"azimuth_deg": 45, "elevation_deg": 0}
     ],
     "close_spot": [{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3}],
-    "rear_behind": {"mover": "human", "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "repeats": 2, "headline": "Place the microphone in front of the speaker", "detail": "One metre in front of the cabinet, at woofer height, pointed at the front baffle. Keep it still for all passes."}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.1, "repeats": 2, "headline": "Place the microphone behind the speaker", "detail": "Halfway between the back of the cabinet and the wall, at woofer height, pointed at the back of the cabinet. Keep it still for all passes."}]}
+    "rear_behind": {"mover": "human", "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "headline": "Place the microphone in front of the speaker", "detail": "One metre in front of the cabinet, at woofer height, pointed at the front baffle. Keep it still for all passes."}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.1, "headline": "Place the microphone behind the speaker", "detail": "Halfway between the back of the cabinet and the wall, at woofer height, pointed at the back of the cabinet. Keep it still for all passes."}]}
   },
   "programs": [
     {"id": "speaker", "size": "mark", "layout": "speaker_mark", "purpose": "speaker", "regime": "per_driver", "room_sweep": true},

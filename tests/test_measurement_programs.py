@@ -346,8 +346,8 @@ def test_the_rear_pair_behind_row_places_the_microphone_behind_the_cabinet() -> 
         mp.PURPOSE_REAR, mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR, "human")
     assert [(pose.azimuth_deg, pose.elevation_deg, pose.kind, pose.distance_m, pose.repeats)
             for pose in row.poses] == [
-        (0, 0, mp.POSE_KIND_BEARING, None, 2),
-        (0, 0, mp.POSE_KIND_BEHIND, 0.1, 2),
+        (0, 0, mp.POSE_KIND_BEARING, None, 1),
+        (0, 0, mp.POSE_KIND_BEHIND, 0.1, 1),
     ]
     assert mp.program("rear").size == "express"
     resolved = mp.run_program("rear", "rear/pair_behind")

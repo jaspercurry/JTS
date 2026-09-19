@@ -1117,7 +1117,7 @@ def test_a_seat_stop_is_stated_from_the_head_not_the_mark() -> None:
 @pytest.mark.parametrize("elevation", [0, 10])
 def test_position_gate_names_the_behind_pose_without_changing_the_action_body(elevation):
     request = ac.request_for_program(mp.program("rear", "pair_behind"), candidates=("rear-candidate",))
-    front, _, behind, _ = ac.resolve_request(request)
+    front, behind = ac.resolve_request(request)
     gate = PositionGate()
     actions = [gate.invitation(SimpleNamespace(screen={**capture_plan.position_screen_keys(stop.prompt),
                capture_plan.POSITION_VERTICAL_DEG_KEY: str(elevation)}))["actions"][0]

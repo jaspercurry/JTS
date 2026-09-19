@@ -330,9 +330,10 @@ charged to program headroom. Keep the bass branch in phase. Carry a filter
 that flattens the front woofer itself on all three chains, so the rear/front
 ratio stays the one you fitted.
 
-A `rear/pair_behind` round records the same pair with the microphone behind
-the cabinet, halfway to the wall at woofer height. Its `behind` position is
-a peer row in the pair block and in every preview: there `change_db` in the
+A `rear/pair_behind` round takes one pass per pose: 1 m in front, then behind
+the cabinet, halfway to the wall at woofer height. Each take repeats both
+woofers on one clock. Use `--repeats 2` for two passes per pose. Its `behind`
+position is a peer row in the pair block and in every preview: `change_db` in the
 cancellation band is the predicted wall-ward null, and a real cardioid
 drives it negative while the front positions hold their figures. Read
 `superposition_residual_db` behind the cabinet first; a large value there
