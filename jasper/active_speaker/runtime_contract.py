@@ -2831,7 +2831,8 @@ def _active_graph_evidence(
             mono_sum_sources() if contract.main_layout == "mono"
             else [(0 if assignment.speaker_kind == "left" else 1, 0.0, False)]
         )
-        if (any(_truthy_bool(step.get("bypassed")) for step in payload["pipeline"])
+        if (any(_truthy_bool(step.get("bypassed"))
+                for step in payload.get("pipeline") or [] if isinstance(step, dict))
                 or not _mixer_output_proved(payload, expected_split, index, sources)):
             issues.append(_issue(
                 "blocker", "active_graph_output_routing_unproven",

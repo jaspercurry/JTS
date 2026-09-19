@@ -2081,6 +2081,7 @@ def _dump_baseline(base: str, payload: dict) -> str:
     ((), None, None),
     (("devices", "volume_limit"), None, "volume_limit_missing"),
     (("devices", "volume_limit"), 1.0, "volume_limit_positive"),
+    (("pipeline",), None, "active_graph_output_routing_unproven"),
     (("pipeline", 2, "channels", -1), None, "active_baseline_driver_chain_missing"),
     (("mixers", "split_active_1way", "mapping"), [], "active_graph_output_routing_unproven"),
     (("mixers", "split_active_1way", "mapping", 0, "sources", 0, "gain"), 1.0, "active_graph_output_routing_unproven"),
