@@ -25,7 +25,7 @@ import numpy as np
 
 from jasper.attribution.session_identity import ALIAS_CAPTURE_SESSION_ID, SESSION_IDENTITY_KEY
 from jasper.audio_measurement.bundles import sha256_file
-from jasper.audio_measurement.program import write_program_wav
+from jasper.audio_measurement.program import ExcitationProgram, KIND_COURTESY_TONE, write_program_wav
 
 from jasper.active_speaker.round_bank import CAPTURE_RING_DIR, bundle_session_id
 from .round_inputs import banked_round_of, round_inputs
@@ -268,16 +268,10 @@ def _banked_sweep_durations_s(
 
 
 def banked_roles(state: Mapping[str, Any]) -> tuple[str, ...]:
-    """WHICH branches this round swept, read off its own banked gain plan.
-
-    ``DRIVER_ROLES_BY_WAY`` resolved against the roles the plan names. Empty
-    when the bank names no roles, or a set no speaker shape declares; every
-    caller turns that into a refusal by name.
-    """
+    """Declared target IDs, retaining the channel order of legacy role plans."""
     gains = state.get("gain_plan_db")
-    banked = set(gains) if isinstance(gains, Mapping) else set()
-    roles = DRIVER_ROLES_BY_WAY.get(len(banked), ())
-    return roles if set(roles) == banked else ()
+    banked = tuple(gains) if isinstance(gains, Mapping) else ()
+    return next((roles for roles in DRIVER_ROLES_BY_WAY.values() if set(roles) == set(banked)), banked)
 
 
 def round_bands_hz(
@@ -516,7 +510,7 @@ def _crossover_fc_hz(
 def _bind_measure_captures(
     dumps_dir: Path, *, unscoped_omissions: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Bind MEASURE sidecars and disclose omissions without a round identity."""
+    """Bind solo-sweep captures and disclose omissions without a round identity."""
     bound: list[dict[str, Any]] = []
     unscoped = unscoped_omissions if unscoped_omissions is not None else []
     for sidecar_path in sorted(dumps_dir.glob(RING_SIDECAR_GLOB)):
@@ -529,7 +523,7 @@ def _bind_measure_captures(
         if not isinstance(doc, Mapping) or not isinstance(doc.get("phase"), str) or not doc["phase"]:
             unscoped.append({"sidecar": sidecar_path.name, "reason": "sidecar_malformed"})
             continue
-        if doc["phase"] != PHASE_MEASURE:
+        if doc["phase"] != PHASE_MEASURE and doc.get("graph_scope") != "candidate_branches":
             continue
         sha = doc.get("wav_sha256")
         sha = sha if isinstance(sha, str) else ""
@@ -962,7 +956,6 @@ def read_round_harmonics(
     orders = tuple(int(order) for order in orders)
     applied_profile, profile_reason = applied_profile_source(applied_profile_path)
     fc_hz = _crossover_fc_hz(applied_profile, profile_reason)
-    program, downstream_db, prelude = rebuild_measure_program(state, bands)
     unscoped_omissions: list[dict[str, str]] = []
     banked = _bind_measure_captures(dumps_dir, unscoped_omissions=unscoped_omissions)
     omissions = {"n_unscoped_omissions": len(unscoped_omissions),
@@ -981,15 +974,21 @@ def read_round_harmonics(
                 "scope": scope,
                 **omissions,
                 "note": (
-                    "harmonics are read from the per-driver MEASURE program, "
-                    "whose sweeps are one driver at a time; a summed VERIFY "
-                    "capture cannot attribute a harmonic to a driver. The scope "
-                    "above says what was looked for: a ring holding captures "
-                    "only from OTHER sessions lands here too"
+                    "harmonics require per-driver or branch solo sweeps; "
+                    "a mono summed capture cannot attribute a harmonic to a target"
                 ),
             },
         )
 
+    manifest = next((capture["sidecar"].get("program") for capture in captures
+                     if capture["sidecar"].get("graph_scope") == "candidate_branches"), None)
+    if manifest is None:
+        program, downstream_db, prelude = rebuild_measure_program(state, round_bands_hz(state, bands))
+    else:
+        program = ExcitationProgram.from_dict(manifest)
+        sweep = program.segment("sweep_w")
+        downstream_db = sweep.effective_peak_dbfs - sweep.gain_db
+        prelude = any(segment.kind == KIND_COURTESY_TONE for segment in program.segments)
     program_sha256 = None
     if any(
         isinstance(capture["sidecar"].get("provenance"), Mapping)
@@ -1142,7 +1141,7 @@ def read_bundle_harmonics(
         raise HarmonicEvidenceRefused(STATE_UNREADABLE, {})
     artifact = read_round_harmonics(
         round_dir, bundle_dir / CAPTURE_RING_DIR, state,
-        round_bands_hz(state, band_overrides),
+        band_overrides,
         session_id=bundle_session_id(bundle_dir),
         calibration_text=calibration_path.read_text() if calibration_path else None,
         applied_profile_path=inputs.applied_profile_path,
