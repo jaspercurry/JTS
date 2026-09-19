@@ -1064,7 +1064,7 @@ def test_summed_room_band_uses_resolved_floor_without_adding_highpass(tmp_path, 
     sweep = next(segment for segment in admission.segments
                  if segment.role == role and segment.segment_id == "sweep_verify")
     assert sweep.refusals == (() if sweep.execution_allowed else (
-        "program_segment_outside_limits", "segment_band_low"))
+        "program_segment_outside_limits", "active_excitation_request_outside_band"))
 
 
 @pytest.mark.parametrize("failed", [(), ("low",), ("level",), ("duration",),
@@ -1093,7 +1093,7 @@ def test_summed_segment_refusal_codes_and_fields(tmp_path, caplog, failed):
     )
     sweep = next(segment for segment in admission.segments
                  if segment.role == "tweeter" and segment.segment_id == "sweep_verify")
-    codes = {"low": "segment_band_low", "level": "segment_level", "duration": "segment_duration"}
+    codes = {"low": "active_excitation_request_outside_band", "level": "active_excitation_request_outside_level", "duration": "active_excitation_request_outside_duration"}
     assert sweep.refusals == (("program_segment_outside_limits", *(codes[code] for code in failed))
                              if failed else ())
     records = event_records(caplog, "active_speaker.program_admission")
