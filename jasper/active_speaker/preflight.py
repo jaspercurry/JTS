@@ -240,11 +240,10 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                         and any(pose.plays_summed and pose.purpose != PURPOSE_BASS for pose in plan.stops)):
                     pilot_dbfs = check_target_capture_dbfs(facts.anchor.sensitivity, predicted)
                     rows = _ambient_rows_in_band(band, ambient.get("bands") or ())
-                    # Remove when measured programs no longer require pilot SNR admission.
                     if rows and not _snr_floor_ok(ambient, pilot_dbfs, [band]):
                         lo, hi, noise_dbfs = max(rows, key=lambda row: row[2])
                         code = REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT
-                        issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence={
+                        issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message, blocking=False), evidence={
                             "level_db": fader, "predicted_pilot_capture_dbfs": pilot_dbfs,
                             "pilot_band_hz": band, "ambient_row": {"band_hz": (lo, hi), "level_dbfs": noise_dbfs},
                             "floor_dbfs": noise_dbfs + DRIVER.snr_ok_db,

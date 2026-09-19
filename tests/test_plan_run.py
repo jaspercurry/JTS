@@ -167,22 +167,24 @@ def test_measure_specs_plan_and_bank_speaker_purpose():
 
 
 @pytest.mark.parametrize(("angles", "candidates"), [([0], ("fp-a",)), ([0, 20], ("fp-a", "fp-b")), ([0, -20, 20], ("fp-a",))])
-@pytest.mark.parametrize("repeats", [1, 3])
+@pytest.mark.parametrize("repeats", [1, 2, 3])
 def test_a_walk_groups_configs_and_repeats_under_one_pose_grant(angles, candidates, repeats):
     request, gate = replace(_walk(angles, candidates), repeats=repeats), AnsweredGate()
+    ac.session_lateral_walk(request, externally_positioned=False, base_entries=0, supported_summed_candidates=True)
+    captures = plan_run.prepare_plan_captures(request)
     result, fakes = asyncio.run(_run_gated(request, gate=gate))
     assert result.status == "complete"
     assert len(result.wall_s) == result.mic_moves == len(gate.grants) == len(angles)
-    assert result.takes_measured == len(fakes.banked) == len(angles) * len(candidates) * repeats
-    assert fakes.graph.scopes == [("candidate", cid) for _ in angles for cid in candidates for _ in range(repeats)]
+    assert result.takes_measured == len(fakes.banked) == len(captures) == len(angles) * len(candidates) * repeats
+    assert fakes.graph.scopes == [("candidate", c.spec.candidate_id) for c in captures]
     assert fakes.graph.restores == fakes.volume.releases == 1
     doc = json.loads(json.dumps(result.to_dict()))
     assert len(doc["sets"]) == len(set(candidates))
     for group in doc["sets"]:
-        assert {take["pose"]["deg"] for take in group["takes"]} == set(angles)
-        assert {take["repeat"] for take in group["takes"]} == set(range(1, repeats + 1))
-    assert doc["not_measured"] == []
-    assert doc["honoured"]["takes_refused"] == 0
+        assert [(t["pose"]["deg"], t["repeat"], t["selected"]) for t in group["takes"]] == [
+            (angle, repeat, True) for angle in angles for repeat in range(1, repeats + 1)]
+    assert len({t["take_id"] for t in _takes(doc)}) == len(captures)
+    assert (doc["not_measured"], doc["honoured"]["takes_refused"]) == ([], 0)
     assert all(row["budget"]["by_household"] == row["budget"]["by_speaker"] == 0 for row in gate.progress)
 
 
@@ -691,10 +693,6 @@ def test_baseline_pairs_driver_and_room_reads_and_keeps_timing_at_entry(layout, 
 
 
 def test_a_hand_written_branch_plan_resolves_its_base_entry_as_a_summed_take():
-    """``from_mapping`` is the door ``jasper-round run --plan`` and the wizard's
-    raw POST come through, so it bypasses ``request_for_program``'s "branches
-    needs one saved candidate" guard. The synthesized entry-baseline stop plays
-    the SUMMED regime, so it carries no branch pair either."""
     plan = ac.AngleCaptureRequest(
         (ac.AngleStop(0, ac.REGIME_BRANCHES, branch_pair="front_rear"),),
     )
