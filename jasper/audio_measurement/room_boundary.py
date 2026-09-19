@@ -27,6 +27,7 @@ ROOM_BOUNDARY_MAX_HZ: float = 500.0
 # The room layer's floor, Hz: below it a seat take says little a cabinet can
 # act on, and no room filter is placed.
 ROOM_FLOOR_HZ: float = 20.0
+AUDIO_BAND_TOP_HZ: float = 20_000.0
 
 # Where a room ceiling came from. ``applied_candidate`` remains readable for
 # room documents produced before the round's own gate became the source.

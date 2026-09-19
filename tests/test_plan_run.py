@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.active_speaker import angle_capture as ac, plan_run
+from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
 from jasper.active_speaker.measurement_programs import run_program, program as measurement_program
 from jasper.active_speaker.crossover_v2 import capture_dispatch, spatial
@@ -30,11 +31,13 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
 from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
+from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.volume_owner import ClaimKind, volume_owner
 from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor, _loc, _verify_analysis, _roles
 from tests.crossover_v2_banked_round import bank_seat_round
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, SeamFailure, open_session
+from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_preflight import ready_facts
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
 from tests.test_crossover_v2_tuning_scope import _room_candidate, tuning_profile as tuning_profile
@@ -697,7 +700,10 @@ def test_a_hand_written_branch_plan_resolves_its_base_entry_as_a_summed_take():
 def test_speaker_room_layout_pairs_driver_and_summed_stops_with_entry_timing():
     program = run_program("speaker", "room_quick")
     request = ac.request_for_program(program, mover=ac.MOVER_ARM)
-    roles = tuple(_roles())
+    _, safety, targets = _profile_and_targets(woofer_floor=30)
+    roles = tuple(RoleBand(role, channel, resolve_driver_excitation_ceilings(
+        safety, fingerprint, program_admission=True)[0])
+        for channel, (role, fingerprint) in enumerate(targets.items()))
 
     assert [(stop.regime, stop.purpose) for stop in request.stops] == [
         pair for _pose in program.poses
@@ -708,7 +714,7 @@ def test_speaker_room_layout_pairs_driver_and_summed_stops_with_entry_timing():
     room_band = ac.room_sweep_band_hz(
         roles, (room_capture.resolved(request).prompt,)
     )
-    assert room_band is not None and room_band[0] == 150.0
+    assert room_band == (20.0, 20000.0)
     assert {capture.spec.sweep_band_hz for capture in captures if capture.stop.purpose == "room"} == {room_band}
     assert {capture.spec.sweep_band_hz for capture in captures if capture.stop.purpose == "speaker"} == {()}
     timing = [capture for capture in captures

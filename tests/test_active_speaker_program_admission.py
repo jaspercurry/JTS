@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+import logging
 from dataclasses import replace
 
 import numpy as np
@@ -45,6 +46,7 @@ from jasper.audio_measurement.program import (
     render_program_pcm,
     write_program_wav,
 )
+from tests._log_events import event_field_maps, event_records
 from tests.active_speaker_fixtures import mono_output_topology, isolated_candidate_bank as isolated_candidate_bank
 from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, _trial_candidate
@@ -201,17 +203,17 @@ def test_clean_program_is_admitted():
     assert facts[0].peak_matches_manifest and facts[1].peak_matches_manifest
 
 
-def test_band_escape_refuses_segment():
+@pytest.mark.parametrize("low_hz", [10, 20, 30, 150, 500])
+def test_driver_sweep_keeps_its_analysis_floor(low_hz):
     topology, profile, targets = _profile_and_targets()
     sv = session_measurement_volume_db(profile, targets.values())
-    # Woofer band dips below the 500 Hz permitted floor.
-    prog = _measure_program(sv, roles=_roles(woofer_band=(150.0, 1600.0)))
+    prog = _measure_program(sv, roles=_roles(woofer_band=(low_hz, 1600.0)))
+    assert prog.segment("sweep_w").f1_hz == max(150, low_hz)
     adm = _admit(
         prog, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
     )
-    assert not adm.allowed
-    assert ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS in adm.refusals
+    assert adm.allowed
 
 
 def test_peak_over_ceiling_refuses():
@@ -638,7 +640,7 @@ def test_declared_sweep_duration_equal_to_the_composed_length_refuses_every_meas
         ("none", None),
         ("too_loud", ProgramAdmissionRefusal.CHANNEL_PEAK_OVER_CAP),
         ("too_long", ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS),
-        ("unprotected_low_band", ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS),
+        ("declared_woofer_floor", None),
         ("missing_target", ProgramAdmissionRefusal.TARGET_NOT_MAPPED),
         ("missing_hp", ProgramAdmissionRefusal.GRAPH_NOT_PROVEN),
         ("boost_without_headroom", ProgramAdmissionRefusal.GRAPH_NOT_PROVEN),
@@ -653,7 +655,7 @@ def test_summed_admission_proves_the_whole_graph_and_actual_audio(tmp_path, chan
     from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
 
     topology, profile, targets = _profile_and_targets(
-        woofer_floor=500 if change == "unprotected_low_band" else 100,
+        woofer_floor=500 if change == "declared_woofer_floor" else 100,
         max_sweep_duration_s=4,
     )
     applied = _applied_profile(topology)
@@ -663,7 +665,7 @@ def test_summed_admission_proves_the_whole_graph_and_actual_audio(tmp_path, chan
     ), candidate=candidate_from_applied_profile(topology, applied))
     program = SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0.0, "tweeter": -65.0},
-        session_volume_db=-20.0, fc_hz=2000,
+        session_volume_db=-20.0, fc_hz=2000, summed_sweep_band_hz=(20, 20000),
         sweep_duration_limits_s={} if change == "too_long" else {"woofer": 4, "tweeter": 4},
     ).verify_program()
     if change == "missing_hp":
@@ -693,7 +695,7 @@ def test_summed_admission_proves_the_whole_graph_and_actual_audio(tmp_path, chan
     if refusal is None:
         assert admission.allowed, admission.to_dict()
         assert {segment.role for segment in admission.segments} == {"woofer", "tweeter"}
-        assert min(segment.band[0] for segment in admission.segments if segment.role == "tweeter") == 150
+        assert min(segment.band[0] for segment in admission.segments if segment.role == "tweeter") == 20
         assert admission.channels[0].cap_dbfs == -65
     else:
         assert not admission.allowed
@@ -806,10 +808,8 @@ def test_summed_scopes_preserve_declared_protection_before_admission(tmp_path, s
         program, wav, graph_yaml=submitted, topology=topology,
         safety_profile=safety, role_targets=targets, session_volume_db=-20,
     )
-    assert admission.allowed is (damage is None), admission.to_dict()
-    if damage in {"upper_band", "lowpass_slope"}:
-        assert ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS in admission.refusals
-    elif damage:
+    assert admission.allowed is (damage in {None, "upper_band", "lowpass_slope"}), admission.to_dict()
+    if not admission.allowed:
         assert ProgramAdmissionRefusal.GRAPH_NOT_PROVEN in admission.refusals
 
 
@@ -919,13 +919,71 @@ def test_summed_admission_proves_the_candidate_rear_stage(tmp_path, evidence_cha
         assert admission.allowed, admission.to_dict()
 
 
+def test_cardioid_timing_admits_full_band_without_rear_lowpass(tmp_path, monkeypatch):
+    topology, safety, targets = _profile_and_targets(
+        rear=True, woofer_floor=30, woofer_upper=4000,
+        tweeter_peak=0, max_sweep_duration_s=4,
+    )
+    profile = MeasurementGraphProfile(
+        _rear_pair("mono")[0], topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets),
+    )
+    candidate = replace(_trial_candidate(profile), rear_calibration=_rear_document())
+    graph = compile_tuning_graph(profile, scope="timing", candidate=candidate)
+    evidence = measurement_graph_evidence(scope="timing", candidate=candidate)
+    proof = classify_bass_extension_graph(
+        topology, evidence_source="desired", graph_text=graph,
+        applied_baseline_state={"recomposition_snapshot": evidence},
+    )
+    assert proof.allowed
+    # Runtime proof requires grouped crossover chains; isolate admission's band gate.
+    monkeypatch.setattr("jasper.active_speaker.program_admission.classify_bass_extension_graph",
+                        lambda *args, **kwargs: proof)
+    payload = yaml.safe_load(graph)
+    rear = next(target for target in active_driver_targets(topology)
+                if target["target_fingerprint"] == targets["woofer:rear"])
+    for step in list(payload["pipeline"]):
+        if rear["output_index"] not in step.get("channels", []):
+            continue
+        names = [name for name in step["names"]
+                 if "Lowpass" not in payload["filters"][name].get("parameters", {}).get("type", "")]
+        if names != step["names"]:
+            step["channels"].remove(rear["output_index"])
+            payload["pipeline"].insert(payload["pipeline"].index(step) + 1,
+                                       {**step, "channels": [rear["output_index"]], "names": names})
+    graph = yaml.safe_dump(payload)
+    assert not any(
+        "Lowpass" in payload["filters"][name].get("parameters", {}).get("type", "")
+        for step in payload["pipeline"] if rear["output_index"] in step.get("channels", [])
+        for name in step.get("names", [])
+    )
+    program = build_verify_program(
+        1600, gain_db=-6, downstream_gain_db=-20, sweep_s=2,
+        sweep_band_hz=(20, 20000),
+    )
+    wav = tmp_path / "timing.wav"
+    write_program_wav(wav, program)
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=graph, topology=topology,
+        safety_profile=safety, role_targets=targets, session_volume_db=-20,
+        graph_evidence=evidence,
+    )
+    assert admission.allowed, admission.to_dict()
+    assert {segment.role for segment in admission.segments} == {"woofer", "woofer:rear", "tweeter"}
+    assert all(segment.band == (20, 20000) for segment in admission.segments
+               if segment.segment_id == "sweep_verify")
+
+
 @pytest.mark.parametrize("low_hz", [10, 20, 40, 60])
-@pytest.mark.parametrize("highpass", [None, 40])
-def test_summed_room_band_uses_hard_floor_without_adding_highpass(tmp_path, low_hz, highpass):
+@pytest.mark.parametrize("role, highpass", [("woofer", None), ("woofer", 40),
+                                             ("tweeter", None), ("tweeter", 1500)])
+def test_summed_room_band_uses_resolved_floor_without_adding_highpass(tmp_path, low_hz, highpass, role):
     topology, safety, targets = _profile_and_targets(
         woofer_floor=40, woofer_measurement_floor=60, max_sweep_duration_s=4,
-        woofer_highpass=highpass,
+        woofer_highpass=highpass if role == "woofer" else None,
     )
+    if role == "tweeter" and highpass is None:
+        next(target for target in safety["targets"] if target["role"] == role)["required_protection_filters"] = []
     applied = _applied_profile(topology)
     measurement = MeasurementGraphProfile(
         ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"]),
@@ -945,7 +1003,58 @@ def test_summed_room_band_uses_hard_floor_without_adding_highpass(tmp_path, low_
         program, wav, graph_yaml=graph, topology=topology,
         safety_profile=safety, role_targets=targets, session_volume_db=-20,
     )
-    assert admission.allowed is (low_hz >= 20 and (low_hz >= 40 or highpass is not None)), admission.to_dict()
+    assert admission.allowed is (low_hz >= 20 and (role == "woofer" or highpass is not None)), admission.to_dict()
+    sweep = next(segment for segment in admission.segments
+                 if segment.role == role and segment.segment_id == "sweep_verify")
+    assert sweep.refusals == (() if sweep.execution_allowed else (
+        "program_segment_outside_limits", "segment_band_low"))
+
+
+@pytest.mark.parametrize("failed", [(), ("low",), ("level",), ("duration",),
+                                     ("low", "level", "duration")])
+def test_summed_segment_refusal_codes_and_fields(tmp_path, caplog, failed):
+    topology, safety, targets = _profile_and_targets(woofer_floor=40, max_sweep_duration_s=4)
+    applied = _applied_profile(topology)
+    graph = compile_tuning_graph(MeasurementGraphProfile(
+        ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"]),
+        topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+    ), candidate=candidate_from_applied_profile(topology, applied))
+    program = build_verify_program(
+        1600, gain_db=-6, downstream_gain_db=-20, sweep_s=2,
+        sweep_band_hz=(20, 20000),
+    )
+    target = next(target for target in safety["targets"] if target["role"] == "tweeter")
+    if "low" in failed:
+        target["required_protection_filters"] = []
+    target["level_duration_limits"]["max_effective_peak_dbfs"] = -30 if "level" in failed else 0
+    target["level_duration_limits"]["max_sweep_duration_s"] = 1 if "duration" in failed else 4
+    wav = tmp_path / "refusal.wav"
+    write_program_wav(wav, program)
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=graph, topology=topology,
+        safety_profile=safety, role_targets=targets, session_volume_db=-20,
+    )
+    sweep = next(segment for segment in admission.segments
+                 if segment.role == "tweeter" and segment.segment_id == "sweep_verify")
+    codes = {"low": "segment_band_low", "level": "segment_level", "duration": "segment_duration"}
+    assert sweep.refusals == (("program_segment_outside_limits", *(codes[code] for code in failed))
+                             if failed else ())
+    records = event_records(caplog, "active_speaker.program_admission")
+    assert len(records) == bool(failed)
+    assert all(record.levelno == logging.WARNING for record in records)
+    fields = event_field_maps(caplog, "active_speaker.program_admission")
+    if failed:
+        field = fields[0]
+        assert field["result"] == "refused"
+        assert field["program_id"] == program.program_id
+        assert field["phase"] == program.phase
+        assert field["refusals"].split(",") == [reason.value for reason in admission.refusals]
+        assert field["session_volume_db"] == "-20.000"
+        assert field["role_caps_dbfs"] == f"woofer=0.000,tweeter={'-30.000' if 'level' in failed else '0.000'}"
+        segments = field["segments_refused"].split(";")
+        assert len(segments) == sum(not segment.execution_allowed for segment in admission.segments)
+        entry = next(item for item in segments if item.startswith("sweep_verify:tweeter:"))
+        assert entry.endswith("|".join(sweep.refusals))
 
 
 CARDIOID_TAKE = {"woofer": 0, "woofer:rear": 1}

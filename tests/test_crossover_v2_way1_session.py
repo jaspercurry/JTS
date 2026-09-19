@@ -392,13 +392,10 @@ def test_a_way1_verify_capture_grades_through_the_shipped_path():
 
     assert verdict.accepted is True
     assert analysis.verify_tracking_curve is not None
-    # VERIFY's no-crossover mode widens its sweep down to the declaration, below
-    # the floor MEASURE excited the lone branch at, where the prediction is
-    # deconvolution noise. The graded band is the intersection, on both edges.
     measure_sweep = conductor.program_for_phase(PHASE_MEASURE).segment("sweep_w")
     verify_sweep = conductor.program_for_phase(PHASE_VERIFY).segment("sweep_verify")
-    assert verify_sweep.f1_hz < measure_sweep.f1_hz
-    assert verify_sweep.f2_hz > measure_sweep.f2_hz
+    assert verify_sweep.f1_hz == WAY1_BAND.lower_hz < measure_sweep.f1_hz == 150.0
+    assert verify_sweep.f2_hz == measure_sweep.f2_hz == WAY1_BAND.upper_hz
     assert analysis.verify_tracking["tracking_band_hz"] == [
         measure_sweep.f1_hz, measure_sweep.f2_hz,
     ]

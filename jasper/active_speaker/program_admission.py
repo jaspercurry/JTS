@@ -6,8 +6,8 @@
 
 Driver programs retain per-segment isolated-driver admission. Summed programs
 require a complete protected graph: runtime_contract proves topology, branch
-headroom and wiring; declared protection filters justify only the frequencies
-outside each driver's input band. Both paths attest actual PCM peak, schedule
+headroom and wiring; a declared high-pass covers a high-frequency driver's
+floor. Both paths attest actual PCM peak, schedule
 silence and manifest agreement before verified playback.
 """
 
@@ -41,7 +41,6 @@ from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_ga
 from jasper.output_topology import OutputTopology, measurement_target_id
 
 from .camilla_yaml import STARTUP_MUTE_GAIN_DB, output_commission_mute_name
-from .driver_protection import PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
 from .graph_safety import (
     output_terminally_muted,
     protection_requirement_present,
@@ -415,7 +414,7 @@ def _evaluate_program(
     # the LIMIT side of two comparisons below, which `SegmentAdmission` does not
     # carry because it records what was REQUESTED. Read only by the refusal log;
     # a segment whose plan raised gets no entry and its limits are omitted.
-    segment_limits: dict[str, tuple[float, float, float]] = {}
+    segment_limits: dict[tuple[str, str], tuple[float, float, float]] = {}
 
     try:
         channel_roles = _channel_roles(program)
@@ -474,7 +473,7 @@ def _evaluate_program(
             )
             continue
         segments.append(_segment_admission(segment, prepared))
-        segment_limits[segment.segment_id] = (
+        segment_limits[segment.segment_id, role] = (
             prepared.limits.permitted_band.lower_hz,
             prepared.limits.permitted_band.upper_hz,
             prepared.limits.maximum_duration_s,
@@ -539,48 +538,45 @@ def _evaluate_program(
         channels=tuple(channels),
         refusals=unique_refusals,
     )
-    if not admission.allowed:
-        # WHICH segment, and the REQUESTED value beside the LIMIT it was judged
-        # against, because the aggregate ``REQUEST_OUTSIDE_LIMITS`` cannot tell
-        # its folded comparisons apart: a bench triage once read it as a woofer
-        # level breach when the real refusal was DURATION (the synchronized
-        # sweep rounds to the nearest phase-closing length, exceeding a declared
-        # 4.0 s by 5.8 ms).
-        # `session_volume_db` is named because a segment's effective peak is its
-        # digital gain PLUS that value.
-        durations_s = {
-            segment.segment_id: segment.n_samples / PROGRAM_SAMPLE_RATE_HZ
-            for segment in program.stimulus_segments()
-        }
-        refused_text: list[str] = []
-        for refused in segments:
-            if not refused.refusals:
-                continue
-            limits = segment_limits.get(refused.segment_id)
-            permitted = f"/permitted={limits[0]:.1f}-{limits[1]:.1f}" if limits else ""
-            max_duration = f"/max={limits[2]:.4f}" if limits else ""
-            refused_text.append(
-                f"{refused.segment_id}:{refused.role}"
-                f":eff={refused.effective_peak_dbfs:.3f}"
-                f":band={refused.band[0]:.1f}-{refused.band[1]:.1f}{permitted}"
-                f":dur={durations_s.get(refused.segment_id, 0.0):.4f}{max_duration}"
-                f":{'|'.join(refused.refusals)}"
-            )
-        log_event(
-            logger,
-            "active_speaker.program_admission",
-            level=logging.WARNING,
-            result="refused",
-            program_id=program.program_id,
-            phase=program.phase,
-            refusals=",".join(reason.value for reason in unique_refusals),
-            segments_refused=";".join(refused_text),
-            role_caps_dbfs=",".join(
-                f"{facts.role}={facts.cap_dbfs:.3f}" for facts in channels
-            ),
-            session_volume_db=f"{float(session_volume_db):.3f}",
-        )
+    _log_program_refusal(program, admission, segment_limits,
+                         {facts.role: facts.cap_dbfs for facts in channels})
     return admission
+
+
+def _log_program_refusal(
+    program: ExcitationProgram,
+    admission: ProgramAdmission,
+    segment_limits: Mapping[tuple[str, str], tuple[float, float, float]],
+    role_caps_dbfs: Mapping[str, float],
+) -> None:
+    if admission.allowed:
+        return
+    durations_s = {
+        segment.segment_id: segment.n_samples / program.sample_rate_hz
+        for segment in program.stimulus_segments()
+    }
+    refused_text: list[str] = []
+    for refused in admission.segments:
+        if not refused.refusals:
+            continue
+        limits = segment_limits.get((refused.segment_id, refused.role))
+        permitted = f"/permitted={limits[0]:.1f}-{limits[1]:.1f}" if limits else ""
+        max_duration = f"/max={limits[2]:.4f}" if limits else ""
+        refused_text.append(
+            f"{refused.segment_id}:{refused.role}"
+            f":eff={refused.effective_peak_dbfs:.3f}"
+            f":band={refused.band[0]:.1f}-{refused.band[1]:.1f}{permitted}"
+            f":dur={durations_s.get(refused.segment_id, 0.0):.4f}{max_duration}"
+            f":{'|'.join(refused.refusals)}"
+        )
+    log_event(
+        logger, "active_speaker.program_admission", level=logging.WARNING,
+        result="refused", program_id=program.program_id, phase=program.phase,
+        refusals=",".join(reason.value for reason in admission.refusals),
+        segments_refused=";".join(refused_text),
+        role_caps_dbfs=",".join(f"{role}={cap:.3f}" for role, cap in role_caps_dbfs.items()),
+        session_volume_db=f"{admission.session_volume_db:.3f}",
+    )
 
 
 def _segment_admission(
@@ -694,8 +690,8 @@ def readmit_summed_program_from_wav(
     """Admit a mono summed artifact through its complete protected tuning graph.
 
     The runtime contract re-proves branch boost compensation and routing. A
-    declared HP/LP or proven protective-slope crossover LP must cover an out-of-band
-    segment; its full emitted band stays in evidence. The caller must prove
+    declared high-pass must cover a segment below a high-frequency driver's
+    floor; its full emitted band stays in evidence. The caller must prove
     this exact graph live while holding the DSP writer lock through playback.
     """
     branches = isinstance(program, ExcitationProgram) and is_branch_program(program)
@@ -779,6 +775,8 @@ def readmit_summed_program_from_wav(
             if source["channel"] != channels[target_id] or source["gain"] != 0 or source.get("inverted", False) or source.get("mute", False):
                 return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
     input_caps: list[float] = []
+    role_caps: dict[str, float] = {}
+    segment_limits: dict[tuple[str, str], tuple[float, float, float]] = {}
     bass_channels = set(graph.details.get("bass_output_channels", ()))
     descriptor = graph.details.get("bass_extension")
     bass_boost_db = dynamic_bass_gain_reserve_db(DynamicBassDescriptor(**descriptor)) if descriptor else 0.0
@@ -819,8 +817,8 @@ def readmit_summed_program_from_wav(
         # Reserve the maximum lift; admission remains valid across Aux updates.
         boost_db = bass_boost_db if output in bass_channels else 0.0
         input_caps.append(cap - boost_db)
+        role_caps[target_id] = cap
         requirements = declared[fingerprint]["required_protection_filters"]
-        protected_floor_hz = float(declared[fingerprint]["hard_excitation_band_hz"][0])
         for requirement in requirements:
             if not protection_requirement_present(
                 view, output_index=output, allowed_channels=same_role_outputs, requirement=requirement,
@@ -833,33 +831,24 @@ def readmit_summed_program_from_wav(
             if branches and segment.channel != branch_channel:
                 continue
             low, high = segment_emitted_band_hz(segment)
-            low_ok = low >= MIN_DRIVER_TEST_FREQUENCY_HZ and (low >= protected_floor_hz or any(
+            low_ok = low >= MIN_DRIVER_TEST_FREQUENCY_HZ and (low >= band.lower_hz or any(
                 requirement["kind"] == "highpass"
-                and requirement["cutoff_hz"] >= protected_floor_hz
+                and requirement["cutoff_hz"] >= band.lower_hz
                 for requirement in requirements
             ))
-            high_ok = high <= band.upper_hz or any(
-                requirement["kind"] == "lowpass"
-                and requirement["cutoff_hz"] <= band.upper_hz
-                for requirement in requirements
-            ) or protection_requirement_present(
-                view, output_index=output, allowed_channels=same_role_outputs,
-                requirement={
-                    "kind": "lowpass", "cutoff_hz": band.upper_hz,
-                    "family_or_equivalent": "equivalent_or_steeper",
-                    "minimum_slope_db_per_octave": PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
-                },
-            )
             peak = float(segment.gain_db) + session_volume_db + boost_db
-            allowed = (
-                low_ok and high_ok and peak <= cap
-                and segment.n_samples / program.sample_rate_hz <= duration
-            )
-            reasons = () if allowed else (ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS.value,)
+            failed = tuple(code for code, passed in (
+                ("segment_band_low", low_ok),
+                ("segment_level", peak <= cap),
+                ("segment_duration", segment.n_samples / program.sample_rate_hz <= duration),
+            ) if not passed)
+            allowed = not failed
+            reasons = (ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS.value, *failed) if failed else ()
             assert segment.channel is not None
             segments.append(SegmentAdmission(
                 segment.segment_id, target_id, segment.channel, (low, high), peak, allowed, reasons,
             ))
+            segment_limits[segment.segment_id, target_id] = (band.lower_hz, band.upper_hz, duration)
             if not allowed:
                 refusals.append(ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS)
     channel_facts = []
@@ -874,10 +863,5 @@ def readmit_summed_program_from_wav(
         program.program_id, program.phase, session_volume_db,
         tuple(segments), tuple(channel_facts), tuple(dict.fromkeys(refusals)),
     )
-    if not admission.allowed:
-        log_event(
-            logger, "active_speaker.program_admission", level=logging.WARNING,
-            result="refused", program_id=program.program_id, phase=program.phase,
-            refusals=",".join(reason.value for reason in admission.refusals),
-        )
+    _log_program_refusal(program, admission, segment_limits, role_caps)
     return admission

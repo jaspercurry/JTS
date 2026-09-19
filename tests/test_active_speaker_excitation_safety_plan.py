@@ -583,57 +583,25 @@ def test_skipped_derivation_logs_named_role(caplog):
     )
 
 
-# --- resolve_driver_excitation_ceilings: band-edge asymmetry (PR-A, #1668) ---
-#
-# The lower permitted edge stays max(MIN, hard[0], measurement[0]) -- an
-# absolute excursion-protection boundary, untouched. The upper permitted edge
-# drops measurement_band[1] from the min() -- it is analysis-window metadata,
-# not a protection boundary -- so it now binds at min(MAX_DRIVER_TEST_
-# FREQUENCY_HZ, hard_band[1]) instead of also being capped by the (often
-# narrower) declared measurement window.
-
-
-def test_upper_edge_ignores_measurement_band_lower_edge_still_absolute():
-    _topology, profile, targets = _profile_and_targets(
-        hard_band=[1200, 20_000], measurement_band=[1800, 18_000],
+@pytest.mark.parametrize("role", ["woofer", "mid", "subwoofer", "tweeter", "full_range"])
+@pytest.mark.parametrize("program_admission", [False, True])
+@pytest.mark.parametrize("hard_upper, expected_upper", [(12000, 12000), (20000, 20000), (30000, 23000)])
+@pytest.mark.parametrize("global_max", [18000, 23000])
+def test_excitation_band_uses_audio_edges_and_keeps_interior_limits(monkeypatch, role, program_admission, hard_upper, expected_upper, global_max):
+    monkeypatch.setattr("jasper.active_speaker.excitation_safety_plan.MAX_DRIVER_TEST_FREQUENCY_HZ", global_max)
+    target = {
+        "role": role, "target_id": f"mono:{role}", "target_fingerprint": "f" * 64,
+        "hard_excitation_band_hz": [45, hard_upper],
+        "measurement_band_hz": [60, 10000],
+        "required_protection_filters": [], "level_duration_limits": {},
+    }
+    band, _cap = resolve_driver_excitation_ceilings(
+        {"targets": [target]}, "f" * 64, program_admission=program_admission,
     )
-    band, _ceiling = resolve_driver_excitation_ceilings(
-        profile, targets["woofer"]["target_fingerprint"],
-    )
-    # Upper edge: was 18_000 (measurement_band[1] used to bind); now 20_000
-    # (hard_band[1] binds -- measurement_band[1] no longer participates).
-    assert band.upper_hz == pytest.approx(20_000.0)
-    # Lower edge: unchanged -- measurement_band[0] (1800) is still the
-    # strictest of the three lower-edge candidates and still binds.
-    assert band.lower_hz == pytest.approx(1800.0)
+    expected_lower = (45 if program_admission else 60) if role == "tweeter" else 20
+    assert (band.lower_hz, band.upper_hz) == (
+        expected_lower, min(global_max, 20000 if role in {"tweeter", "full_range"} else expected_upper))
 
-
-def test_upper_edge_still_bounded_by_global_ceiling_when_hard_band_is_wider():
-    # A hard band WIDER than MAX_DRIVER_TEST_FREQUENCY_HZ still leaves the
-    # global ceiling binding (min() semantics preserved) -- the asymmetry
-    # only ever drops measurement_band[1] from the min(), it does not remove
-    # the global ceiling as a backstop. (The driver safety profile validator
-    # requires measurement_band ⊆ hard_band, so a hard band NARROWER than the
-    # measurement band's upper edge cannot occur in a confirmed profile --
-    # that direction is not a reachable scenario to pin here.)
-    _topology, profile, targets = _profile_and_targets(
-        hard_band=[1200, 30_000], measurement_band=[1800, 25_000],
-    )
-    band, _ceiling = resolve_driver_excitation_ceilings(
-        profile, targets["woofer"]["target_fingerprint"],
-    )
-    assert band.upper_hz == pytest.approx(23_000.0)  # MAX_DRIVER_TEST_FREQUENCY_HZ
-    assert band.lower_hz == pytest.approx(1800.0)
-
-
-# --- low-side asymmetry: HF proven-HP floor follows the declaration (#1654) --
-#
-# The declared JTS3 tweeter (hard=[1600, 20000], measurement=[2000, 18000]) is
-# the case throughout: its analysis floor 2000 is ALSO the configured Fc, which
-# is what made every downward Fc candidate unscorable on its own handoff (#1894
-# R17 STOP record). The widening is deliberately narrow -- one role class, one
-# path -- so the three negative cases below are as load-bearing as the positive
-# one. Each pins declaration -> derivation, not a literal.
 
 _JTS3_TWEETER = {"hard_band": [1600, 20_000], "measurement_band": [2000, 18_000],
                  "tweeter_low_limit_hz": 1600.0}
@@ -659,24 +627,6 @@ def test_hf_naked_tone_sweep_floor_still_binds_at_the_declared_analysis_window()
         profile, targets["tweeter"]["target_fingerprint"],
     )
     assert band.lower_hz == pytest.approx(2000.0)
-
-
-def test_low_frequency_floor_keeps_the_analysis_window_as_excursion_protection():
-    # Negative 2 -- the safety guard. A woofer driven below its declared
-    # analysis floor has nothing between it and its own suspension, so
-    # measurement_band[0] stays an absolute boundary on EVERY path, including
-    # the proven-HP one. This is what keeps the widening from generalising.
-    # hard[0]=45 well below measurement[0]=60, so the two floors are
-    # distinguishable: were the HF rule to leak to low-frequency roles this
-    # would read 45.0. (The upper edges keep the shared fixture's tweeter
-    # high-pass inside the declared hard band.)
-    _topology, profile, targets = _profile_and_targets(
-        hard_band=[45, 20_000], measurement_band=[60, 10_000],
-    )
-    band, _cap = resolve_driver_excitation_ceilings(
-        profile, targets["woofer"]["target_fingerprint"], program_admission=True,
-    )
-    assert band.lower_hz == pytest.approx(60.0)
 
 
 def test_the_widened_floor_never_reaches_below_the_declared_hard_band():
@@ -708,16 +658,15 @@ def test_the_widened_floor_is_announced_when_it_moves(caplog):
     assert fields["excitation_floor_hz"] == "1600.0"
 
 
-def test_the_widened_floor_is_silent_when_the_declaration_already_agrees(caplog):
-    # No event when there is nothing to announce -- a declaration whose
-    # analysis floor already equals its hard floor is unchanged by this rule.
+@pytest.mark.parametrize("role", ["woofer", "tweeter"])
+def test_hard_band_widening_event_excludes_low_frequency_roles_and_unchanged_floors(caplog, role):
     _topology, profile, targets = _profile_and_targets(
         hard_band=[1600, 20_000], measurement_band=[1600, 18_000],
         tweeter_low_limit_hz=1600.0,
     )
     with caplog.at_level(logging.INFO):
         resolve_driver_excitation_ceilings(
-            profile, targets["tweeter"]["target_fingerprint"], program_admission=True,
+            profile, targets[role]["target_fingerprint"], program_admission=True,
         )
     assert not event_records(
         caplog, "active_speaker.excitation_floor_widened_to_hard_band"
@@ -794,11 +743,7 @@ def test_resolve_driver_measurement_band_hz_raises_on_unknown_target():
         resolve_driver_measurement_band_hz(profile, "not-a-real-fingerprint")
 
 
-def test_a_full_range_sweep_never_reaches_below_its_declared_low_limit():
-    """A ``full_range`` driver has no crossover high-pass under it, so its
-    declared minimum recommended crossover frequency is the only thing between
-    a sweep and the suspension. The projection and the resolver sit in
-    different modules, so their composition is pinned rather than assumed."""
+def test_a_full_range_sweep_uses_audio_edges_after_low_limit_projection():
     declared_floor_hz = 80.0
     target = apply_driver_low_limit(
         {
@@ -818,4 +763,5 @@ def test_a_full_range_sweep_never_reaches_below_its_declared_low_limit():
 
     band, _ceiling = resolve_driver_excitation_ceilings({"targets": [target]}, "f" * 64)
 
-    assert band.lower_hz >= declared_floor_hz
+    assert target["hard_excitation_band_hz"][0] == declared_floor_hz
+    assert (band.lower_hz, band.upper_hz) == (20.0, 20000.0)
