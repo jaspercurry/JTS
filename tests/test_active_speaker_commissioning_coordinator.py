@@ -73,25 +73,26 @@ def _applied_baseline_profile(**overrides) -> dict:
             "permissions": {"may_compile": True, "may_apply": False}, "issues": [], **overrides}
 
 
-@pytest.mark.parametrize("status,current,action,enabled,program,layers,rounds", [
-    ("needs_layout", "layout", "declare_speaker", True, None, (), ()),
-    ("needs_driver_values", "research", "save_driver_values", True, None, (), ()),
-    ("needs_driver_safety_profile", "research", "save_driver_values", True, None, (), ()),
-    ("needs_first_experiment", "experiment", "run_speaker_program", True, "speaker", (), ()),
-    ("ready_to_save_profile", "profile", "apply_candidate", True, None, (), ()),
-    ("blocked", "profile", "apply_candidate", False, None, (), ()),
-    ("applied", "profile", "run_program", True, "speaker", ("speaker",), ()),
-    ("not_required", "layout", "run_program", True, "bass", (), ()),
-    ("applied", "profile", "copy_prompt", True, "speaker", (), (("speaker", 1),)),
-    ("applied", "profile", "run_program", True, "speaker", (), (("speaker", 0),)),
-    ("applied", "profile", "run_program", True, "bass", ("speaker",), (("speaker", 1),)),
-    ("applied", "profile", "copy_prompt", True, "room", ("speaker", "bass"), (("room", 1),)),
-    ("applied", "profile", "run_program", True, "bass", ("speaker", "room"), (("room", 1),)),
-    ("applied", "profile", "copy_prompt", True, "bass", ("speaker", "room"), (("bass", 1),)),
-    ("applied", "profile", "run_program", True, "speaker", ("speaker", "room", "bass"), (("speaker", 1),)),
-    ("not_required", "layout", "copy_prompt", True, "bass", (), (("bass", 1),)),
+@pytest.mark.parametrize("status,current,action,enabled,program,layers,rounds,reason_code", [
+    ("needs_layout", "layout", "declare_speaker", True, None, (), (), None),
+    ("needs_driver_values", "research", "save_driver_values", True, None, (), (), None),
+    ("needs_driver_safety_profile", "research", "save_driver_values", True, None, (), (), None),
+    ("needs_first_experiment", "experiment", "run_speaker_program", True, "speaker", (), (), None),
+    ("ready_to_save_profile", "profile", "apply_candidate", True, None, (), (), None),
+    ("blocked", "profile", "apply_candidate", False, None, (), (), None),
+    ("applied", "profile", "run_program", True, "speaker", ("speaker",), (), None),
+    ("not_required", "layout", "run_program", True, "bass", (), (), None),
+    ("applied", "profile", "copy_prompt", True, "speaker", (), (("speaker", 1),), None),
+    ("applied", "profile", "run_program", True, "speaker", (), (("speaker", 0),), None),
+    ("applied", "profile", "run_program", True, "bass", ("speaker",), (("speaker", 1),), None),
+    ("applied", "profile", "copy_prompt", True, "room", ("speaker", "bass"), (("room", 1),), None),
+    ("applied", "profile", "run_program", True, "bass", ("speaker", "room"), (("room", 1),), None),
+    ("applied", "profile", "copy_prompt", True, "bass", ("speaker", "room"), (("bass", 1),), None),
+    ("applied", "profile", "run_program", True, "speaker", ("speaker", "room", "bass"), (("speaker", 1),), None),
+    ("not_required", "layout", "copy_prompt", True, "bass", (), (("bass", 1),), None),
+    ("applied", "profile", "run_program", True, "speaker", (), (("speaker", -1),), "layer_not_applied"),
 ])
-def test_every_commissioning_state_has_one_next_action(status, current, action, enabled, program, layers, rounds):
+def test_every_commissioning_state_has_one_next_action(status, current, action, enabled, program, layers, rounds, reason_code):
     draft = _ready_design()
     topology = passive_stereo_output_topology() if status == "not_required" else _topology()
     if status == "needs_layout":
@@ -115,6 +116,8 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
     assert view["status"] == status
     assert (view["next_action"]["id"], view["next_action"]["enabled"], view["next_action"].get("program")) == (
         action, enabled, program)
+    if reason_code is not None:
+        assert view["next_action"]["reason_code"] == reason_code
     assert "command" not in view["next_action"]
     assert view["combined_groups"] == []
     if action == "apply_candidate":

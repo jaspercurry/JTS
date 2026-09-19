@@ -490,7 +490,9 @@ def _banked_section(
 def _applied_section(
     packet: dict[str, Any] | None, packet_error: str
 ) -> dict[str, Any]:
-    """Keep the round receipt and applied profile BLEND records separate."""
+    """Keep the round receipt and applied profile BLEND records separate;
+    incumbent.linearization is not surfaced yet (#2863 follow-up).
+    """
     block = _block(packet, "incumbent")
     from_receipt = _incumbent_record(block.get("from_round_receipt"), packet_error)
     from_profile = _incumbent_record(block.get("from_applied_profile"), packet_error)

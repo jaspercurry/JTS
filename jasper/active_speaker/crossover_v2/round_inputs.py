@@ -250,8 +250,6 @@ def latest_banked_rounds(
     applied_at = parse_utc_iso(str(identity.get("applied_at") or ""))
     found: dict[str, dict[str, Any]] = {}
     for modified_at, directory in _recent_round_directories(session_dir, limit=limit)[:max(0, limit)]:
-        if applied_at is not None and modified_at <= applied_at:
-            break
         if not (directory / "bundle").is_dir():
             continue
         packet = _read_json_mapping(directory / PACKET_FILENAME) or {}
@@ -262,21 +260,26 @@ def latest_banked_rounds(
             purpose = run_purpose(packet.get("program"))
         except ValueError:
             continue
-        record = {"round_dir": str(directory), "started_at": modified_at,
+        provenance = _read_json_mapping(directory / "provenance.json") or {}
+        # Packet/view rewrites change directory mtime; the bank owns this timestamp.
+        banked_at = next((value for value in (
+            parse_utc_iso(str(provenance.get("banked_at_utc") or "")),
+            finite_float(packet.get("finalized_at")), finite_float(packet.get("started_at")),
+            finite_float((packet.get("session") or {}).get("started_at")),
+        ) if value is not None), modified_at)
+        if applied_at is not None and banked_at <= applied_at:
+            continue
+        record = {"round_dir": str(directory), "started_at": banked_at,
                   "round_id": packet.get("round_id") or directory.name,
-                  "banked_at": modified_at, "status": packet.get("result")}
-        if purpose in programs and purpose not in found:
-            found[purpose] = {
-                **record,
-                **({"alignment_verdict": packet.get("alignment_verdict"),
-                    "next_action": packet.get("next_action")}
-                   if purpose == PURPOSE_SPEAKER else {}),
-            }
-        if PURPOSE_ROOM in programs and packet.get("room") and PURPOSE_ROOM not in found:
-            found[PURPOSE_ROOM] = dict(record)
-        if len(found) == len(programs):
-            break
-    return found
+                  "banked_at": banked_at, "status": packet.get("result")}
+        for name in (purpose, PURPOSE_ROOM) if packet.get("room") else (purpose,):
+            prior = found.get(name)
+            if name in programs and (prior is None or (banked_at, str(directory)) >
+                                     (prior["started_at"], prior["round_dir"])):
+                found[name] = {**record, **({"alignment_verdict": packet.get("alignment_verdict"),
+                                            "next_action": packet.get("next_action")}
+                                           if name == PURPOSE_SPEAKER else {})}
+    return dict(sorted(found.items(), key=lambda item: (item[1]["started_at"], item[1]["round_dir"]), reverse=True))
 
 
 def set_artifact_name(name: str, set_id: str | None = None) -> str:
