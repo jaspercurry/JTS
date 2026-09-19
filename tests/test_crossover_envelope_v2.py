@@ -254,10 +254,11 @@ def test_finished_run_uses_the_registry_action_and_reset(terminal, fault):
     assert all(env[key] is None for key in ("candidate_review", "prediction", "cloud", "cloud_chart", "round"))
 
 
+@pytest.mark.parametrize("previous_failure", [None, {"code": "user_stopped"}])
 @pytest.mark.parametrize("mover", ["human", "cli", "turntable"])
-def test_staged_run_uses_the_measure_screen_and_the_existing_prompt(mover):
+def test_staged_run_uses_the_measure_screen_and_the_existing_prompt(mover, previous_failure):
     capture = {"status": "awaiting_join", "join": {"mover": mover, "prompt": {"title": "First pose"}}}
-    env = build_crossover_envelope_v2({**_status(), "capture": capture})
+    env = build_crossover_envelope_v2({**_status(failure=previous_failure), "capture": capture})
     assert env["screen"] == "measure"
     assert env["capture"] == capture
     assert env["next_action"] is None

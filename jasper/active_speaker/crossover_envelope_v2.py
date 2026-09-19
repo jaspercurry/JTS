@@ -651,7 +651,9 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
     capture = _mapping(status.get("capture"))
     terminal = capture.get("status")
     run = _mapping(capture.get("run"))
-    failure_code = str(run.get("fault") or _mapping(v2.get("failure")).get("code") or "")
+    # A staged capture is a new session; the durable failure is the previous session's.
+    durable_failure = {} if terminal == "awaiting_join" else _mapping(v2.get("failure"))
+    failure_code = str(run.get("fault") or durable_failure.get("code") or "")
     durable_complete = not capture and phase in {PHASE_REVIEW, PHASE_APPLYING, PHASE_DONE}
     if terminal in SESSION_ENDED_STATUSES or durable_complete:
         if terminal == CAPTURE_FAILED or (durable_complete and failure_code):
