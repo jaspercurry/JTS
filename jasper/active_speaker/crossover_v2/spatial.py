@@ -185,17 +185,12 @@ class CaptureScreens:
     ``pilot_snr_ok`` and ``linearity_ok`` are tri-state (``None`` = not
     evaluated), and the ladders branch on ``is False``: an unevaluated screen is
     not a failed one.
-
-    Every field is required, including the four a shorter ladder does not read:
-    a permissive default would silently answer for a capture the caller never
-    looked at the day a rung is added that reads it.
     """
 
     stimulus_located: bool
     pilot_snr_ok: bool | None
     linearity_ok: bool | None
     glitch_detected: bool
-    sweep_locate_confidence_ok: bool
     sweep_schedule_ok: bool
     any_sweep_clipped: bool
 
@@ -259,8 +254,6 @@ def lateral_pose_screens(screens: CaptureScreens) -> str | None:
         return SCREEN_LOCATE_FAILED
     if screens.pilot_snr_ok is False:
         return SCREEN_PILOT_LEVEL_COLLAPSE
-    if not screens.sweep_locate_confidence_ok:
-        return SCREEN_LOCATE_FAILED
     if screens.glitch_detected:
         return SCREEN_CAPTURE_GLITCH
     if not screens.sweep_schedule_ok:

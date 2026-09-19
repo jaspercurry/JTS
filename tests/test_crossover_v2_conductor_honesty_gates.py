@@ -20,11 +20,12 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_REGISTRY,
+    REASON_LOCATE_FAILED, REASON_PILOT_LEVEL_COLLAPSE, REASON_REGISTRY,
 )
 from jasper.active_speaker.crossover_v2.diagnostics import PILOT_SNR_UNUSABLE_DB, _worst_pilot_snr_db
 from jasper.active_speaker.crossover_v2.capture_dispatch import (
-    SWEEP_LOCATE_CONFIDENCE_FLOOR,
+    LOCATE_MIN_CONFIDENCE,
+    assess,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
@@ -117,15 +118,6 @@ def test_glitch_reuses_drift_baselines_disagree():
 
 
 def test_sweep_schedule_fires_on_large_residual_even_with_good_confidence():
-    """Measurement-honesty gate G2 (2026-07-22 — the xrun detector): a
-    uniform whole-capture schedule shift the repeat-pair drift check above
-    is structurally blind to. Mirrors the 2026-07-22 ``event=outputd.xrun``
-    hardware evidence's -25...-28 ms shift, isolating the RESIDUAL half of
-    the gate: good confidence (0.8, clears SWEEP_LOCATE_CONFIDENCE_FLOOR)
-    does not save a badly-shifted sweep. Routed identically to the
-    pre-existing glitch branch above — same silent auto-retry, same reused
-    drift_baselines_disagree code (§5.2's capture-glitch reuse convention);
-    the diag ``guard`` field is what tells them apart in telemetry."""
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
@@ -149,101 +141,51 @@ def test_sweep_schedule_fires_on_large_residual_even_with_good_confidence():
     assert _run_phase(c, 2, 3)["accepted"] is True
 
 
-def test_weakly_located_sweep_reads_too_quiet_not_glitched():
-    """D3 (#1838): the CONFIDENCE half of G2 is a LEVEL verdict, not a glitch.
-
-    Mirrors the 2026-07-22 xrun evidence's 0.07-0.12 per-segment confidence
-    with a negligible residual, so only the confidence floor is exercised.
-    0.12 clears LOCATE_MIN_CONFIDENCE (0.1) but is under
-    SWEEP_LOCATE_CONFIDENCE_FLOOR (0.3).
-
-    Until #1838 this returned `drift_baselines_disagree` + a silent auto
-    retry — the household was told its capture had glitched, and the flow
-    re-ran the same level. A sweep the locator can barely find was not
-    spliced; it was too quiet to hear, and re-running it at the same level
-    cannot succeed. `locate_failed` says so and does not auto-retry.
-
-    WHICH sentence it says is no longer fixed: since #2085 the copy is chosen
-    from this capture's own pilot evidence, because "too quiet to hear" is an
-    inference the pilot can refute. This scenario's analysis carries no pilot
-    verdict, so it renders the unknown-evidence copy; the two established
-    branches are pinned in `test_crossover_v2_honest_capture_copy.py`.
-    """
+def test_heard_sweeps_on_schedule_are_accepted():
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     fakes.measure = lambda program: _measure_analysis(
-        program,
+        program, pilot_snr_ok=True,
         sweep_locations=(
             _loc("sweep_w", confidence=0.12, residual_samples=1.0),
             _loc("sweep_t", confidence=0.12),
             _loc("sweep_w_rep", confidence=0.12),
         ),
     )
-    verdict = _run_phase(c, 2, 2)
-    assert verdict["code"] == "locate_failed"
-    # Positive assertion: the household is asked to fix the level and retry,
-    # not silently re-run at the same one. (`!= "silent_auto_retry"` would
-    # also pass if the template were renamed or dropped.)
-    assert verdict["template"] == "fix_and_retry"
-    assert not verdict.get("auto_retry")
+    program = c.program_for_phase(PHASE_MEASURE)
+    verdict = assess(fakes.measure(program), phase="measure", program=program)
+    assert verdict.ok is True
+    assert verdict.evidence["locate_confidence_min"] == 0.12
+    assert verdict.evidence["schedule_residual_ms_worst"] == pytest.approx(1000 / program.sample_rate_hz)
+    assert _run_phase(c, 2, 2)["accepted"] is True
 
 
-def test_buried_measure_capture_reads_too_quiet_not_glitched():
-    """D3 (#1838), the whole field shape at once: session
-    cap_-Us10xORVNlFa_dgi-sP7g's MEASURE played 33 dB below flat, so its
-    pilots sank under their SNR floor, its sweeps located at 0.03, the
-    mis-located sweeps produced a 1018-sample residual, and the residual
-    tripped `glitch_detected` on noise.
-
-    Every one of those is downstream of one cause: nobody could hear the
-    capture. With the glitch branch second in the ladder the household was
-    told "capture glitched", the flow silently re-armed the same unwinnable
-    level, and the session burned 120 s of dead air into a CaptureTimeout.
-    The verdict has to name the level.
-
-    The pilots are given real confidence on purpose: they WERE located that
-    evening (the SNR guard read 11.22 dB against a 12.38 dB floor, which it
-    could only do on a located pair), and they are what let the capture past
-    the first `_stimulus_locate_ok` gate.
-    """
+@pytest.mark.parametrize("glitch", [False, True])
+@pytest.mark.parametrize(("pilot_snr_ok", "confidence", "code"), [
+    (False, 0.0298, REASON_PILOT_LEVEL_COLLAPSE),
+    (True, 0.15, REASON_LOCATE_FAILED),
+])
+def test_buried_measure_capture_reads_too_quiet_not_glitched(glitch, pilot_snr_ok, confidence, code):
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     fakes.measure = lambda program: _measure_analysis(
-        program,
-        pilot_snr_ok=False,
-        glitch=True,
+        program, pilot_snr_ok=pilot_snr_ok, glitch=glitch,
         sweep_locations=(
             _loc("pilot_woofer_lo", kind="pilot", confidence=0.5),
             _loc("pilot_woofer_hi", kind="pilot", confidence=0.6),
-            _loc("sweep_w", confidence=0.0298, residual_samples=1018.0),
-            _loc("sweep_t", confidence=0.0298, residual_samples=1018.0),
-            _loc("sweep_w_rep", confidence=0.0298, residual_samples=1018.0),
+            *(_loc(segment, confidence=confidence, residual_samples=21.2e-3 * program.sample_rate_hz)
+              for segment in ("sweep_w", "sweep_t", "sweep_w_rep")),
         ),
     )
     verdict = _run_phase(c, 2, 2)
-    assert verdict["code"] == "pilot_level_collapse"
+    assert verdict["code"] == code
+    assert (verdict["next"], verdict["charge"]) == ("fix_and_retake", "operator")
     assert not verdict.get("auto_retry")
-
-    # And with the pilots healthy, the same buried sweeps still read as a
-    # level problem — the weak-locate gate, not the glitch branch.
-    fakes.measure = lambda program: _measure_analysis(
-        program,
-        glitch=True,
-        sweep_locations=(
-            _loc("pilot_woofer_lo", kind="pilot", confidence=0.5),
-            _loc("sweep_w", confidence=0.15, residual_samples=1018.0),
-            _loc("sweep_t", confidence=0.15, residual_samples=1018.0),
-            _loc("sweep_w_rep", confidence=0.15, residual_samples=1018.0),
-        ),
-    )
-    assert _run_phase(c, 2, 3)["code"] == "locate_failed"
 
 
 def test_sweep_schedule_clean_capture_passes():
-    """The default fixture (well inside both thresholds) is unaffected —
-    the happy path already exercises this; pins it explicitly."""
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
@@ -252,8 +194,6 @@ def test_sweep_schedule_clean_capture_passes():
 
 
 def test_sweep_schedule_boundary_exact_values_pass():
-    """Both thresholds are exclusive bounds (``>``/``<``) — exactly-at the
-    ceiling/floor passes."""
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
@@ -261,13 +201,13 @@ def test_sweep_schedule_boundary_exact_values_pass():
         program,
         sweep_locations=(
             _loc(
-                "sweep_w", confidence=SWEEP_LOCATE_CONFIDENCE_FLOOR,
+                "sweep_w", confidence=LOCATE_MIN_CONFIDENCE,
                 residual_samples=(
                     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS * 1e-3 * program.sample_rate_hz
                 ),
             ),
-            _loc("sweep_t", confidence=SWEEP_LOCATE_CONFIDENCE_FLOOR),
-            _loc("sweep_w_rep", confidence=SWEEP_LOCATE_CONFIDENCE_FLOOR),
+            _loc("sweep_t", confidence=LOCATE_MIN_CONFIDENCE),
+            _loc("sweep_w_rep", confidence=LOCATE_MIN_CONFIDENCE),
         ),
     )
     verdict = _run_phase(c, 2, 2)

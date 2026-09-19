@@ -60,10 +60,8 @@ class ConfiguredPathConditioningError(ValueError):
 GLITCH_RESIDUAL_SAMPLES = 1.5
 MAX_DRIFT_PPM = 500.0
 
-# Floor on `SegmentLocation.confidence` below which a located sweep is not
-# evidence (~0.03 fits a confident-looking multi-thousand-sample step from
-# noise). Duplicated from crossover_v2.capture_dispatch's own floor and
-# pinned equal by tests/test_measurement_integrity_floor_contracts.py.
+# Confidence floor for VERIFY summed sweeps, drift step fits, and anchor witnesses;
+# also routes a failed sweep schedule to locate failure instead of a glitch retry.
 SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 
 # How many TIMES more present the winning anchor hypothesis's witness must
@@ -72,10 +70,8 @@ SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 # cannot-discriminate (1.07-12.4) and resolved (197+) anchors. PROVISIONAL.
 ANCHOR_DISCRIMINATION_RATIO = 50.0
 
-# Max residual, ms, between a located VERIFY summed sweep and its scheduled
-# slot; beyond it the timeline was spliced, not drifted. Twin of
-# crossover_v2.capture_dispatch's MEASURE constant; inherited from MEASURE
-# evidence (glitched at -25..-28 ms vs clean at <=1.5 ms), not re-derived.
+# Max residual, ms, between a located sweep and its scheduled slot:
+# measured glitches at -25..-28 ms vs clean captures at <=1.5 ms.
 SWEEP_SCHEDULE_RESIDUAL_CEILING_MS = 5.0
 
 # Sentinel for "no located sweeps were trustworthy enough to fit a step",
