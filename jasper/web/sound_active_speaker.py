@@ -926,7 +926,7 @@ async def _active_speaker_commissioning_view_payload(
     from jasper.active_speaker.timing_status import timing_status_lines  # lazy: view-only formatting
     applied = load_applied_baseline_profile_state()
     identity = applied_identity(applied)
-    recent = latest_banked_rounds(identity) if identity is not None else {}
+    recent = latest_banked_rounds(identity, programs=("speaker",)) if identity is not None else {}
     view["timing"] = timing_status_lines(applied, recent.get("speaker"))
     log_event(
         logger,

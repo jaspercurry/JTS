@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple
 
 from jasper.json_fields import finite_float, parse_utc_iso
-from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_BASS, PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose
+from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from .journey import PHASE_ENTRY_BASELINE
@@ -242,6 +242,7 @@ def recent_round_sessions(session_dir: Path | None = None, *, limit: int = 32) -
 
 def latest_banked_rounds(
     identity: Mapping[str, Any], session_dir: Path | None = None, *, limit: int = 32,
+    programs: tuple[str, ...] = RUNNABLE_PROGRAMS,
 ) -> dict[str, dict[str, Any]]:
     """Latest packet per program and applied identity within a bounded recent window."""
     from jasper.active_speaker.round_packet_report import PACKET_FILENAME  # lazy: packet report imports this reader
@@ -261,16 +262,16 @@ def latest_banked_rounds(
             purpose = run_purpose(packet.get("program"))
         except ValueError:
             continue
-        if purpose in (PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS) and purpose not in found:
+        if purpose in programs and purpose not in found:
             found[purpose] = {
                 "round_dir": str(directory), "started_at": modified_at,
                 **({"alignment_verdict": packet.get("alignment_verdict"),
                     "next_action": packet.get("next_action")}
                    if purpose == PURPOSE_SPEAKER else {}),
             }
-        if packet.get("room") and PURPOSE_ROOM not in found:
+        if PURPOSE_ROOM in programs and packet.get("room") and PURPOSE_ROOM not in found:
             found[PURPOSE_ROOM] = {"round_dir": str(directory), "started_at": modified_at}
-        if len(found) == 3:
+        if len(found) == len(programs):
             break
     return found
 

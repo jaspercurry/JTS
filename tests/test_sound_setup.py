@@ -40,6 +40,7 @@ from jasper.active_speaker.commissioning_coordinator import build_commissioning_
 from jasper.active_speaker.baseline_profile import persist_applied_baseline_profile
 from jasper.active_speaker.design_draft import declared_driver_spacing_m, load_design_draft
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 from jasper.audio_measurement.program_analysis.model import MeasurementGeometry
 from jasper.active_speaker.runtime_convergence import PARK_SKIPPED, park_and_commit_topology
 from jasper.active_speaker.runtime_contract import (
@@ -5754,16 +5755,6 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
     assert len(prompt.split()) < 250
 
 
-def test_program_entries_cover_exactly_the_runnable_programs():
-    """One entry per runnable program: no gap, no entry for a non-runnable id."""
-    from jasper.active_speaker import tuning_handoff
-    from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
-
-    ids = [entry["id"] for entry in tuning_handoff.PROGRAM_ENTRIES]
-    assert len(ids) == len(RUNNABLE_PROGRAMS)
-    assert set(ids) == set(RUNNABLE_PROGRAMS)
-
-
 def test_tuning_handoff_prompt_for_rear_adds_the_trial_commands(monkeypatch):
     """Rear alone carries the trial/packet guidance, naming the real commands."""
     from jasper.active_speaker import tuning_handoff
@@ -5815,7 +5806,7 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
 
     assert payload["status"] == "ready"
     assert payload["binding"]["design_draft_revision"] == 2
-    assert [entry["id"] for entry in payload["programs"]] == ["speaker", "room", "bass", "rear"]
+    assert tuple(entry["id"] for entry in payload["programs"]) == RUNNABLE_PROGRAMS
     assert all("prompt" not in entry for entry in payload["programs"])
     assert payload["program"] == "room"
     assert payload["prompt"] == tuning_handoff.build_tuning_handoff_prompt(
