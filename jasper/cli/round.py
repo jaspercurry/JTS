@@ -8,9 +8,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 from urllib.parse import urlsplit
 
 from jasper.net.http_security import _is_loopback_name
@@ -34,6 +35,22 @@ PROG = "jasper-round"
 DEFAULT_TIMEOUT_S = 900.0
 AUTHORITY_TIER = "mutating-with-gates (`run`/`trial`/`placed`/`stop`/`wait`/`apply`/`reset` write; `status` reads)"
 LOST_ANSWER_ADVICE = "the apply may have taken effect; read the live candidate before trying again"
+_BEARING_LIST = re.compile(r"-\d+(\.\d+)?(,[+-]?\d+(\.\d+)?)*")
+
+
+def _joined_bearings(args: Iterable[str]) -> list[str]:
+    """Rewrite ``--poses <list>`` as ``--poses=<list>``.
+
+    argparse reads a lone negative number as a value but not a bearing list
+    that starts with one, so the spaced spelling would be an unknown option.
+    """
+    joined: list[str] = []
+    for arg in args:
+        if joined[-1:] == ["--poses"] and _BEARING_LIST.fullmatch(arg):
+            joined[-1] = f"--poses={arg}"
+        else:
+            joined.append(arg)
+    return joined
 
 
 class _RoundSubparser(argparse.ArgumentParser):
@@ -42,6 +59,9 @@ class _RoundSubparser(argparse.ArgumentParser):
             from jasper.active_speaker.crossover_v2.refusal_copy import TIMING_RESET_NOTE  # lazy: help-only operator copy
             self.description = TIMING_RESET_NOTE
         return super().format_help()
+
+    def parse_known_args(self, args: Iterable[str] | None = None, namespace: Any = None) -> Any:
+        return super().parse_known_args(args if args is None else _joined_bearings(args), namespace)
 
 
 def _answer(verb: str, human: str, **fields: Any) -> int:
