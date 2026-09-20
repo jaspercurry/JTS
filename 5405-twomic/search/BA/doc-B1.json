@@ -1,0 +1,261 @@
+{
+ "base": "saved",
+ "kind": "jts_prescription",
+ "schema": 1,
+ "rationale": "B1 (#5405 before/after): B0 plus the room correction fitted on B0's own mean-of-3-poses front response in round ba1 (6 Peaking filters, 40-500 Hz, largest boost +3.93 dB), same recipe and same limits as A1's. Measurement only.",
+ "sections": {
+  "rear_calibration": {
+   "assumptions": [
+    "B1: the room correction fitted on its own base in round ba1, carried as a COMMON EQ on every woofer chain of the stage (front).",
+    "Equivalent to the product's pre-split room layer inside 40-500 Hz; the room SECTION itself needs a measured room median this rear round does not bank.",
+    "B0: a rear-muted copy of agg-1 whose FRONT chain carries four measured Peaking filters plus agg-1's own headroom cut in gain_db, so the front response matches A0 while the rear woofer is silent."
+   ],
+   "boundary": {
+    "front": [],
+    "rear": []
+   },
+   "case": "electrical_dsp",
+   "common_delay_ms": 1.06,
+   "conditions": {
+    "dataset": "jts3 measured summed rounds D1..H4; main mic 0.61 m in front (3 arm poses), side mic 0.61 m behind (arm +-20); rig state of round H4",
+    "fit_band_hz": [
+     100.0,
+     350.0
+    ],
+    "fit_tool": "h6_solve.py",
+    "measured": true,
+    "timing_reference": "front output of this stage"
+   },
+   "front": {
+    "delay_ms": 0.0,
+    "filters": [
+     {
+      "parameters": {
+       "freq": 80.0,
+       "q": 0.7071,
+       "type": "Allpass"
+      },
+      "type": "Biquad"
+     },
+     {
+      "parameters": {
+       "freq": 190.14,
+       "gain": -6.36,
+       "q": 0.996,
+       "type": "Peaking"
+      },
+      "type": "Biquad"
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 99.1339546913487,
+       "gain": -2.557775063186485,
+       "q": 2.3222787155526263
+      }
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 250.31579978002407,
+       "gain": 3.283521311157245,
+       "q": 2.943623813765736
+      }
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 179.0078794002169,
+       "gain": 1.7428613501582997,
+       "q": 2.8752562658581655
+      }
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 506.49057835350925,
+       "gain": -0.9580529062963109,
+       "q": 2.7383676610334047
+      }
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 41.75860209372651,
+       "gain": 2.0678940223407913,
+       "q": 4.999996135785842
+      }
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 80.92115704613136,
+       "gain": 3.9338187648363108,
+       "q": 3.7458265313053074
+      }
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 105.92696091344234,
+       "gain": -2.2824587643957854,
+       "q": 4.99742911924212
+      }
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 193.15926139988062,
+       "gain": -2.2024979354313605,
+       "q": 4.999760009683062
+      }
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 253.17002930819473,
+       "gain": -3.8669019308477326,
+       "q": 4.999962470208158
+      }
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 451.00063061565373,
+       "gain": -3.3822966522728235,
+       "q": 4.99999639472202
+      }
+     }
+    ],
+    "gain_db": -1.1327,
+    "inverted": false,
+    "muted": false
+   },
+   "geometry": {
+    "cabinet_back_wall_m": null,
+    "details": null,
+    "sources": {
+     "front": null,
+     "rear": null
+    }
+   },
+   "included_stages": {
+    "front": [],
+    "rear": []
+   },
+   "kind": "jts_rear_calibration",
+   "phase_convention": "positive_delay_has_negative_phase",
+   "rear": {
+    "bass": {
+     "delay_ms": -1.06,
+     "filters": [
+      {
+       "parameters": {
+        "freq": 80.0,
+        "order": 4,
+        "type": "LinkwitzRileyLowpass"
+       },
+       "type": "BiquadCombo"
+      },
+      {
+       "parameters": {
+        "freq": 190.14,
+        "gain": -6.36,
+        "q": 0.996,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      },
+      {
+       "parameters": {
+        "freq": 120.0,
+        "gain": 3,
+        "q": 1.0,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      }
+     ],
+     "gain_db": 0.0,
+     "inverted": false,
+     "muted": false
+    },
+    "cancellation": {
+     "delay_ms": -0.213,
+     "filters": [
+      {
+       "parameters": {
+        "freq": 80.0,
+        "order": 4,
+        "type": "LinkwitzRileyHighpass"
+       },
+       "type": "BiquadCombo"
+      },
+      {
+       "parameters": {
+        "freq": 300.35,
+        "order": 2,
+        "type": "ButterworthLowpass"
+       },
+       "type": "BiquadCombo"
+      },
+      {
+       "parameters": {
+        "freq": 190.14,
+        "gain": -6.36,
+        "q": 0.996,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      },
+      {
+       "parameters": {
+        "freq": 120.0,
+        "gain": 5.453,
+        "q": 1.0,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      },
+      {
+       "parameters": {
+        "freq": 259.46,
+        "gain": 5.651,
+        "q": 2.254,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      }
+     ],
+     "gain_db": 0.0,
+     "inverted": true,
+     "muted": false
+    },
+    "mode": "branches"
+   },
+   "rear_muted": true,
+   "reference": {
+    "level": null,
+    "quantity": "electrical_filter_transfer",
+    "units": "linear output/input"
+   },
+   "sample_rate_hz": 48000,
+   "schema": 1,
+   "valid_band_hz": [
+    40.0,
+    800.0
+   ]
+  },
+  "room": null
+ }
+}

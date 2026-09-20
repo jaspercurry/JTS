@@ -1,0 +1,157 @@
+{
+ "base": "saved",
+ "kind": "jts_prescription",
+ "rationale": "N1 with cancellation gain -6.0 dB (delay +0.10 ms): the two-mic pair round e4cd4da24c24 says the front woofer's direct sound at the mic 0.61 m behind equals the raw rear woofer delayed 0.95 ms at -1.3 dB; N1's rear is 1-3 dB hot there. Measured against rear-muted 0caaa048 in the same round.",
+ "schema": 1,
+ "sections": {
+  "rear_calibration": {
+   "assumptions": [
+    "2026-09-19, #5405: re-derived from pair round 12d0fdb51b0f (speaker near mid-room on a stand, mic 1 m in front and 1 m behind). A preview choice, not a tune, until trial 1 measures it.",
+    "Front carries a 2nd-order all-pass at the 80 Hz hand-over (Q 0.7071 = the LR4 phase) so the in-phase bass branch and the inverted cancellation branch stay phase-matched to the front; n1 had its all-pass on the cancellation branch only and nulled behind the box only at 95-120 Hz.",
+    "Cancellation low-pass is a gentle Butterworth 2 at 300 Hz; the branch delay absorbs its group delay. Bass branch leads by the measured front gap (1.057 ms).",
+    "Grid pick N1: cancellation delay +0.1 ms, rear weight Peaking 120 Hz +3 dB on both rear branches. Preview: gradient residual -8.6 dB (front row), late energy +1.7 dB, behind 90-350 Hz -2.6 dB, headroom charge 0."
+   ],
+   "boundary": {
+    "front": [],
+    "rear": []
+   },
+   "case": "electrical_dsp",
+   "common_delay_ms": 1.06,
+   "conditions": {
+    "dataset": "jts3 round e4cd4da24c24 pair, UMIK-2 0.61 m front, Dayton iMM-6C 0.61 m behind, arm 0/+-20",
+    "measured": false,
+    "timing_reference": "front output of this stage"
+   },
+   "front": {
+    "delay_ms": 0.0,
+    "filters": [
+     {
+      "parameters": {
+       "freq": 80.0,
+       "q": 0.7071,
+       "type": "Allpass"
+      },
+      "type": "Biquad"
+     },
+     {
+      "parameters": {
+       "freq": 190.14,
+       "gain": -6.36,
+       "q": 0.996,
+       "type": "Peaking"
+      },
+      "type": "Biquad"
+     }
+    ],
+    "gain_db": -0.51,
+    "inverted": false,
+    "muted": false
+   },
+   "geometry": {
+    "cabinet_back_wall_m": null,
+    "details": null,
+    "sources": {
+     "front": null,
+     "rear": null
+    }
+   },
+   "included_stages": {
+    "front": [],
+    "rear": []
+   },
+   "kind": "jts_rear_calibration",
+   "phase_convention": "positive_delay_has_negative_phase",
+   "rear": {
+    "bass": {
+     "delay_ms": -1.06,
+     "filters": [
+      {
+       "parameters": {
+        "freq": 80.0,
+        "order": 4,
+        "type": "LinkwitzRileyLowpass"
+       },
+       "type": "BiquadCombo"
+      },
+      {
+       "parameters": {
+        "freq": 190.14,
+        "gain": -6.36,
+        "q": 0.996,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      },
+      {
+       "parameters": {
+        "freq": 120.0,
+        "gain": 3,
+        "q": 1.0,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      }
+     ],
+     "gain_db": 0.0,
+     "inverted": false,
+     "muted": false
+    },
+    "cancellation": {
+     "delay_ms": 0.1,
+     "filters": [
+      {
+       "parameters": {
+        "freq": 80.0,
+        "order": 4,
+        "type": "LinkwitzRileyHighpass"
+       },
+       "type": "BiquadCombo"
+      },
+      {
+       "parameters": {
+        "freq": 300.0,
+        "order": 2,
+        "type": "ButterworthLowpass"
+       },
+       "type": "BiquadCombo"
+      },
+      {
+       "parameters": {
+        "freq": 190.14,
+        "gain": -6.36,
+        "q": 0.996,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      },
+      {
+       "parameters": {
+        "freq": 120.0,
+        "gain": 3,
+        "q": 1.0,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      }
+     ],
+     "gain_db": -6.0,
+     "inverted": true,
+     "muted": false
+    },
+    "mode": "branches"
+   },
+   "rear_muted": false,
+   "reference": {
+    "level": null,
+    "quantity": "electrical_filter_transfer",
+    "units": "linear output/input"
+   },
+   "sample_rate_hz": 48000,
+   "schema": 1,
+   "valid_band_hz": [
+    40.0,
+    800.0
+   ]
+  }
+ }
+}

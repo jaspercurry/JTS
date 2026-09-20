@@ -1,0 +1,166 @@
+{
+ "kind": "jts_prescription",
+ "schema": 1,
+ "base": "saved",
+ "sections": {
+  "rear_calibration": {
+   "assumptions": [
+    "SEARCH PROPOSAL, NOT A TUNE. Fitted to the MEASURED woofer pair of jts3 round 5afe528f7085 at -20, 0 and +20 deg. The rear-side null is not measured.",
+    "The FRONT chain is left at proposal_1's -0.51 dB on purpose. front.gain_db attenuates the front woofer's whole path to the crossover, and the rear branches are low-passed, so using it as a level lever carves a 2-8 dB hole from 350 Hz to the tweeter - measured in rounds 8 and 9 (analysis/ROUND10_DESIGN.md). The rear weight is realised by filter boosts on the rear branches only.",
+    "Rear weight x1.52 (|H_rear/H_front| over 100-300 Hz, against proposal 1) from a Peaking at 120 Hz +4 dB placed on BOTH rear branches, so the fitted bass/cancellation ratio holds.",
+    "Chain gains are all <= 0 dB. The pre-split headroom charge is +0.169 dB, and round 9 proved that charge lands as broadband attenuation, so it is subtracted from every level figure quoted.",
+    "The 30-80 Hz band carries the dynamic bass block's own uncertainty (1.8-3.9 dB measured against prediction).",
+    "The rear branches sit after the same crossover, driver correction and protection stages as the front output, so those stages cancel in the modelled rear/front ratio.",
+    "Fitted to the modelled cardioid rear/front ACOUSTIC-MOTION ratio, 40-800 Hz. The supplied target is a per-frequency design objective, not a transfer function: its phase rises 139 deg between 63 and 100 Hz (reinforcement to cardioid regime switch) and again at 315 Hz (cone to broad objective blend). No stable causal filter can follow either, so those two transitions are de-weighted in phase and held by magnitude only.",
+    "No bass-restoring shelf is needed: with the front chain left alone the 30-100 Hz lift never goes away, and the rear weight boost adds to it. A zero-gain filter was removed rather than shipped."
+   ],
+   "boundary": {
+    "front": [],
+    "rear": []
+   },
+   "case": "electrical_dsp",
+   "common_delay_ms": 6.82,
+   "conditions": {
+    "dataset": "jts3 round 5afe528f7085 banked pair, -20/0/+20 deg",
+    "fit_band_hz": [
+     40.0,
+     800.0
+    ],
+    "fit_tool": "analysis/j_boost.py",
+    "measured": false,
+    "timing_reference": "front output of this stage"
+   },
+   "front": {
+    "delay_ms": 0.0,
+    "filters": [
+     {
+      "parameters": {
+       "freq": 190.14,
+       "gain": -6.36,
+       "q": 0.996,
+       "type": "Peaking"
+      },
+      "type": "Biquad"
+     }
+    ],
+    "gain_db": -0.51,
+    "inverted": false,
+    "muted": false
+   },
+   "geometry": {
+    "cabinet_back_wall_m": 0.2032,
+    "details": null,
+    "sources": {
+     "front": null,
+     "rear": null
+    }
+   },
+   "included_stages": {
+    "front": [],
+    "rear": []
+   },
+   "kind": "jts_rear_calibration",
+   "phase_convention": "positive_delay_has_negative_phase",
+   "rear": {
+    "bass": {
+     "delay_ms": -6.82,
+     "filters": [
+      {
+       "parameters": {
+        "freq": 80.0,
+        "order": 4,
+        "type": "LinkwitzRileyLowpass"
+       },
+       "type": "BiquadCombo"
+      },
+      {
+       "parameters": {
+        "freq": 190.14,
+        "gain": -6.36,
+        "q": 0.996,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      },
+      {
+       "parameters": {
+        "freq": 120.0,
+        "gain": 4.0,
+        "q": 1.0,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      }
+     ],
+     "gain_db": 0.0,
+     "inverted": false,
+     "muted": false
+    },
+    "cancellation": {
+     "delay_ms": -3.8,
+     "filters": [
+      {
+       "parameters": {
+        "freq": 80.0,
+        "order": 4,
+        "type": "LinkwitzRileyHighpass"
+       },
+       "type": "BiquadCombo"
+      },
+      {
+       "parameters": {
+        "freq": 350.0,
+        "order": 8,
+        "type": "ButterworthLowpass"
+       },
+       "type": "BiquadCombo"
+      },
+      {
+       "parameters": {
+        "freq": 100.0,
+        "q": 1.0,
+        "type": "Allpass"
+       },
+       "type": "Biquad"
+      },
+      {
+       "parameters": {
+        "freq": 190.14,
+        "gain": -6.36,
+        "q": 0.996,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      },
+      {
+       "parameters": {
+        "freq": 120.0,
+        "gain": 4.0,
+        "q": 1.0,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      }
+     ],
+     "gain_db": -1.35,
+     "inverted": true,
+     "muted": false
+    },
+    "mode": "branches"
+   },
+   "rear_muted": false,
+   "reference": {
+    "level": null,
+    "quantity": "electrical_filter_transfer",
+    "units": "linear output/input"
+   },
+   "sample_rate_hz": 48000,
+   "schema": 1,
+   "valid_band_hz": [
+    40.0,
+    800.0
+   ]
+  }
+ },
+ "rationale": "A = the applied n1 rear section, verbatim (rear on). Preview only: the behind-the-cabinet reading for #5405 question 1 and the fit target for B."
+}

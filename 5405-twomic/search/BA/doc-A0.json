@@ -1,0 +1,170 @@
+{
+ "base": "saved",
+ "kind": "jts_prescription",
+ "schema": 1,
+ "rationale": "A0 (#5405 before/after): the applied agg-1 cardioid stage with the saved room layer cleared, so the pair A0/B0 differs only in whether the rear woofer plays. Measurement only.",
+ "sections": {
+  "rear_calibration": {
+   "assumptions": [
+    "Solved for FRONT-TO-BACK GAIN = front change - behind change. Front is UNGATED and meaned over the three arm poses; behind is ungated at 63-125 Hz and 400-630 Hz and GATED 10 ms at 160-315 Hz, meaned over +-20. The +0 arm pose is not used behind.",
+    "A0: the applied agg-1 rear stage verbatim, room layer cleared."
+   ],
+   "boundary": {
+    "front": [],
+    "rear": []
+   },
+   "case": "electrical_dsp",
+   "common_delay_ms": 1.06,
+   "conditions": {
+    "dataset": "jts3 measured summed rounds D1..H4; main mic 0.61 m in front (3 arm poses), side mic 0.61 m behind (arm +-20); rig state of round H4",
+    "fit_band_hz": [
+     100.0,
+     350.0
+    ],
+    "fit_tool": "h6_solve.py",
+    "measured": true,
+    "timing_reference": "front output of this stage"
+   },
+   "front": {
+    "delay_ms": 0.0,
+    "filters": [
+     {
+      "parameters": {
+       "freq": 80.0,
+       "q": 0.7071,
+       "type": "Allpass"
+      },
+      "type": "Biquad"
+     },
+     {
+      "parameters": {
+       "freq": 190.14,
+       "gain": -6.36,
+       "q": 0.996,
+       "type": "Peaking"
+      },
+      "type": "Biquad"
+     }
+    ],
+    "gain_db": -0.51,
+    "inverted": false,
+    "muted": false
+   },
+   "geometry": {
+    "cabinet_back_wall_m": null,
+    "details": null,
+    "sources": {
+     "front": null,
+     "rear": null
+    }
+   },
+   "included_stages": {
+    "front": [],
+    "rear": []
+   },
+   "kind": "jts_rear_calibration",
+   "phase_convention": "positive_delay_has_negative_phase",
+   "rear": {
+    "bass": {
+     "delay_ms": -1.06,
+     "filters": [
+      {
+       "parameters": {
+        "freq": 80.0,
+        "order": 4,
+        "type": "LinkwitzRileyLowpass"
+       },
+       "type": "BiquadCombo"
+      },
+      {
+       "parameters": {
+        "freq": 190.14,
+        "gain": -6.36,
+        "q": 0.996,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      },
+      {
+       "parameters": {
+        "freq": 120.0,
+        "gain": 3,
+        "q": 1.0,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      }
+     ],
+     "gain_db": 0.0,
+     "inverted": false,
+     "muted": false
+    },
+    "cancellation": {
+     "delay_ms": -0.213,
+     "filters": [
+      {
+       "parameters": {
+        "freq": 80.0,
+        "order": 4,
+        "type": "LinkwitzRileyHighpass"
+       },
+       "type": "BiquadCombo"
+      },
+      {
+       "parameters": {
+        "freq": 300.35,
+        "order": 2,
+        "type": "ButterworthLowpass"
+       },
+       "type": "BiquadCombo"
+      },
+      {
+       "parameters": {
+        "freq": 190.14,
+        "gain": -6.36,
+        "q": 0.996,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      },
+      {
+       "parameters": {
+        "freq": 120.0,
+        "gain": 5.453,
+        "q": 1.0,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      },
+      {
+       "parameters": {
+        "freq": 259.46,
+        "gain": 5.651,
+        "q": 2.254,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      }
+     ],
+     "gain_db": 0.0,
+     "inverted": true,
+     "muted": false
+    },
+    "mode": "branches"
+   },
+   "rear_muted": false,
+   "reference": {
+    "level": null,
+    "quantity": "electrical_filter_transfer",
+    "units": "linear output/input"
+   },
+   "sample_rate_hz": 48000,
+   "schema": 1,
+   "valid_band_hz": [
+    40.0,
+    800.0
+   ]
+  },
+  "room": null
+ }
+}

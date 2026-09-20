@@ -1,0 +1,170 @@
+{
+    "kind": "jts_prescription",
+    "schema": 1,
+    "base": "saved",
+    "rationale": "ident-B: N1's structure with the cancellation branch solved against the MEASURED rear path.",
+    "sections": {
+        "rear_calibration": {
+            "assumptions": [
+                "The rear acoustic path R(f) was IDENTIFIED from the measured summed rounds: R = (X_i - X_0) / c_rear_i over every accepted candidate take, robust mean. The pair-round forward model is not used -- it was wrong behind the cabinet.",
+                "common_delay_ms is held at N1's 1.06 ms: the compiler adds it to the front chain too, so moving it would invalidate X_0, the measured rear-muted reference.",
+                "The front chain and the bass branch are doc-N1's verbatim, so doc-Nm (fingerprint 0caaa048) stays the measured zero.",
+                "Search stage B."
+            ],
+            "boundary": {
+                "front": [],
+                "rear": []
+            },
+            "case": "electrical_dsp",
+            "common_delay_ms": 1.06,
+            "conditions": {
+                "dataset": "jts3 measured summed rounds 3138af96e104 (D1), 815ecfe40241 (D2), dea67cbd648d (CONFIRM), 649a313770cb; side mic behind, arm 0/+-20",
+                "fit_band_hz": [
+                    100.0,
+                    350.0
+                ],
+                "fit_tool": "ident_bounds.py",
+                "measured": true,
+                "timing_reference": "front output of this stage"
+            },
+            "front": {
+                "delay_ms": 0.0,
+                "filters": [
+                    {
+                        "parameters": {
+                            "freq": 80.0,
+                            "q": 0.7071,
+                            "type": "Allpass"
+                        },
+                        "type": "Biquad"
+                    },
+                    {
+                        "parameters": {
+                            "freq": 190.14,
+                            "gain": -6.36,
+                            "q": 0.996,
+                            "type": "Peaking"
+                        },
+                        "type": "Biquad"
+                    }
+                ],
+                "gain_db": -0.51,
+                "inverted": false,
+                "muted": false
+            },
+            "geometry": {
+                "cabinet_back_wall_m": null,
+                "details": null,
+                "sources": {
+                    "front": null,
+                    "rear": null
+                }
+            },
+            "included_stages": {
+                "front": [],
+                "rear": []
+            },
+            "kind": "jts_rear_calibration",
+            "phase_convention": "positive_delay_has_negative_phase",
+            "rear": {
+                "bass": {
+                    "delay_ms": -1.06,
+                    "filters": [
+                        {
+                            "parameters": {
+                                "freq": 80.0,
+                                "order": 4,
+                                "type": "LinkwitzRileyLowpass"
+                            },
+                            "type": "BiquadCombo"
+                        },
+                        {
+                            "parameters": {
+                                "freq": 190.14,
+                                "gain": -6.36,
+                                "q": 0.996,
+                                "type": "Peaking"
+                            },
+                            "type": "Biquad"
+                        },
+                        {
+                            "parameters": {
+                                "freq": 120.0,
+                                "gain": 3,
+                                "q": 1.0,
+                                "type": "Peaking"
+                            },
+                            "type": "Biquad"
+                        }
+                    ],
+                    "gain_db": 0.0,
+                    "inverted": false,
+                    "muted": false
+                },
+                "cancellation": {
+                    "delay_ms": -0.6495,
+                    "filters": [
+                        {
+                            "parameters": {
+                                "freq": 80.0,
+                                "order": 4,
+                                "type": "LinkwitzRileyHighpass"
+                            },
+                            "type": "BiquadCombo"
+                        },
+                        {
+                            "parameters": {
+                                "freq": 300.0,
+                                "order": 2,
+                                "type": "ButterworthLowpass"
+                            },
+                            "type": "BiquadCombo"
+                        },
+                        {
+                            "parameters": {
+                                "freq": 190.14,
+                                "gain": -6.36,
+                                "q": 0.996,
+                                "type": "Peaking"
+                            },
+                            "type": "Biquad"
+                        },
+                        {
+                            "parameters": {
+                                "freq": 120.0,
+                                "gain": 3,
+                                "q": 1.0,
+                                "type": "Peaking"
+                            },
+                            "type": "Biquad"
+                        },
+                        {
+                            "type": "Biquad",
+                            "parameters": {
+                                "type": "Allpass",
+                                "freq": 381.0736,
+                                "q": 4.3029
+                            }
+                        }
+                    ],
+                    "gain_db": -0.0056,
+                    "inverted": true,
+                    "muted": false
+                },
+                "mode": "branches"
+            },
+            "rear_muted": false,
+            "reference": {
+                "level": null,
+                "quantity": "electrical_filter_transfer",
+                "units": "linear output/input"
+            },
+            "sample_rate_hz": 48000,
+            "schema": 1,
+            "valid_band_hz": [
+                40.0,
+                800.0
+            ]
+        }
+    }
+}

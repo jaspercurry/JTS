@@ -1,0 +1,333 @@
+{
+ "base": "saved",
+ "kind": "jts_prescription",
+ "schema": 1,
+ "rationale": "A1 (#5405 before/after): A0 plus the room correction fitted on A0's own mean-of-3-poses front response in round ba1 (6 Peaking filters, 40-500 Hz, largest boost +4.00 dB). Measurement only.",
+ "sections": {
+  "rear_calibration": {
+   "assumptions": [
+    "A1: the room correction fitted on its own base in round ba1, carried as a COMMON EQ on every woofer chain of the stage (front + rear.bass + rear.cancellation).",
+    "Equivalent to the product's pre-split room layer inside 40-500 Hz; the room SECTION itself needs a measured room median this rear round does not bank.",
+    "Solved for FRONT-TO-BACK GAIN = front change - behind change. Front is UNGATED and meaned over the three arm poses; behind is ungated at 63-125 Hz and 400-630 Hz and GATED 10 ms at 160-315 Hz, meaned over +-20. The +0 arm pose is not used behind."
+   ],
+   "boundary": {
+    "front": [],
+    "rear": []
+   },
+   "case": "electrical_dsp",
+   "common_delay_ms": 1.06,
+   "conditions": {
+    "dataset": "jts3 measured summed rounds D1..H4; main mic 0.61 m in front (3 arm poses), side mic 0.61 m behind (arm +-20); rig state of round H4",
+    "fit_band_hz": [
+     100.0,
+     350.0
+    ],
+    "fit_tool": "h6_solve.py",
+    "measured": true,
+    "timing_reference": "front output of this stage"
+   },
+   "front": {
+    "delay_ms": 0.0,
+    "filters": [
+     {
+      "parameters": {
+       "freq": 80.0,
+       "q": 0.7071,
+       "type": "Allpass"
+      },
+      "type": "Biquad"
+     },
+     {
+      "parameters": {
+       "freq": 190.14,
+       "gain": -6.36,
+       "q": 0.996,
+       "type": "Peaking"
+      },
+      "type": "Biquad"
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 42.04334516483657,
+       "gain": 2.0023064032171063,
+       "q": 4.999999732540488
+      }
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 137.9768466975095,
+       "gain": 3.9999999941163455,
+       "q": 1.000000002281348
+      }
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 115.05238245474453,
+       "gain": -5.549067246339259,
+       "q": 4.999999468310833
+      }
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 185.29622698669846,
+       "gain": -5.156583076918577,
+       "q": 4.999172569534847
+      }
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 255.39455857935107,
+       "gain": -6.189994448882769,
+       "q": 4.999827060351849
+      }
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 450.83629901189806,
+       "gain": -4.46286926290752,
+       "q": 4.999999984012373
+      }
+     }
+    ],
+    "gain_db": -0.51,
+    "inverted": false,
+    "muted": false
+   },
+   "geometry": {
+    "cabinet_back_wall_m": null,
+    "details": null,
+    "sources": {
+     "front": null,
+     "rear": null
+    }
+   },
+   "included_stages": {
+    "front": [],
+    "rear": []
+   },
+   "kind": "jts_rear_calibration",
+   "phase_convention": "positive_delay_has_negative_phase",
+   "rear": {
+    "bass": {
+     "delay_ms": -1.06,
+     "filters": [
+      {
+       "parameters": {
+        "freq": 80.0,
+        "order": 4,
+        "type": "LinkwitzRileyLowpass"
+       },
+       "type": "BiquadCombo"
+      },
+      {
+       "parameters": {
+        "freq": 190.14,
+        "gain": -6.36,
+        "q": 0.996,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      },
+      {
+       "parameters": {
+        "freq": 120.0,
+        "gain": 3,
+        "q": 1.0,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 42.04334516483657,
+        "gain": 2.0023064032171063,
+        "q": 4.999999732540488
+       }
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 137.9768466975095,
+        "gain": 3.9999999941163455,
+        "q": 1.000000002281348
+       }
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 115.05238245474453,
+        "gain": -5.549067246339259,
+        "q": 4.999999468310833
+       }
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 185.29622698669846,
+        "gain": -5.156583076918577,
+        "q": 4.999172569534847
+       }
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 255.39455857935107,
+        "gain": -6.189994448882769,
+        "q": 4.999827060351849
+       }
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 450.83629901189806,
+        "gain": -4.46286926290752,
+        "q": 4.999999984012373
+       }
+      }
+     ],
+     "gain_db": 0.0,
+     "inverted": false,
+     "muted": false
+    },
+    "cancellation": {
+     "delay_ms": -0.213,
+     "filters": [
+      {
+       "parameters": {
+        "freq": 80.0,
+        "order": 4,
+        "type": "LinkwitzRileyHighpass"
+       },
+       "type": "BiquadCombo"
+      },
+      {
+       "parameters": {
+        "freq": 300.35,
+        "order": 2,
+        "type": "ButterworthLowpass"
+       },
+       "type": "BiquadCombo"
+      },
+      {
+       "parameters": {
+        "freq": 190.14,
+        "gain": -6.36,
+        "q": 0.996,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      },
+      {
+       "parameters": {
+        "freq": 120.0,
+        "gain": 5.453,
+        "q": 1.0,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      },
+      {
+       "parameters": {
+        "freq": 259.46,
+        "gain": 5.651,
+        "q": 2.254,
+        "type": "Peaking"
+       },
+       "type": "Biquad"
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 42.04334516483657,
+        "gain": 2.0023064032171063,
+        "q": 4.999999732540488
+       }
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 137.9768466975095,
+        "gain": 3.9999999941163455,
+        "q": 1.000000002281348
+       }
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 115.05238245474453,
+        "gain": -5.549067246339259,
+        "q": 4.999999468310833
+       }
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 185.29622698669846,
+        "gain": -5.156583076918577,
+        "q": 4.999172569534847
+       }
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 255.39455857935107,
+        "gain": -6.189994448882769,
+        "q": 4.999827060351849
+       }
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 450.83629901189806,
+        "gain": -4.46286926290752,
+        "q": 4.999999984012373
+       }
+      }
+     ],
+     "gain_db": 0.0,
+     "inverted": true,
+     "muted": false
+    },
+    "mode": "branches"
+   },
+   "rear_muted": false,
+   "reference": {
+    "level": null,
+    "quantity": "electrical_filter_transfer",
+    "units": "linear output/input"
+   },
+   "sample_rate_hz": 48000,
+   "schema": 1,
+   "valid_band_hz": [
+    40.0,
+    800.0
+   ]
+  },
+  "room": null
+ }
+}

@@ -1,0 +1,211 @@
+{
+    "base": "saved",
+    "kind": "jts_prescription",
+    "rationale": "Aggressive F/B solution G2b (#5405): delay -0.4683 ms; lowpass 300.0 Hz; Peaking 120.0 Hz +3.00 dB q1.00; Peaking 79.6 Hz +2.59 dB q0.83; Peaking 265.2 Hz +5.65 dB q1.98. Predicted F/B gain +8.69 dB meaned over 100-315 Hz against ident-C's +6.30, S1's +8.09 and fb-1's +5.73; the front falls to -3.36 dB and a common EQ buys it back for a 4.25 dB largest boost. A prediction, not a tune.",
+    "schema": 1,
+    "sections": {
+        "rear_calibration": {
+            "assumptions": [
+                "Solved for FRONT-TO-BACK GAIN = front change - behind change. Front is UNGATED and meaned over the three arm poses; behind is ungated at 63-125 Hz and 400-630 Hz and GATED 10 ms at 160-315 Hz, meaned over +-20. The +0 arm pose is not used behind.",
+                "AGGRESSIVE front rule: the front may fall to -8 dB over 80-315 Hz, because a COMMON EQ on both woofers restores it without touching F/B gain. What that costs is excursion and headroom, reported below as the EQ-back curve, not tonality.",
+                "After the EQ-back curve is applied the front is back at the rear-muted response and the level behind is the NEGATIVE of the F/B gain below -- that is the suppression this tune really buys.",
+                "Out of sample the FRONT model lands within 0.1-0.3 dB per third octave, confirmed again on rounds F1/F2. F/B gain is looser and BIASED: on F1/F2, which measured fb-1/fb-2/fb-3 for the first time, the model over-predicted the F/B score in all six cells by 0.5-1.4 dB, with per-band error 2.0 mean / 4.4 worst at 160 Hz and 1.9/3.6 at 200 Hz. Read the F/B figures below as about 1 dB optimistic; the RANKING held exactly (fb-1 > fb-2 > fb-3, measured and predicted).",
+                "Trust region G2b: delay -0.468 vs ident-C -0.919 (+0.451); low f +79.583 vs ident-C +64.361 (+15.222); low g +2.589 vs ident-C +3.953 (-1.364); low q +0.829 vs ident-C +0.679 (+0.150); bell 265 Hz +5.65 dB q1.98 (T3 measured 250 Hz +5.00 q1.00).",
+                "Held-out pose check (fit one arm angle, score the other): +7.24 dB (+7.51 / +6.97).",
+                "Predicted front change, dB, 63/80/100/125/160/200/250/315/400/500/630 Hz: -0.5 -1.0 -3.4 +0.2 +1.0 +1.6 +3.5 +1.0 +0.2 +0.7 -0.0",
+                "Predicted F/B gain, dB: +2.6 +6.5 +12.1 +6.0 +3.4 +12.3 +12.4 +6.7 +0.3 +1.0 +0.0",
+                "Front change INCLUDING the product's own broadband headroom cut (0.89 dB), which is what the owner hears as level: -1.4 -1.9 -4.2 -0.7 +0.1 +0.7 +2.6 +0.1 -0.7 -0.2 -0.9",
+                "EQ-back curve = headroom cut plus the residual shape, common to both woofers, dB: +1.4 +1.9 +4.2 +0.7 -0.1 -0.7 -2.6 -0.1 +0.7 +0.2 +0.9; largest boost 4.25 dB."
+            ],
+            "boundary": {
+                "front": [],
+                "rear": []
+            },
+            "case": "electrical_dsp",
+            "common_delay_ms": 1.06,
+            "conditions": {
+                "dataset": "jts3 measured summed rounds D1..H4; main mic 0.61 m in front (3 arm poses), side mic 0.61 m behind (arm +-20); rig state of round H4",
+                "fit_band_hz": [
+                    100.0,
+                    350.0
+                ],
+                "fit_tool": "h6_solve.py",
+                "measured": true,
+                "timing_reference": "front output of this stage"
+            },
+            "front": {
+                "delay_ms": 0.0,
+                "filters": [
+                    {
+                        "parameters": {
+                            "freq": 80.0,
+                            "q": 0.7071,
+                            "type": "Allpass"
+                        },
+                        "type": "Biquad"
+                    },
+                    {
+                        "parameters": {
+                            "freq": 190.14,
+                            "gain": -6.36,
+                            "q": 0.996,
+                            "type": "Peaking"
+                        },
+                        "type": "Biquad"
+                    }
+                ],
+                "gain_db": -0.51,
+                "inverted": false,
+                "muted": false
+            },
+            "geometry": {
+                "cabinet_back_wall_m": null,
+                "details": null,
+                "sources": {
+                    "front": null,
+                    "rear": null
+                }
+            },
+            "included_stages": {
+                "front": [],
+                "rear": []
+            },
+            "kind": "jts_rear_calibration",
+            "phase_convention": "positive_delay_has_negative_phase",
+            "rear": {
+                "bass": {
+                    "delay_ms": -1.06,
+                    "filters": [
+                        {
+                            "parameters": {
+                                "freq": 80.0,
+                                "order": 4,
+                                "type": "LinkwitzRileyLowpass"
+                            },
+                            "type": "BiquadCombo"
+                        },
+                        {
+                            "parameters": {
+                                "freq": 190.14,
+                                "gain": -6.36,
+                                "q": 0.996,
+                                "type": "Peaking"
+                            },
+                            "type": "Biquad"
+                        },
+                        {
+                            "parameters": {
+                                "freq": 120.0,
+                                "gain": 3,
+                                "q": 1.0,
+                                "type": "Peaking"
+                            },
+                            "type": "Biquad"
+                        }
+                    ],
+                    "gain_db": 0.0,
+                    "inverted": false,
+                    "muted": false
+                },
+                "cancellation": {
+                    "delay_ms": -0.4683,
+                    "filters": [
+                        {
+                            "parameters": {
+                                "freq": 80.0,
+                                "order": 4,
+                                "type": "LinkwitzRileyHighpass"
+                            },
+                            "type": "BiquadCombo"
+                        },
+                        {
+                            "parameters": {
+                                "freq": 300.0,
+                                "order": 2,
+                                "type": "ButterworthLowpass"
+                            },
+                            "type": "BiquadCombo"
+                        },
+                        {
+                            "parameters": {
+                                "freq": 190.14,
+                                "gain": -6.36,
+                                "q": 0.996,
+                                "type": "Peaking"
+                            },
+                            "type": "Biquad"
+                        },
+                        {
+                            "parameters": {
+                                "freq": 120.0,
+                                "gain": 3,
+                                "q": 1.0,
+                                "type": "Peaking"
+                            },
+                            "type": "Biquad"
+                        },
+                        {
+                            "parameters": {
+                                "freq": 365.6582,
+                                "q": 7.7627,
+                                "type": "Allpass"
+                            },
+                            "type": "Biquad"
+                        },
+                        {
+                            "parameters": {
+                                "freq": 391.4937,
+                                "q": 8.3641,
+                                "type": "Allpass"
+                            },
+                            "type": "Biquad"
+                        },
+                        {
+                            "parameters": {
+                                "freq": 79.58,
+                                "gain": 2.589,
+                                "q": 0.829,
+                                "type": "Peaking"
+                            },
+                            "type": "Biquad"
+                        },
+                        {
+                            "parameters": {
+                                "freq": 286.9708,
+                                "gain": 0.7095,
+                                "q": 0.4252,
+                                "type": "Peaking"
+                            },
+                            "type": "Biquad"
+                        },
+                        {
+                            "parameters": {
+                                "freq": 265.24,
+                                "gain": 5.646,
+                                "q": 1.976,
+                                "type": "Peaking"
+                            },
+                            "type": "Biquad"
+                        }
+                    ],
+                    "gain_db": -0.1313,
+                    "inverted": true,
+                    "muted": false
+                },
+                "mode": "branches"
+            },
+            "rear_muted": false,
+            "reference": {
+                "level": null,
+                "quantity": "electrical_filter_transfer",
+                "units": "linear output/input"
+            },
+            "sample_rate_hz": 48000,
+            "schema": 1,
+            "valid_band_hz": [
+                40.0,
+                800.0
+            ]
+        }
+    }
+}

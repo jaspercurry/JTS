@@ -1,0 +1,157 @@
+{
+ "kind": "jts_prescription",
+ "schema": 1,
+ "base": "saved",
+ "rationale": "Seed S1 for a broadband rear null: phase-matched hand-over (front all-pass), gentle cancellation low-pass, delays from the measured gaps of round 12d0fdb51b0f. Preview and grid only.",
+ "sections": {
+  "rear_calibration": {
+   "assumptions": [
+    "Seed S1, 2026-09-19, #5405: re-derived from pair round 12d0fdb51b0f (speaker near mid-room, mic 1 m front and 1 m behind). Not a tune until a trial measures it.",
+    "Front carries a 2nd-order all-pass at the 80 Hz hand-over (Q 0.7071 = the LR4 phase), so the in-phase bass branch and the inverted cancellation branch stay phase-matched to the front across the band; n1 had its all-pass on the cancellation branch only.",
+    "Cancellation delay anchored on the measured behind gap (rear arrives 1.075 ms before the front 1 m behind the cabinet) minus the low-pass group delay; bass branch leads by the measured front gap (1.057 ms).",
+    "Rear weight: the same Peaking 120 Hz +4 dB on both rear branches as n1 (ADR-0327)."
+   ],
+   "boundary": {
+    "front": [],
+    "rear": []
+   },
+   "case": "electrical_dsp",
+   "common_delay_ms": 1.06,
+   "conditions": {
+    "dataset": "jts3 round 12d0fdb51b0f pair, 1 m front and 1 m behind",
+    "measured": false,
+    "timing_reference": "front output of this stage"
+   },
+   "front": {
+    "delay_ms": 0.0,
+    "filters": [
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Allpass",
+       "freq": 80.0,
+       "q": 0.7071
+      }
+     },
+     {
+      "type": "Biquad",
+      "parameters": {
+       "type": "Peaking",
+       "freq": 190.14,
+       "gain": -6.36,
+       "q": 0.996
+      }
+     }
+    ],
+    "gain_db": -0.51,
+    "inverted": false,
+    "muted": false
+   },
+   "geometry": {
+    "cabinet_back_wall_m": null,
+    "details": null,
+    "sources": {
+     "front": null,
+     "rear": null
+    }
+   },
+   "included_stages": {
+    "front": [],
+    "rear": []
+   },
+   "kind": "jts_rear_calibration",
+   "phase_convention": "positive_delay_has_negative_phase",
+   "rear": {
+    "bass": {
+     "delay_ms": -1.06,
+     "filters": [
+      {
+       "type": "BiquadCombo",
+       "parameters": {
+        "type": "LinkwitzRileyLowpass",
+        "freq": 80.0,
+        "order": 4
+       }
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 190.14,
+        "gain": -6.36,
+        "q": 0.996
+       }
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 120.0,
+        "gain": 4.0,
+        "q": 1.0
+       }
+      }
+     ],
+     "gain_db": 0.0,
+     "inverted": false,
+     "muted": false
+    },
+    "cancellation": {
+     "delay_ms": 0.3,
+     "filters": [
+      {
+       "type": "BiquadCombo",
+       "parameters": {
+        "type": "LinkwitzRileyHighpass",
+        "freq": 80.0,
+        "order": 4
+       }
+      },
+      {
+       "type": "BiquadCombo",
+       "parameters": {
+        "type": "ButterworthLowpass",
+        "freq": 300.0,
+        "order": 2
+       }
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 190.14,
+        "gain": -6.36,
+        "q": 0.996
+       }
+      },
+      {
+       "type": "Biquad",
+       "parameters": {
+        "type": "Peaking",
+        "freq": 120.0,
+        "gain": 4.0,
+        "q": 1.0
+       }
+      }
+     ],
+     "gain_db": 0.0,
+     "inverted": true,
+     "muted": false
+    },
+    "mode": "branches"
+   },
+   "rear_muted": false,
+   "reference": {
+    "level": null,
+    "quantity": "electrical_filter_transfer",
+    "units": "linear output/input"
+   },
+   "sample_rate_hz": 48000,
+   "schema": 1,
+   "valid_band_hz": [
+    40.0,
+    800.0
+   ]
+  }
+ }
+}
