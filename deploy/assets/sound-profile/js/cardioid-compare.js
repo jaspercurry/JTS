@@ -42,7 +42,11 @@ export function initCardioidCompare(nowPlaying) {
     const status = [];
     if (state === 'off') status.push('Rear woofer muted.');
     if (match.status === 'matched') {
-      status.push(`Levels matched: ${match.louder === 'off' ? 'Off' : 'On'} plays ${Math.abs(match.trim_db)} dB lower while you compare.`);
+      const bankedDate = match.banked_at && new Date(match.banked_at).toLocaleDateString('en-US', {
+        year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC'
+      });
+      status.push(`Levels matched from round ${match.round_id} (${bankedDate || 'date unknown'}).`);
+      status.push(`${match.louder === 'off' ? 'Off' : 'On'} plays ${Math.abs(match.trim_db)} dB lower while you compare.`);
     } else {
       status.push('Level match unavailable: no front/rear pair measurement on this speaker.');
     }

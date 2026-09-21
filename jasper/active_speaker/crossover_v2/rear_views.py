@@ -401,20 +401,29 @@ def front_on_axis(pose_key: str, pose_kind: str) -> bool:
     return pose_kind == POSE_KIND_BEARING and pose_key.startswith("az+0.00_el+0.00_")
 
 
+def pair_diagnostic(record: Mapping[str, Any]) -> tuple[float, dict[str, Any]] | None:
+    """Sample rate and solo responses usable by a pair, without building spectra."""
+    diagnostic = record.get("branch_diagnostic")
+    if not isinstance(diagnostic, Mapping):
+        return None
+    responses = {row.get("role"): row for row in diagnostic.get("responses", ())}
+    rate = finite_float(diagnostic.get("sample_rate_hz"))
+    if rate is None or rate <= 0 or any(
+        role not in responses or not {"pre_guard_samples", "impulse"} <= responses[role].keys()
+        for role in PAIR_ROLES[:2]
+    ):
+        return None
+    return rate, responses
+
+
 def pair_takes(records: Iterable[Mapping[str, Any]]) -> list[PairTake]:
     takes = []
     for record in records:
-        diagnostic = record.get("branch_diagnostic")
-        if not isinstance(diagnostic, Mapping):
+        diagnostic = pair_diagnostic(record)
+        if diagnostic is None:
             continue
-        responses = {row.get("role"): row for row in diagnostic.get("responses", ())}
+        rate, responses = diagnostic
         roles = PAIR_ROLES[:2]
-        rate = finite_float(diagnostic.get("sample_rate_hz"))
-        if rate is None or rate <= 0 or any(
-            role not in responses or not {"pre_guard_samples", "impulse"} <= responses[role].keys()
-            for role in roles
-        ):
-            continue
         start = max(0, int(responses[PAIR_ROLES[0]]["pre_guard_samples"]) - round(0.005 * rate))
         end = min(len(responses[role]["impulse"]) for role in roles)
         freqs = np.fft.rfftfreq(IMPULSE_FFT_SIZE, 1.0 / rate)
