@@ -29,6 +29,9 @@
 set -uo pipefail
 
 DRIVER_DIR="${JASPER_USB_HCD_DRIVER_DIR:-/sys/bus/platform/drivers/xhci-hcd}"
+# The platform devices themselves, which survive an unbind. Only place a
+# controller that is bound to nothing can still be seen.
+DEVICE_DIR="${JASPER_USB_HCD_DEVICE_DIR:-/sys/bus/platform/devices}"
 JOURNALCTL="${JASPER_USB_HCD_JOURNALCTL:-journalctl}"
 STATE_DIR="${JASPER_USB_HCD_STATE_DIR:-/run/jasper-usb-hcd-recover}"
 # Read by jasper-turntable-autostop@.service's ConditionPathExists=!. A re-bind
@@ -222,6 +225,26 @@ catch_up() {
     done
 }
 
+# A controller that is bound to NOTHING has no entry under the driver dir, so
+# catch_up cannot see it — and that is exactly the state an unbind whose bind
+# never happened leaves behind (this process killed mid-window). The platform
+# device survives; a missing `driver` link is what says it is orphaned. Safe to
+# act on unconditionally: this unit only starts once some controller IS bound to
+# the platform driver, so the driver is loaded and a sibling without it is not
+# merely waiting for probe.
+catch_up_unbound() {
+    local path name
+    for path in "${DEVICE_DIR}"/xhci-hcd.*; do
+        [[ -d "$path" ]] || continue
+        name="${path##*/}"
+        [[ "$name" =~ $NAME_RE ]] || continue
+        [[ -e "${path}/driver" ]] && continue
+        device_present "$name" && continue
+        emit catchup_unbound "${name##*.}" 0
+        handle_death "$name"
+    done
+}
+
 if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
     emit failed none 0 step=state_dir
     exit 1
@@ -229,9 +252,19 @@ fi
 # A marker left behind by a killed run would park the turntable autostop for
 # the rest of the boot.
 inhibit_off
+# Same hazard from this run: a SIGTERM mid-window (systemctl stop/restart, and
+# now try-restart on every deploy) between inhibit_on and inhibit_off would
+# strand the marker, RuntimeDirectoryPreserve=yes would keep it, and the
+# autostop would be condition-skipped for every CH340 hot-plug for the rest of
+# the boot — silently. The explicit TERM trap turns the signal into an ordinary
+# exit so the EXIT trap runs on every bash, not only the versions that run it
+# for an untrapped fatal signal.
+trap inhibit_off EXIT
+trap 'exit 143' TERM INT
 
 emit watching none 0
 catch_up
+catch_up_unbound
 
 # `-n 0`: follow defaults to replaying the last 10 matching lines, which would
 # re-bind a healthy controller off an old death line every time this unit starts.

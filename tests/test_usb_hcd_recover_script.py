@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,7 @@ AUTOSTOP_UNIT = ROOT / "deploy" / "systemd" / "jasper-turntable-autostop@.servic
 
 DEATH = "xhci-hcd xhci-hcd.0: HC died; cleaning up\n"
 REGISTERED = "xhci-hcd xhci-hcd.0: new USB bus registered, assigned bus number 1\n"
+REGISTERED_ONE = "xhci-hcd xhci-hcd.1: new USB bus registered, assigned bus number 3\n"
 # Verbatim boot lines that name a controller but are NOT a death (#5444's corpus).
 BOOT_LINES = (
     "xhci-hcd xhci-hcd.0: xHCI Host Controller\n"
@@ -86,21 +88,34 @@ class Harness:
             'seq 1 "${JOURNAL_CONFIRM_FILLER}"\n'
             "exit $?\n",
         )
+        self.device_dir = tmp_path / "devices"
+        self.device_dir.mkdir()
+        self.inhibit_witness = tmp_path / "inhibit.seen"
         _write_exec(
             self.bin_dir / "sleep",
+            # Records whether the turntable inhibit is held at this moment —
+            # every sleep the script takes is inside a re-bind window.
+            '[[ -e "$INHIBIT_MARKER_PATH" ]] && : > "$INHIBIT_WITNESS"\n'
             'if [[ -n "${SLEEP_HOOK:-}" && ! -e "$SLEEP_HOOK_DONE" ]]; then\n'
             '    : > "$SLEEP_HOOK_DONE"\n'
             '    eval "$SLEEP_HOOK"\n'
             "fi\n"
-            "exit 0\n",
+            'exit 0\n',
         )
         self.sleep_hook_done = tmp_path / "sleep_hook.done"
+
+    def orphan_device(self, name: str) -> Path:
+        """A platform device bound to no driver — what an unbind whose bind
+        never happened leaves behind."""
+        path = self.device_dir / name
+        path.mkdir()
+        return path
 
     def seed_recoveries(self, controller: str, count: int) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         (self.state_dir / controller).write_text(f"{count}\n", encoding="utf-8")
 
-    def run(
+    def _env(
         self,
         *,
         follow: str = "",
@@ -113,11 +128,14 @@ class Harness:
         confirm_after: int = 2,
         confirm_filler: int = 0,
         sleep_hook: str = "",
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> dict[str, str]:
         env = os.environ.copy()
         env.update({
             "PATH": f"{self.bin_dir}:{env['PATH']}",
             "JASPER_USB_HCD_DRIVER_DIR": str(self.driver_dir),
+            "JASPER_USB_HCD_DEVICE_DIR": str(self.device_dir),
+            "INHIBIT_MARKER_PATH": str(self.inhibit),
+            "INHIBIT_WITNESS": str(self.inhibit_witness),
             "JASPER_USB_HCD_JOURNALCTL": str(self.journalctl),
             "JASPER_USB_HCD_STATE_DIR": str(self.state_dir),
             "JASPER_USB_HCD_INHIBIT_MARKER": str(self.inhibit),
@@ -134,10 +152,21 @@ class Harness:
             "SLEEP_HOOK": sleep_hook,
             "SLEEP_HOOK_DONE": str(self.sleep_hook_done),
         })
+        return env
+
+    def run(self, **kw: object) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["bash", str(SCRIPT)],
-            check=False, cwd=ROOT, env=env, text=True,
+            check=False, cwd=ROOT, env=self._env(**kw), text=True,  # type: ignore[arg-type]
             capture_output=True, timeout=60,
+        )
+
+    def run_async(self, **kw: object) -> subprocess.Popen[str]:
+        """The script left running, so a signal can be delivered mid-window."""
+        return subprocess.Popen(
+            ["bash", str(SCRIPT)],
+            cwd=ROOT, env=self._env(**kw), text=True,  # type: ignore[arg-type]
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
 
     def unbind_becomes_unwritable(self) -> str:
@@ -301,15 +330,72 @@ def test_a_controller_whose_last_marker_is_live_is_left_alone_at_startup(tmp_pat
     assert "catchup" not in proc.stderr
 
 
-def test_the_turntable_inhibit_is_dropped_once_the_re_bind_window_closes(tmp_path):
-    """The marker parks jasper-turntable-autostop@ for one hot-plug. A marker
-    that outlived the window would park it for the rest of the boot."""
+def test_the_turntable_inhibit_is_held_during_the_re_bind_and_dropped_after(tmp_path):
+    """The marker parks jasper-turntable-autostop@ for one hot-plug. Held for
+    too little and udev opens the still-wedged CH340 the re-bind just brought
+    back; held for too long and the autostop is parked for the rest of the
+    boot. The witness is written from inside the window."""
     h = Harness(tmp_path)
     h.inhibit.write_text("stale\n", encoding="utf-8")
 
     h.run(follow=DEATH, confirm=REGISTERED)
 
+    assert h.inhibit_witness.exists()
     assert not h.inhibit.exists()
+
+
+def test_a_sigterm_mid_re_bind_does_not_strand_the_turntable_inhibit(tmp_path):
+    """`systemctl stop|restart|try-restart` lands mid-window on any deploy.
+    RuntimeDirectoryPreserve=yes keeps whatever is left behind, so a stranded
+    marker would condition-skip the autostop silently for the rest of the boot."""
+    h = Harness(tmp_path)
+    # A real sleep inside the window, so the signal has somewhere to land.
+    # bash runs the trap once the in-flight foreground child returns, so the
+    # marker clears within one settle (3 s in production) of the SIGTERM —
+    # far inside systemd's TimeoutStopSec.
+    _write_exec(h.bin_dir / "sleep", '[[ -e "$INHIBIT_MARKER_PATH" ]] '
+                '&& : > "$INHIBIT_WITNESS"\nexec /bin/sleep 5\n')
+
+    proc = h.run_async(follow=DEATH, confirm=REGISTERED)
+    try:
+        for _ in range(400):
+            if h.inhibit_witness.exists():
+                break
+            time.sleep(0.05)
+        assert h.inhibit_witness.exists(), "never reached the re-bind window"
+        assert h.inhibit.exists()
+
+        proc.terminate()
+        proc.wait(timeout=30)
+    finally:
+        proc.kill()
+
+    assert not h.inhibit.exists()
+
+
+def test_a_controller_bound_to_nothing_is_found_and_bound_at_startup(tmp_path):
+    """The one state catch_up cannot see: an unbind whose bind never happened
+    leaves no driver entry at all, only a platform device with no driver link."""
+    h = Harness(tmp_path)
+    h.orphan_device("xhci-hcd.1")
+
+    proc = h.run(confirm=REGISTERED_ONE)
+
+    assert "event=usb_hcd_recover.catchup_unbound controller=1" in proc.stderr
+    assert h.bind.read_text() == "xhci-hcd.1"
+    # Never unbound: it is already bound to nothing.
+    assert h.unbind.read_text() == ""
+    assert "event=usb_hcd_recover.recovered controller=1 attempt=1" in proc.stderr
+
+
+def test_a_platform_device_that_still_has_its_driver_is_left_alone(tmp_path):
+    h = Harness(tmp_path)
+    (h.orphan_device("xhci-hcd.1") / "driver").mkdir()
+
+    proc = h.run(confirm=REGISTERED_ONE)
+
+    assert h.bind.read_text() == ""
+    assert "catchup_unbound" not in proc.stderr
 
 
 def test_the_follow_starts_at_the_end_of_the_journal(tmp_path):
