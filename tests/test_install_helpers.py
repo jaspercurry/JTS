@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.shell_runner import run_bash
 from tests.install_surface import JASPER_GROUP_STUBS, installer_text
 
 
@@ -53,11 +54,9 @@ def _compute_min_free_kbytes(memtotal_kb: int) -> int:
     capture the helper's output."""
     # Then the bare invocation of _compute_min_free_kbytes goes to the
     # outer stdout, which we capture.
-    result = subprocess.run(
-        ["bash", "-c",
+    result = run_bash(
+        ["-c",
          f"source {_INSTALL_SH} >/dev/null && _compute_min_free_kbytes {memtotal_kb}"],
-        capture_output=True,
-        text=True,
         timeout=5,
     )
     if result.returncode != 0:
@@ -69,13 +68,11 @@ def _compute_min_free_kbytes(memtotal_kb: int) -> int:
 
 def _cpp_compile_jobs(memtotal_kb: int, ncpu: int) -> int:
     """Invoke the canonical C++ job-budget policy used by the runtime helper."""
-    result = subprocess.run(
-        ["bash", "-c",
+    result = run_bash(
+        ["-c",
          f"source {_BUILD_SANDBOX_LIB} >/dev/null && "
          f"_ram_bounded_jobs {memtotal_kb} {ncpu} "
          '"${BUILD_SANDBOX_KB_PER_JOB_CPP}"'],
-        capture_output=True,
-        text=True,
         timeout=5,
     )
     if result.returncode != 0:
@@ -106,10 +103,8 @@ def _render_install_asound_template(
         f"OUTPUT_DAC_RECOGNIZED={shlex.quote(output_dac_recognized)} && "
         f"jasper_asound_render_template {shlex.quote(str(source))} {shlex.quote(str(dest))}"
     )
-    result = subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True,
-        text=True,
+    result = run_bash(
+        ["-c", script],
         timeout=5,
     )
     if result.returncode != 0:
@@ -138,10 +133,8 @@ def _run_install_helper(
         f"STATE_DIR={shlex.quote(str(state_dir))} && "
         f"{helper_name}"
     )
-    return subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True,
-        text=True,
+    return run_bash(
+        ["-c", script],
         timeout=5,
     )
 
@@ -250,10 +243,8 @@ def _run_speaker_name_seed(
             "command link \"$@\"; }"
         )
     commands.append("seed_speaker_name_env")
-    result = subprocess.run(
-        ["bash", "-c", " && ".join(commands)],
-        capture_output=True,
-        text=True,
+    result = run_bash(
+        ["-c", " && ".join(commands)],
         timeout=5,
     )
     return result, state_dir / "speaker_name.env"
@@ -498,9 +489,8 @@ def test_enhanced_aec_jobs_never_zero_on_garbage_input():
 
 def test_ensure_state_dir_uses_voice_state_directory_mode(tmp_path):
     state_dir = tmp_path / "state"
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             "source "
             + shlex.quote(str(_INSTALL_SH))
@@ -509,8 +499,6 @@ def test_ensure_state_dir_uses_voice_state_directory_mode(tmp_path):
             + shlex.quote(str(state_dir))
             + " && ensure_state_dir",
         ],
-        capture_output=True,
-        text=True,
         timeout=5,
     )
 
@@ -539,9 +527,8 @@ def test_ensure_state_dir_does_not_rechmod_an_existing_dir(tmp_path):
 
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             "source "
             + shlex.quote(str(_INSTALL_SH))
@@ -550,8 +537,6 @@ def test_ensure_state_dir_does_not_rechmod_an_existing_dir(tmp_path):
             + shlex.quote(str(state_dir))
             + " && ensure_state_dir",
         ],
-        capture_output=True,
-        text=True,
         timeout=5,
         env=env,
     )
@@ -592,9 +577,8 @@ def test_the_shared_state_pass_starts_two_interpreters(tmp_path):
     env.pop("JASPER_HOSTNAME", None)
     env.pop("JASPER_SYSTEM_PYTHON", None)
 
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null\n"
             + f"STATE_DIR={shlex.quote(str(state_dir))}\n"
@@ -603,8 +587,6 @@ def test_the_shared_state_pass_starts_two_interpreters(tmp_path):
             + "heal_shared_state_modes\n"
             + "seed_speaker_name_env\n",
         ],
-        capture_output=True,
-        text=True,
         timeout=30,
         env=env,
     )
@@ -639,17 +621,14 @@ def test_persist_install_profile_does_not_rechmod_an_existing_state_dir(tmp_path
 
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             "source "
             + shlex.quote(str(_INSTALL_SH))
             + " >/dev/null && persist_install_profile full "
             + shlex.quote(str(marker)),
         ],
-        capture_output=True,
-        text=True,
         timeout=5,
         env=env,
     )
@@ -814,10 +793,8 @@ def _run_install_streambox_jasper(
     run = "install_streambox_jasper >/dev/null"
     if epilogue:
         run = f'{run}; rc=$?; {epilogue}; exit "$rc"'
-    result = subprocess.run(
-        ["bash", "-c", " && ".join(steps) + "\n" + run],
-        capture_output=True,
-        text=True,
+    result = run_bash(
+        ["-c", " && ".join(steps) + "\n" + run],
         timeout=60,
         env=env,
     )
@@ -872,7 +849,7 @@ install() {{
 }}
 {function}
 """
-    result = subprocess.run(["bash", "-c", script], capture_output=True, timeout=5)
+    result = run_bash(["-c", script], timeout=5)
     assert result.returncode == 23
     assert stat.S_IMODE(env_dir.stat().st_mode) == 0o755
     assert stat.S_IMODE(env_file.stat().st_mode) == 0o640
@@ -1018,9 +995,8 @@ def test_the_staged_manifest_reader_resolves_the_repo_extras(
     pip.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     pip.chmod(0o755)
 
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             " && ".join(
                 [
@@ -1030,8 +1006,6 @@ def test_the_staged_manifest_reader_resolves_the_repo_extras(
                 ]
             ),
         ],
-        capture_output=True,
-        text=True,
         timeout=30,
     )
 
@@ -1058,9 +1032,8 @@ def test_a_failed_publish_rename_never_deletes_the_staging_tree(tmp_path: Path):
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
 
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             " && ".join(
                 [
@@ -1071,8 +1044,6 @@ def test_a_failed_publish_rename_never_deletes_the_staging_tree(tmp_path: Path):
                 ]
             ),
         ],
-        capture_output=True,
-        text=True,
         timeout=30,
         env=env,
     )
@@ -1106,9 +1077,8 @@ def test_a_cut_off_publish_delete_cannot_roll_back_over_the_published_tree(
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
 
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             " && ".join(
                 [
@@ -1119,8 +1089,6 @@ def test_a_cut_off_publish_delete_cannot_roll_back_over_the_published_tree(
                 ]
             ),
         ],
-        capture_output=True,
-        text=True,
         timeout=30,
         env=env,
     )
@@ -1162,9 +1130,8 @@ def test_a_failed_restore_still_recovers_the_other_parked_entries(
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
 
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             " && ".join(
                 [
@@ -1175,8 +1142,6 @@ def test_a_failed_restore_still_recovers_the_other_parked_entries(
                 ]
             ),
         ],
-        capture_output=True,
-        text=True,
         timeout=30,
         env=env,
     )
@@ -1210,9 +1175,8 @@ def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
     env = os.environ.copy()
     env["PIP_CALLS"] = str(calls)
 
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             "source "
             + shlex.quote(str(_INSTALL_LIB_DIR / "python-runtime.sh"))
@@ -1221,8 +1185,6 @@ def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
             + " && retire_esp32_accessory_python_packages",
         ],
         env=env,
-        capture_output=True,
-        text=True,
         timeout=5,
     )
 
@@ -1396,16 +1358,13 @@ def test_mask_distro_background_units_masks_present_timers_only(tmp_path):
     cloud_dir = tmp_path / "cloud"
     cloud_dir.mkdir()
 
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             f"export PATH={shlex.quote(str(bindir))}:$PATH && "
             f"source {_SYSTEMD_UNITS_LIB} >/dev/null 2>&1 && "
             "mask_distro_background_units",
         ],
-        capture_output=True,
-        text=True,
         timeout=15,
         env={**os.environ, "JTS_CLOUD_INIT_DIR": str(cloud_dir)},
     )
@@ -1444,16 +1403,13 @@ def test_restart_headphone_monitor_after_deploy_try_restarts(tmp_path):
     )
     stub.chmod(0o755)
 
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             f"export PATH={shlex.quote(str(bindir))}:$PATH && "
             f"source {_SYSTEMD_UNITS_LIB} >/dev/null 2>&1 && "
             "restart_headphone_monitor_after_deploy",
         ],
-        capture_output=True,
-        text=True,
         timeout=15,
     )
 
@@ -1480,14 +1436,11 @@ def test_headphone_monitor_restart_is_wired_into_both_install_tails():
 
 
 def _run_tune_nginx_worker_processes(conf: Path) -> None:
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             f"source {_INSTALL_SH} >/dev/null 2>&1; tune_nginx_worker_processes",
         ],
-        capture_output=True,
-        text=True,
         timeout=15,
         env={**os.environ, "JTS_NGINX_MAIN_CONF": str(conf)},
     )
@@ -1542,10 +1495,8 @@ def _run_install_nginx_site_conf(
             f"{shlex.quote(str(src))} {shlex.quote(str(root))}",
         ]
     )
-    return subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True,
-        text=True,
+    return run_bash(
+        ["-c", script],
         timeout=15,
         env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
     )
@@ -1624,10 +1575,8 @@ def test_install_nginx_site_aborts_before_touching_the_live_conf(tmp_path):
         ]
     )
 
-    result = subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True,
-        text=True,
+    result = run_bash(
+        ["-c", script],
         timeout=15,
         env={
             **os.environ,
@@ -1641,15 +1590,12 @@ def test_install_nginx_site_aborts_before_touching_the_live_conf(tmp_path):
 
 
 def _run_reconcile_headless_boot_config(cfg_path: Path) -> None:
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             f"source {_RENDERERS_LIB} >/dev/null 2>&1; "
             "reconcile_headless_boot_config",
         ],
-        capture_output=True,
-        text=True,
         timeout=15,
         env={**os.environ, "JTS_BOOT_CONFIG_FILE": str(cfg_path)},
     )
@@ -1710,14 +1656,11 @@ def _run_reconcile_usb_data_role(
     udc = cfg_path.parent / "udc"
     model.write_text(model_text, encoding="utf-8")
     udc.mkdir(exist_ok=True)
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             f"source {_RENDERERS_LIB} >/dev/null 2>&1; reconcile_usb_data_role",
         ],
-        capture_output=True,
-        text=True,
         timeout=15,
         env={
             **os.environ,
@@ -1799,10 +1742,8 @@ def test_install_enables_wifi_recover_timer_with_now():
 def test_install_dry_run_exits_before_the_root_check():
     """The install plan is contributor-facing safety gear: it must run
     without sudo. What it renders is pinned in test_install_profile_tiers."""
-    result = subprocess.run(
-        ["bash", str(_INSTALL_SH), "--dry-run"],
-        capture_output=True,
-        text=True,
+    result = run_bash(
+        [str(_INSTALL_SH), "--dry-run"],
         timeout=5,
     )
 
@@ -1812,18 +1753,14 @@ def test_install_dry_run_exits_before_the_root_check():
 
 def test_install_dry_run_env_alias_and_plan_flag_match():
     """Both documented entry points should use the same no-mutation plan."""
-    by_flag = subprocess.run(
-        ["bash", str(_INSTALL_SH), "--plan"],
-        capture_output=True,
-        text=True,
+    by_flag = run_bash(
+        [str(_INSTALL_SH), "--plan"],
         timeout=5,
     )
     env = os.environ.copy()
     env["JASPER_INSTALL_DRY_RUN"] = "1"
-    by_env = subprocess.run(
-        ["bash", str(_INSTALL_SH)],
-        capture_output=True,
-        text=True,
+    by_env = run_bash(
+        [str(_INSTALL_SH)],
         timeout=5,
         env=env,
     )
@@ -1884,10 +1821,8 @@ def test_base_source_builds_use_hash_checked_archives():
 def test_install_help_is_clean_and_non_root():
     """Agentic flows often probe commands with --help; keep it quiet
     and usable without sudo."""
-    result = subprocess.run(
-        ["bash", str(_INSTALL_SH), "--help"],
-        capture_output=True,
-        text=True,
+    result = run_bash(
+        [str(_INSTALL_SH), "--help"],
         timeout=5,
     )
 
@@ -1959,10 +1894,8 @@ def test_install_asound_renderer_rejects_empty_direct_outputd_dac_card(
         "OUTPUT_DAC_RECOGNIZED=1 && "
         f"jasper_asound_render_template {shlex.quote(str(source))} {shlex.quote(str(dest))}"
     )
-    result = subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True,
-        text=True,
+    result = run_bash(
+        ["-c", script],
         timeout=5,
     )
 
@@ -2000,10 +1933,8 @@ def _run_fetch_verified(
         f"fetch_verified_source_archive {shlex.quote(url)} "
         f"{shlex.quote(sha)} {shlex.quote(str(dest))} test-archive"
     )
-    return subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True,
-        text=True,
+    return run_bash(
+        ["-c", script],
         timeout=30,
     )
 
@@ -2130,10 +2061,8 @@ def _run_require_build_user(tmp_path: Path, getent_rc: int) -> subprocess.Comple
         f"export PATH={shlex.quote(str(bindir))}:$PATH && "
         "require_build_user"
     )
-    return subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True,
-        text=True,
+    return run_bash(
+        ["-c", script],
         timeout=5,
     )
 
@@ -2171,10 +2100,8 @@ def _run_constraints_helper(repo_dir: Path) -> str:
         f"REPO_DIR={shlex.quote(str(repo_dir))} && "
         "jasper_pip_constraints_file"
     )
-    result = subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True,
-        text=True,
+    result = run_bash(
+        ["-c", script],
         timeout=5,
     )
     assert result.returncode == 0, result.stderr
@@ -2184,9 +2111,9 @@ def _run_constraints_helper(repo_dir: Path) -> str:
 def test_install_and_generate_scripts_parse():
     """bash -n over both shell surfaces of the constraints feature."""
     for path in (_INSTALL_SH, _GENERATE_CONSTRAINTS_SH):
-        result = subprocess.run(
-            ["bash", "-n", str(path)],
-            capture_output=True, text=True, timeout=5,
+        result = run_bash(
+            ["-n", str(path)],
+            timeout=5,
         )
         assert result.returncode == 0, f"{path}: {result.stderr}"
 
@@ -2246,10 +2173,8 @@ def _run_install_snippet(
     if repo_dir is not None:
         prelude.append(f"REPO_DIR={shlex.quote(str(repo_dir))}")
     script = " && ".join([*prelude, snippet])
-    return subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True,
-        text=True,
+    return run_bash(
+        ["-c", script],
         timeout=10,
     )
 
@@ -2492,11 +2417,11 @@ _RUST_DAEMONS_LIB = _INSTALL_LIB_DIR / "rust-daemons.sh"
 
 def _ram_bounded_jobs(memtotal_kb: int, ncpu: int, kb_per_job: int) -> int:
     """Invoke the generalized `_ram_bounded_jobs` helper."""
-    result = subprocess.run(
-        ["bash", "-c",
+    result = run_bash(
+        ["-c",
          f"source {_INSTALL_SH} >/dev/null && "
          f"_ram_bounded_jobs {memtotal_kb} {ncpu} {kb_per_job}"],
-        capture_output=True, text=True, timeout=5,
+        timeout=5,
     )
     if result.returncode != 0:
         raise RuntimeError(f"helper failed (rc={result.returncode}): {result.stderr}")
@@ -2517,11 +2442,11 @@ def _build_sandbox_props(
     env["JASPER_BUILD_MEMINFO_FILE"] = str(meminfo)
     if extra_env:
         env.update(extra_env)
-    result = subprocess.run(
-        ["bash", "-c",
+    result = run_bash(
+        ["-c",
          f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
          f"build_sandbox_props {shlex.quote(label)}"],
-        capture_output=True, text=True, timeout=5, env=env,
+        timeout=5, env=env,
     )
     assert result.returncode == 0, result.stderr
     return result.stdout
@@ -2533,10 +2458,10 @@ def _run_contained_build(
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
-    return subprocess.run(
-        ["bash", "-c",
+    return run_bash(
+        ["-c",
          f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && {script_tail}"],
-        capture_output=True, text=True, timeout=10, env=env,
+        timeout=10, env=env,
     )
 
 
@@ -2648,10 +2573,10 @@ def test_build_sandbox_props_without_meminfo_still_protects(tmp_path):
     test_build_sandbox_oom_prefix_uses_choom_kill_me_first.)"""
     env = os.environ.copy()
     env["JASPER_BUILD_MEMINFO_FILE"] = str(tmp_path / "does-not-exist")
-    result = subprocess.run(
-        ["bash", "-c",
+    result = run_bash(
+        ["-c",
          f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && build_sandbox_props x"],
-        capture_output=True, text=True, timeout=5, env=env,
+        timeout=5, env=env,
     )
     assert result.returncode == 0, result.stderr
     assert "--property=CPUWeight=20" in result.stdout
@@ -2853,9 +2778,9 @@ def test_build_sandbox_budget_constants_are_named_once():
 
 
 def test_build_sandbox_lib_parses():
-    result = subprocess.run(
-        ["bash", "-n", str(_BUILD_SANDBOX_LIB)],
-        capture_output=True, text=True, timeout=5,
+    result = run_bash(
+        ["-n", str(_BUILD_SANDBOX_LIB)],
+        timeout=5,
     )
     assert result.returncode == 0, result.stderr
 
@@ -2869,11 +2794,11 @@ def _build_sandbox_jobs(kb_per_job_expr: str, memtotal_kb: int, ncpu: int,
     env = os.environ.copy()
     env["JASPER_BUILD_MEMINFO_FILE"] = str(meminfo)
     env["JASPER_BUILD_NPROC"] = str(ncpu)
-    result = subprocess.run(
-        ["bash", "-c",
+    result = run_bash(
+        ["-c",
          f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
          f"build_sandbox_jobs {kb_per_job_expr}"],
-        capture_output=True, text=True, timeout=5, env=env,
+        timeout=5, env=env,
     )
     assert result.returncode == 0, result.stderr
     return int(result.stdout.strip())
@@ -2912,11 +2837,11 @@ def test_run_contained_build_invokes_systemd_run_scope_with_policy(tmp_path):
     env["PATH"] = f"{bindir}:{env['PATH']}"
     env["JASPER_BUILD_SANDBOX"] = "1"  # force on; the stub satisfies command -v
     env["JASPER_BUILD_MEMINFO_FILE"] = str(meminfo)
-    result = subprocess.run(
-        ["bash", "-c",
+    result = run_bash(
+        ["-c",
          f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
          "run_contained_build demo -- echo HELLO WORLD"],
-        capture_output=True, text=True, timeout=10, env=env,
+        timeout=10, env=env,
     )
     assert result.returncode == 0, result.stderr
     args = [ln[len("ARG="):] for ln in result.stdout.splitlines()
@@ -3130,11 +3055,9 @@ def _run_park_cycle(
             "PATH": f"{bin_dir}:{env.get('PATH', '')}",
         }
     )
-    result = subprocess.run(
-        ["bash", "-c", _PARK_DRIVER],
+    result = run_bash(
+        ["-c", _PARK_DRIVER],
         env=env,
-        capture_output=True,
-        text=True,
         timeout=60,
     )
     calls = [
@@ -3735,16 +3658,13 @@ def test_retire_leftovers_clears_units_then_files_then_tombstones(tmp_path):
     )
     stub.chmod(0o755)
 
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             f"export PATH={shlex.quote(str(bindir))}:$PATH && "
             f"source {_INSTALL_LIB_DIR / 'retirements.sh'} && "
             f"{_RETIRE_TEST_TABLE}{_RETIRE_DRIVER}",
         ],
-        capture_output=True,
-        text=True,
         timeout=15,
         env={
             **os.environ,

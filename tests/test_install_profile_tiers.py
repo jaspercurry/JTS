@@ -41,6 +41,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.shell_runner import run_bash
 from tests.install_surface import installer_text
 
 
@@ -56,20 +57,16 @@ def _run_install_plan(*, profile: str | None = None) -> subprocess.CompletedProc
         env["JASPER_INSTALL_PROFILE"] = profile
     else:
         env.pop("JASPER_INSTALL_PROFILE", None)
-    return subprocess.run(
-        ["bash", str(INSTALL_SH), "--dry-run"],
-        capture_output=True,
-        text=True,
+    return run_bash(
+        [str(INSTALL_SH), "--dry-run"],
         timeout=5,
         env=env,
     )
 
 
 def _run_install_helper(script: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["bash", "-c", f"source {shlex.quote(str(INSTALL_SH))} >/dev/null && {script}"],
-        capture_output=True,
-        text=True,
+    return run_bash(
+        ["-c", f"source {shlex.quote(str(INSTALL_SH))} >/dev/null && {script}"],
         timeout=5,
     )
 
@@ -121,8 +118,8 @@ def _run_main(
     env.pop("JASPER_INSTALL_DRY_RUN", None)
     with tempfile.TemporaryDirectory() as run_dir:
         env["JTS_REBOOT_REQUIRED_MARKER"] = f"{run_dir}/reboot_required"
-        return subprocess.run(
-            ["bash", "-c", script], capture_output=True, text=True, timeout=60, env=env
+        return run_bash(
+            ["-c", script], timeout=60, env=env
         )
 
 
@@ -738,9 +735,8 @@ def test_hid_accessory_unit_files_actually_install(tmp_path):
     """
     systemd_dir = tmp_path / "systemd"
     systemd_dir.mkdir()
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             'set -euo pipefail\n'
             'source "${REPO_DIR}/deploy/lib/install/systemd-units.sh"\n'
@@ -751,8 +747,6 @@ def test_hid_accessory_unit_files_actually_install(tmp_path):
             "REPO_DIR": str(REPO_ROOT),
             "SYSTEMD_DIR": str(systemd_dir),
         },
-        capture_output=True,
-        text=True,
         timeout=60,
     )
 
@@ -978,9 +972,8 @@ def test_voice_unit_file_actually_installs(tmp_path: Path):
     """
     systemd_dir = tmp_path / "systemd"
     systemd_dir.mkdir()
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             'set -euo pipefail\n'
             'source "${REPO_DIR}/deploy/lib/install/systemd-units.sh"\n'
@@ -991,8 +984,6 @@ def test_voice_unit_file_actually_installs(tmp_path: Path):
             "REPO_DIR": str(REPO_ROOT),
             "SYSTEMD_DIR": str(systemd_dir),
         },
-        capture_output=True,
-        text=True,
         timeout=60,
     )
 
@@ -1045,9 +1036,8 @@ def test_streambox_parking_clears_the_stale_voice_input_marker(tmp_path: Path):
     )
     fake_systemctl.chmod(0o755)
 
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             "-c",
             'set -euo pipefail\n'
             'source "${REPO_DIR}/deploy/lib/install/systemd-units.sh"\n'
@@ -1060,8 +1050,6 @@ def test_streambox_parking_clears_the_stale_voice_input_marker(tmp_path: Path):
             "STATE_DIR": str(state_dir),
             "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
         },
-        capture_output=True,
-        text=True,
         timeout=60,
     )
 
