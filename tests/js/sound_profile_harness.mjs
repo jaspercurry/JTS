@@ -728,6 +728,7 @@ function baseFetch(overrides = {}) {
       }));
     }
     if (path === "./output-topology") return Promise.resolve(response(topologyPayload()));
+    if (path === "./cardioid-compare") return Promise.resolve(response({available: false}));
     if (path === "./active-speaker/design-draft") {
       return Promise.resolve(response({ status: "ready_for_review", summary: {}, operator_inputs: {} }));
     }
@@ -1241,7 +1242,8 @@ async function testLeavingAnUnsavedDraftRestoresThePersistedProfile() {
 
 async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
   const eqFetched = [];
-  const eqBase = baseFetch();
+  let finishCompare;
+  const eqBase = baseFetch({'./cardioid-compare': () => new Promise(resolve => { finishCompare = resolve; })});
   const eq = setupHarness((path, options = {}) => {
     eqFetched.push(path);
     return eqBase(path, options);
@@ -1272,6 +1274,10 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
       fail("EQ mode omitted an owned editor mode", { expected, draftHtml });
     }
   }
+  assert.equal(eq.elements.get('cardioid-compare-card').hidden, true);
+  assert.equal(eqFetched.filter(path => path === './cardioid-compare').length, 1);
+  finishCompare(response({available: false}));
+  await eq.flush();
 
   const outputFetched = [], hatPosts = [];
   const hat = {
@@ -5373,12 +5379,14 @@ async function testCardioidCompareMountFollowsEqPageMode() {
     for (const follower of [false, true]) {
       const compare = {available: true, state: 'normal', tune: {label: 'Current tune', layers: [], applied_at: null},
         level_match: {status: 'unavailable', trim_db: null, louder: null}, expires_in_s: null};
+      let requests = 0;
       const harness = setupHarness(baseFetch({
-        './state': () => Promise.resolve(response({...basePayload, cardioid_compare: compare})),
+        './cardioid-compare': () => { requests++; return Promise.resolve(response(compare)); },
       }), {mode, follower});
       await harness.flush(); await harness.flush();
       const card = harness.elements.get('cardioid-compare-card');
       assert.equal(!!card, mode === 'eq' && !follower);
+      assert.equal(requests, card ? 1 : 0);
       if (!card) continue;
       for (const view of ['off', 'saved', 'draft']) {
         harness.elements.get('tab-' + view).click();

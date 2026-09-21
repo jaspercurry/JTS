@@ -105,3 +105,24 @@ and the live boundary's refusal without a durable write.
 If the idle hold or holder fails after the graph swap, restore the applied
 graph before returning the error, using the session token to avoid undoing
 a newer owner.
+
+### Level match cache and endpoint — 2026-09-21
+
+The cache key is now `(candidate_fingerprint, applied_at, campaign-root
+st_mtime_ns)`. A warm lookup reads the applied profile and stats the campaign
+root once; it never walks the bank. Banking a round creates a directory there
+and changes that key. The process memo remains, with an atomic JSON copy at
+`rear_compare_level.json` beside the audition record in `/run`. It contains
+the key and public level fields only, and survives web process idle exit;
+reboot clears it. Missing, corrupt or mismatched files are cache misses.
+A failed cache write leaves the process memo usable.
+
+The studio measured a 2.3 s preview and about a 1 s bank walk on a Pi 5.
+Only a cache miss on GET computes. POST uses cached data only and does not
+wait for a preview in progress; a cold flip reports `unavailable` with
+`cache_miss` and uses zero trim. POST builds the block once and changes only
+its state and expiry after the flip. The projection maths is unchanged.
+
+The card fetches GET `./cardioid-compare` on mount, independently of EQ boot.
+GET `./state` no longer carries the block, so a cold analysis cannot delay
+the editor's state response. A failed card fetch leaves the card hidden.

@@ -1171,7 +1171,7 @@ def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[s
     }
 
 
-def _cardioid_compare_payload() -> dict[str, Any]:
+def _cardioid_compare_payload(*, cached_only: bool = False) -> dict[str, Any]:
     from jasper.active_speaker.baseline_profile import applied_layer_names, load_applied_baseline_profile_state  # lazy: numpy startup cost
 
     applied = load_applied_baseline_profile_state()
@@ -1191,5 +1191,5 @@ def _cardioid_compare_payload() -> dict[str, Any]:
             "state": session["state"] if session else "normal",
             "tune": {"label": "Current tune", "layers": [k for k, v in layers.items() if v],
                      "applied_at": (applied or {}).get("applied_at")},
-            "level_match": rear_compare_level(),
+            "level_match": rear_compare_level(cached_only=cached_only),
             "expires_in_s": session["expires_in_s"] if session else None}

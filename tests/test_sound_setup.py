@@ -5850,7 +5850,7 @@ def test_design_draft_get_computes_profile_from_current_values(monkeypatch, tmp_
 
 
 @pytest.mark.parametrize("reason", ["", "follower", "no_rear_output", "no_applied_profile", "no_rear_layer", "rear_muted_in_tune"])
-def test_cardioid_compare_availability_contract(monkeypatch, reason):
+def test_cardioid_compare_availability_contract(tmp_path, monkeypatch, reason):
     from types import SimpleNamespace
     from jasper.active_speaker import baseline_profile
 
@@ -5871,8 +5871,8 @@ def test_cardioid_compare_availability_contract(monkeypatch, reason):
     monkeypatch.setattr(sound_active_speaker, "audition_summary", lambda: None)
     level = {"status": "matched", "trim_db": 1.2, "louder": "on", "reason": "",
              "round_id": "pair", "banked_at": "2026-09-20T12:00:00Z"}
-    monkeypatch.setattr(sound_active_speaker, "rear_compare_level", lambda: level)
-    payload = sound_active_speaker._cardioid_compare_payload()
+    monkeypatch.setattr(sound_active_speaker, "rear_compare_level", lambda **kwargs: level)
+    payload = _drive_compare_get(tmp_path, "/cardioid-compare")
     assert payload == {
         "available": not reason, "reason": reason, "state": "normal",
         "tune": {"label": "Current tune", "layers": [] if applied is None else
@@ -5884,11 +5884,11 @@ def test_cardioid_compare_availability_contract(monkeypatch, reason):
 
 
 @pytest.mark.parametrize("layer,state,seconds", [("rear_compare", "off", 42), ("rear_compare", "on", 1799), ("baseline", None, None)])
-def test_cardioid_compare_session_disclosure(monkeypatch, layer, state, seconds):
+def test_cardioid_compare_session_disclosure(tmp_path, monkeypatch, layer, state, seconds):
     monkeypatch.setattr(sound_active_speaker, "audition_summary", lambda: {
         "layer": layer, "state": state, "expires_in_s": seconds,
     })
-    payload = sound_active_speaker._cardioid_compare_payload()
+    payload = _drive_compare_get(tmp_path, "/cardioid-compare")
     assert payload["state"] == (state or "normal")
     assert payload["expires_in_s"] == seconds
 
@@ -5898,15 +5898,18 @@ def test_cardioid_compare_session_disclosure(monkeypatch, layer, state, seconds)
 def test_cardioid_compare_post_contract(tmp_path, monkeypatch, refusal, status, state):
     from jasper.active_speaker.audition import AuditionRefused
 
-    payload = {"available": state != "normal", "state": state}
+    payload = {"available": state != "normal", "state": "normal", "level_match": {
+        "status": "unavailable", "trim_db": None, "louder": None, "reason": "cache_miss"}}
+    block = Mock(return_value=payload)
+    monkeypatch.setattr(sound_setup.time, "time", lambda: 1000.0)
     calls, holders = [], []
     async def change(state, *, cam, trim_db):
         calls.append((state, trim_db))
         if refusal:
             raise AuditionRefused(refusal, "The compare could not change.")
-        return {"status": "restored" if state == "normal" else "auditioning", "token": "session"}
+        return {"status": "restored" if state == "normal" else "auditioning", "token": "session", "deadline_at": 1042.0}
     monkeypatch.setattr(sound_setup, "start_web_audition_holder", lambda record, *args: holders.append(record["token"]))
-    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda: payload)
+    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", block)
     monkeypatch.setattr(sound_setup, "set_compare_state", change)
     monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
     body = json.dumps({"state": state}).encode()
@@ -5917,7 +5920,8 @@ def test_cardioid_compare_post_contract(tmp_path, monkeypatch, refusal, status, 
     if refusal:
         assert set(result) == {"error", "message"}
     else:
-        assert result == payload
+        assert result == {**payload, "state": state, "expires_in_s": None if state == "normal" else 42}
+    block.assert_called_once_with(cached_only=True)
     assert calls == [(state, 0.0)]
     assert holders == (["session"] if not refusal and state != "normal" else [])
     assert reads == [len(body)]
@@ -5930,7 +5934,7 @@ def test_cardioid_compare_passes_only_the_louder_states_trim(tmp_path, monkeypat
 
     change = AsyncMock(return_value={"status": "restored"})
     monkeypatch.setattr(sound_setup, "set_compare_state", change)
-    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda: {
+    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda **kwargs: {
         "available": True, "level_match": {"trim_db": 1.23, "louder": louder}})
     monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
     body = json.dumps({"state": state}).encode()
@@ -5959,9 +5963,9 @@ def test_unavailable_level_never_blocks_compare(compare_evidence, tmp_path, monk
         monkeypatch.setattr(readers, "newest_rear_pair_round", Mock(side_effect=LookupError()))
     level = rear_compare.rear_compare_level()
     assert (level["status"], level["reason"], level["trim_db"], level["louder"]) == ("unavailable", reason, None, None)
-    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda: {
-        "available": True, "level_match": rear_compare.rear_compare_level()})
-    change = AsyncMock(return_value={"status": "auditioning", "token": "session"})
+    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda **kwargs: {
+        "available": True, "level_match": rear_compare.rear_compare_level(**kwargs)})
+    change = AsyncMock(return_value={"status": "auditioning", "token": "session", "deadline_at": 9999999999.0})
     monkeypatch.setattr(sound_setup, "set_compare_state", change)
     monkeypatch.setattr(sound_setup, "start_web_audition_holder", Mock())
     monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
@@ -5980,7 +5984,7 @@ def test_compare_restores_if_holder_setup_fails(tmp_path, monkeypatch, failure):
     events = []
     async def change(*args, **kwargs):
         events.append("installed")
-        return {"status": "auditioning", "token": "session"}
+        return {"status": "auditioning", "token": "session", "deadline_at": 9999999999.0}
     restore = AsyncMock(side_effect=lambda **kwargs: events.append("restored"))
     hold = MagicMock()
     if failure == "enter":
@@ -5993,7 +5997,7 @@ def test_compare_restores_if_holder_setup_fails(tmp_path, monkeypatch, failure):
         monkeypatch.setattr(audition.threading.Thread, "start", Mock(side_effect=RuntimeError()))
     monkeypatch.setattr(sound_setup, "set_compare_state", change)
     monkeypatch.setattr(audition, "stop_audition", restore)
-    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda: {"available": True})
+    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda **kwargs: {"available": True})
     monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
     body = b'{"state":"off"}'
     response, _ = _drive_raw_sound_post(tmp_path, path="/cardioid-compare", content_length=len(body), body=body)
@@ -6005,7 +6009,7 @@ def test_compare_restores_if_holder_setup_fails(tmp_path, monkeypatch, failure):
 
 
 def test_cardioid_compare_post_unavailable_and_csrf(tmp_path, monkeypatch):
-    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda: {"available": False})
+    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda **kwargs: {"available": False})
     body = b'{"state":"off"}'
     response, reads = _drive_raw_sound_post(tmp_path, path="/cardioid-compare", content_length=len(body), body=body)
     assert b" 403 " in response.split(b"\r\n", 1)[0]
@@ -6016,14 +6020,11 @@ def test_cardioid_compare_post_unavailable_and_csrf(tmp_path, monkeypatch):
     assert json.loads(response.split(b"\r\n\r\n", 1)[1])["error"] == "cardioid_compare_unavailable"
 
 
-def test_cardioid_compare_in_get_state(tmp_path, monkeypatch):
-    block = {"available": True, "state": "off", "expires_in_s": 42}
-    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda: block)
-    monkeypatch.setattr(sound_setup, "_eq_carrier_block", lambda *a, **k: None)
+def _drive_compare_get(tmp_path, path):
     handler_cls = sound_setup._make_handler(profile_path=tmp_path / "profile.json",
         library_path=tmp_path / "library.json", config_dir=tmp_path, camilla_factory=lambda: None)
     handler = handler_cls.__new__(handler_cls)
-    handler.rfile = io.BytesIO(b"GET /state HTTP/1.1\r\nHost: jts.local\r\n\r\n")
+    handler.rfile = io.BytesIO(f"GET {path} HTTP/1.1\r\nHost: jts.local\r\n\r\n".encode())
     handler.wfile = io.BytesIO()
     handler.client_address, handler.server = ("127.0.0.1", 0), None
     handler.raw_requestline = handler.rfile.readline()
@@ -6031,7 +6032,50 @@ def test_cardioid_compare_in_get_state(tmp_path, monkeypatch):
     handler.do_GET()
     response = handler.wfile.getvalue()
     assert b" 200 " in response.split(b"\r\n", 1)[0]
-    assert json.loads(response.split(b"\r\n\r\n", 1)[1])["cardioid_compare"] == block
+    return json.loads(response.split(b"\r\n\r\n", 1)[1])
+
+
+def test_cardioid_compare_absent_from_get_state(tmp_path, monkeypatch):
+    block = Mock(side_effect=AssertionError())
+    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", block)
+    monkeypatch.setattr(sound_setup, "_eq_carrier_block", lambda *a, **k: None)
+    assert "cardioid_compare" not in _drive_compare_get(tmp_path, "/state")
+    block.assert_not_called()
+
+
+@pytest.mark.parametrize("warm", [False, True])
+def test_compare_post_never_selects_or_previews(compare_evidence, tmp_path, monkeypatch, warm):
+    from unittest.mock import AsyncMock
+    from jasper.active_speaker import rear_compare
+    from jasper.active_speaker.crossover_v2 import rear_preview, rear_pair_round as readers
+
+    monkeypatch.setattr(rear_preview, "preview_rear_section", lambda *a, **k: {})
+    monkeypatch.setattr(rear_preview, "rear_compare_delta_db", lambda preview: 0.35)
+    if warm:
+        rear_compare.rear_compare_level()
+        rear_compare._levels.clear()
+    selector, preview = Mock(side_effect=AssertionError()), Mock(side_effect=AssertionError())
+    monkeypatch.setattr(readers, "newest_rear_pair_round", selector)
+    monkeypatch.setattr(rear_preview, "preview_rear_section", preview)
+    level = Mock(wraps=rear_compare.rear_compare_level)
+    def block(**kwargs):
+        return {"available": True, "level_match": level(**kwargs)}
+    payload = Mock(side_effect=block)
+    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", payload)
+    change = AsyncMock(return_value={"status": "auditioning", "deadline_at": 9999999999.0, "token": "session"})
+    monkeypatch.setattr(sound_setup, "set_compare_state", change)
+    monkeypatch.setattr(sound_setup, "start_web_audition_holder", Mock())
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    body = b'{"state":"on"}'
+    response, _ = _drive_raw_sound_post(tmp_path, path="/cardioid-compare", content_length=len(body), body=body)
+    assert b" 200 " in response.split(b"\r\n", 1)[0]
+    result = json.loads(response.split(b"\r\n\r\n", 1)[1])
+    assert result["level_match"]["status"] == ("matched" if warm else "unavailable")
+    change.assert_awaited_once_with("on", cam=None, trim_db=0.35 if warm else 0.0)
+    payload.assert_called_once_with(cached_only=True)
+    level.assert_called_once_with(cached_only=True)
+    selector.assert_not_called()
+    preview.assert_not_called()
 
 
 def test_cardioid_compare_uses_follower_post_guard(tmp_path, monkeypatch):
