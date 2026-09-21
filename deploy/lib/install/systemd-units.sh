@@ -419,6 +419,16 @@ install_resilience_identity_unit_files() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-bootloop-guard" \
         /usr/local/sbin/jasper-bootloop-guard
+    # The script lands BEFORE the unit whose ExecStart= names it: a deploy
+    # interrupted between these two rows would otherwise leave a unit that
+    # fails to exec (203) on every restart instead of one that is simply
+    # not there yet.
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-usb-hcd-recover" \
+        /usr/local/sbin/jasper-usb-hcd-recover
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-usb-hcd-recover.service" \
+        "${SYSTEMD_DIR}/jasper-usb-hcd-recover.service"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-journal-review.service" \
         "${SYSTEMD_DIR}/jasper-journal-review.service"
@@ -428,6 +438,21 @@ install_resilience_identity_unit_files() {
     install -m 0755 \
         "${REPO_DIR}/scripts/journal-review.sh" \
         /usr/local/sbin/jasper-journal-review
+}
+
+# USB host-controller recovery: a long-lived kernel-log follow that re-binds a
+# controller the xHCI driver declared dead (#5443). Enabled on BOTH profiles on
+# purpose — `streambox` is a profile choice, not a hardware class (only a Zero 2
+# W DEFAULTS to it; JASPER_INSTALL_PROFILE=streambox is accepted on a Pi 5), so
+# the unit's own ConditionPathExistsGlob= on a BOUND platform xHCI is the
+# truthful gate and costs a skipped start on a box that has none.
+enable_usb_hcd_recover() {
+    # `enable --now` arms the next boot and starts a STOPPED unit; it does not
+    # restart one already running the previous deploy's script. try-restart
+    # picks up the new code, and no-ops when the unit is not running.
+    systemctl enable --now jasper-usb-hcd-recover.service || \
+        echo "  (USB host-controller recovery not enabled — non-fatal)"
+    systemctl try-restart jasper-usb-hcd-recover.service 2>/dev/null || true
 }
 
 install_usbsink_unit_files() {
@@ -1396,6 +1421,7 @@ start_streambox_runtime_units() {
     systemctl enable jasper-wifi-guardian.service
     systemctl enable --now jasper-wifi-recover.timer
     systemctl enable jasper-bootloop-guard.service
+    enable_usb_hcd_recover
     systemctl enable --now jasper-identity-reconcile.timer
     systemctl start jasper-identity-reconcile.service || \
         echo "  (identity reconcile failed — non-fatal; doctor will flag)"
@@ -1693,6 +1719,7 @@ install_systemd_units() {
     # disarms StartLimitAction=reboot via runtime drop-ins only when
     # boots are looping. Safe on fresh installs (first boots never trip).
     systemctl enable jasper-bootloop-guard.service
+    enable_usb_hcd_recover
     # Identity reconciler: boot + 5-min timer; pure observer (writes
     # only /var/lib/jasper/identity.env). `enable --now`, NOT bare
     # `enable`: enable alone arms the timer for the NEXT boot but

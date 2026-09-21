@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# jasper-usb-hcd-recover — re-bind a USB host controller the kernel gave up on.
+#
+# When the xHCI driver declares a controller dead ("HC died; cleaning up") it
+# tears down every bus on it and never brings them back. Re-binding the
+# platform driver is the only cure short of a reboot. See #5443 for the two
+# jts3 incidents and the ranked causes.
+#
+# Three facts shape the design:
+#   - `HC died` does NOT deregister the root hubs, so sysfs reads identically
+#     before and after. The kernel log is the only signal, and the re-bind's
+#     own "new USB bus registered" line the only confirmation.
+#   - One re-bind is usually enough but not always: the second incident needed
+#     two, 33 s apart.
+#   - An unbind that is not followed by a successful bind leaves the controller
+#     WORSE than dead — the root hubs really are deregistered then. So the
+#     retry path never re-issues a second unbind against an unbound device.
+#
+# Push-driven: one long-lived `journalctl -k -f` follow, no poll loop and no
+# Python (ADR-0226), plus one catch-up read of this boot's log at start so a
+# death during a restart is not missed. Bounded twice over — at most two
+# re-binds per death, and a hard per-boot ceiling per controller.
+
+set -uo pipefail
+
+DRIVER_DIR="${JASPER_USB_HCD_DRIVER_DIR:-/sys/bus/platform/drivers/xhci-hcd}"
+# The platform devices themselves, which survive an unbind. Only place a
+# controller that is bound to nothing can still be seen.
+DEVICE_DIR="${JASPER_USB_HCD_DEVICE_DIR:-/sys/bus/platform/devices}"
+JOURNALCTL="${JASPER_USB_HCD_JOURNALCTL:-journalctl}"
+STATE_DIR="${JASPER_USB_HCD_STATE_DIR:-/run/jasper-usb-hcd-recover}"
+# Read by jasper-turntable-autostop@.service's ConditionPathExists=!. A re-bind
+# re-enumerates the CH340, whose udev rule OPENS the port — the exact trigger
+# of #5443. Same shape as /run/jasper-install/in_progress.
+INHIBIT_MARKER="${JASPER_USB_HCD_INHIBIT_MARKER:-/run/jasper-usb-hcd-recover/rebinding}"
+# Seconds between the unbind and the bind. 3 s is what the owner's manual
+# recovery used on jts3; shorter has never been tried on hardware.
+SETTLE_SECONDS="${JASPER_USB_HCD_SETTLE_SECONDS:-3}"
+# Bounded wait for the bus to come back: CONFIRM_TRIES * POLL_SECONDS seconds.
+CONFIRM_TRIES="${JASPER_USB_HCD_CONFIRM_TRIES:-20}"
+POLL_SECONDS="${JASPER_USB_HCD_POLL_SECONDS:-1}"
+
+# Per death: the first re-bind, then one more.
+readonly ATTEMPTS_PER_DEATH=2
+# Per boot, per controller. A controller dying in a loop is reported and left
+# alone rather than re-bound forever.
+# Removal condition: change only if a real incident shows 3 is the wrong number.
+readonly MAX_RECOVERIES_PER_BOOT=3
+
+readonly DEATH_MARKER='HC died'
+readonly LIVE_MARKER='new USB bus registered'
+readonly NAME_RE='^xhci-hcd\.[0-9]+$'
+
+SYSFS_WRITE_ERROR=""
+
+# event=usb_hcd_recover.<outcome>, the shape the sibling helpers in this
+# directory use (jasper-wifi-recover). Every line carries controller= and
+# attempt= so one grep reads them all; `none`/`0` where there is no controller.
+emit() {
+    local outcome="$1" controller="$2" attempt="$3" field
+    shift 3
+    printf 'event=usb_hcd_recover.%s controller=%s attempt=%s' \
+        "$outcome" "$controller" "$attempt" >&2
+    for field in "$@"; do
+        [[ -n "$field" ]] && printf ' %s' "$field" >&2
+    done
+    printf '\n' >&2
+}
+
+device_present() {
+    [[ -e "${DRIVER_DIR}/$1" ]]
+}
+
+# $1: unbind|bind, $2: a name the caller has already validated. Keeps the
+# kernel's own refusal (ENODEV, EBUSY, …) in SYSFS_WRITE_ERROR rather than
+# discarding it — that text is the whole diagnosis when a re-bind fails.
+sysfs_write() {
+    local err rc
+    err="$( { printf '%s' "$2" > "${DRIVER_DIR}/$1"; } 2>&1 )"
+    rc=$?
+    err="${err//$'\n'/ }"
+    SYSFS_WRITE_ERROR="${err##*: }"
+    return "$rc"
+}
+
+error_field() {
+    [[ -n "$SYSFS_WRITE_ERROR" ]] && printf 'error="%s"' "$SYSFS_WRITE_ERROR"
+}
+
+validate_controller() {
+    [[ "$1" =~ $NAME_RE ]] && device_present "$1"
+}
+
+recoveries_so_far() {
+    local count=""
+    if [[ -r "${STATE_DIR}/$1" ]]; then
+        read -r count < "${STATE_DIR}/$1"
+    fi
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    printf '%s' "$count"
+}
+
+record_recovery() {
+    { printf '%s\n' "$2" > "${STATE_DIR}/$1"; } 2>/dev/null
+}
+
+# How many times this boot's log says this controller's buses came up. Counted,
+# not timestamp-compared: a wall-clock cutoff is not monotonic, so an NTP step
+# mid-recovery could hide or invent the confirmation.
+registered_count() {
+    local out line count=0
+    out="$("$JOURNALCTL" -k -b 0 -o cat --grep "$LIVE_MARKER" 2>/dev/null)"
+    while IFS= read -r line; do
+        [[ "$line" == *"$1: $LIVE_MARKER"* ]] && count=$(( count + 1 ))
+    done <<< "$out"
+    printf '%s' "$count"
+}
+
+inhibit_on() {
+    { : > "$INHIBIT_MARKER"; } 2>/dev/null || true
+}
+
+inhibit_off() {
+    rm -f "$INHIBIT_MARKER" 2>/dev/null || true
+}
+
+recover_once() {
+    local name="$1" index="$2" attempt="$3" baseline try
+    baseline="$(registered_count "$name")"
+    inhibit_on
+    # Absent means a previous attempt unbound it and its bind failed. Going
+    # straight to bind is the only way back; a second unbind would take ENODEV
+    # and strand the controller unbound.
+    if device_present "$name"; then
+        if ! sysfs_write unbind "$name"; then
+            inhibit_off
+            emit failed "$index" "$attempt" step=unbind "$(error_field)"
+            return 1
+        fi
+        sleep "$SETTLE_SECONDS"
+    fi
+    if ! sysfs_write bind "$name"; then
+        inhibit_off
+        emit failed "$index" "$attempt" step=bind "$(error_field)"
+        return 1
+    fi
+    for (( try = 0; try < CONFIRM_TRIES; try++ )); do
+        if (( $(registered_count "$name") > baseline )); then
+            # Hold the inhibit across the re-enumeration the bind just caused,
+            # so the tty's udev event lands inside the window.
+            sleep "$SETTLE_SECONDS"
+            inhibit_off
+            emit recovered "$index" "$attempt"
+            return 0
+        fi
+        sleep "$POLL_SECONDS"
+    done
+    inhibit_off
+    emit failed "$index" "$attempt" step=confirm
+    return 1
+}
+
+handle_death() {
+    local name="$1" index attempt count
+    index="${name##*.}"
+    for (( attempt = 1; attempt <= ATTEMPTS_PER_DEATH; attempt++ )); do
+        count="$(recoveries_so_far "$name")"
+        if (( count >= MAX_RECOVERIES_PER_BOOT )); then
+            emit capped "$index" "$attempt"
+            return 0
+        fi
+        # Counted BEFORE the write: a re-bind that wedges this process must
+        # still spend its share of the per-boot budget. An uncountable recovery
+        # is refused rather than run uncapped — the counter IS the brake.
+        if ! record_recovery "$name" "$(( count + 1 ))"; then
+            emit failed "$index" "$attempt" step=budget
+            return 0
+        fi
+        if recover_once "$name" "$index" "$attempt"; then
+            return 0
+        fi
+    done
+    # Root hubs deregistered and nothing bound: worse than the death itself,
+    # and no automatic path left. Say so in its own word.
+    if ! device_present "$name"; then
+        emit left_unbound "$index" "$ATTEMPTS_PER_DEATH"
+    fi
+    return 0
+}
+
+# Last marker wins, the rule jasper.cli.doctor.resilience.usb_host_controller_states
+# applies to the same two markers (#5444).
+last_marker_for() {
+    local line state=""
+    while IFS= read -r line; do
+        [[ "$line" == *"xhci-hcd $1: "* ]] || continue
+        if [[ "$line" == *"$DEATH_MARKER"* ]]; then
+            state=dead
+        elif [[ "$line" == *"$LIVE_MARKER"* ]]; then
+            state=live
+        fi
+    done <<< "$2"
+    printf '%s' "$state"
+}
+
+# A death that happened before this unit started — at boot, or inside a
+# RestartSec gap — never reaches the follow, which deliberately starts at the
+# end of the log. Read this boot once and act on whatever is still dead.
+catch_up() {
+    local log path name
+    log="$("$JOURNALCTL" -k -b 0 -o cat --grep 'xhci-hcd' 2>/dev/null)"
+    [[ -n "$log" ]] || return 0
+    for path in "${DRIVER_DIR}"/xhci-hcd.*; do
+        [[ -e "$path" ]] || continue
+        name="${path##*/}"
+        [[ "$name" =~ $NAME_RE ]] || continue
+        [[ "$(last_marker_for "$name" "$log")" == dead ]] || continue
+        emit catchup "${name##*.}" 0
+        handle_death "$name"
+    done
+}
+
+# A controller that is bound to NOTHING has no entry under the driver dir, so
+# catch_up cannot see it — and that is exactly the state an unbind whose bind
+# never happened leaves behind (this process killed mid-window). The platform
+# device survives; a missing `driver` link is what says it is orphaned. Safe to
+# act on unconditionally: this unit only starts once some controller IS bound to
+# the platform driver, so the driver is loaded and a sibling without it is not
+# merely waiting for probe.
+catch_up_unbound() {
+    local path name
+    for path in "${DEVICE_DIR}"/xhci-hcd.*; do
+        [[ -d "$path" ]] || continue
+        name="${path##*/}"
+        [[ "$name" =~ $NAME_RE ]] || continue
+        [[ -e "${path}/driver" ]] && continue
+        device_present "$name" && continue
+        emit catchup_unbound "${name##*.}" 0
+        handle_death "$name"
+    done
+}
+
+if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
+    emit failed none 0 step=state_dir
+    exit 1
+fi
+# A marker left behind by a killed run would park the turntable autostop for
+# the rest of the boot.
+inhibit_off
+# Same hazard from this run: a SIGTERM mid-window (systemctl stop/restart, and
+# now try-restart on every deploy) between inhibit_on and inhibit_off would
+# strand the marker, RuntimeDirectoryPreserve=yes would keep it, and the
+# autostop would be condition-skipped for every CH340 hot-plug for the rest of
+# the boot — silently. The explicit TERM trap turns the signal into an ordinary
+# exit so the EXIT trap runs on every bash, not only the versions that run it
+# for an untrapped fatal signal.
+trap inhibit_off EXIT
+trap 'exit 143' TERM INT
+
+emit watching none 0
+catch_up
+catch_up_unbound
+
+# `-n 0`: follow defaults to replaying the last 10 matching lines, which would
+# re-bind a healthy controller off an old death line every time this unit starts.
+# The catch-up above is what covers the gap, deliberately and once.
+while IFS= read -r line; do
+    # Re-assert the trigger. --grep is the kernel log's filter, not this
+    # script's contract: a journalctl without PCRE, a changed pattern, or any
+    # other line reaching this pipe must not be read as a death.
+    [[ "$line" == *"$DEATH_MARKER"* ]] || continue
+    name=""
+    if [[ "$line" =~ xhci-hcd\.[0-9]+ ]]; then
+        name="${BASH_REMATCH[0]}"
+    fi
+    # Nothing unvalidated reaches sysfs: the name must match the driver's own
+    # shape AND already exist under the driver directory.
+    if ! validate_controller "$name"; then
+        emit ignored none 0
+        continue
+    fi
+    handle_death "$name"
+done < <("$JOURNALCTL" -k -f -n 0 -o cat --grep "$DEATH_MARKER")
+
+emit stream_closed none 0
+exit 1

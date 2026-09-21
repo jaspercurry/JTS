@@ -1,0 +1,62 @@
+[Unit]
+Description=Re-bind a USB host controller the kernel declared dead
+Documentation=https://github.com/jaspercurry/JTS/issues/5443
+# Only the RP1 platform xHCI (Pi 5) is in scope, and only once a controller is
+# actually BOUND to that driver — the bare directory exists wherever the module
+# loaded, with nothing to recover. A box whose USB host controllers sit on
+# another bus never matches, and the unit skips instead of following a log for
+# a line that can never name a target here.
+ConditionPathExistsGlob=/sys/bus/platform/drivers/xhci-hcd/xhci-hcd.*
+After=systemd-journald.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/jasper-usb-hcd-recover
+Restart=always
+RestartSec=5
+Nice=10
+# Holds the per-boot re-bind counters. Preserved across a restart of this unit
+# (the cap must survive one) and gone at the next boot, which is its scope.
+RuntimeDirectory=jasper-usb-hcd-recover
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+StandardOutput=journal
+StandardError=journal
+
+# Root, because the platform driver's unbind/bind attributes are root-write.
+# No capability is needed on top of that: they are plain 0200 root-owned files.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+# The one writable path. Leading `-` so a box without the driver never fails to
+# start on a missing path (the ConditionPathExists above is the real gate).
+ReadWritePaths=-/sys/bus/platform/drivers/xhci-hcd
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_UNIX
+RemoveIPC=true
+UMask=0077
+# Generous: the follower's own working set is a few MB, so this only bounds a
+# runaway. It must not be tight enough to OOM-kill the one thing that can
+# revive a dead controller.
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

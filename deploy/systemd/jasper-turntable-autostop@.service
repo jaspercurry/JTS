@@ -6,6 +6,13 @@ After=dev-%i.device
 ConditionPathExists=/dev/%I
 # See #4123.
 ConditionPathExists=!/run/jasper-install/in_progress
+# Held by jasper-usb-hcd-recover across a host-controller re-bind. That re-bind
+# re-enumerates the CH340, and opening a still-wedged CH340 is what killed the
+# controller in the first place (#5443) — so this one hot-plug is skipped.
+# Safe: a re-bind does not power-cycle the turntable or command motion, and a
+# commanded move completes on its own inside the 45 deg travel envelope
+# (jts_turntable.py), so there is no new motion for this stop to catch.
+ConditionPathExists=!/run/jasper-usb-hcd-recover/rebinding
 
 [Service]
 Type=oneshot
