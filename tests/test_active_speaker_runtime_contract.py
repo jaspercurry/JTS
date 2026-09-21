@@ -26,12 +26,8 @@ from jasper.active_speaker import (
     emit_active_speaker_driver_domain_config,
     emit_active_speaker_program_bake_config,
 )
-from jasper.active_speaker.camilla_yaml import (
-    BASELINE_LIMITER_CLIP_LIMIT_DB,
-    STARTUP_MUTE_GAIN_DB,
-    driver_linearization_shelf_name,
-    driver_linearization_taper_name,
-)
+from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB, STARTUP_MUTE_GAIN_DB
+from jasper.active_speaker.camilla_names import driver_linearization_shelf_name, driver_linearization_taper_name
 from jasper.active_speaker.environment import CAMILLA_CLASS_ACTIVE_PARKED
 from jasper.active_speaker.commission_wiring import resolve_capture_preset
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate

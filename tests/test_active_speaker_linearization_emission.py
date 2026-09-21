@@ -30,13 +30,8 @@ from jasper.active_speaker.baseline_profile import (
     profile_program_headroom_db,
 )
 from jasper.camilla_config_contract import PeqFilter
-from jasper.active_speaker.camilla_yaml import (
-    MAX_LINEARIZATION_FILTERS_PER_DRIVER,
-    driver_linearization_peak_name,
-    driver_linearization_shelf_name,
-    driver_linearization_taper_name,
-    linearization_headroom_db,
-)
+from jasper.active_speaker.camilla_yaml import MAX_LINEARIZATION_FILTERS_PER_DRIVER, linearization_headroom_db
+from jasper.active_speaker.camilla_names import driver_linearization_peak_name, driver_linearization_shelf_name, driver_linearization_taper_name
 from jasper.active_speaker.linearization_fit import (
     MAX_FILTERS_PER_DRIVER,
     _HIGHSHELF_Q,

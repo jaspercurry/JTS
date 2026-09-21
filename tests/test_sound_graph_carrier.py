@@ -434,7 +434,7 @@ def test_stereo_host_reemit_folds_mono_program_onto_the_declared_output(
     half the record — and, on the deploy path, overwrite the width-matched
     cutover the statefile guard just approved.
     """
-    from jasper.active_speaker.camilla_yaml import output_commission_mute_name
+    from jasper.active_speaker.camilla_names import output_commission_mute_name
     from jasper.camilla_emit import MONO_SUM_GAIN_DB
     from tests.test_active_speaker_runtime_contract import _full_range_mono_on
 

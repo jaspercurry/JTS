@@ -25,7 +25,7 @@ from jasper.active_speaker.bench.derivation import (
     derive_offline_render_config,
     device_geometry,
 )
-from jasper.active_speaker.camilla_yaml import driver_baseline_limiter_name
+from jasper.active_speaker.camilla_names import driver_baseline_limiter_name
 from jasper.active_speaker.bench.render import DEPLOYED_PROCESSING_PRECISION
 from jasper.bass_extension.dynamic import DynamicBassDescriptor
 from jasper.bass_extension.dynamic_graph import apply_dynamic_bass_graph
