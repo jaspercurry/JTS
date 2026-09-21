@@ -1337,6 +1337,41 @@ def test_wifi_tuning_persists_retry_forever_and_power_save_disable():
 _SYSTEMD_UNITS_LIB = _INSTALL_LIB_DIR / "systemd-units.sh"
 
 
+def test_outputd_readiness_restart_clears_prior_attempts_or_refuses(tmp_path):
+    """The direct readiness restart starts with a fresh counter; if the reset
+    fails, the installer does not spend another start attempt."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    calls = tmp_path / "systemctl.log"
+    fail_reset = tmp_path / "fail-reset"
+    systemctl = bindir / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$*" >> {shlex.quote(str(calls))}\n'
+        f'if [[ "$1" == "reset-failed" && -e {shlex.quote(str(fail_reset))} ]]; then exit 1; fi\n',
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
+    result = run_bash(
+        [
+            "-c",
+            f"export PATH={shlex.quote(str(bindir))}:$PATH; "
+            f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null; "
+            "_restart_outputd_for_readiness; "
+            f"touch {shlex.quote(str(fail_reset))}; "
+            "if _restart_outputd_for_readiness; then exit 10; fi",
+        ],
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert calls.read_text(encoding="utf-8").splitlines() == [
+        "reset-failed jasper-outputd.service",
+        "restart jasper-outputd.service",
+        "reset-failed jasper-outputd.service",
+    ]
+
+
 def test_mask_distro_background_units_masks_present_timers_only(tmp_path):
     """Only the timers the image actually carries are masked (`mask --now` on
     an absent unit would fail the install); each masked unit's stale
