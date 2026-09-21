@@ -21,6 +21,7 @@
     gap: 8px; padding: 0 4px; margin-bottom: 12px;
   }
   .now-playing { padding-bottom: 28px; }
+  #cardioid-compare-card { margin-bottom: 28px; }
   .now-playing__label {
     font-family: var(--font-display); font-size: 12px; font-weight: 500;
     color: var(--foreground);

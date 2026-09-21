@@ -23,9 +23,6 @@ const subCrossoverBoundsFixture = JSON.parse(execFileSync(process.env.PYTHON || 
 const modulePath = process.argv[2] || "deploy/assets/sound-profile/js/main.js";
 const siblingDir = dirname(modulePath);
 
-// http.js's promptForControlToken (behind a lazy dialog.js import) parses but
-// never runs — main.js only calls the two header helpers, neither of which
-// hits the token-prompt path.
 const JTSCONFIRM_STUB = [
   /^import\s+\{\s*jtsConfirm\s+\}\s+from\s+["'][^"']+["'];\s*/m,
   "const jtsConfirm = async (...args) => globalThis.__jtsConfirm ? globalThis.__jtsConfirm(...args) : true;\n",
@@ -42,7 +39,7 @@ const runner = buildFunction(
     ...[
       "eq-math.js", "active-speaker-ui.js", "state.js", "format.js",
       "eq-curve.js", "topology.js", "driver-model.js", "installation.js", "driver-fields.js",
-      "seat-level.js", "rear-calibration.js", "ab-listen.js",
+      "seat-level.js", "rear-calibration.js", "cardioid-compare.js",
     ].map((name) => ({ path: join(siblingDir, name) })),
     { path: modulePath, rewrite: [JTSCONFIRM_STUB] },
   ],
@@ -77,6 +74,7 @@ function makeEl(id) {
     appendChild(node) { this.children.push(node); return node; },
     replaceChildren(...nodes) { this.children = nodes; },
     replaceWith(node) { Object.assign(this, node); },
+    disabled: false, hidden: false,
     id, innerHTML: "", textContent: "", className: "", value: "", checked: false,
     attrs: {}, style: {}, _listeners: {}, _listenerCapture: {}, classList: classList(),
     setAttribute(k, v) { this.attrs[k] = String(v); },
@@ -545,6 +543,9 @@ function setupHarness(fetchHandler, options = {}) {
       absent.add(id);
     }
   }
+
+  const nowPlaying = elements.get('now-playing');
+  if (nowPlaying) nowPlaying.after = node => elements.set(node.id, node);
 
   let bodyHtml = '';
   Object.defineProperty(elements.get('view-body'), 'innerHTML', {
@@ -4396,7 +4397,6 @@ async function testFollowerModeRendersLocalDriverUi() {
     }
   }
   for (const forbidden of [
-    'id="ab-listen-card"',
     "Create custom profile",
     "Try a stock profile",
     "data-act=\"new-draft\"",
@@ -5368,6 +5368,31 @@ async function testRejectedPasteAndReasonSurviveDraftIngest() {
   return {rejectedPasteAndReasonSurviveDraftIngest: true};
 }
 
+async function testCardioidCompareMountFollowsEqPageMode() {
+  for (const mode of ['eq', 'speaker', 'output']) {
+    for (const follower of [false, true]) {
+      const compare = {available: true, state: 'normal', tune: {label: 'Current tune', layers: [], applied_at: null},
+        level_match: {status: 'unavailable', trim_db: null, louder: null}, expires_in_s: null};
+      const harness = setupHarness(baseFetch({
+        './state': () => Promise.resolve(response({...basePayload, cardioid_compare: compare})),
+      }), {mode, follower});
+      await harness.flush(); await harness.flush();
+      const card = harness.elements.get('cardioid-compare-card');
+      assert.equal(!!card, mode === 'eq' && !follower);
+      if (!card) continue;
+      for (const view of ['off', 'saved', 'draft']) {
+        harness.elements.get('tab-' + view).click();
+        await harness.flush(); await harness.flush();
+        assert.equal(harness.elements.get('cardioid-compare-card'), card);
+        assert.equal(card.hidden, false);
+        assert.ok(!harness.elements.get('view-body').children.includes(card));
+      }
+    }
+  }
+  return {cardioidCompareMountFollowsEqPageMode: true};
+}
+
+results.push(await testCardioidCompareMountFollowsEqPageMode());
 results.push(await testComponentsUseSavedTopologyAndClearPromptOnLayoutSave());
 results.push(await testRefreshRequiresConsentOnlyForDirtyLayout());
 results.push(await testRejectedImportReasonSurvivesTheSaveInThePanel());
