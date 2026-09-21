@@ -17,6 +17,7 @@ import textwrap
 import pytest
 
 from scripts import _pi_target
+from tests.shell_runner import run_bash
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,9 +65,9 @@ def _lib_function_output(function_call: str) -> str:
     its own target resolution so sourcing it doesn't refuse first."""
     env = _env_without_target()
     env.update({"PI_HOST": "explicit.invalid", "PI_USER": "operator"})
-    result = subprocess.run(
-        ["bash", "-c", f'source "{ROOT / "scripts" / "_lib.sh"}"\n{function_call}'],
-        env=env, capture_output=True, text=True, timeout=10,
+    result = run_bash(
+        ["-c", f'source "{ROOT / "scripts" / "_lib.sh"}"\n{function_call}'],
+        env=env, timeout=10,
     )
     assert result.returncode == 0, result.stderr
     return result.stdout
@@ -174,16 +175,13 @@ def _run_script(
         env["FAKE_SSH_FAIL"] = "1"
 
     default_args, _expected_status = INVOCATIONS[name]
-    result = subprocess.run(
+    result = run_bash(
         [
-            "bash",
             str(repo / "scripts" / name),
             *(default_args if args is None else args),
         ],
         cwd=repo.parent / "foreign-cwd",
         env=env,
-        capture_output=True,
-        text=True,
         timeout=10,
     )
     calls = log.read_text(encoding="utf-8") if log.exists() else ""
@@ -370,9 +368,9 @@ def test_help_needs_no_target_but_the_action_still_refuses(
     env = _env_without_target()
 
     def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["bash", str(repo / "scripts" / script), *args],
-            env=env, capture_output=True, text=True, timeout=15,
+        return run_bash(
+            [str(repo / "scripts" / script), *args],
+            env=env, timeout=15,
         )
 
     helped = _run(help_args)
@@ -434,15 +432,15 @@ def test_remote_env_file_set_cmd_executes_the_upsert_it_prints(
 
     remote_cmd = _remote_env_file_set_cmd(str(target), "KEY", value, "0640", "0750")
     local_cmd = remote_cmd.replace("/usr/local/lib/jasper/jasper-env-file.sh", str(real_lib))
-    exec_result = subprocess.run(
-        ["bash", "-c", local_cmd], capture_output=True, text=True, timeout=10,
+    exec_result = run_bash(
+        ["-c", local_cmd], timeout=10,
     )
     assert exec_result.returncode == 0, exec_result.stderr
     assert stat.S_IMODE(target.stat().st_mode) == 0o640
 
-    get_result = subprocess.run(
-        ["bash", "-c", f'. "{real_lib}" && jasper_env_file_get "{target}" KEY'],
-        capture_output=True, text=True, timeout=10,
+    get_result = run_bash(
+        ["-c", f'. "{real_lib}" && jasper_env_file_get "{target}" KEY'],
+        timeout=10,
     )
     assert get_result.returncode == 0, get_result.stderr
     assert get_result.stdout == f"{value}\n"
@@ -489,4 +487,4 @@ def test_env_file_write_matches_the_shared_helper(
 
 @pytest.mark.parametrize("name", SCRIPT_NAMES)
 def test_pi_target_scripts_are_valid_bash(name: str) -> None:
-    subprocess.run(["bash", "-n", str(ROOT / "scripts" / name)], check=True)
+    run_bash(["-n", str(ROOT / "scripts" / name)], timeout=30).check_returncode()

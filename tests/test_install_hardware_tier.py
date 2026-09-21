@@ -12,15 +12,15 @@ from pathlib import Path
 
 import pytest
 
+from tests.shell_runner import run_bash
+
 REPO_ROOT = Path(__file__).parent.parent
 INSTALL_SH = REPO_ROOT / "deploy" / "install.sh"
 
 
 def _run_install_helper(script: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["bash", "-c", f"source {shlex.quote(str(INSTALL_SH))} >/dev/null && {script}"],
-        capture_output=True,
-        text=True,
+    return run_bash(
+        ["-c", f"source {shlex.quote(str(INSTALL_SH))} >/dev/null && {script}"],
         timeout=5,
     )
 
@@ -163,10 +163,8 @@ def test_dry_run_plan_shows_hardware_tier(profile):
         env.pop("JASPER_INSTALL_PROFILE", None)
     else:
         env["JASPER_INSTALL_PROFILE"] = profile
-    r = subprocess.run(
-        ["bash", str(INSTALL_SH), "--dry-run"],
-        capture_output=True,
-        text=True,
+    r = run_bash(
+        [str(INSTALL_SH), "--dry-run"],
         timeout=5,
         env=env,
     )
@@ -186,10 +184,8 @@ def test_dry_run_does_not_enforce_arch_guard():
     env = os.environ.copy()
     env.pop("JASPER_INSTALL_PROFILE", None)
     env["JASPER_HW_ARCH"] = "armv7l"
-    r = subprocess.run(
-        ["bash", str(INSTALL_SH), "--dry-run"],
-        capture_output=True,
-        text=True,
+    r = run_bash(
+        [str(INSTALL_SH), "--dry-run"],
         timeout=5,
         env=env,
     )

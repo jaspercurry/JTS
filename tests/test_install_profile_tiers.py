@@ -41,8 +41,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.shell_runner import run_bash
 from tests.install_surface import installer_text
+from tests.shell_runner import run_bash
 
 
 REPO_ROOT = Path(__file__).parent.parent

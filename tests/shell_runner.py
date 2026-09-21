@@ -10,17 +10,19 @@ import os
 import signal
 import subprocess
 import sys
+from pathlib import Path
 
 
 def run_bash(
     args: list[str], *, timeout: float, env: dict[str, str] | None = None,
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     # Darwin can shrink pipes below modern Bash's here-document threshold.
     # Its system Bash uses temporary files instead; callers must support 3.2.
     bash = "/bin/bash" if sys.platform == "darwin" else "bash"
     with subprocess.Popen(
         [bash, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, start_new_session=True, env=env,
+        text=True, start_new_session=True, env=env, cwd=cwd,
     ) as proc:
         try:
             out, err = proc.communicate(timeout=timeout)

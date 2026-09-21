@@ -26,8 +26,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.shell_runner import run_bash
 from tests.install_surface import JASPER_GROUP_STUBS, installer_text
+from tests.shell_runner import run_bash
 
 
 _INSTALL_SH = Path(__file__).parent.parent / "deploy" / "install.sh"

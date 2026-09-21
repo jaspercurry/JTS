@@ -24,6 +24,7 @@ import subprocess
 from pathlib import Path
 
 from tests.install_surface import JASPER_GROUP_STUBS
+from tests.shell_runner import run_bash
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / "deploy" / "lib" / "install" / "env-migrations.sh"
@@ -40,7 +41,7 @@ chgrp() { :; }
 
 def _extract(name: str, lib: Path = LIB) -> str:
     out = subprocess.run(
-        ["bash", "-c", rf"sed -n '/^{name}()/,/^}}/p' '{lib}'"],
+        ["sed", "-n", rf"/^{name}()/,/^}}/p", str(lib)],
         capture_output=True,
         text=True,
         check=True,
@@ -56,7 +57,7 @@ def _run_heal(state_dir: Path, *, stubs: str = _STUBS) -> None:
         + _extract("heal_shared_state_modes")
         + f'\nSTATE_DIR="{state_dir}"\nheal_shared_state_modes\n'
     )
-    subprocess.run(["bash", "-c", script], check=True)
+    run_bash(["-c", script], timeout=30).check_returncode()
 
 
 def _mk(p: Path, mode: int) -> Path:
@@ -183,8 +184,8 @@ def test_a_later_creator_does_not_re_mode_what_the_heal_repaired(tmp_path):
         + f'\nSTATE_DIR="{tmp_path}"\nINSTALL_DIR="{tmp_path}/opt"\n'
         + "heal_shared_state_modes\nstage_wake_models\n"
     )
-    proc = subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, timeout=10,
+    proc = run_bash(
+        ["-c", script], timeout=10,
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -228,9 +229,7 @@ def test_heal_refuses_all_source_intent_symlinks_without_mutating_target(tmp_pat
             + _extract("heal_shared_state_modes")
             + f'\nSTATE_DIR="{case_dir}"\nheal_shared_state_modes\n'
         )
-        proc = subprocess.run(
-            ["bash", "-c", script], capture_output=True, text=True,
-        )
+        proc = run_bash(["-c", script], timeout=30)
         assert proc.returncode != 0, name
         assert "refusing unsafe shared-state path" in proc.stderr
         assert target.read_text(encoding="utf-8") == "x"
@@ -246,8 +245,8 @@ def test_heal_refuses_source_intent_fifo_without_blocking(tmp_path):
         + f'\nSTATE_DIR="{tmp_path}"\nheal_shared_state_modes\n'
     )
 
-    proc = subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, timeout=3,
+    proc = run_bash(
+        ["-c", script], timeout=3,
     )
 
     assert proc.returncode != 0
@@ -299,7 +298,7 @@ def test_heal_refuses_a_symlinked_run_lock_without_mutating_target(tmp_path):
         + f'\nSTATE_DIR="{tmp_path}"\nheal_shared_state_modes\n'
     )
 
-    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    proc = run_bash(["-c", script], timeout=30)
 
     assert proc.returncode != 0
     assert "refusing unsafe shared-state path" in proc.stderr
@@ -323,7 +322,7 @@ def test_heal_refuses_a_hardlinked_run_lock_without_mutating_target(tmp_path):
         + f'\nSTATE_DIR="{tmp_path}"\nheal_shared_state_modes\n'
     )
 
-    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    proc = run_bash(["-c", script], timeout=30)
 
     assert proc.returncode != 0
     assert "refusing hardlinked shared-state path" in proc.stderr

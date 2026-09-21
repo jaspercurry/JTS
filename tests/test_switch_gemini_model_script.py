@@ -21,6 +21,7 @@ import pytest
 
 from jasper.voice import catalog
 from jasper.voice.catalog import ModelStatus, PROVIDERS, ProviderCatalogEntry
+from tests.shell_runner import run_bash
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -138,12 +139,10 @@ def _run(
             "FAKE_CATALOG_MODE": mode,
         }
     )
-    result = subprocess.run(
-        ["bash", str(repo / "scripts" / SCRIPT.name), *args],
+    result = run_bash(
+        [str(repo / "scripts" / SCRIPT.name), *args],
         cwd=repo.parent / "foreign-cwd",
         env=env,
-        capture_output=True,
-        text=True,
         timeout=10,
     )
     calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
@@ -464,4 +463,4 @@ def test_catalog_failure_is_read_only_and_fail_closed(
 
 
 def test_script_is_valid_bash() -> None:
-    subprocess.run(["bash", "-n", str(SCRIPT)], check=True)
+    run_bash(["-n", str(SCRIPT)], timeout=10).check_returncode()
