@@ -287,6 +287,17 @@ def _seed_airplay_intentionally_off(monkeypatch) -> None:
     })
 
 
+def _seed_airplay_empty_hostname(monkeypatch) -> None:
+    monkeypatch.setattr(
+        renderers.shutil, "which",
+        lambda name: "/usr/bin/avahi-browse" if name == "avahi-browse" else None,
+    )
+    monkeypatch.setattr(
+        renderers, "_run",
+        lambda cmd, timeout=5.0: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+
 @pytest.mark.parametrize(
     "setup,expected_status,expected_reason",
     [
@@ -306,6 +317,10 @@ def _seed_airplay_intentionally_off(monkeypatch) -> None:
         pytest.param(
             _seed_airplay_intentionally_off,
             "ok", "source_off", id="unit_inactive_is_skipped",
+        ),
+        pytest.param(
+            _seed_airplay_empty_hostname,
+            "skipped", "hostname_unreadable", id="empty_hostname_is_skipped",
         ),
     ],
 )

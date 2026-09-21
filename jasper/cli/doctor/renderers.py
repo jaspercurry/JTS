@@ -24,6 +24,7 @@ from ...source_intent import (
 )
 from ...service_units import LIBRESPOT_SERVICE
 from ._evidence import evidence
+from .network import REASON_HOSTNAME_UNREADABLE
 from ._registry import doctor_check
 from ._shared import (
     REASON_SOURCE_INTENT_INVALID,
@@ -422,9 +423,18 @@ def check_airplay_advert_resolves() -> CheckResult:
             "verify the advert resolves.",
             reason=REASON_AIRPLAY_ADVERT_BROWSE_MISSING,
         )
-    own_host = f"{_run(['hostname', '-s']).stdout.strip()}.local".lower()
+    sys_hostname = _run(["hostname", "-s"]).stdout.strip()
+    if not sys_hostname:
+        return CheckResult(
+            label, "skipped", "could not read system hostname",
+            reason=REASON_HOSTNAME_UNREADABLE,
+        )
+    own_host = f"{sys_hostname}.local".lower()
     try:
-        stdout = _run([bin_path, "-rtp", "_airplay._tcp"], timeout=8.0).stdout
+        # avahi's own resolver timeout is 5 s per stale peer record, so a
+        # healthy run can take that long; stdout is pipe-buffered, so a kill
+        # on timeout would lose it.
+        stdout = _run([bin_path, "-rtp", "_airplay._tcp"], timeout=12.0).stdout
     except subprocess.TimeoutExpired as e:
         stdout = e.stdout or ""
         if isinstance(stdout, bytes):

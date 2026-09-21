@@ -1931,9 +1931,9 @@ def test_stable_source_reconcile_log_emitted_for_every_source(tmp_path, caplog):
             == 0
         )
     reconciled = event_field_maps(caplog, "source.reconcile")
-    assert {fields["source"] for fields in reconciled} == {
+    assert sorted(fields["source"] for fields in reconciled) == sorted(
         source.value for source in source_intent.source_intent_sources()
-    }
+    )
     assert all(fields["result"] == "ok" for fields in reconciled)
 
 
