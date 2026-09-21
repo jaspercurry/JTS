@@ -35,7 +35,7 @@ from jasper.net.wifi_guardian_persistence import (
 from . import web
 from ._evidence import evidence
 from ._registry import doctor_check
-from ._shared import CheckResult, _run
+from ._shared import REASON_HOSTNAME_UNREADABLE, CheckResult, _run
 
 # Closed vocabulary for this module's `CheckResult.reason` (AGENTS.md: tests
 # pin status + reason, never `detail` prose). Named by the fact a consumer
@@ -63,7 +63,6 @@ REASON_RECOVER_TIMER_DISABLED = "recover_timer_disabled"
 REASON_AVAHI_DAEMON_NOT_INSTALLED = "avahi_daemon_not_installed"
 REASON_AVAHI_DAEMON_INACTIVE = "avahi_daemon_inactive"
 
-REASON_HOSTNAME_UNREADABLE = "hostname_unreadable"
 REASON_AVAHI_RESOLVE_MISSING = "avahi_resolve_missing"
 REASON_AVAHI_RESOLVE_FAILED = "avahi_resolve_failed"
 REASON_AVAHI_RESOLVE_UNEXPECTED_OUTPUT = "avahi_resolve_unexpected_output"

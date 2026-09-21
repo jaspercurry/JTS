@@ -24,9 +24,9 @@ from ...source_intent import (
 )
 from ...service_units import LIBRESPOT_SERVICE
 from ._evidence import evidence
-from .network import REASON_HOSTNAME_UNREADABLE
 from ._registry import doctor_check
 from ._shared import (
+    REASON_HOSTNAME_UNREADABLE,
     REASON_SOURCE_INTENT_INVALID,
     CheckResult,
     _PROBE_FRAMES,

@@ -137,6 +137,11 @@ async def _run_async_doctor_check(
 # callers of the systemctl helpers report `skipped` with this.
 REASON_SYSTEMCTL_UNAVAILABLE = "systemctl_unavailable"
 
+# `hostname -s` (or equivalent) returned nothing: shared because both the
+# network domain's own hostname/avahi consistency check and the renderers
+# domain's AirPlay advert-resolve check hit this same unobservable case.
+REASON_HOSTNAME_UNREADABLE = "hostname_unreadable"
+
 
 def _systemctl_unavailable_result(label: str) -> CheckResult:
     """The verbatim skip every caller reports when ``unit_state()`` (or the
