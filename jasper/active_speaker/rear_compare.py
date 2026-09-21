@@ -29,7 +29,7 @@ def _valid_cached_level(level: Any) -> bool:
     trim = level["trim_db"]
     if level["status"] == "unavailable":
         return trim is None and level["louder"] is None
-    return (level["status"] == "matched" and type(trim) in (float, int)
+    return (level["status"] == "matched" and type(trim) is float
             and 0 <= trim <= MAX_COMPARE_TRIM_DB
             and (level["louder"] in ("on", "off") if trim else level["louder"] is None))
 
@@ -80,7 +80,7 @@ def rear_compare_level(*, cached_only: bool = False) -> dict[str, Any]:
                         elif not math.isfinite(delta) or abs(delta) > MAX_COMPARE_TRIM_DB:
                             level["reason"] = "delta_out_of_range"
                         else:
-                            level.update(status="matched", reason="", trim_db=0.0 if abs(delta) < 0.05 else round(abs(delta), 2),
+                            level.update(status="matched", reason="", trim_db=0.0 if abs(delta) < 0.05 else round(float(abs(delta)), 2),
                                          louder=None if abs(delta) < 0.05 else "on" if delta > 0 else "off")
                 except Exception:  # noqa: BLE001 - mute must survive level failures (ADR-0329)
                     level["reason"] = "preview_refused"

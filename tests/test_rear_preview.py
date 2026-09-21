@@ -397,6 +397,18 @@ def test_compare_level_real_model_cached_without_ffts(compare_evidence, monkeypa
     preview.assert_called_once()
     selector.assert_called_once()
 
+def test_compare_trim_is_a_plain_float(compare_evidence, monkeypatch):
+    """A numpy scalar clears every bound check and then the graph write fails."""
+    import numpy as np
+    from jasper.active_speaker import rear_compare
+    from jasper.active_speaker.crossover_v2 import rear_preview
+
+    monkeypatch.setattr(rear_preview, "rear_compare_delta_db", lambda preview: np.float64(0.41))
+    level = rear_compare.rear_compare_level()
+    assert (level["status"], level["trim_db"], type(level["trim_db"])) == ("matched", 0.41, float)
+
+
+
 
 @pytest.mark.parametrize("delta,trim,louder,reason", [(0.049, 0, None, ""), (-0.049, 0, None, ""),
     (0.05, 0.05, "on", ""), (-1.236, 1.24, "off", ""), (6.0, 6.0, "on", ""),

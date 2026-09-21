@@ -714,6 +714,20 @@ def test_rear_compare_changes_only_two_parameters(muted, trim, method):
     assert after["devices"]["volume_limit"] == 0.0
 
 
+def test_rear_compare_yaml_writes_a_dumpable_graph_for_a_numpy_trim():
+    """A numpy scalar passes the bound check; the YAML dumper cannot represent it."""
+    import numpy as np
+
+    from jasper.active_speaker.audition import rear_compare_yaml
+    from tests.test_rear_output_foundation import _cardioid_baseline
+
+    applied = _cardioid_baseline()[2]
+    text = rear_compare_yaml(applied, rear_muted=False, trim_db=np.float64(0.41))
+    gain = yaml_lib.safe_load(text)["filters"]["active_baseline_headroom"]["parameters"]["gain"]
+    before = yaml_lib.safe_load(applied)["filters"]["active_baseline_headroom"]["parameters"]["gain"]
+    assert gain == pytest.approx(before - 0.41) and type(gain) is float
+
+
 @pytest.mark.parametrize("trim", [-0.1, 6.1, float("nan"), float("inf")])
 def test_rear_compare_trim_bounds(trim):
     from jasper.active_speaker.audition import rear_compare_yaml
