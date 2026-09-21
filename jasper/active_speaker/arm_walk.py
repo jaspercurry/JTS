@@ -572,7 +572,7 @@ class RunOwnedArm:
     def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
         try:
             self.finish()
-        except BaseException:
+        except BaseException:  # noqa: BLE001 -- cleanup must preserve an in-flight exception
             if exc is None:
                 raise
 

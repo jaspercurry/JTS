@@ -820,17 +820,20 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     REASON_WALK_RIG_CLEAR_NOT_ATTESTED: ReasonSpec(
         REASON_WALK_RIG_CLEAR_NOT_ATTESTED, TEMPLATE_HARD_STOP, 0, "",
         "Confirm that the arm's full sweep path is clear with --attest-rig-clear.",
-        next_action={"id": "attest_rig_clear", "label": "Check the full sweep path and attest"},
+        next_action={"id": "attest_rig_clear", "label": "Check the full sweep path and attest",
+                     "href": "/sound/speaker/crossover/"},
     ),
     REASON_ARM_PARK_UNCONFIRMED: ReasonSpec(
         REASON_ARM_PARK_UNCONFIRMED, TEMPLATE_HARD_STOP, 0, "",
         "Check the arm and its parked journal row before starting another round.",
-        next_action={"id": "check_arm_park", "label": "Check the arm park"},
+        next_action={"id": "check_arm_park", "label": "Check the arm park",
+                     "href": "/sound/speaker/crossover/"},
     ),
     REASON_WALK_MOVER_UNAVAILABLE: ReasonSpec(
         REASON_WALK_MOVER_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
         "Connect the arm adapter and check that root can detect it.",
-        next_action={"id": "connect_arm", "label": "Connect and detect the arm adapter"},
+        next_action={"id": "connect_arm", "label": "Connect and detect the arm adapter",
+                     "href": "/sound/speaker/crossover/"},
     ),
     REASON_WALK_MOVER_MISMATCH: ReasonSpec(
         REASON_WALK_MOVER_MISMATCH, TEMPLATE_HARD_STOP, 0, "",

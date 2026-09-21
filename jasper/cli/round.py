@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import math
 import re
 import sys
@@ -26,8 +25,8 @@ from jasper.active_speaker.wizard_client import (
     WizardClient, apply_by_fingerprint, error_of, wait_for_round,
 )
 from jasper.identity.reader import CROSSOVER_PAGE_PATH, speaker_url
+from jasper.logging_setup import configure_logging
 
-from ._logging import CLI_LOG_FORMAT
 from ._refusal import (
     EXIT_OK as EXIT_OK,
     EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed,
@@ -139,7 +138,7 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
             return _cmd_wait(client, args)
         from jasper.active_speaker import arm_walk  # lazy: arm-only
 
-        logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
+        configure_logging()
         arm_walk.install_park_on_signals()
         with arm_walk.RunOwnedArm(
             arm_walk.TurntableMover(attest_rig_clear=args.attest_rig_clear),
