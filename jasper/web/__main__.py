@@ -593,7 +593,9 @@ def main() -> int:
     # `_make_handler()` for that wizard, so they're distinct types —
     # patch each one's log_request to bump the shared tracker.
     tracker = _systemd.IdleShutdownTracker()
-    for _, _, server in servers:
+    for spec, _, server in servers:
+        if spec.label == "/sound":
+            server.RequestHandlerClass.idle_hold = staticmethod(tracker.hold)
         _systemd.install_request_idle_bump(server.RequestHandlerClass, tracker)
     tracker.start()
 

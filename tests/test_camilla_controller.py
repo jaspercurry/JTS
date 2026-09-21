@@ -1298,3 +1298,37 @@ async def test_failed_duck_release_logs_a_named_event(
 
     assert "event=camilla.graph_swap_duck_restore_failed" in caplog.text
     assert "target_db=0.0" in caplog.text
+
+
+@pytest.mark.parametrize("door", ["set_active_config_raw", "set_config_file_path"])
+@pytest.mark.parametrize("case", ["applied", "rejected", "other_endpoint", "duck_release_failed", "audition_write"])
+async def test_graph_replacement_retires_only_its_audition(tmp_path, monkeypatch, door, case):
+    import json
+    from jasper.active_speaker import audition
+
+    record = tmp_path / "audition.json"
+    monkeypatch.setenv(audition.AUDITION_STATE_ENV, str(record))
+    state = {"kind": audition.AUDITION_STATE_KIND, "schema_version": 1,
+             "layer": "rear_compare", "token": "owned", "deadline_at": 1800.0}
+    record.write_text(json.dumps(state))
+    cam = _controller(_FakeClient(), tmp_path)
+    if case == "other_endpoint":
+        cam._port = 1235
+    elif case == "duck_release_failed":
+        async def failed(_before):
+            raise RuntimeError("release failed")
+        monkeypatch.setattr(cam, "_release_graph_swap_duck", failed)
+    text = CEILING_GRAPH.replace("volume_limit: 0.0", "volume_limit: 1.0") if case == "rejected" else CEILING_GRAPH
+    candidate = tmp_path / "candidate.yml"
+    candidate.write_text(text)
+    arg = text if door == "set_active_config_raw" else str(candidate)
+    token = audition._AUDITION_WRITE.set(case == "audition_write")
+    try:
+        if case in {"rejected", "duck_release_failed"}:
+            with pytest.raises((ValueError, RuntimeError)):
+                await getattr(cam, door)(arg)
+        else:
+            assert await getattr(cam, door)(arg)
+    finally:
+        audition._AUDITION_WRITE.reset(token)
+    assert record.exists() is (case not in {"applied", "duck_release_failed"})

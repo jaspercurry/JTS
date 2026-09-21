@@ -5,7 +5,7 @@
 """Listen to the applied speaker at a reduced DSP layer, and always get it back.
 
 Layer semantics, the crash-safety argument and the rejected alternatives are
-ADR-0193's; this module is its implementation. The one fact worth repeating at
+ADR-0193's; see ADR-0329 for rear comparison. The one fact worth repeating at
 the call sites below, because every function here depends on it: the swap is
 ``set_active_config_raw``, which leaves CamillaDSP's persisted
 ``config_file_path`` alone, so a restart, a reboot or a ``kill -9`` of the owner
@@ -20,25 +20,34 @@ import logging
 import os
 import time
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from dataclasses import replace
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
+import yaml
+
 from jasper.active_speaker.restore_wait import resilient_restore
 from jasper.atomic_io import atomic_write_json
+from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
 from jasper.sound.settings import saved_sound_layers
+from jasper.sound.live_edit import plan_live_edit_for
+from jasper.active_speaker.rear_calibration import rear_stage_gain_name
 
 logger = logging.getLogger(__name__)
 
 AUDITION_LAYER_BASELINE = "baseline"
 AUDITION_LAYER_FULL = "full"
+AUDITION_LAYER_REAR_COMPARE = "rear_compare"
+# Bound the runtime-only loudness-match attenuation; see ADR-0329.
+MAX_COMPARE_TRIM_DB = 6.0
+_AUDITION_WRITE = ContextVar("audition_write", default=False)
 AUDITION_LAYERS = (AUDITION_LAYER_BASELINE, AUDITION_LAYER_FULL)
 
 # The walked-away bound, matching session_volume_plan's own wall-clock ceiling.
-# Removal condition: it exists only while the audition is a foreground-owned
-# swap (see ADR-0193).
+# Applies to both foreground and web owners (ADR-0329).
 AUDITION_DEADLINE_S = 1800.0
 # How often the owner re-reads the state file to notice a stop or a takeover.
 AUDITION_TICK_S = 5.0
@@ -56,6 +65,8 @@ REFUSE_NO_DURABLE_ANCHOR = "audition_no_durable_anchor"
 REFUSE_EMIT = "audition_emit_refused"
 REFUSE_LOAD = "audition_load_refused"
 REFUSE_RESTORE = "audition_restore_failed"
+REFUSE_NO_REAR_STAGE = "audition_no_rear_stage"
+REFUSE_REAR_MUTED = "audition_rear_muted_in_tune"
 
 # Played THROUGH the graph that was just swapped in, so the announcement is also
 # a liveness proof. A silent wrong-graph state is the failure mode this door has.
@@ -82,6 +93,8 @@ __all__ = [
     "read_audition_state",
     "start_audition",
     "stop_audition",
+    "rear_compare_yaml",
+    "set_compare_state",
 ]
 
 
@@ -119,10 +132,41 @@ def read_audition_state(path: str | Path | None = None) -> dict[str, Any] | None
         not isinstance(payload, dict)
         or payload.get("kind") != AUDITION_STATE_KIND
         or payload.get("schema_version") != AUDITION_SCHEMA_VERSION
-        or payload.get("layer") != AUDITION_LAYER_BASELINE
+        or payload.get("layer") not in (AUDITION_LAYER_BASELINE, AUDITION_LAYER_REAR_COMPARE)
     ):
         return None
     return payload
+
+
+def audition_summary() -> dict[str, Any] | None:
+    state = read_audition_state()
+    if state is None:
+        return None
+    return {"layer": state["layer"], "state": state.get("state"),
+            "expires_in_s": max(0, int(state["deadline_at"] - time.time()))}
+
+
+def graph_replaced() -> None:
+    if not _AUDITION_WRITE.get():
+        _clear_audition_state()
+
+
+def rear_compare_yaml(applied_yaml: str, *, rear_muted: bool, trim_db: float) -> str:
+    if not 0.0 <= trim_db <= MAX_COMPARE_TRIM_DB:
+        raise ValueError("compare trim is outside its attenuation range")
+    graph = yaml.safe_load(applied_yaml)
+    filters = graph["filters"]
+    names = [rear_stage_gain_name(i, "output")
+             for i in range(graph["devices"]["playback"]["channels"])
+             if rear_stage_gain_name(i, "output") in filters]
+    if len(names) != 1 or filters[names[0]]["type"] != "Gain":
+        raise AuditionRefused(REFUSE_NO_REAR_STAGE, "The applied graph needs one fitted rear stage.")
+    rear = filters[names[0]]["parameters"]
+    if rear["mute"]:
+        raise AuditionRefused(REFUSE_REAR_MUTED, "The applied tune already mutes the rear output.")
+    rear["mute"] = rear_muted
+    filters["active_baseline_headroom"]["parameters"]["gain"] -= trim_db
+    return str(yaml.safe_dump(graph, sort_keys=False))
 
 
 def _clear_audition_state(path: str | Path | None = None) -> None:
@@ -234,19 +278,19 @@ def level_give_back_db(applied_profile: Mapping[str, Any]) -> float:
 
 
 async def _swap_running_graph(cam: Any, yaml_text: str, *, refusal: str) -> None:
-    """Load ``yaml_text`` as the running graph and prove it took.
-
-    ``set_active_config_raw`` is what makes every swap here runtime-only. Its
-    fader duck is kept on: unlike the measurement graph, an audition replaces
-    the pipeline under live household audio, which is exactly the step the duck
-    exists for.
-    """
-
+    """Write through the controller's admission door, with ADR-0211 routing."""
     from jasper.active_speaker.crossover_v2.composition import confirm_graph_is_live
 
-    if not await cam.set_active_config_raw(yaml_text, best_effort=False):
-        raise AuditionRefused(REFUSE_LOAD, refusal)
-    await confirm_graph_is_live(cam, yaml_text)
+    plan = await plan_live_edit_for(cam, yaml_text)
+    token = _AUDITION_WRITE.set(True)
+    try:
+        if plan.method != "unchanged" and not await cam.set_active_config_raw(
+            yaml_text, best_effort=False, duck=plan.duck,
+        ):
+            raise AuditionRefused(REFUSE_LOAD, refusal)
+        await confirm_graph_is_live(cam, yaml_text)
+    finally:
+        _AUDITION_WRITE.reset(token)
 
 
 async def _put_back(cam: Any, anchor: str) -> None:
@@ -273,9 +317,7 @@ async def _restore_verdict(cam: Any, anchor: str) -> tuple[bool, str | None]:
     writing their own bridge is how one of them comes to read a restore that
     worked as one that failed.
 
-    The put-back keeps its own duck (``set_active_config_raw``'s default) and
-    its own ``confirm_graph_is_live`` read-back; this wraps the verdict, not
-    the swap.
+    The put-back uses the same structural routing and live read-back.
     """
 
     from jasper.active_speaker.web_commissioning import attempt_graph_restore
@@ -287,7 +329,7 @@ async def _restore_verdict(cam: Any, anchor: str) -> tuple[bool, str | None]:
     return await attempt_graph_restore(_restore)
 
 
-async def _undo_failed_arm(cam: Any, anchor: str) -> None:
+async def _undo_failed_arm(cam: Any, anchor: str, state_path: str | Path | None = None) -> None:
     """Put the durable graph back after an arm that could not be completed.
 
     Swallows its own failure so the caller's original exception is the one that
@@ -300,7 +342,9 @@ async def _undo_failed_arm(cam: Any, anchor: str) -> None:
     """
 
     took_effect, message = await _restore_verdict(cam, anchor)
-    if not took_effect:
+    if took_effect:
+        _clear_audition_state(state_path)
+    else:
         log_event(
             logger,
             "active_speaker.audition",
@@ -329,6 +373,8 @@ async def start_audition(
     *,
     cam: Any,
     layer: str = AUDITION_LAYER_BASELINE,
+    compare_state: str = "on",
+    trim_db: float = 0.0,
     state_path: str | Path | None = None,
     play_cue: CueSender | None = None,
     clock: Callable[[], float] = time.time,
@@ -339,8 +385,11 @@ async def start_audition(
     path, not a second one that could drift from :func:`stop_audition`.
     """
 
-    if layer not in AUDITION_LAYERS:
+    if layer not in (*AUDITION_LAYERS, AUDITION_LAYER_REAR_COMPARE):
         raise ValueError(f"unknown audition layer: {layer!r}")
+    compare = layer == AUDITION_LAYER_REAR_COMPARE
+    if compare and compare_state not in {"on", "off"}:
+        raise ValueError("invalid compare state")
     if layer == AUDITION_LAYER_FULL:
         return await stop_audition(
             cam=cam, state_path=state_path, play_cue=play_cue
@@ -380,8 +429,12 @@ async def start_audition(
     async with dsp_writer_lock(
         baseline_config_path().parent, source="active_speaker_audition_start"
     ):
+        _refuse_if_graph_is_claimed()
         anchor = await _durable_anchor(cam)
-        yaml_text, issues = build_reduced_yaml(
+        yaml_text, issues = (rear_compare_yaml(
+            Path(anchor).read_text(encoding="utf-8"),
+            rear_muted=compare_state == "off", trim_db=trim_db,
+        ), []) if compare else build_reduced_yaml(
             topology, applied_profile=applied
         )
         if yaml_text is None or issues:
@@ -391,13 +444,13 @@ async def start_audition(
             raise AuditionRefused(REFUSE_EMIT, detail)
         # Re-proved here rather than trusted from the emitter, exactly as
         # `jasper-active-speaker baseline-reemit` does before it writes a byte.
-        graph = classify_bass_extension_graph(
+        graph = None if compare else classify_bass_extension_graph(
             topology,
             evidence_source="desired",
             graph_text=yaml_text,
             applied_baseline_state=applied,
         )
-        if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
+        if graph is not None and (not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME):
             raise AuditionRefused(
                 REFUSE_EMIT,
                 f"the reduced graph did not re-prove as "
@@ -420,28 +473,31 @@ async def start_audition(
                 "kind": AUDITION_STATE_KIND,
                 "schema_version": AUDITION_SCHEMA_VERSION,
                 "token": uuid.uuid4().hex,
-                "layer": AUDITION_LAYER_BASELINE,
+                "layer": layer,
+                "state": compare_state if compare else None,
+                "owner_pid": os.getpid(),
+                "expires_at": started_at + AUDITION_DEADLINE_S,
                 "started_at": started_at,
                 "deadline_at": started_at + AUDITION_DEADLINE_S,
                 "entry_config_path": anchor,
                 # Disclosed, never compensated: compensating would move a trim,
                 # and identical trims are what makes the A/B mean anything.
-                "louder_than_full_db": level_give_back_db(applied),
+                "louder_than_full_db": None if compare else level_give_back_db(applied),
             }
             atomic_write_json(audition_state_path(state_path), state)
             armed = True
         finally:
             if not armed:
-                await _undo_failed_arm(cam, anchor)
+                await _undo_failed_arm(cam, anchor, state_path)
 
     log_event(
         logger,
         "active_speaker.audition",
         action="start",
         result="swapped",
-        layer=AUDITION_LAYER_BASELINE,
+        layer=layer,
         deadline_at=f"{state['deadline_at']:.0f}",
-        louder_than_full_db=f"{state['louder_than_full_db']:.2f}",
+        louder_than_full_db=state["louder_than_full_db"],
         entry_config_path=anchor,
     )
     _send_cue(play_cue, AUDITION_REDUCED_CUE_SLUG)
@@ -481,14 +537,14 @@ async def stop_audition(
 
     if not audition_state_path(state_path).exists():
         return {"status": "not_auditioning", "layer": AUDITION_LAYER_FULL}
-    if expect_token is not None:
-        live = read_audition_state(state_path)
-        if live is None or live.get("token") != expect_token:
-            return {"status": "superseded", "layer": AUDITION_LAYER_BASELINE}
-
     async with dsp_writer_lock(
         baseline_config_path().parent, source="active_speaker_audition_stop"
     ):
+        if expect_token is not None:
+            live = read_audition_state(state_path)
+            if live is None or live.get("token") != expect_token:
+                return {"status": "superseded", "layer": AUDITION_LAYER_BASELINE}
+        _refuse_if_graph_is_claimed()
         anchor = await _durable_anchor(cam)
         took_effect, message = await _restore_verdict(cam, anchor)
         if not took_effect:
@@ -611,3 +667,41 @@ def _send_cue(play_cue: CueSender | None, slug: str) -> None:
             slug=slug,
             error=type(exc).__name__,
         )
+
+
+async def set_compare_state(state: str, *, cam: Any, trim_db: float) -> dict[str, Any]:
+    if state not in {"on", "off", "normal"}:
+        raise ValueError("invalid compare state")
+    _refuse_if_graph_is_claimed()
+    try:
+        if state == "normal":
+            return await stop_audition(cam=cam)
+        return await start_audition(cam=cam, layer=AUDITION_LAYER_REAR_COMPARE,
+                                    compare_state=state, trim_db=trim_db)
+    except CamillaUnavailable as exc:
+        raise AuditionRefused(REFUSE_LOAD, "CamillaDSP could not load the comparison.") from exc
+
+
+async def recover_web_audition(cam: Any) -> None:
+    state = read_audition_state()
+    if state and state["layer"] == AUDITION_LAYER_REAR_COMPARE:
+        try:
+            os.kill(state["owner_pid"], 0)
+        except ProcessLookupError:
+            await stop_audition(cam=cam, expect_token=state["token"])
+
+
+def watch_web_auditions(camilla_factory: Callable[[], Any], idle_hold: Callable[[], Any]) -> None:
+    cam = camilla_factory()
+    while True:
+        state = read_audition_state()
+        if state and state["layer"] == AUDITION_LAYER_REAR_COMPARE:
+            try:
+                with idle_hold():
+                    asyncio.run(recover_web_audition(cam))
+                    if state.get("owner_pid") == os.getpid():
+                        asyncio.run(hold_audition(state, cam=cam))
+            except (OSError, RuntimeError, ValueError, CamillaUnavailable):
+                log_event(logger, "active_speaker.audition", action="web_restore",
+                          result="failed", level=logging.ERROR, exc_info=True)
+        time.sleep(AUDITION_TICK_S)

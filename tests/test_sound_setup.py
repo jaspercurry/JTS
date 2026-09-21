@@ -703,9 +703,8 @@ def test_seat_level_start_route_dispatches_and_is_csrf_protected(tmp_path, monke
         "state": "idle", "target_db_spl": None,
         "mic": {"available": False}, "default_target_db_spl": 78.0,
     }),
-    ("/ab-listen/state", "_ab_listen_state_payload", {"rounds": [], "applied_fingerprint": None}),
 ])
-def test_seat_level_and_ab_listen_state_routes(tmp_path, monkeypatch, path, builder, expected):
+def test_seat_level_state_routes(tmp_path, monkeypatch, path, builder, expected):
     monkeypatch.setattr(sound_setup, builder, lambda: expected)
 
     handler_cls = sound_setup._make_handler(
@@ -5846,3 +5845,100 @@ def test_design_draft_get_computes_profile_from_current_values(monkeypatch, tmp_
     assert profile != saved["driver_safety_profile"]
     assert "obsolete" not in loaded["driver_protection_policy_view"]
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("reason", ["", "follower", "no_rear_output", "no_applied_profile", "no_rear_layer", "rear_muted_in_tune"])
+def test_cardioid_compare_availability_contract(monkeypatch, reason):
+    from types import SimpleNamespace
+    from jasper.active_speaker import baseline_profile
+
+    applied = {"applied_at": "2026-09-21T12:00:00Z", "recomposition_snapshot": {
+        "rear_calibration": {"rear_muted": reason == "rear_muted_in_tune"},
+        "linearization": {"woofer": [{}]},
+    }}
+    if reason == "no_rear_layer":
+        del applied["recomposition_snapshot"]["rear_calibration"]
+    if reason == "no_applied_profile":
+        applied = None
+    topology = SimpleNamespace(speaker_groups=[SimpleNamespace(channels=[
+        SimpleNamespace(output_variant="primary" if reason == "no_rear_output" else "rear"),
+    ])])
+    monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda: applied)
+    monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
+    monkeypatch.setattr(sound_active_speaker, "bonded_follower_active", lambda: reason == "follower")
+    monkeypatch.setattr(sound_active_speaker, "audition_summary", lambda: None)
+    payload = sound_active_speaker._cardioid_compare_payload()
+    assert payload == {
+        "available": not reason, "reason": reason, "state": "normal",
+        "tune": {"label": "Current tune", "layers": [] if applied is None else
+                 ["driver"] if reason == "no_rear_layer" else ["driver", "rear"],
+                 "applied_at": applied["applied_at"] if applied else None},
+        "level_match": {"status": "unavailable", "trim_db": None, "louder": None},
+        "expires_in_s": None,
+    }
+
+
+@pytest.mark.parametrize("layer,state,seconds", [("rear_compare", "off", 42), ("rear_compare", "on", 1799), ("baseline", None, None)])
+def test_cardioid_compare_session_disclosure(monkeypatch, layer, state, seconds):
+    monkeypatch.setattr(sound_active_speaker, "audition_summary", lambda: {
+        "layer": layer, "state": state, "expires_in_s": seconds,
+    })
+    payload = sound_active_speaker._cardioid_compare_payload()
+    assert payload["state"] == (state or "normal")
+    assert payload["expires_in_s"] == seconds
+
+
+@pytest.mark.parametrize("refusal,status", [(None, 200), ("audition_measurement_session_active", 409), ("audition_restore_failed", 502)])
+def test_cardioid_compare_post_contract(tmp_path, monkeypatch, refusal, status):
+    from jasper.active_speaker.audition import AuditionRefused
+
+    payload = {"available": True, "state": "off"}
+    calls = []
+    async def change(state, *, cam, trim_db):
+        calls.append((state, trim_db))
+        if refusal:
+            raise AuditionRefused(refusal, "The compare could not change.")
+    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda: payload)
+    monkeypatch.setattr(sound_setup, "set_compare_state", change)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    body = b'{"state":"off"}'
+    response, reads = _drive_raw_sound_post(tmp_path, path="/cardioid-compare", content_length=len(body), body=body)
+    assert f" {status} ".encode() in response.split(b"\r\n", 1)[0]
+    result = json.loads(response.split(b"\r\n\r\n", 1)[1])
+    assert result.get("error") == refusal
+    if refusal:
+        assert set(result) == {"error", "message"}
+    else:
+        assert result == payload
+    assert calls == [("off", 0.0)]
+    assert reads == [len(body)]
+
+
+def test_cardioid_compare_post_unavailable_and_csrf(tmp_path, monkeypatch):
+    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda: {"available": False})
+    body = b'{"state":"off"}'
+    response, reads = _drive_raw_sound_post(tmp_path, path="/cardioid-compare", content_length=len(body), body=body)
+    assert b" 403 " in response.split(b"\r\n", 1)[0]
+    assert reads == []
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    response, _ = _drive_raw_sound_post(tmp_path, path="/cardioid-compare", content_length=len(body), body=body)
+    assert b" 409 " in response.split(b"\r\n", 1)[0]
+    assert json.loads(response.split(b"\r\n\r\n", 1)[1])["error"] == "cardioid_compare_unavailable"
+
+
+def test_cardioid_compare_in_get_state(tmp_path, monkeypatch):
+    block = {"available": True, "state": "off", "expires_in_s": 42}
+    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda: block)
+    monkeypatch.setattr(sound_setup, "_eq_carrier_block", lambda *a, **k: None)
+    handler_cls = sound_setup._make_handler(profile_path=tmp_path / "profile.json",
+        library_path=tmp_path / "library.json", config_dir=tmp_path, camilla_factory=lambda: None)
+    handler = handler_cls.__new__(handler_cls)
+    handler.rfile = io.BytesIO(b"GET /state HTTP/1.1\r\nHost: jts.local\r\n\r\n")
+    handler.wfile = io.BytesIO()
+    handler.client_address, handler.server = ("127.0.0.1", 0), None
+    handler.raw_requestline = handler.rfile.readline()
+    assert handler.parse_request()
+    handler.do_GET()
+    response = handler.wfile.getvalue()
+    assert b" 200 " in response.split(b"\r\n", 1)[0]
+    assert json.loads(response.split(b"\r\n\r\n", 1)[1])["cardioid_compare"] == block

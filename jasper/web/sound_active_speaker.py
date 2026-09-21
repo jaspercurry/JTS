@@ -42,6 +42,8 @@ from jasper.audio_hardware.i2s_hat import (
     selectable_i2s_hat_profiles,
     write_i2s_hat_intent,
 )
+from jasper.active_speaker.audition import AUDITION_LAYER_REAR_COMPARE, audition_summary
+from ._common import bonded_follower_active
 from jasper.log_event import log_event
 from jasper.platform import wire
 from jasper.platform.uds import mux_socket_command
@@ -1166,3 +1168,27 @@ def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[s
         "candidate_fingerprint": published.fingerprint,
         "issues": rear_calibration_issues(published.candidate),
     }
+
+
+def _cardioid_compare_payload() -> dict[str, Any]:
+    from jasper.active_speaker.baseline_profile import applied_layer_names, load_applied_baseline_profile_state  # lazy: numpy startup cost
+
+    applied = load_applied_baseline_profile_state()
+    layers = applied_layer_names(applied)
+    rear = (applied or {}).get("recomposition_snapshot", {}).get("rear_calibration", {})
+    topology = load_output_topology()
+    reason = ("follower" if bonded_follower_active() else
+              "no_rear_output" if not any(c.output_variant == "rear"
+                  for g in topology.speaker_groups for c in g.channels) else
+              "no_applied_profile" if not applied else
+              "no_rear_layer" if not layers["rear"] else
+              "rear_muted_in_tune" if rear.get("rear_muted") else "")
+    session = audition_summary()
+    if session and session["layer"] != AUDITION_LAYER_REAR_COMPARE:
+        session = None
+    return {"available": not reason, "reason": reason,
+            "state": session["state"] if session else "normal",
+            "tune": {"label": "Current tune", "layers": [k for k, v in layers.items() if v],
+                     "applied_at": (applied or {}).get("applied_at")},
+            "level_match": {"status": "unavailable", "trim_db": None, "louder": None},
+            "expires_in_s": session["expires_in_s"] if session else None}

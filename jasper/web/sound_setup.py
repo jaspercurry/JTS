@@ -25,12 +25,18 @@ import json
 import logging
 import os
 import sys
+import threading
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
+from jasper.active_speaker.audition import (
+    AuditionRefused, REFUSE_LOAD, REFUSE_RESTORE,
+    set_compare_state, watch_web_auditions,
+)
+from jasper.platform.systemd import no_hold
 from jasper.active_speaker.driver_safety_prompt import driver_field_vocabulary
 from jasper.active_speaker.profile import (
     DEFAULT_SUB_CROSSOVER_HZ,
@@ -79,6 +85,7 @@ from .sound_seat_level import (
 )
 from .sound_active_speaker import (
     OutputHardwareRequestConflict,
+    _cardioid_compare_payload,
     _active_speaker_commissioning_view_payload,
     _active_speaker_design_draft_save_payload,
     _active_speaker_driver_research_request_payload,
@@ -101,7 +108,6 @@ from .sound_active_speaker import (  # noqa: F401 - resolved by name
     _active_speaker_rear_calibration_seed_payload,
     _active_speaker_tuning_handoff_payload,
 )
-from .sound_ab_listen import ab_listen_state_payload as _ab_listen_state_payload  # noqa: F401 - resolved by name
 from .sound_seat_level import (  # noqa: F401 - resolved by name
     seat_level_status_payload as _seat_level_status_payload,
 )
@@ -355,7 +361,6 @@ _GET_ROUTES = {
         "_active_speaker_rear_calibration_seed_payload",
         "sound.active_speaker_rear_calibration_seed",
     ),
-    "/ab-listen/state": ("_ab_listen_state_payload", "sound.ab_listen_state"),
     "/active-speaker/seat-level/status": (
         "_seat_level_status_payload",
         "sound.active_speaker_seat_level_status",
@@ -427,6 +432,8 @@ def _make_handler(
     camilla_factory: Callable[[], Any] = _camilla,
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
+        idle_hold = staticmethod(no_hold)
+
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
@@ -469,13 +476,13 @@ def _make_handler(
                         output_trim_db=_output_trim(profile, settings),
                     )
                 self._send_json(
-                    _state_payload(
+                    {**_state_payload(
                         profile,
                         library_path=library_path,
                         include_library=True,
                         settings_snapshot=settings,
                         eq_block=eq_block,
-                    )
+                    ), "cardioid_compare": _cardioid_compare_payload()}
                 )
                 return
             json_route = _GET_ROUTES.get(path)
@@ -525,6 +532,19 @@ def _make_handler(
             path = route_path(self.path)
             try:
                 raw = self._read_json(max_bytes=MAX_JSON_BYTES)
+                if path == "/cardioid-compare":
+                    try:
+                        if not _cardioid_compare_payload()["available"]:
+                            raise AuditionRefused("cardioid_compare_unavailable", "This tune cannot compare the rear output.")
+                        asyncio.run(set_compare_state(str(raw.get("state", "")), cam=camilla_factory(), trim_db=0.0))
+                    except AuditionRefused as e:
+                        self._send_json({"error": e.reason, "message": e.detail},
+                                        status=502 if e.reason in {REFUSE_LOAD, REFUSE_RESTORE} else 409)
+                    except (OSError, RuntimeError, ValueError) as e:
+                        self._send_json({"error": REFUSE_LOAD, "message": str(e)}, status=400 if isinstance(e, ValueError) else 502)
+                    else:
+                        self._send_json(_cardioid_compare_payload())
+                    return
                 if path == "/i2s-hat":
                     profile_id = raw.get("profile_id")
                     if profile_id is not None and not isinstance(profile_id, str):
@@ -883,6 +903,7 @@ def _make_handler(
     get_routes = dict.fromkeys(_GET_ROUTES, Handler._dispatch_get_route)
 
     _POST_ROUTES = {
+        "/cardioid-compare": Handler._dispatch_post_route,
         "/apply": Handler._dispatch_post_route,
         "/audition": Handler._dispatch_post_route,
         "/live-draft": Handler._dispatch_post_route,
@@ -918,7 +939,7 @@ def make_server(
 ) -> ThreadingHTTPServer:
     from ..platform import systemd
 
-    return systemd.make_http_server(
+    server = systemd.make_http_server(
         target,
         _make_handler(
             profile_path=profile_path
@@ -938,3 +959,7 @@ def make_server(
             ),
         ),
     )
+    threading.Thread(target=watch_web_auditions, args=(
+        _camilla, lambda: getattr(server.RequestHandlerClass, "idle_hold")("speaker audition"),
+    ), daemon=True, name="speaker-audition").start()
+    return server

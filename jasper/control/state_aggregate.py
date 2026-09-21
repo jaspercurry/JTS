@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
 from typing import Any, Callable, Sequence, TypeVar
 
+from ..active_speaker.audition import audition_summary
 from ..music_sources import MUSIC_SOURCE_VALUES
 from ..fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
@@ -686,6 +687,7 @@ async def _get_state(
             "clipped_samples": camilla["clipped_samples"],
             "camilla_active_config_path": camilla["active_config_path"],
             "sound": sound_profile,
+            "speaker_audition": audition_summary(),
             "output_hardware": output_hardware_state,
         },
         "active_source": active_source,
