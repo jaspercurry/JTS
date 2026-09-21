@@ -887,6 +887,23 @@ def test_program_choices_include_rear():
     assert args.program == "rear"
 
 
+@pytest.mark.parametrize("poses, azimuths", [
+    ("-30,-10,10,30", (-30, -10, 10, 30)),
+    ("-20", (-20,)),
+    ("rear/express", None),
+])
+def test_a_pose_set_reads_the_same_spaced_or_joined(poses, azimuths):
+    spaced = cli.build_parser().parse_args(["run", "--program", "rear", "--poses", poses])
+    joined = cli.build_parser().parse_args(["run", "--program", "rear", f"--poses={poses}"])
+    assert spaced.poses == joined.poses == poses
+    program = run_program("rear", spaced.poses)
+    if azimuths is None:
+        assert program.size != "custom"
+    else:
+        assert program.size == "custom"
+        assert tuple(pose.azimuth_deg for pose in program.poses) == azimuths
+
+
 @pytest.mark.parametrize("named", [False, True])
 def test_a_rear_pair_run_composes_its_own_candidate_only_when_none_is_named(
     named, monkeypatch, tmp_path, isolated_candidate_bank,
