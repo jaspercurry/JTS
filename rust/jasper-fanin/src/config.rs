@@ -316,10 +316,16 @@ impl Config {
         self.host_clock_enabled && self.usb_direct_enabled
     }
 
-    /// Read JASPER_FANIN_* env vars, falling back to documented defaults.
-    /// Returns `Err` only on structural misconfiguration (e.g., input
-    /// PCM list length != renderer label list length).
+    /// Read fan-in's environment config, falling back to documented defaults.
+    ///
+    /// Every failure here is config-class: a restart re-reads the same env and
+    /// fails identically. Mark the whole parse once so `main` exits 78 and the
+    /// unit parks instead of reaching `StartLimitAction=reboot`.
     pub fn from_env() -> Result<Self> {
+        Self::parse_env().map_err(|error| error.context(crate::ConfigClassError))
+    }
+
+    fn parse_env() -> Result<Self> {
         // snd-aloop pair 3 is deliberately absent: the USB lane
         // (`input_resampler_lane_label`) reads the gadget capture directly or
         // nothing at all, so it takes no aloop substream and the surviving
@@ -408,8 +414,7 @@ impl Config {
                      (ADR-0100); a box that cannot be served by it parks instead \
                      of falling back",
                     other,
-                )
-                .context(crate::ConfigClassError));
+                ));
             }
         }
 
@@ -429,19 +434,12 @@ impl Config {
                      fan-in publishes the program wire S32_LE unconditionally, so \
                      a narrower declaration would shear against the ring header \
                      rather than narrow the program",
-                )
-                .context(crate::ConfigClassError));
+                ));
             }
         }
 
-        // Every rejection in this Ring A block carries `ConfigClassError`, so main()
-        // exits 78 and the unit PARKS (RestartPreventExitStatus=78). A bad ring
-        // geometry is identical on every restart, and the restart burst on this
-        // unit escalates to StartLimitAction=reboot — a typo here would
-        // otherwise reboot the speaker every few minutes.
         let ring_path = env_str("JASPER_FANIN_RING_PATH", "/dev/shm/jts-ring/program.ring");
-        let ring_slots = env_u32("JASPER_FANIN_RING_SLOTS", 4)
-            .map_err(|e| e.context(crate::ConfigClassError))?;
+        let ring_slots = env_u32("JASPER_FANIN_RING_SLOTS", 4)?;
         if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {
             return Err(anyhow::anyhow!(
                 "JASPER_FANIN_RING_SLOTS={} out of range {}..={} — the SHM ring \
@@ -450,8 +448,7 @@ impl Config {
                 ring_slots,
                 RING_SLOTS_MIN,
                 RING_SLOTS_MAX,
-            )
-            .context(crate::ConfigClassError));
+            ));
         }
         // The slot is pinned at RING_SLOT_FRAMES (128, the outputd DAC-period
         // contract) and fan-in publishes period_frames/128 slots per step, so
@@ -463,8 +460,7 @@ impl Config {
                  would shear the ring",
                 period_frames,
                 RING_SLOT_FRAMES,
-            )
-            .context(crate::ConfigClassError));
+            ));
         }
 
         let input_resampler_target_frames =
@@ -764,18 +760,13 @@ fn env_u32(name: &str, default: u32) -> Result<u32> {
 /// the ms→periods conversion), all UNGUARDED, and release builds compile out the
 /// `debug_assert!(period_frames > 0)`. With `panic = "abort"` and the unit's
 /// `Restart=on-failure` a divide-by-zero panic is an infinite crash-restart loop
-/// that takes ALL audio down, the audible-cue path with it. Bailing would be its
-/// own config-parse restart loop, so a zero falls back to the documented default
-/// with a WARN breadcrumb and the speaker keeps playing on a sane geometry. A
-/// non-numeric or negative value still fails loud via `env_u32`; only a
-/// valid-but-zero dimension is recovered here.
+/// that takes ALL audio down, the audible-cue path with it. Reject zero as a
+/// config error so the unit parks at exit 78 instead of silently changing the
+/// operator's geometry or entering that crash loop.
 fn env_u32_positive(name: &str, default: u32) -> Result<u32> {
     let parsed = env_u32(name, default)?;
     if parsed == 0 {
-        log::warn!(
-            "event=fanin.config_ignored key={name} value=0 reason=dimension_must_be_positive default={default}"
-        );
-        return Ok(default);
+        anyhow::bail!("{name} must be a positive integer");
     }
     Ok(parsed)
 }
@@ -976,29 +967,20 @@ mod tests {
     }
 
     #[test]
-    fn zero_dimension_falls_back_to_default_not_divide_by_zero() {
+    fn zero_dimension_fails_the_parse_not_divide_by_zero() {
         // `sample_rate` and `period_frames` are divided by with no runtime guard
-        // in release builds, so a valid-but-zero value must not construct a
-        // Config that panic-aborts into a crash loop.
-        with_env(&[("JASPER_FANIN_PERIOD_FRAMES", Some("0"))], || {
-            let cfg = Config::from_env().expect("zero period_frames must not fail to parse");
-            assert_eq!(
-                cfg.period_frames, 256,
-                "period_frames=0 must fall back to the 256 default, never 0"
-            );
-        });
-        with_env(&[("JASPER_FANIN_SAMPLE_RATE", Some("0"))], || {
-            let cfg = Config::from_env().expect("zero sample_rate must not fail to parse");
-            assert_eq!(
-                cfg.sample_rate, 48_000,
-                "sample_rate=0 must fall back to the 48000 default, never 0"
-            );
-        });
-        // Whitespace-wrapped zero is still zero.
-        with_env(&[("JASPER_FANIN_PERIOD_FRAMES", Some("  0 "))], || {
-            let cfg = Config::from_env().expect("parses");
-            assert_eq!(cfg.period_frames, 256);
-        });
+        // in release builds, so a valid-but-zero value must never construct a
+        // Config. It parks the unit instead of panic-aborting into a crash loop.
+        for (key, raw) in [
+            ("JASPER_FANIN_PERIOD_FRAMES", "0"),
+            ("JASPER_FANIN_SAMPLE_RATE", "0"),
+            ("JASPER_FANIN_PERIOD_FRAMES", "  0 "),
+            ("JASPER_FANIN_SAMPLE_RATE", "00"),
+        ] {
+            with_env(&[(key, Some(raw))], || {
+                Config::from_env().expect_err("a zero dimension must fail the parse");
+            });
+        }
     }
 
     #[test]
@@ -1012,17 +994,6 @@ mod tests {
         with_env(&[("JASPER_FANIN_SAMPLE_RATE", Some("44100"))], || {
             let cfg = Config::from_env().expect("parses");
             assert_eq!(cfg.sample_rate, 44_100);
-        });
-    }
-
-    #[test]
-    fn non_numeric_dimension_still_fails_loud() {
-        // The boundary: 0 → default + warn, garbage → error.
-        with_env(&[("JASPER_FANIN_PERIOD_FRAMES", Some("garbage"))], || {
-            assert!(
-                Config::from_env().is_err(),
-                "a non-numeric period_frames must still fail loud, not fall back"
-            );
         });
     }
 
@@ -1230,11 +1201,7 @@ mod tests {
     fn host_clock_probe_ppm_range_fails_fast() {
         for bad in ["50", "100", "199", "801", "1200"] {
             with_env(&[("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", Some(bad))], || {
-                let err = Config::from_env().expect_err("out-of-range probe ppm must error");
-                assert!(
-                    !parks_the_unit(&err),
-                    "must restart-loop, not park at 78: {err:#}"
-                );
+                Config::from_env().expect_err("out-of-range probe ppm must error");
             });
         }
         for ok in ["200", "300", "800"] {
@@ -1377,8 +1344,7 @@ mod tests {
             ),
         ] {
             with_env(&vars, || {
-                let err = Config::from_env().unwrap_err();
-                assert!(err.to_string().contains("must be <= 0"), "{err}");
+                Config::from_env().expect_err("positive duck gain must be rejected");
             });
         }
     }
@@ -1459,11 +1425,7 @@ mod tests {
                 ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("512")),
             ],
             || {
-                let err = Config::from_env().expect_err("buffer < 2×period must error");
-                assert!(
-                    !parks_the_unit(&err),
-                    "must restart-loop, not park at 78: {err:#}"
-                );
+                Config::from_env().expect_err("buffer < 2×period must error");
             },
         );
     }
@@ -1496,12 +1458,7 @@ mod tests {
             with_env(
                 &[("JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES", Some(bad))],
                 || {
-                    let err =
-                        Config::from_env().expect_err("out-of-range direct period must error");
-                    assert!(
-                        !parks_the_unit(&err),
-                        "must restart-loop, not park at 78: {err:#}"
-                    );
+                    Config::from_env().expect_err("out-of-range direct period must error");
                 },
             );
         }
@@ -1608,11 +1565,7 @@ mod tests {
                 ),
             ],
             || {
-                let err = Config::from_env().expect_err("floor below margin must error");
-                assert!(
-                    !parks_the_unit(&err),
-                    "must restart-loop, not park at 78: {err:#}"
-                );
+                Config::from_env().expect_err("floor below margin must error");
             },
         );
     }
@@ -1635,11 +1588,7 @@ mod tests {
                 ),
             ],
             || {
-                let err = Config::from_env().expect_err("floor above ceiling must error");
-                assert!(
-                    !parks_the_unit(&err),
-                    "must restart-loop, not park at 78: {err:#}"
-                );
+                Config::from_env().expect_err("floor above ceiling must error");
             },
         );
     }
@@ -1665,12 +1614,8 @@ mod tests {
                 ),
             ],
             || {
-                let err = Config::from_env().expect_err(
+                Config::from_env().expect_err(
                     "floor below minimum-safe-fill must error even above target+margin",
-                );
-                assert!(
-                    !parks_the_unit(&err),
-                    "must restart-loop, not park at 78: {err:#}"
                 );
             },
         );
@@ -1772,14 +1717,8 @@ mod tests {
                 ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
             ],
             || {
-                let error = Config::from_env()
+                Config::from_env()
                     .expect_err("armed inverted geometry must fail through validation");
-                assert!(
-                    error
-                        .to_string()
-                        .contains("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES"),
-                    "{error:#}",
-                );
             },
         );
     }
@@ -2061,17 +2000,40 @@ mod tests {
         );
     }
 
+    /// One policy covers every rejection shape produced by `Config::from_env`:
+    /// the same environment will fail on every restart, so each error must carry
+    /// the marker that maps to exit 78 instead of entering the reboot ladder.
     #[test]
-    fn bad_integer_env_var_takes_the_restart_ladder() {
-        with_env(
-            &[("JASPER_FANIN_SAMPLE_RATE", Some("not-a-number"))],
-            || {
-                let err = Config::from_env().expect_err("bad integer must error");
+    fn every_config_rejection_parks_the_unit() {
+        for vars in [
+            vec![("JASPER_FANIN_SAMPLE_RATE", Some("not-a-number"))],
+            vec![("JASPER_FANIN_PERIOD_FRAMES", Some("0"))],
+            vec![("JASPER_FANIN_SAMPLE_RATE", Some("0"))],
+            vec![("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", Some("1200"))],
+            vec![("JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES", Some("1025"))],
+            vec![("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", Some("3.0"))],
+            vec![("JASPER_OUTPUTD_ASSISTANT_OFFSET_LU", Some("invalid"))],
+            vec![
+                ("JASPER_FANIN_INPUT_PCMS", Some("||")),
+                ("JASPER_FANIN_INPUT_RENDERERS", Some("||")),
+            ],
+            vec![
+                ("JASPER_FANIN_PERIOD_FRAMES", Some("512")),
+                ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("512")),
+            ],
+            vec![("JASPER_FANIN_CAMILLA_COUPLING", Some("loopback"))],
+            vec![("JASPER_FANIN_RING_WIRE_FORMAT", Some("S16_LE"))],
+            vec![("JASPER_FANIN_RING_SLOTS", Some("1"))],
+        ] {
+            with_env(&vars, || {
+                let err = Config::from_env()
+                    .err()
+                    .unwrap_or_else(|| panic!("{vars:?} must be rejected"));
                 assert!(
-                    !parks_the_unit(&err),
-                    "must restart-loop, not park at 78: {err:#}"
+                    parks_the_unit(&err),
+                    "{vars:?} must park at exit 78 instead of entering the reboot ladder: {err:#}",
                 );
-            },
-        );
+            });
+        }
     }
 }

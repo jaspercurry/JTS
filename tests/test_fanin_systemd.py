@@ -72,12 +72,10 @@ def test_unit_field_value(key, expected):
     )
 
 
-# The config-class ring failure -> park (not StartLimitAction=reboot)
-# contract (jasper-outputd took the same treatment after the jts3 2026-06-11
-# reboot-loop incident) is pinned, with the rest of the restart ladder, by
-# tests/test_systemd_hardening.py's RESTART_POLICY table (R22, #4416). Rust
-# unit tests cover the mapping from concrete error classes to exit 78; the
-# unit file's own comment above RestartPreventExitStatus= carries the why.
+# The config-fault -> park contract covers the whole fan-in environment parse
+# plus Ring A attach geometry faults. tests/test_systemd_hardening.py pins the
+# exit-78 fence; Rust tests pin config errors and transient runtime errors to
+# their separate exit paths.
 
 
 def test_sched_fifo_and_mlockall_settings():
