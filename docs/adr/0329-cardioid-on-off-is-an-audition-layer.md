@@ -65,8 +65,9 @@ change removes that card and uses the fixed cardioid compare contract.
 ## Level match — 2026-09-21
 
 The applied rear section is previewed against the newest banked round with
-a front on-axis bearing pair. Search at most 32 recent campaign directories,
-then order by the bank's timestamp. Do not filter by applied identity: the
+a front on-axis bearing pair. Search the newest 128 rounds by banked time;
+the window counts rounds, not bank entries, because the bank also holds one
+directory per authored candidate. Do not filter by applied identity: the
 pair normally predates the rear section it seeds. Behind and other
 non-bearing poses cannot supply this number.
 The selector lives beside the path readers, which cannot import the rear
@@ -90,8 +91,9 @@ volume and durable graph remain unchanged.
 
 The process caches the result by applied candidate fingerprint, apply time
 and pair round ID, including preview refusals. The selector caches each
-immutable round's front-pair check within its 32-round window, so flips do
-not repeat FFTs. A lock prevents concurrent requests from repeating the work.
+immutable round's record-only front-pair check within its bounded window;
+only the selected round's preview builds spectra. A lock prevents concurrent
+requests from repeating the work.
 
 `_consume_linearization_chain` consumes `_linearization_boost_allowance_db`
 during graph classification. Compare trim increases that allowance, but

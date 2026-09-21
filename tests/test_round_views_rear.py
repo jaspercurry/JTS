@@ -15,9 +15,12 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -27,9 +30,10 @@ from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA
 from jasper.active_speaker.camilla_yaml import rear_branch_sum_headroom_db
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal
 from jasper.active_speaker import measurement_analysis
-from jasper.active_speaker.crossover_v2 import rear_views, room_selection
+from jasper.active_speaker.crossover_v2 import rear_pair_round, rear_views, room_selection
 from jasper.active_speaker.crossover_v2.pose_curve import LateralPoseCurve, pose_curve_record
-from jasper.active_speaker.crossover_v2.record_index import measurement_documents
+from jasper.active_speaker.crossover_v2.record_index import measurement_documents, record_path
+from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEHIND
 from jasper.active_speaker.rear_calibration import diagnostic_seed
@@ -364,11 +368,6 @@ def packet_of(root: Path) -> tuple[dict, list[dict]]:
 
 
 def test_newest_front_pair_round_ignores_identity_and_skips_newer_non_pairs(tmp_path):
-    import os
-    import shutil
-    from jasper.active_speaker.crossover_v2.record_index import record_path
-    from jasper.active_speaker.crossover_v2.rear_pair_round import newest_rear_pair_round
-
     pair = pair_round(tmp_path)
     root = pair.parent
     paths = [pair, shutil.copytree(pair, root / "newer-pair"),
@@ -385,18 +384,104 @@ def test_newest_front_pair_round_ignores_identity_and_skips_newer_non_pairs(tmp_
                     record.pop("branch_diagnostic", None)
                 (round_inputs(path).session_dir / record_path(row)).write_text(json.dumps(record))
         os.utime(path, (100 + index, 100 + index))
-    selected = newest_rear_pair_round(root)
+    selected = rear_pair_round.newest_rear_pair_round(root)
     assert selected == {"round_dir": paths[1], "round_id": paths[1].name,
                         "banked_at": "2026-09-18T12:00:00Z"}
-    assert newest_rear_pair_round(root, limit=2) is None
+    assert rear_pair_round.newest_rear_pair_round(root, limit=2) is None
     os.utime(pair, (200, 200))
-    assert newest_rear_pair_round(root) == selected
+    assert rear_pair_round.newest_rear_pair_round(root) == selected
     pending = shutil.copytree(pair, root / "banking")
     provenance = pending / "provenance.json"
     provenance.unlink()
-    assert newest_rear_pair_round(root) == selected
+    assert rear_pair_round.newest_rear_pair_round(root) == selected
     provenance.write_text(json.dumps({"banked_at_utc": "2026-09-21T12:00:00Z"}))
-    assert newest_rear_pair_round(root)["round_id"] == "banking"
+    assert rear_pair_round.newest_rear_pair_round(root)["round_id"] == "banking"
+
+
+def test_pair_round_window_ignores_authored_entries(tmp_path):
+    pair = pair_round(tmp_path)
+    (pair / "provenance.json").write_text("{}")
+    os.utime(pair, (100, 100))
+    for index in range(40):
+        authored = pair.parent / f"authored-{index:064x}"
+        authored.mkdir()
+        os.utime(authored, (200 + index, 200 + index))
+    selected = rear_pair_round.newest_rear_pair_round(pair.parent, limit=32)
+    assert selected is not None and selected["round_dir"] == pair
+
+
+@pytest.mark.parametrize("limit", [4, 128])
+@pytest.mark.parametrize("inside", [True, False])
+def test_pair_round_window_bounds_rounds_by_banked_time(tmp_path, limit, inside):
+    pair = pair_round(tmp_path)
+    (pair / "provenance.json").write_text(json.dumps({"banked_at_utc": "2026-09-20T12:00:00Z"}))
+    os.utime(pair, (200, 200))
+    for index in range(limit + 1):
+        path = pair.parent / f"round-{index}"
+        (path / "bundle" / "session").mkdir(parents=True)
+        newer = index < limit - int(inside)
+        (path / "provenance.json").write_text(json.dumps({
+            "banked_at_utc": "2026-09-21T12:00:00Z" if newer else "2026-09-19T12:00:00Z"}))
+        os.utime(path, (100, 100))
+    selected = rear_pair_round.newest_rear_pair_round(pair.parent, **({"limit": limit} if limit == 4 else {}))
+    assert (selected["round_dir"] if selected else None) == (pair if inside else None)
+    assert rear_pair_round.newest_rear_pair_round(pair.parent, limit=0) is None
+
+
+@pytest.mark.parametrize("case,expected", [
+    ("pair", True), ("behind", False), ("no_rear", False),
+    ("split_roles", False), ("missing_impulse", False), ("invalid_rate", False),
+])
+def test_front_pair_round_uses_records_without_spectra(tmp_path, monkeypatch, case, expected):
+    pair = pair_round(tmp_path, repeats=1)
+    (pair / "provenance.json").write_text("{}")
+    session = round_inputs(pair).session_dir
+    for index, (row, record) in enumerate(room_selection.purpose_take_records(session, purpose="rear")):
+        record = dict(record)
+        if case == "behind":
+            record["pose_kind"] = "behind"
+        elif case == "no_rear":
+            record["measurement_purpose"] = "room"
+        elif case == "split_roles":
+            record["branch_diagnostic"]["responses"] = [record["branch_diagnostic"]["responses"][index % 2]]
+        elif case == "missing_impulse":
+            record["branch_diagnostic"]["responses"][0].pop("impulse")
+        elif case == "invalid_rate":
+            record["branch_diagnostic"]["sample_rate_hz"] = 0
+        (session / record_path(row)).write_text(json.dumps(record))
+    spectra = Mock(side_effect=AssertionError("selector built spectra"))
+    monkeypatch.setattr(rear_views, "pair_takes", spectra)
+    monkeypatch.setattr(np.fft, "rfft", spectra)
+    records = Mock(wraps=rear_pair_round.purpose_take_records)
+    monkeypatch.setattr(rear_pair_round, "purpose_take_records", records)
+    for _ in range(2):
+        assert rear_pair_round._front_pair_round(pair) is expected
+        selected = rear_pair_round.newest_rear_pair_round(pair.parent)
+        assert (selected is not None) is expected
+    records.assert_called_once()
+    spectra.assert_not_called()
+
+
+@pytest.mark.parametrize("error", [OSError(), ValueError(), RoundCapturesRefused("refused", {})])
+def test_pair_round_walk_continues_after_refusal(tmp_path, monkeypatch, error):
+    pair = pair_round(tmp_path)
+    (pair / "provenance.json").write_text("{}")
+    refused = pair.parent / "refused"
+    (refused / "bundle" / "session").mkdir(parents=True)
+    (refused / "provenance.json").write_text("{}")
+    os.utime(pair, (100, 100))
+    os.utime(refused, (200, 200))
+    records = rear_pair_round.purpose_take_records
+
+    def read(session, *, purpose):
+        if session == refused / "bundle" / "session":
+            raise error
+        return records(session, purpose=purpose)
+
+    reads = Mock(side_effect=read)
+    monkeypatch.setattr(rear_pair_round, "purpose_take_records", reads)
+    assert rear_pair_round.newest_rear_pair_round(pair.parent)["round_dir"] == pair
+    assert reads.call_count == 2
 
 
 def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banked_candidates):

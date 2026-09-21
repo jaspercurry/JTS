@@ -27,7 +27,7 @@ const init = buildFunction([
 const block = (state = 'normal') => ({
   available: true, reason: '', state,
   tune: {label: 'Current tune', layers: ['Rear', 'Bass', 'Driver'], applied_at: '2026-09-20T00:00:00Z', fingerprint: 'abcdef1234567890'},
-  level_match: {status: 'matched', trim_db: 2.5, louder: 'on'},
+  level_match: {status: 'matched', trim_db: 2.5, louder: 'on', round_id: 'e4cd4da24c24', banked_at: '2026-09-18T12:00:00Z'},
   expires_in_s: state === 'normal' ? null : 121
 });
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -70,13 +70,17 @@ test('tune metadata excludes fingerprints and has a second hint node', async () 
   const {card, button} = setup(data); await flush();
   const line = text(card.children[1]);
   for (const field of [data.tune.label, ...data.tune.layers, 'Sep 20']) assert.ok(line.includes(field));
-  assert.doesNotMatch(text(card), /[a-f0-9]{8,}/i);
+  assert.ok(!text(card).includes(data.tune.fingerprint));
+  const status = () => text(nodes(card).find(n => n.role === 'status'));
+  for (const field of [data.level_match.round_id, 'Sep 18, 2026']) assert.ok(status().includes(field));
   assert.equal(button('on')['aria-pressed'], 'true');
   assert.equal(button('normal'), undefined);
   assert.equal(card.children.filter(n => n.className === 'form-hint' && !n.role).length, 2);
   data.tune.applied_at = null;
+  data.level_match.banked_at = null;
   const undated = setup(data); await flush();
   assert.doesNotMatch(text(undated.card), /Invalid Date|null/);
+  assert.ok(text(undated.card).includes(data.level_match.round_id));
 });
 test('Off and Done POST states with CSRF and render the server answer', async () => {
   let answer = block('off');
