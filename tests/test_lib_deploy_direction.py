@@ -40,8 +40,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.shell_runner import run_bash
-
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / "scripts" / "_lib.sh"
@@ -146,9 +144,9 @@ def _classify(
         f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; '
         f'classify_deploy_direction "$1" "$2"'
     )
-    proc = run_bash(
-        ["-c", script, "bash", local_sha, installed_sha],
-        timeout=30, cwd=repo,
+    proc = subprocess.run(
+        ["bash", "-c", script, "bash", local_sha, installed_sha],
+        capture_output=True, text=True, timeout=30, cwd=repo,
         env=_shim_env(git_shim),
     )
     assert proc.returncode == 0, proc.stderr
@@ -230,9 +228,9 @@ def _manifest_value(manifest: str, key: str) -> str:
         f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; '
         f'build_manifest_value "$1" "$2"'
     )
-    proc = run_bash(
-        ["-c", script, "bash", manifest, key],
-        timeout=30,
+    proc = subprocess.run(
+        ["bash", "-c", script, "bash", manifest, key],
+        capture_output=True, text=True, timeout=30,
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout.strip()
@@ -318,9 +316,9 @@ def _classify_vs_main(
         f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; '
         f'classify_installed_vs_main "$1" "$2"'
     )
-    proc = run_bash(
-        ["-c", script, "bash", installed_sha, main_ref],
-        timeout=30, cwd=repo,
+    proc = subprocess.run(
+        ["bash", "-c", script, "bash", installed_sha, main_ref],
+        capture_output=True, text=True, timeout=30, cwd=repo,
         env=_shim_env(git_shim),
     )
     assert proc.returncode == 0, proc.stderr
@@ -393,9 +391,9 @@ def test_default_main_ref_is_origin_main(main_history):
     # Called with one arg, the helper defaults the ref to origin/main.
     repo, _a, _b, c, _d = main_history
     script = f'JTS_LIB_TARGET_OPTIONAL=1 source "{LIB}"; classify_installed_vs_main "$1"'
-    proc = run_bash(
-        ["-c", script, "bash", c],
-        timeout=30, cwd=repo,
+    proc = subprocess.run(
+        ["bash", "-c", script, "bash", c],
+        capture_output=True, text=True, timeout=30, cwd=repo,
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "current"
@@ -475,9 +473,9 @@ def _run_preflight(repo, *, installed, local, sudo, host="bench-pi.local"):
         .replace("@INSTALLED@", installed)
         .replace("@SUDO@", str(sudo))
     )
-    return run_bash(
-        ["-c", script],
-        timeout=30, cwd=repo,
+    return subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True, text=True, timeout=30, cwd=repo,
     )
 
 
@@ -557,9 +555,9 @@ def _run_verify_same_sha(repo, *, installed, local, host="bench-pi.local"):
         .replace("@LOCAL@", local)
         .replace("@INSTALLED@", installed)
     )
-    return run_bash(
-        ["-c", script],
-        timeout=30, cwd=repo,
+    return subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True, text=True, timeout=30, cwd=repo,
     )
 
 

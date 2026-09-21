@@ -54,6 +54,7 @@ from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
 )
+from tests.shell_runner import run_bash
 from tests.status_socket_fixtures import JsonStatusSocket
 
 
@@ -252,13 +253,10 @@ def _run_reconcile(
     )
     if extra_env:
         env.update(extra_env)
-    return subprocess.run(
-        ["bash", str(SCRIPT), *args],
-        check=False,
+    return run_bash(
+        [str(SCRIPT), *args],
         cwd=ROOT,
         env=env,
-        text=True,
-        capture_output=True,
         timeout=180,
     )
 
@@ -2696,12 +2694,8 @@ def _eval_shim(
         + f'eval "$({shim})"\n'
         + "".join(f'printf "%s=%s\\n" {name} "${name}"\n' for name in names)
     )
-    shell = subprocess.run(
-        ["bash", "-euo", "pipefail", "-c", script],
-        check=False,
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
+    shell = run_bash(
+        ["-euo", "pipefail", "-c", script], cwd=ROOT, timeout=30,
     )
     assert shell.returncode == 0, shell.stderr
     return dict(line.split("=", 1) for line in shell.stdout.splitlines())
@@ -4483,5 +4477,3 @@ def test_measurement_exclusion_costs_no_interpreter_without_a_usb_card(
 
     assert result.returncode == 0, result.stderr
     assert "measurement resolver was spawned" not in result.stderr
-
-
