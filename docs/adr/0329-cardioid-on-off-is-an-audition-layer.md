@@ -61,3 +61,87 @@ then. This is ADR-0193's accepted shape.
 
 This replaces the server side of PR #5416's A/B listen card. The separate UI
 change removes that card and uses the fixed cardioid compare contract.
+
+## Level match — 2026-09-21
+
+The applied rear section is previewed against the newest banked round with
+a front on-axis bearing pair. Search at most 32 recent campaign directories,
+then order by the bank's timestamp. Do not filter by applied identity: the
+pair normally predates the rear section it seeds. Behind and other
+non-bearing poses cannot supply this number.
+The selector lives beside the path readers, which cannot import the rear
+model without an import cycle.
+
+On 1024 logarithmically spaced bins from 40 Hz to 16 kHz (upper endpoint
+excluded), let `delta(f) = change_db(f) + relative_charge` inside the preview
+curve's covered band, and zero outside it. The broadband difference is the
+flat power mean `10 * log10(mean(10 ** (delta(f) / 10)))`. The rear is
+low-passed; the pair only supplies woofer-band evidence. Add back
+`relative_charge = H_on - H_off` because the preview models separately
+compiled graphs, while the live switch retains the applied headroom in
+both states. The preview stage owns this charge.
+
+Attenuate the louder state by the absolute difference, rounded to two decimal
+places. Below 0.05 dB, apply zero trim and name neither state as louder.
+Missing applied rear, pair round or front pose, refused or unreadable preview,
+and non-finite or greater-than-6 dB differences report `unavailable`. Any
+level-path error leaves the mute switch usable with zero trim. The household
+volume and durable graph remain unchanged.
+
+The process caches the result by applied candidate fingerprint, apply time
+and pair round ID, including preview refusals. The selector caches each
+immutable round's front-pair check within its 32-round window, so flips do
+not repeat FFTs. A lock prevents concurrent requests from repeating the work.
+
+`_consume_linearization_chain` consumes `_linearization_boost_allowance_db`
+during graph classification. Compare trim increases that allowance, but
+does not change a branch or emit a durable proof. Startup, convergence,
+doctor and apply checks use persisted or newly composed graph text. The
+multiroom live check compares running text with the persisted graph first;
+a compare graph fails that equality before classification. There is no
+periodic proof from running compare graphs. Tests pin maximum-trim admission
+and the live boundary's refusal without a durable write.
+
+If the idle hold or holder fails after the graph swap, restore the applied
+graph before returning the error, using the session token to avoid undoing
+a newer owner.
+
+### Level match cache and endpoint — 2026-09-21
+
+The cache key is now `(candidate_fingerprint, applied_at, campaign-root
+st_mtime_ns)`. A warm lookup reads the applied profile and stats the campaign
+root once; it never walks the bank. Banking a round creates a directory there
+and changes that key. The process memo remains, with an atomic JSON copy at
+`rear_compare_level.json` beside the audition record in `/run`. It contains
+the key and public level fields only, and survives web process idle exit;
+reboot clears it. Missing, corrupt or mismatched files are cache misses.
+A failed cache write leaves the process memo usable.
+
+The studio measured a 2.3 s preview and about a 1 s bank walk on a Pi 5.
+Only a cache miss on GET computes. POST uses cached data only and does not
+wait for a preview in progress; a cold flip reports `unavailable` with
+`cache_miss` and uses zero trim. POST builds the block once and changes only
+its state and expiry after the flip. The projection maths is unchanged.
+
+The card fetches GET `./cardioid-compare` on mount, independently of EQ boot.
+GET `./state` no longer carries the block, so a cold analysis cannot delay
+the editor's state response. A failed card fetch leaves the card hidden.
+
+### Limits of the level match — 2026-09-21
+
+The number is broadband POWER, not loudness: an unweighted power mean over
+40 Hz–16 kHz. A bass-only difference is diluted across about 8.6 octaves (on
+jts3 the rear's +2 dB below 60 Hz becomes about 0.3 dB). The two states are
+therefore matched in overall level and NOT matched in bass tone; the card says
+so. A bass-matched "off" needs front compensation and is a separate decision.
+
+A failed level (no pair round, a refusing round, a preview error) is cached
+like a success, so a tune that cannot be matched costs one walk per key, and
+it is logged (`event=active_speaker.rear_compare_level`). Re-banking a round in
+place does not move the campaign root's mtime; that staleness ends at the next
+apply or reboot.
+
+While a compare session runs, the live graph is not the approved graph, so
+`classify_active_bass_extension_graph` answers not-allowed; an operation that
+waits for a settled graph (for example making this speaker a multiroom
+follower) can fail until the session ends. Fail-closed, bounded by the deadline.

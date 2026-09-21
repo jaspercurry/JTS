@@ -161,7 +161,7 @@ import {
   removeSubwooferFromTopology
 } from "/assets/sound-profile/js/topology.js";
 (function() {
-  var renderCardioidCompare = initCardioidCompare(pageMode === 'eq' && !followerMode ? el('now-playing') : null);
+  initCardioidCompare(pageMode === 'eq' && !followerMode ? el('now-playing') : null);
   var LIMIT_DEFAULTS = {
     simple_gain_db: 12, advanced_gain_db: 12, max_parametric_bands: 8,
     min_freq_hz: 20, max_freq_hz: 20000, min_q: 0.2, max_q: 10, cut_max_q: 1.4,
@@ -3546,7 +3546,6 @@ import {
   async function loadState() {
     try {
       var payload = await getJSON('./state');
-      renderCardioidCompare(payload.cardioid_compare);
       ingestState(payload);
       eqEditor.selectedId = findIdFor(applied);
       // Open on Off when no EQ is effectively applied — bypassed (enabled

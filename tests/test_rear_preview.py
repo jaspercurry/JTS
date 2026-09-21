@@ -181,6 +181,7 @@ def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path
     preview = _preview(tmp_path, capsys, {"rear_calibration": section}, root)["preview"]
     assert (preview["stage"]["headroom_charge_db"] > 0) == bool(boost_db)
     charge = rear_branch_sum_headroom_db(section) - rear_branch_sum_headroom_db({**section, "rear_muted": True})
+    assert preview["stage"]["relative_charge"] == pytest.approx(charge, abs=0.0005)
     takes = pair_takes(record for _, record in purpose_take_records(round_inputs(root).session_dir, purpose="rear"))
     for take in takes:
         row = preview["positions"][take.pose_key]
@@ -330,3 +331,164 @@ def test_repeats_use_mean_magnitudes_and_median_per_take_energy(tmp_path, capsys
     for band, level in zip(row["bands"], levels):
         if not band["reason"]:
             assert band["predicted_db"] == pytest.approx(level, abs=0.0005)
+
+
+@pytest.mark.parametrize("pose,key", [("bearing", "az+0.00_el+0.00_d+1.00"),
+                                     ("bearing", "az+90.00_el+0.00_d+1.00"),
+                                     ("behind", "behind_az+0.00_el+0.00_d+0.10"),
+                                     ("seat", "az+0.00_el+0.00_d+1.00")])
+def test_compare_delta_is_broadband_with_retained_headroom(pose, key):
+    preview = {"stage": {"relative_charge": 0.5}, "positions": {key: {
+        "pose_kind": pose, "curve": {"freqs_hz": [40, 350], "change_db": [3, 3]}}}}
+    delta = rear_preview.rear_compare_delta_db(preview)
+    if pose != "bearing" or "90.00" in key:
+        assert delta is None
+    else:
+        grid = np.geomspace(40, 16000, 1024, endpoint=False)
+        expected = 10 * np.log10(np.mean(10 ** (np.where(grid <= 350, 3.5, 0) / 10)))
+        assert delta == pytest.approx(expected, abs=0.01)
+
+
+@pytest.fixture
+def compare_evidence(tmp_path, monkeypatch):
+    from jasper.active_speaker import audition, baseline_profile, rear_compare, round_bank
+    from jasper.active_speaker.crossover_v2 import rear_pair_round as readers
+
+    root = pair_round(tmp_path)
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    monkeypatch.setenv(audition.AUDITION_STATE_ENV, str(runtime / "audition.json"))
+    at = "2026-09-20T12:00:00Z"
+    (root / "provenance.json").write_text(json.dumps({"banked_at_utc": at}))
+    section = diagnostic_seed(48000)
+    section["rear_muted"] = False
+    section["rear"]["bass"]["inverted"] = True
+    section["rear"]["cancellation"]["muted"] = True
+    applied = {"candidate_fingerprint": "later-tune", "applied_at": "2026-09-21T12:00:00Z",
+               "recomposition_snapshot": {"rear_calibration": section}}
+    load = baseline_profile.load_applied_baseline_profile_state
+    monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda path=None: applied if path is None else load(path))
+    monkeypatch.setattr(round_bank, "DEFAULT_CAMPAIGN_ROOT", root.parent)
+    monkeypatch.setattr(rear_compare, "_levels", {})
+    readers._front_pair_round.cache_clear()
+    return root, applied
+
+
+def test_compare_level_real_model_cached_without_ffts(compare_evidence, monkeypatch):
+    from unittest.mock import Mock
+    from jasper.active_speaker import rear_compare
+    from jasper.active_speaker.crossover_v2 import rear_pair_round as readers
+    from jasper.active_speaker.rear_compare import rear_compare_level
+
+    selector = Mock(wraps=readers.newest_rear_pair_round)
+    monkeypatch.setattr(readers, "newest_rear_pair_round", selector)
+    preview = Mock(wraps=rear_preview.preview_rear_section)
+    monkeypatch.setattr(rear_preview, "preview_rear_section", preview)
+    level = rear_compare_level()
+    assert level["status"] == "matched"
+    assert np.isfinite(level["trim_db"]) and 0 < level["trim_db"] <= 6
+    assert level["louder"] == "on"
+    assert level["round_id"] == compare_evidence[0].name
+    assert level["banked_at"] == "2026-09-20T12:00:00Z"
+    monkeypatch.setattr(np.fft, "rfft", Mock(side_effect=AssertionError("uncached FFT")))
+    assert rear_compare_level() == level
+    rear_compare._levels.clear()
+    assert rear_compare_level() == level
+    preview.assert_called_once()
+    selector.assert_called_once()
+
+
+@pytest.mark.parametrize("delta,trim,louder,reason", [(0.049, 0, None, ""), (-0.049, 0, None, ""),
+    (0.05, 0.05, "on", ""), (-1.236, 1.24, "off", ""), (6.0, 6.0, "on", ""),
+    (6.001, None, None, "delta_out_of_range"), (-6.001, None, None, "delta_out_of_range"),
+    (float("nan"), None, None, "delta_out_of_range"), (float("inf"), None, None, "delta_out_of_range"),
+    (None, None, None, "no_front_pose")])
+def test_compare_level_bounds(compare_evidence, monkeypatch, delta, trim, louder, reason):
+    from jasper.active_speaker.rear_compare import rear_compare_level
+
+    monkeypatch.setattr(rear_preview, "preview_rear_section", lambda *a, **k: {})
+    monkeypatch.setattr(rear_preview, "rear_compare_delta_db", lambda preview: delta)
+    level = rear_compare_level()
+    assert (level["trim_db"], level["louder"], level["reason"]) == (trim, louder, reason)
+    assert level["status"] == ("unavailable" if reason else "matched")
+
+
+@pytest.mark.parametrize("fresh", [False, True])
+@pytest.mark.parametrize("identity_field", ["candidate_fingerprint", "applied_at", "root_mtime"])
+def test_compare_cache_invalidates_for_each_identity_field(compare_evidence, monkeypatch, identity_field, fresh):
+    import os
+    from unittest.mock import Mock
+    from jasper.active_speaker import rear_compare
+
+    preview = Mock(return_value={"stage": {"relative_charge": 0}, "positions": {}})
+    monkeypatch.setattr(rear_preview, "preview_rear_section", preview)
+    rear_compare.rear_compare_level()
+    if identity_field == "root_mtime":
+        root = compare_evidence[0].parent
+        stat = root.stat()
+        os.utime(root, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
+    else:
+        compare_evidence[1][identity_field] = "new"
+    if fresh:
+        rear_compare._levels.clear()
+    rear_compare.rear_compare_level()
+    assert preview.call_count == 2
+
+
+@pytest.mark.parametrize("damage", ["missing", "json", "shape", "key", "negative", "excess", "nan"])
+def test_compare_cache_damage_recomputes(compare_evidence, monkeypatch, damage):
+    from unittest.mock import Mock
+    from jasper.active_speaker import audition, rear_compare
+
+    preview = Mock(return_value={})
+    monkeypatch.setattr(rear_preview, "preview_rear_section", preview)
+    monkeypatch.setattr(rear_preview, "rear_compare_delta_db", lambda preview: 0.35)
+    expected = rear_compare.rear_compare_level()
+    path = audition.audition_state_path().with_name("rear_compare_level.json")
+    saved = json.loads(path.read_text())
+    assert set(saved["level"]) == {"status", "trim_db", "louder", "reason", "round_id", "banked_at"}
+    if damage == "missing":
+        path.unlink()
+    elif damage == "json":
+        path.write_text("{")
+    else:
+        if damage == "shape":
+            saved["level"] = []
+        elif damage == "key":
+            saved["key"] = ["old", "old", 0]
+        else:
+            saved["level"]["trim_db"] = {"negative": -1, "excess": 6.01, "nan": float("nan")}[damage]
+        path.write_text(json.dumps(saved))
+    rear_compare._levels.clear()
+    assert rear_compare.rear_compare_level() == expected
+    assert preview.call_count == 2
+
+
+def test_compare_cache_write_failure_keeps_memo(compare_evidence, monkeypatch):
+    from unittest.mock import Mock
+    from jasper.active_speaker import audition, rear_compare
+
+    preview = Mock(return_value={})
+    monkeypatch.setattr(rear_preview, "preview_rear_section", preview)
+    monkeypatch.setattr(rear_preview, "rear_compare_delta_db", lambda preview: 0.35)
+    write = Mock(side_effect=PermissionError())
+    monkeypatch.setattr(rear_compare, "atomic_write_json", write)
+    level = rear_compare.rear_compare_level()
+    assert (level["status"], level["trim_db"]) == ("matched", 0.35)
+    assert rear_compare.rear_compare_level() == level
+    assert not audition.audition_state_path().with_name("rear_compare_level.json").exists()
+    write.assert_called_once()
+    preview.assert_called_once()
+
+
+def test_compare_cold_flip_does_not_wait_for_preview(compare_evidence, monkeypatch):
+    from unittest.mock import Mock
+    from jasper.active_speaker import rear_compare
+    from jasper.active_speaker.crossover_v2 import rear_pair_round as readers
+
+    selector = Mock(side_effect=AssertionError())
+    monkeypatch.setattr(readers, "newest_rear_pair_round", selector)
+    with rear_compare._lock:
+        level = rear_compare.rear_compare_level(cached_only=True)
+    assert (level["status"], level["reason"], level["trim_db"]) == ("unavailable", "cache_miss", None)
+    selector.assert_not_called()

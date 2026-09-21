@@ -397,6 +397,10 @@ class PairTake:
     clock_shift_samples: dict[str, float]
 
 
+def front_on_axis(pose_key: str, pose_kind: str) -> bool:
+    return pose_kind == POSE_KIND_BEARING and pose_key.startswith("az+0.00_el+0.00_")
+
+
 def pair_takes(records: Iterable[Mapping[str, Any]]) -> list[PairTake]:
     takes = []
     for record in records:

@@ -16,12 +16,27 @@ from jasper.audio_measurement import rear_evidence as figures
 from jasper.audio_measurement.analysis import band_levels_from_magnitude, smooth_fractional_octave
 
 from .pose_curve import lateral_evidence_grid_hz, nearest_native_bins
-from .rear_views import PairTake, pair_takes, rear_document
+from .rear_views import PairTake, front_on_axis, pair_takes, rear_document
 from .room_selection import purpose_take_records
 from .round_captures import RoundCapturesRefused
 from .round_inputs import RoundInputs
 
 REAR_PREVIEW_NEEDS_PAIR_ROUND = "rear_preview_needs_pair_round"
+
+
+def rear_compare_delta_db(preview: Mapping[str, Any]) -> float | None:
+    """Front on minus off: 10*log10(mean(10**(delta/10))) on 1024 log bins
+    from 40 Hz to 16 kHz (upper endpoint excluded). Delta is change_db plus
+    relative_charge inside the curve's band, and 0 dB outside it.
+    """
+    for key, row in preview["positions"].items():
+        if front_on_axis(key, row["pose_kind"]):
+            curve = row["curve"]
+            grid = np.geomspace(40.0, 16000.0, 1024, endpoint=False)
+            change = np.asarray(curve["change_db"]) + preview["stage"]["relative_charge"]
+            delta = np.interp(grid, curve["freqs_hz"], change, left=0.0, right=0.0)
+            return band_levels_from_magnitude(grid, delta, [(40.0, 16000.0)])[0]
+    return None
 
 
 def summary_rows(preview: Mapping[str, Any]) -> dict[str, Any]:
@@ -119,6 +134,6 @@ def preview_rear_section(section: Mapping[str, Any], *, inputs: RoundInputs,
     positions = {key: _position(grouped[key], row, validated, relative_charge)
                  for key, row in view["pair"]["positions"].items() if key in grouped}
     return _rounded({"reason": "", "stage": {
-        "headroom_charge_db": charge, **rear_operating_facts(validated),
+        "headroom_charge_db": charge, "relative_charge": relative_charge, **rear_operating_facts(validated),
         "round_id": inputs.session_dir.name, "pair_candidate_id": view["pair"]["candidate_id"],
     }, "positions": positions})

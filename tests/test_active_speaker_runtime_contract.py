@@ -372,6 +372,38 @@ def _dynamic_bass_descriptor() -> dict:
     }
 
 
+@pytest.mark.parametrize("muted", [False, True])
+async def test_compare_trim_cannot_become_durable_headroom_proof(tmp_path, monkeypatch, muted):
+    from unittest.mock import Mock
+    from jasper.active_speaker.audition import MAX_COMPARE_TRIM_DB, rear_compare_yaml
+    from tests.test_camilla_controller import _controller, _FakeClient
+    from tests.test_rear_output_foundation import _cardioid_baseline
+
+    _, topology, applied = _cardioid_baseline(linearization={"woofer": [
+        {"biquad_type": "Peaking", "freq": 100.0, "q": 1.0, "gain": 3.0}]})
+    compare = rear_compare_yaml(applied, rear_muted=muted, trim_db=MAX_COMPARE_TRIM_DB)
+    allowance = runtime_contract_module._linearization_boost_allowance_db
+    assert allowance(yaml.safe_load(compare)) - allowance(yaml.safe_load(applied)) == pytest.approx(MAX_COMPARE_TRIM_DB)
+    cam = _controller(_FakeClient(), tmp_path)
+    for text in (applied, compare):
+        assert cam._admit_graph(text, source="test", best_effort=False)
+    authority = _persisted_boundary(tmp_path, topology=topology, graph_text=applied)
+    paths = [authority[key] for key in ("config", "statefile_path", "applied_baseline_path", "staged_metadata_path")]
+    before = [path.read_bytes() for path in paths]
+    proof = Mock(side_effect=AssertionError("live compare reached durable proof"))
+    monkeypatch.setattr(runtime_contract_module, "_classify_bass_extension_snapshot", proof)
+    async def active():
+        return camilla_default_filled(compare)
+    graph = await classify_active_bass_extension_graph(
+        topology, statefile_path=authority["statefile_path"], read_active_graph_text=active,
+        canonicalize_graph_text=camilla_canonicalize,
+        applied_baseline_path=authority["applied_baseline_path"], staged_metadata_path=authority["staged_metadata_path"])
+    assert not graph.allowed
+    assert graph.issues[0]["code"] == "bass_extension_active_snapshot_unstable"
+    proof.assert_not_called()
+    assert [path.read_bytes() for path in paths] == before
+
+
 @pytest.mark.parametrize("tamper", [
     "descriptor", "compressor", "removed_descriptor", "processor_after_limiter",
 ])

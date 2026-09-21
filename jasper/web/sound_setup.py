@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import sys
+import time
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -337,6 +338,7 @@ _GET_ROUTES = {
     "/state": None,
     "/active-speaker/commissioning-view": None,
     "/output-topology": ("_output_topology_payload", "sound.output_topology"),
+    "/cardioid-compare": ("_cardioid_compare_payload", "sound.cardioid_compare"),
     "/active-speaker/design-draft": (
         "_active_speaker_design_draft_payload",
         "sound.active_speaker_design_draft",
@@ -476,13 +478,13 @@ def _make_handler(
                         output_trim_db=_output_trim(profile, settings),
                     )
                 self._send_json(
-                    {**_state_payload(
+                    _state_payload(
                         profile,
                         library_path=library_path,
                         include_library=True,
                         settings_snapshot=settings,
                         eq_block=eq_block,
-                    ), "cardioid_compare": _cardioid_compare_payload()}
+                    )
                 )
                 return
             json_route = _GET_ROUTES.get(path)
@@ -534,19 +536,27 @@ def _make_handler(
                 raw = self._read_json(max_bytes=MAX_JSON_BYTES)
                 if path == "/cardioid-compare":
                     try:
-                        if raw.get("state") != "normal" and not _cardioid_compare_payload()["available"]:
+                        requested = str(raw.get("state", ""))
+                        compare = _cardioid_compare_payload(cached_only=True)
+                        if requested != "normal" and not compare["available"]:
                             raise AuditionRefused("cardioid_compare_unavailable", "This tune cannot compare the rear output.")
-                        state = asyncio.run(set_compare_state(str(raw.get("state", "")), cam=camilla_factory(), trim_db=0.0))
+                        level = compare.get("level_match", {})
+                        trim = level.get("trim_db") if requested == level.get("louder") else 0.0
+                        state = asyncio.run(set_compare_state(requested, cam=camilla_factory(), trim_db=trim or 0.0))
                         if state["status"] == "auditioning":
                             start_web_audition_holder(state, camilla_factory,
                                                      lambda: self.idle_hold("speaker audition"))
                     except AuditionRefused as e:
                         self._send_json({"error": e.reason, "message": e.detail},
                                         status=502 if e.reason in {REFUSE_LOAD, REFUSE_RESTORE} else 409)
-                    except (OSError, RuntimeError, ValueError) as e:
+                    except Exception as e:  # noqa: BLE001 - holder failures must answer after restore (ADR-0329)
+                        log_event(logger, "sound.cardioid_compare", result="error",
+                                  level=logging.ERROR, exc_info=True, error=type(e).__name__)
                         self._send_json({"error": REFUSE_LOAD, "message": str(e)}, status=400 if isinstance(e, ValueError) else 502)
                     else:
-                        self._send_json(_cardioid_compare_payload())
+                        active = state["status"] == "auditioning"
+                        self._send_json({**compare, "state": requested if active else "normal",
+                                         "expires_in_s": max(0, int(state["deadline_at"] - time.time())) if active else None})
                     return
                 if path == "/i2s-hat":
                     profile_id = raw.get("profile_id")

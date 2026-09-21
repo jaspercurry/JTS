@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { h } from "/assets/shared/js/dom.js";
-import { postJSON } from "/assets/shared/js/http.js";
+import { getJSON, postJSON } from "/assets/shared/js/http.js";
 
 export function initCardioidCompare(nowPlaying) {
-  if (!nowPlaying) return () => {};
+  if (!nowPlaying) return;
   const card = h('section.info-card#cardioid-compare-card', {hidden: true});
   nowPlaying.after(card);
   let busy = false;
@@ -53,8 +53,9 @@ export function initCardioidCompare(nowPlaying) {
       h('div.segmented', {role: 'group', 'attr:aria-label': 'Cardioid'},
         button('on', 'On', 'segmented__btn'), button('off', 'Off', 'segmented__btn')),
       h('p.form-hint', {role: 'status'}, status.join(' ')),
+      h('p.form-hint', {}, 'The rear woofer also changes the bass in front of the speaker, so Off changes the bass tone too.'),
       ...(active ? [button('normal', 'Done', 'btn btn--ghost')] : [])
     );
   }
-  return render;
+  getJSON('./cardioid-compare').then(render).catch(() => {});
 }
