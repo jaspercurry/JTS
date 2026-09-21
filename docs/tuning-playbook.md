@@ -306,22 +306,48 @@ worth playing:
   the same Peaking boost on both rear branches (ADR-0327); front
   attenuation measured as a 2–8 dB hole from 350 Hz up.
 - 200–300 Hz within ±1 dB; leakage or over-cancellation shows here first.
-- `gradient_residual.db` below about −6 dB at every bearing; at −2 to −4
-  the document is fill with a delay.
+- `gradient_residual.db` measures closeness to a TRUE cardioid (pattern
+  ratio 1, below). At −2 to −4 with a long delay the document is fill; with
+  a delay shorter than the gap it is a supercardioid, which the seat
+  preferred.
 - The dip ruler is relative. `dip.depth_db` against the one-octave trend
   read about 2 dB kinder than the raw curve, but differences between
   candidates held. Compare candidates; never read a depth as absolute.
-- The trough that did not close from the front (about 6 dB remained at
-  126–134 Hz) is the room — a 10 ft cube puts its 112 and 169 Hz modes on
-  either side of it — or needs the wall-ward null measured behind the
-  cabinet.
+- Judge the rear stage at the listening seat with the speaker at its wall.
+  Cabinet 0.2 m from the wall, mic 2 m away: the fair "off" had a wall
+  hole of −11 to −13 dB near 134 Hz and a roughness (RMS against the
+  curve's own one-octave trend, 80–350 Hz) of 5.6–5.8 dB; rear tunes cut
+  that to −3 dB and 2.9 dB, and 37 % → 51 % of the 100–350 Hz energy
+  arrived within 20 ms. Mid-room, or with the mic 0.6–0.8 m away, the same
+  tunes showed almost nothing: a near mic is a workshop tool. Roughness
+  repeated to ±0.2 dB over two hours, hole depth only to ±1.4 dB.
+
+The pattern is a spectrum, and the delay picks the point on it. The pattern
+ratio is the rear's effective lateness (the cancellation `delay_ms` plus
+the group delay of that branch's own low-pass, about 225 / corner-Hz ms for
+a second-order Butterworth) over the measured arrival gap: 1 is a cardioid,
+about 0.58 a supercardioid, about 0.33 a hypercardioid. A delay-only sweep at
+the seat (jts3, 0.95 ms gap) put the best roughness and the shallowest wall
+hole at ratio 0.65; ratios 0.65 down to 0.2 sat within 0.3 dB of each other,
+and only the true cardioid was clearly worse (+0.7 dB). The rear also combs
+the FRONT response near 1 / (gap + delay): a shorter delay moves that dip up
+(about 300 Hz → 840 Hz across the sweep) and shrinks it, while the seat's
+early-to-late share falls about 1 dB. So do not pin the delay to the gap:
+start near ratio 0.6, sweep 1.0 → 0.3 with every filter held, and expect a
+broad optimum. A rear that is short of level in part of the band wants a
+NARROW Peaking lift there (q 2–3); one wide bell spoils its neighbours.
+
+An older room layer can over-correct once the rear stage works: a −6 dB cut
+fitted at 106 Hz without a cardioid dug a −19 dB notch after the cardioid
+had already flattened that peak, while the cuts on the 54–59 Hz room mode
+still earned their place. Refit room after the rear stage changes.
 
 First tune, from the pair take: give the bass branch a Linkwitz-Riley
 low-pass and the cancellation branch a Linkwitz-Riley high-pass at ONE
 shared corner near 80–100 Hz; complementary slopes leave no hole at the
 hand-over. Put the cancellation low-pass below c / (4·D), where D is the
 measured arrival gap times the speed of sound. Invert the cancellation
-branch and anchor its delay on that gap. Start its gain at 0 dB; if the
+branch and set its delay from the pattern ratio above. Start its gain at 0 dB; if the
 rear reads louder than the front at the low end of the band, shape it with
 a low shelf rather than a flat cut. A delay-and-invert pair loses forward
 level below c / (4·D); the same Peaking boost on BOTH rear branches in that
@@ -413,6 +439,8 @@ The full ADR file names appear beside their claims above:
 `tuning-methodology.md` gives the cancellation derivation. The room regime
 plan gives boost design criteria. Code owns current limits.
 The jts3 placement observation is from the owner brief, not published research.
+The rear pattern-ratio, seat and room-layer figures are from the jts3 wall
+rounds of 2026-09-20 (issues #5405, #5438, #5439).
 
 ## Current bounds
 
