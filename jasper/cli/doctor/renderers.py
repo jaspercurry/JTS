@@ -26,6 +26,7 @@ from ...service_units import LIBRESPOT_SERVICE
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
+    REASON_HOSTNAME_UNREADABLE,
     REASON_SOURCE_INTENT_INVALID,
     CheckResult,
     _PROBE_FRAMES,
@@ -55,6 +56,9 @@ REASON_SHAIRPORT_NOT_AP2 = "shairport_not_ap2"
 REASON_SHAIRPORT_NOT_ACTIVE = "shairport_not_active"
 
 REASON_NQPTP_NOT_ACTIVE = "nqptp_not_active"
+
+REASON_AIRPLAY_ADVERT_BROWSE_MISSING = "airplay_advert_browse_missing"
+REASON_AIRPLAY_ADVERT_NOT_RESOLVED = "airplay_advert_not_resolved"
 
 REASON_MUX_NOT_ACTIVE = "mux_not_active"
 
@@ -377,6 +381,72 @@ def check_nqptp_running() -> CheckResult:
         f"state={state}. shairport-sync AP2 will not handshake "
         f"without nqptp running.",
         reason=REASON_NQPTP_NOT_ACTIVE,
+    )
+
+def _airplay_advert_resolved(avahi_browse_stdout: str, own_host: str) -> bool:
+    """True iff a resolved (``=``) row's host-name field (7th, semicolon
+    separated, e.g. ``jts3.local``) matches ``own_host``."""
+    for line in avahi_browse_stdout.splitlines():
+        fields = line.split(";")
+        if len(fields) < 7 or fields[0] != "=":
+            continue
+        if fields[6].strip().rstrip(".").lower() == own_host:
+            return True
+    return False
+
+@doctor_check()
+def check_airplay_advert_resolves() -> CheckResult:
+    """Verify avahi actually resolves this speaker's own `_airplay._tcp`
+    advert, not just its PTR record.
+
+    A stranded SRV/TXT record still shows the speaker's name in AirPlay
+    pickers — the PTR is announced fine — but every connection attempt
+    hangs, because avahi 0.8 drops a service's SRV/TXT records when its
+    interface is torn down and rebuilt under ~1 s after they registered.
+    """
+    label = "avahi: _airplay._tcp resolves"
+    parked = _parked_follower_result(label)
+    if parked is not None:
+        return parked
+    intentional_off = _intentional_source_off(
+        Source.AIRPLAY,
+        label,
+        units=("shairport-sync.service", "nqptp.service"),
+    )
+    if intentional_off is not None:
+        return intentional_off
+    bin_path = shutil.which("avahi-browse")
+    if bin_path is None:
+        return CheckResult(
+            label, "skipped",
+            "avahi-browse missing (apt install avahi-utils) — can't "
+            "verify the advert resolves.",
+            reason=REASON_AIRPLAY_ADVERT_BROWSE_MISSING,
+        )
+    sys_hostname = _run(["hostname", "-s"]).stdout.strip()
+    if not sys_hostname:
+        return CheckResult(
+            label, "skipped", "could not read system hostname",
+            reason=REASON_HOSTNAME_UNREADABLE,
+        )
+    own_host = f"{sys_hostname}.local".lower()
+    try:
+        # avahi's own resolver timeout is 5 s per stale peer record, so a
+        # healthy run can take that long; stdout is pipe-buffered, so a kill
+        # on timeout would lose it.
+        stdout = _run([bin_path, "-rtp", "_airplay._tcp"], timeout=12.0).stdout
+    except subprocess.TimeoutExpired as e:
+        stdout = e.stdout or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+    if _airplay_advert_resolved(stdout, own_host):
+        return CheckResult(label, "ok", f"resolves as {own_host}")
+    return CheckResult(
+        label, "fail",
+        f"no resolved (`=`) `_airplay._tcp` row for {own_host}. AirPlay "
+        "shows in pickers but sessions will not connect. "
+        "Fix: sudo systemctl restart shairport-sync nqptp",
+        reason=REASON_AIRPLAY_ADVERT_NOT_RESOLVED,
     )
 
 @doctor_check(core=True)
