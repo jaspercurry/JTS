@@ -25,7 +25,6 @@ import json
 import logging
 import os
 import sys
-import threading
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,7 +33,7 @@ from typing import Any, Callable
 
 from jasper.active_speaker.audition import (
     AuditionRefused, REFUSE_LOAD, REFUSE_RESTORE,
-    set_compare_state, watch_web_auditions,
+    set_compare_state, start_web_audition_holder,
 )
 from jasper.platform.systemd import no_hold
 from jasper.active_speaker.driver_safety_prompt import driver_field_vocabulary
@@ -132,6 +131,7 @@ _FOLLOWER_BLOCKED_CONTENT_DSP_POSTS = frozenset({
         "/apply",
         "/audition",
         "/live-draft",
+        "/cardioid-compare",
         "/settings",
         "/volume-floor/audition",
         "/volume-floor/stop",
@@ -534,9 +534,12 @@ def _make_handler(
                 raw = self._read_json(max_bytes=MAX_JSON_BYTES)
                 if path == "/cardioid-compare":
                     try:
-                        if not _cardioid_compare_payload()["available"]:
+                        if raw.get("state") != "normal" and not _cardioid_compare_payload()["available"]:
                             raise AuditionRefused("cardioid_compare_unavailable", "This tune cannot compare the rear output.")
-                        asyncio.run(set_compare_state(str(raw.get("state", "")), cam=camilla_factory(), trim_db=0.0))
+                        state = asyncio.run(set_compare_state(str(raw.get("state", "")), cam=camilla_factory(), trim_db=0.0))
+                        if state["status"] == "auditioning":
+                            start_web_audition_holder(state, camilla_factory,
+                                                     lambda: self.idle_hold("speaker audition"))
                     except AuditionRefused as e:
                         self._send_json({"error": e.reason, "message": e.detail},
                                         status=502 if e.reason in {REFUSE_LOAD, REFUSE_RESTORE} else 409)
@@ -939,7 +942,7 @@ def make_server(
 ) -> ThreadingHTTPServer:
     from ..platform import systemd
 
-    server = systemd.make_http_server(
+    return systemd.make_http_server(
         target,
         _make_handler(
             profile_path=profile_path
@@ -959,7 +962,3 @@ def make_server(
             ),
         ),
     )
-    threading.Thread(target=watch_web_auditions, args=(
-        _camilla, lambda: getattr(server.RequestHandlerClass, "idle_hold")("speaker audition"),
-    ), daemon=True, name="speaker-audition").start()
-    return server

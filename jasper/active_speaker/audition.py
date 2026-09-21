@@ -17,7 +17,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
+import threading
 import time
 import uuid
 from contextvars import ContextVar
@@ -26,14 +28,12 @@ from dataclasses import replace
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
-import yaml
-
 from jasper.active_speaker.restore_wait import resilient_restore
 from jasper.atomic_io import atomic_write_json
 from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
 from jasper.sound.settings import saved_sound_layers
-from jasper.sound.live_edit import plan_live_edit_for
+from jasper.sound.live_edit import dump_graph_yaml, load_graph_yaml, plan_live_edit_for
 from jasper.active_speaker.rear_calibration import rear_stage_gain_name
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,8 @@ REFUSE_LOAD = "audition_load_refused"
 REFUSE_RESTORE = "audition_restore_failed"
 REFUSE_NO_REAR_STAGE = "audition_no_rear_stage"
 REFUSE_REAR_MUTED = "audition_rear_muted_in_tune"
+REFUSE_MALFORMED_GRAPH = "audition_malformed_graph"
+REFUSE_RUNNING_GRAPH_DIFFERS = "audition_running_graph_differs"
 
 # Played THROUGH the graph that was just swapped in, so the announcement is also
 # a liveness proof. A silent wrong-graph state is the failure mode this door has.
@@ -133,6 +135,11 @@ def read_audition_state(path: str | Path | None = None) -> dict[str, Any] | None
         or payload.get("kind") != AUDITION_STATE_KIND
         or payload.get("schema_version") != AUDITION_SCHEMA_VERSION
         or payload.get("layer") not in (AUDITION_LAYER_BASELINE, AUDITION_LAYER_REAR_COMPARE)
+        or not isinstance(payload.get("token"), str)
+        or type(payload.get("owner_pid")) is not int
+        or payload.get("state") not in (None, "on", "off")
+        or type(payload.get("deadline_at")) not in (int, float)
+        or not math.isfinite(payload["deadline_at"])
     ):
         return None
     return payload
@@ -154,19 +161,22 @@ def graph_replaced() -> None:
 def rear_compare_yaml(applied_yaml: str, *, rear_muted: bool, trim_db: float) -> str:
     if not 0.0 <= trim_db <= MAX_COMPARE_TRIM_DB:
         raise ValueError("compare trim is outside its attenuation range")
-    graph = yaml.safe_load(applied_yaml)
-    filters = graph["filters"]
-    names = [rear_stage_gain_name(i, "output")
-             for i in range(graph["devices"]["playback"]["channels"])
-             if rear_stage_gain_name(i, "output") in filters]
-    if len(names) != 1 or filters[names[0]]["type"] != "Gain":
-        raise AuditionRefused(REFUSE_NO_REAR_STAGE, "The applied graph needs one fitted rear stage.")
-    rear = filters[names[0]]["parameters"]
-    if rear["mute"]:
-        raise AuditionRefused(REFUSE_REAR_MUTED, "The applied tune already mutes the rear output.")
-    rear["mute"] = rear_muted
-    filters["active_baseline_headroom"]["parameters"]["gain"] -= trim_db
-    return str(yaml.safe_dump(graph, sort_keys=False))
+    graph = load_graph_yaml(applied_yaml)
+    try:
+        filters = graph["filters"]
+        names = [rear_stage_gain_name(i, "output")
+                 for i in range(graph["devices"]["playback"]["channels"])
+                 if rear_stage_gain_name(i, "output") in filters]
+        if len(names) != 1 or filters[names[0]]["type"] != "Gain":
+            raise AuditionRefused(REFUSE_NO_REAR_STAGE, "The applied graph needs one fitted rear stage.")
+        rear = filters[names[0]]["parameters"]
+        if rear["mute"]:
+            raise AuditionRefused(REFUSE_REAR_MUTED, "The applied tune already mutes the rear output.")
+        rear["mute"] = rear_muted
+        filters["active_baseline_headroom"]["parameters"]["gain"] -= trim_db
+    except (KeyError, TypeError) as exc:
+        raise AuditionRefused(REFUSE_MALFORMED_GRAPH, "The applied graph is malformed.") from exc
+    return dump_graph_yaml(graph)
 
 
 def _clear_audition_state(path: str | Path | None = None) -> None:
@@ -431,8 +441,14 @@ async def start_audition(
     ):
         _refuse_if_graph_is_claimed()
         anchor = await _durable_anchor(cam)
+        anchor_text = Path(anchor).read_text(encoding="utf-8") if compare else ""
+        live = read_audition_state(state_path)
+        if compare and (not live or live["layer"] != AUDITION_LAYER_REAR_COMPARE):
+            if (await plan_live_edit_for(cam, anchor_text)).method != "unchanged":
+                raise AuditionRefused(REFUSE_RUNNING_GRAPH_DIFFERS,
+                    "An unsaved EQ draft or another live edit is playing. Save or leave it, then compare.")
         yaml_text, issues = (rear_compare_yaml(
-            Path(anchor).read_text(encoding="utf-8"),
+            anchor_text,
             rear_muted=compare_state == "off", trim_db=trim_db,
         ), []) if compare else build_reduced_yaml(
             topology, applied_profile=applied
@@ -544,7 +560,6 @@ async def stop_audition(
             live = read_audition_state(state_path)
             if live is None or live.get("token") != expect_token:
                 return {"status": "superseded", "layer": AUDITION_LAYER_BASELINE}
-        _refuse_if_graph_is_claimed()
         anchor = await _durable_anchor(cam)
         took_effect, message = await _restore_verdict(cam, anchor)
         if not took_effect:
@@ -672,7 +687,6 @@ def _send_cue(play_cue: CueSender | None, slug: str) -> None:
 async def set_compare_state(state: str, *, cam: Any, trim_db: float) -> dict[str, Any]:
     if state not in {"on", "off", "normal"}:
         raise ValueError("invalid compare state")
-    _refuse_if_graph_is_claimed()
     try:
         if state == "normal":
             return await stop_audition(cam=cam)
@@ -684,24 +698,37 @@ async def set_compare_state(state: str, *, cam: Any, trim_db: float) -> dict[str
 
 async def recover_web_audition(cam: Any) -> None:
     state = read_audition_state()
-    if state and state["layer"] == AUDITION_LAYER_REAR_COMPARE:
+    if (state and state["layer"] == AUDITION_LAYER_REAR_COMPARE
+            and state.get("owner_pid") != os.getpid()):
+        await stop_audition(cam=cam, expect_token=state["token"])
+
+
+def start_web_audition_holder(state: dict[str, Any], camilla_factory: Callable[[], Any],
+                              idle_hold: Callable[[], Any]) -> threading.Thread:
+    hold = idle_hold()
+    hold.__enter__()  # Take the idle hold before the request can finish.
+
+    async def run() -> None:
+        cam = camilla_factory()
         try:
-            os.kill(state["owner_pid"], 0)
-        except ProcessLookupError:
-            await stop_audition(cam=cam, expect_token=state["token"])
+            await hold_audition(state, cam=cam)
+        finally:
+            await cam.close()
 
+    def worker() -> None:
+        try:
+            asyncio.run(run())
+        except (OSError, RuntimeError, ValueError):
+            log_event(logger, "active_speaker.audition", action="web_restore",
+                      result="failed", level=logging.ERROR, exc_info=True)
+        finally:
+            hold.__exit__(None, None, None)
 
-def watch_web_auditions(camilla_factory: Callable[[], Any], idle_hold: Callable[[], Any]) -> None:
-    cam = camilla_factory()
-    while True:
-        state = read_audition_state()
-        if state and state["layer"] == AUDITION_LAYER_REAR_COMPARE:
-            try:
-                with idle_hold():
-                    asyncio.run(recover_web_audition(cam))
-                    if state.get("owner_pid") == os.getpid():
-                        asyncio.run(hold_audition(state, cam=cam))
-            except (OSError, RuntimeError, ValueError, CamillaUnavailable):
-                log_event(logger, "active_speaker.audition", action="web_restore",
-                          result="failed", level=logging.ERROR, exc_info=True)
-        time.sleep(AUDITION_TICK_S)
+    thread = threading.Thread(target=worker, daemon=True, name="speaker-audition")
+    try:
+        thread.start()
+    except RuntimeError:
+        hold.__exit__(None, None, None)
+        asyncio.run(stop_audition(cam=camilla_factory(), expect_token=state["token"]))
+        raise
+    return thread

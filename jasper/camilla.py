@@ -897,9 +897,9 @@ class CamillaController:
         return True
 
     def _graph_replaced(self) -> None:
-        from .active_speaker.audition import graph_replaced  # lazy: audition imports CamillaUnavailable
-
         if (self._host, self._port) == _primary_endpoint():
+            from .active_speaker.audition import graph_replaced  # lazy: audition imports CamillaUnavailable
+
             graph_replaced()
 
     async def set_config_file_path(

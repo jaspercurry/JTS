@@ -1076,6 +1076,7 @@ def test_follower_block_set_is_content_dsp_only():
         "/apply",
         "/audition",
         "/live-draft",
+        "/cardioid-compare",
         "/settings",
         "/volume-floor/audition",
         "/volume-floor/stop",
@@ -5888,20 +5889,23 @@ def test_cardioid_compare_session_disclosure(monkeypatch, layer, state, seconds)
     assert payload["expires_in_s"] == seconds
 
 
-@pytest.mark.parametrize("refusal,status", [(None, 200), ("audition_measurement_session_active", 409), ("audition_restore_failed", 502)])
-def test_cardioid_compare_post_contract(tmp_path, monkeypatch, refusal, status):
+@pytest.mark.parametrize("refusal,status", [(None, 200), ("audition_measurement_session_active", 409), ("audition_running_graph_differs", 409), ("audition_malformed_graph", 409), ("audition_restore_failed", 502)])
+@pytest.mark.parametrize("state", ["off", "on", "normal"])
+def test_cardioid_compare_post_contract(tmp_path, monkeypatch, refusal, status, state):
     from jasper.active_speaker.audition import AuditionRefused
 
-    payload = {"available": True, "state": "off"}
-    calls = []
+    payload = {"available": state != "normal", "state": state}
+    calls, holders = [], []
     async def change(state, *, cam, trim_db):
         calls.append((state, trim_db))
         if refusal:
             raise AuditionRefused(refusal, "The compare could not change.")
+        return {"status": "restored" if state == "normal" else "auditioning", "token": "session"}
+    monkeypatch.setattr(sound_setup, "start_web_audition_holder", lambda record, *args: holders.append(record["token"]))
     monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda: payload)
     monkeypatch.setattr(sound_setup, "set_compare_state", change)
     monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
-    body = b'{"state":"off"}'
+    body = json.dumps({"state": state}).encode()
     response, reads = _drive_raw_sound_post(tmp_path, path="/cardioid-compare", content_length=len(body), body=body)
     assert f" {status} ".encode() in response.split(b"\r\n", 1)[0]
     result = json.loads(response.split(b"\r\n\r\n", 1)[1])
@@ -5910,7 +5914,8 @@ def test_cardioid_compare_post_contract(tmp_path, monkeypatch, refusal, status):
         assert set(result) == {"error", "message"}
     else:
         assert result == payload
-    assert calls == [("off", 0.0)]
+    assert calls == [(state, 0.0)]
+    assert holders == (["session"] if not refusal and state != "normal" else [])
     assert reads == [len(body)]
 
 
@@ -5942,3 +5947,104 @@ def test_cardioid_compare_in_get_state(tmp_path, monkeypatch):
     response = handler.wfile.getvalue()
     assert b" 200 " in response.split(b"\r\n", 1)[0]
     assert json.loads(response.split(b"\r\n\r\n", 1)[1])["cardioid_compare"] == block
+
+
+def test_cardioid_compare_uses_follower_post_guard(tmp_path, monkeypatch):
+    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    responses = []
+    for route in ("/cardioid-compare", "/live-draft"):
+        response, reads = _drive_raw_sound_post(tmp_path, path=route, content_length=2, body=b"{}")
+        assert b" 409 " in response.split(b"\r\n", 1)[0]
+        assert reads == []
+        responses.append(json.loads(response.split(b"\r\n\r\n", 1)[1]))
+    assert responses[0] == responses[1]
+    assert set(responses[0]) == {"error"}
+
+
+def test_sound_server_construction_starts_no_thread(tmp_path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from jasper.platform import systemd
+
+    start = Mock(side_effect=AssertionError())
+    monkeypatch.setattr(threading.Thread, "start", start)
+    monkeypatch.setattr(systemd, "make_http_server", lambda target, handler: SimpleNamespace(RequestHandlerClass=handler))
+    sound_setup.make_server(("127.0.0.1", 0), profile_path=tmp_path / "profile.json",
+                            library_path=tmp_path / "library.json", config_dir=tmp_path)
+    start.assert_not_called()
+
+
+def test_web_startup_recovers_after_installing_idle_hold(monkeypatch):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from contextlib import contextmanager
+    from jasper.web import __main__ as web_main
+
+    events = []
+    class Handler:
+        pass
+    class Tracker:
+        @contextmanager
+        def hold(self, label):
+            events.append("hold")
+            try:
+                yield
+            finally:
+                events.append("release")
+        def start(self):
+            events.append("tracker_start")
+    tracker = Tracker()
+    server = SimpleNamespace(RequestHandlerClass=Handler, serve_forever=lambda: events.append("serve"))
+    spec = replace(next(s for s in web_main.WIZARD_SPECS if s.label == "/sound"),
+                   make_server=lambda target: server)
+    async def recover(cam):
+        assert Handler.idle_hold == tracker.hold
+        assert events == ["hold"]
+        events.append("recover")
+    monkeypatch.setattr(web_main, "recover_web_audition", recover)
+    monkeypatch.setattr(web_main, "primary_controller", lambda: object())
+    monkeypatch.setattr(web_main, "_specs_for_role", lambda role: (spec,))
+    monkeypatch.setattr(web_main, "_active_install_role", lambda: "speaker")
+    monkeypatch.setattr("jasper.volume_process.install_env_canonical_target_provider", lambda: None)
+    monkeypatch.setattr(web_main._systemd, "IdleShutdownTracker", lambda: tracker)
+    monkeypatch.setattr(web_main._systemd, "adopt_systemd_sockets", lambda: [])
+    monkeypatch.setattr(web_main._systemd, "install_request_idle_bump", lambda *args: None)
+    monkeypatch.setattr(web_main._systemd, "notify_ready", lambda: None)
+    monkeypatch.setattr(web_main._systemd, "notify_stopping", lambda: None)
+    assert web_main.main() == 0
+    assert events == ["hold", "recover", "release", "tracker_start", "serve"]
+
+
+async def test_live_draft_retires_compare_record(tmp_path, monkeypatch):
+    from jasper.active_speaker import audition
+    from tests.test_camilla_controller import _controller, _FakeClient
+
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    _record_dsp_epoch(tmp_path / "dsp.json", "epoch-1")
+    current = tmp_path / "sound_current.yml"
+    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
+    record = tmp_path / "audition.json"
+    monkeypatch.setenv(audition.AUDITION_STATE_ENV, str(record))
+    record.write_text(json.dumps({"kind": audition.AUDITION_STATE_KIND, "schema_version": 1,
+        "layer": "rear_compare", "state": "off", "token": "session", "owner_pid": 123,
+        "deadline_at": 9999999999.0}))
+    assert sound_active_speaker._cardioid_compare_payload()["state"] == "off"
+    client = _FakeClient()
+    client.parse_yaml = lambda text: text
+    cam = _controller(client, tmp_path)
+    async def anchor(**kwargs):
+        return str(current)
+    monkeypatch.setattr(cam, "get_config_file_path", anchor)
+    monkeypatch.setattr("jasper.camilla.MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
+    payload = await sound_setup._live_draft_profile(
+        SoundProfile(curve_id="harman", simple_eq=SimpleEq(bass_db=2.0)),
+        expected_dsp_write_epoch=dsp_write_epoch(), config_dir=tmp_path,
+        camilla_factory=lambda: cam,
+    )
+    assert payload["live_status"] == "live"
+    assert len(client.active_raw_values) == 1
+    assert not record.exists()
+    assert sound_active_speaker._cardioid_compare_payload()["state"] == "normal"

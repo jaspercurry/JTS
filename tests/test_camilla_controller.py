@@ -1332,3 +1332,15 @@ async def test_graph_replacement_retires_only_its_audition(tmp_path, monkeypatch
     finally:
         audition._AUDITION_WRITE.reset(token)
     assert record.exists() is (case not in {"applied", "duck_release_failed"})
+
+
+def test_secondary_graph_write_does_not_import_audition(tmp_path, monkeypatch):
+    import builtins
+    from unittest.mock import Mock
+
+    cam = _controller(_FakeClient(), tmp_path)
+    cam._port = 1235
+    imports = Mock(wraps=builtins.__import__)
+    monkeypatch.setattr(builtins, "__import__", imports)
+    cam._graph_replaced()
+    assert not any("audition" in call.args[0] for call in imports.call_args_list)
