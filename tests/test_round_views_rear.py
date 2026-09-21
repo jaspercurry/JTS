@@ -363,6 +363,42 @@ def packet_of(root: Path) -> tuple[dict, list[dict]]:
     return write_round_packet(root, manifest_path, views), views
 
 
+def test_newest_front_pair_round_ignores_identity_and_skips_newer_non_pairs(tmp_path):
+    import os
+    import shutil
+    from jasper.active_speaker.crossover_v2.record_index import record_path
+    from jasper.active_speaker.crossover_v2.rear_pair_round import newest_rear_pair_round
+
+    pair = pair_round(tmp_path)
+    root = pair.parent
+    paths = [pair, shutil.copytree(pair, root / "newer-pair"),
+             shutil.copytree(pair, root / "behind-only"), shutil.copytree(pair, root / "no-pair")]
+    for index, path in enumerate(paths):
+        (path / "provenance.json").write_text(json.dumps({"banked_at_utc": f"2026-09-{17 + index}T12:00:00Z"}))
+        (path / "packet.json").write_text(json.dumps({"applied": {"candidate": "old-identity"}}))
+        if index >= 2:
+            for row, record in room_selection.purpose_take_records(round_inputs(path).session_dir, purpose="rear"):
+                record = dict(record)
+                if index == 2:
+                    record["pose_kind"] = "behind"
+                else:
+                    record.pop("branch_diagnostic", None)
+                (round_inputs(path).session_dir / record_path(row)).write_text(json.dumps(record))
+        os.utime(path, (100 + index, 100 + index))
+    selected = newest_rear_pair_round(root)
+    assert selected == {"round_dir": paths[1], "round_id": paths[1].name,
+                        "banked_at": "2026-09-18T12:00:00Z"}
+    assert newest_rear_pair_round(root, limit=2) is None
+    os.utime(pair, (200, 200))
+    assert newest_rear_pair_round(root) == selected
+    pending = shutil.copytree(pair, root / "banking")
+    provenance = pending / "provenance.json"
+    provenance.unlink()
+    assert newest_rear_pair_round(root) == selected
+    provenance.write_text(json.dumps({"banked_at_utc": "2026-09-21T12:00:00Z"}))
+    assert newest_rear_pair_round(root)["round_id"] == "banking"
+
+
 def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banked_candidates):
     root = rear_round(tmp_path)
 

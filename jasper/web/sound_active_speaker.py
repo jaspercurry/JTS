@@ -43,6 +43,7 @@ from jasper.audio_hardware.i2s_hat import (
     write_i2s_hat_intent,
 )
 from jasper.active_speaker.audition import AUDITION_LAYER_REAR_COMPARE, audition_summary
+from jasper.active_speaker.rear_compare import rear_compare_level
 from ._common import bonded_follower_active
 from jasper.log_event import log_event
 from jasper.platform import wire
@@ -1190,5 +1191,5 @@ def _cardioid_compare_payload() -> dict[str, Any]:
             "state": session["state"] if session else "normal",
             "tune": {"label": "Current tune", "layers": [k for k, v in layers.items() if v],
                      "applied_at": (applied or {}).get("applied_at")},
-            "level_match": {"status": "unavailable", "trim_db": None, "louder": None},
+            "level_match": rear_compare_level(),
             "expires_in_s": session["expires_in_s"] if session else None}

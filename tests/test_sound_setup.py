@@ -23,6 +23,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, call
+from tests.test_rear_preview import compare_evidence as compare_evidence
 
 import numpy as np
 import pytest
@@ -5868,13 +5869,16 @@ def test_cardioid_compare_availability_contract(monkeypatch, reason):
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     monkeypatch.setattr(sound_active_speaker, "bonded_follower_active", lambda: reason == "follower")
     monkeypatch.setattr(sound_active_speaker, "audition_summary", lambda: None)
+    level = {"status": "matched", "trim_db": 1.2, "louder": "on", "reason": "",
+             "round_id": "pair", "banked_at": "2026-09-20T12:00:00Z"}
+    monkeypatch.setattr(sound_active_speaker, "rear_compare_level", lambda: level)
     payload = sound_active_speaker._cardioid_compare_payload()
     assert payload == {
         "available": not reason, "reason": reason, "state": "normal",
         "tune": {"label": "Current tune", "layers": [] if applied is None else
                  ["driver"] if reason == "no_rear_layer" else ["driver", "rear"],
                  "applied_at": applied["applied_at"] if applied else None},
-        "level_match": {"status": "unavailable", "trim_db": None, "louder": None},
+        "level_match": level,
         "expires_in_s": None,
     }
 
@@ -5917,6 +5921,87 @@ def test_cardioid_compare_post_contract(tmp_path, monkeypatch, refusal, status, 
     assert calls == [(state, 0.0)]
     assert holders == (["session"] if not refusal and state != "normal" else [])
     assert reads == [len(body)]
+
+
+@pytest.mark.parametrize("louder", ["on", "off", None])
+@pytest.mark.parametrize("state", ["on", "off", "normal"])
+def test_cardioid_compare_passes_only_the_louder_states_trim(tmp_path, monkeypatch, louder, state):
+    from unittest.mock import AsyncMock
+
+    change = AsyncMock(return_value={"status": "restored"})
+    monkeypatch.setattr(sound_setup, "set_compare_state", change)
+    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda: {
+        "available": True, "level_match": {"trim_db": 1.23, "louder": louder}})
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    body = json.dumps({"state": state}).encode()
+    response, _ = _drive_raw_sound_post(tmp_path, path="/cardioid-compare", content_length=len(body), body=body)
+    assert b" 200 " in response.split(b"\r\n", 1)[0]
+    change.assert_awaited_once_with(state, cam=None, trim_db=1.23 if state == louder else 0.0)
+
+
+@pytest.mark.parametrize("failure,reason", [("rear", "no_applied_rear"), ("round", "no_pair_round"),
+    ("range", "delta_out_of_range"), ("preview", "preview_refused"), ("selector", "level_error")])
+def test_unavailable_level_never_blocks_compare(compare_evidence, tmp_path, monkeypatch, failure, reason):
+    from unittest.mock import AsyncMock
+    from jasper.active_speaker import rear_compare, round_bank
+    from jasper.active_speaker.crossover_v2 import rear_preview, rear_pair_round as readers
+    from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
+
+    if failure == "rear":
+        compare_evidence[1]["recomposition_snapshot"].clear()
+    elif failure == "round":
+        monkeypatch.setattr(round_bank, "DEFAULT_CAMPAIGN_ROOT", tmp_path / "empty")
+    elif failure == "range":
+        monkeypatch.setattr(rear_preview, "rear_compare_delta_db", lambda preview: 6.01)
+    elif failure == "preview":
+        monkeypatch.setattr(rear_preview, "preview_rear_section", Mock(side_effect=RoundCapturesRefused("refused", {})))
+    else:
+        monkeypatch.setattr(readers, "newest_rear_pair_round", Mock(side_effect=LookupError()))
+    level = rear_compare.rear_compare_level()
+    assert (level["status"], level["reason"], level["trim_db"], level["louder"]) == ("unavailable", reason, None, None)
+    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda: {
+        "available": True, "level_match": rear_compare.rear_compare_level()})
+    change = AsyncMock(return_value={"status": "auditioning", "token": "session"})
+    monkeypatch.setattr(sound_setup, "set_compare_state", change)
+    monkeypatch.setattr(sound_setup, "start_web_audition_holder", Mock())
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    for state in ("off", "on"):
+        body = json.dumps({"state": state}).encode()
+        response, _ = _drive_raw_sound_post(tmp_path, path="/cardioid-compare", content_length=len(body), body=body)
+        assert b" 200 " in response.split(b"\r\n", 1)[0]
+        change.assert_awaited_with(state, cam=None, trim_db=0.0)
+
+
+@pytest.mark.parametrize("failure", ["hold", "enter", "thread", "start"])
+def test_compare_restores_if_holder_setup_fails(tmp_path, monkeypatch, failure):
+    from unittest.mock import AsyncMock, MagicMock
+    from jasper.active_speaker import audition
+
+    events = []
+    async def change(*args, **kwargs):
+        events.append("installed")
+        return {"status": "auditioning", "token": "session"}
+    restore = AsyncMock(side_effect=lambda **kwargs: events.append("restored"))
+    hold = MagicMock()
+    if failure == "enter":
+        hold.__enter__.side_effect = LookupError()
+    monkeypatch.setattr(sound_setup, "no_hold", Mock(return_value=hold,
+                       side_effect=LookupError() if failure == "hold" else None))
+    if failure == "thread":
+        monkeypatch.setattr(audition.threading, "Thread", Mock(side_effect=RuntimeError()))
+    elif failure == "start":
+        monkeypatch.setattr(audition.threading.Thread, "start", Mock(side_effect=RuntimeError()))
+    monkeypatch.setattr(sound_setup, "set_compare_state", change)
+    monkeypatch.setattr(audition, "stop_audition", restore)
+    monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda: {"available": True})
+    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    body = b'{"state":"off"}'
+    response, _ = _drive_raw_sound_post(tmp_path, path="/cardioid-compare", content_length=len(body), body=body)
+    assert b" 502 " in response.split(b"\r\n", 1)[0]
+    assert json.loads(response.split(b"\r\n\r\n", 1)[1])["error"] == "audition_load_refused"
+    restore.assert_awaited_once_with(cam=None, expect_token="session")
+    assert events == ["installed", "restored"]
+    assert hold.__exit__.call_count == int(failure in {"thread", "start"})
 
 
 def test_cardioid_compare_post_unavailable_and_csrf(tmp_path, monkeypatch):

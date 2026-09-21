@@ -61,3 +61,47 @@ then. This is ADR-0193's accepted shape.
 
 This replaces the server side of PR #5416's A/B listen card. The separate UI
 change removes that card and uses the fixed cardioid compare contract.
+
+## Level match — 2026-09-21
+
+The applied rear section is previewed against the newest banked round with
+a front on-axis bearing pair. Search at most 32 recent campaign directories,
+then order by the bank's timestamp. Do not filter by applied identity: the
+pair normally predates the rear section it seeds. Behind and other
+non-bearing poses cannot supply this number.
+The selector lives beside the path readers, which cannot import the rear
+model without an import cycle.
+
+On 1024 logarithmically spaced bins from 40 Hz to 16 kHz (upper endpoint
+excluded), let `delta(f) = change_db(f) + relative_charge` inside the preview
+curve's covered band, and zero outside it. The broadband difference is the
+flat power mean `10 * log10(mean(10 ** (delta(f) / 10)))`. The rear is
+low-passed; the pair only supplies woofer-band evidence. Add back
+`relative_charge = H_on - H_off` because the preview models separately
+compiled graphs, while the live switch retains the applied headroom in
+both states. The preview stage owns this charge.
+
+Attenuate the louder state by the absolute difference, rounded to two decimal
+places. Below 0.05 dB, apply zero trim and name neither state as louder.
+Missing applied rear, pair round or front pose, refused or unreadable preview,
+and non-finite or greater-than-6 dB differences report `unavailable`. Any
+level-path error leaves the mute switch usable with zero trim. The household
+volume and durable graph remain unchanged.
+
+The process caches the result by applied candidate fingerprint, apply time
+and pair round ID, including preview refusals. The selector caches each
+immutable round's front-pair check within its 32-round window, so flips do
+not repeat FFTs. A lock prevents concurrent requests from repeating the work.
+
+`_consume_linearization_chain` consumes `_linearization_boost_allowance_db`
+during graph classification. Compare trim increases that allowance, but
+does not change a branch or emit a durable proof. Startup, convergence,
+doctor and apply checks use persisted or newly composed graph text. The
+multiroom live check compares running text with the persisted graph first;
+a compare graph fails that equality before classification. There is no
+periodic proof from running compare graphs. Tests pin maximum-trim admission
+and the live boundary's refusal without a durable write.
+
+If the idle hold or holder fails after the graph swap, restore the applied
+graph before returning the error, using the session token to avoid undoing
+a newer owner.

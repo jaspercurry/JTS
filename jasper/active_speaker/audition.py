@@ -705,8 +705,7 @@ async def recover_web_audition(cam: Any) -> None:
 
 def start_web_audition_holder(state: dict[str, Any], camilla_factory: Callable[[], Any],
                               idle_hold: Callable[[], Any]) -> threading.Thread:
-    hold = idle_hold()
-    hold.__enter__()  # Take the idle hold before the request can finish.
+    entered = False
 
     async def run() -> None:
         cam = camilla_factory()
@@ -724,11 +723,17 @@ def start_web_audition_holder(state: dict[str, Any], camilla_factory: Callable[[
         finally:
             hold.__exit__(None, None, None)
 
-    thread = threading.Thread(target=worker, daemon=True, name="speaker-audition")
     try:
+        hold = idle_hold()
+        hold.__enter__()  # Take the idle hold before the request can finish.
+        entered = True
+        thread = threading.Thread(target=worker, daemon=True, name="speaker-audition")
         thread.start()
-    except RuntimeError:
-        hold.__exit__(None, None, None)
-        asyncio.run(stop_audition(cam=camilla_factory(), expect_token=state["token"]))
+    except Exception:  # noqa: BLE001 - restore every holder setup failure (ADR-0329)
+        try:
+            if entered:
+                hold.__exit__(None, None, None)
+        finally:
+            asyncio.run(stop_audition(cam=camilla_factory(), expect_token=state["token"]))
         raise
     return thread
