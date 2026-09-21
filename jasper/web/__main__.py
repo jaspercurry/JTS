@@ -45,6 +45,7 @@ confusing than 'the whole settings host is restarting'.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
@@ -60,6 +61,8 @@ from jasper.install_profile import (
     read_install_profile,
 )
 from jasper.log_event import log_event
+from jasper.active_speaker.audition import recover_web_audition
+from jasper.camilla import primary_controller
 
 from ..accounts import registry_path as spotify_registry_path
 from ..google_creds import registry_path as google_registry_path
@@ -593,7 +596,11 @@ def main() -> int:
     # `_make_handler()` for that wizard, so they're distinct types —
     # patch each one's log_request to bump the shared tracker.
     tracker = _systemd.IdleShutdownTracker()
-    for _, _, server in servers:
+    for spec, _, server in servers:
+        if spec.label == "/sound":
+            server.RequestHandlerClass.idle_hold = staticmethod(tracker.hold)
+            with tracker.hold("speaker audition recovery"):
+                asyncio.run(recover_web_audition(primary_controller()))
         _systemd.install_request_idle_bump(server.RequestHandlerClass, tracker)
     tracker.start()
 

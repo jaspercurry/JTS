@@ -756,3 +756,13 @@ def test_active_speaker_applied_graph_warns_when_setup_cannot_be_read(monkeypatc
 
     assert r.status == "warn"
     assert r.reason == active_speaker.REASON_SPEAKER_SETUP_UNREADABLE
+
+
+@pytest.mark.parametrize("layer", [None, "baseline", "rear_compare"])
+def test_speaker_audition_is_only_a_warning(monkeypatch, layer):
+    monkeypatch.setattr(active_speaker, "audition_summary", lambda: None if layer is None else {
+        "layer": layer, "state": "off", "expires_in_s": 42,
+    })
+    result = active_speaker.check_speaker_audition()
+    assert result.status == ("warn" if layer else "ok")
+    assert result.reason == (active_speaker.REASON_AUDITION_ACTIVE if layer else "")

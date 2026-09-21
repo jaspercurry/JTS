@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 
+from jasper.active_speaker.audition import audition_summary
 from jasper.active_speaker.applied_identity import applied_identity
 
 from ._evidence import evidence
@@ -62,6 +63,7 @@ REASON_STARTUP_HOLD_STALE = "startup_hold_stale"
 
 REASON_SETUP_NOTICES_NONE = "setup_notices_none"
 REASON_SETUP_NOTICES_STANDING = "setup_notices_standing"
+REASON_AUDITION_ACTIVE = "speaker_audition_active"
 
 
 _SPEAKER_SETUP_URL = "http://<speaker>/sound/speaker/"
@@ -614,3 +616,15 @@ def check_active_speaker_setup_notices() -> CheckResult:
         ),
         reason=REASON_SETUP_NOTICES_STANDING,
     )
+
+
+
+@doctor_check()
+def check_speaker_audition() -> CheckResult:
+    state = audition_summary()
+    if state is None:
+        return CheckResult("speaker audition", "ok", "No speaker audition is active.")
+    layer = " ".join(str(state[k]) for k in ("layer", "state") if state[k])
+    return CheckResult("speaker audition", "warn",
+                       f"speaker audition active: {layer}, expires in {state['expires_in_s']} s",
+                       reason=REASON_AUDITION_ACTIVE)

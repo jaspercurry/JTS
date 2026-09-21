@@ -25,12 +25,23 @@ try:  # libyaml when the wheel carries it — this parses two full CamillaDSP
     # configs per edit on a Pi, inside the DSP writer lock, so the pure-Python
     # loader is the dominant cost of deciding duck-vs-quiet.
     from yaml import CSafeLoader as _Loader
+    from yaml import CSafeDumper as _Dumper
 except ImportError:  # pragma: no cover - depends on the installed wheel
     from yaml import SafeLoader as _Loader  # type: ignore[assignment]
+    from yaml import SafeDumper as _Dumper  # type: ignore[assignment]
 
 __all__ = [
     "LiveEditPlan", "does_live_edits", "plan_live_edit", "plan_live_edit_for",
+    "load_graph_yaml", "dump_graph_yaml",
 ]
+
+
+def load_graph_yaml(text: str) -> Any:
+    return yaml.load(text, Loader=_Loader)
+
+
+def dump_graph_yaml(graph: Any) -> str:
+    return str(yaml.dump(graph, Dumper=_Dumper, sort_keys=False))
 
 
 @dataclass(frozen=True)
@@ -62,8 +73,8 @@ def plan_live_edit(
     if not running_yaml or not wanted_yaml:
         return LiveEditPlan.swap("graph_unreadable")
     try:
-        running = yaml.load(running_yaml, Loader=_Loader)
-        wanted = yaml.load(wanted_yaml, Loader=_Loader)
+        running = load_graph_yaml(running_yaml)
+        wanted = load_graph_yaml(wanted_yaml)
     except (RecursionError, UnicodeError, ValueError, yaml.YAMLError):
         return LiveEditPlan.swap("graph_unparseable")
     if not isinstance(running, Mapping) or not isinstance(wanted, Mapping):

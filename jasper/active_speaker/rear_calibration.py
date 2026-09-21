@@ -292,6 +292,10 @@ def diagnostic_seed(sample_rate: int) -> dict[str, Any]:
                      "cancellation": {**deepcopy(chain), "gain_db": -0.84, "inverted": True, "delay_ms": 1.14}}}
 
 
+def rear_stage_gain_name(rear_channel: int, chain: str) -> str:
+    return f"rear_out{rear_channel}_{chain}_gain"
+
+
 def rear_stage_mixer_names(rear_channel: int) -> tuple[str, str]:
     """The stage's split and sum mixer names, in the order it wires them."""
     return f"rear_out{rear_channel}_split", f"rear_out{rear_channel}_sum"
@@ -321,7 +325,7 @@ def compile_rear_stage(document: Mapping[str, Any], *, front_channel: int, rear_
 
     def chain(name: str, channel: int, value: Mapping[str, Any], delay: float) -> None:
         names = []
-        gain = f"{prefix}_{name}_gain"
+        gain = rear_stage_gain_name(rear_channel, name)
         filters.update(yaml.safe_load("\n".join(emit_gain_filter(gain, value["gain_db"], inverted=value["inverted"], mute=value["muted"]))))
         names.append(gain)
         if delay:

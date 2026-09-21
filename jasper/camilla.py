@@ -896,6 +896,12 @@ class CamillaController:
             return self._refuse_graph(e, source=source, best_effort=best_effort)
         return True
 
+    def _graph_replaced(self) -> None:
+        if (self._host, self._port) == _primary_endpoint():
+            from .active_speaker.audition import graph_replaced  # lazy: audition imports CamillaUnavailable
+
+            graph_replaced()
+
     async def set_config_file_path(
         self, path: str, *, best_effort: bool = False, duck: bool = True,
     ) -> bool:
@@ -931,7 +937,10 @@ class CamillaController:
 
         try:
             async with self._graph_mutation(source, duck=duck):
-                return bool(await self._call(write_and_reload))
+                loaded = bool(await self._call(write_and_reload))
+                if loaded:
+                    self._graph_replaced()
+                return loaded
         except CamillaUnavailable as e:
             if best_effort:
                 logger.warning(
@@ -973,6 +982,7 @@ class CamillaController:
         try:
             async with self._graph_mutation(source, duck=duck):
                 await self._call(lambda c: c.config.set_active_raw(config))
+                self._graph_replaced()
                 return True
         except CamillaUnavailable as e:
             if best_effort:
@@ -1107,6 +1117,11 @@ class CamillaController:
             raise
 
 
+def _primary_endpoint() -> tuple[str, int]:
+    return (os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
+            int(os.environ.get("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT)))
+
+
 def primary_controller() -> CamillaController:
     """Return the always-on primary CamillaDSP controller (camilla#1).
 
@@ -1114,9 +1129,7 @@ def primary_controller() -> CamillaController:
     constructing :class:`jasper.config.Config`, whose unrelated provider
     validation must not block low-level DSP recovery and setup paths.
     """
-    host = os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1")
-    port = int(os.environ.get("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT))
-    return CamillaController(host, port)
+    return CamillaController(*_primary_endpoint())
 
 
 def crossover_controller() -> CamillaController:

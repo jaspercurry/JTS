@@ -26,6 +26,7 @@ pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml as yaml_lib
 
 from jasper.active_speaker.audition import (
+    _refuse_if_graph_is_claimed,
     AUDITION_LAYER_BASELINE,
     AUDITION_LAYER_FULL,
     AuditionRefused,
@@ -690,3 +691,357 @@ def test_a_restore_that_raises_outside_the_old_tuple_is_still_a_refusal(
     assert [r for r in caplog.records if "action=stop" in r.getMessage()]
     # The record stays: /state keeps disclosing, and the next stop can retry.
     assert read_audition_state() is not None
+
+
+@pytest.mark.parametrize("muted,trim,method", [(False, 0.0, "unchanged"), (True, 1.5, "parameters")])
+def test_rear_compare_changes_only_two_parameters(muted, trim, method):
+    from jasper.active_speaker.audition import rear_compare_yaml
+    from jasper.active_speaker.rear_calibration import rear_stage_gain_name
+    from jasper.sound.live_edit import plan_live_edit
+    from tests.test_rear_output_foundation import _cardioid_baseline
+
+    applied = _cardioid_baseline()[2]
+    wanted = rear_compare_yaml(applied, rear_muted=muted, trim_db=trim)
+    before, after = yaml_lib.safe_load(applied), yaml_lib.safe_load(wanted)
+    assert plan_live_edit(applied, wanted).method == method
+    rear = rear_stage_gain_name(2, "output")
+    assert after["filters"][rear]["parameters"]["mute"] is muted
+    gain = before["filters"]["active_baseline_headroom"]["parameters"]["gain"]
+    assert after["filters"]["active_baseline_headroom"]["parameters"]["gain"] == gain - trim
+    after["filters"][rear]["parameters"]["mute"] = False
+    after["filters"]["active_baseline_headroom"]["parameters"]["gain"] = gain
+    assert after == before
+    assert after["devices"]["volume_limit"] == 0.0
+
+
+@pytest.mark.parametrize("trim", [-0.1, 6.1, float("nan"), float("inf")])
+def test_rear_compare_trim_bounds(trim):
+    from jasper.active_speaker.audition import rear_compare_yaml
+    from tests.test_rear_output_foundation import _cardioid_baseline
+
+    with pytest.raises(ValueError):
+        rear_compare_yaml(_cardioid_baseline()[2], rear_muted=True, trim_db=trim)
+
+
+@pytest.mark.parametrize("case,code", [("missing", "audition_no_rear_stage"), ("muted", "audition_rear_muted_in_tune"), ("multiple", "audition_no_rear_stage")])
+def test_rear_compare_requires_one_audible_rear(case, code):
+    from jasper.active_speaker.audition import rear_compare_yaml
+    from jasper.active_speaker.rear_calibration import rear_stage_gain_name
+    from tests.test_rear_output_foundation import _cardioid_baseline, _rear_document
+
+    graph = yaml_lib.safe_load(_cardioid_baseline(_rear_document(rear_muted=case == "muted"))[2])
+    if case == "missing":
+        del graph["filters"][rear_stage_gain_name(2, "output")]
+    elif case == "multiple":
+        graph["filters"][rear_stage_gain_name(1, "output")] = graph["filters"][rear_stage_gain_name(2, "output")]
+    with pytest.raises(AuditionRefused) as exc:
+        rear_compare_yaml(yaml_lib.safe_dump(graph), rear_muted=True, trim_db=0.0)
+    assert exc.value.reason == code
+
+
+@pytest.fixture()
+def compare_box(audition_box, monkeypatch):
+    from tests.test_rear_output_foundation import _cardioid_baseline
+
+    cam, anchor, _, state = audition_box
+    _, topology, applied = _cardioid_baseline()
+    anchor.write_text(applied)
+    cam.running = applied
+    monkeypatch.setattr("jasper.output_topology.load_output_topology", lambda: topology)
+    return cam, anchor, applied, state
+
+
+def test_web_compare_off_on_normal_and_unchanged(compare_box):
+    from jasper.active_speaker.audition import set_compare_state, rear_compare_yaml
+    from jasper.sound.live_edit import plan_live_edit
+
+    cam, anchor, applied, path = compare_box
+    first = asyncio.run(set_compare_state("off", cam=cam, trim_db=0.0))
+    assert plan_live_edit(cam.running, rear_compare_yaml(applied, rear_muted=True, trim_db=0.0)).method == "unchanged"
+    assert cam.ducked == [False]
+    second = asyncio.run(set_compare_state("on", cam=cam, trim_db=0.0))
+    assert plan_live_edit(cam.running, applied).method == "unchanged"
+    assert cam.ducked == [False, False]
+    assert second["expires_at"] >= first["expires_at"]
+    assert second["token"] != first["token"]
+    assert read_audition_state()["state"] == "on"
+    asyncio.run(set_compare_state("normal", cam=cam, trim_db=0.0))
+    assert cam.ducked == [False, False]
+    assert not path.exists()
+    assert anchor.read_text() == applied
+    assert cam.path_writes == []
+
+
+@pytest.mark.parametrize("exit_kind", ["normal", "deadline", "takeover"])
+def test_compare_restore_and_takeover(compare_box, monkeypatch, exit_kind):
+    from jasper.active_speaker import audition
+    from jasper.sound.live_edit import plan_live_edit
+
+    cam, _, applied, path = compare_box
+    state = asyncio.run(audition.set_compare_state("off", cam=cam, trim_db=0.0))
+    if exit_kind == "normal":
+        asyncio.run(audition.set_compare_state("normal", cam=cam, trim_db=0.0))
+    elif exit_kind == "deadline":
+        assert asyncio.run(hold_audition(state, cam=cam, clock=lambda: state["expires_at"])) == "deadline"
+    else:
+        replacement = asyncio.run(start_audition(cam=cam))
+        assert asyncio.run(hold_audition(state, cam=cam, sleep=_never_sleeps)) == "superseded"
+        assert read_audition_state()["token"] == replacement["token"]
+        assert cam.ducked == [False, True]
+        with pytest.raises(AuditionRefused) as exc:
+            asyncio.run(audition.set_compare_state("off", cam=cam, trim_db=0.0))
+        assert exc.value.reason == "audition_running_graph_differs"
+        asyncio.run(stop_audition(cam=cam))
+        asyncio.run(audition.set_compare_state("off", cam=cam, trim_db=0.0))
+        assert asyncio.run(hold_audition(replacement, cam=cam, sleep=_never_sleeps)) == "superseded"
+        asyncio.run(audition.set_compare_state("normal", cam=cam, trim_db=0.0))
+    assert plan_live_edit(cam.running, applied).method == "unchanged"
+    assert not path.exists()
+    assert cam.ducked[-1] is False
+
+
+@pytest.mark.parametrize("state", ["off", "on"])
+@pytest.mark.parametrize("code", ["audition_measurement_session_active", "audition_commission_load_active"])
+def test_compare_interlocks_on_every_flip(compare_box, monkeypatch, state, code):
+    from jasper.active_speaker import audition
+
+    cam, _, applied, path = compare_box
+    def refused():
+        raise AuditionRefused(code, "claimed")
+    monkeypatch.setattr(audition, "_refuse_if_graph_is_claimed", refused)
+    with pytest.raises(AuditionRefused) as exc:
+        asyncio.run(audition.set_compare_state(state, cam=cam, trim_db=0.0))
+    assert exc.value.reason == code
+    assert cam.running == applied
+    assert not path.exists()
+
+
+def test_displaced_token_is_checked_after_writer_lock(compare_box, monkeypatch):
+    from contextlib import asynccontextmanager
+    from jasper.active_speaker.audition import set_compare_state
+
+    cam, _, _, path = compare_box
+    state = asyncio.run(set_compare_state("off", cam=cam, trim_db=0.0))
+    @asynccontextmanager
+    async def overtaken(*args, **kwargs):
+        path.write_text(json.dumps({**state, "token": "new-owner"}))
+        yield
+    monkeypatch.setattr("jasper.dsp_apply.dsp_writer_lock", overtaken)
+    verdict = asyncio.run(stop_audition(cam=cam, expect_token=state["token"]))
+    assert verdict["status"] == "superseded"
+    assert cam.ducked == [False]
+    assert read_audition_state()["token"] == "new-owner"
+
+
+@pytest.mark.parametrize("layer", ["baseline", "rear_compare"])
+def test_audition_summary_excludes_ownership_fields(audition_box, monkeypatch, layer):
+    from jasper.active_speaker import audition
+
+    _, _, _, path = audition_box
+    path.write_text(json.dumps({"kind": audition.AUDITION_STATE_KIND, "schema_version": 1,
+        "layer": layer, "state": "off" if layer == "rear_compare" else None,
+        "deadline_at": 150.0, "token": "private-owner", "owner_pid": 123}))
+    monkeypatch.setattr(audition.time, "time", lambda: 100.0)
+    assert audition.audition_summary() == {"layer": layer,
+        "state": "off" if layer == "rear_compare" else None, "expires_in_s": 50}
+
+
+@pytest.mark.parametrize("cause", ["expiry", "normal", "takeover", "graph_replaced"])
+def test_web_holder_ends_and_releases_idle_hold(compare_box, monkeypatch, cause):
+    import threading
+    from contextlib import contextmanager
+    from jasper.active_speaker import audition
+    from jasper.sound.live_edit import plan_live_edit
+
+    cam, _, applied, path = compare_box
+    if cause == "expiry":
+        monkeypatch.setattr(audition, "AUDITION_DEADLINE_S", 0.0)
+    state = asyncio.run(audition.set_compare_state("off", cam=cam, trim_db=0.0))
+    ready, release = threading.Event(), threading.Event()
+    held, controllers, closed = [], [], []
+    @contextmanager
+    def idle_hold():
+        held.append(True)
+        try:
+            yield
+        finally:
+            held.append(False)
+    class HolderCam:
+        def __getattr__(self, name):
+            return getattr(cam, name)
+        async def close(self):
+            closed.append(self)
+    def factory():
+        assert held == [True]
+        assert threading.current_thread() is not threading.main_thread()
+        asyncio.get_running_loop()
+        fresh = HolderCam()
+        controllers.append(fresh)
+        return fresh
+    async def pause(_seconds):
+        ready.set()
+        assert await asyncio.to_thread(release.wait, 5)
+    real_hold = audition.hold_audition
+    async def hold(state, *, cam):
+        return await real_hold(state, cam=cam, sleep=pause)
+    monkeypatch.setattr(audition, "hold_audition", hold)
+    thread = audition.start_web_audition_holder(state, factory, idle_hold)
+    try:
+        if cause != "expiry":
+            assert ready.wait(5)
+            if cause == "normal":
+                asyncio.run(audition.set_compare_state("normal", cam=cam, trim_db=0.0))
+            elif cause == "takeover":
+                newer = asyncio.run(audition.set_compare_state("on", cam=cam, trim_db=0.0))
+            else:
+                cam.running = applied
+                audition.graph_replaced()
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert held == [True, False]
+    assert len(controllers) == 1
+    assert closed == controllers
+    assert plan_live_edit(cam.running, applied).method == "unchanged"
+    if cause == "takeover":
+        assert read_audition_state()["token"] == newer["token"]
+        asyncio.run(stop_audition(cam=cam))
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("failure,code", [("no_anchor", "audition_no_durable_anchor"), ("load", "audition_load_refused"), ("transport", "audition_load_refused"), ("restore", "audition_restore_failed")])
+def test_compare_failure_codes_and_restore_record(compare_box, monkeypatch, failure, code):
+    from jasper.active_speaker import audition
+    from jasper.camilla import CamillaUnavailable
+
+    cam, _, _, path = compare_box
+    if failure == "restore":
+        asyncio.run(audition.set_compare_state("off", cam=cam, trim_db=0.0))
+    async def failed(*args, **kwargs):
+        if failure == "transport":
+            raise CamillaUnavailable("unreachable")
+        return False
+    async def no_anchor(**kwargs):
+        return None
+    if failure == "no_anchor":
+        monkeypatch.setattr(cam, "get_config_file_path", no_anchor)
+    else:
+        monkeypatch.setattr(cam, "set_active_config_raw", failed)
+    with pytest.raises(AuditionRefused) as exc:
+        asyncio.run(audition.set_compare_state("normal" if failure == "restore" else "off", cam=cam, trim_db=0.0))
+    assert exc.value.reason == code
+    assert path.exists() is (failure == "restore")
+
+
+def test_failed_compare_takeover_clears_record_after_successful_undo(compare_box, monkeypatch):
+    from jasper.active_speaker import audition
+    from jasper.sound.live_edit import plan_live_edit
+
+    cam, _, applied, path = compare_box
+    asyncio.run(audition.set_compare_state("off", cam=cam, trim_db=0.0))
+    def unavailable(*args, **kwargs):
+        raise OSError("record unavailable")
+    monkeypatch.setattr(audition, "atomic_write_json", unavailable)
+    with pytest.raises(OSError):
+        asyncio.run(audition.set_compare_state("on", cam=cam, trim_db=0.0))
+    assert not path.exists()
+    assert plan_live_edit(cam.running, applied).method == "unchanged"
+
+
+@pytest.mark.parametrize("layer", ["baseline", "rear_compare"])
+def test_restore_ignores_measurement_refusal(compare_box, monkeypatch, layer):
+    from jasper.active_speaker import audition
+    from jasper.sound.live_edit import plan_live_edit
+
+    cam, _, applied, path = compare_box
+    asyncio.run(start_audition(cam=cam, layer=layer, compare_state="off"))
+    monkeypatch.setattr(audition, "_refuse_if_graph_is_claimed", _refuse_if_graph_is_claimed)
+    monkeypatch.setattr("jasper.active_speaker.session_volume_plan.live_measurement_session",
+                        lambda **kwargs: "unresolved_volume_safety")
+    with pytest.raises(AuditionRefused) as exc:
+        audition._refuse_if_graph_is_claimed()
+    assert exc.value.reason == "audition_measurement_session_active"
+    if layer == "rear_compare":
+        result = asyncio.run(audition.set_compare_state("normal", cam=cam, trim_db=0.0))
+    else:
+        result = asyncio.run(stop_audition(cam=cam))
+    assert result["status"] == "restored"
+    assert plan_live_edit(cam.running, applied).method == "unchanged"
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("pid_case", ["recycled", "other_user", "self"])
+def test_startup_recovers_every_other_web_owner(compare_box, monkeypatch, pid_case):
+    from unittest.mock import Mock
+    from jasper.active_speaker import audition
+    from jasper.sound.live_edit import plan_live_edit
+
+    cam, _, applied, path = compare_box
+    state = asyncio.run(audition.set_compare_state("off", cam=cam, trim_db=0.0))
+    state["owner_pid"] += int(pid_case != "self")
+    path.write_text(json.dumps(state))
+    kill = Mock(side_effect=PermissionError() if pid_case == "other_user" else None)
+    monkeypatch.setattr(audition.os, "kill", kill)
+    asyncio.run(audition.recover_web_audition(cam))
+    kill.assert_not_called()
+    assert path.exists() is (pid_case == "self")
+    assert cam.ducked == ([False] if pid_case == "self" else [False, False])
+    if pid_case != "self":
+        assert plan_live_edit(cam.running, applied).method == "unchanged"
+
+
+@pytest.mark.parametrize("change", ["parameters", "pipeline"])
+def test_compare_refuses_unsaved_live_edit(compare_box, change):
+    from jasper.active_speaker import audition
+
+    cam, anchor, applied, path = compare_box
+    graph = yaml_lib.safe_load(applied)
+    if change == "parameters":
+        graph["filters"]["active_baseline_headroom"]["parameters"]["gain"] -= 1.0
+    else:
+        graph["pipeline"] = graph["pipeline"][:-1]
+    draft = yaml_lib.safe_dump(graph)
+    cam.running = draft
+    with pytest.raises(AuditionRefused) as exc:
+        asyncio.run(audition.set_compare_state("off", cam=cam, trim_db=0.0))
+    assert exc.value.reason == "audition_running_graph_differs"
+    assert cam.running == draft
+    assert cam.ducked == []
+    assert not path.exists()
+    assert anchor.read_text() == applied
+
+
+@pytest.mark.parametrize("path", [("filters",), ("devices", "playback", "channels"),
+    ("filters", "active_baseline_headroom"), ("filters", "active_baseline_headroom", "parameters")])
+@pytest.mark.parametrize("damage", ["missing", "null"])
+def test_malformed_compare_graph_is_named(path, damage):
+    from jasper.active_speaker.audition import rear_compare_yaml
+    from tests.test_rear_output_foundation import _cardioid_baseline
+
+    graph = yaml_lib.safe_load(_cardioid_baseline()[2])
+    node = graph
+    for key in path[:-1]:
+        node = node[key]
+    if damage == "missing":
+        del node[path[-1]]
+    else:
+        node[path[-1]] = None
+    with pytest.raises(AuditionRefused) as exc:
+        rear_compare_yaml(yaml_lib.safe_dump(graph), rear_muted=True, trim_db=0.0)
+    assert exc.value.reason == "audition_malformed_graph"
+
+
+@pytest.mark.parametrize("deadline", [None, "1800", [], {}, True, float("nan"), float("inf")])
+def test_malformed_record_has_no_summary(compare_box, deadline):
+    from jasper.active_speaker import audition
+
+    cam, _, _, path = compare_box
+    state = asyncio.run(audition.set_compare_state("off", cam=cam, trim_db=0.0))
+    if deadline is None:
+        del state["deadline_at"]
+    else:
+        state["deadline_at"] = deadline
+    path.write_text(json.dumps(state))
+    assert read_audition_state() is None
+    assert audition.audition_summary() is None

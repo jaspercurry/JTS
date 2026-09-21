@@ -173,3 +173,13 @@ async def test_state_publishes_wake_storage_and_turn_identity(monkeypatch, tmp_p
         assert state["voice"]["turn_event_id"] == status["turn_event_id"]
     finally:
         await store.aclose()
+
+
+async def test_state_discloses_speaker_audition(monkeypatch, tmp_path):
+    from jasper.control import state_aggregate
+    from tests.test_wire_contracts import _state_payload
+
+    state = {"layer": "rear_compare", "state": "off", "expires_in_s": 42}
+    monkeypatch.setattr(state_aggregate, "audition_summary", lambda: state)
+    payload = await _state_payload(monkeypatch, tmp_path)
+    assert payload["audio"]["speaker_audition"] == state
