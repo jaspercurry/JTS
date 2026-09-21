@@ -88,6 +88,9 @@ REASON_OUTPUTD_UNIT_FAILED = "outputd_failed_without_park_record"
 REASON_OUTPUTD_UNIT_UNSTABLE = "outputd_unstable_without_park_record"
 REASON_OUTPUTD_PARKED = "outputd_failure_reconcile_parked"
 
+REASON_USB_HCD_DEAD = "usb_host_controller_dead"
+REASON_USB_HCD_UNOBSERVED = "usb_host_controllers_unobserved"
+
 REASON_BOOTLOOP_GUARD_NOT_RUN = "bootloop_guard_not_run"
 REASON_BOOTLOOP_GUARD_RELOAD_FAILED = "bootloop_guard_reload_failed"
 REASON_BOOTLOOP_GUARD_ARMED = "bootloop_guard_armed"
@@ -783,3 +786,69 @@ def check_supervisor_reboot_state() -> CheckResult:
     is unarmed; future-dated → a genuinely-needed reboot is suppressed until
     the clock catches up."""
     return _classify_reboot_state(DEFAULT_REBOOT_STATE_PATH)
+
+
+# `xhci-hcd.N: HC died` strips every root hub off that controller but leaves its
+# platform-driver binding in place, so a dead controller is a bound device with
+# no `usbN` child. See #5443.
+_XHCI_PLATFORM_DRIVER_DIR = Path("/sys/bus/platform/drivers/xhci-hcd")
+
+
+def _classify_usb_host_controllers(driver_dir: Path) -> CheckResult:
+    """Classify every xHCI platform device bound under `driver_dir`.
+
+    Split from the check so tests can point it at a fake sysfs tree. Reads
+    directory structure only and opens no USB device — opening a wedged one is
+    what kills a controller in the first place (#5443)."""
+    name = "usb host controllers"
+    unobserved = CheckResult(
+        name, "skipped", f"no xHCI controller bound under {driver_dir}",
+        reason=REASON_USB_HCD_UNOBSERVED,
+    )
+    try:
+        entries = sorted(driver_dir.iterdir())
+    except OSError:
+        return unobserved
+    live: list[str] = []
+    dead: list[str] = []
+    for entry in entries:
+        # Device entries are symlinks into /sys/devices. `bind`, `unbind` and
+        # `uevent` are driver attribute FILES, and the `module` symlink present
+        # when xhci-hcd is built as a module carries no `uevent` — without that
+        # second test it would read as a controller with no buses.
+        if not entry.is_symlink():
+            continue
+        try:
+            if not (entry / "uevent").is_file():
+                continue
+            buses = [c.name for c in entry.iterdir() if c.name.startswith("usb")]
+        except OSError:
+            continue
+        (live if buses else dead).append(entry.name)
+    if not live and not dead:
+        return unobserved
+    if dead:
+        return CheckResult(
+            name, "fail",
+            ", ".join(dead) + " bound but carrying no USB bus — the kernel gave "
+            "up on the controller and every device on it is gone "
+            "(`journalctl -k | grep 'HC died'`). Nothing recovers this on its "
+            "own; re-bind the platform driver: `echo <name> | sudo tee "
+            "/sys/bus/platform/drivers/xhci-hcd/unbind; sleep 3; echo <name> | "
+            "sudo tee /sys/bus/platform/drivers/xhci-hcd/bind`.",
+            reason=REASON_USB_HCD_DEAD,
+        )
+    return CheckResult(name, "ok", f"{len(live)} live: " + ", ".join(live))
+
+
+@doctor_check()
+def check_usb_host_controllers() -> CheckResult:
+    """Surface a USB host controller the kernel has declared dead (#5443).
+
+    Twice on jts3 a control transfer to a wedged full-speed device timed out,
+    the resulting Stop Endpoint command went unanswered, and the xHCI driver
+    tore down the whole controller — taking every device on it with it. The
+    box carried on for 6 min and 2.5 h respectively with no line saying so:
+    downstream checks report an absent card, never the dead controller, and no
+    unit re-binds it."""
+    return _classify_usb_host_controllers(_XHCI_PLATFORM_DRIVER_DIR)

@@ -740,6 +740,7 @@ def test_check_supply_voltage_reports_a_stale_sampler_distinctly(monkeypatch):
         "check_speaker_silence",
         "check_supervisor_runtime_snapshots",
         "check_supply_voltage",
+        "check_usb_host_controllers",
         "check_voice_unit_running",
     ],
 )
@@ -1003,3 +1004,52 @@ def test_a_down_audio_unit_leads_with_silence_only_without_a_control_verdict(
 
     assert result is not None
     assert (result.reason, result.speaker_silent) == ("i", silent)
+
+
+# ------------------------------------------------- check_usb_host_controllers
+
+
+def _fake_xhci_tree(tmp_path, controllers):
+    """Build a sysfs-shaped `drivers/xhci-hcd` directory.
+
+    `controllers` maps a platform device name to its root-hub bus names; an
+    empty tuple is a controller the kernel declared dead. `None` builds no
+    directory at all — a box with no platform xHCI (every dev laptop)."""
+    driver_dir = tmp_path / "drivers" / "xhci-hcd"
+    if controllers is None:
+        return driver_dir
+    driver_dir.mkdir(parents=True)
+    for attr in ("bind", "unbind", "uevent"):
+        (driver_dir / attr).write_text("", encoding="utf-8")
+    for controller, buses in controllers.items():
+        device = tmp_path / "devices" / controller
+        device.mkdir(parents=True)
+        (device / "uevent").write_text("", encoding="utf-8")
+        for bus in buses:
+            (device / bus).mkdir()
+        (driver_dir / controller).symlink_to(device)
+    return driver_dir
+
+
+@pytest.mark.parametrize(
+    "controllers, status, reason",
+    [
+        ({"xhci-hcd.0": ("usb1", "usb2"), "xhci-hcd.1": ("usb3", "usb4")},
+         "ok", ""),
+        ({"xhci-hcd.0": (), "xhci-hcd.1": ("usb3", "usb4")},
+         "fail", resilience.REASON_USB_HCD_DEAD),
+        ({}, "skipped", resilience.REASON_USB_HCD_UNOBSERVED),
+        (None, "skipped", resilience.REASON_USB_HCD_UNOBSERVED),
+    ],
+    ids=["all-live", "one-died", "none-bound", "no-platform-xhci"],
+)
+def test_a_bound_controller_with_no_usb_bus_reads_as_dead(
+    tmp_path, controllers, status, reason
+):
+    """`HC died` leaves the platform binding but strips every root hub, so a
+    bound device with no `usbN` child is the signature (#5443)."""
+    result = resilience._classify_usb_host_controllers(
+        _fake_xhci_tree(tmp_path, controllers)
+    )
+
+    assert (result.status, result.reason) == (status, reason)
