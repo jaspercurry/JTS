@@ -1995,7 +1995,7 @@ def test_member_post_redacts_before_capping_the_http_error_body(monkeypatch):
     assert ok is False
     # The head is the fragment a cap-then-redact order would leave exposed.
     assert household[:8] not in detail
-    assert "<redacted>" in detail
+    assert len(detail) == len("HTTP 403: ") + PEER_DETAIL_MAX_CHARS
 
 
 @pytest.mark.parametrize(

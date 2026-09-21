@@ -543,12 +543,12 @@ async def test_post_peer_grouping_redacts_secret_shaped_body_before_capping(
         await sup._reassert_peer_tick(cfg)
 
     assert sup.reassert_last_ok is False
-    assert household not in sup.reassert_last_detail
-    assert "<redacted>" in sup.reassert_last_detail
+    assert household[:8] not in sup.reassert_last_detail
+    assert len(sup.reassert_last_detail) == len("HTTP 400: ") + PEER_DETAIL_MAX_CHARS
 
     fields = event_fields(caplog, "grouping_supervisor.reassert_failed")
-    assert household not in fields["detail"]
-    assert "<redacted>" in fields["detail"]
+    assert household[:8] not in fields["detail"]
+    assert fields["detail"] == sup.reassert_last_detail
 
 
 async def test_unbond_resets_the_journal_noise_latches():
