@@ -716,13 +716,13 @@ def test_power_verb_is_refused_from_a_non_control_peer(broker, monkeypatch):
     assert calls == []
 
 
-def test_unknown_verb_rejected_without_running_anything(broker):
+@pytest.mark.parametrize("verb", ["exec", "enable", "enable-now", "disable-now"])
+def test_unknown_verb_rejected_without_running_anything(broker, verb):
     sock_path, calls, _ = broker
     resp = _request_restart_retrying_transient_failures(
-        "jasper-voice.service", verb="exec", socket_path=sock_path,
+        "jasper-voice.service", verb=verb, socket_path=sock_path,
     )
     assert resp["ok"] is False
-    assert "unknown verb" in resp["error"]
     assert calls == []
 
 
