@@ -114,6 +114,7 @@ from ._common import (
     flash_error,
     form_guarded,
     restart_systemd_units,
+    restart_voice_daemon,
     send_html_response,
     send_json_response,
     send_see_other,
@@ -210,10 +211,6 @@ def _write_creds_file(
 
 def _delete_creds_file(path: str = SPOTIFY_CREDENTIALS_ENV_PATH) -> None:
     delete_env_file(path)
-
-
-def _restart_voice_daemon() -> RestartOutcome:
-    return restart_systemd_units("jasper-voice")
 
 
 def _restart_spotify_consumers() -> RestartOutcome:
@@ -1243,7 +1240,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 send_see_other(self, "./", flash="Account not found")
                 return
             registry.save()
-            clause = RESTART_CLAUSE[_restart_voice_daemon()]
+            clause = RESTART_CLAUSE[restart_voice_daemon()]
             send_see_other(
                 self, "./", flash=f"Added {name} to {account_name}.{clause}",
             )
@@ -1258,7 +1255,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             registry = Registry.load(cfg["registry_path"])
             if registry.remove_playlist(account_name, uri):
                 registry.save()
-                clause = RESTART_CLAUSE[_restart_voice_daemon()]
+                clause = RESTART_CLAUSE[restart_voice_daemon()]
                 send_see_other(
                     self, "./",
                     flash=f"Removed playlist from {account_name}.{clause}",
