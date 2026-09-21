@@ -13,6 +13,7 @@ output or a bundle.
 """
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -108,13 +109,13 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
     ("repr_keeps_closing_paren", "RuntimeError(api_key=sk-abcd1234efgh)",
      "RuntimeError(api_key=<redacted>)", False),
     ("json_refresh_token", '{"refresh_token": "1//0gABCDEFGHijk"}',
-     '{"refresh_token": <redacted>}', False),
+     '{"refresh_token": "<redacted>"}', False),
     ("json_api_key", '{"api_key": "sk-jsonAbCd12345678"}',
-     '{"api_key": <redacted>}', False),
+     '{"api_key": "<redacted>"}', False),
     ("json_api_key_with_apostrophe", '{"api_key":"ab\'cd1234efgh"}',
-     '{"api_key":<redacted>}', False),
+     '{"api_key": "<redacted>"}', False),
     ("json_spotify_access_token", '{"access_token": "BQAbCdEf1234567890"}',
-     '{"access_token": <redacted>}', False),
+     '{"access_token": "<redacted>"}', False),
     # `_supervisor` clips a provider body to `_SCAN_LIMIT` before redacting,
     # so the opening quote can arrive without its closing one.
     ("json_truncated_access_token", '{"access_token": "BQAbCdEf1234567890',
@@ -131,7 +132,7 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
     ("authorization_assignment", "authorization=very-secret\nnetwork stalled",
      "authorization=<redacted>\nnetwork stalled", False),
     ("authorization_json_basic_scheme", '{"authorization": "Basic FAKE=="}',
-     '{"authorization": <redacted>}', False),
+     '{"authorization": "<redacted>"}', False),
     # The bare header form of the scheme above, not JSON-embedded. Python-only:
     # no KEY=value shape the bash redactor guards holds an HTTP header line.
     ("authorization_basic_header", "Authorization: Basic FAKE-B64-VALUE==",
@@ -178,7 +179,7 @@ CASES: tuple[tuple[str, str, str, bool], ...] = (
     ("jts_household_header", "X-JTS-Household: kR3n9QpZ7sT2vX8b",
      "X-JTS-Household: <redacted>", False),
     ("jts_household_header_json", '{"X-JTS-Household": "kR3n9QpZ7sT2vX8b"}',
-     '{"X-JTS-Household": <redacted>}', False),
+     '{"X-JTS-Household": "<redacted>"}', False),
     ("jts_household_header_repr", "{'X-JTS-Household': 'kR3n9QpZ7sT2vX8b'}",
      "{'X-JTS-Household': <redacted>}", False),
     ("jts_token_header", "X-JTS-Token: t0k3nV4lu3ForTheLan",
@@ -320,6 +321,32 @@ def test_a_caller_held_literal_is_replaced_whatever_shape_it_has(literal: str) -
         redact_secrets(f"rejected {literal} upstream", [literal])
         == "rejected <redacted> upstream"
     )
+
+
+@pytest.mark.parametrize("literal", ['synthetic-left"synthetic-right', "12345678"])
+def test_json_literals_are_redacted_in_each_nested_value(literal: str) -> None:
+    scalar = int(literal) if literal.isdigit() else literal
+    text = json.dumps({"first": literal, "nested": [scalar], "count": 2})
+    redacted = redact_secrets(text, iter([literal]))
+    assert json.loads(redacted) == {
+        "first": "<redacted>", "nested": ["<redacted>"], "count": 2,
+    }
+    assert redact_secrets(redacted, [literal]) == redacted
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"number":' + "9" * 5000 + ',' + json.dumps({"api_key": 'synthetic-left"SYNTHETIC_TAIL'})[1:],
+        "[" * 1500 + json.dumps({"api_key": 'synthetic-left"SYNTHETIC_TAIL'}) + "]" * 1500,
+    ],
+)
+def test_json_parser_limits_do_not_prevent_redaction(text: str) -> None:
+    redacted = redact_secrets(text)
+    assert "synthetic-left" not in redacted
+    assert "SYNTHETIC_TAIL" not in redacted
+    assert "<redacted>" in redacted
+    json.loads(redacted)
 
 
 @pytest.mark.parametrize(
