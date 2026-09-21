@@ -21,6 +21,7 @@ import contextlib
 import importlib.util
 import io
 import json
+from types import SimpleNamespace
 import logging
 import os
 import signal
@@ -30,6 +31,8 @@ import textwrap
 import time
 import urllib.error
 from pathlib import Path
+from functools import partial
+from unittest.mock import Mock
 
 import pytest
 
@@ -97,6 +100,8 @@ class FakeWalkClock:
 
 
 class FakeMover:
+    timeout_s = aw.TurntableMover.timeout_s
+
     def __init__(self, *, power=None, move_ok=True, offset=0.0) -> None:
         # A list is consumed one verdict per read, then the last one repeats.
         self._power = list(power or [aw.PowerVerdict(True, "throttled=0x0")])
@@ -129,6 +134,8 @@ class FakeSession:
     reports the position, so a fake that popped per poll would let a walk skip a
     position no live session ever skips. The final entry repeats forever.
     """
+
+    _timeout = 30.0
 
     def __init__(self, polls, *, release=(200, '{"ok": true}'),
                  cancel=(200, '{"ok": true}')) -> None:
@@ -198,6 +205,8 @@ class LiveThen:
     about a session ENDING therefore has to let it begin.
     """
 
+    _timeout = 30.0
+
     def __init__(self, terminal: aw.Poll) -> None:
         self._terminal = terminal
         self._polls = 0
@@ -217,7 +226,7 @@ class LiveThen:
         return 200, '{"ok": true}'
 
 
-def _walk(mover, session, *, clock=None, trail=None, **cfg):
+def _walk(mover, session, *, clock=None, trail=None, should_stop=lambda: False, **cfg):
     clock = clock or FakeWalkClock()
     config = aw.WalkConfig(**{
         "settle_s": 30.0, "poll_s": 3.0, "idle_ceiling_s": 60.0,
@@ -225,7 +234,7 @@ def _walk(mover, session, *, clock=None, trail=None, **cfg):
     })
     return aw.ArmWalk(
         mover, session, config,
-        trail=trail,
+        trail=trail, should_stop=should_stop,
         clock=clock.now, sleep=clock.sleep,
     )
 
@@ -710,6 +719,7 @@ def test_the_adapter_is_a_subprocess_and_never_an_import(module):
 
 
 def test_no_adapter_verb_this_module_emits_can_redefine_zero():
+    assert "detect" in aw._TOOL_SUBCOMMANDS
     assert "set-zero" not in aw._TOOL_SUBCOMMANDS
     with pytest.raises(AssertionError):
         aw.TurntableMover(attest_rig_clear=True)._invoke("set-zero")
@@ -1498,3 +1508,79 @@ class _Proc:
         self.stdout = stdout
         self.stderr = stderr
         self.returncode = returncode
+
+
+@pytest.mark.parametrize("after_sleep", [False, True])
+def test_stop_request_parks_and_records_attestation(after_sleep):
+    mover, trail, clock = FakeMover(), _RecordingTrail(), FakeWalkClock()
+    session = FakeSession([_IN_FLIGHT_QUIET])
+    walk = _walk(mover, session, clock=clock, trail=trail,
+                 should_stop=lambda: not after_sleep or clock.now() > 1000)
+    with pytest.raises(SystemExit) as exc:
+        walk.run()
+    assert exc.value.code == aw.EXIT_TERMINATED_PARKED
+    assert mover.moves == [0]
+    assert trail.one("parked")["ok"] is True
+    assert trail.one("up")["rig_clear_attested"] is True
+
+
+@pytest.mark.parametrize("payload,available", [({"ok": True}, True), ({"ok": False}, False), ({}, False)])
+def test_mover_discovery_uses_detect(payload, available):
+    calls = []
+    def run(argv, **kw):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+    mover = aw.TurntableMover(run=run)
+    assert mover.available() is available
+    assert [call[3:] for call in calls] == [["detect"]]
+
+
+@pytest.mark.parametrize("finished", [False, True])
+def test_run_owned_finish_latches_success_and_timeout(monkeypatch, finished):
+    clock, mover = FakeWalkClock(), FakeMover()
+    monkeypatch.setattr(aw, "ArmWalk", partial(aw.ArmWalk, clock=clock.now, sleep=clock.sleep))
+    arm = aw.RunOwnedArm(mover, LiveThen(_COMPLETE), aw.WalkConfig())
+    with arm:
+        assert arm._finished.wait(2)
+        wait = Mock(return_value=finished)
+        monkeypatch.setattr(arm._finished, "wait", wait)
+        first = arm.finish()
+        assert arm.finish() is first
+    wait.assert_called_once_with(arm.timeout_s)
+    assert arm.timeout_s == 2637
+    assert first["arm"]["exit"] == ("ok" if finished else "arm_park_unconfirmed")
+    assert mover.moves[-1] == 0 and not arm._thread.is_alive()
+
+
+@pytest.mark.parametrize("fault", [ValueError, KeyboardInterrupt])
+def test_run_owned_worker_fault_is_named_and_parks(monkeypatch, fault):
+    clock, mover, trail = FakeWalkClock(), FakeMover(), _RecordingTrail()
+    session = FakeSession([_IN_FLIGHT_QUIET])
+    monkeypatch.setattr(session, "poll", Mock(side_effect=fault))
+    monkeypatch.setattr(aw, "ArmWalk", partial(aw.ArmWalk, clock=clock.now, sleep=clock.sleep, trail=trail))
+    with aw.RunOwnedArm(mover, session, aw.WalkConfig()) as arm:
+        assert arm._finished.wait(2)
+        answer = arm.finish()["arm"]
+    assert answer["exit"] == "refused" and answer["error_type"] == fault.__name__
+    assert mover.moves == [0] and trail.one("parked")["ok"] is True
+
+
+def test_run_owned_cleanup_does_not_replace_body_exception(monkeypatch):
+    clock = FakeWalkClock()
+    monkeypatch.setattr(aw, "ArmWalk", partial(aw.ArmWalk, clock=clock.now, sleep=clock.sleep))
+    arm = aw.RunOwnedArm(FakeMover(), LiveThen(_COMPLETE), aw.WalkConfig())
+    original = KeyboardInterrupt()
+    with pytest.raises(KeyboardInterrupt) as exc:
+        with arm:
+            assert arm._finished.wait(2)
+            monkeypatch.setattr(arm, "finish", Mock(side_effect=RuntimeError))
+            raise original
+    arm._thread.join(2)
+    assert exc.value is original and not arm._thread.is_alive()
+
+
+def test_owner_stop_preserves_a_completed_session_exit():
+    mover, trail = FakeMover(), _RecordingTrail()
+    walk = _walk(mover, LiveThen(_COMPLETE), trail=trail, should_stop=lambda: True)
+    assert walk.run() == aw.EXIT_OK
+    assert mover.moves == [0] and trail.one("parked")["ok"] is True

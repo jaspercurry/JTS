@@ -18,7 +18,8 @@ from jasper.active_speaker.measurement_programs import (
     PURPOSE_REAR, REGIME_BRANCHES, run_program,
 )
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels
-from jasper.active_speaker.preflight import PreflightReport
+from jasper.active_speaker.preflight import PreflightFacts, PreflightReport
+from jasper.active_speaker.movers import MOVER_ARM
 from jasper.active_speaker.preflight_live import read_preflight_facts
 from jasper.active_speaker.seat_level_reference import seat_level_reference_state_path
 from jasper.active_speaker.state_paths import baseline_profile_state_path
@@ -45,6 +46,15 @@ def _rear_cleared_candidate() -> str:
         raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, str(exc)) from exc
 
 
+def _facts(request: AngleCaptureRequest, args: argparse.Namespace) -> PreflightFacts:
+    available = True
+    if request.mover == MOVER_ARM:
+        from jasper.active_speaker.arm_walk import TurntableMover  # lazy: arm-only
+        available = TurntableMover().available()
+    return read_preflight_facts(request, mover_available=available,
+                               rig_clear_attested=None if args.dry_run else args.attest_rig_clear)
+
+
 def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
     # Shared loaders suppress read faults; keep this CLI check until they expose them.
     for path in (topology_path(), baseline_profile_state_path(), household_mic_path(), seat_level_reference_state_path()):
@@ -62,7 +72,7 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
         if not isinstance(document, dict):
             raise ValueError("plan must be an object")
         request = AngleCaptureRequest.from_mapping(document)
-        return preflight_levels(request, read_preflight_facts(request))
+        return preflight_levels(request, _facts(request, args))
     program = run_program(args.program or "speaker", args.poses)
     if args.repeats is not None:
         try:
@@ -82,5 +92,5 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
         level_source="operator" if operator_level else level_source,
         mover=args.mover or program.mover or "human",
     )
-    facts = read_preflight_facts(request)
+    facts = _facts(request, args)
     return preflight_levels(request, facts, program.levels if args.level_db is None else None)

@@ -31,6 +31,7 @@ from .seat_level_reference import AnchorFacts, load_seat_level_reference
 
 def read_preflight_facts(
     plan: AngleCaptureRequest, *, context: Any = None, device: Any = None,
+    rig_clear_attested: bool | None = None, mover_available: bool = True,
 ) -> PreflightFacts:
     issues: list[PreflightIssue] = []
     if context is None:
@@ -97,6 +98,7 @@ def read_preflight_facts(
         return tuple(programs)
 
     return PreflightFacts(
+        rig_clear_attested=rig_clear_attested, mover_available=mover_available,
         output_volume=read_output_volume(),
         candidates=candidates, mic_present=device is not None,
         mic_identified=bool(device is not None and device.model_key),

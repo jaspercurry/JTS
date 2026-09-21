@@ -14,7 +14,7 @@ from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measurement_programs import program
 from jasper.active_speaker.preflight import PreflightFacts, preflight
 from jasper.active_speaker.run_levels import preflight_levels
-from jasper.active_speaker import candidate_parts, preflight_live
+from jasper.active_speaker import arm_walk, candidate_parts, preflight_live
 from jasper.active_speaker.seat_level_reference import AnchorFacts
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.program import FrequencyBand, RoleBand
@@ -428,3 +428,32 @@ def test_pilot_floor_only_checks_programs_with_pilots(level_db, disclosed, purpo
             "ambient_row": {"band_hz": (200, 800), "level_dbfs": -60},
             "floor_dbfs": -35,
         }
+
+
+@pytest.mark.parametrize("mover,attested,blocking", [
+    ("arm", None, False), ("arm", False, True), ("arm", True, False), ("human", False, False),
+])
+def test_rig_clear_attestation_is_only_required_when_asked(mover, attested, blocking):
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), mover=mover)
+    report = preflight(plan, ready_facts(plan, rig_clear_attested=attested))
+    assert report.blocking is blocking
+    assert [issue.code for issue in report.issues] == (["walk_rig_clear_not_attested"] if blocking else [])
+
+
+@pytest.mark.parametrize("attested,available", [(None, True), (False, False), (True, True)])
+def test_live_preflight_accepts_facts_without_discovery(monkeypatch, attested, available):
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), mover="arm")
+    ready = ready_facts(plan)
+    detect = Mock(side_effect=AssertionError)
+    monkeypatch.setattr(arm_walk.TurntableMover, "available", detect)
+    monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
+    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
+    context = SimpleNamespace(topology=None, roles_bands=(), role_targets={},
+        preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
+    facts = preflight_live.read_preflight_facts(
+        plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"),
+        rig_clear_attested=attested, mover_available=available,
+    )
+    assert facts.rig_clear_attested is attested and facts.mover_available is available
+    detect.assert_not_called()

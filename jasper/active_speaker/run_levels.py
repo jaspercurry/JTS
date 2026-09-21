@@ -54,6 +54,10 @@ class LevelLadder:
         return not self.admissible
 
     @property
+    def blocking_issue(self) -> PreflightIssue:
+        return self.levels[0].blocking_issue
+
+    @property
     def issues(self) -> tuple[PreflightIssue, ...]:
         if self.blocking:
             return self.levels[0].issues

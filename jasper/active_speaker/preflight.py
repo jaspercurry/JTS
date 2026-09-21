@@ -27,6 +27,7 @@ from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs,
     compile_candidate_config, prove_candidate_config,
 )
+from .movers import MOVER_ARM
 from .measurement_programs import BRANCH_PAIR_FRONT_REAR, PURPOSE_BASS, PURPOSE_REAR
 from .profile import SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
 from .seat_level_reference import (
@@ -67,6 +68,8 @@ class PreflightFacts:
     anchor: AnchorFacts
     commissioning_stop_db_spl: float | None
     mover: str
+    rig_clear_attested: bool | None = None
+    mover_available: bool = True
     issues: tuple[PreflightIssue, ...] = ()
     summed_pilot_band_hz: tuple[float, float] | None = None
     applied_bass_extension: Mapping[str, Any] | None = None
@@ -139,6 +142,11 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
     except CrossoverV2FlowError as exc:
         add(getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
         valid_shape = False
+    if facts.mover == MOVER_ARM:
+        for allowed, code in ((facts.rig_clear_attested is not False, "walk_rig_clear_not_attested"),
+                              (facts.mover_available, "walk_mover_unavailable")):
+            if not allowed:
+                add(code, REASON_REGISTRY[code].message)
     captures = len(plan.stops) * plan.repeats if valid_shape else 0
     if captures > MAX_CAPTURE_PLAN_ATTEMPTS or (valid_shape and plan.retries_per_pose > MAX_CAPTURE_PLAN_ATTEMPTS):
         add(WALK_OVER_CAPTURE_CAPACITY, f"captures={captures}, retries_per_pose={plan.retries_per_pose}; limit={MAX_CAPTURE_PLAN_ATTEMPTS}")

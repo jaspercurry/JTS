@@ -47,6 +47,7 @@ import logging
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -57,7 +58,7 @@ from jasper.log_event import log_event
 from .angle_capture import ARM_ENVELOPE_DEG
 from .movers import MOVER_ARM
 from .crossover_v2.position_gate import POSITION_READY_ENDPOINT as POSITION_READY_PATH
-from .crossover_v2.refusal_copy import REASON_ARM_HOST_STUCK, REASON_INTERNAL_ERROR, REASON_USER_STOPPED
+from .crossover_v2.refusal_copy import REASON_ARM_HOST_STUCK, REASON_ARM_PARK_UNCONFIRMED, REASON_INTERNAL_ERROR, REASON_USER_STOPPED
 from .capture_status import SESSION_ENDED_STATUSES as SESSION_ENDED_STATUSES
 from .poll_backoff import next_poll_s
 from .wizard_client import CAPTURE_CANCEL_PATH as CAPTURE_CANCEL_PATH, STATUS_PATH, WizardClient
@@ -102,7 +103,7 @@ _VENDOR_RETRY_S = 1.0
 
 #: Every adapter verb this module may emit. ``set-zero`` is deliberately
 #: absent: no automated walk may redefine the saved acoustic-axis zero.
-_TOOL_SUBCOMMANDS = frozenset({"power", "stop", "position", "offset"})
+_TOOL_SUBCOMMANDS = frozenset({"detect", "power", "stop", "position", "offset"})
 
 
 # --------------------------------------------------------------------------- #
@@ -367,6 +368,10 @@ class TurntableMover:
             return code, payload
         raise AssertionError("vendor retry loop exhausted")
 
+    def available(self) -> bool:
+        _, payload = self._invoke("detect")
+        return bool(payload.get("ok"))
+
     def power(self) -> PowerVerdict:
         _, payload = self._invoke("power")
         return parse_power(payload)
@@ -523,6 +528,55 @@ class WalkConfig:
             raise ArmWalkRefused("poll interval must be above zero")
 
 
+class RunOwnedArm:
+    def __init__(self, mover: TurntableMover, session: LoopbackSession, config: WalkConfig) -> None:
+        self._stop, self._finished = threading.Event(), threading.Event()
+        self._walk = ArmWalk(mover, session, config, should_stop=self._stop.is_set)
+        self._code, self._error = EXIT_REFUSED, ""
+        self._answer: dict[str, Any] | None = None
+        # Covers in-flight polls/serve and park, both stop retries, HTTP/CSRF calls, and settles.
+        self.timeout_s = (8 * mover.timeout_s + 2 * _VENDOR_RETRY_S + 6 * session._timeout
+                          + config.settle_s + PARK_SETTLE_S
+                          + next_poll_s(float("inf"), changed=False, initial_s=config.poll_s))
+        self._thread = threading.Thread(target=self._run, name="round-arm", daemon=False)
+
+    def __enter__(self) -> RunOwnedArm:
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        try:
+            self._code = self._walk.run()
+        except SystemExit as exc:
+            self._code = exc.code if isinstance(exc.code, int) and exc.code in EXIT_NAMES else EXIT_REFUSED
+        except BaseException as exc:  # noqa: BLE001 -- worker faults belong in the answer
+            self._error = type(exc).__name__
+        finally:
+            self._walk._trail.close()
+            self._finished.set()
+
+    def finish(self) -> dict[str, Any]:
+        if self._answer is None:
+            self._stop.set()
+            # CPython 3.12 can mark an interrupted join stopped before the worker exits.
+            finished = self._finished.wait(self.timeout_s)
+            if finished:
+                self._thread.join()
+            self._answer = {"arm": {
+                "exit": EXIT_NAMES[self._code] if finished else REASON_ARM_PARK_UNCONFIRMED,
+                "summary": f"{self._error}: {self._walk.summary()}" if self._error else self._walk.summary(),
+                **({"error_type": self._error} if self._error else {}),
+            }}
+        return self._answer
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        try:
+            self.finish()
+        except BaseException:  # noqa: BLE001 -- cleanup must preserve an in-flight exception
+            if exc is None:
+                raise
+
+
 class ArmWalk:
     """One walk. Foreground, one run, parks whatever happens. Constructed with its three seams
     (``mover``, ``session``, clock/sleep) so the whole loop is exercised without a Pi, a
@@ -536,9 +590,11 @@ class ArmWalk:
         config: WalkConfig,
         *,
         trail: Trail | None = None,
+        should_stop: Callable[[], bool] = lambda: False,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        self._should_stop = should_stop
         self._mover = mover
         self._session = session
         self._config = config
@@ -601,6 +657,7 @@ class ArmWalk:
         first = self._poll()
         self._trail.emit(
             "up",
+            rig_clear_attested=True,
             settle_s=cfg.settle_s,
             settle_floor_s=SETTLE_FLOOR_S,
             envelope_deg=ARM_ENVELOPE_DEG,
@@ -625,6 +682,8 @@ class ArmWalk:
             poll = self._poll()
             if poll.ended and self._saw_session:
                 return self._session_ended(poll)
+            if self._should_stop():
+                raise SystemExit(EXIT_TERMINATED_PARKED)
             changed = first_poll or (poll.readable and poll.progress != progress)
 
             if poll.readable:
