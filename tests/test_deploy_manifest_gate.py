@@ -23,6 +23,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from tests.shell_runner import run_bash
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / "scripts" / "_lib.sh"
@@ -50,9 +51,8 @@ verify_manifest_advanced "$MANIFEST"
 
 def _run_verify(manifest: str, *, full: str = _FULL) -> subprocess.CompletedProcess[str]:
     script = _HARNESS.replace("@LIB@", str(LIB)).replace("@DEPLOY@", str(DEPLOY)).replace("@FULL@", full)
-    return subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True, text=True, timeout=30,
+    return run_bash(
+        ["-c", script], timeout=30,
         env={**os.environ, "MANIFEST": manifest},
     )
 

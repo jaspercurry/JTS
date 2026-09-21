@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import os
 import json
-import signal
 import sys
 import tarfile
+import time
 import pytest
 import subprocess
 from pathlib import Path
+
+from tests.shell_runner import run_bash
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "bank-crossover-round.sh"
@@ -23,27 +25,44 @@ def _run(
     *args: str, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     # A named invalid host satisfies _lib.sh without selecting a real speaker.
-    # Own session: a timeout kills the script's whole tree, not only the
-    # outer bash.
-    proc = subprocess.Popen(
-        ["bash", str(SCRIPT), *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
+    return run_bash(
+        [str(SCRIPT), *args], timeout=30,
         env=env if env is not None else {**os.environ, "PI_HOST": "jts9.invalid"},
     )
-    try:
-        out, err = proc.communicate(timeout=30)
-    except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
-        proc.communicate()
-        raise
-    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
 
 def test_syntax_is_valid():
-    subprocess.run(["bash", "-n", str(SCRIPT)], check=True, timeout=10)
+    assert run_bash(["-n", str(SCRIPT)], timeout=10).returncode == 0
+
+
+@pytest.mark.parametrize("finish", ["wait", "exit 0"])
+def test_shell_timeout_stops_descendants_even_after_the_parent_exits(finish):
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        run_bash(
+            ["-c", f'sleep 60 & printf "%s\\n" "$$" "$!"; {finish}'],
+            timeout=1,
+        )
+    pids = caught.value.output.decode().splitlines()
+    assert len(pids) == 2
+    deadline = time.monotonic() + 5
+    while True:
+        states = subprocess.run(
+            ["ps", "-o", "stat=", "-p", ",".join(pids)],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.split()
+        if all(state.startswith("Z") for state in states):
+            break
+        assert time.monotonic() < deadline, (pids, states)
+        time.sleep(0.01)
+
+
+def test_shell_runner_preserves_large_heredocs_output_and_exit_status():
+    document = "x" * 1100
+    proc = run_bash(
+        ["-c", f'cat <<\'EOF\'\n{document}\nEOF\nprintf "%s" "$MARKER" >&2; exit 7'],
+        timeout=5, env={**os.environ, "MARKER": "stderr"},
+    )
+    assert (proc.returncode, proc.stdout, proc.stderr) == (7, document + "\n", "stderr")
 
 
 def test_refuses_a_non_empty_dest_dir_with_the_literal_exit_code_four(tmp_path):

@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.shell_runner import run_bash
+
 from .systemd_unit_helpers import value_for
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -39,10 +41,8 @@ def _run(
     full = f"set -euo pipefail; source {shlex.quote(str(source))} >/dev/null && {script}"
     env = dict(os.environ)
     env["JTS_REBOOT_REQUIRED_MARKER"] = str(marker)
-    return subprocess.run(
-        ["bash", "-c", full],
-        capture_output=True,
-        text=True,
+    return run_bash(
+        ["-c", full],
         timeout=5,
         env=env,
     )
@@ -107,14 +107,14 @@ def test_install_in_progress_marker_survives_the_window_and_the_exit_trap_clears
     env = dict(os.environ)
     env["JTS_REBOOT_REQUIRED_MARKER"] = str(marker)
     env["JASPER_DEPLOY_SHA_FULL"] = "0123456789abcdef"
-    r = subprocess.run(
-        ["bash", "-c", "set -euo pipefail; "
+    r = run_bash(
+        ["-c", "set -euo pipefail; "
          f"source {shlex.quote(str(MEMORY_RESILIENCE_SH))} >/dev/null; "
          f"source {shlex.quote(str(BUILD_SANDBOX_SH))} >/dev/null; "
          "mark_install_in_progress; "
          f"cat {shlex.quote(str(in_progress))}; "
          "install_exit_cleanup"],
-        capture_output=True, text=True, timeout=5, env=env,
+        timeout=5, env=env,
     )
     assert r.returncode == 0, r.stderr
     assert "sha=0123456789abcdef" in r.stdout
@@ -127,11 +127,11 @@ def test_all_three_install_marker_defaults_name_the_path_the_units_gate_on() -> 
     gate = value_for(GATED_UNIT.read_text(encoding="utf-8"), "ConditionPathExists")
     marker = gate.lstrip("!")
 
-    seam = subprocess.run(
-        ["bash", "-c", "set -euo pipefail; "
+    seam = run_bash(
+        ["-c", "set -euo pipefail; "
          f"source {shlex.quote(str(MEMORY_RESILIENCE_SH))} >/dev/null; "
          'printf "%s" "${INSTALL_IN_PROGRESS_MARKER}"'],
-        capture_output=True, text=True, timeout=5,
+        timeout=5,
         env={k: v for k, v in os.environ.items() if k != "JTS_REBOOT_REQUIRED_MARKER"},
     )
     assert seam.returncode == 0, seam.stderr
@@ -139,9 +139,9 @@ def test_all_three_install_marker_defaults_name_the_path_the_units_gate_on() -> 
 
     # `--help` returns after the assignments, and xtrace reports the value the
     # script really resolved — an execution read, not a grep of its source.
-    recover = subprocess.run(
-        ["bash", "-x", str(WIFI_RECOVER), "--help"],
-        capture_output=True, text=True, timeout=5,
+    recover = run_bash(
+        ["-x", str(WIFI_RECOVER), "--help"],
+        timeout=5,
         env={k: v for k, v in os.environ.items()
              if k != "JASPER_INSTALL_IN_PROGRESS_MARKER"},
     )
