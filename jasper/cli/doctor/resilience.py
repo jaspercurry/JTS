@@ -16,7 +16,12 @@ from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.restart_broker import _SELF_UNIT as _CONTROL_UNIT
 from ...control.heal_supervisor import TICK_INTERVAL_SEC as _HEAL_TICK_SEC
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
-from ...service_units import JASPER_VOICE_SERVICE, unit_unstable, unit_uptime_sec
+from ...service_units import (
+    JASPER_VOICE_SERVICE,
+    USB_HCD_RECOVER_UNIT,
+    unit_unstable,
+    unit_uptime_sec,
+)
 from ...voice.input_presence import voice_parked_no_mic
 from ...voice.provider_state import read_active_provider_state
 from ... import outputd_failure_reconcile_state
@@ -92,6 +97,8 @@ REASON_OUTPUTD_PARKED = "outputd_failure_reconcile_parked"
 
 REASON_USB_HCD_DEAD = "usb_host_controller_dead"
 REASON_USB_HCD_UNOBSERVED = "usb_host_controllers_unobserved"
+REASON_USB_HCD_WATCHER_DOWN = "usb_host_controller_watcher_down"
+REASON_USB_HCD_WATCHER_NOT_APPLICABLE = "usb_host_controller_watcher_not_applicable"
 
 REASON_BOOTLOOP_GUARD_NOT_RUN = "bootloop_guard_not_run"
 REASON_BOOTLOOP_GUARD_RELOAD_FAILED = "bootloop_guard_reload_failed"
@@ -859,4 +866,57 @@ def check_usb_host_controllers() -> CheckResult:
         )
     return CheckResult(
         name, "ok", f"{len(states)} live: " + ", ".join(sorted(states)),
+    )
+
+
+#: The platform driver the recovery watcher writes. A controller BOUND here is
+#: what makes the watcher applicable; the bare directory exists wherever the
+#: module loaded.
+XHCI_PLATFORM_DRIVER_DIR = Path("/sys/bus/platform/drivers/xhci-hcd")
+
+
+def bound_xhci_platform_controllers(
+    driver_dir: Path = XHCI_PLATFORM_DRIVER_DIR,
+) -> list[str]:
+    """Names of the xHCI controllers bound to the platform driver."""
+    try:
+        return sorted(
+            entry.name for entry in driver_dir.glob("xhci-hcd.*")
+        )
+    except OSError:
+        return []
+
+
+@doctor_check()
+def check_usb_hcd_recovery_watcher() -> CheckResult:
+    """The re-bind watcher is running on a box that has a controller to save.
+
+    Its unit is Restart=always behind a start limit, so a watcher that cannot
+    stay up stops trying and sits inactive — the row above would then go on
+    reporting a dead controller nothing is acting on (#5443)."""
+    label = "usb host controller recovery"
+    controllers = bound_xhci_platform_controllers()
+    if not controllers:
+        return CheckResult(
+            label, "skipped", "no xHCI controller bound to the platform driver",
+            reason=REASON_USB_HCD_WATCHER_NOT_APPLICABLE,
+        )
+    states = evidence.unit_states()
+    if states is None:
+        return _systemctl_unavailable_result(label)
+    state = states.get(USB_HCD_RECOVER_UNIT) or {}
+    active = str(state.get("active_state") or "unknown")
+    if active != "active":
+        return CheckResult(
+            label, "fail",
+            f"{USB_HCD_RECOVER_UNIT} is {active} while "
+            + ", ".join(controllers)
+            + " are bound — a controller the kernel kills stays dead until a "
+            "human re-binds it. Run `systemctl status "
+            f"{USB_HCD_RECOVER_UNIT}`; a start-limited unit needs "
+            f"`systemctl reset-failed {USB_HCD_RECOVER_UNIT}`.",
+            reason=REASON_USB_HCD_WATCHER_DOWN,
+        )
+    return CheckResult(
+        label, "ok", f"watching {len(controllers)}: " + ", ".join(controllers),
     )

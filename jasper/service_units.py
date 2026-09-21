@@ -85,7 +85,10 @@ DOCTOR_EXTRA_UNITS = (
     "jasper-wifi-recover.timer",
     "jasper-journal-review.timer",
     "jasper-accessory-reconcile.path",
+    "jasper-usb-hcd-recover.service",
 )
+
+USB_HCD_RECOVER_UNIT = "jasper-usb-hcd-recover.service"
 
 DOCTOR_UNIT_ROSTER: tuple[str, ...] = (
     *JASPER_SERVICE_GROUPS,

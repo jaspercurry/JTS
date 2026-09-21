@@ -741,6 +741,7 @@ def test_check_supply_voltage_reports_a_stale_sampler_distinctly(monkeypatch):
         "check_speaker_silence",
         "check_supervisor_runtime_snapshots",
         "check_supply_voltage",
+        "check_usb_hcd_recovery_watcher",
         "check_usb_host_controllers",
         "check_voice_unit_running",
     ],
@@ -1087,3 +1088,49 @@ def test_a_controller_is_dead_until_the_log_re_registers_its_buses(
     assert resilience.usb_host_controller_states(kernel_log) == states
     result = resilience.check_usb_host_controllers()
     assert (result.status, result.reason) == (status, reason)
+
+
+# --------------------------------------------- check_usb_hcd_recovery_watcher
+
+
+@pytest.mark.parametrize(
+    "bound, active_state, status, reason",
+    [
+        ([], "active", "skipped",
+         resilience.REASON_USB_HCD_WATCHER_NOT_APPLICABLE),
+        (["xhci-hcd.0"], "active", "ok", ""),
+        # Restart=always behind a start limit: a watcher that cannot stay up
+        # gives up and sits inactive, silently, while the row above keeps
+        # reporting a dead controller nothing is acting on.
+        (["xhci-hcd.0", "xhci-hcd.1"], "inactive", "fail",
+         resilience.REASON_USB_HCD_WATCHER_DOWN),
+        (["xhci-hcd.0"], "failed", "fail",
+         resilience.REASON_USB_HCD_WATCHER_DOWN),
+    ],
+    ids=["no-controller-bound", "watching", "start-limited", "failed"],
+)
+def test_the_re_bind_watcher_is_required_wherever_a_controller_is_bound(
+    monkeypatch, bound, active_state, status, reason
+):
+    monkeypatch.setattr(
+        resilience, "bound_xhci_platform_controllers", lambda *a, **kw: bound,
+    )
+    monkeypatch.setattr(
+        _evidence, "read_unit_states",
+        _make_unit_states_fake({
+            service_units.USB_HCD_RECOVER_UNIT: {"active_state": active_state},
+        }),
+    )
+
+    result = resilience.check_usb_hcd_recovery_watcher()
+    assert (result.status, result.reason) == (status, reason)
+
+
+def test_only_a_bound_controller_makes_the_watcher_applicable(tmp_path):
+    """The bare driver directory exists wherever the module loaded; it is a
+    BOUND controller that gives the watcher something to save."""
+    (tmp_path / "bind").write_text("", encoding="utf-8")
+    assert resilience.bound_xhci_platform_controllers(tmp_path) == []
+
+    (tmp_path / "xhci-hcd.0").mkdir()
+    assert resilience.bound_xhci_platform_controllers(tmp_path) == ["xhci-hcd.0"]
