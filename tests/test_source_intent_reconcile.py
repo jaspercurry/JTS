@@ -90,7 +90,6 @@ class _FakeHost:
     bluez: bool | None = False
     calls: list[tuple] = field(default_factory=list)
     fail: set[tuple[str, str]] = field(default_factory=set)
-    available: set[str] = field(default_factory=set)
     # Length of `calls` at each publish; 0 means "before any systemd action".
     published_markers: list[int] = field(default_factory=list)
 
@@ -195,7 +194,6 @@ class _FakeHost:
             unit_enabled=self.unit_enabled,
             unit_active=self.unit_active,
             unit_failed=self.unit_failed,
-            unit_available=lambda unit: unit in self.available,
             local_sources_allowed=lambda: self.allowed,
             usb_port_role=lambda: usb_role,
             usb_audio_present=lambda: self.usb_audio,
@@ -1848,7 +1846,7 @@ def test_bluetooth_toggle_delegates_optional_accessories_to_their_owner(
     """A request file, never a `systemctl start`: this coordinator holds no
     opinion about the accessory owner's units, and the owner's own claim is
     what makes the pass fresh."""
-    host = _FakeHost(available={source_intent._ACCESSORY_RECONCILE_UNIT})
+    host = _FakeHost()
     assert (
         source_intent.reconcile(env_path=str(tmp_path / "missing.env"), ops=host.ops())
         == 0
@@ -1868,7 +1866,6 @@ def test_converged_bluetooth_still_self_heals_accessory_owner(
         enabled={unit: True for unit in units},
         active={unit: True for unit in units},
         bluez=True,
-        available={source_intent._ACCESSORY_RECONCILE_UNIT},
     )
     assert (
         source_intent.reconcile(
