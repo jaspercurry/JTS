@@ -12,6 +12,7 @@ line. The tests drive the path-parameterized classifiers with tmp files.
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 
 import pytest
@@ -1009,47 +1010,80 @@ def test_a_down_audio_unit_leads_with_silence_only_without_a_control_verdict(
 # ------------------------------------------------- check_usb_host_controllers
 
 
-def _fake_xhci_tree(tmp_path, controllers):
-    """Build a sysfs-shaped `drivers/xhci-hcd` directory.
+# Verbatim jts3 journal lines. Boot 76d0a6fd is the 09-19 incident (death at
+# +14498s, operator re-bind at +14852s); boot 598ea1c4 is the 09-20 one (death
+# at +1951s, re-binds at +10899s and +10931s). See #5443.
+_XHCI_BOOT = """\
+[    5.451243] jts3 kernel: xhci-hcd xhci-hcd.0: xHCI Host Controller
+[    5.451355] jts3 kernel: xhci-hcd xhci-hcd.0: new USB bus registered, assigned bus number 1
+[    5.451802] jts3 kernel: xhci-hcd xhci-hcd.0: new USB bus registered, assigned bus number 2
+[    5.454286] jts3 kernel: xhci-hcd xhci-hcd.1: new USB bus registered, assigned bus number 3
+[    5.454748] jts3 kernel: xhci-hcd xhci-hcd.1: new USB bus registered, assigned bus number 4
+"""
 
-    `controllers` maps a platform device name to its root-hub bus names; an
-    empty tuple is a controller the kernel declared dead. `None` builds no
-    directory at all — a box with no platform xHCI (every dev laptop)."""
-    driver_dir = tmp_path / "drivers" / "xhci-hcd"
-    if controllers is None:
-        return driver_dir
-    driver_dir.mkdir(parents=True)
-    for attr in ("bind", "unbind", "uevent"):
-        (driver_dir / attr).write_text("", encoding="utf-8")
-    for controller, buses in controllers.items():
-        device = tmp_path / "devices" / controller
-        device.mkdir(parents=True)
-        (device / "uevent").write_text("", encoding="utf-8")
-        for bus in buses:
-            (device / bus).mkdir()
-        (driver_dir / controller).symlink_to(device)
-    return driver_dir
+_XHCI_DEATH_A = """\
+[14498.032241] jts3 kernel: xhci-hcd xhci-hcd.0: xHCI host not responding to stop endpoint command
+[14498.032955] jts3 kernel: xhci-hcd xhci-hcd.0: xHCI host controller not responding, assume dead
+[14498.033411] jts3 kernel: xhci-hcd xhci-hcd.0: HC died; cleaning up
+"""
+
+_XHCI_REBIND_A = """\
+[14849.856917] jts3 kernel: xhci-hcd xhci-hcd.0: USB bus 2 deregistered
+[14849.858254] jts3 kernel: xhci-hcd xhci-hcd.0: USB bus 1 deregistered
+[14852.874252] jts3 kernel: xhci-hcd xhci-hcd.0: new USB bus registered, assigned bus number 1
+[14852.875478] jts3 kernel: xhci-hcd xhci-hcd.0: new USB bus registered, assigned bus number 2
+"""
+
+_XHCI_DEATH_B = """\
+[ 1951.472243] jts3 kernel: xhci-hcd xhci-hcd.0: xHCI host not responding to stop endpoint command
+[ 1951.472838] jts3 kernel: xhci-hcd xhci-hcd.0: xHCI host controller not responding, assume dead
+[ 1951.473060] jts3 kernel: xhci-hcd xhci-hcd.0: HC died; cleaning up
+"""
+
+_XHCI_REBIND_B_TWICE = """\
+[10896.012543] jts3 kernel: xhci-hcd xhci-hcd.0: USB bus 2 deregistered
+[10896.013108] jts3 kernel: xhci-hcd xhci-hcd.0: USB bus 1 deregistered
+[10899.024517] jts3 kernel: xhci-hcd xhci-hcd.0: new USB bus registered, assigned bus number 1
+[10899.025047] jts3 kernel: xhci-hcd xhci-hcd.0: new USB bus registered, assigned bus number 2
+[10928.724361] jts3 kernel: xhci-hcd xhci-hcd.0: USB bus 2 deregistered
+[10928.792027] jts3 kernel: xhci-hcd xhci-hcd.0: USB bus 1 deregistered
+[10931.808609] jts3 kernel: xhci-hcd xhci-hcd.0: new USB bus registered, assigned bus number 1
+[10931.809758] jts3 kernel: xhci-hcd xhci-hcd.0: new USB bus registered, assigned bus number 2
+"""
+
+_BOTH_LIVE = {"xhci-hcd.0": True, "xhci-hcd.1": True}
+_ZERO_DEAD = {"xhci-hcd.0": False, "xhci-hcd.1": True}
 
 
 @pytest.mark.parametrize(
-    "controllers, status, reason",
+    "kernel_log, states, status, reason",
     [
-        ({"xhci-hcd.0": ("usb1", "usb2"), "xhci-hcd.1": ("usb3", "usb4")},
-         "ok", ""),
-        ({"xhci-hcd.0": (), "xhci-hcd.1": ("usb3", "usb4")},
+        (_XHCI_BOOT, _BOTH_LIVE, "ok", ""),
+        (_XHCI_BOOT + _XHCI_DEATH_A, _ZERO_DEAD,
          "fail", resilience.REASON_USB_HCD_DEAD),
-        ({}, "skipped", resilience.REASON_USB_HCD_UNOBSERVED),
-        (None, "skipped", resilience.REASON_USB_HCD_UNOBSERVED),
+        (_XHCI_BOOT + _XHCI_DEATH_A + _XHCI_REBIND_A, _BOTH_LIVE, "ok", ""),
+        (_XHCI_BOOT + _XHCI_DEATH_B, _ZERO_DEAD,
+         "fail", resilience.REASON_USB_HCD_DEAD),
+        (_XHCI_BOOT + _XHCI_DEATH_B + _XHCI_REBIND_B_TWICE, _BOTH_LIVE,
+         "ok", ""),
+        ("", {}, "skipped", resilience.REASON_USB_HCD_UNOBSERVED),
     ],
-    ids=["all-live", "one-died", "none-bound", "no-platform-xhci"],
+    ids=["clean-boot", "death-09-19", "death-then-rebind-09-19",
+         "death-09-20", "death-then-two-rebinds-09-20", "no-xhci-in-log"],
 )
-def test_a_bound_controller_with_no_usb_bus_reads_as_dead(
-    tmp_path, controllers, status, reason
+def test_a_controller_is_dead_until_the_log_re_registers_its_buses(
+    monkeypatch, kernel_log, states, status, reason
 ):
-    """`HC died` leaves the platform binding but strips every root hub, so a
-    bound device with no `usbN` child is the signature (#5443)."""
-    result = resilience._classify_usb_host_controllers(
-        _fake_xhci_tree(tmp_path, controllers)
+    """Replay of both real incidents. `HC died` leaves the root hubs registered,
+    so only the log separates dead from live — the last marker per controller
+    wins, and only a re-bind revives it (#5443)."""
+    monkeypatch.setattr(
+        resilience, "_run",
+        lambda *a, **kw: subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=kernel_log, stderr="",
+        ),
     )
 
+    assert resilience.usb_host_controller_states(kernel_log) == states
+    result = resilience.check_usb_host_controllers()
     assert (result.status, result.reason) == (status, reason)

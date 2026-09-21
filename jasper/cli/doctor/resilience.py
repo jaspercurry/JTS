@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ from ._shared import (
     _RUNTIME_STATE_UNITS,
     silence_unobserved,
     speaker_silence_code,
+    _run,
     _systemctl_unavailable_result,
 )
 
@@ -788,67 +790,73 @@ def check_supervisor_reboot_state() -> CheckResult:
     return _classify_reboot_state(DEFAULT_REBOOT_STATE_PATH)
 
 
-# `xhci-hcd.N: HC died` strips every root hub off that controller but leaves its
-# platform-driver binding in place, so a dead controller is a bound device with
-# no `usbN` child. See #5443.
-_XHCI_PLATFORM_DRIVER_DIR = Path("/sys/bus/platform/drivers/xhci-hcd")
+# Both markers name their controller: `xhci-hcd xhci-hcd.0: <message>`.
+_XHCI_LINE = re.compile(r"xhci-hcd ([^\s:]+): (.*)")
+
+# `HC died` does NOT deregister the root hubs: they stay registered and `lsusb`
+# still lists them, so sysfs and `lsusb -t` cannot tell a dead controller from a
+# live one with nothing plugged in. The kernel log is the only evidence. A
+# re-bind is what deregisters and re-registers the buses. See #5443.
+_HCD_DEAD_MARKER = "HC died"
+_HCD_LIVE_MARKER = "new USB bus registered"
 
 
-def _classify_usb_host_controllers(driver_dir: Path) -> CheckResult:
-    """Classify every xHCI platform device bound under `driver_dir`.
+def usb_host_controller_states(kernel_log: str) -> dict[str, bool]:
+    """Map xHCI controller name -> alive, over one boot's kernel log.
 
-    Split from the check so tests can point it at a fake sysfs tree. Reads
-    directory structure only and opens no USB device — opening a wedged one is
-    what kills a controller in the first place (#5443)."""
-    name = "usb host controllers"
-    unobserved = CheckResult(
-        name, "skipped", f"no xHCI controller bound under {driver_dir}",
-        reason=REASON_USB_HCD_UNOBSERVED,
-    )
-    try:
-        entries = sorted(driver_dir.iterdir())
-    except OSError:
-        return unobserved
-    live: list[str] = []
-    dead: list[str] = []
-    for entry in entries:
-        # Device entries are symlinks into /sys/devices. `bind`, `unbind` and
-        # `uevent` are driver attribute FILES, and the `module` symlink present
-        # when xhci-hcd is built as a module carries no `uevent` — without that
-        # second test it would read as a controller with no buses.
-        if not entry.is_symlink():
+    Last marker wins: `new USB bus registered` (boot, or a driver re-bind)
+    means live; `HC died` means dead. A controller with neither marker in the
+    log is absent from the result rather than guessed at."""
+    states: dict[str, bool] = {}
+    for line in kernel_log.splitlines():
+        match = _XHCI_LINE.search(line)
+        if match is None:
             continue
-        try:
-            if not (entry / "uevent").is_file():
-                continue
-            buses = [c.name for c in entry.iterdir() if c.name.startswith("usb")]
-        except OSError:
-            continue
-        (live if buses else dead).append(entry.name)
-    if not live and not dead:
-        return unobserved
-    if dead:
-        return CheckResult(
-            name, "fail",
-            ", ".join(dead) + " bound but carrying no USB bus — the kernel gave "
-            "up on the controller and every device on it is gone "
-            "(`journalctl -k | grep 'HC died'`). Nothing recovers this on its "
-            "own; re-bind the platform driver: `echo <name> | sudo tee "
-            "/sys/bus/platform/drivers/xhci-hcd/unbind; sleep 3; echo <name> | "
-            "sudo tee /sys/bus/platform/drivers/xhci-hcd/bind`.",
-            reason=REASON_USB_HCD_DEAD,
-        )
-    return CheckResult(name, "ok", f"{len(live)} live: " + ", ".join(live))
+        name, message = match.group(1), match.group(2)
+        if _HCD_DEAD_MARKER in message:
+            states[name] = False
+        elif _HCD_LIVE_MARKER in message:
+            states[name] = True
+    return states
 
 
 @doctor_check()
 def check_usb_host_controllers() -> CheckResult:
-    """Surface a USB host controller the kernel has declared dead (#5443).
+    """Name a USB host controller the kernel has declared dead (#5443).
 
-    Twice on jts3 a control transfer to a wedged full-speed device timed out,
-    the resulting Stop Endpoint command went unanswered, and the xHCI driver
-    tore down the whole controller — taking every device on it with it. The
-    box carried on for 6 min and 2.5 h respectively with no line saying so:
-    downstream checks report an absent card, never the dead controller, and no
-    unit re-binds it."""
-    return _classify_usb_host_controllers(_XHCI_PLATFORM_DRIVER_DIR)
+    Nothing on the box re-binds one, so every device on it — a mic array
+    included — stays gone until a human intervenes, while the rows downstream
+    report only an absent card."""
+    name = "usb host controllers"
+    proc = _run(
+        ["journalctl", "-k", "-b", "0", "--grep", "xhci-hcd",
+         "--output", "short-monotonic", "--no-pager"],
+        timeout=8.0,
+    )
+    if proc.returncode != 0:
+        return CheckResult(
+            name, "skipped",
+            f"could not read kernel log: {proc.stderr.strip() or 'unknown error'}",
+            reason=REASON_USB_HCD_UNOBSERVED,
+        )
+    states = usb_host_controller_states(proc.stdout)
+    if not states:
+        return CheckResult(
+            name, "skipped", "no xHCI controller in this boot's kernel log",
+            reason=REASON_USB_HCD_UNOBSERVED,
+        )
+    dead = sorted(n for n, alive in states.items() if not alive)
+    if dead:
+        return CheckResult(
+            name, "fail",
+            ", ".join(dead) + " declared dead by the kernel — every device on "
+            "it is gone and stays gone (`journalctl -k -b 0 | grep 'HC died'`). "
+            "Re-bind the platform driver: `echo <name> | sudo tee "
+            "/sys/bus/platform/drivers/xhci-hcd/unbind; sleep 3; echo <name> | "
+            "sudo tee /sys/bus/platform/drivers/xhci-hcd/bind` — it can take "
+            "two rounds before the devices re-enumerate.",
+            reason=REASON_USB_HCD_DEAD,
+        )
+    return CheckResult(
+        name, "ok", f"{len(states)} live: " + ", ".join(sorted(states)),
+    )
