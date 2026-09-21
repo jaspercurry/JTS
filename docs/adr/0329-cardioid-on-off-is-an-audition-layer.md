@@ -126,3 +126,22 @@ its state and expiry after the flip. The projection maths is unchanged.
 The card fetches GET `./cardioid-compare` on mount, independently of EQ boot.
 GET `./state` no longer carries the block, so a cold analysis cannot delay
 the editor's state response. A failed card fetch leaves the card hidden.
+
+### Limits of the level match — 2026-09-21
+
+The number is broadband POWER, not loudness: an unweighted power mean over
+40 Hz–16 kHz. A bass-only difference is diluted across about 8.6 octaves (on
+jts3 the rear's +2 dB below 60 Hz becomes about 0.3 dB). The two states are
+therefore matched in overall level and NOT matched in bass tone; the card says
+so. A bass-matched "off" needs front compensation and is a separate decision.
+
+A failed level (no pair round, a refusing round, a preview error) is cached
+like a success, so a tune that cannot be matched costs one walk per key, and
+it is logged (`event=active_speaker.rear_compare_level`). Re-banking a round in
+place does not move the campaign root's mtime; that staleness ends at the next
+apply or reboot.
+
+While a compare session runs, the live graph is not the approved graph, so
+`classify_active_bass_extension_graph` answers not-allowed; an operation that
+waits for a settled graph (for example making this speaker a multiroom
+follower) can fail until the session ends. Fail-closed, bounded by the deadline.

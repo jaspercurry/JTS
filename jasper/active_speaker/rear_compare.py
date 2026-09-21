@@ -4,14 +4,17 @@
 """Ephemeral level match from the applied rear section and banked pair evidence."""
 from __future__ import annotations
 
+import logging
 import math
 import threading
 from typing import Any
 
 from jasper.atomic_io import atomic_write_json, read_json_mapping
+from jasper.log_event import log_event
 
 from .audition import MAX_COMPARE_TRIM_DB, audition_state_path
 
+logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 _levels: dict[tuple[str, str, int | None], dict[str, Any]] = {}
 
@@ -63,8 +66,8 @@ def rear_compare_level(*, cached_only: bool = False) -> dict[str, Any]:
                 from .crossover_v2.rear_pair_round import newest_rear_pair_round  # lazy: cold preview only
                 from .crossover_v2.rear_preview import preview_rear_section, rear_compare_delta_db  # lazy: numpy startup cost
 
-                pair = newest_rear_pair_round()
                 try:
+                    pair = newest_rear_pair_round()
                     if pair is None:
                         level["reason"] = "no_pair_round"
                     else:
@@ -81,6 +84,9 @@ def rear_compare_level(*, cached_only: bool = False) -> dict[str, Any]:
                                          louder=None if abs(delta) < 0.05 else "on" if delta > 0 else "off")
                 except Exception:  # noqa: BLE001 - mute must survive level failures (ADR-0329)
                     level["reason"] = "preview_refused"
+                    log_event(logger, "active_speaker.rear_compare_level", result="preview_refused",
+                              level=logging.ERROR, exc_info=True)
+                _levels.clear()  # only the current tune's key is ever read
                 _levels[key] = level
                 try:
                     atomic_write_json(path, {"key": key, "level": level})
@@ -88,4 +94,6 @@ def rear_compare_level(*, cached_only: bool = False) -> dict[str, Any]:
                     pass
             return dict(_levels[key])
     except Exception:  # noqa: BLE001 - mute must survive level failures (ADR-0329)
+        log_event(logger, "active_speaker.rear_compare_level", result="level_error",
+                  level=logging.ERROR, exc_info=True)
         return level

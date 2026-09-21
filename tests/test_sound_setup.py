@@ -5944,7 +5944,8 @@ def test_cardioid_compare_passes_only_the_louder_states_trim(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("failure,reason", [("rear", "no_applied_rear"), ("round", "no_pair_round"),
-    ("range", "delta_out_of_range"), ("preview", "preview_refused"), ("selector", "level_error")])
+    ("range", "delta_out_of_range"), ("preview", "preview_refused"), ("selector", "preview_refused"),
+    ("applied", "level_error")])
 def test_unavailable_level_never_blocks_compare(compare_evidence, tmp_path, monkeypatch, failure, reason):
     from unittest.mock import AsyncMock
     from jasper.active_speaker import rear_compare, round_bank
@@ -5959,8 +5960,11 @@ def test_unavailable_level_never_blocks_compare(compare_evidence, tmp_path, monk
         monkeypatch.setattr(rear_preview, "rear_compare_delta_db", lambda preview: 6.01)
     elif failure == "preview":
         monkeypatch.setattr(rear_preview, "preview_rear_section", Mock(side_effect=RoundCapturesRefused("refused", {})))
-    else:
+    elif failure == "selector":
         monkeypatch.setattr(readers, "newest_rear_pair_round", Mock(side_effect=LookupError()))
+    else:
+        from jasper.active_speaker import baseline_profile
+        monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", Mock(side_effect=OSError()))
     level = rear_compare.rear_compare_level()
     assert (level["status"], level["reason"], level["trim_db"], level["louder"]) == ("unavailable", reason, None, None)
     monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", lambda **kwargs: {

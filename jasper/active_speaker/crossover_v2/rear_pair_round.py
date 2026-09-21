@@ -11,6 +11,7 @@ from jasper.active_speaker.measurement_programs import PURPOSE_REAR
 from jasper.json_fields import parse_utc_iso
 from .rear_views import front_on_axis, pair_takes
 from .room_selection import purpose_take_records
+from .round_captures import RoundCapturesRefused
 from .round_inputs import _read_json_mapping, round_inputs
 
 
@@ -37,6 +38,6 @@ def newest_rear_pair_round(root: Path | None = None, *, limit: int = 32) -> dict
         try:
             if _front_pair_round(path):
                 return {"round_dir": path, "round_id": path.name, "banked_at": at}
-        except (OSError, ValueError):
+        except (OSError, ValueError, RoundCapturesRefused):
             continue
     return None
