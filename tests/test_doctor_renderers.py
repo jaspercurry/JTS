@@ -253,6 +253,77 @@ def test_shairport_legacy_remediations_name_the_canonical_device(
     assert "shairport_substream" in r.detail
 
 
+_AIRPLAY_RESOLVED_ROW = (
+    '=;wlan0;IPv4;JTS3;AirPlay Remote Video;local;jts3.local;'
+    '192.168.1.92;7000;"fv=1"\n'
+)
+_AIRPLAY_BROWSE_ROW_ONLY = "+;wlan0;IPv4;JTS3;AirPlay Remote Video;local\n"
+_AIRPLAY_OTHER_HOST_ROW = (
+    '=;wlan0;IPv4;Other;AirPlay Remote Video;local;other.local;'
+    '192.168.1.50;7000;"fv=1"\n'
+)
+
+
+def _seed_airplay_avahi(monkeypatch, stdout: str) -> None:
+    monkeypatch.setattr(
+        renderers.shutil, "which",
+        lambda name: "/usr/bin/avahi-browse" if name == "avahi-browse" else None,
+    )
+
+    def fake_run(cmd, timeout=5.0):
+        if cmd[0] == "hostname":
+            return SimpleNamespace(returncode=0, stdout="jts3\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(renderers, "_run", fake_run)
+
+
+def _seed_airplay_intentionally_off(monkeypatch) -> None:
+    monkeypatch.setattr(renderers, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(renderers, "source_intent_enabled", lambda source: False)
+    _seed_unit_states(**{
+        "shairport-sync.service": {"active_state": "inactive"},
+        "nqptp.service": {"active_state": "inactive"},
+    })
+
+
+@pytest.mark.parametrize(
+    "setup,expected_status,expected_reason",
+    [
+        pytest.param(
+            lambda m: _seed_airplay_avahi(m, _AIRPLAY_RESOLVED_ROW),
+            "ok", "", id="resolved_row_for_our_host",
+        ),
+        pytest.param(
+            lambda m: _seed_airplay_avahi(m, _AIRPLAY_BROWSE_ROW_ONLY),
+            "fail", "airplay_advert_not_resolved", id="only_browse_row_for_us",
+        ),
+        pytest.param(
+            lambda m: _seed_airplay_avahi(m, _AIRPLAY_OTHER_HOST_ROW),
+            "fail", "airplay_advert_not_resolved",
+            id="resolved_row_for_other_host",
+        ),
+        pytest.param(
+            _seed_airplay_intentionally_off,
+            "ok", "source_off", id="unit_inactive_is_skipped",
+        ),
+    ],
+)
+def test_check_airplay_advert_resolves_verdicts(
+    monkeypatch, setup, expected_status, expected_reason,
+):
+    """A stranded SRV/TXT record still shows a `+` (or another host's `=`)
+    row; only a resolved `=` row naming THIS speaker counts as reachable.
+    AirPlay off/parked is not applicable, same as the neighbouring
+    shairport-sync-gated renderer checks."""
+    setup(monkeypatch)
+
+    r = renderers.check_airplay_advert_resolves()
+
+    assert r.status == expected_status
+    assert r.reason == expected_reason
+
+
 @pytest.mark.parametrize(
     "seed_registry,cache_exists",
     [

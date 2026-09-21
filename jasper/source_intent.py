@@ -1486,6 +1486,17 @@ def _apply_source(
     raise RuntimeError(f"unsupported source {source.value}")
 
 
+def _usbsink_applies_first(source: Source) -> bool:
+    """Sort key: USBSINK converges before the rest, in their registry order.
+
+    The gadget's On path recomposes usb0 mid-boot; avahi 0.8 drops the
+    SRV/TXT records of any mDNS advert registered less than ~1 s before an
+    interface disappears. Applying the sink first lets usb0 settle before
+    shairport-sync/librespot register their adverts.
+    """
+    return source is not Source.USBSINK
+
+
 def _reconcile_once(
     *,
     env_path: str = SOURCE_INTENT_ENV,
@@ -1563,7 +1574,7 @@ def _reconcile_once(
             level=logging.WARNING,
         )
     applied = 0
-    for source in source_intent_sources():
+    for source in sorted(source_intent_sources(), key=_usbsink_applies_first):
         if source not in intents:
             continue
         desired = intents[source]

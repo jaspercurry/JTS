@@ -1626,6 +1626,29 @@ def test_usb_failed_to_off_resets_terminal_state(tmp_path):
     assert host.unit_failed(unit) is False
 
 
+def test_reconcile_applies_usbsink_before_airplay_and_spotify_start(tmp_path):
+    """The gadget restart must land before shairport-sync/librespot start.
+
+    A late gadget restart re-creates usb0 mid-registration and strands the
+    AirPlay/Spotify mDNS adverts avahi already probed (`_usbsink_applies_first`).
+    """
+    host = _FakeHost()
+    env = _write(
+        tmp_path,
+        f"{_key(Source.AIRPLAY)}=enabled\n"
+        f"{_key(Source.SPOTIFY)}=enabled\n"
+        f"{_key(Source.USBSINK)}=enabled\n",
+    )
+
+    assert source_intent.reconcile(env_path=env, ops=host.ops()) == 0
+
+    gadget_restart = host.calls.index(("restart", "jasper-usbgadget.service"))
+    shairport_start = host.calls.index(("start", "shairport-sync.service"))
+    librespot_start = host.calls.index(("start", "librespot.service"))
+    assert gadget_restart < shairport_start
+    assert gadget_restart < librespot_start
+
+
 def test_usb_disable_recompose_failure_stops_gadget_before_disarming(tmp_path):
     host = _FakeHost(
         enabled={"jasper-usbsink.service": True},
@@ -1908,9 +1931,9 @@ def test_stable_source_reconcile_log_emitted_for_every_source(tmp_path, caplog):
             == 0
         )
     reconciled = event_field_maps(caplog, "source.reconcile")
-    assert [fields["source"] for fields in reconciled] == [
+    assert {fields["source"] for fields in reconciled} == {
         source.value for source in source_intent.source_intent_sources()
-    ]
+    }
     assert all(fields["result"] == "ok" for fields in reconciled)
 
 
