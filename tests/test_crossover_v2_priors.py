@@ -26,7 +26,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
-from jasper.active_speaker.camilla_yaml import driver_baseline_gain_name, driver_delay_name
+from jasper.active_speaker.camilla_names import driver_baseline_gain_name, driver_delay_name
 from jasper.active_speaker.crossover_v2 import priors, summed_alignment
 from jasper.active_speaker.crossover_v2.contracts import REFERENCE_MARK_DESIGN_AXIS
 from jasper.active_speaker.crossover_v2.record_index import Measurement

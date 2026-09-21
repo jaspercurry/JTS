@@ -718,10 +718,8 @@ def _pipeline_names(yaml_text: str, channel: int) -> str:
 
 
 def test_mono_on_output_0_renders_channel_1_hard_muted():
-    from jasper.active_speaker.camilla_yaml import (
-        STARTUP_MUTE_GAIN_DB,
-        output_commission_mute_name,
-    )
+    from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
+    from jasper.active_speaker.camilla_names import output_commission_mute_name
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     yaml = emit_flat_outputd_cutover_config(topology=_mono_topology(0))
@@ -741,7 +739,7 @@ def test_mono_on_output_0_renders_channel_1_hard_muted():
 
 
 def test_mono_on_output_1_renders_channel_0_hard_muted():
-    from jasper.active_speaker.camilla_yaml import output_commission_mute_name
+    from jasper.active_speaker.camilla_names import output_commission_mute_name
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     yaml = emit_flat_outputd_cutover_config(topology=_mono_topology(1))
@@ -845,7 +843,7 @@ def test_master_gain_folds_both_program_channels_only_onto_a_declared_mono_outpu
     """
     import yaml as yaml_lib
 
-    from jasper.active_speaker.camilla_yaml import output_commission_mute_name
+    from jasper.active_speaker.camilla_names import output_commission_mute_name
     from jasper.camilla_emit import MONO_SUM_GAIN_DB
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
@@ -1095,10 +1093,8 @@ def test_a_wide_graph_carries_the_program_and_mutes_every_other_output(
     """
     import yaml as yaml_lib
 
-    from jasper.active_speaker.camilla_yaml import (
-        STARTUP_MUTE_GAIN_DB,
-        output_commission_mute_name,
-    )
+    from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
+    from jasper.active_speaker.camilla_names import output_commission_mute_name
     from jasper.camilla_emit import MONO_SUM_GAIN_DB
     from jasper.sound.camilla_yaml import FLAT_PROGRAM_WIDTH
 
@@ -1328,7 +1324,7 @@ def test_the_flat_cutover_threads_its_width_into_the_channel_plan():
     a DAC the topology never assigned them to."""
     import yaml as yaml_lib
 
-    from jasper.active_speaker.camilla_yaml import output_commission_mute_name
+    from jasper.active_speaker.camilla_names import output_commission_mute_name
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     doc = yaml_lib.safe_load(
@@ -1365,7 +1361,7 @@ def _write_topology_artifact(tmp_path, monkeypatch, payload) -> None:
 def test_production_call_shape_reads_the_saved_topology_from_disk(
     tmp_path, monkeypatch
 ):
-    from jasper.active_speaker.camilla_yaml import output_commission_mute_name
+    from jasper.active_speaker.camilla_names import output_commission_mute_name
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     _write_topology_artifact(tmp_path, monkeypatch, _mono_topology(0).to_dict())

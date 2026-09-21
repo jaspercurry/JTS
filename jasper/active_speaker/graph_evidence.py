@@ -6,26 +6,10 @@
 
 The active-speaker safety verifiers re-parse a CamillaDSP config and re-prove
 the protective invariants *independently of the emitter*. That independence is
-deliberate and stays. This module owns both the shared verification vocabulary
+deliberate and stays. This module owns the shared accessors
 and the commissioning graph proofs used by staging, startup load, and the
 Stage-5 live gate, keeping that analysis separate from config construction.
 
-Before this module those were copied: three verifiers hardcoded
-``"as_tweeter_protective_hp"`` / ``"as_tweeter_startup_limiter"`` and
-``runtime_contract`` re-derived the commission-mute and baseline names, while
-``_float_matches`` and the filter accessors were re-implemented verbatim. A
-single name change in the emitter could then silently desync a verifier — it
-would look for a filter that no longer exists and fail closed, spuriously
-blocking commissioning.
-
-Ownership boundary (this module vs the sibling ``graph_safety`` leaf)
---------------------------------------------------------------------
-This module owns the verifier's emitter-coupled vocabulary and commissioning
-proofs:
-
-* **Canonical filter names** — re-exposed from the emitter (``camilla_yaml``
-  owns the spellings; see the public aliases there). Importing ``camilla_yaml``
-  is exactly why this module is NOT a leaf.
 * **Raw-dict accessors** (``filter_spec`` / ``filter_params`` / ``filter_type``)
   that pull one field straight out of an already-parsed CamillaDSP config
   mapping — for ``runtime_contract``'s baseline path, which works on the raw
@@ -57,6 +41,11 @@ import yaml
 
 from . import graph_safety as gs
 
+from .camilla_names import (
+    driver_limiter_name,
+    output_commission_mute_name,
+    protective_tweeter_hp_name,
+)
 from .camilla_yaml import (
     APPLIED_RESPONSE_FILTER_MODE,
     COMMISSIONING_FILTER_MODE,
@@ -64,44 +53,12 @@ from .camilla_yaml import (
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
     audible_outputs_for_role,
-    bass_management_hp_name,
-    channel_select_mixer_name,
     crossover_highpass_for_role,
-    driver_baseline_gain_name,
-    driver_baseline_limiter_name,
-    driver_delay_name,
-    driver_limiter_name,
-    driver_linearization_peak_name,
-    driver_linearization_shelf_name,
-    driver_linearization_taper_name,
-    output_commission_mute_name,
-    protective_tweeter_hp_name,
-    sub_baseline_gain_name,
-    sub_baseline_limiter_name,
-    sub_lowpass_name,
-    sub_startup_limiter_name,
 )
 from .profile import ActiveSpeakerPreset
 from .test_signal_plan import protective_tweeter_highpass_frequency_hz
 
 __all__ = [
-    # Canonical filter names (re-exported from the emitter, the single owner).
-    "bass_management_hp_name",
-    "channel_select_mixer_name",
-    "driver_baseline_gain_name",
-    "driver_baseline_limiter_name",
-    "driver_delay_name",
-    "driver_limiter_name",
-    "driver_linearization_peak_name",
-    "driver_linearization_shelf_name",
-    "driver_linearization_taper_name",
-    "output_commission_mute_name",
-    "protective_tweeter_hp_name",
-    "sub_baseline_gain_name",
-    "sub_baseline_limiter_name",
-    "sub_lowpass_name",
-    "sub_startup_limiter_name",
-    # Raw-dict accessors (owned here).
     "filter_spec",
     "filter_params",
     "filter_type",

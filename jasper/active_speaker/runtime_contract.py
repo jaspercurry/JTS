@@ -57,6 +57,8 @@ from jasper.output_topology import (
     stamp_statefile_topology,
 )
 
+from jasper.camilla_emit import CHANNEL_SELECT_MIXER as _channel_select_mixer_name
+
 from ._common import issue as _issue
 from .startup_hold import staged_startup_hold_active
 from .camilla_yaml import (
@@ -65,11 +67,10 @@ from .camilla_yaml import (
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     STARTUP_MUTE_GAIN_DB,
     _reserialize_keeping_header,
-    baseline_protection_name,
 )
-from .graph_evidence import (
+from .camilla_names import (
+    baseline_protection_name,
     bass_management_hp_name as _bass_management_hp_name,
-    channel_select_mixer_name as _channel_select_mixer_name,
     driver_baseline_gain_name as _baseline_gain_name,
     driver_baseline_limiter_name as _baseline_limiter_name,
     driver_delay_name as _driver_delay_name,
@@ -77,8 +78,6 @@ from .graph_evidence import (
     driver_linearization_peak_name as _linearization_peak_name,
     driver_linearization_shelf_name as _linearization_shelf_name,
     driver_linearization_taper_name as _linearization_taper_name,
-    filter_params as _filter_params,
-    filter_type as _filter_type,
     output_commission_mute_name as _commission_mute_name,
     protective_tweeter_hp_name,
     sub_baseline_gain_name as _sub_baseline_gain_name,
@@ -86,6 +85,7 @@ from .graph_evidence import (
     sub_lowpass_name as _sub_lowpass_name,
     sub_startup_limiter_name as _sub_startup_limiter_name,
 )
+from .graph_evidence import filter_params as _filter_params, filter_type as _filter_type
 from .graph_safety import (
     TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
     GraphView,

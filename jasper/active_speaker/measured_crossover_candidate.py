@@ -45,9 +45,9 @@ from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE, PeqFilter, total
 from jasper.json_fields import finite_float
 
 from ._common import issue, require_sha256_hex
+from .camilla_names import driver_delay_name as _driver_delay_name
 from .camilla_yaml import (
     _channels_for_role,
-    _driver_delay_name,
     _rear_stage_channels,
     _role_polarity,
     emit_active_speaker_baseline_config,

@@ -768,10 +768,8 @@ def _anchor_is_all_muted(graph: LoadedCamillaGraph) -> tuple[bool, str]:
     Fails closed on every shape it cannot read: unparseable YAML, a non-mapping
     document, a missing or non-positive channel count.
     """
-    from jasper.active_speaker.camilla_yaml import (  # lazy: import cost
-        STARTUP_MUTE_GAIN_DB,
-        output_commission_mute_name,
-    )
+    from jasper.active_speaker.camilla_names import output_commission_mute_name  # lazy: import cost
+    from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB  # lazy: import cost
     from jasper.active_speaker.graph_safety import (  # lazy: import cost
         output_terminally_muted,
         view_from_yaml_dict,
