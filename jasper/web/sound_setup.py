@@ -550,8 +550,8 @@ def _make_handler(
                         self._send_json({"error": e.reason, "message": e.detail},
                                         status=502 if e.reason in {REFUSE_LOAD, REFUSE_RESTORE} else 409)
                     except Exception as e:  # noqa: BLE001 - holder failures must answer after restore (ADR-0329)
-                        log_event(logger, "active_speaker.audition", action="web_compare",
-                                  result="failed", level=logging.ERROR, exc_info=True)
+                        log_event(logger, "sound.cardioid_compare", result="error",
+                                  level=logging.ERROR, exc_info=True, error=type(e).__name__)
                         self._send_json({"error": REFUSE_LOAD, "message": str(e)}, status=400 if isinstance(e, ValueError) else 502)
                     else:
                         active = state["status"] == "auditioning"
