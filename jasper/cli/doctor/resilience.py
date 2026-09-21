@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ from ._shared import (
     _RUNTIME_STATE_UNITS,
     silence_unobserved,
     speaker_silence_code,
+    _run,
     _systemctl_unavailable_result,
 )
 
@@ -87,6 +89,9 @@ REASON_OUTPUTD_PARK_RECORD_STALE = "outputd_park_record_stale"
 REASON_OUTPUTD_UNIT_FAILED = "outputd_failed_without_park_record"
 REASON_OUTPUTD_UNIT_UNSTABLE = "outputd_unstable_without_park_record"
 REASON_OUTPUTD_PARKED = "outputd_failure_reconcile_parked"
+
+REASON_USB_HCD_DEAD = "usb_host_controller_dead"
+REASON_USB_HCD_UNOBSERVED = "usb_host_controllers_unobserved"
 
 REASON_BOOTLOOP_GUARD_NOT_RUN = "bootloop_guard_not_run"
 REASON_BOOTLOOP_GUARD_RELOAD_FAILED = "bootloop_guard_reload_failed"
@@ -783,3 +788,75 @@ def check_supervisor_reboot_state() -> CheckResult:
     is unarmed; future-dated → a genuinely-needed reboot is suppressed until
     the clock catches up."""
     return _classify_reboot_state(DEFAULT_REBOOT_STATE_PATH)
+
+
+# Both markers name their controller: `xhci-hcd xhci-hcd.0: <message>`.
+_XHCI_LINE = re.compile(r"xhci-hcd ([^\s:]+): (.*)")
+
+# `HC died` does NOT deregister the root hubs: they stay registered and `lsusb`
+# still lists them, so sysfs and `lsusb -t` cannot tell a dead controller from a
+# live one with nothing plugged in. The kernel log is the only evidence. A
+# re-bind is what deregisters and re-registers the buses. See #5443.
+_HCD_DEAD_MARKER = "HC died"
+_HCD_LIVE_MARKER = "new USB bus registered"
+
+
+def usb_host_controller_states(kernel_log: str) -> dict[str, bool]:
+    """Map xHCI controller name -> alive, over one boot's kernel log.
+
+    Last marker wins: `new USB bus registered` (boot, or a driver re-bind)
+    means live; `HC died` means dead. A controller with neither marker in the
+    log is absent from the result rather than guessed at."""
+    states: dict[str, bool] = {}
+    for line in kernel_log.splitlines():
+        match = _XHCI_LINE.search(line)
+        if match is None:
+            continue
+        name, message = match.group(1), match.group(2)
+        if _HCD_DEAD_MARKER in message:
+            states[name] = False
+        elif _HCD_LIVE_MARKER in message:
+            states[name] = True
+    return states
+
+
+@doctor_check()
+def check_usb_host_controllers() -> CheckResult:
+    """Name a USB host controller the kernel has declared dead (#5443).
+
+    Nothing on the box re-binds one, so every device on it — a mic array
+    included — stays gone until a human intervenes, while the rows downstream
+    report only an absent card."""
+    name = "usb host controllers"
+    proc = _run(
+        ["journalctl", "-k", "-b", "0", "--grep", "xhci-hcd",
+         "--output", "short-monotonic", "--no-pager"],
+        timeout=8.0,
+    )
+    if proc.returncode != 0:
+        return CheckResult(
+            name, "skipped",
+            f"could not read kernel log: {proc.stderr.strip() or 'unknown error'}",
+            reason=REASON_USB_HCD_UNOBSERVED,
+        )
+    states = usb_host_controller_states(proc.stdout)
+    if not states:
+        return CheckResult(
+            name, "skipped", "no xHCI controller in this boot's kernel log",
+            reason=REASON_USB_HCD_UNOBSERVED,
+        )
+    dead = sorted(n for n, alive in states.items() if not alive)
+    if dead:
+        return CheckResult(
+            name, "fail",
+            ", ".join(dead) + " declared dead by the kernel — every device on "
+            "it is gone and stays gone (`journalctl -k -b 0 | grep 'HC died'`). "
+            "Re-bind the platform driver: `echo <name> | sudo tee "
+            "/sys/bus/platform/drivers/xhci-hcd/unbind; sleep 3; echo <name> | "
+            "sudo tee /sys/bus/platform/drivers/xhci-hcd/bind` — it can take "
+            "two rounds before the devices re-enumerate.",
+            reason=REASON_USB_HCD_DEAD,
+        )
+    return CheckResult(
+        name, "ok", f"{len(states)} live: " + ", ".join(sorted(states)),
+    )
