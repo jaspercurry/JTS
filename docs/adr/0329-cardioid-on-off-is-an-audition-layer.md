@@ -54,5 +54,10 @@ That later change must pin `_linearization_boost_allowance_db`: a non-zero
 compare trim makes its graph-derived allowance more generous by that many dB
 while the session runs.
 
+A stop of the web unit during a session (a deploy's SIGTERM) ends the holder
+without a restore. The record is then recovered at the next web start, or
+earlier by any CamillaDSP graph load; `/state` and doctor disclose it until
+then. This is ADR-0193's accepted shape.
+
 This replaces the server side of PR #5416's A/B listen card. The separate UI
 change removes that card and uses the fixed cardioid compare contract.
