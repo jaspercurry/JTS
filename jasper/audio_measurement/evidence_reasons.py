@@ -126,7 +126,7 @@ EVIDENCE_REASONS = MappingProxyType({
     NO_FEATURES_DETECTED: "No pooled-response feature exceeds the measured capture-to-capture scatter.",
     PROGRAM_MISSING: "No banked program matches the stimulus bytes recorded by the round captures.",
     REASON_COVERAGE_SHORT: "The captured band does not cover the requested figure.",
-    REASON_CROSS_SEAT_SPREAD_OVERFLOW: "A member curve carries samples so large that their spread does not fit a float.",
+    REASON_CROSS_SEAT_SPREAD_OVERFLOW: "A member curve carries samples so large that their spread does not fit a float; this artifact cannot be read for a cross-seat spread at all.",
     REASON_EXCLUSION_CAP: "The identified nulls would exclude more than the allowed fraction of the band.",
     REASON_GAP_NOT_CONFIDENT: "The measured arrival gap is below the confidence threshold.",
     REASON_LADDER_ARRIVAL_MISMATCH: "The fitted ladder delay disagrees with the independently measured arrival.",
