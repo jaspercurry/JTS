@@ -32,11 +32,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 try:
-    from _wake_pipeline_common import is_safe_wake_pipeline_output
+    from _wake_pipeline_common import is_safe_wake_pipeline_output, sha256_file
 except ModuleNotFoundError as exc:
     if exc.name != "_wake_pipeline_common":
         raise
-    from scripts._wake_pipeline_common import is_safe_wake_pipeline_output
+    from scripts._wake_pipeline_common import is_safe_wake_pipeline_output, sha256_file
 
 
 SCHEMA_VERSION = 1
@@ -130,16 +130,6 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"{path} does not contain a JSON object")
     return data
-
-
-def _sha256(path: Path) -> str:
-    import hashlib
-
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _tail(value: str, limit: int = 4000) -> str:
@@ -515,7 +505,7 @@ def _run_phase0(args: argparse.Namespace, *, runner: CommandRunner = _run_comman
     for key, value in artifacts.items():
         candidate = Path(value)
         if candidate.is_file():
-            artifact_hashes[key] = _sha256(candidate)
+            artifact_hashes[key] = sha256_file(candidate)
 
     manifest = {
         "schema_version": SCHEMA_VERSION,

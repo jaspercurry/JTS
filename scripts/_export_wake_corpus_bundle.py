@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import random
 import shutil
@@ -47,13 +46,13 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 try:
-    from _wake_pipeline_common import is_safe_wake_pipeline_output
+    from _wake_pipeline_common import is_safe_wake_pipeline_output, sha256_file
     from _wake_pipeline_common import read_wake_corpus_json as _read_json
     from _wake_pipeline_common import resolve_wav_path as _resolve_wav_path
 except ModuleNotFoundError as exc:
     if exc.name != "_wake_pipeline_common":
         raise
-    from scripts._wake_pipeline_common import is_safe_wake_pipeline_output
+    from scripts._wake_pipeline_common import is_safe_wake_pipeline_output, sha256_file
     from scripts._wake_pipeline_common import read_wake_corpus_json as _read_json
     from scripts._wake_pipeline_common import resolve_wav_path as _resolve_wav_path
 
@@ -144,14 +143,6 @@ def _safe_path_component(value: object, fallback: str = "unknown") -> str:
     raw = str(value or "").strip().lower()
     out = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in raw)
     return out.strip("_") or fallback
-
-
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _wav_info(path: Path) -> WavInfo:
@@ -367,7 +358,7 @@ def _row_for_leg(
     if info is None:
         return None, {**base_common, "reason": ";".join(wav_issues)}
 
-    digest = _sha256(src)
+    digest = sha256_file(src)
     detail = _leg_detail(clip_ref.session, clip_ref.clip, leg)
     capture_health = clip_ref.clip.get("capture_health")
     capture_status = (

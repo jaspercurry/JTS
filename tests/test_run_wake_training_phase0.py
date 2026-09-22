@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -131,6 +132,8 @@ def test_phase0_runner_uses_real_negative_features(tmp_path: Path) -> None:
     assert str(out / "negative-features" / "negative_features_train.npy") in livekit_command
     assert (out / "phase0_run.json").is_file()
     assert len((out / "command_log.jsonl").read_text().splitlines()) == 6
+    for name, digest in summary["artifact_sha256"].items():
+        assert digest == hashlib.sha256(Path(summary["artifacts"][name]).read_bytes()).hexdigest()
 
 
 def test_phase0_runner_requires_negative_evidence_by_default(tmp_path: Path) -> None:

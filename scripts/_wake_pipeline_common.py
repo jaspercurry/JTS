@@ -2,16 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared helpers for standalone wake-corpus pipeline tools: a destructive-
-output ownership guard, and the recorder-metadata JSON/WAV-path resolution
-used by the analyze/audit/export scripts.
-"""
+"""Shared helpers and repository imports for standalone wake-pipeline tools."""
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
+
+# Direct-file launchers must work outside the checkout without an installed JTS.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from jasper.json_fields import sha256_file as sha256_file
 
 
 MarkerPredicate = Callable[[Mapping[str, Any]], bool]

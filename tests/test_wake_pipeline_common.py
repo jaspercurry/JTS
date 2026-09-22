@@ -2,14 +2,45 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contracts for wake-pipeline destructive-output ownership checks."""
+"""Contracts for wake-pipeline launchers and destructive-output checks."""
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+import pytest
+
 from scripts._wake_pipeline_common import is_safe_wake_pipeline_output
+
+
+@pytest.mark.parametrize("script", [
+    "export_wake_corpus_bundle", "prepare_wake_training_workdir",
+    "prepare_wake_livekit_smoke", "run_wake_training_phase0",
+])
+@pytest.mark.parametrize("mode", ["file", "module", "shell"])
+def test_launch_without_installed_package(tmp_path: Path, script: str, mode: str) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    if mode == "shell":
+        python = tmp_path / "python"
+        python.write_text(f'#!/bin/sh\nexec "{sys.executable}" -S "$@"\n')
+        python.chmod(0o755)
+        env["PYTHON"] = str(python)
+        command = ["bash", str(repo / "scripts" / f"{script.replace('_', '-')}.sh")]
+    else:
+        target = ["-m", f"scripts._{script}"] if mode == "module" else [
+            str(repo / "scripts" / f"_{script}.py")
+        ]
+        command = [sys.executable, "-S", *target]
+    result = subprocess.run(
+        [*command, "--help"], cwd=repo if mode == "module" else tmp_path,
+        env=env, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _matches_marker(data: Mapping[str, object]) -> bool:
