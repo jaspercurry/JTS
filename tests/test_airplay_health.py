@@ -13,6 +13,7 @@ import pytest
 
 
 import jasper.control.airplay_health as airplay_health
+from jasper import service_units
 from jasper.control.airplay_health import (
     AirPlayHealthSampler,
     classify_journal_line,
@@ -694,19 +695,20 @@ def test_mpris_playing_waits_for_fanin_rate_baseline() -> None:
 
 
 def test_default_journal_reader_uses_since_and_until(monkeypatch) -> None:
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], dict]] = []
 
-    def fake_run(args, **_kwargs):
-        calls.append(args)
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
         return types.SimpleNamespace(returncode=0, stdout="\n".join([
             json.dumps({"_SYSTEMD_UNIT": "shairport-sync.service", "MESSAGE": "one"}),
             json.dumps({"_SYSTEMD_UNIT": "librespot.service", "MESSAGE": "two"}),
             json.dumps({"_SYSTEMD_UNIT": "sshd.service", "MESSAGE": "not scanned"}),
             json.dumps({"_SYSTEMD_UNIT": "librespot.service", "MESSAGE": [1, 2]}),
+            json.dumps(["not", "an", "object"]),
             "not json",
         ]) + "\n")
 
-    monkeypatch.setattr(airplay_health.subprocess, "run", fake_run)
+    monkeypatch.setattr(service_units.subprocess, "run", fake_run)
 
     lines = AirPlayHealthSampler._read_journal_lines(
         ("shairport-sync", "librespot"),
@@ -716,10 +718,23 @@ def test_default_journal_reader_uses_since_and_until(monkeypatch) -> None:
 
     assert lines == [("shairport-sync", "one"), ("librespot", "two")]
     assert calls
-    args = calls[0]
+    args, kwargs = calls[0]
     assert args.count("-u") == 2
     assert args[args.index("--since") + 1] == "@10.123"
     assert args[args.index("--until") + 1] == "@40.568"
+    assert "--output-fields=_SYSTEMD_UNIT,MESSAGE" in args
+    assert kwargs["timeout"] == airplay_health.SUBPROCESS_TIMEOUT_SEC
+
+
+def test_default_journal_reader_fails_soft_when_journal_is_unavailable(
+    monkeypatch,
+) -> None:
+    def fail(*_a, **_kw):
+        raise service_units.JournalctlUnavailable("timed out")
+
+    monkeypatch.setattr(airplay_health, "run_journalctl_json", fail)
+
+    assert AirPlayHealthSampler._read_journal_lines(("shairport-sync",), 1, 2) == []
 
 
 def test_seconds_since_camilla_restart_reads_the_shared_unit_state_reader(
