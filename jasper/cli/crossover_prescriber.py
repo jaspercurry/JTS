@@ -604,6 +604,8 @@ def status_document(
                 })
     except (CrossoverEvidencePacketError, OSError) as exc:
         context["context_error"] = str(exc)
+    # A level nobody measured is what a session rides without one, so the banked value
+    # itself is published rather than a warning about its absence.
     level = seat_level_reference_status() or {}
     seat_level_db = level.get("seat_level_reference_volume_db")
     profile = load_applied_baseline_profile_state(applied_profile_path)
