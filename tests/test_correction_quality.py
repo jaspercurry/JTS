@@ -38,3 +38,23 @@ def test_capture_quality_fails_on_clipping():
     assert any(i.code == "capture_clipped" for i in report.issues)
     with pytest.raises(quality.CaptureQualityError, match="clipped"):
         raise quality.CaptureQualityError(report)
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_capture_is_an_integrity_failure_not_a_level_warning(invalid):
+    report = quality.assess_capture(
+        np.array([0.1, invalid, 0.1]),
+        sample_rate=48000,
+        expected_sample_rate=48000,
+        sweep_n_samples=3,
+        has_mic_calibration=True,
+    ).to_dict()
+
+    assert report["failed"] is True
+    issues = {issue["code"]: issue for issue in report["issues"]}
+    assert issues["capture_nonfinite"]["severity"] == "fail"
+    assert issues["capture_nonfinite"]["details"] == {"nonfinite_samples": 1}
+    assert "capture_peak_low" not in issues
+    assert "capture_rms_low" not in issues
+    assert "capture_near_clip" not in issues
+    assert "capture_clipped" not in issues

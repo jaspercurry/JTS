@@ -118,10 +118,12 @@ def assess_capture(
         raise ValueError(f"captured must be mono 1-D, got {captured.shape}")
 
     abs_capture = np.abs(captured.astype(np.float64))
+    finite_samples = np.isfinite(abs_capture)
+    nonfinite_samples = int(np.count_nonzero(~finite_samples))
     peak = float(np.max(abs_capture)) if len(abs_capture) else 0.0
     rms = float(np.sqrt(np.mean(abs_capture ** 2))) if len(abs_capture) else 0.0
     clipped = (
-        float(np.mean(abs_capture >= quality_model.clip_abs_threshold))
+        float(np.mean(finite_samples & (abs_capture >= quality_model.clip_abs_threshold)))
         if len(abs_capture)
         else 0.0
     )
@@ -130,6 +132,13 @@ def assess_capture(
     duration_s = float(len(captured) / sample_rate) if sample_rate > 0 else 0.0
 
     issues: list[QualityIssue] = []
+    if nonfinite_samples:
+        issues.append(QualityIssue(
+            code="capture_nonfinite",
+            severity="fail",
+            message="capture contains nonfinite samples; acoustic levels are unavailable",
+            details={"nonfinite_samples": nonfinite_samples},
+        ))
     if sample_rate != expected_sample_rate:
         issues.append(QualityIssue(
             code="sample_rate_mismatch",
@@ -184,7 +193,7 @@ def assess_capture(
             message="capture has samples at digital full scale",
             details={"clipped_fraction": clipped},
         ))
-    if peak_dbfs < quality_model.peak_too_low_dbfs:
+    if not nonfinite_samples and peak_dbfs < quality_model.peak_too_low_dbfs:
         issues.append(QualityIssue(
             code="capture_peak_low",
             severity="warn",
@@ -194,7 +203,7 @@ def assess_capture(
                 "threshold_dbfs": quality_model.peak_too_low_dbfs,
             },
         ))
-    if rms_dbfs < quality_model.rms_too_low_dbfs:
+    if not nonfinite_samples and rms_dbfs < quality_model.rms_too_low_dbfs:
         issues.append(QualityIssue(
             code="capture_rms_low",
             severity="warn",
