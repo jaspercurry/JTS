@@ -199,21 +199,32 @@ def validated_branch_pair(branch_pair: str, regime: str) -> str:
     return branch_pair
 
 
-def bookkeeping_views(purpose: str, *, has_room: bool = False) -> tuple[tuple[str, bool, bool], ...]:
+def bookkeeping_views(purpose: str, *, has_room: bool = False,
+                      co_purposes: tuple[str, ...] = ()) -> tuple[tuple[str, bool, bool], ...]:
     """View name, per-set scope, and whether it grades against the base."""
     from .round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER  # lazy: cycle — round_view_artifacts imports this module at module level
 
-    wanted = PURPOSE_ROOM if purpose == PURPOSE_SPEAKER and has_room else purpose
+    wanted = {purpose, *co_purposes} | ({PURPOSE_ROOM} if purpose == PURPOSE_SPEAKER and has_room else set())
     rows = ((name, ARTIFACT_BY_VIEW[name]) for name in BOOKKEEPING_ORDER)
     # A speaker round takes its frequency view from the packet writer, not here.
     return tuple((name, row.per_set, row.grades_against_base) for name, row in rows
-                 if wanted in row.bookkeeping and (purpose != PURPOSE_SPEAKER or name != "frequency"))
+                 if wanted.intersection(row.bookkeeping) and (purpose != PURPOSE_SPEAKER or name != "frequency"))
 
 
 def run_purpose(run_program: str | None) -> str:
     """The purpose behind a run manifest's program id (``speaker`` or ``speaker/full``)."""
     name, _, size = str(run_program or "").partition("/")
     return name if not name or name in PURPOSES else program(name, size or None).purpose
+
+
+def run_purposes(run_program: str) -> tuple[str, ...]:
+    """The primary purpose and co-purposes of a run manifest's program."""
+    name, _, size = run_program.partition("/")
+    try:
+        row = program(name, size or None)
+    except UnknownProgramError:
+        return (run_purpose(run_program),)
+    return (row.purpose, *row.co_purposes)
 
 
 def gate_exemption(purpose: str | None) -> str | None:
@@ -311,11 +322,16 @@ class MeasurementProgram:
     stimulus: Mapping[str, Any] | None = None
     room_sweep: bool = False
     branch_pair: str = BRANCH_PAIR_DRIVERS
+    co_purposes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.poses:
             raise ValueError("a measurement program must contain at least one pose")
         validated_capture_purpose(self.purpose, POSE_KIND_BEARING, self.regime)
+        for purpose in self.co_purposes:
+            if purpose not in PURPOSES or purpose == self.purpose or self.co_purposes.count(purpose) > 1:
+                raise ValueError("co_purposes must be distinct from each other and the primary purpose")
+            validated_capture_purpose(purpose, POSE_KIND_BEARING, self.regime)
         validated_branch_pair(self.branch_pair, self.regime)
         if not isinstance(self.room_sweep, bool) or (self.room_sweep and
                 (self.purpose != PURPOSE_SPEAKER or self.regime != REGIME_PER_DRIVER)):
@@ -426,7 +442,7 @@ def _load_programs(
         if not isinstance(row, dict):
             raise ValueError(f"program {index} must be an object")
         unknown = set(row) - {"id", "size", "layout", "purpose", "regime", "levels", "stimulus",
-                              "room_sweep", "branch_pair"}
+                              "room_sweep", "branch_pair", "co_purposes"}
         if unknown:
             raise ValueError(f"program {index} has unknown fields: {sorted(unknown)}")
         try:
@@ -445,6 +461,9 @@ def _load_programs(
         key = (program_id, size)
         if key in programs:
             raise ValueError(f"measurement plan repeats program {program_id}/{size}")
+        co_purposes = row.get("co_purposes", [])
+        if not isinstance(co_purposes, list):
+            raise ValueError("co_purposes must be a list")
         programs[key] = MeasurementProgram(
             program_id,
             size,
@@ -456,6 +475,7 @@ def _load_programs(
             stimulus=stimuli[stimulus] if stimulus is not None else None,
             room_sweep=row.get("room_sweep", False),
             branch_pair=row.get("branch_pair", BRANCH_PAIR_DRIVERS),
+            co_purposes=tuple(_text(value, "co-purpose") for value in co_purposes),
         )
 
     defaults_raw = raw.get("default_sizes")
@@ -536,6 +556,7 @@ def run_program(purpose: str, poses: str | None = None) -> MeasurementProgram:
             own = row.purpose == purpose
             regime = row.regime if own else selected.regime
             return replace(row, program_id=purpose, purpose=purpose, regime=regime,
+                           co_purposes=row.co_purposes if own else selected.co_purposes,
                            branch_pair=row.branch_pair if own else selected.branch_pair,
                            room_sweep=(selected.room_sweep and purpose == PURPOSE_SPEAKER
                                        and regime == REGIME_PER_DRIVER),

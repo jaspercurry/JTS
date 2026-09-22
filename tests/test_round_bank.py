@@ -438,31 +438,63 @@ def test_bank_runs_the_programs_registered_views(tmp_path, purpose, expected):
         assert packet["room"] == packet["bass"] == []
 
 
-@pytest.mark.parametrize("purpose,base", [("room", False), ("room", True), ("speaker", True)])
-def test_bank_fans_out_views_with_the_base(tmp_path, purpose, base):
-    session, state = _live_session(tmp_path)
+@pytest.mark.parametrize("purpose,base", [("room", False), ("room", True), ("speaker", True), ("rear/seat", True)])
+def test_bank_fans_out_views_with_the_base(tmp_path, request, purpose, base):
     groups = [{"set_id": "base", "base": True, "capture_basis": {"candidate_id": "base-graph"},
                "takes": []}] if base else []
     groups += [{"set_id": f"trial-{i}", "base": False, "capture_basis": {"candidate_id": f"trial-{i}"},
-                "takes": []} for i in range(2)]
+                "takes": []} for i in range(1 if purpose == "rear/seat" else 2)]
+    trials = [group for group in groups if not group["base"]]
+    if purpose == "rear/seat":
+        session, _, _, bank = request.getfixturevalue("summed_capture_bundle")
+        state = None
+        for group in groups:
+            records = []
+            for index, pose in enumerate(measurement_programs.program("rear", "seat").poses):
+                record_id = asyncio.run(bank(
+                    f"{group['set_id']}-{index}", candidate=group["capture_basis"]["candidate_id"],
+                    phase="lateral", measurement_purpose="rear", gating_applied=False,
+                    pose_kind=pose.kind, seat_offset_m=pose.seat_offset_m, vertical_deg=0, mark_distance_m=1.0,
+                ))
+                records.append((record_id, json.loads(gate_sweep.take_artifact_path(session, record_id).read_text())))
+            group.update(manifest_set(records, set_id=group["set_id"]))
+        mark_state(session, "applied")
+    else:
+        session, state = _live_session(tmp_path)
     write_manifest(session, program=purpose, groups=groups)
     calls = []
 
     def run(view, target, *, set_id=None, incumbent=None):
         calls.append((view, set_id, incumbent))
-        return {"view": view, "status": "written"}
+        return (run_bookkeeping(view, target, set_id=set_id, incumbent=incumbent) if purpose == "rear/seat"
+                else {"view": view, "status": "written"})
 
     banked = bank_round(session, campaign_root=tmp_path / "bank", state_path=state, view_runner=run)
     if purpose == "speaker":
         assert calls == [("inventory", row["set_id"], None) for row in groups]
     else:
         assert calls == [("room", row["set_id"], None) for row in groups] + [
-            ("room-grade", f"trial-{i}", None) for i in range(2) if base] + [("frequency", None, None)] + [
+            ("room-grade", row["set_id"], None) for row in trials if base] + [
+            (view, None, None) for view in (("rear", "frequency") if purpose == "rear/seat" else ("frequency",))] + [
             ("inventory", row["set_id"], None) for row in groups]
-        assert banked.provenance["views"][len(groups):-1-len(groups)] == [
-            {"view": "room-grade", "set_id": f"trial-{i}", **(
+        assert [{key: row[key] for key in ("view", "set_id", "status", "incumbent_set_id", "reason") if key in row}
+                for row in banked.provenance["views"] if row["view"] == "room-grade"] == [
+            {"view": "room-grade", "set_id": row["set_id"], **(
                 {"status": "written", "incumbent_set_id": "base"} if base else
-                {"status": "unavailable", "reason": "room_incumbent_set_unavailable"})} for i in range(2)]
+                {"status": "unavailable", "reason": "room_incumbent_set_unavailable"})} for row in trials]
+    if purpose == "rear/seat":
+        packet = json.loads((banked.path / "packet.json").read_text())
+        assert len(packet["room"]) == 2 and packet["rear"]
+        sets = {row["set_id"]: row["candidate_id"] for row in packet["sets"]}
+        assert {sets[row["set_id"]] for row in packet["room"]} == {"base-graph", "trial-0"}
+        for entry in packet["room"]:
+            assert entry["median"]["n_positions"] == 3
+            assert set(entry["median"]["evidence"]["take_ids"]) == {f"{entry['set_id']}-{index}" for index in range(3)}
+        for view in banked.provenance["views"]:
+            if view["view"] == "inventory":
+                inventory = json.loads(Path(view["out"]).read_text())
+                assert {row["view"] for row in inventory["artifacts"] if row["present"]} >= {"room", "rear"}
+                assert {row["view"] for row in inventory["artifacts"]} >= {"room", "room-grade", "per-seat"}
 
 
 @pytest.mark.parametrize("purpose,view", [

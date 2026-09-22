@@ -40,6 +40,8 @@ All measurement programs refuse before sound with `walk_layout_unsupported_for_p
 
 Run `jasper-round run --program rear` for the declared rear woofer. Use `rear/pair_mark` for a one-placement pair take; every hand trial of a rear document runs at the three seats as `rear/seat`, while the arm uses `rear_express`. Follow the [playbook’s Rear recipe](tuning-playbook.md#rear) to compose and trial candidates and read the packet.
 
+A `rear/seat` trial banks one room document per candidate set; compose the room fit from the chosen candidate's set with `--set`.
+
 ## Bass
 
 `jasper-round run --program bass --dry-run` lists the session level and offsets −5, −10, and −15 dB without sound. Each level uses the banked ambient bands to check SNR over the bass target band. An explicit `--level-db L --dry-run` checks only that level.

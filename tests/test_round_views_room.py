@@ -35,7 +35,7 @@ from jasper.audio_measurement.room_boundary import (
 from jasper.cli import crossover_prescriber, round_views
 from jasper.cli.round_views import room
 from jasper.cli.round_views._common import resolve_set
-from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
+from jasper.active_speaker.crossover_v2.room_selection import is_purpose_take, select_seat_takes
 from jasper.active_speaker.crossover_v2.room_prescription import (
     ROOM_MEDIAN_MISMATCH, RoomPrescriptionRefused,
     read_room_median, read_room_prescription,
@@ -81,6 +81,14 @@ def room_round(tmp_path):
     profile["recomposition_snapshot"]["room_correction"] = _ROOM_CORRECTION
     (root / "applied-profile.json").write_text(json.dumps(profile))
     return root
+
+
+@pytest.mark.parametrize("purposes,expected", [(("rear", "room"), True), (("room",), False)])
+def test_rear_summed_take_requires_an_accepted_purpose(tmp_path, purposes, expected):
+    root = bank_seat_round(tmp_path, magnitudes_db=_cube()[:1])
+    row, record = next(measurement_documents(round_inputs(root).session_dir))
+    record = {**record, "measurement_purpose": "rear"}
+    assert is_purpose_take(row, record, purposes) is expected
 
 
 @pytest.mark.parametrize("n_positions,sufficient,reason", [
