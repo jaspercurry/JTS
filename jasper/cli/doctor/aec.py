@@ -140,6 +140,7 @@ REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY = "bridge_output_ref_proven_healthy"
 REASON_BRIDGE_OUTPUT_CHIP_ONLY = "bridge_output_chip_only"
 REASON_BRIDGE_OUTPUT_IDLE = "bridge_output_idle"
 REASON_BRIDGE_OUTPUT_HEALTHY_WORK = "bridge_output_healthy_work"
+REASON_BRIDGE_OUTPUT_ATTENUATION_UNPROVEN = "bridge_output_attenuation_unproven"
 
 REASON_DTLN_DISABLED = "dtln_disabled"
 REASON_DTLN_SIZE_NOT_INTEGER = "dtln_size_not_integer"
@@ -1049,11 +1050,6 @@ def _assess_aec_bridge_output(
     Split out from `check_aec_bridge_output_health` so every verdict is
     unit-testable without a live snapshot.
 
-    Counts three quantities across the windows:
-      - silent_ref_count: windows with mic-loud (>threshold) + ref-silent
-      - healthy_ref_windows: windows where ref ≥ silent-threshold (any signal)
-      - healthy_windows: windows with mic-loud + meaningful attenuation
-
     `healthy_ref_windows` is the key signal: as long as the ref path
     delivered signal in at least ONE recent window, the reference
     chain demonstrably works. silent_ref windows in that case are
@@ -1200,8 +1196,7 @@ def _assess_aec_bridge_output(
         f"no attenuation" if chip_windows else ""
     )
 
-    # All windows quiet — speaker has been idle, nothing to assess.
-    if healthy_windows == 0 and silent_ref_count == 0:
+    if healthy_ref_windows == 0 and silent_ref_count == 0:
         return CheckResult(
             "AEC bridge output", "ok",
             f"no music activity in last {_AEC_RMS_WINDOW_SPAN_SEC:g} s "
@@ -1213,16 +1208,14 @@ def _assess_aec_bridge_output(
     summary = (
         f"{healthy_windows}/{total_windows} recent windows show real AEC "
         f"work (mic>{_AEC_MIC_MUSIC_THRESHOLD} + attenuation≤-8 dB)"
-        f"{mixed}"
-    )
+        if healthy_windows else "signal activity present; AEC attenuation unproven"
+    ) + mixed
     if silent_ref_count:
-        # Non-zero silent_ref without hitting the FAIL threshold —
-        # surface as diagnostic so partial ref-path glitches are visible
-        # before they tip into a sustained outage.
         summary += f"; silent-ref={silent_ref_count} (<5 = below alarm)"
     return CheckResult(
         "AEC bridge output", "ok", summary,
-        reason=REASON_BRIDGE_OUTPUT_HEALTHY_WORK,
+        reason=(REASON_BRIDGE_OUTPUT_HEALTHY_WORK if healthy_windows
+                else REASON_BRIDGE_OUTPUT_ATTENUATION_UNPROVEN),
     )
 
 @doctor_check(exclusive_group="audio-probe")
