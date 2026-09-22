@@ -12,7 +12,6 @@ into the answer that UI, control, and multiroom gates consume.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -20,7 +19,6 @@ from jasper.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from jasper.output_topology import OutputTopologyError
 from jasper.output_topology_store import load_output_topology_strict
 
-from ._common import BASELINE_TOPOLOGY_CHANGED
 from .candidate_bank import load_applied_candidate
 from .capture_geometry import comparison_set_valid
 from .crossover_contract import (
@@ -30,19 +28,12 @@ from .crossover_contract import (
 from .environment import read_camilla_statefile_config_path
 from .measurement import load_measurement_state
 from .profile import ActiveSpeakerConfigError
-from .runtime_contract import (
-    CONTRACT_UNCONFIGURED,
-    classify_output_contract,
-    topology_allows_flat_dac_graph,
+from .setup_readiness import (
+    IN_SEQUENCE_CAPTURE_ANCHOR_REASON as IN_SEQUENCE_CAPTURE_ANCHOR_REASON,
+    active_group_count,
+    readiness_snapshot,
 )
-
-SETUP_STATUS_KIND = "jts_active_speaker_setup_status"
-
-_STAGED_CONFIG_BASENAMES = {
-    "active_speaker_staged_startup.yml",
-    "active_speaker_commissioning.yml",
-}
-IN_SEQUENCE_CAPTURE_ANCHOR_REASON = "active_speaker_commissioning_config_loaded"
+from .state_paths import baseline_profile_state_path
 
 
 # ``ActiveSpeakerConfigError`` is named even though it subclasses ``ValueError``:
@@ -61,17 +52,6 @@ _READINESS_DERIVATION_ERRORS = (
 _PROGRAM_BAKE_SOURCE = (
     "jasper.active_speaker.camilla_yaml.emit_active_speaker_program_bake_config"
 )
-
-
-def _issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
-
-
-def _active_group_count(topology: Any) -> int:
-    return sum(
-        1 for group in getattr(topology, "speaker_groups", ())
-        if getattr(group, "mode", "") in {"active_2_way", "active_3_way"}
-    )
 
 
 def _grouped_active_runtime() -> bool:
@@ -403,43 +383,6 @@ def _applied_layer_a_binding(
     }
 
 
-def _blocked_setup_status(
-    topology: Any,
-    *,
-    active_group_count: int | None,
-    status: str,
-    reason: str,
-    detail: str,
-    active_config_path: str | None,
-    issues: list[dict[str, str]],
-) -> dict[str, Any]:
-    """Build the one fail-closed setup snapshot shared by blocked inputs."""
-
-    commissioning = commissioning_summary(
-        topology, profile=None, applied_profile=None, measurements=None,
-    )
-    return {
-        "artifact_schema_version": 1,
-        "kind": SETUP_STATUS_KIND,
-        "active": (
-            active_group_count > 0 if active_group_count is not None else None
-        ),
-        "active_group_count": active_group_count,
-        "status": status,
-        "configured": False,
-        "volume_allowed": False,
-        "grouping_allowed": False,
-        "commissioning": commissioning,
-        "safety_muted": True,
-        "reason": reason,
-        "detail": detail,
-        "active_config_path": active_config_path or None,
-        "baseline_profile": None,
-        "protected_profile": None,
-        "issues": issues,
-    }
-
-
 def read_active_speaker_setup_status(
     *,
     active_config_path: str | None = None,
@@ -447,338 +390,86 @@ def read_active_speaker_setup_status(
     baseline_state_path: str | Path | None = None,
     include_diagnostics: bool = True,
 ) -> dict[str, Any]:
-    """Return the authoritative active-speaker setup readiness snapshot.
+    """Read output permission, then optionally add the setup report.
 
-    For a passive speaker, active setup is not required and both
-    ``volume_allowed`` and ``grouping_allowed`` are true. For an active speaker
-    the durable baseline profile must be applied and the active CamillaDSP
-    config must not be a commissioning/staged safety graph. Room supplies a
-    fresh ``active_raw`` readback as ``active_config_text``; other callers get
-    the durable statefile-path fallback.
-
-    Volume controls omit diagnostics: they check the applied profile and
-    current config path without compiling a staging graph. All readiness
-    inputs are still read fresh; no cached permission survives a graph change.
+    Volume controls skip diagnostics. Both views use the same fresh applied
+    profile and readiness decision; candidate compilation cannot change it.
     """
-
-    issues: list[dict[str, str]] = []
+    topology = None
+    applied_profile = None
+    read_error = None
     try:
         topology = load_output_topology_strict()
     except OutputTopologyError as exc:
-        issues.append(_issue(
-            "blocker",
-            "output_topology_unreadable",
-            f"output topology cannot be read safely: {exc}",
-        ))
-        return _blocked_setup_status(
-            None,
-            active_group_count=None,
-            status="unknown",
-            reason="output_topology_unreadable",
-            detail="output topology cannot be read safely",
-            active_config_path=active_config_path,
-            issues=issues,
-        )
+        read_error = str(exc)
+    if topology is not None and active_group_count(topology):
+        from .baseline_profile import load_applied_baseline_profile_state  # lazy: passive speakers skip baseline imports
 
-    output_contract = classify_output_contract(topology)
-    active_group_count = _active_group_count(topology)
-    if (
-        active_group_count == 0
-        and not topology_allows_flat_dac_graph(output_contract)
-    ):
-        unconfigured = output_contract.classification == CONTRACT_UNCONFIGURED
-        reason = (
-            "output_topology_unconfigured"
-            if unconfigured
-            else "output_topology_not_ready"
-        )
-        detail = (
-            "choose and save a speaker layout before using audio"
-            if unconfigured
-            else "choose and save a complete passive mono or stereo layout before using audio"
-        )
-        issue = _issue(
-            "blocker",
-            reason,
-            detail,
-        )
-        return _blocked_setup_status(
-            topology,
-            active_group_count=0,
-            status="blocked",
-            reason=reason,
-            detail=detail,
-            active_config_path=active_config_path,
-            issues=[issue, *(dict(item) for item in output_contract.issues)],
-        )
-    if active_group_count == 0:
-        passive_commissioning = commissioning_summary(
-            topology, profile=None, applied_profile=None, measurements=None,
-        )
-        return {
-            "artifact_schema_version": 1,
-            "kind": SETUP_STATUS_KIND,
-            "active": False,
-            "active_group_count": 0,
-            "status": "not_active",
-            "configured": True,
-            "volume_allowed": True,
-            "grouping_allowed": True,
-            "commissioning": passive_commissioning,
-            "safety_muted": False,
-            "reason": None,
-            "detail": "speaker does not use an active crossover",
-            "active_config_path": active_config_path or None,
-            "baseline_profile": None,
-            "protected_profile": None,
-            "issues": [],
-        }
-
-    config_path = active_config_path
-    if config_path is None:
-        config_path = active_config_path_from_statefile()
-    config_basename = os.path.basename(config_path or "")
-    if not config_path:
-        issues.append(_issue(
-            "blocker",
-            "active_config_path_unknown",
-            "current CamillaDSP config path is unavailable",
-        ))
-    elif config_basename in _STAGED_CONFIG_BASENAMES:
-        issues.append(_issue(
-            "blocker",
-            IN_SEQUENCE_CAPTURE_ANCHOR_REASON,
-            "active speaker setup/commissioning graph is loaded",
-        ))
-
-    # Deferred past the passive/unconfigured returns above: jasper-control
-    # polls this on every box, so only an active speaker should pay the
-    # baseline/design stack's resident RSS (issue #3697).
-    from .baseline_profile import (
-        baseline_profile_state_path,
-        compile_commissioning_profile,
-        load_applied_baseline_profile_state,
+        if active_config_path is None:
+            active_config_path = active_config_path_from_statefile()
+        try:
+            applied_profile = load_applied_baseline_profile_state(baseline_state_path)
+        except _READINESS_DERIVATION_ERRORS as exc:
+            read_error = type(exc).__name__
+    status = readiness_snapshot(
+        topology, applied_profile=applied_profile,
+        active_config_path=active_config_path, read_error=read_error,
     )
-    from .design_draft import load_design_draft
+    if not include_diagnostics:
+        return status
 
-    profile_summary: dict[str, Any] | None = None
-    protected_profile_summary: dict[str, Any] | None = None
-    measurements: Mapping[str, Any] = {}
-    applied_profile: Mapping[str, Any] | None = None
-    profile: Mapping[str, Any] | None = None
-    try:
-        applied_profile = load_applied_baseline_profile_state(baseline_state_path)
-        profile = applied_profile or {}
-        if include_diagnostics:
-            design_draft = load_design_draft()
+    profile = None
+    measurements = {}
+    if topology is not None and status["active"]:
+        from .baseline_profile import compile_commissioning_profile  # lazy: import cost — setup diagnostics
+        from .design_draft import load_design_draft  # lazy: import cost — setup diagnostics
+
+        try:
             measurements = load_measurement_state(topology)
-            _, profile = compile_commissioning_profile(applied_profile=applied_profile, topology=topology, design_draft=design_draft,
-                find_candidate=lambda fingerprint: load_applied_candidate(fingerprint, applied_profile=applied_profile or {}))
-    except _READINESS_DERIVATION_ERRORS as exc:
-        profile = None
-        issues.append(_issue(
-            "blocker",
-            "active_baseline_profile_unreadable",
-            f"active speaker baseline readiness could not be derived: {type(exc).__name__}",
-        ))
-
-    if profile is not None:
-        raw_config = profile.get("config")
-        config: Mapping[str, Any] = (
-            raw_config
-            if isinstance(raw_config, Mapping)
-            else {}
-        )
-        raw_source = profile.get("source")
-        source: Mapping[str, Any] = (
-            raw_source
-            if isinstance(raw_source, Mapping)
-            else {}
-        )
-        profile_issues = [
-            {
-                "severity": str(issue.get("severity") or "blocker"),
-                "code": str(issue.get("code") or "baseline_profile_issue"),
-                "message": str(issue.get("message") or "active speaker baseline issue"),
-            }
-            for issue in profile.get("issues", [])
-            if isinstance(issue, Mapping)
-        ]
-        profile_summary = {
+            _, profile = compile_commissioning_profile(
+                applied_profile=applied_profile, topology=topology,
+                design_draft=load_design_draft(),
+                find_candidate=lambda fingerprint: load_applied_candidate(
+                    fingerprint, applied_profile=applied_profile or {},
+                ),
+            )
+        except _READINESS_DERIVATION_ERRORS as exc:
+            profile = {"status": "unavailable", "issues": [{
+                "severity": "warning", "code": "setup_diagnostics_unavailable",
+                "message": f"speaker setup diagnostics could not be derived: {type(exc).__name__}",
+            }]}
+        source = _mapping(profile.get("source"))
+        status["baseline_profile"] = {
             "status": profile.get("status"),
             "path": str(baseline_profile_state_path(baseline_state_path)),
-            "config_path": config.get("path"),
+            "config_path": _mapping(profile.get("config")).get("path"),
             "source_fingerprint": source.get("fingerprint"),
             "candidate_fingerprint": profile.get("candidate_fingerprint"),
             "provisional": bool(profile.get("provisional")),
-            "issues": profile_issues,
+            "issues": [{
+                "severity": str(item.get("severity") or "blocker"),
+                "code": str(item.get("code") or "baseline_profile_issue"),
+                "message": str(item.get("message") or "active speaker baseline issue"),
+            } for item in profile.get("issues", []) if isinstance(item, Mapping)],
             "role": "staging_candidate",
             "live_answer_key": "protected_profile",
-        }
-
-        protected_profile = applied_profile
-        protected_source = _mapping(
-            protected_profile.get("source")
-            if isinstance(protected_profile, Mapping)
-            else None
-        )
-        protected_config = _mapping(
-            protected_profile.get("config")
-            if isinstance(protected_profile, Mapping)
-            else None
-        )
-        protected_config_path = str(protected_config.get("path") or "")
-        protected_config_exists = bool(
-            protected_config_path and Path(protected_config_path).exists()
-        )
-        protected_topology_fingerprint = str(
-            protected_source.get("topology_fingerprint") or ""
-        )
-        current_topology_fingerprint = str(
-            source.get("topology_fingerprint") or ""
-        )
-        protected_topology_current = None if not include_diagnostics else not (
-            protected_topology_fingerprint
-            and current_topology_fingerprint
-            and protected_topology_fingerprint != current_topology_fingerprint
-        )
-        # Topology changes disclose staleness without parking (ADR-0019).
-        protected_ready = bool(
-            isinstance(protected_profile, Mapping)
-            and protected_profile.get("status") == "applied"
-            and protected_config_exists
-        )
-        protected_profile_summary = {
-            "available": isinstance(protected_profile, Mapping),
-            "status": "ready" if protected_ready else "unavailable",
-            "config_path": protected_config_path or None,
-            "source_fingerprint": protected_source.get("fingerprint"),
-            "candidate_fingerprint": (
-                protected_profile.get("candidate_fingerprint")
-                if isinstance(protected_profile, Mapping)
-                else None
-            ),
-            "topology_current": protected_topology_current,
-            "provisional": bool(
-                protected_profile.get("provisional")
-                if isinstance(protected_profile, Mapping)
-                else False
-            ),
-            "role": "applied_profile",
-        }
-        profile_summary["matches_applied"] = (
-            None
-            if not isinstance(protected_profile, Mapping)
-            else bool(
+            "matches_applied": None if applied_profile is None else bool(
                 profile.get("candidate_fingerprint")
-                and profile.get("candidate_fingerprint")
-                == protected_profile.get("candidate_fingerprint")
-            )
+                and profile.get("candidate_fingerprint") == applied_profile.get("candidate_fingerprint")
+            ),
+        }
+        status["protected_profile"]["layer_a_binding"] = _applied_layer_a_binding(
+            topology, applied_profile=applied_profile,
+            active_config_path=active_config_path, active_config_text=active_config_text,
         )
-
-        if isinstance(protected_profile, Mapping):
-            if not protected_config_exists:
-                issues.append(_issue(
-                    "blocker",
-                    "active_baseline_config_missing",
-                    "applied active speaker baseline config file is missing",
-                ))
-            elif protected_topology_current is False:
-                issues.append(_issue(
-                    "warning",
-                    BASELINE_TOPOLOGY_CHANGED,
-                    (
-                        "topology changed since the applied baseline; re-mint "
-                        "when convenient"
-                    ),
-                ))
-
-        if profile.get("status") != "applied" and not protected_ready:
-            profile_blockers = [
-                issue for issue in profile_issues
-                if issue["severity"] == "blocker"
-            ]
-            if profile_blockers:
-                issues.extend(profile_blockers)
-            else:
-                issues.append(_issue(
-                    "blocker",
-                    "active_baseline_profile_not_applied",
-                    (
-                        "apply the active speaker baseline before normal output "
-                        "control or grouping"
-                    ),
-                ))
-        if (
-            not protected_ready
-            and config.get("path")
-            and not Path(str(config.get("path"))).exists()
-        ):
-            issues.append(_issue(
-                "blocker",
-                "active_baseline_config_missing",
-                "active speaker baseline config file is missing",
-            ))
-
-    applied_crossover = manual_preservation = commissioning = None
-    if include_diagnostics:
-        current_source = _mapping(
-            profile.get("source") if isinstance(profile, Mapping) else None
+        status["applied_crossover"] = crossover_snapshot_state(
+            applied_profile, expected_topology_id=topology.topology_id,
+            expected_topology_fingerprint=str(source.get("topology_fingerprint") or "") or None,
         )
-        applied_crossover = crossover_snapshot_state(
-            applied_profile,
-            expected_topology_id=topology.topology_id,
-            expected_topology_fingerprint=str(
-                current_source.get("topology_fingerprint") or ""
-            ) or None,
+        status["manual_preservation"] = legacy_manual_preservation_state(
+            applied_profile, current_source_fingerprint=str(source.get("fingerprint") or "") or None,
         )
-        layer_a_binding = _applied_layer_a_binding(
-            topology,
-            applied_profile=applied_profile,
-            active_config_path=config_path,
-            active_config_text=active_config_text,
-        )
-        if protected_profile_summary is not None:
-            protected_profile_summary["layer_a_binding"] = layer_a_binding
-        manual_preservation = legacy_manual_preservation_state(
-            applied_profile,
-            current_source_fingerprint=str(current_source.get("fingerprint") or "") or None,
-        )
-        commissioning = commissioning_summary(
-            topology, profile=profile, applied_profile=applied_profile,
-            measurements=measurements,
-        )
-    else:
-        profile_summary = None
-    # A blocker outranks a notice for the headline whichever was appended
-    # first: the list carries both severities, and a household told "re-mint
-    # when convenient" while the box is blocked is told the wrong thing.
-    blockers = [issue for issue in issues if issue["severity"] == "blocker"]
-    blocked = bool(blockers)
-    headline = blockers or issues
-    setup_reason = headline[0]["code"] if headline else None
-    detail = (
-        headline[0]["message"]
-        if headline
-        else "active speaker baseline is applied and output control is ready"
+    status["commissioning"] = commissioning_summary(
+        topology, profile=profile, applied_profile=applied_profile, measurements=measurements,
     )
-    return {
-        "artifact_schema_version": 1,
-        "kind": SETUP_STATUS_KIND,
-        "active": True,
-        "active_group_count": active_group_count,
-        "status": "blocked" if blocked else "ready",
-        "configured": not blocked,
-        "volume_allowed": not blocked,
-        "grouping_allowed": not blocked,
-        "commissioning": commissioning,
-        "safety_muted": blocked,
-        "reason": setup_reason,
-        "detail": detail,
-        "active_config_path": config_path or None,
-        "baseline_profile": profile_summary,
-        "protected_profile": protected_profile_summary,
-        "applied_crossover": applied_crossover,
-        "manual_preservation": manual_preservation,
-        "issues": issues,
-    }
+    return status

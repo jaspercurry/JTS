@@ -20,7 +20,7 @@ import pytest
 import jasper.active_speaker.baseline_profile as baseline
 import jasper.active_speaker.setup_status as setup
 from jasper.control.server import _make_handler
-from jasper.output_topology import save_output_topology
+from jasper.output_topology_store import save_output_topology
 from jasper.volume_curve import percent_to_db
 
 from tests._log_events import event_fields, event_records
