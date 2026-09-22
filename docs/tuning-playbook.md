@@ -25,6 +25,25 @@ Numbers below the trusted floor carry `below_trusted_floor` beside their
 `value`. They are not speaker evidence. Use `jasper-round-views` for a question
 the packet did not answer. Never recompute a number it prints.
 
+## What we are tuning for
+
+The goal is the listening position. Measure the speaker layer at the mark:
+a gated direct-sound read is the only way to separate speaker from room.
+Judge the result at the seat.
+
+| Goal figure | Owner and current limit |
+|---|---|
+| Wall hole (SBIR: speaker-boundary interference response) depth at the seat | `rear_evidence` owns `dip.depth_db`, measured at bearings only today. The room program publishes no wall-hole depth. |
+| Trough fill | `rear_preview` owns `trough_fill_db`; preview only. |
+| Roughness / ripple | `rear_evidence` owns `ripple_db`, against the rear-muted reference's one-octave trend. Roughness against each curve's own trend is a different number, not yet a product figure. |
+| Early-arriving share | `rear_evidence` owns the late-energy figures: 90–250 Hz, early 0–10 ms versus late 10–40 ms. Rear program only. |
+| Cross-seat spread | `room_views` publishes `median.spread_db`. |
+| Repeat spread | Per program; a shared, comparable repeat spread is not yet a product figure. |
+
+The four programs measure and publish these differently today.
+A shared seat-figures module is the planned owner (#5439).
+The Rear chapter's roughness figures and pattern-ratio arithmetic come from laptop scripts, not the product.
+
 ## Speaker
 
 The emitter absorbs the largest branch peak plus its margin before the
@@ -314,12 +333,14 @@ worth playing:
   read about 2 dB kinder than the raw curve, but differences between
   candidates held. Compare candidates; never read a depth as absolute.
 - Judge the rear stage at the listening seat with the speaker at its wall.
+  Today no rear plan row carries a seat pose, so this judgment needs the
+  seat-round work in #5439; until then, informal seat measurements are not a product step.
   Cabinet 0.2 m from the wall, mic 2 m away: the fair "off" had a wall
   hole of −11 to −13 dB near 134 Hz and a roughness (RMS against the
   curve's own one-octave trend, 80–350 Hz) of 5.6–5.8 dB; rear tunes cut
-  that to −3 dB and 2.9 dB, and 37 % → 51 % of the 100–350 Hz energy
-  arrived within 20 ms. Mid-room, or with the mic 0.6–0.8 m away, the same
-  tunes showed almost nothing: a near mic is a workshop tool. Roughness
+  that to −3 dB and 2.9 dB. A laptop measurement found that 37 % → 51 % of
+  the 100–350 Hz energy arrived within 20 ms. Mid-room, or with the mic
+  0.6–0.8 m away, the same tunes showed almost nothing: a near mic is a workshop tool. Roughness
   repeated to ±0.2 dB over two hours, hole depth only to ±1.4 dB.
 
 The pattern is a spectrum, and the delay picks the point on it. The pattern
@@ -383,9 +404,14 @@ the +6 dB chain cap) that put its previewed curve on tune A's from 30 to
 the filter gains), `compose` it, and trial both in ONE round:
 `jasper-round trial <A fp> --candidates base,<A fp>,<off fp> --wait`. Keep
 the pair when `low_bass` and `band_level_db` agree within about 1 dB at the
-repeated bearing. The A/B listen card on `/sound/speaker/` takes both tunes
-from that round, turns the louder one down by their measured level
-difference (40 Hz–16 kHz; it never adds gain), and flips between them.
+repeated bearing.
+
+The EQ page's Cardioid On|Off switch mutes the applied tune's rear output
+in place, at runtime only; Done or expiry restores normal playback (ADR-0329).
+When a match is available, it trims the louder side using the newest banked
+front/rear pair round.
+The match is broadband power over 40 Hz–16 kHz, not bass tone.
+The switch compares only the applied tune with its rear off, not two banked tunes.
 
 The stack plays as composed: room and bass stay in, the same in every
 candidate. After a rear change is adopted, check the room and bass

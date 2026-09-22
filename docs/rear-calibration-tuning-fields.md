@@ -157,14 +157,11 @@ ADR-0322); any `valid_band_hz` or filter fit an acoustic task later derives
 from the CAD dataset, since that model is an idealized free-field (plus one
 image-source wall estimate) BEM computation, not a measurement.
 
-**REQUIRES MEASUREMENT** (nothing below has been established on real
-hardware): routing/polarity — which physical channel is the rear driver and
-whether its wiring matches `inverted` — qualified by the front/rear/both
-take ADR-0322 adds (one recording clock, one level, summed verify, run
-through the candidate-branches baseline-shaped graph with crossover,
-protection, delay, and limiter already present; only the take's own
-excited target is left unmuted, an untaken rear still mutes byte-identically);
-the driver's electrical-to-motion transfer, needed to turn acoustic
-source-motion weights into an actual amplifier/DSP gain; forward (on-axis)
-response with the calibration applied; rear suppression at multiple
-listener positions and angles.
+**MEASURED:** the front/rear/both pair take reports `rear_polarity` and
+`arrival_gap` in `crossover_v2/rear_views.py`. Measured tunes exist; see the
+[playbook's Rear chapter](tuning-playbook.md#rear) for results and their limits.
+
+**MODEL ONLY:** the CAD ideal target remains an acoustic model, not a
+measured driver transfer or proof that its source-motion weights give the
+required amplifier/DSP gains. The measured pair and tune results do not
+validate that ideal target.

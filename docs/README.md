@@ -35,6 +35,8 @@ then the selected tool's `--help`. Read further only for the question at hand:
 
 - [Doctrine](measurement-loop-doctrine.md): authority and layer boundaries.
 - [Methodology](tuning-methodology.md): optional scientific interpretation.
+- [Playbook](tuning-playbook.md): goals and how to read each program's evidence.
+- [Rear tuning fields](rear-calibration-tuning-fields.md): rear calibration document fields.
 - [Crossover](active-crossover-information-design.md): its product boundary.
   Room is a layer of the same toolbox
   ([ADR-0259](adr/0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md));

@@ -142,10 +142,10 @@ different candidates and then claim their full configurations were compared.
 
 ## 6. Linearize per driver
 
-Ask whether the feature belongs to the speaker and whether the proposed filter
-can control it. `classify-features`, `gate-sweep`, `close-reference`, and
-`distortion` provide distinct evidence. Run useful enrichment before freezing
-the prescription packet. Unavailable classification is not a negative verdict.
+Is this a speaker feature the filter can control? `classify-features`,
+`jasper-round-views sweep --scope round|verdict|take`, `close-reference`, and
+`distortion` give distinct evidence. Run useful views before freezing the
+prescription packet. Unavailable classification is not a negative verdict.
 
 | Observation | Useful interpretation or next test |
 |---|---|
