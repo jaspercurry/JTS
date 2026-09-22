@@ -16,7 +16,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Collection, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
 
 import yaml
 
@@ -55,10 +55,6 @@ from jasper.output_topology import cardioid_cabinet_channels, measurement_target
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
-from .branch_chain import (
-    CrossoverSection, branch_chain_peak_db, branch_headroom_db,
-    rear_branch_sum_headroom_db, sections_by_role,
-)
 from .camilla_names import (
     baseline_protection_name, bass_management_hp_name,
     driver_baseline_gain_name, driver_baseline_limiter_name, driver_delay_name,
@@ -100,6 +96,9 @@ from .test_signal_plan import (
     protective_tweeter_highpass_frequency_hz,
     strictest_crossover_highpass_hz,
 )
+
+if TYPE_CHECKING:
+    from .branch_chain import CrossoverSection
 
 logger = logging.getLogger(__name__)
 
@@ -1622,9 +1621,14 @@ def program_headroom_db(
     rear_calibration: Mapping[str, Any] | None = None,
 ) -> float:
     """Total program attenuation in dB, including shared gains and branch peaks."""
+    rear_headroom_db = 0.0
+    if rear_calibration:
+        from .branch_chain import rear_branch_sum_headroom_db  # lazy: numpy import cost (fanin imports this module for one constant)
+
+        rear_headroom_db = rear_branch_sum_headroom_db(rear_calibration)
     return (baseline_headroom_db + total_positive_boost_db(room_peqs)
             + linearization_headroom_db(linearization, branch_context=branch_context)
-            + rear_branch_sum_headroom_db(rear_calibration)
+            + rear_headroom_db
             + max(0.0, output_trim_db))
 
 
@@ -1643,6 +1647,8 @@ def boost_headroom_by_role(
     the branch above the fader. Measurement excitation caps do not apply here;
     session volume and measured SPL headroom are disclosures only.
     """
+    from .branch_chain import branch_chain_peak_db  # lazy: numpy import cost (fanin imports this module for one constant)
+
     spent = program_headroom_db(linearization, branch_context=branch_context, room_peqs=room_peqs)
     return {role: {
         "composed_boost_db": max(0.0, branch_chain_peak_db((linearization or {}).get(role, ()))),
@@ -1684,9 +1690,11 @@ def linearization_headroom_db(
     """
     # A branch with no positive gain cannot reach unity through a crossover and
     # a non-positive trim, so a cut-only graph is charged 0.0 without evaluating
-    # anything.
+    # anything — and without importing numpy, kept lazy on a 1 GB Pi.
     if not linearization_has_boost(linearization):
         return 0.0
+    from .branch_chain import branch_headroom_db  # lazy: numpy import cost (fanin imports this module for one constant)
+
     worst = 0.0
     for role, filters in (linearization or {}).items():
         if not isinstance(filters, Sequence) or isinstance(filters, (str, bytes)):
@@ -1706,7 +1714,8 @@ def linearization_has_boost(
     """Does any emitted linearization filter carry positive gain?
 
     The guard that keeps a cut-only graph off the chain-evaluation path
-    entirely. Sound because a cut cascade, a Linkwitz-Riley section and a non-positive
+    entirely, so neither this emitter nor the runtime contract imports numpy for
+    it. Sound because a cut cascade, a Linkwitz-Riley section and a non-positive
     trim are each <= 0 dB everywhere.
 
     Public because the adoption table asks the same question of the APPLIED
@@ -1742,6 +1751,8 @@ def _branch_context(
     rather than under-charges, and keeps this identical to what the runtime
     contract can re-derive without walking optional filters.
     """
+    from .branch_chain import sections_by_role  # lazy: numpy import cost (fanin imports this module for one constant)
+
     return {
         role: (
             role_sections,

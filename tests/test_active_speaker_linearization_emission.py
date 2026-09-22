@@ -17,6 +17,9 @@ validation gate (``_validated_linearization``) and the chain-insertion order
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 import yaml
 
@@ -48,6 +51,14 @@ from tests.test_active_speaker_runtime_contract import _active_topology, _dynami
 from jasper.bass_extension.dynamic_graph import PREFIX, validated_base_graph
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
+
+
+def test_importing_camilla_yaml_does_not_load_numpy():
+    subprocess.run(
+        [sys.executable, "-c", "import sys; import jasper.active_speaker.camilla_yaml; assert 'numpy' not in sys.modules"],
+        check=True,
+        timeout=30,
+    )
 
 
 def classify_camilla_graph(*args, **kwargs):
