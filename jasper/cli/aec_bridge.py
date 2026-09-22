@@ -1020,31 +1020,7 @@ def _aec_loop(  # noqa: PLR0915
 
 
 def _park(code: int, reason: str, detail: str) -> int:
-    """Announce the park out loud, log it, and return the exit code systemd
-    holds the unit on.
-
-    ``os.EX_CONFIG`` (78) and ``os.EX_NOINPUT`` (66) are both listed in
-    jasper-aec-bridge.service's ``SuccessExitStatus`` +
-    ``RestartPreventExitStatus``, so a permanent fault parks the unit instead
-    of spending the StartLimitAction=reboot budget ADR-0146 sized for
-    transients. Same split as jasper-voice.service: 78 is "the configuration
-    asks for something this box cannot do", 66 is "the primary microphone
-    would not open", and each speaks the cue that code already means. None of
-    the 78s here is a missing voice provider — a stale reference source, an
-    unvalidated beam plan, a mis-set chip-reference flag or an absent corpus
-    mic are all faults the /voice wizard cannot touch — so they speak the
-    diagnostics cue, not voice_not_set_up.
-
-    Every park here stops the UDP mic feed jasper-voice's wake legs read, so
-    the box goes deaf until someone acts — non-negotiable 6 owes a cue. The
-    jasper-aec-reconcile hand-off (ADR-0239) covers only the card-removal
-    shape: a stale JASPER_MIC_DEVICE, a PortAudio enumeration failure or any
-    config fault raises with no udev event, nothing writes the
-    voice-input-absent marker, and nothing else would make a sound. A cue that
-    cannot play is logged and never changes the exit code — the fan-in socket
-    the cue writes to is only an ``After=``/``Wants=`` of this unit, so it can
-    legitimately be missing at start.
-    """
+    """Keep the park code; only configuration faults need audio (ADR-0340)."""
     log_event(
         logger,
         "aec_bridge.park",
@@ -1053,17 +1029,12 @@ def _park(code: int, reason: str, detail: str) -> int:
         detail=detail,
         level=logging.ERROR,
     )
-    # Imported here, not at module scope: the cue stack costs RAM and import
-    # time the steady-state bridge never needs (ADR-0226).
-    from ..cues.park import play_park_cue
-    from ..cues.registry import (
-        NO_ROOM_MIC_CUE_SLUG,
-        VOICE_ASSETS_MISSING_CUE_SLUG,
-    )
-    slug = (
-        NO_ROOM_MIC_CUE_SLUG if code == os.EX_NOINPUT
-        else VOICE_ASSETS_MISSING_CUE_SLUG
-    )
+    if code == os.EX_NOINPUT:
+        return code
+    from ..cues.park import play_park_cue  # lazy: config-fault cue stack is not needed by the steady-state bridge
+    from ..cues.registry import VOICE_ASSETS_MISSING_CUE_SLUG  # lazy: config-fault cue stack is not needed by the steady-state bridge
+
+    slug = VOICE_ASSETS_MISSING_CUE_SLUG
     result = play_park_cue(slug, logger=logger)
     log_event(
         logger,

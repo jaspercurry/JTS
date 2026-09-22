@@ -41,7 +41,7 @@ import wave
 from dataclasses import dataclass
 from typing import Callable, Collection, Protocol
 
-from ..voice.earcons import LISTENING_CHIRP_RECIPE, _generate_mute_click, render_recipe
+from ..voice.earcons import LISTENING_CHIRP_RECIPE, render_recipe
 from .registry import CueDef
 
 logger = logging.getLogger(__name__)
@@ -470,7 +470,12 @@ def write_cue(
     sounds_dir: str,
     backend: TTSBackend,
 ) -> str:
-    """Write speech or the local microphone-off tone as a 24 kHz WAV."""
+    """Render `cue`'s template, call the TTS backend, resample to 48k,
+    write a WAV at `<sounds_dir>/<slug>-<hash>.wav`. Returns the
+    absolute path. Idempotent: safe to call when the file already
+    exists (will just rewrite the same content). The hash is keyed
+    on the backend's actual model so a model change lands in a new
+    filename."""
     text = render_template(cue, hostname)
     model = backend_model(backend)
     path = cue_path(sounds_dir, cue, hostname, voice, model)
@@ -479,8 +484,7 @@ def write_cue(
         "cue: synthesising %s (text=%r, voice=%s, model=%s, hash=%s)",
         cue.slug, text, voice, model, cue_hash(cue, hostname, voice, model),
     )
-    result = (backend.synthesise(text) if cue.template
-              else TTSResult(pcm_24k=_generate_mute_click(going_on=False)))
+    result = backend.synthesise(text)
     _write_wav_atomic(path, result.pcm_24k)
     logger.info("cue: wrote %s (%d bytes pcm @ 24kHz)", path, len(result.pcm_24k))
     return path

@@ -45,7 +45,6 @@ from jasper.mic_presence import (
     MIC_ABSENT_REASONS,
     MIC_ABSENT_XVF_CAPTURE_ABSENT,
     read_mic_presence,
-    voice_park_is_transient,
 )
 from jasper.mics import xvf3800
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
@@ -1700,27 +1699,24 @@ def _park_validation_bounce(tmp_path: Path) -> Path:
 
 
 @pytest.mark.parametrize(
-    ("park", "code", "transient"),
+    ("park", "code"),
     [
-        (_park_no_accessory, MIC_ABSENT_NO_LOCAL_OR_ACCESSORY, False),
-        (_park_accessory_unknown, MIC_ABSENT_ACCESSORY_UNKNOWN, False),
-        (_park_managed_xvf_unusable, MIC_ABSENT_XVF_CAPTURE_ABSENT, False),
+        (_park_no_accessory, MIC_ABSENT_NO_LOCAL_OR_ACCESSORY),
+        (_park_accessory_unknown, MIC_ABSENT_ACCESSORY_UNKNOWN),
+        (_park_managed_xvf_unusable, MIC_ABSENT_XVF_CAPTURE_ABSENT),
         (
             _park_chip_aec_bringup(chip_aec_health.REFERENCE_PRODUCER_DOWN),
             MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED,
-            False,
         ),
         (
             _park_chip_aec_bringup(chip_aec_health.BRIDGE_FAILED),
             MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED,
-            False,
         ),
         (
             _park_chip_aec_bringup(chip_aec_health.REAPPLY_FAILED),
             MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED,
-            False,
         ),
-        (_park_validation_bounce, MIC_ABSENT_CHIP_AEC_VALIDATING, True),
+        (_park_validation_bounce, MIC_ABSENT_CHIP_AEC_VALIDATING),
     ],
     ids=(
         "no-accessory", "accessory-unknown", "xvf-unusable",
@@ -1733,15 +1729,8 @@ def test_every_park_writes_a_code_the_reader_knows(
     monkeypatch: pytest.MonkeyPatch,
     park: Callable[[Path], Path],
     code: str,
-    transient: bool,
 ) -> None:
-    """Drive every park this harness can reach and read the marker back
-    through the real reader, so writer and vocabulary cannot drift apart.
-
-    `transient` is the ADR-0239 axis and is derived here from nothing but the
-    code — the marker carries no separate flag, so the shutdown cue's verdict
-    IS the code's class.
-    """
+    """The real marker reader recognizes every published park code."""
     body = park(tmp_path)
 
     fields = _marker_fields(body)
@@ -1758,7 +1747,6 @@ def test_every_park_writes_a_code_the_reader_knows(
     assert record.present is False
     assert record.reason == code
     assert record.detail == fields["detail"]
-    assert voice_park_is_transient() is transient
 
 
 def _aec_disabled_direct_mic_box(tmp_path: Path) -> None:

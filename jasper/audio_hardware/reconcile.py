@@ -295,7 +295,7 @@ class Pass:
         (``deploy/systemd/jasper-audio-hardware-reconcile.service``), the way
         the shell reconciler ran them: capping ``stop jasper-voice.service``
         below that unit's ``TimeoutStopSec=14s`` would report a failure for a
-        stop that is merely finishing its mic-loss cue (ADR-0239), and capping
+        stop that is still within its shutdown budget, and capping
         an ``enable`` would abort the pass mid-restart on a slow daemon-reload.
         """
         bound = SYSTEMCTL_TIMEOUT_SEC if timeout == _MANAGER_BOUND else timeout

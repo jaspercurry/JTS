@@ -2,30 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Voice-input gate for jasper-voice.
-
-Pins the pieces that keep a no-input box from crash-looping into
-StartLimitAction=reboot:
-
-1. jasper-voice.service gates ExecStart on the reconciler-written marker
-   (ConditionPathExists), and parks (not crash-loops) on the
-   mic-unavailable exit code.
-2. The marker path agrees across the unit and its Python owner — a drift
-   here silently breaks the gate.
-3. The daemon exits VOICE_MIC_UNAVAILABLE_EXIT on a primary mic-open
-   failure — and VOICE_PROVIDER_NOT_CONFIGURED_EXIT with no provider —
-   announcing each park with a cue first; the doctor reports the parked
-   state as expected-idle.
-4. The gate is an OR over a local mic and a paired accessory mic
-   (issue #2205): the accessory env path agrees across its owner, the unit,
-   and env_load.
-5. The gate owner publishes which half it resolved
-   (JASPER_LOCAL_MIC_PRESENT), and the daemon's leg planner reads that
-   published fact rather than re-deriving mic presence from its own config.
-6. Closing the gate is audible: the daemon plays the mic-loss cue once
-   during its own shutdown when the marker is there, and the unit's
-   TimeoutStopSec clears MIC_LOSS_CUE_STOP_FLOOR_SEC (ADR-0239).
-"""
+"""Behavior of the persistent voice-input gate and boot park codes."""
 from __future__ import annotations
 
 import logging
@@ -38,7 +15,6 @@ from jasper.accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
 from jasper.mic_capture import InputDeviceUnavailable
 from jasper.env_load import ENV_FILES
 from jasper.mic_presence import (
-    MIC_ABSENT_CHIP_AEC_VALIDATING,
     MIC_ABSENT_NO_LOCAL_OR_ACCESSORY,
 )
 from jasper.voice.input_presence import (
@@ -47,7 +23,6 @@ from jasper.voice.input_presence import (
     voice_parked_no_mic,
 )
 from jasper.cues.registry import (
-    NO_ROOM_MIC_CUE_SLUG,
     VOICE_ASSETS_MISSING_CUE_SLUG,
     VOICE_NOT_SET_UP_CUE_SLUG,
 )
@@ -58,10 +33,8 @@ from jasper.voice_daemon import (
     VOICE_PROVIDER_NOT_CONFIGURED_EXIT,
     VOICE_STARTUP_CONFIG_ERROR_EXIT,
 )
-from tests._log_events import event_fields, event_records
+from tests._log_events import event_fields
 from tests._playout import FakeTts
-from tests._wake_loop import wake_loop_for_tests
-from tests.systemd_unit_helpers import value_for
 
 ROOT = Path(__file__).resolve().parents[1]
 UNIT = ROOT / "deploy" / "systemd" / "jasper-voice.service"
@@ -315,7 +288,7 @@ def _parking_daemon(
         (
             InputDeviceUnavailable("Array", ValueError("absent")),
             VOICE_MIC_UNAVAILABLE_EXIT,
-            NO_ROOM_MIC_CUE_SLUG,
+            None,
             "voice.mic_unavailable",
         ),
         (
@@ -339,23 +312,9 @@ def _parking_daemon(
     ],
     ids=("mic-unavailable", "not-set-up", "vad-setup-failed", "config-invalid"),
 )
-def test_a_boot_park_is_announced_before_main_exits(
-    exc: Exception, code: int, slug: str, event: str, monkeypatch, caplog,
+def test_boot_parks_keep_their_exit_code_and_cue_policy(
+    exc: Exception, code: int, slug: str | None, event: str, monkeypatch, caplog,
 ) -> None:
-    """Every park code must reach systemd unchanged — a park that crashed
-    with a traceback would be exit 1 → Restart=on-failure → crash-loop — and
-    each must have said so out loud first. Every check that raises these runs
-    before the daemon's own cue manager exists, so this is the largest window
-    in which the speaker goes deaf with nothing spoken (non-negotiable 6).
-    The slugs differ because the remedies do: the mic path reuses the cue
-    ADR-0239 speaks for the same fact at shutdown, an unusable provider sends
-    the household to the voice wizard, and the faults that wizard cannot fix
-    — a VAD asset that will not load, a rejected config value — send them to
-    System → Run diagnostics, the only page that can show either.
-
-    The event name is the other half: these park silently as far as a
-    support read is concerned unless the journal names which check refused,
-    and each name is what a `journalctl` filter is written against."""
     daemon_main, spy = _parking_daemon(exc, monkeypatch)
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
@@ -364,7 +323,7 @@ def test_a_boot_park_is_announced_before_main_exits(
 
     assert raised.value.code == code
     # Recorded at all means recorded before the exit: nothing plays after it.
-    assert spy.played == [slug]
+    assert spy.played == ([slug] if slug else [])
     assert event_fields(caplog, event)
 
 
@@ -386,7 +345,7 @@ def test_a_park_cue_that_cannot_play_still_parks_with_the_same_code(
     changes the exit code, and the failure is named on the wire so a support
     read can tell "nobody heard it" from "nobody was there"."""
     daemon_main, spy = _parking_daemon(
-        InputDeviceUnavailable("Array", ValueError("absent")),
+        VoiceProviderNotConfigured("not configured"),
         monkeypatch,
         connect_error=connect_error,
     )
@@ -395,7 +354,7 @@ def test_a_park_cue_that_cannot_play_still_parks_with_the_same_code(
         with pytest.raises(SystemExit) as raised:
             daemon_main.main()
 
-    assert raised.value.code == VOICE_MIC_UNAVAILABLE_EXIT
+    assert raised.value.code == VOICE_PROVIDER_NOT_CONFIGURED_EXIT
     assert spy.played == []
     assert event_fields(caplog, "voice.park_cue")["result"] == "play_error"
 
@@ -408,7 +367,7 @@ def test_a_park_cue_interrupted_still_parks_with_the_same_code(
     `sys.exit(code)` and the process exits 1 — neither systemd's success
     code nor its restart-prevent one."""
     daemon_main, spy = _parking_daemon(
-        InputDeviceUnavailable("Array", ValueError("absent")),
+        VoiceProviderNotConfigured("not configured"),
         monkeypatch,
         cue_result=KeyboardInterrupt(),
     )
@@ -417,8 +376,8 @@ def test_a_park_cue_interrupted_still_parks_with_the_same_code(
         with pytest.raises(SystemExit) as raised:
             daemon_main.main()
 
-    assert raised.value.code == VOICE_MIC_UNAVAILABLE_EXIT
-    assert spy.played == [NO_ROOM_MIC_CUE_SLUG]
+    assert raised.value.code == VOICE_PROVIDER_NOT_CONFIGURED_EXIT
+    assert spy.played == [VOICE_NOT_SET_UP_CUE_SLUG]
     assert event_fields(caplog, "voice.park_cue")["result"] == "interrupted"
 
 
@@ -430,7 +389,7 @@ def test_a_park_cue_with_no_cached_asset_is_named_play_failed(
     event carries the shared `play_failed` vocabulary the wake loop uses —
     not a label claiming the asset specifically was missing."""
     daemon_main, spy = _parking_daemon(
-        InputDeviceUnavailable("Array", ValueError("absent")),
+        VoiceProviderNotConfigured("not configured"),
         monkeypatch,
         cue_result=False,
     )
@@ -439,8 +398,8 @@ def test_a_park_cue_with_no_cached_asset_is_named_play_failed(
         with pytest.raises(SystemExit) as raised:
             daemon_main.main()
 
-    assert raised.value.code == VOICE_MIC_UNAVAILABLE_EXIT
-    assert spy.played == [NO_ROOM_MIC_CUE_SLUG]
+    assert raised.value.code == VOICE_PROVIDER_NOT_CONFIGURED_EXIT
+    assert spy.played == [VOICE_NOT_SET_UP_CUE_SLUG]
     assert event_fields(caplog, "voice.park_cue")["result"] == "play_failed"
 
 
@@ -459,94 +418,3 @@ def test_check_mic_capture_reports_expected_idle_when_marked(
     result = audio.check_mic_capture(SimpleNamespace())
     assert result.status == "skipped"
     assert result.reason == audio.REASON_MIC_ABSENT_DEFERRED
-
-
-def _shutting_down_daemon(
-    marked: bool, tmp_path, monkeypatch, *, transient: bool = False
-):
-    """A WakeLoop whose cue path runs for real, and a marker to match."""
-    from tests.test_voice_daemon_manual_start_guard import _SpyCues
-
-    marker = tmp_path / "voice-input-absent"
-    if marked:
-        code = (
-            MIC_ABSENT_CHIP_AEC_VALIDATING if transient
-            else MIC_ABSENT_NO_LOCAL_OR_ACCESSORY
-        )
-        marker.write_text(f"reason={code}\n")
-    monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(marker))
-    wake_loop = wake_loop_for_tests(cues=_SpyCues())
-    return wake_loop
-
-
-@pytest.mark.parametrize(
-    ("marked", "transient", "played", "result"),
-    [
-        (True, False, True, "ok"),
-        (False, False, False, "not_parked"),
-        (True, True, False, "transient_park"),
-    ],
-    ids=("no-mic", "plain-restart", "transient-park"),
-)
-async def test_the_mic_loss_cue_follows_the_marker_at_shutdown(
-    marked: bool, transient: bool, played: bool, result: str,
-    tmp_path, monkeypatch, caplog,
-) -> None:
-    """The daemon's own stop is the transition into deafness, because the
-    reconciler writes the marker and only then stops jasper-voice, and
-    ConditionPathExists=! refuses every start while it stands (ADR-0239).
-    So the marker at shutdown decides, and a plain restart stays silent —
-    including in the journal, so `voice.mic_loss_cue` means a real loss.
-    transient-park is the chip-AEC validation bounce's own park
-    (`reason=chip_aec_validating`, a transient code): marked, so it still
-    logs, but never a real absence, so the cue is skipped."""
-    from jasper.voice import daemon_main
-
-    wake_loop = _shutting_down_daemon(
-        marked, tmp_path, monkeypatch, transient=transient
-    )
-
-    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
-        actual_result = await daemon_main._announce_mic_loss_at_shutdown(wake_loop)
-
-    assert wake_loop._cues.played == ([NO_ROOM_MIC_CUE_SLUG] if played else [])
-    assert actual_result == result
-    records = event_records(caplog, "voice.mic_loss_cue")
-    assert [record.levelno for record in records] == (
-        [logging.INFO] if result in ("ok", "transient_park") else []
-    )
-
-
-async def test_a_cue_that_cannot_play_warns_and_the_stop_still_finishes(
-    tmp_path, monkeypatch, caplog,
-) -> None:
-    """A dead output path (outputd down, cue never baked) must not take the
-    shutdown down with it: the code is named on the wire, at WARNING, and the
-    caller gets it back."""
-    from jasper.voice import daemon_main
-
-    wake_loop = _shutting_down_daemon(True, tmp_path, monkeypatch)
-
-    async def _cannot_play(_slug: str) -> str:
-        raise RuntimeError("no output path")
-
-    wake_loop.play_cue = _cannot_play
-
-    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
-        result = await daemon_main._announce_mic_loss_at_shutdown(wake_loop)
-
-    assert result == "play_error"
-    assert event_fields(caplog, "voice.mic_loss_cue")["result"] == "play_error"
-    (record,) = event_records(caplog, "voice.mic_loss_cue")
-    assert record.levelno == logging.WARNING
-
-
-def test_stop_budget_clears_the_mic_loss_cue_floor() -> None:
-    """The cue runs its natural length through the daemon's owned ducked
-    output — nothing bounds it — so the unit's stop budget has to cover it
-    (ADR-0239). Derived from the unit file, not restated."""
-    from jasper.voice.daemon_main import MIC_LOSS_CUE_STOP_FLOOR_SEC
-
-    raw = value_for(_unit_text(), "TimeoutStopSec")
-    assert raw is not None and raw.endswith("s"), raw
-    assert float(raw[:-1]) >= MIC_LOSS_CUE_STOP_FLOOR_SEC, raw

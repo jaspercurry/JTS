@@ -35,7 +35,7 @@ class CueDef:
     must also flow through `cue_hash` so cache busting stays correct.
     """
     slug: str
-    template: str  # Empty selects the local microphone-off tone.
+    template: str
     description: str
     # Played instead while this cue has no baked WAV of its own — e.g. a
     # cue whose outage announcement needs the very provider it is
@@ -47,7 +47,6 @@ class CueDef:
 
 # Slug vocabulary shared by every player. Named here, beside the CueDef each
 # one keys, so a failure path and its registry entry cannot drift.
-NO_ROOM_MIC_CUE_SLUG = "no_room_microphone"
 VOICE_NOT_SET_UP_CUE_SLUG = "voice_not_set_up"
 VOICE_ASSETS_MISSING_CUE_SLUG = "voice_assets_missing"
 
@@ -142,11 +141,6 @@ CUES: tuple[CueDef, ...] = (
             "(ADR-0215)."
         ),
         fallback="cant_connect",
-    ),
-    CueDef(
-        slug=NO_ROOM_MIC_CUE_SLUG,
-        template="",
-        description="A short tone when the room microphone is unavailable.",
     ),
     CueDef(
         slug=VOICE_NOT_SET_UP_CUE_SLUG,

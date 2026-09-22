@@ -24,7 +24,6 @@ from jasper.cues.generator import (
 )
 from jasper.cues import manager as manager_mod
 from jasper.cues.registry import (
-    NO_ROOM_MIC_CUE_SLUG,
     VOICE_ASSETS_MISSING_CUE_SLUG,
     VOICE_NOT_SET_UP_CUE_SLUG,
     CueDef,
@@ -33,7 +32,6 @@ from jasper.cues.registry import (
 from tests._async_wait import wait_signalled
 from tests._log_events import event_fields
 from tests._playout import FakeTts
-from jasper.voice.earcons import _generate_mute_click
 
 
 # --- Fakes ---
@@ -106,7 +104,7 @@ def test_regenerate_force_re_renders_even_when_cached(tmp_path):
     backend.calls.clear()
     written = mgr.regenerate(force=True)
     assert set(written) == {c.slug for c in CUES}
-    assert len(backend.calls) == sum(bool(c.template) for c in CUES)
+    assert len(backend.calls) == len(CUES)
 
 
 def test_regenerate_single_slug_only(tmp_path):
@@ -225,7 +223,7 @@ def test_status_reports_cached_and_not_cached(tmp_path):
     # Each entry has the rendered text and expected filename.
     for entry in s_after:
         assert entry["expected_filename"].startswith(entry["slug"] + "-")
-        assert isinstance(entry["rendered_text"], str)
+        assert entry["rendered_text"]
         assert entry["description"]
 
 
@@ -807,24 +805,3 @@ def test_regenerate_prunes_wavs_of_retired_slugs(tmp_path):
     mgr.regenerate()
     assert not retired.exists()
     assert dynamic.exists()
-
-
-@pytest.mark.parametrize("legacy_cache", [False, True])
-@pytest.mark.parametrize("configured_backend", [False, True])
-def test_microphone_loss_plays_local_tone_without_cached_speech(
-    tmp_path, legacy_cache, configured_backend,
-):
-    legacy_pcm = _tone_pcm(samples=24000)
-    if legacy_cache:
-        _hand_write_wav(str(tmp_path / f"{NO_ROOM_MIC_CUE_SLUG}-old.wav"), legacy_pcm)
-    backend = _FakeBackend() if configured_backend else None
-    tts = FakeTts()
-    mgr = AudioCueManager(str(tmp_path), "jts.local", "test", backend, tts)
-
-    assert asyncio.run(mgr.play(NO_ROOM_MIC_CUE_SLUG))
-    assert tts.writes == [_generate_mute_click(going_on=False)]
-    assert tts.writes[0] != legacy_pcm
-    assert mgr.snapshot()["last"]["outcome"] == manager_mod.OUTCOME_DELIVERED
-    if backend is not None:
-        assert mgr.regenerate(slug=NO_ROOM_MIC_CUE_SLUG) == [NO_ROOM_MIC_CUE_SLUG]
-        assert backend.calls == []

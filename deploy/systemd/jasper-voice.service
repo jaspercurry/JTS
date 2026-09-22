@@ -78,8 +78,6 @@ ConditionPathExists=!/var/lib/jasper/voice-input-absent
 # than ending it, so the pats continue while the speaker cannot
 # hear. Runtime liveness for that path is issue #2243 (connection
 # state, owned by the accessory reconciler) — not this watchdog.
-# The stop budget is sized for the mic-loss cue (ADR-0239): an 8.7 s
-# worst-case cue path plus teardown. A wedged daemon pays the same 14 s.
 Type=notify
 WatchdogSec=30s
 TimeoutStopSec=14s

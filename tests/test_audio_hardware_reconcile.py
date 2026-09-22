@@ -879,8 +879,7 @@ def test_a_blocking_lifecycle_verb_is_bounded_by_the_unit_not_the_manager_cap(
     tmp_path: Path, monkeypatch
 ) -> None:
     """``stop jasper-voice.service`` must be allowed to take its own
-    ``TimeoutStopSec=14s`` — the window in which voice plays the mic-loss cue
-    (ADR-0239). Capped at the manager-liveness bound it would be KILLED, and
+    ``TimeoutStopSec=14s``. Capped at the manager-liveness bound it would be KILLED, and
     the pass would then restart jasper-outputd against a half-stopped voice.
 
     The fake logs each verb AFTER doing its work, so the transcript's order is

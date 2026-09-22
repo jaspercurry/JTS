@@ -28,7 +28,7 @@ from jasper.voice_daemon import INTERNAL_ERROR_CUE_SLUG
 
 from ._async_wait import wait_signalled
 from ._cue_spy import SpyCues as _SpyCues
-from ._log_events import event_fields, event_records
+from ._log_events import event_fields
 from ._wake_loop import wake_loop_for_tests
 
 
@@ -486,56 +486,15 @@ def _ptt_only_wake_loop():
     return wl
 
 
-async def test_source_less_start_on_a_speaker_with_no_room_mic_cues_and_refuses(
-    caplog,
-):
-    """The silent-turn hole, closed.
-
-    Before this guard, a source-less START on a push-to-talk-only speaker was
-    ACCEPTED: `active_source` stayed None so `_manual_mic_loop`
-    dropped every frame, `_pre_roll` was empty because no primary loop fills
-    it, and the turn ducked the music, chirped, forwarded zero bytes and died
-    to the idle watchdog ~20 s later. `bytes_sent == 0` misses both
-    end-of-turn warnings, so the household got silence and the journal got
-    nothing at all.
-    """
-    from jasper.voice_daemon import NO_ROOM_MIC_CUE_SLUG
-
+async def test_source_less_start_without_a_room_mic_silently_refuses(caplog):
     wl = _ptt_only_wake_loop()
-
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
         result = await wl.manual_session_start()
-
     assert result == "NO_ROOM_MIC"
-    # NOT `_assert_no_turn_no_duck`: that helper also forbids the loudness
-    # prime, and a cue legitimately primes + ducks — that is how it stays
-    # audible over music. What must not happen is the paid LLM turn and the
-    # "I'm listening" chirp for a turn nothing could ever feed.
-    assert wl._begin_turn.called is False
-    assert wl._play_listening_chirp.called is False
-    # Audible, not just logged: the household pressed something and must not
-    # be answered with silence (AGENTS.md's no-silent-deafness rule).
+    _assert_no_turn_no_duck(wl)
     await _drain_refusal_cue(wl)
-    assert wl._cues.played == [NO_ROOM_MIC_CUE_SLUG]
-    assert event_fields(caplog, "session.manual_refused")["reason"] == (
-        "no_room_microphone"
-    )
-    # WARNING, not INFO: this is a misconfigured caller on a working speaker.
-    (record,) = event_records(caplog, "session.manual_refused")
-    assert record.levelno >= logging.WARNING
-
-
-def test_no_room_mic_cue_slug_is_registered():
-    """A slug the registry does not know bakes no WAV and plays nothing —
-    the failure would be as silent as the bug this cue exists to break."""
-    from jasper.cues.registry import find
-    from jasper.voice_daemon import NO_ROOM_MIC_CUE_SLUG
-
-    cue = find(NO_ROOM_MIC_CUE_SLUG)
-    assert cue is not None, NO_ROOM_MIC_CUE_SLUG
-    # Provider-agnostic (AGENTS.md): the voice backend is replaceable.
-    lowered = cue.template.lower()
-    assert "google" not in lowered and "gemini" not in lowered
+    assert wl._cues.played == []
+    assert event_fields(caplog, "session.manual_refused")["reason"] == "no_room_microphone"
 
 
 async def test_ptt_only_speaker_still_serves_a_named_source():
