@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
-from jasper import audio_validation
+from jasper import audio_validation, audio_validation_artifacts as artifacts
 from jasper.cli import audio_hw_validate
-from tests.test_audio_validation import (
+from tests.audio_validation_fixtures import (
     NOW,
     _active_chip_inputs,
     _bridge_sample,
@@ -78,12 +78,12 @@ def test_run_audio_hardware_validation_report_only_does_not_write(monkeypatch):
         lambda: inputs["voice_wake_legs"],
     )
     monkeypatch.setattr(
-        audio_hw_validate,
+        artifacts,
         "write_artifact",
         lambda *_args, **_kwargs: wrote.append("artifact"),
     )
     monkeypatch.setattr(
-        audio_hw_validate,
+        artifacts,
         "write_latest_pointer",
         lambda *_args, **_kwargs: wrote.append("latest"),
     )

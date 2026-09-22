@@ -34,7 +34,7 @@ from ...audio_profile_state import (
 )
 from ...audio_validation import CHIP_AEC_PROFILE
 from ...audio_validation import current_artifact_filter_kwargs as _audio_validation_filter_kwargs
-from ...audio_validation import latest_artifact_summary as _audio_validation_summary
+from ...audio_validation_artifacts import latest_artifact_summary as _audio_validation_summary
 from ...chip_aec.health import STATUS_READY
 from ...chip_aec.policy import (
     STATUS_APPROVED,
