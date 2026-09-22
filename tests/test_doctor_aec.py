@@ -106,21 +106,12 @@ def _healthy_entries(count: int = 8) -> list[dict]:
     return [_window(ref=1_200, mic=2_400, level_db=-24.1)] * count
 
 
-_REASON_BRIDGE_OUTPUT_NO_WINDOWS = aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS
-_REASON_BRIDGE_OUTPUT_IDLE = aec.REASON_BRIDGE_OUTPUT_IDLE
-_REASON_BRIDGE_OUTPUT_HEALTHY_WORK = aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK
-_REASON_BRIDGE_OUTPUT_REF_SILENT = aec.REASON_BRIDGE_OUTPUT_REF_SILENT
-_REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY = (
-    aec.REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY
-)
-
-
 @pytest.mark.parametrize(
     "entries, status, reason",
     [
         # An active bridge publishes a window every RMS_LOG_INTERVAL_SEC
         # (jasper/cli/aec_bridge.py): none is missing evidence.
-        ([], "warn", _REASON_BRIDGE_OUTPUT_NO_WINDOWS),
+        ([], "warn", aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS),
         # A window older than the assessed span is history, not evidence:
         # the stats writer republishes it long after the loop wedged.
         (
@@ -131,23 +122,28 @@ _REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY = (
                 )
             ],
             "warn",
-            _REASON_BRIDGE_OUTPUT_NO_WINDOWS,
+            aec.REASON_BRIDGE_OUTPUT_NO_WINDOWS,
         ),
         # Mic and ref both quiet — the speaker has been idle.
         (
             [_window(ref=0, mic=200, level_db=-16.5)] * 10,
             "ok",
-            _REASON_BRIDGE_OUTPUT_IDLE,
+            aec.REASON_BRIDGE_OUTPUT_IDLE,
         ),
-        (_healthy_entries(), "ok", _REASON_BRIDGE_OUTPUT_HEALTHY_WORK),
-        (_silent_ref_entries(), "fail", _REASON_BRIDGE_OUTPUT_REF_SILENT),
+        (_healthy_entries(), "ok", aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK),
+        (
+            [_window(ref=1_000, mic=3_000, level_db=0)] * 6,
+            "ok",
+            aec.REASON_BRIDGE_OUTPUT_ATTENUATION_UNPROVEN,
+        ),
+        (_silent_ref_entries(), "fail", aec.REASON_BRIDGE_OUTPUT_REF_SILENT),
         # Exactly one healthy_ref window flips the silent-ref pattern from fail
         # to ok: if the ref chain proved itself once, it is trusted.
         (
             _silent_ref_entries(7)
             + [_window(ref=300, mic=400, level_db=-14.0)],
             "ok",
-            _REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY,
+            aec.REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY,
         ),
         # 1-4 silent-ref windows are below the 5-count alarm but still
         # surfaced, so an intermittent glitch is visible before it tips over.
@@ -155,7 +151,7 @@ _REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY = (
             _healthy_entries(6)
             + [_window(ref=0, mic=2_200, level_db=-0.4)] * 3,
             "ok",
-            _REASON_BRIDGE_OUTPUT_HEALTHY_WORK,
+            aec.REASON_BRIDGE_OUTPUT_HEALTHY_WORK,
         ),
         # All-chip: the chip cancels upstream, so no window carries an
         # attenuation to threshold and the ref evidence is the whole verdict.
@@ -165,7 +161,7 @@ _REASON_BRIDGE_OUTPUT_REF_PROVEN_HEALTHY = (
             aec.REASON_BRIDGE_OUTPUT_CHIP_ONLY,
         ),
     ],
-    ids=["empty", "aged-out", "idle", "healthy", "silent-ref",
+    ids=["empty", "aged-out", "idle", "healthy", "unattenuated", "silent-ref",
          "one-healthy-window", "below-alarm", "chip-only"],
 )
 def test_assess_aec_bridge_output_verdicts(entries, status, reason):
