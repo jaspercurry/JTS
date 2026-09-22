@@ -15,7 +15,8 @@ use anyhow::Result;
 use jasper_env::{env_f32, env_f32_fallback};
 
 use jasper_daemon::json::{
-    push_key as push_json_key, push_kv_bool as push_json_bool, push_kv_u64 as push_json_u64,
+    push_key as push_json_key, push_kv_bool as push_json_bool, push_kv_f64 as push_json_f64,
+    push_kv_f64_opt as push_json_f64_opt, push_kv_u64 as push_json_u64,
 };
 
 use crate::{
@@ -892,65 +893,6 @@ pub fn render_assistant_loudness(buf: &mut String, snapshot: &TtsLoudnessSnapsho
     buf.push(',');
     push_json_reference(buf, "held_assistant", snapshot.held_assistant);
     buf.push('}');
-}
-
-/// Serialization-boundary guarantee for every number this writer emits:
-/// **a finite JSON number, or `null` — never a non-finite token.**
-///
-/// Rust's float formatting renders `NaN`/`inf`/`-inf` verbatim, and none of
-/// those is JSON. That is not a cosmetic defect: `inf` makes a reader reject
-/// the WHOLE STATUS document (one bad field takes down every other daemon
-/// fact in it), while `NaN` is worse — Python's `json` accepts it as a
-/// non-standard extension, so it arrives as a float that passes an
-/// `isinstance(v, float)` check and every `abs(a - b) > tol` comparison
-/// against it is False. A silently-OK loudness contract check is exactly the
-/// failure the doctor exists to catch.
-///
-/// `null` is the substitute rather than omission because the key set is a
-/// pinned wire contract (`ASSISTANT_LOUDNESS_STATUS_KEYS`, asserted present
-/// by both daemons' state tests), and it lands somewhere a consumer already
-/// reads: `jasper/cli/doctor/audio_runtime_fanin.py` WARNs on `decision_seen=true`
-/// with a non-numeric `final_gain_db`. That loud path is scoped to
-/// `final_gain_db` — the one doctor-guarded field. Every other float here
-/// maps to `null` **silently, by design**: this is a polled render, so a
-/// value nobody checks should cost a null in a STATUS reply, not a journal
-/// line per poll.
-///
-/// This filters at the render, not at the producer, because only outputd
-/// needs it and both daemons share this writer. fan-in is already safe by
-/// two separate mechanisms, neither of which outputd has:
-///   * its `Option<f64>` fields ride packed integer atomics, and
-///     `pack_optional_db` maps a non-finite input to the NONE sentinel;
-///   * `profile_confidence` rides a scaled `AtomicU64` — `clamp(0.0, 1.0)`
-///     bounds ±inf, and NaN (which `clamp` returns unchanged) is absorbed by
-///     Rust's saturating float→int cast, which yields 0.
-///
-/// outputd copies engine floats straight into the snapshot struct, so it has
-/// neither. Filtering in the one shared writer makes the guarantee hold for
-/// both from a single place rather than a rule written twice.
-///
-/// It also keeps the cost off the audio thread: outputd's
-/// `publish_loudness_snapshot` runs per period on the audio loop, but this
-/// runs on the state-server thread answering a STATUS read.
-fn push_json_finite_or_null(buf: &mut String, value: f64, decimals: usize) {
-    if value.is_finite() {
-        buf.push_str(&format!("{value:.decimals$}"));
-    } else {
-        buf.push_str("null");
-    }
-}
-
-fn push_json_f64(buf: &mut String, key: &str, value: f64, decimals: usize) {
-    push_json_key(buf, key);
-    push_json_finite_or_null(buf, value, decimals);
-}
-
-fn push_json_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: usize) {
-    push_json_key(buf, key);
-    match value {
-        Some(value) => push_json_finite_or_null(buf, value, decimals),
-        None => buf.push_str("null"),
-    }
 }
 
 fn push_json_reference(buf: &mut String, key: &str, reference: Option<HeldLoudnessReference>) {
@@ -2036,7 +1978,7 @@ mod tests {
 
     #[test]
     fn render_assistant_loudness_substitutes_null_for_every_non_finite_number() {
-        // The serialization-boundary guarantee (see `push_json_finite_or_null`):
+        // The serialization-boundary guarantee comes from `jasper_daemon::json`:
         // no non-finite float can reach STATUS as a bare `NaN`/`inf` token,
         // because neither is JSON. fan-in's producer already filters
         // (`pack_optional_db` -> NONE sentinel); outputd's copies engine floats

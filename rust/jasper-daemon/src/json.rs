@@ -80,15 +80,23 @@ pub fn push_kv_bool(buf: &mut String, key: &str, value: bool) {
     buf.push_str(if value { "true" } else { "false" });
 }
 
+fn push_f64_finite_or_null(buf: &mut String, value: f64, decimals: usize) {
+    if value.is_finite() {
+        buf.push_str(&format!("{:.*}", decimals, value));
+    } else {
+        buf.push_str("null");
+    }
+}
+
 pub fn push_kv_f64(buf: &mut String, key: &str, value: f64, decimals: usize) {
     push_key(buf, key);
-    buf.push_str(&format!("{:.*}", decimals, value));
+    push_f64_finite_or_null(buf, value, decimals);
 }
 
 pub fn push_kv_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: usize) {
     push_key(buf, key);
     match value {
-        Some(value) => buf.push_str(&format!("{:.*}", decimals, value)),
+        Some(value) => push_f64_finite_or_null(buf, value, decimals),
         None => buf.push_str("null"),
     }
 }
@@ -155,5 +163,22 @@ mod tests {
                 r#""trim_db":null"#,
             )
         );
+    }
+
+    #[test]
+    fn float_members_render_non_finite_values_as_null() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut bare = String::new();
+            push_kv_f64(&mut bare, "gain_db", value, 2);
+            assert_eq!(bare, r#""gain_db":null"#);
+
+            let mut optional = String::new();
+            push_kv_f64_opt(&mut optional, "gain_db", Some(value), 2);
+            assert_eq!(optional, r#""gain_db":null"#);
+        }
+
+        let mut finite = String::new();
+        push_kv_f64(&mut finite, "gain_db", -1.5, 2);
+        assert_eq!(finite, r#""gain_db":-1.50"#);
     }
 }
