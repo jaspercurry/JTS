@@ -30,15 +30,9 @@ DEFAULT_MAP = ROOT / "docs" / "doc-map.toml"
 @dataclass(frozen=True)
 class Subsystem:
     id: str
-    title: str
     safety: str
     code: tuple[str, ...]
     docs: tuple[str, ...]
-    requires_docs_when: tuple[str, ...]
-    verification: tuple[str, ...]
-
-
-DOCUMENT_CLASS_KEYS = ("session_artifacts", "research")
 
 
 def repo_path(path: str) -> str:
@@ -62,42 +56,12 @@ def load_map(path: Path) -> tuple[Subsystem, ...]:
         seen.add(sid)
         subsystem = Subsystem(
             id=sid,
-            title=_required_str(path, idx, row, "title"),
             safety=_required_str(path, idx, row, "safety"),
             code=_required_str_list(path, idx, row, "code"),
             docs=_required_str_list(path, idx, row, "docs"),
-            requires_docs_when=_required_str_list(
-                path, idx, row, "requires_docs_when"
-            ),
-            verification=_optional_str_list(row, "verification"),
         )
         subsystems.append(subsystem)
     return tuple(subsystems)
-
-
-def load_classified_docs(path: Path) -> tuple[str, ...]:
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
-    table = data.get("document_classes", {})
-    if table is None:
-        return ()
-    if not isinstance(table, dict):
-        raise ValueError(f"{path}: document_classes must be a table")
-
-    docs: list[str] = []
-    for key, value in table.items():
-        if key not in DOCUMENT_CLASS_KEYS:
-            allowed = ", ".join(DOCUMENT_CLASS_KEYS)
-            raise ValueError(
-                f"{path}: unknown document_classes key {key!r}; expected one of {allowed}"
-            )
-        if not isinstance(value, list) or any(
-            not isinstance(item, str) or not item.strip() for item in value
-        ):
-            raise ValueError(
-                f"{path}: document_classes.{key} must be a string list"
-            )
-        docs.extend(repo_path(item) for item in value)
-    return tuple(docs)
 
 
 def _required_str(path: Path, idx: int, row: dict, key: str) -> str:
@@ -120,17 +84,6 @@ def _required_str_list(path: Path, idx: int, row: dict, key: str) -> tuple[str, 
     return tuple(item.strip() for item in value)
 
 
-def _optional_str_list(row: dict, key: str) -> tuple[str, ...]:
-    value = row.get(key, [])
-    if value is None:
-        return ()
-    if not isinstance(value, list) or any(
-        not isinstance(item, str) or not item.strip() for item in value
-    ):
-        raise ValueError(f"optional field {key!r} must be a string list")
-    return tuple(item.strip() for item in value)
-
-
 def validate_map(subsystems: tuple[Subsystem, ...]) -> list[str]:
     errors: list[str] = []
     for subsystem in subsystems:
@@ -142,23 +95,14 @@ def validate_map(subsystems: tuple[Subsystem, ...]) -> list[str]:
                 errors.append(f"{subsystem.id}: mapped doc is not a file: {doc}")
         for pattern in subsystem.code:
             if pattern.startswith("/"):
-                errors.append(f"{subsystem.id}: code glob must be repo-relative: {pattern}")
+                errors.append(
+                    f"{subsystem.id}: code glob must be repo-relative: {pattern}"
+                )
         for pattern in subsystem.docs:
             if pattern.startswith("/"):
-                errors.append(f"{subsystem.id}: doc path must be repo-relative: {pattern}")
-    return errors
-
-
-def validate_classified_docs(docs: tuple[str, ...]) -> list[str]:
-    errors: list[str] = []
-    for doc in docs:
-        doc_path = ROOT / doc
-        if doc.startswith("/"):
-            errors.append(f"document_classes: doc path must be repo-relative: {doc}")
-        elif not doc_path.exists():
-            errors.append(f"document_classes: classified doc does not exist: {doc}")
-        elif not doc_path.is_file():
-            errors.append(f"document_classes: classified doc is not a file: {doc}")
+                errors.append(
+                    f"{subsystem.id}: doc path must be repo-relative: {pattern}"
+                )
     return errors
 
 
@@ -231,18 +175,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         map_path = Path(args.map)
         subsystems = load_map(map_path)
-        classified_docs = load_classified_docs(map_path)
-        errors = validate_map(subsystems) + validate_classified_docs(classified_docs)
+        errors = validate_map(subsystems)
         if errors:
             for error in errors:
                 print(f"docs-impact: {error}", file=sys.stderr)
             return 2
         if args.validate_only:
-            print(
-                "docs-impact: "
-                f"{len(subsystems)} subsystem mappings valid; "
-                f"{len(classified_docs)} classified docs valid"
-            )
+            print(f"docs-impact: {len(subsystems)} subsystem mappings valid")
             return 0
 
         changed_files = tuple(repo_path(path) for path in args.changed_file)
