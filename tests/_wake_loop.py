@@ -132,7 +132,6 @@ def wake_loop_for_tests(
 
     cfg = cfg if cfg is not None else SimpleNamespace(
         active_voice_model="",
-        duck_db=0.0,
         idle_timeout_sec=10.0,
         followup_timeout_sec=0.0,
         mic_device="udp:9876",

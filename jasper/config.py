@@ -299,7 +299,6 @@ class Config:
 
     camilla_host: str
     camilla_port: int
-    duck_db: float
     idle_timeout_sec: int
     followup_timeout_sec: float
     response_stall_timeout_sec: int
@@ -693,7 +692,6 @@ class Config:
             ),
             camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
             camilla_port=_env_int("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT),
-            duck_db=_env_float("JASPER_DUCK_DB", -25.0),
             # Pre-response idle watchdog: closes the turn after this many
             # seconds with no PROGRESS on it — no audio chunk, no
             # transcript delta either way, no tool call, no
