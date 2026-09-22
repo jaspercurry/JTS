@@ -762,6 +762,7 @@ def test_the_cloud_group_result_carries_its_members(tmp_path: Path) -> None:
     assert result["available"] is True
     assert result["positions"]["available"] is True
     assert len(result["positions"]["positions"]) == 3
+    # The aggregate is unchanged — the members ride alongside it, not instead.
     assert result["curve"]["freqs_hz"]
 
 

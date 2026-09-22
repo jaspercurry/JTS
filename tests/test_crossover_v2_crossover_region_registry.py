@@ -197,9 +197,11 @@ def test_the_extension_is_unioned_into_no_mask():
     )
 
     assert without["available"] and with_region["available"]
+    # The extension appeared…
     assert without["null_registry_crossover_region"] is None
     assert with_region["null_registry_crossover_region"] is not None
     assert with_region["null_registry_crossover_region"]["gating"] is False
+    # …and changed nothing that decides anything.
     for key in (
         "null_registry", "spec", "flatness", "carve_outs",
         "merged_excluded_bands_hz", "screen_excluded_bands_hz",

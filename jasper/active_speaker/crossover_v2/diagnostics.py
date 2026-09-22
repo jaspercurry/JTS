@@ -8,7 +8,12 @@ Read-only against a :class:`ProgramAnalysis`, a verdict and a handful of
 session values the caller passes in. Nothing decides a verdict, retries a
 capture or touches session state — these run AFTER the verdict exists,
 which is what lets :func:`_safe_log_diag` degrade a bug in here to a WARN.
-Session events keep the flow's log channel across modules.
+The ``logger`` every emitter takes is the CALLER's: an operator greps one
+channel for a session, and moving these emitters out of
+:mod:`jasper.active_speaker.crossover_v2_flow` must not split it.
+The moved session wrappers keep the flow's own log channel through the module
+logger named for ``crossover_v2_flow``, so their events stay on the channel the
+fixtures expect.
 """
 
 from __future__ import annotations
