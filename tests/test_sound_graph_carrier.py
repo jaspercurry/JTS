@@ -305,7 +305,7 @@ def test_emit_sound_config_never_called_for_active_or_unknown(tmp_path):
         "jasper.sound.graph_carrier._bonded_active_member", return_value=False
     ):
         active_carrier = carrier_for_loaded_config(str(active), config_dir=tmp_path)
-        result = active_carrier.reemit(mock.sentinel.profile, profile_id="x")
+        result = active_carrier.reemit(mock.sentinel.profile, profile_id="x", tune=mock.sentinel.tune)
         assert isinstance(result, ReemitResult)
         assert result.yaml == "active-yaml"
         recompose.assert_called_once()
@@ -632,10 +632,6 @@ def test_program_bake_carrier_requires_pipe_sink(tmp_path):
 
 
 def test_eq_block_probe_sees_what_can_host_eq_alone_misses(tmp_path):
-    """A program bake reports ``can_host_eq`` True and still refuses at reemit,
-    so the probe must be the dry-run emit, not the flag."""
-    from jasper.sound.profile import SoundProfile
-
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     path = config_dir / "grouping_active_leader_bake.yml"
@@ -649,7 +645,6 @@ def test_eq_block_probe_sees_what_can_host_eq_alone_misses(tmp_path):
             str(path), config_dir=config_dir,
         ).can_host_eq is True
         block = eq_block_for_loaded_config(
-            SoundProfile(enabled=False),
             current_path=str(path),
             config_dir=config_dir,
         )
@@ -755,7 +750,7 @@ def test_solo_active_baseline_reemits_via_active_recompose(tmp_path):
     ) as recompose:
         carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
         result = carrier.reemit(
-            mock.sentinel.profile, out_path=out, profile_id="id", output_trim_db=3.0
+            mock.sentinel.profile, out_path=out, profile_id="id", output_trim_db=3.0, tune=mock.sentinel.tune
         )
     assert isinstance(result, ReemitResult)
     assert result.yaml == "eqd-active-yaml"
@@ -990,7 +985,7 @@ def test_active_baseline_ignores_stereo_only_shm_ring_coupling(tmp_path):
         carrier = carrier_for_loaded_config(str(path), config_dir=tmp_path)
         result = carrier.reemit(
             SoundProfile(enabled=False),
-            fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
+            fanin_coupling_capture_kwargs=_SHM_RING_KWARGS, tune=mock.sentinel.tune,
         )
 
     assert result.yaml == "active-yaml"
@@ -1199,6 +1194,9 @@ def test_below_floor_in_service_box_refuses_eq_save_by_type_not_by_500(tmp_path,
     applied["candidate_artifact_path"] = str(banked.path)
     applied["source"]["measured_candidate_fingerprint"] = banked.fingerprint
     monkeypatch.setattr("jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state", lambda: applied)
+    from jasper.sound.graph_carrier import _load_active_tune_for_eq
+    with pytest.raises(CarrierCannotHostEq) as err:
+        _load_active_tune_for_eq()
     with pytest.raises(CarrierCannotHostEq) as err:
         _compile_active_baseline_with_eq(SoundProfile(enabled=False))
     assert err.value.reason_code == "active_baseline_compile_unavailable"
@@ -1248,7 +1246,8 @@ async def test_eq_state_reads_only_the_selected_tune_without_writes(tmp_path, mo
     monkeypatch.setattr("jasper.camilla.primary_controller", lambda: cam)
     with mock.patch.object(candidate_bank, "_iter_candidate_paths", side_effect=AssertionError("bank scan")), \
          mock.patch.object(candidate_bank, "publish_authored_candidate", side_effect=AssertionError("bank write")), \
-         mock.patch.object(candidate_bank, "load_candidate_artifact", wraps=candidate_bank.load_candidate_artifact) as read:
+         mock.patch.object(candidate_bank, "load_candidate_artifact", wraps=candidate_bank.load_candidate_artifact) as read, \
+         mock.patch("jasper.active_speaker.applied_tune.compile_applied_tune", side_effect=AssertionError("page compiled DSP")):
         with sound_server(tmp_path) as base:
             def request():
                 with urllib.request.urlopen(f"{base}/state") as response:

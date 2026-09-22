@@ -25,7 +25,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.audio_runtime_plan import EmitSoundConfigKwargs, apply_capture_precedence
@@ -40,6 +40,9 @@ from jasper.sound.camilla_yaml import (
     is_jts_generated_config,
     sound_audition_config_path, sound_config_path,
 )
+
+if TYPE_CHECKING:
+    from jasper.active_speaker.applied_tune import AppliedTune
 
 logger = logging.getLogger(__name__)
 
@@ -189,23 +192,7 @@ class _StereoHostCarrier:
             return FlatChannelPlan()
         return self._flat_channel_plan
 
-    def reemit(
-        self,
-        profile,
-        *,
-        out_path: str | Path | None = None,
-        profile_id: str | None = None,
-        output_trim_db: float = 0.0,
-        member_kwargs: dict | None = None,
-        room_peqs: list | None = None,
-        fanin_coupling_capture_kwargs: dict | None = None,
-    ) -> ReemitResult:
-        # Refuse (typed, honest) before emitting/loading a flat program graph
-        # when the saved topology assigns a protected tweeter. This is the
-        # authoritative gate for the live-draft SetConfig path (which bypasses
-        # the pre-check), and a backstop for the durable path. Covers BOTH the
-        # in-memory live preview and the on-disk write, so a flat graph can never
-        # reach the DAC under a protected-tweeter topology.
+    def prepare_eq(self, *, member_kwargs: dict | None = None) -> dict:
         if self._eq_block is not None:
             from jasper.active_speaker.runtime_contract import (
                 FLAT_PROGRAM_GRAPH_NOT_AUTHORIZED,
@@ -241,6 +228,20 @@ class _StereoHostCarrier:
             )
         member_kwargs = self._resolve_member_kwargs(member_kwargs)
         self._validate_member_kwargs(member_kwargs)
+        return member_kwargs
+
+    def reemit(
+        self,
+        profile,
+        *,
+        out_path: str | Path | None = None,
+        profile_id: str | None = None,
+        output_trim_db: float = 0.0,
+        member_kwargs: dict | None = None,
+        room_peqs: list | None = None,
+        fanin_coupling_capture_kwargs: dict | None = None,
+    ) -> ReemitResult:
+        member_kwargs = self.prepare_eq(member_kwargs=member_kwargs)
 
         emit_kwargs = cast(EmitSoundConfigKwargs, dict(member_kwargs))
         # fanin_coupling_capture_kwargs (JASPER_FANIN_CAMILLA_COUPLING=shm_ring)
@@ -363,22 +364,7 @@ class _ActiveGraphCarrier:
         # this is a backstop. The bonded read is fresh (grouping.env).
         self.can_host_eq = is_baseline and not _bonded_active_member()
 
-    @staticmethod
-    def prepare_eq():
-        return _load_active_tune_for_eq()
-
-    def reemit(
-        self,
-        profile,
-        *,
-        out_path: str | Path | None = None,
-        profile_id: str | None = None,
-        output_trim_db: float = 0.0,
-        member_kwargs: dict | None = None,
-        room_peqs: list | None = None,
-        fanin_coupling_capture_kwargs: dict | None = None,
-        tune=None,
-    ) -> ReemitResult:
+    def prepare_eq(self, *, member_kwargs: dict | None = None, tune: AppliedTune | None = None) -> AppliedTune:
         if not self._is_baseline:
             raise CarrierCannotHostEq(
                 "eq_on_active_not_wired",
@@ -396,6 +382,21 @@ class _ActiveGraphCarrier:
                 "ungroup it first. Your crossover and driver protection are "
                 "unchanged.",
             )
+        return tune if tune is not None else _load_active_tune_for_eq()
+
+    def reemit(
+        self,
+        profile,
+        *,
+        out_path: str | Path | None = None,
+        profile_id: str | None = None,
+        output_trim_db: float = 0.0,
+        member_kwargs: dict | None = None,
+        room_peqs: list | None = None,
+        fanin_coupling_capture_kwargs: dict | None = None,
+        tune: AppliedTune | None = None,
+    ) -> ReemitResult:
+        tune = self.prepare_eq(member_kwargs=member_kwargs, tune=tune)
         del fanin_coupling_capture_kwargs, room_peqs
         result = _compile_active_baseline_with_eq(profile, output_trim_db=output_trim_db, tune=tune)
         if out_path is not None:
@@ -423,17 +424,10 @@ class _UnknownCarrier:
     def __init__(self, current_path: str | Path | None) -> None:
         self._current_path = current_path
 
-    def reemit(
-        self,
-        profile,
-        *,
-        out_path: str | Path | None = None,
-        profile_id: str | None = None,
-        output_trim_db: float = 0.0,
-        member_kwargs: dict | None = None,
-        room_peqs: list | None = None,
-        fanin_coupling_capture_kwargs: dict | None = None,
-    ) -> ReemitResult:
+    def reemit(self, profile, **kwargs) -> NoReturn:
+        self.prepare_eq()
+
+    def prepare_eq(self) -> NoReturn:
         raise CarrierCannotHostEq(
             "unknown_config",
             "CamillaDSP is running a configuration JTS didn't generate, so "
@@ -453,7 +447,7 @@ def _bonded_active_member() -> bool:
     return is_active_member(load_config())
 
 
-def _load_active_tune_for_eq():
+def _load_active_tune_for_eq() -> AppliedTune:
     from jasper.active_speaker.applied_tune import load_applied_tune  # lazy: active graph owner
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
 
@@ -463,7 +457,7 @@ def _load_active_tune_for_eq():
         raise CarrierCannotHostEq("active_baseline_compile_unavailable", f"Could not load the saved speaker tune: {exc}") from exc
 
 
-def _compile_active_baseline_with_eq(profile, *, output_trim_db: float = 0.0, tune=None) -> ReemitResult:
+def _compile_active_baseline_with_eq(profile, *, output_trim_db: float = 0.0, tune: AppliedTune | None = None) -> ReemitResult:
     from jasper.active_speaker.applied_tune import compile_applied_tune  # lazy: active graph owner
     from jasper.sound.profile import build_sound_filter_slots  # lazy: profile DSP imports NumPy
 
@@ -598,31 +592,11 @@ def carrier_for_loaded_config(current_path, *, config_dir):
     return _UnknownCarrier(current_path)
 
 
-def eq_block_for_loaded_config(
-    profile,
-    *,
-    current_path,
-    config_dir,
-    output_trim_db: float = 0.0,
-) -> CarrierCannotHostEq | None:
-    """The refusal preference EQ would hit on the loaded graph, or ``None``.
-
-    ``can_host_eq`` alone is NOT the predicate: :class:`_ProgramBakeCarrier`
-    reports ``True`` and still refuses at ``reemit`` when grouping state
-    resolves no pipe sink, and an active baseline refuses inside its recompose.
-    So the probe is a dry-run re-emit — nothing is written without ``out_path``
-    — and this is the one owner of the question: the durable apply path's
-    pre-check and the /sound/eq/ page state both read it here, so they cannot
-    disagree about whether the loaded graph can host EQ.
-    """
+def eq_block_for_loaded_config(*, current_path, config_dir) -> CarrierCannotHostEq | None:
+    """Check the shared EQ inputs; preview and save validate the resulting graph."""
     carrier = carrier_for_loaded_config(current_path, config_dir=config_dir)
-    if carrier.can_host_eq and carrier.kind not in {
-        "active",
-        "active_leader_program_bake",
-    }:
-        return None
     try:
-        carrier.reemit(profile, output_trim_db=output_trim_db)
+        carrier.prepare_eq()
     except CarrierCannotHostEq as refusal:
         return refusal
     return None

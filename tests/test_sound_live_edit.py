@@ -18,6 +18,7 @@ import pathlib
 
 import pytest
 
+from jasper.sound.graph_carrier import ReemitResult
 from jasper.sound.live_edit import plan_live_edit
 from tests.sound_camilla_fixtures import FakeCamilla
 
@@ -193,11 +194,10 @@ class _RecordingCamilla(FakeCamilla):
 
 
 def _carrier_emitting(wanted: str):
-    from jasper.sound.graph_carrier import ReemitResult
-
     class _Carrier:
         kind = "base_flat"
         can_host_eq = True
+        prepare_eq = staticmethod(dict)
 
         def reemit(self, profile, *, out_path=None, **kwargs):
             if out_path is not None:

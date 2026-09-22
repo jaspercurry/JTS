@@ -108,14 +108,11 @@ def _candidate_roots(root: Path) -> tuple[Path, ...]:
 
 
 def load_applied_candidate(
-    fingerprint: str, *, applied_profile: Mapping[str, Any] | None = None,
+    fingerprint: str, *, applied_profile: Mapping[str, Any],
 ) -> BankedCandidate:
     """Read and verify the selected artifact without discovery or migration."""
-    from .baseline_profile import load_applied_baseline_profile_state  # lazy: baseline recording imports the bank
-
-    applied = applied_profile if applied_profile is not None else load_applied_baseline_profile_state() or {}
-    path = applied.get("candidate_artifact_path")
-    if path and (applied.get("source") or {}).get("measured_candidate_fingerprint") == fingerprint:
+    path = applied_profile.get("candidate_artifact_path")
+    if path and (applied_profile.get("source") or {}).get("measured_candidate_fingerprint") == fingerprint:
         candidate = load_candidate_artifact(Path(path))
         if candidate is not None and candidate.fingerprint == fingerprint:
             bundle_id, capture_id = _identity_from_path(Path(path))

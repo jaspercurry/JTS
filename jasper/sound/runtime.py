@@ -257,7 +257,6 @@ async def load_profile_config(
     from jasper.sound.graph_carrier import (
         ReemitResult,
         carrier_for_loaded_config,
-        eq_block_for_loaded_config,
     )
     from jasper.sound.live_edit import does_live_edits, plan_live_edit_for
 
@@ -271,11 +270,7 @@ async def load_profile_config(
         raise RuntimeError("CamillaDSP did not report a loaded config path")
     carrier = carrier_for_loaded_config(pre_path, config_dir=config_path)
     if carrier.kind != "active" or not carrier.can_host_eq:
-        pre_block = eq_block_for_loaded_config(
-            profile, current_path=pre_path, config_dir=config_path, output_trim_db=output_trim_db,
-        )
-        if pre_block is not None:
-            raise pre_block
+        carrier.prepare_eq()
 
     from jasper.active_speaker.baseline_profile import load_composed_graph  # lazy: active graph owner
 

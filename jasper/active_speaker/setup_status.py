@@ -566,9 +566,9 @@ def read_active_speaker_setup_status(
     try:
         design_draft = load_design_draft()
         measurements = load_measurement_state(topology)
-        _, profile = compile_commissioning_profile(topology=topology, design_draft=design_draft,
-                                                 find_candidate=load_applied_candidate)
         applied_profile = load_applied_baseline_profile_state(baseline_state_path)
+        _, profile = compile_commissioning_profile(applied_profile=applied_profile, topology=topology, design_draft=design_draft,
+            find_candidate=lambda fingerprint: load_applied_candidate(fingerprint, applied_profile=applied_profile or {}))
     except _READINESS_DERIVATION_ERRORS as exc:
         profile = None
         issues.append(_issue(

@@ -8,9 +8,11 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from jasper.camilla_config_contract import FilterSpec
-from jasper.output_topology import load_output_topology_strict
+from jasper import output_topology
 
 from . import baseline_profile, candidate_bank, design_draft, measurement_emit, runtime_contract
+from .crossover_declaration import assert_crossover_honours_declared_floor
+from .measured_crossover_candidate import candidate_on_declaration
 
 
 @dataclass(frozen=True)
@@ -26,9 +28,13 @@ def load_applied_tune() -> AppliedTune:
     banked = candidate_bank.load_applied_candidate(
         (applied.get("source") or {}).get("measured_candidate_fingerprint", ""), applied_profile=applied,
     )
-    topology = load_output_topology_strict()
+    topology = output_topology.load_output_topology_strict()
     draft = design_draft.load_design_draft(topology=topology)
-    return AppliedTune(banked, measurement_emit.load_tuning_declaration(topology, design_draft=draft), draft, applied)
+    declaration = measurement_emit.load_tuning_declaration(topology, design_draft=draft)
+    measurement_emit.require_candidate_speaker_identity(banked.candidate, declaration.preset)
+    bound = candidate_on_declaration(banked.candidate, declaration.preset)
+    assert_crossover_honours_declared_floor(bound.source_preset)
+    return AppliedTune(banked, declaration, draft, applied)
 
 
 def compile_applied_tune(

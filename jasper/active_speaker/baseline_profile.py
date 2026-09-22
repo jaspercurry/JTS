@@ -329,7 +329,7 @@ def rear_calibration_issues(candidate: MeasuredCrossoverCandidate) -> list[dict[
 
 
 def compile_commissioning_profile(
-    *, topology: OutputTopology | None = None,
+    *, applied_profile: Mapping[str, Any] | None, topology: OutputTopology | None = None,
     design_draft: Mapping[str, Any] | None = None, write: bool = False,
     crossover_preview: Mapping[str, Any] | None = None,
     find_candidate: Callable[[str], BankedCandidate] | None = None,
@@ -349,7 +349,7 @@ def compile_commissioning_profile(
         topology = topology if topology is not None else load_output_topology()
         draft = design_draft if design_draft is not None else load_design_draft(topology=topology)
         declaration = load_tuning_declaration(topology, design_draft=draft)
-        applied = load_applied_baseline_profile_state()
+        applied = applied_profile
         if applied is not None:
             fingerprint = (applied.get("source") or {}).get("measured_candidate_fingerprint", "")
             banked = (find_candidate(fingerprint) if find_candidate is not None

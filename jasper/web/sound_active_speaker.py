@@ -968,10 +968,10 @@ def _active_speaker_baseline_profile_payload(
     write: bool = False,
     design_draft: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from jasper.active_speaker.baseline_profile import compile_commissioning_profile  # lazy: graph compilation imports NumPy
+    from jasper.active_speaker.baseline_profile import compile_commissioning_profile, load_applied_baseline_profile_state  # lazy: graph compilation imports NumPy
 
     topology = load_output_topology()
-    _, payload = compile_commissioning_profile(topology=topology, design_draft=design_draft, write=write)
+    _, payload = compile_commissioning_profile(applied_profile=load_applied_baseline_profile_state(), topology=topology, design_draft=design_draft, write=write)
     log_event(
         logger,
         "sound.active_speaker_baseline_profile",

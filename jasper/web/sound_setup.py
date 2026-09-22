@@ -47,10 +47,7 @@ from jasper.sound.profile import (
     rename_named_profile,
     save_named_profile,
 )
-from jasper.sound.settings import (
-    load_sound_settings,
-    output_trim_db as _output_trim,  # aliased so the probe's kwarg can't shadow it
-)
+from jasper.sound.settings import load_sound_settings
 
 from ._common import (
     JsonBodyError,
@@ -310,24 +307,8 @@ def _error_body(exc: BaseException) -> dict[str, Any]:
     return body
 
 
-def _eq_carrier_block(
-    profile: SoundProfile,
-    *,
-    config_dir: str | Path,
-    camilla_factory: Callable[[], Any],
-    output_trim_db: float,
-) -> Any:
-    """Probe the LOADED graph for /state: a refusal, ``None``, or "not probed".
-
-    ``output_trim_db`` is the household's real trim, computed as the apply path
-    computes it: the emitter folds the trim into ``total_headroom_db`` against
-    ``MAX_PROGRAM_HEADROOM_DB``, so probing at 0 dB would report a graph
-    hostable that the save then refuses.
-
-    Fail-OPEN: an unreachable CamillaDSP, an empty path, or a probe that blows
-    up returns "not probed" and the page keeps its editor. The /apply and
-    /settings refusals stay the fail-closed gate.
-    """
+def _eq_carrier_block(*, config_dir: str | Path, camilla_factory: Callable[[], Any]) -> Any:
+    """An unavailable controller leaves the editor open; writes still validate."""
     from jasper.sound.graph_carrier import eq_block_for_loaded_config
 
     try:
@@ -336,12 +317,7 @@ def _eq_carrier_block(
         )
         if not current_path:
             return _EQ_CARRIER_NOT_PROBED
-        return eq_block_for_loaded_config(
-            profile,
-            current_path=current_path,
-            config_dir=config_dir,
-            output_trim_db=output_trim_db,
-        )
+        return eq_block_for_loaded_config(current_path=current_path, config_dir=config_dir)
     except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
         logger.warning("sound: eq-carrier probe unavailable", exc_info=True)
         return _EQ_CARRIER_NOT_PROBED
@@ -387,16 +363,11 @@ def _make_handler(
             if path == "/state":
                 profile = load_profile(profile_path)
                 settings = load_sound_settings()
-                # Only /sound/eq/ renders the editor, and the probe is a
-                # dry-run recompose of the loaded graph, so no other page pays
-                # for it — it keeps the "not probed" default.
                 eq_block: Any = _EQ_CARRIER_NOT_PROBED
                 if _requested_page_mode(self.headers) == "eq":
                     eq_block = _eq_carrier_block(
-                        profile,
                         config_dir=config_dir,
                         camilla_factory=camilla_factory,
-                        output_trim_db=_output_trim(profile, settings),
                     )
                 self._send_json(
                     _state_payload(
