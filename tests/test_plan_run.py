@@ -1074,7 +1074,7 @@ async def test_opener_cap_survives_plan_serialization_at_each_pose(tmp_path, box
 
 
 @pytest.mark.parametrize("window", [None, float("nan"), float("inf"), float("-inf"), True, "80.53", "empty"])
-async def test_blocked_rung_persists_its_measurement_failure(tmp_path, box, rung_spl, monkeypatch, window):
+async def test_unmeasured_rung_holds_or_persists_its_missing_level(tmp_path, box, rung_spl, monkeypatch, window):
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     request = ac.AngleCaptureRequest((ac.AngleStop(0, ac.REGIME_SUMMED, purpose="bass"),))
@@ -1093,14 +1093,21 @@ async def test_blocked_rung_persists_its_measurement_failure(tmp_path, box, rung
                         lambda *_args, **_kwargs: TakeVerdict(True))
 
     hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
-    with pytest.raises(ac.LateralWalkRefused) as refused:
-        await run_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS,
-                         save_ladder=packet.update_schedule)
-    assert refused.value.reason == "walk_level_policy_invalid"
-    assert [call["level_db"] for call in fakes.play.calls] == ([] if window == "empty" else [-28])
+    run = run_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS, save_ladder=packet.update_schedule)
+    if window == "empty":
+        with pytest.raises(ac.LateralWalkRefused) as refused:
+            await run
+        assert refused.value.reason == "walk_level_policy_invalid"
+    else:
+        assert all(result.status == "complete" for result in await run)
+    assert [call["level_db"] for call in fakes.play.calls] == ([] if window == "empty" else [-28, -28])
     blocked = packet.manifest.records.snapshots[-1]["schedule"]["admissions"][-1]
     assert (blocked["pose_index"], blocked["level_index"], blocked["requested_db_spl"]) == (1, 2, 75)
-    assert blocked["status"] == "blocked" and blocked["admitted_db_spl"] is None
+    if window == "empty":
+        assert blocked["status"] == "blocked" and blocked["admitted_db_spl"] is None
+    else:
+        assert blocked["bound_by"] == "previous_rung_unmeasured" and blocked["level_db"] == -28
+        assert blocked["admitted_db_spl"] == 65
     assert blocked["unavailable"] == (["previous_rung"] if window == "empty" else ["max_window_db_spl"])
 
 

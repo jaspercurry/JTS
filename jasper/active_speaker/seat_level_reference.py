@@ -67,6 +67,31 @@ def rung_lift_bound_db(candidate: Mapping[str, Any], applied: Mapping[str, Any],
     return max(0.0, reserve(candidate) - reserve(applied))
 
 
+def predicted_rung_admission(
+    fader_db: float, anchor: ResolvedLevel, candidates: Mapping[str, Mapping[str, Any]], *,
+    applied: Mapping[str, Any], ceiling_db_spl: float, tolerance_db: float,
+) -> dict[str, Any]:
+    requested = fader_db
+    for attempt in range(6):
+        lift, name = max((rung_lift_bound_db(descriptor, applied, fader_db), name)
+                         for name, descriptor in candidates.items())
+        margin = tolerance_db + lift
+        bound = spl_raise_bound_db_spl(ceiling_db_spl, margin_db=margin)
+        predicted = anchor.db_spl_at(fader_db)
+        if predicted <= bound:
+            return {"level_db": fader_db, "admitted_db_spl": predicted, "candidate_id": name,
+                    "anchor_tolerance_db": tolerance_db, "lift_bound_db": lift,
+                    "margin_db": margin, "bound_db_spl": bound,
+                    **({"bound_by": "commissioning_margin"} if fader_db < requested else {})}
+        if attempt == 4:
+            # Full candidate reserve bounds every fader, even across the loudness taper.
+            lift = max(dynamic_bass_gain_reserve_db(DynamicBassDescriptor(**descriptor)) if descriptor else 0.0
+                       for descriptor in candidates.values())
+            bound = spl_raise_bound_db_spl(ceiling_db_spl, margin_db=tolerance_db + lift)
+        fader_db = math.nextafter(fader_db - (predicted - bound), -math.inf)
+    raise SeatLevelTargetError("The commissioning margin did not converge")
+
+
 class RungMeasurementUnavailable(SeatLevelTargetError):
     def __init__(self, fields: Sequence[str], observation_index: int | None = None) -> None:
         self.evidence = {"unavailable": list(fields), "observation_index": observation_index}
@@ -269,10 +294,6 @@ def write_seat_level_reference(
 #: that looks absolute and was guessed is worse than no number.
 ANCHOR_UNUSABLE = "seat_anchor_unusable"
 
-#: Two sens factors this close are one number in two float reprs, not two
-#: calibrations. A real recalibration moves the figure by whole tenths.
-SENS_FACTOR_TOLERANCE_DB = 0.05
-
 
 class LevelUnresolved(Exception):
     """The anchor's level is not usable, named by ``reason``."""
@@ -293,6 +314,8 @@ class ResolvedLevel:
     session_id: str = ""
     leveled_at: str = ""
     target_db_spl: float = DEFAULT_TARGET_DB_SPL
+    anchor_mic_serial: str | None = None
+    anchor_rebased_db: float = 0.0
 
     def db_spl_at(self, fader_db: float) -> float:
         return self.anchor_db_spl + (fader_db - self.reference_volume_db)
@@ -357,29 +380,21 @@ def resolve_anchor_level(
             "the calibration store, or re-run jasper-seat-level with the mic "
             "you will measure with",
         )
-    if banked_serial and sensitivity.serial != banked_serial:
-        raise LevelUnresolved(ANCHOR_UNUSABLE, "The anchor and current calibration name different microphones")
     banked_sens_factor_db = finite_float(banked.get("sens_factor_db"))
-    if (
-        banked_sens_factor_db is not None
-        and abs(sensitivity.sens_factor_db - banked_sens_factor_db)
-        > SENS_FACTOR_TOLERANCE_DB
-    ):
-        raise LevelUnresolved(
-            ANCHOR_UNUSABLE,
-            f"the anchor was measured with mic {serial or sensitivity.serial} "
-            f"at a sens factor of {banked_sens_factor_db:g} dB, but that mic "
-            f"resolves now at {sensitivity.sens_factor_db:g} dB — an anchor "
-            "measured with one calibration cannot make a session measured "
-            "with another absolute; re-run jasper-seat-level with the "
-            "calibration you will measure with",
-        )
+    rebased = anchor
+    if (banked_serial and sensitivity.serial == banked_serial and banked_sens_factor_db is not None
+            and sensitivity.sens_factor_db != banked_sens_factor_db):
+        from jasper.audio_measurement.calibration import MicSensitivity  # lazy: numpy
+
+        old = MicSensitivity(banked_sens_factor_db, finite_float(banked.get("analog_gain_db")), str(banked_serial))
+        rebased = sensitivity.db_spl_from_dbfs(old.dbfs_from_db_spl(anchor))
 
     return ResolvedLevel(
-        anchor_db_spl=anchor,
+        anchor_db_spl=rebased,
         reference_volume_db=reference_volume_db,
         mic_serial=sensitivity.serial, session_id=str(record["session_id"]),
         leveled_at=str(record["leveled_at"]), target_db_spl=target,
+        anchor_mic_serial=str(banked_serial) if banked_serial else None, anchor_rebased_db=rebased - anchor,
     )
 
 
