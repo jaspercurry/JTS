@@ -37,7 +37,7 @@ from jasper.active_speaker.crossover_v2 import prescription_document as prescrip
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment, compile_candidate_config
 from jasper.active_speaker.design_draft import load_design_draft
 from jasper.web import correction_capture, correction_crossover_v2_apply as v2apply
-from jasper.active_speaker.crossover_v2.evidence_packet import CrossoverEvidencePacketError
+from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
 from jasper.active_speaker.measurement_programs import run_program
 from jasper.active_speaker.measurement import active_driver_targets

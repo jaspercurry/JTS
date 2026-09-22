@@ -34,9 +34,7 @@ from jasper.active_speaker.baseline_profile import applied_layer_names
 from jasper.active_speaker.branch_chain import rear_stage_response
 from jasper.active_speaker.camilla_yaml import rear_branch_sum_headroom_db
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
-from jasper.active_speaker.measurement_programs import (
-    BRANCH_PAIR_FRONT_REAR, POSE_KIND_BEARING, PURPOSE_REAR,
-)
+from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, POSE_KIND_BEARING, PURPOSE_REAR
 from jasper.active_speaker.rear_calibration import (
     changed_section_paths, rear_operating_facts, section_change_family,
 )
@@ -51,7 +49,7 @@ from jasper.audio_measurement.rear_evidence import (
 )
 from jasper.json_fields import finite_float
 
-from .evidence_packet import applied_profile_source
+from .evidence_packet.incumbent import applied_profile_source
 from .measure_spec import branch_target_ids_for
 from .measurement_context import capture_basis
 from .position_cycle import curves_for_take, parse_curve_complex

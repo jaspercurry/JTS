@@ -98,7 +98,7 @@ def list_measurements(sessions_dir: Path) -> tuple[ArchivedMeasurement, ...]:
     """List every bundle that carries measurement records or old round evidence."""
 
     from . import bundles
-    from .crossover_v2.evidence_packet import round_artifact_dir
+    from .crossover_v2.round_inputs import round_artifact_dir
     from .crossover_v2.record_index import bundle_measurements
 
     runs = []

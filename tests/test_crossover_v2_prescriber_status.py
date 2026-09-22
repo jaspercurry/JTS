@@ -43,9 +43,7 @@ from tests import nginx_site
 
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
-from jasper.active_speaker.measured_crossover_candidate import (
-    MeasuredCrossoverAlignment,
-)
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment
 from jasper.active_speaker.seat_level_reference import (
     STATE_PATH_ENV as _SEAT_LEVEL_STATE_PATH_ENV,
 )
@@ -859,7 +857,7 @@ def _rebank_round_as_no_crossover(session: Path) -> None:
     from jasper.active_speaker.crossover_v2.blend_correction import (
         solve_blend_correction,
     )
-    from jasper.active_speaker.crossover_v2.evidence_packet import (
+    from jasper.active_speaker.crossover_v2.round_inputs import (
         round_artifact_dir,
     )
     from jasper.audio_measurement.program_analysis import (

@@ -13,18 +13,15 @@ from typing import Any
 
 from jasper.active_speaker.crossover_v2.contracts import DRIVER_ROLES
 from jasper.active_speaker.crossover_v2.commanded import profile_crossover_fc_hz
-from jasper.active_speaker.crossover_v2.evidence_packet import applied_profile_source
+from jasper.active_speaker.crossover_v2.evidence_packet.incumbent import applied_profile_source
 from jasper.active_speaker.crossover_v2.position_cycle import select_pose_curve_pair
 from jasper.active_speaker.crossover_v2.round_inputs import banked_round_of, round_inputs
 from jasper.active_speaker.crossover_v2.delay_landscape import (
-    BankedLandscape,
-    DelayLandscapeError,
-    confirmation_verdict,
+    BankedLandscape, DelayLandscapeError, confirmation_verdict,
     depth_by_coordinate,
     graded_null_rows,
     landscape_from_bank,
-    optimum_line,
-    verdict_line,
+    optimum_line, verdict_line,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
 from jasper.active_speaker.delay_sweep import sweep_spec

@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
-from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
+from jasper.active_speaker.crossover_v2.evidence_packet.offline_reads import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
 
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
@@ -57,11 +57,7 @@ from jasper.active_speaker.crossover_v2.round_captures import REFUSE_NO_CAPTURES
 from jasper.active_speaker import flat_spec
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
-from tests.crossover_v2_banked_round import (
-    bank_cloud_echo_band,
-    bank_findings,
-    bank_measure_round,
-)
+from tests.crossover_v2_banked_round import bank_cloud_echo_band, bank_findings, bank_measure_round
 from tests.crossover_v2_fixtures import bank_capture_round
 from tests.run_manifest_fixture import manifest_set, write_manifest
 # The gate sweep's own pose IRs, reused rather than copied, so a deconvolved

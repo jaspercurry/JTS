@@ -23,14 +23,12 @@ from jasper.audio_measurement.room_boundary import (
     ROOM_MEDIAN_WINDOW,
     room_ceiling_hz,
 )
-from jasper.audio_measurement.measurement_geometry import (
-    boundary_prior, load_declared_geometry,
-)
+from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
 from jasper.audio_measurement.room_limits import spatial_support
 from jasper.json_fields import finite_float
-from jasper.active_speaker.run_manifest import room_sets, view_sets
+from ..run_manifest import room_sets, view_sets
 
-from .evidence_packet import applied_profile_source
+from .evidence_packet.incumbent import applied_profile_source
 from .prescription_contract import room_analysis_bounds
 from .room_prescription import ROOM_MEDIAN_FIELD, read_room_median
 from .room_selection import SeatTake

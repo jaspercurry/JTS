@@ -29,14 +29,10 @@ from jasper.active_speaker.delay_sweep import (
     VERDICT_ROBUST,
     VERDICT_WEAK,
 )
-from jasper.audio_measurement.analysis import (
-    ShoulderSpan,
-    crossover_null_depth_db,
-    shoulder_span,
-)
+from jasper.audio_measurement.analysis import ShoulderSpan, crossover_null_depth_db, shoulder_span
 from jasper.audio_measurement.null_walk import NullWalkError, NullWalkSpec
 
-from .evidence_packet import round_artifact_dir
+from .round_inputs import round_artifact_dir
 from .position_cycle import PoseCurvePair
 
 LANDSCAPE_KIND = "jts_inter_driver_delay_landscape"
