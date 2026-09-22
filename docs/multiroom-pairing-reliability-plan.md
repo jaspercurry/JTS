@@ -1209,7 +1209,7 @@ This campaign is complete when:
 | Active graph emission | [`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py) |
 | Independent graph proof | [`jasper/active_speaker/runtime_contract.py`](../jasper/active_speaker/runtime_contract.py) |
 | Fan-in coupling | [`jasper/fanin/coupling_reconcile.py`](../jasper/fanin/coupling_reconcile.py) |
-| Source parking/restoration | [`jasper/source_intent.py`](../jasper/source_intent.py) |
+| Source parking/restoration | [`jasper/local_sources/reconcile.py`](../jasper/local_sources/reconcile.py) |
 | TTS route truth | [`jasper/multiroom/tts_route.py`](../jasper/multiroom/tts_route.py) |
 | Acoustic sync measurement | [`jasper/multiroom/sync_measure.py`](../jasper/multiroom/sync_measure.py) |
 | Endpoint-latency receipt (WO-8) | `/var/lib/jasper-grouping/endpoint-latency.json`, consumed by `reconcile.py::snapclient_argv` |

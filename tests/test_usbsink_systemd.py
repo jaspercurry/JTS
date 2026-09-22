@@ -18,10 +18,10 @@ from tests.systemd_unit_helpers import (
 REPO = Path(__file__).resolve().parent.parent
 UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-usbsink.service"
 GADGET_UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-usbgadget.service"
-NAME_INDEX_UNIT_PATH = (
-    REPO / "deploy" / "systemd" / "jasper-usbsink-name-index.service"
+NAME_INDEX_UNIT_PATH = REPO / "deploy" / "systemd" / "jasper-usbsink-name-index.service"
+FORENSICS_SERVICE_PATH = (
+    REPO / "deploy" / "systemd" / "jasper-usbgadget-forensics.service"
 )
-FORENSICS_SERVICE_PATH = REPO / "deploy" / "systemd" / "jasper-usbgadget-forensics.service"
 FORENSICS_PATH_PATH = REPO / "deploy" / "systemd" / "jasper-usbgadget-forensics.path"
 HARDWARE_RECONCILE_UNIT_PATH = (
     REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service"
@@ -89,12 +89,8 @@ def test_readiness_marker_is_process_free_and_reproved_with_gadget_lifecycle():
 
 def test_gadget_waits_for_reconciled_hardware_capability() -> None:
     body = GADGET_UNIT_PATH.read_text()
-    assert "jasper-audio-hardware-reconcile.service" in (
-        _values_for(body, "After")
-    )
-    assert "jasper-audio-hardware-reconcile.service" in (
-        _values_for(body, "Wants")
-    )
+    assert "jasper-audio-hardware-reconcile.service" in (_values_for(body, "After"))
+    assert "jasper-audio-hardware-reconcile.service" in (_values_for(body, "Wants"))
     unset = set(_values_for(body, "UnsetEnvironment"))
     assert USB_ROLE_TEST_SEAMS <= unset
     assert "JASPER_USBGADGET_HARDWARE_ALLOWED_CMD" in unset
@@ -195,7 +191,7 @@ def test_only_volume_observer_keeps_a_usb_console_script():
 def test_name_index_unit_keeps_depmod_off_the_gadget_start_budget() -> None:
     """#2176: `depmod` measured 10.3 s on a Pi Zero 2 W, over 2x the gadget
     unit's TimeoutStartSec=5s — and that 5 s is mirrored into
-    jasper/source_intent.py as the single source of truth for a derived
+    jasper/source_intent_units.py as the single source of truth for a derived
     timeout budget that reaches install.sh and three nginx
     proxy_read_timeout values, so it must not move to accommodate depmod.
 
@@ -209,9 +205,8 @@ def test_name_index_unit_keeps_depmod_off_the_gadget_start_budget() -> None:
 
     # The gadget still runs only the fast publish half, with no argument that
     # would drag the index phase back onto its start path.
-    assert (
-        "-/usr/local/sbin/jasper-usbsink-name-patch"
-        in _assignments_for(gadget, "ExecStartPre")
+    assert "-/usr/local/sbin/jasper-usbsink-name-patch" in _assignments_for(
+        gadget, "ExecStartPre"
     )
     assert "jasper-usbsink-name-patch --index" not in gadget
     assert _value_for(gadget, "TimeoutStartSec") == "5s"
@@ -239,8 +234,7 @@ def test_name_index_unit_keeps_depmod_off_the_gadget_start_budget() -> None:
     assert _values_for(index_unit, "Before") == ()
     # Kick-only: started on demand by the publish half, never boot-enabled.
     sections = [
-        line.strip() for line in index_unit.splitlines()
-        if line.strip().startswith("[")
+        line.strip() for line in index_unit.splitlines() if line.strip().startswith("[")
     ]
     assert "[Install]" not in sections, sections
 

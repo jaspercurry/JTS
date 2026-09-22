@@ -7,10 +7,11 @@
 One source's verdict is household intent plus current grouping role (plus, for
 USB, the physical data-role capability); the shared verdict is role only, for
 infrastructure with no single source intent.  The source coordinator
-(:mod:`jasper.source_intent`) is the single writer; every gated unit consumes
+(:mod:`jasper.local_sources.reconcile`) is the single writer; every gated unit consumes
 one marker as ``ConditionPathExists=``, so an absent marker — or an absent
 directory before the first pass — blocks the start.  See ADR-0221.
 """
+
 from __future__ import annotations
 
 import logging
@@ -68,8 +69,7 @@ def local_sources_allowed() -> tuple[bool, str | None]:
         prior_status = read_effective_role_status()
         if prior_status.get("local_sources_allowed") is False:
             return False, str(
-                prior_status.get("blocked_reason")
-                or "role_transition_in_progress"
+                prior_status.get("blocked_reason") or "role_transition_in_progress"
             )
         return True, None
     reason = effective_local_sources_park_reason(cfg)

@@ -7,7 +7,7 @@ Description=Jasper USB gadget name-patch module index rebuild (depmod)
 #
 # Why the split: depmod alone measures 10.3 s on a Pi Zero 2 W, over 2x
 # jasper-usbgadget.service's TimeoutStartSec=5s. That 5 s is mirrored into
-# jasper/source_intent.py's _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC as the single
+# jasper/source_intent_units.py's _SOURCE_UNIT_SYSTEMD_TIMEOUT_SEC as the single
 # source of truth for the source-intent reconciler's derived timeout budget,
 # which feeds install.sh's broker kill-after and three nginx
 # proxy_read_timeout values across two config files — so raising it to cover

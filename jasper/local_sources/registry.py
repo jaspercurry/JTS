@@ -21,9 +21,9 @@ defaults and the ordinary runtime/guard/health resources used by status,
 installer, and safety checks. Source-specific mechanics remain in the one
 host-owned source coordinator. For example, USB Audio Input needs ordered
 fan-in arming and ConfigFS recomposition; those operations are deliberately
-implemented by ``jasper.source_intent`` rather than encoded as increasingly
-powerful registry callbacks.
+implemented by ``jasper.local_sources.reconcile``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

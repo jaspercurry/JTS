@@ -25,7 +25,7 @@
 # TWO PHASES, because depmod alone measures 10.3 s on a Pi Zero 2 W -- over
 # 2x jasper-usbgadget.service's 5 s TimeoutStartSec (#2176), whose value is
 # the single source of truth for the source-intent reconciler's derived
-# timeout budget (jasper/source_intent.py) and must not move:
+# timeout budget (jasper/source_intent_units.py) and must not move:
 #
 #   publish (default, runs as jasper-usbgadget's ExecStartPre)
 #     Everything cheap and everything ordering-sensitive: read the name,

@@ -2,17 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Source-intent reconcile unit name and timeout budget — a near-stdlib leaf (stdlib plus jasper.service_units).
+"""Source reconciliation unit names and timeout budgets.
 
-``jasper.source_intent`` imports asyncio (for its Bluetooth D-Bus calls),
-``jasper.install_profile``, and ``jasper.local_sources`` for its full
-reconcile machinery. A boot oneshot that only needs the reconcile unit name
-and its derived systemd/broker timeout ceilings
-(``jasper.multiroom.reconcile``, ``jasper.control.restart_broker``) should
-not pay import cost for that whole tree — that is the reason this is a
-separate module rather than a re-export. ``jasper.source_intent`` re-imports
-every name below so existing importers keep working unchanged.
+Clients import this near-stdlib leaf without loading root host operations
+from ``jasper.local_sources.reconcile``.
 """
+
 from __future__ import annotations
 
 from jasper.service_units import FANIN_SERVICE, LIBRESPOT_SERVICE
@@ -98,9 +93,7 @@ _FANIN_RESTART_BACKOFF_SEC = 5.0
 _USB_GADGET_START_DEPENDENCY_SEC: dict[str, float] = {
     "jasper-usb-network-plan.service": 10.0,
     "jasper-audio-hardware-reconcile.service": 50.0,
-    FANIN_SERVICE: (
-        _SYSTEMD_DEFAULT_TIMEOUT_START_SEC + _FANIN_RESTART_BACKOFF_SEC
-    ),
+    FANIN_SERVICE: (_SYSTEMD_DEFAULT_TIMEOUT_START_SEC + _FANIN_RESTART_BACKOFF_SEC),
 }
 # A synchronous start waits for the whole required dependency transaction, not
 # just the named service. AirPlay's packaged unit Requires=/After= our nqptp
