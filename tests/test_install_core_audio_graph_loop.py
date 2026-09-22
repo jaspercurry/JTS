@@ -24,8 +24,6 @@ FRAGMENT = ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
 BUILD_SANDBOX = ROOT / "deploy" / "lib" / "install" / "build-sandbox.sh"
 _REAL_INSTALL = shutil.which("install") or "/usr/bin/install"
 
-# Every destination the install table should attempt, regardless of mid-loop
-# failure. Kept as the asserted contract so a future row addition is caught.
 EXPECTED_DSTS = (
     "jasper-camilla-topology-gate",
     "jasper-camilla.service",
@@ -72,11 +70,6 @@ rm() {{
 
 
 def _assert_no_rm_escaped(tmp_path: Path) -> None:
-    """Fail the test if `rm` was ever asked to touch a path outside tmp_path.
-
-    A no-op when the harness never wrote rm.log: not every harness exercises
-    install_local_audio_graph_unit_files's destructive line.
-    """
     log = tmp_path / "rm.log"
     if not log.exists():
         return
@@ -85,10 +78,6 @@ def _assert_no_rm_escaped(tmp_path: Path) -> None:
 
 
 def _harness(tmp_path: Path, *, fail_basename: str | None) -> str:
-    """A bash script that sources the fragment with stub globals + shims and
-    invokes the install loop. `fail_basename` makes the stub `install` return
-    non-zero when the destination ends with that name (simulating a mid-loop
-    failure)."""
     systemd_dir = tmp_path / "systemd"
     install_log = tmp_path / "install.log"
     reload_log = tmp_path / "reload.log"
@@ -152,16 +141,11 @@ def test_all_units_installed_on_clean_run(tmp_path):
     r = _run(tmp_path, fail_basename=None)
     assert r.returncode == 0, r.stderr
     attempted = _attempted_dsts(tmp_path)
-    # Set-equality (not just a subset): EXPECTED_DSTS is the asserted contract,
-    # so a future SSOT row added to JASPER_CORE_AUDIO_GRAPH_INSTALL_ROWS without
-    # updating this tuple fails here — making good on the docstring promise that
-    # "a future row addition is caught," not only a removal.
     assert attempted == set(EXPECTED_DSTS), (
         "core audio-graph install rows drifted from EXPECTED_DSTS: "
         f"missing={set(EXPECTED_DSTS) - attempted}, "
         f"unexpected={attempted - set(EXPECTED_DSTS)}"
     )
-    # daemon-reload ran.
     assert (tmp_path / "reload.log").exists()
 
 
@@ -247,15 +231,6 @@ install -m 0644 "{tmp_path / 'missing.service'}" "{new}"
 def test_usbgadget_forensics_units_both_roll_back_after_later_staging_failure(
     tmp_path,
 ):
-    """Every file install must snapshot its exact destination, not a directory.
-
-    GNU install accepts multiple sources plus a directory destination.  The full
-    profile's transaction wrapper cannot safely roll that shape back because a
-    directory snapshot can be restored *inside* the live directory, leaving a
-    mixed generation.  Exercise the production USB helper and then fail a later
-    staging row: both prior forensics units must return byte-for-byte and the
-    systemd directory must contain no nested rollback artifact.
-    """
     systemd_dir = tmp_path / "systemd"
     transaction = tmp_path / "transaction"
     systemd_dir.mkdir()
@@ -310,8 +285,6 @@ install -m 0644 "{tmp_path / 'missing.service'}" \
 
 
 def test_later_install_failure_restores_usb_projections_and_gate_state(tmp_path):
-    """The generated pair belongs to the full-profile rollback generation."""
-
     transaction = tmp_path / "transaction"
     nm = tmp_path / "jts-usb.nmconnection"
     dnsmasq = tmp_path / "usbnet-dnsmasq.conf"
@@ -361,8 +334,6 @@ install -m 0644 "{tmp_path / 'missing.service'}" "{tmp_path / 'later.service'}"
 
 
 def _function_body(source: str, name: str) -> str:
-    """Extract a bash function body from the fragment. Functions here open with
-    `name() {` and close with a `}` alone at column 0."""
     pattern = r"^" + re.escape(name) + r"\(\) \{\n(.*?)\n\}$"
     m = re.search(pattern, source, re.S | re.M)
     assert m, f"function {name} not found in systemd-units.sh"
@@ -389,31 +360,20 @@ def test_source_intent_reapply_runs_the_bounded_full_coordinator():
 
 
 def test_midloop_failure_still_attempts_every_later_unit(tmp_path):
-    """THE deploy hazard: a row in the MIDDLE fails. Every LATER row (including
-    the newly-added guards at the end) must still be attempted, the function
-    must report failure, and a daemon-reload must still run so the units that
-    DID land take effect on this deploy."""
-    # jasper-fanin.service is the 6th row — fail it and assert the tail still
-    # gets attempted.
     r = _run(tmp_path, fail_basename="jasper-fanin.service")
     assert r.returncode != 0, "the loop must surface the row failure"
     attempted = _attempted_dsts(tmp_path)
-    # Everything except the failed row was still attempted...
     for dst in EXPECTED_DSTS:
         assert dst in attempted, (
             f"{dst} should still be attempted after a mid-loop failure"
         )
-    # ...including later guards and the final pitch-neutralization helper.
     assert "jasper-camilla-crossover-guard" in attempted
     assert "jasper-fanin-pitch-neutralize" in attempted
-    # daemon-reload ran despite the failure.
     assert (tmp_path / "reload.log").exists()
     assert "jasper-fanin.service" in r.stderr
 
 
 def test_last_unit_failure_still_runs_daemon_reload(tmp_path):
-    """A failure on the FINAL row must still leave a daemon-reload behind so the
-    earlier units that landed are known to systemd."""
     r = _run(tmp_path, fail_basename="jasper-fanin-pitch-neutralize")
     assert r.returncode != 0
     assert (tmp_path / "reload.log").exists()
@@ -558,14 +518,6 @@ def test_an_abort_mid_tail_leaves_no_parked_core_graph_unit_stopped(tmp_path):
 
 
 def _shim_preamble(tmp_path: Path, *, errexit: bool = True) -> str:
-    """The install.sh globals the fragment assumes, every mutable root pointed
-    at tmp_path, and the fragment itself. `errexit` is off for the runtime
-    harness alone: that path also calls install.sh helpers and on-box binaries
-    under /usr/local/sbin, neither of which exists here and both non-fatal on
-    the box too. `rm` is shimmed here too (not just LOCAL_SBIN_DIR's
-    redirection): install_local_audio_graph_unit_files's cleanup line is the
-    one `rm -f` outside any install() call, so a regression there must fail
-    the test rather than delete the real file on a host that ran install.sh."""
     return f"""
 set -{"euo" if errexit else "uo"} pipefail
 REPO_DIR="{ROOT}"
@@ -588,9 +540,6 @@ _RECORDER_SHIMS = ("systemctl", "clear_install_in_progress", "mktemp", "rm")
 
 
 def _transaction_recorder(tmp_path: Path) -> str:
-    """One ordered log of the systemctl argv a profile issues plus
-    clear_install_in_progress, which lives in install.sh and so is covered by
-    no fragment stub. Also pins the transaction directory under tmp_path."""
     return f"""
 systemctl() {{ echo "systemctl $*" >> "{tmp_path}/calls.log"; return 0; }}
 clear_install_in_progress() {{ echo "fn clear_install_in_progress" >> "{tmp_path}/calls.log"; }}
@@ -606,14 +555,6 @@ def _profile_runtime_harness(
     extra_shims: str = "",
     epilogue: str = "",
 ) -> str:
-    """Run one profile's unit-install function with every fragment-defined
-    helper stubbed into a recorder, so the systemctl argv it issues is
-    observable off-box. `keep` names further fragment functions to leave real.
-    `extra_shims` replaces recorder stubs with scenario-specific behaviour (it
-    is emitted last, so it wins); `epilogue` runs after the profile returns and
-    is where a test sources libraries the stub loop must not have seen."""
-    # The stub loop never replaces the recorder's own shims, so the two can be
-    # emitted in either order.
     real = " ".join(
         shlex.quote(name)
         for name in (function, *keep, *_RECORDER_SHIMS)
@@ -930,14 +871,6 @@ require_outputd_ready() {{
 def test_both_profiles_restart_control_and_refresh_the_source_roster(
     tmp_path, function
 ):
-    """Both profiles must RESTART jasper-control: enabling alone leaves the
-    control plane — and, through its Wants=, CamillaDSP — down until the next
-    reboot. The try-restart set must cover every unit jasper's own local-source
-    roster names, and the USB baseline, the active-only refresh and the
-    source-intent coordinator must stay in that order.
-
-    Remove when the installer stops managing unit lifecycle.
-    """
     result = subprocess.run(
         [
             "bash",
@@ -996,9 +929,6 @@ def test_both_profiles_restart_control_and_refresh_the_source_roster(
         and "jasper-source-intent-reconcile.service" in call
         for call in calls
     )
-    # Streambox uses the same direct USB data plane as a full speaker, so it
-    # arms the combo owner inline, between the two; the full profile leaves
-    # that to resolve_fanin_coupling_default after the coordinator's pass.
     if function == "start_streambox_runtime_units":
         assert (
             first("fn enable_usbgadget")
@@ -1014,29 +944,19 @@ def test_both_profiles_restart_control_and_refresh_the_source_roster(
             "install_systemd_units",
             "_stage_full_unit_files",
             "systemctl enable --now jts-audio.slice jts-mic.slice",
-            ("mask_distro_background_units",),
+            ("activate_staged_unit_files", "mask_distro_background_units"),
         ),
         (
             "install_streambox_systemd_units",
             "_stage_streambox_unit_files",
             "systemctl enable --now jts-audio.slice",
-            ("park_streambox_brain_units", "mask_distro_background_units"),
+            ("activate_staged_unit_files", "park_streambox_brain_units", "mask_distro_background_units"),
         ),
     ),
 )
 def test_both_profiles_close_the_install_window_between_staging_and_runtime(
     tmp_path, entry, stage, first_runtime_call, post_commit
 ):
-    """Both positions the shared transaction has to preserve, read off the
-    recorded argv order rather than the source. #4218: the install window
-    closes AFTER daemon-reload has loaded the staged generation (so gated units
-    see their Condition lines) and BEFORE the profile's first enable/start.
-    #4222: jasper-control is restarted from the runtime tail, i.e. after the
-    wrapper returned and committed — the wrapper issues nothing recordable past
-    clear_install_in_progress, so anything logged later is outside it.
-
-    Remove when the installer stops staging units transactionally.
-    """
     keep = ("_with_unit_install_transaction", "restart_jasper_control_and_input")
     if entry == "install_streambox_systemd_units":
         keep += ("start_streambox_runtime_units",)
@@ -1076,18 +996,15 @@ def test_both_profiles_close_the_install_window_between_staging_and_runtime(
     assert all(cleared < first(f"fn {name}") for name in post_commit)
 
 
-def _stage_rollback_harness(tmp_path: Path, stage: str) -> str:
-    """Drive one profile's stage function under the real transaction wrapper,
-    with `install` a stub EXECUTABLE on PATH: the wrapper's interceptor promotes
-    with `command install`, which bypasses shell functions. The stub really
-    copies destinations under tmp_path (so rollback has bytes to restore) and
-    skips every other destination, keeping the run off the host's /etc and
-    /usr/local."""
+def _stage_rollback_harness(tmp_path: Path, stage: str, shims: str = "", tail: str = "") -> str:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     stub = bin_dir / "install"
     stub.write_text(
         "#!/usr/bin/env bash\n"
+        'args=(); while (( $# )); do\n'
+        '  case "$1" in -o|-g) shift 2 ;; *) args+=("$1"); shift ;; esac\n'
+        'done; set -- "${args[@]}"\n'
         'dst="${!#}"\n'
         'printf \'%s\\t%s\\n\' "$1" "$dst" >> "$JTS_STUB_CALLS"\n'
         'if [[ "$dst" == "$JTS_STUB_FAIL" ]]; then exit 1; fi\n'
@@ -1099,7 +1016,9 @@ def _stage_rollback_harness(tmp_path: Path, stage: str) -> str:
     stub.chmod(0o755)
     return f"""{_shim_preamble(tmp_path)}
 {_transaction_recorder(tmp_path)}
+{shims}
 _with_unit_install_transaction {stage}
+{tail}
 """
 
 
@@ -1123,15 +1042,6 @@ _with_unit_install_transaction {stage}
 def test_a_failed_stage_rolls_the_whole_profile_generation_back(
     tmp_path, stage, seeded, staged_new, fail_unit
 ):
-    """Both profiles stage through one rollback domain: when the Nth `install`
-    fails, every destination touched since the wrapper opened is restored to
-    its prior bytes, destinations that never existed are gone, and the profile
-    reaches none of its enable/start work — so PID 1 keeps the generation it
-    was already running instead of a half-replaced one. Streambox had no
-    transaction at all before this.
-
-    Remove when the installer stops staging units transactionally.
-    """
     systemd_dir = tmp_path / "systemd"
     systemd_dir.mkdir()
     (systemd_dir / seeded).write_text("old generation\n", encoding="utf-8")
@@ -1154,9 +1064,6 @@ def test_a_failed_stage_rolls_the_whole_profile_generation_back(
     assert (systemd_dir / seeded).read_text(encoding="utf-8") == "old generation\n"
     assert not (systemd_dir / staged_new).exists()
     assert not (tmp_path / "txn").exists()
-    # The harness only restores what it really copied, so the chosen failure
-    # point must come before the first destination outside tmp_path. Drop this
-    # assertion if the stage functions ever stop installing to absolute paths.
     promoted = {
         destination
         for mode, destination in (
@@ -1170,9 +1077,122 @@ def test_a_failed_stage_rolls_the_whole_profile_generation_back(
     assert not [
         call
         for call in issued
-        if call.startswith(("systemctl enable", "systemctl start"))
+        if (call.startswith("systemctl ") and call != "systemctl daemon-reload")
+        or call.startswith(("nmcli ", "udevadm "))
         or call == "fn clear_install_in_progress"
     ], issued
+
+
+@pytest.mark.parametrize("profile", ["full", "streambox"])
+@pytest.mark.parametrize("fault", ["network", "late", "verify", None])
+@pytest.mark.parametrize("pending", [False, True])
+def test_staging_faults_preserve_files_and_live_activation(tmp_path, profile, fault, pending):
+    # Rewrite only host roots; all stage helpers and rollback run unchanged.
+    fragment = tmp_path / "systemd-units.sh"
+    source = FRAGMENT.read_text()
+    for root in ("/etc/", "/usr/local/", "/var/lib/", "/sys/"):
+        source = source.replace(root, f"{tmp_path}{root}")
+    fragment.write_text(source)
+    systemd = tmp_path / "systemd"
+    retired = systemd / "jasper-wiim-remote-mic.service"
+    link = systemd / "multi-user.target.wants/jasper-wiim-remote-mic.service"
+    stale = systemd / "shairport-sync.service.d/jts-output.conf"
+    helper = tmp_path / "usrlocalsbin/jasper-outputd-unpark"
+    old_paths = [
+        retired, stale, helper, systemd / "jasper-web.service",
+        tmp_path / "etc/NetworkManager/system-connections/jts-usb.nmconnection",
+        tmp_path / "etc/jasper/usbnet-dnsmasq.conf",
+        tmp_path / "var/lib/jasper-usb-network/plan.json",
+        tmp_path / "var/lib/jasper-usb-network/migration_pending",
+    ]
+    for path in old_paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("old generation\n")
+        path.chmod(0o640)
+    link.parent.mkdir(parents=True)
+    link.symlink_to(retired)
+    (tmp_path / "sys/class/net/usb0").mkdir(parents=True)
+    for directory in ("usr/local/sbin", "usr/local/bin", "usr/local/lib/jasper"):
+        (tmp_path / directory).mkdir(parents=True)
+    late = (systemd / "jts-mic.slice" if profile == "full" else
+            tmp_path / "etc/udev/rules.d/99-jasper-bluetooth-adapter.rules")
+    shims = f'''
+INSTALL_DIR="{tmp_path}/opt/jasper"
+record_activation() {{
+    local phase=staging
+    [[ -d "{tmp_path}/txn" ]] || phase=committed
+    echo "$phase $*" >> "{tmp_path}/activation.log"
+}}
+systemctl() {{
+    record_activation systemctl "$@"
+    [[ "$1" != list-unit-files ]] || echo "$2 enabled"
+}}
+nmcli() {{ record_activation nmcli "$@"; }}
+udevadm() {{ record_activation udevadm "$@"; }}
+validate_installed_systemd_units() {{ return {1 if fault == "verify" else 0}; }}
+python3() {{
+    local plan nm dnsmasq pending
+    while (( $# )); do
+        case "$1" in
+            --plan) plan="$2"; shift ;;
+            --nm) nm="$2"; shift ;;
+            --dnsmasq) dnsmasq="$2"; shift ;;
+            --pending) pending="$2"; shift ;;
+        esac
+        shift
+    done
+    echo new > "$plan"
+    if {"true" if pending else "false"}; then
+        echo deferred > "$pending"
+    else
+        echo new > "$nm"
+        echo new > "$dnsmasq"
+        rm -f "$pending"
+    fi
+    return {1 if fault == "network" else 0}
+}}
+'''
+    script = _stage_rollback_harness(
+        tmp_path, f"_stage_{profile}_unit_files", shims, "activate_staged_unit_files"
+    ).replace(f'source "{FRAGMENT}"', f'source "{fragment}"')
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=30,
+        env={**os.environ, "PATH": f"{tmp_path}/bin:{os.environ['PATH']}",
+             "JTS_STUB_CALLS": str(tmp_path / "install.calls"),
+             "JTS_STUB_FAIL": str(late) if fault == "late" else ""},
+    )
+    assert result.returncode == (1 if fault else 0), result.stderr
+    _assert_no_rm_escaped(tmp_path)
+    assert not (tmp_path / "txn").exists()
+    copies = (tmp_path / "install.calls").read_text()
+    if fault == "late":
+        assert str(late) in copies
+    if fault in ("verify", None):
+        assert str(systemd / "jasper-headphone-monitor.service") in copies
+    issued = (tmp_path / "activation.log").read_text().splitlines()
+    mutations = [call for call in issued if not call.endswith("systemctl daemon-reload")]
+    assert all(call.startswith("committed ") for call in mutations), issued
+    if fault:
+        assert not mutations
+        for path in old_paths:
+            assert path.read_text() == "old generation\n", path
+            assert path.stat().st_mode & 0o777 == 0o640, path
+        assert link.is_symlink() and link.readlink() == retired
+        assert not (systemd / "jasper-input.service").exists()
+        assert not (tmp_path / "etc/NetworkManager/conf.d/90-jasper-usbnet.conf").exists()
+    else:
+        assert not any(path.exists() or path.is_symlink() for path in (retired, link, stale, helper))
+        assert (systemd / "jasper-input.service").is_file()
+        assert {
+            "committed systemctl disable --now jasper-wiim-remote-mic.service",
+            "committed systemctl disable --now snapserver.service",
+            "committed systemctl disable --now snapclient.service",
+            "committed udevadm control --reload-rules",
+        } <= set(mutations)
+        nm_calls = [call for call in mutations if call.startswith("committed nmcli ")]
+        assert bool(nm_calls) is not pending
+        if not pending:
+            assert nm_calls[-1] == "committed nmcli --wait 10 connection up jts-usb ifname usb0"
 
 
 @pytest.mark.parametrize("verify_rc", [0, 1, 124])
@@ -1238,14 +1258,6 @@ _with_unit_install_transaction stage
 
 
 def _destination_harness(tmp_path: Path, function: str) -> str:
-    """Record every destination one install step promotes, with the copy itself
-    suppressed — nothing here may write to the host's /etc or /usr/local. The
-    stubbed helpers cannot run off-box at all: install_usb_network_files drives
-    a Python plan owner against the real /etc/NetworkManager, and the other two
-    reload udev rules or shell out to systemd-analyze. That costs the recorded
-    set exactly one destination, NetworkManager's 90-jasper-usbnet.conf, which
-    both profiles reach through that same helper — so the subset comparison
-    below is unaffected."""
     calls = tmp_path / "destinations.log"
     return f"""{_shim_preamble(tmp_path)}
 install_transaction_dir="{tmp_path}/txn"
@@ -1284,10 +1296,6 @@ def _destinations(tmp_path: Path, function: str) -> set[str]:
 
 
 def test_only_the_contained_builder_policy_lands_in_the_install_lib_dir(tmp_path):
-    """/usr/local/lib/jasper/install has exactly one reader on the box,
-    deploy/bin/jasper-contained-build, and it sources build-sandbox.sh alone.
-    Copying the rest of deploy/lib/install/ shipped installer internals to
-    every speaker for nobody to read."""
     landed = {
         Path(destination).name
         for destination in _destinations(tmp_path, "install_jasper_support_files")
@@ -1295,8 +1303,6 @@ def test_only_the_contained_builder_policy_lands_in_the_install_lib_dir(tmp_path
     }
     assert landed == {"build-sandbox.sh"}
     assert landed < {path.name for path in installer_shell_paths()}
-    # The on-box renderer lib deploy/bin/jasper-audio-hardware-reconcile falls
-    # back to has this one owner, ahead of every /usr/local/sbin reconciler run.
     support = _destinations(
         tmp_path / "support", "install_jasper_support_files"
     )
@@ -1308,18 +1314,10 @@ def test_only_the_contained_builder_policy_lands_in_the_install_lib_dir(tmp_path
 
 
 def test_a_streambox_stages_a_subset_of_the_full_unit_generation(tmp_path):
-    """One roster: every destination a streambox stages, a full speaker stages
-    too. While the full profile re-inlined the shared helpers instead of calling
-    them, bluealsa-aplay's jts-restart.conf was streambox-only — a full speaker
-    never got the drop-in that restarts Bluetooth audio after a clean exit."""
     full = _destinations(tmp_path / "full", "_stage_full_unit_files")
     streambox = _destinations(tmp_path / "streambox", "_stage_streambox_unit_files")
     assert streambox
     assert streambox <= full, streambox - full
-    # Two drop-ins that shipped on one profile only in the past: the nginx
-    # recovery drop-in (the doctor's installed-settings drift check expects
-    # OOMScoreAdjust=-450 regardless of profile) and bluetooth's discovery
-    # timeout.
     assert {
         "/systemd/nginx.service.d/jts-recovery.conf",
         "/systemd/bluetooth.service.d/jts-timeout.conf",
