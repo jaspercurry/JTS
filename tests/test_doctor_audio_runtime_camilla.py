@@ -17,7 +17,6 @@ from jasper.cli.doctor import (
     audio_runtime_camilla,
     audio_runtime_fanin,
     audio_runtime_outputd,
-    correction,
 )
 from jasper.cli.doctor._evidence import evidence
 from jasper.doctor_contract import summarize
@@ -192,35 +191,29 @@ async def test_check_camilla_websocket_verdicts(
     assert constructed == [("127.0.0.1", 1234)]
 
 
+_MISSING_VOLUME_LIMIT_CONFIGS = [
+    "devices:\n  samplerate: 48000\n",
+    "devices:\n  volume_limit: null\n",
+    "devices:\n  volume_limit: invalid\n",
+    "devices:\n  volume_limit: nan\n",
+    "devices:\n  volume_limit: inf\n",
+    "devices:\n  volume_limit: -inf\n",
+    "devices:\n  playback:\n    volume_limit: 0.0\n",
+    "devices:\n  volume_limit: 0.0\ndevices: {volume_limit: 9.0}\n",
+    "devices:\n  volume_limit: 0.0\n  volume_limit: 6.0\n",
+]
+
+
 @pytest.mark.parametrize(
     "raw, status, reason",
     [
-        # CamillaDSP's own GetConfig re-serialization of a shipped graph.
         (_GETCONFIG_READBACK.read_text(), "ok", ""),
-        ("devices:\n  samplerate: 48000\n  volume_limit: -3.0\n", "ok", ""),
-        (
-            "devices:\n  samplerate: 48000\n",
-            "fail", audio_runtime_camilla.REASON_LIVE_VOLUME_LIMIT_ABSENT,
-        ),
-        (
-            "devices:\n  samplerate: 48000\n  volume_limit: 6.0\n",
-            "fail", audio_runtime_camilla.REASON_LIVE_VOLUME_LIMIT_ABOVE_CEILING,
-        ),
-        # A nested key is not the global fader ceiling.
-        (
-            "devices:\n  playback:\n    volume_limit: 0.0\n",
-            "fail", audio_runtime_camilla.REASON_LIVE_VOLUME_LIMIT_ABSENT,
-        ),
-        (None, "skipped", audio_runtime_camilla.REASON_LIVE_VOLUME_LIMIT_NO_ACTIVE_GRAPH),
-        (" \n", "skipped", audio_runtime_camilla.REASON_LIVE_VOLUME_LIMIT_NO_ACTIVE_GRAPH),
-        (
-            CamillaUnavailable("operation exceeded 5.0s"),
-            "skipped", audio_runtime_camilla.REASON_LIVE_VOLUME_LIMIT_UNAVAILABLE,
-        ),
-    ],
-    ids=[
-        "readback", "below", "omitted", "positive", "nested-only", "no-graph", "blank",
-        "unreachable",
+        ("devices:\n  volume_limit: -3.0\n", "ok", ""),
+        ("devices:\n  volume_limit: 6.0\n", "fail", "live_volume_limit_above_ceiling"),
+        *((text, "fail", "live_volume_limit_absent") for text in _MISSING_VOLUME_LIMIT_CONFIGS),
+        (None, "skipped", "live_volume_limit_no_active_graph"),
+        (" \n", "skipped", "live_volume_limit_no_active_graph"),
+        (CamillaUnavailable("unavailable"), "skipped", "live_volume_limit_unavailable"),
     ],
 )
 async def test_check_camilla_live_volume_limit_verdicts(monkeypatch, raw, status, reason):
@@ -255,55 +248,24 @@ def _point_at_config(monkeypatch, tmp_path, text, *, name="v1.yml"):
 @pytest.mark.parametrize(
     "text, status, reason",
     [
-        ("devices:\n  samplerate: 48000\n  volume_limit: 0.0\n", "ok", ""),
-        (
-            "devices:\n  samplerate: 48000\n", "fail",
-            audio_runtime_camilla.REASON_VOLUME_LIMIT_ABSENT,
-        ),
-        (
-            "devices:\n  samplerate: 48000\n  volume_limit: 6.0\n", "fail",
-            audio_runtime_camilla.REASON_VOLUME_LIMIT_ABOVE_CEILING,
-        ),
-        # Ambiguous ownership never resolves to "capped": a nested or
-        # duplicated key is not the global fader ceiling.
-        (
-            "devices:\n  playback:\n    volume_limit: 0.0\n", "fail",
-            audio_runtime_camilla.REASON_VOLUME_LIMIT_ABSENT,
-        ),
-        (
-            "devices:\n  volume_limit: 0.0\ndevices: {volume_limit: 9.0}\n", "fail",
-            audio_runtime_camilla.REASON_VOLUME_LIMIT_ABSENT,
-        ),
-        (
-            "devices:\n  volume_limit: 0.0\n  volume_limit: 9.0\n", "fail",
-            audio_runtime_camilla.REASON_VOLUME_LIMIT_ABSENT,
-        ),
-    ],
-    ids=[
-        "capped", "omitted", "positive", "nested-only", "duplicate-block",
-        "duplicate-key",
+        ("devices:\n  volume_limit: 0.0\n", "ok", ""),
+        ("devices:\n  volume_limit: -3.0\n", "ok", ""),
+        ("devices:\n  volume_limit: 6.0\n", "fail", "volume_limit_above_ceiling"),
+        *((text, "fail", "volume_limit_absent") for text in _MISSING_VOLUME_LIMIT_CONFIGS),
+        (None, "fail", "camilla_config_unreadable"),
+        (FileNotFoundError(), "fail", "camilla_config_missing"),
     ],
 )
-def test_check_camilla_volume_limit_verdicts(
-    monkeypatch, tmp_path, text, status, reason
-):
-    _point_at_config(monkeypatch, tmp_path, text)
+def test_check_camilla_volume_limit_verdicts(monkeypatch, tmp_path, text, status, reason):
+    config = _point_at_config(monkeypatch, tmp_path, text if isinstance(text, str) else "")
+    if not isinstance(text, str):
+        config.unlink()
+        if text is None:
+            config.mkdir()
 
-    r = audio_runtime_camilla.check_camilla_volume_limit()
+    result = audio_runtime_camilla.check_camilla_volume_limit()
 
-    assert r.status == status
-    assert r.reason == reason
-
-
-def test_check_camilla_volume_limit_fails_on_a_missing_config(monkeypatch, tmp_path):
-    statefile = tmp_path / "statefile.yml"
-    statefile.write_text(f"config_path: {tmp_path / 'gone.yml'}\n")
-    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
-
-    r = audio_runtime_camilla.check_camilla_volume_limit()
-
-    assert r.status == "fail"
-    assert r.reason == correction.REASON_CAMILLA_CONFIG_MISSING
+    assert (result.status, result.reason) == (status, reason)
 
 
 # --------------------------------------------------------- camilla ring chunk

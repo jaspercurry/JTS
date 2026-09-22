@@ -23,7 +23,6 @@ import yaml
 
 from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_DEVICE,
-    DEFAULT_VOLUME_LIMIT_DB,
     VolumeLimitViolation,
     check_volume_limit,
     parse_camilla_devices_config,
@@ -350,9 +349,11 @@ def classify_camilla_config_text(text: str) -> dict[str, Any]:
         label = "Advanced DSP config active; JTS cannot safely preserve this"
 
     issues: list[dict[str, str]] = []
+    volume_limit_ok = True
     try:
         check_volume_limit(text)
     except VolumeLimitViolation as exc:
+        volume_limit_ok = False
         issues.append(_issue("blocker", exc.code, str(exc)))
 
     forbidden = forbidden_playback_token(playback_device)
@@ -438,9 +439,7 @@ def classify_camilla_config_text(text: str) -> dict[str, Any]:
         "playback_device": playback_device,
         "playback_channels": playback_channels,
         "volume_limit_db": volume_limit_db,
-        "volume_limit_ok": (
-            volume_limit_db is not None and volume_limit_db <= DEFAULT_VOLUME_LIMIT_DB
-        ),
+        "volume_limit_ok": volume_limit_ok,
         "issues": issues,
     }
 

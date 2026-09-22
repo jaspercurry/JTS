@@ -127,51 +127,52 @@ def test_parse_camilla_statefile_config_path_handles_quotes() -> None:
 def test_classify_camilla_config_text_distinguishes_active_outputd_and_custom() -> None:
     active = classify_camilla_config_text(_active_config_text())
     outputd = classify_camilla_config_text(_outputd_config_text())
-    custom = classify_camilla_config_text("""
-devices:
-  volume_limit: 0.0
-  playback:
-    channels: 2
-    device: "hw:SomeDAC,0"
-""")
-    retired_lane = classify_camilla_config_text(f"""
-devices:
-  volume_limit: 0.0
-  playback:
-    channels: 2
-    device: "{RETIRED_ALOOP_PLAYBACK_DEVICE}"
-""")
-
     assert active["classification"] == "active_startup_candidate"
     assert active["active_split"]["mixer_output_channels"] == 4
     assert outputd["classification"] == "jts_outputd_stereo"
-    assert custom["classification"] == "unknown_custom"
-    assert custom["issues"][0]["code"] == "unknown_custom_camilla_config"
-    assert retired_lane["classification"] == "unknown_custom"
-    assert "unknown_custom_camilla_config" in {
-        issue["code"] for issue in retired_lane["issues"]
-    }
+    for device in ("hw:SomeDAC,0", RETIRED_ALOOP_PLAYBACK_DEVICE):
+        custom = classify_camilla_config_text(
+            _outputd_config_text().replace("jts_ring_playback", device)
+        )
+        assert custom["classification"] == "unknown_custom"
+        assert custom["issues"][0]["code"] == "unknown_custom_camilla_config"
 
 
 @pytest.mark.parametrize(
-    "limit_line, expected_code",
+    "limit_line, expected_db, expected_code",
     [
-        ("  volume_limit: 0.0\n", None),
-        ("  volume_limit: -3.0\n", None),
-        ("", "volume_limit_missing"),
-        ("  volume_limit: 6.0\n", "volume_limit_positive"),
-        ("  volume_limit: invalid\n", "volume_limit_missing"),
-        ("  volume_limit: .nan\n", "volume_limit_missing"),
-        ("  volume_limit: 0.0\n  volume_limit: 6.0\n", "volume_limit_missing"),
+        ("  volume_limit: 0.0\n", 0.0, None),
+        ("  volume_limit: -3.0\n", -3.0, None),
+        ("", None, "volume_limit_missing"),
+        ("  volume_limit: null\n", None, "volume_limit_missing"),
+        ("  volume_limit: 6.0\n", 6.0, "volume_limit_positive"),
+        ("  volume_limit: invalid\n", None, "volume_limit_missing"),
+        ("  volume_limit: .nan\n", None, "volume_limit_missing"),
+        ("  volume_limit: .inf\n", None, "volume_limit_missing"),
+        ("  volume_limit: nan\n", None, "volume_limit_missing"),
+        ("  volume_limit: inf\n", None, "volume_limit_missing"),
+        ("  volume_limit: -inf\n", None, "volume_limit_missing"),
+        ("  volume_limit: 0.0\n  volume_limit: 6.0\n", None, "volume_limit_missing"),
+        (None, None, "camilla_config_unreadable"),
     ],
 )
-def test_classify_volume_limit_verdicts(limit_line, expected_code) -> None:
-    text = _outputd_config_text().replace("  volume_limit: 0.0\n", limit_line)
-    codes = [
-        issue["code"] for issue in classify_camilla_config_text(text)["issues"]
-        if issue["code"].startswith("volume_limit_")
-    ]
-    assert codes == ([] if expected_code is None else [expected_code])
+def test_classify_volume_limit_verdicts(tmp_path, limit_line, expected_db, expected_code):
+    config = tmp_path / "config.yml"
+    if limit_line is None:
+        config.mkdir()
+    else:
+        config.write_text(_outputd_config_text().replace("  volume_limit: 0.0\n", limit_line))
+    summary = probe_active_speaker_environment(
+        config_path=config, runner=_runner, validate=_valid_config,
+    )["camilla_config"]
+    codes = {issue["code"] for issue in summary["issues"]}
+    assert codes == (set() if expected_code is None else {expected_code})
+    assert summary["readable"] is (limit_line is not None)
+    if limit_line is None:
+        assert "volume_limit_ok" not in summary
+    else:
+        assert summary["volume_limit_db"] == expected_db
+        assert summary["volume_limit_ok"] is (expected_code is None)
 
 
 def test_classify_active_config_blocks_playback_split_channel_mismatch() -> None:
@@ -226,16 +227,6 @@ def test_classify_active_config_blocks_missing_active_split() -> None:
 
 
 def test_program_config_mixer_satisfies_active_split_ecosystem_contract() -> None:
-    """W6 hardware run 4 finding I, the environment-contract half: the
-    renamed program-graph mixer (jasper.active_speaker.camilla_yaml's
-    _emit_role_routed_mixer, now emitted as split_active_{way}way) must also
-    satisfy _ACTIVE_SPLIT_RE -- the runtime ecosystem's OWN active-config
-    recognizer -- not just resolve the pipeline's Mixer reference (pinned
-    separately in tests/test_active_speaker_emit_gate.py). Drives the real
-    emitter output through classify_camilla_config_text end to end, rather
-    than the hand-built _active_config_text() fixture above, so a future
-    rename that satisfies the pipeline but drifts from the ecosystem
-    vocabulary would fail here."""
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
     text = emit_active_speaker_program_config(
         preset,
