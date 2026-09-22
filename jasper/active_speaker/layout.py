@@ -5,7 +5,7 @@
 
 from typing import Any, Mapping
 
-from jasper.output_topology import OutputTopology, OutputTopologyError, OUTPUT_VARIANT_SCHEMA_VERSION
+from jasper.output_topology import OutputTopology, OutputTopologyError, OUTPUT_VARIANT_SCHEMA_VERSION, physical_target_id
 
 
 def layout_choices(topology: OutputTopology) -> dict[str, Any]:
@@ -43,7 +43,7 @@ def build_speaker_layout(topology: OutputTopology, choices: Mapping[str, Any]) -
                                  "label": f"{side.title()} speaker" if layout == "stereo" else "Speaker",
                                  "channels": []}
         for role, variant in [(role, "primary") for role in roles] + ([("woofer", "rear")] if rear else []):
-            target_id = f"{group_id}:{role}" + (":rear" if variant == "rear" else "")
+            target_id = physical_target_id(group_id, role, variant)
             channel = dict(previous.get(target_id) or {"role": role, "output_variant": variant,
                            "startup_muted": True, "protection_required": role == "tweeter"})
             index = channel.get("physical_output_index")
