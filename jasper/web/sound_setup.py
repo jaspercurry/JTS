@@ -517,7 +517,7 @@ def _make_handler(
             try:
                 raw = self._read_json(max_bytes=MAX_JSON_BYTES)
                 if path.startswith("/setup/"):
-                    self._send_json(asyncio.run(sound_speaker_setup.update_setup(path, raw, camilla_factory=camilla_factory)))
+                    self._send_json(sound_speaker_setup.update_setup(path, raw, camilla_factory=camilla_factory))
                     return
                 if path == "/cardioid-compare":
                     try:

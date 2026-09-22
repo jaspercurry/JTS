@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any, Mapping, TypedDict
@@ -158,7 +159,7 @@ def import_research(raw: Mapping[str, Any]) -> None:
                                   manual_settings=prior.get("manual_settings"), operator_inputs=prior.get("operator_inputs"))
 
 
-async def update_setup(path: str, raw: Mapping[str, Any], *, camilla_factory) -> dict[str, Any]:
+def update_setup(path: str, raw: Mapping[str, Any], *, camilla_factory) -> dict[str, Any]:
     from .sound_active_speaker import (  # lazy: HTTP adapters share existing operation owners
         _save_output_topology_payload, _reset_output_topology_payload,
         _active_speaker_finish_commissioning_payload,
@@ -178,7 +179,7 @@ async def update_setup(path: str, raw: Mapping[str, Any], *, camilla_factory) ->
 
         topology = load_output_topology()
         candidate = candidate_from_design_draft(topology, design_draft.load_design_draft(topology=topology))
-        result = await _active_speaker_finish_commissioning_payload(candidate=candidate, camilla_factory=camilla_factory)
+        result = asyncio.run(_active_speaker_finish_commissioning_payload(candidate=candidate, camilla_factory=camilla_factory))
     elif path == "/setup/reset":
         result = _reset_output_topology_payload(raw)
     else:

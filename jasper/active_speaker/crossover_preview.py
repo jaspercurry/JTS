@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 from jasper.output_topology import ADJACENT_PAIRS_BY_MAIN_MODE, OutputTopology, OutputTopologyError, canonical_fingerprint
 from ._common import issue as _issue
+from .design_inputs import resolved_draft_inputs
 from .driver_protection import (
     LOW_LIMIT_DECLARED,
     PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
@@ -135,8 +136,6 @@ def _candidate_map(research: Mapping[str, Any] | None) -> dict[frozenset[str], M
 
 
 def _merged_design_inputs(design_draft: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    from .design_inputs import resolved_draft_inputs
-
     if not design_draft.get("topology") or not (design_draft.get("driver_research") or design_draft.get("manual_settings")):
         return None
     return resolved_draft_inputs(design_draft)

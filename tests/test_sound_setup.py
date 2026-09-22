@@ -6203,9 +6203,9 @@ def test_setup_partial_details_return_research_action_without_measurement_errors
         'applied_profile': {'stands': False}, 'driver_values': {'complete': False},
         'review': {'issues': [{'code': 'measurement_band_missing'}]},
     })
-    response = asyncio.run(setup.update_setup('/setup/details', {
+    response = setup.update_setup('/setup/details', {
         'operator_inputs': _operator_inputs(), 'manual_settings': {},
-    }, camilla_factory=lambda: None))
+    }, camilla_factory=lambda: None)
     view = response['setup']
     assert view['stage'] == 'research'
     assert view['next_action']['id'] == 'copy_research'
@@ -6226,7 +6226,7 @@ def test_setup_apply_uses_declared_base_instead_of_the_incumbent(tmp_path, monke
         return {'status': 'applied'}
     monkeypatch.setattr(sound_active_speaker, '_active_speaker_finish_commissioning_payload', apply)
     monkeypatch.setattr(setup, 'load_setup_view', lambda: {'stage': 'tune', 'programs': [{'id': 'speaker'}]})
-    response = asyncio.run(setup.update_setup('/setup/apply', {}, camilla_factory=lambda: None))
+    response = setup.update_setup('/setup/apply', {}, camilla_factory=lambda: None)
     assert response['result']['status'] == 'applied'
     assert response['setup'] == setup.load_setup_view()
     assert seen[0].analysis['measurement_status'] == 'unmeasured'
@@ -6238,3 +6238,20 @@ def test_speaker_setup_browser_contract():
         pytest.skip("node not on PATH")
     result = subprocess.run([_NODE, str(Path(__file__).parent / 'js/speaker_setup_test.mjs')], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize('path,writer', [('/setup/save-layout', '_save_output_topology_payload'),
+                                      ('/setup/reset', '_reset_output_topology_payload')])
+def test_setup_routes_call_the_existing_sync_topology_writer(tmp_path, monkeypatch, path, writer):
+    from jasper.web import sound_speaker_setup as setup
+
+    async def audio_operation():
+        return {'status': 'saved'}
+    def save(raw):
+        return asyncio.run(audio_operation())
+    monkeypatch.setattr(sound_active_speaker, writer, save)
+    monkeypatch.setattr(setup, 'load_setup_view', lambda: {'stage': 'details'})
+    with sound_server(tmp_path) as base:
+        response = json.loads(json_post_with_csrf(base, path, {}).read())
+    assert response['result']['status'] == 'saved'
+    assert response['setup']['stage'] == 'details'

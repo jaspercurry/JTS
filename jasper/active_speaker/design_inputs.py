@@ -11,6 +11,7 @@ from collections import Counter
 from typing import Any
 
 from jasper.output_topology import OutputTopology
+from .driver_protection import declared_protection_highpass_floor_hz
 
 
 def _overlay(base: Mapping[str, Any], edits: Mapping[str, Any]) -> dict[str, Any]:
@@ -36,7 +37,7 @@ def resolve_design_inputs(
     manual_settings: Mapping[str, Any] | None,
     driver_research: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """Bind by physical target; legacy role values resolve only when unambiguous."""
+    """Bind by physical target and disclose ambiguous legacy role values."""
     manual, research = manual_settings or {}, driver_research or {}
     drivers, bindings = [], {}
     counts = Counter(channel.role for group in topology.speaker_groups for channel in group.channels)
@@ -52,6 +53,9 @@ def resolve_design_inputs(
                 facts["cabinet"] = {key: value for key, value in facts["cabinet"].items()
                                     if key != "enclosure_kind"}
             edits = _target_values(manual, target_id, channel.role, channel.output_variant != "rear")
+            if declared_protection_highpass_floor_hz(edits) is not None and not edits.get("recommended_highpass_hz"):
+                facts.pop("recommended_highpass_hz", None)
+                facts.pop("recommended_highpass_slope_db_per_octave", None)
             if not facts and not edits:
                 continue
             source = edits or facts
