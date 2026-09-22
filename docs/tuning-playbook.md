@@ -63,9 +63,11 @@ names the instrument limit; `envelope_limited_by_spatial_exclusion` names
 an identified null.
 
 Read three verdicts. A fit's `verdict` gives `repeat_spread_db`,
-`residual_within_repeat_spread` and `reason`. A residual at or under the repeat
-spread means further correction is not a result. A null `repeat_spread_db`
-with `reason=repeat_floor_not_banked` means bank a repeat floor first.
+`residual_within_repeat_spread` and `reason`. Repeat spread is the largest
+pair RMS over the fit band among this driver/set's mark takes with the mic
+held still; `n_pairs` gives the pair count ([ADR-0341](adr/0341-fit-repeat-spread-comes-from-the-rounds-mark-pairs.md)).
+Fewer than two mark takes give null with `repeat_basis: "no_mark_pairs"`;
+this discloses missing evidence and does not refuse the fit.
 `crossover_band_spread` gives `center_hz`, `sigma_db` and `max_sigma_db`, or
 is null with `crossover_band_spread_reason`. Each proposed filter's
 `position_variance` gives

@@ -325,6 +325,52 @@ def test_design_cloud_discloses_evidence_for_each_roles_fit(speaker_round, capsy
         assert fit["position_spread_db"] is None
 
 
+@pytest.mark.parametrize("horizontal,vertical,expected", [([-20, 20], [-10, 10], 5),
+    ([-40, -30, -20, -10, 10, 20, 30, 40], [-20, -10, 10, 20], 13)])
+def test_baseline_design_poses_keep_both_angles_and_the_on_axis_take(speaker_round, horizontal, vertical, expected):
+    root, record, *_ = speaker_round
+    curve = record["curves"][0]
+    poses = [(0, 0)] * 4 + [(h, 0) for h in horizontal] + [(0, v) for v in vertical]
+    takes = [{"take_id": f"baseline-{i}", "selected": True, "phase": "measure", "role": "woofer",
+              "pose": {"kind": "bearing", "deg": h, "elevation_deg": v}, "timing": {"ended_s": i},
+              "curve": {**curve, "magnitude_db": (np.asarray(curve["magnitude_db"]) + i).tolist()}}
+             for i, (h, v) in enumerate(poses)]
+    manifest = {"sets": [{"set_id": "woofer", "capture_basis": {"role": "woofer"}, "takes": takes}]}
+    cloud = design_clouds(round_inputs(root), manifest)["woofer"]
+    assert cloud.n_positions == len(cloud.boost_responses) == expected
+    np.testing.assert_allclose(cloud.boost_responses[0].magnitude_db, takes[3]["curve"]["magnitude_db"])
+    for response, take in zip(cloud.boost_responses[1:], takes[4:]):
+        np.testing.assert_allclose(response.magnitude_db, take["curve"]["magnitude_db"])
+
+
+@pytest.mark.parametrize("program,marks,pairs,spread", [("speaker/mark", 2, 1, 1), ("baseline/express", 4, 6, 3)])
+def test_current_round_packet_uses_mark_pairs(speaker_round, program, marks, pairs, spread):
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    analysis = json.loads((directory / "candidate.json").read_text())["analysis"]
+    rows = []
+    for i in range(marks):
+        curves = [{**curve, "magnitude_db": (np.asarray(curve["magnitude_db"]) + i).tolist()} for curve in record["curves"]]
+        capture = {**record, "take_id": f"mark-{i}", "position_deg": 0, "vertical_deg": 0, "curves": curves}
+        path = directory / "positions" / f"mark-{i}.json"
+        path.write_text(json.dumps(capture))
+        rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), capture))
+    group = manifest_set(rows, set_id="woofer")
+    group["capture_basis"]["role"] = "woofer"
+    for take, (_, capture) in zip(group["takes"], rows):
+        take.update(role="woofer", pose_index=0, analysis=analysis, curve=capture["curves"][0])
+    write_manifest(root, program=program, groups=[group])
+    packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
+    assert len(packet["fits"]) == marks
+    for fit in packet["fits"]:
+        assert fit["fit_band_hz"][0] < fit["fit_band_hz"][1]
+        assert fit["verdict"]["repeat_spread_db"] == pytest.approx(spread)
+        assert fit["verdict"]["n_pairs"] == pairs
+        assert fit["verdict"]["repeat_basis"] == "mark_pairs_max_rms"
+    json.dumps(packet, allow_nan=False)
+
+
 @pytest.mark.parametrize("trusted_floor_hz", [357.0, None])
 def test_speaker_fit_respects_banked_trusted_floor(speaker_round, capsys, trusted_floor_hz):
     root, record, program, _, _, _ = speaker_round

@@ -82,7 +82,7 @@ def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str,
     for (_, _, _, _, role), members in groups.items():
         bearings = latest_measure_takes(
             ((group, take) for group in members for take in group["takes"]),
-            key=lambda group, take: (take["pose"]["deg"],) if (
+            key=lambda group, take: (take["pose"]["deg"], take["pose"].get("elevation_deg")) if (
                 role and role != REGIME_SUMMED and (take.get("role") or role) == role
                 and take["pose"].get("kind") == POSE_KIND_BEARING and take["pose"].get("deg") is not None
             ) else None,
