@@ -308,3 +308,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0331](0331-applied-tune-reads-use-the-saved-artifact.md) | Applied tune reads use the saved artifact | EQ status dry-run superseded by 0332 |
 | [0332](0332-eq-status-checks-inputs-without-building-dsp.md) | EQ status checks inputs without building DSP | accepted |
 | [0333](0333-live-followup-counts-from-audible-playout.md) | Live follow-up counts from audible playout | accepted |
+| [0334](0334-dynamic-bass-reduction-is-common-across-the-cardioid-pair.md) | Dynamic-bass reduction is common across a cardioid pair: one detector on the front lane, one gain on both lanes | accepted |
