@@ -409,7 +409,6 @@ code = [
   "deploy/systemd/jasper-xvf-firmware-update.service",
   "deploy/systemd/jts-mic.slice",
   "deploy/udev/99-jasper-aec-reconcile.rules",
-  "scripts/aec-*",
   "scripts/xvf-interrogate.sh",
 ]
 docs = [

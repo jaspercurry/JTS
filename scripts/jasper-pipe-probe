@@ -617,7 +617,7 @@ def _section_mono(label: str, n: int, rate: int, rng: np.random.Generator) -> np
 def build_probe_signal(rate: int, rng: np.random.Generator) -> np.ndarray:
     """The 44 s probe as (n, 2) float64 in [-1, 1], identical on both
     channels -- the DSP crossover splits by role downstream, not by input
-    channel (matches aec-probe-timing.py's make_stimulus)."""
+    channel."""
     parts = []
     for label, duration_s in PROBE_SECTIONS:
         n = int(round(duration_s * rate))
