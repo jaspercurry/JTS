@@ -1667,7 +1667,7 @@ def test_two_present_curves_that_will_not_subtract_are_named_on_the_journal(capl
     """
     import logging
 
-    from jasper.active_speaker.crossover_v2_flow import _commanded_delta
+    from jasper.active_speaker.crossover_v2.diagnostics import _commanded_delta
 
     good = _summed(APPLIED_GRAPH)
     with caplog.at_level(logging.WARNING):
@@ -1675,8 +1675,6 @@ def test_two_present_curves_that_will_not_subtract_are_named_on_the_journal(capl
     fields = event_fields(caplog, "correction.crossover_v2_commanded_delta_failed")
     assert fields["applied_points"] == "2048"
 
-    # ...and a MISSING curve stays silent here, because it is not this
-    # function's fact to report.
     caplog.clear()
     with caplog.at_level(logging.WARNING):
         assert _commanded_delta(None, good) is None

@@ -45,7 +45,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2_flow import assemble_cloud_group_result
+from jasper.active_speaker.crossover_v2.diagnostics import assemble_cloud_group_result
 from jasper.active_speaker.crossover_v2.spatial import cloud_position_capture
 from jasper.attribution.findings import (
     EVIDENCE_STORE_BUNDLE,
@@ -762,7 +762,6 @@ def test_the_cloud_group_result_carries_its_members(tmp_path: Path) -> None:
     assert result["available"] is True
     assert result["positions"]["available"] is True
     assert len(result["positions"]["positions"]) == 3
-    # The aggregate is unchanged — the members ride alongside it, not instead.
     assert result["curve"]["freqs_hz"]
 
 

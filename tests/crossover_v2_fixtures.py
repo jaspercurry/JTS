@@ -54,12 +54,8 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.capture_dispatch import SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
-from jasper.active_speaker.crossover_v2_flow import (
-    CrossoverV2Session,
-    V2FlowSeams,
-    V2RecordPublishers,
-    spec_report_for_predicted_sum,
-)
+from jasper.active_speaker.crossover_v2.diagnostics import spec_report_for_predicted_sum
+from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams, V2RecordPublishers
 from jasper.active_speaker.crossover_v2.capture_plan import (
     build_v2_cloud_index_phase_map,
     build_inline_session_spec,
