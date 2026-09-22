@@ -32,7 +32,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import ring_assets
+from jasper import ring_assets, ring_conf
 from jasper.fanin_coupling import RingWire
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -240,12 +240,12 @@ def test_the_active_axis_is_read_from_the_block_the_renderer_writes():
         _REPO_ROOT / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf", tmp
     )
 
-    ring_assets.render_ring_conf_wire(wire, conf_d=str(tmp))
+    ring_conf.render_ring_conf_wire(wire, conf_d=str(tmp))
 
     # The renderer put `channels` in the ACTIVE block and NOWHERE else...
-    assert ring_assets.ring_conf_channels(ring_assets.RING_ACTIVE_CONF_PCM, str(tmp)) == 4
-    assert ring_assets.ring_conf_channels(ring_assets.RING_A_CONF_PCM, str(tmp)) == 2
-    assert ring_assets.ring_conf_channels(ring_assets.RING_B_CONF_PCM, str(tmp)) == 2
+    assert ring_conf.ring_conf_channels(ring_conf.RING_ACTIVE_CONF_PCM, str(tmp)) == 4
+    assert ring_conf.ring_conf_channels(ring_conf.RING_A_CONF_PCM, str(tmp)) == 2
+    assert ring_conf.ring_conf_channels(ring_conf.RING_B_CONF_PCM, str(tmp)) == 2
     # ...so the predicate must demand the capability that block now needs.
     assert ring_assets.RING_CAP_WIRE_CHANNELS in ring_assets.ring_wire_capabilities(
         wire

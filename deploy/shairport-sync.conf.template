@@ -51,7 +51,7 @@ general = {
     //   RING_A_SLOT_FRAMES (the ring's LIVE fill, refreshed every render
     //   period — the only live Ring A evidence, since fan-in reaches
     //   CamillaDSP over SHM with no ALSA delay to sample, ADR-0100 and
-    //   ADR-0266); else a jasper.ring_assets parse of the
+    //   ADR-0266); else a jasper.ring_conf parse of the
     //   shipped deploy/alsa/conf.d/60-jts-ring.conf (period_frames x
     //   n_slots); else a hardcoded default matching that same file. Ring A
     //   runs pinned full in steady state (STATUS full_waits/published
@@ -64,7 +64,7 @@ general = {
     // ring_b_frames — Ring B (CamillaDSP -> outputd): jasper-outputd
     //   STATUS shm_ring.occupancy x shm_ring.slot_frames (live fill,
     //   refreshed every DAC period) when the ring is configured; else the
-    //   same jasper.ring_assets parse's period_frames ALONE — the one-slot
+    //   same jasper.ring_conf parse's period_frames ALONE — the one-slot
     //   floor, not x n_slots, because (unlike Ring A) there is no
     //   pinned-full evidence for Ring B, so only the proven minimum is
     //   charged; else a hardcoded default. Downstream of both shairport's

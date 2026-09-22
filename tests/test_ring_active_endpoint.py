@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import ring_assets, ring_header
+from jasper import ring_assets, ring_conf, ring_header
 from jasper.env_file import read_env_file
 
 from .doctor_test_support import record_active_dac
@@ -411,7 +411,7 @@ def test_the_active_device_name_is_spelled_identically_everywhere():
     rust = OUTPUTD_CONFIG_RS.read_text(encoding="utf-8")
 
     assert f"pcm.{RING_ACTIVE_PLAYBACK_DEVICE} {{" in conf
-    assert ring_assets.RING_ACTIVE_CONF_PCM == RING_ACTIVE_PLAYBACK_DEVICE
+    assert ring_conf.RING_ACTIVE_CONF_PCM == RING_ACTIVE_PLAYBACK_DEVICE
     assert OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE == RING_ACTIVE_PLAYBACK_DEVICE
     assert (
         audio_hardware_reconcile.RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE
@@ -1001,7 +1001,7 @@ def _steps_one_and_two_box(monkeypatch, tmp_path):
     conf_d.write_text(
         "pcm.jts_ring_capture {\n    format S32_LE\n}\n"
         "pcm.jts_ring_playback {\n    format S32_LE\n}\n"
-        f"pcm.{ra.RING_ACTIVE_CONF_PCM} {{\n"
+        f"pcm.{ring_conf.RING_ACTIVE_CONF_PCM} {{\n"
         "    format S32_LE\n    channels 4\n}\n",
         encoding="utf-8",
     )
@@ -1255,7 +1255,7 @@ def test_a_roleful_topology_is_admitted_only_with_a_staged_endpoint(monkeypatch)
         "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
     )
     monkeypatch.setattr(
-        "jasper.ring_assets.ring_conf_channels", lambda pcm, conf_d=None: 2
+        "jasper.ring_conf.ring_conf_channels", lambda pcm, conf_d=None: 2
     )
     ok, detail = ring_readiness.ring_topology_ready(strict_unreadable=True)
     assert ok is False
@@ -1263,7 +1263,7 @@ def test_a_roleful_topology_is_admitted_only_with_a_staged_endpoint(monkeypatch)
 
     # Both staged -> admitted.
     monkeypatch.setattr(
-        "jasper.ring_assets.ring_conf_channels", lambda pcm, conf_d=None: 6
+        "jasper.ring_conf.ring_conf_channels", lambda pcm, conf_d=None: 6
     )
     ok, detail = ring_readiness.ring_topology_ready(strict_unreadable=True)
     assert ok is True
@@ -1365,11 +1365,11 @@ def test_the_shipped_conf_d_declares_the_active_block_wide_but_its_channels_at_t
     assert "channels" not in body
     assert "period_frames 128" in body
     assert "n_slots 2" in body
-    assert ring_assets.ring_conf_channels(
-        ring_assets.RING_ACTIVE_CONF_PCM, str(RING_CONF)
-    ) == ring_assets.RING_CONF_DEFAULT_CHANNELS
-    assert ring_assets.ring_conf_format(
-        ring_assets.RING_ACTIVE_CONF_PCM, str(RING_CONF)
+    assert ring_conf.ring_conf_channels(
+        ring_conf.RING_ACTIVE_CONF_PCM, str(RING_CONF)
+    ) == ring_conf.RING_CONF_DEFAULT_CHANNELS
+    assert ring_conf.ring_conf_format(
+        ring_conf.RING_ACTIVE_CONF_PCM, str(RING_CONF)
     ) == "S32_LE"
 
 
@@ -1401,13 +1401,13 @@ def test_a_fourth_ring_block_must_render_or_fail_loud(monkeypatch, tmp_path):
     )
     # Control: the shipped three render (here, a no-op — every value already
     # matches), so the failure below is the fourth entry and not the fixture.
-    assert ra.render_ring_conf_wire(wire, conf_d=str(conf)).changed is False
+    assert ring_conf.render_ring_conf_wire(wire, conf_d=str(conf)).changed is False
 
     monkeypatch.setattr(
-        ra, "RING_CONF_PCMS", (*ra.RING_CONF_PCMS, "jts_ring_fourth_playback")
+        ring_conf, "RING_CONF_PCMS", (*ring_conf.RING_CONF_PCMS, "jts_ring_fourth_playback")
     )
     with pytest.raises(ValueError, match="jts_ring_fourth_playback"):
-        ra.render_ring_conf_wire(wire, conf_d=str(conf))
+        ring_conf.render_ring_conf_wire(wire, conf_d=str(conf))
 
 
 def test_the_ring_doctor_checks_are_still_registered():

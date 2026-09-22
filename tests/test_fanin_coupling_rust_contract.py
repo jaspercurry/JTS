@@ -32,7 +32,7 @@ from jasper.fanin_coupling import (
     resolve_ring_slots,
 )
 from jasper.music_sources import MUSIC_SOURCE_SPECS, SOURCE_TO_FANIN_LABEL
-from jasper.ring_assets import RING_CONF_DEFAULT_CHANNELS
+from jasper.ring_conf import RING_CONF_DEFAULT_CHANNELS
 from tests.ring_abi import ring_abi
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -218,7 +218,7 @@ def test_stereo_program_channel_count_agrees_across_python_rust_and_c():
     cross-language pin. The channel count — the other field the ring header
     compares on attach — had none, in any module: two Rust crates, the C ioplug
     and two Python constants each spell it independently, and
-    ``tests/test_ring_assets.py`` pinned the Python conf.d default to a bare
+    ``tests/test_ring_conf.py`` pins the Python conf.d default to a bare
     literal rather than to the C ``#define`` its own comment says it mirrors.
 
     What drift costs, per site:
@@ -244,7 +244,7 @@ def test_stereo_program_channel_count_agrees_across_python_rust_and_c():
     assert RING_A_CHANNELS == RING_CONF_DEFAULT_CHANNELS, (
         "the two Python spellings of the stereo width disagree: "
         f"jasper.fanin_coupling.RING_A_CHANNELS={RING_A_CHANNELS}, "
-        f"jasper.ring_assets.RING_CONF_DEFAULT_CHANNELS={RING_CONF_DEFAULT_CHANNELS}"
+        f"jasper.ring_conf.RING_CONF_DEFAULT_CHANNELS={RING_CONF_DEFAULT_CHANNELS}"
     )
     for label, path, pattern in _CHANNEL_DECLARATIONS:
         found = re.findall(pattern, _source_text(path), re.MULTILINE)

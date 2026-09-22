@@ -156,7 +156,7 @@ def ioplug_constraints(
     THE DEFAULTS ARE THE IOPLUG'S OWN COMPILED-IN TOKENS, NOT THE SHIPPED WIRE.
     ``sample_format``/``channels`` default to :data:`RING_WIRE_FORMAT` (narrow)
     and :data:`RING_A_CHANNELS` — the C plugin's own hard-coded defaults,
-    mirroring ``jasper.ring_assets.RING_CONF_DEFAULT_FORMAT`` — because they are
+    mirroring ``jasper.ring_conf.RING_CONF_DEFAULT_FORMAT`` — because they are
     a fixed test baseline every byte-math assertion in this suite is measured
     against, not a claim about what a real box carries. Since
     :func:`jasper.fanin_coupling.resolve_ring_wire_format`'s default flipped

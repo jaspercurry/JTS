@@ -72,7 +72,7 @@ pub const RATE_HZ: u32 = 48_000;
 ///
 /// A compile-time constant with no env override, the same shape as
 /// [`RING_SLOT_FRAMES`]: outputd reads it for its Ring B reader and
-/// `jasper.ring_assets` renders it into the outputd-read `conf.d` blocks
+/// `jasper.ring_conf` renders it into the outputd-read `conf.d` blocks
 /// (`jts_ring_playback`, `jts_ring_active_playback`), so the ioplug and
 /// outputd cannot declare different depths there today. Ring A
 /// (`jts_ring_capture`) takes its depth from jasper-fanin's own

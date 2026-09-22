@@ -76,7 +76,7 @@ from jasper.log_event import log_event
 # The single writer of ``JASPER_OUTPUTD_CONTENT_FORMAT``, which is why the
 # spine below starts it before restarting outputd — see :func:`_converge_ring`.
 from jasper.service_units import AUDIO_HARDWARE_RECONCILE_UNIT
-from jasper import env_load, fanin_coupling, ring_assets
+from jasper import env_load, fanin_coupling, ring_assets, ring_conf
 
 from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_readiness import (
@@ -1191,8 +1191,8 @@ def _migrate_stale_fanin_ring_slots(
     current = read_snapshot(fanin_snapshot.path)
 
     # The axes this function does NOT own, read before it writes the one it does.
-    conf_format = ring_assets.ring_conf_format(ring_assets.RING_A_CONF_PCM)
-    conf_channels = ring_assets.ring_conf_channels(ring_assets.RING_A_CONF_PCM)
+    conf_format = ring_conf.ring_conf_format(ring_conf.RING_A_CONF_PCM, ring_assets.RING_CONF_D)
+    conf_channels = ring_conf.ring_conf_channels(ring_conf.RING_A_CONF_PCM, ring_assets.RING_CONF_D)
     fanin_format, fanin_format_source = resolve_effective_fanin_wire_format(
         current.text
     )
@@ -1200,12 +1200,12 @@ def _migrate_stale_fanin_ring_slots(
     if conf_format is not None and conf_format != fanin_format:
         wire_shear = (
             f"fan-in declares wire format {fanin_format} (from "
-            f"{fanin_format_source}) but conf.d pcm.{ring_assets.RING_A_CONF_PCM} declares "
+            f"{fanin_format_source}) but conf.d pcm.{ring_conf.RING_A_CONF_PCM} declares "
             f"{conf_format}"
         )
     elif conf_channels is not None and conf_channels != RING_A_CHANNELS:
         wire_shear = (
-            f"conf.d pcm.{ring_assets.RING_A_CONF_PCM} declares {conf_channels} channels but "
+            f"conf.d pcm.{ring_conf.RING_A_CONF_PCM} declares {conf_channels} channels but "
             f"fan-in's mixer is fixed at {RING_A_CHANNELS}"
         )
     if wire_shear:
@@ -1223,7 +1223,7 @@ def _migrate_stale_fanin_ring_slots(
         )
         return current, False
 
-    conf_a = ring_assets.ring_conf_n_slots(ring_assets.RING_A_CONF_PCM)
+    conf_a = ring_conf.ring_conf_n_slots(ring_conf.RING_A_CONF_PCM, ring_assets.RING_CONF_D)
     if conf_a is None:
         return current, False  # indeterminate conf.d → nothing provable to heal.
     resolution = resolve_effective_fanin_ring_slots(current.text)
@@ -1314,18 +1314,18 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
         fanin_slots = fanin_coupling.resolve_ring_slots(read_value(fanin_text, RING_SLOTS_ENV_VAR))
     except ValueError:
         fanin_slots = None
-    expected_a = ring_assets.ring_conf_n_slots(ring_assets.RING_A_CONF_PCM)
+    expected_a = ring_conf.ring_conf_n_slots(ring_conf.RING_A_CONF_PCM, ring_assets.RING_CONF_D)
     if expected_a is None:
         expected_a = fanin_slots
 
     deleted = False
     for path, pcm_name, expected_slots in (
-        (ring_assets.RING_A_PROGRAM_FILE, ring_assets.RING_A_CONF_PCM, expected_a),
-        (ring_assets.RING_B_CONTENT_FILE, ring_assets.RING_B_CONF_PCM, None),
+        (ring_assets.RING_A_PROGRAM_FILE, ring_conf.RING_A_CONF_PCM, expected_a),
+        (ring_assets.RING_B_CONTENT_FILE, ring_conf.RING_B_CONF_PCM, None),
         # The ACTIVE ring is judged against ITS OWN conf.d block, whose CHANNELS
         # legitimately differ per box: a re-commission from a 2-way to a 3-way
         # moves only this file's width.
-        (ring_assets.RING_ACTIVE_CONTENT_FILE, ring_assets.RING_ACTIVE_CONF_PCM, None),
+        (ring_assets.RING_ACTIVE_CONTENT_FILE, ring_conf.RING_ACTIVE_CONF_PCM, None),
     ):
         verdict = ring_assets.ring_header_matches_conf(
             path, pcm_name, expected_n_slots=expected_slots

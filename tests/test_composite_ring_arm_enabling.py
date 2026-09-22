@@ -34,6 +34,13 @@ from pathlib import Path
 import pytest
 import yaml
 
+from jasper.fanin_coupling import resolve_ring_wire
+from jasper.ring_assets import ring_conf_wire_report
+from jasper.ring_conf import (
+    RING_ACTIVE_CONF_PCM,
+    render_ring_conf_wire,
+    ring_conf_channels,
+)
 from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
 from jasper.camilla_config_contract import PeqFilter
 from jasper.active_speaker.runtime_contract import (
@@ -361,7 +368,6 @@ def test_declaring_the_floor_is_what_unlocks_the_conf_d_render(tmp_path):
     """The floor's real payoff, pinned at the command that consumes it: an
     absent floor short-circuits to ``no_declared_floor`` BEFORE the wire is
     resolved, so the ACTIVE block would keep the ioplug default forever."""
-    from jasper.ring_assets import ring_conf_wire_report
 
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(Path(RING_CONF_D_SOURCE).read_text(encoding="utf-8"), "utf-8")
@@ -379,12 +385,6 @@ def test_declaring_the_floor_is_what_unlocks_the_conf_d_render(tmp_path):
 
 def test_conf_d_active_block_renders_four_channels_for_the_composite(tmp_path):
     """END TO END through the real renderer: topology -> wire -> conf.d text."""
-    from jasper.fanin_coupling import resolve_ring_wire
-    from jasper.ring_assets import (
-        RING_ACTIVE_CONF_PCM,
-        render_ring_conf_wire,
-        ring_conf_channels,
-    )
 
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(Path(RING_CONF_D_SOURCE).read_text(encoding="utf-8"), "utf-8")

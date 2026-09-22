@@ -30,8 +30,9 @@ from jasper.audio_hardware.output_probe import observe as _REAL_OBSERVE
 from jasper.audio_hardware.usb_port_role import (
     reconcile_boot_config as _real_boot_config,
 )
-from jasper import audio_runtime_plan
-from jasper.fanin_coupling import RING_SLOT_FRAMES
+from jasper import audio_runtime_plan, ring_conf
+from jasper.fanin_coupling import RING_SLOT_FRAMES, RingWire
+from jasper.ring_assets import ring_conf_wire_report
 from tests._lock_holder import spawn_lock_holder
 from tests._log_events import parse_event, stderr_event, stderr_events
 from tests.systemd_unit_helpers import values_for
@@ -786,7 +787,6 @@ def test_ring_conf_journal_line_carries_every_field_the_renderer_resolved(
 ) -> None:
     """The event's fields are a WHITELIST - a key the renderer resolves but the
     line never names leaves the wire it rendered undiagnosable."""
-    from jasper.ring_assets import ring_conf_wire_report
 
     declare_slot_floor()
     conf = _staged_ring_conf(tmp_path)
@@ -3455,7 +3455,6 @@ def _drifted_ring_conf(tmp_path: Path, period_frames: int = 1024) -> Path:
 
 def _render_ring_conf(conf: Path, topology: Path | None = None) -> dict[str, str]:
     """The renderer the reconciler itself calls, over the same two inputs."""
-    from jasper.ring_assets import ring_conf_wire_report
 
     return ring_conf_wire_report(
         profile_id="hifiberry_dac8x",
@@ -3532,16 +3531,14 @@ def test_ring_render_renders_for_any_profile_declaring_the_slot_floor(
     assert report["period_frames"] == str(RING_SLOT_FRAMES)
     assert report["previous_period_frames"] == "1024"
 
-    from jasper import ring_assets
-
-    assert ring_assets.ring_conf_period_frames(str(conf)) == RING_SLOT_FRAMES
+    assert ring_conf.ring_conf_period_frames(str(conf)) == RING_SLOT_FRAMES
     # EVERY ring PCM the conf.d defines converges onto the one slot period —
     # Ring A, Ring B, and the ACTIVE ring. The count is derived from the block
     # list rather than spelled, so adding a fourth ring cannot leave this
     # assertion silently checking a subset.
     assert conf.read_text(encoding="utf-8").count(
         f"    period_frames {RING_SLOT_FRAMES}"
-    ) == len(ring_assets.RING_CONF_PCMS)
+    ) == len(ring_conf.RING_CONF_PCMS)
 
 
 def test_ring_render_refuses_a_floor_the_ring_slot_cannot_carry(
@@ -3570,14 +3567,12 @@ def test_render_ring_conf_wire_itself_refuses_a_non_slot_period(
 ) -> None:
     # Defence in depth: the writer cannot emit a period the ring transport
     # will not carry, even if a future caller forgets the floor gate.
-    from jasper import ring_assets
-    from jasper.fanin_coupling import RingWire
 
     conf = _staged_ring_conf(tmp_path)
     before_bytes = conf.read_bytes()
 
     with pytest.raises(ValueError, match="RING_SLOT_FRAMES"):
-        ring_assets.render_ring_conf_wire(
+        ring_conf.render_ring_conf_wire(
             RingWire(
                 sample_format="S16_LE",
                 ring_a_channels=2,
@@ -3639,7 +3634,6 @@ def test_ring_render_reports_a_torn_conf_instead_of_inventing_one(
 def test_ring_render_reports_the_wire_and_the_topology_it_resolved(
     tmp_path: Path, declare_slot_floor, capsys, topology_json: str | None, expected: str
 ) -> None:
-    from jasper import ring_assets
     from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
     conf = _drifted_ring_conf(tmp_path)
@@ -3659,10 +3653,10 @@ def test_ring_render_reports_the_wire_and_the_topology_it_resolved(
     assert report["sample_format"] == "S32_LE"
     assert report["ring_a_channels"] == "2"
     assert report["ring_b_channels"] == "2"
-    assert ring_assets.ring_conf_period_frames(str(conf)) == RING_SLOT_FRAMES
-    for pcm in (ring_assets.RING_A_CONF_PCM, ring_assets.RING_B_CONF_PCM):
-        assert ring_assets.ring_conf_format(pcm, str(conf)) == "S32_LE"
-        assert ring_assets.ring_conf_channels(pcm, str(conf)) == 2
+    assert ring_conf.ring_conf_period_frames(str(conf)) == RING_SLOT_FRAMES
+    for pcm in (ring_conf.RING_A_CONF_PCM, ring_conf.RING_B_CONF_PCM):
+        assert ring_conf.ring_conf_format(pcm, str(conf)) == "S32_LE"
+        assert ring_conf.ring_conf_channels(pcm, str(conf)) == 2
 
 
 # --- the flat cutover render --------------------------------------------------

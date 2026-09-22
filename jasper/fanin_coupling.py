@@ -44,7 +44,7 @@ RING_SLOTS_ENV_VAR = "JASPER_FANIN_RING_SLOTS"
 # Ring A/B slot size in frames. Compile-time on the other three ends with no env
 # override, so this is the only slot size the transport carries: mirrors
 # rust/jasper-ring/src/layout.rs RING_SLOT_FRAMES and c/jts-ring-ioplug/
-# pcm_jts_ring.c JTS_RING_DEFAULT_PERIOD. jasper.ring_assets.render_ring_conf_wire
+# pcm_jts_ring.c JTS_RING_DEFAULT_PERIOD. jasper.ring_conf.render_ring_conf_wire
 # refuses any other period — the ioplug would attach against a geometry fan-in
 # never builds and crash at arm instead of refusing.
 RING_SLOT_FRAMES = 128
@@ -478,7 +478,7 @@ def resolve_ring_wire(topology: Any = None) -> RingWire:
       tokens, so which one a box carries is a DECLARATION, not a policy
       constant. The shipped conf.d declares the wide token in every block rather
       than omitting the key, because the C ioplug's own default is the narrow
-      one (:data:`~jasper.ring_assets.RING_CONF_DEFAULT_FORMAT`) and silence
+      one (:data:`~jasper.ring_conf.RING_CONF_DEFAULT_FORMAT`) and silence
       would mean the opposite of what the resolver answers.
     - ``ring_a_channels`` — :data:`RING_A_CHANNELS` on every box.
     - ``ring_b_channels`` — from

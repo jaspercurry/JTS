@@ -413,12 +413,8 @@ module = [
 ]
 ignore_errors = true
 
-# Exhaustive: every top-level child of `jasper` is either on a layer line or an
-# explicit holdout below, so a new module has to be classified rather than
-# drift in unranked. A holdout moves to its layer line in the PR that removes
-# its last upward import; a deleted or renamed module loses its line in that
-# same PR -- a stale layer line hard-fails with `Missing layer`, a stale
-# holdout only rots. Never ignore_imports.
+# Classify every module; remove holdouts when their upward imports are cut.
+# Deleted modules lose their entries. Never ignore_imports.
 [tool.importlinter]
 root_packages = ["jasper"]
 # import-linter 2.15 reads this key only at session level, so it applies to
@@ -498,6 +494,9 @@ exhaustive_ignores = [
   "peering",
   "renderer",
   "ring_assets",
+  # fanin_coupling -> active_speaker.runtime_contract -> output_topology -> cli;
+  # ring_conf ranks when its geometry constants no longer import that chain.
+  "ring_conf",
   "sound",
   "source_intent",
   "source_state",

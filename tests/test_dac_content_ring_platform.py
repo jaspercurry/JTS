@@ -42,6 +42,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper import ring_conf
 from jasper.fanin_coupling import RING_SLOT_FRAMES
 from jasper.multiroom.dac_content_ring import (
     DAC_CONTENT_RING_CHANNELS,
@@ -248,22 +249,21 @@ def _confd_field(key: str) -> str:
 
     Deliberately reads the SHIPPED file with the ring platform's own block
     parser rather than a private regex, so "how a jts_ring block is read" keeps
-    one owner (:mod:`jasper.ring_assets`, which the conf.d renderer and every
+    one owner (:mod:`jasper.ring_conf`, which the conf.d renderer and every
     doctor check already share).
     """
-    from jasper import ring_assets
 
     readers = {
-        "period_frames": lambda: ring_assets.ring_conf_period_frames(
+        "period_frames": lambda: ring_conf.ring_conf_period_frames(
             str(_DAC_CONTENT_CONF)
         ),
-        "n_slots": lambda: ring_assets.ring_conf_n_slots(
+        "n_slots": lambda: ring_conf.ring_conf_n_slots(
             DAC_CONTENT_RING_PCM, str(_DAC_CONTENT_CONF)
         ),
-        "channels": lambda: ring_assets.ring_conf_channels(
+        "channels": lambda: ring_conf.ring_conf_channels(
             DAC_CONTENT_RING_PCM, str(_DAC_CONTENT_CONF)
         ),
-        "format": lambda: ring_assets.ring_conf_format(
+        "format": lambda: ring_conf.ring_conf_format(
             DAC_CONTENT_RING_PCM, str(_DAC_CONTENT_CONF)
         ),
     }

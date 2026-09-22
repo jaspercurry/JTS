@@ -17,7 +17,7 @@ import subprocess
 import time
 from typing import Any
 
-from ... import ring_assets, ring_header
+from ... import ring_assets, ring_conf, ring_header
 from ...audio_hardware.dac import latency_floor_for
 from ...fanin_coupling import RING_SLOT_FRAMES
 from ...output_hardware import active_dac_profile_id
@@ -35,18 +35,18 @@ _JTS_RING_IOPLUG_SO = ring_assets.RING_IOPLUG_SO
 _JTS_RING_CONF_D = ring_assets.RING_CONF_D
 _JTS_RING_SHM_DIR = ring_assets.RING_SHM_DIR
 # Every PCM the ring conf.d defines, with the tool that probes its direction and
-# the ring file it names. Names and filenames come from ``jasper.ring_assets``;
+# the ring file it names. Config names and asset paths use their shared owners;
 # only the probe TOOL (which of arecord/aplay opens this direction) is local.
 _JTS_RING_PCMS = (
-    (ring_assets.RING_A_CONF_PCM, "arecord", os.path.basename(ring_assets.RING_A_PROGRAM_FILE)),
-    (ring_assets.RING_B_CONF_PCM, "aplay", os.path.basename(ring_assets.RING_B_CONTENT_FILE)),
+    (ring_conf.RING_A_CONF_PCM, "arecord", os.path.basename(ring_assets.RING_A_PROGRAM_FILE)),
+    (ring_conf.RING_B_CONF_PCM, "aplay", os.path.basename(ring_assets.RING_B_CONTENT_FILE)),
     (
-        ring_assets.RING_ACTIVE_CONF_PCM,
+        ring_conf.RING_ACTIVE_CONF_PCM,
         "aplay",
         os.path.basename(ring_assets.RING_ACTIVE_CONTENT_FILE),
     ),
 )
-assert tuple(name for name, _tool, _ring in _JTS_RING_PCMS) == ring_assets.RING_CONF_PCMS
+assert tuple(name for name, _tool, _ring in _JTS_RING_PCMS) == ring_conf.RING_CONF_PCMS
 
 REASON_SPLIT_BONDED_RETURN_RING = "split_bonded_return_ring"
 REASON_SPLIT_MARKER_CONTRADICTED = "split_marker_contradicted"
@@ -124,8 +124,8 @@ def _jts_ring_probe_wire(pcm: str) -> tuple[int, str] | None:
     parsers encode, so a never-rendered file answers correctly too. The ring PCMs
     can legitimately differ on channels, hence the per-PCM lookup.
     """
-    channels = ring_assets.ring_conf_channels(pcm, _JTS_RING_CONF_D)
-    sample_format = ring_assets.ring_conf_format(pcm, _JTS_RING_CONF_D)
+    channels = ring_conf.ring_conf_channels(pcm, _JTS_RING_CONF_D)
+    sample_format = ring_conf.ring_conf_format(pcm, _JTS_RING_CONF_D)
     if channels is None or sample_format is None:
         return None
     return channels, sample_format
@@ -398,7 +398,7 @@ def check_ring_platform_assets() -> CheckResult:
     """Verify the jts_ring transport platform assets are present.
 
     Three assets: the compiled ioplug .so, the conf.d PCM definitions
-    (jasper.ring_assets.RING_CONF_PCMS), and the /dev/shm/jts-ring directory.
+    (jasper.ring_conf.RING_CONF_PCMS), and the /dev/shm/jts-ring directory.
     Since ADR-0100 they are load-bearing on every box.
 
     Statuses:
@@ -943,14 +943,14 @@ def check_ring_geometry_coherence() -> CheckResult:
     fanin_slots = resolution.value
 
     # Axis 2: the conf.d attach authority.
-    conf_slots = ring_assets.ring_conf_n_slots(
-        ring_assets.RING_A_CONF_PCM, _JTS_RING_CONF_D
+    conf_slots = ring_conf.ring_conf_n_slots(
+        ring_conf.RING_A_CONF_PCM, _JTS_RING_CONF_D
     )
     if conf_slots is None:
         return CheckResult(
             label, "warn",
             f"conf.d ({_JTS_RING_CONF_D}) has no single n_slots for "
-            f"pcm.{ring_assets.RING_A_CONF_PCM}; Ring A geometry is indeterminate — "
+            f"pcm.{ring_conf.RING_A_CONF_PCM}; Ring A geometry is indeterminate — "
             "redeploy to reinstall the ring conf.d.",
             reason=REASON_RING_CONF_SLOTS_INDETERMINATE,
         )
@@ -958,7 +958,7 @@ def check_ring_geometry_coherence() -> CheckResult:
         return CheckResult(
             label, "fail",
             f"Ring A slot mismatch: JASPER_FANIN_RING_SLOTS resolves to {fanin_slots} "
-            f"but conf.d pcm.{ring_assets.RING_A_CONF_PCM} pins n_slots={conf_slots}. "
+            f"but conf.d pcm.{ring_conf.RING_A_CONF_PCM} pins n_slots={conf_slots}. "
             "CamillaDSP's ioplug attach fails (hw_params EINVAL) "
             "and crash-loops. Run: sudo /opt/jasper/.venv/bin/"
             "jasper-fanin-coupling-reconcile shm_ring (it self-heals a stale env), "
@@ -984,7 +984,7 @@ def check_ring_geometry_coherence() -> CheckResult:
     # cannot call a file coherent that the reconciler is about to delete.
     verdict = ring_assets.ring_header_matches_conf(
         ring_assets.RING_A_PROGRAM_FILE,
-        ring_assets.RING_A_CONF_PCM,
+        ring_conf.RING_A_CONF_PCM,
         conf_d=_JTS_RING_CONF_D,
     )
     if not verdict.ok:
@@ -1116,7 +1116,7 @@ def check_ring_conf_floor_render() -> CheckResult:
             + roleful_note,
             reason=REASON_RING_FLOOR_NOT_RENDERABLE,
         )
-    conf_period = ring_assets.ring_conf_period_frames(_JTS_RING_CONF_D)
+    conf_period = ring_conf.ring_conf_period_frames(_JTS_RING_CONF_D)
     if conf_period is None:
         return CheckResult(
             label,
