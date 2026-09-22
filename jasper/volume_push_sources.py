@@ -6,10 +6,8 @@
 
 Spotify and Bluetooth carry `listening_level` on their own protocol
 sliders rather than CamillaDSP (see `volume_coordinator`'s module
-docstring). `VolumeCoordinator._set_spotify`/`_set_bluetooth` stay methods
-— `tests/test_volume_coordinator.py`'s `_RecordingCoordinator` doubles
-override them by name — but the device walk and transport probe underneath
-are free functions over the coordinator, called by those thin delegators.
+docstring). The coordinator retains `_set_spotify`/`_set_bluetooth` because
+`tests/test_volume_coordinator.py` overrides them, and owns echo stamps.
 """
 from __future__ import annotations
 
@@ -28,13 +26,17 @@ from .volume_scales import (
 )
 
 if TYPE_CHECKING:
-    from .volume_coordinator import VolumeCoordinator
+    from .spotify_router import Router
 
 logger = logging.getLogger(__name__)
 _bluez_alsa_active_transport_path = partial(active_transport_path, logger)
 
 
-async def push_spotify_volume(coord: VolumeCoordinator, level: int) -> bool:
+async def push_spotify_volume(
+    router: Router | None,
+    device_name: str,
+    level: int,
+) -> bool:
     """Set Spotify volume via Spotify Web API.
 
     librespot 0.8.0 has no local control HTTP — to change Spotify's
@@ -47,9 +49,7 @@ async def push_spotify_volume(coord: VolumeCoordinator, level: int) -> bool:
     has the JTS device active, or all accounts return errors),
     log and no-op."""
     pct = listening_level_to_spotify_percent(level)
-    if coord._spotify_router is None or not getattr(
-        coord._spotify_router, "clients", {},
-    ):
+    if router is None or not getattr(router, "clients", {}):
         volume_diagnostics.record_source_push(
             Source.SPOTIFY,
             level=level,
@@ -63,9 +63,7 @@ async def push_spotify_volume(coord: VolumeCoordinator, level: int) -> bool:
             "account via /spotify)",
         )
         return False
-    matches = await coord._spotify_router.devices_named(
-        coord._spotify_device_name,
-    )
+    matches = await router.devices_named(device_name)
     saw_device = bool(matches)
     write_failed = False
     for ac, d in matches:
@@ -76,7 +74,6 @@ async def push_spotify_volume(coord: VolumeCoordinator, level: int) -> bool:
                 ),
                 timeout=DEVICES_TIMEOUT_SEC,
             )
-            coord._stamp_outbound(Source.SPOTIFY)
             volume_diagnostics.record_source_push(
                 Source.SPOTIFY,
                 level=level,
@@ -111,12 +108,12 @@ async def push_spotify_volume(coord: VolumeCoordinator, level: int) -> bool:
     logger.warning(
         "spotify volume set FAILED: %d%% — no account could write "
         "to device '%s' (is JTS still selected in Spotify?)",
-        pct, coord._spotify_device_name,
+        pct, device_name,
     )
     return False
 
 
-async def push_bluetooth_volume(coord: VolumeCoordinator, level: int) -> bool:
+async def push_bluetooth_volume(level: int) -> bool:
     vol = listening_level_to_bt_volume(level)
     # bluez-alsa exposes one MediaTransport1 path per active
     # transport; we have to find it before we can set the
@@ -143,7 +140,6 @@ async def push_bluetooth_volume(coord: VolumeCoordinator, level: int) -> bool:
         bus="--system",
     )
     if ok:
-        coord._stamp_outbound(Source.BLUETOOTH)
         volume_diagnostics.record_source_push(
             Source.BLUETOOTH,
             level=level,
