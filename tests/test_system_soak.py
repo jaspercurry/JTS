@@ -8,6 +8,7 @@ import json
 
 import pytest
 
+from jasper import service_units
 from jasper.cli import system_soak
 
 
@@ -31,6 +32,8 @@ def test_tracked_units_cover_resident_usb_mic_export_path() -> None:
 
 
 def test_journal_summary_counts_without_storing_messages(monkeypatch) -> None:
+    calls = []
+
     class FakeCompletedProcess:
         returncode = 0
         stderr = ""
@@ -45,13 +48,15 @@ def test_journal_summary_counts_without_storing_messages(monkeypatch) -> None:
                 "PRIORITY": "4",
                 "MESSAGE": ["non-string", "message"],
             }),
+            "not json",
+            json.dumps(["not", "an", "object"]),
         ])
 
-    monkeypatch.setattr(
-        system_soak.subprocess,
-        "run",
-        lambda *a, **kw: FakeCompletedProcess(),
-    )
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(service_units.subprocess, "run", fake_run)
 
     summary = system_soak._summarize_journal(
         "2026-06-02T10:00:00Z",
@@ -65,6 +70,25 @@ def test_journal_summary_counts_without_storing_messages(monkeypatch) -> None:
     assert camilla["priorities"] == {"6": 1, "4": 1}
     assert camilla["message_bytes"] > 0
     assert "Capture read" not in json.dumps(summary)
+    argv, kwargs = calls[0]
+    assert argv[argv.index("--since") + 1] == "2026-06-02T10:00:00Z"
+    assert argv[argv.index("--until") + 1] == "2026-06-02T10:01:00Z"
+    assert "--output-fields=__REALTIME_TIMESTAMP,_SYSTEMD_UNIT,PRIORITY,MESSAGE" in argv
+    assert argv[argv.index("-u") + 1] == "jasper-camilla.service"
+    assert kwargs["timeout"] == 20
+
+
+def test_journal_summary_preserves_unavailable_returncode(monkeypatch) -> None:
+    def fail(*_a, **_kw):
+        raise service_units.JournalctlUnavailable("denied", returncode=2)
+
+    monkeypatch.setattr(system_soak, "run_journalctl_json", fail)
+
+    assert system_soak._summarize_journal("start", "end", ["a.service"]) == {
+        "available": False,
+        "error": "denied",
+        "returncode": 2,
+    }
 
 
 def test_run_soak_writes_versioned_artifact(tmp_path, monkeypatch) -> None:

@@ -6,6 +6,7 @@
 record predicates (ADR-0233 rule 1 — one parser, one roster)."""
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 from types import SimpleNamespace
@@ -164,3 +165,80 @@ def test_unit_uptime_sec_reads_the_monotonic_clock_shared_with_systemd():
     )
 
     assert uptime == pytest.approx(90.0, abs=1.0)
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_run_journalctl_json_builds_argv_and_parses_object_rows(
+    monkeypatch, returncode,
+):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(
+            returncode=returncode,
+            stdout="\n".join((
+                json.dumps({"_SYSTEMD_UNIT": "a.service", "MESSAGE": "one"}),
+                "not json",
+                json.dumps(["not", "an", "object"]),
+            )),
+            stderr="",
+        )
+
+    monkeypatch.setattr(service_units.subprocess, "run", fake_run)
+
+    rows = service_units.run_journalctl_json(
+        ("a", "b"),
+        since="@1.000",
+        until="@2.000",
+        output_fields=("_SYSTEMD_UNIT", "MESSAGE"),
+        timeout=7.5,
+    )
+
+    assert rows == [{"_SYSTEMD_UNIT": "a.service", "MESSAGE": "one"}]
+    assert calls == [(
+        [
+            "journalctl", "-u", "a", "-u", "b",
+            "--since", "@1.000", "--until", "@2.000",
+            "--no-pager", "-o", "json",
+            "--output-fields=_SYSTEMD_UNIT,MESSAGE",
+        ],
+        {
+            "capture_output": True,
+            "text": True,
+            "timeout": 7.5,
+            "check": False,
+        },
+    )]
+
+
+def test_run_journalctl_json_preserves_failure_code_and_bounds_stderr(monkeypatch):
+    monkeypatch.setattr(
+        service_units.subprocess,
+        "run",
+        lambda *_a, **_k: SimpleNamespace(
+            returncode=2, stdout="", stderr="x" * 350,
+        ),
+    )
+
+    with pytest.raises(service_units.JournalctlUnavailable) as raised:
+        service_units.run_journalctl_json(
+            ("a",), since="now", until="now", output_fields=("MESSAGE",),
+        )
+
+    assert raised.value.returncode == 2
+    assert str(raised.value) == "x" * 300
+
+
+def test_run_journalctl_json_wraps_process_failure_without_a_returncode(monkeypatch):
+    def fail(*_a, **_k):
+        raise subprocess.TimeoutExpired("journalctl", 20)
+
+    monkeypatch.setattr(service_units.subprocess, "run", fail)
+
+    with pytest.raises(service_units.JournalctlUnavailable) as raised:
+        service_units.run_journalctl_json(
+            ("a",), since="now", until="now", output_fields=("MESSAGE",),
+        )
+
+    assert raised.value.returncode is None
