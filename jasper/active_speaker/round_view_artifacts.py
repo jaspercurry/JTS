@@ -6,6 +6,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, NamedTuple
+from jasper.audio_measurement.evidence_reasons import (
+    REASON_REFUSED as REASON_REFUSED,
+    REASON_UNREADABLE as REASON_UNREADABLE,
+    REASON_UNWRITABLE as REASON_UNWRITABLE,
+)
 from .run_manifest import RUN_MANIFEST_FILENAME
 from .measurement_programs import PURPOSE_BASS, PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER
 from .frequency_view import FREQUENCY_VIEW_FILENAME
@@ -139,9 +144,5 @@ def context_artifacts(inputs: RoundInputs, round_dir: Path) -> dict[str, Any]:
         for key, path in (("latest_agent_note", latest_note),)
     }
 
-
-REASON_REFUSED = "round_views_refused"
-REASON_UNREADABLE = "round_views_unreadable_round"
-REASON_UNWRITABLE = "round_views_unwritable_out"
 
 PROG = "jasper-round-views"

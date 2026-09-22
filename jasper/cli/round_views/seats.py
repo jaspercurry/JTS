@@ -16,6 +16,7 @@ from typing import Any
 
 from jasper.active_speaker.flat_spec_views import DirectivityTable
 
+from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_SEATS
 from jasper.cli._refusal import EXIT_REFUSED, EXIT_WRITE_FAILED, STATUS_BY_CODE, StageFailed, answered
 
 from jasper.active_speaker.crossover_v2.round_views import (
@@ -178,7 +179,7 @@ def _compose_seats(args: argparse.Namespace, banked: BankedRound) -> int:
                         not_evaluable=sum(f["common_mode"] is None for f in payload["features"]),
                     )
                     if len(seats) < AGREEMENT_TESTIFY_MIN:
-                        result.update(outcome="unavailable", reason="insufficient_agreement_seats")
+                        result.update(outcome="unavailable", reason=REASON_TOO_FEW_SEATS)
             elif view == "directivity":
                 result["parameters"] = {
                     "reference_role": DEFAULT_PRIMARY_ROLE,

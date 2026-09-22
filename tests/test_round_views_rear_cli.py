@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from jasper.active_speaker.angle_capture import BASE_CANDIDATE
-from jasper.active_speaker.round_packet_report import INDEX_FILENAME
+from jasper.active_speaker.round_packet_report import INDEX_FILENAME, PACKET_FILENAME
 from jasper.audio_measurement.rear_evidence import REASON_NO_COMPARISON, REASON_NO_REPEATS
 from jasper.cli import round_views
 from jasper.cli._refusal import EXIT_OK, EXIT_REFUSED
@@ -30,9 +30,14 @@ from tests.test_round_views_rear import (
 __all__ = ["banked_candidates"]
 
 
-def test_rear_prints_the_banked_entries(tmp_path, banked_candidates, capsys):
+@pytest.mark.parametrize("reason", [None, "no_repeats", "insufficient_positions",
+                                   "insufficient_agreement_seats", "unknown_analysis_reason"])
+def test_rear_prints_the_banked_entries(tmp_path, banked_candidates, capsys, reason):
     root = rear_round(tmp_path)
     packet, _views = packet_of(root)
+    if reason is not None:
+        packet["rear"][0]["comparison"]["repeat_spread"]["reason"] = reason
+        (root / PACKET_FILENAME).write_text(json.dumps(packet))
 
     code = round_views.main(["rear", str(root)])
 

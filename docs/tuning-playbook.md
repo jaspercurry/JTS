@@ -75,7 +75,7 @@ with `reason=repeat_floor_not_banked` means bank a repeat floor first.
 is null with `crossover_band_spread_reason`. Each proposed filter's
 `position_variance` gives
 `cv_percent`, `frequencies_hz`, `positions_deep`, `positions_total` and
-`classification`. On a three-pose round, `insufficient_positions` prints the
+`classification`. On a three-pose round, `too_few_positions` prints the
 CV but cannot separate the 3% and 8% cues; six deep poses can. Each `verdicts`
 pose gives `branch_gap_db`, `louder_role`, `null_ceiling_db`, `band_hz` and
 `capture_graph`. Its ceiling is the deepest reverse null the branch gap permits

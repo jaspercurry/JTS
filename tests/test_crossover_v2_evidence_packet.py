@@ -62,7 +62,7 @@ from tests.test_crossover_v2_blend_prescription import _bundle
         "gate_moved_rms_db": 0.31, "gate_reflection_delay_ms": 2.4,
     }}, "ae6d13cf298bb6c186a1e50baac378547c1209e999e1d78a4fcbc33155a8a491"),
     ({"cloud_over": {"positions": {}}},
-     "45bf0774e961ba2d5b42a5df06e5618a4e800d2157118821040da47377f9bc9d"),
+     "d890d9cb39a56ffa8eccf10cccc6ca4531c130cafa6e9c3995406a8ca345ae35"),
 ], ids=["default", "gate-and-seat-spread", "positions-absent"])
 def test_packet_json_bytes(tmp_path, overrides, digest):
     # A plain-box packet carries no rear contract (report H R3).

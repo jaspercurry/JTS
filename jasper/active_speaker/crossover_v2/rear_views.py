@@ -33,6 +33,16 @@ import numpy as np
 from jasper.active_speaker.baseline_profile import applied_layer_names
 from jasper.active_speaker.branch_chain import rear_branch_sum_headroom_db, rear_stage_response
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
+from jasper.audio_measurement.evidence_reasons import (
+    REASON_COVERAGE_SHORT,
+    REASON_NON_BEARING,
+    REASON_NO_COMPARISON,
+    REASON_NO_REFERENCE_TAKE,
+    REASON_SEGMENT_MISSING,
+    REFUSE_NO_BRANCH_DIAGNOSTIC,
+    REFUSE_NO_INCUMBENT,
+    REFUSE_NO_REAR_TAKES,
+)
 from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, POSE_KIND_BEARING, PURPOSE_REAR
 from jasper.active_speaker.rear_calibration import (
     changed_section_paths, rear_operating_facts, section_change_family,
@@ -41,7 +51,7 @@ from jasper.active_speaker.run_manifest import view_sets
 from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
 from jasper.audio_measurement.rear_evidence import (
     ARRIVAL_GAP_BAND_HZ, BAND_SOURCE_COVERAGE, IMPULSE_FFT_SIZE, LEVEL_BANDS_HZ,
-    REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, across_positions,
+    across_positions,
     arrival_gap_ms, comparison_band, confident_arrival_gap_s, gradient_residual_db,
     late_energy_change, pair_band_levels, position_figures, rear_polarity, reference_curve_db,
     repeat_spread, superposition_residual_db, band_level_changes,
@@ -57,27 +67,12 @@ from .room_views import room_ceiling
 from .round_captures import RoundCapturesRefused, doc_pose_key
 from .round_inputs import RoundInputs, banked_round_of
 
-REFUSE_NO_REAR_TAKES = "rear_no_summed_takes"
-REFUSE_NO_INCUMBENT = "rear_incumbent_set_unavailable"
-#: A pair round whose takes banked no branch segments. Its OWN reason: falling
-#: through to the summed path would report a missing incumbent, which is a
-#: question a pair round never asked.
-REFUSE_NO_BRANCH_DIAGNOSTIC = "rear_pair_branch_diagnostic_missing"
 
 ROLE_INCUMBENT = "incumbent"
 ROLE_REAR_MUTED = "rear_muted"
 ROLE_VARIANT = "variant"
 ROLE_PAIR = "pair"
 
-#: A pose some candidate measured that the batch could not score: the
-#: reference take is missing there, so the position has no frozen zero and no
-#: candidate may be read at it. Disclosed, never dropped.
-REASON_NO_REFERENCE_TAKE = "no_reference_take"
-REASON_NON_BEARING = "non_bearing_pose"
-
-#: A pose whose pair take did not bank all three segments on one grid, so
-#: neither woofer alone nor their sum can be read there.
-REASON_SEGMENT_MISSING = "pair_segment_missing"
 
 #: A pair take's three segments: the front woofer alone, the rear woofer alone,
 #: then both together. The two solo identities come from the ONE owner of what a

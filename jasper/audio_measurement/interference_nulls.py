@@ -57,6 +57,24 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from jasper.audio_measurement.alignment import parabolic_peak
+from jasper.audio_measurement.evidence_reasons import (
+    CANDIDATE_BELOW_MIN_DEPTH,
+    CANDIDATE_DEPTH_EXCEEDS_CEILING,
+    CANDIDATE_NOT_MEASURABLE,
+    CANDIDATE_NO_MATCHING_RUNG,
+    CANDIDATE_OUTSIDE_CONTIGUOUS_RUN,
+    CLASSIFICATION_INSUFFICIENT_EVIDENCE,
+    CLASSIFICATION_POSITION_DEPENDENT,
+    CLASSIFICATION_POSITION_INVARIANT,
+    REASON_EXCLUSION_CAP,
+    REASON_LADDER_ARRIVAL_MISMATCH,
+    REASON_NO_CANDIDATE_NULLS,
+    REASON_NO_CORROBORATING_ARRIVALS,
+    REASON_NO_LADDER,
+    REASON_NO_PER_POSITION_CURVES,
+    REASON_R_DISAGREEMENT,
+    REASON_TOO_FEW_POSITIONS,
+)
 from jasper.audio_measurement.peq import bell_half_width_oct
 from jasper.audio_measurement.series_stats import _power_mean_db
 from jasper.audio_measurement.spatial_combine import (
@@ -299,41 +317,6 @@ POSITION_PRESENCE_FRACTION = 0.70
 # be an arbitrary ordering presented as a measurement. The other two honesty instruments are
 # unaffected; the consumer runs all three.
 EXCLUSION_CAP_FRACTION = 0.65
-
-# --------------------------------------------------------------------------- #
-# Vocabulary — mirroring spatial_combine's ``REFUSAL_*``/``GEOMETRY_*`` slugs. Consumers gate
-# on ``reason == ""``/the classification constants, never a specific refusal slug.
-# --------------------------------------------------------------------------- #
-
-CLASSIFICATION_POSITION_INVARIANT = "position_invariant"
-CLASSIFICATION_POSITION_DEPENDENT = "position_dependent"
-CLASSIFICATION_INSUFFICIENT_EVIDENCE = "insufficient_evidence"
-
-# Report-level reasons — why nothing was identified. Listed in the order
-# :func:`identify_interference_nulls` can emit them.
-REASON_NO_PER_POSITION_CURVES = "no_per_position_curves"
-REASON_NO_CORROBORATING_ARRIVALS = "no_corroborating_arrivals"
-#: :func:`classify_dip_position_variance` only — a cross-position statistic over one position
-#: is undefined, same line :func:`~jasper.audio_measurement.spatial_combine.combine_positions`
-#: draws for an empty ``band_spread`` below N=2.
-REASON_TOO_FEW_POSITIONS = "too_few_positions"
-REASON_NO_CANDIDATE_NULLS = "no_candidate_nulls"
-REASON_NO_LADDER = "no_ladder"
-REASON_LADDER_ARRIVAL_MISMATCH = "ladder_arrival_mismatch"
-REASON_R_DISAGREEMENT = "r_disagreement"
-REASON_EXCLUSION_CAP = "exclusion_cap_exceeded"
-
-# Per-candidate reasons — why one measured minimum is not an identified null.
-CANDIDATE_NOT_MEASURABLE = "no_flanking_maxima"
-CANDIDATE_BELOW_MIN_DEPTH = "below_min_depth"
-CANDIDATE_DEPTH_EXCEEDS_CEILING = "depth_exceeds_arrival_ceiling"
-CANDIDATE_NO_MATCHING_RUNG = "no_matching_rung"
-# Labelling only: a second candidate inside tolerance of an IN-RUN rung loses the tie in
-# ``_assign_rungs`` and is reported here (``predicted_hz``/``rung_error_spacings`` keep the
-# loss legible). Reaching it needs ``(n + 0.65) / (n + 0.35) > 2 ** (1/6)`` — possible only at
-# n <= 2; no corpus or synthetic case in this module's suite reaches it.
-CANDIDATE_OUTSIDE_CONTIGUOUS_RUN = "outside_contiguous_run"
-
 
 # --------------------------------------------------------------------------- #
 # Data model
@@ -1197,7 +1180,7 @@ def feature_position_variance(
     count = len(frequencies)
     cv = float(np.std(frequencies, ddof=1) / np.mean(frequencies) * 100) if count >= 2 else None
     if count < FEATURE_MIN_DEEP_POSITIONS:
-        classification = "insufficient_positions"
+        classification = REASON_TOO_FEW_POSITIONS
     elif cv is not None and cv < FEATURE_SOURCE_FIXED_CV_PERCENT:
         classification = "source_fixed"
     elif cv is not None and cv > FEATURE_POSITION_VARIANT_CV_PERCENT:

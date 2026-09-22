@@ -25,6 +25,7 @@ from jasper.active_speaker.crossover_v2.record_index import measurement_document
 from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir, round_inputs
+from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS
 from jasper.audio_measurement.room_boundary import (
     ROOM_BOUNDARY_DEFAULT_HZ,
     ROOM_BOUNDARY_MAX_HZ,
@@ -83,7 +84,7 @@ def room_round(tmp_path):
 
 
 @pytest.mark.parametrize("n_positions,sufficient,reason", [
-    (1, False, "too_few_positions"), (2, True, ""), (3, True, ""),
+    (1, False, REASON_TOO_FEW_POSITIONS), (2, True, ""), (3, True, ""),
 ])
 def test_room_views_disclose_spatial_support(tmp_path, capsys, n_positions, sufficient, reason):
     round_dir = bank_seat_round(tmp_path, magnitudes_db=_cube()[:n_positions])
@@ -116,7 +117,7 @@ def test_room_band_follows_coverage_and_support_counts_positions(tmp_path, floor
     persistence = room_views.room_persistence(takes, ceiling)
 
     support = {"n_positions": n_positions, "sufficient": n_positions > 1,
-               "reason": "" if n_positions > 1 else "too_few_positions"}
+               "reason": "" if n_positions > 1 else REASON_TOO_FEW_POSITIONS}
     assert document["freqs_hz"][0] == document["coverage_hz"][0] == persistence["coverage_hz"][0] == floor_hz
     assert document["spatial_support"] == persistence["spatial_support"] == support
     assert all(feature["band_hz"][0] >= floor_hz for feature in persistence["features"])

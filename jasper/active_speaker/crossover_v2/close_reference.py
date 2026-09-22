@@ -44,6 +44,18 @@ from jasper.audio_measurement.alignment import (
     fractional_shift,
     gcc_phat,
 )
+from jasper.audio_measurement.evidence_reasons import (
+    REFUSE_AT_HZ_OFF_SPEC_TABLE,
+    REFUSE_GATE_NOT_POSITIVE,
+    REFUSE_RATE_MISMATCH,
+    UNRESOLVED_LOW_CONFIDENCE,
+    UNRESOLVED_NO_CANCELLATION,
+    UNRESOLVED_OUTSIDE_VALIDITY,
+    UNRESOLVED_RESIDUAL_SMALL,
+    VERDICT_AGREEMENT,
+    VERDICT_ROOM_DOMINATED,
+    VERDICT_UNRESOLVED,
+)
 from jasper.audio_measurement.gating import (
     ENTANGLEMENT_SOURCE_DECLARED,
     TAPER_FRACTION,
@@ -118,32 +130,9 @@ RESIDUAL_FLOOR_DB = -120.0
 #: intersection before it is graded rather than left unresolved.
 MIN_BAND_POINTS = 16
 
-VERDICT_AGREEMENT = "agreement"
-VERDICT_ROOM_DOMINATED = "room_dominated"
-VERDICT_UNRESOLVED = "unresolved"
-
-#: Named reasons a band is unresolved, so a reader is told which one.
-UNRESOLVED_LOW_CONFIDENCE = "alignment_confidence_below_floor"
-UNRESOLVED_OUTSIDE_VALIDITY = "band_outside_validity"
-UNRESOLVED_RESIDUAL_SMALL = "disagreement_without_residual"
-UNRESOLVED_NO_CANCELLATION = "agreement_without_cancellation"
 
 WINDOW_FAR = "far_window"
 WINDOW_CLOSE = "close_window"
-
-#: Refused before any computation: a non-finite or non-positive explicit gate
-#: makes :func:`~jasper.audio_measurement.gating.f_trusted_floor_hz` return
-#: ``+inf``, which the strict JSON writer cannot carry.
-REFUSE_GATE_NOT_POSITIVE = "close_reference_gate_not_positive"
-
-#: Two rounds captured at different rates cannot be subtracted. The selector's
-#: own two refusals live with it, in :mod:`.round_captures`.
-REFUSE_RATE_MISMATCH = "close_reference_rate_mismatch"
-
-#: Refused before any computation: a bin outside :data:`SPEC_BANDS` has no
-#: tolerance to be graded against, and inventing one would publish a verdict
-#: no spec ever stated.
-REFUSE_AT_HZ_OFF_SPEC_TABLE = "close_reference_at_hz_off_spec_table"
 
 
 def _narrow_band(at_hz: float | None) -> tuple[tuple[float, float, float], ...]:

@@ -28,46 +28,20 @@ from jasper.active_speaker.linearization_envelope import (
     MIC_TIERS,
 )
 from jasper.active_speaker.linearization_fit import FitVocabulary
+from jasper.audio_measurement.evidence_reasons import (
+    CLOUD_BINDING_CLOUD_EVIDENCE_UNREADABLE,
+    CLOUD_BINDING_ENTRY_INCOMPLETE,
+    CLOUD_BINDING_FIT_INPUTS_NOT_BANKED,
+    CLOUD_BINDING_NOT_A_PAIR,
+    CLOUD_BINDING_NOT_FITTED,
+    CLOUD_BINDING_NO_CLOUD_EVIDENCE,
+    CLOUD_BINDING_NO_FIT,
+    CLOUD_BINDING_REFIT_DRIFTED,
+)
 from jasper.audio_measurement.spatial_combine import BandSpread, octave_bands_hz
 
 from .banked import BankedRound, _round_candidate, response_from_banked_curve
 
-#: The round banked no linearization fit to run a counterfactual against.
-CLOUD_BINDING_NO_FIT = "round_banked_no_linearization_fit"
-
-#: The round banked a fit but no cloud exclusion evidence, so there is no
-#: input to sever.
-CLOUD_BINDING_NO_CLOUD_EVIDENCE = "round_banked_no_cloud_exclusion_evidence"
-
-#: The MEASURE take carries no curve able to rebuild the fit's own inputs —
-#: a round banked before the per-occurrence ``validity_floor_hz`` and
-#: ``repeat_curves`` rode on it. Nothing here can be reconstructed from what
-#: such a round holds; re-run the round to ask this question of it.
-CLOUD_BINDING_FIT_INPUTS_NOT_BANKED = "fit_inputs_not_banked"
-
-#: The fit is per-branch and the sibling's occurrence count gates the sigma
-#: term, so the counterfactual is stated for a PAIR. A 1-way main is a
-#: different question, not a broken round.
-CLOUD_BINDING_NOT_A_PAIR = "fit_roles_not_a_pair"
-
-#: The round's ``linearization`` entries are the PRESCRIBED shape, not the
-#: fitted one — a candidate may read ``fit_failed`` and still carry prescribed
-#: filters, and the entry's ``prescribed_by`` is what tells them apart. There
-#: is no fit to run a counterfactual against, which is a different answer from
-#: a reconstruction that drifted.
-CLOUD_BINDING_NOT_FITTED = "round_linearization_was_prescribed_not_fitted"
-
-#: A fitted entry that names no mic tier the envelope knows, or no driver
-#: class. The refit cannot be composed without inventing one of them.
-CLOUD_BINDING_ENTRY_INCOMPLETE = "banked_fit_entry_names_no_tier_or_driver_class"
-
-#: The cloud block is present and malformed — a band row that is not a pair,
-#: or a missing ``n_positions``. Not the same as a round that banked none.
-CLOUD_BINDING_CLOUD_EVIDENCE_UNREADABLE = "cloud_exclusion_evidence_unreadable"
-
-#: The refit with every input wired did not reproduce the banked fit, so the
-#: severed arm cannot be read as the cloud's doing.
-CLOUD_BINDING_REFIT_DRIFTED = "refit_does_not_reproduce_the_banked_fit"
 
 #: How far the all-inputs-wired refit may sit from the banked correction curve
 #: before this view refuses to report a counterfactual, dB.

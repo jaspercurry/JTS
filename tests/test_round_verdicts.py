@@ -12,6 +12,10 @@ from jasper.active_speaker.repeat_floor import derive_repeat_floor, write_repeat
 from jasper.active_speaker.round_packet_report import INDEX_FILENAME, packet_index
 from jasper.active_speaker.round_verdicts import round_verdicts
 from jasper.active_speaker.speaker_fit import design_clouds
+from jasper.audio_measurement.evidence_reasons import (
+    REASON_TOO_FEW_POSITIONS,
+    REASON_REPEAT_FLOOR_NOT_BANKED,
+)
 from jasper.audio_measurement.interference_nulls import feature_position_variance
 from jasper.audio_measurement.series_stats import series_stats
 from tests.crossover_v2_fixtures import _one_way_preset
@@ -30,7 +34,7 @@ def live_round():
     [
         (2, 6, 6, 7, "source_fixed"), (5, 6, 6, -7, "unsure"),
         (10, 6, 6, 7, "position_variant"), (2, 6, 6, -7, "source_fixed"),
-        (5, 3, 3, -7, "insufficient_positions"), (2, 6, 10, 7, "source_fixed"),
+        (5, 3, 3, -7, REASON_TOO_FEW_POSITIONS), (2, 6, 10, 7, "source_fixed"),
     ],
 )
 def test_feature_variance_direction(cv, count, total, gain, classification):
@@ -153,7 +157,7 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap):
         residual <= 1 if unit == "db" and residual is not None else None
     )
     assert verdict["reason"] == (
-        "repeat_floor_not_banked"
+        REASON_REPEAT_FLOOR_NOT_BANKED
         if not unit
         else "repeat_floor_unit_mismatch" if unit != "db"
         else "fit_residual_unavailable"
@@ -217,7 +221,7 @@ def test_live_round_verdicts(tmp_path, live_round, band_lo, contains_crossover):
         for feature, count, frequencies, cv in zip(fit["filters"], (0, 3), ([], [3937.0, 3935.1, 3936.9]), (None, 0.027)):
             assert feature["position_variance"] == {
                 "positions_deep": count, "positions_total": 3, "cv_percent": pytest.approx(cv, abs=0.001) if cv else None,
-                "frequencies_hz": pytest.approx(frequencies, abs=0.1), "classification": "insufficient_positions",
+                "frequencies_hz": pytest.approx(frequencies, abs=0.1), "classification": REASON_TOO_FEW_POSITIONS,
             }
         packet["series"].append({**fit, "stats": {"flatness_rms_db": {"value": 2.4}}})
     packet["series"].append({**packet["series"][0], "pose": {"kind": "seat", "deg": 0, "name": "sofa", "seat_offset_m": [0, 0, 0]}})
