@@ -96,7 +96,7 @@ _STASH_PATH = os.environ.get(
 
 # Most nmcli reads are sub-second. Scans block until results are ready;
 # default `nmcli dev wifi list` after a rescan returns within 6-10 s on
-# a Pi 5 + Realtek 8821CU. 15 s is the comfortable ceiling.
+# a Pi 5 + Realtek 8821CU.
 _DEFAULT_NMCLI_TIMEOUT = 10
 _SCAN_TIMEOUT = 20
 # `nmcli --wait N` blocks until the connection activates OR N seconds
@@ -122,18 +122,9 @@ CONNECT_NEW_TIMEOUT_CEILING = (
 )
 _SCAN_HEALTH_JOURNAL_LINES = 120
 _SCAN_REPAIR_IFACE = os.environ.get("JASPER_WIFI_SCAN_REPAIR_IFACE", "wlan0")
-_SCAN_REPAIR_UNIT = os.environ.get(
-    "JASPER_WIFI_SCAN_REPAIR_UNIT", "jasper-wifi-scan-repair.service",
-)
+_SCAN_REPAIR_UNIT = "jasper-wifi-scan-repair.service"
 _SCAN_REPAIR_RETRY_DELAYS = (2.0, 3.0)
 _NM_AUTOCONNECT_RETRIES_FOREVER = "0"
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.environ.get(name, ""))
-    except ValueError:
-        return default
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -143,7 +134,7 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
-_SCAN_REPAIR_ROOT_TIMEOUT = _env_float("JASPER_WIFI_SCAN_REPAIR_ROOT_TIMEOUT", 20.0)
+_SCAN_REPAIR_ROOT_TIMEOUT = 20.0
 
 
 # ============================================================
@@ -540,10 +531,6 @@ def _filter_available_networks(
     return [network for network in networks if not network.get("inUse")]
 
 
-def _text_mentions_scan_suppression(*chunks: str | None) -> bool:
-    return wifi_scan_repair.text_mentions_scan_suppression(*chunks)
-
-
 def _recent_kernel_scan_suppressed() -> bool | None:
     """Best-effort read of recent kernel logs for the Pi 5 brcmfmac
     scan-suppression signature.
@@ -566,7 +553,7 @@ def _recent_kernel_scan_suppressed() -> bool | None:
         return None
     if proc.returncode != 0:
         return None
-    return _text_mentions_scan_suppression(proc.stdout, proc.stderr)
+    return wifi_scan_repair.text_mentions_scan_suppression(proc.stdout, proc.stderr)
 
 
 def _scan_report(
@@ -581,7 +568,7 @@ def _scan_report(
     only_current = (
         len(raw_networks) == 1 and bool(raw_networks[0].get("inUse"))
     )
-    nmcli_mentions_suppression = _text_mentions_scan_suppression(
+    nmcli_mentions_suppression = wifi_scan_repair.text_mentions_scan_suppression(
         rescan_proc.stdout, rescan_proc.stderr,
         list_proc.stdout, list_proc.stderr,
     )
@@ -604,10 +591,6 @@ def _scan_report(
         "degraded": degraded,
         "suspect": only_current and not degraded,
         "reason": reason,
-        # Product behavior stays conservative while the Pi 5 brcmfmac
-        # driver-suppressed-scan failure mode is validated live: the
-        # backend can detect suppression but never hides the Scan button.
-        "hideScanButton": False,
         "debug": {
             "rescanReturncode": rescan_proc.returncode,
             "listReturncode": list_proc.returncode,
@@ -733,11 +716,6 @@ def scan_networks_report(*, allow_repair: bool = True) -> dict[str, Any]:
         if not last_report["scan"].get("degraded"):
             return last_report
     return last_report
-
-
-def scan_networks() -> list[dict[str, Any]]:
-    """Compatibility wrapper for callers that only need rows."""
-    return scan_networks_report()["networks"]
 
 
 def _pretty_security(raw: str) -> str:
@@ -1048,10 +1026,8 @@ def connect_new(
         hidden_proc = _run_nmcli_secret(
             hidden_cmd, timeout=_CONNECT_TIMEOUT,
         )
-        if hidden_proc.returncode == 0:
-            proc = hidden_proc
-        else:
-            proc = hidden_proc
+        proc = hidden_proc
+        if hidden_proc.returncode != 0:
             err = _readable_nmcli_error(hidden_proc, password)
 
     if proc.returncode == 0:
