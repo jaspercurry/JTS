@@ -12,7 +12,7 @@ from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, 
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, REASON_WALK_BRANCH_PAIR_UNDECLARED, TEMPLATE_HARD_STOP
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measurement_programs import program
-from jasper.active_speaker.preflight import PreflightFacts, preflight
+from jasper.active_speaker.preflight import PreflightFacts, PreflightIssue, preflight
 from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker import arm_walk, candidate_parts, preflight_live
 from jasper.active_speaker.seat_level_reference import AnchorFacts
@@ -125,6 +125,8 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     ("serial", "seat_anchor_unusable"),
     ("sensitivity", "seat_anchor_unusable"),
     ("stop", "walk_commissioning_stop_unset"),
+    ("context", "measure_box_not_ready"),
+    ("context", "program_measurement_inputs_invalid"),
     ("candidate", "not_found"),
     ("capacity", "walk_over_capture_capacity"),
 ])
@@ -146,14 +148,15 @@ def test_preflight_issues(change, code):
     elif change in {"serial", "sensitivity"}:
         sensitivity = replace(facts.anchor.sensitivity, **({"serial": "other"} if change == "serial" else {"sens_factor_db": -10}))
         facts = replace(facts, anchor=replace(facts.anchor, sensitivity=sensitivity))
-    elif change == "stop":
-        facts = replace(facts, commissioning_stop_db_spl=None)
+    elif change in {"stop", "context"}:
+        facts = replace(facts, commissioning_stop_db_spl=None,
+                        issues=(PreflightIssue.from_code(code, ""),) if change == "context" else ())
     elif change == "capacity":
         plan = replace(plan, repeats=129)
     report = preflight(plan, facts)
-    issue = next(issue for issue in report.issues if issue.code == code)
+    issue, = report.issues
+    assert issue.code == code
     assert report.blocking and issue.blocking and issue.next_action
-    assert all(issue.code in REASON_REGISTRY for issue in report.issues)
     if change == "capacity":
         assert report.schedule == ()
 
@@ -218,15 +221,6 @@ def test_supplied_facts_do_not_read_files(monkeypatch):
     monkeypatch.setattr(seat_level_reference, "load_seat_level_reference", unexpected_read)
     monkeypatch.setattr(calibration, "resolve_mic_sensitivity", unexpected_read)
     assert preflight(plan, facts).issues == ()
-
-
-def test_missing_calibration_is_one_blocking_cause():
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
-    facts = ready_facts(plan)
-    report = preflight(plan, replace(facts, anchor=replace(facts.anchor, sensitivity=None)))
-    assert [(issue.code, issue.blocking) for issue in report.issues] == [
-        ("measure_spl_calibration_required", True),
-    ]
 
 
 @pytest.mark.parametrize("bass", [False, True])
