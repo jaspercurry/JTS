@@ -6200,13 +6200,22 @@ def test_setup_research_import_uses_one_draft_writer_and_preserves_edits(tmp_pat
     assert draft['manual_settings']['drivers'][0]['gain_offset_db'] == -3
 
 
-def test_setup_partial_details_return_research_action_without_measurement_errors(tmp_path, monkeypatch):
+@pytest.mark.parametrize('style', ['', 'compression_driver'])
+def test_setup_partial_details_return_research_action_without_measurement_errors(tmp_path, monkeypatch, style):
     from jasper.web import sound_speaker_setup as setup
     from jasper.active_speaker import baseline_profile
     from tests.active_speaker_fixtures import mono_output_topology
     from tests.test_active_speaker_driver_safety import _operator_inputs
 
     topology = mono_output_topology()
+    target = topology.speaker_groups[0].channels[1].target_id(topology.speaker_groups[0].id)
+    saved_layouts = []
+    def save_layout(raw):
+        nonlocal topology
+        topology = type(topology).from_mapping(raw['output_topology'])
+        saved_layouts.append(topology)
+        return {'save': {'status': 'saved'}}
+    monkeypatch.setattr(sound_active_speaker, '_save_output_topology_payload', save_layout)
     monkeypatch.setenv('JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE', str(tmp_path / 'draft.json'))
     monkeypatch.setattr(setup, 'load_output_topology', lambda: topology)
     monkeypatch.setattr(baseline_profile, 'load_applied_baseline_profile_state', lambda: None)
@@ -6215,12 +6224,14 @@ def test_setup_partial_details_return_research_action_without_measurement_errors
         'review': {'issues': [{'code': 'measurement_band_missing'}]},
     })
     response = setup.update_setup('/setup/details', {
-        'operator_inputs': _operator_inputs(), 'manual_settings': {},
+        'operator_inputs': _operator_inputs(), 'manual_settings': {}, 'driver_styles': {target: style},
     }, camilla_factory=lambda: None)
     view = response['setup']
     assert view['stage'] == 'research'
     assert view['next_action']['id'] == 'copy_research'
     assert view['draft']['prompt']
+    assert len(saved_layouts) == bool(style)
+    assert view['draft']['targets'][1]['driver_style'] == (style or None)
     assert view['issues'] == []
     assert view == setup.load_setup_view()
     assert [p['id'] for p in view['programs']] == ['speaker', 'bass', 'room']

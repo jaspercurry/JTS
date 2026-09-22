@@ -8,7 +8,7 @@ import { jtsConfirm } from '/assets/shared/js/dialog.js';
 
 const root = document.getElementById('view-body');
 const status = document.getElementById('status');
-let view, layout, inputs, manual, busy = false;
+let view, layout, inputs, manual, driverStyles, busy = false;
 const openSections = new Map();
 
 function adopt(next) {
@@ -18,6 +18,7 @@ function adopt(next) {
   layout = structuredClone(view.layout);
   inputs = structuredClone(view.draft.operator_inputs);
   inputs.target_models = Object.fromEntries(view.draft.targets.map(t => [t.target_id, t.model]));
+  driverStyles = Object.fromEntries(view.draft.targets.filter(t => t.role === 'tweeter').map(t => [t.target_id, t.driver_style || '']));
   manual = structuredClone(view.draft.manual_settings);
   manual.drivers ||= [];
   render();
@@ -108,10 +109,7 @@ function layoutCard() {
     layout.topology.speaker_groups.map(group => h('fieldset', {}, h('legend', {}, group.label),
       group.channels.map(channel => h('div.speaker-driver', {},
         field(channel.output_variant === 'rear' ? 'Rear woofer output' : `${channel.role.replaceAll('_', ' ')} output`,
-          channel.physical_output_index, value => { channel.physical_output_index = Number(value); }, { options: layout.outputs }),
-        channel.role === 'tweeter' && field('High-frequency driver type', channel.driver_style || '',
-          value => { channel.driver_style = value; }, { options: [
-            { value: '', label: 'Choose a type' }, ...layout.driver_styles] }))))),
+          channel.physical_output_index, value => { channel.physical_output_index = Number(value); }, { options: layout.outputs }))))),
     h('details', {}, h('summary', {}, 'Custom output layout'), editor,
       button('Save custom layout', () => run(() => postJSON('./setup/save-layout', { output_topology: JSON.parse(editor.value) }), 'Layout saved.'))),
     button('Save layout', () => run(async () => {
@@ -128,9 +126,12 @@ function driverCard(target) {
   const pad = driver.pad || { kind: 'none' };
   return h('fieldset', {}, h('legend', {}, target.label),
     field('Manufacturer and model', inputs.target_models[target.target_id], value => { inputs.target_models[target.target_id] = value; }),
+    target.role === 'tweeter' && field('High-frequency driver type', driverStyles[target.target_id],
+      value => { driverStyles[target.target_id] = value; render(); }, { options: [
+        { value: '', label: 'Choose a type' }, ...layout.driver_styles] }),
     target.role !== 'tweeter' && field('Enclosure', driver.cabinet?.enclosure_kind || 'unknown',
       value => { edit(driver, 'cabinet.enclosure_kind', value); render(); }, { options: view.draft.enclosures }),
-    target.driver_style === 'compression_driver' && field('Horn or waveguide (if known)', driver.installation?.horn_model,
+    driverStyles[target.target_id] === 'compression_driver' && field('Horn or waveguide (if known)', driver.installation?.horn_model,
       value => edit(driver, 'installation.horn_model', value)),
     field('Resistor or L-pad', pad.kind, value => { driver.pad = { kind: value }; render(); }, { options: view.draft.pads }),
     pad.kind !== 'none' && field('Nominal impedance (ohms)', driver.nominal_impedance_ohm,
@@ -155,7 +156,7 @@ function detailsCard() {
   const card = section('2. Driver details', view.stage === 'details',
     view.draft.targets.map(driverCard),
     field('Build notes (optional)', inputs.notes, value => { inputs.notes = value; }),
-    button('Save details', () => run(() => postJSON('./setup/details', { operator_inputs: inputs, manual_settings: manual }), 'Details saved.'), true));
+    button('Save details', () => run(() => postJSON('./setup/details', { operator_inputs: inputs, manual_settings: manual, driver_styles: driverStyles }), 'Details saved.'), true));
   card.id = 'driver-safety-issues';
   return card;
 }

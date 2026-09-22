@@ -129,17 +129,30 @@ def load_setup_view() -> SpeakerSetupView:
     }
 
 
-def save_details(raw: Mapping[str, Any]) -> None:
+def save_details(raw: Mapping[str, Any]) -> dict[str, Any]:
+    from .sound_active_speaker import _save_output_topology_payload  # lazy: existing topology operation owner
+
     topology = load_output_topology()
     prior = design_draft.load_design_draft(topology=topology)
     inputs = design_draft.normalise_operator_inputs(raw.get("operator_inputs"))
+    styles = raw.get("driver_styles") or {}
+    changed = topology.to_dict()
+    for group, group_data in zip(topology.speaker_groups, changed["speaker_groups"]):
+        for channel, channel_data in zip(group.channels, group_data["channels"]):
+            target = channel.target_id(group.id)
+            if channel.role == "tweeter" and target in styles and (styles[target] or None) != channel.driver_style:
+                channel_data["driver_style"] = styles[target] or None
+    style_changed = changed != topology.to_dict()
+    result = _save_output_topology_payload({"output_topology": changed}) if style_changed else {}
+    topology = load_output_topology() if style_changed else topology
     def models(values):
         return {(group.id, channel.role, channel.output_variant):
                 (values.get("target_models") or {}).get(channel.target_id(group.id)) or values.get(channel.role)
                 for group in topology.speaker_groups for channel in group.channels}
-    research = prior.get("driver_research") if models(inputs) == models(prior.get("operator_inputs") or {}) else None
+    research = prior.get("driver_research") if not style_changed and models(inputs) == models(prior.get("operator_inputs") or {}) else None
     design_draft.save_design_draft(topology, driver_research=research,
                                   manual_settings=raw.get("manual_settings"), operator_inputs=raw.get("operator_inputs"))
+    return result if (result.get("save") or {}).get("status") == "needs_attention" else {}
 
 
 def import_research(raw: Mapping[str, Any]) -> None:
@@ -171,7 +184,7 @@ def update_setup(path: str, raw: Mapping[str, Any], *, camilla_factory) -> dict[
     if path == "/setup/save-layout":
         result = _save_output_topology_payload(dict(raw))
     elif path == "/setup/details":
-        save_details(raw)
+        result = save_details(raw)
     elif path == "/setup/research":
         import_research(raw)
     elif path == "/setup/apply":
