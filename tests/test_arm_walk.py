@@ -1596,7 +1596,7 @@ def test_run_owned_finish_latches_success_and_timeout(monkeypatch, finished):
         first = arm.finish()
         assert arm.finish() is first
     wait.assert_called_once_with(arm.timeout_s)
-    assert arm.timeout_s == 2637
+    assert arm.timeout_s == 2642
     assert first["arm"]["exit"] == ("ok" if finished else "arm_park_unconfirmed")
     # A reported timeout skips the join, so the worker may still be unwinding
     # after it set `_finished`; the park is what this pins, not thread state.

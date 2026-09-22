@@ -30,6 +30,7 @@ still blocks a brownout move); the envelope is clamped to
 :data:`~jasper.active_speaker.angle_capture.ARM_ENVELOPE_DEG` before any
 move; the arm parks at 0 deg and is verified (``abs(offset) <
 PARK_TOLERANCE_DEG``) on EVERY exit path, including :data:`PARK_ON_SIGNALS`;
+park may re-issue ``move_to(0)`` once after a ``port_busy`` refusal;
 ``set-zero`` is never invoked (:data:`_TOOL_SUBCOMMANDS` is the complete
 adapter-verb set); the settle never goes under :data:`SETTLE_FLOOR_S`,
 validated at configure time and MEASURED per release.
@@ -353,6 +354,8 @@ class TurntableMover:
             self._stderr_tail = stderr.splitlines()[-1][-200:] if stderr else ""
             code = int(getattr(proc, "returncode", 1))
             error = f"{stderr}\n{payload.get('error', '')}"
+            # experiments/usb-turntable/jts_turntable.py:main emits port_busy before
+            # controller access: refused stop/position sent zero bytes, safe to retry once.
             if (
                 attempt == 1
                 and code
@@ -541,8 +544,8 @@ class RunOwnedArm:
         self._walk = ArmWalk(mover, session, config, should_stop=self._stop.is_set)
         self._code, self._error = EXIT_REFUSED, ""
         self._answer: dict[str, Any] | None = None
-        # Covers in-flight polls/serve and park, both stop retries, HTTP/CSRF calls, and settles.
-        self.timeout_s = (8 * mover.timeout_s + 2 * _VENDOR_RETRY_S + 6 * session._timeout
+        # Covers polls/serve, stop/position retries in all three moves, park retry, HTTP/CSRF, settles.
+        self.timeout_s = (8 * mover.timeout_s + 7 * _VENDOR_RETRY_S + 6 * session._timeout
                           + config.settle_s + PARK_SETTLE_S
                           + next_poll_s(float("inf"), changed=False, initial_s=config.poll_s))
         self._thread = threading.Thread(target=self._run, name="round-arm", daemon=False)
