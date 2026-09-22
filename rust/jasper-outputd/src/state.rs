@@ -26,10 +26,7 @@ use crate::config::Config;
 use crate::dac_content::DacContentMetrics;
 use crate::tts::TtsMetrics;
 use crate::types::SampleFormat;
-use jasper_daemon::json::{
-    json_string, push_kv_bool, push_kv_f64, push_kv_f64_opt, push_kv_str, push_kv_str_opt,
-    push_kv_u64, NEVER_MS,
-};
+use jasper_daemon::json::{json_string, push_kv_f64, push_kv_str, NEVER_MS};
 use jasper_daemon::uds::{CommandLimits, UdsCommandServer};
 use jasper_daemon::DaemonHooks;
 use jasper_ring::RingMetrics;
@@ -911,137 +908,7 @@ impl OutputdState {
 
         self.mix_json(&mut buf);
 
-        buf.push_str(r#""reference_outputs":{"#);
-        push_kv_str(
-            &mut buf,
-            "speaker_reference_source",
-            "outputd_final_electrical",
-        );
-        buf.push(',');
-        push_kv_str(
-            &mut buf,
-            "chip_ref_transform",
-            "stereo_mean_boxcar_decimate_dual_mono_v1",
-        );
-        buf.push(',');
-        push_kv_bool(&mut buf, "speaker_reference_is_fallback", false);
-        buf.push(',');
-        push_kv_bool(
-            &mut buf,
-            "speaker_reference_active",
-            self.chip_ref_writer_active.load(Ordering::Relaxed)
-                || self.reference_udp_active.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(&mut buf, "speaker_reference_sample_rate", sample_rate);
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "speaker_reference_channels",
-            crate::types::CHANNELS as u64,
-        );
-        buf.push(',');
-        push_kv_str_opt(&mut buf, "chip_ref_pcm", self.chip_ref_pcm.as_deref());
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "chip_ref_sample_rate",
-            self.chip_ref_sample_rate.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "chip_ref_period_frames",
-            self.chip_ref_period_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "chip_ref_buffer_frames",
-            self.chip_ref_buffer_frames.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        let chip_ref_sample_rate = self.chip_ref_writer_json(&mut buf, uptime_ms);
-        push_kv_str_opt(&mut buf, "udp_target", self.reference_udp_target.as_deref());
-        buf.push(',');
-        push_kv_bool(
-            &mut buf,
-            "udp_active",
-            self.reference_udp_active.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "udp_error_count",
-            self.reference_udp_error_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(
-            &mut buf,
-            "udp_dropped_count",
-            self.reference_udp_dropped_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-
-        // Passive chip-AEC clock drift (Layer 0). Observe-only: SRO estimate,
-        // a thin verdict, and the latency budget outputd already knows. No
-        // audio path is affected by anything in this block.
-        // Read the Copy snapshot under the lock, then build the human-readable
-        // reason string AFTER releasing it — never allocate while the lock is
-        // held, so a /state query can't make the chip-ref writer wait on a heap
-        // allocation. (It is off the audio path either way, but this keeps the
-        // lock hold to a few non-allocating reads.)
-        let (sro_ppm, sro_status, verdict, poisoned) = match self.sro_estimator.lock() {
-            Ok(est) => (est.sro_ppm(), est.status(), est.verdict(), false),
-            // A poisoned lock should never happen (the estimator never panics),
-            // but never surface a panic from /state — degrade to fallback.
-            Err(_) => (
-                None,
-                crate::aec_clock::SroStatus::Untrusted,
-                crate::aec_clock::AecClockVerdict::Fallback,
-                true,
-            ),
-        };
-        let verdict_reason = if poisoned {
-            "sro estimator lock poisoned".to_string()
-        } else {
-            crate::aec_clock::verdict_reason_for(sro_status, sro_ppm)
-        };
-        let sro_status = sro_status.as_str();
-        let verdict = verdict.as_str();
-        let dac_presentation_ms = frames_to_ms_opt(dac_delay_frames, sample_rate);
-        let playback_queue_ms = frames_to_ms_opt(
-            Some(self.dac_buffer_frames.load(Ordering::Relaxed)),
-            sample_rate,
-        );
-        let chip_ref_queue_ms = frames_to_ms_opt(
-            Some(self.chip_ref_queued_frames.load(Ordering::Relaxed)),
-            chip_ref_sample_rate,
-        );
-        buf.push_str(r#""aec_clock":{"#);
-        push_kv_f64_opt(&mut buf, "chip_ref_sro_ppm", sro_ppm, 3);
-        buf.push(',');
-        push_kv_str(&mut buf, "sro_estimator_status", sro_status);
-        buf.push(',');
-        push_kv_str(&mut buf, "verdict", verdict);
-        buf.push(',');
-        push_kv_str(&mut buf, "verdict_reason", &verdict_reason);
-        buf.push(',');
-        // Observe-only label: the chip-ref writer was armed purely to MEASURE
-        // drift on the DAC playout clock vs nominal (not chip-AEC). Pure
-        // self-description; no audio path reads it.
-        push_kv_bool(&mut buf, "observe", self.chip_ref_observe);
-        buf.push(',');
-        buf.push_str(r#""latency":{"#);
-        push_kv_f64_opt(&mut buf, "dac_presentation_ms", dac_presentation_ms, 3);
-        buf.push(',');
-        push_kv_f64_opt(&mut buf, "playback_queue_ms", playback_queue_ms, 3);
-        buf.push(',');
-        push_kv_f64_opt(&mut buf, "chip_ref_queue_ms", chip_ref_queue_ms, 3);
-        buf.push('}');
-        buf.push('}');
-        buf.push('}');
-        buf.push(',');
+        self.reference_outputs_json(&mut buf, sample_rate, uptime_ms, dac_delay_frames);
 
         self.watchdog_json(&mut buf, uptime_ms);
 
