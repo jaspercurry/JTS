@@ -16,7 +16,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -595,6 +595,36 @@ async def test_set_spotify_pins_diagnostic_by_scenario(
         assert volume_calls == [listening_level_to_spotify_percent(55)]
     else:
         assert Source.SPOTIFY not in coord._last_outbound
+
+
+@pytest.mark.parametrize("ok", [True, False], ids=["ok", "failure"])
+async def test_set_bluetooth_pins_diagnostic_by_scenario(tmp_path, monkeypatch, ok):
+    diag_path = tmp_path / "volume_policy.json"
+    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
+    monkeypatch.setattr(
+        vps_mod,
+        "_bluez_alsa_active_transport_path",
+        AsyncMock(return_value="/transport"),
+    )
+    set_property = AsyncMock(return_value=ok)
+    monkeypatch.setattr(vps_mod.busctl, "set_property", set_property)
+    coord, _, _ = _real_coord(tmp_path, active={})
+
+    assert await coord._set_bluetooth(55) is ok
+
+    set_property.assert_awaited_once_with(
+        "org.bluealsa",
+        "/transport",
+        "org.bluez.MediaTransport1",
+        "Volume",
+        "q",
+        str(listening_level_to_bt_volume(55)),
+        bus="--system",
+    )
+    push_result = read_diagnostics(str(diag_path))["last_source_push_result"]
+    assert push_result["ok"] is ok
+    assert push_result["reason"] == (PUSH_OK if ok else PUSH_WRITE_FAILED)
+    assert (Source.BLUETOOTH in coord._last_outbound) is ok
 
 
 def _assert_push_failure_outcome(

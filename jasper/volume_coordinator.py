@@ -2450,21 +2450,18 @@ class VolumeCoordinator:
         return await self._set_camilla(level)
 
     async def _set_spotify(self, level: int) -> bool:
-        """Set Spotify volume via Spotify Web API.
-
-        Body lives in `volume_push_sources.push_spotify_volume` — this stays
-        a method because `tests/test_volume_coordinator.py`'s
-        `_RecordingCoordinator` doubles override it by name.
-        """
-        return await volume_push_sources.push_spotify_volume(self, level)
+        ok = await volume_push_sources.push_spotify_volume(
+            self._spotify_router, self._spotify_device_name, level,
+        )
+        if ok:
+            self._stamp_outbound(Source.SPOTIFY)
+        return ok
 
     async def _set_bluetooth(self, level: int) -> bool:
-        """Set Bluetooth AVRCP volume via bluez-alsa.
-
-        Body lives in `volume_push_sources.push_bluetooth_volume` — this
-        stays a method for the same reason as `_set_spotify` above.
-        """
-        return await volume_push_sources.push_bluetooth_volume(self, level)
+        ok = await volume_push_sources.push_bluetooth_volume(level)
+        if ok:
+            self._stamp_outbound(Source.BLUETOOTH)
+        return ok
 
     async def _set_camilla(self, level: int) -> bool:
         db = percent_to_db(level)
