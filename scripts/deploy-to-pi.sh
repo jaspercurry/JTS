@@ -41,10 +41,6 @@ AIRPLAY_HEALTH_SUPPRESS_PATH="/run/jasper-airplay-health-suppress-until"
 AIRPLAY_HEALTH_DEPLOY_SUPPRESS_SEC="${AIRPLAY_HEALTH_DEPLOY_SUPPRESS_SEC:-2700}"
 AIRPLAY_HEALTH_POST_DEPLOY_SUPPRESS_SEC="${AIRPLAY_HEALTH_POST_DEPLOY_SUPPRESS_SEC:-120}"
 SSH_TARGET="${PI_USER}@${PI_HOST}"
-# ServerAlive keepalives bound a severed transport (issue #2340) to a
-# ~60s ssh error instead of an unbounded hang, so a poll that lost its
-# link fails fast enough to be retried on the next tick.
-SSH_BATCH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
 SUDO_INTERACTIVE=0
 HOSTNAME_FOR_INSTALL=""
 REMOTE_REPO_DIR="${REMOTE_REPO_DIR:-}"

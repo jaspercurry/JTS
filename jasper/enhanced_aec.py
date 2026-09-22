@@ -26,7 +26,6 @@ importing the optional native module or duplicating installer decisions.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import platform
 import sys
@@ -36,7 +35,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
-from .atomic_io import advisory_file_lock, atomic_write_text, read_json_mapping
+from .atomic_io import advisory_file_lock, atomic_write_json, read_json_mapping
 from .env_file import parse_env_mapping
 from .install_profile import (
     install_profile_supports_wake_detection,
@@ -102,9 +101,9 @@ def _read_versioned_object(path: Path) -> dict[str, Any]:
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    atomic_write_text(
+    atomic_write_json(
         path,
-        json.dumps(dict(payload), indent=2, sort_keys=True) + "\n",
+        dict(payload),
         mode=0o664,
         durable=True,
     )
@@ -246,19 +245,15 @@ def write_installed_marker(
     # mutable state.  Its parent is provisioned root:root 0755 by install.sh;
     # publishing root:root 0644 here lets non-root readers verify it without
     # letting any member of the shared `jasper` group rewrite or replace it.
-    atomic_write_text(
+    atomic_write_json(
         path,
-        json.dumps(
-            {
-                "schema_version": SCHEMA_VERSION,
-                "fingerprint": fingerprint,
-                "extension_sha256": extension_sha256,
-                "extension_name": extension_name,
-                "installed_at": utc_now_iso(),
-            },
-            indent=2,
-            sort_keys=True,
-        ) + "\n",
+        {
+            "schema_version": SCHEMA_VERSION,
+            "fingerprint": fingerprint,
+            "extension_sha256": extension_sha256,
+            "extension_name": extension_name,
+            "installed_at": utc_now_iso(),
+        },
         mode=0o644,
         group_from_parent=False,
         durable=True,

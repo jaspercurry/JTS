@@ -499,7 +499,7 @@ def test_diff_route_health_incomplete_surfaces_never_justify_ok():
 
 
 def test_diff_route_health_requires_numeric_stable_counters():
-    for bad_value in (None, True, "0", -1):
+    for bad_value in (None, True, "0", -1, 10**400):
         before = _healthy_route_snapshot()
         after = _healthy_route_snapshot(uptime_seconds=20.0)
         before["outputd"]["dac"]["xrun_count"] = bad_value

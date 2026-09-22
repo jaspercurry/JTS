@@ -515,10 +515,10 @@ def test_the_grid_declares_its_real_resolution_not_just_its_density() -> None:
 
 
 def test_a_missing_validity_floor_is_named_not_invented() -> None:
-    block = position_evidence_block(_combined(), position_records=_records())
-
-    assert block["curve_grid"]["floor_source"] == "default_floor"
-    assert block["curve_grid"]["floor_hz"] == pytest.approx(20.0)
+    for floor in (None, 10**400):
+        block = position_evidence_block(_combined(), validity_floor_hz=floor)
+        assert block["curve_grid"]["floor_source"] == "default_floor"
+        assert block["curve_grid"]["floor_hz"] == pytest.approx(20.0)
 
 
 def test_the_per_position_scalars_the_pipeline_already_had_survive() -> None:

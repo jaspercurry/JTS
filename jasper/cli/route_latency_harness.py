@@ -45,13 +45,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import math
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from jasper.json_fields import finite_float
 from jasper.log_event import log_event
 from jasper.percentiles import nearest_rank_percentile
 from jasper.route_latency import click_track, ref9891_pcap, warm_check
@@ -264,10 +264,8 @@ def _finite_nonnegative_number_at(
         if not isinstance(value, Mapping) or part not in value:
             return None
         value = value[part]
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    number = float(value)
-    return number if math.isfinite(number) and number >= 0 else None
+    number = finite_float(value)
+    return number if number is not None and number >= 0 else None
 
 
 def _fanin_topology(snapshot: Mapping[str, Any]) -> tuple[tuple[str, str], ...] | None:
