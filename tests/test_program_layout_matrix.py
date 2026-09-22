@@ -18,7 +18,7 @@ from jasper.active_speaker.excitation_safety_plan import (
 from jasper.active_speaker.measurement_emit import (
     MeasurementGraphProfile, compile_tuning_graph, emit_measurement_graph, measurement_graph_evidence,
 )
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, load_programs, run_program
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, load_programs, programs_for_topology, run_program
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.preflight import preflight
 from jasper.active_speaker.profile import ActiveSpeakerPreset, required_driver_roles
@@ -39,12 +39,17 @@ LEVEL_DB = -23.0
 SENSITIVITIES = {'woofer': 84.0, 'tweeter': 109.2, 'mid': 90.0, 'full_range': 87.0}
 PLAN_REFUSALS = {
     layout: dict.fromkeys(rows, 'walk_branch_pair_undeclared') for layout, rows in {
-        'one_way_passive': {'branches/express', 'front_rear/express', 'rear/express', 'rear/wide', 'rear/behind', 'rear/pair', 'rear/pair_behind'},
-        'two_way_active': {'front_rear/express', 'rear/express', 'rear/wide', 'rear/behind', 'rear/pair', 'rear/pair_behind'},
-        'three_way_active': {'branches/express', 'front_rear/express', 'rear/express', 'rear/wide', 'rear/behind', 'rear/pair', 'rear/pair_behind'},
+        'one_way_passive': {'branches/express', 'front_rear/express'},
+        'two_way_active': {'front_rear/express'},
+        'three_way_active': {'branches/express', 'front_rear/express'},
         'cardioid': set(),
     }.items()
 }
+for layout in LAYOUTS[:-1]:
+    PLAN_REFUSALS[layout].update(dict.fromkeys(
+        ('rear/express', 'rear/seat', 'rear/wide', 'rear/behind', 'rear/pair', 'rear/pair_mark', 'rear/pair_behind'),
+        'walk_branch_pair_undeclared',
+    ))
 # Three-way per-driver programs refuse at plan time (#5396).
 PLAN_REFUSALS['three_way_active'].update(dict.fromkeys(
     ('speaker/mark', 'baseline/express', 'baseline/full', 'tournament/express', 'tournament/full'),
@@ -148,5 +153,7 @@ def _outcome(speaker, row):
 
 @pytest.mark.parametrize('row', ROWS)
 def test_every_program_on_every_layout(speaker, row):
+    if ROWS[row].purpose == 'rear':
+        assert ('rear' in programs_for_topology(speaker.topology)) == (speaker.name == 'cardioid')
     code = PLAN_REFUSALS[speaker.name].get(row)
     assert _outcome(speaker, row) == ({('plan_refused', code)} if code else {('pass',)})

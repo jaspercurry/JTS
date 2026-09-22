@@ -35,9 +35,9 @@ Judge the result at the seat.
 
 | Goal figure | Owner and current limit |
 |---|---|
-| Wall hole (SBIR: speaker-boundary interference response) depth at the seat | `rear_evidence` owns `dip.depth_db`, measured at bearings only today. The room program publishes no wall-hole depth. |
+| Wall hole (SBIR: speaker-boundary interference response) depth at the seat | `rear_evidence` owns `dip.depth_db` at bearings and seats. The room program publishes no wall-hole depth. |
 | Trough fill | `rear_preview` owns `trough_fill_db`; preview only. |
-| Roughness / ripple | `rear_evidence` owns `ripple_db`, against the rear-muted reference's one-octave trend. Roughness against each curve's own trend is a different number, not yet a product figure. |
+| Roughness / ripple | `rear_evidence` owns `ripple_db`, against each pose's frozen rear-muted reference. Roughness against each curve's own trend is a different number, not yet a product figure. |
 | Early-arriving share | `rear_evidence` owns the late-energy figures: 90–250 Hz, early 0–10 ms versus late 10–40 ms. Rear program only. |
 | Cross-seat spread | `room_views` publishes `median.spread_db`. |
 | Repeat spread | Per program; a shared, comparable repeat spread is not yet a product figure. |
@@ -265,7 +265,8 @@ The loop of record is one pair take, previews, one trial.
 
 1. Pair take first. `jasper-round run --program rear --poses rear/pair
    --wait` plays, at each bearing, the front woofer alone, the rear woofer
-   alone and both, on one clock, with the rear stage cleared. Read its
+   alone and both, on one clock, with the rear stage cleared; use
+   `rear/pair_mark` for the one-placement pair take. Read its
    `packet["rear"][].pair.positions[*]`: `superposition_residual_db` (the
    trust number),
    `arrival_gap` (rear-minus-front gap in 90–315 Hz, clipped to sweep coverage,
@@ -307,12 +308,14 @@ The loop of record is one pair take, previews, one trial.
 
 4. One trial, judged within the round. `jasper-round trial <fp>
    --candidates base,<fp>,<fp>,<muted fp> --wait` plays them with the same
-   section carrying `rear_muted: true` as the reference. Read
-   `packet["rear"][].candidates[]`: the per-position `dip`, `ripple_db`,
+   section carrying `rear_muted: true` as the reference at the three seats
+   by hand, banked as `rear/seat`; `--mover arm` uses `rear_express`.
+   Read `packet["rear"][].candidates[]`: the per-position `dip`, `ripple_db`,
    `handover.hole_db`, `low_bass`, `band_level_db`; the measured
    `late_energy` (candidate minus rear-muted at that position:
    `early_late_change_db`, `band_energy_change_db`, `arrival_shift_ms`);
-   `upper_bands` (350–700, 700–1500, 1500–5000 Hz against rear-muted); then
+   `bands` at seats; `upper_bands` at bearings (350–700, 700–1500,
+   1500–5000 Hz against rear-muted); then
    `headroom_change_db` and `across_positions`. Compare within one round
    only: the muted trough's depth drifts by up to 5 dB between rounds at the
    same bearing while its frequency holds, and only the repeated bearing
@@ -336,8 +339,6 @@ worth playing:
   read about 2 dB kinder than the raw curve, but differences between
   candidates held. Compare candidates; never read a depth as absolute.
 - Judge the rear stage at the listening seat with the speaker at its wall.
-  Today no rear plan row carries a seat pose, so this judgment needs the
-  seat-round work in #5439; until then, informal seat measurements are not a product step.
   Cabinet 0.2 m from the wall, mic 2 m away: the fair "off" had a wall
   hole of −11 to −13 dB near 134 Hz and a roughness (RMS against the
   curve's own one-octave trend, 80–350 Hz) of 5.6–5.8 dB; rear tunes cut

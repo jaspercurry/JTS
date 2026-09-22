@@ -183,7 +183,7 @@ def _position_rows(
         _, curve_db = _mean_curve_db(takes, grid)
         rows[key] = position_figures(
             grid, curve_db, reference_db=reference_db,
-            band_hz=band_hz if key in bearing else None, coverage_hz=coverage_hz,
+            band_hz=band_hz, coverage_hz=coverage_hz,
             handover_hz=handover_hz,
             incumbent=None if incumbent is None else incumbent.get(key),
         )
@@ -195,7 +195,7 @@ def _position_rows(
         ) if key in bearing and key in reference_curve else []
         rows[key]["ladder"] = "rear_upper" if key in bearing else "rear_level"
         if key not in bearing:
-            rows[key].update(reason=REASON_NON_BEARING, trough_fill_db=None)
+            rows[key].update(trough_fill_db=None, trough_fill_reason=REASON_NON_BEARING)
             measured = band_level_changes(
                 grid, curve_db, reference_db=reference_curve[key], coverage_hz=swept_hz,
                 bands_hz=LEVEL_BANDS_HZ,

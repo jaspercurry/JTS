@@ -221,7 +221,7 @@ def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
                             "mark_distance_m": 1.0, "measurement_purpose": "rear",
                             "gating_applied": False, "graph_scope": "candidate",
                             "candidate_id": candidate, "level_db": -30.0,
-                            "seat_offset_m": None,
+                            "seat_offset_m": [0.0, 0.0, 0.0] if on_axis_kind == "seat" and degrees == 0 else None,
                             "curves": [{**source["curves"][0],
                                         "magnitude_db": _CURVES[candidate],
                                         "late_energy": {
@@ -556,15 +556,17 @@ def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banke
 
 
 @pytest.mark.parametrize("summed_capture_bundle,covered_bands", [(20000, 7), (200, 2)], indirect=["summed_capture_bundle"])
-def test_rear_views_banked_behind_trial(summed_capture_bundle, covered_bands, tmp_path, banked_candidates, monkeypatch):
+@pytest.mark.parametrize("pose_kind", ["behind", "seat"])
+def test_rear_views_banked_non_bearing_trial(summed_capture_bundle, covered_bands, tmp_path, banked_candidates, monkeypatch, pose_kind):
     bundle, _, _, bank = summed_capture_bundle
     monkeypatch.setattr(room_selection, "analyzed_measurements", measurement_analysis.analyzed_measurements)
     gains = {BASE_CANDIDATE: -3.0, _VARIANT: -6.0, _MUTED: 0.0}
     for candidate, gain in gains.items():
-        for kind, distance in (("bearing", 1.0), ("behind", 0.1)):
+        for kind, distance in (("bearing", 1.0), (pose_kind, 0.1)):
             asyncio.run(bank(f"{candidate}-{kind}", candidate=candidate, measurement_purpose="rear", phase="lateral",
                              pose_kind=kind, mark_distance_m=distance, vertical_deg=0,
-                             capture_gain_db=gain if kind == "behind" else 0.0, gating_applied=False))
+                             seat_offset_m=[0.0, 0.0, 0.0] if kind == "seat" else None,
+                             capture_gain_db=gain if kind == pose_kind else 0.0, gating_applied=False))
     groups = []
     records = [(row.path, record) for row, record in measurement_documents(bundle)]
     for candidate in gains:
@@ -572,7 +574,7 @@ def test_rear_views_banked_behind_trial(summed_capture_bundle, covered_bands, tm
                               if record["candidate_id"] == candidate], set_id=candidate)
         group["base"] = candidate == BASE_CANDIDATE
         groups.append(group)
-    write_manifest(bundle, program="rear/behind", groups=groups)
+    write_manifest(bundle, program=f"rear/{pose_kind}", groups=groups)
     _round_environment(bundle, applied=_SECTIONS[BASE_CANDIDATE])
     mark_state(bundle, "applied")
     banked = bank_round(bundle, campaign_root=tmp_path / "bank", view_runner=round_views.run_bookkeeping,
@@ -583,8 +585,8 @@ def test_rear_views_banked_behind_trial(summed_capture_bundle, covered_bands, tm
     assert entry["comparison"]["positions_unscored"] == {}
     for candidate in entry["candidates"]:
         positions = candidate["positions"]
-        behind, = (row for key, row in positions.items() if key.startswith("behind_"))
-        front, = (row for key, row in positions.items() if not key.startswith("behind_"))
+        placed, = (row for key, row in positions.items() if key.startswith(f"{pose_kind}_"))
+        front, = (row for key, row in positions.items() if not key.startswith(f"{pose_kind}_"))
         assert set(front) == {"reason", "dip", "dip_shift", "ripple_db", "handover", "low_bass",
                               "band_level_db", "late_energy", "upper_bands", "ladder"}
         assert [band["band_hz"] for band in front["upper_bands"]] == (
@@ -592,13 +594,16 @@ def test_rear_views_banked_behind_trial(summed_capture_bundle, covered_bands, tm
         for band in front["upper_bands"]:
             assert set(band) == {"band_hz", "level_db", "reference_db", "change_db"}
             assert band["change_db"] == pytest.approx(0.0, abs=0.01)
-        assert behind["upper_bands"] == []
-        assert behind["reason"] == rear_views.REASON_NON_BEARING
-        assert all(behind[key] is None for key in (
-            "dip", "dip_shift", "ripple_db", "handover", "low_bass", "band_level_db", "trough_fill_db"))
-        assert [row["band_hz"] for row in behind["bands"]] == [list(band) for band in LEVEL_BANDS_HZ]
+        assert placed["upper_bands"] == []
+        assert placed["reason"] == ""
+        assert isinstance(placed["ripple_db"], float)
+        assert isinstance(placed["band_level_db"], float)
+        assert isinstance(placed["handover"], dict) and isinstance(placed["low_bass"], dict)
+        assert placed["trough_fill_db"] is None
+        assert placed["trough_fill_reason"] == rear_views.REASON_NON_BEARING
+        assert [row["band_hz"] for row in placed["bands"]] == [list(band) for band in LEVEL_BANDS_HZ]
         expected = gains[candidate["candidate_id"]]
-        for index, band in enumerate(behind["bands"]):
+        for index, band in enumerate(placed["bands"]):
             assert set(band) == {"band_hz", "level_db", "reference_db", "change_db", "reason"}
             if index < covered_bands:
                 assert band["reason"] == ""
@@ -607,7 +612,7 @@ def test_rear_views_banked_behind_trial(summed_capture_bundle, covered_bands, tm
             else:
                 assert band["change_db"] is band["level_db"] is band["reference_db"] is None
                 assert band["reason"] == REASON_COVERAGE_SHORT
-        assert set(behind) == set(front) | {"trough_fill_db", "bands"}
+        assert set(placed) == set(front) | {"trough_fill_db", "trough_fill_reason", "bands"}
         assert candidate["repeats"] == dict.fromkeys(positions, 1)
 
 
@@ -674,21 +679,22 @@ def test_a_batch_without_repeats_or_a_muted_candidate_falls_back_and_says_so(
                for row in entry["candidates"])
 
 
-def test_a_non_bearing_take_at_azimuth_zero_is_never_the_on_axis_reference(
-    tmp_path, banked_candidates,
+@pytest.mark.parametrize("pose_kind", [POSE_KIND_BEHIND, "seat"])
+def test_a_non_bearing_take_has_figures_without_becoming_the_on_axis_reference(
+    tmp_path, banked_candidates, pose_kind,
 ):
-    """A behind-the-cabinet pose sits at azimuth 0 by declared coordinates
-    (kind ``behind``, #5362) without being a front bearing take, so it must
-    never seed the measured-dip search's reference curve (review, PR #5362)."""
-    root = rear_round(tmp_path, on_axis_kind=POSE_KIND_BEHIND)
-
+    root = rear_round(tmp_path, on_axis_kind=pose_kind)
     entry, = packet_of(root)[0]["rear"]
-
-    # No bearing take at azimuth 0 ever freezes a reference curve there, so the
-    # measured-dip search never runs and the band falls back to the declared
-    # geometry rather than crediting the behind-kind take as on-axis.
     assert entry["comparison"]["band_source"] == BAND_SOURCE_DECLARED_GEOMETRY
     assert entry["comparison"]["band_dip_hz"] is None
+    for candidate in entry["candidates"]:
+        row, = (row for key, row in candidate["positions"].items() if key.startswith(f"{pose_kind}_"))
+        assert row["reason"] == ""
+        assert isinstance(row["ripple_db"], float)
+        assert isinstance(row["dip"], dict)
+        assert row["upper_bands"] == []
+        assert row["trough_fill_db"] is None
+        assert row["trough_fill_reason"] == rear_views.REASON_NON_BEARING
 
 
 def test_a_pair_round_packets_each_woofer_alone_and_the_trust_number(

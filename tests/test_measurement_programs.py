@@ -108,6 +108,8 @@ def test_program_table_projections(site):
     ("room", "cloud", 11, 11, 11),
     ("room", "arm", 3, 3, 3),
     ("room", "seat", 3, 3, 3),
+    ("rear", "seat", 3, 3, 3),
+    ("rear", "pair_mark", 1, 1, 2),
     ("bass", "axis", 1, 1, 1),
     ("close", "spot", 1, 1, 1),
 ])
@@ -162,10 +164,26 @@ def test_a_branch_row_is_reachable_as_a_speaker_run_and_keeps_its_pair(poses, pa
 
 
 @pytest.mark.parametrize("reverse", [False, True])
-def test_run_layout_prefers_its_program_regardless_of_registry_order(monkeypatch, reverse):
+@pytest.mark.parametrize("purpose,layout,size,mover", [
+    ("room", "room_quick", "arm", "arm"),
+    ("bass", "room_quick", "quick", "arm"),
+    ("rear", "seat_express", "seat", "human"),
+    ("room", "seat_express", "seat", "human"),
+    ("rear", "speaker_mark", "pair_mark", None),
+])
+def test_run_layout_prefers_its_program_regardless_of_registry_order(monkeypatch, reverse, purpose, layout, size, mover):
     monkeypatch.setattr(mp, "_PROGRAMS", dict(sorted(mp._PROGRAMS.items(), reverse=reverse)))
-    assert mp.run_program("room", "room_quick") == mp.program("room", "arm")
-    assert mp.run_program("bass", "room_quick") == mp.program("bass", "quick")
+    row = mp.run_program(purpose, layout)
+    assert row == mp.program(purpose, size)
+    assert (row.program_id, row.size, row.layout, row.mover) == (purpose, size, layout, mover)
+
+
+@pytest.mark.parametrize("mover,size,layout", [
+    (None, "seat", "seat_express"), ("human", "seat", "seat_express"), ("arm", "express", "rear_express"),
+])
+def test_rear_trial_uses_seats_by_hand_and_bearings_by_arm(mover, size, layout):
+    row = mp.trial_program(("rear_calibration",), mover)
+    assert (row.program_id, row.size, row.layout, row.mover) == ("rear", size, layout, mover or "human")
 
 
 def test_express_geometry() -> None:
@@ -194,13 +212,13 @@ def test_available_programs_is_the_sorted_registry() -> None:
         ("baseline", "express"), ("baseline", "full"), ("bass", "axis"), ("bass", "cloud"),
         ("bass", "nearfield"), ("bass", "quick"), ("branches", "express"), ("close", "spot"),
         ("front_rear", "express"), ("rear", "behind"), ("rear", "express"), ("rear", "pair"),
-        ("rear", "pair_behind"), ("rear", "wide"), ("room", "arm"), ("room", "cloud"), ("room", "seat"),
+        ("rear", "pair_behind"), ("rear", "pair_mark"), ("rear", "seat"), ("rear", "wide"),
+        ("room", "arm"), ("room", "cloud"), ("room", "seat"),
         ("seat", "cloud"), ("seat", "cube"), ("seat", "express"), ("speaker", "mark"),
         ("tournament", "express"), ("tournament", "full"),
     )
     rows = [mp.program(program_id, size) for program_id, size in choices]
     assert tuple((row.program_id, row.size) for row in rows) == choices
-    # Three branch rows, and only their ids tell them apart to the session.
     assert {(row.program_id, row.branch_pair) for row in rows
             if row.regime == mp.REGIME_BRANCHES} == {
         ("branches", mp.BRANCH_PAIR_DRIVERS), ("front_rear", mp.BRANCH_PAIR_FRONT_REAR),
@@ -328,7 +346,6 @@ def test_room_and_bass_plans_share_poses_and_summed_regime(program, size, purpos
     ("wide", [(0, 2), (-20, 1), (20, 1), (-45, 1), (45, 1)]),
 ])
 def test_rear_layouts_pin_no_mover_and_repeat_the_zero_pose(size, poses) -> None:
-    """The arm is a temporary convenience; a rear layout never pins one (issue #5330)."""
     row = mp.program("rear", size)
 
     assert row.purpose == mp.PURPOSE_REAR and row.regime == mp.REGIME_SUMMED

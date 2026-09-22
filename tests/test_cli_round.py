@@ -483,6 +483,7 @@ def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
     (("room",), "room", "seat_express", "human"),
     (("bass",), "bass", "bass_axis", "arm"),
     (("driver", "room"), "room", "seat_express", "human"),
+    (("rear_calibration",), "rear", "seat_express", "human"),
 ])
 def test_trial_uses_authored_section_and_keeps_candidates_at_each_pose(
     bank_trial, banked_session_level, monkeypatch, capsys, sections, program,
@@ -498,12 +499,14 @@ def test_trial_uses_authored_section_and_keeps_candidates_at_each_pose(
         return
     assert code == 0 and body["verb"] == "trial" and body["shape"] == "trial"
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
-    expected = run_program(program, "room_quick" if program == "room" and mover == "arm" else layout)
+    arm_layout = {"room": "room_quick", "rear": "rear_express"}.get(program, layout)
+    expected = run_program(program, arm_layout if mover == "arm" else layout)
     assert plan.program == f"{program}/{expected.size}"
     assert plan.mover == (mover or default_mover)
     assert plan.candidates == ("base", fingerprint)
     assert [(stop.place, stop.candidate_id, stop.regime) for stop in plan.stops] == [
-        (pose.place, candidate, "summed") for pose in expected.poses for candidate in ("", fingerprint)
+        (pose.place, candidate, "summed") for pose in expected.poses
+        for _ in range(pose.repeats) for candidate in ("", fingerprint)
     ]
     if expected.levels is None:
         assert plan.level.level_db == -20
@@ -534,7 +537,7 @@ def test_declared_trial_uses_the_design_mark_speaker_experiment(isolated_candida
 @pytest.mark.parametrize("sections,program", [
     ((), "room/seat"), (("driver", "blend"), "room/seat"),
     (("driver", "room", "bass"), "bass/axis"),
-    (("rear_calibration", "bass", "room"), "rear/express"),
+    (("rear_calibration", "bass", "room"), "rear/seat"),
 ])
 def test_trial_selects_program_by_section_precedence(bank_trial, monkeypatch, capsys, sections, program, arm_plan_answer):
     fingerprint = bank_trial(dict.fromkeys(sections, "document"))
