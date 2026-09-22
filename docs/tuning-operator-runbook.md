@@ -38,7 +38,7 @@ All measurement programs refuse before sound with `walk_layout_unsupported_for_p
 
 `jasper-round run --program rear --dry-run` shows the rear measurement plan without sound.
 
-Run `jasper-round run --program rear` for the declared rear woofer. Follow the [playbook’s Rear recipe](tuning-playbook.md#rear) to compose and trial candidates and read the packet.
+Run `jasper-round run --program rear` for the declared rear woofer. Use `rear/pair_mark` for a one-placement pair take; every hand trial of a rear document runs at the three seats as `rear/seat`, while the arm uses `rear_express`. Follow the [playbook’s Rear recipe](tuning-playbook.md#rear) to compose and trial candidates and read the packet.
 
 ## Bass
 

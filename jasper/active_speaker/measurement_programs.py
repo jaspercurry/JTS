@@ -93,7 +93,7 @@ _PROGRAM_SECTIONS = (
         PURPOSE_REAR, (PrescriptionSection("rear_calibration", "jts_rear_calibration", 6, 5),),
         (CandidateField("rear_calibration", dict),), (REGIME_SUMMED, REGIME_BRANCHES), 4,
         "Cardioid tuning", "Set the rear woofer to reduce sound behind the speaker.",
-        "Measure the rear woofer", "rear", trial=("rear_express", None),
+        "Measure the rear woofer", "rear", trial=("seat_express", "rear_express"),
         preview=(0, "rear_calibration", ("rear_calibration",)), profile_fallback=False, graph_evidence=True,
     ),
     ProgramDefinition(
