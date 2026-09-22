@@ -869,20 +869,20 @@ install_audio_slice_and_dropins() {
 }
 
 park_audio_clients_for_core_graph_restart() {
-    # Deploy updates can rewrite asound/Camilla/outputd state while local
-    # renderers are actively playing. Park the units that can hold fan-in,
-    # Camilla, or outputd endpoints before restarting the core graph, then
-    # let the existing restart/reconcile steps below restore the profile-
-    # appropriate runtime state. The list is the single canonical
-    # JASPER_CORE_GRAPH_PARK_UNITS sourced at the top of this file.
-    # Those restore steps run unguarded under `set -e`, so record each unit
-    # before stopping it: the record is what install.sh's EXIT trap replays.
-    # forget_core_graph_park_record() drops the record again once they finish.
+    # Stop fan-in before outputd: losing its downstream pacer while Camilla
+    # runs can trip fan-in's RLIMIT_RTTIME. Record before each stop so an
+    # aborted install restores every holder before the rings are reused.
     retire_stale_outputd_park_if_active
     local unit
-    for unit in "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; do
+    for unit in "${JASPER_CORE_GRAPH_RESTART_TARGETS[@]}" \
+                "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; do
         _record_parked_unit "${unit}"
-        systemctl stop "${unit}" 2>/dev/null || true
+        if ! systemctl stop "${unit}" 2>/dev/null; then
+            if [[ "$(systemctl show -p LoadState --value "${unit}" 2>/dev/null)" != "not-found" ]]; then
+                echo "  ERROR: could not stop ${unit}; keeping the audio rings" >&2
+                return 1
+            fi
+        fi
         systemctl reset-failed "${unit}" 2>/dev/null || true
     done
 }
@@ -927,7 +927,9 @@ forget_core_graph_park_record() {
     local -a parked=()
     if (( ${#JASPER_UNIT_PARK_RECORD[@]} )); then
         for unit in "${JASPER_UNIT_PARK_RECORD[@]}"; do
-            if _jasper_unit_in_list "${unit}" "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; then
+            if _jasper_unit_in_list "${unit}" \
+                "${JASPER_CORE_GRAPH_RESTART_TARGETS[@]}" \
+                "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; then
                 dropped=$(( dropped + 1 ))
                 continue
             fi
@@ -949,7 +951,12 @@ restart_core_camilla_after_dsp_reconcile() {
     # reconcile so a ring-default deploy cannot start Camilla on a stale
     # chunk-256 statefile against freshly-created ring files (Ring A and Ring B
     # are sized independently since #4124 — 512 and 256 frames respectively).
-    systemctl try-restart jasper-camilla.service 2>/dev/null || true
+    local verb=try-restart
+    if (( ${#JASPER_UNIT_PARK_RECORD[@]} )) &&
+        _jasper_unit_in_list jasper-camilla.service "${JASPER_UNIT_PARK_RECORD[@]}"; then
+        verb=restart
+    fi
+    systemctl "${verb}" jasper-camilla.service 2>/dev/null || true
 }
 
 restart_headphone_monitor_after_deploy() {
@@ -965,29 +972,11 @@ restart_headphone_monitor_after_deploy() {
     systemctl try-restart jasper-headphone-monitor.service 2>/dev/null || true
 }
 
-# The two always-on core-graph units the install path RESTARTS in place (never
-# parked, because they ARE the graph being restarted). Both carry a
-# StartLimitBurst guard; jasper-fanin escalates to StartLimitAction=reboot.
-# JASPER_CORE_GRAPH_PARK_UNITS already reset-failed the PARKED clients (incl.
-# outputd); these are the restart TARGETS it deliberately omits.
+# Stop fan-in before outputd removes its downstream pacer.
 JASPER_CORE_GRAPH_RESTART_TARGETS=(
     jasper-fanin.service
     jasper-camilla.service
 )
-
-reset_failed_core_graph_restart_targets() {
-    # Deploy-churn guard: a prior deploy can leave jasper-fanin (or camilla) in
-    # a `failed` state with its StartLimit counter at/near the burst — e.g. a
-    # transient EBUSY/config error during the previous install window. A bare
-    # `systemctl restart` then immediately re-trips the burst, and
-    # jasper-fanin's StartLimitAction=reboot would REBOOT THE PI mid-deploy.
-    # reset-failed clears the failed state and the start-limit counter so the
-    # restart below starts from a clean slate. Best-effort; never fatal.
-    local unit
-    for unit in "${JASPER_CORE_GRAPH_RESTART_TARGETS[@]}"; do
-        systemctl reset-failed "${unit}" 2>/dev/null || true
-    done
-}
 
 # The local music sources a deploy refreshes in place, plus the two support
 # daemons that are not sources (nqptp clocks AirPlay 2, bt-agent answers
@@ -1125,26 +1114,20 @@ park_low_memory_build_units() {
     #
     # Record only what was RUNNING. Restoring a unit that was already stopped
     # would start something this box had deliberately off.
-    for unit in "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; do
+    for unit in "${JASPER_CORE_GRAPH_RESTART_TARGETS[@]}" \
+                "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; do
         _record_parked_unit "${unit}"
     done
     for unit in "${JASPER_LOW_MEMORY_BUILD_PARK_UNITS[@]}"; do
-        # The two lists overlap by jasper-camilla-crossover today; skip so the
-        # record cannot hold a unit twice regardless of future edits.
-        _jasper_unit_in_list "${unit}" "${JASPER_CORE_GRAPH_PARK_UNITS[@]}" && continue
+        _jasper_unit_in_list "${unit}" "${JASPER_CORE_GRAPH_RESTART_TARGETS[@]}" \
+            "${JASPER_CORE_GRAPH_PARK_UNITS[@]}" && continue
         _record_parked_unit "${unit}"
     done
 
-    # jasper-fanin must stop before park_audio_clients_for_core_graph_restart
-    # stops jasper-outputd below: with outputd gone and CamillaDSP
-    # free-running, fanin's mixer loop loses its downstream pacer and its RT
-    # thread trips RLIMIT_RTTIME (SIGKILL) within ~1s. fanin is a restart
-    # target (JASPER_CORE_GRAPH_RESTART_TARGETS), not parked here, so it is
-    # stopped explicitly rather than reordered into either park list.
-    systemctl stop jasper-fanin.service 2>/dev/null || true
-    systemctl reset-failed jasper-fanin.service 2>/dev/null || true
     park_audio_clients_for_core_graph_restart
     for unit in "${JASPER_LOW_MEMORY_BUILD_PARK_UNITS[@]}"; do
+        _jasper_unit_in_list "${unit}" "${JASPER_CORE_GRAPH_RESTART_TARGETS[@]}" \
+            "${JASPER_CORE_GRAPH_PARK_UNITS[@]}" && continue
         systemctl stop "${unit}" 2>/dev/null || true
         systemctl reset-failed "${unit}" 2>/dev/null || true
     done
@@ -1404,7 +1387,7 @@ start_streambox_runtime_units() {
     # accessory refresh requested before then would be dropped on the floor.
     systemctl enable --now jasper-accessory-reconcile.path
     park_audio_clients_for_core_graph_restart
-    reset_failed_core_graph_restart_targets
+    remove_stale_jts_ring_data_files
     install_run_bounded 55 -- /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || {
         echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
         JASPER_CORE_GRAPH_TAIL_DEGRADED=1
@@ -1659,7 +1642,7 @@ install_systemd_units() {
     # grouping, and renderer restart steps below restore the appropriate
     # runtime state once the graph is coherent.
     park_audio_clients_for_core_graph_restart
-    reset_failed_core_graph_restart_targets
+    remove_stale_jts_ring_data_files
     install_run_bounded 55 -- /usr/local/sbin/jasper-audio-hardware-reconcile --reason install || {
         echo "  WARN: audio hardware reconcile failed. Check logs with: journalctl -u jasper-audio-hardware-reconcile -e"
         JASPER_CORE_GRAPH_TAIL_DEGRADED=1

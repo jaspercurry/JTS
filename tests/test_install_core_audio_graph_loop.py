@@ -419,63 +419,6 @@ def test_last_unit_failure_still_runs_daemon_reload(tmp_path):
     assert (tmp_path / "reload.log").exists()
 
 
-def _reset_failed_harness(tmp_path: Path) -> str:
-    systemctl_log = tmp_path / "systemctl.log"
-    return f"""
-set -euo pipefail
-REPO_DIR="{ROOT}"
-SYSTEMD_DIR="{tmp_path / "systemd"}"
-systemctl() {{ echo "$*" >> "{systemctl_log}"; return 0; }}
-source "{FRAGMENT}"
-reset_failed_core_graph_restart_targets
-"""
-
-
-def test_reset_failed_clears_fanin_and_camilla_before_restart(tmp_path):
-    """Item 4 — deploy-churn StartLimit guard: jasper-fanin carries
-    StartLimitAction=reboot, so a `systemctl restart` while it is `failed` with
-    the burst exhausted would REBOOT the Pi mid-deploy. The install path must
-    reset-failed both in-place restart targets first."""
-    log = tmp_path / "systemctl.log"
-    r = subprocess.run(
-        ["bash", "-c", _reset_failed_harness(tmp_path)],
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    assert r.returncode == 0, r.stderr
-    calls = log.read_text() if log.exists() else ""
-    assert "reset-failed jasper-fanin.service" in calls
-    assert "reset-failed jasper-camilla.service" in calls
-
-
-def test_reset_failed_targets_exclude_parked_units(tmp_path):
-    """The restart-target reset set is DISJOINT from the parked-client set
-    (which park_audio_clients_for_core_graph_restart already reset-failed):
-    fanin/camilla are restarted in place, never parked."""
-    r = subprocess.run(
-        [
-            "bash",
-            "-c",
-            f'REPO_DIR="{ROOT}"; SYSTEMD_DIR="{tmp_path}"; source "{FRAGMENT}"; '
-            'printf "%s\\n" "${JASPER_CORE_GRAPH_RESTART_TARGETS[@]}"; '
-            'echo "---"; '
-            'printf "%s\\n" "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"',
-        ],
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    assert r.returncode == 0, r.stderr
-    targets_block, _, park_block = r.stdout.partition("---\n")
-    targets = {ln.strip() for ln in targets_block.splitlines() if ln.strip()}
-    park = {ln.strip() for ln in park_block.splitlines() if ln.strip()}
-    assert targets == {"jasper-fanin.service", "jasper-camilla.service"}
-    assert targets.isdisjoint(park), (
-        f"restart targets must not overlap parked clients: {targets & park}"
-    )
-
-
 def test_graph_park_retires_a_stale_record_before_stopping_active_outputd(tmp_path):
     park = tmp_path / "outputd.park"
     park.write_text("old\n")
