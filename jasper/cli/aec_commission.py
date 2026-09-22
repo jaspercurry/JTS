@@ -76,7 +76,12 @@ from jasper.env_load import merged_env_files
 from jasper.log_event import log_event
 from jasper.mics import xvf3800
 from jasper.logging_setup import configure_logging
-from jasper.service_units import OUTPUTD_SERVICE, JASPER_VOICE_SERVICE
+from jasper.service_units import (
+    AEC_BRIDGE_SERVICE,
+    AEC_RECONCILE_SERVICE,
+    JASPER_VOICE_SERVICE,
+    OUTPUTD_SERVICE,
+)
 from jasper import systemd_probe
 
 logger = logging.getLogger("jasper.aec_commission")
@@ -137,7 +142,7 @@ ADAPTATION_CHUNKS = 60
 CHIRP_BUDGET_SECONDS = 85.0
 STOP_UNITS = (
     JASPER_VOICE_SERVICE,
-    "jasper-aec-bridge.service",
+    AEC_BRIDGE_SERVICE,
     "jasper-aec-init.service",
     OUTPUTD_SERVICE,
 )
@@ -647,7 +652,7 @@ class SystemIO:
 
     def wait_reconciler_idle(self) -> None:
         deadline = time.monotonic() + 30
-        unit = "jasper-aec-reconcile.service"
+        unit = AEC_RECONCILE_SERVICE
         while time.monotonic() < deadline:
             state = systemd_probe.unit_states(
                 [unit], timeout=_RECONCILER_PROBE_TIMEOUT_SEC,

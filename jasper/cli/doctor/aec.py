@@ -43,6 +43,7 @@ from ...chip_aec.policy import (
 )
 from ...env_load import env_file_path, parse_env_file as _shared_parse_env_file
 from ...json_fields import finite_float, sha256_file
+from ...service_units import AEC_BRIDGE_SERVICE
 from ...aec.bridge_config import (
     OUTPUTD_REF_UDP_HOST_ENV,
     OUTPUTD_REF_UDP_PORT_ENV,
@@ -227,7 +228,7 @@ def _audio_profile_status_for_doctor(
     """
 
     if bridge_active is None:
-        bridge_active = evidence.unit_active("jasper-aec-bridge.service") is True
+        bridge_active = evidence.unit_active(AEC_BRIDGE_SERVICE) is True
     if env is None:
         env = _doctor_env_file()
     testing_requested = (
@@ -561,7 +562,7 @@ def check_aec_bridge_running() -> CheckResult:
     if parked is not None:
         return parked
     from ...mics import xvf3800
-    bridge_state = evidence.unit_state("jasper-aec-bridge.service") or {}
+    bridge_state = evidence.unit_state(AEC_BRIDGE_SERVICE) or {}
     is_active = str(bridge_state.get("active_state") or "")
     is_enabled = str(bridge_state.get("unit_file_state") or "")
 
@@ -1241,7 +1242,7 @@ def check_aec_bridge_output_health() -> CheckResult:
     if parked is not None:
         return parked
     is_active = str(
-        (evidence.unit_state("jasper-aec-bridge.service") or {}).get("active_state")
+        (evidence.unit_state(AEC_BRIDGE_SERVICE) or {}).get("active_state")
         or ""
     )
     if is_active != "active":
@@ -1681,7 +1682,7 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
 
     # Bridge must be running for the engine to mean anything.
     is_active = str(
-        (evidence.unit_state("jasper-aec-bridge.service") or {}).get("active_state")
+        (evidence.unit_state(AEC_BRIDGE_SERVICE) or {}).get("active_state")
         or ""
     )
     if is_active != "active":
@@ -1705,7 +1706,7 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
     # bridge startup, so we just need to look back far enough to
     # find the most recent startup.
     proc = _run(
-        ["journalctl", "-u", "jasper-aec-bridge.service",
+        ["journalctl", "-u", AEC_BRIDGE_SERVICE,
          "--since", "10 min ago", "--no-pager", "--output", "cat"],
         timeout=8.0,
     )

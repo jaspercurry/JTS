@@ -43,10 +43,13 @@ from ...doctor_contract import (  # noqa: F401 — re-exported for the domain mo
 from ...install_profile import is_streambox_install_profile, read_install_profile
 from ...secret_redaction import redact_secrets
 from ...service_units import (
+    AEC_BRIDGE_SERVICE,
     JASPER_VOICE_SERVICE,
     LIBRESPOT_SERVICE,
+    SHAIRPORT_SYNC_SERVICE,
     unit_not_running,
 )
+from ...source_intent_units import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
 
 GREEN = "\033[32m"
 
@@ -390,7 +393,7 @@ def _parked_follower_result(label: str) -> CheckResult | None:
 _RUNTIME_STATE_UNITS = (
     "nginx.service",
     JASPER_VOICE_SERVICE,
-    "jasper-aec-bridge.service",
+    AEC_BRIDGE_SERVICE,
     "jasper-control.service",
     "jasper-input.service",
     # A .path unit fails on a bad spec; resilience.check_required_units_active
@@ -398,7 +401,7 @@ _RUNTIME_STATE_UNITS = (
     "jasper-accessory-reconcile.path",
     "jasper-mux.service",
     "nqptp.service",
-    "shairport-sync.service",
+    SHAIRPORT_SYNC_SERVICE,
     LIBRESPOT_SERVICE,
     "bluealsa.service",
     "bluealsa-aplay.service",
@@ -411,7 +414,7 @@ _RUNTIME_STATE_UNITS = (
     # reconciler was doctor-invisible except indirectly, via USB combo
     # consistency.
     "jasper-grouping-reconcile.service",
-    "jasper-source-intent-reconcile.service",
+    SOURCE_INTENT_RECONCILE_UNIT,
 )
 
 # A oneshot normally stays `activating` during its pass; its unit timeout
@@ -419,7 +422,7 @@ _RUNTIME_STATE_UNITS = (
 _ONESHOT_RUNTIME_STATE_UNITS = frozenset({
     "jasper-fanin-coupling-auto.service",
     "jasper-grouping-reconcile.service",
-    "jasper-source-intent-reconcile.service",
+    SOURCE_INTENT_RECONCILE_UNIT,
 })
 
 def _loopback_playback_active() -> bool:

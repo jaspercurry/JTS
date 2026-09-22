@@ -23,11 +23,15 @@ from jasper.output_topology_store import (
     output_topology_mutation,
     topology_path,
 )
-from jasper.service_units import read_unit_states, unit_activating
+from jasper.service_units import (
+    AUDIO_HARDWARE_RECONCILE_UNIT,
+    read_unit_states,
+    unit_activating,
+)
 
 logger = logging.getLogger("jasper.output_topology_runtime")
 
-RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
+RECONCILE_UNIT = AUDIO_HARDWARE_RECONCILE_UNIT
 GROUPING_RECONCILE_UNIT = "jasper-grouping-reconcile.service"
 RECONCILE_UNITS = (GROUPING_RECONCILE_UNIT, RECONCILE_UNIT)
 

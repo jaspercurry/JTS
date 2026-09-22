@@ -91,12 +91,19 @@ from typing import Any
 
 from jasper.log_event import log_event
 from jasper.service_units import (
+    AEC_BRIDGE_SERVICE,
+    AEC_RECONCILE_SERVICE,
+    AUDIO_HARDWARE_RECONCILE_UNIT,
+    CAMILLA_SERVICE,
     FANIN_SERVICE,
     OUTPUTD_SERVICE,
     JASPER_VOICE_SERVICE,
     LIBRESPOT_SERVICE,
+    SHAIRPORT_SYNC_SERVICE,
+    USBGADGET_SERVICE,
 )
 from jasper.source_intent_units import (
+    RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT,
     RECONCILE_BROKER_TIMEOUT_SECONDS as _SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC,
 )
 
@@ -124,12 +131,12 @@ MANAGED_UNITS = frozenset({
     "jasper-input.service",
     # Audio chain + reconcilers (control endpoints / supervisors /
     # wake-corpus bridge-output enable flow)
-    "jasper-aec-bridge.service",
+    AEC_BRIDGE_SERVICE,
     "jasper-aec-init.service",
-    "jasper-aec-reconcile.service",
+    AEC_RECONCILE_SERVICE,
     "jasper-grouping-reconcile.service",
     "jasper-grouping-reconcile-trailing.service",
-    "jasper-camilla.service",
+    CAMILLA_SERVICE,
     OUTPUTD_SERVICE,
     # jasper.fanin.coupling_reconcile restarts fan-in to apply a coupling or
     # USB-combo flip. Caught on jts 2026-06-27 (then via the since-deleted
@@ -143,7 +150,7 @@ MANAGED_UNITS = frozenset({
     # it via its polkit manage-units grant.
     "jasper-doctor-json.service",
     # AirPlay / Spotify / USB renderers (/sources, /airplay, mux, correction)
-    "shairport-sync.service",
+    SHAIRPORT_SYNC_SERVICE,
     "nqptp.service",
     LIBRESPOT_SERVICE,
     "jasper-usbsink.service",
@@ -165,7 +172,7 @@ MANAGED_UNITS = frozenset({
     # it to recompose the audio function after source/role changes; /speaker
     # restarts it so the name-patch reruns. Replaces the deleted
     # jasper-usbsink-init.service.
-    "jasper-usbgadget.service",
+    USBGADGET_SERVICE,
     # Bluetooth stack (/speaker rename restarts the whole BT chain)
     "bluetooth.service",
     "bluealsa.service",
@@ -177,7 +184,7 @@ MANAGED_UNITS = frozenset({
 # of MANAGED_UNITS so Tier-B reconcilers are not generally brokerable; this is
 # just enough for graph transitions to request a bounded reconciliation pass.
 START_ONLY_UNITS = frozenset({
-    "jasper-audio-hardware-reconcile.service",
+    AUDIO_HARDWARE_RECONCILE_UNIT,
     # Root oneshot that resolves the fan-in coupling + USB low-latency combo
     # (jasper.fanin.coupling_auto). Normally runs at boot/deploy, but the
     # /sources/ USB-audio toggle (jasper-web, non-root) starts it right after
@@ -194,7 +201,7 @@ START_ONLY_UNITS = frozenset({
     # persistence pass, not stop/restart the helper (mirrors
     # jasper-wifi-scan-repair). The helper enforces its own source-unit allowlist
     # internally; the broker/polkit only allow STARTING it.
-    "jasper-source-intent-reconcile.service",
+    SOURCE_INTENT_RECONCILE_UNIT,
     "jasper-wifi-scan-repair.service",
     # Root oneshot that reserves BLE connection-event length on the live WiiM
     # Remote 2 link (jasper.cli.wiim_remote_ce). BlueZ hardcodes CE length to
@@ -264,8 +271,8 @@ _EXEC_TIMEOUT_CEILING_SEC = 120.0
 # wait on, so :func:`reset_then_manage` bounds it independently of whatever the
 # action it precedes is allowed to take.
 _RESET_TIMEOUT_SEC = 5.0
-_SOURCE_INTENT_RECONCILE_UNIT = "jasper-source-intent-reconcile.service"
-_CAMILLA_UNIT = "jasper-camilla.service"
+_SOURCE_INTENT_RECONCILE_UNIT = SOURCE_INTENT_RECONCILE_UNIT
+_CAMILLA_UNIT = CAMILLA_SERVICE
 # jasper-camilla.service Wants= (and is After=) a Type=oneshot hardware
 # reconciler whose RemainAfterExit is unset, so every camilla START re-queues
 # that oneshot in full. Measured on jts4 (Pi Zero 2 W, 2026-08-21): the

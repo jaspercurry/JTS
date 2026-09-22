@@ -45,6 +45,8 @@ from ..audio_validation import (
 from ..log_event import log_event
 from ..logging_setup import configure_logging
 from ..service_units import (
+    AEC_BRIDGE_SERVICE,
+    CAMILLA_SERVICE,
     FANIN_SERVICE,
     OUTPUTD_SERVICE,
     JASPER_VOICE_SERVICE,
@@ -77,9 +79,9 @@ def _collect_service_states() -> dict[str, str]:
         unit: service_state(unit)
         for unit in (
             OUTPUTD_SERVICE,
-            "jasper-camilla.service",
+            CAMILLA_SERVICE,
             FANIN_SERVICE,
-            "jasper-aec-bridge.service",
+            AEC_BRIDGE_SERVICE,
             "jasper-aec-init.service",
             JASPER_VOICE_SERVICE,
         )

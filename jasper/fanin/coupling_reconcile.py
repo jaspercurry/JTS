@@ -75,8 +75,7 @@ from jasper.fanin_coupling import (
 from jasper.log_event import log_event
 # The single writer of ``JASPER_OUTPUTD_CONTENT_FORMAT``, which is why the
 # spine below starts it before restarting outputd — see :func:`_converge_ring`.
-from jasper.service_units import AUDIO_HARDWARE_RECONCILE_UNIT
-from jasper import env_load, fanin_coupling, ring_assets, ring_conf
+from jasper import env_load, fanin_coupling, ring_assets, ring_conf, service_units
 
 from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_readiness import (
@@ -87,13 +86,18 @@ from jasper.fanin.ring_readiness import (
     ring_endpoint_anchor_converged,
 )
 from jasper.logging_setup import configure_logging
-from jasper.service_units import FANIN_SERVICE, OUTPUTD_SERVICE
+from jasper.service_units import (
+    AUDIO_HARDWARE_RECONCILE_UNIT,
+    CAMILLA_SERVICE,
+    FANIN_SERVICE,
+    OUTPUTD_SERVICE,
+)
 
 logger = logging.getLogger(__name__)
 
 FANIN_UNIT = FANIN_SERVICE
 OUTPUTD_UNIT = OUTPUTD_SERVICE
-CAMILLA_UNIT = "jasper-camilla.service"
+CAMILLA_UNIT = CAMILLA_SERVICE
 
 # Legacy env keys of deleted selectors. Nothing writes either; each is retained
 # ONLY so a reconcile pass can UNSET a stale value off a migrating box's env
@@ -204,11 +208,9 @@ def _camilla_up_or_gate_refusal() -> tuple[bool, str]:
     this unit at all, leaves the ok verdict alone — the same fail-soft rule
     :func:`jasper.service_units.read_unit_states` sets.
     """
-    from jasper.service_units import read_unit_states, unit_active, unit_loaded
-
-    records = read_unit_states((CAMILLA_UNIT,))
+    records = service_units.read_unit_states((CAMILLA_UNIT,))
     record = records.get(CAMILLA_UNIT) if records else None
-    if not unit_loaded(record) or unit_active(record):
+    if not service_units.unit_loaded(record) or service_units.unit_active(record):
         return True, ""
     # lazy: the control package is optional here for the same reason the broker
     # import above is — a broken install degrades to a reported failure.

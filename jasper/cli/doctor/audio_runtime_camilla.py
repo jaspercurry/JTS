@@ -25,6 +25,7 @@ from ...camilla_config_contract import (
 from ...config import Config
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR as CAMILLA_CONFIGS_DIR
 from ...fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
+from ...service_units import CAMILLA_SERVICE
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -99,7 +100,7 @@ def check_camilla_service() -> CheckResult:
     label = "jasper-camilla service"
     service_failure = _service_state_failure(
         label,
-        "jasper-camilla.service",
+        CAMILLA_SERVICE,
         missing=REASON_CAMILLA_UNIT_MISSING,
         not_enabled=REASON_CAMILLA_UNIT_NOT_ENABLED,
         inactive=REASON_CAMILLA_INACTIVE,
@@ -614,7 +615,7 @@ def check_camilla_recover_park() -> CheckResult:
             reason=REASON_CAMILLA_PARK_RECORD_UNINTELLIGIBLE,
         )
 
-    if evidence.unit_active("jasper-camilla.service"):
+    if evidence.unit_active(CAMILLA_SERVICE):
         return CheckResult(
             label,
             "warn",

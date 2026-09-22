@@ -46,6 +46,7 @@ from jasper.local_sources.markers import local_sources_allowed
 from jasper.log_event import log_event
 from jasper.music_sources import Source
 from jasper.service_units import (
+    AEC_RECONCILE_SERVICE,
     JASPER_VOICE_SERVICE,
     SYSTEMCTL_TIMEOUT_SEC,
     run_systemctl as _systemctl,
@@ -69,7 +70,7 @@ VOICE_UNIT = JASPER_VOICE_SERVICE
 # marker and the voice start/park decision; we hand our half back to it rather
 # than deciding here — see refresh_voice_input. Where it is not installed, see
 # voice_follows_accessory_mic.
-VOICE_INPUT_GATE_UNIT = "jasper-aec-reconcile.service"
+VOICE_INPUT_GATE_UNIT = AEC_RECONCILE_SERVICE
 BLUEZ_DISCOVERY_TIMEOUT_SEC = 5.0
 # Per adapter host, and only when the published set changed: one try-restart,
 # then one show probe of the result.

@@ -44,6 +44,7 @@ from jasper.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
 from jasper.platform.status_socket import FANIN_STATUS_SOCKET
 from jasper.source_intent import source_intent_enabled
+from jasper.service_units import USBGADGET_SERVICE
 from jasper.usbgadget import (
     DEFAULT_UDC_CLASS_DIR,
     network_wanted,
@@ -143,7 +144,7 @@ REASON_COMPOSITION_MISMATCH = "composition_mismatch"
 REASON_COMPOSITION_RETAINED_PENDING_REBOOT = "composition_retained_pending_reboot"
 
 USBSINK_UNIT = "jasper-usbsink.service"
-USBGADGET_UNIT = "jasper-usbgadget.service"
+USBGADGET_UNIT = USBGADGET_SERVICE
 USBSINK_GADGET_PATH = Path("/sys/kernel/config/usb_gadget/jts-usb-audio")
 UAC2_EXPECTED_LOW_LATENCY_ATTRS = UAC2_LOW_LATENCY_EXPECTED_ATTRS
 USB_NAME_PATCH_SCHEMA = "3"

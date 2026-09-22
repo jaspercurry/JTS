@@ -23,16 +23,20 @@ from jasper.atomic_io import atomic_write_text
 from jasper.json_fields import utc_now_iso
 
 from ..mics import xvf3800
-from ..service_units import JASPER_VOICE_SERVICE
+from ..service_units import (
+    AEC_BRIDGE_SERVICE,
+    AEC_RECONCILE_SERVICE,
+    JASPER_VOICE_SERVICE,
+)
 
 
 STATE_PATH = Path("/var/lib/jasper/xvf-firmware-update.json")
 UPDATE_UNITS = (
     JASPER_VOICE_SERVICE,
-    "jasper-aec-bridge.service",
+    AEC_BRIDGE_SERVICE,
     "jasper-aec-init.service",
 )
-RECONCILE_UNIT = "jasper-aec-reconcile.service"
+RECONCILE_UNIT = AEC_RECONCILE_SERVICE
 DOWNLOAD_IO_TIMEOUT_SEC = 60.0
 DOWNLOAD_TOTAL_TIMEOUT_SEC = 120.0
 PRE_FLASH_TIMEOUT_BUDGET_SEC = 150.0
