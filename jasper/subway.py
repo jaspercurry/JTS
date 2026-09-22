@@ -66,7 +66,7 @@ from datetime import datetime
 import httpx
 
 from .log_event import log_event
-from .transit._mta_stations import Station as StationInfo, stations_by_id
+from .transit._mta_stations import Station, stations_by_id
 
 logger = logging.getLogger(__name__)
 
@@ -315,13 +315,7 @@ class _GTFSRealtimeFeed:
         ]
 
 
-# The runtime arrivals client uses the same `Station` dataclass as
-# the provider; `StationInfo` is re-exported above as an alias for
-# backwards-compat with any callers that imported it before the
-# shared module landed.
-
-
-def _load_stations() -> dict[str, StationInfo]:
+def _load_stations() -> dict[str, Station]:
     """Stop-id-keyed view of the bundled stations CSV.
 
     Resource lookup, open, decode, or iteration failures become ``{}`` rather
@@ -333,7 +327,7 @@ def _load_stations() -> dict[str, StationInfo]:
     return stations_by_id()
 
 
-def _build_aliases(station: StationInfo | None) -> dict[str, str]:
+def _build_aliases(station: Station | None) -> dict[str, str]:
     """Combine the universal aliases with station-specific ones derived from
     MTA's north/south labels. Returns a flat lowercased lookup."""
     aliases = dict(_BASE_ALIASES)

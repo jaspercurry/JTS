@@ -112,13 +112,7 @@ MAX_REFERENCE_PERIODS_IN_FLIGHT = 2
 # keys one entry carries.  outputd publishes raw observations; every acceptance
 # rule over them is here and in jasper/chip_aec/alignment.py.
 RECENT_WRITES_KEY = "recent_writes"
-# How long to wait between STATUS reads.  Polling harder buys little: outputd's
-# state server is one thread answering one command per connection, so a
-# sequential reader's rate is bounded by its own round trips (measured on jts3
-# at about two reads a second, when the accept still paid a blind 500 ms sleep;
-# it polls for readiness now).  What makes a window reachable at any of those
-# rates is the ring — each read carries every write since the last one, rather
-# than the single latest reading.
+# The per-write ring preserves observations between STATUS reads.
 QUEUE_POLL_INTERVAL_SEC = 0.25
 # How long the reference queue has to hold still, independent of how many
 # readings that takes.  Sample count alone bounds the median's precision but
@@ -225,12 +219,8 @@ def _integer(value: object, name: str, *, positive: bool = False) -> int:
 def _reference_writes(writer: Mapping[str, Any]) -> tuple[ReferenceWrite, ...]:
     """Parse the writer's recent per-write observations out of STATUS.
 
-    An outputd too old to publish the ring omits the key entirely.  Never
-    substitute the single latest reading for it: a reader capped at two STATUS
-    reads a second cannot assemble a window that way on any box, so guessing
-    would trade a loud refusal for a boot that burns its whole budget and then
-    blames the queue.  Same shape as `build_identity`'s `dac.format` refusal —
-    the box needs a newer outputd, and says so.
+    An outputd without the per-write ring cannot supply the observations needed
+    for the queue window; the single latest reading cannot replace it.
 
     An EMPTY ring is not that: a writer that has just opened its PCM has
     nothing to report yet, and the next read will.
@@ -590,9 +580,7 @@ def collect_reference_queue(
     outputd records ``snd_pcm_delay`` once per completed chip-reference write
     and publishes the recent ones as a ring, so a window is assembled from the
     WRITER's observations rather than from however often this loop manages to
-    ask.  That is what makes the window reachable: outputd answers about two
-    STATUS reads a second, while its writer writes 47-375 times a second
-    depending on the mix cadence.
+    ask.  The writer writes 47-375 times a second depending on the mix cadence.
 
     The window slides.  Every read folds in the fresh entries and drops anything
     older than `QUEUE_WINDOW_MAX_SEC`, so a single outlier write leaves the
@@ -630,9 +618,7 @@ def collect_reference_queue(
     # leading edge is invisible to the split-half drift bound by construction.
     # With the floor here the invariant is exact: every retained reading lies
     # between two instants at which the counters were observed equal, and a
-    # cumulative counter cannot tick in between and come back.  What the ring
-    # buys is not reach into the past — it is that no write made WHILE watching
-    # is missed at two reads a second.
+    # cumulative counter cannot tick in between and come back.
     baseline: tuple[tuple[int, ...], float] | None = None
     status_reads = 0
     last_error = "no STATUS response"
