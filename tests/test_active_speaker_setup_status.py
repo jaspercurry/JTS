@@ -734,7 +734,7 @@ def test_setup_binding_uses_the_banked_candidate_and_live_declaration(tmp_path, 
     assert binding["expected_fingerprint"] == binding["loaded_fingerprint"] == active_layer_a_fingerprint(expected)
 
 
-@pytest.mark.parametrize("applied,review_ready", [(False, False), (False, True), (True, False), (True, True)])
+@pytest.mark.parametrize("applied,review_ready", [(False, False), (False, True), (True, False), (True, True), (False, None), (True, None)])
 def test_setup_reports_composer_review_and_applied_record(monkeypatch, tmp_path, applied, review_ready):
     topology = _active_topology()
     _save_topology(monkeypatch, tmp_path, topology)
@@ -745,9 +745,23 @@ def test_setup_reports_composer_review_and_applied_record(monkeypatch, tmp_path,
     review["candidate_fingerprint"] = "review-fp"
     review["permissions"] = {"may_compile": review_ready, "may_apply": False}
     saved = {"status": "applied", "config": {"path": str(path)}, "candidate_fingerprint": "saved-fp"} if applied else None
-    monkeypatch.setattr(baseline_mod, "compile_commissioning_profile", lambda **kw: ("", review))
+    def compile_review(**kwargs):
+        if review_ready is None:
+            raise OSError("diagnostics unavailable")
+        return "", review
+
+    monkeypatch.setattr(baseline_mod, "compile_commissioning_profile", compile_review)
     monkeypatch.setattr(baseline_mod, "load_applied_baseline_profile_state", lambda path=None: saved)
     status = setup_mod.read_active_speaker_setup_status(active_config_path=str(path))
+    readiness = setup_mod.read_active_speaker_setup_status(
+        active_config_path=str(path), include_diagnostics=False,
+    )
+    for key in ("status", "configured", "volume_allowed", "grouping_allowed", "safety_muted"):
+        assert status[key] == readiness[key]
+    if review_ready is None:
+        assert status["volume_allowed"] is applied
+        assert status["baseline_profile"]["status"] == "unavailable"
+        return
     assert status["volume_allowed"] is applied
     assert status["grouping_allowed"] is applied
     assert status["baseline_profile"]["status"] == review["status"]

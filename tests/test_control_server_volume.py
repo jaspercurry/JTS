@@ -11,15 +11,20 @@ dispatch through (the Spotify router and the duck-active probe).
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from http.server import ThreadingHTTPServer
 
 import pytest
 
+import jasper.active_speaker.baseline_profile as baseline
+import jasper.active_speaker.setup_status as setup
 from jasper.control.server import _make_handler
+from jasper.output_topology_store import save_output_topology
 from jasper.volume_curve import percent_to_db
 
 from tests._log_events import event_fields, event_records
+from tests.active_speaker_fixtures import mono_output_topology
 from tests.control_server_fixtures import (
     _explicit_passive_output_topology,
     _get,
@@ -101,6 +106,49 @@ def test_volume_set_native_percent(server_with_coordinator):
     assert status == 200
     assert body["percent"] == 75
     assert ("set", 75) in fake.calls
+
+
+@pytest.mark.parametrize("transition", ["missing_config", "missing_profile", "staged", "unknown", "unreadable_profile"])
+def test_airplay_volume_checks_fresh_readiness_without_compiling_diagnostics(
+    monkeypatch, tmp_path, server_with_coordinator, transition,
+):
+    save_output_topology(mono_output_topology())
+    config = tmp_path / "applied.yml"
+    config.write_text("{}")
+    profile_path = tmp_path / "baseline.json"
+    profile_path.write_text(json.dumps({
+        "artifact_schema_version": baseline.SCHEMA_VERSION,
+        "kind": baseline.BASELINE_PROFILE_KIND,
+        "status": "applied", "config": {"path": str(config)},
+    }))
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(profile_path))
+    monkeypatch.setattr(setup, "active_config_path_from_statefile", lambda: str(config))
+
+    def unavailable(*args, **kwargs):
+        raise AssertionError("volume must not depend on staging diagnostics")
+
+    monkeypatch.setattr(baseline, "compile_commissioning_profile", unavailable)
+    monkeypatch.setattr(setup, "_applied_layer_a_binding", unavailable)
+    base, fake = server_with_coordinator
+    status, body = _post(f"{base}/volume/set", {"percent": 45, "source": "airplay"})
+    assert status == 200
+    assert body["percent"] == 45
+    assert body["observation_applied"] is True
+
+    if transition == "missing_config":
+        config.unlink()
+    elif transition == "missing_profile":
+        profile_path.unlink()
+    elif transition == "unreadable_profile":
+        profile_path.write_text("not json")
+    else:
+        path = "active_speaker_commissioning.yml" if transition == "staged" else ""
+        monkeypatch.setattr(setup, "active_config_path_from_statefile", lambda: path)
+    fake.calls.clear()
+    status, body = _post(f"{base}/volume/set", {"percent": 55, "source": "airplay"})
+    assert status == 409
+    assert body["active_speaker_setup"]["volume_allowed"] is False
+    assert not fake.calls
 
 
 def test_volume_set_rejects_active_speaker_setup_block(
@@ -328,13 +376,6 @@ def test_volume_mute_when_already_silent(server_with_coordinator):
 
 
 def _block_active_speaker_volume(monkeypatch):
-    """Force the active-speaker readiness gate into the not-safe state.
-
-    Mirrors test_grouping_set_enable_rejects_active_speaker_setup_block: an
-    active speaker whose combined crossover hasn't been validated reports
-    `volume_allowed=False`, which `_active_speaker_volume_block` turns into a
-    block.
-    """
     import jasper.control.handlers.volume as volume_mod
 
     monkeypatch.setattr(
