@@ -14,6 +14,7 @@ Structured fields only. The prose beside each class is presentation.
 
 from __future__ import annotations
 
+from jasper import output_topology_store as ot
 from types import SimpleNamespace
 
 import pytest
@@ -479,7 +480,6 @@ def test_a_corrupt_topology_file_is_not_a_healthy_box(tmp_path, monkeypatch):
     degrades corruption to an empty draft, which classifies as not-configured
     and would report a rotted box as healthy on all three surfaces. The strict
     loader is what makes `unavailable` reachable."""
-    from jasper import output_topology as ot
 
     corrupt = tmp_path / "output_topology.json"
     corrupt.write_text("{not json at all", encoding="utf-8")
@@ -494,7 +494,6 @@ def test_a_corrupt_topology_file_is_not_a_healthy_box(tmp_path, monkeypatch):
 
 def test_a_missing_topology_is_still_not_configured(tmp_path, monkeypatch):
     """Missing is NOT corrupt: a fresh box must reach `ok`, never `unavailable`."""
-    from jasper import output_topology as ot
 
     monkeypatch.setattr(
         ot, "topology_path", lambda _p=None: tmp_path / "absent.json"

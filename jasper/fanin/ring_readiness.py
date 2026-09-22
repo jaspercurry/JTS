@@ -213,10 +213,8 @@ def load_topology_for_wire():
     :func:`ring_topology_ready`'s decision, not this helper's.
     """
     try:
-        from jasper.output_topology import (  # lazy: import cost
-            OutputTopologyError,
-            load_output_topology_strict,
-        )
+        from jasper.output_topology import OutputTopologyError  # lazy: import cost
+        from jasper.output_topology_store import load_output_topology_strict  # lazy: import cost
     except ImportError:
         # Bound outside the read's ``except`` on purpose: naming
         # ``OutputTopologyError`` in that tuple while the import itself can fail
@@ -1114,10 +1112,8 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
     from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: import cost
     from jasper.active_speaker.measurement_emit import load_tuning_declaration, require_candidate_speaker_identity  # lazy: import cost
     from jasper.active_speaker.runtime_contract import classify_output_contract  # lazy: import cost
-    from jasper.output_topology import (  # lazy: import cost
-        OutputTopologyError,
-        load_output_topology_strict,
-    )
+    from jasper.output_topology import OutputTopologyError  # lazy: import cost
+    from jasper.output_topology_store import load_output_topology_strict  # lazy: import cost
 
     try:
         topology = load_output_topology_strict()
@@ -1221,10 +1217,8 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
         classify_output_contract,
         topology_supports_shm_ring,
     )
-    from jasper.output_topology import (  # lazy: import cost
-        OutputTopologyError,
-        load_output_topology_strict,
-    )
+    from jasper.output_topology import OutputTopologyError  # lazy: import cost
+    from jasper.output_topology_store import load_output_topology_strict  # lazy: import cost
 
     try:
         topology = load_output_topology_strict()

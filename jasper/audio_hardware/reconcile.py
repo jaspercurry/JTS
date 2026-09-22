@@ -662,7 +662,7 @@ class Pass:
             try:
                 # lazy: import cost — 2k lines a single-DAC install pass
                 # never needs (ADR-0226).
-                from jasper.output_topology import load_output_topology_strict
+                from jasper.output_topology_store import load_output_topology_strict  # lazy: topology parse cost on composite paths
 
                 self._topology = load_output_topology_strict(
                     self.output_topology_path
@@ -1371,7 +1371,7 @@ class Pass:
             return
         # lazy: import cost — the stamp writers live beside the topology, and
         # the --print-env path returns before this point (ADR-0226).
-        from jasper.output_topology import stamp_statefile_convergence
+        from jasper.output_topology_store import stamp_statefile_convergence  # lazy: --print-env skips topology imports
 
         stamp_statefile_convergence(self.camilla_statefile, topology, proved=False)
 

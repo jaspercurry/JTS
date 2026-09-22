@@ -22,11 +22,8 @@ from jasper.cli.doctor.boot_config import (
     check_i2s_dac_overlay_persists,
     check_i2s_hat_block_orphaned,
 )
-from jasper.output_topology import (
-    OUTPUT_TOPOLOGY_KIND,
-    OutputTopology,
-    save_output_topology,
-)
+from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.output_topology_store import save_output_topology
 
 _MANAGED_I2S_BLOCK = (
     f"[all]\n{I2S_HAT_BLOCK_BEGIN}\n"

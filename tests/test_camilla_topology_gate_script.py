@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from jasper.control import camilla_topology_gate_state as gate_state
-from jasper.output_topology import (
+from jasper.output_topology_store import (
     STATEFILE_TOPOLOGY_STAMP_SUFFIX,
     STATEFILE_UNPROVED_STAMP_SUFFIX,
 )

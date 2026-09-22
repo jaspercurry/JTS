@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from jasper import output_topology_store as topology_mod
 from jasper.active_speaker.candidate_bank import bank_candidate
 
 import asyncio
@@ -53,16 +54,6 @@ from jasper.active_speaker.runtime_contract import (
 from jasper.audio_hardware.dac import all_profiles as dac_all_profiles
 from jasper.camilla_config_contract import PeqFilter
 from jasper.dsp_apply import DspApplyState, dsp_write_epoch, record_dsp_apply_state
-from jasper.output_topology import (
-    DUAL_APPLE_ACTIVE_DEVICE_ID,
-    OUTPUT_TOPOLOGY_KIND,
-    OutputTopology,
-    OutputTopologyMutation,
-    OutputTopologyError,
-    load_output_topology,
-    output_topology_mutation,
-    save_output_topology,
-)
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
@@ -112,6 +103,19 @@ from ._web_test_helpers import (
     json_post_with_csrf,
     make_csrf_session,
     request_with_csrf,
+)
+from jasper.output_topology import (
+    DUAL_APPLE_ACTIVE_DEVICE_ID,
+    OUTPUT_TOPOLOGY_KIND,
+    OutputTopology,
+    OutputTopologyError,
+    new_topology_draft,
+)
+from jasper.output_topology_store import (
+    OutputTopologyMutation,
+    load_output_topology,
+    output_topology_mutation,
+    save_output_topology,
 )
 from .sound_camilla_fixtures import FakeCamilla
 from .test_active_speaker_runtime_contract import _active_baseline_yaml
@@ -267,8 +271,6 @@ def _configure_passive_layout_for_eq(
     exercise EQ composition, so they must model the separate case where a
     passive full-range speaker has already been configured.
     """
-
-    from jasper.output_topology import OutputTopology, save_output_topology
 
     topology_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
@@ -1828,8 +1830,6 @@ def test_topology_save_reports_the_reconcile_verdict_without_leaking_it(
 def test_topology_save_parks_before_replacing_saved_layout(
     monkeypatch, tmp_path: Path,
 ):
-    from jasper.output_topology import new_topology_draft, save_output_topology
-
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
     original = new_topology_draft(name="Old layout")
@@ -1905,9 +1905,6 @@ def test_topology_save_does_not_restore_old_graph_for_a_post_write_read_failure(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    from jasper import output_topology as topology_mod
-    from jasper.output_topology import new_topology_draft, save_output_topology
-
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
     save_output_topology(new_topology_draft(name="Old layout"), path)
@@ -2040,7 +2037,6 @@ def test_subwoofer_crossover_fc_round_trips_through_topology_save(
     written at all, so the active builder falls back to
     ``DEFAULT_SUB_CROSSOVER_HZ``.
     """
-    from jasper.output_topology import load_output_topology
 
     monkeypatch.setenv(
         "JASPER_OUTPUT_TOPOLOGY_PATH",
@@ -2293,7 +2289,6 @@ def test_preview_preserves_driver_values_and_does_not_rewrite_draft(
     topology = mono_output_topology(card_id=None)
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     draft_path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
-    from jasper.output_topology import save_output_topology
 
     save_output_topology(topology)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
@@ -2342,7 +2337,6 @@ def _declared_candidate_box(
 
     topology = mono_output_topology(card_id=None)
     _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    from jasper.output_topology import save_output_topology
 
     save_output_topology(topology)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
@@ -3002,8 +2996,6 @@ def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    from jasper.output_topology import new_topology_draft, save_output_topology
-
     topology_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     save_output_topology(new_topology_draft(name="Old intent"), topology_path)
@@ -3051,8 +3043,6 @@ def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph
 def test_reset_reports_the_reconcile_verdict(
     monkeypatch, tmp_path: Path, reconcile, status,
 ) -> None:
-    from jasper.output_topology import new_topology_draft, save_output_topology
-
     topology_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     save_output_topology(new_topology_draft(name="Old intent"), topology_path)
@@ -3076,7 +3066,6 @@ def _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path: Path) -> dict:
     """An applied baseline on a rear-output topology, so ``--base saved``
     resolves — the shape ``candidate_from_applied_profile`` needs."""
     from jasper.active_speaker import baseline_profile as baseline_profile_mod
-    from jasper.output_topology import save_output_topology
     from .active_speaker_fixtures import declared_graph_fixture, standard_design_draft
     from .test_rear_output_foundation import _rear_pair
 
@@ -3191,11 +3180,10 @@ def test_rear_calibration_bank_route_refuses_a_corrupt_saved_topology(
 ):
     """Mirrors jasper-crossover-prescriber's ``--base saved`` block: a corrupt
     on-disk file fails closed as a typed refusal, not an unhandled 502."""
-    from jasper.output_topology import OutputTopologyError
 
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json"))
     monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict",
+        "jasper.output_topology_store.load_output_topology_strict",
         lambda *a, **kw: (_ for _ in ()).throw(OutputTopologyError("output topology is not valid JSON")),
     )
     document = sound_active_speaker._active_speaker_rear_calibration_seed_payload()["calibration"]
@@ -5283,8 +5271,6 @@ def _write_repin_fixture(
 ) -> None:
     """Save the commissioned pair, then observe whichever units are attached."""
 
-    from jasper.output_topology import save_output_topology
-
     topology_path = tmp_path / "output_topology.json"
     hardware_path = tmp_path / "output_hardware.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
@@ -5494,8 +5480,6 @@ def test_sound_output_topology_repin_http_route_is_csrf_protected(
 
 
 def _save_topology(monkeypatch, tmp_path: Path, raw: dict) -> Path:
-    from jasper.output_topology import save_output_topology
-
     topology_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     save_output_topology(OutputTopology.from_mapping(raw), path=topology_path)

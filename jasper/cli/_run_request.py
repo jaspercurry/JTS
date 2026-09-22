@@ -25,7 +25,7 @@ from jasper.active_speaker.seat_level_reference import seat_level_reference_stat
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.household_mic import household_mic_path
-from jasper.output_topology import topology_path
+from jasper.output_topology_store import topology_path
 from ._refusal import read_json_source
 
 

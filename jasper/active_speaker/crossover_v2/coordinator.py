@@ -16,7 +16,8 @@ from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_EXPLICIT_PRESCRIPTION_OBJECTIVES,
 )
 from jasper.log_event import log_event
-from jasper.output_topology import load_output_topology, topology_config_fingerprint
+from jasper.output_topology import topology_config_fingerprint
+from jasper.output_topology_store import load_output_topology
 
 from ..boost_protection import BOOST_OVER_DECLARED_BOUND, record_boost_finding
 from ..candidate_bank import CandidateBankRefusal

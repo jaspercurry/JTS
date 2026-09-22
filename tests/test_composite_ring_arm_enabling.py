@@ -502,7 +502,7 @@ def test_the_wide_wire_rule_is_wired_into_the_active_arm(monkeypatch, tmp_path):
     from jasper.fanin import ring_readiness
 
     monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict", _composite_active_2way
+        "jasper.output_topology_store.load_output_topology_strict", _composite_active_2way
     )
     monkeypatch.setattr(
         "jasper.fanin_coupling.read_declared_ring_wire_format", lambda: "S16_LE"
@@ -578,7 +578,7 @@ def test_the_unattended_pass_refuses_a_composite_carrying_neither_proven_arm(
     )
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
     monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict", _composite_active_2way
+        "jasper.output_topology_store.load_output_topology_strict", _composite_active_2way
     )
     ok, detail = ring_readiness.ring_roleful_unattended_ready()
     assert ok is False

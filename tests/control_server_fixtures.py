@@ -23,6 +23,7 @@ import pytest
 
 from jasper.control.server import _make_handler
 from jasper.volume_state import VolumeState
+from jasper.output_topology_store import save_output_topology
 
 def _recording_popen(calls: list[list[str]]):
     """Build the minimal Popen double used by command-dispatch route tests."""
@@ -95,7 +96,6 @@ def _isolate_household_secret(monkeypatch, tmp_path):
 def _explicit_passive_output_topology(monkeypatch, tmp_path):
     """Give unrelated control-route tests explicit output permission."""
 
-    from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
     topology_path = tmp_path / "output_topology.json"

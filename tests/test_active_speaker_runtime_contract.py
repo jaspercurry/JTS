@@ -76,7 +76,6 @@ from jasper.camilla_config_contract import (
     FilterSpec,
     PeqFilter,
 )
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.sound.profile import SimpleEq, SoundProfile
 
 from tests._camilla_readback_double import (
@@ -85,6 +84,14 @@ from tests._camilla_readback_double import (
 )
 from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import mono_output_topology, passive_stereo_output_topology
+from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.output_topology_store import (
+    read_topology_fingerprint_stamp,
+    statefile_topology_stamp_path,
+    topology_fingerprint_stamp,
+    stamp_statefile_convergence,
+    statefile_unproved_stamp_path,
+)
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
@@ -5224,11 +5231,6 @@ def test_a_proved_statefile_is_stamped_with_the_topology_behind_it(
     topology change that resolved to the same config), and a gate reading an
     unstamped statefile allows.
     """
-    from jasper.output_topology import (
-        read_topology_fingerprint_stamp,
-        statefile_topology_stamp_path,
-        topology_fingerprint_stamp,
-    )
 
     topology = _active_topology("mono", "active_2_way")
     parked_path = tmp_path / "active_speaker_parked.yml"
@@ -5272,13 +5274,6 @@ def test_a_statefile_write_that_fails_leaves_the_old_proof_in_place(
     stamp write beside it still SUCCEEDS — which is what makes the two orderings
     tell different stories.
     """
-    from jasper.output_topology import (
-        read_topology_fingerprint_stamp,
-        stamp_statefile_convergence,
-        statefile_topology_stamp_path,
-        statefile_unproved_stamp_path,
-        topology_fingerprint_stamp,
-    )
 
     first = _active_topology("mono", "active_2_way")
     moved = _active_topology("mono", "active_3_way")
@@ -5323,7 +5318,6 @@ def test_a_statefile_write_that_fails_leaves_the_old_proof_in_place(
 def test_an_apply_that_writes_no_statefile_stamps_nothing(tmp_path: Path) -> None:
     """A refused decision leaves no proof behind it — the gate would otherwise
     read a stamp for a graph nobody wrote."""
-    from jasper.output_topology import statefile_topology_stamp_path
 
     topology = _active_topology("mono", "active_2_way")
     statefile = tmp_path / "outputd-statefile.yml"

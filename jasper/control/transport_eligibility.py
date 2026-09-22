@@ -48,6 +48,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Mapping
 
 from ..env_load import outputd_reconciled_env
+from ..output_topology_store import load_output_topology_strict
 
 if TYPE_CHECKING:
     from ..output_topology import OutputTopology
@@ -239,7 +240,6 @@ def _assess(
         dac_content_marker_contradicted,
         ring_active_endpoint_armed,
     )
-    from ..output_topology import load_output_topology_strict
 
     if topology is None:
         # STRICT, not the fail-soft loader: that one degrades a corrupt or

@@ -26,7 +26,7 @@ from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.dsp_apply import DspApplyError, dsp_writer_lock
 from jasper.log_event import log_event
-from jasper.output_topology import load_output_topology
+from jasper.output_topology_store import load_output_topology
 from jasper.sound import settings as sound_settings
 from .sound_active_speaker import apply_measured_crossover_geometry
 

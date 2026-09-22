@@ -15,7 +15,6 @@ from jasper.log_event import log_event
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, required_driver_roles
 from jasper.active_speaker.design_draft import declared_driver_spacing_m
-from jasper.output_topology import measurement_target_id
 
 from .refusal_copy import (
     REASON_MEASUREMENT_TARGETS_MISSING,
@@ -25,6 +24,7 @@ from .refusal_copy import (
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS,
     CrossoverV2Refused,
 )
+from jasper.output_topology import measurement_target_id, topology_is_subless_passive_mains
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.program import FrequencyBand
@@ -267,10 +267,7 @@ def resolve_conductor_context(
         LevelUnresolved, session_measurement_volume_db,
     )
     from jasper.audio_measurement.program import RoleBand
-    from jasper.output_topology import (
-        load_output_topology,
-        topology_is_subless_passive_mains,
-    )
+    from jasper.output_topology_store import load_output_topology  # lazy: test_correction_crossover_v2_conductor_context pins the store lookup
 
     topology = topology if topology is not None else load_output_topology()
     # A subless passive main has no active crossover, so the gates below — all

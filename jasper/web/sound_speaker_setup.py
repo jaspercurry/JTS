@@ -20,7 +20,7 @@ from jasper.active_speaker.driver_safety_prompt import build_driver_research_pro
 from jasper.active_speaker.installation import INSTALLATION_FIELDS
 from jasper.active_speaker.level_trim import declared_driver_gains
 from jasper.active_speaker.measurement_programs import program_entries
-from jasper.output_topology import load_output_topology
+from jasper.output_topology_store import load_output_topology
 from jasper.active_speaker.layout import build_speaker_layout, layout_choices
 
 

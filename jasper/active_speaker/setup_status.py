@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
-from jasper.output_topology import OutputTopologyError, load_output_topology_strict
+from jasper.output_topology import OutputTopologyError
+from jasper.output_topology_store import load_output_topology_strict
 
 from ._common import BASELINE_TOPOLOGY_CHANGED
 from .candidate_bank import load_applied_candidate

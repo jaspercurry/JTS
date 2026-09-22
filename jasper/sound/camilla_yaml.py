@@ -779,10 +779,8 @@ def flat_graph_channel_plan(
         flat_graph_muted_outputs,
         flat_graph_program_dest_map,
     )
-    from jasper.output_topology import (
-        OutputTopologyError,
-        load_output_topology_strict,
-    )
+    from jasper.output_topology import OutputTopologyError  # lazy: keep topology off the base emitter path
+    from jasper.output_topology_store import load_output_topology_strict  # lazy: keep topology off the base emitter path
 
     try:
         if topology is None:
@@ -958,7 +956,7 @@ def render_flat_cutover_configs(
         # Explicitly, so a corrupt artifact raises HERE rather than being
         # swallowed downstream into "mute nothing". A missing file returns an
         # empty draft (the golden case) and does not raise.
-        from jasper.output_topology import load_output_topology_strict
+        from jasper.output_topology_store import load_output_topology_strict  # lazy: topology needed only for cutover
 
         topology = load_output_topology_strict()
     directory = Path(config_dir) if config_dir is not None else BASE_CONFIG_PATH.parent

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from jasper import output_topology_store as output_topology_mod
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.program_failure import classify_program_failure
 from jasper.web import correction_crossover_v2_evidence as v2evidence
@@ -325,7 +326,6 @@ def session_open(monkeypatch, tmp_path, banked_session_level):
     from tests.test_preflight import ready_facts
     monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "v2_state.json")
     monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kw: ready_facts(plan))
-    from jasper import output_topology as output_topology_mod
     from jasper.active_speaker import commission_wiring, design_draft
     from jasper.active_speaker.tone_plan import load_active_speaker_preset
     from tests.active_speaker_fixtures import mono_output_topology

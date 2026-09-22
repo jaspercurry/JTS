@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from jasper import output_topology, output_topology_store
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -52,6 +53,7 @@ from jasper.cli.measure import (
 )
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.crossover_v2_fixtures import FakeCam, _preset, _roles, _loc
+from jasper.output_topology import topology_config_fingerprint
 
 ARTIFACTS = "evidence/v1/artifacts"
 CAPTURE_RELPATH = "captures/summed/take.wav"
@@ -187,11 +189,10 @@ def test_the_flag_refusal_exits_as_an_input_error(argv, reason, capsys):
 
 def _stub_box_reads(monkeypatch, *, preview_status: str) -> None:
     """The global reads ``read_box_declaration`` makes before the gate."""
-    from jasper import output_topology
     from jasper.active_speaker import crossover_preview, design_draft
 
     monkeypatch.setattr(
-        output_topology, "load_output_topology", lambda *a, **k: object()
+        output_topology_store, "load_output_topology", lambda *a, **k: object()
     )
     monkeypatch.setattr(
         output_topology, "topology_is_subless_passive_mains", lambda _t: False
@@ -1145,7 +1146,6 @@ def applied_baseline(monkeypatch, tmp_path):
     these drivers.
     """
     from jasper.active_speaker import baseline_profile, candidate_parts, bundles
-    from jasper.output_topology import topology_config_fingerprint
     from tests.crossover_v2_fixtures import _fixture_applied_profile
 
     topology = mono_output_topology()

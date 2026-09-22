@@ -520,7 +520,8 @@ def _loaded_config_is_stale_program_bake_pipe(current_path: str | Path) -> bool:
     if Path(current_path).name != _CURRENT_SOUND_CONFIG:
         return False
     from jasper.active_speaker.runtime_contract import flat_program_graph_blocked_reason
-    from jasper.output_topology import OutputTopologyError, load_output_topology_strict
+    from jasper.output_topology import OutputTopologyError  # lazy: keep topology off the base emitter path
+    from jasper.output_topology_store import load_output_topology_strict  # lazy: keep topology off the base emitter path
 
     try:
         topology = load_output_topology_strict()

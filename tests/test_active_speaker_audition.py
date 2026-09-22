@@ -342,7 +342,7 @@ def audition_box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "jasper.active_speaker.baseline_profile.applied_profile_displacement",
         lambda *_a, **_k: "",
     )
-    monkeypatch.setattr("jasper.output_topology.load_output_topology", lambda: topology)
+    monkeypatch.setattr("jasper.output_topology_store.load_output_topology", lambda: topology)
     monkeypatch.setattr(
         "jasper.active_speaker.runtime_contract.classify_bass_extension_graph",
         lambda *_a, **_k: _ApprovedGraph(),
@@ -761,7 +761,7 @@ def compare_box(audition_box, monkeypatch):
     _, topology, applied = _cardioid_baseline()
     anchor.write_text(applied)
     cam.running = applied
-    monkeypatch.setattr("jasper.output_topology.load_output_topology", lambda: topology)
+    monkeypatch.setattr("jasper.output_topology_store.load_output_topology", lambda: topology)
     return cam, anchor, applied, state
 
 

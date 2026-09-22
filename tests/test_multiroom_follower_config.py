@@ -10,6 +10,7 @@ the unbond restore (which must always restore an ACTIVE graph, never passive).
 """
 from __future__ import annotations
 
+from jasper.output_topology import OutputTopologyError
 import ast
 import asyncio
 import logging
@@ -30,7 +31,7 @@ import jasper.active_speaker.design_draft as design_draft_mod
 import jasper.active_speaker.measurement as measurement_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
 import jasper.dsp_apply as dsp_apply_mod
-import jasper.output_topology as output_topology_mod
+import jasper.output_topology_store as output_topology_mod
 from jasper.multiroom import active_leader_config as alc
 from jasper.multiroom import follower_config as fc
 from jasper.multiroom.config import GroupingConfig
@@ -844,7 +845,7 @@ def test_precheck_fails_closed_on_unreadable_topology(monkeypatch, tmp_path) -> 
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
 
     def _boom(*a, **k):
-        raise output_topology_mod.OutputTopologyError("topology.json corrupt")
+        raise OutputTopologyError("topology.json corrupt")
 
     monkeypatch.setattr(output_topology_mod, "load_output_topology_strict", _boom)
 
@@ -864,7 +865,7 @@ def test_restore_fails_closed_on_unreadable_topology_never_loads(
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
 
     def _boom(*a, **k):
-        raise output_topology_mod.OutputTopologyError("topology.json corrupt")
+        raise OutputTopologyError("topology.json corrupt")
 
     monkeypatch.setattr(output_topology_mod, "load_output_topology_strict", _boom)
     # A flat config sitting in the stash (what the filesystem-loss class leaves).

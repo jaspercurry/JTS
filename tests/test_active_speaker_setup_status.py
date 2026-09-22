@@ -24,11 +24,8 @@ from jasper.active_speaker.measurement import (
     active_driver_targets,
     start_active_comparison_set,
 )
-from jasper.output_topology import (
-    OutputTopology,
-    OutputTopologyError,
-    save_output_topology,
-)
+from jasper.output_topology import OutputTopology, OutputTopologyError
+from jasper.output_topology_store import save_output_topology
 from tests.active_speaker_fixtures import (
     mono_output_topology,
 )

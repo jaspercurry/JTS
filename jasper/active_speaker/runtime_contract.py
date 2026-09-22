@@ -45,9 +45,8 @@ from jasper.output_topology import (
     OutputTopologyError,
     SpeakerChannel,
     SpeakerGroup,
-    load_output_topology_strict,
-    stamp_statefile_topology,
 )
+from jasper.output_topology_store import load_output_topology_strict, stamp_statefile_topology
 
 from ._common import issue as _issue
 from .startup_hold import staged_startup_hold_active

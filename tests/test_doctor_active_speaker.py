@@ -20,14 +20,14 @@ from jasper.multiroom.active_leader_config import CROSSOVER_CONFIG_PATH, LEADER_
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 
 from .test_doctor_audio_runtime_camilla import _point_at_config
+from jasper.output_topology_store import save_output_topology
+from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 
 # ------------------------------------------------- active speaker runtime graph
 
 
 def _save_topology(monkeypatch, tmp_path, topology):
-    from jasper.output_topology import save_output_topology
-
     topology_path = tmp_path / "output_topology.json"
     save_output_topology(topology, path=topology_path)
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
@@ -284,7 +284,6 @@ def test_active_speaker_runtime_graph_exits_are_capability_aware(monkeypatch, tm
         PARKED_MUTED_EXITS,
         parked_muted_exits,
     )
-    from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
     from tests.active_speaker_fixtures import register_passive_only_dac
 
     profile = register_passive_only_dac(monkeypatch)

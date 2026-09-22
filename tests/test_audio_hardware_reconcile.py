@@ -40,6 +40,14 @@ from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
 )
+from jasper.output_topology_store import (
+    save_output_topology,
+    load_output_topology_strict,
+    read_topology_fingerprint_stamp,
+    statefile_unproved_stamp_path,
+    topology_fingerprint_stamp,
+)
+from jasper.output_topology import OutputTopology
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -578,7 +586,6 @@ def _active_graph_env(
     """
     from jasper.active_speaker import emit_active_speaker_baseline_config
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
-    from jasper.output_topology import save_output_topology
 
     topology, preset = _preset_and_topology(channels)
     active_config = tmp_path / "active_speaker_baseline.yml"
@@ -624,7 +631,6 @@ def _active_leader_graph_env(
         emit_active_speaker_program_bake_config,
     )
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
-    from jasper.output_topology import save_output_topology
     from jasper.sound.profile import SimpleEq, SoundProfile
 
     topology, preset = _preset_and_topology(channels, strict=True)
@@ -661,8 +667,6 @@ def _active_leader_graph_env(
 
 
 def _apple_active_graph_env(tmp_path: Path) -> dict[str, str]:
-    from jasper.output_topology import OutputTopology, save_output_topology
-
     env = _active_graph_env(tmp_path, channels=2)
     topology_path = Path(env["JASPER_OUTPUT_TOPOLOGY_PATH"])
     raw = json.loads(topology_path.read_text(encoding="utf-8"))
@@ -3330,12 +3334,6 @@ def test_a_rejected_outputd_candidate_still_leaves_the_topology_unproved(
     convergence, precisely so the exits BEFORE the convergence — this one, an
     i2s apply error, an OOM kill — are not read as "a graph was proved".
     """
-    from jasper.output_topology import (
-        load_output_topology_strict,
-        read_topology_fingerprint_stamp,
-        statefile_unproved_stamp_path,
-        topology_fingerprint_stamp,
-    )
 
     graph_env = _apple_active_graph_env(tmp_path)
     result = _run_reconcile(
@@ -4122,7 +4120,6 @@ def test_an_unrecognized_dac_parks_and_does_not_kick_the_coupling(tmp_path: Path
 
 def test_a_no_change_pass_still_reconciles_topology_coupling(tmp_path: Path):
     """Topology may change while DAC identity and rendered bytes stay stable."""
-    from jasper.output_topology import OutputTopology, save_output_topology
     from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
     configured = _full_range_stereo()

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from jasper.camilla_config_contract import FilterSpec
-from jasper import output_topology
+from jasper import output_topology_store as output_topology
 
 from . import baseline_profile, candidate_bank, design_draft, measurement_emit, runtime_contract
 from .crossover_declaration import assert_crossover_honours_declared_floor

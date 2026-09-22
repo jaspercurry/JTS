@@ -939,7 +939,7 @@ def _saved_topology_requires_roleful_graph(
     from .active_speaker.runtime_contract import (
         active_topology_requires_roleful_graph,
     )
-    from .output_topology import load_output_topology
+    from .output_topology_store import load_output_topology  # lazy: cycle: store imports output_hardware
 
     return active_topology_requires_roleful_graph(load_output_topology(path))
 

@@ -418,7 +418,7 @@ async def start_audition(
         classify_bass_extension_graph,
     )
     from jasper.dsp_apply import dsp_writer_lock
-    from jasper.output_topology import load_output_topology
+    from jasper.output_topology_store import load_output_topology  # lazy: test_active_speaker_audition pins the store lookup
 
     _refuse_if_graph_is_claimed()
     applied = load_applied_baseline_profile_state()

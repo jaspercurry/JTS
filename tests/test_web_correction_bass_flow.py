@@ -46,7 +46,7 @@ def test_bass_module_uses_shared_get_json():
 
 def _corner(monkeypatch, corner_hz=None):
     monkeypatch.setattr(
-        "jasper.output_topology.bass_management_corner_hz", lambda: corner_hz
+        "jasper.output_topology_store.bass_management_corner_hz", lambda: corner_hz
     )
 
 

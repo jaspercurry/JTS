@@ -55,6 +55,7 @@ from jasper.measurement_window import (
 from tests._async_wait import wait_signalled
 from tests._log_events import event_fields, event_records
 from tests.control_server_fixtures import FakeCoordinator
+from jasper.output_topology_store import save_output_topology
 
 
 class Clock:
@@ -262,7 +263,6 @@ def control_server(monkeypatch, tmp_path):
     """A real jasper-control on a throwaway port. Yields (base_url, fake)."""
     import jasper.control.household_credential as hc
     import jasper.control.server as srv_mod
-    from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
     monkeypatch.setattr(hc, "SECRET_FILE", str(tmp_path / "household_secret"))

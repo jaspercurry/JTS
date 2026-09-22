@@ -35,9 +35,9 @@ from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
 from jasper.output_topology import (
     OutputTopology,
     canonical_fingerprint as _fingerprint,
-    load_output_topology,
     topology_config_fingerprint,
 )
+from jasper.output_topology_store import load_output_topology
 
 from ._common import finite_float as _finite_float, issue as _issue
 from .camilla_yaml import (

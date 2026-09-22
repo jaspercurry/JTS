@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from jasper import output_topology_store as output_topology
 import dataclasses
 import json
 import shlex
@@ -27,6 +28,7 @@ from jasper.output_hardware import (
     detected_hardware_adoption_precondition,
     topology_hardware_from_state,
 )
+from jasper.output_topology_store import load_output_topology
 
 
 def test_detected_hardware_adoption_requires_ready_usable_state() -> None:
@@ -603,8 +605,6 @@ def test_topology_path_resolves_identically_to_the_topology_module(
     The constant is shared now; the env-var seam is what can still drift.
     """
 
-    from jasper import output_topology
-
     monkeypatch.delenv("JASPER_OUTPUT_TOPOLOGY_PATH", raising=False)
     assert output_hardware._topology_path() == output_topology.topology_path()
 
@@ -655,8 +655,6 @@ def _assert_saved_rolefulness(topology_path: Path, expected: bool) -> None:
     to catch — leaving the passive fixture, which is what pins the SF-1 carve
     out, unprotected.
     """
-
-    from jasper.output_topology import load_output_topology
 
     topology = load_output_topology(topology_path)
     assert topology.speaker_groups, (

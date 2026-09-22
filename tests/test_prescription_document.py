@@ -464,7 +464,7 @@ def test_bass_compose_uses_saved_layers_without_reviving_old_candidate(bank, sav
     v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     topology, applied = saved_tune
     original = deepcopy(applied)
-    monkeypatch.setattr("jasper.output_topology.load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr("jasper.output_topology_store.load_output_topology_strict", lambda: topology)
     monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state", lambda: applied)
     bass = tmp_path / "bass.json"
     base = "saved" if base_kind == "saved" else publish_authored_candidate(
@@ -626,7 +626,7 @@ def test_driver_numeric_refusals_keep_the_judges_code(base, evidence, value):
 @pytest.mark.parametrize("base_choice", ["saved", "banked"])
 def test_saved_base_preview_migrates_once_and_invalid_composition_banks_no_child(bank, saved_tune, tmp_path, monkeypatch, capsys, base_choice):
     topology, applied = saved_tune
-    monkeypatch.setattr("jasper.output_topology.load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr("jasper.output_topology_store.load_output_topology_strict", lambda: topology)
     monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state", lambda: applied)
     base_name = "saved" if base_choice == "saved" else publish_authored_candidate(candidate_from_applied_profile(topology, applied), root=bank).fingerprint
     path = tmp_path / "prescription.json"
@@ -644,7 +644,7 @@ def test_a_saved_base_judge_reads_the_applied_profile_state_once(saved_tune, mon
     serves both, so a judge cannot see two different files."""
     topology, applied = saved_tune
     reads = []
-    monkeypatch.setattr("jasper.output_topology.load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr("jasper.output_topology_store.load_output_topology_strict", lambda: topology)
     monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state",
                         lambda: (reads.append(1), applied)[1])
 
