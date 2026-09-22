@@ -70,7 +70,7 @@ def test_voice_save_form_preserves_csrf_field_and_action():
 def test_voice_page_uses_canonical_field_vocabulary():
     out = _render()
     assert 'class="field"' in out
-    assert 'class="form-actions"' in out
+    assert 'class="form-actions ' in out
     assert 'class="btn btn--primary"' in out
 
 
@@ -148,14 +148,15 @@ def test_get_root_renders_canonical_page(tmp_path):
 
 
 @pytest.mark.parametrize("provider", PROVIDERS, ids=lambda p: p.id)
-def test_choose_provider_is_read_only_and_disclosures_start_closed(tmp_path, monkeypatch, provider):
+@pytest.mark.parametrize("page", ["/", "/costs"])
+def test_choose_provider_is_read_only_and_disclosures_start_closed(tmp_path, monkeypatch, provider, page):
     state_path = tmp_path / "voice.env"
     state = {"JASPER_VOICE_PROVIDER": "gemini", "JASPER_GEMINI_MODEL": "custom-live"}
     env_file.write_env_file(str(state_path), state)
     calls = []
     monkeypatch.setattr(voice_setup, "restart_voice_daemon", lambda: calls.append("restart"))
     monkeypatch.setattr(voice_setup, "refresh_provider_cache", lambda *a, **k: calls.append("refresh"))
-    h, _ = make_real_handler(_handler_cls(tmp_path), f"/?provider={provider.id}")
+    h, _ = make_real_handler(_handler_cls(tmp_path), f"{page}?provider={provider.id}")
     h.do_GET()
     assert h.status == 200
     assert env_file.read_env_file(str(state_path)) == state
@@ -165,6 +166,7 @@ def test_choose_provider_is_read_only_and_disclosures_start_closed(tmp_path, mon
     class FormParser(HTMLParser):
         forms = 0
         disclosures = 0
+        disclosure_depth = 0
         keys = []
 
         def handle_starttag(self, tag, attributes):
@@ -174,6 +176,8 @@ def test_choose_provider_is_read_only_and_disclosures_start_closed(tmp_path, mon
                 self.forms += 1
             if tag == "details":
                 assert "open" not in attrs
+                assert self.disclosure_depth == 0
+                self.disclosure_depth += 1
                 self.disclosures += 1
             if tag == "input" and attrs.get("type") == "password":
                 assert attrs.get("value", "") == ""
@@ -182,12 +186,14 @@ def test_choose_provider_is_read_only_and_disclosures_start_closed(tmp_path, mon
         def handle_endtag(self, tag):
             if tag == "form":
                 self.forms -= 1
+            if tag == "details":
+                self.disclosure_depth -= 1
 
     parser = FormParser()
     parser.feed(h.wfile.getvalue().decode())
     assert parser.forms == 0
     assert parser.disclosures > 0
-    assert parser.keys == [f"{provider.id}_key"]
+    assert parser.keys == ([f"{provider.id}_key"] if page == "/" else [])
 
 
 def test_post_unknown_route_404s(tmp_path):

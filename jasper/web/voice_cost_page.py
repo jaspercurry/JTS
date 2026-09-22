@@ -11,8 +11,9 @@ from jasper.voice.catalog import PROVIDERS, ProviderCatalogEntry
 from jasper.voice.model_discovery import DiscoverySnapshot
 from jasper.usage import pricing_for_model
 
-from ._common import csrf_field_html
-from .voice_settings import provider_model_ids as _provider_model_ids
+from ._common import csrf_field_html, pair_banner_html
+from .chrome import canonical_banner, canonical_header, canonical_page
+from .voice_settings import provider_model_ids as _provider_model_ids, selected_provider
 from .voice_costs import _fmt_env_float, _fmt_env_money, _read_spend_cap_status, _today_iso
 
 
@@ -26,7 +27,7 @@ def _badge_html(label: str, tone: str) -> str:
     return f'<span class="badge badge--{tone}">{html.escape(label)}</span>'
 
 
-def _spend_cap_section_html(state: dict[str, str], csrf_token: str) -> str:
+def _spend_cap_section_html(state: dict[str, str], csrf_token: str, selected: str) -> str:
     status = _read_spend_cap_status(state)
     disabled = bool(status["disabled"])
     if disabled:
@@ -67,11 +68,9 @@ def _spend_cap_section_html(state: dict[str, str], csrf_token: str) -> str:
         quote=True,
     )
     return f"""
-  <details class="disclosure">
-    <summary>Spending and limits</summary>
-    <div class="disclosure__body">
-    <div class="info-card spend-cap-card">
-      <dl class="deflist spend-cap__stats">
+  <section class="section">
+    <h2 class="section__title">Spending</h2>
+      <dl class="deflist">
         <dt>Status</dt><dd>{status_badge}</dd>
         <dt>Rolling 24h spend</dt><dd>{_fmt_usd(status["spend_last_24h_usd"]) if status["usage_available"] else "—"}</dd>
         <dt>Cap comparison</dt><dd>{compare}</dd>
@@ -81,8 +80,12 @@ def _spend_cap_section_html(state: dict[str, str], csrf_token: str) -> str:
       </dl>
       <p class="form-hint">Spend figures include the tuning assistant's paid calls; Turns today counts voice turns only.</p>
       {note_html}
+    <details class="disclosure">
+      <summary>Change spending limit</summary>
+      <div class="disclosure__body">
       <form method="post" action="spend-cap" class="spend-cap__form">
         {csrf_field_html(csrf_token)}
+        <input type="hidden" name="provider" value="{selected}">
         <div class="field">
           <label for="daily_spend_cap_usd">Rolling 24h cap (USD)</label>
           <input id="daily_spend_cap_usd" name="daily_spend_cap_usd"
@@ -96,15 +99,15 @@ def _spend_cap_section_html(state: dict[str, str], csrf_token: str) -> str:
                  name="daily_spend_cap_safety_multiplier"
                  type="number" min="1" step="0.05" inputmode="decimal"
                  value="{multiplier_value}" required>
-          <p class="form-hint">The breaker compares rolling spend times this multiplier to the cap.</p>
+          <p class="form-hint">Spending is multiplied by this value before checking the cap.</p>
         </div>
         <div class="form-actions">
           <button class="btn btn--default" type="submit">Save spend cap</button>
         </div>
       </form>
-    </div>
-    </div>
-  </details>"""
+      </div>
+    </details>
+  </section>"""
 
 
 _BUCKET_LABELS = {
@@ -124,9 +127,6 @@ def _pricing_section_html(
     default_as_of: str,
     csrf_token: str,
 ) -> str:
-    """Collapsible per-model rate editor for one provider. Standalone form
-    POSTing to /pricing (writes /var/lib/jasper/pricing.json) — independent
-    of the key/model save-form."""
     buckets = provider.pricing_buckets
     if not buckets:
         return ""
@@ -149,9 +149,9 @@ def _pricing_section_html(
             name = f"price__{html.escape(model_id)}__{field}"
             rows.append(f"""
             <div class="field">
-              <label>{html.escape(_BUCKET_LABELS[field])}{chip}</label>
+              <label for="{name}">{html.escape(_BUCKET_LABELS[field])}{chip}</label>
               <input type="number" min="0" step="0.01" inputmode="decimal"
-                     name="{name}" value="{value_attr}"
+                     id="{name}" name="{name}" value="{value_attr}"
                      placeholder="{html.escape(placeholder)}">
             </div>""")
         needs = (
@@ -159,20 +159,19 @@ def _pricing_section_html(
             if unpriced else ""
         )
         blocks.append(f"""
-          <div class="price-model">
-            <p class="form-hint"><code>{html.escape(model_id)}</code>{needs}</p>
+          <fieldset class="price-model">
+            <legend>{html.escape(model_id)}{needs}</legend>
             {''.join(rows)}
-          </div>""")
+          </fieldset>""")
     as_of_txt = (
         f"Bundled rates as of {html.escape(default_as_of)}. " if default_as_of else ""
     )
     return f"""
-    <details class="disclosure pricing-disclosure">
-      <summary>{html.escape(provider.label)} Pricing rates</summary>
+    <details class="disclosure">
+      <summary>Edit {html.escape(provider.label)} rates</summary>
       <div class="disclosure__body">
-        <p class="form-hint">{as_of_txt}Used by the /voice spend cap status
-        and circuit breaker. Blank = use the bundled default; clear a box to reset.
-        Edits apply to future sessions after the daemon restarts.</p>
+        <p class="form-hint">{as_of_txt}Leave a field blank to use the default rate.
+        Saving restarts voice and applies the rates to future sessions.</p>
         <form method="post" action="pricing">
           {csrf_field_html(csrf_token)}
           <input type="hidden" name="provider" value="{provider.id}">
@@ -188,10 +187,6 @@ def _pricing_section_html(
 def _pricing_research_prompt(
     discovery: dict[str, DiscoverySnapshot] | None,
 ) -> str:
-    """Build a copy-paste prompt enumerating the EXACT current models
-    (catalog ∪ discovered) and the JSON schema we want back. Generated
-    dynamically so it always reflects the models this speaker actually
-    offers, including any newly discovered ones."""
     discovery = discovery or {}
     today = _today_iso()
     lines = []
@@ -230,43 +225,65 @@ def _pricing_research_prompt(
 def _pricing_refresh_html(
     discovery: dict[str, DiscoverySnapshot] | None,
     csrf_token: str,
+    selected: str,
 ) -> str:
-    """Phase-3 section: a copyable research prompt (auto-filled with the
-    speaker's exact current models) + a paste-back box that imports the
-    chatbot's JSON. Standalone form POSTing to /pricing-import.
-
-    The "Copy prompt" button is wired by the page's ES module (it carries
-    no inline JS); it targets the textarea by id."""
     prompt = html.escape(_pricing_research_prompt(discovery))
     return f"""
-    <section class="section">
-      <h2 class="section__title">Refresh pricing rates</h2>
-      <p class="form-hint">Copy a model-specific pricing prompt, then paste back validated JSON.</p>
-      <details class="disclosure pricing-disclosure">
-        <summary>1. Copy this research prompt</summary>
-        <div class="disclosure__body">
-          <textarea id="pricing-prompt" class="prompt-box" readonly rows="14">{prompt}</textarea>
+    <details class="disclosure">
+      <summary>Update rates from research</summary>
+      <div class="disclosure__body">
+        <p class="form-hint">Use this prompt with a research assistant to check official prices for all providers.</p>
+        <div class="field">
+          <label for="pricing-prompt">1. Copy the research prompt</label>
+          <textarea id="pricing-prompt" class="prompt-box" readonly rows="6">{prompt}</textarea>
           <div class="form-actions">
             <button type="button" class="btn btn--default"
                     id="copy-prompt" data-copy-target="pricing-prompt">Copy prompt</button>
           </div>
         </div>
-      </details>
-      <details class="disclosure pricing-disclosure">
-        <summary>2. Paste the JSON it gives you back</summary>
-        <div class="disclosure__body">
           <form method="post" action="pricing-import">
             {csrf_field_html(csrf_token)}
+            <input type="hidden" name="provider" value="{selected}">
             <div class="field">
-              <textarea name="payload" class="prompt-box" rows="12"
+              <label for="pricing-payload">2. Paste the JSON response</label>
+              <textarea id="pricing-payload" name="payload" class="prompt-box" rows="6"
                 placeholder="{{&quot;models&quot;: {{&quot;gpt-realtime-2&quot;: {{&quot;audio_input_per_million_usd&quot;: 32}}}}}}"></textarea>
             </div>
             <div class="form-actions">
               <button class="btn btn--default" type="submit">Validate &amp; import rates</button>
             </div>
           </form>
-          <p class="form-hint">Replaces the per-model overrides with the validated
-          values, then restarts the voice daemon.</p>
-        </div>
-      </details>
-    </section>"""
+          <p class="form-hint">Updates the models in the response, keeps other rates,
+          and restarts voice.</p>
+      </div>
+    </details>"""
+
+
+def _costs_html(
+    state: dict[str, str], csrf_token: str, *, status_msg: str = "",
+    discovery: dict[str, DiscoverySnapshot] | None = None,
+    overrides: dict[str, dict] | None = None, default_as_of: str = "",
+    selected: str | None = None,
+) -> bytes:
+    discovery = discovery or {}
+    provider = selected_provider(state, selected)
+    selected_id = provider.id if provider else ""
+    pricing = _pricing_section_html(
+        provider, discovery.get(provider.id), overrides or {}, default_as_of, csrf_token,
+    ) if provider else ""
+    body = f"""
+{canonical_header("Usage and costs", back_href=f"./?provider={selected_id}", back_label="Voice")}
+{pair_banner_html()}
+<main class="page voice-setup">
+  {canonical_banner(status_msg)}
+  {_spend_cap_section_html(state, csrf_token, selected_id)}
+  <section class="section">
+    <h2 class="section__title">Model rates</h2>
+    <p class="form-hint">Rates estimate your spending and control when the spending limit stops voice.</p>
+    {pricing}
+    {_pricing_refresh_html(discovery, csrf_token, selected_id)}
+  </section>
+</main>
+<script type="module" src="/assets/voice/js/main.js"></script>
+"""
+    return canonical_page("Usage and costs", body, csrf_token=csrf_token, page_css_href="/assets/voice/voice.css")

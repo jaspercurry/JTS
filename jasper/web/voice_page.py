@@ -12,15 +12,9 @@ from jasper.voice.model_discovery import DiscoverySnapshot
 
 from ._common import csrf_field_html, pair_banner_html
 from .chrome import canonical_banner, canonical_header, canonical_page
-from .voice_cost_page import (
-    _pricing_refresh_html, _pricing_section_html, _spend_cap_section_html,
-)
 from .voice_settings import (
     Choice, ProviderSettings, active_provider_id, provider_settings, selected_provider,
 )
-
-VOICE_PAGE_CSS_HREF = "/assets/voice/voice.css"
-
 
 def _choice_html(choice: Choice) -> str:
     options = "".join(
@@ -99,7 +93,7 @@ def _provider_html(
       {f'<p class="form-hint">{html.escape(discovery_status)}</p>' if discovery_status else ''}
     </section>
     <details class="disclosure">
-      <summary>Voice and options</summary>
+      <summary>4. Voice and options</summary>
       <div class="disclosure__body">{''.join(_choice_html(c) for c in settings.options)}</div>
     </details>
     <div class="form-actions voice-savebar">
@@ -111,7 +105,6 @@ def _provider_html(
 def _index_html(
     state: dict[str, str], csrf_token: str, *, status_msg: str = "",
     discovery: dict[str, DiscoverySnapshot] | None = None,
-    overrides: dict[str, dict] | None = None, default_as_of: str = "",
     selected: str | None = None,
 ) -> bytes:
     discovery = discovery or {}
@@ -123,14 +116,11 @@ def _index_html(
         f'{html.escape(p.label)}{" — active" if p.id == active_id else ""}</option>'
         for p in PROVIDERS
     )
-    setup = pricing = ""
+    setup = ""
     if provider:
         setup = _provider_html(
             provider_settings(provider, state, discovery.get(provider.id)),
             csrf_token, discovery.get(provider.id),
-        )
-        pricing = _pricing_section_html(
-            provider, discovery.get(provider.id), overrides or {}, default_as_of, csrf_token,
         )
     body = f"""
 {canonical_header("Voice", back_href="/assistant/", back_label="Assistant")}
@@ -138,6 +128,7 @@ def _index_html(
 <main class="page voice-setup">
   {canonical_banner(status_msg)}
   <p class="form-hint">Choose a provider, add its key, then select a model. Changes apply when you save.</p>
+  <p class="form-hint voice-cost-link"><a href="costs?provider={selected_id}">Usage and costs <span aria-hidden="true">→</span></a></p>
   <section class="section">
     <h2 class="section__title">1. Select provider</h2>
     <form method="get" action="./" id="provider-form">
@@ -150,15 +141,7 @@ def _index_html(
     {f'<p class="form-hint">{html.escape(provider.cost_hint)}</p>' if provider else ''}
   </section>
   {setup}
-  {_spend_cap_section_html(state, csrf_token)}
-  <details class="disclosure">
-    <summary>Advanced pricing</summary>
-    <div class="disclosure__body">
-      {pricing}
-      {_pricing_refresh_html(discovery, csrf_token)}
-    </div>
-  </details>
 </main>
 <script type="module" src="/assets/voice/js/main.js"></script>
 """
-    return canonical_page("Voice", body, csrf_token=csrf_token, page_css_href=VOICE_PAGE_CSS_HREF)
+    return canonical_page("Voice", body, csrf_token=csrf_token, page_css_href="/assets/voice/voice.css")

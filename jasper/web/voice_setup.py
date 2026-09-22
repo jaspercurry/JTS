@@ -63,6 +63,7 @@ from ._common import (
     value_for_env as _value_for,
 )
 from .voice_page import _index_html
+from .voice_cost_page import _costs_html
 from .voice_settings import (
     active_provider_id as _active_provider_id,
     provider_model_ids as _provider_model_ids,
@@ -241,8 +242,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         return partial(
             _index_html, state, selected=selected,
             discovery=load_cache(cfg["discovery_cache_path"]),
-            overrides=load_pricing_overrides(cfg["pricing_path"]),
-            default_as_of=default_pricing_as_of(),
         )
 
     def _get_index(handler: BaseHTTPRequestHandler) -> None:
@@ -254,6 +253,21 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             csrf_token=ctx["csrf_token"],
             status_msg=ctx["flash"],
         ))
+
+    def _get_costs(handler: BaseHTTPRequestHandler) -> None:
+        query = parse_qs(urlsplit(handler.path).query, keep_blank_values=True)
+        ctx = begin_request(handler)
+        send_html_response(handler, _costs_html(
+            _load_merged(cfg), ctx["csrf_token"], status_msg=ctx["flash"],
+            selected=query.get("provider", [None])[0],
+            discovery=load_cache(cfg["discovery_cache_path"]),
+            overrides=load_pricing_overrides(cfg["pricing_path"]),
+            default_as_of=default_pricing_as_of(),
+        ))
+
+    def _costs_location(form: dict[str, str]) -> str:
+        provider = provider_by_id(form.get("provider", ""))
+        return f"costs?provider={provider.id}" if provider else "costs"
 
     def _reject_save(handler, form: dict[str, str], error: str) -> None:
         state = _load_merged(cfg)
@@ -483,7 +497,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         current = _load_merged(cfg)
         new, err = _apply_spend_cap(form, current)
         if err is not None:
-            send_see_other(handler, "./", flash=err)
+            send_see_other(handler, _costs_location(form), flash=err)
             return
         try:
             # current came from _load_merged, so `new` still carries the API
@@ -492,13 +506,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             _write_split(cfg, new)
         except OSError as e:
             logger.exception("could not write spend-cap env settings")
-            send_see_other(handler, "./", flash=f"Could not save spend cap: {e}")
+            send_see_other(handler, _costs_location(form), flash=f"Could not save spend cap: {e}")
             return
         clause = RESTART_CLAUSE[restart_voice_daemon()]
         log_event(logger, "voice.spend_cap", client=handler.address_string())
         send_see_other(
             handler,
-            "./",
+            _costs_location(form),
             flash=f"Saved spend cap.{clause}",
         )
 
@@ -509,7 +523,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         pid = (form.get("provider") or "").strip()
         provider = provider_by_id(pid)
         if provider is None:
-            send_see_other(handler, "./", flash=f"Unknown provider {pid!r}.")
+            send_see_other(handler, _costs_location(form), flash=f"Unknown provider {pid!r}.")
             return
         discovery = load_cache(cfg["discovery_cache_path"])
         model_ids = _provider_model_ids(provider, discovery.get(provider.id))
@@ -532,7 +546,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         except OSError as e:
             logger.exception("could not write pricing override")
             send_see_other(
-                handler, f"./?provider={pid}", flash=f"Could not save pricing: {e}",
+                handler, _costs_location(form), flash=f"Could not save pricing: {e}",
             )
             return
         log_event(
@@ -543,7 +557,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         )
         clause = RESTART_CLAUSE[restart_voice_daemon()]
         send_see_other(
-            handler, f"./?provider={pid}",
+            handler, _costs_location(form),
             flash=f"Saved {provider.label} pricing.{clause}",
         )
 
@@ -553,7 +567,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     ) -> None:
         models, as_of, err = _apply_pricing_paste(form.get("payload") or "")
         if err is not None:
-            send_see_other(handler, "./", flash=err)
+            send_see_other(handler, _costs_location(form), flash=err)
             return
         # MERGE into existing overrides (like the per-provider editor):
         # pasted models overlay, models the paste omitted are preserved.
@@ -576,7 +590,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         except OSError as e:
             logger.exception("could not write imported pricing")
             send_see_other(
-                handler, "./", flash=f"Could not save pricing: {e}",
+                handler, _costs_location(form), flash=f"Could not save pricing: {e}",
             )
             return
         log_event(
@@ -587,11 +601,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         )
         clause = RESTART_CLAUSE[restart_voice_daemon()]
         send_see_other(
-            handler, "./",
+            handler, _costs_location(form),
             flash=f"Imported rates for {len(models)} model(s).{clause}",
         )
 
-    _GET_ROUTES = {"/": _get_index}
+    _GET_ROUTES = {"/": _get_index, "/costs": _get_costs}
     _POST_ROUTES = {
         "/save": _post_save,
         "/save-test": _post_save_test,

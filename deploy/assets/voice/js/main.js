@@ -9,8 +9,10 @@ wireConfirmForms();
 wireCopyButtons();
 
 const providerForm = document.getElementById("provider-form");
-providerForm.addEventListener("change", () => providerForm.requestSubmit());
-document.getElementById("choose-provider").hidden = true;
+if (providerForm) {
+  providerForm.addEventListener("change", () => providerForm.requestSubmit());
+  document.getElementById("choose-provider").hidden = true;
+}
 
 const clearKey = document.getElementById("clear-key");
 clearKey?.addEventListener("click", (event) => {

@@ -318,14 +318,13 @@ def test_read_spend_cap_status_uses_rolling_spend_and_multiplier(tmp_path: Path)
     assert status["remaining_usd"] == 0
 
 
-def test_index_renders_spend_cap_status_and_save_form(tmp_path: Path):
+def test_costs_renders_spend_cap_status_and_save_form(tmp_path: Path):
     db = _usage_db_with_cost(tmp_path, 0.25)
-    page = voice_setup._index_html(
+    page = voice_cost_page._costs_html(
         {"JASPER_USAGE_DB": str(db), "JASPER_DAILY_SPEND_CAP_USD": "2.00"},
         "csrf-token-for-test-" + "x" * 32,
     ).decode()
 
-    assert 'action="spend-cap"' in page
     assert 'action="spend-cap"' in page
     assert 'name="daily_spend_cap_usd"' in page
     assert "Rolling 24h spend" in page
@@ -646,10 +645,13 @@ def test_e2e_spend_cap_save_writes_voice_env_and_restarts(
     server, base, _ = _start_server(tmp_path)
     try:
         status, location, _ = _post(f"{base}/spend-cap", {
+            "provider": "openai_live",
             "daily_spend_cap_usd": "5",
             "daily_spend_cap_safety_multiplier": "1.1",
         })
         assert status == 303
+        assert urllib.parse.urlsplit(location).path == "costs"
+        assert urllib.parse.parse_qs(urllib.parse.urlsplit(location).query)["provider"] == ["openai_live"]
         assert "Saved spend cap" in urllib.parse.unquote(location)
         loaded = env_file.read_env_file(str(state_path))
         # WS1 Phase 4a — the key is preserved across a spend-cap save, but lives
@@ -931,8 +933,8 @@ def test_e2e_clear_credentials_removes_provider_keys(
 
 # ---------- Pricing editor (/pricing) --------------------------------------
 @pytest.mark.parametrize("provider", catalog.PROVIDERS, ids=lambda p: p.id)
-def test_index_renders_only_selected_provider_pricing_buckets(provider):
-    page = voice_setup._index_html({}, "tok", selected=provider.id).decode()
+def test_costs_renders_only_selected_provider_pricing_buckets(provider):
+    page = voice_cost_page._costs_html({}, "tok", selected=provider.id).decode()
     for model in provider.models:
         for bucket in provider.pricing_buckets:
             assert f'name="price__{model.id}__{bucket}"' in page
@@ -941,8 +943,8 @@ def test_index_renders_only_selected_provider_pricing_buckets(provider):
             assert f'name="price__{other.models[0].id}__' not in page
 
 
-def test_index_prefills_custom_override_and_tags_it():
-    page = voice_setup._index_html(
+def test_costs_prefills_custom_override_and_tags_it():
+    page = voice_cost_page._costs_html(
         {"JASPER_VOICE_PROVIDER": "openai"}, "tok",
         overrides={"gpt-realtime-2": {"text_output_per_million_usd": 28.0}},
     ).decode()
@@ -1037,9 +1039,8 @@ def test_research_prompt_includes_discovered_models():
     assert "gpt-realtime-3" in prompt
 
 
-def test_index_renders_research_prompt_and_import_form():
-    page = voice_setup._index_html({"JASPER_VOICE_PROVIDER": "openai"}, "tok").decode()
-    assert "Refresh pricing rates" in page
+def test_costs_renders_research_prompt_and_import_form():
+    page = voice_cost_page._costs_html({"JASPER_VOICE_PROVIDER": "openai"}, "tok").decode()
     assert 'action="pricing-import"' in page
     assert 'id="pricing-prompt"' in page
 
