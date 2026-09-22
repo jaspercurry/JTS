@@ -82,6 +82,8 @@ def test_json_fingerprint_ignores_key_order_but_not_values():
     ("optional_text", "  ", None, (), "field_required"),
     ("optional_text", "x" * 241, "x" * 240, (), "field_too_long"),
     ("integer", "1.5", "2", (), "field_not_integer"),
+    ("integer", float("inf"), 2, (), "field_not_integer"),
+    ("integer", float("-inf"), 2, (), "field_not_integer"),
     ("strict_boolean", 1, True, (), "field_not_boolean"),
     ("enum", 1, "one", ({"one"},), "field_not_string"),
     ("enum", "two", "one", ({"one"},), "field_unsupported"),
