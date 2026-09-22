@@ -7,12 +7,22 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import threading
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
+
+from jasper.active_speaker import baseline_reemit, measurement_emit
+from jasper.active_speaker.baseline_profile import prepare_applied_baseline_profile
+from jasper.active_speaker.candidate_bank import publish_authored_candidate
+from jasper.active_speaker.environment import read_camilla_statefile_config_path
+from tests.active_speaker_fixtures import (
+    declared_graph_fixture, mono_output_topology, standard_design_draft,
+)
 
 from jasper.active_speaker import runtime_convergence
 from jasper.active_speaker.runtime_contract import parked_safe_graph_decision
@@ -23,7 +33,9 @@ from jasper.output_topology import (
     statefile_unproved_stamp_path,
     topology_fingerprint_stamp,
 )
-from tests.test_active_speaker_runtime_contract import _flat_yaml, _topology
+from tests.test_active_speaker_runtime_contract import (
+    _active_yaml, _flat_yaml, _staged_metadata, _topology, _under_charged_boosted_baseline,
+)
 
 
 class _Controller:
@@ -304,22 +316,6 @@ def test_flat_fallback_is_composed_before_load(
 def test_stay_parked_skips_selection_so_a_re_pin_cannot_resume_audio(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The postcondition behind #2814's copy: a re-pin leaves the box silent.
-
-    ``safe_graph_for_current_topology`` is identity-blind by design — it proves
-    a graph legal for the saved SHAPE, and a DAC re-pin changes no shape. So on
-    an ALREADY-ARMED box every rung it can reach resumes audio, through DACs
-    whose per-lane identity nobody has re-confirmed; on a roleful topology that
-    is the full-range-into-a-tweeter hazard class. The identity gates guard the
-    next ARM, not the graph already playing, which is why parking has to be the
-    committing caller's job.
-
-    Both halves are asserted from ONE stubbed selector: without ``stay_parked``
-    it is consulted and its playing graph is loaded (the hazard, demonstrated
-    rather than assumed); with it the selector is never called and the durable
-    parked graph is loaded instead.
-    """
-
     monkeypatch.setattr(
         "jasper.active_speaker.staging.DEFAULT_CAMILLA_CONFIG_DIR", tmp_path
     )
@@ -472,3 +468,122 @@ def test_a_read_only_convergence_stamps_nothing(tmp_path: Path) -> None:
 
     assert not statefile_unproved_stamp_path(paths["statefile_path"]).exists()
     assert not statefile_topology_stamp_path(paths["statefile_path"]).exists()
+
+
+@pytest.mark.parametrize("staged", [False, True])
+@pytest.mark.parametrize("case", [
+    "heal", "heal_current", "read_only", "disabled", "missing", "bad_candidate", "unsafe_emit",
+    "publish_error", "reselect_refusal", "already_safe", "current_startup", "hold", "blocked",
+])
+def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, staged):
+    topology = mono_output_topology()
+    draft = standard_design_draft(topology)
+    draft["manual_settings"] = {"drivers": [{
+        "target_id": "mono:tweeter", "role": "tweeter", "recommended_highpass_hz": 2500,
+    }], "crossover_candidates": []}
+    draft_path = tmp_path / "draft.json"
+    draft_path.write_text(json.dumps(draft))
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(draft_path))
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "sound.json"))
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "sound-settings.json"))
+    monkeypatch.setattr("jasper.active_speaker.staging.DEFAULT_CAMILLA_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr("jasper.active_speaker.baseline_profile.baseline_config_path",
+                        lambda _path=None: tmp_path / "canonical.yml")
+    _, base = declared_graph_fixture(topology, draft)
+    declaration = measurement_emit.load_tuning_declaration(topology)
+    candidate = replace(base, bass_extension={
+        "low_boost_db": 4.0, "reference_level_db": -10.0,
+        "detector_lowpass_hz": 120.0, "compressor_threshold_dbfs": -12.0,
+    } if case != "blocked" else {})
+    banked = publish_authored_candidate(candidate, root=tmp_path / "bank")
+    paths = _boot_convergence_paths(tmp_path)
+    startup = tmp_path / "startup.yml"
+    startup.write_text(_active_yaml("mono", 2, frozenset()))
+    if staged or case in {"current_startup", "hold"}:
+        paths["staged_metadata_path"].write_text(json.dumps(_staged_metadata(topology, startup)))
+    hold = tmp_path / "startup-hold"
+    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_STARTUP_HOLD_MARKER", str(hold))
+    if case == "hold":
+        hold.touch()
+    artifact = tmp_path / "baseline.yml"
+    applied = prepare_applied_baseline_profile(
+        banked, declaration=declaration, design_draft=draft, measurements={}, config_path=artifact,
+    )
+    applied["status"] = "applied"
+    paths["applied_baseline_path"].write_text(json.dumps(applied))
+    fresh = measurement_emit.compile_tuning_graph(declaration, candidate=candidate)
+    old_payload = yaml.safe_load(fresh)
+    if case != "blocked":
+        old_payload["processors"]["bass_ext_dynamic_compress_0"]["parameters"]["attack"] = 0.123
+    old = "\n".join(line for line in fresh.splitlines() if line.startswith("#")) + "\n" + yaml.safe_dump(old_payload)
+    artifact.write_text(fresh if case in {"already_safe", "hold"} else old)
+    current = artifact if case == "heal_current" else tmp_path / "prior.yml"
+    current.write_text(artifact.read_text())
+    if case in {"current_startup", "hold"}:
+        current = startup
+    elif case == "blocked":
+        artifact.write_text(_under_charged_boosted_baseline())
+        current.write_text(artifact.read_text())
+    paths["statefile_path"].write_text(f"config_path: {current}\nvolume: -18.0\nmute: false\n")
+    if case == "missing":
+        paths["applied_baseline_path"].unlink()
+    elif case == "bad_candidate":
+        banked.path.unlink()
+    elif case == "unsafe_emit":
+        monkeypatch.setattr(measurement_emit, "compile_tuning_graph", lambda *_a, **_kw: old)
+    elif case == "publish_error":
+        real_write = baseline_reemit.atomic_io.atomic_write_text
+        def fail_artifact(path, *args, **kwargs):
+            if Path(path) == artifact:
+                raise OSError("write failed")
+            return real_write(path, *args, **kwargs)
+        monkeypatch.setattr(baseline_reemit.atomic_io, "atomic_write_text", fail_artifact)
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    calls = []
+    real_reemit = runtime_convergence.reemit_applied_baseline
+    def reemit(parsed, saved, **kwargs):
+        assert parsed is topology
+        assert read_camilla_statefile_config_path(paths["statefile_path"]) == str(current)
+        calls.append(parsed)
+        statefile_stat = paths["statefile_path"].stat()
+        result = real_reemit(parsed, saved, **kwargs)
+        assert paths["statefile_path"].stat() == statefile_stat
+        if case == "reselect_refusal":
+            artifact.write_text(old)
+        return result
+    monkeypatch.setattr(runtime_convergence, "reemit_applied_baseline", reemit)
+    result = runtime_convergence.converge_boot_statefile(
+        topology=topology, topology_path=tmp_path / "must-not-read.json",
+        current_config_path=current, write_statefile=case != "read_only",
+        consider_applied_baseline=case != "disabled", **paths,
+    )
+    assert result.ok is (case != "blocked")
+    assert len(calls) == (0 if case in {
+        "read_only", "disabled", "missing", "already_safe", "current_startup", "hold", "blocked",
+    } else 1)
+    if case in {"heal", "heal_current"}:
+        assert result.decision.status == ("select_active_baseline" if case == "heal" else "preserve_current")
+        assert result.decision.preferred_graph.allowed
+        if case == "heal":
+            assert result.decision.current_graph.issues[0]["code"] == "bass_extension_block_invalid"
+        assert read_camilla_statefile_config_path(paths["statefile_path"]) == str(artifact)
+        assert yaml.safe_load(artifact.read_text())["devices"]["volume_limit"] == 0.0
+        assert yaml.safe_load(paths["statefile_path"].read_text())["volume"] == -18.0
+    elif case in {"already_safe", "current_startup", "hold", "blocked"}:
+        assert result.decision.status == ("blocked" if case == "blocked" else "preserve_current")
+        assert read_camilla_statefile_config_path(paths["statefile_path"]) == str(current)
+        assert artifact.read_bytes() == before[artifact]
+        if case == "hold":
+            assert hold.exists()
+    else:
+        assert result.decision.status == ("select_active_startup" if staged else "parked_muted")
+        if case == "read_only":
+            assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+        else:
+            assert read_camilla_statefile_config_path(paths["statefile_path"]) == result.decision.selected_config_path
+            assert yaml.safe_load(Path(result.decision.selected_config_path).read_text())["devices"]["volume_limit"] == 0.0
+    if case in {"bad_candidate", "unsafe_emit", "publish_error"}:
+        assert artifact.read_bytes() == before[artifact]
+        assert not (tmp_path / "canonical.yml").exists()
+    if case != "missing":
+        assert paths["applied_baseline_path"].read_bytes() == before[paths["applied_baseline_path"]]

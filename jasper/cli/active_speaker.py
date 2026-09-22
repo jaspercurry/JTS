@@ -11,11 +11,16 @@ import asyncio
 import contextlib
 import json
 import signal
-import stat
 from collections.abc import Coroutine, Iterable, Mapping
 from pathlib import Path
 from typing import Any, assert_never
 
+from jasper import camilla, volume_process
+from jasper.active_speaker import baseline_profile
+from jasper.active_speaker.baseline_reemit import reemit_applied_baseline
+from jasper.active_speaker.candidate_bank import CandidateBankRefusal
+from jasper.active_speaker.playback_route import resolve_active_playback_device
+from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.active_speaker.profile import (
     ActiveSpeakerConfigError,
     ActiveSpeakerPreset,
@@ -41,6 +46,7 @@ from jasper.active_speaker.runtime_contract import (
     PARKED_MUTED_STATUS,
     parked_muted_exits,
     safe_graph_for_current_topology,
+    write_camilla_statefile,
 )
 from jasper.active_speaker.runtime_convergence import (
     converge_boot_statefile,
@@ -383,9 +389,6 @@ def _baseline_reemit_endpoint(
     topology: Any, endpoint: str | None
 ) -> tuple[str | None, str]:
     """Return the playback device and whether it was explicitly requested."""
-    from jasper.active_speaker.playback_route import resolve_active_playback_device
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
-
     if endpoint == "ring":
         return RING_ACTIVE_PLAYBACK_DEVICE, "explicit_endpoint_ring"
     if endpoint:
@@ -483,19 +486,8 @@ def _print_startup_anchor_reemit(
 
 def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
     """Re-emit the applied baseline, or re-stage the saved startup anchor."""
-    from jasper.active_speaker.candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
-    from jasper.active_speaker.baseline_profile import (
-        load_applied_baseline_profile_state,
-        promote_applied_baseline_candidate,
-    )
-    from jasper.active_speaker.runtime_contract import (
-        classify_bass_extension_graph,
-        write_camilla_statefile,
-    )
-    from jasper.atomic_io import atomic_write_text
-
     topology = load_output_topology_strict(args.topology)
-    applied = load_applied_baseline_profile_state(args.applied_baseline_state)
+    applied = baseline_profile.load_applied_baseline_profile_state(args.applied_baseline_state)
     device, source = _baseline_reemit_endpoint(topology, args.endpoint)
     if not device:
         print(
@@ -539,101 +531,35 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
         )
         return 1
 
-    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: baseline command
-    from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration  # lazy: baseline command
-    from jasper.sound.settings import saved_sound_layers  # lazy: household EQ imports NumPy
-
     try:
-        declaration = load_tuning_declaration(topology, playback_device=device)
-        preference_filters, trim_db = saved_sound_layers()
-        yaml = compile_tuning_graph(declaration, candidate=candidate_from_applied_profile(topology, applied),
-            preference_filters=preference_filters, output_trim_db=trim_db)
+        baseline_report = reemit_applied_baseline(topology, applied, playback_device=device, out=args.out)
     except (CandidateBankRefusal, OSError, ValueError) as exc:
-        print(f"ERROR: could not compile the applied baseline: {exc}")
+        print(f"ERROR: could not re-emit the applied baseline: {exc}")
         return 1
-
-    # RE-PROOF before any byte lands. This graph is about to become the box's
-    # boot graph, so it is held to the same contract the runtime holds a loaded
-    # graph to — and it is re-derived here rather than trusted from the emitter,
-    # because the emitter is the thing being checked.
-    graph = classify_bass_extension_graph(
-        topology,
-        evidence_source="desired",
-        graph_text=yaml,
-        applied_baseline_state=applied,
-    )
-    if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
-        print(
-            "ERROR: the re-emitted baseline did not re-prove as "
-            f"{GRAPH_APPROVED_ACTIVE_RUNTIME} (got {graph.classification}); "
-            "NOTHING was written"
-        )
-        _print_issues(graph.issues)
-        return 1
-
+    written_path = baseline_report.path
     preview_path = Path(args.out) if args.out else None
-    written_path: Path | None = None
     statefile_written = False
-    if preview_path is not None:
-        if not preview_path.parent.exists():
-            print(
-                f"ERROR: parent directory does not exist: {preview_path.parent}"
-            )
-            return 1
-        atomic_write_text(preview_path, yaml, mode=0o640)
-        written_path = preview_path
-    else:
-        applied_config = applied.get("config")
-        raw_target = (
-            applied_config.get("path") if isinstance(applied_config, Mapping) else None
-        )
-        if not isinstance(raw_target, str) or not raw_target.strip():
-            print(
-                "ERROR: the applied baseline profile records no config path, so "
-                "there is no artifact to re-emit over; NOTHING was written"
-            )
-            return 1
-        target = Path(raw_target)
-        # Preserve the target's own mode when it exists (this rewrites a file
-        # someone else created); fall back to the module's 0640 convention when
-        # it does not.
-        try:
-            target_mode = stat.S_IMODE(target.stat().st_mode)
-        except OSError:
-            target_mode = 0o640
-        atomic_write_text(
-            target,
-            yaml,
-            mode=target_mode,
-            durable=True,
-        )
-        written_path = target
-        # Keep the canonical readable copy in step (fail-soft by its own
-        # contract), then make sure the boot pointer names the artifact we just
-        # rewrote — idempotent when it already does.
-        promote_applied_baseline_candidate(applied)
-        statefile = Path(args.statefile)
-        if read_camilla_statefile_config_path(statefile) != str(target):
-            write_camilla_statefile(statefile, target)
-            statefile_written = True
+    if preview_path is None and read_camilla_statefile_config_path(args.statefile) != str(written_path):
+        write_camilla_statefile(args.statefile, written_path)
+        statefile_written = True
 
     payload = {
         "playback_device": device,
         "playback_device_source": source,
-        "classification": graph.classification,
+        "classification": baseline_report.classification,
         "preview": preview_path is not None,
         "written_path": str(written_path) if written_path else None,
         "statefile_path": str(args.statefile),
         "statefile_written": statefile_written,
-        "bytes": len(yaml),
+        "bytes": baseline_report.byte_count,
     }
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print(f"Re-emitted applied baseline against playback_device={device}")
         print(f"  source:         {source}")
-        print(f"  classification: {graph.classification}")
-        print(f"  bytes:          {len(yaml)}")
+        print(f"  classification: {baseline_report.classification}")
+        print(f"  bytes:          {baseline_report.byte_count}")
         if preview_path is not None:
             print(f"  PREVIEW only:   {preview_path}")
             print("  (live artifact, canonical copy and statefile untouched)")
@@ -651,14 +577,7 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
 
 
 def _camilla_controller() -> Any:
-    """Return a CamillaController bound to the live CamillaDSP websocket.
-
-    An operator running the commission-load CLI reaches the same running graph
-    as the daemons and web wizards.
-    """
-    from jasper.camilla import primary_controller
-
-    return primary_controller()
+    return camilla.primary_controller()
 
 
 def _resolve_commission_inputs(
@@ -1420,9 +1339,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     # Commissioning applies the candidate graph inline (commission_load_config
     # -> set_active_config_raw), so its swap duck needs a canonical target.
-    from jasper.volume_process import install_env_canonical_target_provider
-
-    install_env_canonical_target_provider()
+    volume_process.install_env_canonical_target_provider()
 
     parser = build_parser()
     args = parser.parse_args(argv)

@@ -61,13 +61,11 @@ def test_the_roster_names_exactly_the_modules_that_register_checks():
 
 
 def test_core_modules_are_exactly_the_modules_holding_core_checks():
-    """CORE_MODULES goes stale in both directions: a `core=True` check in an
-    unlisted module never runs on a deploy, and a listed module with no core
-    check costs the deploy gate an import it gets no row from."""
     core = registered_checks(core_only=True)
     assert core, "the --core subset is empty"
     assert core == [c for c in registered_checks() if c.core]
     assert CORE_MODULES == {c.module for c in core}
+    assert "check_content_transport_coherence" in {c.func.__name__ for c in core}
 
 
 def test_the_live_hearing_ceiling_check_runs_on_every_deploy():

@@ -7,10 +7,19 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from jasper import camilla, dsp_apply
+from jasper.control import restart_broker
+from jasper.sound import runtime as sound_runtime
+from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
+from jasper.active_speaker.baseline_reemit import reemit_applied_baseline
+from jasper.active_speaker.candidate_bank import CandidateBankRefusal
+from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+from jasper.log_event import log_event
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.runtime_contract import (
     PARKED_MUTED_STATUS,
@@ -29,6 +38,8 @@ from jasper.output_topology import (
     topology_config_fingerprint,
 )
 from jasper.service_units import OUTPUTD_SERVICE
+
+logger = logging.getLogger(__name__)
 
 OUTPUTD_UNIT = OUTPUTD_SERVICE
 
@@ -85,24 +96,12 @@ def converge_boot_statefile(
     consider_applied_baseline: bool = True,
     write_statefile: bool = False,
 ) -> StatefileConvergenceResult:
-    """Select the safe persisted graph and optionally seed the boot statefile.
-
-    Never touches a live CamillaDSP: the callers that own an ordered live
-    transition are :func:`park_and_commit_topology` and the coupling
-    reconciler. ``topology`` skips the
-    load for a caller that already parsed it (``topology_path`` is then unused);
-    ``None`` reads the path here, so a caller whose own read failed still gets
-    this function's fail-closed reason rather than a silent empty draft.
-    """
+    """Select or rebuild the persisted graph; never touch live CamillaDSP."""
 
     if topology is None:
         topology = load_output_topology_strict(topology_path)
     if write_statefile:
-        # Opened as soon as the topology is READ and closed only by a statefile
-        # write: what is left behind names the topology whose boot graph nobody
-        # proved, which is what jasper-camilla's ExecCondition gate refuses to
-        # start on (#4416 R8). Opening it after graph selection, or after the
-        # `decision.ok` test, would miss every failure before that point.
+        # The startup gate must see every failed pass, including selection.
         stamp_statefile_convergence(statefile_path, topology, proved=False)
     kwargs: dict[str, Any] = {
         "statefile_path": statefile_path,
@@ -114,6 +113,23 @@ def converge_boot_statefile(
     if flat_config_path is not None:
         kwargs["flat_config_path"] = flat_config_path
     decision = safe_graph_for_current_topology(topology, **kwargs)
+    if (
+        write_statefile and consider_applied_baseline
+        and decision.status in (PARKED_MUTED_STATUS, "select_active_startup")
+        and decision.current_graph is not None and not decision.current_graph.allowed
+        and decision.preferred_graph is not None and not decision.preferred_graph.allowed
+    ):
+        try:
+            applied = load_applied_baseline_profile_state(kwargs["applied_baseline_path"])
+            if applied:
+                report = reemit_applied_baseline(topology, applied, playback_device=RING_ACTIVE_PLAYBACK_DEVICE)
+                reproved = safe_graph_for_current_topology(topology, **kwargs)
+                if (reproved.status in ("preserve_current", "select_active_baseline")
+                        and reproved.selected_config_path == str(report.path)):
+                    decision = reproved
+                log_event(logger, "active_speaker.baseline_reemit", decision=decision.status)
+        except (CandidateBankRefusal, OSError, RuntimeError, ValueError, TypeError) as exc:
+            log_event(logger, "active_speaker.baseline_reemit", decision=decision.status, error=str(exc))
     if not (write_statefile and decision.ok):
         return StatefileConvergenceResult(decision, topology, False)
     try:
@@ -121,9 +137,6 @@ def converge_boot_statefile(
         wrote = apply_safe_graph_decision_to_statefile(
             decision,
             statefile_path=statefile_path,
-            # Same topology object the decision was made from, so the
-            # write-time all-muted re-proof cannot be answered by a second,
-            # differently-read topology.
             topology=topology,
         )
     except (
@@ -133,9 +146,6 @@ def converge_boot_statefile(
         ValueError,
         TypeError,
     ) as exc:
-        # Only the parked branch generates bytes, and it refuses to write
-        # anything it cannot re-prove all-muted. Fail the pass: a statefile
-        # pointing at a config we would not write is worse than a red deploy.
         return StatefileConvergenceResult(decision, topology, False, f"{exc}")
     stamp_statefile_convergence(statefile_path, topology, proved=True)
     return StatefileConvergenceResult(decision, topology, wrote)
@@ -143,9 +153,7 @@ def converge_boot_statefile(
 
 def _controller(controller_factory: Callable[[], Any] | None) -> Any:
     if controller_factory is None:
-        from jasper.camilla import primary_controller
-
-        controller_factory = primary_controller
+        controller_factory = camilla.primary_controller
     return controller_factory()
 
 
@@ -189,24 +197,17 @@ def compose_selected_flat_graph(
     profile_path: str | Path | None = None,
     config_dir: str | Path | None = None,
 ) -> SafeGraphDecision:
-    """Compose saved DSP onto a selected flat carrier, then re-prove it.
-
-    This is the single flat-statefile/live-convergence seam. Boot selection and
-    the web topology transaction both use it, so a future passive linearization
-    cannot be kept live by one path and discarded on restart by the other.
-    """
+    """Compose saved DSP onto a selected flat carrier, then re-prove it."""
 
     if decision.status != "select_flat" or not decision.selected_config_path:
         return decision
-
-    from jasper.sound.runtime import materialise_saved_dsp_on_carrier
 
     kwargs: dict[str, Any] = {}
     if profile_path is not None:
         kwargs["profile_path"] = profile_path
     if config_dir is not None:
         kwargs["config_dir"] = config_dir
-    composed = materialise_saved_dsp_on_carrier(
+    composed = sound_runtime.materialise_saved_dsp_on_carrier(
         decision.selected_config_path,
         **kwargs,
     )
@@ -340,22 +341,16 @@ async def _park_and_commit_topology(
     stay_parked: bool = False,
     parked_reason: str | None = None,
 ) -> TopologyRuntimeMutationResult:
-    from jasper.dsp_apply import (
-        CANONICAL_DSP_WRITER_LOCK_PATH,
-        camilla_graph_mutation,
-    )
-    from jasper.control.restart_broker import manage_units
-
     controller = _controller(controller_factory)
     lock_path = getattr(
-        controller, "_graph_mutation_lock_path", CANONICAL_DSP_WRITER_LOCK_PATH
+        controller, "_graph_mutation_lock_path", dsp_apply.CANONICAL_DSP_WRITER_LOCK_PATH
     )
-    async with camilla_graph_mutation(
+    async with dsp_apply.camilla_graph_mutation(
         source="output_topology.replace",
         lock_path=lock_path,
     ):
         if park:
-            outputd_stop = manage_units(
+            outputd_stop = restart_broker.manage_units(
                 OUTPUTD_UNIT,
                 verb="stop",
                 reason="output topology replace",
