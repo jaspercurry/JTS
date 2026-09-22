@@ -1228,10 +1228,8 @@ def _subsample_delay_us(
     return float(-slope * 1e6)
 
 
-#: Fewest samples inside a centre-search span for its extremum to mean
-#: anything, on the lateral walk's own coarse evidence grid
-#: (``spatial.LATERAL_EVIDENCE_POINTS_PER_OCTAVE`` = 12/octave). Lower
-#: than :data:`_MIN_SLOPE_SAMPLES`: this reads an extremum, not a slope.
+#: Fewest samples needed to read an extremum on the lateral walk's grid
+#: (``spatial.LATERAL_EVIDENCE_POINTS_PER_OCTAVE`` = 12/octave).
 _POSE_MIN_CENTRE_SAMPLES = 3
 
 
