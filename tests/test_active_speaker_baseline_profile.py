@@ -1058,15 +1058,21 @@ def test_a_rear_calibration_discloses_what_it_cannot_prove(
     assert {issue["severity"] for issue in issues} <= {"warning"}
 
 
-@pytest.mark.parametrize("band,room,overlap", [
-    ([100.0, 200.0], _room_correction(), True),
-    ([400.0, 500.0], _room_correction(), False),
-    ([300.0, 400.0], _room_correction(), False),
-    (None, _room_correction(), False),
-    ([100.0, 200.0], {}, False),
-    ([100.0, 200.0], _room_correction(sides={"mono": []}), False),
+@pytest.mark.parametrize("band,room,room_band", [
+    ([100.0, 200.0], _room_correction(), [93.69, 153.69]),
+    ([400.0, 500.0], _room_correction(), None),
+    ([300.0, 400.0], _room_correction(), None),
+    (None, _room_correction(), None),
+    ([100.0, 200.0], {}, None),
+    ([100.0, 200.0], _room_correction(sides={"mono": []}), None),
+    ([100.0, 200.0], _room_correction(sides={"mono": [{"freq": 45.0, "q": 3.0, "gain": -4.0}]}), None),
+    ([100.0, 200.0], _room_correction(sides={"mono": [{"freq": 90.0, "q": 1.0, "gain": -2.0}]}), [55.62, 145.62]),
+    ([100.0, 200.0], _room_correction(sides={"mono": [{"freq": 90.0, "q": 8.0, "gain": -2.0}]}), None),
+    ([100.0, 200.0], _room_correction(sides={"mono": [{"freq": 120.0, "q": 2.0, "gain": 0.0}]}), None),
+    ([100.0, 200.0], _room_correction(sides={"mono": [
+        {"freq": 45.0, "q": 8.0, "gain": -2.0}, {"freq": 250.0, "q": 8.0, "gain": -2.0}]}), None),
 ])
-def test_rear_room_band_overlap_is_a_disclosure(monkeypatch, cardioid_declaration, band, room, overlap):
+def test_rear_room_band_overlap_is_a_disclosure(monkeypatch, cardioid_declaration, band, room, room_band):
     monkeypatch.setattr(measurement_geometry, "load_declared_geometry", lambda: None)
     document = _rear_document()
     document["rear"]["cancellation"]["filters"] = [
@@ -1074,8 +1080,8 @@ def test_rear_room_band_overlap_is_a_disclosure(monkeypatch, cardioid_declaratio
         for kind, freq in zip(("Highpass", "Lowpass"), band or [])]
     candidate = replace(cardioid_declaration[3], rear_calibration=document, room_correction=room)
     issues = baseline_profile_mod.rear_calibration_issues(candidate)
-    assert [issue["code"] for issue in issues] == ([REAR_CALIBRATION_ROOM_BAND_OVERLAP] if overlap else [])
-    if overlap:
+    assert [issue["code"] for issue in issues] == ([REAR_CALIBRATION_ROOM_BAND_OVERLAP] if room_band else [])
+    if room_band:
         assert issues[0]["severity"] == "warning"
-        assert issues[0]["room_band_hz"] == [20.0, 300.0]
+        assert issues[0]["room_band_hz"] == pytest.approx(room_band, abs=0.01)
         assert issues[0]["cancellation_band_hz"] == band

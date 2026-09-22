@@ -453,6 +453,7 @@ def _rear_calibration_schema() -> dict[str, Any]:
 
 
 def _rear() -> dict[str, Any]:
+    """Electrical branches only; see ADR-0318, ADR-0322, ADR-0324 and ADR-0327."""
     return {
         "document_section": "rear_calibration",
         "case": "electrical_dsp",

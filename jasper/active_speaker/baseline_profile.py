@@ -19,7 +19,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Mapping, Se
 import yaml as yaml_parser
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
-from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
+from jasper.audio_measurement.peq import bell_half_width_oct
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.dsp_apply import (
     DspApplyError,
@@ -322,17 +322,19 @@ def rear_calibration_issues(candidate: MeasuredCrossoverCandidate) -> list[dict[
             f"the rear calibration delays the front woofer by {front_delay_ms:g} ms, which moves it "
             "away from the measured woofer/tweeter arrival difference",
         ))
-    room = candidate.room_correction
     cancellation_band = rear_operating_facts(document)["band_hz"]
-    if room and any(room["sides"].values()) and cancellation_band:
-        room_band = [ROOM_FLOOR_HZ, room["ceiling_hz"]]
-        if max(room_band[0], cancellation_band[0]) < min(room_band[1], cancellation_band[1]):
-            issues.append({
-                **_issue("warning", REAR_CALIBRATION_ROOM_BAND_OVERLAP,
-                         "The room correction layer and the rear cancellation branch are "
-                         "not reconciled against each other in v1."),
-                "room_band_hz": room_band, "cancellation_band_hz": cancellation_band,
-            })
+    if cancellation_band:
+        for peq in (entry for filters in candidate.room_correction.get("sides", {}).values()
+                    for entry in filters if entry["gain"]):
+            width = 2 ** bell_half_width_oct(peq["q"])
+            room_band = [peq["freq"] / width, peq["freq"] * width]
+            if max(room_band[0], cancellation_band[0]) < min(room_band[1], cancellation_band[1]):
+                issues.append({
+                    **_issue("warning", REAR_CALIBRATION_ROOM_BAND_OVERLAP,
+                             "the room correction layer and the rear cancellation branch are "
+                             "not reconciled against each other in v1"),
+                    "room_band_hz": room_band, "cancellation_band_hz": cancellation_band,
+                })
     return issues
 
 

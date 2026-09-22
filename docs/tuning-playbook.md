@@ -570,12 +570,12 @@ Rear
 | biquad_kinds | ["Allpass","Highpass","Highshelf","Lowpass","Lowshelf","Peaking"] | type | contract.rear.bounds.biquad_kinds |
 | combo_kinds | ["ButterworthHighpass","ButterworthLowpass","LinkwitzRileyHighpass","LinkwitzRileyLowpass"] | type | contract.rear.bounds.combo_kinds |
 | gain_kinds | ["Highshelf","Lowshelf","Peaking"] | type | contract.rear.bounds.gain_kinds |
-| gain_rule | "Peaking, Lowshelf and Highshelf gain must not exceed +6 dB; a boost is charged to program headroom (ADR-0326)" | rule | contract.rear.bounds.gain_rule |
+| gain_rule | "Peaking, Lowshelf and Highshelf gain must not exceed +6 dB. A boost uses shared program headroom (ceiling 40 dB), applied as broadband attenuation pre-split to every driver, including the tweeter (ADR-0327)." | rule | contract.rear.bounds.gain_rule |
 | emitted_delay_rule | "common_delay_ms + front.delay_ms + a rear branch's own delay_ms must sum to >= 0; add common delay to realize a negative relative rear delay" | rule | contract.rear.bounds.emitted_delay_rule |
 | branch_delay_is_not_acoustic_delay | "a branch's raw delay_ms is not its acoustic delay: the branch's own filters add delay" | rule | contract.rear.bounds.branch_delay_is_not_acoustic_delay |
 | stage_kinds | ["boundary_correction","crossover","driver_correction","protection"] | type | contract.rear.bounds.stage_kinds |
 | boundary_correction_rule | "included_stages.<side> must not list boundary_correction while boundary.<side> carries filters" | rule | contract.rear.bounds.boundary_correction_rule |
-| comparison_scope | "a variant changes ONE control family -- rear gain, rear relative delay, or one band edge -- and carries every other field of the incumbent's section verbatim, including the front chain and the filter structure" | rule | contract.rear.bounds.comparison_scope |
+| comparison_scope | "change ONE family: rear gain, rear relative delay, or one band edge; copy all other incumbent fields verbatim, including the front chain and filter structure" | rule | contract.rear.bounds.comparison_scope |
 | rear_muted_reference | "the same section with rear_muted: true is the rear-muted reference" | rule | contract.rear.bounds.rear_muted_reference |
 | inheritance_rule | "an absent rear_calibration key inherits the base's section; null clears the stage and the rear output is then muted" | rule | contract.rear.bounds.inheritance_rule |
 ```
