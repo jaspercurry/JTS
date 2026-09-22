@@ -609,8 +609,8 @@ def build_crossover_evidence_packet(
     verify = _verify_block(state, state_reason)
     reflections = _reflections_block(cloud, cloud_reason)
     crossover_region, no_crossover = _region_block(receipt, receipt_reason)
-    sources = {**contract_sources(round_context or session_dir), \"draft\": _mapping(draft_raw),
-               \"receipt\": receipt, \"applied_profile\": applied_profile or {}}
+    sources = {**contract_sources(round_context or session_dir), "draft": _mapping(draft_raw),
+               "receipt": receipt, "applied_profile": applied_profile or {}}
 
     packet: dict[str, Any] = {
         "artifact_schema_version": PACKET_SCHEMA_VERSION,
