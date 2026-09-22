@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.audio_measurement.delay_graph import (
+from jasper.active_speaker.delay_graph import (
     DelayGraphProofError,
     prove_static_delay_binding,
     quantized_delay_ms,

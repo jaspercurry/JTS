@@ -502,7 +502,7 @@ def test_no_delay_asked_for_emits_the_graph_it_always_did():
 
 def test_a_named_role_carries_a_delay_filter_at_the_head_of_its_chain():
     from jasper.active_speaker.camilla_names import driver_delay_name
-    from jasper.audio_measurement.delay_graph import quantized_delay_ms
+    from jasper.active_speaker.delay_graph import quantized_delay_ms
 
     # A coordinate whose two plausible recipes DISAGREE: fmt(us/1000) rounds to
     # 4 decimal places of ms (0.2502) where a raw divide keeps 0.25015006948647.
