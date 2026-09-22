@@ -128,6 +128,7 @@ unset _jts_lib_caller_host _jts_lib_caller_hostname _jts_lib_caller_user
 # Pi (matches deploy-to-pi.sh's own SSH_BATCH_OPTS). ServerAlive keepalives
 # bound a severed transport (issue #2340) to a ~60s ssh error instead of an
 # unbounded hang, so a poll that lost its link fails fast enough to retry.
+# shellcheck disable=SC2034 # consumed by the scripts that source this lib
 SSH_BATCH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
 
 # Print the Python executable for repository-bound laptop tooling.
