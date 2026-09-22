@@ -9,6 +9,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+from tests.test_install_core_audio_graph_loop import staged_file_copies
 from tests.systemd_unit_helpers import (
     assignments_for as _assignments_for,
     value_for as _value_for,
@@ -118,10 +119,11 @@ def test_gadget_snapshots_controller_before_reset_and_after_bind() -> None:
     } <= unset
 
 
-def test_installer_ships_usb_gadget_snapshot_helper() -> None:
-    body = INSTALL_HELPER_PATH.read_text()
-    assert 'deploy/usbsink/jasper-usbgadget-snapshot"' in body
-    assert "/usr/local/sbin/jasper-usbgadget-snapshot" in body
+def test_installer_ships_usb_gadget_snapshot_helper(tmp_path) -> None:
+    copies = dict(staged_file_copies(tmp_path, "install_usbsink_unit_files"))
+    source = str(REPO / "deploy/usbsink/jasper-usbgadget-snapshot")
+    assert source in copies
+    assert copies[source] == "/usr/local/sbin/jasper-usbgadget-snapshot"
 
 
 def test_forensics_is_opt_in_ram_bounded_and_deploy_persistent() -> None:
@@ -188,23 +190,11 @@ def test_only_volume_observer_keeps_a_usb_console_script():
     )
 
 
-def test_name_index_unit_keeps_depmod_off_the_gadget_start_budget() -> None:
-    """#2176: `depmod` measured 10.3 s on a Pi Zero 2 W, over 2x the gadget
-    unit's TimeoutStartSec=5s — and that 5 s is mirrored into
-    jasper/source_intent_units.py as the single source of truth for a derived
-    timeout budget that reaches install.sh and three nginx
-    proxy_read_timeout values, so it must not move to accommodate depmod.
-
-    The structural invariant that replaces a timeout bump: the gadget's
-    ExecStartPre is the fast publish half only, and the slow half lives in
-    its own unit with its own generous, bounded start timeout. Own unit =
-    own cgroup, so the `systemctl restart jasper-usbgadget` install.sh
-    issues right after `enable --now` cannot SIGTERM the rebuild."""
+def test_name_index_unit_keeps_depmod_off_the_gadget_start_budget(tmp_path) -> None:
+    # depmod measured 10.3 s on a Pi Zero 2 W; the gadget's budget is 5 s (#2176).
     gadget = GADGET_UNIT_PATH.read_text()
     index_unit = NAME_INDEX_UNIT_PATH.read_text()
 
-    # The gadget still runs only the fast publish half, with no argument that
-    # would drag the index phase back onto its start path.
     assert "-/usr/local/sbin/jasper-usbsink-name-patch" in _assignments_for(
         gadget, "ExecStartPre"
     )
@@ -215,11 +205,7 @@ def test_name_index_unit_keeps_depmod_off_the_gadget_start_budget() -> None:
     assert _assignments_for(index_unit, "ExecStart") == (
         "/usr/local/sbin/jasper-usbsink-name-patch --index",
     )
-    # RemainAfterExit must stay unset. `systemctl start` on an already-active
-    # oneshot is a no-op, so RemainAfterExit=yes would make the first rebuild
-    # succeed and every later kick silently do nothing — a rename or kernel
-    # update would never re-index and the marker would never promote, which
-    # is #2176 wearing a different hat.
+    # RemainAfterExit=yes would suppress later rebuilds on rename or kernel update.
     assert _value_for(index_unit, "RemainAfterExit") is None
     # Bounded (a wedged depmod must not sit forever) but far above the
     # 10.3 s measurement, and — unlike the gadget's — not part of any
@@ -238,5 +224,7 @@ def test_name_index_unit_keeps_depmod_off_the_gadget_start_budget() -> None:
     ]
     assert "[Install]" not in sections, sections
 
-    install = INSTALL_HELPER_PATH.read_text()
-    assert 'deploy/systemd/jasper-usbsink-name-index.service"' in install
+    assert (
+        str(NAME_INDEX_UNIT_PATH),
+        str(tmp_path / "systemd/jasper-usbsink-name-index.service"),
+    ) in staged_file_copies(tmp_path, "install_usbsink_unit_files")
