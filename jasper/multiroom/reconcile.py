@@ -43,7 +43,8 @@ from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
 from ..service_units import (
     OUTPUTD_SERVICE,
-    run_systemctl,
+    classify_unit_query,
+    read_unit_query,
 )
 from ..source_intent_units import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
@@ -663,64 +664,30 @@ def box_outputd_period_frames() -> int | None:
 
 
 def _systemctl_unit_state(query: str, unit: str) -> bool | None:
-    """Tri-state truth for one ``systemctl is-*`` query.
-
-    A missing systemctl binary returns ``None`` silently; other spawn failures
-    return ``None`` with one warning. Completed commands are classified by their
-    explicit state TEXT, not return code alone, so a manager/D-Bus error cannot
-    masquerade as disabled or inactive.
-    """
-    try:
-        proc = run_systemctl(
-            [query, unit],
-            timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC,
-        )
-    except FileNotFoundError:
+    result = read_unit_query(query, unit, timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC)
+    verdict = classify_unit_query(result)
+    if verdict is not None:
+        return verdict
+    if isinstance(result.error, FileNotFoundError):
         return None
-    except (OSError, subprocess.SubprocessError) as e:
+    if result.error is not None:
         log_event(
             logger,
             "multiroom.reconcile.unit_state_probe_failed",
             unit=unit,
             query=query,
-            error=e,
+            error=result.error,
             level=logging.WARNING,
         )
         return None
-
-    state = (proc.stdout or "").strip().lower()
-    true_states = {
-        "is-enabled": {"enabled", "enabled-runtime"},
-        "is-active": {"active"},
-    }
-    false_states = {
-        "is-enabled": {
-            "alias",
-            "static",
-            "indirect",
-            "disabled",
-            "generated",
-            "transient",
-            "linked",
-            "linked-runtime",
-            "masked",
-            "masked-runtime",
-            "not-found",
-        },
-        "is-active": {"inactive", "failed"},
-    }
-    if state in true_states.get(query, set()):
-        return True
-    if state in false_states.get(query, set()):
-        return False
     log_event(
         logger,
         "multiroom.reconcile.unit_state_probe_failed",
         unit=unit,
         query=query,
-        rc=proc.returncode,
-        state=state or "(none)",
-        stderr=(proc.stderr or "").strip(),
+        rc=result.returncode,
+        state=result.word or "(none)",
+        stderr=result.stderr,
         level=logging.WARNING,
     )
     return None

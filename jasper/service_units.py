@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
+from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 # Import these instead of re-spelling the literal.
@@ -114,6 +115,55 @@ SHOW_PROPERTIES = (
 # indefinitely; their own pass ceilings are multiples of this. The read-only
 # `show` probes above take a much shorter timeout of their own.
 SYSTEMCTL_TIMEOUT_SEC = 10.0
+
+_QUERY_TRUE_STATES = {
+    "is-active": frozenset({"active"}),
+    "is-enabled": frozenset({"enabled", "enabled-runtime"}),
+    "is-failed": frozenset({"failed"}),
+}
+_QUERY_FALSE_STATES = {
+    "is-active": frozenset({"inactive", "failed"}),
+    "is-enabled": frozenset({
+        "alias", "static", "indirect", "disabled", "generated", "transient",
+        "linked", "linked-runtime", "masked", "masked-runtime", "not-found",
+    }),
+    "is-failed": frozenset({
+        "active", "activating", "deactivating", "inactive", "maintenance",
+        "reloading",
+    }),
+}
+
+
+@dataclass(frozen=True)
+class UnitQueryResult:
+    query: str
+    word: str | None
+    error: Exception | None = None
+    returncode: int | None = None
+    stderr: str = ""
+
+
+def read_unit_query(query: str, unit: str, *, timeout: float) -> UnitQueryResult:
+    """Run one ``systemctl is-*`` query without guessing its verdict."""
+    try:
+        proc = run_systemctl([query, unit], timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return UnitQueryResult(query=query, word=None, error=exc)
+    return UnitQueryResult(
+        query=query,
+        word=(proc.stdout or "").strip().lower(),
+        returncode=proc.returncode,
+        stderr=(proc.stderr or "").strip(),
+    )
+
+
+def classify_unit_query(result: UnitQueryResult) -> bool | None:
+    """Classify a query word as true, false, or unresolved."""
+    if result.word in _QUERY_TRUE_STATES.get(result.query, ()):
+        return True
+    if result.word in _QUERY_FALSE_STATES.get(result.query, ()):
+        return False
+    return None
 
 
 def unit_failed(record: Mapping[str, Any] | None) -> bool:

@@ -73,7 +73,11 @@ from jasper.log_event import log_event
 from jasper.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
 from jasper.logging_setup import configure_logging
-from jasper.service_units import LIBRESPOT_SERVICE
+from jasper.service_units import (
+    LIBRESPOT_SERVICE,
+    classify_unit_query,
+    read_unit_query,
+)
 from jasper.source_intent_units import (
     RECONCILE_BROKER_TIMEOUT_SECONDS,
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
@@ -709,53 +713,9 @@ def _run_unit_action(unit: str, verb: str) -> tuple[int, str]:
 
 
 def _query_unit_state(query: str, unit: str) -> bool | None:
-    try:
-        process = subprocess.run(
-            ["systemctl", query, unit],
-            check=False,
-            timeout=_UNIT_STATE_QUERY_TIMEOUT_SEC,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    state = (process.stdout or "").strip().lower()
-    if query == "is-enabled":
-        if state in {"enabled", "enabled-runtime"}:
-            return True
-        if state in {
-            "disabled",
-            "masked",
-            "masked-runtime",
-            "not-found",
-            "static",
-            "indirect",
-            "generated",
-            "transient",
-            "linked",
-            "linked-runtime",
-            "alias",
-        }:
-            return False
-    elif query == "is-active":
-        if state == "active":
-            return True
-        if state in {"inactive", "failed"}:
-            return False
-    elif query == "is-failed":
-        if state == "failed":
-            return True
-        if state in {
-            "active",
-            "activating",
-            "deactivating",
-            "inactive",
-            "maintenance",
-            "reloading",
-        }:
-            return False
-    return None
+    return classify_unit_query(
+        read_unit_query(query, unit, timeout=_UNIT_STATE_QUERY_TIMEOUT_SEC)
+    )
 
 
 def _unit_enabled(unit: str) -> bool | None:

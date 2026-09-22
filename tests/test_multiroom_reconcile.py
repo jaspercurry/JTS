@@ -26,6 +26,7 @@ import os
 
 import pytest
 
+from jasper import service_units
 from jasper.ring_assets import (
     RING_ACTIVE_CONTENT_FILE,
     RING_WRITER_LOCK_SUFFIX,
@@ -1392,6 +1393,35 @@ def test_plan_leader_owns_only_snap_units():
 
 
 @pytest.mark.parametrize(
+    ("returncode", "state", "expected"),
+    [
+        (0, "active", True),
+        (0, "activating", True),
+        (0, "reloading", True),
+        (0, "deactivating", True),
+        (0, "inactive", False),
+        (0, "failed", False),
+        (0, "unknown", None),
+        (1, "active", None),
+    ],
+)
+def test_unit_active_barrier_requires_successful_show(
+    monkeypatch, returncode, state, expected,
+):
+    import subprocess as sp
+
+    monkeypatch.setattr(
+        reconcile_mod.subprocess,
+        "run",
+        lambda argv, **_kwargs: sp.CompletedProcess(
+            argv, returncode, stdout=f"{state}\n", stderr="",
+        ),
+    )
+
+    assert reconcile_mod._unit_active("u.service") is expected
+
+
+@pytest.mark.parametrize(
     ("active_states", "expect_changed"),
     [
         pytest.param(
@@ -2641,7 +2671,7 @@ def test_unit_state_queries_share_exact_systemctl_contract(monkeypatch):
             stderr="",
         )
 
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(service_units.subprocess, "run", fake_run)
 
     assert (
         reconcile_mod._systemctl_unit_state(
@@ -2678,76 +2708,12 @@ def test_active_speaker_topology_error_is_raw_unknown_but_legacy_false(
     assert all(fields["error"] == "corrupt topology" for fields in maps)
 
 
-def test_unit_state_vocabulary_has_explicit_jts_intent_semantics(monkeypatch):
-    """Every documented systemctl state is deliberately true/false/unknown."""
-    import subprocess as sp
-
-    current = [""]
-
-    def fake_run(argv, **_kw):
-        state = current[0]
-        return sp.CompletedProcess(
-            argv,
-            0 if state in {"enabled", "enabled-runtime", "active"} else 1,
-            stdout=f"{state}\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
-
-    enabled_states = {
-        "enabled": True,
-        "enabled-runtime": True,
-        "alias": False,
-        "static": False,
-        "indirect": False,
-        "disabled": False,
-        "generated": False,
-        "transient": False,
-        "linked": False,
-        "linked-runtime": False,
-        "masked": False,
-        "masked-runtime": False,
-        "not-found": False,
-        "bad": None,
-    }
-    active_states = {
-        "active": True,
-        "inactive": False,
-        "failed": False,
-        "activating": None,
-        "deactivating": None,
-        "reloading": None,
-        "refreshing": None,
-        "maintenance": None,
-        "unknown": None,
-    }
-    for state, expected in enabled_states.items():
-        current[0] = state
-        assert (
-            reconcile_mod._systemctl_unit_state(
-                "is-enabled",
-                "test.service",
-            )
-            is expected
-        ), state
-    for state, expected in active_states.items():
-        current[0] = state
-        assert (
-            reconcile_mod._systemctl_unit_state(
-                "is-active",
-                "test.service",
-            )
-            is expected
-        ), state
-
-
 def test_unit_state_completed_manager_error_is_unknown(monkeypatch, caplog):
     """A completed systemctl error cannot be interpreted as disabled."""
     import subprocess as sp
 
     monkeypatch.setattr(
-        reconcile_mod.subprocess,
+        service_units.subprocess,
         "run",
         lambda argv, **_kw: sp.CompletedProcess(
             argv,
@@ -2778,7 +2744,7 @@ def test_unit_state_query_oserror_is_safe_false_and_observable(
     def fake_run(_argv, **_kw):
         raise OSError("cannot allocate process")
 
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(service_units.subprocess, "run", fake_run)
 
     with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
         assert (
@@ -2806,7 +2772,7 @@ def test_unit_state_query_timeout_is_unknown_and_observable(monkeypatch, caplog)
         assert kw["timeout"] == reconcile_mod._SYSTEMCTL_CONTROL_TIMEOUT_SEC
         raise sp.TimeoutExpired(argv, kw["timeout"])
 
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(service_units.subprocess, "run", fake_run)
 
     with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
         assert (
@@ -2831,7 +2797,7 @@ def test_unit_state_query_missing_systemctl_is_silent_false(
     def fake_run(_argv, **_kw):
         raise FileNotFoundError("systemctl")
 
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(service_units.subprocess, "run", fake_run)
 
     with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
         assert (

@@ -142,6 +142,93 @@ def test_read_unit_states_is_none_when_the_subprocess_itself_fails(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    ("query", "word", "expected"),
+    [
+        ("is-active", "active", True),
+        ("is-active", "inactive", False),
+        ("is-active", "failed", False),
+        ("is-active", "activating", None),
+        ("is-active", "deactivating", None),
+        ("is-active", "reloading", None),
+        ("is-active", "refreshing", None),
+        ("is-active", "maintenance", None),
+        ("is-active", "unknown", None),
+        ("is-active", "", None),
+        ("is-enabled", "enabled", True),
+        ("is-enabled", "enabled-runtime", True),
+        ("is-enabled", "disabled", False),
+        ("is-enabled", "alias", False),
+        ("is-enabled", "static", False),
+        ("is-enabled", "indirect", False),
+        ("is-enabled", "generated", False),
+        ("is-enabled", "transient", False),
+        ("is-enabled", "linked", False),
+        ("is-enabled", "linked-runtime", False),
+        ("is-enabled", "masked", False),
+        ("is-enabled", "masked-runtime", False),
+        ("is-enabled", "not-found", False),
+        ("is-enabled", "bad", None),
+        ("is-enabled", "", None),
+        ("is-failed", "failed", True),
+        ("is-failed", "active", False),
+        ("is-failed", "activating", False),
+        ("is-failed", "deactivating", False),
+        ("is-failed", "inactive", False),
+        ("is-failed", "maintenance", False),
+        ("is-failed", "reloading", False),
+        ("is-failed", "bad-word", None),
+        ("is-failed", "", None),
+    ],
+)
+def test_unit_query_classifies_stdout_not_returncode(
+    monkeypatch, query, word, expected,
+):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(
+            returncode=1,
+            stdout=f" {word.upper()} \n",
+            stderr="detail\n",
+        )
+
+    monkeypatch.setattr(service_units.subprocess, "run", fake_run)
+
+    result = service_units.read_unit_query(query, "u.service", timeout=3.5)
+
+    assert service_units.classify_unit_query(result) is expected
+    assert (result.word, result.returncode, result.stderr, result.error) == (
+        word, 1, "detail", None,
+    )
+    assert calls[0][0] == ["systemctl", query, "u.service"]
+    assert calls[0][1]["timeout"] == 3.5
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        FileNotFoundError("systemctl"),
+        OSError("cannot allocate process"),
+        subprocess.TimeoutExpired(["systemctl"], 1.0),
+        subprocess.SubprocessError("boom"),
+    ],
+)
+def test_unit_query_preserves_process_failure(monkeypatch, failure):
+    def fail(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(service_units.subprocess, "run", fail)
+
+    result = service_units.read_unit_query("is-enabled", "u.service", timeout=1.0)
+
+    assert service_units.classify_unit_query(result) is None
+    assert result.word is None
+    assert result.returncode is None
+    assert result.error is failure
+
+
+@pytest.mark.parametrize(
     ("record", "is_none"),
     [
         (None, True),

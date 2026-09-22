@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.bluetooth.rfkill import BluetoothRfkillState
-from jasper import source_intent
+from jasper import service_units, source_intent
 from jasper.accessories import reconcile as accessory_reconcile
 from jasper.multiroom import reconcile as reconcile_mod
 from jasper.music_sources import Source
@@ -29,6 +29,28 @@ def _write(tmp_path, text: str) -> str:
     path = tmp_path / "source_intent.env"
     path.write_text(text, encoding="utf-8")
     return str(path)
+
+
+def test_unit_queries_keep_source_timeout_and_transitional_semantics(monkeypatch):
+    import subprocess as sp
+
+    replies = iter(("enabled-runtime", "activating", "activating"))
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((list(argv), kwargs["timeout"]))
+        return sp.CompletedProcess(argv, 1, stdout=f"{next(replies)}\n", stderr="")
+
+    monkeypatch.setattr(service_units.subprocess, "run", fake_run)
+
+    assert source_intent._unit_enabled("u.service") is True
+    assert source_intent._unit_active("u.service") is None
+    assert source_intent._unit_failed("u.service") is False
+    assert calls == [
+        (["systemctl", "is-enabled", "u.service"], 2.0),
+        (["systemctl", "is-active", "u.service"], 2.0),
+        (["systemctl", "is-failed", "u.service"], 2.0),
+    ]
 
 
 def _write_target_status(
