@@ -21,7 +21,6 @@ and uneven condition/distance coverage before the corpus drives Phase
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import statistics
 import sys
@@ -36,6 +35,15 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+try:
+    from _wake_pipeline_common import read_wake_corpus_json
+    from _wake_pipeline_common import resolve_wav_path as _resolve_wav_path
+except ModuleNotFoundError as exc:
+    if exc.name != "_wake_pipeline_common":
+        raise
+    from scripts._wake_pipeline_common import read_wake_corpus_json
+    from scripts._wake_pipeline_common import resolve_wav_path as _resolve_wav_path
 
 from jasper import wake_legs
 from jasper.aec_sweep import AEC3_SWEEP_VARIANTS
@@ -104,13 +112,6 @@ class WavStats:
         return 20.0 * math.log10(self.rms / 32768.0)
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as e:
-        raise ValueError(f"{path}: failed to read JSON: {e}") from e
-
-
 def _load_wav(path: Path) -> WavStats:
     with wave.open(str(path)) as w:
         channels = w.getnchannels()
@@ -134,27 +135,6 @@ def _load_wav(path: Path) -> WavStats:
         rms=rms,
         peak=peak,
     )
-
-
-def _resolve_wav_path(corpus_dir: Path, path_str: str) -> Path:
-    """Resolve recorder metadata paths against a local corpus copy.
-
-    Production metadata contains absolute Pi paths such as
-    `/var/lib/jasper/enrollment_positives/aec_on_nomusic/foo.wav`.
-    After rsync, those same WAVs live under the caller's local
-    `corpus_dir`, so map any path below `enrollment_positives/` back
-    onto the local root before falling back to the literal path.
-    """
-    raw = Path(path_str)
-    marker = "enrollment_positives"
-    if marker in raw.parts:
-        idx = raw.parts.index(marker)
-        rel_parts = raw.parts[idx + 1:]
-        if rel_parts:
-            return corpus_dir.joinpath(*rel_parts)
-    if raw.is_absolute():
-        return raw
-    return corpus_dir / raw
 
 
 def _expected_legs(session: dict[str, Any]) -> tuple[str, ...]:
@@ -249,7 +229,7 @@ def audit(
     sessions: list[dict[str, Any]] = []
     for path in session_paths:
         try:
-            data = _read_json(path)
+            data = read_wake_corpus_json(path)
         except ValueError as e:
             issues.append(str(e))
             continue

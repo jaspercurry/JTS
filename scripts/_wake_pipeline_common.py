@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared destructive-output guard for standalone wake pipeline tools."""
+"""Shared helpers for standalone wake-corpus pipeline tools."""
 from __future__ import annotations
 
 import json
@@ -67,3 +67,27 @@ def is_safe_wake_pipeline_output(
         return Path(output_dir).expanduser().resolve() == candidate
     except Exception:  # noqa: BLE001 - ownership validation must fail closed.
         return False
+
+
+def read_wake_corpus_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{path}: failed to read JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} does not contain a JSON object")
+    return data
+
+
+def resolve_wav_path(corpus_dir: Path, path_str: str) -> Path:
+    raw = Path(path_str)
+    # Pi metadata keeps absolute paths under this corpus marker after rsync.
+    marker = "enrollment_positives"
+    if marker in raw.parts:
+        idx = raw.parts.index(marker)
+        rel_parts = raw.parts[idx + 1:]
+        if rel_parts:
+            return corpus_dir.joinpath(*rel_parts)
+    if raw.is_absolute():
+        return raw
+    return corpus_dir / raw

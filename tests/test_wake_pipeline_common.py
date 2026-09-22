@@ -9,7 +9,12 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
-from scripts._wake_pipeline_common import is_safe_wake_pipeline_output
+import pytest
+
+from scripts._wake_pipeline_common import (
+    is_safe_wake_pipeline_output,
+    read_wake_corpus_json,
+)
 
 
 def _matches_marker(data: Mapping[str, object]) -> bool:
@@ -39,6 +44,31 @@ def _safe(path: Path, *, owner: Path, protected: Path) -> bool:
         marker_name="owner.json",
         marker_matches=_matches_marker,
     )
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"session_id": "abc"}, {"session_id": "abc"}),
+        ("[]", ValueError),
+        ("{", ValueError),
+        (None, ValueError),
+    ],
+)
+def test_read_wake_corpus_json_requires_a_readable_object(
+    tmp_path: Path,
+    payload: object,
+    expected: object,
+) -> None:
+    path = tmp_path / "session.json"
+    if payload is not None:
+        path.write_text(payload if isinstance(payload, str) else json.dumps(payload))
+
+    if expected is ValueError:
+        with pytest.raises(ValueError):
+            read_wake_corpus_json(path)
+    else:
+        assert read_wake_corpus_json(path) == expected
 
 
 def test_owned_root_and_descendants_are_safe(tmp_path: Path) -> None:
