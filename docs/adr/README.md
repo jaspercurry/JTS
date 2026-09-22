@@ -319,6 +319,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0337](0337-conversation-history-is-local-opt-in-native-text.md) | Conversation history is local, opt-in native text | accepted |
 | [0338](0338-tools-share-one-boundary-and-defer-untrusted-distribution.md) | Tools share one boundary and defer untrusted distribution | accepted |
 | [0339](0339-declared-topology-and-observed-hardware-have-separate-owners.md) | Declared topology and observed hardware have separate owners | accepted |
+| [0340](0340-microphone-absence-is-silent.md) | Microphone absence is silent | accepted |
 | [0341](0341-fit-repeat-spread-comes-from-the-rounds-mark-pairs.md) | Fit repeat spread comes from the round's mark pairs | accepted; supersedes repeat-floor authority in 0192 and 0302 |
 | [0342](0342-one-measurement-path.md) | One measurement path; `jasper-measure` is retired | accepted |
 | [0343](0343-the-room-cut-floor-is-a-disclosure-not-a-refusal.md) | The room cut floor is a disclosure, not a refusal: a cut past the spread-derived floor carries `cut_beyond_spread_db` | accepted |
