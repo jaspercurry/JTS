@@ -5,9 +5,10 @@
 """Shared helpers for the JTS web setup pages.
 
 Every wizard under `jasper/web/` (Spotify, voice, transit, wake, …)
-shares the `systemctl restart jasper-voice` shell-out and the
-request-response plumbing for navigation hygiene (flash cookies, CSRF
-tokens, no-store caching); the page shell itself lives in `chrome.py`.
+shares the jasper-voice restart request (routed through jasper-control's
+restart broker, not a direct shell-out) and the request-response plumbing
+for navigation hygiene (flash cookies, CSRF tokens, no-store caching); the
+page shell itself lives in `chrome.py`.
 What's NOT shared: per-wizard route handlers, page layouts, form bodies.
 
 ## Conventions for new wizards
@@ -87,15 +88,12 @@ import logging
 import os
 import re
 import secrets
-import subprocess
 import urllib.parse
 from collections.abc import Callable, Mapping
-from contextlib import suppress
 from enum import Enum
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Literal
 
-from ..atomic_io import atomic_write_text
 from ..platform import control_client as control
 from ..control import control_token
 from ..control.restart_broker import manage_units
@@ -192,28 +190,16 @@ def value_for_env(
 #   - Files under /var/lib/jasper (the shared StateDirectory) land group
 #     `jasper` via systemd's recursive StateDirectory chown — voice_provider.env
 #     (now keyless), control_token, etc.
-#   - WS1 Phase 4a moved the high-value {jasper-voice, jasper-web}-only
-#     secrets into the setgid /var/lib/jasper-secrets dir, so a file written
-#     there inherits group `jasper-secrets` instead: voice_keys.env (the LLM
-#     API keys split out of voice_provider.env) and google_credentials.env.
-#   - WS1 Phase 4b moved integration secrets into the setgid
-#     /var/lib/jasper-intsecrets dir, so Spotify/HA files inherit group
-#     `jasper-intsecrets`.
+#   - The setgid /var/lib/jasper-secrets dir holds the {jasper-voice,
+#     jasper-web}-only secrets, so a file written there inherits group
+#     `jasper-secrets` instead: voice_keys.env (the LLM API keys split out
+#     of voice_provider.env) and google_credentials.env.
+#   - The setgid /var/lib/jasper-intsecrets dir holds integration secrets,
+#     so Spotify/HA files inherit group `jasper-intsecrets`.
 #     The mode is the same 0o640; only the inherited group differs, which is
 #     what narrows those secrets away from jasper-mux/-control/-input.
 # Files only one daemon reads keep the 0o600 default.
 SECRET_ENV_MODE = 0o640
-
-
-def write_json_file(path: str, obj, *, mode: int = 0o644) -> None:
-    """Atomically write ``obj`` as pretty JSON via the canonical
-    ``jasper.atomic_io.atomic_write_text`` (unique-temp + ``os.replace``), so a
-    reader (the voice daemon) never sees a half-written file. Default mode
-    0644 — JSON config like pricing rates carries no secrets, unlike env
-    files."""
-    atomic_write_text(
-        path, json.dumps(obj, indent=2, sort_keys=True) + "\n", mode=mode,
-    )
 
 
 class RestartOutcome(Enum):
@@ -238,9 +224,8 @@ def restart_systemd_units(*units: str) -> RestartOutcome:
     jasper-voice means model load + cue regen + reconnect to the
     LLM provider — often 8–12 s on a Pi. Without --no-block the
     web wizard's save handler hangs that long before returning the
-    303 redirect, the browser shows a spinner, the user thinks
-    nothing happened and click Save again (then again) — observed
-    on PR #117 when switching wake models via the /assistant/wake/ UI.
+    303 redirect, the browser shows a spinner, and the user thinks
+    nothing happened and clicks Save again (then again).
 
     With --no-block, systemctl queues the restart and returns in
     a few ms. The browser gets the success banner immediately.
@@ -256,11 +241,11 @@ def restart_systemd_units(*units: str) -> RestartOutcome:
     unit. If we hit 5 s here, something is wedged (dbus dead, etc.)
     and the bigger problem will surface elsewhere.
 
-    WS1 Phase 3: this no longer shells out to systemctl directly — it asks
-    jasper-control's restart broker to do it (manage_units), so jasper-web
-    needs no privilege of its own once dropped to a non-root service user.
-    manage_units is best-effort and never raises (same contract as before)
-    and logs its own `event=restart_broker.client_error` on a refusal."""
+    This does not shell out to systemctl directly — it asks jasper-control's
+    restart broker to do it (manage_units), so jasper-web needs no privilege
+    of its own once dropped to a non-root service user. manage_units is
+    best-effort and never raises, and logs its own
+    `event=restart_broker.client_error` on a refusal."""
     if not units:
         return RestartOutcome.SKIPPED
     resp = manage_units(
@@ -376,11 +361,11 @@ def restart_voice_daemon() -> RestartOutcome:
     # No explicit `systemctl enable` here. jasper-voice is enabled at install,
     # and the root jasper-aec-reconcile (Tier B) is the authoritative owner of
     # voice's enable/disable (it disables on bonded-follower park and re-enables
-    # on unpark). The web side only needs the runtime restart. (WS1 Phase 3b-2:
-    # the non-root jasper-control is deliberately NOT granted polkit
-    # manage-unit-files — it can't be unit-scoped and `systemctl restart`
-    # consults it, which would re-open restart-of-any-unit; see
-    # deploy/polkit/49-jasper-control.rules.)
+    # on unpark). The web side only needs the runtime restart. The non-root
+    # jasper-control is deliberately NOT granted polkit manage-unit-files —
+    # it can't be unit-scoped and `systemctl restart` consults it, which
+    # would re-open restart-of-any-unit; see
+    # deploy/polkit/49-jasper-control.rules.
     return restart_systemd_units("jasper-voice")
 
 
@@ -397,80 +382,12 @@ RESTART_CLAUSE = {
 }
 
 
-def terminate_process(
-    proc: subprocess.Popen[Any] | None,
-    *,
-    timeout: float = 0.75,
-) -> None:
-    """Best-effort bounded shutdown of a subprocess a wizard spawned.
-
-    SIGTERM, then SIGKILL after ``timeout`` seconds, then give up: a page
-    that cannot reap its own audible helper must still answer the request.
-    """
-    if proc is None or proc.poll() is not None:
-        return
-    try:
-        proc.terminate()
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        try:
-            proc.kill()
-            proc.wait(timeout=timeout)
-        except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
-            pass
-    except (OSError, ProcessLookupError):
-        pass
-
-
 def close_awaitable(awaitable: Any) -> None:
     """Release a coroutine no runner took ownership of, so the interpreter
     does not warn about one that was never awaited."""
     close = getattr(awaitable, "close", None)
     if callable(close):
         close()
-
-
-def terminate_async_process(proc: Any) -> None:
-    """SIGTERM an ``asyncio.subprocess.Process`` a wizard spawned on the
-    background loop. A child that has already exited is not an error.
-
-    Reaping needs that loop, so it is not done here: a caller that must know
-    the child is gone awaits ``proc.wait()`` through its own runner.
-    """
-    if proc is None:
-        return
-    with suppress(ProcessLookupError):
-        proc.terminate()
-
-
-def reset_session_locked(
-    state: dict[str, Any],
-    fields: dict[str, Any],
-    *,
-    proc_key: str,
-    error: str = "",
-) -> None:
-    """Return a measurement flow's session ``state`` to idle, clearing the
-    child held under ``proc_key``; call under the flow's own lock, with
-    ``fields`` carrying that flow's schema delta. Every step is
-    non-blocking — a reap would need the background loop, which deadlocks
-    against a playback watcher waiting on the caller's lock.
-    """
-    holder = state.get(proc_key)
-    if holder:
-        terminate_async_process(holder.get("proc"))
-    release = state.get("release_window")
-    state.update({
-        "phase": "idle",
-        "error": error,
-        "members": None,
-        "session_token": int(state.get("session_token", 0)) + 1,
-        "release_window": None,
-        proc_key: None,
-        **fields,
-    })
-    if release is not None:
-        release()
 
 
 # Upper bound on a wizard form body. Every wizard POST here is a small
@@ -907,17 +824,16 @@ def csrf_meta_html(token: str) -> str:
 
 
 def control_token_meta_html() -> str:
-    """<meta> tag carrying the WS1 control token, or "" when none exists yet.
+    """<meta> tag carrying the control token, or "" when none exists yet.
 
-    The invisible-token delivery (Phase 2): the page is only served behind the
-    management-host / Fetch-Metadata read guard, so a same-origin dashboard sees
-    the token in `meta[name=jts-control-token]` and rides it on the destructive
-    POSTs (via http.js) with zero household friction. A cross-site fetch can't
-    read it; a determined LAN device that fetches the page can — by design this
-    is defense-in-depth on the annoyance-class routes, not a hard boundary.
-    Emits nothing when the gate is off
-    (no token file), so non-control pages stay byte-identical until the token
-    exists."""
+    The page is only served behind the management-host / Fetch-Metadata read
+    guard, so a same-origin dashboard sees the token in
+    `meta[name=jts-control-token]` and rides it on the destructive POSTs (via
+    http.js) with zero household friction. A cross-site fetch can't read it;
+    a determined LAN device that fetches the page can — by design this is
+    defense-in-depth on the annoyance-class routes, not a hard boundary.
+    Emits nothing when the gate is off (no token file), so non-control pages
+    stay byte-identical until the token exists."""
     token = control_token.current_token()
     if not token:
         return ""
@@ -1161,7 +1077,7 @@ def send_html_response(
       * Sets the CSRF cookie if `begin_request()` minted a new one.
       * Clears the flash cookie if a flash was read this request, so the
         next render doesn't keep showing the success banner.
-    The handler's old per-wizard `_send_html` should delegate here."""
+    """
     ctx = _request_ctx(handler)
     handler.send_response(status)
     handler.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1185,10 +1101,7 @@ def send_see_other(
 ) -> None:
     """Send a 303 SEE_OTHER redirect. Optionally sets the flash cookie so
     the GET target renders a status banner without a `?msg=...` query
-    param polluting browser history.
-
-    Replaces every wizard's per-class `_redirect(...)` plus the prior
-    `_redirect(f'./?msg={urllib.parse.quote(msg)}')` pattern."""
+    param polluting browser history."""
     handler.send_response(http.HTTPStatus.SEE_OTHER)
     handler.send_header("Location", location)
     handler.send_header("Content-Length", "0")

@@ -910,30 +910,6 @@ def test_read_form_accepts_body_at_the_bound():
     assert parsed["k"] == "v" * (_common.MAX_FORM_BODY_BYTES - 2)
 
 
-class _StubbornProc:
-    """asyncio subprocess stand-in whose child ignores SIGTERM."""
-
-    def __init__(self, *, gone: bool = False) -> None:
-        self.signals: list[str] = []
-        self._gone = gone
-
-    def terminate(self) -> None:
-        self.signals.append("terminate")
-        if self._gone:
-            raise ProcessLookupError(3, "No such process")
-
-
-def test_terminate_async_process_signals_and_tolerates_a_departed_child():
-    live, gone = _StubbornProc(), _StubbornProc(gone=True)
-
-    _common.terminate_async_process(live)
-    _common.terminate_async_process(gone)
-    _common.terminate_async_process(None)
-
-    assert live.signals == ["terminate"]
-    assert gone.signals == ["terminate"]
-
-
 def test_close_awaitable_releases_an_unsubmitted_coroutine():
     closed: list[bool] = []
 

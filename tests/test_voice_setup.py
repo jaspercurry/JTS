@@ -1011,7 +1011,7 @@ def test_pricing_round_trip_through_overrides_loader(tmp_path: Path):
         openai, ["gpt-realtime-2"], {},
     )
     f = tmp_path / "pricing.json"
-    _common.write_json_file(str(f), {"as_of": "2026-08-01", "models": out})
+    atomic_io.atomic_write_json(str(f), {"as_of": "2026-08-01", "models": out})
     loaded = usage.load_pricing_overrides(str(f))
     eff = usage.pricing_for_model("gpt-realtime-2", overrides=loaded)
     assert eff.text_output_per_million_usd == 30.0
@@ -1087,14 +1087,14 @@ def test_pricing_import_round_trips_to_pricing_for_model(tmp_path: Path):
     )
     assert err is None
     f = tmp_path / "pricing.json"
-    _common.write_json_file(str(f), {"as_of": "2026-09-01", "models": models})
+    atomic_io.atomic_write_json(str(f), {"as_of": "2026-09-01", "models": models})
     loaded = usage.load_pricing_overrides(str(f))
     eff = usage.pricing_for_model("gpt-realtime-2", overrides=loaded)
     assert eff.text_output_per_million_usd == 33.0
     assert eff.audio_input_per_million_usd == 32.0  # bundled default kept
 
 
-# ---------- Review fixes: catalog metadata, as_of, merge, write_json_file ----
+# ---------- Review fixes: catalog metadata, as_of, merge --------------------
 def test_catalog_entries_carry_pricing_metadata():
     """Per-provider pricing knowledge lives on the catalog entry (single
     source), not in voice_setup maps. Buckets must be real Pricing fields."""
@@ -1123,15 +1123,6 @@ def test_sparsify_overrides_drops_at_default_fields():
         },
     })
     assert sp == {"gpt-realtime-2": {"audio_input_per_million_usd": 99.0}}
-
-
-def test_write_json_file_atomic_mode_0644(tmp_path: Path):
-    import json
-    p = tmp_path / "x.json"
-    _common.write_json_file(str(p), {"models": {"m": {"a": 1.0}}})
-    assert json.loads(p.read_text()) == {"models": {"m": {"a": 1.0}}}
-    assert (os.stat(p).st_mode & 0o777) == 0o644  # no secrets → 0644 fine
-    assert not (tmp_path / "x.json.tmp").exists()  # temp cleaned up
 
 
 def test_pricing_import_route_merges_preserving_other_models(tmp_path: Path):
