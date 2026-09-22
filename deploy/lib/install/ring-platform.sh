@@ -371,26 +371,15 @@ install_jts_ring_conf_assets() {
 install_jts_ring_platform() {
     build_install_jts_ring_ioplug
     install_jts_ring_conf_assets
-    # Delete these tmpfs ring files before install_systemd_units restarts
-    # fan-in/outputd: a stale-geometry ring is a fatal attach for those units
-    # (StartLimitAction=reboot), so leaving one behind reboots the box
-    # mid-install. Both ends create-or-attach (O_CREAT|O_EXCL), so a missing
-    # file is a no-op, not a fault. Never delete the sibling `.writer.lock` /
-    # `.open.lock` files — that opens a torn-inode window between holders.
-    # Pinned by tests/test_install_ring_platform_sequencing.py
-    # (test_ring_platform_deletes_stale_tmpfs_rings_before_systemd_units).
-    #
-    # ACTIVE ring: an operator-pinned box short-circuits before
-    # reconcile_coupling, so _converge_ring's _delete_stale_ring_files
-    # (jasper/fanin/coupling_reconcile.py) never runs there — this rm -f is
-    # the only deleter that reaches those boxes.
-    #
-    # `grouping.ring` (jasper-snapclient's ingress) is deliberately excluded:
-    # that unit has StartLimitBurst=6 and NO StartLimitAction, so a stale
-    # ring there costs bounded, visible retries rather than a reboot loop —
-    # not worth the extra unlink.
-    rm -f /dev/shm/jts-ring/program.ring
-    rm -f /dev/shm/jts-ring/content.ring
-    rm -f /dev/shm/jts-ring/active-content.ring
-    rm -f /dev/shm/jts-ring/dac-content.ring
+}
+
+# Caller must first stop every unit in the canonical core-graph park and
+# restart-target lists. Lock files survive so every opener serializes on the
+# same transaction inode.
+remove_stale_jts_ring_data_files() {
+    rm -f \
+        /dev/shm/jts-ring/program.ring \
+        /dev/shm/jts-ring/content.ring \
+        /dev/shm/jts-ring/active-content.ring \
+        /dev/shm/jts-ring/dac-content.ring
 }
