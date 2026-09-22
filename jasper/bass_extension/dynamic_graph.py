@@ -21,7 +21,7 @@ def dynamic_bass_owner_groups(
     owner_channels: tuple[int, ...],
     outputs: Iterable[tuple[str, str, str, int | None]],
 ) -> tuple[tuple[int, ...], ...]:
-    """Group (side, role, variant, index) declarations, front first (ADR-0334)."""
+    """Group (side, role, variant, index) declarations, front first (ADR-0335)."""
     slots = {
         (side, role, variant): index
         for side, role, variant, index in outputs

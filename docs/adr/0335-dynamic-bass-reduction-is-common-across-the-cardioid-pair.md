@@ -1,4 +1,4 @@
-# ADR-0334: Dynamic bass reduction is common across the cardioid pair
+# ADR-0335: Dynamic bass reduction is common across the cardioid pair
 
 - **Date:** 2026-09-22
 - **Status:** Accepted
