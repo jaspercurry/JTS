@@ -26,7 +26,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError, build_crossover_evidence_packet, packet_driver_passbands_hz,
     packet_feature_classifications, packet_region_band_hz,
 )
-from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, prescription_contracts
+from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, contract_programs, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
     PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document, preview_prescription_document,
     parse_vary_axis, preview_kind, read_prescription_document, saved_base, vary_document,
@@ -248,7 +248,10 @@ def _load_packet(args: argparse.Namespace, *, inputs: RoundInputs | None = None)
 def _cmd_contract(args: argparse.Namespace) -> int:
     try:
         sources = prescription_sources(round_inputs(Path(args.round)) if args.round else None, set_id=args.set)
-        contracts = prescription_contracts(**sources)
+        programs = contract_programs(sources) if args.round else programs_for_topology(load_output_topology())
+        contracts = prescription_contracts(programs=programs, **sources)
+        if args.section != "all" and args.section not in contracts:
+            return failed(EXIT_REFUSED, "prescription_section_unavailable", args.section)
         document = contracts if args.section == "all" else contracts[args.section]
         payload = contract_json(document)
     except RoundSetRefused as exc:

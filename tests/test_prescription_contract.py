@@ -29,12 +29,13 @@ from jasper.active_speaker.crossover_v2.fc_sweep import (
     fc_rejection_scenarios,
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import (
-    CONTRACT_COMMAND, SECTIONS, contract_digests, contract_json, prescription_contracts,
+    CONTRACT_COMMAND, contract_digests, contract_json, contract_programs, prescription_contracts,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import contract_sources, default_out, round_inputs
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
+from jasper.active_speaker.measurement_programs import programs_for_topology
 from jasper.active_speaker.bass_table_report import BASS_READOUT_FIELDS, bass_table_rows
 from jasper.audio_measurement import room_limits as limits
 from jasper.bass_extension import dynamic
@@ -47,6 +48,49 @@ from tests.test_crossover_v2_driver_prescription import _draft, applied_profile
 from tests.test_crossover_v2_room_prescription import _room_median
 from tests.test_crossover_v2_harmonic_evidence import _artifact, _bundle as harmonic_bundle
 from tests.run_manifest_fixture import write_manifest
+from tests.active_speaker_fixtures import mono_output_topology
+from tests.test_rear_output_foundation import _rear_pair
+from tests.test_active_speaker_runtime_contract import _active_topology
+
+PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
+
+
+@pytest.mark.parametrize("layout,rear,digest", [
+    ("mono", False, "6eda21d4ff92e75654d9c4ce87a4dbe28bbcc00b11d74fea57bf60caa6a53bff"),
+    ("mono", True, "4da066a6722233076422d893ba967fe33a1bff0b93ca5813c123ef9cb367344e"),
+    ("stereo", False, "f1fecb0a7d62660d0503192a5ff9a4b8fe75262a502d3d380da466e8dad20106"),
+    ("stereo", True, "edaa33ead790f9903de912428715012dca4dfd4bc317d20e02bc5512e58126f6"),
+])
+def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
+    preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
+    box = _rear_pair(layout)[1] if rear else _active_topology(layout, "active_2_way")
+    candidate = {"source_preset": preset}
+    programs = programs_for_topology(box)
+    for sources in ({"draft": {"topology": box.to_dict()}}, {"candidate": candidate},
+                    {"applied_profile": applied_profile(preset=preset)}):
+        assert contract_programs(sources) == programs
+    contracts = prescription_contracts(programs=programs, candidate=candidate)
+    assert ("rear" in contracts) is rear
+    assert hashlib.sha256(contract_json(contracts).encode()).hexdigest() == digest
+    bank, session = round_bank
+    artifact = session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY/candidate.json"
+    artifact.write_text(json.dumps(candidate))
+    draft_path = bank / "design-draft.json"
+    draft_path.write_text(json.dumps({**json.loads(draft_path.read_text()), "topology": box.to_dict()}))
+    monkeypatch.setattr(cli, "load_output_topology", lambda: box)
+    for args in ([], ["--round", str(bank)]):
+        assert cli.main(["contract", *args]) == cli.EXIT_OK
+        assert set(json.loads(capsys.readouterr().out)) == set(programs)
+        assert cli.main(["contract", "--section", "rear", *args]) == (cli.EXIT_OK if rear else cli.EXIT_REFUSED)
+        answer = json.loads(capsys.readouterr().out)
+        assert answer.get("reason") == (None if rear else "prescription_section_unavailable")
+    packet = build_crossover_evidence_packet(session, driver_draft_path=draft_path)
+    monkeypatch.setattr(rear_cal, "MAX_ALLPASS_Q", rear_cal.MAX_ALLPASS_Q + 1)
+    changed = prescription_contracts(programs=programs, candidate=candidate)
+    assert (contract_digests(changed) != contract_digests(contracts)) is rear
+    after = build_crossover_evidence_packet(session, driver_draft_path=draft_path)
+    assert set(packet["contracts"]) == set(programs)
+    assert (packet["packet_fingerprint"] != after["packet_fingerprint"]) is rear
 
 
 @pytest.fixture
@@ -96,11 +140,12 @@ def test_room_contract_preserves_the_document_ceiling_provenance(round_bank):
 
 
 def _contracts(bank: Path, session: Path):
-    return prescription_contracts(
+    sources = dict(
         **contract_sources(session),
         draft=json.loads((bank / "design-draft.json").read_text()),
         receipt=json.loads((session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY/round_receipt.json").read_text()),
     )
+    return prescription_contracts(programs=contract_programs(sources), **sources)
 
 
 @pytest.mark.parametrize("section,door,codes", [
@@ -198,16 +243,16 @@ def test_round_context_is_read_once(round_bank, monkeypatch, capsys, surface):
     monkeypatch.setattr(Path, "open", counted_open)
     if surface == "contract":
         assert cli.main(["contract", "--round", str(bank)]) == 0
-        assert set(json.loads(capsys.readouterr().out)) == set(SECTIONS)
+        assert set(json.loads(capsys.readouterr().out)) == set(PLAIN_PROGRAMS)
     else:
         packet = build_crossover_evidence_packet(
             session, driver_draft_path=bank / "design-draft.json", applied_profile_path=profile,
         )
-        assert set(packet["contracts"]) == set(SECTIONS)
+        assert set(packet["contracts"]) == set(PLAIN_PROGRAMS)
     assert list(reads.values()) == [1, 1, 1]
 
 
-@pytest.mark.parametrize("section", SECTIONS)
+@pytest.mark.parametrize("section", PLAIN_PROGRAMS)
 def test_served_bytes_digest_matches_packet_and_status(round_bank, tmp_path, capsys, section):
     bank, session = round_bank
     output = tmp_path / f"{section}.json"
@@ -237,7 +282,7 @@ def test_packet_reader_refuses_the_previous_schema_by_name(round_bank):
 def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(capsys):
     assert cli.main(["contract"]) == 0
     contracts = json.loads(capsys.readouterr().out)
-    assert set(contracts) == set(SECTIONS)
+    assert set(contracts) == set(PLAIN_PROGRAMS)
     assert contracts["room"]["evidence_status"] == room.ROOM_MEDIAN_UNAVAILABLE
     assert contracts["room"]["bounds"]["cut_floor_db"] is None
     contract = contracts["bass"]
@@ -538,7 +583,8 @@ def test_rear_document_agrees_with_the_validator_at_each_bound_edge(mutate, expe
             rear_cal.read_rear_calibration(document, sample_rate=48000)
 
 
-def test_contract_cli_rear_shares_rooms_top_level_shape(capsys):
+def test_contract_cli_rear_shares_rooms_top_level_shape(capsys, monkeypatch):
+    monkeypatch.setattr(cli, "load_output_topology", lambda: _rear_pair("mono")[1])
     assert cli.main(["contract", "--section", "rear"]) == 0
     rear = json.loads(capsys.readouterr().out)
     assert cli.main(["contract", "--section", "room"]) == 0

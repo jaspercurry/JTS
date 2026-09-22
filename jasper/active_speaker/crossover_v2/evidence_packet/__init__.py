@@ -34,6 +34,7 @@ from ..operator_notes import OPERATOR_NOTES_KIND, build_operator_notes
 from ..prescription_contract import (
     CONTRACT_COMMAND,
     contract_digests,
+    contract_programs,
     prescription_contracts,
 )
 from ..record_index import Measurement, bundle_measurements
@@ -608,6 +609,8 @@ def build_crossover_evidence_packet(
     verify = _verify_block(state, state_reason)
     reflections = _reflections_block(cloud, cloud_reason)
     crossover_region, no_crossover = _region_block(receipt, receipt_reason)
+    sources = {**contract_sources(round_context or session_dir), \"draft\": _mapping(draft_raw),
+               \"receipt\": receipt, \"applied_profile\": applied_profile or {}}
 
     packet: dict[str, Any] = {
         "artifact_schema_version": PACKET_SCHEMA_VERSION,
@@ -729,10 +732,7 @@ def build_crossover_evidence_packet(
             findings=findings,
             no_crossover=no_crossover,
         ),
-        "contracts": contract_digests(prescription_contracts(**{
-            **contract_sources(round_context or session_dir), "draft": _mapping(draft_raw),
-            "receipt": receipt, "applied_profile": applied_profile or {},
-        })),
+        "contracts": contract_digests(prescription_contracts(programs=contract_programs(sources), **sources)),
     }
     packet["packet_fingerprint"] = _fingerprint(packet)
     return packet

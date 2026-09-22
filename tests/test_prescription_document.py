@@ -19,6 +19,7 @@ from tests.test_prescription_contract import bass_packet as bass_packet
 from tests.test_active_speaker_audition import _applied_profile
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
 from jasper.active_speaker.profile import ActiveSpeakerPreset, SIDES_BY_LAYOUT
+from jasper.active_speaker.staging import build_passive_mains_preset
 from jasper.bass_extension.dynamic_graph import validated_base_graph
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
 from tests.test_crossover_v2_blend_prescription import _receipt, _document as blend_document
@@ -36,7 +37,7 @@ import yaml
 
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
-from jasper.active_speaker.crossover_v2.prescription_contract import contract_digests, contract_json, prescription_contracts
+from jasper.active_speaker.crossover_v2.prescription_contract import contract_digests, contract_json, contract_programs, prescription_contracts
 from jasper.active_speaker.crossover_v2.round_inputs import prescription_sources, round_inputs
 from jasper.active_speaker.crossover_v2 import prescription_document as prescription_document_mod
 from jasper.active_speaker.crossover_v2.prescription_document import (
@@ -366,7 +367,8 @@ def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsy
     descriptor = validate_dynamic_bass_descriptor(BASS_EXTENSION)
     receipt = {**descriptor, "round_id": bass_packet["round_id"], "evidence_status": "evaluated",
                "unqualified_boost_bands_hz": []}
-    contracts = prescription_contracts(**{**prescription_sources(round_inputs(bass_round)), "candidate": base.candidate.to_dict()})
+    sources = {**prescription_sources(round_inputs(bass_round)), "candidate": base.candidate.to_dict()}
+    contracts = prescription_contracts(programs=contract_programs(sources), **sources)
     direct = compose_candidate(base, sections={"bass": descriptor}, rationale=raw["rationale"], evidence={
         "packet_fingerprint": None, "contracts": contract_digests(contracts), "prescriptions": {"bass": receipt},
     })
@@ -652,7 +654,16 @@ def test_a_saved_base_judge_reads_the_applied_profile_state_once(saved_tune, mon
 
 
 @pytest.mark.parametrize("explicit_envelope", [False, True])
-def test_room_digest_names_judged_envelope_and_inheritance_drops_stale_match(base, bank, evidence, explicit_envelope):
+@pytest.mark.parametrize("passive", [False, True])
+def test_room_digest_names_judged_envelope_and_inheritance_drops_stale_match(base, bank, evidence, explicit_envelope, passive):
+    if passive:
+        box = mono_output_topology(mode="full_range_passive")
+        preset, _, _ = build_passive_mains_preset(box)
+        base = publish_authored_candidate(MeasuredCrossoverCandidate(
+            program_id="passive", analysis={"measurement_status": "unmeasured"},
+            source_preset=preset, role_attenuations_db={"full_range": 0.0},
+        ), root=bank)
+        evidence = replace(evidence, sources={**evidence.sources, "draft": {"topology": box.to_dict()}})
     section = room_document()
     section.pop("rationale", None)
     if not explicit_envelope:
@@ -660,6 +671,7 @@ def test_room_digest_names_judged_envelope_and_inheritance_drops_stale_match(bas
             section.pop(key)
     raw = document(base.fingerprint, {"room": section})
     child = judge_prescription_document(raw, base=base, evidence=evidence)
+    assert ("speaker" in child.analysis["evidence"]["contracts"]) is not passive
     judged = child.analysis["evidence"]["prescriptions"]["room"]
     source = child.analysis["room_source"]
     assert source["prescription_sha256"] == prescription_sha256(contract_json(judged).encode())

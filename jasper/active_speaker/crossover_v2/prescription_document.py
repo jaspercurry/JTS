@@ -40,7 +40,7 @@ from . import topology_prescription as topology
 from .capture_prediction import capture_prediction
 from .forward_model import ForwardModelError
 from .evidence_packet.readers import packet_feature_classifications, packet_positional_evidence
-from .prescription_contract import contract_digests, contract_json, prescription_contracts
+from .prescription_contract import contract_digests, contract_json, contract_programs, prescription_contracts
 from .refusal_copy import refusal_copy_for
 from .rear_preview import preview_rear_section
 from .round_captures import RoundCapturesRefused
@@ -48,6 +48,7 @@ from .round_inputs import prescription_sources, read_run_manifest, round_inputs
 
 DOCUMENT_KIND = "jts_prescription"
 SECTION_KINDS = {section.name: section.kind for section in PRESCRIPTION_SECTIONS}
+_SECTION_PROGRAMS = {section.name: row.purpose for row in PROGRAM_DOCUMENT_ORDER for section in row.sections}
 _JUDGE_ORDER = tuple(section.name for section in sorted(PRESCRIPTION_SECTIONS, key=lambda section: section.judge_order))
 
 
@@ -157,7 +158,7 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
                    contracts: Mapping[str, Any], evidence: PrescriptionEvidence,
                    fc_hz: float | None, selected: Mapping[str, Any]) -> tuple[Any, Mapping[str, Any]]:
     packet = dict(evidence.packet)
-    speaker = contracts["speaker"]
+    speaker = contracts.get("speaker", {})
     if name == "driver":
         preset, _ = apply_topology_pin(selected.get("topology"), preset=base.candidate.source_preset, fc_hz=None)
         driver.check_driver_document_size(json.dumps(raw).encode())
@@ -287,7 +288,8 @@ def preview_prescription_document(
                 preview_function = room.preview_room_prescription
                 if not sections[kind]:
                     raise PrescriptionDocumentRefused("prescription_malformed", kind, "preview requires a room section")
-                contracts = prescription_contracts(**{**evidence.sources, "candidate": base.candidate.to_dict()})
+                sources = {**evidence.sources, "candidate": base.candidate.to_dict()}
+                contracts = prescription_contracts(programs=contract_programs(sources), **sources)
                 payload = _section_payload(kind, sections[kind], document["rationale"], contracts)
                 kwargs = {"room_median": room.read_room_median(evidence.sources.get("room_median", {})),
                           "room_median_sha256": evidence.room_median_sha256, "round_id": evidence.round_id,
@@ -346,10 +348,11 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
     if document["base"] != "saved" and document["base"] != base.fingerprint:
         raise PrescriptionDocumentRefused("composition_base_mismatch", None, "document and resolved base differ")
     evidence = evidence or PrescriptionEvidence()
-    contracts = prescription_contracts(**{**evidence.sources, "candidate": base.candidate.to_dict()})
+    sources = {**evidence.sources, "candidate": base.candidate.to_dict()}
+    contracts = prescription_contracts(programs=contract_programs(sources), **sources)
     selected: dict[str, Any] = {}
     judged: dict[str, Any] = {}
-    fc_hz = contracts["speaker"]["alignment"]["bounds"]["fc_hz"]
+    fc_hz = contracts["speaker"]["alignment"]["bounds"]["fc_hz"] if "speaker" in contracts else None
     for name in _JUDGE_ORDER:
         if name not in document["sections"]:
             continue
@@ -357,6 +360,8 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
         if not section:
             selected[name] = None
             continue
+        if _SECTION_PROGRAMS[name] not in contracts:
+            raise PrescriptionDocumentRefused("prescription_section_unavailable", name, "section unavailable for this topology")
         section = _section_payload(name, section, document["rationale"], contracts)
         try:
             selected[name], judged[name] = _judge_section(
