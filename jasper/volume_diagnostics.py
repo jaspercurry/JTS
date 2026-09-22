@@ -20,7 +20,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .atomic_io import atomic_write_text
+from .atomic_io import atomic_write_text, read_json_mapping
 from .json_fields import utc_now_iso
 from .music_sources import Source, VolumeMode, volume_mode
 
@@ -54,11 +54,8 @@ def _source_value(source: Source | str) -> str:
 
 def _read(path: str | None = None) -> dict[str, Any]:
     p = Path(diagnostics_path(path))
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError):
-        return {"version": 1}
-    if not isinstance(data, dict):
+    data = read_json_mapping(p)
+    if data is None:
         return {"version": 1}
     data["version"] = 1
     return data

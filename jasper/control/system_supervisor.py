@@ -83,7 +83,7 @@ from typing import Any
 
 from jasper.log_event import log_event
 
-from ..atomic_io import atomic_write_text
+from ..atomic_io import atomic_write_text, read_json_mapping
 from ..platform.control_client import CONTROL_PORT
 from . import restart_broker
 from .supervisor_runtime import (
@@ -556,13 +556,9 @@ def _read_reboot_state(path: Path) -> float | None:
 
     Fail-open by design: a missing, unreadable, corrupt, or malformed
     file resolves to None so a genuinely-needed reboot is never blocked
-    by one bad byte on disk. Mirrors the conservative read in
-    `jasper/net/wifi_scan_repair.py`."""
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(raw, dict):
+    by one bad byte on disk."""
+    raw = read_json_mapping(path)
+    if raw is None:
         return None
     value = raw.get("last_reboot_at")
     try:

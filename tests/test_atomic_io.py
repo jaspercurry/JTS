@@ -838,8 +838,8 @@ def test_locked_transform_serializes_concurrent_read_modify_writes(tmp_path):
     for t in threads:
         t.join(5.0)
 
-    from jasper.atomic_io import _parse_env_text
-    final = _parse_env_text(path.read_text(encoding="utf-8"))
+    from jasper.env_file import parse_env_mapping
+    final = parse_env_mapping(path.read_text(encoding="utf-8"))
     assert final == {f"K{i}": str(i) for i in range(n)}  # nothing lost
 
 
@@ -912,3 +912,32 @@ def test_locked_upsert_publishes_an_emptied_file_unless_asked_to_delete_it(tmp_p
         assert path.exists() is exists
         if exists:
             assert path.read_bytes() == b""
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "plain",
+        "'single quoted'",
+        '"double quoted"',
+        "with spaces",
+        '"escaped \\" quote"',
+        "",
+    ],
+    ids=["plain", "single", "double", "spaces", "escaped", "empty"],
+)
+def test_both_env_readers_resolve_one_written_file_identically(tmp_path, value):
+    """``atomic_io`` and ``env_file`` are two doors onto the same
+    ``EnvironmentFile``; a value written once must read back the same through
+    either. Quoted values are the case that divided them — the bash writer
+    (``deploy/lib/jasper-env-file.sh``) quotes, so they reach these files."""
+    from jasper.atomic_io import format_env_text, locked_update_env_file
+    from jasper.env_file import read_env_file
+
+    path = tmp_path / "shared.env"
+    path.write_text(format_env_text({"K": value}), encoding="utf-8")
+
+    via_atomic_io = locked_update_env_file(path, {})
+    via_env_file = read_env_file(path)
+
+    assert via_atomic_io == via_env_file

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import math
 import os
@@ -41,7 +40,7 @@ from ..audio_profile_state import (
     resolve_audio_input_intent,
     runtime_env_from_mapping,
 )
-from ..atomic_io import locked_update_env_file
+from ..atomic_io import locked_update_env_file, read_json_mapping
 from ..audio_input_view import build_microphone_settings_view
 from ..env_file import read_env_file
 from ..env_load import env_file_path, read_env_file_state
@@ -55,6 +54,7 @@ from ..chip_aec.policy import (
     effective_chip_aec_dac_gate,
 )
 from ..wake_models import WAKE_MODEL_ENV_OWNER, WAKE_MODEL_FILE
+from .. import systemd_probe
 from . import restart_broker
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,8 @@ _ENHANCED_AEC_INSTALL_SERVICE = "jasper-enhanced-aec-install.service"
 _AEC_COMMISSION_SERVICE = "jasper-aec-commission.service"
 _AEC_BRIDGE_SERVICE = "jasper-aec-bridge.service"
 _USB_MIC_APPLY_UNIT = "jasper-usbmic-apply.service"
-_UNIT_LIVE_STATES = frozenset({"active", "activating", "reloading"})
+# /aec is polled every 3 s; a wedged manager must not hold a worker.
+_PROBE_TIMEOUT_SEC = 2.0
 _AEC_BRIDGE_STATS_FRESH_SECONDS = 3.0
 _USB_MIC_LEG_APPLY_COALESCE_SECONDS = 5.0
 _usb_mic_leg_apply_lock = threading.Lock()
@@ -354,23 +355,17 @@ _probe_memo = threading.local()
 def _batched_unit_probes(*units: str) -> Iterator[None]:
     """Answer several is-active probes with ONE systemctl invocation.
 
-    /aec is polled every 3 s and asks about three units; systemctl prints one
-    state per line in argument order, so one spawn answers all of them. The
-    per-unit probe functions below stay the patchable seams — they consult
-    this memo only when it holds their unit, and a unit missing from the memo
-    (or a failed batch) falls back to the per-unit spawn.
+    /aec is polled every 3 s and asks about three units; one spawn answers all
+    of them. The per-unit probe functions below stay the patchable seams —
+    they consult this memo only when it holds their unit, and a unit the batch
+    could not resolve falls back to the per-unit spawn.
     """
-    try:
-        result = subprocess.run(
-            ["systemctl", "is-active", *units],
-            capture_output=True, text=True, timeout=2.0,
-        )
-        states = dict(
-            zip(units, (line.strip() for line in result.stdout.splitlines()))
-        )
-    except (OSError, subprocess.SubprocessError):
-        states = {}
-    _probe_memo.states = states
+    states = systemd_probe.unit_states(units, timeout=_PROBE_TIMEOUT_SEC)
+    _probe_memo.states = {
+        unit: state
+        for unit, state in states.items()
+        if state != systemd_probe.UNKNOWN
+    }
     try:
         yield
     finally:
@@ -385,15 +380,12 @@ def _aec_bridge_active() -> bool:
     """True if jasper-aec-bridge.service is currently active."""
     state = _memoized_unit_state(_AEC_BRIDGE_SERVICE)
     if state is not None:
-        return state == "active"
-    try:
-        result = subprocess.run(
-            ["systemctl", "is-active", _AEC_BRIDGE_SERVICE],
-            capture_output=True, text=True, timeout=2.0,
-        )
-        return result.stdout.strip() == "active"
-    except (OSError, subprocess.SubprocessError):
-        return False
+        return systemd_probe.state_is_live(state, activating_is_live=False)
+    return systemd_probe.unit_active(
+        _AEC_BRIDGE_SERVICE,
+        timeout=_PROBE_TIMEOUT_SEC,
+        activating_is_live=False,
+    )
 
 
 def _unit_active(unit: str) -> bool:
@@ -404,27 +396,16 @@ def _unit_active(unit: str) -> bool:
     job-liveness truth, so treating only ``active`` as live would make a
     real multi-minute install/update/measurement look interrupted.
     """
-
     state = _memoized_unit_state(unit)
     if state is not None:
-        return state in _UNIT_LIVE_STATES
-    try:
-        result = subprocess.run(
-            ["systemctl", "is-active", unit],
-            capture_output=True, text=True, timeout=2.0,
-        )
-        return result.stdout.strip() in _UNIT_LIVE_STATES
-    except (OSError, subprocess.SubprocessError):
-        return False
+        return systemd_probe.state_is_live(state, activating_is_live=True)
+    return systemd_probe.unit_active(
+        unit, timeout=_PROBE_TIMEOUT_SEC, activating_is_live=True,
+    )
 
 
 def _read_xvf_firmware_update_state() -> dict[str, Any]:
-    try:
-        with open(_XVF_FIRMWARE_UPDATE_STATE_FILE) as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return read_json_mapping(_XVF_FIRMWARE_UPDATE_STATE_FILE) or {}
 
 
 def _commission_status() -> dict[str, Any]:

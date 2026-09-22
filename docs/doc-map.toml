@@ -150,6 +150,7 @@ code = [
   "deploy/configure-bluez.sh",
   "deploy/nginx-jasper.conf",
   "deploy/nginx-jasper-streambox.conf",
+  "deploy/nginx/**",
   "deploy/modules-load.d/**",
   "deploy/modprobe.d/**",
   ".github/dependabot.yml",
@@ -284,6 +285,7 @@ code = [
   "jasper/cli/doctor/web.py",
   "deploy/jasper-chat-web.*",
   "deploy/nginx-jasper.conf",
+  "deploy/nginx/**",
 ]
 docs = [
   "docs/extensibility.md",
@@ -550,6 +552,7 @@ code = [
   "jasper/control/shairport_supervisor.py",
   "jasper/control/restart_broker.py",
   "jasper/multiroom/reconcile.py",
+  "jasper/multiroom/grouping_env.py",
   "jasper/multiroom/effective_role.py",
   "jasper/control/server.py",
   "jasper/control/handlers/**",
@@ -558,10 +561,7 @@ code = [
   "jasper/web/chrome.py",
   "jasper/web/sources_setup.py",
   "jasper/web/bluetooth_setup.py",
-  "jasper/web/airplay_setup.py",
   "jasper/web/speaker_setup.py",
-  "jasper/airplay_mode.py",
-  "jasper/cli/airplay_mode.py",
   "jasper/cli/doctor/renderers.py",
   "jasper/cli/doctor/usbsink.py",
   "jasper/control/audio_*.py",
@@ -589,8 +589,9 @@ code = [
   "deploy/usbsink/jasper-usbgadget-compose.sh",
   "deploy/nginx-jasper.conf",
   "deploy/nginx-jasper-streambox.conf",
+  "deploy/nginx/**",
   "deploy/lib/install/systemd-units.sh",
-  "deploy/lib/install/env-migrations.sh",
+  "deploy/lib/install/state-and-secrets.sh",
   "deploy/lib/install/renderers.sh",
 ]
 docs = [
@@ -999,7 +1000,6 @@ code = [
   "jasper/control/camilla_recover_state.py",
   "jasper/control/park_record.py",
   "jasper/web/system_setup.py",
-  "jasper/web/airplay_setup.py",
   "jasper/platform/systemd.py",
   "deploy/journald/**",
   "deploy/rpi-swap/**",
@@ -1029,7 +1029,7 @@ docs = [
   "AGENTS.md",
 ]
 requires_docs_when = [
-  "Watchdog, OOM, restart, dashboard health, AirPlay mode/health, or systemd unit resilience behavior changes.",
+  "Watchdog, OOM, restart, dashboard health, AirPlay conf render/health, or systemd unit resilience behavior changes.",
   "Logging verbosity, the debug-mode toggle, or log/journald volume behavior changes.",
 ]
 verification = [

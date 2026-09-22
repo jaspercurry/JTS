@@ -48,10 +48,14 @@ from typing import Any, Iterable, Mapping
 
 try:
     from _wake_pipeline_common import is_safe_wake_pipeline_output
+    from _wake_pipeline_common import read_wake_corpus_json as _read_json
+    from _wake_pipeline_common import resolve_wav_path as _resolve_wav_path
 except ModuleNotFoundError as exc:
     if exc.name != "_wake_pipeline_common":
         raise
     from scripts._wake_pipeline_common import is_safe_wake_pipeline_output
+    from scripts._wake_pipeline_common import read_wake_corpus_json as _read_json
+    from scripts._wake_pipeline_common import resolve_wav_path as _resolve_wav_path
 
 
 SCHEMA_VERSION = 1
@@ -134,34 +138,6 @@ class ClipRef:
             return f"{session_id}:{seq:03d}"
         clip_id = self.clip_id or "unknown-clip"
         return f"{session_id}:{clip_id}"
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    with open(path) as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} does not contain a JSON object")
-    return data
-
-
-def _resolve_wav_path(corpus_dir: Path, path_str: str) -> Path:
-    """Resolve recorder paths against a local corpus copy.
-
-    Pi-side metadata stores absolute paths below
-    `/var/lib/jasper/enrollment_positives/`. After rsync, those paths need to
-    be remapped to the local `corpus_dir`.
-    """
-    raw = Path(path_str)
-    parts = raw.parts
-    marker = "enrollment_positives"
-    if marker in parts:
-        idx = parts.index(marker)
-        rel_parts = parts[idx + 1:]
-        if rel_parts:
-            return corpus_dir.joinpath(*rel_parts)
-    if raw.is_absolute():
-        return raw
-    return corpus_dir / raw
 
 
 def _safe_path_component(value: object, fallback: str = "unknown") -> str:
@@ -641,6 +617,11 @@ def _non_empty(path: Path) -> bool:
     return path.exists() and any(path.iterdir())
 
 
+# Same name as _extract_wake_corpus.py's _safe_to_remove_output, deliberately
+# not converged: this one proves ownership via is_safe_wake_pipeline_output's
+# marker-JSON scheme (bundle.json); the extractor proves it via its own
+# manifest.csv/summary.txt shape. Different artifact shapes, so a shared
+# implementation would have to fake one or lose the other's guarantee.
 def _safe_to_remove_output(path: Path, *, corpus_dir: Path) -> bool:
     if corpus_dir.expanduser().resolve() in path.expanduser().resolve().parents:
         return False

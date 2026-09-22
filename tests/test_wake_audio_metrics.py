@@ -90,7 +90,7 @@ def test_audit_corpus_and_waveform_dbfs_consume_shared_rms(tmp_path: Path) -> No
         wav.setframerate(16000)
         wav.writeframes(samples.tobytes())
 
-    assert audit._load_wav(wav_path).rms == rms_amplitude(samples)
+    assert audit._load_wav_stats(wav_path).rms == rms_amplitude(samples)
     assert fusion._dbfs_from_rms(samples) == pytest.approx(
         20.0 * math.log10(rms_amplitude(samples) / 32768.0),
     )

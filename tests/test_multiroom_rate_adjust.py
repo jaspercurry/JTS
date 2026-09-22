@@ -536,7 +536,7 @@ def test_channel_pick_check_skips_when_env_is_unreadable(monkeypatch, tmp_path):
 
 
 def test_channel_pick_check_warns_on_channel_drift(monkeypatch, tmp_path):
-    from jasper.multiroom.reconcile import OUTPUTD_DAC_CONTENT_CHANNEL_ENV
+    from jasper.multiroom.dac_content_ring import OUTPUTD_DAC_CONTENT_CHANNEL_ENV
 
     env = tmp_path / "grouping-outputd.env"
     r = _channel_pick_check(
@@ -616,10 +616,8 @@ def test_channel_pick_check_ok_when_wired(monkeypatch, tmp_path):
 def test_channel_pick_check_active_endpoint_names_the_grouping_ring(
     monkeypatch, tmp_path,
 ):
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
-        outputd_grouping_env,
-    )
+    from jasper.multiroom.grouping_env import outputd_grouping_env
+    from jasper.multiroom.dac_content_ring import OUTPUTD_DAC_CONTENT_CHANNEL_ENV
     cfg = _cfg(enabled=True, role="leader", channel="right", bond_id="b")
     derived = outputd_grouping_env(cfg, active_endpoint=True)
     assert derived[DAC_CONTENT_LANE_ENV] == ""
@@ -637,7 +635,7 @@ def test_channel_pick_check_active_endpoint_names_the_grouping_ring(
 def test_channel_pick_check_active_endpoint_warns_on_stale_dumb_lane(
     monkeypatch, tmp_path,
 ):
-    from jasper.multiroom.reconcile import OUTPUTD_DAC_CONTENT_CHANNEL_ENV
+    from jasper.multiroom.dac_content_ring import OUTPUTD_DAC_CONTENT_CHANNEL_ENV
 
     cfg = _cfg(enabled=True, role="leader", channel="right", bond_id="b")
     env = tmp_path / "grouping-outputd.env"
@@ -659,10 +657,8 @@ def test_outputd_grouping_env_clears_when_not_active():
     empty strings (outputd reads empty as unset → byte-identical solo
     loop), and the writer never names a content bridge in any state — the
     round-trip lane has no transport of its own to declare (ADR-0100)."""
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
-        outputd_grouping_env,
-    )
+    from jasper.multiroom.grouping_env import outputd_grouping_env
+    from jasper.multiroom.dac_content_ring import OUTPUTD_DAC_CONTENT_CHANNEL_ENV
     for cfg in (
         _cfg(),  # off
         _cfg(enabled=True, role="", channel="left", bond_id="", error="bad"),
@@ -679,7 +675,7 @@ def test_only_the_armed_branch_touches_the_content_bridge_key():
     ``jasper-fanin-coupling-auto`` put there. Without the marker outputd reads
     the bridge with ``env_str``, whose BLANK is a value it parks on, so an
     unarmed box has to inherit layer 1 verbatim — absent, not cleared."""
-    from jasper.multiroom.reconcile import outputd_grouping_env
+    from jasper.multiroom.grouping_env import outputd_grouping_env
     configs = [
         _cfg(),
         _cfg(enabled=True, role="leader", channel="left", bond_id="b"),
@@ -815,7 +811,7 @@ def test_tts_lane_check_bonded_without_voice_override_warns(monkeypatch):
 def test_tts_lane_check_active_endpoint_fanin_is_ok(monkeypatch, tmp_path):
     """Active endpoints must use fan-in upstream of the crossover; outputd's
     post-crossover TTS socket is intentionally unarmed."""
-    from jasper.multiroom.reconcile import outputd_grouping_env, voice_grouping_env
+    from jasper.multiroom.grouping_env import outputd_grouping_env, voice_grouping_env
     cfg = _cfg(enabled=True, role="leader", channel="right", bond_id="b")
     r = _tts_lane_check(
         monkeypatch,
@@ -889,9 +885,7 @@ def test_tts_lane_check_uses_systemd_resolved_voice_socket(monkeypatch, tmp_path
     The doctor must judge the same resolved env jasper-voice actually
     starts with, not the reconciler-written file in isolation.
     """
-    from jasper.multiroom.reconcile import (
-        outputd_grouping_env,
-    )
+    from jasper.multiroom.grouping_env import outputd_grouping_env
     cfg = _cfg(enabled=True, role="leader", channel="left", bond_id="b")
     r = _tts_lane_check(
         monkeypatch,
@@ -911,7 +905,7 @@ def test_tts_lane_check_uses_systemd_resolved_voice_socket(monkeypatch, tmp_path
 def test_tts_lane_check_ok_when_reconciler_wired_both_ends(monkeypatch, tmp_path):
     """The reconciler's own pure derives write both files → the check
     passes: the two ends of the contract are the same functions."""
-    from jasper.multiroom.reconcile import outputd_grouping_env, voice_grouping_env
+    from jasper.multiroom.grouping_env import outputd_grouping_env, voice_grouping_env
     cfg = _cfg(enabled=True, role="follower", channel="right",
                bond_id="b", leader_addr="jts.local")
     r = _tts_lane_check(
@@ -929,7 +923,7 @@ def test_tts_lane_check_ok_when_reconciler_wired_both_ends(monkeypatch, tmp_path
 
 def test_grouping_tts_route_matrix_matches_reconciler_writers():
     """One matrix feeds both env writers, including special endpoints."""
-    from jasper.multiroom.reconcile import outputd_grouping_env, voice_grouping_env
+    from jasper.multiroom.grouping_env import outputd_grouping_env, voice_grouping_env
 
     leader = _cfg(enabled=True, role="leader", channel="right", bond_id="b")
     follower = _cfg(
@@ -995,7 +989,7 @@ def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
     """PR-2: a passive bonded member's voice plays TTS via outputd
     (post-round-trip); solo and active endpoints OMIT the key entirely so voice
     falls back to fan-in upstream of the crossover."""
-    from jasper.multiroom.reconcile import voice_grouping_env
+    from jasper.multiroom.grouping_env import voice_grouping_env
     leader = voice_grouping_env(
         _cfg(enabled=True, role="leader", channel="left", bond_id="b"),
         flat_output_allowed=True)
@@ -1036,7 +1030,7 @@ def test_voice_grouping_env_flips_socket_when_bonded_and_omits_when_solo():
 def test_outputd_grouping_env_arms_tts_socket_with_the_lane():
     """The TTS socket arms/clears in lockstep with the round-trip lane —
     one file, one writer, no half-armed member."""
-    from jasper.multiroom.reconcile import outputd_grouping_env
+    from jasper.multiroom.grouping_env import outputd_grouping_env
     bonded = outputd_grouping_env(
         _cfg(enabled=True, role="follower", channel="right",
              bond_id="b", leader_addr="jts.local"),
@@ -1135,10 +1129,8 @@ def test_outputd_grouping_env_carries_the_trim():
     """Bonded: the validated trim derives into the outputd lane env
     (always written, so a cleared trim converges to 0.0); solo clears
     with EMPTY (outputd's env_f32 reads empty as unset -> default 0)."""
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_DAC_CONTENT_TRIM_ENV,
-        outputd_grouping_env,
-    )
+    from jasper.multiroom.grouping_env import outputd_grouping_env
+    from jasper.multiroom.dac_content_ring import OUTPUTD_DAC_CONTENT_TRIM_ENV
     bonded = bonded_grouping_env(
         _cfg(enabled=True, role="follower", channel="right",
              bond_id="b", leader_addr="jts.local", trim_db=-2.5),

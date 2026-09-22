@@ -33,10 +33,6 @@ from .config import (
 
 logger = logging.getLogger(__name__)
 
-# Compatibility alias for callers/tests that imported this module's old name.
-# The driver-domain emitter owns the actual Camilla filter identity.
-PAIR_BALANCE_FILTER = DRIVER_DOMAIN_PAIR_TRIM_FILTER
-
 ApplyMode = Literal["active_camilla", "outputd", "not_bonded"]
 
 
@@ -87,7 +83,7 @@ def camilla_patch_for_trim(trim_db: float) -> dict[str, Any]:
     trim = coerce_trim_db(trim_db)
     return {
         "filters": {
-            PAIR_BALANCE_FILTER: {
+            DRIVER_DOMAIN_PAIR_TRIM_FILTER: {
                 "parameters": {
                     "gain": trim,
                     "inverted": False,

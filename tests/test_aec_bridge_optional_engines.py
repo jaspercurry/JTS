@@ -42,4 +42,7 @@ def test_optional_engine_process_disables_only_failed_leg(caplog):
     assert active is None
     assert clean == b""
     assert isinstance(error, RuntimeError)
-    assert "optional path failed: inference failed" in caplog.text
+    (record,) = caplog.records
+    assert record.levelname == "ERROR"
+    assert record.name == aec_bridge.logger.name
+    assert record.getMessage() == "optional path failed: inference failed"

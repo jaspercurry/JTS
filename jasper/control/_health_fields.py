@@ -25,6 +25,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from jasper.json_fields import as_mapping
+
 # Expected failures at optional/cached observability boundaries. Programming
 # errors outside this set should not be hidden; a dead sampler is surfaced as
 # stale by snapshot() instead of silently retrying a broken implementation.
@@ -64,24 +66,60 @@ def _finite_number(value: Any) -> int | float | None:
     return value
 
 
-def _mapping(value: Any) -> Mapping[str, Any]:
-    """``value`` when it is an object, else an empty one — so a chain of
-    ``.get()`` hops over an absent branch stays a lookup, not a crash."""
-    return value if isinstance(value, Mapping) else {}
+_mapping = as_mapping
 
 
 def _as_int(value: Any, default: int = 0) -> int:
-    """``value`` as an ``int``, or ``default`` when it is not one.
+    """``value`` as an ``int``, or ``default`` when it is not one."""
+    parsed = _as_int_or_none(value)
+    return default if parsed is None else parsed
+
+
+def _as_float(value: Any) -> float | None:
+    """``value`` as a ``float``, or ``None`` when it is not one."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_int_or_none(value: Any) -> int | None:
+    """``value`` as an ``int``, or ``None`` when it is not one — ``0`` would
+    misread as "confirmed zero" rather than "couldn't tell".
 
     ``bool`` is an ``int`` in Python, so it is rejected here too — a stray
     ``True``/``False`` in untyped JSON must not silently become 1 or 0.
     """
     if isinstance(value, bool):
-        return default
+        return None
     try:
         return int(value)
     except (TypeError, ValueError):
-        return default
+        return None
+
+
+def _nonneg_delta(curr: Any, prev: Any) -> int | None:
+    """``curr - prev`` when both are ``int`` and non-decreasing, else ``None``."""
+    if not isinstance(curr, int) or not isinstance(prev, int) or curr < prev:
+        return None
+    return curr - prev
+
+
+def _nonneg_rate(curr: Any, prev: Any, dt: float) -> float | None:
+    """A monotonic counter's per-second delta, or ``None`` on wrap/reset/absence."""
+    delta = _nonneg_delta(curr, prev)
+    return delta / dt if delta is not None else None
+
+
+def _sum_or_none(block: Mapping[str, Any], keys: tuple[str, ...]) -> int | None:
+    """Sum of the named counters, or ``None`` unless every one of them is present."""
+    total = 0
+    for key in keys:
+        value = _as_int_or_none(block.get(key))
+        if value is None:
+            return None
+        total += value
+    return total
 
 
 def _nonnegative_counter(value: Any) -> int | None:

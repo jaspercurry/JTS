@@ -29,6 +29,13 @@ from typing import Any
 import numpy as np
 from scipy import ndimage, signal
 
+try:
+    from _wake_pipeline_common import read_wake_corpus_json, resolve_wav_path
+except ModuleNotFoundError as exc:
+    if exc.name != "_wake_pipeline_common":
+        raise
+    from scripts._wake_pipeline_common import read_wake_corpus_json, resolve_wav_path
+
 
 SAMPLE_RATE_HZ = 16000
 FULL_SCALE = 32768.0
@@ -154,27 +161,7 @@ def _fmt(value: float | None, digits: int = 1) -> str:
     return f"{float(value):.{digits}f}"
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as e:
-        raise ValueError(f"{path}: failed to read JSON: {e}") from e
-
-
-def _resolve_wav_path(corpus_dir: Path, path_str: str) -> Path:
-    raw = Path(path_str)
-    marker = "enrollment_positives"
-    if marker in raw.parts:
-        idx = raw.parts.index(marker)
-        rel_parts = raw.parts[idx + 1:]
-        if rel_parts:
-            return corpus_dir.joinpath(*rel_parts)
-    if raw.is_absolute():
-        return raw
-    return corpus_dir / raw
-
-
-def _load_wav(path: Path) -> tuple[int, int, int, np.ndarray, np.ndarray]:
+def _load_wav_samples(path: Path) -> tuple[int, int, int, np.ndarray, np.ndarray]:
     with wave.open(str(path), "rb") as w:
         channels = w.getnchannels()
         sample_width = w.getsampwidth()
@@ -620,8 +607,8 @@ def analyze_wav(
     path_str: str,
     config: AnalyzerConfig,
 ) -> tuple[dict[str, Any], np.ndarray]:
-    path = _resolve_wav_path(corpus_dir, path_str)
-    sample_rate, channels, sample_width, pcm, samples = _load_wav(path)
+    path = resolve_wav_path(corpus_dir, path_str)
+    sample_rate, channels, sample_width, pcm, samples = _load_wav_samples(path)
     duration_s = len(samples) / sample_rate if sample_rate else 0.0
     abs_pcm = np.abs(pcm.astype(np.int32))
     peak_int = int(np.max(abs_pcm)) if abs_pcm.size else 0
@@ -791,7 +778,7 @@ def _load_clips(
     if not metadata_dir.is_dir():
         raise ValueError(f"{metadata_dir} is not a directory")
     session_paths = sorted(metadata_dir.glob("enroll_*.json"))
-    sessions = [_read_json(path) for path in session_paths]
+    sessions = [read_wake_corpus_json(path) for path in session_paths]
     if session_ids is not None:
         sessions = [s for s in sessions if str(s.get("session_id")) in session_ids]
     if latest is not None:

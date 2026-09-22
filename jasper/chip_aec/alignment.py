@@ -22,6 +22,8 @@ from jasper.atomic_io import read_regular_bytes_nofollow
 from jasper.audio_measurement.ramp import capped_gap_step_db
 from jasper.mics import xvf3800
 
+from .health import PER_UNIT_IDENTITY_FIELDS
+
 if TYPE_CHECKING:
     import numpy as np
 
@@ -247,11 +249,6 @@ class AlignmentIdentity:
             raise ValueError("alignment identity geometry must be positive integers")
 
 
-# The identity fields that name THIS physical box rather than its hardware
-# class.  K is a property of the class, so a box whose only divergence is here
-# is running a proof measured on a sibling of itself — worth saying out loud,
-# not worth refusing (ADR-0101).
-PER_UNIT_IDENTITY_FIELDS = frozenset({"xvf_serial", "output_hardware_key"})
 # Recorded on every artifact for forensics only; excluded from comparison —
 # ADR-0190.
 RECORDED_ONLY_IDENTITY_FIELDS = frozenset({"xvf_variant", "beam_plan", "output_format"})

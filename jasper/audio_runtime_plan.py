@@ -1115,12 +1115,12 @@ def outputd_period_frames_as_loaded(
     The plan's resolver answers a POLICY question — lab override, then
     ``jasper.env``, then the DAC floor, then the packaged default, with
     ``outputd.env`` feeding only warnings. outputd asks a different one:
-    ``env_u32("JASPER_OUTPUTD_PERIOD_FRAMES", DEFAULT)`` over its three
-    ``EnvironmentFile=`` layers, later wins. The two disagree exactly where the
-    slot gate must not guess — a floor of 128 with a stale 1024 still in
-    ``outputd.env`` (the resolver's own "rerun audio hardware reconcile" drift),
-    or an operator ``jasper.env`` value the reconciler has not applied — so the
-    gate reads THIS and the plan keeps its own.
+    ``env_u32_positive_or_bail("JASPER_OUTPUTD_PERIOD_FRAMES", DEFAULT)`` over
+    its three ``EnvironmentFile=`` layers, later wins. The two disagree exactly
+    where the slot gate must not guess — a floor of 128 with a stale 1024 still
+    in ``outputd.env`` (the resolver's own "rerun audio hardware reconcile"
+    drift), or an operator ``jasper.env`` value the reconciler has not applied
+    — so the gate reads THIS and the plan keeps its own.
 
     Blank or absent is the packaged default, matching ``env_parse``. A value
     outputd would REFUSE (non-numeric, or not positive) answers ``None``: the

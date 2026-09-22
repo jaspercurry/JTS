@@ -40,7 +40,7 @@ def popen_correction_play(
     stderr: int | None,
 ) -> subprocess.Popen[bytes]:
     """Spawn a correction-lane ``aplay`` for sync/thread callers."""
-    return subprocess.Popen(
+    return subprocess.Popen(  # unbounded: caller owns the wait/timeout (sync/thread return)
         correction_play_argv(wav_path),
         stdout=stdout,
         stderr=stderr,

@@ -21,7 +21,6 @@ and uneven condition/distance coverage before the corpus drives Phase
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import statistics
 import sys
@@ -32,6 +31,15 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+try:
+    from _wake_pipeline_common import read_wake_corpus_json as _read_json
+    from _wake_pipeline_common import resolve_wav_path as _resolve_wav_path
+except ModuleNotFoundError as exc:
+    if exc.name != "_wake_pipeline_common":
+        raise
+    from scripts._wake_pipeline_common import read_wake_corpus_json as _read_json
+    from scripts._wake_pipeline_common import resolve_wav_path as _resolve_wav_path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -104,14 +112,7 @@ class WavStats:
         return 20.0 * math.log10(self.rms / 32768.0)
 
 
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as e:
-        raise ValueError(f"{path}: failed to read JSON: {e}") from e
-
-
-def _load_wav(path: Path) -> WavStats:
+def _load_wav_stats(path: Path) -> WavStats:
     with wave.open(str(path)) as w:
         channels = w.getnchannels()
         sample_width = w.getsampwidth()
@@ -134,27 +135,6 @@ def _load_wav(path: Path) -> WavStats:
         rms=rms,
         peak=peak,
     )
-
-
-def _resolve_wav_path(corpus_dir: Path, path_str: str) -> Path:
-    """Resolve recorder metadata paths against a local corpus copy.
-
-    Production metadata contains absolute Pi paths such as
-    `/var/lib/jasper/enrollment_positives/aec_on_nomusic/foo.wav`.
-    After rsync, those same WAVs live under the caller's local
-    `corpus_dir`, so map any path below `enrollment_positives/` back
-    onto the local root before falling back to the literal path.
-    """
-    raw = Path(path_str)
-    marker = "enrollment_positives"
-    if marker in raw.parts:
-        idx = raw.parts.index(marker)
-        rel_parts = raw.parts[idx + 1:]
-        if rel_parts:
-            return corpus_dir.joinpath(*rel_parts)
-    if raw.is_absolute():
-        return raw
-    return corpus_dir / raw
 
 
 def _expected_legs(session: dict[str, Any]) -> tuple[str, ...]:
@@ -380,7 +360,7 @@ def audit(
                     issues.append(f"{clip_id}: missing WAV for {leg}: {wav_path}")
                     continue
                 try:
-                    stats = _load_wav(wav_path)
+                    stats = _load_wav_stats(wav_path)
                 except (OSError, wave.Error, ValueError) as e:
                     issues.append(f"{clip_id}: failed to read {wav_path}: {e}")
                     continue

@@ -32,6 +32,7 @@ import os
 from pathlib import Path
 
 from .atomic_io import atomic_write_text
+from .env_file import read_value
 
 logger = logging.getLogger(__name__)
 
@@ -49,26 +50,18 @@ def read_mic_muted(path: str | os.PathLike) -> bool:
     except OSError as e:
         logger.warning("mic mute persistence: read %s failed (%s)", p, e)
         return False
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        if key.strip() != _KEY:
-            continue
-        v = value.strip().strip('"').strip("'")
-        if v in ("1", "true", "True", "yes", "on"):
-            return True
-        if v in ("0", "false", "False", "no", "off", ""):
-            return False
-        logger.warning(
-            "mic mute persistence: %s has unrecognised value %r — "
-            "treating as unmuted",
-            p, v,
-        )
+    v = read_value(text, _KEY)
+    if v is None:
         return False
+    if v in ("1", "true", "True", "yes", "on"):
+        return True
+    if v in ("0", "false", "False", "no", "off", ""):
+        return False
+    logger.warning(
+        "mic mute persistence: %s has unrecognised value %r — "
+        "treating as unmuted",
+        p, v,
+    )
     return False
 
 

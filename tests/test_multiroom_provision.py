@@ -16,6 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from jasper.multiroom import provision
+from tests._log_events import event_fields
 
 
 def _which(present):
@@ -154,9 +155,9 @@ def test_install_success_logs_nonzero_distro_unit_neutralise(
 
     assert r["state"] == "installed"
     assert json.loads(Path(status).read_text())["state"] == "installed"
-    assert "multiroom.provision.distro_unit_neutralise_failed" in caplog.text
-    assert "rc=1" in caplog.text
-    assert "systemctl boom" in caplog.text
+    fields = event_fields(caplog, "multiroom.provision.distro_unit_neutralise_failed")
+    assert fields["rc"] == "1"
+    assert "systemctl boom" in fields["detail"]
 
 
 def test_apt_nonzero_fails_soft(tmp_path) -> None:

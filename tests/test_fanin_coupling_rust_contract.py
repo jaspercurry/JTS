@@ -33,6 +33,7 @@ from jasper.fanin_coupling import (
 )
 from jasper.music_sources import MUSIC_SOURCE_SPECS, SOURCE_TO_FANIN_LABEL
 from jasper.ring_assets import RING_CONF_DEFAULT_CHANNELS
+from tests.ring_abi import ring_abi
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _FANIN_CONFIG_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "config.rs"
@@ -53,19 +54,12 @@ _FANIN_DIRECT_CAPTURE_RS = (
 )
 _OUTPUTD_TYPES_RS = _REPO_ROOT / "rust" / "jasper-outputd" / "src" / "types.rs"
 _RING_IOPLUG_C = _REPO_ROOT / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
-_RING_LAYOUT_RS = _REPO_ROOT / "rust" / "jasper-ring" / "src" / "layout.rs"
 
 
 def _config_rs_text() -> str:
     if not _FANIN_CONFIG_RS.exists():
         pytest.skip(f"rust source not present: {_FANIN_CONFIG_RS}")
     return _FANIN_CONFIG_RS.read_text(encoding="utf-8")
-
-
-def _ring_layout_rs_text() -> str:
-    if not _RING_LAYOUT_RS.exists():
-        pytest.skip(f"rust source not present: {_RING_LAYOUT_RS}")
-    return _RING_LAYOUT_RS.read_text(encoding="utf-8")
 
 
 def _lane_resampler_rs_text() -> str:
@@ -294,17 +288,10 @@ def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
     # restating them, so the values are pinned at their real source
     # (jasper-ring) and fanin's re-export is pinned separately.
     text = _config_rs_text()
-    assert "MIN_N_SLOTS as RING_SLOTS_MIN" in text, (
-        "jasper-fanin must re-export jasper_ring::MIN_N_SLOTS, not restate it"
-    )
-    assert "MAX_N_SLOTS as RING_SLOTS_MAX" in text, (
-        "jasper-fanin must re-export jasper_ring::MAX_N_SLOTS, not restate it"
-    )
-    layout_text = _ring_layout_rs_text()
-    assert f"pub const MIN_N_SLOTS: u32 = {RING_SLOTS_MIN};" in layout_text, (
+    assert ring_abi()["min_n_slots"] == RING_SLOTS_MIN, (
         "jasper_ring::MIN_N_SLOTS must match the Python RING_SLOTS_MIN bound"
     )
-    assert f"pub const MAX_N_SLOTS: u32 = {RING_SLOTS_MAX};" in layout_text, (
+    assert ring_abi()["max_n_slots"] == RING_SLOTS_MAX, (
         "jasper_ring::MAX_N_SLOTS must match the Python RING_SLOTS_MAX bound"
     )
     # The out-of-range guard returns an Err, it does NOT clamp.

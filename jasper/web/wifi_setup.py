@@ -52,7 +52,6 @@ Security:
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -62,6 +61,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ..atomic_io import read_json_mapping
 from ..net import wifi_guardian_persistence, wifi_scan_repair
 from ..control.restart_broker import manage_units
 from ..log_event import log_event
@@ -663,13 +663,7 @@ def _scan_networks_report_once(
 
 def _read_scan_repair_state() -> dict[str, Any]:
     """Read the repair helper's rate-limit state, best-effort."""
-    try:
-        raw = json.loads(wifi_scan_repair.DEFAULT_STATE_PATH.read_text(
-            encoding="utf-8",
-        ))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return {}
-    return raw if isinstance(raw, dict) else {}
+    return read_json_mapping(wifi_scan_repair.DEFAULT_STATE_PATH) or {}
 
 
 def _root_scan_repair_result(iface: str) -> dict[str, Any]:

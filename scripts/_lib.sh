@@ -124,6 +124,13 @@ fi
 export PI_USER="${PI_USER:-pi}"
 unset _jts_lib_caller_host _jts_lib_caller_hostname _jts_lib_caller_user
 
+# Shared ssh option set for laptop-side scripts that batch-connect to the
+# Pi (matches deploy-to-pi.sh's own SSH_BATCH_OPTS). ServerAlive keepalives
+# bound a severed transport (issue #2340) to a ~60s ssh error instead of an
+# unbounded hang, so a poll that lost its link fails fast enough to retry.
+# shellcheck disable=SC2034 # consumed by the scripts that source this lib
+SSH_BATCH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+
 # Print the Python executable for repository-bound laptop tooling.
 # Precedence is the effective PYTHON value (one executable token/path),
 # this checkout's venv, the main checkout's venv when invoked from a linked
@@ -177,6 +184,29 @@ quote_args() {
         out+="${out:+ }$(shell_quote "$arg")"
     done
     printf '%s' "$out"
+}
+
+# cleanup_remote_capture PATTERN REMOTE_DIR
+# Remove REMOTE_DIR on PI_HOST via `sudo rm -rf --`, but only when it
+# matches PATTERN (a path-shape glob such as "/tmp/wake-rate-*") — the
+# allowlist a corrupted or empty REMOTE_DIR must never bypass. Capture
+# scripts trap this on EXIT so a scratch capture directory is removed
+# even after Ctrl-C or an earlier failure.
+cleanup_remote_capture() {
+    local pattern="$1" remote_dir="$2"
+    # shellcheck disable=SC2254 # pattern is a caller-chosen glob, not a literal
+    case "$remote_dir" in
+        $pattern) ;;
+        *)
+            echo "WARN: refusing to clean unexpected remote path: $remote_dir" >&2
+            return
+            ;;
+    esac
+    local remote_capture_q
+    printf -v remote_capture_q '%q' "$remote_dir"
+    ssh "${PI_USER}@${PI_HOST}" "sudo rm -rf -- ${remote_capture_q}" \
+        >/dev/null 2>&1 \
+        || echo "WARN: could not remove remote capture directory $remote_dir" >&2
 }
 
 JASPER_VOICE_JOURNAL_NOISE_RE='GetGpuDevices|device_discovery'

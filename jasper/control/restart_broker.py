@@ -385,7 +385,7 @@ def _spawn_detached(argv: list[str], *, verb: str, units_label: str) -> None:
     """Fire a systemctl call the broker must not wait on — the transition it
     starts can kill the broker before it has answered. The rc can never reach
     the caller, so stderr goes to a reaper thread instead of DEVNULL."""
-    proc = subprocess.Popen(
+    proc = subprocess.Popen(  # unbounded: bounded by _journal_detached_result's communicate(timeout=_EXEC_TIMEOUT_CEILING_SEC)
         argv,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,

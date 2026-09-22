@@ -57,7 +57,7 @@ def test_verify_accepts_when_unreadable(monkeypatch, tmp_path):
     a_dir = tmp_path / "household_secret"
     a_dir.mkdir()
     monkeypatch.setattr(hc, "SECRET_FILE", str(a_dir))
-    assert hc._stored_secret() == ""
+    assert hc.is_paired() is False
     assert hc.verify("anything") is True
 
 

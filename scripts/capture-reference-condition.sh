@@ -179,7 +179,7 @@ rsync -avz "${PI_USER}@${PI_HOST}:${OUT_REMOTE}/" "$OUT_LOCAL/"
 [[ -f "$OUT_LOCAL/ref.wav"       ]] && mv "$OUT_LOCAL/ref.wav"       "$OUT_LOCAL/reference.wav"
 
 # Pi-side cleanup
-ssh -q "${PI_USER}@${PI_HOST}" "sudo rm -rf '${OUT_REMOTE}'" 2>/dev/null || true
+cleanup_remote_capture "/tmp/jts-refcap-*" "$OUT_REMOTE"
 
 echo
 echo ">>> sanity stats:"

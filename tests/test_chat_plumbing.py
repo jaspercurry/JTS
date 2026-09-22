@@ -8,6 +8,8 @@ from pathlib import Path
 
 from jasper.web.nav import entry
 
+from . import nginx_site
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -15,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_chat_web_is_socket_nginx_and_entrypoint_wired():
     socket_unit = (ROOT / "deploy" / "jasper-chat-web.socket").read_text()
     service_unit = (ROOT / "deploy" / "jasper-chat-web.service").read_text()
-    nginx = (ROOT / "deploy" / "nginx-jasper.conf").read_text()
+    nginx = nginx_site.conf_text("full")
     pyproject = (ROOT / "pyproject.toml").read_text()
     install_units = (
         ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"

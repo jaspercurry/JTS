@@ -15,7 +15,6 @@ from that tier's ``Capability`` grants, never from its name — see
   /spotify/            →  127.0.0.1:8765  (jasper.web.spotify_setup)
   /assistant/voice/    →  127.0.0.1:8767  (jasper.web.voice_setup)
   /assistant/google/   →  127.0.0.1:8768  (jasper.web.google_setup)
-  /airplay/            →  127.0.0.1:8771  (jasper.web.airplay_setup)
   /sources/            →  127.0.0.1:8773  (jasper.web.sources_setup)
   /assistant/wake/     →  127.0.0.1:8774  (jasper.web.wake_setup)
   /wifi/               →  127.0.0.1:8775  (jasper.web.wifi_setup)
@@ -275,18 +274,6 @@ def _make_google_server(target: object) -> object:
     return google_setup.make_server(target, registry_path=google_registry_path())
 
 
-def _make_airplay_server(target: object) -> object:
-    from . import airplay_setup
-
-    return airplay_setup.make_server(
-        target,
-        state_path=os.environ.get(
-            "JASPER_AIRPLAY_MODE_FILE",
-            airplay_setup.MODE_FILE,
-        ),
-    )
-
-
 def _make_sources_server(target: object) -> object:
     from . import sources_setup
 
@@ -464,10 +451,6 @@ WIZARD_SPECS: tuple[WizardSpec, ...] = (
     WizardSpec(
         "/google", "JASPER_GOOGLE_WEB_PORT", 8768, _make_google_server,
         requires=Capability.ASSISTANT,
-    ),
-    WizardSpec(
-        "/airplay", "JASPER_AIRPLAY_WEB_PORT", 8771, _make_airplay_server,
-        requires=None,
     ),
     WizardSpec(
         "/sources", "JASPER_SOURCES_WEB_PORT", 8773, _make_sources_server,

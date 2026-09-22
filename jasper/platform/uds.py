@@ -42,7 +42,7 @@ async def _connect(
     deadline = time.monotonic() + retry_budget_sec
     while True:
         try:
-            return await asyncio.open_unix_connection(socket_path)
+            return await asyncio.open_unix_connection(socket_path)  # unbounded: bounded by this loop's own retry_budget_sec wall-clock deadline
         except (FileNotFoundError, ConnectionRefusedError):
             if time.monotonic() >= deadline:
                 raise

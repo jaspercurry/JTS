@@ -148,7 +148,7 @@ class _SeatLevelSession:
                     "detail": "A seat-level pass is already running. Stop it first.",
                 }
             cli = _cli_path(SEAT_LEVEL_CLI)
-            proc = subprocess.Popen(
+            proc = subprocess.Popen(  # unbounded: reaped by _reap(); run length owned by the leveling pass, not this module
                 [
                     cli,
                     "--calibration-file",

@@ -80,15 +80,45 @@ pub fn push_kv_bool(buf: &mut String, key: &str, value: bool) {
     buf.push_str(if value { "true" } else { "false" });
 }
 
+/// Render one float, substituting `null` for a non-finite value.
+///
+/// Serialization-boundary guarantee for every number these writers emit:
+/// **a finite JSON number, or `null` — never a non-finite token.**
+///
+/// Rust formats `NaN`/`inf`/`-inf` verbatim and none of those is JSON: `inf`
+/// makes a strict reader reject the whole STATUS document, and `NaN` is worse
+/// — Python's `json` accepts it as a non-standard extension, so it arrives as
+/// a float that passes `isinstance(v, float)` while every `abs(a - b) > tol`
+/// comparison against it is False, i.e. a silently-passing contract check.
+///
+/// `null` rather than omission because the key sets here are pinned wire
+/// contracts asserted present by the daemons' state tests. The substitution is
+/// silent by design: these are polled renders, so a value nobody checks costs a
+/// null in one reply, not a journal line per poll. The one doctor-guarded field
+/// (`final_gain_db`) is WARNed on downstream by
+/// `jasper/cli/doctor/audio_runtime_fanin.py`.
+///
+/// Filtering happens at this shared writer rather than at each producer because
+/// outputd copies engine floats straight into its snapshot structs, while
+/// fan-in's producers already clamp or pack to a sentinel; one writer makes the
+/// guarantee hold for both from a single place.
+fn push_f64_finite_or_null(buf: &mut String, value: f64, decimals: usize) {
+    if value.is_finite() {
+        buf.push_str(&format!("{:.*}", decimals, value));
+    } else {
+        buf.push_str("null");
+    }
+}
+
 pub fn push_kv_f64(buf: &mut String, key: &str, value: f64, decimals: usize) {
     push_key(buf, key);
-    buf.push_str(&format!("{:.*}", decimals, value));
+    push_f64_finite_or_null(buf, value, decimals);
 }
 
 pub fn push_kv_f64_opt(buf: &mut String, key: &str, value: Option<f64>, decimals: usize) {
     push_key(buf, key);
     match value {
-        Some(value) => buf.push_str(&format!("{:.*}", decimals, value)),
+        Some(value) => push_f64_finite_or_null(buf, value, decimals),
         None => buf.push_str("null"),
     }
 }
@@ -155,5 +185,24 @@ mod tests {
                 r#""trim_db":null"#,
             )
         );
+    }
+
+    #[test]
+    fn non_finite_floats_render_as_null_and_finite_ones_keep_their_decimals() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut buf = String::new();
+            push_kv_f64(&mut buf, "gain_db", value, 2);
+            assert_eq!(buf, r#""gain_db":null"#, "value={value}");
+
+            let mut buf = String::new();
+            push_kv_f64_opt(&mut buf, "gain_db", Some(value), 2);
+            assert_eq!(buf, r#""gain_db":null"#, "value={value}");
+        }
+
+        let mut buf = String::new();
+        push_kv_f64(&mut buf, "gain_db", -1.5, 2);
+        buf.push(',');
+        push_kv_f64_opt(&mut buf, "trim_db", Some(0.0), 3);
+        assert_eq!(buf, r#""gain_db":-1.50,"trim_db":0.000"#);
     }
 }

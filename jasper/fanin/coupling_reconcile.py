@@ -67,11 +67,9 @@ from jasper.fanin_coupling import (
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
     OUTPUTD_RING_PATH_ENV_VAR,
-    OUTPUTD_RING_SLOTS_ENV_VAR,
     RING_A_CHANNELS,
     RING_SLOTS_ENV_VAR,
     resolve_outputd_ring_path,
-    resolve_outputd_ring_slots,
 )
 from jasper.log_event import log_event
 # The single writer of ``JASPER_OUTPUTD_CONTENT_FORMAT``, which is why the
@@ -81,8 +79,8 @@ from jasper import env_load, fanin_coupling, ring_assets
 
 from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_readiness import (
-    _EnvSnapshot,
-    _read_snapshot,
+    EnvSnapshot,
+    read_snapshot,
     resolve_effective_fanin_ring_slots,
     resolve_effective_fanin_wire_format,
     ring_endpoint_anchor_converged,
@@ -103,6 +101,7 @@ CAMILLA_UNIT = "jasper-camilla.service"
 # Remove once every deployed Pi has booted a build carrying this sweep; the
 # Camilla -> outputd File playback pipe (ADR-0100).
 _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
+_LEGACY_OUTPUTD_RING_SLOTS_ENV = "JASPER_OUTPUTD_SHM_RING_SLOTS"
 # Remove once every deployed Pi has booted a build carrying this sweep; the
 # fan-in transport selector, which selects nothing (ADR-0100). jasper-fanin
 # still REFUSES a value it cannot serve (exit 78), so a stale `loopback` left
@@ -771,8 +770,8 @@ def _converge_ring(
             return reconcile_camilla()
         return _reconcile_camilla(reason=reason, force=force)
 
-    fanin_snapshot = _read_snapshot(env_path)
-    outputd_snapshot = _read_snapshot(outputd_env_path)
+    fanin_snapshot = read_snapshot(env_path)
+    outputd_snapshot = read_snapshot(outputd_env_path)
 
     fanin_new_text, fanin_changed = _apply_action(
         fanin_snapshot.text,
@@ -1008,7 +1007,7 @@ def reconcile_auto(
     Every ``DaemonOp`` argument plus ``gadget_present`` / ``usb_intent_enabled``
     is injectable for tests.
     """
-    fanin_snapshot = _read_snapshot(env_path)
+    fanin_snapshot = read_snapshot(env_path)
     gadget = (
         read_usb_gadget_available() if gadget_present is None else gadget_present
     )
@@ -1221,8 +1220,8 @@ CAMILLA_ANCHOR_CONVERGED_DETAIL = "converged_anchor"
 
 
 def _migrate_stale_fanin_ring_slots(
-    fanin_snapshot: _EnvSnapshot, reason: str
-) -> tuple[_EnvSnapshot, bool]:
+    fanin_snapshot: EnvSnapshot, reason: str
+) -> tuple[EnvSnapshot, bool]:
     """Override a stale, shear-prone ``JASPER_FANIN_RING_SLOTS`` into fanin.env.
 
     ``JASPER_FANIN_RING_SLOTS`` is operator-tunable (range 2..16), so a value
@@ -1251,7 +1250,7 @@ def _migrate_stale_fanin_ring_slots(
     into the CURRENT content — writing the stale snapshot back would reinstate
     the lines the sweep just removed.
     """
-    current = _read_snapshot(fanin_snapshot.path)
+    current = read_snapshot(fanin_snapshot.path)
 
     # The axes this function does NOT own, read before it writes the one it does.
     conf_format = ring_assets.ring_conf_format(ring_assets.RING_A_CONF_PCM)
@@ -1337,7 +1336,7 @@ def _migrate_stale_fanin_ring_slots(
         stale_source=resolution.source,
         conf_n_slots=conf_a,
     )
-    return _EnvSnapshot(current.path, new_text, True), True
+    return EnvSnapshot(current.path, new_text), True
 
 
 def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
@@ -1496,7 +1495,8 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
     """The COMPLETE set of reconciler-owned outputd.env actions for the ring.
 
     Sets ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the post-DSP ring's
-    path/slots — content.ring, or active-content.ring on an armed roleful box.
+    path — content.ring, or active-content.ring on an armed roleful box. The
+    ring's slot count is outputd's own compiled-in constant, not env-set here.
     The two rings move together: fan-in's Ring A capture (fanin.env) and
     outputd's post-DSP ring bridge (here) are ONE coupling, and a split leaves
     one end reading or writing a ring nobody serves.
@@ -1529,16 +1529,8 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
             OUTPUTD_RING_PATH_ENV_VAR,
             outputd_ring_path_for(outputd_text),
         ),
-        RuntimeEnvAction(
-            "set",
-            OUTPUTD_RING_SLOTS_ENV_VAR,
-            str(
-                resolve_outputd_ring_slots(
-                    read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR)
-                )
-            ),
-        ),
         RuntimeEnvAction("unset", _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV),
+        RuntimeEnvAction("unset", _LEGACY_OUTPUTD_RING_SLOTS_ENV),
     )
 
 
@@ -1566,12 +1558,8 @@ def _sync_process_env_for_emit(outputd_text: str) -> None:
     os.environ.pop(_LEGACY_FANIN_COUPLING_ENV, None)
     os.environ[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] = OUTPUTD_CONTENT_BRIDGE_SHM_RING
     os.environ[OUTPUTD_RING_PATH_ENV_VAR] = outputd_ring_path_for(outputd_text)
-    os.environ[OUTPUTD_RING_SLOTS_ENV_VAR] = str(
-        resolve_outputd_ring_slots(
-            read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR)
-        )
-    )
     os.environ.pop(_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV, None)
+    os.environ.pop(_LEGACY_OUTPUTD_RING_SLOTS_ENV, None)
 
 
 @dataclass(frozen=True)

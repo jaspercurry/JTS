@@ -1001,7 +1001,7 @@ _T5_CELLS = [
 
 def _t5_decision(cfg, active_endpoint: bool, flat_output_allowed: bool):
     from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
-    from jasper.multiroom.reconcile import member_lane_decision
+    from jasper.multiroom.grouping_env import member_lane_decision
 
     return member_lane_decision(
         cfg,
@@ -1064,7 +1064,7 @@ def test_the_lane_arms_on_exactly_the_dumb_member_cells():
     """
     from jasper.fanin_coupling import dac_content_lane_marker_armed
     from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
-    from jasper.multiroom.reconcile import outputd_grouping_env
+    from jasper.multiroom.grouping_env import outputd_grouping_env
 
     for label, cfg, endpoint, flat, expected_armed in _T5_CELLS:
         assert _t5_decision(cfg, endpoint, flat).armed is expected_armed, label
@@ -1081,7 +1081,7 @@ def test_each_unarmed_member_cell_names_which_condition_refused_it():
     """The reason token is what the reconciler's bond refusal and the doctor
     branch on, so each unarmed MEMBER cell must carry the right one — and a
     non-member (solo, invalid) carries none, because it was never refused."""
-    from jasper.multiroom.reconcile import (
+    from jasper.multiroom.grouping_env import (
         LANE_REFUSED_ACTIVE_ENDPOINT,
         LANE_REFUSED_FLAT_OUTPUT_DENIED,
         LANE_REFUSED_PERIOD,
@@ -1309,7 +1309,7 @@ def test_packaged_outputd_defaults_match_the_rust_daemon():
         ("JASPER_OUTPUTD_DAC_BUFFER_FRAMES", "DEFAULT_DAC_BUFFER_FRAMES"),
     ):
         assert re.search(
-            rf'env_u32\(\s*"{key}",\s*{const},?\s*\)', config_rs
+            rf'env_u32_positive_or_bail\(\s*"{key}",\s*{const},?\s*\)', config_rs
         ), key
 
 

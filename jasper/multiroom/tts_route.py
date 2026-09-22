@@ -62,7 +62,7 @@ def expected_grouping_tts_route(
     The outputd TTS mixer is a DIRECT DAC path — post-graph, inside outputd —
     so it consumes BOTH facts of the one topology read
     (``jasper.multiroom.reconcile.output_topology_state``), exactly as
-    :func:`~jasper.multiroom.reconcile.member_lane_decision` does for the
+    :func:`~jasper.multiroom.grouping_env.member_lane_decision` does for the
     dac-content lane. ``active_endpoint`` alone is NARROWER than the topologies
     whose DAC outputs the graph owns: a subwoofer beside passive mains, and a
     protected full-range output, declare no active group yet still carry the

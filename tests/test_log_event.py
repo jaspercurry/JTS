@@ -158,21 +158,26 @@ def test_logfmt_bool_not_treated_as_int():
 # --------------------------------------------------------------- JSON mode
 
 
-def test_json_mode_disabled_by_default(monkeypatch):
-    monkeypatch.delenv("JASPER_LOG_JSON", raising=False)
-    assert json_mode_enabled() is False
-
-
-@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", "enabled"])
-def test_json_mode_truthy_values(monkeypatch, value):
-    monkeypatch.setenv("JASPER_LOG_JSON", value)
-    assert json_mode_enabled() is True
-
-
-@pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "  "])
-def test_json_mode_falsy_values(monkeypatch, value):
-    monkeypatch.setenv("JASPER_LOG_JSON", value)
-    assert json_mode_enabled() is False
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param(None, False, id="unset_disabled_by_default"),
+        *[pytest.param(v, True, id=f"truthy_{v}") for v in
+          ["1", "true", "TRUE", "yes", "on", "enabled"]],
+        pytest.param("", False, id="falsy_empty"),
+        pytest.param("0", False, id="falsy_0"),
+        pytest.param("false", False, id="falsy_false"),
+        pytest.param("no", False, id="falsy_no"),
+        pytest.param("off", False, id="falsy_off"),
+        pytest.param("  ", False, id="falsy_whitespace"),
+    ],
+)
+def test_json_mode_enabled_matches_env_value(monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv("JASPER_LOG_JSON", raising=False)
+    else:
+        monkeypatch.setenv("JASPER_LOG_JSON", value)
+    assert json_mode_enabled() is expected
 
 
 def test_render_json_event_is_first_key_and_carries_fields():

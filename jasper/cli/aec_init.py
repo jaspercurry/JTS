@@ -898,12 +898,12 @@ def set_uac_unity(card: str) -> None:
             ["amixer", "-c", card, "sset", control, "60", "unmute"],
             capture_output=True,
             text=True,
-        )
+        )  # unbounded: operator-present CLI; amixer sset has no bound today
         readback = subprocess.run(
             ["amixer", "-c", card, "sget", control],
             capture_output=True,
             text=True,
-        )
+        )  # unbounded: operator-present CLI; amixer sget readback has no bound today
         lines = [
             line
             for line in readback.stdout.splitlines()

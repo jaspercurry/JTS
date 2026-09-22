@@ -219,6 +219,17 @@ printf 'event=kept\\n'
     assert log.read_bytes().split(b"\0")[:-1] == [arg.encode() for arg in expected]
 
 
+def test_lib_defines_the_shared_remote_capture_cleanup_guard() -> None:
+    """cleanup_remote_capture lives once in _lib.sh (#4805) — every capture
+    script traps or calls it instead of re-implementing the path-shape
+    allowlist + quoting itself."""
+    text = (ROOT / "scripts" / "_lib.sh").read_text(encoding="utf-8")
+
+    assert "cleanup_remote_capture()" in text
+    assert 'printf -v remote_capture_q \'%q\' "$remote_dir"' in text
+    assert '"sudo rm -rf -- ${remote_capture_q}"' in text
+
+
 @pytest.mark.parametrize(
     ("name", "remote_prefix"),
     [
@@ -227,16 +238,29 @@ printf 'event=kept\\n'
     ],
 )
 def test_capture_scripts_clean_their_bounded_remote_directory_on_exit(
+    script_repo: tuple[Path, Path, Path],
     name: str,
     remote_prefix: str,
 ) -> None:
-    text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+    """The EXIT trap fires the shared guard exactly once, against this
+    script's own scratch directory only."""
+    result, calls = _run_script(
+        script_repo,
+        name,
+        env_local=None,
+        inherited={"PI_HOST": "explicit.invalid", "PI_USER": "operator"},
+    )
 
-    assert "cleanup_remote_capture()" in text
-    assert "trap cleanup_remote_capture EXIT" in text
-    assert f"{remote_prefix}*)" in text
-    assert 'printf -v remote_capture_q \'%q\' "$OUT_REMOTE"' in text
-    assert '"sudo rm -rf -- ${remote_capture_q}"' in text
+    assert result.returncode == INVOCATIONS[name][1], result.stdout + result.stderr
+    rm_calls = [line for line in calls.splitlines() if "rm -rf --" in line]
+    assert len(rm_calls) == 1
+    assert "operator@explicit.invalid" in rm_calls[0]
+    assert remote_prefix in rm_calls[0]
+
+
+def test_capture_reference_condition_cleans_its_bounded_remote_directory() -> None:
+    text = (ROOT / "scripts" / "capture-reference-condition.sh").read_text(encoding="utf-8")
+    assert 'cleanup_remote_capture "/tmp/jts-refcap-*" "$OUT_REMOTE"' in text
 
 
 @pytest.mark.parametrize("name", SCRIPT_NAMES)

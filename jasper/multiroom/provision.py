@@ -42,7 +42,6 @@ import logging
 import os
 import shutil
 import subprocess
-from pathlib import Path
 
 from .. import atomic_io
 from ..log_event import log_event
@@ -100,11 +99,8 @@ def snapcast_present(*, which=shutil.which) -> bool:
 def read_provision_status(path: str = PROVISION_STATUS_FILE) -> dict[str, str]:
     """Fresh-read the provision progress for ``/state`` / the wizard, or ``{}``
     when absent/unreadable. Total + fail-soft; never raises."""
-    try:
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    if not isinstance(raw, dict):
+    raw = atomic_io.read_json_mapping(path)
+    if raw is None:
         return {}
     return {
         "state": str(raw.get("state") or ""),

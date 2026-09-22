@@ -39,8 +39,6 @@ NAV: tuple[NavRow, ...] = (
            "music", "", "Household routing"),
     NavRow("Sources", "Bluetooth devices", "/bluetooth/", "/", ("local_sources",),
            "bluetooth", "", "Pairing"),
-    NavRow("Sources", "AirPlay sync", "/airplay/", "/", ("local_sources",),
-           "airplay", "", "Synced"),
     NavRow("Sound", "Sound", "/sound/", "/", ("content_dsp",),
            "sliders", "", "EQ · Speakers · Pair · Bass"),
     NavRow("Sound", "EQ", "/sound/eq/", "/sound/", ("content_dsp",),

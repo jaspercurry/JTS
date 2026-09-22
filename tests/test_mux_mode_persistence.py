@@ -98,7 +98,7 @@ def test_write_is_atomic_no_partial_on_existing(tmp_path):
 
 
 def test_write_mode_matches_the_heal_allowlist_mode(tmp_path):
-    """deploy/lib/install/env-migrations.sh heals mux_mode.json to
+    """deploy/lib/install/state-and-secrets.sh heals mux_mode.json to
     `f:0660` (group-jasper writable) — the writer must not fight that."""
     path = tmp_path / "mux_mode.json"
     write_mode(path, Source.AIRPLAY)

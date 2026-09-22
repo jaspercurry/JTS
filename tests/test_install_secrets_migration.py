@@ -17,7 +17,11 @@ from jasper.env_file import read_env_file
 from tests._lock_holder import spawn_lock_holder
 
 ROOT = Path(__file__).resolve().parents[1]
-LIB = ROOT / "deploy" / "lib" / "install" / "env-migrations.sh"
+# The compartment moves, the dirs they land in and the mode re-asserts over
+# them all live in state-and-secrets.sh.
+LIBS = [
+    ROOT / "deploy" / "lib" / "install" / "state-and-secrets.sh",
+]
 ENV_LIB = ROOT / "deploy" / "lib" / "jasper-env-file.sh"
 
 # `getent` stubbed to succeed so the `getent group jasper-secrets` guard passes;
@@ -62,9 +66,9 @@ def _run(tmp_path: Path, fn: str) -> subprocess.CompletedProcess[str]:
         "SECRETS_DIR": str(tmp_path / "secrets"),
         "INTSECRETS_DIR": str(tmp_path / "intsecrets"),
     }
+    sourced = "".join(f". {shlex.quote(str(lib))}\n" for lib in [ENV_LIB, *LIBS])
     return subprocess.run(
-        ["/bin/bash", "-euc",
-         f". {shlex.quote(str(ENV_LIB))}\n. {shlex.quote(str(LIB))}\n{_STUBS}\n{fn}"],
+        ["/bin/bash", "-euc", f"{sourced}{_STUBS}\n{fn}"],
         env=env,
         capture_output=True,
         text=True,

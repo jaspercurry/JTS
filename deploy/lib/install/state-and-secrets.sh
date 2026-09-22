@@ -7,17 +7,17 @@
 # State-dir setup, secret-compartment enforcement, and voice-provider
 # manifest rendering for deploy/install.sh.
 #
-# Extracted verbatim from install.sh (the installer remains the only
-# caller; it sources this file REPO_DIR-relative from the rsync
-# checkout). Functions assume install.sh's globals (ENV_DIR, STATE_DIR,
-# INSTALL_DIR) and `set -euo pipefail` from the sourcing shell.
+# The installer remains the only caller; it sources this file REPO_DIR-relative
+# from the rsync checkout. Functions assume install.sh's globals (ENV_DIR,
+# STATE_DIR, INSTALL_DIR) and `set -euo pipefail` from the sourcing shell.
 #
 # These helpers create/heal the shared state and secret-compartment
-# directories, re-assert their ownership and modes on every deploy,
-# sweep operator-seeded provider/Routes keys out of jasper.env into the
-# jasper-secrets compartment, seed the WiFi guardian stash, and render the
-# voice-provider id manifest. All are idempotent and safe on fresh
-# installs.
+# directories, re-assert their ownership and modes on every deploy, widen the
+# env files jasper-control reads, render the voice-provider id manifest, and run
+# the one-shot adoptions at the end of the file: the operator API keys move into
+# their compartment, and the WiFi guardian stash is seeded from an already-active
+# profile. All are idempotent and safe on fresh installs. What earlier releases
+# left behind with no adopter is retired instead, from retirements.sh.
 
 ensure_state_dir() {
     # `install -d -m` re-chmods an EXISTING dir, so every call (10+ per
@@ -328,6 +328,29 @@ reassert_intsecrets_compartment_perms() {
     systemd-tmpfiles --create --prefix="${INTSECRETS_DIR}" 2>/dev/null || true
 }
 
+render_voice_provider_ids_manifest() {
+    local provider_ids_file="${STATE_DIR}/voice_provider_ids"
+    local python_bin="${JASPER_INSTALL_PYTHON:-${INSTALL_DIR}/.venv/bin/python}"
+    local tmp
+
+    ensure_state_dir
+    tmp="$(mktemp "${STATE_DIR}/.voice_provider_ids.XXXXXX")"
+    if ! "${python_bin}" - <<'PY' > "${tmp}"
+from jasper.voice.catalog import provider_ids_manifest_text
+
+print(provider_ids_manifest_text(), end="")
+PY
+    then
+        rm -f "${tmp}" "${provider_ids_file}"
+        echo "  warning: could not generate ${provider_ids_file}"
+        echo "  jasper-voice will remain parked until a successful install regenerates it"
+        return 0
+    fi
+    chmod 0644 "${tmp}"
+    mv "${tmp}" "${provider_ids_file}"
+    echo "  voice provider id manifest: ${provider_ids_file}"
+}
+
 # Operator seeds still enter jasper.env; the wizards own the compartments.
 # Never remove a broad key until the compartment holds a NON-EMPTY value for
 # it: .env.example seeds every key empty, and an empty compartment line would
@@ -367,29 +390,6 @@ migrate_google_routes_key() {
     if [[ -f "${SECRETS_DIR}/google_routes.env" ]]; then
         chmod 0640 "${SECRETS_DIR}/google_routes.env"
     fi
-}
-
-render_voice_provider_ids_manifest() {
-    local provider_ids_file="${STATE_DIR}/voice_provider_ids"
-    local python_bin="${JASPER_INSTALL_PYTHON:-${INSTALL_DIR}/.venv/bin/python}"
-    local tmp
-
-    ensure_state_dir
-    tmp="$(mktemp "${STATE_DIR}/.voice_provider_ids.XXXXXX")"
-    if ! "${python_bin}" - <<'PY' > "${tmp}"
-from jasper.voice.catalog import provider_ids_manifest_text
-
-print(provider_ids_manifest_text(), end="")
-PY
-    then
-        rm -f "${tmp}" "${provider_ids_file}"
-        echo "  warning: could not generate ${provider_ids_file}"
-        echo "  jasper-voice will remain parked until a successful install regenerates it"
-        return 0
-    fi
-    chmod 0644 "${tmp}"
-    mv "${tmp}" "${provider_ids_file}"
-    echo "  voice provider id manifest: ${provider_ids_file}"
 }
 
 # Seed /var/lib/jasper/wifi_guardian.env from the currently-active WiFi

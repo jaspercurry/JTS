@@ -12,7 +12,6 @@ from collections.abc import Mapping
 
 from jasper.env_load import VOICE_GROUPING_ENV_FILE, parse_env_file
 
-FANIN_TTS_SOCKET_ENV = "JASPER_FANIN_TTS_SOCKET"
 FANIN_TTS_SOCKET = "/run/jasper-fanin/tts.sock"
 
 OUTPUTD_TTS_SOCKET_ENV = "JASPER_OUTPUTD_TTS_SOCKET"

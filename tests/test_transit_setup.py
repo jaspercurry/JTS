@@ -33,6 +33,7 @@ import pytest
 from jasper import env_file
 from jasper.transit import geocode as geocode_mod
 from jasper.web import transit_page, transit_setup
+from tests._log_events import event_records, leaked_lines
 from jasper.web._common import RestartOutcome
 
 
@@ -64,11 +65,18 @@ def test_coords_returns_tuple_when_set():
 # ---------- Geocode action -------------------------------------------------
 
 
-def test_apply_geocode_empty_input_returns_error():
-    new, err = transit_setup._apply_geocode({}, {})
-    assert err is not None
-    assert "address" in err.lower()
+@pytest.mark.parametrize(
+    ("form", "expected_error_substring"),
+    [
+        pytest.param({}, "address", id="empty_input"),
+        pytest.param({"manual_lat": "40.6"}, "both", id="manual_one_side_only"),
+        pytest.param({"manual_lat": "200", "manual_lon": "0"}, "-90", id="manual_out_of_range"),
+    ],
+)
+def test_apply_geocode_rejects_invalid_input(form, expected_error_substring):
+    new, err = transit_setup._apply_geocode(form, {})
     assert new == {}
+    assert err is not None and expected_error_substring.lower() in err.lower()
 
 
 def test_apply_geocode_writes_coords_on_success(monkeypatch):
@@ -110,19 +118,6 @@ def test_apply_geocode_manual_lat_lon_bypasses_nominatim(monkeypatch):
     assert err is None
     assert new[transit_setup.LAT_ENV] == "40.646"
     assert new[transit_setup.LON_ENV] == "-73.994"
-
-
-def test_apply_geocode_manual_one_side_only_errors():
-    new, err = transit_setup._apply_geocode({"manual_lat": "40.6"}, {})
-    assert err is not None
-
-
-def test_apply_geocode_manual_out_of_range_errors():
-    new, err = transit_setup._apply_geocode(
-        {"manual_lat": "200", "manual_lon": "0"}, {},
-    )
-    assert err is not None
-    assert "-90" in err
 
 
 def test_seed_weather_from_transit_only_when_weather_missing(tmp_path):
@@ -720,9 +715,9 @@ def test_handler_post_geocode_writes_state(wizard_server, monkeypatch, caplog):
     state = env_file.read_env_file(state_path)
     assert state[transit_setup.LAT_ENV] == "40.646"
     assert state[transit_setup.LON_ENV] == "-73.994"
-    assert "event=transit.geocode" in caplog.text
-    assert "9 Av Brooklyn" not in caplog.text
-    assert "Sunset Park" not in caplog.text
+    assert len(event_records(caplog, "transit.geocode")) == 1
+    assert not leaked_lines(caplog, "9 Av Brooklyn")
+    assert not leaked_lines(caplog, "Sunset Park")
 
 
 def test_handler_post_save_restarts_voice(wizard_server):

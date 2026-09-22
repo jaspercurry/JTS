@@ -73,11 +73,8 @@ from jasper.log_event import log_event
 from jasper.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
 from jasper.logging_setup import configure_logging
-from jasper.service_units import (
-    LIBRESPOT_SERVICE,
-    classify_unit_query,
-    read_unit_query,
-)
+from jasper.service_units import LIBRESPOT_SERVICE
+from jasper.systemd_probe import unit_query, unit_state
 from jasper.source_intent_units import (
     RECONCILE_BROKER_TIMEOUT_SECONDS,
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
@@ -713,9 +710,12 @@ def _run_unit_action(unit: str, verb: str) -> tuple[int, str]:
 
 
 def _query_unit_state(query: str, unit: str) -> bool | None:
-    return classify_unit_query(
-        read_unit_query(query, unit, timeout=_UNIT_STATE_QUERY_TIMEOUT_SEC)
-    )
+    """Tri-state ``systemctl is-active``/``is-enabled``/``is-failed``.
+
+    Classification lives in jasper.systemd_probe (shared with the multiroom
+    reconciler's `_systemctl_unit_state`); this wrapper only picks the timeout.
+    """
+    return unit_query(unit_state(query, unit, timeout=_UNIT_STATE_QUERY_TIMEOUT_SEC))
 
 
 def _unit_enabled(unit: str) -> bool | None:
