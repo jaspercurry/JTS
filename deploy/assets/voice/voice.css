@@ -1,78 +1,42 @@
-/* voice.css — page-specific styles for /assistant/voice/ (the voice-provider wizard).
- *
- * Only the visuals the shared /assets/app.css doesn't already cover live here:
- * the active-provider radio group, the spend-cap form layout, the
- * provider setting/key sections, and the monospace research-prompt
- * textareas. Everything else (.page, .info-card, .field, .form-actions,
- * .form-hint, .badge, .btn--*, .banner, .eyebrow, .section, .disclosure)
- * comes from app.css. This file adds classes only — it defines no :root
- * tokens and reads the shared design tokens so it re-skins with the rest
- * of the system.
- *
- * Loaded via canonical_page(page_css_href="/assets/voice/voice.css"), served
- * static by nginx from /assets/ and cache-busted by the build SHA. */
-
-/* Active-provider chooser ------------------------------------------------- */
-/* A radio per provider, laid out as a tappable row. The whole <label> is the
- * hit target (the native radio sits inside it). Disabled rows (no API key yet)
- * are dimmed with a dashed border so it's clear they can't be selected. */
-.active-group {
-  gap: 0.4rem;
+/* Shared controls and disclosures are styled by app.css. */
+.voice-setup {
+  max-width: 44rem;
 }
 
-.provider-radio {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-  padding: 0.55rem 0.7rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  cursor: pointer;
+.voice-setup > .disclosure {
+  margin-block: 0.75rem;
 }
 
-.provider-radio:hover {
-  border-color: color-mix(in oklch, var(--primary) 45%, var(--border));
+.voice-savebar, .voice-cost-link {
+  margin-block: 1rem;
 }
 
-.provider-radio input[type="radio"] {
-  flex: none;
-  margin: 0;
-  accent-color: var(--primary);
+.voice-model {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.5rem;
 }
 
-.provider-radio.is-disabled {
-  cursor: not-allowed;
-  border-style: dashed;
-  background: color-mix(in oklch, var(--muted) 8%, transparent);
+.voice-key {
+  position: relative;
+}
+
+.voice-key input[type="password"] {
+  padding-inline-end: 3rem;
+}
+
+.voice-key__clear {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  width: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
   color: var(--muted);
-}
-
-.provider-radio__name {
-  flex: 1;
-  min-width: 8rem;
-  font-weight: 600;
-}
-
-.provider-radio__price {
-  font-variant-numeric: tabular-nums;
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-
-.provider-radio__status {
-  font-size: 0.8rem;
-  color: var(--muted);
-}
-
-/* Spend cap --------------------------------------------------------------- */
-.spend-cap-card {
-  gap: 0.8rem;
-}
-
-.spend-cap__stats {
-  margin-block-end: 0.2rem;
+  font-size: 16px;
 }
 
 .spend-cap__form {
@@ -85,80 +49,26 @@
   grid-column: 1 / -1;
 }
 
+.price-model {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem 0;
+  border: 0;
+  min-width: 0;
+}
+
+.price-model legend {
+  padding: 0;
+  overflow-wrap: anywhere;
+}
+
+.prompt-box {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+
 @media (max-width: 700px) {
   .spend-cap__form {
     grid-template-columns: 1fr;
   }
-}
-
-/* Provider sections ------------------------------------------------------- */
-.provider-stack {
-  display: grid;
-  gap: 0.85rem;
-}
-
-/* Title + vendor eyebrow on the left, status badge pinned to the right. */
-.provider-card__head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.75rem;
-}
-
-.provider-card__title {
-  margin: 0;
-  font-size: 1.05rem;
-  font-family: var(--font-display);
-  font-weight: 700;
-}
-
-.provider-settings-grid {
-  display: grid;
-  gap: 0.75rem;
-  grid-template-columns: minmax(0, 1fr) minmax(13rem, 0.42fr);
-  align-items: end;
-}
-
-.provider-settings-grid .field:last-child {
-  grid-column: 1 / -1;
-}
-
-.model-refresh-form .form-actions {
-  align-items: flex-start;
-}
-
-.voice-savebar {
-  margin-block-start: 0.9rem;
-}
-
-@media (max-width: 700px) {
-  .provider-settings-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .voice-savebar {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .voice-savebar .btn {
-    width: 100%;
-  }
-}
-
-/* Pricing editor and research-prompt disclosures use the shared .disclosure
-   primitive (app.css); margin-block-start clears the field above them. */
-.pricing-disclosure { margin-block-start: 0.4rem; }
-
-.price-model {
-  display: grid;
-  gap: 0.5rem;
-  padding-block-start: 0.5rem;
-  border-block-start: 1px solid var(--border);
-}
-
-/* The research-prompt + paste-back textareas: full width, monospace. */
-.prompt-box {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.8rem;
 }

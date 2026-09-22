@@ -2,22 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the /assistant/voice/ wizard after its migration to the canonical look.
-
-1. The page renders canonical design-system bytes (links /assets/app.css and
-   the page-specific /assets/voice/voice.css, carries the shared .app-header,
-   embeds the CSRF meta tag) and delivers its behaviour as an ES module --
-   no inline <script>.
-2. The migration was presentation-only: the server-rendered POST flows
-   (/save, /clear-credentials, /refresh-models, /pricing, /pricing-import),
-   their CSRF + flash plumbing, and the public module surface
-   (_index_html / make_server / main) are unchanged.
-
-The pure-function and the full POST-flow coverage lives in the existing
-tests/test_voice_setup.py (driven through a real ThreadingHTTPServer); this
-file focuses on the canonical-shell migration and a couple of handler-wiring
-smoke checks.
-"""
+"""Voice setup shell and HTTP routing."""
 from __future__ import annotations
 
 import http
@@ -25,7 +10,11 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from html.parser import HTMLParser
 
+import pytest
+
+from jasper import env_file
 from jasper.voice.catalog import PROVIDERS
 from jasper.web import chrome, voice_setup
 
@@ -37,6 +26,7 @@ def _render(state: dict | None = None, flash: str = "") -> str:
         state or {},
         "tok-abcdefghijklmnopqrstuvwx",
         status_msg=flash,
+        selected="gemini",
     ).decode()
 
 
@@ -80,27 +70,16 @@ def test_voice_save_form_preserves_csrf_field_and_action():
 def test_voice_page_uses_canonical_field_vocabulary():
     out = _render()
     assert 'class="field"' in out
-    assert 'class="form-actions"' in out
+    assert 'class="form-actions ' in out
     assert 'class="btn btn--primary"' in out
-    assert 'class="info-card provider-card"' in out
 
 
-def test_voice_page_renders_all_provider_cards_and_radios():
+def test_voice_page_offers_every_provider_before_a_key_is_saved():
     out = _render()
-    for p in PROVIDERS:
-        assert p.label in out
-        # one active-provider radio per provider
-        assert f'name="active" value="{p.id}"' in out
-
-
-def test_voice_page_has_save_and_test_and_first_time_key_metadata():
-    out = _render()
-    assert "Save and Test" in out
+    for provider in PROVIDERS:
+        assert f'<option value="{provider.id}"' in out
+    assert 'name="gemini_key"' in out
     assert 'formaction="save-test"' in out
-    for p in PROVIDERS:
-        assert f'data-provider-radio="{p.id}"' in out
-        assert f'data-provider-key="{p.id}"' in out
-        assert f'data-provider-radio-row="{p.id}"' in out
 
 
 def test_voice_page_loads_es_module_not_inline_script():
@@ -166,6 +145,55 @@ def test_get_root_renders_canonical_page(tmp_path):
     assert_canonical_page(out)
     for p in PROVIDERS:
         assert p.label in out
+
+
+@pytest.mark.parametrize("provider", PROVIDERS, ids=lambda p: p.id)
+@pytest.mark.parametrize("page", ["/", "/costs"])
+def test_choose_provider_is_read_only_and_disclosures_start_closed(tmp_path, monkeypatch, provider, page):
+    state_path = tmp_path / "voice.env"
+    state = {"JASPER_VOICE_PROVIDER": "gemini", "JASPER_GEMINI_MODEL": "custom-live"}
+    env_file.write_env_file(str(state_path), state)
+    calls = []
+    monkeypatch.setattr(voice_setup, "restart_voice_daemon", lambda: calls.append("restart"))
+    monkeypatch.setattr(voice_setup, "refresh_provider_cache", lambda *a, **k: calls.append("refresh"))
+    h, _ = make_real_handler(_handler_cls(tmp_path), f"{page}?provider={provider.id}")
+    h.do_GET()
+    assert h.status == 200
+    assert env_file.read_env_file(str(state_path)) == state
+    assert not (tmp_path / "voice_keys.env").exists()
+    assert calls == []
+
+    class FormParser(HTMLParser):
+        forms = 0
+        disclosures = 0
+        disclosure_depth = 0
+        keys = []
+
+        def handle_starttag(self, tag, attributes):
+            attrs = dict(attributes)
+            if tag == "form":
+                assert self.forms == 0
+                self.forms += 1
+            if tag == "details":
+                assert "open" not in attrs
+                assert self.disclosure_depth == 0
+                self.disclosure_depth += 1
+                self.disclosures += 1
+            if tag == "input" and attrs.get("type") == "password":
+                assert attrs.get("value", "") == ""
+                self.keys.append(attrs["name"])
+
+        def handle_endtag(self, tag):
+            if tag == "form":
+                self.forms -= 1
+            if tag == "details":
+                self.disclosure_depth -= 1
+
+    parser = FormParser()
+    parser.feed(h.wfile.getvalue().decode())
+    assert parser.forms == 0
+    assert parser.disclosures > 0
+    assert parser.keys == ([f"{provider.id}_key"] if page == "/" else [])
 
 
 def test_post_unknown_route_404s(tmp_path):
