@@ -51,10 +51,9 @@ def test_nonfinite_capture_is_an_integrity_failure_not_a_level_warning(invalid):
     ).to_dict()
 
     assert report["failed"] is True
+    assert report["peak_dbfs"] is None
+    assert report["rms_dbfs"] is None
     issues = {issue["code"]: issue for issue in report["issues"]}
+    assert set(issues) == {"capture_nonfinite"}
     assert issues["capture_nonfinite"]["severity"] == "fail"
     assert issues["capture_nonfinite"]["details"] == {"nonfinite_samples": 1}
-    assert "capture_peak_low" not in issues
-    assert "capture_rms_low" not in issues
-    assert "capture_near_clip" not in issues
-    assert "capture_clipped" not in issues
