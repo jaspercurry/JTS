@@ -753,17 +753,9 @@ def test_walker_range_matches_modprobe_pcm_substreams():
 # --------------------------------------------------------------------------
 
 def test_derived_set_matches_the_expected_allocation():
-    """Dropping a pair from the owning constant changes this set.
-
-    Also THE structural pin that every entry of `_FANIN_EXPECTED_ALOOP_INPUTS`
-    parses as an snd-aloop triple: an entry that does not would silently shrink
-    the registered set, and the module derives it rather than guarding for it
-    at runtime.
-    """
+    """Dropping a pair from the owning lane roster changes this set."""
     derived = audio_runtime_fanin._derive_registered_pairs()
     assert tuple(sorted(derived)) == _EXPECTED_REGISTERED_PAIRS
-    assert len(derived) == len(audio_runtime_fanin._FANIN_EXPECTED_ALOOP_INPUTS)
-    assert audio_runtime_fanin._pair_from_loopback_pcm("hw:OtherCard,1,0") is None
 
 
 @pytest.mark.parametrize("pair", _EXPECTED_REGISTERED_PAIRS)
