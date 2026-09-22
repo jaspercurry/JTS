@@ -26,6 +26,7 @@ from jasper.audio_profile_state import (
 from jasper.chip_aec.health import AlignmentHealth, alignment_health
 from jasper.env_file import parse_env_mapping, quote_env_value, read_env_file, read_env_file_text
 from jasper.mics import xvf3800
+from jasper.service_units import SYSTEMCTL_TIMEOUT_SEC, run_systemctl
 from jasper.voice.input_presence import voice_input_absent_marker_path
 
 
@@ -87,9 +88,13 @@ class Reconcile:
         print(f"jasper-aec-reconcile[{self.reason}]: {text}", file=sys.stderr)
 
     def system(self, *args: str) -> bool:
+        # Init can take ~55s and voice stop plays its mic-loss cue. Lifecycle
+        # waits retain reconcile.service/commission caller deadlines; manual
+        # calls intentionally have no Python deadline.
+        timeout = SYSTEMCTL_TIMEOUT_SEC if args[0] in {"is-active", "is-enabled", "reset-failed", "--no-block"} else None
         try:
-            return subprocess.run([self.systemctl, *args], check=False).returncode == 0
-        except OSError as exc:
+            return run_systemctl(args, executable=self.systemctl, capture_output=False, timeout=timeout).returncode == 0
+        except (OSError, subprocess.TimeoutExpired) as exc:
             self.log(f"event=aec_reconcile.systemctl status=failed error={exc}")
             return False
 
@@ -400,7 +405,7 @@ class Reconcile:
 
     def mixer_command(self, command: list[str], control: str) -> None:
         try:
-            success = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0
+            success = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0  # unbounded: retain manual ALSA wait; service/caller alone bounds the pass
         except OSError:
             success = False
         if not success:

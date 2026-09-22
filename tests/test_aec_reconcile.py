@@ -12,12 +12,14 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from jasper import wake_legs
 from jasper.aec_ready import read_aec_bridge_ready
 from jasper.aec.reconcile.runtime import VOICE_IRRELEVANT_ENV_KEYS
+from jasper.aec.reconcile import runtime as reconcile_runtime
 from jasper.chip_aec import health as chip_aec_health
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
 from jasper.audio_profile_state import (
@@ -63,6 +65,7 @@ from tests.reconcile_fixtures import (
     systemctl_log as _systemctl_log,
 )
 from tests.shell_runner import run_bash
+from tests import shell_runner
 from tests.status_socket_fixtures import JsonStatusSocket
 
 
@@ -2681,8 +2684,10 @@ def test_missing_package_keeps_running_state_and_the_last_records(
     if runtime == "missing-interpreter":
         bin_dir = tmp_path / "shell-only"
         bin_dir.mkdir()
-        for command in ("dirname", "rm"):
+        for command in ("bash", "dirname", "rm"):
             (bin_dir / command).symlink_to(shutil.which(command))
+        monkeypatch.setattr(shell_runner, "sys", SimpleNamespace(platform="linux"))
+        assert shutil.which("python3", path=str(bin_dir)) is None
         extra_env.update(PATH=str(bin_dir), JASPER_MIC_PROFILE_PYTHON=str(tmp_path / "absent-python"))
     result = _run_reconcile(tmp_path, "--reason", reason, script=installed, cwd=tmp_path,
         extra_env=extra_env)
@@ -2691,6 +2696,34 @@ def test_missing_package_keeps_running_state_and_the_last_records(
     assert _systemctl_log(tmp_path) == ""
     assert not read_aec_bridge_ready().ready
     assert not _marker(tmp_path).exists()
+
+
+@pytest.mark.parametrize("args,completes", [
+    (("is-active", "--quiet", "jasper-aec-bridge.service"), False),
+    (("is-enabled", "--quiet", "jasper-aec-bridge.service"), False),
+    (("reset-failed", "jasper-voice.service"), False),
+    (("--no-block", "restart", "jasper-voice.service"), False),
+    (("restart", "jasper-aec-init.service"), True),
+    (("stop", "jasper-voice.service"), True),
+    (("enable", "jasper-aec-bridge.service"), True),
+    (("disable", "--now", "jasper-voice.service"), True),
+    (("daemon-reload",), True),
+])
+def test_manager_timeout_preserves_blocking_lifecycle_waits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...], completes: bool,
+) -> None:
+    command = tmp_path / "slow-systemctl"
+    done = tmp_path / "completed"
+    command.write_text(
+        f"#!{sys.executable}\nimport pathlib, time\ntime.sleep(0.1)\n"
+        f"pathlib.Path({str(done)!r}).touch()\n"
+    )
+    command.chmod(0o755)
+    monkeypatch.setenv("JASPER_ENV_FILE", str(tmp_path / "jasper.env"))
+    monkeypatch.setenv("JASPER_SYSTEMCTL", str(command))
+    monkeypatch.setattr(reconcile_runtime, "SYSTEMCTL_TIMEOUT_SEC", 0.03)
+    assert reconcile_runtime.Reconcile("test").system(*args) is completes
+    assert done.exists() is completes
 
 
 @pytest.mark.parametrize("args,status", [(('--help',), 0), (('--bogus',), 2), (('--reason',), 2)])
