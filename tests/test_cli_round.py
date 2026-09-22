@@ -476,10 +476,11 @@ def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
 
 @pytest.mark.parametrize("mover", [None, "arm", "human"])
 @pytest.mark.parametrize("sections,program,layout,default_mover", [
-    (("driver",), "room", "room_quick", "arm"),
-    (("blend",), "room", "room_quick", "arm"),
-    (("alignment",), "room", "room_quick", "arm"),
-    (("topology",), "room", "room_quick", "arm"),
+    (("driver",), "room", "seat_express", "human"),
+    (("blend",), "room", "seat_express", "human"),
+    (("driver", "blend"), "room", "seat_express", "human"),
+    (("alignment",), "room", "seat_express", "human"),
+    (("topology",), "room", "seat_express", "human"),
     (("room",), "room", "seat_express", "human"),
     (("bass",), "bass", "bass_axis", "arm"),
     (("driver", "room"), "room", "seat_express", "human"),
@@ -498,7 +499,7 @@ def test_trial_uses_authored_section_and_keeps_candidates_at_each_pose(
         return
     assert code == 0 and body["verb"] == "trial" and body["shape"] == "trial"
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
-    expected = run_program(program, "room_quick" if "room" in sections and mover == "arm" else layout)
+    expected = run_program(program, "room_quick" if program == "room" and mover == "arm" else layout)
     assert plan.program == f"{program}/{expected.size}"
     assert plan.mover == (mover or default_mover)
     assert plan.candidates == ("base", fingerprint)
@@ -532,7 +533,7 @@ def test_declared_trial_uses_the_design_mark_speaker_experiment(isolated_candida
 
 
 @pytest.mark.parametrize("sections,program", [
-    ((), "room/arm"), (("driver", "blend"), "room/arm"),
+    ((), "room/seat"), (("driver", "blend"), "room/seat"),
     (("driver", "room", "bass"), "bass/axis"),
     (("rear_calibration", "bass", "room"), "rear/express"),
 ])

@@ -167,7 +167,8 @@ def _cmd_trial(client: WizardClient, args: argparse.Namespace) -> int:
                       if source == "document")
     declared = banked.candidate.program_id == DECLARED_CROSSOVER_PROGRAM_ID
     selected = run_program("speaker") if declared else trial_program(sections, args.mover)
-    args.program, args.poses, args.mover = selected.program_id, selected.layout, args.mover or selected.mover
+    args.program, args.poses = selected.program_id, selected.layout
+    if not declared: args.mover = selected.mover
     args.candidates = args.candidates or (None if declared else f"base,{banked.fingerprint}")
     return _cmd_run(client, args)
 
