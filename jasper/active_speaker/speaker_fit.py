@@ -20,7 +20,7 @@ from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, fit_branches, resolve_trims_after_fit
 from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, take_artifact_path
-from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, round_artifact_dir
+from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, round_artifact_dir, resolve_set
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve, ladder_smooth
@@ -32,11 +32,9 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
 from jasper.audio_measurement.bundles import relative_artifact_path
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
 from jasper.audio_measurement.program import ExcitationProgram
+from jasper.audio_measurement.series_stats import _power_mean_db
 from jasper.audio_measurement.spatial_combine import _band_spread, octave_bands_hz
 from jasper.output_topology import OutputTopology
-
-from .crossover_v2.round_inputs import resolve_set
-from .flat_spec import _power_mean_db
 
 
 class SpeakerFitUnreadable(RoundViewsError):

@@ -9,10 +9,11 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.repeat_floor import derive_repeat_floor, write_repeat_floor
-from jasper.active_speaker.round_packet_report import INDEX_FILENAME, packet_index, series_stats
+from jasper.active_speaker.round_packet_report import INDEX_FILENAME, packet_index
 from jasper.active_speaker.round_verdicts import round_verdicts
 from jasper.active_speaker.speaker_fit import design_clouds
 from jasper.audio_measurement.interference_nulls import feature_position_variance
+from jasper.audio_measurement.series_stats import series_stats
 from tests.crossover_v2_fixtures import _one_way_preset
 
 
@@ -102,9 +103,7 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap):
     plot = {"freqs_hz": [100, 1000, 10000], "deviation_db": [-2, 0, 2],
             "rms_db": (8 / 3) ** 0.5,
             "band_means": [{"band_hz": [80, 120], "mean_db": -2}]}
-    stats = series_stats({"freqs_hz": plot["freqs_hz"], "display": {
-        "deviation_db": plot["deviation_db"],
-    }}, plot, 500)
+    stats = series_stats({"freqs_hz": plot["freqs_hz"], "display": {"deviation_db": plot["deviation_db"]}}, plot, 500)
     identity = {"set_id": "woofer", "take_id": "woofer", "role": "woofer", "pose": pose}
     packet = {
         "round_id": "fixture",

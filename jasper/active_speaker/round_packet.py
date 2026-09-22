@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from jasper.atomic_io import atomic_write_json
+from jasper.audio_measurement.series_stats import series_stats
 from jasper.audio_measurement.timing_verification import timing_next_action
 
 from .applied_identity import applied_identity
@@ -30,9 +31,7 @@ from .speaker_fit import design_clouds, speaker_fit
 from .measurement_programs import PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose
 from .round_bank import BankedRound
 from .round_verdicts import round_verdicts
-from .round_packet_report import (
-    INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, gate_fields, packet_index, series_stats,
-)
+from .round_packet_report import INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, gate_fields, packet_index
 from .run_manifest import RUN_MANIFEST_KIND, RunManifest, room_sets
 from .crossover_v2.refusal_copy import CrossoverV2Refused, exception_detail
 

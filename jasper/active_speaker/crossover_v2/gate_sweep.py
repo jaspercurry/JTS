@@ -42,6 +42,7 @@ from jasper.active_speaker.flat_spec import SPEC_BANDS
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.calibration import CalibrationCurve, apply_calibration_curve
 from jasper.audio_measurement.deconv import cap_capture_length
+from jasper.audio_measurement.excess_phase import MAGNITUDE_SMOOTH_FRACTION
 from jasper.audio_measurement.gating import (
     SEARCH_T_MAX_MS,
     TAPER_FRACTION,
@@ -59,10 +60,7 @@ from jasper.audio_measurement.wired_capture import decode_wav_to_mono
 
 from .feature_classification import UNCERTAINTY_UNSEPARATED
 from .feature_optics import (
-    CENTRE_SEARCH_OCT,
-    DETREND_FRACTION,
-    MAGNITUDE_SMOOTH_FRACTION,
-    PHASE_GATE_LEAD_MS,
+    CENTRE_SEARCH_OCT, DETREND_FRACTION, PHASE_GATE_LEAD_MS,
     biquad_peaking,
     detrend,
     feature_q,
@@ -93,7 +91,7 @@ RESOLUTION_GREY_CYCLES = 5.0
 #: applied to every rung of that capture. Per-window normalisation would
 #: poison the cross-rung deltas this instrument publishes, by a margin of
 #: the same order as the deltas themselves (P1). Deliberately NOT
-#: :data:`.feature_classifier.NORMALISE_BAND_HZ` (400-8000 Hz, median, per
+#: :data:`~jasper.audio_measurement.excess_phase.NORMALISE_BAND_HZ` (400-8000 Hz, median, per
 #: rung): 400-1200 Hz is the band that moves most with the rung, and a
 #: reference must not drift with the thing it is referencing (P1). Not
 #: :data:`~jasper.active_speaker.flat_spec.REFERENCE_BAND_HZ`, which this
@@ -106,7 +104,7 @@ REFERENCE_BAND_HZ = (2500.0, 8000.0)
 REFERENCE_RUNG_MS = SEARCH_T_MAX_MS
 
 #: Analysis grid. Deliberately NOT
-#: :func:`.feature_classifier.classification_grid`, whose floor is 300 Hz:
+#: :func:`~jasper.audio_measurement.excess_phase.classification_grid`, whose floor is 300 Hz:
 #: the lowest spec band starts at 250 Hz and the features under
 #: investigation sit at 358 and 441.6 Hz.
 GRID_LO_HZ = 200.0

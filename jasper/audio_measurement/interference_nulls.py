@@ -58,6 +58,7 @@ import numpy as np
 
 from jasper.audio_measurement.alignment import parabolic_peak
 from jasper.audio_measurement.peq import bell_half_width_oct
+from jasper.audio_measurement.series_stats import _power_mean_db
 from jasper.audio_measurement.spatial_combine import (
     ECHO_CONFIDENCE_FLOOR,
     GEOMETRY_CLUSTER_TOLERANCE,
@@ -502,13 +503,6 @@ def reflection_ratio_from_depth(depth_db: float) -> float:
     return float((x - 1.0) / (x + 1.0))
 
 
-def _power_mean_db(values: Sequence[float]) -> float:
-    """dB level of the mean of the linear powers — this module's only
-    averaging rule for levels, matching spatial_combine's estimator so a
-    baseline computed here composes with a power mean computed there."""
-    return float(10.0 * np.log10(np.mean([10.0 ** (v / 10.0) for v in values])))
-
-
 # --------------------------------------------------------------------------- #
 # Candidate location and depth
 # --------------------------------------------------------------------------- #
@@ -588,7 +582,7 @@ def _measure_candidates(
         pl = lo_bound + int(np.argmax(y[lo_bound:p]))
         pr = p + 1 + int(np.argmax(y[p + 1 : hi_bound + 1]))
         i, il, ir = int(band_idx[p]), int(band_idx[pl]), int(band_idx[pr])
-        baseline = _power_mean_db((float(diag[il]), float(diag[ir])))
+        baseline = _power_mean_db(np.array([diag[il], diag[ir]], dtype=float))
         depth = baseline - float(raw[i])
         diag_depth = baseline - float(diag[i])
         # Half-depth width on the diagnostic curve, bounded by the two flanking maxima.
