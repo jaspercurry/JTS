@@ -12,6 +12,8 @@ capture state they act on lives in :mod:`jasper.web.correction_capture`.
 """
 from __future__ import annotations
 
+import logging
+
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from http import HTTPStatus
@@ -19,6 +21,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from ..active_speaker.crossover_v2.refusal_copy import ARM_STOP_REASONS, CrossoverV2Refused, REASON_USER_STOPPED
+from ..log_event import log_event
 from ..platform.systemd import no_hold
 
 from . import correction_capture, correction_runtime
@@ -27,6 +30,8 @@ from .correction_capture import (
     _session_lock,
 )
 from .correction_runtime import BadRequest
+
+logger = logging.getLogger(__name__)
 
 
 def _handle_crossover_capture_cancel(raw: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -115,7 +120,7 @@ def _handle_crossover_v2_capture(
     """Stage an inline session."""
     raw = correction_runtime.read_json_body(handler)
 
-    from . import correction_crossover_backend, correction_crossover_v2 as v2host
+    from . import correction_crossover_backend, correction_crossover_v2 as v2host, correction_crossover_v2_volume as v2volume  # lazy: avoid measurement-stack import cost on unused paths
 
     blocking = correction_capture._crossover_blocking_phase()
     if blocking is not None:
@@ -124,6 +129,17 @@ def _handle_crossover_v2_capture(
             "before starting a crossover measurement session"
         )
     status = correction_crossover_backend.status_payload()
+    if v2volume.v2_volume_recovery_active():
+        succeeded, recovery = v2volume.recover_session_volume(
+            correction_runtime.run_async,
+            correction_runtime.camilla_controller,
+        )
+        log_event(
+            logger,
+            "correction.crossover_v2_volume_auto_recovery",
+            succeeded=succeeded,
+            recovery=recovery,
+        )
     prepared = v2host.prepare_v2_session(
         raw,
         status=status,
