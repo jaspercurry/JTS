@@ -1531,7 +1531,7 @@ def correction_latency_eligibility_for_config(
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        return correction_latency_eligibility()
+        return correction_latency_eligibility(fir_mode="unknown")
     if not _CONV_FILTER_RE.search(text):
         return correction_latency_eligibility()
 
