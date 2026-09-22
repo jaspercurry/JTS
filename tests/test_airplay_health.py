@@ -837,58 +837,58 @@ def test_boot_warmup_suppresses_transient_audio_path_events() -> None:
     assert snap["status"] == "issue"
 
 
-def test_airplay_connect_grace_suppresses_session_establish() -> None:
-    # When a sender connects, the PTP-anchor settle emits expected
-    # sync-correction bursts; a per-session grace keeps them off the
-    # dashboard. Connect detection is MPRIS-driven (the frame rate
-    # free-runs silence and so can't mark a real session start), so it is
-    # bounded by the ~30 s MPRIS sample interval — advance past it.
+def test_airplay_connect_grace_suppresses_session_establish(tmp_path) -> None:
     now = [5000.0]
-    frames = [0]
-
-    def fanin_probe():
-        frames[0] += 480000   # keep the rate well above the 1000 floor
-        return _fanin_status(airplay_frames=frames[0])
-
     mpris = {"playing": False}
-    journal: dict[str, list[str]] = {"shairport-sync": []}
+    journal: dict[str, list[str]] = {"shairport-sync": [], "jasper-camilla": []}
+    calls = []
 
-    sampler = AirPlayHealthSampler(
-        fanin_probe=fanin_probe,
-        journal_reader=lambda _u, _s, _n: [
-            (unit, line) for unit, lines in journal.items() for line in lines
-        ],
+    def reader(units, since, until):
+        calls.append((units, since, until))
+        return [(unit, line) for unit in units for line in journal[unit]]
+
+    sampler = _storm_sampler(
+        now, reader=reader, tmp_dir=str(tmp_path),
+        fanin_probe=lambda: _fanin_status(
+            airplay_frames=int(now[0] * 48000),
+            airplay_xruns=int(now[0] >= 5036.0) + int(now[0] >= 5076.0),
+        ),
         mpris_probe=lambda: dict(mpris),
-        camilla_probe=lambda: None,
-        maintenance_suppress_path=None,
-        warmup_sec=0.0,
         connect_grace_sec=45.0,
-        time_fn=lambda: now[0],
     )
-
-    sampler._tick()            # t=5000 idle baseline (MPRIS sampled: not playing)
+    sampler._tick()
     assert sampler.snapshot()["suppressed_reason"] is None
 
-    # Sender connects; advance past the MPRIS interval so it re-samples
-    # playing and the idle->active transition arms the grace.
     mpris["playing"] = True
     journal["shairport-sync"] = ["rtp.c sync: Large negative sync error"]
-    now[0] += 31.0             # t=5031: MPRIS -> playing -> arm grace
+    journal["jasper-camilla"] = _material_short_read_lines(100)
+    for offset, count in ((31.0, 100), (36.0, 100), (61.0, 200)):
+        now[0] = 5000.0 + offset
+        sampler._tick()
+        snap = sampler.snapshot()
+        assert snap["suppressed_reason"] == "airplay_connect"
+        assert snap["connect_grace_until"] == 5076.0
+        assert snap["summary_5m"]["shairport_sync_errors"] == 0
+        assert snap["summary_5m"]["fanin_airplay_xruns"] == 0
+        assert snap["summary_5m"]["camilla_short_reads"] == count
+        assert {event["type"] for event in snap["events"]} == {"camilla_short_read"}
+        assert snap["storm"]["active"] is True
+        assert snap["status"] == "watch"
+    assert calls == [
+        (("shairport-sync",), 5000.0, 5000.0),
+        (("jasper-camilla",), 5000.0, 5000.0),
+        (("jasper-camilla",), 5000.0, 5031.0),
+        (("jasper-camilla",), 5031.0, 5061.0),
+    ]
+    assert snap["storm"]["material_per_min"] == 200.0
+    assert snap["storm"]["samples"] == 3
+
+    now[0] += 46.0
     sampler._tick()
-
-    snap = sampler.snapshot()
-    assert snap["suppressed_reason"] == "airplay_connect"
-    assert snap["summary_5m"]["shairport_sync_errors"] == 0   # establish burst suppressed
-    assert snap["events"] == []
-
-    # Grace (45 s) expires; the establish-class sync error is no longer
-    # suppressed and surfaces (a sync error is a hard 5 m recovery event).
-    now[0] += 46.0             # t=5077: past grace, still playing
-    sampler._tick()
-
     snap = sampler.snapshot()
     assert snap["suppressed_reason"] is None
-    assert snap["summary_5m"]["shairport_sync_errors"] >= 1
+    assert snap["summary_5m"]["shairport_sync_errors"] == 1
+    assert snap["summary_5m"]["fanin_airplay_xruns"] == 1
     assert snap["status"] == "issue"
 
 
