@@ -103,7 +103,7 @@ _VENDOR_RETRY_S = 1.0
 
 #: Every adapter verb this module may emit. ``set-zero`` is deliberately
 #: absent: no automated walk may redefine the saved acoustic-axis zero.
-_TOOL_SUBCOMMANDS = frozenset({"detect", "power", "stop", "position", "home", "offset"})
+_TOOL_SUBCOMMANDS = frozenset({"detect", "power", "stop", "position", "offset"})
 
 
 # --------------------------------------------------------------------------- #
@@ -358,7 +358,7 @@ class TurntableMover:
                 and code
                 and (
                     (subcommand == "stop" and _VENDOR_HEARTBEAT_FRAME_ERROR in error)
-                    or (subcommand in {"stop", "position", "home"}
+                    or (subcommand in {"stop", "position"}
                         and payload.get("code") == "port_busy")
                 )
             ):

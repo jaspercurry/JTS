@@ -931,8 +931,8 @@ def test_transient_vendor_failure_retries_once(
 
 
 @pytest.mark.parametrize("subcommand,structured,attempts", [
-    ("home", True, 2),
-    ("home", False, 1),
+    ("stop", True, 2),
+    ("stop", False, 1),
     ("offset", True, 1),
     ("detect", True, 1),
     ("power", True, 1),
