@@ -305,17 +305,21 @@ def test_delay_landscape_banks_itself_beside_the_round(tmp_path, capsys) -> None
     assert payload["bytes"] == banked.stat().st_size
 
 
-def test_complete_tune_delay_proposal_selects_one_take(tmp_path, capsys):
+@pytest.mark.parametrize("composition,coordinate_basis", [
+    ("complete_tune_measured", "residual addition to measured tune"),
+    ("crossover_composed", "neutral branch delay"),
+])
+def test_delay_proposal_selects_one_take_and_reports_coordinate_basis(tmp_path, capsys, composition, coordinate_basis):
     _bank(tmp_path, curves=[_curve("woofer", arrival_us=100), _curve("tweeter")],
-          phase="lateral", composition="complete_tune_measured", take_id="p0_a01")
+          phase="lateral", composition=composition, take_id="p0_a01")
     _bank(tmp_path, curves=[_curve("woofer", arrival_us=-100), _curve("tweeter")],
-          phase="lateral", composition="complete_tune_measured", take_id="p0_a02")
+          phase="lateral", composition=composition, take_id="p0_a02")
     take = "crossover_v2/capture-1/positions/p0_a01.json"
     code, payload, _err = _propose(tmp_path, capsys, "--phase", "lateral", "--take-path", take)
     assert code == 0
     assert payload["take_path"] == take
     assert payload["best_coordinate_us"] == pytest.approx(100)
-    assert _banked(payload)["delay_coordinates"] == "residual addition to measured tune"
+    assert _banked(payload)["delay_coordinates"] == coordinate_basis
 
 
 def test_delay_landscape_reads_only_the_common_gate_coverage(tmp_path, capsys):

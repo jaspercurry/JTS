@@ -99,6 +99,8 @@ def _cmd_delay_landscape(args: argparse.Namespace) -> int:
         "delay_coordinates": "residual addition to measured tune" if composition == "complete_tune_measured" else "neutral branch delay",
         "confirm_with": [
             "Author full candidate variants with these residual delay changes added to the measured tune's alignment; compare their summed captures with jasper-round trial."
+            if composition == "complete_tune_measured" else
+            "Author candidate variants whose branch delay is set to these coordinates; compare their summed captures with jasper-round trial."
         ],
     }
     return answer(
