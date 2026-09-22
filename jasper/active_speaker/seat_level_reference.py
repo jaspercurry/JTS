@@ -192,7 +192,18 @@ def seat_level_reference_volume_db(
     *, state_path: str | Path | None = None
 ) -> float | None:
     """Return a valid session gain; absent or old records require leveling."""
-    record = load_seat_level_reference(state_path=state_path)
+    return _reference_volume_db(load_seat_level_reference(state_path=state_path))
+
+
+def seat_level_reference_status() -> dict[str, Any] | None:
+    record = load_seat_level_reference()
+    return None if record is None else {
+        "seat_level_reference_volume_db": _reference_volume_db(record),
+        "leveled_db_spl": record.get("measured_db_spl"),
+    }
+
+
+def _reference_volume_db(record: Mapping[str, Any] | None) -> float | None:
     if record is None:
         return None
     value = record.get("reference_volume_db")

@@ -37,7 +37,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
 )
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.measurement_programs import prescription_sections
-from jasper.active_speaker.seat_level_reference import load_seat_level_reference, seat_level_reference_volume_db
+from jasper.active_speaker.seat_level_reference import seat_level_reference_status
 from jasper.active_speaker.rear_calibration import compile_rear_stage, diagnostic_seed, read_rear_calibration
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
@@ -604,10 +604,8 @@ def status_document(
                 })
     except (CrossoverEvidencePacketError, OSError) as exc:
         context["context_error"] = str(exc)
-    # A level nobody measured is what a session rides without one, so the
-    # banked value itself is published rather than a warning about its absence.
-    seat_level_db = seat_level_reference_volume_db()
-    level = load_seat_level_reference() or {}
+    level = seat_level_reference_status() or {}
+    seat_level_db = level.get("seat_level_reference_volume_db")
     profile = load_applied_baseline_profile_state(applied_profile_path)
     identity = applied_identity(profile) or {}
     programs = programs_for_topology(load_output_topology())
@@ -616,7 +614,7 @@ def status_document(
     banked = latest_banked_rounds(identity, programs=programs, include_stale=True)
     sections["applied"].update(
         layers=applied_layer_names(profile), candidate_fingerprint=identity.get("candidate"),
-        reference_volume_db=seat_level_db, leveled_db_spl=level.get("measured_db_spl"),
+        reference_volume_db=seat_level_db, leveled_db_spl=level.get("leveled_db_spl"),
     )
     return {
         "speaker": {
