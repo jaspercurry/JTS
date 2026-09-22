@@ -408,7 +408,6 @@ OFF_LADDER_HELD: dict[str, set[str]] = {
     "deploy/assets/transit/transit.css": {
         "0.8125rem", "0.875rem", "0.95rem", "1.05rem",
     },
-    "deploy/assets/voice/voice.css": {"0.85rem", "0.8rem", "1.05rem"},
     "deploy/assets/wake/wake.css": {
         "0.78rem", "0.82rem", "0.83rem", "0.84rem", "0.86rem", "0.88rem",
         "0.93rem", "0.95rem", "0.9rem", "1rem",

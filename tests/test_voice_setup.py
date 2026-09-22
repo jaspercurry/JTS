@@ -2,23 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the voice-provider config wizard at /assistant/voice/.
-
-The wizard's risky bits are:
-  1. Save logic — what gets written, what gets dropped, when does the
-     'active provider needs a key' guard kick in?
-  2. Atomic env-file IO with mode-0600 (an API key is in there).
-  3. Page render correctness — the right card opens, the right radio
-     is checked, the right key prefix shows up masked.
-
-Driven through the pure-function seams (`_apply_save`,
-`_apply_clear`, `_index_html`) plus the canonical env-file helpers
-and a tempdir for env-file IO. The HTTP handler itself is exercised
-end-to-end by spinning up the actual ThreadingHTTPServer on a random
-port, hitting it with `urllib`, and inspecting the responses — the
-same shape as the Spotify wizard would be tested if it had its own
-test file.
-"""
+"""Voice configuration, credential persistence, and setup form behavior."""
 from __future__ import annotations
 
 import os
@@ -38,7 +22,7 @@ import pytest
 from jasper import env_file
 from jasper.voice import catalog
 from jasper.voice import model_discovery
-from jasper.web import _common, voice_page, voice_setup
+from jasper.web import _common, voice_cost_page, voice_costs, voice_setup
 from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 
 
@@ -46,40 +30,29 @@ from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 
 
 def _form_for(active="openai", **kwargs) -> dict[str, str]:
-    """Build a save form with sensible defaults. Keys omitted means
-    'leave blank' — i.e. preserve the saved value."""
-    f = {
-        "active": active,
-        # All three providers' model + voice always submit (dropdowns).
-        "gemini_model": kwargs.pop(
-            "gemini_model", catalog.default_model_id("gemini"),
-        ),
-        "gemini_voice": kwargs.pop(
-            "gemini_voice", catalog.default_voice_id("gemini"),
-        ),
-        "openai_model": kwargs.pop(
-            "openai_model", catalog.default_model_id("openai"),
-        ),
-        "openai_voice": kwargs.pop(
-            "openai_voice", catalog.default_voice_id("openai"),
-        ),
-        "openai_reasoning_effort": kwargs.pop(
-            "openai_reasoning_effort",
-            catalog.default_extra_value("openai", "reasoning_effort"),
-        ),
-        "grok_model": kwargs.pop(
-            "grok_model", catalog.default_model_id("grok"),
-        ),
-        "grok_voice": kwargs.pop(
-            "grok_voice", catalog.default_voice_id("grok"),
-        ),
-        # Keys default blank (= no change).
-        "gemini_key": "",
-        "openai_key": "",
-        "grok_key": "",
-    }
-    f.update(kwargs)
-    return f
+    form = {"active": active}
+    provider = catalog.provider_by_id(active)
+    if provider:
+        form.update({
+            f"{active}_key": "",
+            f"{active}_model": catalog.default_model_id(active),
+            f"{active}_voice": catalog.default_voice_id(active),
+            **{f"{active}_{extra.name}": extra.default for extra in provider.extras},
+        })
+    return {**form, **kwargs}
+
+
+@pytest.mark.parametrize("provider", catalog.PROVIDERS, ids=lambda p: p.id)
+def test_saving_one_provider_keeps_other_provider_settings(provider):
+    current = {p.model_env: f"custom-{p.id}" for p in catalog.PROVIDERS}
+    current.update({p.key_env: "saved-key" for p in catalog.PROVIDERS})
+    new, error = voice_setup._apply_save(_form_for(provider.id), current)
+    assert error is None
+    assert new["JASPER_VOICE_PROVIDER"] == provider.id
+    for other in catalog.PROVIDERS:
+        if other.id != provider.id:
+            assert new[other.model_env] == current[other.model_env]
+        assert new[other.key_env] == current[other.key_env]
 
 
 def test_catalog_defaults_are_listed_with_their_validation_status():
@@ -88,8 +61,8 @@ def test_catalog_defaults_are_listed_with_their_validation_status():
     The catalog is still not an allow-list, but the built-in defaults
     should not drift into an unlabelled or fallback-only state.
     """
-    defaults = _form_for(openai_live_model="gpt-live-1", openai_live_voice="marin")
     for provider in catalog.PROVIDERS:
+        defaults = _form_for(provider.id)
         model_default = defaults[f"{provider.id}_model"]
         voice_default = defaults[f"{provider.id}_voice"]
         model = next((m for m in provider.models if m.default), None)
@@ -109,35 +82,17 @@ def test_provider_ids_manifest_is_shell_readable_catalog_projection():
     assert all("=" not in line and line.strip() == line for line in lines)
 
 
-def test_index_model_options_show_catalog_statuses():
-    page = voice_setup._index_html(
-        {},
-        "csrf-token-for-test-" + "x" * 32,
-    ).decode()
-    assert "3.1 Flash Live preview (tested; default)" in page
-    assert (
-        "2.5 Flash native-audio preview "
-        "(fallback; silent-session recovery)"
-    ) in page
-    assert "gpt-realtime-mini (fallback; lower cost, no reasoning)" in page
-
-
-def test_index_selects_catalog_defaults_when_unset():
-    page = voice_setup._index_html(
-        {},
-        "csrf-token-for-test-" + "x" * 32,
-    ).decode()
-    for provider in catalog.PROVIDERS:
-        for field, default in (
-            ("model", catalog.default_model_id(provider.id)),
-            ("voice", catalog.default_voice_id(provider.id)),
-        ):
-            select_idx = page.index(f'name="{provider.id}_{field}"')
-            value_idx = page.index(f'value="{default}"', select_idx)
-            option = page[
-                page.rfind("<option", 0, value_idx): page.index(">", value_idx)
-            ]
-            assert "selected" in option
+@pytest.mark.parametrize("provider", catalog.PROVIDERS, ids=lambda p: p.id)
+def test_index_offers_selected_provider_catalog_and_defaults(provider):
+    page = voice_setup._index_html({}, "tok", selected=provider.id).decode()
+    for model in provider.models:
+        assert model.display_label in page
+    for field, default in (
+        ("model", catalog.default_model_id(provider.id)),
+        ("voice", catalog.default_voice_id(provider.id)),
+    ):
+        select = page.split(f'name="{provider.id}_{field}"', 1)[1].split("</select>", 1)[0]
+        assert f'value="{default}" selected' in select
 
 
 def test_index_preserves_unknown_model_as_custom_experimental():
@@ -183,7 +138,7 @@ def test_index_merges_discovered_models_as_experimental_options():
 
 def test_index_renders_manual_refresh_button_without_page_load_fetch():
     page = voice_setup._index_html(
-        {"OPENAI_API_KEY": "sk-x"},
+        {"OPENAI_API_KEY": "sk-x", "JASPER_VOICE_PROVIDER": "openai"},
         "csrf-token-for-test-" + "x" * 32,
     ).decode()
     assert 'action="refresh-models"' in page
@@ -361,7 +316,7 @@ def _usage_db_with_cost(
 
 def test_read_spend_cap_status_uses_rolling_spend_and_multiplier(tmp_path: Path):
     db = _usage_db_with_cost(tmp_path, 0.81)
-    status = voice_page._read_spend_cap_status({
+    status = voice_costs._read_spend_cap_status({
         "JASPER_USAGE_DB": str(db),
         "JASPER_DAILY_SPEND_CAP_USD": "1.00",
         "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER": "1.25",
@@ -381,7 +336,7 @@ def test_index_renders_spend_cap_status_and_save_form(tmp_path: Path):
         "csrf-token-for-test-" + "x" * 32,
     ).decode()
 
-    assert "Voice spend cap" in page
+    assert 'action="spend-cap"' in page
     assert 'action="spend-cap"' in page
     assert 'name="daily_spend_cap_usd"' in page
     assert "Rolling 24h spend" in page
@@ -398,7 +353,7 @@ def test_read_spend_cap_status_tuning_only_ledger_shows_dollars(tmp_path: Path):
     'Turns today' stays VOICE-only, so it reads 0 here."""
     usage_db = tmp_path / "usage.db"  # never created
     _usage_db_with_cost(tmp_path, 0.40, name="usage-tuning.db")
-    status = voice_page._read_spend_cap_status({
+    status = voice_costs._read_spend_cap_status({
         "JASPER_USAGE_DB": str(usage_db),
         "JASPER_DAILY_SPEND_CAP_USD": "1.00",
         "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER": "1.0",
@@ -415,7 +370,7 @@ def test_read_spend_cap_status_turns_today_counts_voice_only(tmp_path: Path):
     figure counts only voice sessions."""
     db = _usage_db_with_cost(tmp_path, 0.10)  # 1 voice session
     _usage_db_with_cost(tmp_path, 0.05, name="usage-tuning.db")  # 1 tuning tap
-    status = voice_page._read_spend_cap_status({
+    status = voice_costs._read_spend_cap_status({
         "JASPER_USAGE_DB": str(db),
         "JASPER_DAILY_SPEND_CAP_USD": "1.00",
         "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER": "1.0",
@@ -459,176 +414,30 @@ def test_apply_spend_cap_rejects_negative_or_weak_multiplier():
 # ---------- Page rendering -------------------------------------------------
 
 
-def test_index_renders_active_radio_checked_for_active_provider():
-    state = {"JASPER_VOICE_PROVIDER": "openai", "OPENAI_API_KEY": "sk-x"}
-    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
-    # The openai radio is checked.
-    idx = page.index('name="active" value="openai"')
-    nearby = page[idx - 200: idx + 200]
-    assert "checked" in nearby
-    # Title element is present so the page renders cleanly.
-    assert "<title>Voice</title>" in page
-
-
-def test_index_disables_radio_for_unconfigured_provider(monkeypatch):
-    monkeypatch.delenv("XAI_API_KEY", raising=False)
-    state = {"JASPER_VOICE_PROVIDER": "openai", "OPENAI_API_KEY": "sk-x"}
-    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
-    # The grok radio input carries the `disabled` attribute, and its row is
-    # marked is-disabled (canonical dimmed/dashed styling) + aria-disabled.
-    idx = page.index('name="active" value="grok"')
-    tag_start = page.rfind("<input", 0, idx)
-    tag_end = page.index(">", idx)
-    tag = page[tag_start: tag_end + 1]
-    assert "disabled" in tag
-    row_start = page.rfind("<label", 0, idx)
-    assert "provider-radio is-disabled" in page[row_start:idx]
-
-
-def test_index_masks_existing_key_in_card():
-    state = {"OPENAI_API_KEY": "sk-proj-abcdef-tail9999"}
-    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
-    # Full key should never appear in the rendered HTML.
-    assert "sk-proj-abcdef-tail9999" not in page
-    # Masked prefix should.
-    assert "sk-p" in page  # first 4 chars
-    assert "9999" in page  # last 4 chars
-
-
-def test_index_active_card_renders_controls_and_active_badge():
-    """On the canonical design every provider key card is an always-open
-    flat .info-card (no collapse), so the paste field is visible without a
-    click. The active provider's key card carries the 'active' badge."""
-    state = {"JASPER_VOICE_PROVIDER": "openai", "OPENAI_API_KEY": "sk-x"}
-    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
-    # Find the openai card by its key input, then walk up to the card root.
-    idx = page.index('name="openai_key"')
-    head = page.rfind('class="info-card provider-card"', 0, idx)
-    assert head != -1
-    card = page[head: page.index('name="openai_key"', head) + 300]
-    # The active provider's badge sits in the card head.
-    head_block = page[head: idx]
-    assert "active</span>" in head_block
-    # The key input is visible without opening a disclosure.
-    assert 'name="openai_key"' in card
-
-
-def test_index_save_form_does_not_enclose_standalone_forms():
-    """HTML forbids nested forms. The page has standalone clear-key,
-    refresh-model, and pricing forms, so the outer save form MUST contain
-    only the active provider radios + CSRF. Regression test: an earlier
-    version nested clear forms inside the save form, browsers silently closed
-    the outer form, and Save no-op'd."""
-    state = {"JASPER_VOICE_PROVIDER": "gemini", "GEMINI_API_KEY": "AIza-x"}
-    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
-    save_form_open = page.index('id="save-form"')
-    save_form_close = page.index("</form>", save_form_open)
-    save_form = page[save_form_open:save_form_close]
-    assert "clear-credentials" not in save_form
-    assert "refresh-models" not in save_form
-    assert "pricing" not in save_form
-    assert 'class="info-card provider-card"' not in save_form
-    assert 'class="info-card provider-model-card"' not in save_form
-
-
-def test_index_voice_sections_follow_first_time_setup_order():
-    """A fresh setup has to add a key before an unconfigured provider can be
-    selected, so the page order should match that prerequisite."""
-    page = voice_setup._index_html({}, "csrf-token-for-test-" + "x" * 32).decode()
-    keys = page.index("1. Enter API keys")
-    provider = page.index("2. Select provider")
-    model = page.index("3. Select model and voice")
-    assert keys < provider < model
-    assert "add a key first" in page
-    assert "paste below first" not in page
-
-
-def test_index_card_inputs_associate_with_save_form_via_attribute():
-    """Cards are no longer DOM-nested in the save form (see prior test),
-    so each input/select inside a card MUST carry the HTML5
-    `form="save-form"` attribute to participate in the save POST.
-    Without it, pasting a key and pressing Save sends a POST with that
-    field absent — a silent no-op that gave us "Save doesn't do
-    anything" in the live deploy."""
-    state = {"JASPER_VOICE_PROVIDER": "gemini", "GEMINI_API_KEY": "AIza-x"}
-    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
-    # Every key input must opt into the save form.
-    for pid in ("gemini", "openai", "grok"):
-        anchor = f'name="{pid}_key"'
+@pytest.mark.parametrize("provider", catalog.PROVIDERS, ids=lambda p: p.id)
+@pytest.mark.parametrize("saved", [False, True])
+def test_selected_provider_form_preserves_controls_and_masks_keys(provider, saved):
+    key = "test-key-123456789-tail"
+    state = {provider.key_env: key} if saved else {}
+    page = voice_setup._index_html(state, "tok", selected=provider.id).decode()
+    assert key not in page
+    if saved:
+        assert _common.mask_secret(key) in page
+    assert f'name="active" value="{provider.id}"' in page
+    for field in ("key", "model", "voice", *(e.name for e in provider.extras)):
+        anchor = f'name="{provider.id}_{field}"'
         idx = page.index(anchor)
-        # Look in the same tag (between the previous '<' and the next '>').
-        tag_start = page.rfind("<", 0, idx)
-        tag_end = page.index(">", idx)
-        tag = page[tag_start: tag_end + 1]
-        assert 'form="save-form"' in tag, (
-            f"{pid}_key input is missing form=\"save-form\" — "
-            f"submission will silently drop this field. tag={tag!r}"
-        )
-    # Same check for model + voice selects.
-    for pid in ("gemini", "openai", "grok"):
-        for field in ("model", "voice"):
-            anchor = f'name="{pid}_{field}"'
-            idx = page.index(anchor)
-            tag_start = page.rfind("<", 0, idx)
-            tag_end = page.index(">", idx)
-            tag = page[tag_start: tag_end + 1]
-            assert 'form="save-form"' in tag, (
-                f"{pid}_{field} select is missing form=\"save-form\""
-            )
-
-
-def test_index_save_button_associates_with_save_form_via_attribute():
-    """The submit button at the bottom of the page sits OUTSIDE the
-    <form>...</form> tags (so the outer form can close before the
-    cards). It must carry form="save-form" to actually submit."""
-    state = {}
-    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
-    idx = page.index("Save and restart voice")
-    # Find the enclosing <button> tag.
-    btn_start = page.rfind("<button", 0, idx)
-    btn_end = page.index(">", btn_start)
-    btn_tag = page[btn_start: btn_end + 1]
-    assert 'form="save-form"' in btn_tag, (
-        f"save button is missing form=\"save-form\" — "
-        f"clicking it would do nothing. tag={btn_tag!r}"
-    )
-
-
-def test_index_save_and_test_button_posts_to_bounded_test_route():
-    """The explicit provider-call path must be an operator action, not a
-    page-load side effect or an implicit normal save."""
-    page = voice_setup._index_html({}, "csrf-token-for-test-" + "x" * 32).decode()
-    idx = page.index("Save and Test")
-    btn_start = page.rfind("<button", 0, idx)
-    btn_end = page.index(">", btn_start)
-    btn_tag = page[btn_start: btn_end + 1]
-    assert 'form="save-form"' in btn_tag
-    assert 'formaction="save-test"' in btn_tag
-
-
-def test_index_unconfigured_card_shows_paste_field(monkeypatch):
-    """A card with no saved key still renders its paste field directly (the
-    canonical cards are always-open flat .info-cards), so the user doesn't
-    have to click to discover where to paste. The card shows the
-    'not configured' badge and the empty key input."""
-    # Make sure environment doesn't supply keys (could carry from
-    # /etc/jasper/jasper.env on a developer's machine).
-    for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"):
-        monkeypatch.delenv(k, raising=False)
-    # Also neutralize the active-provider selection. CI sets
-    # JASPER_VOICE_PROVIDER=gemini ambiently (.github/workflows/tests.yml),
-    # which makes the gemini card render the "active" badge — that wins over
-    # the key state (_provider_key_card_html: is_active before configured), so
-    # "not configured" never appears even though the card still shows its
-    # paste field. This test asserts the inactive-AND-unconfigured rendering,
-    # so clear it (passes-local-fails-CI otherwise).
-    monkeypatch.delenv("JASPER_VOICE_PROVIDER", raising=False)
-    state = {}
-    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
-    idx = page.index('name="gemini_key"')
-    head = page.rfind('class="info-card provider-card"', 0, idx)
-    assert head != -1
-    assert "not configured</span>" in page[head: idx]
+        tag = page[page.rfind("<", 0, idx):page.index(">", idx)]
+        assert 'form="save-form"' in tag
+        if field == "key":
+            assert ("Key saved" in tag) is saved
+            assert (" required" in tag) is not saved
+    for other in catalog.PROVIDERS:
+        if other.id != provider.id:
+            assert f'name="{other.id}_key"' not in page
+            assert f'name="{other.id}_model"' not in page
+    assert 'formaction="save-test"' in page
+    assert page.index("1. Select provider") < page.index("2. Enter API key") < page.index("3. Select model")
 
 
 # ---------- Mask helper ----------------------------------------------------
@@ -1050,23 +859,26 @@ def test_e2e_save_and_test_handles_seed_skip_and_restarts(
         server.server_close()
 
 
-def test_e2e_save_rejects_active_without_key(tmp_path: Path, monkeypatch):
-    """Server-side enforcement of the 'no key, no activate' rule.
-    The radio is disabled in the UI, but a hand-crafted POST should
-    still be rejected."""
+@pytest.mark.parametrize("route", ["save", "save-test"])
+def test_e2e_rejected_save_keeps_choices_without_echoing_key(tmp_path, monkeypatch, route):
     monkeypatch.delenv("XAI_API_KEY", raising=False)
-    monkeypatch.setattr(
-        voice_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN,
-    )
+    restarts = []
+    monkeypatch.setattr(voice_setup, "restart_voice_daemon", lambda: restarts.append(True))
     server, base, _ = _start_server(tmp_path)
     try:
-        form = _form_for(active="grok")
-        status, location, _ = _post(f"{base}/save", form)
-        assert status == 303
-        assert "Grok" in urllib.parse.unquote(location)
-        assert "no API key" in urllib.parse.unquote(location)
-        # File was not touched.
+        key = "invalid-key with-whitespace"
+        status, _, body = _post(f"{base}/{route}", {
+            "active": "grok", "grok_key": key,
+            "grok_model": "custom-model", "grok_voice": "rex",
+        })
+        assert status == 422
+        assert key not in body
+        assert 'value="custom-model" selected' in body
+        assert 'value="rex" selected' in body
+        assert 'name="active" value="grok"' in body
+        assert restarts == []
         assert not (tmp_path / "voice_provider.env").exists()
+        assert not (tmp_path / "voice_keys.env").exists()
     finally:
         server.shutdown()
         server.server_close()
@@ -1086,10 +898,8 @@ def test_e2e_get_index_renders_state(tmp_path: Path, monkeypatch):
     server, base, _ = _start_server(tmp_path)
     try:
         body = urllib.request.urlopen(f"{base}/").read().decode()
-        # Active radio reflects the saved state.
-        idx = body.index('name="active" value="openai"')
-        nearby = body[idx: idx + 200]
-        assert "checked" in nearby
+        assert 'value="openai" selected' in body
+        assert 'name="active" value="openai"' in body
         # Mask shows up (prefix + suffix) but raw key does NOT.
         assert "sk-existing-12345abc" not in body
         assert "sk-e" in body and "5abc" in body
@@ -1131,18 +941,15 @@ def test_e2e_clear_credentials_removes_provider_keys(
 
 
 # ---------- Pricing editor (/pricing) --------------------------------------
-def test_index_renders_pricing_section_with_provider_buckets():
-    page = voice_setup._index_html(
-        {"JASPER_VOICE_PROVIDER": "openai"}, "tok", default_as_of="2026-05-30",
-    ).decode()
-    assert "Pricing rates" in page
-    assert "Bundled rates as of 2026-05-30" in page
-    # OpenAI shows the cached bucket; Gemini shows only audio (no text);
-    # Grok shows the flat-rate bucket.
-    assert "price__gpt-realtime-2__cached_input_per_million_usd" in page
-    assert "price__gemini-3.1-flash-live-preview__audio_input_per_million_usd" in page
-    assert "price__gemini-3.1-flash-live-preview__text_input_per_million_usd" not in page
-    assert "price__grok-voice-think-fast-1.0__flat_per_hour_usd" in page
+@pytest.mark.parametrize("provider", catalog.PROVIDERS, ids=lambda p: p.id)
+def test_index_renders_only_selected_provider_pricing_buckets(provider):
+    page = voice_setup._index_html({}, "tok", selected=provider.id).decode()
+    for model in provider.models:
+        for bucket in provider.pricing_buckets:
+            assert f'name="price__{model.id}__{bucket}"' in page
+    for other in catalog.PROVIDERS:
+        if other.id != provider.id:
+            assert f'name="price__{other.models[0].id}__' not in page
 
 
 def test_index_prefills_custom_override_and_tags_it():
@@ -1222,7 +1029,7 @@ def test_pricing_round_trip_through_overrides_loader(tmp_path: Path):
 
 # ---------- Pricing research prompt + import (Phase 3) ----------------------
 def test_research_prompt_lists_current_models_and_schema():
-    prompt = voice_page._pricing_research_prompt({})
+    prompt = voice_cost_page._pricing_research_prompt({})
     assert "gpt-realtime-2" in prompt
     assert "gemini-3.1-flash-live-preview" in prompt
     assert "grok-voice-think-fast-1.0" in prompt
@@ -1237,7 +1044,7 @@ def test_research_prompt_includes_discovered_models():
         fetched_at="2026-05-30T00:00:00Z",
         models=("gpt-realtime-3",),
     )
-    prompt = voice_page._pricing_research_prompt({"openai": snap})
+    prompt = voice_cost_page._pricing_research_prompt({"openai": snap})
     assert "gpt-realtime-3" in prompt
 
 
