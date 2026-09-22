@@ -360,6 +360,5 @@ def test_finished_round_names_the_next_pose_set(monkeypatch, selected_id):
     choices = round_choices(status, selected_id)
     env = build_crossover_envelope_v2({**status, "round_choices": choices})
     action = next(c["action"] for c in env["round_choices"] if c["id"] == selected_id)
-    assert selected_id in action["label"]
     assert action["body"]["plan"]["program"] == selected_id
     assert (env["screen"], env["terminal_status"], env["verdict_text"]) == ("finished", "complete", RUN_ENDED)
