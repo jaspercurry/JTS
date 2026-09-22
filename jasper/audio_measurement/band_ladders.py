@@ -45,7 +45,7 @@ BAND_LADDERS = MappingProxyType({
     "bass": BASS_BANDS_HZ,
     "third_octave_bass": THIRD_OCTAVE_BASS_BANDS_HZ,
     "octave": OCTAVE_BANDS_HZ,
-    "room": ROOM_BAND_SPLITS_HZ,
+    "room": ROOM_BAND_SPLITS_HZ,  # Splits, not edges; outer edges follow coverage and ceiling; band_ladder_name never matches this entry.
     "speaker_spec": SPEC_BAND_EDGES_HZ,
     "snr": tuple((lo, hi) for _, lo, hi in SNR_BANDS_HZ),
     "crossover_snr": tuple((lo, hi) for _, lo, hi in CROSSOVER_SNR_BANDS_HZ),
