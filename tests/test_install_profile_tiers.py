@@ -343,18 +343,43 @@ def test_persisted_install_profile_rewrites_legacy_marker(tmp_path: Path):
     assert marker.read_text().strip() == "streambox"
 
 
-def test_genuine_full_to_streambox_change_still_errors(tmp_path: Path):
-    """A REAL tier change (persisted full, requested streambox) still
-    fails closed — only the legacy-alias path auto-migrates."""
+@pytest.mark.parametrize(
+    ("persisted", "requested", "resolved", "returncode", "conversion"),
+    [
+        ("full", "streambox", "streambox", 0, True),
+        ("streambox", "full", "full", 0, True),
+        ("full", "endpoint", "streambox", 0, True),
+        ("full", "satellite", "streambox", 0, True),
+        ("full", "full", "full", 0, False),
+        ("streambox", "streambox", "streambox", 0, False),
+        ("full", "", "full", 0, False),
+        ("streambox", "", "streambox", 0, False),
+        ("full", "invalid", "", 2, False),
+        ("streambox", "invalid", "", 2, False),
+    ],
+)
+def test_explicit_install_profile_resolution(
+    tmp_path: Path, persisted: str, requested: str, resolved: str,
+    returncode: int, conversion: bool,
+):
     marker = tmp_path / "install_profile"
-    marker.write_text("full\n")
-    r = _run_install_helper(
+    marker.write_text(f"{persisted}\n")
+    result = _run_install_helper(
         "unset JASPER_ACCEPT_INSTALL_PROFILE_CHANGE; "
-        "JASPER_INSTALL_PROFILE=streambox "
+        f"JASPER_INSTALL_PROFILE={shlex.quote(requested)} "
         f"resolve_install_profile {shlex.quote(str(marker))}"
     )
-    assert r.returncode == 2
-    assert "install profile mismatch" in r.stderr
+    assert result.returncode == returncode
+    assert result.stdout.strip() == resolved
+    assert marker.read_text() == f"{persisted}\n"
+    if conversion:
+        fields = dict(field.split("=", 1) for field in result.stderr.split())
+        assert fields == {
+            "event": "install_profile.conversion_requested",
+            "previous": persisted, "profile": resolved, "source": "explicit",
+        }
+    elif returncode == 0:
+        assert not result.stderr
 
 
 # ---------- (3) one STEPS table: the plan renders what main() runs -------

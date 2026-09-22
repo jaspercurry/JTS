@@ -135,8 +135,6 @@ Environment:
                              Install tier. Unset/default is full speaker.
                              streambox is the Zero-class local renderer tier.
                              Legacy endpoint/satellite tokens map to streambox.
-  JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1
-                             Allow a persisted install-profile change.
   JASPER_HOSTNAME=<name>.local
                              Speaker identity/cert hostname for direct
                              Pi-local installs. scripts/deploy-to-pi.sh
@@ -319,19 +317,8 @@ resolve_install_profile() {
         requested_profile="$(detect_default_install_profile)" || return $?
     fi
 
-    if [[ -n "${persisted}" && "${persisted}" != "${requested_profile}" ]] \
-            && ! _is_truthy "${JASPER_ACCEPT_INSTALL_PROFILE_CHANGE:-0}"; then
-        cat >&2 <<EOF
-ERROR: install profile mismatch.
-
-Persisted profile: ${persisted}
-Requested profile: ${requested_profile}
-
-Refusing to switch install tiers implicitly. Set
-JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1 only when intentionally converting
-this Pi between the full speaker and streambox tiers.
-EOF
-        return 2
+    if [[ -n "${persisted}" && "${persisted}" != "${requested_profile}" ]]; then
+        echo "event=install_profile.conversion_requested previous=${persisted} profile=${requested_profile} source=explicit" >&2
     fi
 
     printf '%s\n' "${requested_profile}"
@@ -1784,8 +1771,8 @@ print_install_plan() {
 Nothing below is executed. Ahead of the table main() reports the hardware tier
 (refusing a non-arm64 host unless JASPER_ALLOW_UNSUPPORTED_ARCH=1), requires
 root, arms the exit trap, marks the install in progress, and persists the tier
-in ${INSTALL_PROFILE_MARKER} (refusing a full/streambox change unless
-JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=1).
+in ${INSTALL_PROFILE_MARKER}. An explicit JASPER_INSTALL_PROFILE selects a
+conversion; an unset profile keeps the persisted tier.
 
 Hardware tier (detected on this host): $(detect_hardware_tier)
 Run for real: sudo JASPER_INSTALL_PROFILE=$1 JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh

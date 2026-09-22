@@ -887,9 +887,6 @@ JASPER_HOSTNAME=$(shell_quote "$HOSTNAME_FOR_INSTALL")"
 if [[ -n "${JASPER_INSTALL_PROFILE:-}" ]]; then
     install_env="${install_env} JASPER_INSTALL_PROFILE=$(shell_quote "$JASPER_INSTALL_PROFILE")"
 fi
-if [[ -n "${JASPER_ACCEPT_INSTALL_PROFILE_CHANGE:-}" ]]; then
-    install_env="${install_env} JASPER_ACCEPT_INSTALL_PROFILE_CHANGE=$(shell_quote "$JASPER_ACCEPT_INSTALL_PROFILE_CHANGE")"
-fi
 # Forward selected env vars into the remote install.sh (non-empty only).
 # SKIP_RESTART rides along with the install env, but install.sh does not read
 # it: its only reader is this script's own post-install restart policy below,
