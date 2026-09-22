@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from jasper import wake_legs
+from jasper.aec_ready import read_aec_bridge_ready
 from jasper.aec.reconcile.runtime import VOICE_IRRELEVANT_ENV_KEYS
 from jasper.chip_aec import health as chip_aec_health
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
@@ -2658,11 +2659,13 @@ def test_missing_venv_uses_the_package_on_system_python(
     ("chip-aec-commission-arm", True, 69),
 ])
 def test_missing_package_keeps_running_state_and_the_last_records(
-    tmp_path: Path, reason: str, commissioning: bool, expected: int, runtime: str,
+    tmp_path: Path, reason: str, commissioning: bool, expected: int, runtime: str, monkeypatch,
 ) -> None:
     _armed_chip_aec_box(tmp_path)
     before = (tmp_path / "jasper.env").read_bytes()
     _prepublish_ready_marker(tmp_path)
+    monkeypatch.setenv("JASPER_AEC_BRIDGE_READY_MARKER", str(_ready_marker(tmp_path)))
+    assert read_aec_bridge_ready().ready
     installed = tmp_path / "installed" / "sbin" / "jasper-aec-reconcile"
     installed.parent.mkdir(parents=True)
     installed.write_bytes(SCRIPT.read_bytes())
@@ -2686,7 +2689,7 @@ def test_missing_package_keeps_running_state_and_the_last_records(
     assert result.returncode == expected, result.stderr
     assert (tmp_path / "jasper.env").read_bytes() == before
     assert _systemctl_log(tmp_path) == ""
-    assert not _ready_marker(tmp_path).exists()
+    assert not read_aec_bridge_ready().ready
     assert not _marker(tmp_path).exists()
 
 
