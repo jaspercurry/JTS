@@ -1242,8 +1242,6 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     code, body = _run([*argv, *flags, "--wait", "--attest-rig-clear"], opener, monkeypatch, capsys)
     assert code == 0, body
     expected = [(level, "lateral") for level in sorted(levels) for _ in range(2 if verb == "trial" else 1)]
-    if len(levels) == 1:
-        expected.insert(0, (levels[0], "entry_baseline"))
     assert [(call["level_db"], call["spec"].program_phase) for call in fakes.play.calls] == expected
     assert len(gate.grants) == fakes.graph.restores == 1
     assert (box.volume_db, asyncio.run(box.get_loudness_volume_db())) == (entry_volume, entry_loudness)

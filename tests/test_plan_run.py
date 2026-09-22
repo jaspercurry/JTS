@@ -741,8 +741,10 @@ def test_speaker_room_layout_pairs_driver_and_summed_stops_with_entry_timing():
     ("per_driver", "base", "speaker", ("check", "entry_baseline", "measure"), "timing"),
     ("summed", "base", "speaker", ("entry_baseline", "lateral"), "timing"),
     ("summed", "candidate-a", "speaker", ("lateral",), None),
-    ("summed", "base", "room", ("entry_baseline", "lateral"), "candidate"),
-    ("summed", "base", "bass", ("entry_baseline", "lateral"), "candidate"),
+    ("summed", "base", "room", ("lateral",), None),
+    ("summed", "base", "rear", ("lateral",), None),
+    ("summed", "base", "bass", ("lateral",), None),
+    ("summed", "base", "reference", ("lateral",), None),
 ])
 @pytest.mark.parametrize("repeats", [1, 3])
 def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, purpose, phases, scope, repeats):
@@ -751,19 +753,50 @@ def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, pu
         candidates=(candidate,), repeats=repeats,
     )
     captures = plan_run.prepare_plan_captures(request)
-    entry_repeats = repeats if scope == "timing" else 1
-    phase_repeats = {"check": 1, "entry_baseline": entry_repeats, "measure": repeats, "lateral": repeats}
+    phase_repeats = {"check": 1, "entry_baseline": repeats, "measure": repeats, "lateral": repeats}
     assert tuple(capture.spec.program_phase for capture in captures) == tuple(
         phase for phase in phases for _ in range(phase_repeats[phase]))
     assert [capture.repeat for capture in captures[-repeats:]] == list(range(1, repeats + 1))
     assert [capture.stop.angle_deg for capture in captures[-repeats:]] == [20] * repeats
     assert all(capture.stop.angle_deg == 0 for capture in captures[:-repeats])
     baseline = [capture for capture in captures if capture.spec.program_phase == "entry_baseline"]
-    assert [capture.repeat for capture in baseline] == (list(range(1, entry_repeats + 1)) if candidate == "base" else [])
+    assert [capture.repeat for capture in baseline] == (list(range(1, repeats + 1)) if scope else [])
     assert all((capture.spec.graph_scope, capture.stop.regime, capture.spec.positions, capture.spec.vertical_deg)
                == (scope, "summed", (0,), 0) for capture in baseline)
     assert all(capture.spec.graph_scope == ("drivers" if regime == "per_driver" else "candidate")
                for capture in captures[-repeats:])
+
+
+@pytest.mark.parametrize("purpose,layout,entry,poses", [
+    ("speaker", "baseline/express", True, 5), ("room", "seat_express", False, 3),
+    ("rear", "rear/express", False, 3),
+])
+def test_program_entry_baseline_and_placement_count(purpose, layout, entry, poses):
+    request = ac.request_for_program(run_program(purpose, layout))
+    context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
+                              driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+    captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
+    assert any(c.spec.program_phase == "entry_baseline" for c in captures) is entry
+    assert plan_run.preview_schedule(request, captures, context)["poses"] == poses
+
+
+async def test_room_uses_its_first_seat_take_as_the_level_reference():
+    request = ac.request_for_program(run_program("room", "seat_express"))
+    captures = plan_run.prepare_plan_captures(request)
+    manifest = RunManifest("run", _Store(FakeSeams().records), program=request.program)
+    for index, (capture, observed, accepted, action, delta) in enumerate(zip(
+        captures, (70, 78), (True, False), ("accept", "retake_same"), (None, 8),
+    ), 1):
+        assert (capture.spec.program_phase, capture.stop.kind) == ("lateral", "seat")
+        manifest.begin({"index": index, "pose": {"kind": "seat", "seat_offset_m": capture.stop.seat_offset_m},
+                        "candidate_id": capture.stop.candidate_id}, attempt=1, pose_index=index - 1)
+        record = {"take_id": str(index), "level_db": -20, "program_id": "room", "phase": "lateral",
+                  "capture_integrity": {"spl": {"loudest_half_second_db_spl": observed}}}
+        verdict = capture_dispatch.level_drift_verdict(**manifest.level_observation(record))
+        assert (verdict.ok, verdict.next, verdict.evidence.get("level_delta_db")) == (accepted, action, delta)
+        await manifest.append(record, str(index), verdict, complete=True, started_s=index, ended_s=index + 1,
+                              level_observation=verdict.evidence)
+    assert [take["selected"] for take in _takes(manifest.to_dict())] == [True, False]
 
 
 @pytest.mark.parametrize(("requested", "level", "source"), [
