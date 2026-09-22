@@ -647,12 +647,12 @@ def test_bare_status_leaves_evidence_unselected_when_history_is_empty(capsys):
 
 @pytest.mark.parametrize("stale_kind", [None, "candidate", "record", "applied_at"])
 @pytest.mark.parametrize("rear,layers,rounds,expected", [
-    (False, (), {}, ("speaker", "never_measured")),
-    (True, ("speaker",), {"speaker": 1}, ("rear", "never_measured")),
+    (False, (), {}, ("speaker", "layer_not_applied")),
+    (True, ("speaker",), {"speaker": 1}, ("rear", "layer_not_applied")),
     (False, ("speaker", "bass", "room"), {"speaker": 1, "room": 2, "bass": 3}, ("room", "upstream_changed")),
     (False, ("speaker", "bass", "room"), {"speaker": 1, "bass": 2, "room": 3}, (None, "complete")),
-    (False, ("speaker", "bass", "room"), {}, ("speaker", "never_measured")),
-    (True, ("speaker", "rear", "bass", "room"), {}, ("speaker", "never_measured")),
+    (False, ("speaker", "bass", "room"), {}, (None, "complete")),
+    (True, ("speaker", "rear", "bass", "room"), {}, (None, "complete")),
     (False, (), {"speaker": 1}, ("speaker", "round_available")),
 ])
 def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, capsys, rear, layers, rounds, expected, stale_kind):
@@ -669,7 +669,8 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(path))
     programs = ("speaker", "rear", "bass", "room") if rear else ("speaker", "bass", "room")
     if stale_kind:
-        expected = ("speaker", "never_measured")
+        missing = next((name for name in programs if name not in layers), None)
+        expected = (missing, "layer_not_applied" if missing else "complete")
     recent = {}
     for name, age in rounds.items():
         directory = tmp_path / "campaigns" / name
@@ -702,10 +703,10 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
     assert payload["next"] == dict(zip(("program", "reason_code"), expected))
     web_action = build_commissioning_view(topology, applied_profile=profile,
                                           recent_rounds={} if stale_kind else recent)["next_action"]
-    assert web_action["program"] == (expected[0] or programs[0])
+    assert web_action["program"] == expected[0]
     assert web_action["reason_code"] == expected[1]
-    assert web_action["id"] == ("copy_prompt" if expected[1] == "round_available" else "run_program")
-    assert web_action["enabled"] is True
+    assert web_action["id"] == (None if expected[0] is None else "copy_prompt" if expected[1] == "round_available" else "run_program")
+    assert web_action["enabled"] is (expected[0] is not None)
     assert packet_builder == []
     assert _tree(tmp_path) == before
 

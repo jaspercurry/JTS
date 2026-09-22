@@ -85,7 +85,7 @@ def _applied_baseline_profile(**overrides) -> dict:
     ("needs_driver_safety_profile", "research", "save_driver_values", True, None, (), (), None),
     ("ready_to_save_profile", "profile", "save_baseline_profile", True, None, (), (), None),
     ("blocked", "profile", "save_baseline_profile", False, None, (), (), None),
-    ("applied", "profile", "run_program", True, "speaker", ("speaker",), (), None),
+    ("applied", "profile", "run_program", True, "bass", ("speaker",), (), "layer_not_applied"),
     ("not_required", "layout", "run_program", True, "bass", (), (), None),
     ("applied", "profile", "copy_prompt", True, "speaker", (), (("speaker", 1),), None),
     ("applied", "profile", "run_program", True, "speaker", (), (("speaker", 0),), None),
@@ -93,7 +93,7 @@ def _applied_baseline_profile(**overrides) -> dict:
     ("applied", "profile", "copy_prompt", True, "room", ("speaker", "bass"), (("room", 1),), None),
     ("applied", "profile", "run_program", True, "bass", ("speaker", "room"), (("room", 1),), None),
     ("applied", "profile", "copy_prompt", True, "bass", ("speaker", "room"), (("bass", 1),), None),
-    ("applied", "profile", "run_program", True, "speaker", ("speaker", "room", "bass"), (("speaker", 1),), None),
+    ("applied", "profile", None, False, None, ("speaker", "room", "bass"), (("speaker", 1),), "complete"),
     ("not_required", "layout", "copy_prompt", True, "bass", (), (("bass", 1),), None),
     ("applied", "profile", "run_program", True, "speaker", (), (("speaker", -1),), "layer_not_applied"),
 ])
@@ -182,22 +182,26 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
 
 
 @pytest.mark.parametrize("rear", [False, True])
-@pytest.mark.parametrize("banked", [False, True])
-def test_next_program_follows_declared_rear_target(rear, banked):
+@pytest.mark.parametrize("layers,rounds,expected,reason", [
+    (None, {}, "speaker", "never_measured"),
+    ((), {}, "speaker", "layer_not_applied"),
+    (("speaker",), {}, "bass", "layer_not_applied"),
+    (("speaker", "rear"), {}, "bass", "layer_not_applied"),
+    (("speaker", "rear", "bass"), {}, "room", "layer_not_applied"),
+    (RUNNABLE_PROGRAMS, {}, None, "complete"),
+    (RUNNABLE_PROGRAMS, {"room": {"started_at": 1}, "speaker": {"started_at": 2}}, "room", "upstream_changed"),
+    (("speaker", "rear"), {"bass": {"round_dir": "/bank/bass", "started_at": 1}}, "bass", "round_available"),
+])
+def test_next_program_follows_applied_layers_and_rounds(rear, layers, rounds, expected, reason):
     topology = _topology()
     if rear:
         group, = topology.speaker_groups
         channel = replace(group.channels[0], output_variant="rear", physical_output_index=2)
         topology = replace(topology, speaker_groups=(replace(group, channels=(*group.channels, channel)),))
-    sequence = ("speaker", "rear", "bass", "room") if rear else ("speaker", "bass", "room")
-    for index in range(1, len(sequence)):
-        profile = _applied_anchor(layers=sequence[:index])
-        rounds = {sequence[index - 1]: {"round_dir": "/bank/previous", "started_at": 1}}
-        if banked:
-            rounds[sequence[index]] = {"round_dir": "/bank/current",
-                                       "started_at": parse_utc_iso(profile["applied_at"]) + 1}
-        action = build_commissioning_view(topology, applied_profile=profile, recent_rounds=rounds)["next_action"]
-        assert (action["id"], action["program"]) == ("copy_prompt" if banked else "run_program", sequence[index])
+    action = next_program_action(None if layers is None else _applied_anchor(layers=layers), {}, rounds,
+                                 programs=coordinator.programs_for_topology(topology))
+    assert (action["program"], action["reason_code"]) == ("rear" if rear and layers == ("speaker",) else expected, reason)
+    assert action["enabled"] is (expected is not None)
 
 
 @pytest.mark.parametrize("upstream", ["speaker", "rear", "bass"])
@@ -209,7 +213,7 @@ def test_room_repeats_after_newer_upstream_round(upstream, age, room_applied):
               upstream: {"round_dir": "/bank/upstream", "started_at": age}}
     action = next_program_action(_applied_anchor(layers=layers), {}, rounds, programs=RUNNABLE_PROGRAMS)
     expected = ("run_program", "room") if age > 1 else (
-        ("run_program", "speaker") if room_applied else ("copy_prompt", "room"))
+        (None, None) if room_applied else ("copy_prompt", "room"))
     assert (action["id"], action["program"]) == expected
 
 

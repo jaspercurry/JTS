@@ -33,15 +33,10 @@ def next_program_action(
     *,
     programs: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Choose from the latest banked round per program for this applied identity."""
+    """Choose from applied layers and the latest rounds for this identity."""
     from .baseline_profile import applied_layers  # lazy: baseline imports measurement
 
-    baseline = {"id": "run_program", "enabled": True,
-                "program": programs[0], "label": _MEASURE_LABELS[programs[0]],
-                "reason_code": "never_measured"}
-    # Plan #5073 §2 rule (a): no round for this identity means measure the baseline first.
-    if not recent_rounds:
-        return baseline
+    # Decision d18 / ADR-0301: the trial verifies an apply; a new baseline round is not required.
     layers = applied_layers(profile)
     room_at = finite_float((recent_rounds.get(PURPOSE_ROOM) or {}).get("started_at"))
     room_stale = room_at is not None and any(
@@ -49,7 +44,9 @@ def next_program_action(
         for name in programs if name != PURPOSE_ROOM
     )
     program = next((name for name in programs if not layers[name]
-                    or name == PURPOSE_ROOM and room_stale), programs[0])
+                    or name == PURPOSE_ROOM and room_stale), None)
+    if program is None:
+        return {"id": None, "enabled": False, "program": None, "label": "Tuning complete", "reason_code": "complete"}
     round_ = recent_rounds.get(program) or {}
     applied_at = parse_utc_iso(str(identity.get("applied_at") or "")) or 0
     if (not layers[program] and not (program == PURPOSE_ROOM and room_stale)
@@ -57,9 +54,8 @@ def next_program_action(
         return {"id": "copy_prompt", "label": f"Copy the {program} prompt", "enabled": True,
                 "program": program, "round_dir": round_["round_dir"], "reason_code": "round_available"}
     reason = ("upstream_changed" if program == PURPOSE_ROOM and room_stale else
-              "complete" if all(layers[name] for name in programs) else
-              "layer_not_applied" if round_ else "never_measured")
-    return {**baseline, "program": program, "label": _MEASURE_LABELS[program], "reason_code": reason}
+              "layer_not_applied" if profile is not None else "never_measured")
+    return {"id": "run_program", "enabled": True, "program": program, "label": _MEASURE_LABELS[program], "reason_code": reason}
 
 
 def build_commissioning_view(
