@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The systemd unit roster and a shared ``systemctl show`` reader.
+"""The systemd unit roster and shared ``systemctl``/``journalctl`` readers.
 
 jasper-control's samplers, jasper-doctor and jasper-system-soak read unit
 state through here, sharing one roster and one parser (ADR-0233 rule 1).
@@ -10,6 +10,7 @@ Stdlib only: the doctor imports this on every run.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 from typing import Any, Mapping, Sequence
@@ -310,6 +311,64 @@ def run_systemctl(
         check=False,
         timeout=timeout,
     )
+
+
+class JournalctlUnavailable(Exception):
+    """journalctl could not be run, or exited outside ``{0, 1}``."""
+
+    def __init__(self, message: str, *, returncode: int | None = None) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+
+
+def run_journalctl_json(
+    units: Sequence[str],
+    *,
+    since: str,
+    until: str,
+    output_fields: Sequence[str],
+    timeout: float = 20.0,
+) -> list[dict[str, Any]]:
+    """Run one JSON journal scan and return its object-valued rows.
+
+    Timestamps are passed through verbatim. Return codes 0 and 1 may both
+    carry usable journal output. Callers own their fail-soft response when the
+    command is unavailable or returns another code.
+    """
+    argv = ["journalctl"]
+    for unit in units:
+        argv.extend(("-u", unit))
+    argv.extend((
+        "--since", since,
+        "--until", until,
+        "--no-pager",
+        "-o", "json",
+        f"--output-fields={','.join(output_fields)}",
+    ))
+    try:
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, OSError) as exc:
+        raise JournalctlUnavailable(str(exc)) from exc
+    if proc.returncode not in (0, 1):
+        raise JournalctlUnavailable(
+            proc.stderr[:300], returncode=proc.returncode,
+        )
+
+    rows: list[dict[str, Any]] = []
+    for raw in proc.stdout.splitlines():
+        try:
+            record = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(record, dict):
+            rows.append(record)
+    return rows
 
 
 def unit_uptime_sec(record: Mapping[str, Any] | None) -> float | None:
