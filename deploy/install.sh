@@ -520,12 +520,22 @@ install_streambox_deps() {
     _install_renderer_native_deps
 }
 
+_restart_outputd_for_readiness() {
+    # Clear earlier transient attempts before spending this install's one
+    # readiness restart. A failed reset must not risk the reboot ladder (#5267).
+    if ! systemctl reset-failed jasper-outputd.service 2>/dev/null; then
+        echo "  ERROR: could not clear jasper-outputd's start-rate state; refusing the readiness restart" >&2
+        return 1
+    fi
+    systemctl restart jasper-outputd.service
+}
+
 require_outputd_ready() {
     if [[ ! -x /opt/jasper/bin/jasper-outputd ]]; then
         echo "  ERROR: /opt/jasper/bin/jasper-outputd is missing or not executable" >&2
         return 1
     fi
-    systemctl restart jasper-outputd.service
+    _restart_outputd_for_readiness || return 1
     systemctl is-active --quiet jasper-outputd.service || {
         echo "  ERROR: jasper-outputd.service did not become active" >&2
         journalctl -u jasper-outputd.service -n 40 --no-pager >&2 || true
