@@ -511,7 +511,7 @@ exhaustive_ignores = [
   "usbsink",
   "voice",
   "voice_daemon",
-  "volume_coordinator",
+  "volume_coordinator", "volume_handoff",  # volume_curve -> sound -> cli; rank after that chain is cut.
   "volume_curve",
   "volume_echo",
   "volume_observers",

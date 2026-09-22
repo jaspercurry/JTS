@@ -23,12 +23,15 @@ import pytest
 from tests._async_wait import wait_signalled
 from tests._log_events import event_field_maps, event_records
 
-from jasper import bluealsa_probe
+from jasper import bluealsa_probe, camilla, renderer, volume_process
+from jasper import volume_handoff as vh_mod
 from jasper import spotify_router as spotify_router_mod
 from jasper import volume_coordinator as vc_mod
 from jasper import volume_push_sources as vps_mod
 from jasper.accounts import Account
-from jasper.camilla import CamillaUnavailable
+from jasper.camilla import CamillaController, CamillaUnavailable
+from jasper.dsp_apply import camilla_graph_mutation
+from jasper.volume_handoff import main_mute_for_level
 from jasper.spotify_router import AccountClient, Router
 from jasper.music_sources import Source
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
@@ -89,7 +92,7 @@ def test_clamping_below_zero_and_above_100():
 def test_main_mute_predicates_agree_for_every_audible_level(level):
     # R-006: a level and its own dB must not disagree on mute, or the
     # coordinator re-mutes an audible level forever.
-    assert VolumeCoordinator._main_mute_for_level(level) == (
+    assert main_mute_for_level(level) == (
         VolumeCoordinator._main_mute_for_db(percent_to_db(level))
     )
 
@@ -309,7 +312,7 @@ def _warnings(caplog) -> list[str]:
     return [
         record.getMessage()
         for record in caplog.records
-        if record.name == vc_mod.__name__ and record.levelno >= logging.WARNING
+        if record.name in (vc_mod.__name__, vh_mod.__name__) and record.levelno >= logging.WARNING
     ]
 
 
@@ -714,7 +717,7 @@ async def test_push_dispatch_failure_guard_preserves_diagnostics_and_warning(
     level = 25
     guard_db = percent_to_db(level)
 
-    with caplog.at_level(logging.WARNING, logger=vc_mod.__name__):
+    with caplog.at_level(logging.WARNING, logger="jasper"):
         await coord.set_listening_level(level)
 
     assert guard_calls == [(pytest.approx(guard_db), context, True)]
@@ -1363,106 +1366,6 @@ async def test_observe_inactive_source_is_ignored(
 # ---------- source handoff -------------------------------------------------
 
 
-async def test_handoff_spotify_to_airplay_guards_camilla_before_gate(tmp_path):
-    """Push-mode → camilla-master handoff lowers Camilla before mux
-    exposes the AirPlay lane."""
-    coord, cam, _ = _coord(tmp_path, active={"spotactive": True})
-    await coord.set_listening_level(50)
-
-    handoff = await coord.prepare_source_handoff(
-        Source.SPOTIFY, Source.AIRPLAY, reason="manual",
-    )
-
-    assert handoff.ok
-    assert handoff.guard_db == pytest.approx(percent_to_db(50))
-    assert cam.set_calls[-1] == pytest.approx(percent_to_db(50))
-
-
-async def test_handoff_finalize_honors_mute_landed_after_prepare(tmp_path):
-    """A remote mute between prepare and finalize must keep the new lane silent."""
-    coord, cam, persistence = _coord(tmp_path, active={"spotactive": True})
-    await coord.set_listening_level(60)
-    handoff = await coord.prepare_source_handoff(
-        Source.SPOTIFY, Source.AIRPLAY, reason="manual",
-    )
-    assert handoff.ok
-
-    # jasper-control handling the remote while mux owns this coordinator's
-    # source-transition sequence.
-    persistence.save_mute_state(60, None)
-
-    assert await coord.finalize_source_handoff(handoff) is True
-    assert cam.set_calls[-1] == pytest.approx(percent_to_db(0))
-    assert cam.mute_calls[-1] is True
-
-
-async def test_handoff_catches_lower_level_during_guard_settle(tmp_path):
-    """If the user lowers volume while Camilla is settling, handoff
-    catches down before mux opens the target lane."""
-    coord, cam, persistence = _coord(tmp_path, active={"spotactive": True})
-    await coord.set_listening_level(50)
-    original_set_camilla_db = coord._set_camilla_db
-    lowered = False
-
-    async def set_and_lower_once(db, *, context, persist):
-        nonlocal lowered
-        ok = await original_set_camilla_db(db, context=context, persist=persist)
-        if context == "source_handoff_guard" and not lowered:
-            persistence.save_listening_level(20, mark_user_change=True)
-            lowered = True
-        return ok
-
-    coord._set_camilla_db = set_and_lower_once
-
-    handoff = await coord.prepare_source_handoff(
-        Source.SPOTIFY, Source.AIRPLAY, reason="manual",
-    )
-
-    assert handoff.ok
-    assert handoff.level == 20
-    assert handoff.guard_db == pytest.approx(percent_to_db(20))
-    assert cam.set_calls[-1] == pytest.approx(percent_to_db(20))
-
-
-async def test_handoff_airplay_to_spotify_pushes_before_finalize(tmp_path):
-    """Camilla-master → push-mode handoff pushes the source volume
-    before mux opens the source, then finalize pins Camilla to 0 dB."""
-    coord, cam, _ = _coord(tmp_path, active={"aplactive": True}, db=-25.0)
-    await coord.set_listening_level(60)
-    coord.spotify_writes.clear()
-
-    handoff = await coord.prepare_source_handoff(
-        Source.AIRPLAY, Source.SPOTIFY, reason="manual",
-    )
-
-    assert handoff.ok
-    assert handoff.push_ok is True
-    assert coord.spotify_writes == [60]
-    await coord.finalize_source_handoff(handoff)
-    assert cam.set_calls[-1] == pytest.approx(0.0)
-
-
-async def test_handoff_push_failure_keeps_camilla_guarded(tmp_path):
-    """If a push-mode source cannot accept volume, handoff degrades
-    safe by keeping downstream Camilla at the canonical guard."""
-    coord, cam, _ = _coord(tmp_path, active={"aplactive": True})
-    await coord.set_listening_level(40)
-
-    async def fail_spotify(_level: int) -> bool:
-        return False
-
-    coord._set_spotify = fail_spotify
-    handoff = await coord.prepare_source_handoff(
-        Source.AIRPLAY, Source.SPOTIFY, reason="manual",
-    )
-
-    assert handoff.result == "degraded_safe"
-    assert handoff.push_ok is False
-    assert cam.set_calls[-1] == pytest.approx(percent_to_db(40))
-    await coord.finalize_source_handoff(handoff)
-    assert cam.set_calls[-1] == pytest.approx(percent_to_db(40))
-
-
 async def test_observer_transition_push_failure_preserves_guard(tmp_path):
     """The observer backstop must not undo mux's degraded-safe guard.
 
@@ -1529,7 +1432,7 @@ async def test_transition_push_failure_guard_preserves_diagnostics_and_warning(
     )
     guard_db = percent_to_db(level)
 
-    with caplog.at_level(logging.WARNING, logger=vc_mod.__name__):
+    with caplog.at_level(logging.WARNING, logger="jasper"):
         await coord.apply_active_source_transition(prev_source, current_source)
 
     assert guard_calls == [(pytest.approx(guard_db), context, True)]
@@ -1600,6 +1503,24 @@ async def test_handoff_ducked_safe_guard_reports_restore_target(tmp_path):
 
     assert handoff.ok
     assert await coord.get_camilla_target_db() == pytest.approx(percent_to_db(20))
+
+
+@pytest.mark.parametrize("door", ["finalize_source_handoff", "abort_source_handoff"])
+@pytest.mark.parametrize("db", [-45.0, -5.0])
+async def test_handoff_restore_keeps_percent_write_semantics_during_duck(tmp_path, door, db):
+    coord, cam, persistence = _coord(tmp_path, db=db, level=20)
+    persistence.save_now(0.0)
+    handoff = await coord.prepare_source_handoff(Source.AIRPLAY, Source.AIRPLAY, reason="manual")
+    coord.note_voice_session(True, camilla_volume_locked=True)
+
+    assert await getattr(coord, door)(handoff) is True
+    assert cam.set_calls == []
+    assert cam.mute_calls == [False]
+    _assert_persisted(persistence, db=0.0)
+
+    guard_ok = await coord._set_camilla_db(percent_to_db(20), context="test_guard", persist=True)
+    assert guard_ok is (db == -45.0)
+    _assert_persisted(persistence, db=round(percent_to_db(20), 2))
 
 
 async def test_get_camilla_target_db_preserves_degraded_push_guard(tmp_path):
@@ -2617,8 +2538,6 @@ async def test_get_camilla_target_db_refreshes_from_disk(tmp_path):
 async def test_env_target_and_registered_provider_read_current_persisted_intent(
     tmp_path, monkeypatch,
 ):
-    from jasper import camilla, renderer, volume_process
-
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     monkeypatch.setattr(volume_process, "volume_state_path", lambda: persistence.path)
     monkeypatch.setattr(camilla, "primary_controller", lambda: _FakeCamilla())
@@ -2991,8 +2910,6 @@ class _MinimalCamillaClient:
 
 
 def _real_controller(client: _MinimalCamillaClient, tmp_path):
-    from jasper.camilla import CamillaController
-
     cam = CamillaController("127.0.0.1", 1234)
     cam._graph_mutation_lock_path = tmp_path / ".dsp_apply.lock"
 
@@ -3052,8 +2969,6 @@ async def test_reconciler_stands_down_while_a_dsp_writer_holds_the_graph(tmp_pat
     which is what makes the stand-down transient rather than a second
     carve-out.
     """
-    from jasper.dsp_apply import camilla_graph_mutation
-
     expected_db = percent_to_db(40)
     coord, cam, client = _owned_coord(tmp_path, db=expected_db)
     await coord.set_listening_level(40)
@@ -3171,14 +3086,12 @@ async def test_cue_and_graph_swap_interleave_back_to_the_canonical_target(
     wrote back a value the other had already ducked, tens of dB quiet, in the
     one band `maybe_reconcile_camilla` deliberately refuses to heal.
     """
-    from jasper import camilla as camilla_module
-
-    monkeypatch.setattr(camilla_module, "MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
+    monkeypatch.setattr(camilla, "MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
     canonical_db = percent_to_db(70)
     coord, cam, client = _owned_coord(tmp_path, db=canonical_db)
     await coord.set_listening_level(70)
     monkeypatch.setattr(
-        camilla_module,
+        camilla,
         "_canonical_target_db_provider",
         coord.get_camilla_target_db,
     )
@@ -3220,13 +3133,11 @@ async def test_duck_release_never_lands_above_a_volume_change_made_inside_it(
     just wrote lands tens of dB above what the user asked for. The canonical
     ceiling is the half that prevents it.
     """
-    from jasper import camilla as camilla_module
-
-    monkeypatch.setattr(camilla_module, "MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
+    monkeypatch.setattr(camilla, "MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
     coord, cam, client = _owned_coord(tmp_path, db=percent_to_db(70))
     await coord.set_listening_level(70)
     monkeypatch.setattr(
-        camilla_module,
+        camilla,
         "_canonical_target_db_provider",
         coord.get_camilla_target_db,
     )

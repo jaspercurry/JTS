@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Value objects for canonical volume intent and source handoffs.
+"""Value objects for canonical volume intent.
 
 `jasper.volume_coordinator` is the sole mutator of these; this module holds
 the frozen shapes so `jasper.control`, `jasper.mux`, and their tests can
@@ -13,7 +13,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .music_sources import Source, VolumeMode
 from .volume_persistence import db_to_percent
 
 if TYPE_CHECKING:
@@ -76,29 +75,3 @@ class VolumeState:
     @property
     def restore_percent(self) -> int | None:
         return self.pre_mute_level
-
-
-@dataclass(frozen=True)
-class SourceHandoff:
-    """Preparation result for a mux-owned source transition.
-
-    ``level`` is the effective level captured during preparation, not the
-    separately remembered post-unmute level.
-    """
-    prev_source: Source
-    current_source: Source
-    reason: str
-    level: int
-    prev_mode: VolumeMode
-    current_mode: VolumeMode
-    guard_db: float | None = None
-    camilla_before_db: float | None = None
-    push_ok: bool | None = None
-    camilla_guarded: bool = False
-    settled_ms: int = 0
-    result: str = "ok"
-    detail: str = ""
-
-    @property
-    def ok(self) -> bool:
-        return self.result in {"ok", "degraded_safe", "noop"}
