@@ -89,11 +89,11 @@ def observe(values: Mapping[str, str], asound_root: Path, outputd_socket: str, l
             testing_requested=values.get("JASPER_AUDIO_INPUT_PROFILE") == "xvf_chip_aec_testing",
         )
     except (OSError, ValueError) as exc:
-        gate = gate_from_runtime_env(values)
-        if gate is None:
+        carried = gate_from_runtime_env(values)
+        if carried is None:
             gate = ChipAecGate(dac_id, "needs_calibration", "policy_unavailable", str(exc), False)
         else:
             note = "chip-AEC DAC gate could not be evaluated; carrying last verdict"
-            gate = replace(gate, source="runtime_env_carried", detail=f"{gate.detail.removesuffix('; ' + note)}; {note}".lstrip('; '))
+            gate = replace(carried, source="runtime_env_carried", detail=f"{carried.detail.removesuffix('; ' + note)}; {note}".lstrip('; '))
         log(f"event=aec_reconcile.dac_gate status=failed error={exc}")
     return Observation(mic, channels, frozenset(measurement), sources, accessory_status, gate)
