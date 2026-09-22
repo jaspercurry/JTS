@@ -491,11 +491,6 @@ def test_model_label_aliases_default_and_unknown():
 
 # --- measurement-class USB identity (W1) -----------------------------------
 #
-# The registry is the ONE owner of "which hardware is a measurement
-# microphone". deploy/bin/jasper-aec-reconcile reads it through
-# `python -m jasper.cli.capture_card` so a calibrated measurement mic can
-# never be selected as the voice/wake input — it carries no wake or AEC
-# contract, so selecting one would swap the room mic for an instrument.
 
 
 def test_supported_models_every_entry_declares_usb_ids():

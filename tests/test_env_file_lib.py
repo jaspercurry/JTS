@@ -31,13 +31,7 @@ from tests.install_surface import installer_text
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / "deploy" / "lib" / "jasper-env-file.sh"
-# Every deploy/bin executable that loads the shared lib. The drift guards
-# below are about the loader and the quoting, which every consumer must get
-# identically right. jasper-audio-hardware-reconcile is absent because its pass
-# is Python: it writes through jasper.env_file under the SAME advisory lock
-# (jasper.atomic_io.env_lock_path == jasper_env_lock_path here).
 LIB_CONSUMERS = [
-    ROOT / "deploy" / "bin" / "jasper-aec-reconcile",
     ROOT / "deploy" / "bin" / "jasper-apply-airplay-mode",
     ROOT / "deploy" / "bin" / "jasper-wifi-guardian",
 ]
@@ -639,10 +633,7 @@ def test_env_file_export_skips_jasper_prefixed_keys(
 
 
 def test_lib_consumers_source_shared_lib_and_never_printf_q() -> None:
-    """Drift guard: every script in LIB_CONSUMERS (the two reconcilers, the
-    wifi guardian and the AirPlay conf renderer) must load
-    jasper-env-file.sh and must not regrow a local `printf %q` (the
-    bash-5.2 comma bug) or a forked local quoting loop."""
+    """Shared quoting avoids the Bash 5.2 printf-%q comma bug."""
     for script in LIB_CONSUMERS:
         text = script.read_text()
         assert "jasper-env-file.sh" in text, script.name

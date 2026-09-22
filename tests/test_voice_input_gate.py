@@ -10,27 +10,25 @@ StartLimitAction=reboot:
 1. jasper-voice.service gates ExecStart on the reconciler-written marker
    (ConditionPathExists), and parks (not crash-loops) on the
    mic-unavailable exit code.
-2. The marker path agrees across the unit, the bash reconciler default,
-   and the Python reader — a drift here silently breaks the gate.
+2. The marker path agrees across the unit and its Python owner — a drift
+   here silently breaks the gate.
 3. The daemon exits VOICE_MIC_UNAVAILABLE_EXIT on a primary mic-open
    failure — and VOICE_PROVIDER_NOT_CONFIGURED_EXIT with no provider —
    announcing each park with a cue first; the doctor reports the parked
    state as expected-idle.
 4. The gate is an OR over a local mic and a paired accessory mic
    (issue #2205): the accessory env path agrees across its owner, the unit,
-   and env_load, and the bash reconciler carries no copy of it because it
-   asks jasper.accessories.mic_env instead.
-5. The gate owner PUBLISHES which half it resolved
+   and env_load.
+5. The gate owner publishes which half it resolved
    (JASPER_LOCAL_MIC_PRESENT), and the daemon's leg planner reads that
    published fact rather than re-deriving mic presence from its own config.
-6. Closing the gate is AUDIBLE: the daemon plays the mic-loss cue once
+6. Closing the gate is audible: the daemon plays the mic-loss cue once
    during its own shutdown when the marker is there, and the unit's
    TimeoutStopSec clears MIC_LOSS_CUE_STOP_FLOOR_SEC (ADR-0239).
 """
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -67,7 +65,6 @@ from tests.systemd_unit_helpers import value_for
 
 ROOT = Path(__file__).resolve().parents[1]
 UNIT = ROOT / "deploy" / "systemd" / "jasper-voice.service"
-RECONCILE = ROOT / "deploy" / "bin" / "jasper-aec-reconcile"
 
 
 def _unit_text() -> str:
@@ -152,12 +149,6 @@ def test_marker_path_agreement() -> None:
     ]
     assert unit_paths == [DEFAULT_VOICE_INPUT_ABSENT_MARKER], unit_paths
 
-    m = re.search(
-        r'VOICE_INPUT_ABSENT_MARKER="\$\{JASPER_VOICE_INPUT_ABSENT_MARKER:-([^}]+)\}"',
-        RECONCILE.read_text(),
-    )
-    assert m, "reconciler must define VOICE_INPUT_ABSENT_MARKER with a default"
-    assert m.group(1) == DEFAULT_VOICE_INPUT_ABSENT_MARKER, m.group(1)
 
 
 def test_accessory_mic_env_path_agreement() -> None:
@@ -170,20 +161,6 @@ def test_accessory_mic_env_path_agreement() -> None:
     ), DEFAULT_ACCESSORY_MIC_ENV_FILE
     assert DEFAULT_ACCESSORY_MIC_ENV_FILE in ENV_FILES, ENV_FILES
 
-
-def test_reconciler_asks_python_for_the_accessory_half() -> None:
-    """The bash reconciler must NOT carry a copy of the accessory env path or
-    re-derive the entry format in shell — a second parser is how the gate and
-    the daemon come to disagree about whether a source is published. It shells
-    to the owning module instead (same posture as the mic-profile resolver)."""
-    script = RECONCILE.read_text()
-    assert "jasper.accessories.mic_env" in script
-    # Prose may name the path and the key; executable shell may not.
-    code = "\n".join(
-        line for line in script.splitlines() if not line.lstrip().startswith("#")
-    )
-    assert DEFAULT_ACCESSORY_MIC_ENV_FILE not in code
-    assert "JASPER_MANUAL_MIC_SOURCES" not in code
 
 
 def test_gate_owner_can_actually_report_enabled() -> None:
@@ -210,22 +187,6 @@ def test_gate_owner_can_actually_report_enabled() -> None:
 
 LOCAL_MIC_PRESENT_KEY = "JASPER_LOCAL_MIC_PRESENT"
 
-
-def test_reconciler_publishes_the_local_half_of_the_gate() -> None:
-    """The gate owner must publish WHICH half it resolved.
-
-    The marker is the AND of both absences, so it structurally cannot say
-    "there is no local mic but a remote is paired" — and that is exactly the
-    case the daemon has to serve. Without this published key the daemon would
-    have to guess local-mic presence from its own config, which cannot work:
-    `Config.mic_device` defaults to the literal "Array" and the reconciler
-    writes a real candidate name on its no-mic paths.
-    """
-    code = "\n".join(
-        line for line in RECONCILE.read_text().splitlines()
-        if not line.lstrip().startswith("#")
-    )
-    assert f"set_env_var \"$ENV_FILE\" {LOCAL_MIC_PRESENT_KEY}" in code
 
 
 def _config_with(monkeypatch, **env) -> object:
