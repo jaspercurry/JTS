@@ -156,7 +156,7 @@ def test_marker_restamp_failure_is_loud(monkeypatch) -> None:
     # The bake re-stamps emit_sound_config's `# Source:` line; if that upstream
     # marker ever changes shape the substitution must fail LOUD, never ship a
     # bake the verifier cannot route to the flat program path.
-    import jasper.active_speaker.camilla_yaml as mod
+    import jasper.active_speaker.camilla_yaml.emit_program_bake as mod
 
     monkeypatch.setattr(
         mod, "emit_sound_config", lambda *a, **k: "devices:\n  samplerate: 48000\n"

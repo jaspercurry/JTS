@@ -92,7 +92,12 @@ _READER_PATHS = (
 # staleness test fails if a listed file no longer has a hand-written event=
 # line (so a finished migration must drop its entry).
 DEFERRED_ACTIVE_ZONE: dict[str, set[str]] = {
-    "jasper/active_speaker/camilla_yaml.py": {"*"},
+    "jasper/active_speaker/camilla_yaml/emit_baseline.py": {"*"},
+    "jasper/active_speaker/camilla_yaml/emit_commissioning.py": {"*"},
+    "jasper/active_speaker/camilla_yaml/emit_driver_domain.py": {"*"},
+    "jasper/active_speaker/camilla_yaml/emit_program.py": {"*"},
+    "jasper/active_speaker/camilla_yaml/emit_program_bake.py": {"*"},
+    "jasper/active_speaker/camilla_yaml/emit_startup.py": {"*"},
     "jasper/active_speaker/playback.py": {"*"},
     "jasper/active_speaker/staging.py": {"*"},
     "jasper/active_speaker/commission_load.py": {"*"},

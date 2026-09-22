@@ -88,7 +88,7 @@ def _normalize_width(width: int) -> int:
     width = int(width)
     if width == FLAT_GRAPH_WIDTH:
         return width
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.camilla_yaml import (
         MAX_RING_CHANNELS,
         MIN_RING_CHANNELS,
     )

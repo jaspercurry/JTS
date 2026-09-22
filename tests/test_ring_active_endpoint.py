@@ -1764,7 +1764,7 @@ def test_the_width_refusal_actually_fires_through_an_emitter(monkeypatch):
 
     preset = _mono_two_way_preset()  # 2 outputs (woofer + tweeter)
     monkeypatch.setattr(
-        "jasper.active_speaker.runtime_contract.MAX_RING_CHANNELS", 1
+        "jasper.active_speaker.camilla_yaml.devices.MAX_RING_CHANNELS", 1
     )
     with pytest.raises(ActiveSpeakerConfigError, match="active-ring playback"):
         active_camilla_yaml.emit_active_speaker_startup_config(
@@ -1787,7 +1787,10 @@ def test_the_width_refusal_actually_fires_through_an_emitter(monkeypatch):
 
     # All five emitters still call it. A count, because the number is the claim:
     # every active emitter that can name a ring must ask.
-    source = Path(active_camilla_yaml.__file__).read_text(encoding="utf-8")
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(Path(active_camilla_yaml.__file__).parent.rglob("*.py"))
+    )
     call_sites = _re.findall(r"^\s+_assert_ring_playback_width\(", source, _re.M)
     assert len(call_sites) == 5, (
         f"expected 5 emitter call sites of _assert_ring_playback_width, found "

@@ -1035,7 +1035,7 @@ def test_every_width_this_emitter_uses_is_one_the_ring_accepts():
     """``_normalize_width`` skips the bounds import ON the default width, so the
     default has to be in range as a fact rather than an assumption. Both halves
     of the graph are rings (ADR-0100), so the program's width is bounded too."""
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.camilla_yaml import (
         MAX_RING_CHANNELS,
         MIN_RING_CHANNELS,
     )

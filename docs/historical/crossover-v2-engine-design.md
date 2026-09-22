@@ -462,7 +462,7 @@ host-adjacent, and renaming them would rewrite a durable shape for cosmetics.
     `SUMMED_SWEEP_PHASES` play into the already-active production graph — and
     that emit derives its whole `devices:` block from the resolved playback
     endpoint in one call (`active_emit_devices` in
-    [`camilla_yaml.py`](../../jasper/active_speaker/camilla_yaml.py)), capture lane
+    [`camilla_yaml.py`](../../jasper/active_speaker/camilla_yaml/__init__.py)), capture lane
     and wire format and latency geometry together. A ring-armed speaker's
     playback endpoint is the ACTIVE ring, not Ring B: naming only the sink would
     sweep into one ring while CamillaDSP captured a lane nobody feeds — silence
@@ -508,7 +508,7 @@ Design prose lives in each module's docstring. What that index does not cover:
 | [`candidate_bank.py`](../../jasper/active_speaker/candidate_bank.py) | Where banked candidates live on disk, and finding one by its own fingerprint. |
 | [`linearization_envelope.py`](../../jasper/active_speaker/linearization_envelope.py) | The Layer-1a correction envelope: per-bin allowed depth and the terms it takes the `min` across. |
 | [`linearization_fit.py`](../../jasper/active_speaker/linearization_fit.py) | The Layer-1a fit engine: `fit_driver_linearization` and its budgets, bands, give-back, and the trim solve. |
-| [`camilla_yaml.py`](../../jasper/active_speaker/camilla_yaml.py) | The baseline emitter, and the independent re-validation of every linearization filter before it reaches CamillaDSP. |
+| [`camilla_yaml.py`](../../jasper/active_speaker/camilla_yaml/__init__.py) | The baseline emitter, and the independent re-validation of every linearization filter before it reaches CamillaDSP. |
 | [`crossover_envelope_v2.py`](../../jasper/active_speaker/crossover_envelope_v2.py) | The pure `status → envelope` renderer: step list, screen dispatch, registry copy. |
 | [`delta_probe.py`](../../jasper/active_speaker/delta_probe.py) | The realized-vs-commanded map for an applied correction change, and its four verdicts. |
 | [`web/correction_crossover_v2.py`](../../jasper/web/correction_crossover_v2.py) | The web host: endpoint bindings, durable v2 state, the real seams, apply/restore, `resolve_conductor_context`, `persist_conductor_state`. |

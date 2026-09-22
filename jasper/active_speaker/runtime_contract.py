@@ -736,12 +736,7 @@ def active_ring_channels_for_topology(topology: OutputTopology) -> int | None:
     return width
 
 
-# The ring layout's channel accept-set (``jasper_ring::Geometry::validate_self``
-# and the C ioplug's ``JTS_RING_MIN_CHANNELS`` / ``MAX_RING_CHANNELS``). Spelled
-# here so the topology side refuses a width the transport could not carry
-# instead of deferring it to an attach failure.
-MIN_RING_CHANNELS = 2
-MAX_RING_CHANNELS = 8
+from .camilla_yaml import MAX_RING_CHANNELS, MIN_RING_CHANNELS
 
 
 def topology_supports_shm_ring(topology: OutputTopology) -> bool:
