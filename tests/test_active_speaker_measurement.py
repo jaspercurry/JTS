@@ -335,10 +335,6 @@ def test_sweep_evidence_never_clobbers_the_confirmation_gate(
     ]
     assert confirmation_record["captured"] is True
 
-    # Sweep evidence for the SAME target, recorded seconds later with its own
-    # fresh playback id -- exactly what
-    # commissioning_capture.record_driver_acoustic_capture does, passing the
-    # ORIGINAL confirmation through as `durable_floor_confirmation`.
     swept = record_driver_measurement(
         topology,
         {
@@ -698,46 +694,34 @@ def test_driver_measurement_records_optional_bundle_ref(tmp_path: Path) -> None:
     assert reloaded["driver_measurements"][-1]["bundle"] is None
 
 
+def _repeat_summary():
+    return {
+        "repeat_group_id": "repeat-fixture",
+        "target": 3, "accepted": 3, "rejected": 0,
+        "recaptured": False, "needed_recapture": False,
+        "aggregate": "median_magnitude", "spread_db_p90": 0.2, "confidence": "normal",
+        "per_repeat": [{
+            "index": index, "attempt": index + 1,
+            "verdict": "heard_correct_driver", "accepted": True, "reject_reason": None,
+            "artifact_path": Path(f"repeat_captures/r{index}.wav"),
+            "estimated_snr_db": None, "clipping": False, "above_validity_floor": True,
+            "level_dbfs": level, "capture_admission": {"admission_id": f"admission-r{index}"},
+        } for index, level in enumerate((-30.0, -30.2, -29.9))],
+        "aggregate_repeat": {
+            "verdict": "heard_correct_driver",
+            "acoustic": {"observed_mic_dbfs": -30.0, "mic_clipping": False},
+        },
+    }
+
+
 def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
-    """Step 2: when commissioning_capture.aggregate_driver_repeats decided a
-    winner across N repeat captures, the SINGLE driver measurement recorded
-    is that winner -- with the SC-4 repeats summary attached -- and the
-    latest-wins pointer (summary.latest_driver_measurements) resolves to
-    THAT aggregate record. Per-repeat evidence beyond the compact
-    per_repeat[] summary lives only in the bundle, never duplicated into
-    measurement state."""
-
-    from jasper.active_speaker.commissioning_capture import aggregate_driver_repeats
-
     topology = _topology(tweeter_output=1)
     state_path = tmp_path / "measurements.json"
-
-    def repeat(level: float, path: Path) -> dict:
-        wav_path = tmp_path / path.name
-        return {
-            "verdict": "heard_correct_driver",
-            "acoustic": {"observed_mic_dbfs": level, "mic_clipping": False},
-            "artifact_path": path,
-            # These mirror the process-local continuation fields retained on
-            # each real Lane-D attempt. They must remain available to the web
-            # finalizer through ``aggregate_repeat`` but never enter durable
-            # measurement JSON.
-            "wav_path": wav_path,
-            "bundle_dir": tmp_path / "bundle",
-            "analysis_kwargs": {"captured_wav": wav_path},
-            "preset": object(),
-            "capture_admission": {
-                "admission_id": f"admission-{path.stem}",
-            },
-        }
-
-    repeats = [
-        repeat(-30.0, Path("repeat_captures/r0.wav")),
-        repeat(-30.2, Path("repeat_captures/r1.wav")),
-        repeat(-29.9, Path("repeat_captures/r2.wav")),
-    ]
-    aggregate = aggregate_driver_repeats(repeats)
-    assert aggregate["accepted"] == 3
+    aggregate = _repeat_summary()
+    aggregate["aggregate_repeat"].update({
+        "wav_path": tmp_path / "r0.wav", "bundle_dir": tmp_path / "bundle",
+        "analysis_kwargs": {"captured_wav": tmp_path / "r0.wav"}, "preset": object(),
+    })
     # The Lane B floor verdict is tri-state. A rejected unknown fixed-axis
     # attempt can coexist with accepted evidence and must remain ``null`` in
     # the compact durable projection, never be rewritten as safely above.
@@ -835,20 +819,10 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
 def test_malformed_repeat_summary_is_rejected_before_state_write(
     tmp_path: Path, malformation: str
 ) -> None:
-    from jasper.active_speaker.commissioning_capture import aggregate_driver_repeats
-
     topology = _topology(tweeter_output=1)
     state_path = tmp_path / "measurements.json"
-    repeats = [
-        {
-            "verdict": "heard_correct_driver",
-            "acoustic": {"observed_mic_dbfs": level, "mic_clipping": False},
-            "artifact_path": Path(f"repeat_captures/r{index}.wav"),
-        }
-        for index, level in enumerate((-30.0, -30.2, -29.9))
-    ]
-    aggregate: object = aggregate_driver_repeats(repeats)
-    assert isinstance(aggregate, dict)
+    aggregate = _repeat_summary()
+    winner = aggregate["aggregate_repeat"]
     if malformation == "non_artifact_path":
         aggregate["confidence"] = tmp_path / "runtime-only"
     elif malformation == "absolute_artifact_path":
@@ -872,8 +846,8 @@ def test_malformed_repeat_summary_is_rejected_before_state_write(
             {
                 "speaker_group_id": "mono",
                 "role": "woofer",
-                "outcome": repeats[0]["verdict"],
-                "acoustic": repeats[0]["acoustic"],
+                "outcome": winner["verdict"],
+                "acoustic": winner["acoustic"],
                 "playback_id": "play-1",
                 "repeats": aggregate,
             },

@@ -62,7 +62,7 @@ DRIVER_PLACEMENT_TARGET_CM = 3.0
 # crossover_v2.sweep_spec imports THIS module (lazily, for placement copy), so
 # importing it back at module scope would invert that dependency. Containment
 # of its CAPTURE_PROTOCOL_VERSION is pinned by
-# tests/test_active_speaker_commissioning_capture.py.
+# tests/test_active_speaker_capture_geometry.py.
 PLACEMENT_PROOF_ACKNOWLEDGEMENT_CAPABLE_PROTOCOLS = (2, 3)
 
 # Capture geometry is speaker policy, never browser input. The host verifies
