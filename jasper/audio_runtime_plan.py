@@ -95,7 +95,9 @@ PACKAGED_OUTPUTD_DEFAULT_SOURCE = "packaged outputd default"
 MAX_LOW_LATENCY_CORRECTION_GROUP_DELAY_FRAMES = 512
 FANIN_INPUT_BUFFER_KEY = "JASPER_FANIN_INPUT_BUFFER_FRAMES"
 DEFAULT_FANIN_INPUT_BUFFER_FRAMES = 4096
-FANIN_INPUT_RESAMPLER_KEY = "JASPER_FANIN_INPUT_RESAMPLER"
+# RETIRED: fan-in never read this selector. Keep the unset until deployed
+# boxes no longer carry it, then remove both together.
+RETIRED_FANIN_INPUT_RESAMPLER_KEY = "JASPER_FANIN_INPUT_RESAMPLER"
 FANIN_INPUT_RESAMPLER_LANE_KEY = "JASPER_FANIN_INPUT_RESAMPLER_LANE"
 FANIN_INPUT_RESAMPLER_TARGET_KEY = "JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES"
 FANIN_INPUT_RESAMPLER_MAX_ADJUST_KEY = "JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM"
@@ -807,9 +809,9 @@ def route_owned_env_actions(
         if isinstance(route, str)
         else route
     )
-    if profile.route_id != ROUTE_USB_LOW_LATENCY_48K:
-        return (
-            RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_KEY),
+    retired = (RuntimeEnvAction("unset", RETIRED_FANIN_INPUT_RESAMPLER_KEY),)
+    if not profile.fanin_input_resampler_required:
+        return retired + (
             RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_LANE_KEY),
             RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_TARGET_KEY),
             RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_MAX_ADJUST_KEY),
@@ -817,8 +819,7 @@ def route_owned_env_actions(
             RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_RING_KEY),
         )
 
-    return (
-        RuntimeEnvAction("set", FANIN_INPUT_RESAMPLER_KEY, "enabled"),
+    return retired + (
         RuntimeEnvAction("set", FANIN_INPUT_RESAMPLER_LANE_KEY, USB_LOW_LATENCY_SOURCE_ID),
         RuntimeEnvAction(
             "set",
@@ -874,9 +875,9 @@ def _int_like(value: str | int) -> int | str:
 def fanin_resampler_config_for_route(route: AudioRouteProfile) -> dict[str, Any]:
     """Route-owned fan-in resampler config expected for latency evidence."""
 
-    values = _route_action_values(route)
-    if values.get(FANIN_INPUT_RESAMPLER_KEY) != "enabled":
+    if not route.fanin_input_resampler_required:
         return {}
+    values = _route_action_values(route)
     return {
         "enabled": True,
         "lane": values.get(FANIN_INPUT_RESAMPLER_LANE_KEY, ""),

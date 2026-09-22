@@ -2848,17 +2848,16 @@ def test_reconcile_route_only_change_restarts_fanin_not_voice(tmp_path: Path):
 
 
 def test_route_env_change_restarts_fanin_exactly_once(tmp_path: Path):
-    """The route profile's five fan-in keys are written, fan-in bounces once,
-    and a semantically identical second pass bounces nothing (canonical-form
-    change detection: nothing moved -> nothing restarts)."""
+    """The route writes five live keys once, then converges."""
     route_env = "JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n"
 
     first = _run_reconcile(
-        tmp_path, APPLE_LISTING, "--reason", "test", initial_env=route_env
+        tmp_path, APPLE_LISTING, "--reason", "test", initial_env=route_env,
+        initial_fanin_env="JASPER_FANIN_INPUT_RESAMPLER=stale\n",
     )
     assert first.returncode == 0, first.stderr
     fanin_env = (tmp_path / "fanin.env").read_text(encoding="utf-8")
-    assert "JASPER_FANIN_INPUT_RESAMPLER=enabled" in fanin_env
+    assert "JASPER_FANIN_INPUT_RESAMPLER=" not in fanin_env
     assert "JASPER_FANIN_INPUT_RESAMPLER_LANE=usbsink" in fanin_env
     assert "JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512" in fanin_env
     assert "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=1536" in fanin_env
