@@ -141,7 +141,6 @@ FANIN_TEST_OWNERS = frozenset({
     "correction-measurement",
     "doctor-aec-probe",
     "jasper-measure",
-    "jasper-null",
     "seat-level",
 })
 # A diagnostic owner must renew before this monotonic deadline;

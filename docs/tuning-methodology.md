@@ -98,18 +98,16 @@ establishes that a structural recommissioning retires the incumbent tune.
 Per-driver evidence can still be useful. Compare actual layer/phase composition
 before reusing it.
 
-1. **Inspect phase composition.** MEASURE analysis can replace emitted
-   protection with the configured crossover; lateral solos can retain protection.
+1. **Read packet `alignment` / `alignment_verdict` (ADR-0319).** MEASURE can replace
+   emitted protection with the crossover; lateral solos can retain protection.
    Read `phase_composition`: `crossover_composed`, `protection_retained`, or
    unknown. A retained protection phase can bias a predicted alignment.
 2. **Compute a hypothesis.** `delay-landscape` complex-sums banked branches over
    a bounded delay grid. `τ = Δpath/c` gives a geometric scale; at 343 m/s,
    1 mm is about 2.915 µs. Use code for the calculation and the take's own `c`.
-3. **Measure if useful.** `jasper-null` plays a protected summed probe;
-   `delay-confirm` compares its rows with the landscape. A proposed optimum is
-   unmeasured until the corresponding summed graph has played. The returned
-   command emits sound; confirm the mic placement and human start before using
-   it. The small neighbour set is one economical test, not a required round.
+3. **Test the prediction.** Author candidate variants with the residual delay
+   changes and compare real captures with `jasper-round trial`. A predicted
+   optimum stays unmeasured until its summed graph has played.
 
 Read branch levels before blaming a shallow reverse null on timing. With a
 branch level gap Δ dB, cancellation relative to the louder branch is limited by

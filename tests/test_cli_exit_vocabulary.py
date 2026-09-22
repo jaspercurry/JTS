@@ -183,11 +183,6 @@ _REFUSING_ARGV: dict[str, Callable[[Path, pytest.MonkeyPatch], list[str]]] = {
         "run", "--poses", "not-a-layout",
     ],
     "jasper.cli.round_views": lambda tmp, mp: ["entry", str(tmp / "absent-round")],
-    # 1 us is off every fine grid the walk offers, so this refuses before the
-    # measurement door opens on a speaker that HAS a crossover to measure.
-    "jasper.cli.null_door": lambda tmp, mp: [
-        "--bundle-dir", str(tmp), "--fc-hz", "1800", "--delays=1",
-    ],
     "jasper.cli.audition": _audition_argv,
 }
 
@@ -275,7 +270,6 @@ _VIEW_RUN: dict[str, str | Callable[[_FixtureRound], list[str]]] = {
     "close-reference": _NO_CAPTURES,
     "room": lambda r: ["room", str(r.seat)],
     "delay-landscape": lambda r: ["delay-landscape", str(r.bundle), "--fc-hz", "1800"],
-    "delay-confirm": "the fixture banks no null_runs rows; jasper-null writes those",
     "inventory": lambda r: ["inventory", str(r.measured)],
 }
 

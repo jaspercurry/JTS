@@ -9,7 +9,7 @@ microphone, with the frame accounting and dropout scanning that make a wired tak
 the same ladder as browser capture takes, and :func:`mint_wired_answer` — the single place a
 recording becomes the capture seam's answer (audio + device identity + calibration reference +
 integrity counters). Every wired take mints here: the wizard's plan walk, the engine's play
-seam, and the ``jasper-null`` door. The kernel is a LEAF on purpose — the bass bench and the
+seam. The kernel is a LEAF on purpose — the bass bench and the
 CLI doors reach it without importing :mod:`jasper.active_speaker`, and the emitter already
 imports ``bass_extension``, so a reverse edge would close a cycle. No web/session knowledge
 lives here: host policy (the household calibration hint) arrives already resolved, as the
@@ -766,9 +766,7 @@ def mint_wired_answer(
 
     Channel selection, the zero-run scan, the 32-bit encode, the integrity
     report in the frame ledger's wire spelling, and the device identity. Every
-    wired take — the plan walk's consume path, the play seam's capture half,
-    the ``jasper-null`` door — mints here, because the analyzer grades
-    whichever path delivered it.
+    wired take mints here, because the analyzer grades whichever path delivered it.
 
     ``setup`` is the calibration reference ALREADY resolved by the caller
     (:func:`setup_from_hint` against whatever household record it can reach).

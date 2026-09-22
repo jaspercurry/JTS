@@ -87,7 +87,6 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
         "--after-set", "<set-id>", "--change", "<change>",
     ), purposes=(PURPOSE_BASS,), packet="bass"),
     "delay-landscape": ViewArtifact("delay_landscape.json", purposes=(PURPOSE_SPEAKER,)),
-    "delay-confirm": ViewArtifact("delay_confirmation.json", purposes=(PURPOSE_SPEAKER,)),
     "close-reference": ViewArtifact("close_reference.json", TAKES_FAR_AND_CLOSE, purposes=(PURPOSE_SPEAKER,)),
     "room": ViewArtifact(ROOM_ARTIFACT, TAKES_SET, purposes=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,), builder="round_bookkeeping.room", packet="room"),
     # The packet owns these two names, so the rows take those constants rather

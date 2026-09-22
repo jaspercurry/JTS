@@ -2,21 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Excitation-program composers + schedule model (crossover conductor W1).
-
-Pins the pure-data half of the conductor flow
-(docs/historical/crossover-measurement-productization-design.md §5.3):
-
-  - the three phase composers produce the design's segment layout
-    (ambient + pilots for CHECK; woofer → tweeter → woofer-repeat for MEASURE;
-    a mono summed sweep for VERIFY), with the repeat bit-identical to the first
-    woofer sweep;
-  - the MESM inter-sweep gap satisfies ``gap ≥ ir_tail + L·ln(order)`` with a
-    conservative floor;
-  - per-segment digital gains are recorded (``gain_db`` / ``effective_peak_dbfs``)
-    from composer INPUT (no safety admission here);
-  - the schedule renders to interleaved PCM and JSON round-trips.
-"""
+"""Excitation-program composers and schedule model."""
 from __future__ import annotations
 
 import json
@@ -25,6 +11,7 @@ import math
 import numpy as np
 import pytest
 
+from jasper.audio_measurement import program as program_mod
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.distortion import (
     preceding_silence_s, required_pre_guard_s, segment_sweep_meta,
@@ -81,11 +68,6 @@ def _gain_plan() -> dict[str, float]:
     return {"woofer": -11.0, "tweeter": -13.0}
 
 
-# --------------------------------------------------------------------------- #
-# CHECK composer
-# --------------------------------------------------------------------------- #
-
-
 def test_check_program_layout_and_gains():
     prog = build_check_program(
         _roles(), ambient_s=2.0, pilot_duration_s=0.6,
@@ -122,11 +104,6 @@ def test_check_gaps_are_at_least_half_second():
     assert gaps, "expected inter-pilot gaps"
     for gap in gaps:
         assert gap.n_samples >= 0.5 * PROGRAM_SAMPLE_RATE_HZ
-
-
-# --------------------------------------------------------------------------- #
-# MEASURE composer
-# --------------------------------------------------------------------------- #
 
 
 def test_measure_program_layout_is_n3_interleaved_repeats_bit_identical():
@@ -243,11 +220,6 @@ def test_measure_takes_one_or_two_drivers_and_needs_every_gain():
         build_measure_program(_gain_plan(), _roles() + _roles()[:1])
     with pytest.raises(ValueError):
         build_measure_program({"woofer": -11.0}, _roles())
-
-
-# --------------------------------------------------------------------------- #
-# VERIFY composer
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize("band", [None, (60.0, 18000.0)])
@@ -368,11 +340,6 @@ def test_a_no_crossover_verify_rides_the_declaration_instead_of_a_corner(
         build_verify_program(None)
 
 
-# --------------------------------------------------------------------------- #
-# MESM gap rule
-# --------------------------------------------------------------------------- #
-
-
 def test_mesm_gap_rule():
     meta = synchronized_sweep_metadata(
         f1=150.0, f2=6000.0, duration_approx_s=4.0,
@@ -395,11 +362,6 @@ def test_mesm_gap_respects_conservative_floor():
     )
     gap = mesm_gap_samples(meta, ir_tail_s=0.1, max_harmonic_order=3)
     assert gap == int(round(MESM_GAP_FLOOR_S * PROGRAM_SAMPLE_RATE_HZ))
-
-
-# --------------------------------------------------------------------------- #
-# render + WAV + manifest
-# --------------------------------------------------------------------------- #
 
 
 def test_render_pcm_shape_and_channel_placement():
@@ -477,11 +439,6 @@ def test_segment_validation_rejects_bad_shapes():
             start_sample=0, n_samples=10, f1_hz=None, f2_hz=None,
             gain_db=-12.0, effective_peak_dbfs=-12.0,
         )
-
-
-# --------------------------------------------------------------------------- #
-# courtesy-tone prelude (issue #1677)
-# --------------------------------------------------------------------------- #
 
 
 def test_segment_validation_accepts_courtesy_tone_kind():
@@ -977,11 +934,6 @@ def test_worst_case_measure_with_prelude_stays_under_capture_wav_cap():
     assert CROSSOVER_CAPTURE_MAX_WAV_BYTES - wav_bytes > 512 * 1024
 
 
-# --------------------------------------------------------------------------- #
-# one vocabulary per question: stimulus phase vs journey phase (ticket 2.9)
-# --------------------------------------------------------------------------- #
-
-
 def _phase_names(module) -> set[str]:
     """Every module-level name carrying the word PHASE.
 
@@ -1062,3 +1014,27 @@ def test_program_and_journey_phase_values_stay_identical():
     assert program.PROGRAM_PHASE_CHECK == journey.PHASE_CHECK
     assert program.PROGRAM_PHASE_MEASURE == journey.PHASE_MEASURE
     assert program.PROGRAM_PHASE_VERIFY == journey.PHASE_VERIFY
+
+
+def test_an_ungated_program_keeps_its_program_id():
+    """The gate fields are omitted from an ungated segment's dict, so every
+    program composed before they existed hashes to the same ``program_id``."""
+    program = build_measure_program(
+        {"woofer": -6.0, "tweeter": -46.0}, _roles(), downstream_gain_db=-10.0,
+    )
+    for segment in program.stimulus_segments():
+        assert not segment.is_gated
+        assert "gate_start_sample" not in segment.to_dict()
+
+
+@pytest.mark.parametrize("kwargs,expected", [
+    ({"fc_hz": -1.0}, "SUMMED_REFUSE_FC_INVALID"),
+    ({"limits": {"woofer": 6.0}}, "SUMMED_REFUSE_LIMITS_INCOMPLETE"),
+])
+def test_each_compose_refusal_carries_its_own_reason(kwargs, expected):
+    with pytest.raises(program_mod.SummedSweepUnavailable) as caught:
+        build_verify_program(
+            kwargs.get("fc_hz", 2000.0), roles=_roles(), gain_db=-20.0,
+            sweep_duration_limits_s=kwargs.get("limits", {"woofer": 6.0, "tweeter": 2.0}),
+        )
+    assert caught.value.reason == getattr(program_mod, expected)

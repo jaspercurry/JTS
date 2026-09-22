@@ -23,7 +23,7 @@ What is pinned, and why each pin exists:
 * **The pre-roll guarantee** — ``start()`` does not return until real audio
   arrived, and fails loudly (before any excitation could play) when none does.
 * **The ONE answer mint** — every wired take in the product (the wizard's plan
-  walk, the engine's play seam, ``jasper-null``) becomes a
+  walk, the engine's play seam) becomes a
   ``WiredCaptureAnswer`` here, so the device block, the calibration reference
   and the integrity counters cannot differ by which door recorded it.
 """

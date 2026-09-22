@@ -36,6 +36,7 @@ from jasper.active_speaker.measurement_level import scope_gains_db
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import (
+    _gate_leak_refusals,
     ProgramAdmissionError,
     ProgramAdmissionRefusal,
     readmit_program_from_wav,
@@ -207,11 +208,6 @@ def _measure_program(session_volume_db, roles=None, gains=None, courtesy_prelude
 
 def _admit(prog, *, topology, safety_profile, role_targets, session_volume_db,
            pcm=None, declared_sensitivities=None):
-    """Admit through the actual play-time door: write ``prog`` to a WAV and
-    read it back, the way every real caller does. There is no composition-time
-    admission entry point -- ``admit_excitation_program`` had zero production
-    callers and was retired; ``pcm`` (default: a clean render) lets a test
-    attest tampered bytes the same way a tampered WAV would arrive."""
     import tempfile
     from pathlib import Path
 
@@ -277,14 +273,7 @@ def test_peak_over_ceiling_refuses():
 
 
 def test_asymmetric_caps_woofer_reaches_reference_while_tweeter_lands_at_cap():
-    """The 2026-07-18 gate's asymmetric-cap admission proof (B1).
 
-    Caps (woofer 0.0, tweeter -65): V = min(-20, max(caps)) = -20. The woofer's
-    admitted effective peak reaches ≈ V - 6 (the digital guard) — NOT ~40 dB
-    under its ceiling as the inverted min(caps) rule produced — while the
-    tweeter attenuates down (-45 dB digital) and lands exactly at its own cap.
-    Symmetric -65/-65 fixtures could never distinguish the two rules.
-    """
     topology, profile, targets = _profile_and_targets(
         woofer_peak=0.0, tweeter_peak=-65.0
     )
@@ -612,19 +601,6 @@ def test_refused_program_publishes_binding_comparison(caplog):
 
 
 def test_declared_sweep_duration_equal_to_the_composed_length_refuses_every_measure():
-    """A ``max_sweep_duration_s`` equal to the composer's nominal sweep refuses.
-
-    The 2026-08-23 jts3 b0 walk's refusal, reproduced — and it is a
-    level-independent, structural one. ``build_measure_program`` asks for
-    ``DEFAULT_WOOFER_SWEEP_S`` (4.0 s), and the synchronized sweep rounds that
-    request to the nearest phase-closing length, which for many bands is
-    LONGER. Admission then compares the realized length against
-    ``min(declared max_sweep_duration_s, driver_sweep_duration_s(role))``, so a
-    declaration whose limit IS 4.0 refuses by a few milliseconds — every time,
-    forever, at any level and any session volume — while that same segment's
-    effective peak sits well inside its cap. On jts3 the woofer's 150-4000 Hz
-    band realized 4.0058 s against a declared 4.0.
-    """
     topology, profile, targets = _profile_and_targets(max_sweep_duration_s=4)
     sv = session_measurement_volume_db(profile, targets.values())
     # A woofer band whose phase-closing round lands ABOVE the 4 s request. The
@@ -1341,3 +1317,24 @@ async def test_take_composer_uses_installed_scope_gain_and_all_programs_remain_a
                 played.program, tmp_path / paths[-1], graph_yaml=graphs[scope],
                 graph_evidence=measurement_graph_evidence(scope=scope, candidate=candidate), **kwargs)
         assert admission.allowed, admission.refusals
+
+
+def test_the_bytes_leg_is_vacuous_for_the_wizard_summed_program():
+    program = build_verify_program(2000.0, gain_db=-20.0, downstream_gain_db=-10.0)
+    assert all(not s.is_gated for s in program.stimulus_segments())
+    assert _gate_leak_refusals(program, render_program_pcm(program)) == []
+
+
+def test_the_bytes_leg_is_vacuous_for_per_driver_programs():
+    topology, profile, targets = _profile_and_targets()
+    sv = session_measurement_volume_db(profile, targets.values())
+    program = build_measure_program(
+        {"woofer": -6.0, "tweeter": -46.0},
+        [RoleBand("woofer", 0, FrequencyBand(500.0, 1600.0)),
+         RoleBand("tweeter", 1, FrequencyBand(1600.0, 10_000.0))],
+        downstream_gain_db=sv,
+    )
+    assert all(not s.is_gated for s in program.stimulus_segments())
+    assert _gate_leak_refusals(program, render_program_pcm(program)) == []
+    assert _admit(program, topology=topology, safety_profile=profile,
+                  role_targets=targets, session_volume_db=sv).allowed

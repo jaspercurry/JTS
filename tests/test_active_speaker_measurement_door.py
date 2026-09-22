@@ -14,6 +14,9 @@ graph would prove nothing about the fader it strands.
 from __future__ import annotations
 
 from jasper.web import correction_crossover_v2_evidence as v2evidence
+from jasper import measurement_window as coordinator
+from jasper.cli.measure import DOOR_GATE_OWNER
+from jasper.mux import FANIN_TEST_OWNERS
 
 import asyncio
 from typing import Any
@@ -54,7 +57,6 @@ def applied_reference(monkeypatch):
 @pytest.fixture
 def box(tmp_path, monkeypatch):
     """A speaker with a fake DSP, a real owner, and no isolation to acquire."""
-    from jasper import measurement_window as coordinator
 
     class _NoWindow:
         async def __aenter__(self) -> Any:
@@ -379,21 +381,9 @@ async def test_the_variant_axes_reach_the_emitter_through_the_door(tmp_path, box
 async def test_the_door_holds_the_gate_under_the_owner_its_caller_states(
     tmp_path, monkeypatch,
 ):
-    """The gate identity REACHES ``measurement_window``, it is not merely stored.
-
-    ``mux.FANIN_TEST_OWNERS`` is a CLOSED allowlist: an owner missing from it is
-    refused the fan-in diagnostic gate, the correction lane never carries the
-    stimulus, and a door measures silence with every daemon healthy and no gate
-    tripped. So a caller has to be able to state its own — and asserting that a
-    constant EXISTS would not catch a door that accepted the argument and then
-    called ``measurement_window()`` bare, which is exactly the shape this
-    parameter was added to fix.
-
-    Default unchanged: ``None`` keeps the wizard's owner, so every caller that
-    does not care is byte-identical to before.
-    """
-    from jasper import measurement_window as coordinator
-    from jasper.mux import FANIN_TEST_OWNERS
+    assert DOOR_GATE_OWNER == "jasper-measure"
+    assert DOOR_GATE_OWNER in FANIN_TEST_OWNERS
+    assert DOOR_GATE_OWNER != coordinator.MEASUREMENT_GATE_OWNER
 
     seen: list[str | None] = []
 
@@ -419,14 +409,14 @@ async def test_the_door_holds_the_gate_under_the_owner_its_caller_states(
         )
     )
     try:
-        async with _door(tmp_path, cam, gate_owner="jasper-null"):
+        async with _door(tmp_path, cam, gate_owner="jasper-measure"):
             pass
         async with _door(tmp_path, cam):
             pass
     finally:
         install_volume_owner(None)
 
-    assert seen == ["jasper-null", coordinator.MEASUREMENT_GATE_OWNER]
+    assert seen == ["jasper-measure", coordinator.MEASUREMENT_GATE_OWNER]
     # A stated owner the allowlist does not carry is refused the gate on the
     # box, so a door may only name one that is registered.
     assert set(seen) <= FANIN_TEST_OWNERS
