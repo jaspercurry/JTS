@@ -945,10 +945,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS: ReasonSpec(
         REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP, 0, "",
-        'This layout has three driver roles. Speaker-purpose programs that measure each driver '
-        'are not built for it yet. Room, bass and rear programs still run.',
-        next_action={"id": 'review_plan', "label": 'Choose a room, bass or rear program',
-                     "href": '/sound/speaker/crossover/'},
+        'This layout declares three driver roles: woofer, mid and tweeter. '
+        'The measurement programs are not built for it yet.',
     ),
     REASON_WALK_NOTHING_PLAYABLE: ReasonSpec(
         REASON_WALK_NOTHING_PLAYABLE, TEMPLATE_HARD_STOP, 0, "",

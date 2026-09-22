@@ -32,7 +32,7 @@ Use `jasper-round reset` to reset everything, including the rear stage, or `jasp
 
 `speaker/mark` takes two measurements at the design mark; full-speaker sweeps cover 20 Hz–20 kHz from the resolved driver bands (ADR-0328). Driver caps still bind the fader. Use `speaker-fit`, `repeat`, and `sweep`; measure the composed full graph before apply.
 
-Three-way per-driver programs refuse before sound with `walk_layout_unsupported_for_per_driver_programs` (#5396).
+All measurement programs refuse before sound with `walk_layout_unsupported_for_per_driver_programs` when the layout declares three driver roles (woofer, mid and tweeter); these programs are not built for that layout yet.
 
 ## Rear
 
