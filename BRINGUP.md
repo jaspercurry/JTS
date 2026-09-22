@@ -163,29 +163,6 @@ the venv and re-applies configs. Watch the output for warnings about
 missing ALSA cards (the dongle and mic should be detected; if either
 is missing, fix and re-run).
 
-<details>
-<summary>Advanced/developer Pi-local checkout path</summary>
-
-Use this only when intentionally developing directly on the Pi or when
-you cannot rsync from a laptop. It makes the Pi a checkout host and
-therefore requires `git`; it is not the normal public install path.
-
-```sh
-ssh pi@jts.local
-sudo apt install -y git
-git clone https://github.com/jaspercurry/JTS.git ~/jts
-cd ~/jts
-sudo JASPER_HOSTNAME=<hostname>.local bash deploy/install.sh
-```
-
-Substitute the Pi's actual speaker hostname. A direct Pi-local
-`install.sh` run reads `JASPER_HOSTNAME` from the process environment;
-it does not source an existing `/etc/jasper/jasper.env` first. The
-normal laptop-side `scripts/deploy-to-pi.sh` path forwards the hostname
-for you.
-
-</details>
-
 After it finishes:
 
 ```sh
@@ -1158,9 +1135,9 @@ persist them to flash via that command.
   `hw:Loopback,*` or retired `jasper_renderer_in` wiring.
 
 **iPhone / Mac volume slider does nothing.**
-- The volume coordinator polls each source's slider at 1 Hz.
-  Phone sliders should be reflected within ~2 s. If not, check
-  `journalctl -u jasper-voice -f` for "VolumeObserver" log lines.
+- Only active Spotify or Bluetooth volume is polled at 1 Hz; AirPlay
+  and USB use events. Check `journalctl -u jasper-voice -f` for
+  `event=volume.observer_tick_failed` and `event=volume.observer_tick_recovered`.
 
 For deeper debugging:
 

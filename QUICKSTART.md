@@ -196,16 +196,23 @@ When it finishes, you'll see a banner with the next URLs to visit.
 The completion banner reports the Pi model and installed profile. Follow
 that result rather than inferring the profile again from the board model.
 
-For a **full** profile, visit these pages from any device on the same
-Wi-Fi. Replace `jts.local` with your chosen hostname if needed.
+Both profiles play music and provide DSP, grouping, management, and assistant
+setup pages. **Full** supports always-on wake detection with a local mic.
+**Streambox** supports push-to-talk conversations while a remote with a mic is
+paired; it has no always-on wake or local mic/AEC stack. See
+[ADR-0217](docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md).
+
+Visit these pages from the same Wi-Fi. Replace `jts.local` with your hostname.
 
 - **`http://jts.local/sound/speaker/`** — required first. Choose mono or
   stereo, then passive or active. Audio stays off until you save this layout.
-- **`http://jts.local/assistant/voice/`** — required. Pick a voice provider
-  (Gemini / OpenAI / Grok) and paste an API key. The speaker will
-  not respond to "Hey Jarvis" until this is done.
+- **`http://jts.local/assistant/voice/`** — required for assistant use.
+  Pick a provider (Gemini / OpenAI / Grok) and paste an API key.
 - **`http://jts.local/assistant/transit/`** — optional. NYC subway / bus /
   Citi Bike. Geocode your address; pick stops.
+- **`http://jts.local/sources/`** — choose and enable music sources.
+- **`http://jts.local/sound/`** — sound and output hardware.
+- **`http://jts.local/sound/pair/`** — group speakers.
 - **`http://jts.local/spotify/`** — optional. Connect a Spotify
   account so "play Taylor Swift" works without your phone.
 - **`http://jts.local/speaker/`** — optional. Rename the speaker as it
@@ -215,16 +222,7 @@ Wi-Fi. Replace `jts.local` with your chosen hostname if needed.
 - **`http://jts.local/system/`** — the dashboard. Status, mic-mute,
   software version, Wi-Fi.
 
-For a **streambox** profile, use only the locally installed surfaces:
-
-- **`http://jts.local/sources/`** — choose and enable music sources.
-- **`http://jts.local/spotify/`** — connect a Spotify account (optional).
-- **`http://jts.local/sound/`** — configure sound and output hardware.
-- **`http://jts.local/sound/pair/`** — group speakers.
-- **`http://jts.local/system/`** — dashboard and status.
-
-Streambox intentionally has no `/assistant/voice/` or `/assistant/transit/`
-setup. If the banner says audio is safely parked because no output DAC was
+If the banner says audio is safely parked because no output DAC was
 detected, connect a supported DAC (the standard build uses the Apple USB-C →
 3.5mm dongle with its analog plug attached), then open `/sound/`. That hardware
 next step does not mean installation failed.
@@ -237,10 +235,6 @@ A speaker that:
 - Plays music from any device that supports AirPlay 2, Spotify
   Connect, or Bluetooth A2DP.
 - Has every wizard URL persisted across reboots.
-
-A full speaker also listens for "Hey Jarvis" and answers via the LLM
-provider you picked. A Streambox intentionally omits that local voice and
-microphone brain while retaining DSP, grouping, and management.
 
 Future Claude Code sessions in this checkout will automatically
 read `CLAUDE.local.md` and know which Pi you're targeting — no

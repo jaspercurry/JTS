@@ -401,9 +401,8 @@ plain HTTP was a deliberate trade.
 
 What this means for upgrading installs:
 
-- The cert + key files are no longer installed, and nginx serves plain
-  HTTP only. (An install-time sweep removed leftovers from pre-2026-06
-  boxes; #2285 deleted it once no producer remained.)
+- The Spotify wizard and callback use plain HTTP; this flow needs no
+  local certificate. Both nginx profiles also include a TLS listener.
 - The wizard's `spotify_credentials.env` schema changed from
   `SPOTIFY_CLIENT_ID + SPOTIFY_CLIENT_SECRET` to
   `SPOTIFY_CLIENT_ID + SPOTIFY_OAUTH_MODE`. The wizard re-prompts
@@ -453,7 +452,7 @@ jasper/web/spotify_setup.py           jasper-web HTTP service (PKCE wizard)
 jasper/cli/spotify_auth.py            CLI bootstrap (PKCE)
 jasper/tools/transport.py             AirPlay / Spotify / Bluetooth / no-source dispatch
 jasper/tools/spotify.py               spotify_play / spotify_queue (router-aware)
-deploy/nginx/jts-routes-common.conf   /spotify/ + /assistant/voice/ proxy (HTTP only)
+deploy/nginx/jts-routes-common.conf   /spotify/ + /assistant/voice/ proxy
 deploy/jasper-web.service             systemd unit for jasper-web
 ```
 

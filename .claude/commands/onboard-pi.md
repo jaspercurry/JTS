@@ -254,35 +254,11 @@ an `~/.ssh/config` Host alias automatically.
 
 ## Phase 5 — Configure
 
-The script reports the Pi model and the installer's persisted profile, then
-lists only that profile's post-install pages. Follow the reported profile;
-do not infer it again from the board model.
-
-For a **full** profile, walk the user through these one at a time:
-
-1. **`http://<hostname>.local/sound/speaker/`** — required first. Choose mono
-   or stereo, then passive or active. Audio stays off until the layout is
-   saved.
-2. **`http://<hostname>.local/assistant/voice/`** — required. Pick a voice
-   provider (Gemini is the cheapest at ~$0.025/min; OpenAI Realtime
-   is best quality at ~$0.30/min; Grok is the middle option). Paste
-   an API key. The speaker won't respond to "Hey Jarvis" until this
-   is set.
-3. **`http://<hostname>.local/assistant/transit/`** — optional. NYC subway / bus
-   / Citi Bike. Skip if they're not in NYC.
-4. **`http://<hostname>.local/spotify/`** — optional. Connect Spotify
-   so "play Taylor Swift" works without phone interaction.
-5. **`http://<hostname>.local/system/`** — the dashboard. Show them
-   where status and mic-mute controls live.
-
-Tell them they're done after Steps 1 and 2 (speaker layout and voice provider).
-The rest can happen anytime later.
-
-For a **streambox** profile, explain that AirPlay, Spotify Connect,
-Bluetooth, DSP, grouping, and management are installed locally, while the
-voice/microphone brain is intentionally omitted. Walk them through the
-banner's `/sources/`, `/spotify/`, `/sound/`, `/sound/pair/`, and `/system/`
-links. Do not send them to `/assistant/voice/` or `/assistant/transit/`.
+Follow the reported install profile and walk through
+[QUICKSTART §4](../../QUICKSTART.md#4-configure-one-time), one page at a time.
+That section owns the profile differences and setup steps. Use the chosen
+hostname in every URL. Finish speaker layout first, then configure a voice
+provider if the user wants the assistant; other setup can wait.
 
 If the banner says audio is safely parked because no output DAC was found,
 this is an actionable next step, not an installation failure. Ask them to
