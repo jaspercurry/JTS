@@ -1151,6 +1151,21 @@ def test_everything_the_round_wanted_is_a_pass_with_no_targets():
     assert verdict.evidence["targets"] == []
 
 
+@pytest.mark.parametrize(
+    ("amount", "frequency", "targets"),
+    [(10 ** 400, 1384.1, []), (3.891, 10 ** 400, ["model_departure:3.89dB"])],
+    ids=["amount", "frequency"],
+)
+def test_quality_reports_oversized_probe_numbers_as_unavailable(amount, frequency, targets):
+    verdict = _quality(probe=types.SimpleNamespace(
+        model_departure_over_tolerance=True,
+        max_signed_error_db=amount,
+        max_signed_error_hz=frequency,
+    ))
+    assert verdict.status is QualityStatus.PASSED
+    assert verdict.evidence["targets"] == targets
+
+
 def test_a_measured_regression_outranks_the_target_list():
     """A round that made the speaker worse has nothing to hand the next one."""
 

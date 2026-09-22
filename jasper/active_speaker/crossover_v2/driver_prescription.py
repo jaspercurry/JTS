@@ -25,6 +25,7 @@ from typing import Any
 
 import numpy as np
 
+from jasper.json_fields import finite_float
 from jasper.camilla_config_contract import PeqFilter
 
 from jasper.active_speaker.branch_chain import (
@@ -481,7 +482,7 @@ def driver_passbands_from_safety_profile(
             continue
         if len(band) != 2:
             continue
-        lo, hi = _finite_or_none(band[0]), _finite_or_none(band[1])
+        lo, hi = finite_float(band[0]), finite_float(band[1])
         if lo is None or hi is None or not 0.0 < lo < hi:
             continue
         floor = declared_protection_highpass_floor_hz(target)
@@ -517,17 +518,6 @@ def check_driver_document_size(payload: bytes) -> None:
             max_bytes=DRIVER_PRESCRIPTION_MAX_BYTES,
             got_bytes=len(payload),
         )
-
-
-def _finite_or_none(value: Any) -> float | None:
-    """One real number, or ``None`` — never a raise, never a coercion."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    try:
-        number = float(value)
-    except OverflowError:
-        return None
-    return number if math.isfinite(number) else None
 
 
 def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
@@ -910,7 +900,7 @@ def _pre_registration(raw: Mapping[str, Any]) -> tuple[float | None, float | Non
         value = raw.get(field)
         if value is None:
             return None
-        number = _finite_or_none(value)
+        number = finite_float(value)
         if number is None or abs(number) > bound:
             _refuse(
                 DRIVER_EXPECTATION_MALFORMED,
@@ -960,7 +950,7 @@ def _parse_pinned_trim(
                 role=role,
                 document_names=sorted(named),
             )
-        db = _finite_or_none(value)
+        db = finite_float(value)
         if db is None:
             _refuse(
                 TRIM_PIN_MALFORMED,
