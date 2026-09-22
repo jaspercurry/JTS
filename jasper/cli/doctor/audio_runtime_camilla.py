@@ -362,20 +362,15 @@ async def check_camilla_live_volume_limit() -> CheckResult:
             label, "skipped", "CamillaDSP is running no graph",
             reason=REASON_LIVE_VOLUME_LIMIT_NO_ACTIVE_GRAPH,
         )
+    try:
+        check_volume_limit(raw)
+    except VolumeLimitViolation as exc:
+        reason = {
+            "volume_limit_missing": REASON_LIVE_VOLUME_LIMIT_ABSENT,
+            "volume_limit_positive": REASON_LIVE_VOLUME_LIMIT_ABOVE_CEILING,
+        }[exc.code]
+        return CheckResult(label, "fail", str(exc), reason=reason)
     limit = parse_camilla_devices_config(raw).get("volume_limit")
-    if limit is None:
-        return CheckResult(
-            label, "fail",
-            "the running graph omits devices.volume_limit; CamillaDSP defaults to +50 dB",
-            reason=REASON_LIVE_VOLUME_LIMIT_ABSENT,
-        )
-    if limit > DEFAULT_VOLUME_LIMIT_DB:
-        return CheckResult(
-            label, "fail",
-            f"the running graph sets devices.volume_limit={limit:.1f} dB "
-            f"(expected <= {DEFAULT_VOLUME_LIMIT_DB:.1f} dB)",
-            reason=REASON_LIVE_VOLUME_LIMIT_ABOVE_CEILING,
-        )
     return CheckResult(label, "ok", f"running graph devices.volume_limit={limit:.1f} dB")
 
 
@@ -403,22 +398,17 @@ def check_camilla_volume_limit() -> CheckResult:
             f"could not read {config_path}",
             reason=REASON_CAMILLA_CONFIG_UNREADABLE,
         )
-    limit = parse_camilla_devices_config(text).get("volume_limit")
     try:
         check_volume_limit(text)
     except VolumeLimitViolation as exc:
-        if exc.code == "volume_limit_missing":
-            return CheckResult(
-                "CamillaDSP volume_limit", "fail",
-                f"{config_path} omits devices.volume_limit; CamillaDSP "
-                "defaults to +50 dB",
-                reason=REASON_VOLUME_LIMIT_ABSENT,
-            )
+        reason = {
+            "volume_limit_missing": REASON_VOLUME_LIMIT_ABSENT,
+            "volume_limit_positive": REASON_VOLUME_LIMIT_ABOVE_CEILING,
+        }[exc.code]
         return CheckResult(
-            "CamillaDSP volume_limit", "fail",
-            f"{config_path}: {exc}",
-            reason=REASON_VOLUME_LIMIT_ABOVE_CEILING,
+            "CamillaDSP volume_limit", "fail", f"{config_path}: {exc}", reason=reason,
         )
+    limit = parse_camilla_devices_config(text).get("volume_limit")
     return CheckResult(
         "CamillaDSP volume_limit", "ok",
         f"{config_path} devices.volume_limit={limit:.1f} dB",

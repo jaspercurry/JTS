@@ -8,6 +8,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from jasper.active_speaker import ActiveSpeakerPreset, emit_active_speaker_program_config
 from jasper.active_speaker.environment import (
     classify_camilla_config_text,
@@ -149,6 +151,27 @@ devices:
     assert "unknown_custom_camilla_config" in {
         issue["code"] for issue in retired_lane["issues"]
     }
+
+
+@pytest.mark.parametrize(
+    "limit_line, expected_code",
+    [
+        ("  volume_limit: 0.0\n", None),
+        ("  volume_limit: -3.0\n", None),
+        ("", "volume_limit_missing"),
+        ("  volume_limit: 6.0\n", "volume_limit_positive"),
+        ("  volume_limit: invalid\n", "volume_limit_missing"),
+        ("  volume_limit: .nan\n", "volume_limit_missing"),
+        ("  volume_limit: 0.0\n  volume_limit: 6.0\n", "volume_limit_missing"),
+    ],
+)
+def test_classify_volume_limit_verdicts(limit_line, expected_code) -> None:
+    text = _outputd_config_text().replace("  volume_limit: 0.0\n", limit_line)
+    codes = [
+        issue["code"] for issue in classify_camilla_config_text(text)["issues"]
+        if issue["code"].startswith("volume_limit_")
+    ]
+    assert codes == ([] if expected_code is None else [expected_code])
 
 
 def test_classify_active_config_blocks_playback_split_channel_mismatch() -> None:
