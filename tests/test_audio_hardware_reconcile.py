@@ -26,10 +26,11 @@ import pytest
 
 from jasper.audio_hardware import reconcile as reconcile_module
 from jasper.audio_hardware.dac import final_edge_format_for
+from jasper.audio_hardware.output_probe import observe as _REAL_OBSERVE
 from jasper.audio_hardware.usb_port_role import (
     reconcile_boot_config as _real_boot_config,
 )
-from jasper import audio_runtime_plan, output_hardware
+from jasper import audio_runtime_plan
 from jasper.fanin_coupling import RING_SLOT_FRAMES
 from tests._lock_holder import spawn_lock_holder
 from tests._log_events import parse_event, stderr_event, stderr_events
@@ -1016,9 +1017,6 @@ def test_runtime_convergence_only_writes_statefile(tmp_path: Path) -> None:
 
 
 # --- I2S HAT boot intent ------------------------------------------------------
-
-
-_REAL_OBSERVE = output_hardware.observe
 
 
 def _statusless_observation(*args: Any, **kwargs: Any) -> tuple[Any, Any, bool]:

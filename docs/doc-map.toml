@@ -610,6 +610,7 @@ id = "usb-audio-input"
 title = "USB Audio Input"
 safety = "boot-risk"
 code = [
+  "jasper/audio_hardware/output_probe.py",
   "jasper/audio_hardware/usb_port_role.py",
   "jasper/audio_hardware/config_txt.py",
   "jasper/audio_hardware/i2s_hat.py",
@@ -645,6 +646,7 @@ id = "usb-management-network"
 title = "USB management network (composite gadget)"
 safety = "boot-risk"
 code = [
+  "jasper/audio_hardware/output_probe.py",
   "jasper/audio_hardware/usb_port_role.py",
   "jasper/audio_hardware/config_txt.py",
   "jasper/audio_hardware/i2s_hat.py",

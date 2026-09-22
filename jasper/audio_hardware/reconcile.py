@@ -51,6 +51,7 @@ from jasper.atomic_io import (
     locked_upsert_env_file,
 )
 from jasper.audio_hardware.config_txt import boot_config_path
+from jasper.audio_hardware.output_probe import DEFAULT_PROC_ASOUND_PATH, observe
 from jasper.audio_hardware.reconcile_inputs import publish_reconcile_inputs
 from jasper.audio_hardware.usb_port_role import DEFAULT_MODEL_PATH
 from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
@@ -59,10 +60,8 @@ from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
 from jasper.output_hardware import (
-    DEFAULT_PROC_ASOUND_PATH,
     DEFAULT_TOPOLOGY_PATH,
     ObservedOutput,
-    observe,
     observed_output,
     degraded_marker_path,
     state_path,

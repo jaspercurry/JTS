@@ -9,12 +9,8 @@ from __future__ import annotations
 import argparse
 import json
 
-from jasper.output_hardware import (
-    OutputCardFact,
-    OutputHardwareState,
-    observe,
-    observed_output,
-)
+from jasper.audio_hardware.output_probe import observe
+from jasper.output_hardware import OutputCardFact, OutputHardwareState, observed_output
 from jasper.shell_env import render_shell_assignments
 
 
