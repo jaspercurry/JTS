@@ -18,7 +18,7 @@ import pytest
 import yaml as yaml_lib
 
 import jasper.active_speaker.declaration_vocabulary as vocabulary_mod
-import jasper.active_speaker.staging as staging_mod
+from jasper.active_speaker import preset_binding, staging as staging_mod
 from jasper.active_speaker import (
     STAGED_STARTUP_CONFIG_KIND,
     ActiveSpeakerPreset,
@@ -442,7 +442,7 @@ def test_every_entry_accepted_crossover_vocabulary_compiles() -> None:
                 topology, filter_type=filter_type, slope=slope
             )
 
-            preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+            preset, issues, _gates = preset_binding.compile_preset_from_crossover_preview(
                 topology, preview
             )
 
@@ -463,7 +463,7 @@ def test_the_late_filter_blocker_is_now_unreachable_from_the_draft() -> None:
     for filter_type, slope in (("Butterworth", 24), ("Linkwitz-Riley", 18)):
         preview = _preview_with_filter(topology, filter_type=filter_type, slope=slope)
 
-        _preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+        _preset, issues, _gates = preset_binding.compile_preset_from_crossover_preview(
             topology, preview
         )
 
@@ -504,7 +504,7 @@ def test_compile_preset_from_crossover_preview_sets_polarity_and_delay() -> None
         crossover["delay_ms"] = 0.3
         crossover["delay_target_role"] = "woofer"
 
-    preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+    preset, issues, _gates = preset_binding.compile_preset_from_crossover_preview(
         topology, preview
     )
 
@@ -522,7 +522,7 @@ def test_compile_preset_from_crossover_preview_omits_polarity_and_delay_by_defau
     topology = _topology()
     preview = _crossover_preview(topology, frequency_hz=2500, way_count=2)
 
-    preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+    preset, issues, _gates = preset_binding.compile_preset_from_crossover_preview(
         topology, preview
     )
 
@@ -545,7 +545,7 @@ def test_legacy_manual_role_rows_keep_stereo_preview_additive_but_not_confirmed(
         },
     ))
     preview = build_crossover_preview(draft)
-    preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(topology, preview)
+    preset, issues, _gates = preset_binding.compile_preset_from_crossover_preview(topology, preview)
 
     assert draft["status"] == "ready_for_review"
     assert draft["summary"]["missing_driver_info_target_ids"] == []
@@ -565,7 +565,7 @@ def test_compile_preset_from_crossover_preview_stereo_polarity_mismatch_blocks()
     left_group = next(g for g in preview["groups"] if g["kind"] == "left")
     left_group["crossovers"][0]["lower_polarity"] = "inverted"
 
-    preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+    preset, issues, _gates = preset_binding.compile_preset_from_crossover_preview(
         topology, preview
     )
 
@@ -582,7 +582,7 @@ def test_compile_preset_from_crossover_preview_stereo_delay_mismatch_blocks() ->
     right_group["crossovers"][0]["delay_ms"] = 0.5
     right_group["crossovers"][0]["delay_target_role"] = "woofer"
 
-    preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+    preset, issues, _gates = preset_binding.compile_preset_from_crossover_preview(
         topology, preview
     )
 
@@ -626,7 +626,7 @@ def test_compile_preset_from_crossover_preview_manual_settings_end_to_end_sets_p
     )
     preview = build_crossover_preview(draft)
 
-    preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+    preset, issues, _gates = preset_binding.compile_preset_from_crossover_preview(
         topology, preview
     )
 
@@ -667,7 +667,7 @@ def test_compile_preset_from_crossover_preview_manual_settings_reversed_between_
     )
     preview = build_crossover_preview(draft)
 
-    preset, issues, _gates = staging_mod.compile_preset_from_crossover_preview(
+    preset, issues, _gates = preset_binding.compile_preset_from_crossover_preview(
         topology, preview
     )
 

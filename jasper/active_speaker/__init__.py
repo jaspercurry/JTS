@@ -40,7 +40,7 @@ _LAZY_ATTRS: dict[str, str] = {
     "build_stage5_ramp_gate": "commission_ramp",
     "build_startup_load_path_safety_evidence": "path_safety",
     "channel_select_mixer_name": "camilla_yaml",
-    "compile_preset_from_crossover_preview": "staging",
+    "compile_preset_from_crossover_preview": "preset_binding",
     "crossover_preview_fingerprint": "crossover_preview",
     "driver_commission_audible_evidence": "graph_evidence",
     "driver_test_signal_plan": "test_signal_plan",

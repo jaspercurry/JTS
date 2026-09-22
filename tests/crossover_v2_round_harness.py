@@ -130,7 +130,7 @@ def _bg_run_async(coro: Any, *, timeout: Any = None) -> Any:
     return asyncio.run(coro)
 
 def _stub_restore_doors(monkeypatch) -> list[int]:
-    from jasper.active_speaker import staging
+    from jasper.active_speaker import preset_binding
     from dataclasses import replace
     from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.web import correction_crossover_v2_apply as apply_host
@@ -147,7 +147,7 @@ def _stub_restore_doors(monkeypatch) -> list[int]:
     draft["manual_settings"]["drivers"][1]["recommended_highpass_hz"] = 2000
     draft = design_draft_view(draft)
     preview = build_crossover_preview(draft)
-    preset, _, _ = staging.compile_preset_from_crossover_preview(topology, preview)
+    preset, _, _ = preset_binding.compile_preset_from_crossover_preview(topology, preview)
     if preset is None:
         raise ValueError("Previous graph fixture has no crossover preset")
     measured = replace(_candidate(), source_preset=preset, analysis=_MEASURE_EVIDENCE)

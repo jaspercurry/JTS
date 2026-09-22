@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.active_speaker import commission_wiring, staging, tone_plan
+from jasper.active_speaker import commission_wiring, preset_binding as staging, tone_plan
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, SafetyEnvelope
 from jasper.active_speaker.seat_level_reference import (

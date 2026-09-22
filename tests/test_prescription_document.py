@@ -19,7 +19,7 @@ from tests.test_prescription_contract import bass_packet as bass_packet
 from tests.test_active_speaker_audition import _applied_profile
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
 from jasper.active_speaker.profile import ActiveSpeakerPreset, SIDES_BY_LAYOUT
-from jasper.active_speaker.staging import build_passive_mains_preset
+from jasper.active_speaker.preset_binding import build_passive_mains_preset
 from jasper.bass_extension.dynamic_graph import validated_base_graph
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
 from tests.test_crossover_v2_blend_prescription import _receipt, _document as blend_document
