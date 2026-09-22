@@ -204,10 +204,8 @@ def read_box_declaration() -> BoxDeclaration:
         resolve_conductor_context,
     )
     from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
-    from jasper.output_topology import (
-        load_output_topology,
-        topology_is_subless_passive_mains,
-    )
+    from jasper.output_topology import topology_is_subless_passive_mains  # lazy: test_cli_measure pins the schema predicate
+    from jasper.output_topology_store import load_output_topology  # lazy: test_cli_measure pins the store lookup
 
     if topology_is_subless_passive_mains(load_output_topology()):
         raise BoxNotMeasurable(

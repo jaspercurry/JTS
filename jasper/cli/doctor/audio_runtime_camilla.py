@@ -731,7 +731,7 @@ def _topology_gate_allowed_result(label: str) -> CheckResult:
     writes a statefile clears either.
     """
     from ...active_speaker.environment import camilla_statefile_path
-    from ...output_topology import (
+    from ...output_topology_store import (
         read_topology_fingerprint_stamp,
         statefile_topology_stamp_path,
         statefile_unproved_stamp_path,

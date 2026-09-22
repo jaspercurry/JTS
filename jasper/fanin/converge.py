@@ -26,7 +26,8 @@ from jasper.active_speaker.runtime_contract import active_ring_channels_for_topo
 from jasper.fanin import ring_readiness as rr
 from jasper.fanin.coupling_reconcile import _start_audio_hardware_reconcile
 from jasper.log_event import log_event
-from jasper.output_topology import OutputTopologyError, load_output_topology_strict
+from jasper.output_topology import OutputTopologyError
+from jasper.output_topology_store import load_output_topology_strict
 
 logger = logging.getLogger(__name__)
 

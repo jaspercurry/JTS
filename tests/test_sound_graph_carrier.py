@@ -64,6 +64,8 @@ from tests.test_active_speaker_runtime_contract import (
     _flat_yaml,
     _full_range_stereo,
 )
+from jasper.output_topology_store import save_output_topology
+from jasper.output_topology import new_topology_draft
 
 _STEREO_HOST_KINDS = {"base_flat", "sound_or_correction"}
 
@@ -71,8 +73,6 @@ _STEREO_HOST_KINDS = {"base_flat", "sound_or_correction"}
 @pytest.fixture(autouse=True)
 def _saved_passive_layout(tmp_path, monkeypatch):
     """Carrier unit tests need explicit DAC playback authorization now."""
-
-    from jasper.output_topology import save_output_topology
 
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
@@ -1054,7 +1054,6 @@ def test_stereo_host_reemit_requires_explicit_passive_layout(
     tmp_path, monkeypatch
 ):
     """Only an explicit passive layout may re-emit a flat DAC graph."""
-    from jasper.output_topology import new_topology_draft
     from jasper.sound.profile import SimpleEq, SoundProfile
 
     profile = SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=4.0))

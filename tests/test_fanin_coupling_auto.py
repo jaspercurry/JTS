@@ -20,6 +20,7 @@ resolving a second route.
 
 from __future__ import annotations
 
+from jasper import output_topology_store as ot
 import ast
 import re
 from pathlib import Path
@@ -45,6 +46,8 @@ from jasper.fanin_coupling import (
     RING_CAMILLA_QUEUELIMIT,
     RING_CAMILLA_TARGET_LEVEL,
 )
+from jasper.output_topology_store import save_output_topology
+from jasper.output_topology import OutputTopologyError
 
 
 def test_pure_auto_decision_module_does_not_import_transition_owner():
@@ -398,7 +401,6 @@ def _stub_ring_geometry_heals(monkeypatch):
 
 def _persist_ring_eligible_topology(tmp_path: Path, monkeypatch) -> Path:
     """Save the explicit passive stereo intent required by Ring B."""
-    from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
     path = tmp_path / "output_topology.json"
@@ -749,14 +751,12 @@ def test_auto_ring_combo_fanin_restart_failure_still_resumes_camilla(tmp_path, m
 def test_ring_topology_strict_fails_closed_on_unreadable(monkeypatch):
     """F4: the strict topology gate (auto path) resolves NOT-eligible when the
     topology cannot be read, where the human-arm gate fails open."""
-    from jasper.output_topology import OutputTopologyError
 
     from jasper.fanin.ring_readiness import ring_topology_ready
 
     def boom():
         raise OutputTopologyError("topology file corrupt")
 
-    import jasper.output_topology as ot
 
     monkeypatch.setattr(ot, "load_output_topology_strict", boom)
 

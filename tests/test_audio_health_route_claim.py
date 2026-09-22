@@ -7,13 +7,14 @@ from __future__ import annotations
 import pytest
 
 from jasper.control import audio_route_claim
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 from .active_speaker_fixtures import (
     PASSIVE_ONLY_DAC_ID,
     PASSIVE_ONLY_DAC_LABEL,
     register_passive_only_dac,
 )
+from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.output_topology_store import save_output_topology
 from .audio_health_fixtures import _RETIRED_ACTIVE_LANE, _compose
 
 
@@ -238,7 +239,6 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
     assert evidence.endpoint_recognized is False  # ...but names no outputd lane
 
     topology_path = tmp_path / "output_topology.json"
-    from jasper.output_topology import save_output_topology
 
     save_output_topology(topology, path=topology_path)
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
@@ -271,7 +271,6 @@ def test_unconfigured_parked_graph_names_the_layout_action(monkeypatch, tmp_path
         UNCONFIGURED_PARKED_EXIT,
         build_parked_muted_graph,
     )
-    from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import _topology
 
     topology = _topology([])

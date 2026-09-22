@@ -31,12 +31,8 @@ from jasper.active_speaker.runtime_contract import (
     safe_graph_for_current_topology,
 )
 from jasper.active_speaker.state_paths import baseline_profile_state_path
-from jasper.output_topology import (
-    OutputTopology,
-    load_output_topology_strict,
-    stamp_statefile_convergence,
-    topology_config_fingerprint,
-)
+from jasper.output_topology import OutputTopology, topology_config_fingerprint
+from jasper.output_topology_store import load_output_topology_strict, stamp_statefile_convergence
 from jasper.service_units import OUTPUTD_SERVICE
 
 logger = logging.getLogger(__name__)

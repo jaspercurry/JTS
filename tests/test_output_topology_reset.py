@@ -12,7 +12,8 @@ import pytest
 
 from jasper import output_topology_runtime as topology_runtime
 from jasper.output_hardware import OutputHardwareState, write_state
-from jasper.output_topology import OutputTopology, load_output_topology_strict, save_output_topology
+from jasper.output_topology import OutputTopology
+from jasper.output_topology_store import load_output_topology_strict, save_output_topology
 
 
 class _ParkResult:

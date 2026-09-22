@@ -37,10 +37,8 @@ from jasper.active_speaker.startup_load import (
 from jasper.camilla import CamillaUnavailable
 from jasper.dsp_apply import same_config_file
 from jasper.log_event import log_event
-from jasper.output_topology import (
-    OutputTopology,
-    load_output_topology,
-)
+from jasper.output_topology import OutputTopology
+from jasper.output_topology_store import load_output_topology
 
 from ._common import blocker_issue as _issue
 

@@ -23,6 +23,7 @@ from .doctor_test_support import (
     _make_unit_states_fake,
     _registered_check_names,
 )
+from jasper.output_topology_store import save_output_topology
 
 _LEADER = dict(enabled=True, role="leader", channel="left", bond_id="x")
 _FOLLOWER = dict(
@@ -298,7 +299,6 @@ def _active_leader_topology(monkeypatch, tmp_path):
     """An ACTIVE-LEADER context: a roleful/protected output topology plus a
     bonded-leader grouping config. Leaves `grouping._run` patchable."""
     import jasper.multiroom.config as mr_config
-    from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import _active_topology
 
     topology_path = tmp_path / "output_topology.json"
@@ -330,7 +330,6 @@ def test_check_crossover_unit_skips_when_not_an_active_leader(
 def test_check_crossover_unit_skips_for_a_passive_leader(monkeypatch, tmp_path):
     """A bonded LEADER whose topology has NO roleful/protected outputs runs no
     per-driver crossover, so camilla#2 is n/a."""
-    from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import _topology
 
     topology_path = tmp_path / "output_topology.json"

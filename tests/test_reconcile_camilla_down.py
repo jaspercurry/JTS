@@ -69,6 +69,7 @@ from tests.test_active_speaker_baseline_profile import (
 from tests.active_speaker_fixtures import declare_applied_fixture
 from tests.sound_camilla_fixtures import FakeCamilla
 from tests._log_events import event_fields
+from jasper.output_topology_store import save_output_topology
 
 
 # The width jts4's statefile was stuck at: the pre-#2601 narrow wire. The
@@ -171,7 +172,6 @@ def _flat_streambox(tmp_path: Path, monkeypatch):
     config_dir.mkdir(parents=True, exist_ok=True)
     stale = _stale_sound_current(config_dir)
     statefile = _statefile_at(tmp_path, monkeypatch, stale)
-    from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
     topology_path = tmp_path / "output_topology.json"

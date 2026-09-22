@@ -37,7 +37,7 @@ from jasper.active_speaker.seat_level_sweep import SweepLevelReader, watchdog_se
 from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
 from jasper.active_speaker.volume_latch import read_fader_db
 from jasper.camilla import primary_controller
-from jasper.output_topology import load_output_topology_strict
+from jasper.output_topology_store import load_output_topology_strict
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.seat_level_reference import (
     DEFAULT_TARGET_DB_SPL, DEFAULT_TOLERANCE_DB, SeatLevelTarget, SeatLevelTargetError,

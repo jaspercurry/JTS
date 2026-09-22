@@ -10,9 +10,10 @@ from typing import Any, Mapping
 
 from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.json_fields import finite_float, parse_utc_iso
-from jasper.output_topology import OutputTopology
 from .driver_safety import driver_floor_issues
 from .applied_identity import applied_identity
+from jasper.output_topology import OutputTopology
+from jasper.output_topology_store import load_output_topology
 from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, PROGRAM_ROWS, programs_for_topology
 
 COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
@@ -174,7 +175,6 @@ def load_commissioning_view(
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.active_speaker.measurement import load_measurement_state
     from jasper.active_speaker.startup_load import load_startup_load_state
-    from jasper.output_topology import load_output_topology
 
     if topology is None:
         topology = load_output_topology()

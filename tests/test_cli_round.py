@@ -25,7 +25,7 @@ from unittest.mock import Mock
 import pytest
 import yaml
 
-from jasper import output_topology
+from jasper import output_topology, output_topology_store
 from jasper.active_speaker import arm_walk as aw, candidate_bank, graph_safety, round_bank, round_packet, wizard_client as wc
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
 from jasper.active_speaker.bundles import mark_state
@@ -268,7 +268,7 @@ def test_reset_composes_and_applies_the_selected_scope(
     post_apply_read = Mock(side_effect=[persisted])
     monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state", pre_apply_read)
     monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", post_apply_read)
-    monkeypatch.setattr(output_topology, "load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr(output_topology_store, "load_output_topology_strict", lambda: topology)
     real_compose = crossover_prescriber.compose_prescription_document
     composed_with: dict = {}
     def _spy_compose(document, *, base, evidence=None, base_profile=None):
@@ -958,7 +958,6 @@ def test_a_rear_pair_run_composes_its_own_candidate_only_when_none_is_named(
     """
     from jasper.active_speaker import candidate_bank
     from jasper.active_speaker.crossover_v2 import prescription_document as prescription_document_mod
-    from jasper import output_topology
 
     topology, _ = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     applied = publish_authored_candidate(
@@ -967,7 +966,7 @@ def test_a_rear_pair_run_composes_its_own_candidate_only_when_none_is_named(
     monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state",
                         lambda: {"status": "applied",
                                  "source": {"measured_candidate_fingerprint": applied.fingerprint}})
-    monkeypatch.setattr(output_topology, "load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr(output_topology_store, "load_output_topology_strict", lambda: topology)
     monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan, **kw: ready_facts(
         plan, **kw, candidates={name: candidate_bank.find_banked_candidate(name).candidate
                           for name in plan.candidates}))

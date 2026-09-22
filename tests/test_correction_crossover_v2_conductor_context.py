@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from jasper import output_topology_store as output_topology_mod
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
 from jasper.web import correction_crossover_v2_volume as v2volume
@@ -179,8 +180,6 @@ def _stub_non_topology_inputs(monkeypatch):
 
 
 def _patch_topology(monkeypatch, topology: OutputTopology) -> None:
-    from jasper import output_topology as output_topology_mod
-
     monkeypatch.setattr(output_topology_mod, "load_output_topology", lambda *a, **k: topology)
 
 

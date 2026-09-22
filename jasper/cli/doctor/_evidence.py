@@ -367,7 +367,7 @@ class Evidence:
         )
 
     def output_topology(self) -> Any:
-        from ...output_topology import load_output_topology
+        from ...output_topology_store import load_output_topology
 
         return self.get("output_topology", load_output_topology)
 
@@ -379,7 +379,7 @@ class Evidence:
         to see (and fail on) a corrupt/unreadable saved topology, so
         ``OutputTopologyError`` propagates here uncaught.
         """
-        from ...output_topology import load_output_topology_strict
+        from ...output_topology_store import load_output_topology_strict
 
         return self.get("output_topology_strict", load_output_topology_strict)
 

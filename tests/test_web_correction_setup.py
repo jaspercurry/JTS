@@ -41,13 +41,13 @@ from tests.conftest import bare_root_logger, seat_process_volume_owner
 from tests.test_web_wizard_cli import (
     wizard_harness_fixture as _wizard_harness_fixture,
 )
+from jasper.output_topology_store import save_output_topology
 
 _IMPORTED_FIXTURES = (_wizard_harness_fixture,)
 
 @pytest.fixture(autouse=True)
 def _saved_passive_layout(tmp_path, monkeypatch):
     """HTTP tests that drive correction apply declare flat-graph authority."""
-    from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
     path = tmp_path / "output_topology.json"

@@ -593,7 +593,7 @@ def _undeclared_hardware_signal(
     ``output_hardware`` is the reconciler-published
     :class:`~jasper.output_hardware.OutputHardwareState` (or ``None`` when
     unreadable); ``output_topology_snapshot`` is a
-    :class:`~jasper.output_topology.OutputTopologySnapshot` (or ``None``
+    :class:`~jasper.output_topology_store.OutputTopologySnapshot` (or ``None``
     before the sampler's first read) — the bare topology is not enough, see
     below.
 

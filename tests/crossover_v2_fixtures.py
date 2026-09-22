@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from jasper import output_topology_store as output_topology_mod
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker.plan_run import prepare_plan_captures
 
@@ -1350,7 +1351,6 @@ def _production_host_seams(monkeypatch, tmp_path):
     monkeypatch.setattr(v2host, "secrets", SimpleNamespace(
         token_hex=lambda _: "minted_by_this_stage", token_urlsafe=v2host.secrets.token_urlsafe))
     monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", fake_measurement_mic)
-    from jasper import output_topology as output_topology_mod
     from jasper.active_speaker import model_error_store
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
 

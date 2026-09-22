@@ -26,12 +26,14 @@ from tests.active_speaker_fixtures import (
 
 from jasper.active_speaker import runtime_convergence
 from jasper.active_speaker.runtime_contract import parked_safe_graph_decision
-from jasper.output_topology import (
-    OutputTopology,
+from jasper.output_topology import OutputTopology
+from jasper.output_topology_store import (
     read_topology_fingerprint_stamp,
     statefile_topology_stamp_path,
     statefile_unproved_stamp_path,
     topology_fingerprint_stamp,
+    load_output_topology,
+    save_output_topology,
 )
 from tests.test_active_speaker_runtime_contract import (
     _active_yaml, _flat_yaml, _staged_metadata, _topology, _under_charged_boosted_baseline,
@@ -172,8 +174,6 @@ def test_post_publication_fsync_failure_does_not_restore_old_graph(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from jasper.output_topology import load_output_topology, save_output_topology
-
     topology_path = tmp_path / "output_topology.json"
     old_topology = replace(_topology([]), name="Old layout")
     new_topology = replace(_topology([]), name="New layout")

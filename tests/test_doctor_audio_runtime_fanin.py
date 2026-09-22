@@ -4,6 +4,7 @@
 
 """Unit tests for the jasper-doctor jasper-fanin checks."""
 
+from jasper import output_topology_store as output_topology
 import json
 import re
 from pathlib import Path
@@ -1027,7 +1028,6 @@ def test_an_unreadable_topology_fails_soft_to_not_roleful(monkeypatch, tmp_path,
     True would print a
     remediation ladder at every box with a torn topology file.
     """
-    import jasper.output_topology as output_topology
 
     def _raise(*_a, **_kw):
         raise exc
@@ -1044,7 +1044,6 @@ def test_a_roleful_topology_is_reported_roleful(monkeypatch, tmp_path):
     the helper would be pinned to a constant. This runs the real classifier over
     a real roleful topology.
     """
-    import jasper.output_topology as output_topology
     from tests.test_active_speaker_runtime_contract import _active_topology
 
     topology = _active_topology("mono", "active_2_way")

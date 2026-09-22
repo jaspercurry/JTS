@@ -26,6 +26,8 @@ from .active_speaker_fixtures import (
     register_passive_only_dac,
 )
 from .test_doctor_audio_runtime_fanin import _patch_unreachable_status
+from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.output_topology_store import save_output_topology
 
 def _patch_ring_coupled_box(
     monkeypatch,
@@ -169,11 +171,6 @@ def _write_no_lane_active_topology(path: Path) -> None:
     for the next lane-less board. Callers must register it first with
     ``register_passive_only_dac(monkeypatch)``.
     """
-    from jasper.output_topology import (
-        OUTPUT_TOPOLOGY_KIND,
-        OutputTopology,
-        save_output_topology,
-    )
 
     save_output_topology(
         OutputTopology.from_mapping({

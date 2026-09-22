@@ -20,6 +20,7 @@ plain asserts; file I/O goes to pytest's tmp_path.
 
 from __future__ import annotations
 
+from jasper import output_topology_store as topology_mod
 import dataclasses
 import fcntl
 import os
@@ -79,6 +80,8 @@ from jasper.multiroom.reconcile_plan import (
     snapclient_argv,
     snapserver_argv,
 )
+from jasper.output_topology import OutputTopologyError
+from jasper.output_topology_store import save_output_topology
 
 
 def _desired(plan_: ReconcilePlan, unit: str) -> str:
@@ -572,7 +575,6 @@ def test_outputd_direct_dac_paths_follow_one_topology_predicate(
     """
     from jasper.multiroom.grouping_env import outputd_grouping_env, voice_grouping_env
     from jasper.multiroom.reconcile import output_topology_state
-    from jasper.output_topology import save_output_topology
     from jasper.tts_routing import OUTPUTD_TTS_SOCKET_ENV, VOICE_TTS_SOCKET_ENV
 
     topology_path = tmp_path / "output_topology.json"
@@ -2699,10 +2701,9 @@ def test_active_speaker_topology_error_is_raw_unknown_but_legacy_false(
     caplog,
 ):
     """Safety callers retain corrupt-topology uncertainty; old readers do not."""
-    import jasper.output_topology as topology_mod
 
     def fail_load():
-        raise topology_mod.OutputTopologyError("corrupt topology")
+        raise OutputTopologyError("corrupt topology")
 
     monkeypatch.setattr(topology_mod, "load_output_topology_strict", fail_load)
 

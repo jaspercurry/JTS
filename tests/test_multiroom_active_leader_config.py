@@ -10,6 +10,7 @@ armed camilla#2), and the unbond restore (always an ACTIVE graph, never passive,
 re-using the shared follower_config ladder)."""
 from __future__ import annotations
 
+from jasper import output_topology_store as output_topology_mod
 from tests.active_speaker_fixtures import declared_profile_fixture
 
 from tests.active_speaker_fixtures import compile_applied_fixture, isolated_candidate_bank as isolated_candidate_bank
@@ -32,7 +33,6 @@ import jasper.active_speaker.design_draft as design_draft_mod
 import jasper.active_speaker.measurement as measurement_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
 import jasper.dsp_apply as dsp_apply_mod
-import jasper.output_topology as output_topology_mod
 import jasper.sound.profile as sound_profile_mod
 import jasper.sound.settings as sound_settings_mod
 from jasper.multiroom import active_leader_config as alc
@@ -53,6 +53,7 @@ from tests.test_active_speaker_baseline_profile import (
     _valid_config,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
+from jasper.output_topology import OutputTopologyError
 
 
 @pytest.fixture(autouse=True)
@@ -253,7 +254,6 @@ def test_leader_bake_captures_ring_a_and_keeps_the_snapfifo_sink(
 def test_precheck_fails_closed_on_a_corrupt_topology(monkeypatch, tmp_path) -> None:
     """An unreadable topology.json (the 2026-05-23 filesystem-loss class) refuses
     the bond under its own reason and emits neither config."""
-    from jasper.output_topology import OutputTopologyError
 
     topology = _dual_apple_topology()
     draft = _draft(topology)
@@ -261,12 +261,11 @@ def test_precheck_fails_closed_on_a_corrupt_topology(monkeypatch, tmp_path) -> N
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
 
-    import jasper.output_topology as ot
 
     def _boom(*a, **k):
         raise OutputTopologyError("topology.json corrupt")
 
-    monkeypatch.setattr(ot, "load_output_topology_strict", _boom)
+    monkeypatch.setattr(output_topology_mod, "load_output_topology_strict", _boom)
 
     with pytest.raises(alc.ActiveLeaderError) as exc:
         asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
@@ -491,7 +490,7 @@ def test_precheck_fails_closed_on_unreadable_topology(monkeypatch, tmp_path) -> 
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
 
     def _boom(*a, **k):
-        raise output_topology_mod.OutputTopologyError("topology.json corrupt")
+        raise OutputTopologyError("topology.json corrupt")
 
     monkeypatch.setattr(output_topology_mod, "load_output_topology_strict", _boom)
 

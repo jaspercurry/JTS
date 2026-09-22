@@ -390,6 +390,8 @@ def _load_topology_for_ring_wire(path: str | None) -> tuple[OutputTopology | Non
     """Unreadable topology keeps the shipped stereo wire; arm preflights reject it."""
     from jasper.output_topology import (  # lazy: import cost, keep ring asset readers import-cheap
         OutputTopologyError,
+    )
+    from jasper.output_topology_store import (  # lazy: keep ring asset readers import-cheap
         load_output_topology_strict,
     )
 

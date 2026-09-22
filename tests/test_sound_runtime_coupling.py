@@ -28,12 +28,12 @@ from jasper.sound.graph_carrier import ReemitResult
 from tests.sound_camilla_fixtures import FakeCamilla
 
 from .fanin_env_fixtures import declare_fanin_env
+from jasper.output_topology_store import save_output_topology
 
 
 @pytest.fixture(autouse=True)
 def _saved_passive_layout(tmp_path, monkeypatch):
     """Runtime coupling tests exercise a flat DAC graph intentionally."""
-    from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
     path = tmp_path / "output_topology.json"

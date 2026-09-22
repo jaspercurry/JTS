@@ -58,11 +58,13 @@ from jasper.output_topology import (
     clock_domain_report,
     composite_serial_repin_plan,
     declared_hardware_mismatch,
+    new_topology_draft,
+    repin_composite_child_serials,
+)
+from jasper.output_topology_store import (
     load_output_topology,
     load_output_topology_snapshot,
-    new_topology_draft,
     output_topology_mutation,
-    repin_composite_child_serials,
 )
 from jasper.output_hardware import (
     detected_hardware_adoption_precondition,

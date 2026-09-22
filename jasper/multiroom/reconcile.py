@@ -84,6 +84,7 @@ from .reconcile_plan import (
 )
 from .tts_route import VOICE_PARK_ENV
 from ..logging_setup import configure_logging
+from jasper.output_topology import OutputTopologyError
 
 logger = logging.getLogger(__name__)
 
@@ -368,10 +369,7 @@ def output_topology_state() -> tuple[bool | None, bool]:
             classify_output_contract,
             topology_allows_flat_dac_graph,
         )  # lazy: import cost — same active_speaker tree; its own SNAPFIFO import back into this module is lazy for the same reason
-        from jasper.output_topology import (
-            OutputTopologyError,
-            load_output_topology_strict,
-        )  # lazy: import cost — control.grouping_supervisor (a resident daemon) reaches this probe via its own lazy import precisely to avoid this tree
+        from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_reconcile pins the store lookup
 
         topology = load_output_topology_strict()
         active = active_playback_route_capability(topology).active_group_count > 0

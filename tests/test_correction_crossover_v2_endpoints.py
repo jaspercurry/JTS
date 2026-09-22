@@ -83,6 +83,7 @@ from tests.crossover_v2_fixtures import (
     _preset,
     _roles,
 )
+from jasper.output_topology_store import save_output_topology, load_output_topology
 
 _BINDING = "placement_abcdefghijklmnopqrstuv"
 
@@ -4527,7 +4528,6 @@ def _seed_baseline_apply_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(v2state, "_state_path_override", tmp_path / "v2_state.json")
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda status: object())
     from jasper.active_speaker.preset_binding import compile_preset_from_crossover_preview
-    from jasper.output_topology import save_output_topology
 
     from tests.test_active_speaker_baseline_profile import _draft, _dual_apple_topology
 
@@ -4824,7 +4824,6 @@ def test_a_persisted_fc_selection_no_longer_decides_what_sound_is_told(
     """
     from jasper.active_speaker.preset_binding import compile_preset_from_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.output_topology import load_output_topology
 
     _seed_alternative_apply(monkeypatch, tmp_path)
     # Recompile the candidate from what /sound DECLARES, so this apply asks for
@@ -6388,7 +6387,6 @@ def test_restore_uses_the_saved_sound_inverse_and_the_previous_trial(monkeypatch
     from jasper.active_speaker.preset_binding import compile_preset_from_crossover_preview
     from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.output_topology import load_output_topology
 
     selected = _seed_alternative_apply(monkeypatch, tmp_path)
     preset, _, _ = compile_preset_from_crossover_preview(load_output_topology(), build_crossover_preview(load_design_draft()))

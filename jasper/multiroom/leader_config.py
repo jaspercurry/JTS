@@ -52,6 +52,7 @@ from ..log_event import log_event
 from . import _stash
 from .config import GroupingConfig
 from .member_config import member_camilla_kwargs
+from jasper.output_topology_store import load_output_topology_strict
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +222,6 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
     Raises on a failed apply (stash kept — the next reconcile retries).
     """
     from jasper.dsp_apply import apply_dsp_config
-    from jasper.output_topology import load_output_topology_strict
     from jasper.sound.camilla_yaml import (
         FLAT_GRAPH_WIDTH,
         FlatChannelPlan,

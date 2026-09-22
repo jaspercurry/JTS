@@ -17,6 +17,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from ._health_fields import _MONITOR_ERRORS
+from ..output_topology import OutputTopologyError
+from ..output_topology_store import load_output_topology_strict, load_output_topology
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +89,6 @@ def _parked_graph_transport() -> dict[str, Any] | None:
         parked_muted_exits,
     )
     from ..audio_runtime_settings import DEFAULT_CAMILLA_STATEFILE_PATH  # lazy: source patch boundary pinned by test_audio_health_route_claim
-    from ..output_topology import OutputTopologyError, load_output_topology_strict
 
     config_path = read_camilla_statefile_config_path(DEFAULT_CAMILLA_STATEFILE_PATH)
     if not active_graph_is_parked(config_path):
@@ -135,7 +136,6 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
         DEFAULT_CAMILLA2_STATEFILE_PATH,
         DEFAULT_CAMILLA_STATEFILE_PATH,
     )
-    from ..output_topology import load_output_topology
 
     evidence = output_endpoint_evidence_from_statefiles(
         DEFAULT_CAMILLA_STATEFILE_PATH,

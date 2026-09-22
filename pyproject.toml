@@ -489,6 +489,9 @@ exhaustive_ignores = [
   "oauth_redirect",
   "output_hardware",
   "output_topology",
+  # Store imports the held schema and its observation dependencies; ranks after
+  # the separate observation split removes that upward chain (#5515).
+  "output_topology_store",
   "output_topology_runtime",
   "outputd_failure_reconcile_state",
   "peering",

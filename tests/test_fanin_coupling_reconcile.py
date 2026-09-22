@@ -36,6 +36,8 @@ from jasper.fanin_coupling import (
     OUTPUTD_RING_PATH_ENV_VAR,
 )
 from tests._lock_holder import spawn_lock_holder
+from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.output_topology_store import save_output_topology
 
 
 @pytest.fixture(autouse=True)
@@ -50,11 +52,6 @@ def isolate_base_jasper_env(tmp_path, monkeypatch):
     # speaker. Empty speaker_groups now means "unconfigured and silent", so it
     # is not a neutral default for tests that are specifically about the later
     # asset, geometry, and daemon-order gates.
-    from jasper.output_topology import (
-        OUTPUT_TOPOLOGY_KIND,
-        OutputTopology,
-        save_output_topology,
-    )
 
     jasper_env = tmp_path / "jasper.env"
     jasper_env.write_text("", encoding="utf-8")
@@ -1361,11 +1358,6 @@ def test_ring_topology_ready_refuses_real_stale_subwoofer_with_reset_hint(
     # ring genuinely cannot drive a sub — and the refusal names the actionable
     # remediation (jasper-output-topology-reset) instead of an opaque "loopback".
     from jasper.fanin.ring_readiness import ring_topology_ready
-    from jasper.output_topology import (
-        OUTPUT_TOPOLOGY_KIND,
-        OutputTopology,
-        save_output_topology,
-    )
 
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))

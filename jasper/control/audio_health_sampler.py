@@ -47,6 +47,7 @@ from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
 from .audio_route_claim import read_route_claim
 from .audio_signal_path import _parked_signal, _selected_source, _undeclared_hardware_signal
 from .audio_state_issues import _state_issues
+from ..output_topology_store import load_output_topology_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,6 @@ def _read_output_topology() -> Any:
     ``/sound/speaker/`` uses (``jasper.web.sound_active_speaker._output_topology_payload``).
     """
     try:
-        from ..output_topology import load_output_topology_snapshot
 
         return load_output_topology_snapshot()
     except _MONITOR_ERRORS:

@@ -28,7 +28,7 @@ from jasper.active_speaker.profile import SIDES_BY_LAYOUT
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker import rear_calibration
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
-from jasper import output_topology
+from jasper import output_topology_store as output_topology
 from .topology_prescription import apply_topology_pin
 
 from . import alignment_prescription as alignment

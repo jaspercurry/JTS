@@ -33,6 +33,8 @@ from jasper.output_hardware import (
 
 from ._sounddevice_stub import stub_sounddevice
 from .doctor_test_support import _fresh_cfg, record_active_dac
+from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.output_topology_store import save_output_topology
 
 
 def _lsusb_only(stdout: str):
@@ -186,8 +188,6 @@ def test_dual_apple_dongle_check_requires_two_audio_cards(monkeypatch):
 
 
 def _dual_apple_topology():
-    from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
-
     return OutputTopology.from_mapping(
         {
             "artifact_schema_version": 1,
@@ -260,8 +260,6 @@ def test_active_speaker_hardware_mismatch_is_separate_from_basic_output_health(
     monkeypatch,
     tmp_path,
 ):
-    from jasper.output_topology import save_output_topology
-
     topology_path = tmp_path / "output_topology.json"
     save_output_topology(_dual_apple_topology(), path=topology_path)
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
@@ -300,7 +298,6 @@ def test_active_speaker_hardware_match_checks_dual_apple_child_serials(
 ):
     """The saved pair is attached, but the observed serials are not the banked
     ones — a clock-domain blocker, distinct from a device_id mismatch."""
-    from jasper.output_topology import save_output_topology
 
     topology_path = tmp_path / "output_topology.json"
     hardware_path = tmp_path / "output_hardware.json"

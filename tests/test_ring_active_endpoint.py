@@ -62,6 +62,13 @@ from jasper.fanin_coupling import (
     ring_active_endpoint_armed,
     resolve_ring_wire,
 )
+from jasper.output_topology import (
+    OUTPUT_TOPOLOGY_KIND,
+    OutputTopology,
+    OutputTopologyError,
+    resolve_output_layout,
+)
+from jasper.output_topology_store import save_output_topology
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -78,8 +85,6 @@ HARDWARE_RECONCILE = REPO / "jasper/audio_hardware/reconcile.py"
 
 
 def _topology(groups, routing=None, *, device_id="hifiberry_dac8x", outputs=8):
-    from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
-
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,
         "kind": OUTPUT_TOPOLOGY_KIND,
@@ -171,7 +176,6 @@ def _subwoofer_topology():
 
 def _apple_dongle_shipped_default():
     """A shipped-default single-sink box: no groups, ONE recorded child device."""
-    from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,
@@ -200,7 +204,6 @@ def _apple_dongle_shipped_default():
 
 def _apple_dongle_passive_stereo():
     """The shipped Apple sink after explicit passive-stereo authorization."""
-    from jasper.output_topology import OutputTopology
 
     raw = _apple_dongle_shipped_default().to_dict()
     passive = _full_range_stereo().to_dict()
@@ -211,7 +214,6 @@ def _apple_dongle_passive_stereo():
 
 def _dual_apple_stereo():
     """A composite sink: TWO child devices, so >1 clock domain — no ring at all."""
-    from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,
@@ -911,7 +913,7 @@ def test_the_roleful_gate_admits_a_passive_box_and_refuses_a_roleful_one(
 
     _no_applied_profile_and_no_anchor(monkeypatch, tmp_path)
     monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict",
+        "jasper.output_topology_store.load_output_topology_strict",
         lambda *a, **k: _active_topology("mono", "active_2_way"),
     )
     ok, detail = ring_readiness.ring_roleful_unattended_ready()
@@ -919,7 +921,7 @@ def test_the_roleful_gate_admits_a_passive_box_and_refuses_a_roleful_one(
     assert "jasper-fanin-coupling-reconcile shm_ring" in detail
 
     monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict",
+        "jasper.output_topology_store.load_output_topology_strict",
         lambda *a, **k: _full_range_stereo(),
     )
     ok, _detail = ring_readiness.ring_roleful_unattended_ready()
@@ -928,12 +930,11 @@ def test_the_roleful_gate_admits_a_passive_box_and_refuses_a_roleful_one(
 
 def test_the_roleful_gate_fails_closed_on_an_unreadable_topology(monkeypatch):
     from jasper.fanin import ring_readiness
-    from jasper.output_topology import OutputTopologyError
 
     def _boom(*a, **k):
         raise OutputTopologyError("corrupt")
 
-    monkeypatch.setattr("jasper.output_topology.load_output_topology_strict", _boom)
+    monkeypatch.setattr("jasper.output_topology_store.load_output_topology_strict", _boom)
     ok, detail = ring_readiness.ring_roleful_unattended_ready()
     assert ok is False
     assert "fail-closed" in detail
@@ -984,7 +985,7 @@ def _steps_one_and_two_box(monkeypatch, tmp_path):
         ),
     )
     monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict", _composite_active_2way
+        "jasper.output_topology_store.load_output_topology_strict", _composite_active_2way
     )
     monkeypatch.setattr(
         "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
@@ -1033,7 +1034,7 @@ def test_arm_one_admits_an_applied_baseline_that_still_matches_the_hardware(
     declare_applied_fixture(monkeypatch, topology, _applied_profile_for(topology))
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
     monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict", lambda *a, **k: topology
+        "jasper.output_topology_store.load_output_topology_strict", lambda *a, **k: topology
     )
     applied = _applied_profile_for(topology)
     if not same_topology:
@@ -1063,7 +1064,7 @@ def test_arm_one_refuses_a_baseline_whose_fingerprint_no_longer_matches(
     declare_applied_fixture(monkeypatch, topology, _applied_profile_for(topology))
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
     monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict", lambda *a, **k: topology
+        "jasper.output_topology_store.load_output_topology_strict", lambda *a, **k: topology
     )
     monkeypatch.setattr(
         "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
@@ -1119,7 +1120,7 @@ def test_arm_two_admits_only_the_terminally_muted_anchor(
         ),
     )
     monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict",
+        "jasper.output_topology_store.load_output_topology_strict",
         _composite_active_2way,
     )
 
@@ -1148,7 +1149,7 @@ def test_the_roleful_gate_refuses_a_corrupt_applied_record_with_a_remedy(
     monkeypatch.setattr(bp, "baseline_profile_state_path", lambda *a, **k: record)
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
     monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict",
+        "jasper.output_topology_store.load_output_topology_strict",
         lambda *a, **k: _active_topology("mono", "active_2_way"),
     )
 
@@ -1196,7 +1197,7 @@ def test_the_roleful_gate_does_not_ask_the_divergence_question(monkeypatch, tmp_
     declare_applied_fixture(monkeypatch, topology, _applied_profile_for(topology))
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
     monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict", lambda *a, **k: topology
+        "jasper.output_topology_store.load_output_topology_strict", lambda *a, **k: topology
     )
     outcomes = []
     for profile in (None, _applied_profile_for(topology)):
@@ -1217,7 +1218,7 @@ def test_the_roleful_gate_does_not_ask_the_divergence_question(monkeypatch, tmp_
         ),
     )
     monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict", _composite_active_2way
+        "jasper.output_topology_store.load_output_topology_strict", _composite_active_2way
     )
     outcomes.append(ring_readiness.ring_roleful_unattended_ready()[0])
 
@@ -1237,7 +1238,7 @@ def test_a_roleful_topology_is_admitted_only_with_a_staged_endpoint(monkeypatch)
     from jasper.fanin import ring_readiness
 
     monkeypatch.setattr(
-        "jasper.output_topology.load_output_topology_strict",
+        "jasper.output_topology_store.load_output_topology_strict",
         lambda *a, **k: _active_topology("stereo", "active_3_way"),
     )
 
@@ -1846,7 +1847,6 @@ def test_resolve_output_layout_answers_the_ring_without_reading_the_marker(
     driven from both stub values, because a chooser still reading it would
     answer the retired lane in the first half.
     """
-    from jasper.output_topology import resolve_output_layout
 
     topo = _active_topology("mono", "active_2_way")
 
@@ -2364,7 +2364,6 @@ def test_the_arm_sequence_completes_from_an_unarmed_roleful_box(monkeypatch):
     """
     from jasper.cli.active_speaker import _baseline_reemit_endpoint
     from jasper.fanin.coupling_reconcile import _outputd_actions
-    from jasper.output_topology import resolve_output_layout
 
     topology = _active_topology("mono", "active_2_way")
     preset = _mono_two_way_preset()
@@ -2560,7 +2559,6 @@ def _run_validate_outputd_env(
     four of them passed while the real ladder deadlocked at step 2 on jts3.
     """
     from jasper.audio_runtime_plan import validate_outputd_env
-    from jasper.output_topology import save_output_topology
 
     graph = tmp_path / "graph.yml"
     graph.write_text(graph_yaml, encoding="utf-8")

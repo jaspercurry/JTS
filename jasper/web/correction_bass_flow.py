@@ -6,7 +6,7 @@
 
 DISPLAY-ONLY. This page does NOT own the crossover corner — the SPEAKER layer
 does. It reads the live corner
-(:func:`jasper.output_topology.bass_management_corner_hz`) and shows the
+(:func:`jasper.output_topology_store.bass_management_corner_hz`) and shows the
 household where their subwoofer and speakers hand off, plus a pointer to the
 Room tab where the bass-region measurement/correction already lives. There is
 no control surface here (no corner picker, no apply) by design: the corner is
@@ -78,7 +78,7 @@ def status_payload() -> dict[str, Any]:
     Never raises — an unreadable topology resolves to "no subwoofer," which the
     page shows as "not configured."
     """
-    from jasper.output_topology import bass_management_corner_hz
+    from jasper.output_topology_store import bass_management_corner_hz  # lazy: test_web_correction_bass_flow pins the store lookup
 
     corner_hz = bass_management_corner_hz()
     payload: dict[str, Any] = {
