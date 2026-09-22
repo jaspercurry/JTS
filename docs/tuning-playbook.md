@@ -164,7 +164,7 @@ Read each `packet["room"]` entry's `set_id`, `median`, `ceiling.hz` and
 `incumbent_reason` before comparison. Top-level `limits` carries the contract.
 Do not infer an incumbent from a file name when the entry says the set is
 ambiguous.
-Read `median.spread_rms_db`: RMS of the per-bin cross-position spread from the coverage floor to the ceiling, with `n_positions`; `None` below two positions.
+Read `spread_rms_db` beside `median`: RMS of the per-bin cross-position spread from the coverage floor to the ceiling, with `n_positions`; `None` below two positions.
 
 Room correction ends at the printed ceiling. Above it, the speaker owns the
 curve. The ceiling follows the highest trusted floor from the round's gated

@@ -15,7 +15,7 @@ import pytest
 
 from jasper.active_speaker.angle_capture import BASE_CANDIDATE
 from jasper.active_speaker.round_packet_report import INDEX_FILENAME, PACKET_FILENAME
-from jasper.audio_measurement.rear_evidence import REASON_NO_COMPARISON, REASON_NO_REPEATS
+from jasper.audio_measurement.evidence_reasons import REASON_NO_COMPARISON, REASON_NO_REPEATS
 from jasper.cli import round_views
 from jasper.cli._refusal import EXIT_OK, EXIT_REFUSED
 from jasper.cli.round_views.rear import REFUSE_NO_REAR

@@ -117,20 +117,23 @@ def test_room_views_disclose_spatial_support(tmp_path, capsys, n_positions, suff
 @pytest.mark.parametrize("n_positions", [1, 3])
 def test_room_band_follows_coverage_and_support_counts_positions(tmp_path, floor_hz, n_positions):
     round_dir = bank_seat_round(tmp_path, magnitudes_db=_cube()[:n_positions])
-    selected = select_seat_takes(round_inputs(round_dir).session_dir)
+    inputs = round_inputs(round_dir)
+    selected = select_seat_takes(inputs.session_dir)
     takes = tuple(replace(take, band_hz=(floor_hz, take.band_hz[1])) for take in selected.takes)
-    ceiling = room_views.room_ceiling(round_inputs(round_dir).session_dir)
-
-    document = room_views.room_median(takes, ceiling)
-    persistence = room_views.room_persistence(takes, ceiling)
+    room = room_views.room_document(
+        takes, set_id="base", evidence=selected.evidence, bundle_dir=inputs.session_dir,
+        applied_profile_path=None, geometry_path=None, manifest={},
+    )
+    document, persistence = room["median"], room["persistence"]
 
     support = {"n_positions": n_positions, "sufficient": n_positions > 1,
                "reason": "" if n_positions > 1 else REASON_TOO_FEW_POSITIONS}
     assert document["freqs_hz"][0] == document["coverage_hz"][0] == persistence["coverage_hz"][0] == floor_hz
     assert document["spatial_support"] == persistence["spatial_support"] == support
     freqs = np.asarray(document["freqs_hz"])
-    band = (freqs >= floor_hz) & (freqs < ceiling.ceiling_hz)
-    assert document["spread_rms_db"] == (
+    band = (freqs >= floor_hz) & (freqs < document["ceiling_hz"])
+    assert "spread_rms_db" not in document
+    assert room["spread_rms_db"] == (
         pytest.approx(np.sqrt(np.mean(np.asarray(document["spread_db"])[band] ** 2)))
         if n_positions > 1 else None)
     assert all(feature["band_hz"][0] >= floor_hz for feature in persistence["features"])
@@ -316,7 +319,7 @@ def test_room_document_sections_and_owners(room_round, capsys, geometry, walls, 
         result = _run(capsys, ["room", str(root), "--set", selected.set_id])
     source.assert_called_once_with(inputs.applied_profile_path)
     document = json.loads(Path(result["out"]).read_text())
-    assert set(document) == {"ceiling", "median", "persistence", "limits", "incumbent",
+    assert set(document) == {"ceiling", "median", "spread_rms_db", "persistence", "limits", "incumbent",
                              "boundary", "boundary_reason", "incumbent_reason", "room_median_sha256", "admit_boost"}
     median = document["median"]
     selection = select_seat_takes(inputs.session_dir, take_ids=selected.selected_ids,
@@ -404,8 +407,8 @@ def test_room_grade_never_grades_a_set_against_itself(room_round, capsys):
     assert answer["incumbent_reason"] == "room_incumbent_set_unavailable"
 
 
-@pytest.mark.parametrize("change", ["incumbent", "median"])
-def test_room_median_digest_tracks_only_the_measured_section(room_round, capsys, change):
+@pytest.mark.parametrize("change", ["incumbent", "median", "spread_rms_db"])
+def test_room_median_digest_tracks_only_the_measured_section(room_round, capsys, monkeypatch, change):
     inputs = round_inputs(room_round)
     selected = resolve_set(inputs)
     argv = ["room", str(room_round), "--set", selected.set_id]
@@ -417,8 +420,12 @@ def test_room_median_digest_tracks_only_the_measured_section(room_round, capsys,
         round_id="another-round", room_median_sha256="b" * 64,
     )
     profile_path.write_text(json.dumps(profile))
+    if change == "spread_rms_db":
+        monkeypatch.setattr(room_views, "spread_rms_db", lambda *a, **kw: before["spread_rms_db"] + 1.0)
     _run(capsys, argv)
     after = json.loads(path.read_text())
+    if change == "spread_rms_db":
+        assert after["spread_rms_db"] == before["spread_rms_db"] + 1.0
     assert before["incumbent"] != after["incumbent"]
     assert before["median"] == after["median"]
     digest = before["room_median_sha256"]
@@ -427,7 +434,7 @@ def test_room_median_digest_tracks_only_the_measured_section(room_round, capsys,
         after["median"]["median_db"][0] += 1.0
         path.write_text(json.dumps(after))
     median, read_digest = crossover_prescriber._room_median(path)
-    assert (read_digest == digest) is (change == "incumbent")
+    assert (read_digest == digest) is (change != "median")
     prescription = _document(sha256=digest, filters=[{"freq": 33.0, "q": 3.0, "gain": -1.0}])
     kwargs = dict(room_median=median, room_median_sha256=read_digest, round_id="round-7", sides=("mono",))
     if change == "median":
@@ -494,7 +501,7 @@ def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(speak
     assert room["set_id"] == room["incumbent"]["set_id"] == "summed"
     assert room["median"]["n_positions"] == room["persistence"]["spatial_support"]["n_positions"] == 3
     assert room["median"]["window"] == "ungated"
-    assert set(room) == {"ceiling", "median", "persistence", "incumbent", "boundary", "boundary_reason",
+    assert set(room) == {"ceiling", "median", "spread_rms_db", "persistence", "incumbent", "boundary", "boundary_reason",
                          "incumbent_reason", "room_median_sha256", "admit_boost", "out", "set_id"}
     assert packet["limits"]["summed"]["bounds"]["admit_boost"] == room["admit_boost"]
     limits = packet["limits"]["summed"]

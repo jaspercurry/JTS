@@ -21,21 +21,8 @@ from jasper.audio_measurement.band_ladders import (
 from jasper.audio_measurement.evidence_reasons import (
     REASON_COVERAGE_SHORT, REASON_GAP_NOT_CONFIDENT, REASON_NO_IMPULSE,
 )
-from jasper.audio_measurement.seat_figures import _band, _figure_level_db
+from jasper.audio_measurement.seat_figures import band_indices, figure_level_db
 from jasper.json_fields import finite_float
-
-# These callers are outside this move's edit scope: tests/test_rear_preview.py and tests/test_round_views_rear_cli.py.
-from jasper.audio_measurement.band_ladders import (
-    LATE_ENERGY_BAND_HZ as LATE_ENERGY_BAND_HZ, LEVEL_BANDS_HZ as LEVEL_BANDS_HZ,
-)
-from jasper.audio_measurement.evidence_reasons import (
-    REASON_NO_COMPARISON as REASON_NO_COMPARISON, REASON_NO_REPEATS as REASON_NO_REPEATS,
-)
-from jasper.audio_measurement.seat_figures import (
-    FIGURE_FRACTION as FIGURE_FRACTION, IMPULSE_FFT_SIZE as IMPULSE_FFT_SIZE,
-    band_limited_impulse as band_limited_impulse, impulse_energy_figures as impulse_energy_figures,
-    position_figures as position_figures, reference_curve_db as reference_curve_db,
-)
 
 #: Applied before the log so a bin that cancelled to exactly zero banks a
 #: number instead of ``-inf``, which is not JSON — the same floor
@@ -100,11 +87,11 @@ def superposition_residual_db(
     pass mark. ``None`` under three in-band bins.
     """
     freqs = np.asarray(freqs_hz, dtype=np.float64)
-    inside = np.empty(0, dtype=int) if band_hz is None else _band(freqs, band_hz)
+    inside = np.empty(0, dtype=int) if band_hz is None else band_indices(freqs, band_hz)
     if inside.size < 3:
         return None
-    parts = _figure_level_db(freqs, magnitude_db(np.asarray(front_tf) + np.asarray(rear_tf)))
-    played = _figure_level_db(freqs, magnitude_db(pair_tf))
+    parts = figure_level_db(freqs, magnitude_db(np.asarray(front_tf) + np.asarray(rear_tf)))
+    played = figure_level_db(freqs, magnitude_db(pair_tf))
     return float(np.sqrt(np.mean((parts[inside] - played[inside]) ** 2)))
 
 
@@ -203,7 +190,7 @@ def rear_polarity(
             if min(one[index] for one in levels) >= floor][:POLARITY_BAND_COUNT]
     if not loud:
         return {**row, "reason": REASON_COVERAGE_SHORT}
-    inside = np.concatenate([_band(freqs, band) for band in loud])
+    inside = np.concatenate([band_indices(freqs, band) for band in loud])
     ahead = np.asarray(front_tf, dtype=np.complex128)[inside]
     aligned = (np.asarray(rear_tf, dtype=np.complex128)[inside]
                / np.where(np.abs(ahead) < _MAGNITUDE_FLOOR, _MAGNITUDE_FLOOR, ahead)
@@ -234,7 +221,7 @@ def gradient_residual_db(
     ``None`` when the gap is unavailable or the band holds no bins.
     """
     freqs = np.asarray(freqs_hz, dtype=np.float64)
-    inside = np.empty(0, dtype=int) if band_hz is None else _band(freqs, band_hz)
+    inside = np.empty(0, dtype=int) if band_hz is None else band_indices(freqs, band_hz)
     if arrival_gap_s is None or not inside.size:
         return None
     ideal = np.exp(-2j * np.pi * freqs[inside] * abs(float(arrival_gap_s)))
@@ -253,7 +240,7 @@ def _third_octaves(freqs: np.ndarray,
     is read over."""
     return [band for band in THIRD_OCTAVE_BASS_BANDS_HZ
             if band[0] >= float(band_hz[0]) and band[1] <= float(band_hz[1])
-            and _band(freqs, band).size]
+            and band_indices(freqs, band).size]
 
 
 def _band_levels(freqs: np.ndarray, transfer: Any,
@@ -262,4 +249,4 @@ def _band_levels(freqs: np.ndarray, transfer: Any,
     if not bands:
         return []
     return [float(level) for level in band_levels_from_magnitude(
-        freqs, _figure_level_db(freqs, magnitude_db(transfer)), bands)]
+        freqs, figure_level_db(freqs, magnitude_db(transfer)), bands)]

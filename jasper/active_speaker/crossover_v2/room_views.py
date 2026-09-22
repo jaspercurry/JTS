@@ -169,12 +169,10 @@ def room_median(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, Any]:
     freqs, rows = _stacked(takes, coverage_hz[0], ceiling.ceiling_hz)
     median = np.median(rows, axis=0)
     support = spatial_support(len(takes))
-    spread = np.std(rows, axis=0).tolist() if support["sufficient"] else None
     return {
         "freqs_hz": freqs.tolist(),
         "median_db": median.tolist(),
-        "spread_db": spread,
-        "spread_rms_db": spread_rms_db(spread, freqs, band_hz=(coverage_hz[0], ceiling.ceiling_hz)),
+        "spread_db": np.std(rows, axis=0).tolist() if support["sufficient"] else None,
         "spatial_support": support,
         "n_positions": len(takes),
         "positions": [
@@ -340,6 +338,9 @@ def room_document(
     return {
         "ceiling": {"hz": ceiling.ceiling_hz, "provenance": ceiling.to_dict()},
         "median": median,
+        "spread_rms_db": spread_rms_db(
+            median["spread_db"], median["freqs_hz"],
+            band_hz=[median["coverage_hz"][0], ceiling.ceiling_hz]),
         ROOM_MEDIAN_FIELD: room_median_sha256(median),
         "persistence": persistence,
         "admit_boost": limits.pop("admit_boost"),

@@ -141,11 +141,11 @@ def band_level_changes(
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     bands = [band for band in bands_hz
              if band[0] >= coverage_hz[0] and band[1] <= coverage_hz[1]
-             and _band(freqs, band).size]
+             and band_indices(freqs, band).size]
     if not bands:
         return []
     levels, reference = [band_levels_from_magnitude(
-        freqs, _figure_level_db(freqs, np.asarray(curve, dtype=np.float64)), bands,
+        freqs, figure_level_db(freqs, np.asarray(curve, dtype=np.float64)), bands,
     ) for curve in (curve_db, reference_db)]
     return [{"band_hz": [lo, hi], "level_db": float(level), "reference_db": float(zero),
              "change_db": float(level - zero)}
@@ -209,7 +209,7 @@ def comparison_band(
     if search_hz is not None and reference_take is not None:
         freqs = np.asarray(reference_take[0], dtype=np.float64)
         curve = np.asarray(reference_take[1], dtype=np.float64)
-        shape = _figure_level_db(freqs, curve) - reference_curve_db(freqs, curve)
+        shape = figure_level_db(freqs, curve) - reference_curve_db(freqs, curve)
         dip = _deepest_dip(freqs, shape, search_hz, DIP_MIN_DEPTH_DB)
     lo_ratio, hi_ratio = CANONICAL_SHOULDER_RATIOS
     source: str
@@ -257,12 +257,12 @@ def position_figures(
     if freqs.shape != curve.shape or freqs.shape != reference.shape:
         raise ValueError("rear_evidence_curves_unmatched")
     band = None if band_hz is None else (float(band_hz[0]), float(band_hz[1]))
-    in_band = np.empty(0, dtype=int) if band is None else _band(freqs, band)
+    in_band = np.empty(0, dtype=int) if band is None else band_indices(freqs, band)
     if band is None or in_band.size < 3 or freqs[0] > band[0] or freqs[-1] < band[1]:
         return {"reason": REASON_COVERAGE_SHORT, "dip": None, "dip_shift": None,
                 "ripple_db": None, "own_trend_ripple_db": None,
                 "handover": None, "low_bass": None, "band_level_db": None}
-    level = _figure_level_db(freqs, curve)
+    level = figure_level_db(freqs, curve)
     shape = level - reference
     shape -= float(np.mean(shape[in_band]))
     window = None if handover_hz is None else _clip(
@@ -284,7 +284,7 @@ def position_figures(
 def own_trend_ripple_db(freqs_hz: Any, curve_db: Any, *, band_hz: Sequence[float]) -> float:
     """Mean-removed RMS against the candidate's own one-octave trend, dB."""
     freqs, curve = np.asarray(freqs_hz, dtype=np.float64), np.asarray(curve_db, dtype=np.float64)
-    shape = (_figure_level_db(freqs, curve) - reference_curve_db(freqs, curve))[_band(freqs, band_hz)]
+    shape = (figure_level_db(freqs, curve) - reference_curve_db(freqs, curve))[band_indices(freqs, band_hz)]
     return float(np.sqrt(np.mean((shape - np.mean(shape)) ** 2)))
 
 
@@ -292,7 +292,7 @@ def spread_rms_db(spread_db: Any, freqs_hz: Any, *, band_hz: Sequence[float]) ->
     """RMS of per-bin cross-position standard deviations over the band, dB."""
     if spread_db is None:
         return None
-    spread = np.asarray(spread_db, dtype=np.float64)[_band(np.asarray(freqs_hz), band_hz)]
+    spread = np.asarray(spread_db, dtype=np.float64)[band_indices(np.asarray(freqs_hz), band_hz)]
     return float(np.sqrt(np.mean(spread ** 2)))
 
 
@@ -359,11 +359,11 @@ def across_positions(
     }
 
 
-def _figure_level_db(freqs: np.ndarray, curve_db: np.ndarray) -> np.ndarray:
+def figure_level_db(freqs: np.ndarray, curve_db: np.ndarray) -> np.ndarray:
     return smooth_fractional_octave(freqs, curve_db, fraction=FIGURE_FRACTION)
 
 
-def _band(freqs: np.ndarray, band_hz: Sequence[float]) -> np.ndarray:
+def band_indices(freqs: np.ndarray, band_hz: Sequence[float]) -> np.ndarray:
     """This grid's bins inside the half-open band — the edge rule
     :func:`~jasper.audio_measurement.analysis.band_levels_from_magnitude`
     applies, so a bin counts toward coverage exactly when it counts toward
@@ -385,7 +385,7 @@ def _band_level_db(freqs: np.ndarray, level: np.ndarray,
                    band_hz: Sequence[float]) -> float | None:
     """Power-mean level over the band in the caller's own dB unit, or ``None``
     when the band holds none of this grid's bins."""
-    if not _band(freqs, band_hz).size:
+    if not band_indices(freqs, band_hz).size:
         return None
     return float(band_levels_from_magnitude(
         freqs, level, ((float(band_hz[0]), float(band_hz[1])),))[0])
@@ -398,7 +398,7 @@ def _deepest_dip(freqs: np.ndarray, shape: np.ndarray, band_hz: Sequence[float],
     candidate — a dip ON the band's own edge is still a dip, and the sample
     beside it is real data one bin outside the band — so only the ARRAY's two
     end samples, which have no neighbour to compare, are skipped."""
-    idx = _band(freqs, band_hz)
+    idx = band_indices(freqs, band_hz)
     if idx.size < 3:
         return None
     best: dict[str, float] | None = None
@@ -442,7 +442,7 @@ def _handover(freqs: np.ndarray, level: np.ndarray, reference: np.ndarray, shape
     against the reference. A positive ``hole_db`` is below the reference."""
     if handover_hz is None:
         return None
-    idx = _band(freqs, window) if window is not None else np.empty(0, dtype=int)
+    idx = band_indices(freqs, window) if window is not None else np.empty(0, dtype=int)
     row: dict[str, Any] = {"hz": float(handover_hz),
                            "window_hz": None if window is None else list(window)}
     if window is None or not idx.size:
