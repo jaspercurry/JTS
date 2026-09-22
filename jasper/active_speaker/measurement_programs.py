@@ -394,7 +394,7 @@ _TRIAL_PROGRAMS = {
     "rear_calibration": (PURPOSE_REAR, "rear_express", None),
     "bass": (PURPOSE_BASS, "bass_axis", None),
     "room": (PURPOSE_ROOM, "seat_express", "room_quick"),
-    None: (PURPOSE_ROOM, "room_quick", None),
+    None: (PURPOSE_ROOM, "seat_express", "room_quick"),
 }
 
 _PROGRAM_SECTIONS = {
@@ -467,7 +467,7 @@ def run_program(purpose: str, poses: str | None = None) -> MeasurementProgram:
 
 
 def trial_program(sections: Collection[str], mover: str | None = None) -> MeasurementProgram:
-    """Rear precedes bass precedes room, then driver/alignment/blend/topology or a carried document."""
+    """Rear precedes bass, then room and speaker-layer candidates."""
     purpose, layout, arm_layout = next(value for section, value in _TRIAL_PROGRAMS.items()
                                      if section is None or section in sections)
     selected = run_program(purpose, arm_layout if mover == "arm" and arm_layout else layout)

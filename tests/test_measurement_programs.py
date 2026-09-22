@@ -14,6 +14,7 @@ import pytest
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker import measurement_programs as mp
+from jasper.active_speaker.angle_capture import request_for_program
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER
 from jasper.audio_measurement.gating import SEAT_EXEMPT
 
@@ -359,12 +360,22 @@ def test_a_behind_pose_states_its_own_distance_from_the_back_panel() -> None:
 
 
 @pytest.mark.parametrize("mover", [None, "arm", "human"])
-@pytest.mark.parametrize("sections", [{"rear_calibration"}, {"rear_calibration", "room"}, {"rear_calibration", "bass", "room"}])
-def test_rear_calibration_trials_the_rear_row_for_every_mover(sections, mover) -> None:
-    """The rear section trials first, ahead of bass and room, with no arm-only layout."""
+@pytest.mark.parametrize("sections,purpose,layout,default_mover", [
+    (("driver", "blend"), "room", "seat_express", "human"),
+    (("room",), "room", "seat_express", "human"),
+    (("bass",), "bass", "bass_axis", "arm"),
+    (("rear_calibration",), "rear", "rear_express", None),
+    (("rear_calibration", "room"), "rear", "rear_express", None),
+    (("rear_calibration", "bass", "room"), "rear", "rear_express", None),
+])
+def test_trial_program_selects_sections_and_mover(sections, purpose, layout, default_mover, mover) -> None:
     selected = mp.trial_program(sections, mover)
-
-    assert (selected.purpose, selected.layout) == (mp.PURPOSE_REAR, "rear_express")
+    assert (selected.program_id, selected.purpose, selected.layout, selected.mover) == (
+        purpose, purpose, "room_quick" if purpose == "room" and mover == "arm" else layout,
+        mover or default_mover,
+    )
+    request = request_for_program(selected, mover=selected.mover or "human")
+    assert (request.program, request.mover) == (f"{purpose}/{selected.size}", mover or default_mover or "human")
 
 
 def test_run_program_resolves_rear_layouts_and_custom_bearings() -> None:
