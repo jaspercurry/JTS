@@ -94,10 +94,7 @@ from ..spotify_router import (
     BuildResult,
     build_clients,
 )
-from ..spotify_oauth import (
-    SPOTIFY_OAUTH_CALLBACK_BASE as _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE,
-    resolved_spotify_redirect_uri,
-)
+from ..spotify_oauth import resolved_spotify_redirect_uri
 from ..spotify_uri import parse_playlist_uri, playlist_id_from_uri
 from ..log_event import log_event
 from ..secret_redaction import redact_secrets
@@ -139,12 +136,6 @@ _CLIENT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 # page; `manual` uses the loopback IP and a paste-the-URL fallback.
 OAUTH_MODES = ("bounce", "manual")
 
-# Default redirect URIs per mode. The bounce URL points at a static
-# page hosted on GitHub Pages from the standalone
-# `jaspercurry/spotify-oauth-callback` repo; the `?host=` query param
-# tells the page which mDNS hostname to forward back to, so a single
-# hosted page works for any speaker hostname.
-DEFAULT_BOUNCE_REDIRECT_URI_BASE = _SHARED_SPOTIFY_OAUTH_CALLBACK_BASE
 DEFAULT_MANUAL_REDIRECT_URI = "http://127.0.0.1:8888/callback"
 
 
@@ -1074,7 +1065,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 # needs the pre-warn first or they'll see "cannot
                 # connect" at the end and assume something broke.
                 self._send_html(_manual_prewarn_page_html(
-                    authorize_url, name,
+                    authorize_url, name, begin_request(self)["csrf_token"],
                 ))
                 return
 
@@ -1339,9 +1330,6 @@ def _build_cfg(
     bounce_redirect_uri: str,
     manual_redirect_uri: str,
 ) -> dict[str, Any]:
-    """Resolve cfg from env + on-disk creds; shared by main() and
-    make_server() so direct CLI invocation and the jasper-web
-    multi-wizard process see identical state."""
     creds_from_file = _read_creds_file()
     client_id = (
         os.environ.get("SPOTIFY_CLIENT_ID", "")

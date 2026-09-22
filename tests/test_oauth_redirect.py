@@ -11,6 +11,8 @@ from typing import Callable, NamedTuple
 
 import pytest
 
+from jasper import spotify_oauth
+from jasper.control import volume_ops
 from jasper.google_oauth import (
     GOOGLE_OAUTH_CALLBACK_BASE,
     resolved_google_redirect_uri,
@@ -140,11 +142,7 @@ def test_callback_base_literal_has_one_python_owner(
 
 
 def test_existing_spotify_redirect_aliases_share_the_domain_owner() -> None:
-    from jasper.control import volume_ops
-    from jasper.web import spotify_setup
-
-    assert volume_ops.SPOTIFY_OAUTH_CALLBACK_BASE == SPOTIFY_OAUTH_CALLBACK_BASE
     assert (
-        spotify_setup.DEFAULT_BOUNCE_REDIRECT_URI_BASE
-        == SPOTIFY_OAUTH_CALLBACK_BASE
+        volume_ops.SPOTIFY_OAUTH_CALLBACK_BASE
+        == spotify_oauth.SPOTIFY_OAUTH_CALLBACK_BASE
     )
