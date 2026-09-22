@@ -541,10 +541,10 @@ def _outputd_transport_health(
     :func:`check_content_transport_coherence`'s.
     """
     from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
-    from jasper.audio_runtime_plan import (
+    from jasper.audio_runtime_plan import output_endpoint_evidence_from_statefiles
+    from jasper.audio_runtime_settings import (
         DEFAULT_CAMILLA2_STATEFILE_PATH,
         DEFAULT_CAMILLA_STATEFILE_PATH,
-        output_endpoint_evidence_from_statefiles,
     )
     from jasper.transport_coherence import (
         transport_coherence_report,

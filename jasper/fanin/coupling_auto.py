@@ -40,7 +40,7 @@ import logging
 import subprocess
 from collections.abc import Mapping
 
-from jasper.audio_runtime_plan import RuntimeEnvAction
+from jasper.audio_runtime_settings import RuntimeEnvAction
 from jasper.fanin.latency_mode import DEFAULT_MODE, preset_for
 from jasper.output_hardware import current_usb_data_role
 

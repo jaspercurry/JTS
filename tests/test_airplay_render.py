@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.audio_runtime_settings import DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES
 from tests.status_socket_fixtures import JsonStatusSocket
 
 
@@ -273,12 +274,10 @@ def test_airplay_default_dac_buffer_matches_the_runtime_plan(tmp_path: Path):
     default and this renderer must charge exactly that number — the AirPlay
     presentation offset is derived from it. The script keeps its own python-free
     constant (this tier is what answers when the venv is the broken thing), so
-    the drift is closed here instead: against jasper.audio_runtime_plan, which
-    the plan's own contract test pins to the Rust const.
+    the drift is closed here instead: against jasper.audio_runtime_settings, which
+    the settings test pins to the Rust const.
     """
     import re
-
-    from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES
 
     match = re.search(
         r"^DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=(\d+)$",

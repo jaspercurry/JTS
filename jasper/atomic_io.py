@@ -100,7 +100,7 @@ EnvKeyAction = tuple[str, "str | None"]
 class ReconcilerEnvAction(Protocol):
     """The set/unset shape every reconciler's env action already has.
 
-    Structural on purpose: ``jasper.audio_runtime_plan.RuntimeEnvAction`` is
+    Structural on purpose: ``jasper.audio_runtime_settings.RuntimeEnvAction`` is
     the one implementation, and naming it here would drag that policy layer
     into this module's import graph — the audio-hardware pass keeps it lazy
     (ADR-0226).

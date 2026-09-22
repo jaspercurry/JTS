@@ -290,10 +290,8 @@ def check_content_transport_coherence() -> CheckResult:
     legitimately reads crossed; :func:`_crossed_transport_pair` tells that
     window from a wedge by the reconcile entry lock.
     """
-    from jasper.audio_runtime_plan import (
-        DEFAULT_CAMILLA2_STATEFILE_PATH,
-        output_endpoint_evidence_from_statefiles,
-    )
+    from jasper.audio_runtime_plan import output_endpoint_evidence_from_statefiles
+    from jasper.audio_runtime_settings import DEFAULT_CAMILLA2_STATEFILE_PATH
     from jasper.fanin.coupling_reconcile import outputd_ring_path_for
     from jasper.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
@@ -1058,7 +1056,7 @@ def check_ring_conf_floor_render() -> CheckResult:
     applies through ``outputd.env``. Known limit, issue #2147, so ok not warn.
     """
     label = "ring conf floor"
-    from ...audio_runtime_plan import DEFAULT_OUTPUTD_PERIOD_FRAMES
+    from ...audio_runtime_settings import DEFAULT_OUTPUTD_PERIOD_FRAMES
 
     dac_id = active_dac_profile_id()
     if dac_id is None:

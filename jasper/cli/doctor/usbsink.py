@@ -34,7 +34,7 @@ from jasper.audio_hardware.usb_port_role import (
     UsbPortRoleState,
     gadget_unavailable_detail,
 )
-from jasper.audio_runtime_plan import UAC2_LOW_LATENCY_EXPECTED_ATTRS
+from jasper.audio_runtime_settings import UAC2_LOW_LATENCY_EXPECTED_ATTRS
 from jasper.audio_validation_route import route_live_state_issues
 from jasper.fanin.status import (
     fanin_usbsink_input,

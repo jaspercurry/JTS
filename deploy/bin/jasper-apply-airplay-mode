@@ -91,7 +91,7 @@ OUTPUTD_STATUS_SOCKET="${JASPER_OUTPUTD_STATUS_SOCKET:-/run/jasper-outputd/contr
 # layer names the key. Python-free, like the ring defaults below, because this
 # tier is what answers when the venv is the broken thing;
 # test_airplay_default_dac_buffer_matches_the_runtime_plan pins it equal to
-# jasper.audio_runtime_plan's copy so a retune cannot desync lip-sync silently.
+# jasper.audio_runtime_settings' copy so a retune cannot desync lip-sync silently.
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
 # Ring A/B slot-geometry LAST-TIER fallback, reached only when both live
 # STATUS and the jasper.ring_assets parse (see ring_conf_parsed_frames) are

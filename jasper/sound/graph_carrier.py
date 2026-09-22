@@ -28,7 +28,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
-from jasper.audio_runtime_plan import EmitSoundConfigKwargs, apply_capture_precedence
+from jasper.audio_runtime_plan import apply_capture_precedence
+from jasper.audio_runtime_settings import EmitSoundConfigKwargs
 from jasper.sound.camilla_yaml import (
     FLAT_GRAPH_WIDTH,
     FlatChannelPlan,

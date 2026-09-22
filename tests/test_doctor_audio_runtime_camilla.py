@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from jasper import audio_runtime_settings as audio_settings
 from jasper import audio_runtime_plan
 from jasper.camilla import CamillaUnavailable
 from jasper.cli.doctor import (
@@ -591,8 +592,8 @@ def test_audio_runtime_plan_doctor_fails_usb_route_with_legacy_lab_transport(
     # not the one transport, so the USB low-latency route refuses it.
     plan = audio_runtime_plan.build_audio_runtime_plan(
         base_env={
-            audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
-                audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
+            audio_settings.AUDIO_ROUTE_PROFILE_KEY: (
+                audio_settings.ROUTE_USB_LOW_LATENCY_48K
             )
         },
         outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "rate_match"},
