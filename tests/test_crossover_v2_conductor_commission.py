@@ -12,8 +12,9 @@ import pytest
 import yaml
 from dataclasses import replace
 from jasper.active_speaker import angle_capture as ac
+from jasper.active_speaker.capture_geometry import SUMMED_PLACEMENT_POLICY_ID
 from jasper.active_speaker.plan_run import prepare_plan_captures
-from jasper.active_speaker.crossover_v2.sweep_spec import CaptureSpec
+from jasper.active_speaker.crossover_v2.sweep_spec import CaptureSpec, build_crossover_sweep_spec
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_VERIFY,
@@ -593,6 +594,17 @@ def test_inline_session_spec_is_a_valid_protocol_3_crossover_spec():
     assert spec.capture_plan is not None
     reparsed = CaptureSpec.from_dict(spec.to_dict())
     assert reparsed.capture_plan.entries == spec.capture_plan.entries
+
+
+@pytest.mark.parametrize("verify_only", [False, True], ids=["inline", "verify"])
+def test_the_summed_consent_heading_names_the_job_not_the_driver(verify_only):
+    spec = (build_v2_verify_session_spec(FC_HZ, acknowledgement_binding="b" * 24)
+            if verify_only else _inline_spec())
+    assert spec.acknowledgement.id == SUMMED_PLACEMENT_POLICY_ID
+    summed = build_crossover_sweep_spec(driver_label="unused", driver_role="summed")
+    assert next(c for c in spec.screen if c["type"] == "heading") == next(
+        c for c in summed.screen if c["type"] == "heading"
+    )
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_MEASURE_POSITIONS - 1,
