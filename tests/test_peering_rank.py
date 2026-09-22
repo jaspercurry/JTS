@@ -77,10 +77,6 @@ def test_empty_input_raises():
         rank([])
 
 
-# ---------- tier priorities: can_serve, confidence, SNR, primary bias, ----------
-# ---------- final tiebreaker, input clamping ----------
-
-
 @pytest.mark.parametrize(
     ("reports", "winner"),
     [
@@ -127,8 +123,6 @@ def test_empty_input_raises():
             "bob",
             id="confidence_beats_snr_when_gap_is_clear",
         ),
-        # Primary bias is small enough not to override real signal, large
-        # enough to break a near-tie: bob's effective 0.83+0.05 beats 0.85.
         pytest.param(
             [
                 _r("alice", score=0.85, primary=False),
@@ -137,8 +131,6 @@ def test_empty_input_raises():
             "bob",
             id="primary_wins_near_tie",
         ),
-        # Primary bias must NOT make a clearly-worse-positioned peer win, or a
-        # user could never grab a non-primary speaker by talking to it directly.
         pytest.param(
             [
                 _r("alice", score=0.95, primary=False),

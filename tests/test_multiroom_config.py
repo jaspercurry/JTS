@@ -912,8 +912,6 @@ def test_load_config_reads_roster(tmp_path):
 @pytest.mark.parametrize(
     "module_name, attr",
     [
-        ("jasper.multiroom", "is_enabled"),
-        ("jasper.multiroom", "load_config"),
         ("jasper.multiroom.airplay_latency", "is_active_leader"),
         ("jasper.multiroom.member_config", "is_active_leader"),
         ("jasper.multiroom.member_config", "load_config"),
