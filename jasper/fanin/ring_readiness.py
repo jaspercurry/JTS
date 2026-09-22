@@ -830,6 +830,7 @@ def _staged_anchor_identity(graph: LoadedCamillaGraph) -> tuple[bool, str]:
     staged = load_staged_startup_config()
     status = staged.get("status")
     config_record = staged.get("config")
+    # isinstance avoids (config_record or {}).get(...) raising AttributeError on truthy non-mappings.
     anchor_path = (
         config_record.get("path") if isinstance(config_record, Mapping) else None
     )

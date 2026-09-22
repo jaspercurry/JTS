@@ -434,6 +434,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
     router is currently empty, so re-linking via the web wizard
     recovers the daemon without a manual restart."""
     from ..spotify_router import airplay_client_name
+
     def _no_account_msg() -> str:
         """Pick the right user-facing message based on why the router is
         empty. Spoken verbatim by the LLM, so the phrasing is tuned for

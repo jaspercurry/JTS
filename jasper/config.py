@@ -645,7 +645,8 @@ class Config:
                 "JASPER_ASSISTANT_LOUDNESS_AUTO_SEED",
                 False,
             ),
-            # Seconds added to the sample-counted playout deadline.
+            # Apple dongle drain measured ~60–85 ms; 0.085 s leaves a small margin.
+            # Raise if tails are truncated on a Pi; lower if end-of-turn feels sluggish.
             tts_drain_tail_sec=_env_float(
                 "JASPER_TTS_DRAIN_TAIL_SEC", 0.085,
             ),
