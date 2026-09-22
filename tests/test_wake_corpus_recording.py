@@ -231,7 +231,7 @@ def test_start_recording_rejects_double_start(backend) -> None:
 
 def test_stop_recording_without_start_raises(backend) -> None:
     backend.begin_session("jasper")
-    with pytest.raises(wake_corpus_setup.StateError, match="no recording"):
+    with pytest.raises(recording_backend.NoRecordingError):
         backend.stop_recording()
 
 
@@ -1152,8 +1152,7 @@ def test_manual_stop_fails_fast_while_recording_start_is_reserved(
             "manual stop blocked behind the lifecycle owner"
         )
         assert len(stop_errors) == 1
-        assert isinstance(stop_errors[0], wake_corpus_setup.StateError)
-        assert "lifecycle transition in progress" in str(stop_errors[0])
+        assert isinstance(stop_errors[0], recording_backend.LifecycleBusyError)
     finally:
         release.set()
         start_thread.join(timeout=2)
@@ -1167,16 +1166,11 @@ def test_manual_stop_fails_fast_while_recording_start_is_reserved(
 
 
 @pytest.mark.parametrize(
-    ("trigger_name", "expected_auto", "expected_mute"),
-    [
-        ("_auto_stop_safe", True, False),
-        ("_mute_stop_safe", False, True),
-    ],
+    ("expected_auto", "expected_mute"), [(True, False), (False, True)],
 )
 def test_safety_stop_quiesces_then_retries_save_after_owner_releases(
     backend,
     monkeypatch: pytest.MonkeyPatch,
-    trigger_name: str,
     expected_auto: bool,
     expected_mute: bool,
 ) -> None:
@@ -1192,13 +1186,22 @@ def test_safety_stop_quiesces_then_retries_save_after_owner_releases(
     assert clip_id is not None and task is not None and task._task is not None
     generation = (clip_id, task)
 
-    # Stand in for a lifecycle owner stalled in filesystem I/O. The safety
-    # worker must return promptly, quiesce capture on the loop, and leave one
-    # bounded-delay retry rather than wait on this mutex.
+    original_stop = backend.stop_recording
+
+    def reworded_stop(**kwargs):
+        try:
+            return original_stop(**kwargs)
+        except recording_backend.LifecycleBusyError as exc:
+            raise recording_backend.LifecycleBusyError("try later") from exc
+
+    monkeypatch.setattr(backend, "stop_recording", reworded_stop)
+    labels = {"auto": expected_auto, "mute_stopped": expected_mute}
+    # Stand in for a lifecycle owner stalled in filesystem I/O.
     assert backend._lifecycle_lock.acquire(blocking=False)
     try:
-        trigger = getattr(backend, trigger_name)
-        trigger_thread = threading.Thread(target=trigger, args=(generation,))
+        trigger_thread = threading.Thread(
+            target=backend._safety_stop, args=(generation,), kwargs=labels,
+        )
         trigger_thread.start()
         trigger_thread.join(timeout=0.25)
         assert not trigger_thread.is_alive()
@@ -1214,10 +1217,9 @@ def test_safety_stop_quiesces_then_retries_save_after_owner_releases(
             assert backend._stop_retry_attempts >= 1
         assert retry_handle.interval <= recording_backend.STOP_RETRY_MAX_SEC
 
-        # Repeated triggers merge into the existing timer; they do not spawn
-        # more Timer/worker threads while its owner remains blocked.
+        # Repeated triggers merge into the existing timer; no extra Timer/worker threads.
         for _ in range(3):
-            trigger(generation)
+            backend._safety_stop(generation, **labels)
         with backend._lock:
             assert backend._stop_retry_handle is retry_handle
             assert backend._stop_retry_attempts == 1
@@ -1259,11 +1261,9 @@ def test_stop_retry_gives_up_after_max_attempts(
         clip_id = backend._current_clip_id
     generation = (clip_id, task)
 
-    # Stand in for a lifecycle owner that never releases — every attempt,
-    # including the initial synchronous one, reports "still busy".
     monkeypatch.setattr(backend, "_stop_with_recovery", lambda *a, **k: False)
 
-    backend._auto_stop_safe(generation)
+    backend._safety_stop(generation, auto=True, mute_stopped=False)
 
     def _gave_up() -> bool:
         with backend._lock:
@@ -1284,9 +1284,7 @@ def test_recorder_usable_after_stop_retry_abandoned(
     monkeypatch: pytest.MonkeyPatch,
     caplog,
 ) -> None:
-    """Abandoning a wedged stop must give up on that clip, not on the
-    recorder — a later start_recording() must not be stuck raising
-    StateError forever."""
+    """A later recording can start after stop retries are exhausted."""
     monkeypatch.setattr(recording_backend, "STOP_RETRY_INITIAL_SEC", 0.001)
     monkeypatch.setattr(recording_backend, "STOP_RETRY_MAX_SEC", 0.001)
     monkeypatch.setattr(recording_backend, "STOP_RETRY_MAX_ATTEMPTS", 3)
@@ -1298,7 +1296,7 @@ def test_recorder_usable_after_stop_retry_abandoned(
     generation = (clip_id, task)
 
     monkeypatch.setattr(backend, "_stop_with_recovery", lambda *a, **k: False)
-    backend._auto_stop_safe(generation)
+    backend._safety_stop(generation, auto=True, mute_stopped=False)
 
     def _gave_up() -> bool:
         with backend._lock:
@@ -1350,7 +1348,7 @@ def test_stale_retry_callback_cannot_stop_the_next_clip(
     monkeypatch.setattr(backend, "_stop_with_recovery", blocked_recovery)
     assert backend._lifecycle_lock.acquire(blocking=False)
     try:
-        backend._auto_stop_safe(first_generation)
+        backend._safety_stop(first_generation, auto=True, mute_stopped=False)
     finally:
         backend._lifecycle_lock.release()
     assert callback_entered.wait(timeout=2)
@@ -1412,7 +1410,7 @@ def test_old_cleanup_finishes_before_a_new_generation_can_install_retry(
     second_generation = (second["clip_id"], second_task)
     assert backend._lifecycle_lock.acquire(blocking=False)
     try:
-        backend._auto_stop_safe(second_generation)
+        backend._safety_stop(second_generation, auto=True, mute_stopped=False)
         with backend._lock:
             assert backend._pending_stop_generation == second_generation
             assert backend._stop_retry_handle is not None
@@ -1444,10 +1442,13 @@ def test_mute_intent_merges_after_auto_stop_owns_lifecycle(
         return original_stop(*args, **kwargs)
 
     monkeypatch.setattr(backend, "_stop_recording", blocked_stop)
-    auto_thread = threading.Thread(target=backend._auto_stop_safe, args=(generation,))
+    auto_thread = threading.Thread(
+        target=backend._safety_stop, args=(generation,),
+        kwargs={"auto": True, "mute_stopped": False},
+    )
     auto_thread.start()
     assert publisher_entered.wait(timeout=2)
-    backend._mute_stop_safe(generation)
+    backend._safety_stop(generation, auto=False, mute_stopped=True)
     release_publisher.set()
     auto_thread.join(timeout=2)
     assert not auto_thread.is_alive()
@@ -1484,7 +1485,7 @@ def test_shutdown_joins_active_retry_before_closing_loop(
     monkeypatch.setattr(backend, "_stop_with_recovery", blocked_recovery)
     assert backend._lifecycle_lock.acquire(blocking=False)
     try:
-        backend._auto_stop_safe(generation)
+        backend._safety_stop(generation, auto=True, mute_stopped=False)
     finally:
         backend._lifecycle_lock.release()
     assert callback_entered.wait(timeout=2)
@@ -1598,7 +1599,7 @@ def test_retry_join_timeout_keeps_loop_alive_until_later_shutdown(
     monkeypatch.setattr(backend, "_stop_with_recovery", blocked_recovery)
     assert backend._lifecycle_lock.acquire(blocking=False)
     try:
-        backend._auto_stop_safe(generation)
+        backend._safety_stop(generation, auto=True, mute_stopped=False)
     finally:
         backend._lifecycle_lock.release()
     assert callback_entered.wait(timeout=2)
@@ -1643,7 +1644,7 @@ def test_retry_timer_can_initiate_shutdown_without_self_join(
     monkeypatch.setattr(backend, "_stop_with_recovery", timer_shutdown)
     assert backend._lifecycle_lock.acquire(blocking=False)
     try:
-        backend._auto_stop_safe(generation)
+        backend._safety_stop(generation, auto=True, mute_stopped=False)
     finally:
         backend._lifecycle_lock.release()
     assert callback_done.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
