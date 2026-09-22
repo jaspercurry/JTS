@@ -26,13 +26,15 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
     preview = plan_run.preview_schedule
     monkeypatch.setattr(plan_run, "preview_schedule", lambda request, *args: (
         planned.append(request.program), preview(request, *args))[1])
+    visible = [(name, size) for name, size in available_programs()
+               if f"{name}/{size}" not in measurement_view._ALIAS_PLAN_IDS]
     choices = measurement_view.round_choices({}, "tournament/full")
     assert planned == ["tournament/full"]
-    assert [c["id"] for c in choices] == [f"{name}/{size}" for name, size in available_programs()]
+    assert [c["id"] for c in choices] == [f"{name}/{size}" for name, size in visible]
     assert sum("lines" in c for c in choices) == 1
     assert [c["id"] for c in choices if c["default"]] == ["tournament/full"]
     assert [(c["poses"], c["captures"]) for c in choices] == [
-        (program(name, size).mic_move_count, program(name, size).capture_count) for name, size in available_programs()]
+        (program(name, size).mic_move_count, program(name, size).capture_count) for name, size in visible]
     selected = next(c for c in choices if c["id"] == "tournament/full")
     assert selected["action"]["body"]["plan"]["program"] == "tournament/full"
     assert len(selected["action"]["body"]["plan"]["stops"]) == 3
@@ -80,11 +82,31 @@ def test_a_conductor_context_refusal_discloses_on_its_row_instead_of_500(monkeyp
 
     assert code == 200
     choices = {c["id"]: c for c in envelope["round_choices"]}
-    assert len(choices) == len(available_programs())
+    assert len(choices) == len(available_programs()) - len(measurement_view._ALIAS_PLAN_IDS)
     selected = choices["speaker/mark"]
     assert selected["code"] == REASON_MEASUREMENT_TARGETS_MISSING
     assert "action" not in selected
     assert selected["lines"]
+
+
+def test_alias_ids_are_hidden_from_the_picker_but_still_resolve(monkeypatch):
+    """R4-D9: seat/cloud duplicates room/cloud and seat/express duplicates
+    room/seat. The picker offers only one of each pair, but both ids stay
+    registered and keep resolving (ADR-0277: registry ids are banked-round
+    identities)."""
+    context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
+                              driver_sweep_duration_limits_s={}, safety_profile={}, role_targets={})
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
+                        lambda *a, **kw: context)
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {"next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS})
+
+    choices = measurement_view.round_choices({}, "speaker/mark")
+
+    ids = {c["id"] for c in choices}
+    assert "seat/cloud" not in ids
+    assert "seat/express" not in ids
+    assert program("seat", "cloud").program_id == "seat"
+    assert program("seat", "express").program_id == "seat"
 
 
 def test_pre_round_choice_survives_a_stopped_run(monkeypatch):

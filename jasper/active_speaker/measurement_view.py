@@ -37,6 +37,13 @@ def round_capture(capture: Mapping[str, Any], verdict: str, *, advertise_capture
     return {**result, "capture": None, "pending": {"actions": actions} if live else None, "busy": live}
 
 
+#: Registry ids whose layout, purpose, and regime duplicate another id's
+#: (reviewer finding R4-D9): ``seat/cloud`` mirrors ``room/cloud`` and
+#: ``seat/express`` mirrors ``room/seat``. Hidden from the picker only -- the
+#: ids stay registered and keep resolving through :func:`program` (ADR-0277).
+_ALIAS_PLAN_IDS = frozenset({"seat/cloud", "seat/express"})
+
+
 def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict[str, Any]]:
     from .angle_capture import REGIME_BRANCHES, request_for_program  # lazy: measurement planning
     from .crossover_v2.conductor_context import resolve_conductor_context  # lazy: measurement planning
@@ -49,7 +56,8 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
 
     view = load_commissioning_view()
     programs = view["programs"]
-    plans = {f"{name}/{size}": program(name, size) for name, size in available_programs()}
+    plans = {f"{name}/{size}": program(name, size) for name, size in available_programs()
+             if f"{name}/{size}" not in _ALIAS_PLAN_IDS}
     plans = {key: plan for key, plan in plans.items()
              if not ((plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs)
                      or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs))}
