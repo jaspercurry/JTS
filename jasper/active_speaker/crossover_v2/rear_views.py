@@ -43,10 +43,11 @@ from jasper.active_speaker.rear_calibration import (
 from jasper.active_speaker.run_manifest import view_sets
 from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
 from jasper.audio_measurement.rear_evidence import (
-    BAND_SOURCE_COVERAGE, IMPULSE_FFT_SIZE, LEVEL_BANDS_HZ, REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, across_positions,
+    ARRIVAL_GAP_BAND_HZ, BAND_SOURCE_COVERAGE, IMPULSE_FFT_SIZE, LEVEL_BANDS_HZ,
+    REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, across_positions,
     arrival_gap_ms, comparison_band, confident_arrival_gap_s, gradient_residual_db,
     late_energy_change, pair_band_levels, position_figures, rear_polarity, reference_curve_db,
-    repeat_spread, shared_radiating_band_hz, superposition_residual_db, band_level_changes,
+    repeat_spread, superposition_residual_db, band_level_changes,
 )
 from jasper.json_fields import finite_float
 
@@ -500,7 +501,8 @@ def _pair_position(
     rate = takes[0].sample_rate_hz if takes else 0
     gap = arrival_gap_ms(
         repeats if rate else (), sample_rate_hz=int(rate or 0),
-        band_hz=shared_radiating_band_hz(grid, front_tf=front, rear_tf=rear, band_hz=swept_hz),
+        band_hz=(max(ARRIVAL_GAP_BAND_HZ[0], swept_hz[0]),
+                 min(ARRIVAL_GAP_BAND_HZ[1], swept_hz[1])),
     )
     # The trust number has its own band gate, so a row whose residual is absent
     # is not a clean read however many bands the levels answered.

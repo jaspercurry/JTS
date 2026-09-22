@@ -333,9 +333,7 @@ def test_a_synthetic_pair_recovers_its_gap_level_and_polarity(
     bands = rear_evidence.pair_band_levels(FREQS_HZ, coverage_hz=COVERAGE_HZ, **transfers)
     gap = rear_evidence.arrival_gap_ms(
         [pair["impulses"]], sample_rate_hz=SAMPLE_RATE_HZ,
-        band_hz=rear_evidence.shared_radiating_band_hz(
-            FREQS_HZ, front_tf=pair["front_tf"], rear_tf=pair["rear_tf"],
-            band_hz=(FREQS_HZ[0], FREQS_HZ[-1])),
+        band_hz=rear_evidence.ARRIVAL_GAP_BAND_HZ,
     )
     read = rear_evidence.rear_polarity(
         FREQS_HZ, front_tf=pair["front_tf"], rear_tf=pair["rear_tf"],
@@ -352,6 +350,43 @@ def test_a_synthetic_pair_recovers_its_gap_level_and_polarity(
     assert read["state"] == polarity
     assert json.loads(json.dumps({"bands": bands, "gap": gap, "polarity": read})) == {
         "bands": bands, "gap": gap, "polarity": read}
+
+
+@pytest.mark.parametrize("band_hz,expected_ms,confidence_range,search_ms", [
+    ((40.0, 3000.0), 1.14, (0.4, 0.7), 2.0),
+    (rear_evidence.ARRIVAL_GAP_BAND_HZ, 1.7, (0.4, 1.0), 8.889),
+])
+def test_a_wall_image_shifts_the_gap_in_the_cancellation_band(
+    band_hz, expected_ms, confidence_range, search_ms,
+):
+    front, rear, shift = _pair(1.14)["impulses"]
+    rear += _pulse(FRONT_ARRIVAL_S + 0.00114 + 0.0012, gain=0.9)
+
+    gap = rear_evidence.arrival_gap_ms(
+        [(front, rear, shift)], sample_rate_hz=SAMPLE_RATE_HZ, band_hz=band_hz)
+
+    assert gap["ms"] == pytest.approx(expected_ms, abs=0.03)
+    assert confidence_range[0] < gap["confidence"] < confidence_range[1]
+    assert gap["band_hz"] == list(band_hz)
+    assert gap["search_ms"] == pytest.approx(search_ms, abs=0.001)
+    assert rear_evidence.confident_arrival_gap_s(gap) == pytest.approx(expected_ms / 1e3, abs=3e-5)
+
+
+@pytest.mark.parametrize("band_hz,search_ms", [
+    ((90.0, 91.0), None), ((90.0, 289.9), None),
+    ((90.0, 290.0), 10.0), ((90.0, 315.0), 8.889),
+])
+def test_the_gap_requires_enough_bandwidth_for_a_bounded_search(band_hz, search_ms):
+    gap = rear_evidence.arrival_gap_ms(
+        [_pair(0.3)["impulses"]], sample_rate_hz=SAMPLE_RATE_HZ, band_hz=band_hz)
+
+    assert gap["reason"] == (rear_evidence.REASON_COVERAGE_SHORT if search_ms is None else "")
+    if search_ms is None:
+        assert (gap["ms"], gap["search_ms"], gap["confidence"]) == (None, None, None)
+        assert rear_evidence.confident_arrival_gap_s(gap) is None
+    else:
+        assert gap["ms"] is not None
+        assert gap["search_ms"] == pytest.approx(search_ms, abs=0.001)
 
 
 @pytest.mark.parametrize("error_db", [0.0, 3.0, -2.0])
@@ -392,9 +427,6 @@ def test_a_band_too_narrow_to_read_answers_empty_rather_than_a_figure():
         FREQS_HZ, coverage_hz=(FREQS_HZ[0], 21.0), **transfers) == []
     assert rear_evidence.superposition_residual_db(
         FREQS_HZ, band_hz=two_bins, **transfers) is None
-    assert rear_evidence.shared_radiating_band_hz(
-        FREQS_HZ, front_tf=pair["front_tf"], rear_tf=pair["rear_tf"],
-        band_hz=(FREQS_HZ[100], FREQS_HZ[101])) is None
     assert rear_evidence.gradient_residual_db(
         FREQS_HZ, pair["rear_tf"], 0.0008, (FREQS_HZ[0], FREQS_HZ[0])) is None
 
@@ -474,22 +506,6 @@ def test_the_gradient_residual_reads_the_applied_ratio_against_the_gap(ratio, ex
         FREQS_HZ, applied, -gap_s, (40.0, 200.0)) == pytest.approx(residual)
     assert rear_evidence.gradient_residual_db(FREQS_HZ, applied, None, (40.0, 200.0)) is None
     assert rear_evidence.gradient_residual_db(FREQS_HZ, applied, gap_s, None) is None
-
-
-@pytest.mark.parametrize("output_db", [0.0, -30.0])
-def test_the_gap_band_follows_where_both_woofers_radiate(output_db):
-    """A rear that rolls off narrows the band the gap correlates over, so
-    GCC-PHAT never whitens a bin the pair did not drive. The floor is each
-    woofer's OWN peak, so a quiet take reads the same band as a loud one."""
-    scale = 10.0 ** (output_db / 20.0)
-
-    narrowed = rear_evidence.shared_radiating_band_hz(
-        FREQS_HZ, front_tf=scale * np.ones_like(FREQS_HZ, dtype=np.complex128),
-        rear_tf=scale / (1.0 + 1j * FREQS_HZ / 120.0) ** 4,
-        band_hz=(FREQS_HZ[0], FREQS_HZ[-1]))
-
-    assert narrowed[0] == pytest.approx(FREQS_HZ[0])
-    assert 120.0 < narrowed[1] < 400.0
 
 
 @pytest.mark.parametrize("missing", ["short_grid", "no_band"])
