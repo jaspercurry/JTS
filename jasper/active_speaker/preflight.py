@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Resolve plans without opening resources."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
@@ -199,7 +198,8 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
     stop = finite_float(facts.commissioning_stop_db_spl)
     ceiling = None
     if stop is None or stop <= 0:
-        add("walk_commissioning_stop_unset", "The commissioning stop cannot be resolved")
+        if not facts.issues:
+            add("walk_commissioning_stop_unset", "The commissioning stop cannot be resolved")
     else:
         ceiling = stop
         if facts.anchor.sensitivity is not None:
