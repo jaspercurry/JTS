@@ -184,7 +184,7 @@ def _round_id(session_dir: Path, session_id: str) -> str:
     :data:`_ROUND_ID_RE` token falls back to the session id rather than banking
     outside the store.
     """
-    from .crossover_v2.evidence_packet import round_artifact_dir  # lazy: keep bank constants cheap
+    from .crossover_v2.round_inputs import round_artifact_dir  # lazy: keep bank constants cheap
 
     round_dir, _why = round_artifact_dir(session_dir)
     if round_dir is None:

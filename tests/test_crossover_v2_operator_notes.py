@@ -481,21 +481,18 @@ def test_the_prose_gatherer_has_exactly_one_production_caller():
                     if alias.name.endswith("operator_notes"):
                         importers.add(path.relative_to(REPO_ROOT).as_posix())
     assert importers == {
-        "jasper/active_speaker/crossover_v2/evidence_packet.py",
+        "jasper/active_speaker/crossover_v2/evidence_packet/__init__.py",
     }
 
 
 def test_no_shipped_module_reads_the_packets_operator_notes_block():
-    """The other half: nothing subscripts the block out of an assembled packet.
-
-    A grep rather than an import walk, because a consumer would reach the
-    strings through the packet dict, not through this module — the two tests
-    together cover both routes into the prose.
-    """
+    """Only the gatherer and packet assembly may name the prose block."""
     offenders = []
     for path in sorted((REPO_ROOT / "jasper").rglob("*.py")):
-        # The assembly pair itself: the gatherer and the block that embeds it.
-        if path.name in {"evidence_packet.py", "operator_notes.py"}:
+        if path.relative_to(REPO_ROOT).as_posix() in {
+            "jasper/active_speaker/crossover_v2/evidence_packet/__init__.py",
+            "jasper/active_speaker/crossover_v2/operator_notes.py",
+        }:
             continue
         text = path.read_text()
         if any(n in text for n in ('"operator_notes"', "'operator_notes'")):

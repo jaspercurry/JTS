@@ -20,7 +20,7 @@ from jasper.active_speaker.baseline_profile import load_applied_baseline_profile
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
 from jasper.active_speaker.camilla_yaml import _branch_context
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
-from jasper.active_speaker.measured_crossover_candidate import (
+from ..measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, room_peqs_from_correction, driver_corrections,
 )
 from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS, PROGRAM_DOCUMENT_ORDER
@@ -39,7 +39,7 @@ from . import room_prescription as room
 from . import topology_prescription as topology
 from .capture_prediction import capture_prediction
 from .forward_model import ForwardModelError
-from .evidence_packet import packet_feature_classifications, packet_positional_evidence
+from .evidence_packet.readers import packet_feature_classifications, packet_positional_evidence
 from .prescription_contract import contract_digests, contract_json, prescription_contracts
 from .refusal_copy import refusal_copy_for
 from .rear_preview import preview_rear_section

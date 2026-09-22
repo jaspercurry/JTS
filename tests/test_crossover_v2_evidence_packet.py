@@ -2,19 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""General packet blocks that are not any one prescription gate's own concern.
-
-``accuracy_budget`` (6.5) and ``structural_history`` (6.6) both read fields the
-packet already assembles from elsewhere in the tree; neither computes a new
-measurement. Reuses the synthetic-bundle fixture
-``test_crossover_v2_blend_prescription`` already established, on the same
-reuse rule ``test_crossover_v2_driver_prescription`` follows.
-"""
+"""Packet blocks over the shared synthetic commissioning bundle."""
 
 from __future__ import annotations
 
 import json
 import shutil
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -61,9 +55,19 @@ from jasper.active_speaker.repeat_floor import (
 
 from tests.test_crossover_v2_blend_prescription import _bundle
 
-# --------------------------------------------------------------------------- #
-# accuracy_budget (ticket 6.5)
-# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("overrides, digest", [
+    ({}, "cf1173b1791138e1ebb6632f3ee4126cf40aa3b236e1fd1ec3acffffa236f42b"),
+    ({"dip_at": [None, 1000.0, 1200.0, None], "position_over": {
+        "gate_moved_rms_db": 0.31, "gate_reflection_delay_ms": 2.4,
+    }}, "2e28a04ee85fd2678f898d22b07f1904ed86b536ec48ba9a49598e0d3dea7851"),
+    ({"cloud_over": {"positions": {}}},
+     "cb00f4683dc896fc72d9a31f62bc6810182bb7e64755d029684bfdfd87a81315"),
+], ids=["default", "gate-and-seat-spread", "positions-absent"])
+def test_packet_json_bytes(tmp_path, overrides, digest):
+    session, _ = _bundle(tmp_path, **overrides)
+    packet = build_crossover_evidence_packet(session)
+    assert sha256(json.dumps(packet, allow_nan=False).encode()).hexdigest() == digest
 
 
 def test_every_accuracy_budget_component_labels_its_own_kind(tmp_path):
@@ -262,11 +266,6 @@ def test_mic_calibration_tier_publishes_each_roles_own_tier(tmp_path):
         "phone": {"full_to_hz": 3_000.0, "taper_zero_hz": 8_000.0},
         "consumer": {"full_to_hz": 6_000.0, "taper_zero_hz": 12_000.0},
     }
-
-
-# --------------------------------------------------------------------------- #
-# structural_history (ticket 6.6, #3484)
-# --------------------------------------------------------------------------- #
 
 
 def _sibling_bundle(
@@ -489,11 +488,6 @@ def test_the_history_is_bounded_at_max_rounds(tmp_path):
     ]
 
 
-# --------------------------------------------------------------------------- #
-# candidates (#3498 WP4)
-# --------------------------------------------------------------------------- #
-
-
 def _bank_candidate_take(
     round_dir: Path, *, take_id: str, candidate_id: str, position_deg: int,
     phase: str | None = None,
@@ -557,11 +551,6 @@ def test_candidates_groups_the_takes_by_the_candidate_they_measured(tmp_path):
     assert packet["packet_fingerprint"]
 
 
-# --------------------------------------------------------------------------- #
-# session.declared_geometry (#3498) — the fifth banked SSOT sibling
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize(
     "stored, room",
     [
@@ -623,11 +612,6 @@ def test_an_unbanked_declaration_never_reads_the_machine_building_the_packet(
 
     assert block["status"] == "not_evaluated"
     assert block["reason"] == "source_absent"
-
-
-# --------------------------------------------------------------------------- #
-# findings — every phase, whether it ran, and the band that bounds the set
-# --------------------------------------------------------------------------- #
 
 
 def _bank_finding_set(round_dir: Path, phase: str, *, findings: list[Any]) -> None:

@@ -31,18 +31,17 @@ from jasper.active_speaker.measurement_analysis import analyze_measurement_bundl
 from jasper.active_speaker.crossover_v2 import gate_sweep
 from jasper.cli.round_views import main as round_views_main
 from jasper.active_speaker.round_bookkeeping import run_bookkeeping
-from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_CYCLE_FILENAME,
     read_position_cycle,
     takes_by_position,
 )
-from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME, RoundSetRefused, resolve_set, round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME, RoundSetRefused, resolve_set, round_artifact_dir, round_inputs
 from jasper.active_speaker.crossover_v2.round_views import load_banked_round
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_KEY, POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.feature_classifier import load_round_captures
 from jasper.active_speaker.crossover_v2.harmonic_evidence import _bind_measure_captures, _scope_captures
-from jasper.active_speaker.crossover_v2.evidence_packet import round_program_dir
+from jasper.active_speaker.crossover_v2.evidence_packet.offline_reads import round_program_dir
 from jasper.attribution.session_identity import read_session_identity
 from jasper.active_speaker.round_packet import INDEX_FILENAME
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME

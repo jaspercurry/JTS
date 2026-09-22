@@ -33,7 +33,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_CANDIDATE,
     ROUND_RECEIPT_KIND,
 )
-from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
+from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir
 from jasper.active_speaker.crossover_v2.record_store import (
     CHECK_EVIDENCE_KIND,
     CLOUD_EVIDENCE_KIND,
@@ -45,10 +45,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.attribution.findings import FindingSet
-from jasper.attribution.session_identity import (
-    SESSION_IDENTITY_KEY,
-    SessionIdentity,
-)
+from jasper.attribution.session_identity import SESSION_IDENTITY_KEY, SessionIdentity
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_profile import _two_way_preset
 

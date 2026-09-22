@@ -25,16 +25,13 @@ from jasper.active_speaker.commissioning_evidence_store import (
     CommissioningEvidenceStore,
     CommissioningEvidenceStoreError,
 )
-from jasper.active_speaker.crossover_v2.evidence_packet import round_artifact_dir
+from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_MEASURE,
 )
-from jasper.active_speaker.crossover_v2.round_inputs import (
-    RoundViewsError,
-    round_inputs,
-)
+from jasper.active_speaker.crossover_v2.round_inputs import RoundViewsError, round_inputs
 from jasper.active_speaker.round_bank import bundle_session_id
 from jasper.attribution.mechanisms import (
     MECHANISM_BOUNDARY_SBIR,

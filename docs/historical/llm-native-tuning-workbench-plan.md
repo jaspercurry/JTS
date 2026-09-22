@@ -214,7 +214,7 @@ existing owner.
 > ([`jasper/cli/crossover_prescriber.py`](../../jasper/cli/crossover_prescriber.py))
 > is an installed console script with four verbs: `packet` emits one banked
 > round's evidence as a versioned JSON document
-> ([`crossover_v2/evidence_packet.py`](../../jasper/active_speaker/crossover_v2/evidence_packet.py)),
+> ([`crossover_v2/evidence_packet.py`](../../jasper/active_speaker/crossover_v2/evidence_packet/__init__.py)),
 > `propose` reads a correction back through a strict gate, `stage`
 > (2026-08-19) leaves an accepted correction where the next crossover round
 > takes it (the spool has since been retired),

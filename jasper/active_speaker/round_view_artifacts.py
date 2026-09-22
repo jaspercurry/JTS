@@ -9,8 +9,7 @@ from typing import Any, NamedTuple
 from .run_manifest import RUN_MANIFEST_FILENAME
 from .measurement_programs import PURPOSE_BASS, PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER
 from .frequency_view import FREQUENCY_VIEW_FILENAME
-from .crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
-from .crossover_v2.harmonic_evidence import HARMONICS_ARTIFACT
+from .crossover_v2.evidence_packet.offline_reads import CLASSIFICATION_ARTIFACT, HARMONICS_ARTIFACT
 from .crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
 from .crossover_v2.round_inputs import ROOM_ARTIFACT, RoundInputs, banked_round_of, recent_round_sessions
 

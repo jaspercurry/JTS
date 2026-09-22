@@ -49,13 +49,10 @@ from typing import Any
 
 import numpy as np
 
-from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
+from ..commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.bundles import sha256_file
-from jasper.audio_measurement.deconv import (
-    magnitude_response,
-    regularized_deconvolution_full,
-)
+from jasper.audio_measurement.deconv import magnitude_response, regularized_deconvolution_full
 from jasper.audio_measurement.gating import (
     SEARCH_T_MAX_MS,
     analytic_envelope,
@@ -75,7 +72,7 @@ from .feature_classification import (
     ROOM,
     UNRESOLVED,
 )
-from .evidence_packet import RING_SIDECAR_GLOB
+from .evidence_packet.offline_reads import RING_SIDECAR_GLOB
 from .feature_optics import (
     CENTRE_SEARCH_OCT,
     FEATURE_HALF_OCT,
