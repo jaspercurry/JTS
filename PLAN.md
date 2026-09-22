@@ -1,7 +1,7 @@
 # JTS roadmap
 
 JTS is a working smart speaker. This roadmap lists only active direction.
-Shipped work belongs in [CHANGELOG.md](CHANGELOG.md). Implementation history
+Shipped work belongs in [docs/changelog.md](docs/changelog.md). Implementation history
 belongs in Git, issues, pull requests, and
 [decision records](docs/adr/).
 

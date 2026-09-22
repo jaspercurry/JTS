@@ -67,8 +67,8 @@ _PACKAGE_MD = "jasper/mics/README.md"
         # docs: a prose subject, alone or with registered companions only.
         ("docs", "pull_request", (_DOC,)),
         ("docs", "pull_request", ("docs/bass-extension-waves/protocol.md",)),
-        ("docs", "pull_request", ("README.md", "AGENTS.md", "CONTRIBUTING.md")),
-        ("docs", "pull_request", ("CHANGELOG.md", "CODE_OF_CONDUCT.md")),
+        ("docs", "pull_request", ("README.md", "AGENTS.md", ".github/CONTRIBUTING.md")),
+        ("docs", "pull_request", ("docs/changelog.md", ".github/CODE_OF_CONDUCT.md")),
         ("docs", "pull_request", (".github/PULL_REQUEST_TEMPLATE.md",)),
         ("docs", "pull_request", ("docs/doc-map.toml",)),
         ("docs", "pull_request", (_DOC, "tests/test_docs_impact.py")),

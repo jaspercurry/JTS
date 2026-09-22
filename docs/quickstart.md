@@ -6,7 +6,7 @@ substantially by Pi model.
 
 > [!TIP]
 > **Using Claude Code?** Skip this doc and just say *"set up a Pi"*
-> (or similar). Claude auto-invokes the [`/onboard-pi`](.claude/commands/onboard-pi.md)
+> (or similar). Claude auto-invokes the [`/onboard-pi`](../.claude/commands/onboard-pi.md)
 > skill and walks you through every step interactively — Raspberry Pi
 > Imager, SD card flash, first boot, network discovery, install, and
 > the first setup pages. This QUICKSTART is the same flow in
@@ -16,7 +16,7 @@ This guide supports two hardware paths:
 
 - **Full speaker:** Raspberry Pi 5 (2 GB recommended) plus the voice,
   microphone, DAC, amplifier, and speaker hardware from
-  [README.md](README.md#hardware).
+  [README.md](../README.md#hardware).
 - **Streambox:** Raspberry Pi Zero 2 W, microSD card (16 GB+), an
   appropriate 5 V supply, a supported output DAC, amplifier, speakers,
   and the adapters/cables needed for the Pi's USB data port. It provides
@@ -117,7 +117,7 @@ Auto-eject means the files may not be visible until you do.
 1. Insert the SD card into the Pi.
 2. Connect the hardware for your path. For a full speaker, connect the
    Apple USB-C dongle, ReSpeaker XVF3800, amp, and speakers; see
-   [BRINGUP.md](BRINGUP.md) Phase 1. For a Streambox, connect its
+   [docs/bringup.md](bringup.md) Phase 1. For a Streambox, connect its
    supported output DAC, amplifier, and speakers; there is no ReSpeaker.
 3. Power on the Pi. It should join Wi-Fi and start SSH in 45-90
    seconds.
@@ -200,7 +200,7 @@ Both profiles play music and provide DSP, grouping, management, and assistant
 setup pages. **Full** supports always-on wake detection with a local mic.
 **Streambox** supports push-to-talk conversations while a remote with a mic is
 paired; it has no always-on wake or local mic/AEC stack. See
-[ADR-0217](docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md).
+[ADR-0217](adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md).
 
 Visit these pages from the same Wi-Fi. Replace `jts.local` with your hostname.
 
@@ -411,7 +411,7 @@ remediation links. Common warnings:
 
 - **XVF firmware is 2-channel** — software AEC stays off until you
   DFU-flash 6-channel firmware. See
-  [BRINGUP.md "XVF firmware: switch to 6-channel variant via DFU"](BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu).
+  [docs/bringup.md "XVF firmware: switch to 6-channel variant via DFU"](bringup.md#xvf-firmware-switch-to-6-channel-variant-via-dfu).
 - **Voice provider not configured** — visit `/assistant/voice/` and paste an
   API key.
 - **Apple USB-C dongle not detected** — check that headphones (or
@@ -500,11 +500,11 @@ hostname am I" is `JASPER_HOSTNAME`.
 gitignored, both written by `scripts/onboard.sh`. `.env.local` records
 `PI_HOST` as the SSH target and `JASPER_HOSTNAME` as the speaker's
 hostname/cert identity, which may differ when you connect by IP. See
-[AGENTS.md](AGENTS.md).
+[AGENTS.md](../AGENTS.md).
 
 ---
 
 When something breaks that isn't in the failure ladder, the
-[docs/](docs/) directory has subsystem deep-dives. The full bringup
+[docs/](.) directory has subsystem deep-dives. The full bringup
 walkthrough — including the XVF firmware DFU flash — is in
-[BRINGUP.md](BRINGUP.md).
+[docs/bringup.md](bringup.md).

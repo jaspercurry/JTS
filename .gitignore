@@ -32,7 +32,6 @@ target/
 # Pi log fetches — never commit log dumps (may contain transient
 # state / device serial numbers etc.)
 logs/*
-!logs/.gitkeep
 
 # Local measurement and diagnostic captures — large/private binaries.
 # No trailing slash — same symlink reason as .venv above.

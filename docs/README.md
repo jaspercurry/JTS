@@ -6,11 +6,11 @@ state are authoritative when prose conflicts with either.
 ## Start here
 
 - [Project overview and architecture](../README.md)
-- [Quick start](../QUICKSTART.md)
-- [Full hardware bring-up](../BRINGUP.md)
+- [Quick start](quickstart.md)
+- [Full hardware bring-up](bringup.md)
 - [Roadmap](../PLAN.md)
-- [Contribution guide](../CONTRIBUTING.md)
-- [Security policy](../SECURITY.md) and [privacy policy](../PRIVACY.md)
+- [Contribution guide](../.github/CONTRIBUTING.md)
+- [Security policy](../SECURITY.md) and [privacy policy](privacy.md)
 
 ## Current engineering references
 

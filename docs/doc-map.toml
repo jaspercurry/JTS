@@ -15,7 +15,7 @@ code = [
   # The executable test lanes and the PR lane classifier. AGENTS.md's "Agent
   # test routing" names these scripts as the source of truth for what a lane
   # runs ("update the script first, then adjust this short routing note and
-  # CONTRIBUTING.md"), so a lane change here is exactly the case that must
+  # .github/CONTRIBUTING.md"), so a lane change here is exactly the case that must
   # scan those two docs.
   "scripts/test-fast",
   "scripts/test-merge",
@@ -26,7 +26,7 @@ code = [
   "scripts/rust-ci-needed",
 ]
 docs = [
-  "CONTRIBUTING.md",
+  ".github/CONTRIBUTING.md",
   "AGENTS.md",
   "docs/testing-tooling.md",
 ]
@@ -38,7 +38,7 @@ code = [
   "AGENTS.md",
   "CLAUDE.md",
   "README.md",
-  "CONTRIBUTING.md",
+  ".github/CONTRIBUTING.md",
   ".github/PULL_REQUEST_TEMPLATE.md",
   ".github/workflows/docs-*.yml",
   "scripts/docs-impact.py",
@@ -52,7 +52,7 @@ docs = [
   "AGENTS.md",
   "CLAUDE.md",
   "README.md",
-  "CONTRIBUTING.md",
+  ".github/CONTRIBUTING.md",
   "docs/README.md",
   "docs/testing-tooling.md",
   "docs/DEEP-AUDIT-PLAYBOOK.md",
@@ -105,8 +105,8 @@ code = [
 docs = [
   "README.md",
   "AGENTS.md",
-  "QUICKSTART.md",
-  "BRINGUP.md",
+  "docs/quickstart.md",
+  "docs/bringup.md",
 ]
 
 [[subsystem]]
@@ -458,7 +458,7 @@ code = [
   "deploy/systemd/bluealsa*.service.d/**",
 ]
 docs = [
-  "PRIVACY.md",
+  "docs/privacy.md",
   "docs/audio-paths.md",
 ]
 
@@ -572,7 +572,7 @@ code = [
 ]
 docs = [
   "docs/testing-tooling.md",
-  "BRINGUP.md",
+  "docs/bringup.md",
 ]
 
 [[subsystem]]
@@ -705,9 +705,9 @@ id = "security-oss-and-maintainer-backlog"
 safety = "safe-ci"
 code = [
   "SECURITY.md",
-  "PRIVACY.md",
-  "CODE_OF_CONDUCT.md",
-  "CHANGELOG.md",
+  "docs/privacy.md",
+  ".github/CODE_OF_CONDUCT.md",
+  "docs/changelog.md",
   "LICENSE",
   "NOTICE",
   "LICENSE-third-party.md",
@@ -722,9 +722,9 @@ code = [
 ]
 docs = [
   "SECURITY.md",
-  "PRIVACY.md",
-  "CODE_OF_CONDUCT.md",
-  "CHANGELOG.md",
+  "docs/privacy.md",
+  ".github/CODE_OF_CONDUCT.md",
+  "docs/changelog.md",
   "LICENSE-third-party.md",
 ]
 

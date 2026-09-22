@@ -43,20 +43,18 @@ FAST_LANDING_PATHS = frozenset((LANDING_PAGE, *LANDING_TEST_FILES))
 
 ROUTING_POLICY_PYTEST_TARGETS = ("tests/test_ci_classifier.py",)
 
-# Prose documents outside docs/: the root operational docs plus the PR
-# template.
 DOCS_PROSE_FILES = frozenset((
     ".github/PULL_REQUEST_TEMPLATE.md",
     "AGENTS.md",
-    "BRINGUP.md",
-    "CHANGELOG.md",
+    "docs/bringup.md",
+    "docs/changelog.md",
     "CLAUDE.md",
-    "CODE_OF_CONDUCT.md",
-    "CONTRIBUTING.md",
+    ".github/CODE_OF_CONDUCT.md",
+    ".github/CONTRIBUTING.md",
     "LICENSE-third-party.md",
     "PLAN.md",
-    "PRIVACY.md",
-    "QUICKSTART.md",
+    "docs/privacy.md",
+    "docs/quickstart.md",
     "README.md",
     "SECURITY.md",
 ))

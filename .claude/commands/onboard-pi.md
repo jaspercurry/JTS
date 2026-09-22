@@ -30,7 +30,7 @@ phases interactively.
 - **Front-load anti-patterns.** Several Pi Imager + Trixie footguns
   are listed in "Things to warn about" at the bottom — surface the
   relevant ones at the right phase, before the user can hit them.
-- **One source of truth.** Read `QUICKSTART.md` for the canonical
+- **One source of truth.** Read `docs/quickstart.md` for the canonical
   human-facing steps. This skill is the conversational driver; the
   shell script is the deterministic executor. Don't reinvent either.
 
@@ -75,7 +75,7 @@ second speaker, or replacing the existing one?"*
 If the Pi is already booted, read `/proc/device-tree/model` rather than
 asking which model it is. Otherwise ask which Raspberry Pi they have, then
 check the matching hardware one or two items at a time. The two hardware
-paths and their parts live in [QUICKSTART.md](../../QUICKSTART.md); do not
+paths and their parts live in [docs/quickstart.md](../../docs/quickstart.md); do not
 maintain a second parts list here.
 
 Do not choose or override `JASPER_INSTALL_PROFILE` during onboarding. The
@@ -172,7 +172,7 @@ output DAC and amplifier; do not ask for a ReSpeaker or 32 V amplifier unless
 those are actually part of their build.
 
 If they are unsure about the wiring, point them at
-[BRINGUP.md](../../BRINGUP.md) Phase 1 before they power on.
+[docs/bringup.md](../../docs/bringup.md) Phase 1 before they power on.
 
 If they need to inspect `bootfs`, tell them to physically reinsert
 the SD card into the computer first; auto-eject means it may not be
@@ -193,7 +193,7 @@ done
 ```
 
 If still not reachable after 2 minutes, walk them through the failure
-ladder from `QUICKSTART.md` "I can't reach `<hostname>.local`" (router
+ladder from `docs/quickstart.md` "I can't reach `<hostname>.local`" (router
 admin page → ARP scan → USB-C gadget rescue). Don't pre-emptively
 recite all four rungs; check them one at a time.
 
@@ -255,7 +255,7 @@ an `~/.ssh/config` Host alias automatically.
 ## Phase 5 — Configure
 
 Follow the reported install profile and walk through
-[QUICKSTART §4](../../QUICKSTART.md#4-configure-one-time), one page at a time.
+[QUICKSTART §4](../../docs/quickstart.md#4-configure-one-time), one page at a time.
 That section owns the profile differences and setup steps. Use the chosen
 hostname in every URL. Finish speaker layout first, then configure a voice
 provider if the user wants the assistant; other setup can wait.
@@ -266,7 +266,7 @@ connect a supported DAC (the standard build uses the Apple USB-C → 3.5mm
 dongle with its analog plug attached) and then open `/sound/`.
 
 **If `jasper-doctor` warned about XVF firmware**: speaker works fine;
-AEC is just off. To enable, walk through [BRINGUP.md](../../BRINGUP.md)
+AEC is just off. To enable, walk through [docs/bringup.md](../../docs/bringup.md)
 Phase 2A.5 later. Not a blocker.
 
 ---

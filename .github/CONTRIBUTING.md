@@ -6,8 +6,8 @@ back. This guide is the on-ramp for **first-time contributors** —
 humans or AI coding agents.
 
 If you're extending the codebase rather than just reading it, the
-authoritative operational guide is [AGENTS.md](AGENTS.md) (Claude
-users: same content via [CLAUDE.md](CLAUDE.md)). That file covers
+authoritative operational guide is [AGENTS.md](../AGENTS.md) (Claude
+users: same content via [CLAUDE.md](../CLAUDE.md)). That file covers
 file-ownership rules, the deploy path, the wizards, and the
 hardware-specific footguns. This file is just "how do I land my
 first PR."
@@ -76,7 +76,7 @@ only `openwakeword==0.6.0` itself with `--no-deps`, mirroring the Pi
 installer's ONNX-only setup.
 
 Hardware-only work (audio playback, the AEC bridge, the wizards in a
-browser) is covered by [BRINGUP.md](BRINGUP.md), which walks from
+browser) is covered by [docs/bringup.md](../docs/bringup.md), which walks from
 blank SD card to working speaker.
 
 ## How to land a PR
@@ -104,12 +104,12 @@ rule is enforced for admins too — so nobody, including the maintainer, can
 merge into a red `main`. Strict/up-to-date branches are off. There is no
 required reviewer at the GitHub level: green `ci` plus resolved
 conversations is what branch protection enforces mechanically.
-[AGENTS.md's review policy](AGENTS.md) adds a tiered check on top that
+[AGENTS.md's review policy](../AGENTS.md) adds a tiered check on top that
 GitHub does not enforce: most changes get one `/code-review` pass with
 owner triage; a diff touching the non-negotiables also gets
-[/adversarial-review](.claude/commands/adversarial-review.md) and its
+[/adversarial-review](../.claude/commands/adversarial-review.md) and its
 blockers fixed before merge
-([ADR-0001](docs/adr/0001-operating-model-reset.md)).
+([ADR-0001](../docs/adr/0001-operating-model-reset.md)).
 
 Two operational notes:
 
@@ -205,7 +205,7 @@ Two operational notes:
   dependencies.
 - **Voice-eval suite** (`pytest tests/voice_eval/regression/`) —
   opens **paid** real-time LLM sessions; see
-  [`tests/voice_eval/README.md`](tests/voice_eval/README.md) for the
+  [`tests/voice_eval/README.md`](../tests/voice_eval/README.md) for the
   per-scenario cost table by provider. Don't run on every PR; nightly
   at most with an explicit budget. See AGENTS.md "Voice-eval cost
   discipline."
@@ -228,25 +228,25 @@ Two operational notes:
 - Match the surrounding style. Don't refactor working code that
   isn't part of your change.
 - For larger or riskier changes, follow the review tiering in
-  [AGENTS.md](AGENTS.md): correctness, hearing/hardware safety, secrets,
+  [AGENTS.md](../AGENTS.md): correctness, hearing/hardware safety, secrets,
   and single-source-of-truth are what the heavy tier defends.
 - Web setup pages follow the shared wizard conventions — shared
   CSRF helpers, checkbox-based toggles, and no generated inline JS for
   untrusted device/network metadata.
-- See [AGENTS.md](AGENTS.md) — the authoritative working agreement for
+- See [AGENTS.md](../AGENTS.md) — the authoritative working agreement for
   both humans and AI agents.
 
 ## Documentation
 
 The repo has a large Markdown corpus in a layered structure:
 
-- **[README.md](README.md)** — architecture, hardware, where things
+- **[README.md](../README.md)** — architecture, hardware, where things
   live. Read first.
-- **[AGENTS.md](AGENTS.md)** — operational rules for AI agents (and
+- **[AGENTS.md](../AGENTS.md)** — operational rules for AI agents (and
   the de-facto reference for human contributors).
-  [CLAUDE.md](CLAUDE.md) is the same content via @-import.
-- **[BRINGUP.md](BRINGUP.md)** — flash a fresh Pi to working speaker.
-- **[PLAN.md](PLAN.md)** — roadmap.
+  [CLAUDE.md](../CLAUDE.md) is the same content via @-import.
+- **[docs/bringup.md](../docs/bringup.md)** — flash a fresh Pi to working speaker.
+- **[PLAN.md](../PLAN.md)** — roadmap.
 
 ## Working on a sensitive subsystem
 
@@ -282,7 +282,7 @@ project that others are trying to build on top of.
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE). By contributing you agree your
+Apache 2.0. See [LICENSE](../LICENSE). By contributing you agree your
 contributions will be licensed under the same.
 
 First-party JTS source is Apache-2.0. The existing tree was swept with
@@ -291,18 +291,18 @@ Apache-2.0`, in the language's comment style) via `reuse annotate`, so
 **new first-party files should carry the same header** to stay
 consistent. Do not add JTS SPDX headers to vendored, generated, model,
 data, or third-party files: those need an explicit entry in
-[LICENSE-third-party.md](LICENSE-third-party.md) or, if REUSE is enabled
+[LICENSE-third-party.md](../LICENSE-third-party.md) or, if REUSE is enabled
 later, a scoped `REUSE.toml` annotation instead. No CI gate enforces the
 header — it is a hygiene convention, not a blocking check. The bulk
 header commit is listed in
-[`.git-blame-ignore-revs`](.git-blame-ignore-revs) so `git blame` skips
+[`.git-blame-ignore-revs`](../.git-blame-ignore-revs) so `git blame` skips
 it; enable it locally with
 `git config blame.ignoreRevsFile .git-blame-ignore-revs`.
 
 ## Where to start
 
 - **First-timer**: read README.md, then pick something from
-  [PLAN.md](PLAN.md). Open an
+  [PLAN.md](../PLAN.md). Open an
   issue first to discuss approach before coding.
 - **Returning**: scan open PRs and `git log --since="2 weeks ago"`
   for active workstreams. Active subsystems (AEC, mic-quality, USB

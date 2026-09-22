@@ -134,7 +134,7 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
 ## Build, test, deploy
 
 - Iterating: `scripts/test-fast`. Before merge: `scripts/test-merge`
-  (what it runs: CONTRIBUTING.md). Trust only the final `==> <lane>: N passed`
+  (what it runs: .github/CONTRIBUTING.md). Trust only the final `==> <lane>: N passed`
   sentinel line — a piped/truncated run lies.
 - Deploy: `bash scripts/deploy-to-pi.sh` (flags: `SKIP_INSTALL=1` rsync-only,
   `SKIP_RESTART=1`). Verify: `http://jts.local/system/` shows the new SHA;
@@ -143,7 +143,7 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
   re-copies.
 - A post-merge fetch can miss GitHub's ref advance and redeploy stale code —
   verify `git merge-base --is-ancestor <merge-sha> origin/main` first.
-- CI lanes and branch protection: [CONTRIBUTING.md](CONTRIBUTING.md).
+- CI lanes and branch protection: [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md).
 
 ## PRs and coordination
 

@@ -79,7 +79,7 @@ remote_sudo() {
 echo "==> Renaming ${PI_HOST} → ${NEW_FQDN}"
 
 # Preflight: current target answers, with passwordless sudo (the same
-# posture deploy-to-pi.sh requires — see BRINGUP.md Phase 2.5).
+# posture deploy-to-pi.sh requires — see docs/bringup.md Phase 2.5).
 remote_sudo "true" >/dev/null 2>&1 \
     || { echo "rename-speaker: cannot reach ${SSH_TARGET} with passwordless sudo" >&2; exit 1; }
 remote_sudo "test -r /usr/local/lib/jasper/jasper-env-file.sh" >/dev/null 2>&1 \

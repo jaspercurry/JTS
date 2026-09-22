@@ -5,7 +5,7 @@
 > **extend or reuse it** rather than writing a parallel tool.
 
 Test lanes, CI gates and branch protection are owned by
-[CONTRIBUTING.md](../CONTRIBUTING.md); the test/comment/evidence defaults are
+[CONTRIBUTING.md](../.github/CONTRIBUTING.md); the test/comment/evidence defaults are
 owned by [AGENTS.md](../AGENTS.md). This file is the tool catalog and does not
 restate either.
 
@@ -15,7 +15,7 @@ restate either.
 
 | If you want to … | Start with |
 |---|---|
-| Run the local or merge test lane | [CONTRIBUTING.md](../CONTRIBUTING.md) — `scripts/test-fast`, `scripts/test-merge` |
+| Run the local or merge test lane | [CONTRIBUTING.md](../.github/CONTRIBUTING.md) — `scripts/test-fast`, `scripts/test-merge` |
 | Format/type-check/Clippy every Rust crate locally | [Rust formatting and Clippy cross-check](#rust-formatting-and-clippy-cross-check) |
 | Understand a pytest-timeout failure, or bound a slow test | [Hang backstop (pytest-timeout)](#hang-backstop-pytest-timeout) |
 | Check JS↔Python math parity (PEQ, level trims) | [JS ↔ Python parity checks](#js--python-parity-checks) |

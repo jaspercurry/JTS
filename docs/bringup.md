@@ -8,7 +8,7 @@ This is the long-form **advanced/operator** runbook. It includes
 manual SSH, Pi-local package installs, hardware checks, firmware
 flashing, and calibration steps. If this is your first JTS speaker
 and you want the guided consumer setup, start with
-[QUICKSTART.md](QUICKSTART.md) instead. The normal beginner install
+[docs/quickstart.md](quickstart.md) instead. The normal beginner install
 path runs from your computer:
 
 ```sh
@@ -204,7 +204,7 @@ mid-session:
 For the JTS appliance, **passwordless sudo is the right posture.** It is a
 trusted-LAN device you own, its deploys already require root to install and
 update system services (and the boot/recovery reconcilers still run as root),
-and the threat model ([SECURITY.md](SECURITY.md)) already assumes a trusted
+and the threat model ([SECURITY.md](../SECURITY.md)) already assumes a trusted
 household network. The alternative — re-typing a password on every deploy
 and blocking every agent session — buys you almost nothing here.
 
@@ -683,7 +683,7 @@ You should hear a synthetic voice reply. "Hey Jarvis" works too.
 To pick a different wake phrase — Hey Jarvis, Alexa, Hey Mycroft —
 visit `http://jts.local/assistant/wake/` from any LAN device, or run
 `bash scripts/switch-wake-word.sh <key>` from your laptop. The model registry (and how to add one) lives in
-[`jasper/wake_models.py`](jasper/wake_models.py).
+[`jasper/wake_models.py`](../jasper/wake_models.py).
 
 If wake isn't firing:
 
@@ -858,7 +858,7 @@ Two-channel firmware uses direct capture. Channels 0/1 depend on the
 firmware geometry and chip profile: the production square chip-AEC plan
 routes fixed ASR beams there. Six channels do not imply identical processed
 outputs or a production chip beam plan. The
-[microphone reference](jasper/mics/README.md) owns that support boundary.
+[microphone reference](../jasper/mics/README.md) owns that support boundary.
 
 #### Which firmware to flash
 
@@ -875,7 +875,7 @@ geometry. Use the linear Flex blob on Flex LINEAR-4. Its software-AEC3
 fallback is implemented; it has no registered production chip beam plan.
 
 Before using another firmware version, verify its geometry, channel mapping
-and control contract against [`jasper/mics/xvf3800.py`](jasper/mics/xvf3800.py).
+and control contract against [`jasper/mics/xvf3800.py`](../jasper/mics/xvf3800.py).
 A matching channel count alone is not enough.
 
 #### How DFU works on this chip (no button combo needed)
@@ -995,7 +995,7 @@ voice's mic source at the AEC bridge's UDP output, and resets the kernel
 ALSA mixer to known-good values for the newly-exposed ch2-5 (the stale-mute
 trap — see "Why the reconciler step matters" below). `jasper-aec-commission`
 then measures and banks this box's chip-AEC alignment. Neither is a gate
-([ADR-0101](docs/adr/0101-proven-once-disclose-on-change.md)): until an
+([ADR-0101](adr/0101-proven-once-disclose-on-change.md)): until an
 alignment is banked the speaker still hears — software
 AEC3 on 6-channel firmware, the chip's plain capture on 2-channel — and
 discloses what chip AEC is missing. The stack parks only for a microphone
