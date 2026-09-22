@@ -24,6 +24,8 @@ import yaml
 from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_VOLUME_LIMIT_DB,
+    VolumeLimitViolation,
+    check_volume_limit,
     parse_camilla_devices_config,
 )
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
@@ -348,25 +350,10 @@ def classify_camilla_config_text(text: str) -> dict[str, Any]:
         label = "Advanced DSP config active; JTS cannot safely preserve this"
 
     issues: list[dict[str, str]] = []
-    if volume_limit_db is None:
-        issues.append(
-            _issue(
-                "blocker",
-                "volume_limit_missing",
-                "CamillaDSP config omits devices.volume_limit; CamillaDSP defaults above 0 dB",
-            )
-        )
-    elif volume_limit_db > DEFAULT_VOLUME_LIMIT_DB:
-        issues.append(
-            _issue(
-                "blocker",
-                "volume_limit_positive",
-                (
-                    f"CamillaDSP config sets devices.volume_limit={volume_limit_db:.1f} dB; "
-                    f"expected <= {DEFAULT_VOLUME_LIMIT_DB:.1f} dB"
-                ),
-            )
-        )
+    try:
+        check_volume_limit(text)
+    except VolumeLimitViolation as exc:
+        issues.append(_issue("blocker", exc.code, str(exc)))
 
     forbidden = forbidden_playback_token(playback_device)
     if classification == "active_startup_candidate" and forbidden:
