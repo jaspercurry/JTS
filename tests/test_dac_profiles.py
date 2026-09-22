@@ -136,7 +136,7 @@ def test_hifiberry_studio_match_hints_do_not_overlap_base_dac8x() -> None:
     edge.
 
     `label` is `product or proc_description or card_id`
-    (`output_hardware.probe_system_cards`); an I2S HAT has no USB `product`,
+    (`audio_hardware.output_probe.probe_system_cards`); an I2S HAT has no USB `product`,
     so the realistic value is the joined /proc/asound/cards description. Both
     the bare card name and that joined line are covered below.
     """
@@ -208,9 +208,8 @@ _DAC8X_STUDIO_HAT = HatEeprom(
     uuid="be3b8164-dd7b-48fc-ab27-79dd7c641980",
 )
 
-# `label` is `product or proc_description or card_id`
-# (`output_hardware.probe_system_cards`), so both the bare kernel card name
-# and the joined /proc/asound/cards description are realistic inputs.
+# I2S HATs have no USB product; audio_hardware.output_probe.probe_system_cards
+# uses the joined /proc/asound/cards description or the bare kernel card name.
 _UNIFIED_STUDIO_PROC_LABEL = (
     " 2 [HiFiBerryStudio]: HifiberryStudio - Hifiberry Studio Soundcard"
     " Hifiberry Studio Soundcard"
