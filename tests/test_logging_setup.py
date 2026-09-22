@@ -13,16 +13,43 @@ from __future__ import annotations
 
 import ast
 import io
+import json
 import logging
 from pathlib import Path
 
 import pytest
 
 import jasper.logging_setup as logging_setup
+from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
 from tests.conftest import bare_root_logger
 
 _REPO = Path(__file__).resolve().parent.parent
+
+
+@pytest.mark.parametrize(
+    "fields, expected",
+    [
+        ({"api_key": 'synthetic-left"synthetic-right'}, {"api_key": "<redacted>"}),
+        ({"authorization": "Basic synthetic-value"}, {"authorization": "<redacted>"}),
+        ({"password": {"parts": ["synthetic", "value"]}}, {"password": "<redacted>"}),
+        ({"details": [{"refresh_token": "synthetic-value"}]},
+         {"details": [{"refresh_token": "<redacted>"}]}),
+        ({"details": 'password: synthetic-left"synthetic-right'},
+         {"details": "password: <redacted>"}),
+        ({"details": "https://example.test/?key=synthetic-value&ok=1"},
+         {"details": "https://example.test/?key=<redacted>&ok=1"}),
+        ({"api_key": 12345678}, {"api_key": "<redacted>"}),
+    ],
+)
+def test_json_events_remain_parseable_after_redaction(monkeypatch, capsys, fields, expected):
+    monkeypatch.setenv("JASPER_LOG_JSON", "1")
+    with bare_root_logger():
+        configure_logging(fmt="%(message)s")
+        log_event(logging.getLogger("jasper.x"), "test.redaction", fields=fields, count=2)
+    assert json.loads(capsys.readouterr().err) == {
+        "event": "test.redaction", **expected, "count": 2,
+    }
 
 
 @pytest.mark.parametrize(

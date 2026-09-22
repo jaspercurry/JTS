@@ -8,6 +8,7 @@ See ADR-0243.
 """
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable
 
@@ -165,6 +166,40 @@ def redact_secrets(message: str, literals: Iterable[str] = ()) -> str:
     and by value, which is the only way a credential in an unrecognised
     shape comes out — the patterns run after either way (ADR-0243).
     """
+    literals = tuple(literals)
+    # JSON escapes belong to the serializer; regex replacement can split a
+    # quoted credential and leave its tail in the journal (issue #4807).
+    if message.lstrip().startswith(("{", "[")):
+        try:
+            value = json.loads(message)
+            redacted = _redact_json(value, literals)
+            return message if redacted == value else json.dumps(redacted)
+        except json.JSONDecodeError:
+            pass
+        except (ValueError, RecursionError):
+            return json.dumps("<redacted>")
+    return _redact_text(message, literals)
+
+
+def _redact_json(value: object, literals: tuple[str, ...]) -> object:
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            probe = f"{key}=redaction-probe"
+            result[_redact_text(key, literals)] = (
+                "<redacted>" if _redact_text(probe, ()) != probe
+                else _redact_json(item, literals)
+            )
+        return result
+    if isinstance(value, list):
+        return [_redact_json(item, literals) for item in value]
+    if isinstance(value, str):
+        return redact_secrets(value, literals)
+    text = json.dumps(value)
+    return value if _redact_text(text, literals) == text else "<redacted>"
+
+
+def _redact_text(message: str, literals: Iterable[str]) -> str:
     for literal in literals:
         if literal:
             message = message.replace(literal, "<redacted>")
