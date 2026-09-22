@@ -846,7 +846,7 @@ instrument runs: `tests/test_crossover_v2_feature_classifier.py`.
 ## Round-grading comparison views
 
 `jasper-round-views` ([`jasper/cli/round_views/`](../jasper/cli/round_views/),
-core in [`round_views.py`](../jasper/active_speaker/crossover_v2/round_views.py)):
+core in [`round_views.py`](../jasper/active_speaker/crossover_v2/round_views/__init__.py)):
 
 ```sh
 # grade the state the round ENTERED on, from the write-once entry-baseline take,
