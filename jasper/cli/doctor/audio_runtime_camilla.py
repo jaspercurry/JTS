@@ -17,6 +17,8 @@ from ...camilla import CamillaController, CamillaUnavailable, primary_controller
 from ...camilla_config_contract import (
     DEFAULT_PIPE_SINK_FORMAT,
     DEFAULT_VOLUME_LIMIT_DB,
+    VolumeLimitViolation,
+    check_volume_limit,
     parse_camilla_devices_config,
     read_camilla_devices_config,
 )
@@ -49,7 +51,6 @@ REASON_PLAYBACK_FORMAT_NO_CONFIG = "playback_format_no_config"
 REASON_PLAYBACK_FORMAT_FIELD_ABSENT = "playback_format_field_absent"
 REASON_PLAYBACK_FORMAT_MISMATCH = "playback_format_mismatch"
 
-REASON_VOLUME_LIMIT_INVALID = "volume_limit_invalid"
 REASON_VOLUME_LIMIT_ABSENT = "volume_limit_absent"
 REASON_VOLUME_LIMIT_ABOVE_CEILING = "volume_limit_above_ceiling"
 
@@ -378,15 +379,6 @@ async def check_camilla_live_volume_limit() -> CheckResult:
     return CheckResult(label, "ok", f"running graph devices.volume_limit={limit:.1f} dB")
 
 
-def _devices_volume_limit_from_text(text: str) -> float | None:
-    """``devices.volume_limit`` from a CamillaDSP config, or None if absent /
-    null. Uses the depth-aware shared devices parser so a nested capture or
-    playback field cannot masquerade as the global fader ceiling."""
-    value = parse_camilla_devices_config(text).get("volume_limit")
-    if value is None:
-        return None
-    return float(value)
-
 @doctor_check(core=True)
 def check_camilla_volume_limit() -> CheckResult:
     """Verify the active Camilla config has JTS's non-positive fader cap."""
@@ -411,26 +403,20 @@ def check_camilla_volume_limit() -> CheckResult:
             f"could not read {config_path}",
             reason=REASON_CAMILLA_CONFIG_UNREADABLE,
         )
+    limit = parse_camilla_devices_config(text).get("volume_limit")
     try:
-        limit = _devices_volume_limit_from_text(text)
-    except ValueError as e:
+        check_volume_limit(text)
+    except VolumeLimitViolation as exc:
+        if exc.code == "volume_limit_missing":
+            return CheckResult(
+                "CamillaDSP volume_limit", "fail",
+                f"{config_path} omits devices.volume_limit; CamillaDSP "
+                "defaults to +50 dB",
+                reason=REASON_VOLUME_LIMIT_ABSENT,
+            )
         return CheckResult(
             "CamillaDSP volume_limit", "fail",
-            f"invalid devices.volume_limit in {config_path}: {e}",
-            reason=REASON_VOLUME_LIMIT_INVALID,
-        )
-    if limit is None:
-        return CheckResult(
-            "CamillaDSP volume_limit", "fail",
-            f"{config_path} omits devices.volume_limit; CamillaDSP "
-            "defaults to +50 dB",
-            reason=REASON_VOLUME_LIMIT_ABSENT,
-        )
-    if limit > DEFAULT_VOLUME_LIMIT_DB:
-        return CheckResult(
-            "CamillaDSP volume_limit", "fail",
-            f"{config_path} sets devices.volume_limit={limit:.1f} dB "
-            f"(expected <= {DEFAULT_VOLUME_LIMIT_DB:.1f} dB)",
+            f"{config_path}: {exc}",
             reason=REASON_VOLUME_LIMIT_ABOVE_CEILING,
         )
     return CheckResult(
