@@ -13,12 +13,15 @@ import numpy as np
 import pytest
 from scipy.signal import fftconvolve, resample_poly
 
+from jasper.active_speaker.crossover_v2 import capture_dispatch, refusal_copy
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
+    AMBIENT_SEGMENT_ID,
     KIND_COURTESY_TONE,
     KIND_PILOT,
     KIND_SILENCE,
     RoleBand,
+    _finalize,
     build_measure_program,
     build_verify_program,
     render_program_pcm,
@@ -220,17 +223,50 @@ def test_measure_pilot_linearity_clean_capture_passes():
     assert res.candidate is not None
 
 
-def test_measure_pilot_linearity_fails_under_simulated_agc():
-    prog = _measure_program()
+@pytest.mark.parametrize("phase", ["measure", "verify"])
+@pytest.mark.parametrize("keep_fraction,snr_valid", [
+    pytest.param(1.0, True, id="ambient-present"),
+    pytest.param(0.7, True, id="ambient-shortened-usable"),
+    pytest.param(None, False, id="ambient-absent"),
+    pytest.param(0.1, False, id="ambient-truncated-unusable"),
+])
+def test_pilot_linearity_requires_usable_ambient(phase, keep_fraction, snr_valid):
+    prog = _measure_program() if phase == "measure" else _verify_pilot_program()
+    ambient = prog.segment(AMBIENT_SEGMENT_ID)
+    if keep_fraction is None:
+        prog = _finalize(prog.phase, prog.channels,
+                         [seg for seg in prog.segments if seg != ambient], prog.total_samples)
     cap = _synthesize(prog)
     # AGC-compress the HI pilot only: programmed 10 dB delta captured as ~4 dB.
-    hi = prog.segment("pilot_woofer_hi")
+    role = "woofer" if phase == "measure" else "summed"
+    hi = prog.segment(f"pilot_{role}_hi")
     start = GLOBAL_OFFSET + hi.start_sample
     cap[start:start + hi.n_samples] *= 10.0 ** (-6.0 / 20.0)
+    if keep_fraction is not None and keep_fraction < 1.0:
+        dropped = int((1.0 - keep_fraction) * ambient.n_samples)
+        cap = cap[GLOBAL_OFFSET + ambient.start_sample + dropped:]
     res = analyze_program_capture(
         prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
     )
-    assert res.linearity_ok is False
+    pilot, = res.pilots
+    assert pilot.snr_valid is snr_valid
+    assert res.pilot_snr_ok is (True if snr_valid else None)
+    assert pilot.linearity_ok is res.linearity_ok is (False if snr_valid else None)
+    assert pilot.captured_delta_db == pytest.approx(4.0, abs=0.5)
+    summary = analysis_diagnostic_summary(res)
+    assert summary.get("linearity_ok") is res.linearity_ok
+    assert summary.get("pilot_snr_ok") is res.pilot_snr_ok
+    if snr_valid:
+        assert math.isfinite(pilot.snr_db) and pilot.snr_db > PILOT_MIN_SNR_DB
+        assert summary[f"{role}_pilot_snr_db"] == round(pilot.snr_db, 2)
+    else:
+        assert summary[f"{role}_pilot_snr_db"] is None
+    verdict = capture_dispatch.assess(res, phase=phase, program=prog)
+    assert (verdict.ok, verdict.fault, verdict.next) == (
+        (False, refusal_copy.REASON_AGC_BEHAVIORAL_FAIL, "fix_and_retake")
+        if snr_valid else (True, None, "accept")
+    )
+    assert verdict.screens == []
 
 
 def test_legacy_measure_program_reports_no_pilot_verdict():
@@ -271,16 +307,6 @@ def _verify_pilot_program():
 
 @pytest.mark.parametrize("phase", ["measure", "verify"])
 def test_pilot_snr_is_measured_not_infinite(phase):
-    """Issue #1810's structural defect, pinned.
-
-    ``_pilot_in_band_snr_db`` returns ``+inf`` when there is no ambient
-    evidence — "nothing to validate against, so nothing to distrust". Before
-    the pre-pilot ambient window shipped, that was the ONLY value MEASURE and
-    VERIFY could ever produce, so ``snr_valid = snr_db >= PILOT_MIN_SNR_DB``
-    was satisfied unconditionally and the guard was dead code on both phases.
-
-    A finite number here is the proof the window is actually being read.
-    """
     prog = _measure_program() if phase == "measure" else _verify_pilot_program()
     cap = _synthesize(prog)
     res = analyze_program_capture(
@@ -430,40 +456,6 @@ def test_pilot_ambient_samples_is_none_without_a_window():
     prog = _measure_program(with_pilots=False)
     capture = np.zeros(prog.total_samples, dtype=np.float64)
     assert _pilot_ambient_samples(prog, capture, 0) is None
-
-
-@pytest.mark.parametrize(
-    "keep_fraction,expect_evidence", [(0.7, True), (0.1, False)],
-)
-def test_late_started_capture_clips_the_ambient_window_never_slides_it(
-    keep_fraction, expect_evidence,
-):
-    """A capture that began after the program did clips the window's HEAD.
-
-    Two things must hold. (1) The window is clipped, not slid: computing its
-    end from the clamped start instead of its own schedule position would
-    walk it forward onto the first pilot and read that pilot as the room
-    floor — a fabricated loud ambient, i.e. a false ``pilot_level_collapse``
-    on a perfectly good capture. Above
-    ``AMBIENT_MIN_USABLE_FRACTION`` the shortened window is still an
-    honest floor, because RMS is length-independent. (2) Below that fraction
-    there is nothing left to measure, and the analysis falls back to "no
-    ambient evidence" — ``+inf`` SNR, pilots trusted — never to a guess.
-    """
-    prog = _measure_program()
-    cap = _synthesize(prog)
-    ambient = prog.segment("ambient")
-    dropped = int((1.0 - keep_fraction) * ambient.n_samples)
-    cut = GLOBAL_OFFSET + ambient.start_sample + dropped
-    res = analyze_program_capture(
-        prog, cap[cut:], SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
-    )
-    assert res.pilot_snr_ok is True
-    if expect_evidence:
-        assert math.isfinite(res.pilots[0].snr_db)
-        assert res.pilots[0].snr_db > PILOT_MIN_SNR_DB
-    else:
-        assert res.pilots[0].snr_db == math.inf
 
 
 @pytest.mark.parametrize("delta_db,clock_slip", [(0.15, False), (1.0, False), (1.0, True)])

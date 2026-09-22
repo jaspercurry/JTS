@@ -4728,30 +4728,6 @@ def test_channel_map_fails_when_one_driver_never_played():
 
 
 def test_check_refuses_a_capture_with_no_program_in_it_at_all():
-    """No pilot signal anywhere (pure noise capture) ⇒ CHECK refuses.
-
-    With nothing to correlate against, `_global_offset` anchors on the first
-    stimulus (``pilot_woofer_lo``) and returns a MEANINGLESS offset (order
-    -10^4 samples; the exact value is an argmax over noise and is not stable
-    across environments), i.e. the window's scheduled span lies almost
-    entirely before the capture began. Since #1818 the ambient helper answers
-    that honestly ("no evidence") instead of fabricating a window from
-    ``capture[0:n]``, which is what the pre-#1818 clamped-start slice did — a
-    window that was only accidentally right, because a capture normally leads
-    the program and so happens to open on real room noise.
-
-    What must hold is that the SESSION is refused, and it is, three
-    independent ways. Per-role channel-map detail is deliberately NOT asserted
-    here: with no ambient evidence `_channel_map_ok` documents a fallback to
-    the original total-in-band-energy-fraction test (no rise concept without
-    an ambient window), and white noise against the tweeter's 2.5-20 kHz
-    declared band does put most of its energy in band — which since #2052
-    resolves that role to UNKNOWN rather than to a PASS it did not earn. The
-    woofer's own band still fails the fraction outright, and a FAILURE
-    outranks an unknown in the fold, so the session verdict is ``False``.
-    Per-role protection is pinned on the realistic miswire fixture above,
-    where the offset is sound.
-    """
     roles = _check_roles()
     chk = build_check_program(roles, ambient_s=1.0, pilot_duration_s=0.5)
     pcm = render_program_pcm(chk)
@@ -4762,7 +4738,7 @@ def test_check_refuses_a_capture_with_no_program_in_it_at_all():
 
     assert res.ambient_report["bands"] == []       # honest: no evidence
     assert res.channel_map_ok is False
-    assert res.linearity_ok is False
+    assert res.linearity_ok is None
     assert res.gain_plan is not None
     assert res.gain_plan.snr_floor_ok is False
 
@@ -5204,8 +5180,7 @@ def test_channel_map_fallback_never_passes_a_driver_that_never_played():
     assert by_role["woofer"].channel_map_ok is None
     assert all(p.channel_map_target_rise_db is None for p in res.pilots)
     assert res.channel_map_ok is None
-    # Still refused, on the rungs whose evidence this capture DOES carry.
-    assert res.linearity_ok is False
+    assert res.linearity_ok is None
 
 
 def test_degraded_miswire_still_names_the_wiring_not_the_room():

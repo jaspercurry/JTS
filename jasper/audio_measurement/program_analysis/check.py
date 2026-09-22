@@ -61,8 +61,7 @@ from .signals import _peak_dbfs
 # length-independent, so a shortened window is still an honest floor estimate;
 # what this rejects is the degenerate case where a couple of hundred samples
 # survive and the estimate is noise about noise. Below the fraction the caller
-# gets ``None`` and the analysis degrades to "no ambient evidence, trust the
-# pilots" — never to a fabricated floor.
+# gets ``None`` and pilot linearity stays unknown.
 #
 # ONE policy, both windows: CHECK's 12 s session-ambient window
 # (`_ambient_from_capture`) and MEASURE/VERIFY's 1 s pilot-ambient window
@@ -112,12 +111,6 @@ def _pilot_ambient_samples(
     program: ExcitationProgram, capture: np.ndarray, global_offset: int,
 ) -> np.ndarray | None:
     """The program's own room-listening window, or ``None`` if it has none.
-
-    MEASURE/VERIFY programs carry an
-    :data:`~jasper.audio_measurement.program.AMBIENT_SEGMENT_ID` window
-    ahead of their leading pilot pair so `_pilot_observations`' in-band SNR
-    guard has something to measure against; without it the guard's input
-    is ``+inf`` and can never fire.
 
     Located by SCHEDULE offset, not correlation (it is silence). Clipped to
     the capture, never slid along it, sharing :data:`AMBIENT_MIN_USABLE_FRACTION`
@@ -238,7 +231,7 @@ def _pilot_observations(
     ambient-power-subtracted before converting to dB — a full-band PEAK
     estimate would let LF room rumble inflate the quiet pilot's level and
     compress the captured delta. With no window (``ambient_samples=None``)
-    subtraction is a no-op and SNR is trusted unconditionally.
+    subtraction is a no-op, SNR is invalid, and linearity is unknown.
 
     Two ambient parameters: ``ambient_samples`` feeds level/SNR;
     ``channel_map_ambient_samples`` feeds `_channel_map_ok`'s TARGET/CROSS
@@ -311,9 +304,7 @@ def _pilot_observations(
         captured_delta = level_hi - level_lo
 
         lo_snr_db = _pilot_in_band_snr_db(lo_power, ambient_power) if has_ambient else math.inf
-        snr_valid = lo_snr_db >= PILOT_MIN_SNR_DB
-        # UNKNOWN below the SNR floor, never True: the captured delta is not
-        # evidence in EITHER direction down there.
+        snr_valid = has_ambient and lo_snr_db >= PILOT_MIN_SNR_DB
         linearity_ok = (
             None if not snr_valid
             else abs(captured_delta - programmed_delta) <= LINEARITY_TOLERANCE_DB
@@ -408,13 +399,14 @@ def _pilot_verdicts(
     verdict; the channel-map check still uses
     `_channel_map_ok`'s one-sided fallback (see `_pilot_observations`).
     """
+    ambient_samples = _pilot_ambient_samples(program, capture, global_offset)
     pilots = _pilot_observations(
         program, capture, sample_rate, locations,
-        ambient_samples=_pilot_ambient_samples(program, capture, global_offset),
+        ambient_samples=ambient_samples,
     )
     linearity_ok = _aggregate_linearity_ok(pilots)
     channel_map_ok = _aggregate_tri_state_ok([p.channel_map_ok for p in pilots])
-    pilot_snr_ok = all(p.snr_valid for p in pilots) if pilots else None
+    pilot_snr_ok = all(p.snr_valid for p in pilots) if pilots and ambient_samples is not None else None
     return tuple(pilots), linearity_ok, channel_map_ok, pilot_snr_ok
 
 
