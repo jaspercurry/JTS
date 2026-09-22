@@ -73,7 +73,7 @@ CORPUS_PROFILES = (PROFILE_STANDARD, PROFILE_CHIP_AEC_COMPARISON)
 # CONDITIONS / DISTANCES (defined in the sibling recording_backend.py,
 # which imports them from jasper.wake_conditions) are the operator-labelled
 # input domains — the shared single source of truth so the corpus, the
-# runtime fuser, and the wake telemetry agree on one taxonomy. The wizard
+# runtime and the wake telemetry agree on one taxonomy. The wizard
 # validates strictly against them to reject typos;
 # captured files land in aec_<leg>_<condition>/ for the upstream
 # extract/score/review pipeline, so do NOT rename a condition without an

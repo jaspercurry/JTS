@@ -39,9 +39,6 @@ registry — they are tuning experiments enumerated dynamically in
 ``jasper.aec_sweep``, not stable named legs. ``jasper.wake_ports``
 merges them on top of the registry ports for tooling.
 
-Fields grow as later phases consume them: a per-leg threshold offset
-lands with the condition-aware fuser, and the ``wake_events`` per-leg
-column mapping lands with the ``LegRuntime`` WakeLoop refactor.
 """
 from __future__ import annotations
 
@@ -51,7 +48,7 @@ from enum import Enum
 
 class LegKind(str, Enum):
     """What kind of signal a leg carries. Descriptive metadata the
-    fuser / topology key off (e.g. "always keep a RAW leg in the OR")."""
+    topology key off (e.g. "always keep a RAW leg in the OR")."""
 
     SOFTWARE_AEC = "software_aec"  # WebRTC AEC3 (mic near-end + playback ref)
     NEURAL_AEC = "neural_aec"      # DTLN-aec
@@ -155,5 +152,3 @@ def by_token(token: str) -> LegSpec:
 def wake_input_legs() -> tuple[LegSpec, ...]:
     """The production legs WakeLoop OR-gates, in priority order."""
     return tuple(leg for leg in REGISTRY if leg.wake_input)
-
-

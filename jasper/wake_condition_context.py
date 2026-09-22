@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Runtime acoustic-condition estimator for wake fusion (Phase 1).
+"""Runtime acoustic-condition estimator for wake telemetry.
 
 Turns the two cheap runtime signals the daemon already has at a wake fire
 into one :data:`jasper.wake_conditions.CONDITIONS` label:
@@ -16,16 +16,14 @@ into one :data:`jasper.wake_conditions.CONDITIONS` label:
     ``jasper.voice.wake_detect._ring_noise_floor_dbfs``).
 
 :func:`classify_condition` is intentionally **pure** — both signals are
-passed in — so it is unit-testable and so the Phase-1.2 fuser can call it
-with the same inputs to pick per-condition thresholds. Phase 1.1 records its
-result as ``wake_events.condition_class``.
+passed in — so it is unit-testable. The result is recorded as
+``wake_events.condition_class``.
 
 The boundaries below are tunable knobs, not laws. ``MUSIC_FLOOR_DBFS``
 matches the daemon's existing ``music_active_proxy`` threshold.
 ``AMBIENT_FLOOR_DBFS`` is a **placeholder** on a different signal (the mic
 noise floor) — the quiet/ambient split is the soft boundary to tune against
-the corpus; until then it only affects an observability label, never a wake
-decision. When the 1.2 fuser consumes these, promote them to config knobs.
+the corpus; it affects an observability label, never a wake decision.
 """
 from __future__ import annotations
 
@@ -44,8 +42,7 @@ AMBIENT_FLOOR_DBFS: float = -50.0
 class ConditionContext:
     """The acoustic situation at a wake fire.
 
-    Recorded as ``wake_events.condition_class`` (Phase 1.1) and consumed by
-    the per-condition fuser (Phase 1.2). ``condition`` is always one of
+    Recorded as ``wake_events.condition_class``. ``condition`` is always one of
     :data:`jasper.wake_conditions.CONDITIONS`.
     """
 

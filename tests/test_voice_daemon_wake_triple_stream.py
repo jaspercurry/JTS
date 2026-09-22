@@ -89,8 +89,6 @@ def _make_wake_loop_triple(
             by_token("chip_aec_210"), MagicMock(), detector_chip_aec_210, None,
         )
     wl._wake_legs.fire_lock = asyncio.Lock()
-    from jasper.wake_fusion import WakeFuser
-    wl._wake_legs.fuser = WakeFuser()
     wl._wake_legs.condition = "quiet"
     wl._wake_legs.condition_refreshed_at = 0.0
     wl._wake_legs.refractory_until = 0.0
@@ -240,17 +238,10 @@ async def test_aec_off_fire_still_records_fire_aec_off():
 
 
 async def test_non_primary_fire_records_firing_leg_effective_threshold():
-    """begin_event must store the threshold the firing leg actually had
-    to cross. AEC ON can keep the base threshold while AEC OFF is raised
-    for the current condition; if AEC OFF wins, the row should record
-    the raised AEC OFF threshold, not the primary detector's base value."""
-    from jasper.wake_fusion import WakeFuser
-
-    detector_off = _make_detector(threshold=0.5)
+    """begin_event stores the firing detector's threshold."""
+    detector_off = _make_detector(threshold=0.7)
     detector_off.score_frame.return_value = 0.72
     wl = _make_wake_loop_triple(detector_off=detector_off)
-    wl._wake_legs.fuser = WakeFuser({("off", "music"): 0.2})
-    wl._wake_legs.condition = "music"
     wl._wake_legs.condition_refreshed_at = asyncio.get_event_loop().time()
 
     await wl._handle_wake_frame(_frame(), leg="off")
@@ -261,20 +252,26 @@ async def test_non_primary_fire_records_firing_leg_effective_threshold():
     assert kwargs["threshold"] == pytest.approx(0.7)
 
 
-async def test_dtln_fire_with_other_legs_above_threshold_records_all_in_fired_legs():
-    """When DTLN wins the OR-gate race but AEC ON / AEC OFF were also
-    above their thresholds at the same instant, `fired_legs` should
-    reflect all three. `trigger_kind` stays the winner ("fire_dtln")
-    because only one leg can claim the lock."""
-    detector_off = _make_detector(threshold=0.5)
+@pytest.mark.parametrize(
+    ("off_threshold", "expected_legs"),
+    [
+        (0.95, {"on", "off", "dtln"}),
+        (0.96, {"on", "dtln"}),
+    ],
+)
+async def test_dtln_fire_corroborates_peers_using_each_detector_threshold(
+    off_threshold, expected_legs
+):
+    """Fresh peer scores use each detector's own threshold."""
+    detector_off = _make_detector(threshold=off_threshold)
     detector_dtln = _make_detector(threshold=0.5)
     detector_dtln.score_frame.return_value = 0.92
     wl = _make_wake_loop_triple(
         detector_off=detector_off, detector_dtln=detector_dtln,
     )
-    # AEC ON + AEC OFF have very recent above-threshold scores —
-    # within the STALE_SEC window (0.32 s).
+    # Both peer scores are fresh.
     now = asyncio.get_event_loop().time()
+    wl._wake_legs.legs["on"].detector.threshold = 0.8
     wl._wake_legs.legs["on"].recent_score = 0.87
     wl._wake_legs.legs["on"].recent_score_at = now
     wl._wake_legs.legs["off"].recent_score = 0.95
@@ -285,7 +282,7 @@ async def test_dtln_fire_with_other_legs_above_threshold_records_all_in_fired_le
     kwargs = wl._wake_telemetry.store.begin_event.await_args.kwargs
     assert kwargs["trigger_kind"] == "fire_dtln"  # DTLN won the race
     legs = set(kwargs["fired_legs"].split(","))
-    assert legs == {"on", "off", "dtln"}, kwargs["fired_legs"]
+    assert legs == expected_legs, kwargs["fired_legs"]
 
 
 # ---------------------------------------------------------------------------

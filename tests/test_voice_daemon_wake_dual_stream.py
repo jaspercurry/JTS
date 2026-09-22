@@ -66,8 +66,6 @@ def _make_wake_loop(
             by_token("off"), MagicMock(), detector_off, None,
         )
     wl._wake_legs.fire_lock = asyncio.Lock()
-    from jasper.wake_fusion import WakeFuser
-    wl._wake_legs.fuser = WakeFuser()
     wl._wake_legs.condition = "quiet"
     wl._wake_legs.condition_refreshed_at = 0.0
     wl._wake_legs.capture_ring_on = None  # _ring_noise_floor_dbfs tolerates None
