@@ -5,6 +5,16 @@
 import { h } from "/assets/shared/js/dom.js";
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 
+const unavailableReasons = {
+  no_applied_rear: 'no rear output is active',
+  no_pair_round: 'no front/rear pair round has been measured yet',
+  no_front_pose: 'the pair round has no front measurement',
+  preview_refused: 'this tune cannot be level matched',
+  delta_out_of_range: 'this tune cannot be level matched',
+  cache_miss: 'not computed yet',
+  level_error: 'the level could not be computed'
+};
+
 export function initCardioidCompare(nowPlaying) {
   if (!nowPlaying) return;
   const card = h('section.info-card#cardioid-compare-card', {hidden: true});
@@ -48,7 +58,7 @@ export function initCardioidCompare(nowPlaying) {
       status.push(`Levels matched from round ${match.round_id} (${bankedDate || 'date unknown'}).`);
       status.push(`${match.louder === 'off' ? 'Off' : 'On'} plays ${Math.abs(match.trim_db)} dB lower while you compare.`);
     } else {
-      status.push('Level match unavailable: no front/rear pair measurement on this speaker.');
+      status.push(`Level match unavailable: ${unavailableReasons[match.reason] || 'reason unknown'}.`);
     }
     if (active && expires !== null) status.push(`Resets by itself in ${Math.ceil(expires / 60)} min.`);
     card.replaceChildren(

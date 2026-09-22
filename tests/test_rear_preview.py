@@ -370,8 +370,10 @@ def compare_evidence(tmp_path, monkeypatch):
     monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda path=None: applied if path is None else load(path))
     monkeypatch.setattr(round_bank, "DEFAULT_CAMPAIGN_ROOT", root.parent)
     monkeypatch.setattr(rear_compare, "_levels", {})
+    rear_compare._build_sha.cache_clear()
     readers._front_pair_round.cache_clear()
-    return root, applied
+    yield root, applied
+    rear_compare._build_sha.cache_clear()
 
 
 def test_compare_level_real_model_cached_without_ffts(compare_evidence, monkeypatch):
@@ -380,6 +382,8 @@ def test_compare_level_real_model_cached_without_ffts(compare_evidence, monkeypa
     from jasper.active_speaker.crossover_v2 import rear_pair_round as readers
     from jasper.active_speaker.rear_compare import rear_compare_level
 
+    reader = Mock(wraps=rear_compare._detect_build_sha)
+    monkeypatch.setattr(rear_compare, "_detect_build_sha", reader)
     selector = Mock(wraps=readers.newest_rear_pair_round)
     monkeypatch.setattr(readers, "newest_rear_pair_round", selector)
     preview = Mock(wraps=rear_preview.preview_rear_section)
@@ -396,6 +400,7 @@ def test_compare_level_real_model_cached_without_ffts(compare_evidence, monkeypa
     assert rear_compare_level() == level
     preview.assert_called_once()
     selector.assert_called_once()
+    reader.assert_called_once()
 
 def test_compare_trim_is_a_plain_float(compare_evidence, monkeypatch):
     """A numpy scalar clears every bound check and then the graph write fails."""
@@ -426,25 +431,40 @@ def test_compare_level_bounds(compare_evidence, monkeypatch, delta, trim, louder
 
 
 @pytest.mark.parametrize("fresh", [False, True])
-@pytest.mark.parametrize("identity_field", ["candidate_fingerprint", "applied_at", "root_mtime"])
+@pytest.mark.parametrize("identity_field", [None, "candidate_fingerprint", "applied_at", "root_mtime", "build_sha"])
 def test_compare_cache_invalidates_for_each_identity_field(compare_evidence, monkeypatch, identity_field, fresh):
     import os
     from unittest.mock import Mock
-    from jasper.active_speaker import rear_compare
+    from jasper.active_speaker import bundles, rear_compare
 
-    preview = Mock(return_value={"stage": {"relative_charge": 0}, "positions": {}})
+    build = compare_evidence[0].parents[1] / "build.txt"
+    build.write_text("JASPER_GIT_SHA=build-a\n")
+    monkeypatch.setattr(bundles, "_BUILD_MANIFEST_PATH", build)
+    preview = Mock(return_value={})
+    delta = Mock(return_value=None)
     monkeypatch.setattr(rear_preview, "preview_rear_section", preview)
-    rear_compare.rear_compare_level()
+    monkeypatch.setattr(rear_preview, "rear_compare_delta_db", delta)
+    cached = rear_compare.rear_compare_level()
+    assert (cached["status"], cached["reason"]) == ("unavailable", "no_front_pose")
+    delta.return_value = 0.35
     if identity_field == "root_mtime":
         root = compare_evidence[0].parent
         stat = root.stat()
         os.utime(root, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
-    else:
+    elif identity_field == "build_sha":
+        build.write_text("JASPER_GIT_SHA=build-b\n")
+        rear_compare._build_sha.cache_clear()
+    elif identity_field:
         compare_evidence[1][identity_field] = "new"
     if fresh:
         rear_compare._levels.clear()
-    rear_compare.rear_compare_level()
-    assert preview.call_count == 2
+        rear_compare._build_sha.cache_clear()
+    level = rear_compare.rear_compare_level(cached_only=True)
+    assert level["reason"] == ("cache_miss" if identity_field else "no_front_pose")
+    level = rear_compare.rear_compare_level()
+    assert level == ({**cached, "status": "matched", "reason": "", "trim_db": 0.35,
+                      "louder": "on"} if identity_field else cached)
+    assert preview.call_count == (2 if identity_field else 1)
 
 
 @pytest.mark.parametrize("damage", ["missing", "json", "shape", "key", "negative", "excess", "nan"])
