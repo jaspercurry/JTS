@@ -923,10 +923,7 @@ pub const LIVE_VOLUME_RAMP_FRAMES: u32 = SAMPLE_RATE / 10;
 /// The first target snaps in (no ramp from zero); later targets glide over
 /// [`LIVE_VOLUME_RAMP_FRAMES`] so a mid-turn volume change is inaudible.
 /// `force_silent` collapses to zero and re-arms so the next non-muted target
-/// always ramps back up from silence — even at the gain floor. This is the
-/// extraction of fan-in's private ramp so outputd's post-DSP mix loop applies
-/// live re-gain and mute identically; the ramp math is now unit-tested once
-/// here in the hardware-free crate.
+/// always ramps back up from silence — even at the gain floor.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GainRamp {
     initialized: bool,
