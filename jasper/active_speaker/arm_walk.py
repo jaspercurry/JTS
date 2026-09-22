@@ -95,7 +95,7 @@ DEFAULT_STUCK_ALARM_S = 300.0
 DEFAULT_UNREADABLE_CEILING_S = 60.0
 
 #: Where ``install.sh`` puts the turntable adapter on a speaker.
-DEFAULT_TOOL_PATH = Path("/opt/jasper/experiments/usb-turntable/jts_turntable.py")
+DEFAULT_TOOL_PATH = Path("/opt/jasper/jasper/turntable/jts_turntable.py")
 
 # Issue #2516: the vendor retries offset/probe/position itself; stop is safe to
 # repeat here because it is idempotent before the absolute position re-homes.
@@ -354,7 +354,7 @@ class TurntableMover:
             self._stderr_tail = stderr.splitlines()[-1][-200:] if stderr else ""
             code = int(getattr(proc, "returncode", 1))
             error = f"{stderr}\n{payload.get('error', '')}"
-            # experiments/usb-turntable/jts_turntable.py:main emits port_busy before
+            # jasper/turntable/jts_turntable.py:main emits port_busy before
             # controller access: refused stop/position sent zero bytes, safe to retry once.
             if (
                 attempt == 1

@@ -119,8 +119,8 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
   shared crates. `c/jts-ring-ioplug` — ALSA shared-memory ring plugin.
 - `deploy/` — `install.sh` + `lib/install/`, systemd units, nginx confs,
   web assets (`deploy/assets/`, design system in `app.css`).
-  `scripts/` — laptop-side operator tools. `experiments/usb-turntable` is
-  production (turntable-driven speaker measurement) despite the path.
+  `scripts/` — laptop-side operator tools. `jasper/turntable` drives the
+  measurement arm through a system-Python subprocess.
 - Audio path: renderers → snd-aloop/ring → jasper-fanin → CamillaDSP →
   jasper-outputd → DAC ([docs/audio-paths.md](docs/audio-paths.md)).
 - **Single-writer env files** under `/var/lib/jasper/` (wizard- or

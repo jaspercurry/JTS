@@ -523,6 +523,7 @@ set -{"euo" if errexit else "uo"} pipefail
 REPO_DIR="{ROOT}"
 SYSTEMD_DIR="{tmp_path}/systemd"
 STATE_DIR="{tmp_path}/state"
+INSTALL_DIR="{tmp_path}/opt/jasper"
 LOCAL_SBIN_DIR="{tmp_path}/usrlocalsbin"
 APPLE_DONGLE_SERVICE_CARD="auto"
 mkdir -p "$SYSTEMD_DIR" "$STATE_DIR" "$LOCAL_SBIN_DIR"
@@ -1081,6 +1082,79 @@ def test_a_failed_stage_rolls_the_whole_profile_generation_back(
         or call.startswith(("nmcli ", "udevadm "))
         or call == "fn clear_install_in_progress"
     ], issued
+
+
+@pytest.mark.parametrize("profile,inherited", [("full", True), ("streambox", True), ("streambox", False)])
+@pytest.mark.parametrize("fault", [None, "stage", "reload"])
+def test_turntable_migration_preserves_the_stop_target_until_unit_commit(
+    tmp_path, profile, inherited, fault
+):
+    fragment = tmp_path / "systemd-units.sh"
+    source = FRAGMENT.read_text()
+    for root in ("/etc/", "/usr/local/", "/var/lib/", "/sys/"):
+        source = source.replace(root, f"{tmp_path}{root}")
+    fragment.write_text(source)
+    install_dir = tmp_path / "opt/jasper"
+    old_tool = install_dir / "experiments/usb-turntable/jts_turntable.py"
+    unrelated = install_dir / "experiments/unrelated/keep.txt"
+    new_tool = install_dir / "jasper/turntable/jts_turntable.py"
+    for path in (old_tool, unrelated, new_tool):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("keep\n")
+    for directory in ("usr/local/sbin", "usr/local/bin", "usr/local/lib/jasper"):
+        (tmp_path / directory).mkdir(parents=True)
+    unit = tmp_path / "systemd/jasper-turntable-autostop@.service"
+    rule = tmp_path / "etc/udev/rules.d/99-jasper-turntable-autostop.rules"
+    old_unit = "[Service]\nExecStart=/usr/bin/python3 /opt/jasper/experiments/usb-turntable/jts_turntable.py\n"
+    if inherited:
+        unit.parent.mkdir(parents=True)
+        unit.write_text(old_unit)
+        rule.parent.mkdir(parents=True)
+        rule.write_text("inherited rule\n")
+    shims = f'''
+INSTALL_DIR="{install_dir}"
+install_usb_network_files() {{ :; }}
+validate_installed_systemd_units() {{ return 0; }}
+reload_audio_recovery_udev_rules_for_install() {{ :; }}
+activate_usb_network() {{ :; }}
+stage() {{
+    _stage_{profile}_unit_files
+    return {1 if fault == "stage" else 0}
+}}
+systemctl() {{
+    [[ "$1" == daemon-reload ]] || return 0
+    [[ -f "{old_tool}" ]] || return 99
+    if [[ ! -d "{tmp_path}/txn" ]]; then
+        return {1 if fault == "reload" else 0}
+    fi
+}}
+'''
+    script = _stage_rollback_harness(
+        tmp_path, "stage", shims, "activate_staged_unit_files"
+    ).replace(f'source "{FRAGMENT}"', f'source "{fragment}"')
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=30,
+        env={**os.environ, "PATH": f"{tmp_path}/bin:{os.environ['PATH']}",
+             "JTS_STUB_CALLS": str(tmp_path / "install.calls"), "JTS_STUB_FAIL": ""},
+    )
+    assert result.returncode == (1 if fault else 0), result.stderr
+    _assert_no_rm_escaped(tmp_path)
+    assert not (tmp_path / "txn").exists()
+    assert unrelated.read_text() == new_tool.read_text() == "keep\n"
+    if fault:
+        assert old_tool.read_text() == "keep\n"
+    else:
+        assert not old_tool.parent.exists()
+    if fault == "stage":
+        assert unit.exists() is inherited
+        if inherited:
+            assert unit.read_text() == old_unit
+            assert rule.read_text() == "inherited rule\n"
+    else:
+        assert unit.exists() is (inherited or profile == "full")
+        if unit.exists():
+            assert unit.read_bytes() == (ROOT / "deploy/systemd" / unit.name).read_bytes()
+    assert rule.exists() is (inherited or (profile == "full" and fault != "stage"))
 
 
 @pytest.mark.parametrize("profile", ["full", "streambox"])

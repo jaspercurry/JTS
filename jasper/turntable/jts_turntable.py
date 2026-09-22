@@ -66,8 +66,7 @@ AUTOSTOP_PRODUCT = "MT320RUBL40ProV3"
 AUTOSTOP_IO_TIMEOUT = 1.5
 THROTTLED_RE = re.compile(r"\s*throttled=(0x[0-9a-fA-F]+)\s*")
 AUTOSTOP_PORT_RE = re.compile(r"/dev/ttyUSB\d+")
-EXPERIMENT_ROOT = Path(__file__).resolve().parent
-VENDOR_ROOT = EXPERIMENT_ROOT / "vendor"
+VENDOR_ROOT = Path(__file__).resolve().parent / "vendor"
 PORT_LOCK_PATH = Path("/run/lock/jasper-turntable.lock")
 PORT_LOCK_FALLBACK_PATH = Path("/tmp/jasper-turntable.lock")
 _JSON_LOCK_PATH: ContextVar[Path | None] = ContextVar("lock_path", default=None)
@@ -398,7 +397,7 @@ _JSON_PARENT.add_argument(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Manual JTS USB turntable experiment")
+    parser = argparse.ArgumentParser(description="Manual JTS USB turntable")
     parser.add_argument("--port", help="serial path; default uses bundled discovery")
     parser.add_argument(
         "--allow-power-risk",
@@ -553,7 +552,7 @@ def _run_with_session_retry(
             raise
         try:
             return _attempt(), True
-        except Exception as second_exc:
+        except Exception as second_exc:  # noqa: BLE001 - report both hardware attempts
             raise _RetryExhausted(first_exc, second_exc) from second_exc
 
 

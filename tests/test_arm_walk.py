@@ -45,7 +45,7 @@ from jasper.cli import angle_capture as cli
 from tests._log_events import event_fields, event_records
 
 ROOT = Path(__file__).resolve().parents[1]
-TURNTABLE_SCRIPT = ROOT / "experiments" / "usb-turntable" / "jts_turntable.py"
+TURNTABLE_SCRIPT = ROOT / "jasper" / "turntable" / "jts_turntable.py"
 
 
 @pytest.mark.parametrize("initial_s,expected", [

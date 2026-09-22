@@ -39,7 +39,7 @@ restate either.
 | Check the DSP realizes a linearization as the fit says, offline | [Offline emit loop](#offline-emit-loop) |
 | Hold a field incident still in CI as a committed fixture | [Committed incident replay](#committed-incident-replay) |
 | Find what a measurement change actually moved, at value level | [Reading comparator (pre/post value diff)](#reading-comparator-prepost-value-diff) |
-| Detect, probe, or move the experimental USB turntable | [USB turntable experiment](#usb-turntable-experiment) |
+| Detect, probe, or move the USB turntable | [USB turntable](#usb-turntable) |
 | Pull a crossover-v2 round's evidence off the Pi | [Crossover-v2 round banking](#crossover-v2-round-banking) |
 | Run, read, prescribe or apply a speaker-tuning round | [Tuning tools](#tuning-tools) |
 | Fit or re-fit the cardioid rear branches of a `jts_rear_calibration` document | [`scripts/fit-rear-branches.py`](../scripts/fit-rear-branches.py) — usage, input shapes and conventions in `--help` |
@@ -690,9 +690,9 @@ inside a `pytest.approx` tolerance, and prose homes that restate the same fact.
 
 ---
 
-## USB turntable experiment
+## USB turntable
 
-[`experiments/usb-turntable/jts_turntable.py`](../experiments/usb-turntable/jts_turntable.py)
+[`jasper/turntable/jts_turntable.py`](../jasper/turntable/jts_turntable.py)
 is the manual JTS3 adapter for the reusable `usb_turntable` controller package:
 USB detection, identity/firmware probe, read-only offset query, left/right
 relative movement, a confirm-gated zero redefinition, home, the vendor stop, and
@@ -708,9 +708,9 @@ confirmation gate and a bounded one-retry recovery on the vendored transport's
 
 Positioning is opt-in — no voice tool, no scheduler, no permanent daemon; a full
 install adds only a bounded udev-triggered stop one-shot for the known
-CH340-attached turntable. Read the experiment's
-[`README.md`](../experiments/usb-turntable/README.md) before use; coverage in
-`tests/test_usb_turntable_experiment.py`.
+CH340-attached turntable. Read the adapter's
+[`README.md`](../jasper/turntable/README.md) before use; coverage in
+`tests/test_turntable.py`.
 
 ---
 
@@ -743,7 +743,7 @@ tuning CLI.
   safety checks.
 
 The adapter still runs as a subprocess at
-`/opt/jasper/experiments/usb-turntable/jts_turntable.py`. Root must be able to
+`/opt/jasper/jasper/turntable/jts_turntable.py`. Root must be able to
 detect it. A loop polls the session, checks power, moves, settles for 30 seconds,
 and sends `position-ready`. The adapter's confirmation flags come from the
 person's attestation; a power sign voids it.

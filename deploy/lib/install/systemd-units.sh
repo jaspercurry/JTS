@@ -596,6 +596,8 @@ activate_staged_unit_files() {
         fi
     done
     systemctl daemon-reload
+    # Remove after all pre-package turntable installs have been upgraded.
+    rm -rf -- "${INSTALL_DIR:?}/experiments/usb-turntable"
     reload_audio_recovery_udev_rules_for_install
     activate_usb_network
 }
@@ -1360,6 +1362,10 @@ _stage_streambox_unit_files() {
     install_hid_accessory_unit_files
     install_voice_unit_files
     install_audio_output_recovery_unit_files
+    if [[ -f "${SYSTEMD_DIR}/jasper-turntable-autostop@.service" ]]; then
+        _install_file_rows \
+            "0644 deploy/systemd/jasper-turntable-autostop@.service ${SYSTEMD_DIR}/jasper-turntable-autostop@.service"
+    fi
     validate_streambox_web_socket
 }
 

@@ -405,11 +405,11 @@ def test_fast_lane_routes_an_experiment_kit_to_its_own_guard(tmp_path: Path) -> 
         changed_path="experiments/e0-capture/README.md",
         routed_tests=(
             "tests/test_e0_capture_experiment.py",
-            "tests/test_usb_turntable_experiment.py",
+            "tests/test_turntable.py",
         ),
     )
     assert "tests/test_e0_capture_experiment.py" in selected
-    assert "tests/test_usb_turntable_experiment.py" not in selected
+    assert "tests/test_turntable.py" not in selected
 
 
 def test_mypy_dev_tooling_is_packaged_and_in_ci() -> None:
@@ -426,10 +426,7 @@ def test_mypy_dev_tooling_is_packaged_and_in_ci() -> None:
         for dep in data["project"]["optional-dependencies"]["dev"]
         if dep.startswith("mypy")
     ] == ["mypy>=2.3.0,<2.4"]
-    assert data["tool"]["mypy"]["files"] == [
-        "jasper",
-        "experiments/usb-turntable/jts_turntable.py",
-    ]
+    assert data["tool"]["mypy"]["files"] == ["jasper"]
     assert data["tool"]["mypy"]["ignore_missing_imports"] is True
     assert {
         override["follow_imports"]
