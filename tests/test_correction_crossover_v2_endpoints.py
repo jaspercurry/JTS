@@ -43,6 +43,7 @@ import pytest
 from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.crossover_v2.conductor_context import V2ConductorContext
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_REVIEW,
     PHASE_CHECK,
@@ -55,7 +56,8 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.capture_plan import (
     V2_FIRST_BEGIN_TIMEOUT_S,
     build_v2_cloud_index_phase_map,
-    build_v2_session_spec,
+    build_inline_session_spec,
+    LATERAL_MARK_PROMPT,
     build_v2_verify_session_spec,
     v2_first_begin_timeout_s,
 )
@@ -3777,40 +3779,29 @@ def test_default_setup_calibration_for_v2_reuses_the_household_mic_hint(
     assert hint.resolvable is True
 
 
-def test_v2_session_and_verify_specs_carry_the_default_calibration_hint(
-    tmp_path, monkeypatch,
+@pytest.mark.parametrize("verify_only", [False, True])
+@pytest.mark.parametrize("with_calibration", [False, True])
+def test_inline_and_verify_specs_carry_the_default_calibration_hint(
+    tmp_path, monkeypatch, verify_only, with_calibration,
 ):
-    """build_v2_session_spec / build_v2_verify_session_spec's existing
-    **spec_kwargs forwards default_setup_calibration through to
-    build_crossover_sweep_spec's new parameter, landing on the WIRE spec the
-    phone actually receives."""
-
     record = _seed_household_mic(tmp_path, monkeypatch)
     hint = v2evidence.default_setup_calibration_for_v2()
     assert hint is not None
-
-    session_spec = build_v2_session_spec(
-        _roles(), FC_HZ,
-        acknowledgement_binding=_BINDING,
-        default_setup_calibration=hint,
-    )
-    verify_spec = build_v2_verify_session_spec(
-        FC_HZ, acknowledgement_binding=_BINDING, default_setup_calibration=hint,
-    )
-    for spec in (session_spec, verify_spec):
-        wire = spec.to_dict()
-        assert wire["default_setup"]["calibration"]["calibration_id"] == (
-            record.calibration_id
+    kwargs = {"default_setup_calibration": hint} if with_calibration else {}
+    if verify_only:
+        spec = build_v2_verify_session_spec(FC_HZ, acknowledgement_binding=_BINDING, **kwargs)
+    else:
+        spec = build_inline_session_spec(
+            [(MeasureSpec(kind="candidate", program_phase=PHASE_CHECK), LATERAL_MARK_PROMPT, "base")],
+            roles_bands=_roles(), fc_hz=FC_HZ, acknowledgement_binding=_BINDING,
+            retries_per_pose=0, **kwargs,
         )
+    wire = spec.to_dict()
+    if with_calibration:
+        assert wire["default_setup"]["calibration"]["calibration_id"] == record.calibration_id
         assert wire["default_setup"]["calibration"]["mode"] == "serial"
-
-    # Omitted (the pre-W6.12 default): no hint on the wire — every existing
-    # caller (including the two legacy correction_setup.py handlers, which
-    # never pass this) stays byte-identical.
-    bare = build_v2_session_spec(
-        _roles(), FC_HZ, acknowledgement_binding=_BINDING,
-    ).to_dict()
-    assert "default_setup" not in bare
+    else:
+        assert "default_setup" not in wire
 
 
 def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(

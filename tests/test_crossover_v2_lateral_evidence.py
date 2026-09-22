@@ -7,7 +7,6 @@ re-built: two copies of a conductor factory is two definitions of a session.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import math
 from dataclasses import replace
@@ -44,13 +43,11 @@ from jasper.active_speaker.crossover_v2.spatial import (
     LateralPose,
 )
 from jasper.active_speaker.crossover_v2.capture_plan import (
-    build_v2_capture_plan,
     build_v2_cloud_index_phase_map,
-    build_v2_session_spec,
-    resolve_plan_shape,
 )
 from jasper.active_speaker.crossover_v2.pose_curve import lateral_evidence_grid_hz
-from jasper.audio_measurement.program import KIND_SWEEP
+from jasper.active_speaker.plan_run import prepare_plan_captures
+from jasper.audio_measurement.program import KIND_SWEEP, build_verify_program
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     DriverResponse,
@@ -138,124 +135,6 @@ def test_the_walk_is_derived_from_the_cloud_table_and_bracketed_by_the_mark():
     assert len(derived) != 2 * len(capture_plan._LATERAL_POSE_OFFSETS_CM) + 2
 
 
-# --- the shipped stage-1 shape --------------------------------------------------
-
-
-def _stage1(**flags):
-    """The index map, plan and spec one set of stage-1 flags produces."""
-    return (
-        build_v2_cloud_index_phase_map(**flags),
-        build_v2_capture_plan(_roles(), FC_HZ, **flags),
-        build_v2_session_spec(
-            _roles(), FC_HZ, acknowledgement_binding="b" * 24,
-            **flags,
-        ),
-    )
-
-
-def _shipped_flags():
-    return dict(
-        include_lateral=False,
-        include_entry_baseline=capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE,
-    )
-
-
-def test_stage_1_is_the_pinned_three_capture_shape():
-    """A household is not walked: stage 1 is the anchor pair plus #2291's one
-    held-still capture at the mark.
-
-    The shape is written out INDEPENDENTLY of the flags, so a build that flipped
-    a flag and also changed the shape some other way still fails.
-
-    Why no walk, in one line: over the 8 banked rounds it was 59.4% of all
-    session audio, never changed an outcome, and fed a statistic whose
-    rank-1-to-rank-2 gaps (0.004–2.13 dB) sit under its own 3.54 dB repeat
-    noise. It was paused on 2026-08-18 and retired with the corner hunt it fed;
-    :func:`test_a_walk_still_builds_r17s_shape_byte_for_byte` is the executable
-    half of the promise that the walk MACHINERY an operator's staged angle walk
-    runs is untouched.
-    """
-    assert capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE is True
-
-    index_phase, plan, spec = _stage1(**_shipped_flags())
-
-    # Stage 1 stated in full: the anchor pair, then #2291's entry baseline. The
-    # pre-apply cloud stays off on its own separate flag, as it has since R15.
-    assert index_phase == {
-        1: PHASE_CHECK, 2: PHASE_MEASURE, 3: journey.PHASE_ENTRY_BASELINE,
-    }
-    assert [e.kind_label for e in plan.entries] == [
-        "check", "measure", "entry_baseline",
-    ]
-    assert plan.capture_target == 3
-    assert plan.max_attempts == 3 + capture_plan.CLOUD_RETAKE_ALLOWANCE
-    assert capture_plan.stage1_base_entries(resolve_plan_shape()) == 3
-
-    # No pose reaches the wire — this plan is what the phone renders.
-    raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
-    assert b"lateral" not in raw
-    assert b"entry_baseline" in raw
-    # RE-DERIVED 2026-08-18 (session trims): the courtesy prelude now rides
-    # only the capture that OPENS a session, so MEASURE budgets 3600 ms less
-    # while CHECK and the entry baseline are untouched. The byte LENGTH is
-    # unchanged (same digit count), which is why the digest is the part that
-    # moved.
-    assert (len(raw), hashlib.sha256(raw).hexdigest()) == (
-        1107, "d2f5c5a40bc2466dd3660c7ec783dff6bd3c05109fbd246dc7daf7978c5d2b77",
-    ), "the shipped stage-1 plan's wire bytes moved"
-
-    # …and the consent screen no longer tells the household they will be
-    # walked. Its walk note is the one R17 added; with the poses gone the
-    # screen must not still promise a move nobody will be asked to make.
-    notes = [c["text"] for c in spec.screen if c["type"] == "note"]
-    assert not any("of the mark" in note for note in notes)
-
-
-def test_a_walk_still_builds_r17s_shape_byte_for_byte():
-    """The MACHINERY-not-DELETED promise, executable.
-
-    Every piece of the walk stays in the tree for an operator's staged angle
-    walk, so asking the builders for one must reproduce R17's shipped stage 1
-    EXACTLY — same phases, same entry labels, same capture target, and the same
-    wire bytes the phone rendered (2,692 / ``c5cfa51f…``, carried over verbatim
-    from the pin this file kept while stage 1 shipped the walk on). A refactor
-    that quietly ate a prompt, a screen or a plan entry fails here rather than
-    on the first operator who stages a walk.
-
-    ``include_lateral=True`` is asked of the builders directly, which is what
-    ``prepare_v2_session`` itself does once it has taken a staged walk.
-    """
-    poses = len(capture_plan.LATERAL_POSE_PROMPTS)
-    index_phase, plan, spec = _stage1(
-        **{**_shipped_flags(), "include_lateral": True}
-    )
-
-    assert index_phase == (
-        {1: PHASE_CHECK, 2: PHASE_MEASURE}
-        | {index: PHASE_LATERAL for index in range(3, 3 + poses)}
-        | {3 + poses: journey.PHASE_ENTRY_BASELINE}
-    )
-    assert [e.kind_label for e in plan.entries] == [
-        "check", "measure", *["lateral"] * poses, "entry_baseline",
-    ]
-    assert plan.capture_target == 3 + poses
-    assert plan.max_attempts == 3 + poses + capture_plan.CLOUD_RETAKE_ALLOWANCE
-
-    raw = json.dumps(plan.to_dict(), separators=(",", ":")).encode("utf-8")
-    # RE-DERIVED 2026-08-18 (session trims), same cause and same byte length as
-    # the shipped shape above: MEASURE and every pose that replays it budget one
-    # prelude less. R17's plan SHAPE is what this pins — entry count, order and
-    # copy — and none of that moved.
-    assert (len(raw), hashlib.sha256(raw).hexdigest()) == (
-        2692, "c5cfa51f34c770aa83b9907c6a66b6d75a006b8f84a0f58eb888400739b76da2",
-    ), "a walk no longer reproduces the plan R17 shipped"
-
-    # The consent copy comes back with it — the household is told they will be
-    # moved, which is the whole reason that note exists.
-    notes = [c["text"] for c in spec.screen if c["type"] == "note"]
-    assert any("of the mark" in note for note in notes)
-
-
 def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
     """The third guard of the completeness claim — it fails if a SURFACE was
     missed rather than a rule broken. Driven end to end: a real conductor's
@@ -306,45 +185,34 @@ def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
 # --- the capture plan ---------------------------------------------------------
 
 
-def test_stage_1_walks_the_poses_with_the_anchors_own_program_duration():
-    plan = build_v2_capture_plan(
-        _roles(), FC_HZ,
-        include_lateral=True,
+@pytest.mark.parametrize("purpose", ["speaker", "room"])
+def test_inline_summed_lateral_entries_budget_the_requested_sweep(purpose):
+    request = ac.AngleCaptureRequest((
+        ac.AngleStop(22, ac.REGIME_SUMMED, candidate_id="trial", purpose=purpose),
+    ), candidates=("trial",))
+    captures = prepare_plan_captures(request, roles_bands=_roles())
+    plan = capture_plan.build_inline_session_spec(
+        [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
+        roles_bands=_roles(), fc_hz=FC_HZ, acknowledgement_binding="b" * 24,
+        retries_per_pose=0,
+    ).capture_plan
+    (entry,) = plan.entries
+    assert entry.kind_label == PHASE_LATERAL
+    band = (150.0, 20000.0) if purpose == "room" else None
+    assert captures[0].spec.sweep_band_hz == (band or ())
+    program = build_verify_program(
+        FC_HZ, measurement_band_hz=programs.measurement_band_hz(_roles()),
+        sweep_band_hz=band,
     )
-    kinds = [entry.kind_label for entry in plan.entries]
-    assert kinds == ["check", "measure"] + ["lateral"] * LATERAL_COUNT
-    measure_entry = plan.entries[1]
-    for entry, prompt in zip(plan.entries[2:], capture_plan.LATERAL_POSE_PROMPTS):
-        # A pose replays the MEASURE program, so its budget is MEASURE's — a
-        # phone sized for the summed sweep would stop recording mid-pose.
-        assert entry.duration_ms == measure_entry.duration_ms
-        assert entry.screen["title"] == prompt.headline
-        assert entry.screen["auto_advance"] == capture_plan.AUTO_ADVANCE_TAP
-        assert entry.screen["progress"] == capture_plan.capture_progress_label(
-            entry.index + 1, plan.capture_target
-        )
-    assert plan.capture_target == 2 + LATERAL_COUNT
+    assert entry.duration_ms == capture_plan._program_duration_ms(program) + capture_plan.CAPTURE_ENTRY_MARGIN_MS
+    assert entry.screen[capture_plan.POSITION_DEG_KEY] == "22"
 
 
-def test_the_index_phase_map_and_the_emitted_entries_agree():
-    mapping = build_v2_cloud_index_phase_map(include_lateral=True)
-    plan = build_v2_capture_plan(_roles(), FC_HZ, include_lateral=True)
-    assert len(mapping) == plan.capture_target
-    assert [mapping[e.index + 1] for e in plan.entries] == [
-        {"check": PHASE_CHECK, "measure": PHASE_MEASURE, "lateral": PHASE_LATERAL}[e.kind_label]
-        for e in plan.entries
-    ]
-    lateral_indexes = [i for i, phase in mapping.items() if phase == PHASE_LATERAL]
-    assert lateral_indexes == list(range(3, 3 + LATERAL_COUNT))
-
-
-def test_the_retry_budget_grows_with_lateral_entries():
-    shape = resolve_plan_shape()
-    baseline = build_v2_capture_plan(_roles(), FC_HZ, plan_shape=shape)
-    assert baseline.max_attempts == baseline.capture_target + capture_plan.CLOUD_RETAKE_ALLOWANCE
-    walked = build_v2_capture_plan(_roles(), FC_HZ, plan_shape=shape, include_lateral=True)
-    assert walked.capture_target == baseline.capture_target + LATERAL_COUNT
-    assert walked.max_attempts == baseline.max_attempts + LATERAL_COUNT
+@pytest.mark.parametrize("capture_target", [2, 3, 2 + LATERAL_COUNT, 3 + LATERAL_COUNT])
+def test_the_retry_budget_grows_with_lateral_entries(capture_target):
+    assert capture_plan.stage1_plan_max_attempts(capture_target) == (
+        capture_target + capture_plan.CLOUD_RETAKE_ALLOWANCE
+    )
 
 
 # --- priors: the pose evidence stays NEUTRAL ----------------------------------

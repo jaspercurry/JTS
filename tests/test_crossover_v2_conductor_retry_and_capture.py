@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conductor W5a: the bounded-retry ruling and the capture-plan auto-advance policy."""
+"""Conductor W5a: bounded retries and capture evidence."""
 
 from __future__ import annotations
 
@@ -27,12 +27,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     locate_failed_diagnosis,
 )
 from jasper.active_speaker.crossover_v2.capture_plan import (
-    AUTO_ADVANCE_COUNTDOWN,
-    AUTO_ADVANCE_COUNTDOWN_S,
-    AUTO_ADVANCE_TAP,
     CLOUD_POSITION_PROMPTS,
-    build_v2_capture_plan,
-    build_v2_cloud_index_phase_map,
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
@@ -779,65 +774,3 @@ def test_verify_only_rearm_session_never_waits_on_a_cloud_it_has_no_captures_for
     assert c.current_phase == PHASE_VERIFY
     _run_phase(c, 1, 1)
     assert c.current_phase == PHASE_DONE
-
-
-# --- capture plan (auto-advance policy, §5.2/§5.7) ---------------------------------
-
-
-def test_capture_plan_entries_carry_auto_advance_policy():
-    plan = build_v2_capture_plan(_roles(), FC_HZ)
-    assert plan.schema_version == 2
-    check, measure = plan.entries[0], plan.entries[1]
-    # CHECK and MEASURE each take a tap. Every prompted cloud position needs
-    # its own tap, because the operator has to physically move the mic
-    # between them.
-    assert check.screen["auto_advance"] == AUTO_ADVANCE_TAP
-    # MEASURE used to auto-advance behind a 5 s cancelable countdown (same
-    # spot, no movement needed). Issue #1823: it is also the session's longest
-    # capture and the one that can be its loudest, and rolling into it unasked
-    # read as the speaker taking a liberty — so it takes a tap, behind copy
-    # that says what is coming. The countdown vocabulary is retained for a
-    # future same-spot transition; it is simply unused by this entry, so the
-    # countdown-only keys are gone with it.
-    assert measure.screen["auto_advance"] == AUTO_ADVANCE_TAP
-    assert "countdown_s" not in measure.screen
-    assert "cancelable" not in measure.screen
-    # HEDGED on purpose. #1825/#1829 solve each driver's MEASURE level to the
-    # SNR the fit needs in its own band, so a quiet room gets a quiet MEASURE —
-    # "louder" flat would be a promise the speaker no longer keeps.
-    assert "can be the loudest" in measure.screen["body"]
-    assert "louder —" not in measure.screen["body"]
-    # The vocabulary itself survives the flip — the page still implements the
-    # policy and a future same-spot transition can earn it back — but no
-    # SHIPPED entry uses it today. Pinned so "unused, delete it" and "silently
-    # reinstated on MEASURE" are both visible changes.
-    assert AUTO_ADVANCE_COUNTDOWN_S > 0
-    assert all(
-        entry.screen.get("auto_advance") != AUTO_ADVANCE_COUNTDOWN
-        for entry in plan.entries
-    )
-    # …and the END screen is stage 2's, not stage 1's: nothing here may claim
-    # the speaker is tuned. (The generic page fallback a stage-1 plan therefore
-    # falls back to is PR-T4's; see the work order's D7 list.)
-    assert all("done_title" not in entry.screen for entry in plan.entries)
-    # Durations are per-entry (heterogeneous) and positive.
-    assert all(entry.duration_ms > 0 for entry in plan.entries)
-    assert len({entry.duration_ms for entry in plan.entries}) > 1
-
-
-def test_capture_plan_index_phase_map_matches_the_emitted_entries():
-    """The prompt an entry carries and the phase the conductor runs for that
-    index come from the same builder — a drift here would prompt "move left"
-    while the conductor analysed a VERIFY."""
-    plan = build_v2_capture_plan(_roles(), FC_HZ)
-    index_phase = build_v2_cloud_index_phase_map()
-    assert len(index_phase) == plan.capture_target
-    kind_for_phase = {
-        PHASE_CHECK: "check",
-        PHASE_MEASURE: "measure",
-        PHASE_VERIFY: "verify",
-        PHASE_CLOUD_VERIFY: "cloud_verify",
-    }
-    for entry in plan.entries:
-        # Entry indexes are 0-based; the capture's own index space is 1-based.
-        assert entry.kind_label == kind_for_phase[index_phase[entry.index + 1]]

@@ -72,7 +72,6 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.contracts import REFERENCE_MARK_DESIGN_AXIS
 from jasper.active_speaker.crossover_v2.programs import SUMMED_SWEEP_PHASES
 from jasper.active_speaker.crossover_v2.capture_plan import (
-    build_v2_capture_plan,
     build_v2_cloud_index_phase_map,
     resolve_plan_shape,
 )
@@ -88,7 +87,6 @@ from tests.crossover_v2_fixtures import (
     bank_into,
     _capture,
     _conductor,
-    _roles,
     _run_phase,
     _verify_analysis,
 )
@@ -188,28 +186,7 @@ def _failed_integrity() -> CaptureIntegrity:
 # --------------------------------------------------------------------------- #
 
 
-def test_stage_1_plans_exactly_one_entry_baseline_and_it_is_last():
-    """Position, not membership.
-
-    "Immediately before apply" is the entry baseline's whole justification —
-    every capture that followed it would be room, microphone, and household
-    drift landing inside the before→after bracket. An entry that merely EXISTS
-    somewhere in the plan would satisfy a membership check and lose that.
-    """
-    plan = build_v2_capture_plan(
-        _roles(), FC_HZ, plan_shape=resolve_plan_shape(),
-
-        include_lateral=False,
-        include_entry_baseline=capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE,
-    )
-    labels = [entry.kind_label for entry in plan.entries]
-
-    assert labels.count("entry_baseline") == 1
-    assert labels[-1] == "entry_baseline"
-    # The capture drives 0-based entry indexes; the last entry must address the
-    # last slot, or "last in the list" would not mean "last in the session".
-    assert plan.entries[-1].index == plan.capture_target - 1
-
+def test_stage_1_map_keeps_exactly_one_entry_baseline_last():
     index_phase = _stage_1_map()
     assert index_phase[max(index_phase)] == PHASE_ENTRY_BASELINE
     assert list(index_phase.values()).count(PHASE_ENTRY_BASELINE) == 1

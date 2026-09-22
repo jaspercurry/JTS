@@ -56,8 +56,7 @@ PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[
 #: The phases whose capture OPENS a session's playback, and so carries the
 #: courtesy prelude (#1677). No env/config switch. :data:`PHASE_ENTRY_BASELINE`
 #: is stage 1's LAST capture rather than an opener, but it PLAYS the announced
-#: program, and ``build_v2_capture_plan`` sizes its recording window from this
-#: set — dropping it would budget the phone 3.6 s short.
+#: program.
 COURTESY_PRELUDE_PHASES = frozenset(
     {PHASE_CHECK, PHASE_VERIFY, PHASE_ENTRY_BASELINE}
 )

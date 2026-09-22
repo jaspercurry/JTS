@@ -38,7 +38,6 @@ import pytest
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker.crossover_v2 import capture_plan
 from jasper.active_speaker.crossover_v2 import spatial
-from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     CrossoverV2Refused,
     REASON_REGISTRY,
@@ -48,7 +47,6 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     AUTO_ADVANCE_TAP,
     POSITION_DEG_KEY,
     POSITION_ROLE_KEY,
-    build_v2_capture_plan,
     build_v2_verify_capture_plan,
     position_angle_deg,
 )
@@ -110,22 +108,7 @@ STAGE2_ANGLES = (0, 0, -7, 7, -22, 22)
 # Production refuses a session with no volume owner; stand one up.
 pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
 
-def _stage1_of(shape):
-    """The shipped stage-1 plan for a RESOLVED shape — the flags are the
-    shipped ones so a plan built here is the plan a session runs."""
-    return build_v2_capture_plan(
-        flow._DISPLAY_ROLES_BANDS,
-        flow._DISPLAY_FC_HZ,
-        plan_shape=shape,
-        include_lateral=False,
-        include_entry_baseline=capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE,
-    )
-
-
 def _stage2_of(shape):
-    """The shipped stage-2 plan for a RESOLVED shape — the twin of
-    :func:`_stage1_of`, and the only builder that reaches
-    ``_positioned_prompt`` in a shipped shape (stage 1's cloud group is off)."""
     return build_v2_verify_capture_plan(FC_HZ, plan_shape=shape)
 
 
