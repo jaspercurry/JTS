@@ -620,8 +620,7 @@ gate_core_health() {
     echo "==> Post-deploy core health (jasper-doctor --core)"
     local rc=0 tmp line verdict=""
     wait_for_units_settled
-    # tee to a file, not a capture: the rows stay on stdout, where an
-    # attended sudo prompt also rides.
+    # Keep attended sudo prompts visible while retaining the verdict.
     tmp="$(mktemp "${TMPDIR:-/tmp}/jts-core-health.XXXXXX")" || return 1
     run_remote_sudo "systemd-run --quiet --wait --pipe --collect \
 -p MemoryMax=96M -p RuntimeMaxSec=60 /opt/jasper/.venv/bin/jasper-doctor --core" \
@@ -632,17 +631,17 @@ gate_core_health() {
     rm -f "$tmp"
     # --wait folds timeout, oom-kill and a bus failure alike into rc 1, so
     # only the doctor's own line is a verdict. See ADR-0248.
-    case "$verdict" in
-        *" status=fail"*)
+    case "${verdict%$'\r'} " in
+        *" status=fail "*|*" speaker_silent=true "*)
             echo "  event=deploy.core_health status=fail rc=${rc}"
             echo "─────────────────────────────────────────────────────────────" >&2
             echo " DEPLOY VERIFICATION FAILED: the post-deploy core doctor"  >&2
-            echo " reported a failing row on ${PI_HOST}."                    >&2
+            echo " reported failed health or speaker silence on ${PI_HOST}." >&2
             echo " Diagnose on the Pi:"                                      >&2
             echo "   sudo /opt/jasper/.venv/bin/jasper-doctor --core"        >&2
             echo "─────────────────────────────────────────────────────────────" >&2
             return 1 ;;
-        *" status=ok"*) return 0 ;;
+        *" status=ok "*) return 0 ;;
     esac
     if [[ "$rc" == "255" ]]; then
         echo "  event=deploy.core_health status=unreachable rc=${rc}"

@@ -4,8 +4,9 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 import os
+import io
 from pathlib import Path
 import pty
 import shutil
@@ -14,6 +15,8 @@ import tempfile
 import textwrap
 import unittest
 
+from jasper.cli.doctor._cli import render
+from jasper.doctor_contract import CheckResult
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "scripts" / "deploy-to-pi.sh"
@@ -22,13 +25,10 @@ LIB = ROOT / "scripts" / "_lib.sh"
 USE = ROOT / "scripts" / "use"
 ENV_LOCAL = ROOT / ".env.local"
 ISOLATED_SCRIPTS = (DEPLOY, ONBOARD, LIB, USE)
-# Resolved before any test prepends the fake-remote bin dir, so the shim below
-# can hand real work back to a real interpreter.
 REAL_PYTHON3 = shutil.which("python3")
 
 
 def fake_peer_id(host: str) -> str:
-    """The identity FAKE_SSH reports for a given fake speaker."""
     hexed = (host.encode().hex() + "0" * 32)[:32]
     return "-".join(
         (hexed[:8], hexed[8:12], hexed[12:16], hexed[16:20], hexed[20:32])
@@ -199,10 +199,10 @@ case "$cmd" in
     exit "${FAKE_SETTLE_RC:-0}"
     ;;
   *jasper-doctor*)
-    # The shape a Pi prints: coloured rows, a blank line, then the verdict
-    # line the wrapper parses out.
     printf '\n  \033[32m\xe2\x9c\x93\033[0m service runtime state    no failed units\n\n'
-    if [[ "${FAKE_DOCTOR_VERDICT:-ok}" != none ]]; then
+    if [[ -n "${FAKE_DOCTOR_REPORT:-}" ]]; then
+      cat "$FAKE_DOCTOR_REPORT"
+    elif [[ "${FAKE_DOCTOR_VERDICT:-ok}" != none ]]; then
       printf 'event=deploy.health status=%s fail=0 warn=0 rows=12 speaker_silent=false\n' \
         "${FAKE_DOCTOR_VERDICT:-ok}"
     fi
@@ -1028,35 +1028,31 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertNotIn("==> Done.", combined)
 
     def test_the_deploy_exit_code_carries_the_core_health_verdict(self):
-        """The doctor's own `event=deploy.health status=` line is the
-        verdict, not the transient unit's exit code: `systemd-run --wait`
-        folds a fired bound, an OOM kill and a bus failure alike into rc
-        1, so a run that printed no verdict is named and stays green —
-        while a transport that died is named and is not. See ADR-0248."""
-        for verdict, doctor_rc, expect_rc, events in (
-            ("ok", "0", 0, []),
-            ("fail", "1", 1, ["event=deploy.core_health status=fail rc=1"]),
-            (
-                "none",
-                "1",
-                0,
-                ["event=deploy.core_health status=no_verdict rc=1"],
-            ),
-            (
-                "none",
-                "255",
-                255,
-                ["event=deploy.core_health status=unreachable rc=255"],
-            ),
+        for verdict, silent, doctor_rc, expect_rc, status, ending in (
+            ("ok", "false", "0", 0, None, "\n"),
+            ("ok", "true", "0", 1, "fail", "\n"),
+            ("ok", "true", "0", 1, "fail", "\r\n"),
+            ("fail", "false", "1", 1, "fail", "\n"),
+            ("fail", "true", "1", 1, "fail", "\n"),
+            ("none", "false", "1", 0, "no_verdict", "\n"),
+            ("none", "false", "255", 255, "unreachable", "\n"),
         ):
-            with self.subTest(verdict=verdict, doctor_rc=doctor_rc):
+            with self.subTest(verdict=verdict, silent=silent, doctor_rc=doctor_rc, ending=ending):
                 fake = FakeRemote(self)
+                report_path = fake.tmp / "doctor.txt"
+                with redirect_stdout(io.StringIO()) as report:
+                    render([CheckResult(
+                        "content transport coherence", "fail" if verdict == "fail" else "warn",
+                        "", reason="split_ring_unfed", speaker_silent=silent == "true",
+                    )], core=True)
+                report_path.write_text(report.getvalue().replace("\n", ending))
                 result = self.run_deploy(
                     fake,
                     env_local=None,
                     PI_HOST="jts3.local",
                     PI_USER="pi",
                     JASPER_HOSTNAME="jts3.local",
+                    FAKE_DOCTOR_REPORT=str(report_path) if verdict != "none" else "",
                     FAKE_DOCTOR_VERDICT=verdict,
                     FAKE_DOCTOR_RC=doctor_rc,
                 )
@@ -1064,14 +1060,14 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
                 calls = fake.calls()
                 combined = result.stdout + result.stderr
                 self.assertEqual(result.returncode, expect_rc, combined)
-                # One line per result, never two.
                 self.assertEqual(
                     [
                         line.strip()
                         for line in result.stdout.splitlines()
                         if "event=deploy.core_health" in line
                     ],
-                    events,
+                    [f"event=deploy.core_health status={status} rc={doctor_rc}"]
+                    if status else [],
                 )
                 self.assertIn("jasper-doctor\\ --core", calls)
                 # The remote run carries install.sh's bound. See ADR-0242.
@@ -1123,14 +1119,14 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
 
         calls = fake.calls()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        # The short sha's auto-abbreviated length differs between this
-        # checkout and the disposable clone the script runs in; pin only
-        # that it is a prefix of the full sha.
         sha_full = git_head("HEAD")
-        self.assertRegex(
-            result.stdout, rf"sha:    {sha_full[:7]}[0-9a-f]* \({sha_full}\)"
+        overlay = subprocess.run(
+            ["git", "diff", "--quiet", "HEAD", "--", *map(str, ISOLATED_SCRIPTS)], cwd=ROOT,
         )
-        self.assertNotIn("-dirty", result.stdout)
+        self.assertIn(overlay.returncode, (0, 1))
+        suffix = "-dirty" if overlay.returncode else ""
+        self.assertRegex(result.stdout, rf"sha:    {sha_full[:7]}[0-9a-f]*{suffix} \({sha_full}\)")
+        self.assertEqual("-dirty" in result.stdout, bool(overlay.returncode))
         self.assertIn("alice@jts3.local:/home/alice/jts/", calls)
         self.assertIn("sudo -n sh -c", self._launch_line(fake))
         self.assertIn("/home/alice/jts/deploy/install.sh", calls)

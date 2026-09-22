@@ -252,13 +252,9 @@ def _crossed_transport_pair(label: str, reason: str, stranded: str) -> CheckResu
     )
 
 
-@doctor_check()
+@doctor_check(core=True)
 def check_content_transport_coherence() -> CheckResult:
     """The post-DSP hop's three ends must agree: graph, bridge, and ring path.
-
-    One check over both rungs of the ring arm ladder: every disagreement
-    between them is the same finding — the speaker emits nothing while every
-    daemon looks healthy — under the same remedy.
 
     * the loaded CamillaDSP graph writes a post-DSP ring while
       ``JASPER_OUTPUTD_CONTENT_BRIDGE`` is not ``shm_ring``: nobody consumes

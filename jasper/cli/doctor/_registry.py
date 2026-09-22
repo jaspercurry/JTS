@@ -71,8 +71,6 @@ _ROSTER_POSITION: dict[str, int] = {
     module: position for position, module in enumerate(MODULE_ROSTER)
 }
 
-# The only modules a ``--core`` run imports: those declaring a ``core=True``
-# check.
 CORE_MODULES: frozenset[str] = frozenset({
     "renderers",
     "privsep",
@@ -80,6 +78,7 @@ CORE_MODULES: frozenset[str] = frozenset({
     "resilience",
     "audio_runtime_fanin",
     "audio_runtime_camilla",
+    "audio_runtime_ring",
     "audio_runtime_outputd",
 })
 
