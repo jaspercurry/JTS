@@ -1146,11 +1146,6 @@ def test_active_speaker_stop_and_level_payloads_are_no_audio(
         "JASPER_ACTIVE_SPEAKER_CALIBRATION_LEVEL_STATE",
         str(tmp_path / "calibration-level.json"),
     )
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_TONE_ARTIFACT_DIR",
-        str(tmp_path / "tone-artifacts"),
-    )
-    monkeypatch.setenv("JASPER_AUDIO_LAB_TONE_BACKEND", "wav_artifact")
     environment = {
         "status": "pass",
         "load_gate": "ready",

@@ -38,7 +38,6 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     parse_camilla_devices_config,
 )
-from jasper.active_speaker.playback import FORBIDDEN_TEST_PCM_TOKENS
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GraphSafety,
@@ -385,22 +384,6 @@ def test_the_stereo_ring_is_a_forbidden_active_playback_target():
     # carries a full-range stereo program to a stereo sink. Targeting it would
     # put per-driver audio on a full-range path.
     assert RING_PLAYBACK_DEVICE in active_camilla_yaml.FORBIDDEN_ACTIVE_PLAYBACK_TOKENS
-
-
-def test_both_rings_are_forbidden_test_pcm_targets():
-    """An audio-lab tone must never be injected into either ring.
-
-    Sharper than "wrong output": a ring is single-producer, and its epoch
-    takeover ACCEPTS a second writer where a raw ALSA ``hw`` device would refuse
-    with EBUSY. So a stray tone is admitted, not rejected — and on the active
-    ring it lands post-crossover, where a full-range tone reaches a compression
-    driver.
-    """
-    from jasper.active_speaker.playback import _forbidden_test_pcm_token
-
-    for device in (RING_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE):
-        assert _forbidden_test_pcm_token(device) is not None, device
-    assert RING_ACTIVE_PLAYBACK_DEVICE in FORBIDDEN_TEST_PCM_TOKENS
 
 
 # --------------------------------------------------------------------------

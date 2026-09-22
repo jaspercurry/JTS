@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from jasper.active_speaker.crossover_declaration import CrossoverGeometry
     from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 
-from jasper.active_speaker import commissioning_coordinator, design_draft as design_draft_store
+from jasper.active_speaker import calibration_level, commissioning_coordinator, design_draft as design_draft_store
 from jasper.active_speaker.driver_safety import build_driver_research_context
 from jasper.active_speaker.driver_safety_prompt import build_driver_research_prompt
 from jasper.active_speaker.installation import installation_view
@@ -30,6 +30,7 @@ from jasper.active_speaker.playback_route import (
     active_lane_capability_gap, active_playback_route_capability,
 )
 from jasper.active_speaker.rear_calibration import RearCalibrationError, diagnostic_seed, read_rear_calibration
+from jasper.active_speaker.safe_playback import stop_safe_playback_session
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
 from jasper.active_speaker.measurement_programs import program_entries
@@ -553,14 +554,9 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
 def _active_speaker_stop_payload() -> dict[str, Any]:
     """Stop the no-audio safety session."""
 
-    from jasper.active_speaker.calibration_level import update_calibration_level_state
-    from jasper.active_speaker.playback import stop_tone_playback
-    from jasper.active_speaker.safe_playback import stop_safe_playback_session
-
-    playback = stop_tone_playback(reason="operator_stop")
     state = dict(stop_safe_playback_session())
     try:
-        state["calibration_level"] = update_calibration_level_state(
+        state["calibration_level"] = calibration_level.update_calibration_level_state(
             action="stop", run_id=state.get("session_id")
         )
     except Exception as e:  # noqa: BLE001
@@ -582,8 +578,6 @@ def _active_speaker_stop_payload() -> dict[str, Any]:
         action="stop",
         status=str(state.get("status")),
         session_id=str(state.get("session_id")),
-        playback_status=str(playback.get("status")),
-        audio_emitted=str(bool(playback.get("audio_emitted"))),
         level_status=str(state.get("calibration_level", {}).get("status")),
     )
     return state
