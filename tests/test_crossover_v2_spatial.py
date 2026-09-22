@@ -1302,23 +1302,21 @@ def test_a_cloud_with_no_grid_fails_open_rather_than_banning_boost():
 # --------------------------------------------------------------------------- #
 
 
-def _spatial_imports() -> set[str]:
-    """Every module name :mod:`.spatial` imports, including inside functions.
-
-    Parsed rather than read as text, because the module's own docstring NAMES
-    the modules it must not import — a substring check calls that a violation.
-    Parsed rather than introspected, because an import that only runs inside a
-    function leaves no trace on the module object, and that is exactly the
-    shape a later edit would take.
-    """
+def _spatial_tree():
     import ast
     from pathlib import Path
 
-    source = (
-        Path(spatial.__file__).resolve()
-    ).read_text()
+    return ast.parse("\n".join(
+        path.read_text() for path in sorted(Path(spatial.__file__).parent.glob("*.py"))
+    ))
+
+
+def _spatial_imports() -> set[str]:
+    """Every module spatial imports, including inside functions."""
+    import ast
+
     names: set[str] = set()
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(_spatial_tree()):
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
@@ -1346,14 +1344,12 @@ def test_the_module_writes_no_journal_lines():
     event names it owns.
     """
     import ast
-    from pathlib import Path
 
     assert "jasper.log_event" not in _spatial_imports()
     assert not hasattr(spatial, "logger")
 
-    tree = ast.parse(Path(spatial.__file__).resolve().read_text())
     called = {
-        node.func.id for node in ast.walk(tree)
+        node.func.id for node in ast.walk(_spatial_tree())
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert "log_event" not in called

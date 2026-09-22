@@ -524,7 +524,7 @@ def test_assemble_cloud_group_result_never_raises_on_a_pipeline_bug(monkeypatch)
     """Diagnostic/disclosure machinery, never a capture-accept gate: a bug
     inside the pipeline degrades to an honest 'unavailable', never a crash
     that would strand a session that just finished a real cloud group."""
-    import jasper.audio_measurement.interference_nulls as nulls_mod
+    from jasper.active_speaker.crossover_v2.spatial import cloud_group as nulls_mod
 
     combined = combine_positions(_locked_cloud(), echo_band_hz=SYNTHETIC_BAND_HZ)
 
@@ -532,9 +532,6 @@ def test_assemble_cloud_group_result_never_raises_on_a_pipeline_bug(monkeypatch)
         raise ValueError("synthetic pipeline failure")
 
     monkeypatch.setattr(nulls_mod, "identify_interference_nulls", _boom)
-    # assemble_cloud_group_result imports identify_interference_nulls lazily
-    # INSIDE its own try block, from the module namespace, so patching the
-    # module attribute is what a real regression would also hit.
     result = assemble_cloud_group_result(combined, echo_band_hz=SYNTHETIC_BAND_HZ)
     assert result == {"available": False, "reason": "pipeline_failed"}
 

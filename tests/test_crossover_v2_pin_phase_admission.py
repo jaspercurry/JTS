@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 import pytest
 
-from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import capture_dispatch, refusal_copy, spatial
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
@@ -78,10 +77,10 @@ def test_every_linearity_admission_site_is_covered_by_a_row_above():
 @pytest.mark.parametrize("site,phases", LINEARITY_SITES.items(), ids=lambda value: getattr(value, "__name__", None))
 def test_the_tripwire_looks_in_every_module_that_carries_the_rule(site, phases):
     owners = Counter(site.__module__ for site in _linearity_admission_sites())
-    assert owners == {capture_dispatch.__name__: 1, spatial.__name__: 3}
-    assert owners[flow.__name__] == 0
+    assert owners == {capture_dispatch.__name__: 1, spatial.screens.__name__: 3}
+    owner = spatial if site.__module__ == spatial.screens.__name__ else capture_dispatch
     for phase in phases:
-        with patch(f"{site.__module__}.{site.__name__}", wraps=site) as called:
+        with patch.object(owner, site.__name__, wraps=site) as called:
             verdict = _refuse_at(phase)
         assert verdict["code"] == REASON_AGC_BEHAVIORAL_FAIL
         assert called.call_args_list[-1].args[0].linearity_ok is False
