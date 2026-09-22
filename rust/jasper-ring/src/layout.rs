@@ -9,7 +9,7 @@
 //! object, committed at `rust/jasper-ring/layout.json`, and the other two
 //! spellings — the C writer's `_Static_assert`ed header
 //! (`c/jts-ring-ioplug/jts_ring_shm.h`, checked by its `test_ring_core`) and
-//! the Python reader (`jasper.ring_assets`, checked by `tests/test_ring_assets`)
+//! the Python reader (`jasper.ring_header`, checked by `tests/test_ring_header.py`)
 //! — are compared against that file rather than against this source text.
 //! Change a constant here and regenerate the file (the command is in
 //! [`tests::layout_json_is_committed`]); the two consumers then fail until they
@@ -264,7 +264,7 @@ impl Geometry {
 
 /// The ring ABI as one JSON object — the generator behind the committed
 /// `rust/jasper-ring/layout.json`, which the C ioplug's `test_ring_core` and
-/// `jasper.ring_assets`' contract test read instead of regexing Rust source.
+/// `jasper.ring_header`'s contract test read instead of regexing Rust source.
 ///
 /// Deliberately hand-rolled (this crate has no serde) and deliberately flat:
 /// every value is an unsigned integer or a short string, so the C consumer

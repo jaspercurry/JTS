@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import pytest
 
+from jasper import ring_header
 from jasper.fanin.ring_readiness import (
     ring_edge_width_ready,
     ring_wire_caps_ready,
@@ -314,16 +315,14 @@ def _ring_file(path, *, sample_format, n_slots=2, period=128, channels=2):
     """Write a valid ring header (JRIN magic) with the given geometry."""
     import struct
 
-    import jasper.ring_assets as ra
-
-    hdr = bytearray(ra._RING_HEADER_BYTES)
-    struct.pack_into("<I", hdr, ra._RING_OFF_MAGIC, 0x4A52_494E)
-    struct.pack_into("<I", hdr, ra._RING_OFF_VERSION, 1)
-    struct.pack_into("<I", hdr, ra._RING_OFF_RATE, 48000)
-    struct.pack_into("<I", hdr, ra._RING_OFF_CHANNELS, channels)
-    struct.pack_into("<I", hdr, ra._RING_OFF_SAMPLE_FORMAT, sample_format)
-    struct.pack_into("<I", hdr, ra._RING_OFF_PERIOD_FRAMES, period)
-    struct.pack_into("<I", hdr, ra._RING_OFF_N_SLOTS, n_slots)
+    hdr = bytearray(ring_header._RING_HEADER_BYTES)
+    struct.pack_into("<I", hdr, ring_header._RING_OFF_MAGIC, 0x4A52_494E)
+    struct.pack_into("<I", hdr, ring_header._RING_OFF_VERSION, 1)
+    struct.pack_into("<I", hdr, ring_header._RING_OFF_RATE, 48000)
+    struct.pack_into("<I", hdr, ring_header._RING_OFF_CHANNELS, channels)
+    struct.pack_into("<I", hdr, ring_header._RING_OFF_SAMPLE_FORMAT, sample_format)
+    struct.pack_into("<I", hdr, ring_header._RING_OFF_PERIOD_FRAMES, period)
+    struct.pack_into("<I", hdr, ring_header._RING_OFF_N_SLOTS, n_slots)
     path.write_bytes(bytes(hdr) + b"\x00" * 256)
     return path
 
@@ -357,13 +356,12 @@ def test_stale_file_guard_deletes_a_format_mismatched_ring(tmp_path, monkeypatch
     behind, which this guard clears the same way.
     """
     import jasper.fanin.coupling_reconcile as cr
-    import jasper.ring_assets as ra
 
     ring_a, ring_b = _point_ring_files_at(monkeypatch, tmp_path)
     # Slots and period MATCH the shipped conf.d; only the format is stale. A
     # guard that compared the old two axes would leave this file in place.
-    _ring_file(ring_a, sample_format=ra.RING_SAMPLE_FORMAT_S16LE)
-    _ring_file(ring_b, sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
+    _ring_file(ring_a, sample_format=ring_header.RING_SAMPLE_FORMAT_S16LE)
+    _ring_file(ring_b, sample_format=ring_header.RING_SAMPLE_FORMAT_S32LE)
 
     cr._delete_stale_ring_files("t", "")
 
