@@ -31,9 +31,8 @@ in the worst direction: the ioplug reports a geometry mismatch as a hard
 before the ring exists. The load-bearing one is SLOT == READER PERIOD, which on
 every DAC-floored box is the ring slot the whole box already uses (#3656).
 
-**T-3 — the installer places it, and the deploy DOES unlink its ring file.**
-The second half is the asymmetry with the grouping ring and is deliberate; the
-reason is in that test's docstring.
+**T-3 — the installer places the PCM.** Ring cleanup is covered by
+``test_install_ring_platform_sequencing``.
 """
 
 from __future__ import annotations
@@ -505,50 +504,7 @@ def test_the_installer_ships_the_dac_content_confd():
     )
 
 
-def test_the_deploy_unlinks_the_dac_content_ring_file():
-    """``dac-content.ring`` IS in install's ``rm -f`` list — unlike grouping.
-
-    The discriminator is the FAILURE-ESCALATION ASYMMETRY the installer's own
-    comment records, and this ring lands on the opposite side of it from the
-    grouping ring:
-
-    * Its READER is ``jasper-outputd``, whose unit carries
-      ``StartLimitBurst=5`` + ``StartLimitAction=reboot`` — the same escalation
-      as ``jasper-fanin``. A stale-geometry ring is a fatal attach, and five of
-      those reboot the box mid-install.
-    * Its geometry is DERIVED from the box's ring slot (``RING_SLOT_FRAMES``),
-      so the deploy that changes that number is exactly the deploy that leaves a
-      stale header behind.
-
-    ``jasper-snapclient.service`` — the WRITER, and the reason ``grouping.ring``
-    stays out — carries ``StartLimitBurst=6`` and no ``StartLimitAction``. That
-    bounds the writer's half; it says nothing about the reader's, which is the
-    half that reboots.
-
-    Asserted through the constant rather than the literal, so a path respelled
-    in Python fails here too.
-    """
-    platform = _read(_RING_PLATFORM_SH)
-    removed = set(
-        re.findall(r"^\s*rm -f (/dev/shm/jts-ring/\S+)$", platform, re.MULTILINE)
-    )
-    assert DAC_CONTENT_RING_FILE in removed, (
-        "the DAC-content ring's reader reboots the household on a fatal attach; "
-        f"its file must be unlinked at deploy. rm -f set: {sorted(removed)}"
-    )
-    # RING FILES ONLY: unlinking a `.writer.lock` / `.open.lock` opens a silent
-    # inode-tear window between two holders.
-    assert DAC_CONTENT_RING_WRITER_LOCK not in removed
-
-
 def test_the_outputd_reader_unit_escalates_to_reboot():
-    """The premise the rm -f membership rests on, pinned where it is claimed.
-
-    The asymmetry above is an argument ABOUT TWO UNITS. If outputd ever dropped
-    ``StartLimitAction=reboot``, this ring would belong on the grouping ring's
-    side of the line and the reason recorded in ``ring-platform.sh`` would be
-    stale prose pointing the wrong way.
-    """
     unit = _read(_REPO / "deploy" / "systemd" / "jasper-outputd.service")
     assert re.search(r"^StartLimitAction=reboot$", unit, re.MULTILINE), (
         "jasper-outputd no longer reboots on a start-limit burst — re-decide "

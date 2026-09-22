@@ -27,9 +27,8 @@ different wire from the one snapclient decodes to fails negotiation at open,
 because the shipped ring PCMs are raw ``type jts_ring`` rather than
 ``plug``-wrapped.
 
-**T-3 — the installer places it, and the deploy does not unlink its ring
-file.** The second half is the asymmetry with the coupling's three ring files
-and is deliberate; the reason is in that test's docstring.
+**T-3 — the installer places the PCM.** Ring cleanup is covered by
+``test_install_ring_platform_sequencing``.
 
 **T-6 — the writer's unit adopts the ring-writer contract.** Once snapclient
 writes this ring it inherits the platform's cadence rules: a restart slower
@@ -532,67 +531,6 @@ def test_the_installer_ships_the_grouping_confd():
     ), (
         "the grouping ring PCM must be installed system-wide at 0644 so any "
         "user can resolve the name"
-    )
-
-
-def test_the_deploy_does_not_unlink_the_grouping_ring_file():
-    """``grouping.ring`` is deliberately absent from install's ``rm -f`` list.
-
-    The reason is a FAILURE-ESCALATION ASYMMETRY between the two ends' units,
-    not a difference in which daemon is running at that instant:
-
-    * A stale-geometry ring on the coupling path is a fatal attach for
-      ``jasper-fanin``, whose unit carries ``StartLimitBurst=5`` and
-      ``StartLimitAction=reboot`` — it reboots the box mid-install, before
-      ``write_build_manifest``. That is the trap
-      ``tests/test_install_ring_platform_sequencing.py`` documents, and it makes
-      unlinking those three MANDATORY.
-    * ``jasper-snapclient.service`` carries ``StartLimitBurst=6`` and NO
-      ``StartLimitAction``, by explicit design — its own unit comment reads
-      *"follower degrades, visible; never reboots the household."* A stale
-      ``grouping.ring`` costs six retries and one ``failed`` unit, surfaced on
-      ``/state`` and by ``jasper-doctor``. Unlinking buys nothing against an
-      outcome that is already bounded and already visible.
-
-    **Install ORDER is not the reason**, though it is real and is pinned
-    mechanically by ``test_install_ring_platform_sequencing``. Order does not
-    separate the two cases: the three rings above also have live writers at that
-    instant, and the park set that stops snapclient has a third call site
-    (``park_low_memory_build_units``, gated on a low-memory box) that runs before
-    the ring-platform step — so no statement about who is parked there holds on
-    every box. The escalation asymmetry holds in every ordering.
-
-    Scoped WIDER than the sibling in
-    ``test_install_ring_platform_sequencing``, deliberately: that one reads
-    ``install_jts_ring_platform``'s body, this one scans the whole file, so an
-    ``rm -f`` added anywhere in ``ring-platform.sh`` is caught too.
-    """
-    from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_FILE
-    from jasper.ring_assets import (
-        RING_A_PROGRAM_FILE,
-        RING_ACTIVE_CONTENT_FILE,
-        RING_B_CONTENT_FILE,
-    )
-
-    platform = _read(_RING_PLATFORM_SH)
-    removed = set(re.findall(r"^\s*rm -f (/dev/shm/jts-ring/\S+)$", platform, re.MULTILINE))
-    assert removed == {
-        RING_A_PROGRAM_FILE,
-        RING_B_CONTENT_FILE,
-        RING_ACTIVE_CONTENT_FILE,
-        # The DAC-content return ring (#3118) is the case that proves the rule
-        # is about ESCALATION and not about snapclient: snapclient writes it
-        # too, but its READER is outputd (StartLimitAction=reboot), so a stale
-        # header reboots the household. Its own membership pin, and the
-        # escalation premise it rests on, are in
-        # tests/test_dac_content_ring_platform.py.
-        DAC_CONTENT_RING_FILE,
-    }, f"the deploy-time ring rm -f set changed: {sorted(removed)}"
-    assert GROUPING_RING_FILE not in removed
-    # The asymmetry is stated where the lines are, not only here.
-    assert "grouping.ring" in platform, (
-        "the rm -f block must name grouping.ring's deliberate absence, or the "
-        "next reader adds it as an oversight"
     )
 
 
