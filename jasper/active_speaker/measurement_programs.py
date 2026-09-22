@@ -109,6 +109,7 @@ _PROGRAM_SECTIONS = (
         trial=("seat_express", "room_quick"), preview=(1, "room", ("room",)),
     ),
 )
+PROGRAM_ROWS = _PROGRAM_SECTIONS
 PROGRAM_DOCUMENT_ORDER = tuple(sorted(_PROGRAM_SECTIONS, key=lambda row: row.purpose_order))
 PRESCRIPTION_SECTIONS = tuple(sorted(
     (section for row in _PROGRAM_SECTIONS for section in row.sections), key=lambda section: section.document_order,
@@ -116,9 +117,11 @@ PRESCRIPTION_SECTIONS = tuple(sorted(
 PURPOSES = tuple(name for _, name in sorted(
     [(row.purpose_order, row.purpose) for row in _PROGRAM_SECTIONS] + [(3, PURPOSE_REFERENCE)],
 ))
+#: Tuning order; reference is reached only through the close/spot program.
 RUNNABLE_PROGRAMS = tuple(row.purpose for row in _PROGRAM_SECTIONS)
 PROGRAM_DETAILS = {row.purpose: {"title": row.title, "description": row.description} for row in _PROGRAM_SECTIONS}
 PROGRAM_ENTRIES = tuple({"id": name, **PROGRAM_DETAILS[name]} for name in RUNNABLE_PROGRAMS)
+#: The capture modes the runner supports per purpose. A rear comparison reads each woofer solo as well as their sum, so it is the one non-speaker purpose a :data:`REGIME_BRANCHES` take may carry (issue #5330).
 _REGIMES_BY_PURPOSE = {name: next((row.regimes for row in _PROGRAM_SECTIONS if row.purpose == name),
                                 (REGIME_SUMMED,)) for name in PURPOSES}
 _TRIAL_PROGRAMS: dict[str | None, tuple[str, str, str | None]] = {

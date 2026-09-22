@@ -25,13 +25,32 @@ from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEE
 from jasper.audio_measurement.gating import SEAT_EXEMPT
 
 
+@pytest.mark.parametrize("actual,expected", [
+    pytest.param(pd._JUDGE_ORDER, ("topology", "blend", "alignment", "room", "bass", "rear_calibration", "driver"), id="judge"),
+    pytest.param(tuple(pd._PREVIEW_ROWS), ("rear_calibration", "room", "emitted_graph"), id="preview"),
+    pytest.param(tuple(pc.prescription_contracts()), ("speaker", "room", "bass", "rear"), id="contracts"),
+    pytest.param(tuple(section.name for section in mp.PRESCRIPTION_SECTIONS if section.compose),
+                 ("driver", "blend", "topology", "room", "bass", "rear_calibration"), id="compose-with-rear"),
+    pytest.param(tuple(section.name for section in mp.PRESCRIPTION_SECTIONS if section.compose and section.name != "rear_calibration"),
+                 ("driver", "blend", "topology", "room", "bass"), id="compose-without-rear"),
+    pytest.param(mp.RUNNABLE_PROGRAMS, ("speaker", "rear", "bass", "room"), id="runnable"),
+    pytest.param(tuple(pd.SECTION_KINDS.items()), (
+        ("driver", "jts_crossover_driver_prescription"), ("blend", "jts_crossover_blend_prescription"),
+        ("alignment", "jts_crossover_alignment_prescription"), ("topology", "jts_crossover_topology_prescription"),
+        ("room", "jts_room_prescription"), ("bass", None), ("rear_calibration", "jts_rear_calibration"),
+    ), id="section-kinds"),
+])
+def test_program_projections_preserve_document_order(actual, expected):
+    assert actual == expected
+
+
 @pytest.mark.parametrize("site", [
     "purposes", "runnable", "regimes", "trial", "sections", "kinds", "kind_constants", "judge", "preview",
     "contracts", "compose", "optional_types", "typed_fields", "snapshot", "applied", "applied_names",
     "handoff", "measure", "graph",
 ])
 def test_program_table_projections(site):
-    rows = mp._PROGRAM_SECTIONS
+    rows = mp.PROGRAM_ROWS
     ordered = sorted(rows, key=lambda row: row.purpose_order)
     sections = sorted((section for row in rows for section in row.sections), key=lambda section: section.document_order)
     candidate_fields = [field for row in ordered for field in row.candidate_fields]

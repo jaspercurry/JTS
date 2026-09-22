@@ -23,7 +23,7 @@ from jasper.active_speaker.linearization_fit import linearization_filters_by_rol
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, room_peqs_from_correction, driver_corrections,
 )
-from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS, _PROGRAM_SECTIONS
+from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS, PROGRAM_DOCUMENT_ORDER
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker import rear_calibration
@@ -245,7 +245,7 @@ def _preview_emitted_graph(document: Mapping[str, Any], *, round_dir: Path,
         raise PrescriptionDocumentRefused(exc.reason, section, str(exc), evidence=exc.detail) from exc
 
 
-_PREVIEW_ROWS = {kind: set(names) for _, kind, names in sorted(row.preview for row in _PROGRAM_SECTIONS if row.preview)}
+_PREVIEW_ROWS = {kind: set(names) for _, kind, names in sorted(row.preview for row in PROGRAM_DOCUMENT_ORDER if row.preview)}
 
 
 def preview_kind(document: Mapping[str, Any]) -> str:

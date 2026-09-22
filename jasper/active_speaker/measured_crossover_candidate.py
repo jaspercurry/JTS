@@ -90,6 +90,7 @@ _LINEARIZATION_OUTCOME_VALUES = frozenset({
 })
 
 
+# Shared by the unknown-field check, from_mapping persisted-core filter, and optional-field coverage test.
 _OPTIONAL_FIELD_TYPES = {field.name: field.type for row in PROGRAM_DOCUMENT_ORDER for field in row.candidate_fields}
 
 _ROOM_CORRECTION_KEYS = frozenset({
