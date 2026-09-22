@@ -13,7 +13,6 @@ from jasper.active_speaker import baseline_profile, runtime_contract
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, bank_candidate, find_banked_candidate, load_applied_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.commissioning_experiment import commissioning_candidate
-from jasper.active_speaker.candidate_trials import candidate_boost_issue
 from jasper.active_speaker.crossover_declaration import (
     CrossoverBelowDeclaredFloor, assert_crossover_honours_declared_floor, change_to_record, declaration_change_for_candidate,
 )
@@ -65,8 +64,6 @@ async def apply_candidate(
             expected = selected.fingerprint
             assert_crossover_honours_declared_floor(candidate_on_declaration(selected, declaration.preset).source_preset)
             text = compile_tuning_graph(declaration, candidate=selected)
-            # Boost findings identify measurement graphs, which exclude household EQ.
-            measured_sha = baseline_profile.config_text_sha256(text)
             preference_filters, trim_db = sound_settings.saved_sound_layers()
             if preference_filters or trim_db:
                 text = compile_tuning_graph(declaration, candidate=selected,
@@ -78,11 +75,6 @@ async def apply_candidate(
             if not proof.allowed or proof.classification != runtime_contract.GRAPH_APPROVED_ACTIVE_RUNTIME:
                 raise CrossoverV2Refused("graph safety proof failed", code="baseline_graph_safety_proof_failed",
                                          issues=proof.issues)
-            issue = candidate_boost_issue(measured_sha[:16])
-            if issue:
-                log_event(logger, "correction.crossover_v2_apply", status="blocked", code=issue["code"], candidate_fingerprint=expected)
-                await baseline_profile._record_apply_outcome_into_bundle(measurements, candidate={"issues": [issue]}, apply_state=None, rollback_target=None)
-                return {"status": "blocked", "issue": issue, "issues": [issue], "apply": None}
             target = baseline_profile.baseline_candidate_config_path(text)
             prepared = baseline_profile.prepare_applied_baseline_profile(banked or bank_candidate(selected), declaration=declaration, design_draft=draft,
                 measurements=measurements, config_path=target, config_sha256=sha,

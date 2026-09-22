@@ -2,14 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Bank round advice; only a measured excess-boost finding restores playback."""
+"""Bank round advice."""
 
 from __future__ import annotations
 
 import logging
 import math
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from jasper.audio_measurement.program_analysis import (
@@ -19,8 +19,6 @@ from jasper.log_event import log_event
 from jasper.output_topology import topology_config_fingerprint
 from jasper.output_topology_store import load_output_topology
 
-from ..boost_protection import BOOST_OVER_DECLARED_BOUND, record_boost_finding
-from ..candidate_bank import CandidateBankRefusal
 from .contracts import ENTRY_GRAPH_FINGERPRINT_UNKNOWN
 from .journey import PHASE_VERIFY
 from .round_evidence import (
@@ -30,7 +28,6 @@ from .round_evidence import (
     evaluate_round,
 )
 from .verification import FlatnessObjectives
-from .refusal_copy import PhaseVerdict
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program_analysis import ProgramAnalysis
@@ -62,7 +59,6 @@ class RoundPorts:
 
     #: Whether a previous candidate is available for the operator.
     rollback_available: Callable[[], bool] | None = None
-    restore_boost: Callable[[str], Mapping[str, Any]] | None = None
     tuning_graph_fingerprint: Callable[[], str] | None = None
     #: Does the APPLIED intervention put energy in? (the applied-profile SSOT)
     applied_boosts: Callable[[], bool] | None = None
@@ -229,14 +225,13 @@ class RoundDecision:
 
     evaluation: RoundEvaluation | None = None
     receipt_identity: dict[str, Any] | None = None
-    protection: dict[str, Any] | None = None
 
 
 # --- the coordinator ---
 
 
 def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
-    """Grade one accepted capture and bank advice; excess boost stops immediately."""
+    """Grade one accepted capture and bank advice."""
     applied_graph = entry_graph_fingerprint(ports, session_id=evidence.session_id)
     try:
         graph = ports.tuning_graph_fingerprint() if ports.tuning_graph_fingerprint else ""
@@ -244,7 +239,6 @@ def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
         graph = ""
     boosted = applied_boosts(ports, session_id=evidence.session_id)
     previous_available = rollback_available(ports, session_id=evidence.session_id)
-    protection = _stop_excess_boost(evidence, ports, graph)
     try:
         evaluation = evaluate_round(
             post_analysis=evidence.post_analysis,
@@ -270,50 +264,12 @@ def run_round(evidence: RoundEvidence, ports: RoundPorts) -> RoundDecision:
             logger, "correction.crossover_v2_round_grade_failed",
             level=logging.WARNING, session_id=evidence.session_id, exc_info=True,
         )
-        return RoundDecision(
-            protection=protection, receipt_identity={"protection": protection} if protection else None,
-        )
+        return RoundDecision()
     _log_round(evaluation, session_id=evidence.session_id)
     receipt_identity = _write_round_receipt(
-        evaluation, evidence, ports, applied_graph=applied_graph, graph=graph, protection=protection,
+        evaluation, evidence, ports, applied_graph=applied_graph, graph=graph,
     )
-    return RoundDecision(evaluation=evaluation, receipt_identity=receipt_identity, protection=protection)
-
-
-def round_verdict(verdict: PhaseVerdict, protection: Mapping[str, Any] | None) -> PhaseVerdict:
-    if not protection:
-        return verdict
-    return replace(verdict, accepted=False, code=BOOST_OVER_DECLARED_BOUND,
-                   payload={**verdict.payload, "protection": dict(protection)})
-
-
-def _stop_excess_boost(
-    evidence: RoundEvidence, ports: RoundPorts, graph: str,
-) -> dict[str, Any] | None:
-    if getattr(evidence.delta_probe, "boost_over_declared_bound", False) is not True:
-        return None
-    result: dict[str, Any] = {
-        "code": BOOST_OVER_DECLARED_BOUND, "graph_fingerprint": graph,
-        "status": "restore_unavailable", "restored": False, "finding_recorded": False,
-    }
-    try:
-        record_boost_finding(
-            graph, candidate_fingerprint=evidence.candidate_fingerprint, round_id=evidence.session_id,
-        )
-        result["finding_recorded"] = True
-    except (CandidateBankRefusal, OSError) as exc:
-        result["finding_error"] = getattr(exc, "code", "boost_finding_write_failed")
-    if ports.restore_boost is not None:
-        try:
-            result.update(ports.restore_boost(graph))
-        except _SEAM_ERRORS:
-            result.update(status="restore_failed", restored=False)
-    log_event(
-        logger, "correction.crossover_v2_boost_stop", session_id=evidence.session_id,
-        level=logging.WARNING if result["restored"] and result["finding_recorded"] else logging.ERROR,
-        **result,
-    )
-    return result
+    return RoundDecision(evaluation=evaluation, receipt_identity=receipt_identity)
 
 
 def _log_round(evaluation: RoundEvaluation, *, session_id: str) -> None:
@@ -355,7 +311,7 @@ def _write_round_receipt(
     evaluation: RoundEvaluation,
     evidence: RoundEvidence,
     ports: RoundPorts,
-    *, applied_graph: str, graph: str, protection: dict[str, Any] | None,
+    *, applied_graph: str, graph: str,
 ) -> dict[str, Any] | None:
     """Assemble the round receipt and hand it to the publishing seam.
 
@@ -371,9 +327,6 @@ def _write_round_receipt(
     reverses a verdict, refuses a capture, or crashes the capture path.
     """
     identity = _round_identity(evaluation, evidence)
-    identity["protection"] = protection
-    if protection and protection["restored"]:
-        identity["blend"] = None
     seam = ports.publish_round_receipt
     if seam is None:
         # No publishing capability; the series still has to remember the
@@ -405,7 +358,6 @@ def _write_round_receipt(
                 phase=PHASE_VERIFY,
             ),
             advice=identity["advice"],
-            protection=protection,
             round_measurements=_round_measurements(evidence, evaluation),
             evidence_identities={
                 "session_id": evidence.session_id,

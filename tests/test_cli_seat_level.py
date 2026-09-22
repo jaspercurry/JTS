@@ -598,12 +598,12 @@ async def test_commissioning_maps_composer_refusals(monkeypatch, commissioning_b
     verified.assert_not_awaited()
 
 
-@pytest.mark.parametrize("outcome", ["applied", "apply_failed", "blocked"])
+@pytest.mark.parametrize("outcome", ["applied", "apply_failed"])
 async def test_commissioning_records_apply_outcomes(tmp_path, monkeypatch, caplog, commissioning_box, outcome):
     from jasper.active_speaker import baseline_profile, bundles, measurement
     from jasper.web import correction_crossover_v2_apply as apply_host
     from jasper.web import sound_active_speaker as web
-    from tests._log_events import event_fields, event_records
+    from tests._log_events import event_fields
 
     topology, cam = commissioning_box
     if outcome == "apply_failed":
@@ -622,9 +622,6 @@ async def test_commissioning_records_apply_outcomes(tmp_path, monkeypatch, caplo
     monkeypatch.setattr(measurement, "load_measurement_state", lambda _: measurements)
     monkeypatch.setattr(apply_host, "load_measurement_state", lambda _: measurements)
     reviewed = web._active_speaker_baseline_profile_payload(write=True)
-    if outcome == "blocked":
-        monkeypatch.setattr(apply_host, "candidate_boost_issue",
-                            lambda _: {"severity": "blocker", "code": "unmeasured_boost"})
     caplog.clear()
     caplog.set_level("INFO", logger=baseline_profile.__name__)
     result = await web._active_speaker_baseline_profile_apply_payload(camilla_factory=lambda: cam)
@@ -632,9 +629,6 @@ async def test_commissioning_records_apply_outcomes(tmp_path, monkeypatch, caplo
     record = bundles._read_info(Path(bundle["bundle_dir"]))
     assert record["state"] == ("applied" if outcome == "applied" else "failed")
     assert record["apply"] == result["apply"]
-    if outcome == "blocked":
-        assert not event_records(caplog, "correction.crossover_apply_started")
-        return
     started = event_fields(caplog, "correction.crossover_apply_started")
     assert started["candidate_fingerprint"] == reviewed["candidate_fingerprint"]
     if outcome == "apply_failed":

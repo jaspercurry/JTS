@@ -348,7 +348,7 @@ def bind_v2_stage_seams(
     # holds. Bound unconditionally: with the capture-dump ring gone the banked
     # record is the only file these numbers can land in.
     banked_evidence = v2evidence.CaptureEvidenceCarry()
-    from jasper.web.correction_crossover_v2_restore import bind_boost_restore, current_graph_fingerprint  # lazy: host binding cycle
+    from jasper.web.correction_crossover_v2_restore import current_graph_fingerprint  # lazy: host binding cycle
 
     from jasper.active_speaker.crossover_v2.summed_alignment import session_reference  # lazy: NumPy analysis boundary
 
@@ -395,7 +395,6 @@ def bind_v2_stage_seams(
         applied_profile=_applied_profile_now,
         record_model_error=v2state._record_live_model_error,
         rollback_available=_previous_candidate_known,
-        restore_boost=bind_boost_restore(run_async, camilla_factory),
         tuning_graph_fingerprint=current_graph_fingerprint,
         # #2291/#2318: "does the APPLIED graph boost". Bound on both stages for
         # ``entry_graph_fingerprint``'s reason — what is live right now is not

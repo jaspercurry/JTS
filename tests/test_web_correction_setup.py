@@ -437,7 +437,7 @@ def test_a_start_time_refusal_is_a_clean_400_not_a_500(monkeypatch, caplog):
     assert event_records(caplog, "correction.crossover_v2_refused")
 
 
-@pytest.mark.parametrize("status,code", [("blocked", "boost_over_declared_bound"), ("apply_failed", "apply_failed")])
+@pytest.mark.parametrize("status,code", [("apply_failed", "apply_failed")])
 def test_apply_blocked_status_maps_to_409_with_named_issue(monkeypatch, status, code):
     from jasper.web import correction_crossover_v2_apply as apply_host
 

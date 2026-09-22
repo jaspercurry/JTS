@@ -13,7 +13,6 @@ import math
 from typing import Any, Mapping
 
 from jasper.active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
-from jasper.active_speaker.candidate_trials import tuning_trial_matches_candidate
 from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_VERIFY
 from jasper.active_speaker.crossover_v2.verification import (
     RESULT_INCONCLUSIVE,
@@ -34,14 +33,12 @@ GRADE_MARK_VERIFIED = "mark_verified"
 GRADE_INCONCLUSIVE = "inconclusive"
 GRADE_FAILED = "failed"
 GRADE_UNVERIFIED = "unverified"
-GRADE_TUNING_TRIAL_MEASURED = "tuning_trial_measured"
 
 
 #: Delivered coverage, compared below with the run's asked poses (#2098).
 GRADE_SCOPE_NONE = "none"
 GRADE_SCOPE_MARK = "mark"
 GRADE_SCOPE_SPATIAL = "spatial"
-GRADE_SCOPE_TUNING_TRIAL = "tuning_trial"
 
 #: The post-apply SPATIAL grade's own state (#2160). ``overall_within_target`` is a
 #: bool and therefore cannot distinguish "graded and failed" from "could not be
@@ -209,26 +206,6 @@ def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = Fals
         }
     candidate = block.get("candidate")
     candidate = candidate if isinstance(candidate, Mapping) else {}
-    if tuning_trial_matches_candidate(
-        block.get("tuning_trial"), candidate.get("fingerprint"),
-    ):
-        return {
-            "state": GRADE_TUNING_TRIAL_MEASURED,
-            "graded": True,
-            "verify_outcome": None,
-            "post_apply_spec_passed": None,
-            "scope": GRADE_SCOPE_TUNING_TRIAL,
-            "spatial": GRADE_SPATIAL_ABSENT,
-            "spatial_worst_db": None,
-            "spatial_worst_hz": None,
-            "complete": True,
-            "improvement_db": None,
-            "tracking_passed": None,
-            "absolute_passed": None,
-            "absolute_miss_db": None,
-            "absolute_worst_hz": None,
-            "candidate_fingerprint": str(candidate.get("fingerprint") or ""),
-        }
     verify = block.get("verify")
     outcome = str((verify or {}).get("outcome") or "") if isinstance(verify, Mapping) else ""
     claims = verify.get("claims") if isinstance(verify, Mapping) else None

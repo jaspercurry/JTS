@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_text
-from jasper.active_speaker.candidate_trials import tuning_trial_matches_candidate
 from jasper.active_speaker.crossover_v2.durable_state import build_conductor_state
 from jasper.active_speaker.crossover_v2.verification import RESULT_INCONCLUSIVE, RESULT_KEEP_PREVIOUS
 from jasper.log_event import log_event
@@ -72,8 +71,6 @@ def load_v2_state() -> dict[str, Any] | None:
         return None
     state = dict(raw)
     state.pop("tier", None)  # ADR-0298: old records have unknown plan coverage.
-    if "room_trial" in state:
-        state.setdefault("tuning_trial", state.pop("room_trial"))
     return state
 
 
@@ -217,7 +214,6 @@ def observe_apply_success(
     *,
     previous_candidate_fingerprint: str | None = None,
     expected_post_apply_offset_db: float = 0.0,
-    tuning_trial: Mapping[str, Any] | None = None,
     selected_candidate: Mapping[str, Any] | None = None,
     previous_applied_profile: Mapping[str, Any] | None = None,
 ) -> None:
@@ -227,12 +223,6 @@ def observe_apply_success(
         state["candidate"] = dict(selected_candidate)
     state["applied"] = True
     state["previous_applied_profile"] = dict(previous_applied_profile) if previous_applied_profile else None
-    state["tuning_trial"] = (
-        dict(tuning_trial)
-        if isinstance(tuning_trial, Mapping)
-        and tuning_trial_matches_candidate(tuning_trial, candidate_fingerprint)
-        else None
-    )
     # SF1 (adversarial review, 2026-07-20): do NOT blindly clear an existing
     # failure code. In the ordinary happy path it is already None (MEASURE's
     # own accept clears it before the conductor ever triggers auto-apply) —

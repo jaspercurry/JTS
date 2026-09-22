@@ -33,11 +33,8 @@ from typing import Any, Mapping
 
 import pytest
 
-from jasper.active_speaker import baseline_profile
-from jasper.active_speaker.boost_protection import BOOST_OVER_DECLARED_BOUND, read_boost_finding
 from jasper.active_speaker.crossover_v2 import durable_state
 from jasper.active_speaker.crossover_v2 import journey
-from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.delta_probe import (
@@ -62,7 +59,6 @@ from jasper.active_speaker.crossover_v2.contracts import ATTEMPT_METRIC_VERIFY_M
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_status as v2status
-from jasper.web import correction_crossover_v2_restore as restore
 
 from tests._log_events import event_records
 
@@ -1412,6 +1408,7 @@ def test_round_advice_keeps_the_applied_graph(
             classify_delta_probe(_GRID_HZ, commanded, commanded, band_hz=_band()),
             verdict=probe_verdict,
             safety_anchored=True,
+            boost_over_declared_bound=True,
             realized_louder_than_commanded=True,
         )
         monkeypatch.setattr(delta_probe_run, "run_delta_probe", lambda *a, **k: probe)
@@ -1435,61 +1432,6 @@ def test_round_advice_keeps_the_applied_graph(
         assert advice["delta_probe"]["advises_against_keep"] is True
     v2state.persist_conductor_state(conductor, failure_code=None)
     assert v2state.load_v2_state()["round_receipt"]["advice"] == advice
-
-@pytest.mark.parametrize("failure", [None, "apply", "unavailable", "displaced", "bank", "grade"])
-def test_measured_excess_boost_restores_once_and_discloses_the_result(
-    monkeypatch, tmp_path, real_bundle, failure,
-):
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
-    _seed_round_state(previous_candidate=failure != "unavailable")
-    conductor, attempts = _restoring_stage_2(monkeypatch, load_ok=failure != "apply")
-    _install_entry_baseline(conductor, scale=0.4)
-    previous_sha = v2state.load_v2_state().get("previous_applied_profile", {}).get("config", {}).get("sha256")
-    live = {"candidate_fingerprint": "applied", "config": {"sha256": "a" * 64},
-            "source": {"measured_candidate_fingerprint": "fp-stage-1"}}
-    monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda *a, **k: live)
-    if failure == "displaced":
-        monkeypatch.setattr(restore, "current_graph_fingerprint", lambda: "c" * 16)
-    if failure == "bank":
-        def failed_record(*args, **kwargs):
-            raise OSError("storage unavailable")
-        monkeypatch.setattr(coordinator, "record_boost_finding", failed_record)
-    if failure == "grade":
-        def failed_grade(*args, **kwargs):
-            raise ValueError("grade unavailable")
-        monkeypatch.setattr(coordinator, "evaluate_round", failed_grade)
-    commanded = _commanded_lift()
-    probe = dataclasses.replace(
-        classify_delta_probe(_GRID_HZ, commanded, commanded, band_hz=_band()),
-        boost_over_declared_bound=True, safety_anchored=True,
-    )
-    monkeypatch.setattr(delta_probe_run, "run_delta_probe", lambda *a, **k: probe)
-
-    verdict = _consume_verify(conductor, _post_apply_analysis(conductor))
-    result = verdict.to_capture_dict()
-    protection = result["protection"]
-    restored = failure in (None, "bank", "grade")
-    assert result["accepted"] is False
-    assert result["code"] == BOOST_OVER_DECLARED_BOUND
-    assert result["auto_retry"] is False
-    assert protection["restored"] is restored, protection
-    assert protection["graph_fingerprint"] == "a" * 16
-    assert protection["finding_recorded"] is (failure != "bank")
-    assert len(attempts) == (0 if failure in ("unavailable", "displaced") else 1)
-    assert live["config"]["sha256"] == (previous_sha if restored else "a" * 64)
-    assert conductor._grade_round_once(refusal_copy.PhaseVerdict(True)).payload["protection"] == protection
-    first_count = len(attempts)
-    _flow_seams(conductor).restore_boost("a" * 16)
-    assert len(attempts) == first_count
-    if failure != "bank":
-        assert read_boost_finding("a" * 16)["round_id"] == conductor.session_id
-    if failure != "grade":
-        receipt = _round_receipt_json(real_bundle, _MINTED_CAPTURE_SESSION_ID)
-        assert receipt["protection"] == protection
-        assert receipt["evidence_identities"]["tuning_graph_fingerprint"] == "a" * 16
-        assert receipt["applied_graph_fingerprint"] == "applied"
-    v2state.persist_conductor_state(conductor, failure_code=result["code"])
-    assert v2state.load_v2_state()["round_receipt"]["protection"] == protection
 
 @pytest.mark.parametrize(
     "restore, failure, write_failed, expected_state",

@@ -63,7 +63,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams, V2RecordPublishers
 from jasper.active_speaker import crossover_envelope_v2 as v2projection
-from jasper.active_speaker import seat_level_reference
+from jasper.active_speaker import baseline_profile, seat_level_reference
 
 import jasper.capture_protocol as capture_protocol
 from jasper.capture_protocol import MAX_TTL_S
@@ -2154,55 +2154,6 @@ def test_apply_completes_a_plan_without_verify():
     })
     v2state.observe_apply_success("candidate")
     assert v2status.crossover_v2_status_block()["phase"] == PHASE_DONE
-
-
-def _tuning_trial_state(*, reference=None, scope="candidate"):
-    fingerprint = "room-candidate-fingerprint"
-    return {
-        "session_id": "cap_room",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "candidate": {"fingerprint": fingerprint},
-        "applied": True,
-        "tuning_trial": reference if reference is not None else {
-            "candidate_fingerprint": fingerprint,
-            "graph_scope": scope,
-            "graph_fingerprint": "0123456789abcdef",
-            "record_path": "/bank/position-0001.json",
-        },
-    }
-
-
-@pytest.mark.parametrize("scope, receipt_key", [
-    ("candidate", "tuning_trial"),
-    ("candidate", "room_trial"),
-])
-def test_an_applied_tuning_trial_is_terminal_without_speaker_recovery(monkeypatch, scope, receipt_key):
-    state = _tuning_trial_state(scope=scope)
-    state[receipt_key] = state.pop("tuning_trial")
-    v2state.save_v2_state(state)
-    assert "room_trial" not in v2state.load_v2_state()
-    monkeypatch.setattr(v2host, "_applied_graph_boosts", lambda: True)
-
-    block = v2status.crossover_v2_status_block()
-    assert block["phase"] == "done"
-    assert block["post_apply_grade"] == {
-        "state": v2grade.GRADE_TUNING_TRIAL_MEASURED,
-        "graded": True,
-        "verify_outcome": None,
-        "post_apply_spec_passed": None,
-        "scope": v2grade.GRADE_SCOPE_TUNING_TRIAL,
-        "spatial": v2grade.GRADE_SPATIAL_ABSENT,
-        "spatial_worst_db": None,
-        "spatial_worst_hz": None,
-        "complete": True,
-        "improvement_db": None,
-        "tracking_passed": None,
-        "absolute_passed": None,
-        "absolute_miss_db": None,
-        "absolute_worst_hz": None,
-        "candidate_fingerprint": "room-candidate-fingerprint",
-    }
 
 
 def test_a_session_that_verified_still_resolves_to_done():
@@ -6511,14 +6462,13 @@ def test_document_apply_keeps_timing_only_when_alignment_is_inherited(monkeypatc
 @pytest.mark.parametrize("fault,code", [
     ("bank", "not_found"), ("declaration", "tweeter:required_highpass_missing"),
     ("floor", "crossover_below_declared_protection_floor"),
-    ("graph", "baseline_graph_safety_proof_failed"), ("boost", "boost_over_declared_bound"),
+    ("graph", "baseline_graph_safety_proof_failed"),
     ("load", "apply_failed"), ("malformed", "driver_protection_invalid"),
     ("compose", "compose_refused"), ("live_floor", "crossover_below_declared_protection_floor"),
     ("identity", "measurement_candidate_speaker_mismatch"),
 ])
 def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault, code):
     caplog.set_level(logging.INFO, logger=v2apply.__name__)
-    from jasper.active_speaker import baseline_profile, boost_protection
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
 
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
@@ -6560,16 +6510,6 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
         def unsafe(*args, **kwargs):
             return compile_graph(*args, **kwargs).replace("volume_limit: 0.0", "volume_limit: 1.0")
         monkeypatch.setattr(v2apply, "compile_tuning_graph", unsafe)
-    elif fault == "boost":
-        monkeypatch.setattr(boost_protection, "sessions_dir", lambda: tmp_path / "sessions")
-        compile_graph = v2apply.compile_tuning_graph
-        def over_bound(*args, **kwargs):
-            import hashlib
-            text = compile_graph(*args, **kwargs)
-            boost_protection.record_boost_finding(hashlib.sha256(text.encode()).hexdigest()[:16],
-                candidate_fingerprint=candidate.fingerprint, round_id="over-bound")
-            return text
-        monkeypatch.setattr(v2apply, "compile_tuning_graph", over_bound)
     before = (tmp_path / "design_draft.json").read_bytes()
     state_before = v2state.load_v2_state()
     cam = _FakeApplyCam()
@@ -6578,13 +6518,12 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
             return False
         cam.set_config_file_path = fail
     raw = {"expected_candidate_fingerprint": "0" * 64 if fault == "bank" else candidate.fingerprint}
-    if fault in {"boost", "load"}:
+    if fault == "load":
         result = v2apply.handle_v2_apply(raw, _bg_run_async, lambda: cam)
         assert result["issue"]["code"] == code
-        assert result["status"] == ("apply_failed" if fault == "load" else "blocked")
-        if fault == "load":
-            assert result["apply"]["result"] == "load_failed"
-            assert result["apply"]["rollback_attempted"] is False
+        assert result["status"] == "apply_failed"
+        assert result["apply"]["result"] == "load_failed"
+        assert result["apply"]["rollback_attempted"] is False
     else:
         with pytest.raises(refusal_copy.CrossoverV2Refused) as refused:
             v2apply.handle_v2_apply(raw, _bg_run_async, lambda: cam)
