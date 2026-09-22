@@ -295,8 +295,11 @@ async def test_harness_shared_contract_and_evidence(
     harness = harness_mod.VoiceEvalHarness(cfg)
     try:
         result = None
-        if outcome in ("no_audio", "timeout"):
-            with pytest.raises(TimeoutError if outcome == "timeout" else AssertionError):
+        if outcome == "no_audio":
+            with pytest.raises(AssertionError):
+                await harness.ask("hello")
+        elif outcome == "timeout":
+            with pytest.raises(TimeoutError):
                 await harness.ask("hello", turn_timeout_sec=0.05)
         elif outcome == "interrupt":
             result, ack = await harness._run_turn("hello", 30.0, interrupt=True)
