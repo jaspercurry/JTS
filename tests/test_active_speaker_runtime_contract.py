@@ -10,6 +10,8 @@ import collections
 import copy
 from dataclasses import replace
 import json
+import subprocess
+import sys
 
 import pytest
 import yaml
@@ -85,6 +87,15 @@ from tests.active_speaker_fixtures import mono_output_topology, passive_stereo_o
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
+
+
+def test_runtime_contract_import_leaves_numpy_unloaded():
+    result = subprocess.run(
+        [sys.executable, "-c", "import sys; import jasper.active_speaker.runtime_contract; "
+         "raise SystemExit('numpy' in sys.modules)"],
+        cwd=Path(__file__).resolve().parents[1], timeout=30, check=False,
+    )
+    assert result.returncode == 0
 
 
 def classify_camilla_graph(*args, **kwargs):
@@ -2095,21 +2106,6 @@ def test_mono_active_2way_allows_approved_baseline_runtime() -> None:
     assert graph.allowed is True
     assert graph.details["baseline_candidate"] is True
     assert graph.details["unmuted_outputs"] == [0, 1]
-
-
-# --- C3a-4: the active-baseline runtime graph's fail-closed protections ---
-#
-# When source == ACTIVE_BASELINE_SOURCE the classifier SUPPRESSES the
-# commission-mute checks and instead treats every output as unmuted, validating
-# them through a NEW block of per-driver blocker predicates
-# (runtime_contract.py:1047-1291). That block is the ENTIRE fail-closed safety
-# net for a tweeter-bearing active-baseline runtime graph, yet only the positive
-# path (test_mono_active_2way_allows_approved_baseline_runtime) was pinned. These
-# mutate the emitted baseline YAML to break one protection at a time and assert
-# the classifier rejects it with the matching blocker — so a fail-OPEN regression
-# (e.g. dropping the gain<=0 check) can't pass green. The baseline-source comment
-# header is preserved by mutating text rather than parse->dump (the classifier
-# reads the source from that comment; a YAML round-trip strips it).
 
 
 def _baseline_codes(graph) -> set[str]:
