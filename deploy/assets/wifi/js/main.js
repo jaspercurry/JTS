@@ -170,11 +170,7 @@ function savedRow(p, curName) {
 // Available networks list --------------------------------------------
 function renderScanHealth() {
   const box = document.getElementById('scan-health');
-  const btn = document.getElementById('scan-btn');
   if (!box) return;
-  if (btn) {
-    btn.hidden = !!(scanHealth && scanHealth.hideScanButton);
-  }
   box.replaceChildren();
   if (!scanHealth) return;
   const debug = scanHealth.debug || {};
@@ -256,7 +252,6 @@ async function rescan() {
     scanHealth = {
       degraded: true,
       reason: 'request_failed',
-      hideScanButton: false,
       debug: {},
     };
   } finally {

@@ -12,14 +12,6 @@ from tests._nmcli_fakes import mock_proc as _mock_proc
 from tests._nmcli_fakes import scripted_nmcli as _scripted_nmcli
 
 
-def test_scan_repair_timeout_env_parse_is_fail_soft(monkeypatch):
-    import jasper.web.wifi_setup as wifi_setup
-
-    monkeypatch.setenv("JASPER_WIFI_SCAN_REPAIR_ROOT_TIMEOUT", "nope")
-
-    assert wifi_setup._env_float("JASPER_WIFI_SCAN_REPAIR_ROOT_TIMEOUT", 20.0) == 20.0
-
-
 def test_scan_report_happy_path_deduplicates_and_skips_hidden(monkeypatch):
     import jasper.web.wifi_setup as wifi_setup
 

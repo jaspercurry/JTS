@@ -251,23 +251,18 @@ for (const c of SAVED_CASES) {
   }
 }
 
-// ---- scan health notice + the Scan button's own hide/show ----
+// ---- scan health notice ----
 const SCAN_HEALTH_CASES = [
-  { name: "clean", scan: { degraded: false, suspect: false, hideScanButton: false, debug: {} }, note: null },
+  { name: "clean", scan: { degraded: false, suspect: false, debug: {} }, note: null },
   {
     name: "degraded",
-    scan: { degraded: true, reason: "x", suspect: false, hideScanButton: false, debug: {} },
+    scan: { degraded: true, reason: "x", suspect: false, debug: {} },
     note: ["scan-note", "warn"],
   },
   {
     name: "suspect-only",
-    scan: { degraded: false, suspect: true, hideScanButton: false, debug: {} },
+    scan: { degraded: false, suspect: true, debug: {} },
     note: ["scan-note"],
-  },
-  {
-    name: "hides-scan-button",
-    scan: { degraded: false, suspect: false, hideScanButton: true, debug: {} },
-    note: null, buttonHidden: true,
   },
 ];
 
@@ -294,7 +289,6 @@ for (const c of SCAN_HEALTH_CASES) {
   } else {
     assert.equal(notes.length, 0, `${c.name}: no health note`);
   }
-  assert.equal(elements.scanBtn.hidden, !!c.buttonHidden, `${c.name}: scan button hidden state`);
   assert.equal(elements.scanBtn.children.length, 0, `${c.name}: scan button spinner cleared after scan`);
 }
 
@@ -314,7 +308,7 @@ const AVAIL_CASES = [
 for (const c of AVAIL_CASES) {
   fixtureScan = {
     networks: c.networks,
-    scan: { degraded: false, suspect: false, hideScanButton: false, debug: {} },
+    scan: { degraded: false, suspect: false, debug: {} },
   };
   await rescan();
   const rows = elements.availList.children.filter((n) => hasClass(n, "net-row"));
@@ -348,7 +342,7 @@ for (const c of CONNECT_FAILURE_CASES) {
   await fetchState();
   fixtureScan = {
     networks: [{ ssid: "OpenNet", secured: false, channel: 6, signal: 40, inUse: false }],
-    scan: { degraded: false, suspect: false, hideScanButton: false, debug: {} },
+    scan: { degraded: false, suspect: false, debug: {} },
   };
   await rescan();
   openConnect("OpenNet");

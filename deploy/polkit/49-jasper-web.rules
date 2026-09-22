@@ -26,7 +26,7 @@
 // worst-case brick this whole phase is gated on avoiding. Each grant maps to a
 // real wifi_setup.py operation:
 //
-//     wifi.scan               nmcli device wifi rescan / list (scan_networks)
+//     wifi.scan               nmcli device wifi rescan / list
 //     network-control         nmcli connection up <profile>; nmcli dev wifi
 //                             connect (activate) — incl. the failed-connect
 //                             ROLLBACK `connection up <previous>` path
