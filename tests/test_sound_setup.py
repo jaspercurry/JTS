@@ -6144,6 +6144,7 @@ async def test_live_draft_retires_compare_record(tmp_path, monkeypatch):
 ])
 def test_setup_layout_choices_build_distinct_driver_outputs(layout, crossover, channels, cardioid, count):
     from jasper.active_speaker.layout import build_speaker_layout, layout_choices
+    from jasper.active_speaker.measurement_programs import programs_for_topology
     from tests.active_speaker_fixtures import mono_output_topology
 
     choices = dict(layout=layout, crossover=crossover, channels=channels, cardioid=cardioid)
@@ -6153,6 +6154,7 @@ def test_setup_layout_choices_build_distinct_driver_outputs(layout, crossover, c
     assert len(set(targets)) == len(set(outputs)) == count
     assert topology.evaluation()['status'] == 'valid'
     assert layout_choices(topology) == choices
+    assert ('rear' in programs_for_topology(topology)) is cardioid
 
 
 def test_setup_research_import_uses_one_draft_writer_and_preserves_edits(tmp_path, monkeypatch):

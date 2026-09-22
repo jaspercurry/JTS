@@ -122,7 +122,7 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
         f"Use existing SSH access to {hostname}; ask for a login only if access is missing.",
         f"Orient with {ORIENTATION_COMMAND}.",
         f"Inspect available measurement plans with {PROGRAM_DOOR_COMMAND}.",
-        "Explain the next step briefly. I place the microphone and start each position batch. Measure the chosen change, show its limits, and get my choice before saving.",
+        "Create the measurement session, then give me its returned link. Explain the next step briefly; I place the microphone and start each batch. Measure the change, show its limits, and get my choice before saving.",
     ))
 
 

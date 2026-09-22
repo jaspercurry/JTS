@@ -53,13 +53,13 @@ def program_entries(topology: OutputTopology) -> tuple[dict[str, Any], ...]:
 
 def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
     passive = topology_is_subless_passive_mains(topology)
-    rear = cardioid_cabinet_channels(
+    rear = any(cardioid_cabinet_channels(
         (channel.role, channel.output_variant, channel.physical_output_index)
-        for group in topology.speaker_groups for channel in group.channels
+        for channel in group.channels
         if channel.physical_output_index is not None
-    )
+    ) is not None for group in topology.speaker_groups)
     return tuple(name for name in RUNNABLE_PROGRAMS
-                 if not (name == PURPOSE_SPEAKER and passive or name == PURPOSE_REAR and rear is None))
+                 if not (name == PURPOSE_SPEAKER and passive or name == PURPOSE_REAR and not rear))
 
 
 REGIME_PER_DRIVER = "per_driver"

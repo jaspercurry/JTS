@@ -61,6 +61,10 @@ test('pasting and applying use server state and reveal the tuning menu without r
   assert.match(visible(ui.root), /Room/);
   assert.doesNotMatch(visible(ui.root), /measured|private-config|opaque-identity/);
   const tuning = nodes(ui.root).find(n => n.className === 'speaker-program');
+  for (const program of nodes(ui.root).filter(n => n.className === 'speaker-program')) {
+    assert.deepEqual(nodes(program).filter(n => n.tag === 'button').map(text), ['Copy prompt']);
+    assert.equal(nodes(program).filter(n => n.tag === 'a').length, 0);
+  }
   await nodes(tuning).find(n => n.tag === 'button').click();
   assert.deepEqual(ui.copies, ['Tune this speaker using /opt/jasper']);
   assert.doesNotMatch(visible(ui.root), /\/opt\/jasper/);

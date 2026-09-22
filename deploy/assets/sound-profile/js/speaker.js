@@ -231,8 +231,7 @@ function tuningCard() {
             details.open = !ok;
             message(ok ? 'Prompt copied.' : 'Select and copy the prompt below.');
           }
-        }, program.id === 'speaker'), holder,
-        h('a.btn', { href: `./crossover/?program=${program.id}` }, 'Open tuning'));
+        }, program.id === 'speaker'), holder);
     }));
 }
 
