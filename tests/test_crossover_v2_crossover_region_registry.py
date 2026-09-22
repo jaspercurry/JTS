@@ -22,7 +22,7 @@ import types
 import numpy as np
 import pytest
 
-import jasper.active_speaker.crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2.diagnostics import assemble_cloud_group_result
 from jasper.active_speaker.crossover_v2.verification import (
     ECHO_BAND_HF_REGIME_FLOOR_HZ,
     _crossover_region_null_registry,
@@ -191,8 +191,8 @@ def test_the_extension_is_unioned_into_no_mask():
         echo_band_hz=(ECHO_BAND_HF_REGIME_FLOOR_HZ, 18000.0),
         validity_floor_hz=None,
     )
-    without = flow.assemble_cloud_group_result(combined, **kw)
-    with_region = flow.assemble_cloud_group_result(
+    without = assemble_cloud_group_result(combined, **kw)
+    with_region = assemble_cloud_group_result(
         combined, crossover_region_hz=(1000.0, 4000.0), **kw,
     )
 

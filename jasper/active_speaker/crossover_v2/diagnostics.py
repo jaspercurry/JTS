@@ -11,6 +11,9 @@ which is what lets :func:`_safe_log_diag` degrade a bug in here to a WARN.
 The ``logger`` every emitter takes is the CALLER's: an operator greps one
 channel for a session, and moving these emitters out of
 :mod:`jasper.active_speaker.crossover_v2_flow` must not split it.
+The moved session wrappers keep the flow's own log channel through the module
+logger named for ``crossover_v2_flow``, so their events stay on the channel the
+fixtures expect.
 """
 
 from __future__ import annotations
@@ -18,6 +21,15 @@ from __future__ import annotations
 import logging
 import math
 from typing import Any, Callable, Mapping, Sequence
+
+import numpy as np
+
+from jasper.active_speaker.crossover_v2 import commanded as _commanded
+from jasper.active_speaker.crossover_v2 import spatial as _spatial
+from jasper.active_speaker.crossover_v2.spatial import _CloudPosition
+from jasper.active_speaker.flat_spec import evaluate_flat_spec
+from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.spatial_combine import decimate_curve_to_analysis_grid
 
 from jasper.audio_measurement.mic_meter import (
     MIC_USABLE_MAX_DBFS,
@@ -61,6 +73,8 @@ from jasper.audio_measurement.program_analysis import (
     polarity_label,
 )
 from jasper.log_event import log_event
+
+logger = logging.getLogger("jasper.active_speaker.crossover_v2_flow")
 
 
 def _capture_integrity_log_field(integrity: CaptureIntegrity | None) -> str:
@@ -158,6 +172,108 @@ def _emit_cloud_combine_diagnostics(
         logger, "correction.crossover_v2_cloud_combine_failed",
         level=logging.WARNING, **diagnostics,
     )
+
+
+def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
+    """Combine a closed group, and journal a combiner failure."""
+    result = _spatial.combine_cloud_positions(positions)
+    _emit_cloud_combine_diagnostics(logger, result.diagnostics)
+    return result.combined
+
+
+def _derive_cloud_echo_band_hz(
+    signal_band_hz: tuple[float, float],
+    tweeter_measurement_band_hz: tuple[float, float] | None,
+) -> _spatial._CloudEchoBand:
+    """Derive the echo band, and journal whichever clamp produced it."""
+    band = _spatial._derive_cloud_echo_band_hz(
+        signal_band_hz, tweeter_measurement_band_hz,
+    )
+    if band.diagnostics is None:
+        return band
+    if band.source == "passband_fallback":
+        event = "correction.crossover_v2_cloud_echo_band_degenerate"
+    elif band.source == "clamp_degenerate_default":
+        event = "correction.crossover_v2_cloud_echo_band_clamp_degenerate"
+    else:
+        event = "correction.crossover_v2_cloud_echo_band_clamped_to_hf_regime"
+    log_event(logger, event, level=logging.WARNING, **band.diagnostics)
+    return band
+
+
+def assemble_cloud_group_result(
+    combined: Any,
+    *,
+    echo_band_hz: tuple[float, float],
+    echo_band_provenance: Mapping[str, Any] | None = None,
+    validity_floor_hz: float | None = None,
+    trusted_ceiling_hz: float | None = None,
+    position_records: Sequence[Mapping[str, Any]] = (),
+    crossover_region_hz: tuple[float, float] | None = None,
+    graded_spec_sink: Callable[[Any], None] | None = None,
+) -> dict[str, Any]:
+    """Assemble the closed group's result, and journal a pipeline failure."""
+    answer = _spatial.assemble_cloud_group_result(
+        combined,
+        echo_band_hz=echo_band_hz,
+        echo_band_provenance=echo_band_provenance,
+        validity_floor_hz=validity_floor_hz,
+        trusted_ceiling_hz=trusted_ceiling_hz,
+        position_records=position_records,
+        crossover_region_hz=crossover_region_hz,
+        graded_spec_sink=graded_spec_sink,
+    )
+    if answer.diagnostics is not None:
+        log_event(
+            logger, "correction.crossover_v2_cloud_pipeline_failed",
+            level=logging.WARNING, **answer.diagnostics,
+        )
+    return answer.result
+
+
+def spec_report_for_predicted_sum(predicted_sum: Any) -> Any:
+    """Grade the PREDICTED post-apply response against the flat spec.
+
+    **``None`` means "unknown", never "passed".** Decimating before the smooth is
+    load-bearing: a raw 512k-point grid costs ~11 s on a laptop, worse on a Pi 5.
+    """
+    if predicted_sum is None:
+        return None
+    try:
+        freqs_hz, magnitude_db = predicted_sum
+        grid, curve_db = decimate_curve_to_analysis_grid(
+            np.asarray(freqs_hz, dtype=float), np.asarray(magnitude_db, dtype=float),
+        )
+        return evaluate_flat_spec(
+            grid, smooth_fractional_octave(grid, curve_db, fraction=3),
+        )
+    except (ValueError, TypeError, IndexError, AttributeError) as exc:
+        log_event(
+            logger, "correction.crossover_v2_predicted_spec_failed",
+            level=logging.WARNING, error=str(exc),
+        )
+        return None
+
+
+def _commanded_delta(previous_predicted_sum: Any, predicted_sum: Any) -> Any:
+    """``(freqs_hz, delta_db)`` the applied correction COMMANDS, or ``None``."""
+    delta = _commanded.commanded_delta(previous_predicted_sum, predicted_sum)
+    if delta is None and None not in (previous_predicted_sum, predicted_sum):
+        log_event(
+            logger, "correction.crossover_v2_commanded_delta_failed",
+            level=logging.WARNING,
+            previous_points=_curve_points(previous_predicted_sum),
+            applied_points=_curve_points(predicted_sum),
+        )
+    return delta
+
+
+def _curve_points(curve: Any) -> int | None:
+    """How many points a ``(freqs, values)`` pair carries, or ``None``."""
+    try:
+        return int(np.asarray(curve[1], dtype=float).size)
+    except (ValueError, TypeError, IndexError, AttributeError):
+        return None
 
 
 def _safe_log_diag(

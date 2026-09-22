@@ -45,7 +45,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.crossover_v2_flow import assemble_cloud_group_result
+from jasper.active_speaker.crossover_v2.diagnostics import assemble_cloud_group_result
 from jasper.active_speaker.crossover_v2.spatial import cloud_position_capture
 from jasper.attribution.findings import (
     EVIDENCE_STORE_BUNDLE,

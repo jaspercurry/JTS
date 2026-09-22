@@ -1667,7 +1667,7 @@ def test_two_present_curves_that_will_not_subtract_are_named_on_the_journal(capl
     """
     import logging
 
-    from jasper.active_speaker.crossover_v2_flow import _commanded_delta
+    from jasper.active_speaker.crossover_v2.diagnostics import _commanded_delta
 
     good = _summed(APPLIED_GRAPH)
     with caplog.at_level(logging.WARNING):

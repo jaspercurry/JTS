@@ -33,9 +33,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jasper.active_speaker.crossover_v2.journey import (
-    PHASE_CLOUD_VERIFY,
-)
+from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_VERIFY
 from jasper.active_speaker.crossover_v2.programs import measurement_band_hz
 from jasper.active_speaker.crossover_v2.spatial import (
     CLOUD_CURVE_MAX_JSON_POINTS,
@@ -46,7 +44,7 @@ from jasper.active_speaker.crossover_v2.spatial import (
 from jasper.active_speaker.crossover_v2.verification import (
     ECHO_BAND_HF_REGIME_FLOOR_HZ,
 )
-from jasper.active_speaker.crossover_v2_flow import _derive_cloud_echo_band_hz, assemble_cloud_group_result
+from jasper.active_speaker.crossover_v2.diagnostics import _derive_cloud_echo_band_hz, assemble_cloud_group_result
 from jasper.active_speaker.crossover_v2.verification import _per_band_flatness_log_field
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 from jasper.audio_measurement.excitation_admission import FrequencyBand

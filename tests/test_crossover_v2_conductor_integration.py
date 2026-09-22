@@ -14,10 +14,8 @@ from dataclasses import replace
 from jasper.active_speaker.crossover_v2 import (
     intervention as iv,
 )
-from jasper.active_speaker.crossover_v2_flow import (
-    PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
-    spec_report_for_predicted_sum,
-)
+from jasper.active_speaker.crossover_v2.diagnostics import spec_report_for_predicted_sum
+from jasper.active_speaker.crossover_v2_flow import PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
 from jasper.active_speaker.crossover_v2.planning import analysis_json as _analysis_json
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
