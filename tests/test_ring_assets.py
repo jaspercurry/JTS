@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from jasper import ring_assets
-from jasper.active_speaker.runtime_contract import MAX_RING_CHANNELS
+from jasper.active_speaker.camilla_yaml import MAX_RING_CHANNELS
 from jasper.fanin_coupling import (
     DEFAULT_FANIN_RING_SLOTS,
     RING_SLOT_FRAMES,

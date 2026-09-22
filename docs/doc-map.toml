@@ -507,7 +507,7 @@ code = [
   "jasper/camilla_config_contract.py",
   "jasper/camilla_latency.py",
   "jasper/sound/camilla_yaml.py",
-  "jasper/active_speaker/camilla_yaml.py",
+  "jasper/active_speaker/camilla_yaml/__init__.py",
   "jasper/cli/route_latency_harness.py",
   "jasper/route_latency/**",
   "jasper/platform/status_socket.py",

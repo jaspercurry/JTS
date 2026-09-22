@@ -409,7 +409,7 @@ independently re-checks.
 Primary code:
 
 - [`AppliedDriverDomainConfig` and applied recomposition](../jasper/active_speaker/baseline_profile.py)
-- [`emit_active_speaker_driver_domain_config`](../jasper/active_speaker/camilla_yaml.py)
+- [`emit_active_speaker_driver_domain_config`](../jasper/active_speaker/camilla_yaml/__init__.py)
 - [`classify_camilla_graph`](../jasper/active_speaker/runtime_contract.py)
 - [leader role projection](../jasper/multiroom/active_leader_config.py)
 - [follower role projection](../jasper/multiroom/follower_config.py)
@@ -1206,7 +1206,7 @@ This campaign is complete when:
 | Snapcast RPC surface | [`jasper/multiroom/snapcast_rpc.py`](../jasper/multiroom/snapcast_rpc.py) |
 | Rooms presentation | [`deploy/assets/rooms/js/main.js`](../deploy/assets/rooms/js/main.js), [`grouping-view.js`](../deploy/assets/rooms/js/grouping-view.js) |
 | Applied Layer-A authority | [`jasper/active_speaker/baseline_profile.py`](../jasper/active_speaker/baseline_profile.py) |
-| Active graph emission | [`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py) |
+| Active graph emission | [`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml/__init__.py) |
 | Independent graph proof | [`jasper/active_speaker/runtime_contract.py`](../jasper/active_speaker/runtime_contract.py) |
 | Fan-in coupling | [`jasper/fanin/coupling_reconcile.py`](../jasper/fanin/coupling_reconcile.py) |
 | Source parking/restoration | [`jasper/local_sources/reconcile.py`](../jasper/local_sources/reconcile.py) |

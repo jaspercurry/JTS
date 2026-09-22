@@ -402,7 +402,7 @@ def test_precheck_refuses_unprovable_crossover_graph(monkeypatch, tmp_path) -> N
     preview = build_crossover_preview(draft)
     measurements = _measurements(topology, tmp_path)
     _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
-    import jasper.active_speaker.camilla_yaml as camilla_yaml
+    import jasper.active_speaker.camilla_yaml.pipeline as camilla_yaml
 
     original = camilla_yaml._driver_baseline_filter_chain
 
@@ -429,7 +429,7 @@ def test_precheck_emit_gate_refusal_surfaces_as_leader_error(
     ActiveLeaderError (a RuntimeError) so the reconciler's `except RuntimeError`
     fail-safe-to-solo path catches it (test_main_active_leader_precheck_failure_
     falls_back_to_solo) instead of the oneshot crashing."""
-    import jasper.active_speaker.camilla_yaml as camilla_yaml
+    import jasper.active_speaker.camilla_yaml.pipeline as camilla_yaml
 
     topology = _dual_apple_topology()
     draft = _draft(topology)

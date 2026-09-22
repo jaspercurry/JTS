@@ -47,6 +47,7 @@ from jasper.active_speaker import (
     emit_active_speaker_program_config,
     emit_active_speaker_startup_config,
 )
+from jasper.active_speaker.camilla_yaml import decorate_dynamic_bass, emit_baseline, emit_program, pipeline
 import jasper.active_speaker.camilla_yaml as camilla_yaml
 from jasper.active_speaker.camilla_yaml import (
     _assert_pipeline_references_closed,
@@ -307,14 +308,14 @@ def test_native_bass_tamper_is_rejected_at_emit_and_runtime_boundaries(monkeypat
     )
     assert not proof.allowed
     assert "bass_extension_block_invalid" in {issue["code"] for issue in proof.issues}
-    original = camilla_yaml.apply_dynamic_bass_graph
+    original = decorate_dynamic_bass.apply_dynamic_bass_graph
 
     def missing_detector(*args):
         payload = original(*args)
         del payload["filters"][f"{PREFIX}_detector_lowpass"]
         return payload
 
-    monkeypatch.setattr(camilla_yaml, "apply_dynamic_bass_graph", missing_detector)
+    monkeypatch.setattr(decorate_dynamic_bass, "apply_dynamic_bass_graph", missing_detector)
     with pytest.raises(ValueError):
         emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM, bass_extension=descriptor)
 
@@ -371,8 +372,8 @@ def test_emit_gate_refuses_flat_graph_with_tweeter_role(
     # protective high-pass from the chain builder THIS emitter uses, so the
     # emitted graph routes full-range program to the compression driver. The
     # fail-closed gate on each emitter must refuse it (raise) rather than ship it.
-    original = getattr(camilla_yaml, chain_attr)
-    monkeypatch.setattr(camilla_yaml, chain_attr, _hp_stripping(original))
+    original = getattr(pipeline, chain_attr)
+    monkeypatch.setattr(pipeline, chain_attr, _hp_stripping(original))
     with pytest.raises(ActiveSpeakerConfigError, match="protective high-pass"):
         emit(_preset("mono", 2))
 
@@ -380,9 +381,9 @@ def test_emit_gate_refuses_flat_graph_with_tweeter_role(
 def test_emit_gate_names_the_unprotected_output(monkeypatch) -> None:
     # The refusal names the offending DAC output (1-based) so an operator/log has
     # an honest hint. The mono 2-way preset puts the tweeter on DAC output 2.
-    original = camilla_yaml._driver_baseline_filter_chain
+    original = pipeline._driver_baseline_filter_chain
     monkeypatch.setattr(
-        camilla_yaml, "_driver_baseline_filter_chain", _hp_stripping(original)
+        pipeline, "_driver_baseline_filter_chain", _hp_stripping(original)
     )
     with pytest.raises(ActiveSpeakerConfigError, match=r"output\(s\) 2"):
         emit_active_speaker_baseline_config(
@@ -392,9 +393,9 @@ def test_emit_gate_names_the_unprotected_output(monkeypatch) -> None:
 
 def test_emit_gate_logs_before_raising(monkeypatch, caplog) -> None:
     # No silent failure: the block emits a structured event before raising.
-    original = camilla_yaml._driver_baseline_filter_chain
+    original = pipeline._driver_baseline_filter_chain
     monkeypatch.setattr(
-        camilla_yaml, "_driver_baseline_filter_chain", _hp_stripping(original)
+        pipeline, "_driver_baseline_filter_chain", _hp_stripping(original)
     )
     with caplog.at_level("ERROR"):
         with pytest.raises(ActiveSpeakerConfigError):
@@ -531,13 +532,13 @@ def test_build_and_prove_refuses_program_graph_with_dropped_mixer(monkeypatch) -
     pipeline's hardcoded split_active_2way reference. If a future edit ever
     deletes the reference-closure gate from emit_active_speaker_program_config,
     this test starts shipping a graph CamillaDSP would refuse to load."""
-    original = camilla_yaml._emit_role_routed_mixer
+    original = emit_program._emit_role_routed_mixer
 
     def _renamed(*args, **kwargs):
         text = original(*args, **kwargs)
         return text.replace("split_active_2way", "program_route_2way", 1)
 
-    monkeypatch.setattr(camilla_yaml, "_emit_role_routed_mixer", _renamed)
+    monkeypatch.setattr(emit_program, "_emit_role_routed_mixer", _renamed)
     with pytest.raises(ActiveSpeakerConfigError, match="undefined mixer"):
         emit_active_speaker_program_config(
             _preset("mono", 2),
@@ -550,13 +551,13 @@ def test_build_and_prove_refuses_baseline_graph_with_dropped_mixer(monkeypatch) 
     """Mutated-graph negative for the baseline emitter: same shape as the
     program-graph test above, applied to _emit_split_mixer (the mixer
     _emit_baseline_pipeline's hardcoded Mixer step references)."""
-    original = camilla_yaml._emit_split_mixer
+    original = emit_baseline._emit_split_mixer
 
     def _renamed(*args, **kwargs):
         text = original(*args, **kwargs)
         return text.replace("split_active_2way", "renamed_split_mixer", 1)
 
-    monkeypatch.setattr(camilla_yaml, "_emit_split_mixer", _renamed)
+    monkeypatch.setattr(emit_baseline, "_emit_split_mixer", _renamed)
     with pytest.raises(ActiveSpeakerConfigError, match="undefined mixer"):
         emit_active_speaker_baseline_config(
             _preset("mono", 2), playback_device=ACTIVE_PCM
