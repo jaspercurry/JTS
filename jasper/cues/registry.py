@@ -35,7 +35,7 @@ class CueDef:
     must also flow through `cue_hash` so cache busting stays correct.
     """
     slug: str
-    template: str
+    template: str  # Empty selects the local microphone-off tone.
     description: str
     # Played instead while this cue has no baked WAV of its own — e.g. a
     # cue whose outage announcement needs the very provider it is
@@ -145,22 +145,8 @@ CUES: tuple[CueDef, ...] = (
     ),
     CueDef(
         slug=NO_ROOM_MIC_CUE_SLUG,
-        template=(
-            "I don't have a microphone of my own. Hold the button on your "
-            "remote to talk to me."
-        ),
-        description=(
-            "Played when something asks this speaker to open a room-mic turn "
-            "but it has no always-listening microphone — a streambox whose "
-            "only voice input is a paired push-to-talk remote (issue #2205). "
-            "Without it that request ducks the music, chirps, forwards no "
-            "audio at all, and dies to the idle watchdog in silence. Wired "
-            "from WakeLoop.manual_session_start, and from every 66 park that "
-            "means the same thing to the household — jasper-voice's and "
-            "jasper-aec-bridge's, whose mic would not open. "
-            "Names the remedy, not the cause: the household can act on "
-            "'hold the button', not on 'no primary leg was planned'."
-        ),
+        template="",
+        description="A short tone when the room microphone is unavailable.",
     ),
     CueDef(
         slug=VOICE_NOT_SET_UP_CUE_SLUG,

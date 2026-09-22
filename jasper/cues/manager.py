@@ -37,8 +37,11 @@ from typing import Any
 from ..assistant_loudness import AssistantLoudnessProfile, measure_pcm_24k_mono
 from ..json_fields import age_seconds
 from ..log_event import log_event
+from ..voice.earcons import _generate_mute_click
 from .generator import (
     CHIME_MODEL,
+    WAV_RATE,
+    WAV_SAMPLE_WIDTH,
     backend_model,
     cue_hash,
     cue_path,
@@ -423,6 +426,9 @@ class AudioCueManager:
             logger.warning("cue play: no TtsPlayout configured (slug=%s)", slug)
             return OUTCOME_FAILED, REASON_NO_PLAYOUT, slug, False
 
+        if not cue.template:
+            return await self._deliver_cue(cue, _generate_mute_click(going_on=False))
+
         # Prefer the current-hash file. If missing, fall back to ANY
         # cached version under the same slug — stale audio beats
         # silent failure (per the project's silent-failure-is-bad
@@ -458,11 +464,17 @@ class AudioCueManager:
             stale_used = True
 
         try:
-            pcm, audio_duration_sec = self._read_wav_pcm(path)
+            pcm, _ = self._read_wav_pcm(path)
         except (OSError, wave.Error) as e:
             logger.warning("cue play: could not read %s: %s", path, e)
             return OUTCOME_FAILED, REASON_READ_ERROR, slug, False
 
+        return await self._deliver_cue(cue, pcm, stale=stale_used)
+
+    async def _deliver_cue(
+        self, cue: CueDef, pcm: bytes, *, stale: bool = False,
+    ) -> tuple[str, str, str, bool]:
+        slug = cue.slug
         try:
             await self._write_pcm(self._tts, pcm, model=f"cue-{cue.slug}")
         except Exception as e:  # noqa: BLE001
@@ -474,10 +486,10 @@ class AudioCueManager:
             await wait_tts_drained_owned(self._tts)
         logger.info(
             "cue play: %s (%d bytes pcm, audio=%.1fs)",
-            slug, len(pcm), audio_duration_sec,
+            slug, len(pcm), len(pcm) / (WAV_RATE * WAV_SAMPLE_WIDTH),
         )
         return (
-            OUTCOME_STALE if stale_used else OUTCOME_DELIVERED,
+            OUTCOME_STALE if stale else OUTCOME_DELIVERED,
             REASON_OK, slug, True,
         )
 
