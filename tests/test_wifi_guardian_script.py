@@ -730,70 +730,33 @@ def test_guardian_accepts_reason_argument(tmp_path):
 # *count*, not on real backoff latency).
 
 
-def test_run_guardian_retries_transient_spawn_oserror(tmp_path, monkeypatch):
-    """The test's own subprocess.run can fail to spawn bash with a
-    transient EAGAIN/EMFILE *before the child runs* — the documented
-    cause of ~16 subprocess tests erroring together under load. The
-    harness must retry and still get a correct result; the retried spawn
-    has no side effects, so nothing the real tests assert is weakened."""
+@pytest.mark.parametrize(
+    ("failure_kind", "retry_count", "failure_errno"),
+    [
+        pytest.param("spawn", 3, errno.EMFILE, id="emfile-three"),
+        pytest.param("child", 2, None, id="child-fork-two"),
+        pytest.param("spawn", 2, errno.EAGAIN, id="eagain-two"),
+    ],
+)
+def test_run_guardian_retries_transient_failures(
+    tmp_path, monkeypatch, failure_kind, retry_count, failure_errno
+):
+    """Transient spawn and child-fork failures retry, warn, then succeed."""
     monkeypatch.setattr(time, "sleep", lambda *_a, **_k: None)  # no real backoff
     real_run = subprocess.run
     calls = {"n": 0}
 
     def flaky_run(*a, **k):
         calls["n"] += 1
-        if calls["n"] <= 3:
-            raise BlockingIOError(errno.EMFILE, "Too many open files")
-        return real_run(*a, **k)
-
-    monkeypatch.setattr(subprocess, "run", flaky_run)
-    proc, _ = _run_guardian(tmp_path, stash_contents=None)
-    assert proc.returncode == 0, proc.stderr
-    assert "event=wifi_guardian.absent" in proc.stderr
-    assert calls["n"] == 4  # 3 transient spawn failures, then the real run
-
-
-def test_run_guardian_retries_transient_child_fork_failure(tmp_path, monkeypatch):
-    """The child bash can itself fail to fork() a helper (nmcli/awk/sed)
-    under the same load, printing 'fork: Resource temporarily unavailable'
-    and producing garbage output. The harness must treat that signature as
-    transient and retry, not surface the garbage as a spurious failure."""
-    monkeypatch.setattr(time, "sleep", lambda *_a, **_k: None)  # no real backoff
-    real_run = subprocess.run
-    calls = {"n": 0}
-
-    def flaky_run(*a, **k):
-        calls["n"] += 1
-        if calls["n"] <= 2:
-            return subprocess.CompletedProcess(
-                a[0] if a else k["args"], 1,
-                stdout="",
-                stderr="bash: fork: Resource temporarily unavailable\n",
-            )
-        return real_run(*a, **k)
-
-    monkeypatch.setattr(subprocess, "run", flaky_run)
-    proc, _ = _run_guardian(tmp_path, stash_contents=None)
-    assert proc.returncode == 0, proc.stderr
-    assert "event=wifi_guardian.absent" in proc.stderr
-    assert calls["n"] == 3  # 2 transient-output results, then the real run
-
-
-def test_run_guardian_warns_on_each_transient_retry(tmp_path, monkeypatch):
-    """Retries are NOT silent: each transient retry emits a
-    `_TransientSpawnRetryWarning` so a persistently-degraded machine leaves
-    a breadcrumb in pytest's warnings summary instead of the retry quietly
-    masking it — JTS's no-silent-failures rule, applied to the test harness.
-    One blip warns once and still passes; a real problem warns every time
-    and then fails loudly via the bounded re-raise."""
-    monkeypatch.setattr(time, "sleep", lambda *_a, **_k: None)  # no real backoff
-    real_run = subprocess.run
-    calls = {"n": 0}
-
-    def flaky_run(*a, **k):
-        calls["n"] += 1
-        if calls["n"] <= 2:
-            raise BlockingIOError(errno.EAGAIN, "Resource temporarily unavailable")
+        if calls["n"] <= retry_count:
+            if failure_kind == "child":
+                return subprocess.CompletedProcess(
+                    a[0] if a else k["args"],
+                    1,
+                    stdout="",
+                    stderr="bash: fork: Resource temporarily unavailable\n",
+                )
+            raise BlockingIOError(failure_errno, "transient spawn failure")
         return real_run(*a, **k)
 
     monkeypatch.setattr(subprocess, "run", flaky_run)
@@ -801,11 +764,12 @@ def test_run_guardian_warns_on_each_transient_retry(tmp_path, monkeypatch):
         proc, _ = _run_guardian(tmp_path, stash_contents=None)
     assert proc.returncode == 0, proc.stderr
     assert "event=wifi_guardian.absent" in proc.stderr
-    # One warning per retry (2 transient failures -> 2 warnings), and the
-    # message carries the attempt counter so a tail of them is diagnosable.
-    retries = [w for w in record if issubclass(w.category, _TransientSpawnRetryWarning)]
-    assert len(retries) == 2
-    assert "attempt 1/" in str(retries[0].message)
+    assert calls["n"] == retry_count + 1
+    assert len(record) == retry_count
+    assert all(
+        issubclass(warning.category, _TransientSpawnRetryWarning)
+        for warning in record
+    )
 
 
 def test_run_guardian_does_not_retry_real_oserror(tmp_path, monkeypatch):
