@@ -21,14 +21,17 @@ from .angle_capture import (
 )
 from .crossover_v2.contracts import CrossoverV2FlowError
 from .crossover_v2.measure_spec import branch_target_ids_for
-from .crossover_v2.refusal_copy import REASON_REGISTRY, REASON_MEASUREMENT_OUTPUT_MUTED, REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT, REASON_WALK_BRANCH_PAIR_UNDECLARED
+from .crossover_v2.refusal_copy import (
+    REASON_REGISTRY, REASON_MEASUREMENT_OUTPUT_MUTED, REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT,
+    REASON_WALK_BRANCH_PAIR_UNDECLARED, REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS,
+)
 from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs,
     compile_candidate_config, prove_candidate_config,
 )
 from .movers import MOVER_ARM
 from .measurement_programs import BRANCH_PAIR_FRONT_REAR, PURPOSE_BASS, PURPOSE_REAR
-from .profile import SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
+from .profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
 from .seat_level_reference import (
     AnchorFacts, LevelUnresolved, RungMeasurementUnavailable, SeatLevelTargetError, check_target_capture_dbfs, resolve_anchor_level,
     measured_rung_admission, rung_lift_bound_db, stimulus_mismatch, validate_commissioning_spl,
@@ -150,6 +153,14 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
     if captures > MAX_CAPTURE_PLAN_ATTEMPTS or (valid_shape and plan.retries_per_pose > MAX_CAPTURE_PLAN_ATTEMPTS):
         add(WALK_OVER_CAPTURE_CAPACITY, f"captures={captures}, retries_per_pose={plan.retries_per_pose}; limit={MAX_CAPTURE_PLAN_ATTEMPTS}")
         valid_shape = False
+
+    # Remove once three-way CHECK graphs and MEASURE are supported (#5396).
+    if (valid_shape and {role.role for role in facts.roles_bands} == set(DRIVER_ROLES_BY_WAY[3])
+            and any(not stop.plays_summed for stop in plan.stops)):
+        code = REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS
+        issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message),
+                              evidence={"driver_roles": DRIVER_ROLES_BY_WAY[3]}))
+        return PreflightReport(plan, tuple(issues), (), {}, facts.commissioning_stop_db_spl)
 
     # Remove when plans can only name declared capture targets.
     if valid_shape and facts.declared_target_ids is not None:

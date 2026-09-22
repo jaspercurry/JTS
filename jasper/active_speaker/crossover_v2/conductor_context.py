@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, Mapping, TypeVar, overl
 
 from jasper.log_event import log_event
 from jasper.active_speaker.crossover_preview import build_crossover_preview
-from jasper.active_speaker.profile import required_driver_roles
+from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, required_driver_roles
 from jasper.active_speaker.design_draft import declared_driver_spacing_m
 from jasper.output_topology import measurement_target_id
 
@@ -22,6 +22,7 @@ from .refusal_copy import (
     REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID,
     REASON_REGISTRY,
     REASON_SPEAKER_SHAPE_UNSUPPORTED,
+    REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS,
     CrossoverV2Refused,
 )
 
@@ -299,10 +300,10 @@ def resolve_conductor_context(
     preset = (resolve_commission_preset(topology, crossover_preview=preview)
               if preview is not None else resolve_capture_preset(topology))
     if preset.way_count not in (1, 2):
-        raise CrossoverV2Refused(
-            REASON_REGISTRY[REASON_SPEAKER_SHAPE_UNSUPPORTED].message,
-            code=REASON_SPEAKER_SHAPE_UNSUPPORTED,
-        )
+        # Remove once the measurement programs support three driver roles (#5396).
+        code = (REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS
+                if set(preset.drivers) == set(DRIVER_ROLES_BY_WAY[3]) else REASON_SPEAKER_SHAPE_UNSUPPORTED)
+        raise CrossoverV2Refused(REASON_REGISTRY[code].message, code=code)
     roles = required_driver_roles(preset.way_count)
     if draft is None:
         draft = load_design_draft(topology=topology)

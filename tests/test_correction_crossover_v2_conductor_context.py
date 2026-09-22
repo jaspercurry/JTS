@@ -10,6 +10,7 @@ from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
 from jasper.web import correction_crossover_v2_volume as v2volume
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import logging
@@ -23,12 +24,13 @@ from jasper.active_speaker import commission_wiring, design_draft
 from jasper.active_speaker import session_volume_plan as session_volume_plan_mod
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_TARGETS_MISSING,
-    REASON_REGISTRY,
     REASON_SPEAKER_SHAPE_UNSUPPORTED,
+    REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS,
     CrossoverV2Refused,
 )
 from jasper.active_speaker import excitation_safety_plan as excitation_safety_plan_mod
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
+from jasper.active_speaker.profile import ActiveSpeakerPreset, DRIVER_ROLES_BY_WAY
 from jasper.audio_hardware.dac import HIFIBERRY_DAC8X
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.output_topology import (
@@ -40,6 +42,8 @@ from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
 from tests.crossover_v2_fixtures import fake_measurement_mic
 from tests.test_active_speaker_crossover_preview import _research as preview_research
+from tests.test_active_speaker_profile import _three_way_preset
+from tests.test_rear_output_foundation import _rear_pair
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 
 _TWO_WAY_GROUP = [{
@@ -240,7 +244,8 @@ def test_a_subless_passive_speaker_opens_a_session(monkeypatch, _passive_topolog
 @pytest.mark.parametrize(
     ("mutate", "expected_code"),
     [
-        pytest.param("preset", REASON_SPEAKER_SHAPE_UNSUPPORTED, id="no_walk"),
+        pytest.param("preset", REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, id="no_walk"),
+        pytest.param("unsupported", REASON_SPEAKER_SHAPE_UNSUPPORTED, id="unsupported_way_count"),
         pytest.param(
             "targets", REASON_MEASUREMENT_TARGETS_MISSING, id="nothing_to_measure",
         ),
@@ -250,14 +255,10 @@ def test_the_session_refuses_by_a_registered_code(
     monkeypatch, _passive_topology, mutate, expected_code,
 ):
     status = _passive_status(_passive_topology)
-    if mutate == "preset":
-        from jasper.active_speaker.profile import ActiveSpeakerPreset
-        from tests.test_active_speaker_profile import _three_way_preset
-
-        monkeypatch.setattr(
-            commission_wiring, "resolve_capture_preset",
-            lambda topo: ActiveSpeakerPreset.from_mapping(_three_way_preset("mono")),
-        )
+    if mutate in {"preset", "unsupported"}:
+        preset = (ActiveSpeakerPreset.from_mapping(_three_way_preset("mono")) if mutate == "preset"
+                  else replace(load_active_speaker_preset(), way_count=4))
+        monkeypatch.setattr(commission_wiring, "resolve_capture_preset", lambda topo: preset)
     else:
         status["targets"] = {"drivers": [], "summed": []}
 
@@ -265,8 +266,18 @@ def test_the_session_refuses_by_a_registered_code(
         v2ctx.resolve_conductor_context(status)
 
     assert excinfo.value.code == expected_code
-    assert expected_code in REASON_REGISTRY
 
+
+@pytest.mark.parametrize("layout", ["mono", "stereo"])
+def test_cardioid_opens_a_session(monkeypatch, layout):
+    preset, topology = _rear_pair(layout)
+    monkeypatch.setattr(commission_wiring, "resolve_capture_preset", lambda topo: preset)
+    monkeypatch.setenv(ACTIVE_PLAYBACK_DEVICE_ENV, "hw:Lab")
+
+    context = v2ctx.resolve_conductor_context(_passive_status(topology), topology=topology)
+
+    assert tuple(rb.role for rb in context.roles_bands) == DRIVER_ROLES_BY_WAY[2]
+    assert set(context.role_targets) == {"woofer", "woofer:rear", "tweeter"}
 
 
 def test_resolves_real_playback_device_from_a_verified_topology(monkeypatch):

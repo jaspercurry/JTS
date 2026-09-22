@@ -38,19 +38,18 @@ ROWS = {f'{name}/{size}': row for (name, size), row in load_programs().items()
 LEVEL_DB = -23.0
 SENSITIVITIES = {'woofer': 84.0, 'tweeter': 109.2, 'mid': 90.0, 'full_range': 87.0}
 PLAN_REFUSALS = {
-    'one_way_passive': {'branches/express', 'front_rear/express', 'rear/express', 'rear/wide', 'rear/behind', 'rear/pair', 'rear/pair_behind'},
-    'two_way_active': {'front_rear/express', 'rear/express', 'rear/wide', 'rear/behind', 'rear/pair', 'rear/pair_behind'},
-    'three_way_active': {'branches/express', 'front_rear/express', 'rear/express', 'rear/wide', 'rear/behind', 'rear/pair', 'rear/pair_behind'},
-    'cardioid': set(),
+    layout: dict.fromkeys(rows, 'walk_branch_pair_undeclared') for layout, rows in {
+        'one_way_passive': {'branches/express', 'front_rear/express', 'rear/express', 'rear/wide', 'rear/behind', 'rear/pair', 'rear/pair_behind'},
+        'two_way_active': {'front_rear/express', 'rear/express', 'rear/wide', 'rear/behind', 'rear/pair', 'rear/pair_behind'},
+        'three_way_active': {'branches/express', 'front_rear/express', 'rear/express', 'rear/wide', 'rear/behind', 'rear/pair', 'rear/pair_behind'},
+        'cardioid': set(),
+    }.items()
 }
-KNOWN_GAPS = {
-    ('three_way_active', row): (
-        {('graph_error', 'ActiveSpeakerConfigError', 'check', 'drivers'),
-         ('compose_error', 'ValueError', 'measure', 'drivers')},
-        'Remove when the neutral graph supports three ways and MEASURE accepts more than two drivers.',
-    )
-    for row in ('speaker/mark', 'baseline/express', 'baseline/full', 'tournament/express', 'tournament/full')
-}
+# Three-way per-driver programs refuse at plan time (#5396).
+PLAN_REFUSALS['three_way_active'].update(dict.fromkeys(
+    ('speaker/mark', 'baseline/express', 'baseline/full', 'tournament/express', 'tournament/full'),
+    'walk_layout_unsupported_for_per_driver_programs',
+))
 
 
 @pytest.fixture(scope='module', params=LAYOUTS)
@@ -149,6 +148,5 @@ def _outcome(speaker, row):
 
 @pytest.mark.parametrize('row', ROWS)
 def test_every_program_on_every_layout(speaker, row):
-    expected = ({('plan_refused', 'walk_branch_pair_undeclared')} if row in PLAN_REFUSALS[speaker.name]
-                else KNOWN_GAPS.get((speaker.name, row), ({('pass',)}, ''))[0])
-    assert _outcome(speaker, row) == expected
+    code = PLAN_REFUSALS[speaker.name].get(row)
+    assert _outcome(speaker, row) == ({('plan_refused', code)} if code else {('pass',)})
