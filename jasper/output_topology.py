@@ -1198,10 +1198,6 @@ def resolve_output_layout(
         # device would derive from the marker, so no automated pass could move
         # a box between transports — only a human passing `--endpoint`. Not
         # reading the marker is what makes the roleful path convergent.
-        #
-        # The marker is unaffected: it is outputd's own
-        # JASPER_OUTPUTD_ACTIVE_LANE biconditional, read by the Rust daemon and
-        # by `active_ring_endpoint_proof`.
         active_device = RING_ACTIVE_PLAYBACK_DEVICE
         return OutputLayout(
             device_id=hardware.device_id,

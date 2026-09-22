@@ -489,10 +489,6 @@ def render_ring_conf_wire(
     # active width the block's absence is a genuine fault and still raises: the
     # ioplug attaches with what the block says, so skipping the write silently
     # would ship a shear.
-    #
-    # The arm path does not rely on that leniency — ``active_ring_endpoint_proof``
-    # independently refuses to arm unless the block declares the resolved width,
-    # so a missing block fails CLOSED there whatever the renderer did.
     per_block = {
         RING_A_CONF_PCM: (ring_a_channels, True),
         RING_B_CONF_PCM: (ring_b_channels, True),

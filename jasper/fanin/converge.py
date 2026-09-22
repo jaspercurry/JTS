@@ -38,10 +38,6 @@ def _ring_gates() -> tuple[tuple[str, rr.RingGate], ...]:
     Order is a diagnostic decision, not cost: the coarser roleful-admission
     refusal first, then asset presence before the two gates that read those
     assets, then capability before width.
-
-    ``ring_topology_ready`` is deliberately absent: its roleful arm ends in
-    ``active_ring_endpoint_proof``, which reads the marker derived from the graph
-    this step has not moved yet. The coupling reconcile that follows re-runs it.
     """
     return (
         ("ring_roleful_unattended", rr.ring_roleful_unattended_ready),

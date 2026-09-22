@@ -553,9 +553,6 @@ def test_topology_supports_shm_ring_stays_false_for_roleful():
     - ``jasper.sound.camilla_yaml``'s flat-cutover defusal gate protects exactly
       the boxes the widening would re-expose to a full-range stereo graph on a
       compression driver.
-
-    The active ring is admitted by ``ring_topology_ready``'s own arm instead,
-    where the endpoint proof is in scope.
     """
     for layout, mode, _width in ROLEFUL_CASES:
         topo = _active_topology(layout, mode)
@@ -878,10 +875,6 @@ def test_the_active_ring_is_a_recognized_output_endpoint():
 def test_the_unattended_pass_has_its_own_roleful_gate():
     """Independent of every eligibility predicate, on purpose.
 
-    ``ring_topology_ready`` has an arm that ADMITS a roleful topology, so the
-    auto pass cannot rely on "roleful boxes fail the topology gate". This gate
-    asks the roleful question on its own — so a future change to any eligibility
-    predicate cannot re-open unattended arming of a crossover speaker by accident.
     """
     from jasper.fanin.converge import _ring_gates
 
@@ -1225,50 +1218,6 @@ def test_the_roleful_gate_does_not_ask_the_divergence_question(monkeypatch, tmp_
     # Refuse, arm 1, arm 2 — three distinct paths, so the spy covers them all.
     assert outcomes == [False, True, True]
     assert calls == []
-
-
-def test_a_roleful_topology_is_admitted_only_with_a_staged_endpoint(monkeypatch):
-    """E2: the width alone is not enough — the ENDPOINT must be staged.
-
-    A roleful box that resolves an active width but has no marker (or a conf.d
-    block still on the shipped default) would arm into a daemon that refuses the
-    pairing. Both halves are checked separately because they have different
-    remedies.
-    """
-    from jasper.fanin import ring_readiness
-
-    monkeypatch.setattr(
-        "jasper.output_topology_store.load_output_topology_strict",
-        lambda *a, **k: _active_topology("stereo", "active_3_way"),
-    )
-
-    # No marker -> refused, naming the reconciler.
-    monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
-    )
-    ok, detail = ring_readiness.ring_topology_ready(strict_unreadable=True)
-    assert ok is False
-    assert "marker" in detail
-
-    # Marker present but the conf.d block still declares the shipped default
-    # while this box needs 6 -> refused, naming the conf.d.
-    monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
-    )
-    monkeypatch.setattr(
-        "jasper.ring_conf.ring_conf_channels", lambda pcm, conf_d=None: 2
-    )
-    ok, detail = ring_readiness.ring_topology_ready(strict_unreadable=True)
-    assert ok is False
-    assert "channels=2" in detail
-
-    # Both staged -> admitted.
-    monkeypatch.setattr(
-        "jasper.ring_conf.ring_conf_channels", lambda pcm, conf_d=None: 6
-    )
-    ok, detail = ring_readiness.ring_topology_ready(strict_unreadable=True)
-    assert ok is True
-    assert "ACTIVE-ring eligible" in detail
 
 
 # --------------------------------------------------------------------------
@@ -3189,9 +3138,7 @@ def test_the_crossed_pair_is_unreachable_from_the_reconciler():
 # mid-commission BY DESIGN: its boot graph is the all-muted staged startup
 # ANCHOR, not a baseline. Every layer BELOW step 1 already admits that shape —
 # `GRAPH_ALL_MUTED_ACTIVE_STARTUP` is a legal outputd endpoint class,
-# `jts_ring_active_playback` is a legal endpoint device, and
-# `active_ring_endpoint_proof` reads only the marker and the conf.d — so the
-# refusal was the ONLY thing standing between that box and the arm ladder.
+# `jts_ring_active_playback` is a legal endpoint device.
 #
 # These drive the real command against a real staged artifact and a real
 # statefile. The re-stage, the re-proof, the publish and the repoint all run;

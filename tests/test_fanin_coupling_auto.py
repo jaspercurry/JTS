@@ -20,7 +20,6 @@ resolving a second route.
 
 from __future__ import annotations
 
-from jasper import output_topology_store as ot
 import ast
 import re
 from pathlib import Path
@@ -47,7 +46,6 @@ from jasper.fanin_coupling import (
     RING_CAMILLA_TARGET_LEVEL,
 )
 from jasper.output_topology_store import save_output_topology
-from jasper.output_topology import OutputTopologyError
 
 
 def test_pure_auto_decision_module_does_not_import_transition_owner():
@@ -741,32 +739,6 @@ def test_auto_ring_combo_fanin_restart_failure_still_resumes_camilla(tmp_path, m
     assert r.restarted_fanin_for_combo is False
     assert restarts.index("camilla_stop") < restarts.index("fanin")
     assert restarts.index("fanin") < restarts.index("camilla_start")
-
-
-# --------------------------------------------------------------------------
-# F4 — the auto topology gate fails CLOSED on an unreadable topology
-# --------------------------------------------------------------------------
-
-
-def test_ring_topology_strict_fails_closed_on_unreadable(monkeypatch):
-    """F4: the strict topology gate (auto path) resolves NOT-eligible when the
-    topology cannot be read, where the human-arm gate fails open."""
-
-    from jasper.fanin.ring_readiness import ring_topology_ready
-
-    def boom():
-        raise OutputTopologyError("topology file corrupt")
-
-
-    monkeypatch.setattr(ot, "load_output_topology_strict", boom)
-
-    open_ok, open_detail = ring_topology_ready()  # human arm: fail-open
-    assert open_ok is True
-    assert "deferring to outputd" in open_detail
-
-    strict_ok, strict_detail = ring_topology_ready(strict_unreadable=True)
-    assert strict_ok is False
-    assert "fail-closed" in strict_detail
 
 
 # --------------------------------------------------------------------------
