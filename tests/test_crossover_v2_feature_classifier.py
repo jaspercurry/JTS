@@ -208,11 +208,6 @@ def dip_artifact(tmp_path_factory) -> dict:
     return _classify(tmp_path_factory.mktemp("dip"), _resonant_ir(-3.0))
 
 
-# --------------------------------------------------------------------------- #
-# the known answers
-# --------------------------------------------------------------------------- #
-
-
 def test_a_minimum_phase_peak_is_classified_cuttable(peak_artifact):
     """The whole point: a resonance the instrument may aim a cut at."""
     rows = peak_artifact["rows"]
@@ -874,7 +869,7 @@ def test_failing_controls_withhold_the_phase_class_and_nothing_else(
     deliberate — it proves the withholding is driven by the CONTROL VERDICT and
     not by some other property of a degraded signal.
     """
-    monkeypatch.setattr(fx, "CONTROL_MAX_FALSE_POSITIVE_US", 0.0)
+    monkeypatch.setattr(fx.controls, "CONTROL_MAX_FALSE_POSITIVE_US", 0.0)
     artifact = _classify(tmp_path, _resonant_ir(+3.0))
 
     verdict = artifact["controls"]["verdict"]
@@ -1846,7 +1841,7 @@ def test_failed_controls_exit_zero_and_bank_their_own_disclosure(
     what was lost, and a scripted caller sees exit 0 rather than a refusal it
     cannot distinguish from a broken round.
     """
-    monkeypatch.setattr(fx, "CONTROL_MAX_FALSE_POSITIVE_US", 0.0)
+    monkeypatch.setattr(fx.controls, "CONTROL_MAX_FALSE_POSITIVE_US", 0.0)
     bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
     code = cli.main(["classify-features", str(bundle)])
     assert code == cli.EXIT_OK
