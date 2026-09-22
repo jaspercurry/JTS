@@ -16,7 +16,7 @@ Two engines:
   fork). Exposes the deep ``EchoCanceller3Config`` knobs via a custom
   ``EchoControlFactory`` subclass. Default kwargs reflect the BEST_A
   canonical config from the 2026-05-22 tuning campaign — see
-  ``experiments/aec3-v2-deep-tune-spike/README.md`` for per-knob
+  ``docs/research/2026-05-22-aec3-tuning.md`` for per-knob
   rationale.
 
 Both engines take 16 kHz mono int16 mic + ref byte buffers (multiple

@@ -14,7 +14,7 @@
 // subclass that constructs EchoCanceller3 with a custom config.
 //
 // Default kwargs reflect the BEST_A config from the 2026-05-22 sweep
-// campaign — see experiments/aec3-v2-deep-tune-spike/README.md for the
+// campaign — see docs/research/2026-05-22-aec3-tuning.md for the
 // methodology + per-knob rationale.
 //
 // Production loader (jasper/cli/aec_bridge.py): tries `import _aec3_v2`
@@ -246,7 +246,7 @@ PYBIND11_MODULE(_aec3_v2, m) {
              "BEST_A AEC3 binding via vendored webrtc-audio-processing v2.1. "
              "All knobs default to the BEST_A canonical config from the "
              "2026-05-22 tuning campaign — see "
-             "experiments/aec3-v2-deep-tune-spike/README.md for rationale "
+             "docs/research/2026-05-22-aec3-tuning.md for rationale "
              "per knob. Override any kwarg to deviate from BEST_A.")
         .def("process", &Aec3V2::process,
              py::arg("mic"), py::arg("ref"),
