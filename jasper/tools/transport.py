@@ -12,6 +12,7 @@ from ..music_sources import SOURCE_TO_ACTIVE_KEY, Source
 from ..bluetooth.avrcp import bluetooth_avrcp_call as _bluetooth_call
 from ..renderer import airplay_now_playing
 from . import tool
+from .spotify import _format_name_list
 from ..spotify_router import airplay_client_name
 
 logger = logging.getLogger(__name__)
@@ -263,7 +264,6 @@ def make_transport_dispatcher(renderer, router):
                 active = await router.active(airplay_active=False)
                 if active is None:
                     if router.empty_reason() == "revoked":
-                        from .spotify import _format_name_list
                         names = router.revoked_account_names()
                         who = (
                             _format_name_list(names) if names
