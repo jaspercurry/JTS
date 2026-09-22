@@ -1954,6 +1954,7 @@ def test_topology_save_does_not_restore_old_graph_for_a_post_write_read_failure(
 
     assert snapshot_reads == 1
     assert events == ["park", "converge-new-graph"]
+    monkeypatch.setattr(topology_mod, "load_output_topology_snapshot", real_snapshot)
     assert load_output_topology(path).name != "Old layout"
 
 

@@ -9,6 +9,7 @@ import json
 import logging
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -1014,47 +1015,43 @@ def test_load_failure_state_is_bounded(
     )
 
 
+@pytest.fixture(params=[load_output_topology_strict, load_output_topology_snapshot])
+def loader(request: pytest.FixtureRequest):
+    return request.param
+
+
 def test_load_output_topology_strict_rejects_corrupt_state(
-    tmp_path: Path,
+    tmp_path: Path, loader
 ) -> None:
     path = tmp_path / "output_topology.json"
     path.write_text("{not json", encoding="utf-8")
 
-    with pytest.raises(OutputTopologyError, match="not valid JSON"):
-        load_output_topology_strict(path)
+    with pytest.raises(OutputTopologyError):
+        loader(path)
 
 
 def test_load_output_topology_strict_rejects_non_utf8_bytes(
-    tmp_path: Path,
+    tmp_path: Path, loader
 ) -> None:
-    """SD-card bit rot fails CLOSED, like every other unreadable shape.
-
-    `read_text(encoding="utf-8")` raises UnicodeDecodeError BEFORE json.loads
-    runs, and UnicodeDecodeError is not an OSError — so without the loader's own
-    clause it escapes as a bare ValueError past every caller's fail-closed
-    handling. In the grouping reconciler that degrades route_mode to "unknown",
-    which never blocks: a bonded box with corrupted topology bytes would be
-    ADMITTED where an unreadable one is refused.
-    """
     path = tmp_path / "output_topology.json"
     path.write_bytes(b'{"kind": "\xff\xfe not utf-8"}')
 
-    with pytest.raises(OutputTopologyError, match="could not read"):
-        load_output_topology_strict(path)
+    with pytest.raises(OutputTopologyError):
+        loader(path)
+
+
+def test_strict_loaders_reject_unreadable_file(tmp_path: Path, loader) -> None:
+    path = tmp_path / "output_topology.json"
+    save_output_topology(new_topology_draft(), path)
+    with patch.object(Path, "open", side_effect=PermissionError):
+        with pytest.raises(OutputTopologyError):
+            loader(path)
 
 
 @pytest.mark.parametrize("device_id", [5, True, 1.5, ["hifiberry_dac8x"], {"id": 1}])
 def test_load_output_topology_strict_rejects_a_non_string_device_id(
-    tmp_path: Path, device_id: object
+    tmp_path: Path, device_id: object, loader
 ) -> None:
-    """The strict loader's contract is that EVERY malformed artifact leaves as
-    its one typed error.
-
-    A truthy non-string `device_id` reached `normalize_output_device_id`'s
-    `.strip()` and raised `AttributeError` — which is not a `ValueError`, so it
-    escaped the loader's own handling and every caller written to that contract.
-    The topology is otherwise valid, so nothing earlier can refuse it.
-    """
     path = tmp_path / "output_topology.json"
     path.write_text(
         json.dumps({
@@ -1071,14 +1068,16 @@ def test_load_output_topology_strict_rejects_a_non_string_device_id(
     )
 
     with pytest.raises(OutputTopologyError):
-        load_output_topology_strict(path)
+        loader(path)
 
 
 def test_load_output_topology_strict_allows_missing_as_unconfigured(
-    tmp_path: Path,
+    tmp_path: Path, loader
 ) -> None:
-    loaded = load_output_topology_strict(tmp_path / "missing.json")
-
+    loaded = loader(tmp_path / "missing.json")
+    if isinstance(loaded, output_topology_mod.OutputTopologySnapshot):
+        assert loaded.revision == "missing"
+        loaded = loaded.topology
     assert loaded.status == "draft"
     assert loaded.speaker_groups == ()
 

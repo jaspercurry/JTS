@@ -1935,6 +1935,7 @@ def load_output_topology_snapshot(
         raw = json.loads(data.decode("utf-8"))
         topology = OutputTopology.from_mapping(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # UnicodeDecodeError is not an OSError; SD-card bit rot can produce it.
         raise OutputTopologyError(
             f"output topology {target} is not valid JSON: {exc}"
         ) from exc
@@ -1986,33 +1987,7 @@ def load_output_topology_strict(path: str | Path | None = None) -> OutputTopolog
     runtime graph must fail closed instead of silently treating it as no saved
     roleful/protected outputs.
     """
-    target = topology_path(path)
-    try:
-        raw = json.loads(target.read_text(encoding="utf-8"))
-        return OutputTopology.from_mapping(raw)
-    except FileNotFoundError:
-        return new_topology_draft()
-    except (OSError, UnicodeDecodeError) as exc:
-        # UnicodeDecodeError is NOT an OSError, and read_text() raises it before
-        # the JSON limb below can see it; SD-card bit rot produces exactly that,
-        # and uncaught it escapes every caller's fail-closed handling.
-        raise OutputTopologyError(
-            f"could not read output topology {target}: {exc}"
-        ) from exc
-    except json.JSONDecodeError as exc:
-        raise OutputTopologyError(
-            f"output topology {target} is not valid JSON: {exc}"
-        ) from exc
-    except ValueError as exc:
-        # `OutputTopologyError` IS a ValueError, so the domain error still lands
-        # here unchanged. Catching the BASE is deliberate: not every field
-        # validator raises the subclass, and only the base makes "every
-        # malformed artifact leaves as one typed error" true of the whole parse
-        # — which every caller that authorizes a runtime graph fails closed on.
-        # The snapshot loader above widens for the same reason.
-        raise OutputTopologyError(
-            f"output topology {target} is invalid: {exc}"
-        ) from exc
+    return load_output_topology_snapshot(path).topology
 
 
 # A corrupt or unreadable topology is a persistent *state*, not a per-call
