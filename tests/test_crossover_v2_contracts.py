@@ -13,11 +13,12 @@ just as happily when the guard is deleted and the type accepts everything.
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 
 import pytest
 
 from jasper.active_speaker.branch_chain import CrossoverSection
-from jasper.active_speaker.crossover_v2.contracts import SCHEMA_VERSION
+from jasper.active_speaker.crossover_v2.contracts import CandidateFcDisagreementError, SCHEMA_VERSION
 from jasper.active_speaker.crossover_v2 import (
     PLAN_REFUSAL_REASONS,
     PROPOSAL_FINGERPRINT_KINDS,
@@ -593,3 +594,30 @@ def test_no_trim_strategy_says_rejected_while_meaning_committed():
     for member in TrimStrategy:
         if "committed" in member.value:
             assert "reject" not in member.value, member
+
+
+def test_the_refusal_reason_travels_by_TYPE_not_by_the_exceptions_prose():
+    disagreement = CandidateFcDisagreementError("wording that no test owns")
+    assert disagreement.refusal_reason == "candidate_fc_disagreement"
+    assert CrossoverV2ContractError("anything").refusal_reason == "contract_invalid"
+
+
+
+def test_the_unrecorded_drift_member_is_gone_and_referenced_nowhere():
+    assert not hasattr(TrimStrategy, "COMMITTED_PAIR_UNRECORDED_AFTER_SANITY_DRIFT")
+    assert "committed_pair_unrecorded_after_sanity_drift" not in {
+        member.value for member in TrimStrategy
+    }
+
+    root = Path(__file__).resolve().parent.parent
+    stale = []
+    for path in list((root / "jasper").rglob("*.py")) + list(
+        (root / "tests").rglob("*.py")
+    ):
+        if path.resolve() == Path(__file__).resolve():
+            continue  # this test names it in order to bury it
+        if "COMMITTED_PAIR_UNRECORDED_AFTER_SANITY_DRIFT" in path.read_text(
+            encoding="utf-8"
+        ):
+            stale.append(str(path.relative_to(root)))
+    assert stale == [], f"deleted member still referenced in {stale}"
