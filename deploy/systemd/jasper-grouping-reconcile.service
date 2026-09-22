@@ -25,7 +25,7 @@ StateDirectoryMode=0755
 # the six bounded post-plan service/hardware actions each costed at the
 # restart broker's worst reset-then-verb round trip (a reset-failed leg plus
 # the verb leg, each waiting `timeout + 5 s` on the broker socket -- see
-# jasper.multiroom.reconcile._broker_op_ceiling_sec), one-time provisioning
+# jasper.control.restart_broker.operation_ceiling_sec), one-time provisioning
 # (apt update + install), up to two 2732 s source-coordinator starts (drain a
 # prior activation, then synchronously converge the completed role), manager
 # probes, and a final margin. The handoff uses `start`, never restart, so an
