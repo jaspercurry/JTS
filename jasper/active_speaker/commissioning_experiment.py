@@ -17,7 +17,7 @@ from .candidate_bank import load_candidate_artifact, publish_authored_candidate
 from .candidate_parts import candidate_from_design_draft, compose_candidate
 from .crossover_v2.alignment_prescription import (
     ALIGNMENT_PRESCRIPTION_KIND, ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION,
-    AlignmentPrescription, AlignmentPrescriptionRefused, alignment_delay_search_bounds_us, read_alignment_prescription,
+    PRESCRIPTION_OUT_OF_LOBE, AlignmentPrescription, AlignmentPrescriptionRefused, alignment_delay_search_bounds_us, read_alignment_prescription,
 )
 from .crossover_v2.planning import alignment_to_candidate_fields
 from .alignment_evidence import commissioning_alignment
@@ -83,7 +83,9 @@ def bank_commissioning_experiment(
             }, fc_hz=preset.crossover_regions[0].fc_hz if preset.crossover_regions else None,
                declared_bounds_us=alignment_delay_search_bounds_us(preset), way_count=preset.way_count))
             fields = alignment_to_candidate_fields({**committed, "alignment_status": alignment["status"]}, roles=required_driver_roles(preset.way_count))
-            if fields[0] is None:
+            if prescription.out_of_lobe:
+                reason = PRESCRIPTION_OUT_OF_LOBE
+            elif fields[0] is None:
                 reason = alignment["status"] or "commissioning_alignment_unavailable"
             else:
                 sections["alignment"] = MeasuredCrossoverAlignment(*fields)

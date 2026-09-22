@@ -1705,20 +1705,6 @@ def test_the_gate_refuses_every_malformed_or_out_of_bounds_filter(
         {"artifact_schema_version": 99}, "prescription_schema_unsupported", id="version",
     ),
     pytest.param({"kind": "something_else"}, "prescription_malformed", id="kind"),
-    pytest.param(
-        {"packet_fingerprint": "0" * 64}, "prescription_packet_mismatch", id="fingerprint",
-    ),
-    pytest.param(
-        {"packet_fingerprint": ""}, "prescription_provenance_missing", id="empty-fp",
-    ),
-    pytest.param({"prescriber": {}}, "prescription_provenance_missing", id="no-author"),
-    pytest.param(
-        {"prescriber": {"model": "m"}}, "prescription_provenance_missing", id="no-operator",
-    ),
-    pytest.param(
-        {"prescriber": {"model": "", "operator": "j"}},
-        "prescription_provenance_missing", id="blank-model",
-    ),
     pytest.param({"apply": True}, "prescription_malformed", id="unknown-top-level"),
     pytest.param({"rationale": 17}, "prescription_malformed", id="rationale-not-text"),
 ])
@@ -1726,6 +1712,27 @@ def test_the_gate_refuses_a_malformed_identity_or_provenance(packet, over, reaso
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut()], packet, **over))
     assert excinfo.value.reason == reason
+
+
+@pytest.mark.parametrize("echo,author,expected", [
+    (None, None, {"model": "", "operator": ""}),
+    ("0" * 64, {}, {"model": "", "operator": ""}),
+    ("", {"model": "m"}, {"model": "m", "operator": ""}),
+    ("0" * 64, {"model": "", "operator": "j"}, {"model": "", "operator": "j"}),
+])
+def test_optional_evidence_echo_and_author_are_disclosed(packet, echo, author, expected):
+    document = _document([_cut()], packet)
+    document.pop("packet_fingerprint")
+    document.pop("prescriber")
+    if echo is not None:
+        document.update(packet_fingerprint=echo, prescriber=author)
+    accepted = _gate(packet, document)
+    receipt = accepted.to_dict()
+    assert receipt["packet_fingerprint"] == packet["packet_fingerprint"]
+    assert receipt["answers_packet"] is (None if echo is None else False)
+    assert receipt["prescriber"] == expected
+    assert blend_prescription_from_mapping(receipt).to_dict()["answers_packet"] is receipt["answers_packet"]
+    assert {"prescription_packet_mismatch", "prescription_provenance_missing"}.isdisjoint(BLEND_PRESCRIPTION_REFUSAL_REASONS)
 
 
 @pytest.mark.parametrize("payload", [
@@ -2514,7 +2521,7 @@ def test_the_unprefixed_names_colliding_with_alignment_prescription_are_gone():
     assert not hasattr(bp, "PRESCRIPTION_PROVENANCE_MISSING")
     assert not hasattr(bp, "PRESCRIPTION_REFUSAL_REASONS")
     assert bp.BLEND_PRESCRIPTION_MALFORMED == "prescription_malformed"
-    assert bp.BLEND_PRESCRIPTION_PROVENANCE_MISSING == "prescription_provenance_missing"
+    assert "prescription_provenance_missing" not in bp.BLEND_PRESCRIPTION_REFUSAL_REASONS
 
 
 def test_an_accepted_prescription_round_trips_through_the_durable_reader(packet):

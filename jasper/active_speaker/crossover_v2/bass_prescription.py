@@ -17,10 +17,9 @@ from jasper.bass_extension.dynamic import (
 
 from ._prescription_common import BlendPrescriptionRefused, _refuse
 
-BASS_ROUND_MISMATCH = "bass_round_mismatch"
 BASS_EVIDENCE_UNAVAILABLE = "bass_evidence_unavailable"
 BASS_PRESCRIPTION_REFUSAL_REASONS = DYNAMIC_BASS_REFUSAL_REASONS | {
-    BASS_ROUND_MISMATCH, BASS_EVIDENCE_UNAVAILABLE,
+    BASS_EVIDENCE_UNAVAILABLE,
 }
 BassPrescriptionRefused = BlendPrescriptionRefused
 
@@ -43,17 +42,18 @@ class BassPrescription:
     round_id: str
     evidence_status: str
     unqualified_boost_bands_hz: list[list[float]]
+    answers_round: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {**self.descriptor, "round_id": self.round_id,
+        return {**self.descriptor, "round_id": self.round_id, "answers_round": self.answers_round,
                 "evidence_status": self.evidence_status,
                 "unqualified_boost_bands_hz": self.unqualified_boost_bands_hz}
 
 
 def bass_prescription_response_format() -> dict[str, Any]:
     return {
-        "required_top_level": {
-            "round_id": "copy round_id from packet.json",
+        "optional_top_level": {
+            "round_id": "evidence echo; a mismatch is disclosed as answers_round=false",
         },
         "refusal_reasons": sorted(BASS_PRESCRIPTION_REFUSAL_REASONS),
     }
@@ -70,8 +70,6 @@ def read_bass_prescription(raw: Any, *, evidence: Mapping[str, Any]) -> BassPres
     status = bass_evidence_status(evidence)["evidence_status"]
     if not round_id or status != "evaluated":
         _refuse(BASS_EVIDENCE_UNAVAILABLE, "The round has no bass evidence.", round_id=round_id)
-    if raw.get("round_id") != round_id:
-        _refuse(BASS_ROUND_MISMATCH, "The bass prescription must name this round.", round_id=round_id)
     lower = max(BASS_BANDS_HZ[0][0], descriptor["delta_highpass_hz"] or BASS_BANDS_HZ[0][0])
     upper = descriptor["detector_lowpass_hz"]
     bands = [(lo, hi) for lo, hi in BASS_BANDS_HZ if lo < upper and hi > lower]
@@ -80,4 +78,5 @@ def read_bass_prescription(raw: Any, *, evidence: Mapping[str, Any]) -> BassPres
                  if band.get("fundamental_qualified") is True}
     # At the allowed 20 Hz detector minimum, the first measured band supplies the endpoint.
     unqualified = [list(band) for band in bands or [BASS_BANDS_HZ[0]] if band not in qualified]
-    return BassPrescription(descriptor, round_id, status, unqualified)
+    return BassPrescription(descriptor, round_id, status, unqualified,
+                            answers_round=raw.get("round_id") == round_id if "round_id" in raw else None)

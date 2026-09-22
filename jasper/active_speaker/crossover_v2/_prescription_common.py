@@ -54,30 +54,20 @@ def _finite_number(value: Any, *, reason: str, field: str) -> float:
     return number
 
 
-def _prescriber(raw: Any, *, reason: str) -> tuple[str, str]:
-    """Who authored this, strictly and non-blank. Both halves required."""
+def _prescriber(raw: Any) -> tuple[str, str]:
     if not isinstance(raw, Mapping):
-        _refuse(
-            reason,
-            "a prescription must carry a prescriber object naming its model "
-            "and operator",
-        )
-    unknown = sorted(set(raw) - {"model", "operator"})
-    if unknown:
-        _refuse(
-            reason,
-            f"prescriber carries unknown field(s): {', '.join(unknown)}",
-        )
+        return "", ""
     values: list[str] = []
     for field in ("model", "operator"):
         value = raw.get(field)
-        if not isinstance(value, str) or not value.strip():
-            _refuse(
-                reason,
-                f"prescriber.{field} must be a non-blank name",
-            )
-        values.append(" ".join(value.split()))
+        values.append(" ".join(value.split()) if isinstance(value, str) else "")
     return values[0], values[1]
+
+
+def _read_artifacts(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(entry.strip() for entry in value if isinstance(entry, str) and entry.strip())
 
 
 def _rationale(raw: Any, *, reason: str) -> tuple[str, int]:

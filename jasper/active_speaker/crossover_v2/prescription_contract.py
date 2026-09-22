@@ -74,8 +74,8 @@ def _document(format_: dict[str, Any], properties: dict[str, Any]) -> dict[str, 
     return _object({
         "kind": {"const": required["kind"]},
         "artifact_schema_version": {"const": required["artifact_schema_version"]},
-        "prescriber": _object({name: {"type": "string", "minLength": 1}
-                               for name in required["prescriber"]}, list(required["prescriber"])),
+        "prescriber": _object({name: {"type": "string"}
+                               for name in format_["optional_top_level"]["prescriber"]}, []),
         "rationale": {"type": "string"},
         **properties,
     }, list(required))
@@ -204,8 +204,7 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
         )
     except (KeyError, TypeError, ValueError, ExcitationSafetyPlanError):
         pass
-    artifacts = {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}
-    shared = {"basis_artifacts": artifacts}
+    shared = {"basis_artifacts": {"type": "array", "items": {"type": "string"}}}
     return {
         "way_count": preset.way_count if preset else None,
         "evidence_declarations": {
@@ -268,12 +267,12 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
             "entry": alignment_format["entry"], "request_key": alignment_format["key"],
             "schema": _request_schema(alignment_format, alignment.ALIGNMENT_PRESCRIPTION_KIND,
                                       alignment.ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION,
-                                      {**shared, "delay_us": _number(), "basis_delay_us": _number()},
-                                      {"basis_note": {"type": "string"},
+                                      {"delay_us": _number()},
+                                      {**shared, "basis_delay_us": _number(), "basis_note": {"type": "string"},
                                        "polarity": {"enum": sorted(alignment._PINNABLE_POLARITIES)}}),
             "bounds": {"declared_delay_magnitude_us": list(delay) if delay else None,
                        "fc_hz": corner, "lobe_us": alignment.half_period_us(corner) if corner else None,
-                       "lobe_applies_to": "abs(delay_us - basis_delay_us)"},
+                       "lobe_applies_to": "abs(delay_us - basis_delay_us), disclosure only"},
             "refusal_codes": sorted(alignment.ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS),
         },
         "topology": {
@@ -282,9 +281,9 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
             "entry": topology_format["entry"], "request_key": topology_format["key"],
             "schema": _request_schema(topology_format, topology.TOPOLOGY_PRESCRIPTION_KIND,
                                       topology.TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION,
-                                      {**shared, "fc_hz": _number(),
+                                      {"fc_hz": _number(),
                                        "order": {"type": "integer", "enum": sorted(topology.SUPPORTED_LR_ORDERS)}},
-                                      {"basis_note": {"type": "string"}}),
+                                      {**shared, "basis_note": {"type": "string"}}),
             "bounds": topology_bounds,
             "refusal_codes": sorted(topology.TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS),
         },
@@ -366,9 +365,9 @@ def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
         if field.default is not MISSING:
             properties[field.name]["default"] = field.default
     properties.update({name: {"type": "string", "minLength": 1, "description": description}
-                       for name, description in format_["required_top_level"].items()})
+                       for name, description in format_["optional_top_level"].items()})
     return {
-        "schema": _object(properties, sorted(bass._REQUIRED_FIELDS | format_["required_top_level"].keys())),
+        "schema": _object(properties, sorted(bass._REQUIRED_FIELDS)),
         "bounds": {"delta_highpass_hz_exclusive_upper_field": "detector_lowpass_hz"},
         "refusal_codes": format_["refusal_reasons"],
         **bass_prescription.bass_evidence_status(evidence),

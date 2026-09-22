@@ -210,8 +210,6 @@ _EVALUABLE_MAX_HZ = RESPONSE_SAMPLE_RATE_HZ / 2.0
 DRIVER_PRESCRIPTION_TOO_LARGE = "driver_prescription_too_large"
 DRIVER_PRESCRIPTION_MALFORMED = "driver_prescription_malformed"
 DRIVER_PRESCRIPTION_SCHEMA_UNSUPPORTED = "driver_prescription_schema_unsupported"
-DRIVER_PRESCRIPTION_PACKET_MISMATCH = "driver_prescription_packet_mismatch"
-DRIVER_PRESCRIPTION_PROVENANCE_MISSING = "driver_prescription_provenance_missing"
 DRIVER_PRESCRIPTION_PROHIBITED_FIELD = "driver_prescription_prohibited_field"
 FILTER_MALFORMED = "driver_filter_malformed"
 FILTER_COUNT_EXCEEDED = "driver_filter_count_exceeded"
@@ -231,8 +229,6 @@ DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     DRIVER_PRESCRIPTION_TOO_LARGE,
     DRIVER_PRESCRIPTION_MALFORMED,
     DRIVER_PRESCRIPTION_SCHEMA_UNSUPPORTED,
-    DRIVER_PRESCRIPTION_PACKET_MISMATCH,
-    DRIVER_PRESCRIPTION_PROVENANCE_MISSING,
     DRIVER_PRESCRIPTION_PROHIBITED_FIELD,
     FILTER_MALFORMED,
     FILTER_COUNT_EXCEEDED,
@@ -253,6 +249,7 @@ _PRESCRIPTION_FIELDS = frozenset({
     "kind",
     PACKET_FINGERPRINT_FIELD,
     "prescriber",
+    "answers_packet",
     "filters",
     "pinned_trim_db",
     EXPECTED_DELTA_FIELD,
@@ -332,9 +329,7 @@ class DriverPrescription:
     #: ``"cut"`` or ``"boost"``, derived from the gains and never read from the
     #: document.
     prescription_class: str
-    #: The packet fingerprint this answered.
     packet_fingerprint: str
-    #: Who authored it. Both required.
     prescriber_model: str
     prescriber_operator: str
     #: The per-role bands the proposal was checked against, as
@@ -396,6 +391,7 @@ class DriverPrescription:
     #: The declared voicing tilt, dB/octave, negative for a downward in-room
     #: tilt (methodology §8). Read by no gate.
     declared_tilt_db_per_octave: float | None = None
+    answers_packet: bool | None = None
 
     @property
     def roles(self) -> tuple[str, ...]:
@@ -426,6 +422,7 @@ class DriverPrescription:
                 [role, lo, hi] for role, lo, hi in self.passbands_hz
             ],
             PACKET_FINGERPRINT_FIELD: self.packet_fingerprint,
+            "answers_packet": self.answers_packet,
             "prescriber": {
                 "model": self.prescriber_model,
                 "operator": self.prescriber_operator,
@@ -1016,17 +1013,9 @@ def _parse_prescription(
             supported=DRIVER_PRESCRIPTION_SCHEMA_VERSION,
         )
     filters = _parse_filters(raw.get("filters"))
-    fingerprint = raw.get(PACKET_FINGERPRINT_FIELD)
-    if filters and (not isinstance(fingerprint, str) or not fingerprint.strip()):
-        _refuse(
-            DRIVER_PRESCRIPTION_PROVENANCE_MISSING,
-            f"a prescription must echo the packet's {PACKET_FINGERPRINT_FIELD}",
-        )
-    if filters:
-        fingerprint = str(fingerprint).strip()
-        model, operator = _prescriber(raw.get("prescriber"), reason=DRIVER_PRESCRIPTION_PROVENANCE_MISSING)
-    else:
-        fingerprint, model, operator = "", "", ""
+    fingerprint = raw.get(PACKET_FINGERPRINT_FIELD, "")
+    fingerprint = fingerprint.strip() if isinstance(fingerprint, str) else ""
+    model, operator = _prescriber(raw.get("prescriber"))
     rationale, dropped = _rationale(raw.get("rationale"), reason=DRIVER_PRESCRIPTION_MALFORMED)
     return (
         filters,
@@ -1064,31 +1053,6 @@ def read_driver_prescription(
     ) = _parse_prescription(raw)
     expected_delta_db, declared_tilt = _pre_registration(raw)
 
-    if filters and (not isinstance(packet_fingerprint, str) or not packet_fingerprint):
-        _refuse(
-            DRIVER_PRESCRIPTION_PACKET_MISMATCH,
-            "the evidence packet carries no fingerprint to compare against",
-        )
-    if filters and fingerprint != packet_fingerprint:
-        _refuse(
-            DRIVER_PRESCRIPTION_PACKET_MISMATCH,
-            "this prescription answers a different evidence packet "
-            f"({fingerprint[:12]}...) than the one supplied "
-            f"({packet_fingerprint[:12]}...); the fingerprint depends on "
-            "which evidence inputs (--drivers, --applied-profile, --state) "
-            "were present when each packet was built, so two honest builds "
-            "of the same round can disagree",
-            prescription_answers=fingerprint,
-            packet_is=packet_fingerprint,
-            # Only THIS side's inputs are knowable — the other is a
-            # fingerprint, not a build.
-            packet_is_evidence_present={
-                "drivers": bool(passbands_hz),
-                "classification": bool(classifications),
-                "incumbent_linearization": incumbent_filters is not None,
-            },
-        )
-
     if filters and not passbands_hz:
         _refuse(
             PASSBAND_UNAVAILABLE,
@@ -1125,7 +1089,8 @@ def read_driver_prescription(
         filters=filters,
         pinned_trim_db=pinned_trim_db,
         prescription_class=prescription_class,
-        packet_fingerprint=fingerprint,
+        packet_fingerprint=packet_fingerprint,
+        answers_packet=fingerprint == packet_fingerprint if PACKET_FINGERPRINT_FIELD in raw else None,
         prescriber_model=model,
         prescriber_operator=operator,
         passbands_hz=tuple(
@@ -1264,14 +1229,6 @@ def driver_prescription_response_format() -> dict[str, Any]:
         "required_top_level": {
             "artifact_schema_version": DRIVER_PRESCRIPTION_SCHEMA_VERSION,
             "kind": DRIVER_PRESCRIPTION_KIND,
-            PACKET_FINGERPRINT_FIELD: (
-                "copy the packet's own fingerprint field verbatim; a "
-                "prescription that names a different packet is refused"
-            ),
-            "prescriber": {
-                "model": "the model that authored this, e.g. 'claude-opus-5'",
-                "operator": "the person who ran it",
-            },
             "filters": (
                 "0 or more objects, each {role: <driver role>, biquad_type: "
                 "<one of the biquad_types below>, freq: <Hz>, gain: <dB, "
@@ -1281,6 +1238,8 @@ def driver_prescription_response_format() -> dict[str, Any]:
             ),
         },
         "optional_top_level": {
+            PACKET_FINGERPRINT_FIELD: "evidence echo; a mismatch is disclosed as answers_packet=false",
+            "prescriber": {"model": "optional author", "operator": "optional operator"},
             "pinned_trim_db": (
                 "{<role>: <dB, between "
                 f"{MAX_ATTENUATION_DB} and 0>}} — pin that driver's LEVEL "

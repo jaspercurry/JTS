@@ -37,7 +37,6 @@ from jasper.cli.round_views import room
 from jasper.cli.round_views._common import resolve_set
 from jasper.active_speaker.crossover_v2.room_selection import is_purpose_take, select_seat_takes
 from jasper.active_speaker.crossover_v2.room_prescription import (
-    ROOM_MEDIAN_MISMATCH, RoomPrescriptionRefused,
     read_room_median, read_room_prescription,
 )
 from jasper.active_speaker.crossover_v2.room_grade import grade_room_median
@@ -437,12 +436,9 @@ def test_room_median_digest_tracks_only_the_measured_section(room_round, capsys,
     assert (read_digest == digest) is (change != "median")
     prescription = _document(sha256=digest, filters=[{"freq": 33.0, "q": 3.0, "gain": -1.0}])
     kwargs = dict(room_median=median, room_median_sha256=read_digest, round_id="round-7", sides=("mono",))
-    if change == "median":
-        with pytest.raises(RoomPrescriptionRefused) as exc:
-            read_room_prescription(prescription, **kwargs)
-        assert exc.value.reason == ROOM_MEDIAN_MISMATCH
-    else:
-        assert read_room_prescription(prescription, **kwargs).room_median_sha256 == digest
+    receipt = read_room_prescription(prescription, **kwargs).to_dict()
+    assert receipt["answers_median"] is (change != "median")
+    assert receipt["room_median_sha256"] == read_digest
 
 
 def test_room_with_unreadable_geometry(tmp_path, capsys):

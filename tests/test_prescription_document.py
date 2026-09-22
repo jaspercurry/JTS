@@ -321,7 +321,6 @@ def test_one_invalid_section_refuses_whole_document(base, evidence, section, pay
 @pytest.mark.parametrize("change, code", [
     ("no_round", "bass_evidence_unavailable"),
     ("no_bass", "bass_evidence_unavailable"),
-    ({"round_id": "wrong"}, "bass_round_mismatch"),
     ("packet_round_mismatch", "bass_evidence_unavailable"),
     ("no_round_id", "bass_evidence_unavailable"),
     ("missing_field", "bass_descriptor_malformed"),
@@ -353,6 +352,18 @@ def test_bass_refusals_keep_the_evidence_pin_and_field_codes(base, evidence, bas
     assert {"ok", "code", "section", "next_action", "error", "evidence"} <= answer.keys()
 
 
+@pytest.mark.parametrize("echo", [None, "wrong", "round-1"])
+def test_bass_round_echo_is_optional_and_disclosed(base, evidence, bass_packet, echo):
+    section = bass_document(bass_packet)
+    section.pop("round_id")
+    if echo is not None:
+        section["round_id"] = echo
+    child = judge_prescription_document(document(base.fingerprint, {"bass": section}), base=base, evidence=evidence)
+    receipt = child.analysis["evidence"]["prescriptions"]["bass"]
+    assert receipt["round_id"] == bass_packet["round_id"]
+    assert receipt["answers_round"] is (None if echo is None else echo == bass_packet["round_id"])
+
+
 @pytest.mark.parametrize("verb", ["judge", "compose"])
 def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsys, bass_round, bass_packet, verb):
     raw = document(base.fingerprint, {"bass": bass_document(bass_packet)})
@@ -365,7 +376,7 @@ def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsy
     assert crossover_prescriber.main(args) == 0
     answer = json.loads(capsys.readouterr().out)
     descriptor = validate_dynamic_bass_descriptor(BASS_EXTENSION)
-    receipt = {**descriptor, "round_id": bass_packet["round_id"], "evidence_status": "evaluated",
+    receipt = {**descriptor, "round_id": bass_packet["round_id"], "answers_round": True, "evidence_status": "evaluated",
                "unqualified_boost_bands_hz": []}
     sources = {**prescription_sources(round_inputs(bass_round)), "candidate": base.candidate.to_dict()}
     contracts = prescription_contracts(programs=contract_programs(sources), **sources)
@@ -549,7 +560,7 @@ def test_all_sections_form_one_proved_candidate(base, evidence, bass_packet, del
 
 
 @pytest.mark.parametrize("section, payload, code", [
-    ("alignment", {"delay_us": 300, "basis_delay_us": 0, "basis_artifacts": ["alignment.json"]}, "prescription_out_of_lobe"),
+    ("alignment", {"delay_us": 300, "basis_delay_us": 0, "basis_artifacts": ["alignment.json"]}, None),
     ("topology", {"fc_hz": 2000, "order": 2, "basis_artifacts": ["fc.json"]}, "topology_slope_below_declared_requirement"),
 ])
 def test_structural_bounds_use_proposed_topology(base, evidence, section, payload, code):
@@ -558,6 +569,11 @@ def test_structural_bounds_use_proposed_topology(base, evidence, section, payloa
     tweeter["recommended_highpass_hz"] = 1600
     tweeter["recommended_highpass_slope_db_per_octave"] = 24
     sections = {"topology": {"fc_hz": 2000, "order": 4, "basis_artifacts": ["fc.json"]}, section: payload}
+    if code is None:
+        child = judge_prescription_document(document(base.fingerprint, sections), base=base, evidence=replace(evidence, sources=sources))
+        receipt = child.analysis["evidence"]["prescriptions"]["alignment"]
+        assert (receipt["residual_us"], receipt["lobe_us"], receipt["out_of_lobe"]) == (300, 250, True)
+        return
     with pytest.raises(PrescriptionDocumentRefused) as refused:
         judge_prescription_document(document(base.fingerprint, sections), base=base, evidence=replace(evidence, sources=sources))
     assert (refused.value.section, refused.value.code) == (section, code)

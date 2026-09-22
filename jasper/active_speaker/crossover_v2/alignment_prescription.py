@@ -2,20 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""ONE inter-driver delay — and optionally its polarity basin — prescribed from
-a named measurement (#2662).
-
-Pure functions, no I/O, no session. A prescription enters at
-``AlignmentEstimate`` (via ``MeasurementPriors.explicit_alignment_delay_us`` /
-``explicit_alignment_polarity_sign``), never stamped on the candidate after,
-so every downstream consumer reads one field. Two gates compose: provenance
-(a named basis) and the lobe bound, measured from that declared basis and NOT
-from the incumbent delay. Refusals raise and are never clamped to the boundary.
-One parser, two policies: :func:`read_alignment_prescription` is the request
-gate and the only place the bound is applied;
-:func:`alignment_prescription_from_mapping` re-checks shape and provenance but
-not the bound, and returns ``None`` rather than raising.
-"""
+"""Parse inter-driver delay and disclose its residual against an optional basis."""
 
 from __future__ import annotations
 
@@ -26,7 +13,9 @@ from typing import Any, Mapping
 
 from jasper.audio_measurement.program_analysis import half_period_us
 from jasper.log_event import log_event
+from jasper.json_fields import finite_float
 
+from ._prescription_common import _read_artifacts
 from .contracts import POLARITY_INVERT, POLARITY_KEEP
 
 __all__ = [
@@ -34,7 +23,6 @@ __all__ = [
     "ALIGNMENT_PRESCRIPTION_KEY",
     "ALIGNMENT_PRESCRIPTION_KIND",
     "ALIGNMENT_PRESCRIPTION_MALFORMED",
-    "ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING",
     "ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS",
     "ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED",
     "ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION",
@@ -100,8 +88,6 @@ ALIGNMENT_PRESCRIPTION_KIND = "jts_crossover_alignment_prescription"
 #: The closed refusal vocabulary: a caller branches on a code, never on prose.
 ALIGNMENT_PRESCRIPTION_MALFORMED = "prescription_malformed"
 PRESCRIPTION_DELAY_INVALID = "prescription_delay_invalid"
-PRESCRIPTION_BASIS_INVALID = "prescription_basis_invalid"
-ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING = "prescription_provenance_missing"
 PRESCRIPTION_FC_UNKNOWN = "prescription_fc_unknown"
 #: A way-1 speaker: no corner and no second driver, so nothing to align. Its
 #: own reason because an unknown corner is a number to go and derive while this
@@ -118,19 +104,12 @@ ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED = "alignment_prescription_schema_unsup
 ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     ALIGNMENT_PRESCRIPTION_MALFORMED,
     PRESCRIPTION_DELAY_INVALID,
-    PRESCRIPTION_BASIS_INVALID,
-    ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
-    PRESCRIPTION_FC_UNKNOWN,
     ALIGNMENT_NO_CROSSOVER_REGION,
-    PRESCRIPTION_OUT_OF_LOBE,
     PRESCRIPTION_OUTSIDE_DECLARED_WINDOW,
     PRESCRIPTION_POLARITY_INVALID,
     ALIGNMENT_PRESCRIPTION_SCHEMA_UNSUPPORTED,
 })
 
-#: The field names a prescription may carry. Anything else is refused rather
-#: than ignored: a misspelled ``basis_artifact`` would leave the bound checking
-#: against a basis nobody declared.
 _PRESCRIPTION_FIELDS = frozenset({
     "kind",
     "artifact_schema_version",
@@ -147,6 +126,7 @@ _PRESCRIPTION_FIELDS = frozenset({
     "checked_at_fc_hz",
     "lobe_us",
     "residual_us",
+    "out_of_lobe",
 })
 
 
@@ -171,13 +151,10 @@ class AlignmentPrescription:
     """
 
     delay_us: float
-    basis_delay_us: float
+    basis_delay_us: float | None
     basis_artifacts: tuple[str, ...]
     basis_note: str = ""
     polarity: str | None = None
-    #: The corner the bound was evaluated at, and the lobe it produced, so a
-    #: receipt says what the residual was compared against. ``None`` on a record
-    #: that has not been through the bound.
     checked_at_fc_hz: float | None = None
     lobe_us: float | None = None
 
@@ -189,13 +166,14 @@ class AlignmentPrescription:
         return -1 if self.polarity == POLARITY_INVERT else 1
 
     @property
-    def residual_us(self) -> float:
-        """How far this prescription leaves the drivers from the basis's answer.
+    def residual_us(self) -> float | None:
+        return self.delay_us - self.basis_delay_us if self.basis_delay_us is not None else None
 
-        The quantity the bound is expressed in: ``0.0`` prescribes exactly what
-        the measurement says, and the sign says which driver is left early.
-        """
-        return self.delay_us - self.basis_delay_us
+    @property
+    def out_of_lobe(self) -> bool | None:
+        if self.residual_us is None or self.lobe_us is None:
+            return None
+        return abs(self.residual_us) > self.lobe_us
 
     def to_dict(self) -> dict[str, Any]:
         """The receipt's view: what was prescribed, and what justifies it."""
@@ -210,6 +188,7 @@ class AlignmentPrescription:
             "polarity": self.polarity,
             "checked_at_fc_hz": self.checked_at_fc_hz,
             "lobe_us": self.lobe_us,
+            "out_of_lobe": self.out_of_lobe,
         }
 
 
@@ -277,31 +256,17 @@ def _parse_prescription(
     delay_us = _finite_number(
         raw["delay_us"], reason=PRESCRIPTION_DELAY_INVALID, field="delay_us",
     )
-    if "basis_delay_us" not in raw:
-        raise AlignmentPrescriptionRefused(
-            PRESCRIPTION_BASIS_INVALID,
-            "a prescription must state the basis_delay_us it was derived from",
-        )
-    basis_delay_us = _finite_number(
-        raw["basis_delay_us"],
-        reason=PRESCRIPTION_BASIS_INVALID,
-        field="basis_delay_us",
-    )
+    basis_delay_us = finite_float(raw.get("basis_delay_us"))
     artifacts = _read_artifacts(raw.get("basis_artifacts"))
     note = raw.get("basis_note", "")
-    if not isinstance(note, str):
-        raise AlignmentPrescriptionRefused(
-            ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
-            f"basis_note must be text, got {type(note).__name__}",
-        )
     return AlignmentPrescription(
         delay_us=delay_us,
         basis_delay_us=basis_delay_us,
         basis_artifacts=artifacts,
-        basis_note=note,
+        basis_note=note if isinstance(note, str) else "",
         polarity=_read_polarity(raw.get("polarity")),
-        checked_at_fc_hz=_optional_number(raw.get("checked_at_fc_hz")),
-        lobe_us=_optional_number(raw.get("lobe_us")),
+        checked_at_fc_hz=finite_float(raw.get("checked_at_fc_hz")),
+        lobe_us=finite_float(raw.get("lobe_us")),
     )
 
 
@@ -326,19 +291,6 @@ def _read_polarity(value: Any) -> str | None:
     return value
 
 
-def _optional_number(value: Any) -> float | None:
-    """A finite number, or ``None`` — never a raise.
-
-    These fields are the GATE's own record of what it checked, not a
-    requester's claim, so an unreadable one is missing context rather than a
-    malformed prescription.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    number = float(value)
-    return number if math.isfinite(number) else None
-
-
 def read_alignment_prescription(
     raw: Mapping[str, Any] | None,
     *,
@@ -346,23 +298,11 @@ def read_alignment_prescription(
     declared_bounds_us: tuple[float, float] | None,
     way_count: int | None = None,
 ) -> AlignmentPrescription | None:
-    """THE request gate, and the one derivation of the lobe bound.
+    """Check the preset's declared delay window and disclose the optional lobe.
 
-    ``None`` when the request carries no prescription — the automatic path,
-    untouched. Otherwise a validated :class:`AlignmentPrescription`, or
-    :class:`AlignmentPrescriptionRefused` naming which gate said no.
-
-    ``declared_bounds_us`` is the PRESET's own unsigned delay-magnitude window,
-    already margin-expanded; the caller derives it from
-    ``alignment_delay_search_bounds_us``. ``None`` means the preset declares no window.
-    Required and undefaulted: it is the only bound here that does not rest on a
-    number the requester supplied.
-
-    ``fc_hz`` is the corner THIS round runs at, the half-period of which is the
-    bound. The bound is INCLUSIVE — exactly half a period from the basis is
-    legal — so a round's legality does not turn on float noise in the corner.
-    ``way_count`` ``1`` is a ``full_range_passive`` speaker with nothing to
-    align; ``None`` means the caller did not state it and leaves the gate as-is.
+    ``declared_bounds_us`` is the preset's unsigned delay-magnitude window,
+    margin-expanded by ``alignment_delay_search_bounds_us``. ``None`` means
+    the preset declares no window. A way-1 speaker has nothing to align.
     """
     if raw is None:
         return None
@@ -375,24 +315,9 @@ def read_alignment_prescription(
             "region, so there is no handoff for a delay to align",
         )
     prescription = _parse_prescription(raw)
-    # Checked after the shape and before the bound: an unusable corner is a
-    # different problem from an out-of-lobe prescription, and reporting the
-    # second would send an operator to re-derive a number that was fine.
-    if not isinstance(fc_hz, (int, float)) or isinstance(fc_hz, bool):
-        raise AlignmentPrescriptionRefused(
-            PRESCRIPTION_FC_UNKNOWN,
-            f"the crossover corner must be a number, got {type(fc_hz).__name__}",
-        )
-    corner = float(fc_hz)
-    if not math.isfinite(corner) or corner <= 0.0:
-        raise AlignmentPrescriptionRefused(
-            PRESCRIPTION_FC_UNKNOWN,
-            "a prescription's bound is a half-period at the crossover corner, "
-            f"which is undefined at fc_hz={corner!r}",
-        )
-    # The HARDWARE's bound first, then the measurement's: the two send an
-    # operator to different places (re-declare the region vs re-derive
-    # the basis).
+    corner = finite_float(fc_hz)
+    if corner is not None and corner <= 0.0:
+        corner = None
     if declared_bounds_us is not None:
         lo_us, hi_us = (abs(float(b)) for b in declared_bounds_us)
         lo_us, hi_us = min(lo_us, hi_us), max(lo_us, hi_us)
@@ -404,18 +329,8 @@ def read_alignment_prescription(
                 f"delay, outside the preset's declared window of "
                 f"{lo_us:.1f}-{hi_us:.1f} us",
             )
-    lobe_us = half_period_us(corner)
-    if abs(prescription.residual_us) > lobe_us:
-        raise AlignmentPrescriptionRefused(
-            PRESCRIPTION_OUT_OF_LOBE,
-            f"{prescription.delay_us:.1f} us leaves "
-            f"{prescription.residual_us:.1f} us of residual against the "
-            f"declared basis {prescription.basis_delay_us:.1f} us, outside the "
-            f"+/-{lobe_us:.1f} us half-period lobe at {corner:.1f} Hz",
-        )
-    # What the bound was actually evaluated against, recorded on the record the
-    # receipt banks. A residual alone does not say which lobe cleared it.
-    return replace(prescription, checked_at_fc_hz=corner, lobe_us=lobe_us)
+    return replace(prescription, checked_at_fc_hz=corner,
+                   lobe_us=half_period_us(corner) if corner is not None else None)
 
 
 def alignment_prescription_from_mapping(
@@ -440,39 +355,6 @@ def alignment_prescription_from_mapping(
             detail=exc.detail,
         )
         return None
-
-
-def _read_artifacts(value: Any) -> tuple[str, ...]:
-    """The named provenance, strictly and non-empty.
-
-    A bare string is refused rather than wrapped: ``"a,b"`` and ``["a", "b"]``
-    would otherwise be one artifact and two, decided by punctuation.
-    """
-    if value is None:
-        raise AlignmentPrescriptionRefused(
-            ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
-            "a prescription must name the basis_artifacts it was measured from",
-        )
-    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
-        raise AlignmentPrescriptionRefused(
-            ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
-            "basis_artifacts must be a list of names, got "
-            f"{type(value).__name__}",
-        )
-    artifacts: list[str] = []
-    for entry in value:
-        if not isinstance(entry, str) or not entry.strip():
-            raise AlignmentPrescriptionRefused(
-                ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
-                "every basis_artifacts entry must be a non-blank name",
-            )
-        artifacts.append(entry.strip())
-    if not artifacts:
-        raise AlignmentPrescriptionRefused(
-            ALIGNMENT_PRESCRIPTION_PROVENANCE_MISSING,
-            "a prescription must name at least one basis artifact",
-        )
-    return tuple(artifacts)
 
 
 def alignment_prescription_response_format() -> dict[str, Any]:
@@ -500,11 +382,11 @@ def alignment_prescription_response_format() -> dict[str, Any]:
                 "delays the tweeter, negative delays the woofer"
             ),
             "basis_delay_us": (
-                "required number, the delay the named measurement says would "
+                "optional number, the delay the named measurement says would "
                 "leave the drivers coincident"
             ),
             "basis_artifacts": (
-                "required non-empty list of names — what this delay was "
+                "optional list of names — what this delay was "
                 "measured from"
             ),
             "basis_note": "optional human line beside the artifacts",
@@ -515,10 +397,7 @@ def alignment_prescription_response_format() -> dict[str, Any]:
                 "solve; absent leaves it to the objective"
             ),
         },
-        "bound": (
-            "delay_us may not leave the drivers more than one half-period at "
-            "the crossover corner away from basis_delay_us — the comb lobe, "
-            "checked at the tap against the corner this round is measured at"
-        ),
+        "bound": "delay_us must stay inside the preset's declared delay window",
+        "disclosures": "residual_us, lobe_us and out_of_lobe compare the optional basis at this round's corner",
         "refusals": sorted(ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS),
     }

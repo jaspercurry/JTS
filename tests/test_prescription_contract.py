@@ -56,10 +56,10 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 
 @pytest.mark.parametrize("layout,rear,digest", [
-    ("mono", False, "6eda21d4ff92e75654d9c4ce87a4dbe28bbcc00b11d74fea57bf60caa6a53bff"),
-    ("mono", True, "064f58b5e11cf3e08f648daad0dca62971e36a4465b158dc72afaaedecd5bf2a"),
-    ("stereo", False, "f1fecb0a7d62660d0503192a5ff9a4b8fe75262a502d3d380da466e8dad20106"),
-    ("stereo", True, "9f2f0d49c9178e7c1e827020e5b82cfde343e41812bc89211dee4dffab957e32"),
+    ("mono", False, "e487f5dac7d2295d924c755618e7bdc4576f32256d0cba310f3c5dc36ecf6c13"),
+    ("mono", True, "89e97371a92a76ba3d45a3e6d1a8af75e3cf2912f93af9639854419691544d56"),
+    ("stereo", False, "dcc1da24c400c0b62b8990a97c53911a3cd5995d86afffef9b8da19193368a57"),
+    ("stereo", True, "825f5d1fc7278d553a146069f49ca2d5fe9b7907499f3dd1902711ce139851de"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
@@ -295,7 +295,7 @@ def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(cap
     contract = contracts["bass"]
     assert set(contract["schema"]["properties"]) == dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS | {"round_id"}
     assert set(contract["refusal_codes"]) == {
-        "bass_round_mismatch", "bass_evidence_unavailable", "bass_descriptor_malformed",
+        "bass_evidence_unavailable", "bass_descriptor_malformed",
     } | {f"bass_{name}_invalid" for name in dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS}
     assert contract["schema"]["properties"]["low_boost_db"]["maximum"] == dynamic.NATIVE_LOUDNESS_BOOST_MAX_DB
     assert contract["evidence_status"] == bass.BASS_EVIDENCE_UNAVAILABLE

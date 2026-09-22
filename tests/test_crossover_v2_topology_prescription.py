@@ -51,7 +51,6 @@ from jasper.active_speaker.crossover_v2.topology_prescription import (
     TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS,
     TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED,
     TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION,
-    TOPOLOGY_PROVENANCE_MISSING,
     TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT,
     TopologyPrescription,
     TopologyPrescriptionRefused,
@@ -238,12 +237,6 @@ def test_the_envelope_is_checked_before_any_content_field(mutation, reason):
         ({"order": 6}, TOPOLOGY_ORDER_UNSUPPORTED),
         ({"order": 1}, TOPOLOGY_ORDER_UNSUPPORTED),
         ({"order": 16}, TOPOLOGY_ORDER_UNSUPPORTED),
-        ({"basis_artifacts": None}, TOPOLOGY_PROVENANCE_MISSING),
-        ({"basis_artifacts": []}, TOPOLOGY_PROVENANCE_MISSING),
-        ({"basis_artifacts": "a,b"}, TOPOLOGY_PROVENANCE_MISSING),
-        ({"basis_artifacts": ["  "]}, TOPOLOGY_PROVENANCE_MISSING),
-        ({"basis_artifacts": [7]}, TOPOLOGY_PROVENANCE_MISSING),
-        ({"basis_note": 7}, TOPOLOGY_PROVENANCE_MISSING),
         ({"authority": 7}, TOPOLOGY_MALFORMED),
     ],
 )
@@ -253,12 +246,27 @@ def test_one_malformed_field_names_its_own_reason(mutation, reason):
     assert excinfo.value.reason == reason
 
 
-@pytest.mark.parametrize("field", ["fc_hz", "order", "basis_artifacts"])
+@pytest.mark.parametrize("field", ["fc_hz", "order"])
 def test_each_required_field_is_required(field):
     body = _pin(2400.0)
     del body[field]
     with pytest.raises(TopologyPrescriptionRefused):
         _read(body)
+
+
+@pytest.mark.parametrize("mutation", [
+    {}, {"basis_artifacts": None}, {"basis_artifacts": []}, {"basis_artifacts": "a,b"},
+    {"basis_artifacts": ["  "]}, {"basis_artifacts": [7]}, {"basis_note": 7},
+])
+def test_optional_basis_is_disclosed(mutation):
+    raw = _pin(2400.0)
+    raw.pop("basis_artifacts")
+    raw.pop("basis_note", None)
+    accepted = _read({**raw, **mutation})
+    assert accepted.to_dict()["basis_artifacts"] == []
+    assert accepted.to_dict()["basis_note"] == ""
+    assert topology_prescription_from_mapping(accepted.to_dict()) == accepted
+    assert "topology_provenance_missing" not in TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS
 
 
 def test_a_float_order_is_refused_rather_than_truncated():
