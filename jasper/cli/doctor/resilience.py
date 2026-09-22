@@ -690,8 +690,10 @@ def check_outputd_failure_reconcile_park() -> CheckResult:
             f"{_parked_ago(state.get('parked_at'))} "
             f"(exit_status={state.get('exit_status') or '?'}, "
             f"reason={state.get('park_reason') or '?'}) and nothing retries "
-            f"it. Fix the output env, `systemctl restart jasper-outputd`, "
-            f"then delete {path} if it survives.",
+            "it. Fix the output env, then run "
+            "`systemctl reset-failed jasper-outputd && "
+            f"jasper-unpark {path} outputd.retry_admitted && "
+            "systemctl start jasper-outputd`.",
             speaker_silent=silence_unobserved(),
             reason=REASON_OUTPUTD_PARKED,
         )
