@@ -97,7 +97,7 @@ def test_rewriting_old_packet_preserves_banked_order_and_next_action(tmp_path, m
     assert tuple(before) == ("room", "bass", "rear", "speaker")
     assert before["speaker"]["round_id"] == "speaker"
     assert before["room"]["banked_at"] == before["room"]["started_at"] == base + 5
-    assert (action["program"], action["reason_code"]) == ("speaker", "complete")
+    assert (action["program"], action["reason_code"]) == (None, "complete")
 
     stale = tmp_path / "campaigns" / "speaker-stale"
     _bank_packet(stale, {**identity, "candidate": "previous"}, "speaker", finalized_at=base + 6)

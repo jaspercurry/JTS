@@ -13,7 +13,7 @@ First run `jasper-crossover-prescriber status` without a round. Read `applied`,
 banked at or before the last apply; only current rounds guide the next action.
 With a current-identity round, all applicable layers applied, and none stale,
 `next` is `{"program": null, "reason_code": "complete"}`. Without a current round,
-the shared decision still offers the baseline with `reason_code: "never_measured"`.
+`next` uses applied layers; `never_measured` means no profile is applied.
 `next_commands` lists commands; add a round path for its evidence.
 
 Run the tuning programs in order: speaker → rear → bass → room (skip rear if there is no rear driver).
