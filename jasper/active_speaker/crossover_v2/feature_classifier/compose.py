@@ -72,6 +72,10 @@ FRAC_NMP_NON_MIN_PHASE = 0.50
 #: must sit before it is a feature of the response rather than of the noise.
 Z_LOCAL_FLAT = 3.0
 
+# The room/speaker thresholds are :mod:`.gate_sweep`'s — the engine that runs
+# the ladder owns what counts as the window having moved a feature, and this
+# module maps its three-word verdict into the register (:func:`_gate_call`).
+
 
 def classifiable_band_hz(trusted_band_hz: tuple[float, float]) -> tuple[float, float]:
     """Where a verdict can be about the SPEAKER rather than about the band edge.
