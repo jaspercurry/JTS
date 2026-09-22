@@ -15,13 +15,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 from ...airplay_session import REASONS as AIRPLAY_CLEANUP_REASONS
+from ...bluetooth.rfkill import read_bluetooth_rfkill_state
 from ...config import Config
 from ...mux_mode_persistence import DEFAULT_PATH as _MUX_MODE_DEFAULT_PATH
 from ...music_sources import MUSIC_SOURCES, Source
-from ...source_intent import (
-    read_bluetooth_rfkill_state,
-    source_intent_enabled,
-)
+from ...source_intent import source_intent_enabled
 from ...service_units import LIBRESPOT_SERVICE
 from ._evidence import evidence
 from ._registry import doctor_check

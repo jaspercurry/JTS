@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from ..local_sources import local_source_lifecycle
 from ..music_sources import Source
-from ..source_intent import BluetoothRfkillState, read_bluetooth_rfkill_state
+from .rfkill import BluetoothRfkillState, read_bluetooth_rfkill_state
 
 BLUETOOTH_ADAPTER_PATH = "/sys/class/bluetooth/hci0"
 BLUETOOTH_CONTROL_PLANE_UNIT = "bluetooth.service"

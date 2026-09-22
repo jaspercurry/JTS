@@ -8,9 +8,9 @@ from jasper.bluetooth.availability import (
     BLUETOOTH_CONTROL_PLANE_UNIT,
     probe_bluetooth_availability,
 )
+from jasper.bluetooth.rfkill import BluetoothRfkillState
 from jasper.local_sources import local_source_lifecycle
 from jasper.music_sources import Source
-from jasper.source_intent import BluetoothRfkillState
 
 
 _REQUIRED_UNITS = (
