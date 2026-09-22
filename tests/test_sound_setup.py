@@ -28,10 +28,7 @@ from tests.test_rear_preview import compare_evidence as compare_evidence
 import numpy as np
 import pytest
 
-from jasper.active_speaker import playback_route, profile as active_profile
-from jasper.active_speaker._common import MANUAL_DRIVER_FIELDS
-from jasper.active_speaker.driver_safety import DRIVER_SAFETY_FIELDS
-from jasper.active_speaker.driver_safety_prompt import _PROMPT_PROVENANCE_KEYS
+from jasper.active_speaker import playback_route
 from jasper.active_speaker.calibration_level import (
     load_calibration_level_state,
     update_calibration_level_state,
@@ -854,66 +851,11 @@ def _island_payload(html: str, element_id="sound-page-data") -> dict:
 
 @pytest.mark.parametrize("follower", [False, True])
 @pytest.mark.parametrize("page_mode", ["eq", "speaker", "output"])
-def test_sound_page_serves_sub_crossover_bounds(monkeypatch, follower, page_mode):
+def test_sound_page_island_carries_page_identity(monkeypatch, follower, page_mode):
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: follower)
-    assert _island_payload(
-        sound_setup._index_html(page_mode=page_mode).decode(), "jts-sub-crossover-bounds",
-    ) == {
-        "default_hz": active_profile.DEFAULT_SUB_CROSSOVER_HZ,
-        "lo_hz": active_profile.SUB_CROSSOVER_HZ_LO,
-        "hi_hz": active_profile.SUB_CROSSOVER_HZ_HI,
+    assert _island_payload(sound_setup._index_html(page_mode=page_mode).decode()) == {
+        "mode": page_mode, "follower": follower,
     }
-
-
-@pytest.mark.parametrize("follower", [False, True])
-def test_sound_page_serves_driver_vocabulary(monkeypatch, follower):
-    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: follower)
-    vocabulary = _island_payload(
-        sound_setup._index_html(page_mode="setup").decode(), "jts-driver-fields",
-    )
-    echo_fields = set(_PROMPT_PROVENANCE_KEYS) | set(DRIVER_SAFETY_FIELDS)
-    assert vocabulary == {
-        "driver_fields": list(MANUAL_DRIVER_FIELDS),
-        "driver_echo_back_fields": [field for field in MANUAL_DRIVER_FIELDS if field in echo_fields],
-    }
-    assert set(vocabulary["driver_echo_back_fields"]) == echo_fields
-
-
-@pytest.mark.parametrize("follower", [False, True])
-def test_sound_page_island_serves_the_compilers_crossover_vocabulary(
-    monkeypatch, follower,
-):
-    """The page offers exactly what the compiler builds, and is TOLD what that is.
-
-    Before this the filter picker carried its own list (including a Butterworth
-    the compiler refuses) and the slope was a free ``step="6"`` field, so the
-    editor could author a crossover that only failed at
-    ``crossover_preview_filter_unsupported`` several screens later. Deriving the
-    offer here is what makes widening
-    :data:`~jasper.active_speaker.profile.SUPPORTED_CROSSOVER_TYPES` /
-    ``SUPPORTED_LR_ORDERS`` reach the wizard with no edit in main.js. A bonded
-    follower keeps its LOCAL driver domain, so it gets the same offer.
-    """
-    from jasper.active_speaker.crossover_preview import (
-        DEFAULT_FILTER_TYPE,
-        DEFAULT_SLOPE_DB_PER_OCTAVE,
-    )
-    from jasper.active_speaker.declaration_vocabulary import (
-        supported_declaration_filter_types,
-        supported_declaration_slopes_db_per_octave,
-    )
-
-    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: follower)
-    island = _island_payload(sound_setup._index_html(page_mode="setup").decode())
-    vocabulary = island["crossover_vocabulary"]
-
-    assert island["follower"] is follower
-    assert vocabulary["filter_types"] == list(supported_declaration_filter_types())
-    assert vocabulary["slopes_db_per_octave"] == list(
-        supported_declaration_slopes_db_per_octave()
-    )
-    assert vocabulary["default_filter_type"] == DEFAULT_FILTER_TYPE
-    assert vocabulary["default_slope_db_per_octave"] == DEFAULT_SLOPE_DB_PER_OCTAVE
 
 
 @pytest.mark.parametrize("manual,code", [

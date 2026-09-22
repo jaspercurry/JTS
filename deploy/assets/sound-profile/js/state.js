@@ -2,14 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Sound profile — the page's shared records and its boot island.
-//
-// The /sound/eq/, /sound/speaker/ and /sound/output/ views share these records
-// by reference: callers mutate their properties, never the bindings, so this
-// module stays the one owner of each. `pageData` reads the JSON island at
-// evaluation time, which is safe because the page loads main.js as a deferred
-// module script.
-
 import { readJsonIsland } from '../../shared/js/dom.js';
 
 const ACTIVE_GAIN_EPSILON_DB = 0.05;
@@ -80,6 +72,5 @@ export {
   followerMode,
   outputPage,
   pageMode,
-  readJsonIsland,
   resetEqEditor,
 };

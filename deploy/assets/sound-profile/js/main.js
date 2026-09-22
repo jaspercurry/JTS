@@ -2,28 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Sound profile — parametric EQ editor.
-//
-// Static ES module served from /assets/sound-profile/js/ (revalidated by
-// nginx, same delivery model as /system/). CSRF helpers read the
-// <meta name=jts-csrf> tag. Module scope is strict mode — the IIFE
-// declares all its state with var/function.
-//
-// This entry module owns the page's reassigned state, the render and IO paths
-// that write it, and the event wiring. Helpers that read no reassigned state
-// moved to sibling concern modules where they formed a coherent seam; the
-// rest stay here. A module cannot assign to an imported binding, so moving a
-// state WRITER out is a rewrite of the state, not a move. The editor's
-// live-draft path (band-drag + live-draft → CamillaDSP) still has to be
-// exercised on a Pi before that rewrite; do not blind-refactor it.
-//
-// jsonHeaders is imported from /assets/shared/js/http.js — the one
-// cross-page owner of the CSRF/JSON plumbing. A conventions guard in
-// tests/test_web_wizard_conventions.py keeps a local re-declaration from
-// creeping back (same shared-by-promotion rule as escape.js / dialog.js).
 import { jtsConfirm } from "/assets/shared/js/dialog.js";
 import { escapeHtml } from "/assets/shared/js/escape.js";
-import { wireCopyButtons } from "/assets/shared/js/copy.js";
 import { getJSON, postJSON } from "/assets/shared/js/http.js";
 import { initCardioidCompare } from "/assets/sound-profile/js/cardioid-compare.js";
 import {
@@ -1434,5 +1414,4 @@ import {
     if (event && event.persisted && eqEditor.view === 'draft') scheduleLiveDraft(true);
   });
   loadState();
-  wireCopyButtons(el('view-body'));
 })();

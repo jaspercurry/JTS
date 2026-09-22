@@ -37,12 +37,6 @@ from jasper.active_speaker.audition import (
     set_compare_state, start_web_audition_holder,
 )
 from jasper.platform.systemd import no_hold
-from jasper.active_speaker.driver_safety_prompt import driver_field_vocabulary
-from jasper.active_speaker.profile import (
-    DEFAULT_SUB_CROSSOVER_HZ,
-    SUB_CROSSOVER_HZ_HI,
-    SUB_CROSSOVER_HZ_LO,
-)
 from jasper.log_event import log_event
 from jasper.sound.profile import (
     PROFILE_LIBRARY_PATH,
@@ -158,65 +152,13 @@ def _coerce_page_mode(page_mode: str) -> str:
 
 
 def _sound_page_island(*, page_mode: str, follower: bool) -> str:
-    """Build the page's JSON islands for every /sound/ shell.
-
-    The editor's filter and slope pickers are built from the crossover
-    vocabulary carried here, read from the compiler rather than restated, so a
-    value the compiler cannot build is never presented. The defaults ride along
-    because the picker must pre-select the same member ``crossover_preview``
-    would fill in.
-    """
-
-    from jasper.active_speaker.crossover_preview import (
-        DEFAULT_FILTER_TYPE,
-        DEFAULT_SLOPE_DB_PER_OCTAVE,
-    )
-    from jasper.active_speaker.declaration_vocabulary import (
-        supported_declaration_filter_types,
-        supported_declaration_slopes_db_per_octave,
-    )
-
-    return json_island(
-        "sound-page-data",
-        {
-            "mode": page_mode,
-            "follower": follower,
-            "crossover_vocabulary": {
-                "filter_types": list(supported_declaration_filter_types()),
-                "slopes_db_per_octave": list(
-                    supported_declaration_slopes_db_per_octave()
-                ),
-                "default_filter_type": DEFAULT_FILTER_TYPE,
-                "default_slope_db_per_octave": DEFAULT_SLOPE_DB_PER_OCTAVE,
-            },
-        },
-    ) + json_island("jts-driver-fields", driver_field_vocabulary()) + json_island(
-        "jts-sub-crossover-bounds",
-        {
-            "default_hz": DEFAULT_SUB_CROSSOVER_HZ,
-            "lo_hz": SUB_CROSSOVER_HZ_LO,
-            "hi_hz": SUB_CROSSOVER_HZ_HI,
-        },
-    )
+    return json_island("sound-page-data", {"mode": page_mode, "follower": follower})
 
 
 def _follower_sound_html(
     csrf_token: str = "", *, page_mode: str, title: str
 ) -> bytes:
-    """Render one split Sound page for a bonded active follower.
-
-    A bonded follower delegates the PROGRAM domain (content EQ, room
-    correction, volume shaping) to the pair leader but still owns its LOCAL
-    driver domain (the per-driver crossover / limiter / tweeter high-pass that
-    protects the DAC it drives). Speaker setup keeps the delegation card and
-    mounts the same active-speaker UI as a solo box; EQ and Output are
-    delegation-only pages with a path back to local Speaker setup.
-
-    The page island tells main.js to boot in follower speaker mode: only the
-    active-speaker section, no Off/Saved/Draft editor or now-playing plot.
-    Content-DSP POSTs still 409 (``_FOLLOWER_BLOCKED_CONTENT_DSP_POSTS``); the
-    active-speaker commissioning/crossover endpoints are allowed.
-    """
+    """Content controls belong to the leader; local driver setup stays usable."""
     page_mode = _coerce_page_mode(page_mode)
     local_setup = (
         '<div id="view-body"></div>'

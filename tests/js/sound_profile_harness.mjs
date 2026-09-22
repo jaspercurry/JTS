@@ -3,22 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Minimal DOM harness for the /sound/ static module. It exercises the
-// live-source tab state machine plus active-speaker guards without needing a
+// EQ tab state machine and output settings without needing a
 // browser or CamillaDSP.
 //
 //   node tests/js/sound_profile_harness.mjs deploy/assets/sound-profile/js/main.js
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { buildFunction, repoPath } from "./_loader.mjs";
-
-const driverVocabularyFixture = JSON.parse(execFileSync(process.env.PYTHON || "python3", [
-  "-c", "import json; from jasper.active_speaker.driver_safety_prompt import driver_field_vocabulary; print(json.dumps(driver_field_vocabulary()))",
-], {cwd: repoPath("."), encoding: "utf8"}));
-
-const subCrossoverBoundsFixture = JSON.parse(execFileSync(process.env.PYTHON || "python3", [
-  "-c", "import json; from jasper.active_speaker.profile import DEFAULT_SUB_CROSSOVER_HZ, SUB_CROSSOVER_HZ_LO, SUB_CROSSOVER_HZ_HI; print(json.dumps(dict(default_hz=DEFAULT_SUB_CROSSOVER_HZ, lo_hz=SUB_CROSSOVER_HZ_LO, hi_hz=SUB_CROSSOVER_HZ_HI)))",
-], {cwd: repoPath("."), encoding: "utf8"}));
 
 const modulePath = process.argv[2] || "deploy/assets/sound-profile/js/main.js";
 const siblingDir = dirname(modulePath);
@@ -34,7 +25,6 @@ const runner = buildFunction(
     { path: repoPath("deploy/assets/shared/js/escape.js") },
     { path: repoPath("deploy/assets/shared/js/dom.js") },
     { path: repoPath("deploy/assets/shared/js/http.js") },
-    { path: repoPath("deploy/assets/shared/js/copy.js") },
     { path: repoPath("deploy/assets/shared/js/frequency-scale.js") },
     ...[
       "eq-math.js", "state.js", "format.js", "eq-curve.js", "cardioid-compare.js",
@@ -46,9 +36,6 @@ const runner = buildFunction(
     stripExports: true,
     strictImports: true,
     guardNoImports: true,
-    // fetch stays on globalThis, not a runner param: setupHarness() reassigns
-    // it every scenario, and a per-runner param would pin a stale mock for any
-    // continuation outliving its scenario (main.js's commission auto-ramp loop).
     params: ["document", "window", "globalThis", "console", "setTimeout", "clearTimeout"],
   },
 );
@@ -160,337 +147,6 @@ function topologyPayload() {
   };
 }
 
-function activeTwoWayTopologyPayload() {
-  return {
-    status: "valid",
-    hardware: {
-      physical_output_count: 2,
-      profile_id: "test-dac",
-      outputs: [
-        { index: 0, human_label: "DAC output 1" },
-        { index: 1, human_label: "DAC output 2" },
-      ],
-    },
-    routing: { mono_group_id: "main", main_left_group_id: null, main_right_group_id: null, subwoofer_group_ids: [] },
-    evaluation: { status: "valid" },
-    speaker_groups: [{
-      id: "main",
-      label: "Main speaker",
-      kind: "mono",
-      mode: "active_2_way",
-      position: { x: 0, y: 0, rotation_degrees: 0 },
-      channels: [
-        {
-          role: "woofer",
-          physical_output_index: 0,
-          startup_muted: true,
-          protection_required: false,
-        },
-        {
-          role: "tweeter",
-          physical_output_index: 1,
-          startup_muted: true,
-          protection_required: true,
-        },
-      ],
-    }],
-  };
-}
-
-function activeStereoTwoWayTopologyPayload() {
-  const topology = activeTwoWayTopologyPayload();
-  topology.hardware.physical_output_count = 4;
-  topology.hardware.outputs = [0, 1, 2, 3].map((index) => ({
-    index,
-    human_label: `DAC output ${index + 1}`,
-  }));
-  topology.routing = {
-    mono_group_id: null,
-    main_left_group_id: "left",
-    main_right_group_id: "right",
-    subwoofer_group_ids: [],
-  };
-  topology.speaker_groups = [
-    { id: "left", label: "Left cabinet", kind: "left", outputBase: 0 },
-    { id: "right", label: "Right cabinet", kind: "right", outputBase: 2 },
-  ].map((group) => ({
-    id: group.id,
-    label: group.label,
-    kind: group.kind,
-    mode: "active_2_way",
-    position: { x: group.id === "left" ? -1 : 1, y: 0, rotation_degrees: 0 },
-    channels: [
-      {
-        role: "woofer",
-        physical_output_index: group.outputBase,
-        startup_muted: true,
-        protection_required: false,
-      },
-      {
-        role: "tweeter",
-        physical_output_index: group.outputBase + 1,
-        startup_muted: true,
-        protection_required: true,
-      },
-    ],
-  }));
-  return topology;
-}
-
-function activeTwoWayWithSubwooferTopologyPayload() {
-  const topology = activeTwoWayTopologyPayload();
-  topology.hardware.physical_output_count = 3;
-  topology.hardware.outputs.push({ index: 2, human_label: "DAC output 3" });
-  topology.routing.subwoofer_group_ids = ["sub"];
-  topology.speaker_groups.push({
-    id: "sub",
-    label: "Subwoofer",
-    kind: "subwoofer",
-    mode: "subwoofer",
-    position: { x: 0, y: -0.72, rotation_degrees: 0 },
-    channels: [{
-      role: "subwoofer",
-      physical_output_index: 2,
-      startup_muted: true,
-      protection_required: false,
-    }],
-  });
-  return topology;
-}
-
-// ADR-0318: a cardioid mono pair with a rear woofer output alongside the
-// front woofer/tweeter — the shape the rear-calibration panel gates on.
-function cardioidTwoWayTopologyPayload() {
-  const topology = activeTwoWayTopologyPayload();
-  topology.hardware.physical_output_count = 3;
-  topology.hardware.outputs.push({ index: 2, human_label: "DAC output 3" });
-  topology.speaker_groups[0].channels.push({
-    role: "woofer",
-    output_variant: "rear",
-    physical_output_index: 2,
-    identity_verified: false,
-    startup_muted: true,
-    protection_required: false,
-  });
-  return topology;
-}
-
-function passiveWithSubwooferTopologyPayload() {
-  const topology = topologyPayload();
-  topology.hardware.physical_output_count = 2;
-  topology.hardware.outputs = [
-    { index: 0, human_label: "DAC output 1" },
-    { index: 1, human_label: "DAC output 2" },
-  ];
-  topology.routing.subwoofer_group_ids = ["sub"];
-  topology.speaker_groups.push({
-    id: "sub",
-    label: "Subwoofer",
-    kind: "subwoofer",
-    mode: "subwoofer",
-    position: { x: 0, y: -0.72, rotation_degrees: 0 },
-    channels: [{
-      role: "subwoofer",
-      physical_output_index: 1,
-      startup_muted: true,
-      protection_required: false,
-    }],
-  });
-  return topology;
-}
-
-function activeThreeWayTopologyPayload() {
-  return {
-    status: "valid",
-    hardware: {
-      physical_output_count: 3,
-      profile_id: "test-dac",
-      outputs: [
-        { index: 0, human_label: "DAC output 1" },
-        { index: 1, human_label: "DAC output 2" },
-        { index: 2, human_label: "DAC output 3" },
-      ],
-    },
-    routing: { mono_group_id: "main", main_left_group_id: null, main_right_group_id: null, subwoofer_group_ids: [] },
-    evaluation: { status: "valid" },
-    speaker_groups: [{
-      id: "main",
-      label: "Main speaker",
-      kind: "mono",
-      mode: "active_3_way",
-      position: { x: 0, y: 0, rotation_degrees: 0 },
-      channels: [
-        {
-          role: "woofer",
-          physical_output_index: 0,
-          startup_muted: true,
-          protection_required: false,
-        },
-        {
-          role: "mid",
-          physical_output_index: 1,
-          startup_muted: true,
-          protection_required: false,
-        },
-        {
-          role: "tweeter",
-          physical_output_index: 2,
-          startup_muted: true,
-          protection_required: true,
-        },
-      ],
-    }],
-  };
-}
-
-function emptyTopologyPayload() {
-  return {
-    artifact_schema_version: 1,
-    kind: "jts_output_topology",
-    topology_id: "bench",
-    name: "Bench output setup",
-    status: "draft",
-    hardware: {
-      device_id: "hifiberry_dac8x",
-      device_label: "HiFiBerry DAC8x",
-      physical_output_count: 8,
-      outputs: [
-        { index: 0, human_label: "DAC output 1" },
-        { index: 1, human_label: "DAC output 2" },
-      ],
-    },
-    speaker_groups: [],
-    routing: {},
-    evaluation: {},
-  };
-}
-
-// Single physical output (the Apple-dongle case) already consumed by a passive
-// mono layout: no spare DAC channel for a LOCAL subwoofer, so the subwoofer
-// add-on dead-ends.
-function dongleMonoTopologyPayload() {
-  return {
-    status: "valid",
-    hardware: {
-      physical_output_count: 1,
-      profile_id: "apple-dongle",
-      outputs: [{ index: 0, human_label: "Headphone output" }],
-    },
-    routing: { mono_group_id: "main", main_left_group_id: null, main_right_group_id: null, subwoofer_group_ids: [] },
-    evaluation: { status: "valid" },
-    speaker_groups: [{
-      id: "main",
-      label: "Main speaker",
-      kind: "mono",
-      mode: "full_range_passive",
-      position: { x: 0, y: 0, rotation_degrees: 0 },
-      channels: [{
-        role: "full_range",
-        physical_output_index: 0,
-        startup_muted: true,
-        protection_required: false,
-      }],
-    }],
-  };
-}
-
-
-function activePayloads() {
-  return {
-    "./active-speaker/measurements": {
-      status: "not_applicable",
-      summary: {
-        required_driver_count: 0,
-        captured_driver_count: 0,
-        driver_checks_complete: false,
-        driver_measurements_complete: false,
-        latest_driver_checks: {},
-        latest_driver_measurements: {},
-      },
-      issues: [],
-    },
-    "./active-speaker/baseline-profile": {
-      status: "blocked",
-      permissions: { may_compile: false, may_apply: false },
-      config: {},
-      issues: [],
-    },
-  };
-}
-
-function levelPayload(value) {
-  return {
-    status: "ready",
-    test_signal: {
-      min_level_dbfs: -80,
-      max_level_dbfs: 0,
-      step_db: 1,
-      default_level_dbfs: -80,
-      requested_level_dbfs: value,
-    },
-    mic_meter: { status: "usable", recommendation: "hold_level" },
-    software_gain_guard: { upward_step_limit_db: 1 },
-    issues: [],
-  };
-}
-
-function commissioningSteps(currentStep, statuses = {}) {
-  const labels = {
-    layout: "Choose speaker layout",
-    research: "Driver values",
-    experiment: "First speaker experiment",
-    profile: "Apply speaker profile",
-  };
-  return ["layout", "research", "experiment", "profile"].map((id) => ({
-    id,
-    label: labels[id],
-    status: statuses[id] || (id === currentStep ? "active" : "todo"),
-    message: "",
-  }));
-}
-
-function commissioningViewPayload(overrides = {}) {
-  const currentStep = overrides.current_step || "layout";
-  const stepStatuses = overrides.stepStatuses || {};
-  const steps = overrides.steps || commissioningSteps(currentStep, stepStatuses);
-  const payload = {
-    artifact_schema_version: 1,
-    kind: "jts_active_speaker_commissioning_view",
-    status: overrides.status || "needs_layout",
-    current_step: currentStep,
-    steps,
-    driver_values: {
-      status: "ready",
-      complete: true,
-      design_ready: true,
-      preview_ready: true,
-      missing_driver_info_roles: [],
-      missing_crossover_candidate_pairs: [],
-      message: "Driver and crossover values are saved.",
-    },
-    driver_checks: { complete: true, captured: 2, required: 2 },
-    test_level: levelPayload(-72).test_signal,
-    combined_groups: [],
-    next_action: {},
-  };
-  delete overrides.stepStatuses;
-  return { ...payload, ...overrides, steps };
-}
-
-function profileCommissioningView(overrides = {}) {
-  return commissioningViewPayload({
-    current_step: "experiment",
-    stepStatuses: {
-      layout: "done",
-      research: "done",
-      experiment: "active",
-      profile: "todo",
-    },
-    status: "needs_combined_check",
-    ...overrides,
-  });
-}
-
 function setupHarness(fetchHandler, options = {}) {
   const pageMode = options.mode || "speaker";
   const elements = new Map();
@@ -498,37 +154,14 @@ function setupHarness(fetchHandler, options = {}) {
   for (const id of [
     "tab-off", "tab-saved", "tab-draft", "eq-tabs", "back", "view-body",
     "now-playing", "plot", "plot-summary", "live-label", "status",
-    "copy-driver-research-prompt-control",
   ]) {
     elements.set(id, makeEl(id));
   }
   const island = makeEl("sound-page-data");
-  // Mirrors jasper/web/sound_setup.py:_sound_page_island. The crossover
-  // vocabulary the editor may offer is SERVED, not hardcoded in the page, so
-  // the harness has to serve it too. That the served lists are the compiler's
-  // own is pinned on the Python side (tests/test_sound_setup.py); scenarios
-  // narrow or drop this fixture to exercise the page's own refusals.
   island.textContent = options.islandText !== undefined
     ? options.islandText
-    : JSON.stringify({
-      mode: pageMode,
-      follower: !!options.follower,
-      crossover_vocabulary: options.crossoverVocabulary !== undefined
-        ? options.crossoverVocabulary
-        : {
-          filter_types: ["Linkwitz-Riley"],
-          slopes_db_per_octave: [12, 24, 48],
-          default_filter_type: "Linkwitz-Riley",
-          default_slope_db_per_octave: 24,
-        },
-    });
+    : JSON.stringify({mode: pageMode, follower: !!options.follower});
   elements.set("sound-page-data", island);
-  const driverIsland = makeEl('jts-driver-fields');
-  driverIsland.textContent = JSON.stringify(options.driverVocabulary || driverVocabularyFixture);
-  elements.set('jts-driver-fields', driverIsland);
-  const boundsIsland = makeEl('jts-sub-crossover-bounds');
-  boundsIsland.textContent = JSON.stringify(subCrossoverBoundsFixture);
-  elements.set('jts-sub-crossover-bounds', boundsIsland);
   if (pageMode !== "eq" || options.follower) {
     // The hardware and follower pages omit the content-EQ chrome. Making those
     // ids resolve to null exercises the module's mode guards as the browser does.
@@ -594,9 +227,6 @@ function setupHarness(fetchHandler, options = {}) {
     },
     querySelector(sel) {
       if (sel === "meta[name=jts-csrf]") return { content: "csrf-token" };
-      if (sel === '[data-act="copy-driver-research-prompt"]') {
-        return elements.get("copy-driver-research-prompt-control");
-      }
       return null;
     },
     addEventListener(ev, fn) {
@@ -613,48 +243,21 @@ function setupHarness(fetchHandler, options = {}) {
     },
     setTimeout,
     clearTimeout,
-    // `hash` is read by the /sound/ deep-link entry point
-    // (applyConfirmSafetyDeepLink); a real browser always has it, so the
-    // harness does too — empty means "no fragment", the ordinary page load.
-    location: { href: "", hash: options.hash || "" },
+    location: { href: "" },
   };
-  const clipboard = [];
-  Object.defineProperty(globalThis, "navigator", {
-    value: { clipboard: { async writeText(text) { clipboard.push(text); } } },
-    configurable: true,
-  });
   delete globalThis.__jtsConfirm;
   globalThis.fetch = fetchHandler;
 
   runner(globalThis.document, globalThis.window, globalThis, console, setTimeout, clearTimeout);
 
   const viewBody = elements.get("view-body");
-  const driverProposal = makeEl("driver-proposal-control");
-  const driverResearchFooter = makeEl("driver-research-footer-control");
-  // The #2195 echo-back panel's targeted-refresh container. Same shape as the
-  // two above: a manual driver edit repaints it without a full render, so the
-  // panel cannot go on describing a value the operator has already changed.
-  const driverEcho = makeEl("driver-echo-control");
-  elements.set(driverProposal.id, driverProposal);
-  elements.set(driverResearchFooter.id, driverResearchFooter);
-  elements.set(driverEcho.id, driverEcho);
-  viewBody.querySelector = (selector) => {
-    if (selector === "[data-driver-proposal]") return driverProposal;
-    if (selector === "[data-driver-research-footer]") return driverResearchFooter;
-    if (selector === "[data-driver-echo]") return driverEcho;
-    if (selector === '[data-output-step="layout"]') return {
-      scrollIntoView(options) { elements.get('view-body').scrolledTo = {step: 'layout', ...options}; },
-    };
-    return null;
-  };
   const dispatchClick = (attrs) => {
     const target = {
       getAttribute(name) { return attrs[name] || ""; },
       dataset: Object.fromEntries(Object.entries(attrs).filter(([key]) => key.startsWith('data-'))
         .map(([key, value]) => [key.slice(5), value])),
       closest(selector) {
-        return (selector === "[data-act]" && 'data-act' in attrs) ||
-          (selector === "[data-copy], [data-copy-target]" && 'data-copy' in attrs) ? this : null;
+        return selector === "[data-act]" && 'data-act' in attrs ? this : null;
       },
     };
     for (const fn of viewBody._listeners.click || []) {
@@ -673,26 +276,6 @@ function setupHarness(fetchHandler, options = {}) {
       fn({ target });
     }
   };
-  const dispatchToggle = (attrs) => {
-    const target = {
-      open: attrs.open !== undefined ? attrs.open : true,
-      getAttribute(name) { return attrs[name] || ""; },
-      matches(selector) {
-        return selector === "[data-driver-advanced]" &&
-          Object.prototype.hasOwnProperty.call(attrs, "data-driver-advanced");
-      },
-      classList: {
-        contains(name) {
-          return name === "output-step" &&
-            Object.prototype.hasOwnProperty.call(attrs, "data-output-step");
-        },
-      },
-    };
-    for (const [index, fn] of (viewBody._listeners.toggle || []).entries()) {
-      if (viewBody._listenerCapture.toggle?.[index]) fn({ target });
-    }
-    return target;
-  };
   const dispatchInput = (attrs, value = "") => {
     const target = {
       id: attrs.id || "",
@@ -709,11 +292,10 @@ function setupHarness(fetchHandler, options = {}) {
     }
   };
   const flush = () => new Promise((r) => setTimeout(r, 0));
-  return { elements, clipboard, dispatchClick, dispatchChange, dispatchToggle, dispatchInput, flush };
+  return { elements, dispatchClick, dispatchChange, dispatchInput, flush };
 }
 
 function baseFetch(overrides = {}) {
-  const active = activePayloads();
   return (path, options = {}) => {
     const override = overrides[path] || overrides[path.split("?")[0]];
     if (override) return override(path, options);
@@ -727,31 +309,7 @@ function baseFetch(overrides = {}) {
     }
     if (path === "./output-topology") return Promise.resolve(response(topologyPayload()));
     if (path === "./cardioid-compare") return Promise.resolve(response({available: false}));
-    if (path === "./active-speaker/design-draft") {
-      return Promise.resolve(response({ status: "ready_for_review", summary: {}, operator_inputs: {} }));
-    }
-    if (path === "./active-speaker/crossover-preview") {
-      return Promise.resolve(response({ status: "blocked", issues: [] }));
-    }
-    if (path === "./active-speaker/commissioning-view") {
-      return Promise.resolve(response(commissioningViewPayload({
-        status: "needs_layout",
-        current_step: "layout",
-        stepStatuses: { layout: "active", research: "todo", experiment: "todo", profile: "todo" },
-        driver_values: {
-          status: "not_saved",
-          complete: false,
-          design_ready: false,
-          preview_ready: false,
-          missing_driver_info_roles: [],
-          missing_crossover_candidate_pairs: [],
-          message: "Save driver and crossover values.",
-        },
-        driver_checks: { complete: false, captured: 0, required: 0 },
-      })));
-    }
     if (path === "./preview") return Promise.resolve(response({ preview: [] }));
-    if (active[path] && !options.method) return Promise.resolve(response(active[path]));
     throw new Error(`unexpected fetch: ${path}`);
   };
 }
@@ -764,24 +322,6 @@ function fail(message, details = {}) {
 // the step's summary hint or by a different step's card. Slices from the step's
 // `output-step__body` to the next step marker; safe for the safety/profile
 // steps, which contain no nested <details>.
-function outputStepBodyHtml(html, step) {
-  const at = String(html || "").indexOf('data-output-step="' + step + '"');
-  if (at < 0) return null;
-  const open = '<div class="output-step__body">';
-  const bodyAt = html.indexOf(open, at);
-  if (bodyAt < 0) return null;
-  const start = bodyAt + open.length;
-  const next = html.indexOf('data-output-step="', start);
-  return html.slice(start, next < 0 ? html.length : next);
-}
-
-function commissionCardHtml(html) {
-  const match = String(html || "").match(
-    /<div class="commission-card">[\s\S]*?commission-card__followup[\s\S]*?<\/p><\/div>/
-  );
-  return match ? match[0] : String(html || "");
-}
-
 async function loadAndSetActiveState(harness) {
   await harness.flush();
   await harness.flush();
