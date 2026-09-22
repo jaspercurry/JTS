@@ -6,6 +6,10 @@ After=sound.target
 # blocks on an absent reader during boot/reload.
 Before=jasper-camilla.service
 
+# A config-fault park is the admission fact for every direct or dependency
+# start. Conditions run before systemd charges the start-limit counter.
+ConditionPathExists=!/run/jasper-outputd-failure-reconcile.park
+
 StartLimitIntervalSec=300
 StartLimitBurst=5
 # The policy for all three audio units: an exhausted burst reboots only where
@@ -26,8 +30,8 @@ RestartSec=5
 # reboot above. ExecStopPost gives exit 78 one bounded audio-hardware
 # reconcile + explicit retry for transient DAC hotplug shear; a second 78
 # leaves the unit parked on the helper's marker, visible on /state + doctor.
-# See ADR-0141. Recovery after a persistent park: fix the env, then
-# `systemctl restart jasper-outputd`.
+# See ADR-0141. Recovery after a persistent park: fix the env, reset-failed,
+# retire the park with jasper-unpark, then start jasper-outputd.
 RestartPreventExitStatus=78
 
 # Above Camilla (-900): this owns the DAC write loop.
@@ -97,11 +101,8 @@ ExecCondition=/bin/sh -c 'backend="$${JASPER_OUTPUTD_BACKEND:-alsa}"; card="$${J
 # a reconciler pass per restart. Its --no-restart keeps that reconciler from
 # controlling jasper-outputd from inside this unit's stop transaction.
 #
-# JASPER_OUTPUTD_RECONCILE_PARK_STATE is the one park-record path: this
-# helper's own PARK_RECORD default and the Python reader's default
-# (jasper/outputd_failure_reconcile_state.py) already agree on it, and
-# jasper-unpark's argv below now does too, so a drop-in overriding this
-# Environment= moves every participant together.
+# Keep the producer, reader, native ConditionPathExists=, and READY retirer on
+# the same fixed path. A service condition cannot expand Environment= values.
 Environment="JASPER_OUTPUTD_RECONCILE_PARK_STATE=/run/jasper-outputd-failure-reconcile.park"
 ExecStopPost=-/usr/local/sbin/jasper-outputd-failure-reconcile
 ExecStart=/opt/jasper/bin/jasper-outputd

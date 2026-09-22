@@ -40,6 +40,9 @@ OUTPUT_HARDWARE_STATE_PATH="${JASPER_OUTPUT_HARDWARE_STATE_PATH:-/run/jasper-out
 RECONCILE_STAMP_PATH="${OUTPUT_HARDWARE_STATE_PATH%/*}/reconcile.stamp"
 RECONCILE_INPUTS_PATH="${OUTPUT_HARDWARE_STATE_PATH%/*}/reconcile.inputs"
 RECONCILE_DEGRADED_MARKER="${OUTPUT_HARDWARE_STATE_PATH%/*}/reconcile.degraded"
+OUTPUTD_PARK_RECORD="${JASPER_OUTPUTD_RECONCILE_PARK_STATE:-/run/jasper-outputd-failure-reconcile.park}"
+UNPARK="${SCRIPT_DIR}/jasper-unpark"
+SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 
 REASON="manual"
 PRINT_ENV=0
@@ -47,6 +50,26 @@ NO_RESTART=0
 CHECK_CHANGED=0
 OBSERVED_AT_PASS_START=""
 INPUTS_AT_PASS_START=""
+OUTPUTD_PARK_AT_PASS_START=""
+
+outputd_park_identity() {
+    LC_ALL=C ls -di -- "$OUTPUTD_PARK_RECORD" 2>/dev/null \
+        | awk 'NR == 1 { print $1 }'
+}
+
+retry_outputd_after_repair() {
+    [[ "$NO_RESTART" != "1" ]] || return 0
+    [[ -n "$OUTPUTD_PARK_AT_PASS_START" ]] || return 0
+    [[ "$(outputd_park_identity)" == "$OUTPUTD_PARK_AT_PASS_START" ]] || return 0
+    "$SYSTEMCTL" reset-failed jasper-outputd.service
+    "$UNPARK" "$OUTPUTD_PARK_RECORD" outputd.retry_admitted
+    if [[ -e "$OUTPUTD_PARK_RECORD" ]]; then
+        log_event "outputd_retry_blocked" "reason=park_retire_failed state=${OUTPUTD_PARK_RECORD}"
+        return 1
+    fi
+    "$SYSTEMCTL" --no-block start jasper-outputd.service
+    log_event "outputd_retry" "result=requested"
+}
 
 # The hermetic tests run this script on the developer laptop, where macOS
 # ships shasum and no sha256sum.
@@ -281,10 +304,14 @@ fi
 # abort in the window before the first state write (an OOM kill, TimeoutStartSec)
 # would otherwise leave a predecessor's stamp valid and the retry would be
 # condition-skipped and report success.
+if [[ "$NO_RESTART" != "1" ]]; then
+    OUTPUTD_PARK_AT_PASS_START="$(outputd_park_identity)" || OUTPUTD_PARK_AT_PASS_START=""
+fi
 INPUTS_AT_PASS_START="$(cat -- "$RECONCILE_INPUTS_PATH" 2>/dev/null)" || INPUTS_AT_PASS_START=""
 OBSERVED_AT_PASS_START="$(reconcile_observed_digest 2>/dev/null)" || OBSERVED_AT_PASS_START=""
 rm -f -- "$RECONCILE_STAMP_PATH" "$RECONCILE_DEGRADED_MARKER"
 rc=0
 "$OUTPUT_HARDWARE_PYTHON" -m jasper.audio_hardware.reconcile "$@" || rc=$?
 [[ "$rc" == "0" ]] || exit "$rc"
+retry_outputd_after_repair
 write_reconcile_stamp

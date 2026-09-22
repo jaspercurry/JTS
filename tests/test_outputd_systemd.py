@@ -43,9 +43,11 @@ def test_outputd_unit_is_notify_and_watchdog_managed():
     # RESTART_POLICY table (R22, #4416).
 
 
-def test_outputd_unit_is_mainline_default_not_flag_gated():
+def test_outputd_unit_blocks_every_start_while_config_fault_is_parked():
     unit = _read_unit()
-    assert _values_for(unit, "ConditionPathExists") == ()
+    assert _values_for(unit, "ConditionPathExists") == (
+        "!/run/jasper-outputd-failure-reconcile.park",
+    )
     # StartLimitAction=reboot is pinned by RESTART_POLICY (R22, #4416).
 
 

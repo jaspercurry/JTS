@@ -271,6 +271,96 @@ def _run_shim(
     )
 
 
+@pytest.mark.parametrize(
+    "initial, interpreter_body, args, expected_rc, expected_live, retries",
+    (
+        (True, "exit 0\n", ("--reason", "test"), 0, None, True),
+        (True, "exit 7\n", ("--reason", "test"), 7, "old", False),
+        (True, "exit 0\n", ("--reason", "test", "--no-restart"), 0, "old", False),
+        (
+            True,
+            'printf "new\\n" > "$JASPER_OUTPUTD_RECONCILE_PARK_STATE.next"\n'
+            'mv "$JASPER_OUTPUTD_RECONCILE_PARK_STATE.next" '
+            '"$JASPER_OUTPUTD_RECONCILE_PARK_STATE"\n',
+            ("--reason", "test"),
+            0,
+            "new",
+            False,
+        ),
+        (
+            False,
+            'printf "new\\n" > "$JASPER_OUTPUTD_RECONCILE_PARK_STATE"\n',
+            ("--reason", "test"),
+            0,
+            "new",
+            False,
+        ),
+    ),
+    ids=(
+        "success",
+        "failure",
+        "no-restart",
+        "replaced-during-pass",
+        "new-during-pass",
+    ),
+)
+def test_mutating_reconcile_retries_only_the_same_preexisting_outputd_park(
+    tmp_path, initial, interpreter_body, args, expected_rc, expected_live, retries
+):
+    park = tmp_path / "outputd.park"
+    if initial:
+        park.write_text("old\n")
+    interpreter = _script(tmp_path, "reconcile-python", interpreter_body)
+
+    result = _run_shim(
+        tmp_path,
+        "",
+        *args,
+        extra_env={
+            "JASPER_OUTPUT_HARDWARE_PYTHON": str(interpreter),
+            "JASPER_OUTPUTD_RECONCILE_PARK_STATE": str(park),
+        },
+    )
+
+    assert result.returncode == expected_rc, result.stderr
+    if expected_live is None:
+        assert not park.exists()
+        assert Path(f"{park}.last").exists()
+    else:
+        assert park.read_text().strip() == expected_live
+    calls = _systemctl_log(tmp_path).splitlines()
+    recovery = [
+        call for call in calls
+        if call in (
+            "reset-failed jasper-outputd.service",
+            "--no-block start jasper-outputd.service",
+        )
+    ]
+    assert recovery == (
+        [
+            "reset-failed jasper-outputd.service",
+            "--no-block start jasper-outputd.service",
+        ]
+        if retries else []
+    )
+
+
+@pytest.mark.parametrize("args", (("--changed",), ("--print-env",)))
+def test_read_only_reconcile_modes_never_release_an_outputd_park(tmp_path, args):
+    park = tmp_path / "outputd.park"
+    park.write_text("old\n")
+    result = _run_shim(
+        tmp_path,
+        "",
+        *args,
+        extra_env={"JASPER_OUTPUTD_RECONCILE_PARK_STATE": str(park)},
+    )
+
+    assert result.returncode in (0, 1), result.stderr
+    assert park.read_text().strip() == "old"
+    assert "reset-failed jasper-outputd.service" not in _systemctl_log(tmp_path)
+
+
 def _assert_no_empty_alsa_card(rendered: str) -> None:
     assert not re.search(r"(?m)^\s*card\s*$", rendered)
     assert not re.search(r"\bcard\s+}", rendered)
@@ -4120,6 +4210,41 @@ def _stub_pass(
     driven through each outcome the real pass can reach."""
     stub = _script(tmp_path, f"stub-pass-{name}", f"{body}\nexit {rc}\n")
     return {"JASPER_OUTPUT_HARDWARE_PYTHON": str(stub)}
+
+
+def test_a_failed_outputd_retry_leaves_no_successful_reconcile_stamp(tmp_path):
+    common = {**_fake_proc_asound(tmp_path), **_cutover_env(tmp_path)}
+    converged = _run_reconcile(
+        tmp_path, APPLE_LISTING, "--reason", "converge", extra_env=common
+    )
+    assert converged.returncode == 0, converged.stderr
+    boot_config = (tmp_path / "config.txt").read_text(encoding="utf-8")
+    park = tmp_path / "outputd.park"
+    park.write_text("old\n")
+    failing_systemctl = _script(
+        tmp_path,
+        "failing-reset-systemctl",
+        'printf \'%s\\n\' "$*" >> "$JASPER_SYSTEMCTL_LOG"\n'
+        '[[ "$*" != "reset-failed jasper-outputd.service" ]]\n',
+    )
+
+    result = _run_shim(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "retry-fails",
+        initial_boot_config=boot_config,
+        extra_env={
+            **common,
+            **_stub_pass(tmp_path, "retry-fails"),
+            "JASPER_OUTPUTD_RECONCILE_PARK_STATE": str(park),
+            "JASPER_SYSTEMCTL": str(failing_systemctl),
+        },
+    )
+
+    assert result.returncode != 0
+    assert park.exists()
+    assert not (tmp_path / "reconcile.stamp").exists()
 
 
 # mode -> (stub kwargs, expected rc, stamp written, stamp_skipped reason)

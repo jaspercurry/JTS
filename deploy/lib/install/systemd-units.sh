@@ -23,6 +23,8 @@ WIZARD_UNITS=(
     jasper-chat-web
 )
 
+OUTPUTD_FAILURE_PARK_RECORD="/run/jasper-outputd-failure-reconcile.park"
+
 install_jasper_support_files() {
     install -d -m 0755 /usr/local/lib/jasper /usr/local/sbin /usr/local/bin \
         "${SYSTEMD_DIR}"
@@ -876,12 +878,24 @@ park_audio_clients_for_core_graph_restart() {
     # Those restore steps run unguarded under `set -e`, so record each unit
     # before stopping it: the record is what install.sh's EXIT trap replays.
     # forget_core_graph_park_record() drops the record again once they finish.
+    retire_stale_outputd_park_if_active
     local unit
     for unit in "${JASPER_CORE_GRAPH_PARK_UNITS[@]}"; do
         _record_parked_unit "${unit}"
         systemctl stop "${unit}" 2>/dev/null || true
         systemctl reset-failed "${unit}" 2>/dev/null || true
     done
+}
+
+retire_stale_outputd_park_if_active() {
+    systemctl is-active --quiet jasper-outputd.service || return 0
+    [[ -e "$OUTPUTD_FAILURE_PARK_RECORD" ]] || return 0
+    "${LOCAL_SBIN_DIR}/jasper-unpark" \
+        "$OUTPUTD_FAILURE_PARK_RECORD" outputd.retry_admitted
+    [[ ! -e "$OUTPUTD_FAILURE_PARK_RECORD" ]] || {
+        echo "  ERROR: could not retire the jasper-outputd config-fault park" >&2
+        return 1
+    }
 }
 
 forget_core_graph_park_record() {
@@ -1181,6 +1195,13 @@ _unpark_one_unit() {
     esac
 
     if systemctl start "${unit}" 2>/dev/null; then
+        if [[ "${unit}" == "jasper-outputd.service" &&
+              -e "${OUTPUTD_FAILURE_PARK_RECORD}" ]] &&
+            ! systemctl is-active --quiet "${unit}" 2>/dev/null; then
+            _build_sandbox_log "unpark_skip" \
+                "unit=${unit} reason=config_fault_parked"
+            return 0
+        fi
         _JASPER_UNPARK_RESTORED=$(( _JASPER_UNPARK_RESTORED + 1 ))
         return 0
     fi

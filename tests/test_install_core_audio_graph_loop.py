@@ -476,6 +476,43 @@ def test_reset_failed_targets_exclude_parked_units(tmp_path):
     )
 
 
+def test_graph_park_retires_a_stale_record_before_stopping_active_outputd(tmp_path):
+    park = tmp_path / "outputd.park"
+    park.write_text("old\n")
+    local_sbin = tmp_path / "sbin"
+    local_sbin.mkdir()
+    unpark = local_sbin / "jasper-unpark"
+    unpark.write_text(
+        "#!/usr/bin/env bash\n"
+        f'"{ROOT}/deploy/bin/jasper-unpark" "$@"\n'
+        f'echo unpark >> "{tmp_path}/calls.log"\n'
+    )
+    unpark.chmod(0o755)
+    script = f"""
+set -euo pipefail
+REPO_DIR="{ROOT}"
+SYSTEMD_DIR="{tmp_path}/systemd"
+LOCAL_SBIN_DIR="{local_sbin}"
+source "{FRAGMENT}"
+OUTPUTD_FAILURE_PARK_RECORD="{park}"
+JASPER_CORE_GRAPH_PARK_UNITS=(jasper-outputd.service)
+_record_parked_unit() {{ :; }}
+systemctl() {{
+  if [[ "$1" == "is-active" ]]; then return 0; fi
+  echo "$*" >> "{tmp_path}/calls.log"
+}}
+park_audio_clients_for_core_graph_restart
+"""
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=20
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not park.exists()
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    assert calls.index("unpark") < calls.index("stop jasper-outputd.service")
+
+
 def test_the_two_park_lists_overlap_only_by_the_crossover(tmp_path):
     """The core-graph park and the low-memory build park write ONE record, and
     forget_core_graph_park_record drops every entry the core-graph list names.
@@ -820,6 +857,125 @@ def test_a_degraded_tail_keeps_the_core_graph_park_restorable(tmp_path, function
     assert _LEFT_OFF_BY_THE_TAIL <= started, sorted(started)
     still_down = {p.name for p in (tmp_path / "down").iterdir()}
     assert not (_LEFT_OFF_BY_THE_TAIL & still_down), sorted(still_down)
+
+
+@pytest.mark.parametrize(
+    "function",
+    ("start_streambox_runtime_units", "install_systemd_units"),
+)
+def test_a_fresh_outputd_park_blocks_direct_dependency_and_exit_starts(
+    tmp_path, function
+):
+    park = tmp_path / "outputd.park"
+    systemctl = f"""
+mkdir -p "{tmp_path}/down"
+_attempt_outputd() {{
+  local via="$1"
+  if [[ -e "{park}" ]]; then
+    echo "outputd condition-skip via=$via" >> "{tmp_path}/calls.log"
+    return 0
+  fi
+  echo "outputd exec-start via=$via" >> "{tmp_path}/calls.log"
+  rm -f "{tmp_path}/down/jasper-outputd.service"
+}}
+systemctl() {{
+  local verb="${{1:-}}" arg now=0
+  local -a units=()
+  echo "systemctl $*" >> "{tmp_path}/calls.log"
+  shift || true
+  for arg in ${{1+"$@"}}; do
+    case "$arg" in
+      --now) now=1 ;;
+      -*) ;;
+      *) units+=("$arg") ;;
+    esac
+  done
+  (( ${{#units[@]}} )) || return 0
+  case "$verb:$now" in
+    is-active:*) [[ ! -e "{tmp_path}/down/${{units[0]}}" ]] && return 0 || return 1 ;;
+    is-enabled:*) echo enabled; return 0 ;;
+    stop:*) for arg in "${{units[@]}}"; do : > "{tmp_path}/down/$arg"; done ;;
+    start:*|restart:*|try-restart:*|enable:1)
+      for arg in "${{units[@]}}"; do
+        case "$arg" in
+          jasper-outputd.service) _attempt_outputd "$arg" ;;
+          jasper-camilla.service|jasper-control.service|jasper-voice.service|jasper-accessory-reconcile.service)
+            _attempt_outputd "$arg"
+            rm -f "{tmp_path}/down/$arg"
+            ;;
+          *) rm -f "{tmp_path}/down/$arg" ;;
+        esac
+      done
+      ;;
+  esac
+  return 0
+}}
+"""
+    fresh_park = f"""
+OUTPUTD_FAILURE_PARK_RECORD="{park}"
+require_outputd_ready() {{
+  systemctl restart jasper-outputd.service
+  systemctl stop jasper-outputd.service
+  printf 'parked_at=1\\nexit_status=78\\nreason=recent\\n' > "{park}"
+  echo PARK_CREATED >> "{tmp_path}/calls.log"
+  systemctl restart jasper-outputd.service
+  return 1
+}}
+"""
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _profile_runtime_harness(
+                tmp_path,
+                function,
+                keep=(
+                    *_PARK_RECORD_CHAIN,
+                    "restart_core_camilla_after_dsp_reconcile",
+                    "restart_jasper_control_and_input",
+                ),
+                extra_shims=systemctl + _TAIL_RECONCILER_SHIMS + fresh_park,
+                epilogue=(
+                    f'echo TAIL_DONE >> "{tmp_path}/calls.log"\n'
+                    f'source "{BUILD_SANDBOX}"\n'
+                    f'_build_sandbox_log() {{ echo "event=$1 $2" >> "{tmp_path}/calls.log"; }}\n'
+                    "install_exit_cleanup\n"
+                    f'echo INSTALL_MARKER_CLEARED >> "{tmp_path}/calls.log"\n'
+                    "systemctl restart jasper-control.service\n"
+                    "systemctl start jasper-outputd.service\n"
+                ),
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    cut = calls.index("PARK_CREATED")
+    assert any(call == "outputd exec-start via=jasper-outputd.service" for call in calls[:cut])
+    after = calls[cut + 1:]
+    starts = [call for call in after if call.startswith("outputd ")]
+    assert starts
+    assert not [call for call in starts if call.startswith("outputd exec-start")]
+    assert {
+        "jasper-outputd.service",
+        "jasper-camilla.service",
+        "jasper-control.service",
+    } <= {call.split("via=", 1)[1] for call in starts}
+    tail_done = after.index("TAIL_DONE")
+    cleared = after.index("INSTALL_MARKER_CLEARED")
+    assert any(
+        "via=jasper-outputd.service" in call
+        for call in after[tail_done + 1:cleared]
+    )
+    assert any(
+        call == "event=unpark_skip unit=jasper-outputd.service reason=config_fault_parked"
+        for call in after[tail_done + 1:cleared]
+    )
+    assert any("via=jasper-control.service" in call for call in after[cleared + 1:])
+    assert any("via=jasper-outputd.service" in call for call in after[cleared + 1:])
 
 
 @pytest.mark.parametrize(
