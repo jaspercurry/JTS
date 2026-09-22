@@ -144,11 +144,6 @@ install_local_audio_graph_unit_files() {
         echo "  ERROR: core audio-graph unit install failed for: ${failed}" >&2
         return 1
     fi
-    # jasper-unpark serves both parks now; its outputd-only ancestor is called
-    # by no unit. Remove the stale copy only once every row above — including
-    # jasper-unpark's own — has proven it installed: an rm before that could
-    # leave a box with neither script if the loop above never reached here.
-    rm -f "${LOCAL_SBIN_DIR}/jasper-outputd-unpark"
 }
 
 _snapshot_unit_install_destination() {
@@ -215,7 +210,6 @@ _rollback_unit_install_transaction() {
         fi
     done
     systemctl daemon-reload 2>/dev/null || true
-    udevadm control --reload-rules 2>/dev/null || true
     rm -rf -- "${install_transaction_dir:?}"
     echo "  ERROR: rolled back the incomplete unit generation" >&2
 }
@@ -254,41 +248,14 @@ _with_unit_install_transaction() {
     rm -rf -- "${install_transaction_dir:?}"
 }
 
-# Bluetooth accessory units, shared by BOTH install profiles. A paired remote
-# is renderer-side: its buttons reach jasper-control, which runs on either
-# profile, and its optional mic rides the accessory path (udp:9892) rather
-# than the AEC bridge's local-array path. The AEC units below stay
-# full-profile only, deliberately.
+# See ADR-0225. Retire the old producer only after the host files commit.
 install_hid_accessory_unit_files() {
-    # The WiiM mic adapter is a task inside jasper-input now (ADR-0225). An
-    # upgraded box still has the old daemon running and its unit enabled, and
-    # both producers would subscribe to the same GATT voice report and send to
-    # the same UDP mic source. Retire it before staging the host. Fresh
-    # installs no-op.
-    systemctl disable --now jasper-wiim-remote-mic.service \
-        >/dev/null 2>&1 || true
-    rm -f "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service" \
-          "${SYSTEMD_DIR}/multi-user.target.wants/jasper-wiim-remote-mic.service"
-    # jasper-input: every accessory bridge in one interpreter (ADR-0225).
-    # Reads /dev/input/event* via python-evdev and translates known devices'
-    # key events into HTTP calls against jasper-control; also runs the BLE mic
-    # adapter task for whichever accessory mic the reconciler below publishes.
-    # Always-on like jasper-mux — idle cost is negligible if no accessory is
-    # attached. See jasper/accessories/.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-input.service" \
         "${SYSTEMD_DIR}/jasper-input.service"
-    # Optional accessory mic profiles are activated by this root oneshot:
-    # it reads BlueZ's paired-device state and writes
-    # /var/lib/jasper/accessory-mics.env, which is both jasper-voice's source
-    # list and jasper-input's instruction about which mic adapter to run. This
-    # keeps rare remotes from imposing resident cost on every speaker.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-accessory-reconcile.service" \
         "${SYSTEMD_DIR}/jasper-accessory-reconcile.service"
-    # How every unprivileged requester (the Bluetooth wizard, the source-intent
-    # coordinator) asks for a pass: touch a request file, no systemd privilege.
-    # Without this watcher every request is silently dropped until reboot.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-accessory-reconcile.path" \
         "${SYSTEMD_DIR}/jasper-accessory-reconcile.path"
@@ -563,6 +530,8 @@ install_usb_network_files() {
     # a partially promoted address pair.
     _snapshot_unit_install_destination "${nm_path}"
     _snapshot_unit_install_destination "${dnsmasq_path}"
+    _snapshot_unit_install_destination "${plan_path}"
+    _snapshot_unit_install_destination "${pending_path}"
     local plan_output
     if ! plan_output="$(PYTHONPATH="${REPO_DIR}" "${plan_python}" \
             -m jasper.usb_network converge \
@@ -574,6 +543,10 @@ install_usb_network_files() {
         return 1
     fi
     echo "  ${plan_output}"
+}
+
+activate_usb_network() {
+    local pending_path="/var/lib/jasper-usb-network/migration_pending"
     if [[ -e "${pending_path}" ]]; then
         # Deliberately skip every live NM/dnsmasq action. The files and their
         # running consumers remain one legacy generation until next boot.
@@ -592,7 +565,7 @@ install_usb_network_files() {
         nmcli --wait 10 general reload conf >/dev/null 2>&1 || \
             echo "  WARN: NetworkManager did not reload USB network device policy"
         nmcli --wait 10 connection load \
-            "${nm_path}" \
+            /etc/NetworkManager/system-connections/jts-usb.nmconnection \
             >/dev/null 2>&1 || \
             echo "  WARN: NetworkManager did not reload jts-usb profile"
         if [[ -e /sys/class/net/usb0 ]]; then
@@ -688,7 +661,6 @@ enable_usbmic_relay() {
 }
 
 install_grouping_unit_files() {
-    local distro_unit
     # All three ship DISABLED: a solo speaker runs none of them, and the
     # reconciler is the only thing that enables them on explicit opt-in. The
     # snapcast binaries the units reference are deliberately not apt-installed
@@ -713,28 +685,32 @@ install_grouping_unit_files() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-grouping-reconcile-kick" \
         /usr/local/sbin/jasper-grouping-reconcile-kick
+}
 
-    # Trixie's snapserver package ships an enabled-by-default snapserver.service
-    # that squats :1704 and advertises _snapcast._tcp on the LAN — a rogue
-    # second server a bare snapclient will auto-discover instead of the JTS
-    # leader. JTS owns jasper-snapserver/jasper-snapclient; the distro units
-    # must never run. A no-op when the packages are absent.
+activate_staged_unit_files() {
+    local distro_unit
+    systemctl disable --now jasper-wiim-remote-mic.service \
+        >/dev/null 2>&1 || true
+    rm -f "${SYSTEMD_DIR}/jasper-wiim-remote-mic.service" \
+          "${SYSTEMD_DIR}/multi-user.target.wants/jasper-wiim-remote-mic.service"
+    rm -f "${LOCAL_SBIN_DIR}/jasper-outputd-unpark"
+    # Distro Snapcast competes with the JTS-owned server on port 1704.
     for distro_unit in snapserver.service snapclient.service; do
         if systemctl list-unit-files "${distro_unit}" 2>/dev/null \
                 | grep -q "^${distro_unit}"; then
             systemctl disable --now "${distro_unit}" >/dev/null 2>&1 || true
         fi
     done
+    systemctl daemon-reload
+    reload_audio_recovery_udev_rules_for_install
+    activate_usb_network
 }
 
 install_renderer_source_unit_files() {
-    # A box installed against an older codepath can still carry
-    # shairport-sync.service.d/jts-output.conf, whose ExecStart points at the
-    # apt-package binary this stack does not build — the service then
-    # crash-loops. Remove it on every install so an rsync cannot revive it.
+    # The old drop-in names an apt binary JTS does not build.
     if [[ -e "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf" ]]; then
+        _snapshot_unit_install_destination "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf"
         rm -f "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf"
-        rmdir "${SYSTEMD_DIR}/shairport-sync.service.d" 2>/dev/null || true
         echo "  removed stale shairport drop-in from a previous install"
     fi
     install -m 0644 \
@@ -1301,8 +1277,7 @@ park_streambox_brain_units() {
 
 enable_streambox_web_sockets() {
     local unit
-    for unit in jasper-web jasper-bluetooth-web jasper-correction-web \
-                jasper-system-web jasper-chat-web; do
+    for unit in "${WIZARD_UNITS[@]}"; do
         systemctl stop "${unit}.service" 2>/dev/null || true
         if systemctl is-enabled "${unit}.service" --quiet 2>/dev/null; then
             systemctl disable "${unit}.service" 2>/dev/null || true
@@ -1437,8 +1412,7 @@ start_streambox_runtime_units() {
     systemctl try-restart "${JASPER_LOCAL_SOURCE_REFRESH_UNITS[@]}" \
         2>/dev/null || true
     reapply_source_intent
-    for unit in jasper-web jasper-bluetooth-web jasper-correction-web \
-                jasper-system-web jasper-chat-web; do
+    for unit in "${WIZARD_UNITS[@]}"; do
         systemctl stop "${unit}.service" 2>/dev/null || true
     done
     reconcile_grouping_state
@@ -1508,13 +1482,13 @@ _stage_streambox_unit_files() {
     install_hid_accessory_unit_files
     install_voice_unit_files
     install_audio_output_recovery_unit_files
-    reload_audio_recovery_udev_rules_for_install
     validate_streambox_web_socket
 }
 
 install_streambox_systemd_units() {
     install_local_audio_graph_unit_files
     _with_unit_install_transaction _stage_streambox_unit_files
+    activate_staged_unit_files
     park_streambox_brain_units
     mask_distro_background_units
     systemctl enable --now jts-audio.slice >/dev/null 2>&1 || true
@@ -1578,7 +1552,6 @@ _stage_full_unit_files() {
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-turntable-autostop.rules" \
         /etc/udev/rules.d/99-jasper-turntable-autostop.rules
-    reload_audio_recovery_udev_rules_for_install
 
     install_renderer_source_unit_files
 
@@ -1591,6 +1564,7 @@ _stage_full_unit_files() {
 install_systemd_units() {
     install_local_audio_graph_unit_files
     _with_unit_install_transaction _stage_full_unit_files
+    activate_staged_unit_files
 
     # Exercise both cgroup protection slices now as well as enabling them for
     # boot — both carry [Install], so a copy alone is not enough.

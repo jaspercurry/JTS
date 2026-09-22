@@ -1132,14 +1132,10 @@ def test_a_failed_publish_is_authoritative_not_fail_soft(monkeypatch, caplog):
 
 
 def test_the_installer_retires_the_deleted_adapter_unit_on_upgrade():
-    """Deleting the unit from the repo does not remove it from a deployed Pi.
-    Until the installer disables and deletes it, an upgraded box with a paired
-    remote runs the old daemon AND the folded task against the same GATT
-    report and the same UDP mic source."""
     units_sh = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
         encoding="utf-8",
     )
-    body = units_sh.split("install_hid_accessory_unit_files() {", 1)[1].split(
+    body = units_sh.split("activate_staged_unit_files() {", 1)[1].split(
         "\n}", 1,
     )[0]
 

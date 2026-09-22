@@ -165,10 +165,8 @@ def test_usbnet_networkmanager_policy_owns_only_usb0_without_carrier():
 
 
 def test_usbnet_install_reloads_policy_and_bounds_existing_device_activation():
-    """Upgrades converge an existing usb0; later recreation is NM-owned."""
-
     source = FRAGMENT.read_text(encoding="utf-8")
-    body = source.split("install_usb_network_files() {", 1)[1].split("\n}\n", 1)[0]
+    body = source.split("install_usb_network_files() {", 1)[1].split("\nenable_usbgadget()", 1)[0]
 
     assert 'deploy/usb-network/90-jasper-usbnet.conf"' in body
     assert "/etc/NetworkManager/conf.d/90-jasper-usbnet.conf" in body
@@ -213,7 +211,7 @@ def test_usb_network_boot_gate_blocks_gadget_but_never_wifi_on_plan_failure():
 
 def test_deferred_install_never_replaces_either_live_projection():
     source = FRAGMENT.read_text(encoding="utf-8")
-    body = source.split("install_usb_network_files() {", 1)[1].split("\n}\n", 1)[0]
+    body = source.split("install_usb_network_files() {", 1)[1].split("\nenable_usbgadget()", 1)[0]
 
     pending_start = body.index('if [[ -e "${pending_path}" ]]')
     return_index = body.index("return 0", pending_start)
