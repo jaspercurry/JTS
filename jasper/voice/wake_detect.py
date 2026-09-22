@@ -5,9 +5,9 @@
 """jasper-voice's wake-leg fan-in: which leg heard the wake word.
 
 Owns the live per-leg detection state — the `LegRuntime` map, each leg's
-recent score, the fuser-decided firing threshold, the shared OR-gate lock
-and refractory latch, the capture rings and the acoustic condition the
-thresholds key on — and turns a scored frame into at most one `WakeFire`
+recent score, each detector's firing threshold, the shared OR-gate lock
+and refractory latch, the capture rings and the acoustic condition — and
+turns a scored frame into at most one `WakeFire`
 per user attempt.
 
 `WakeLoop` builds one at construction time, reads and writes its public
@@ -34,7 +34,6 @@ from ..config import Config
 from ..mic_capture import MicCapture
 from ..wake_condition_context import AMBIENT_FLOOR_DBFS, classify_condition
 from ..wake_events import CAPTURE_POST_SEC, CAPTURE_PRE_SEC
-from ..wake_fusion import WakeFuser
 from ..wake_legs import LegSpec, wake_input_legs
 from .wake_telemetry import LEG_DB, LegFireScore
 
@@ -50,8 +49,8 @@ WAKE_REFRACTORY_SEC = 0.2
 # score. 4x MicCapture's 80 ms frame period.
 WAKE_STALE_SCORE_SEC = 0.32
 
-# How often the WAKE loop recomputes the acoustic condition the fuser keys
-# on. The fire gate reads a cached `condition`; this bounds its staleness
+# How often the WAKE loop recomputes the acoustic condition. The fire gate
+# reads a cached `condition`; this bounds its staleness
 # while keeping the ring-noise-floor cost off the per-frame path
 # (recompute ~1x/s, not ~12x/s/leg). Conditions — music starting, the room
 # going quiet — change on a human timescale, so ~1 s is ample.
@@ -294,11 +293,6 @@ class WakeLegs:
         # other legs' recent scores. Without this, two legs could race to
         # fire the same wake event simultaneously.
         self.fire_lock: asyncio.Lock = asyncio.Lock()
-        # The fire-decision seam: the single place a leg's fire threshold
-        # is decided, so per-condition thresholds and any corroboration /
-        # veto land here rather than in the parallel leg loops.
-        # `condition` is the acoustic condition the fuser keys on.
-        self.fuser: WakeFuser = WakeFuser()
         self.condition_ctx = classify_condition(None, None)
         self.condition: str = self.condition_ctx.condition
         # Loop-clock timestamp of the last condition recompute; 0.0 forces
@@ -343,7 +337,7 @@ class WakeLegs:
         return _snapshot_ring(runtime.capture_ring, n_frames)
 
     def refresh_condition(self, now_loop: float) -> None:
-        """Refresh `condition` (the acoustic condition the fuser keys on) at
+        """Refresh the acoustic condition at
         most once per CONDITION_REFRESH_SEC, so the per-frame fire gate works
         off a ~1 s-fresh condition without paying the ring-noise-floor cost
         every frame."""
@@ -395,7 +389,7 @@ class WakeLegs:
         if now_loop < self.refractory_until:
             return None
 
-        # Keep the condition the fuser keys on fresh (~1x/s) so the
+        # Keep the condition fresh (~1x/s) so the
         # per-frame gate below works off a live condition.
         self.refresh_condition(now_loop)
 
@@ -409,9 +403,7 @@ class WakeLegs:
         rt.recent_score = score
         rt.recent_score_at = now_loop
 
-        firing_threshold = self.fuser.effective_threshold(
-            leg, self.condition, detector.threshold,
-        )
+        firing_threshold = detector.threshold
         if score < firing_threshold:
             return None
 
@@ -439,9 +431,7 @@ class WakeLegs:
                     continue
                 if (now_loop - _other.recent_score_at) > WAKE_STALE_SCORE_SEC:
                     continue
-                if _other.recent_score >= self.fuser.effective_threshold(
-                    _name, self.condition, _other.detector.threshold,
-                ):
+                if _other.recent_score >= _other.detector.threshold:
                     fired_set.add(_name)
             fired_legs = ",".join(sorted(fired_set))
 

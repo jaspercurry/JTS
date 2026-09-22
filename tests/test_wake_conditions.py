@@ -16,7 +16,7 @@ from jasper.wake_conditions import (
 
 
 def test_conditions_taxonomy():
-    # Pins the taxonomy the corpus tool, the fuser, and the telemetry all
+    # Pins the taxonomy the corpus tool and telemetry all
     # bind to. Changing this is a deliberate act with data implications
     # (see the module's stability contract), so it should fail loudly here.
     assert CONDITIONS == ("quiet", "ambient", "music")
@@ -36,7 +36,7 @@ def test_corpus_directory_condition_encoding():
 
 def test_default_condition_is_a_real_condition():
     # The fallback must itself be a valid condition (and the base one, which
-    # applies no threshold relaxation).
+    # is the safe fallback.
     assert DEFAULT_CONDITION in CONDITIONS
 
 

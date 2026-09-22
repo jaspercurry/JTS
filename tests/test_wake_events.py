@@ -187,8 +187,8 @@ async def test_begin_event_inserts_row_in_progress(store: WakeEventStore):
 
 async def test_begin_event_records_condition_class(store: WakeEventStore):
     """Phase 1.1a: the runtime acoustic-condition label round-trips through
-    begin_event into wake_events — the source the per-condition threshold
-    tuning and the estimator-vs-corpus validation read."""
+    begin_event into wake_events — the source estimator-vs-corpus validation
+    reads."""
     await store.begin_event(
         event_id="evt-cond",
         trigger_kind="fire_aec_on",
