@@ -743,16 +743,15 @@ class AirPlayHealthSampler:
         now = self._time()
         suppress_until = self._read_maintenance_suppress_until(now)
         within_warmup = (now - self._started_at) < self._warmup_sec
+        suppress_base = suppress_until is not None or within_warmup
         in_connect_grace = (
             self._connect_grace_until is not None
             and now < self._connect_grace_until
         )
-        # Base suppression gates this tick's fan-in xrun recording.
-        suppress_base = (
-            suppress_until is not None or within_warmup or in_connect_grace
-        )
         self._ensure_bucket(now)
-        self._sample_fanin(now, suppress_events=suppress_base)
+        self._sample_fanin(
+            now, suppress_events=(suppress_base or in_connect_grace),
+        )
         self._sample_link(now)
 
         if now - self._last_mpris_sample_at >= self._mpris_interval:
@@ -767,12 +766,9 @@ class AirPlayHealthSampler:
             if self._storming:
                 self._append_trajectory(now)
 
-        # Arm a per-session grace when AirPlay transitions idle->active.
-        # The PTP-anchor settle at session establish emits expected
-        # sync-correction / out-of-sequence bursts; suppressing event
-        # *recording* (not just classification) keeps the 5m/30m windows
-        # clean, same as the boot warmup. Detected after sampling so the
-        # freshly-armed grace also covers THIS tick's journal scan.
+        # PTP-anchor settle emits expected shairport sync-correction /
+        # out-of-sequence bursts. Arm after MPRIS sampling so the grace
+        # covers this tick's shairport journal scan.
         active = self._airplay_active_now()
         if active and not self._airplay_active:
             self._connect_grace_until = now + self._connect_grace_sec
@@ -783,8 +779,6 @@ class AirPlayHealthSampler:
             self._connect_grace_until is not None
             and now < self._connect_grace_until
         )
-        suppress_events = suppress_base or in_connect_grace
-
         # R21 (#4416): no AirPlay session in sight for a while widens
         # SHAIRPORT's scan cadence — the next idle->active transition
         # re-arms the connect grace above, which covers the 30 s cadence
@@ -796,13 +790,16 @@ class AirPlayHealthSampler:
             if now - self._last_airplay_active_at >= self._journal_idle_threshold
             else self._journal_interval
         )
-        if suppress_events:
-            self._advance_journal_cursor(now)
-        else:
-            if now - self._last_shairport_scan_at >= shairport_interval:
-                self._scan_journal_unit(SHAIRPORT_UNIT, now)
-            if now - self._last_camilla_scan_at >= self._journal_interval:
-                self._scan_journal_unit(CAMILLA_UNIT, now)
+        if suppress_base or in_connect_grace:
+            self._shairport_journal_since = max(self._shairport_journal_since, now)
+            self._last_shairport_scan_at = now
+        elif now - self._last_shairport_scan_at >= shairport_interval:
+            self._scan_journal_unit(SHAIRPORT_UNIT, now)
+        if suppress_base:
+            self._camilla_journal_since = max(self._camilla_journal_since, now)
+            self._last_camilla_scan_at = now
+        elif now - self._last_camilla_scan_at >= self._journal_interval:
+            self._scan_journal_unit(CAMILLA_UNIT, now)
 
         if suppress_until is not None:
             reason: str | None = "maintenance"
@@ -1360,12 +1357,6 @@ class AirPlayHealthSampler:
         with self._lock:
             self._current_camilla = current if isinstance(current, dict) else None
         self._last_camilla_sample_at = now
-
-    def _advance_journal_cursor(self, now: float) -> None:
-        self._shairport_journal_since = max(self._shairport_journal_since, now)
-        self._camilla_journal_since = max(self._camilla_journal_since, now)
-        self._last_shairport_scan_at = now
-        self._last_camilla_scan_at = now
 
     def _scan_journal_unit(self, unit: str, now: float) -> None:
         """Scan one unit's journal on its own cadence/cursor.
