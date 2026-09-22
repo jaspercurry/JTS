@@ -82,11 +82,10 @@ def test_a_record_written_before_the_schema_keys_still_projects(
     }
 
 
-@pytest.mark.parametrize("text", [None, "{not json", "[1, 2]"])
-def test_an_unusable_record_reads_as_absent(tmp_path: Path, text: str | None) -> None:
+def test_an_unusable_record_reads_as_absent(tmp_path: Path) -> None:
+    # Missing/malformed/non-dict JSON is `atomic_io.read_json_mapping`'s own
+    # contract; this pins only that `read` propagates its `None`.
     path = tmp_path / "chip-aec-commission.json"
-    if text is not None:
-        path.write_text(text)
 
     assert read(path) is None
     assert CommissionOutcome().to_public(running=False) == {

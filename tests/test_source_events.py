@@ -18,7 +18,7 @@ from jasper import source_events
 from jasper.source_events import classify_source_signal, inotify_changed_names
 
 from ._async_wait import wait_signalled
-from ._log_events import event_fields
+from ._log_events import event_field_maps, event_fields
 
 
 def test_airplay_signal_is_only_a_wake_hint_for_relevant_properties():
@@ -285,6 +285,8 @@ async def test_unexpected_adapter_exit_is_observable(monkeypatch, caplog):
         await asyncio.gather(*tasks, return_exceptions=True)
         await asyncio.sleep(0)
 
-    assert caplog.text.count("event=source_event.adapter_stopped") == 2
-    assert "adapter=mux-spotify-events" in caplog.text
-    assert "adapter=mux-dbus-events" in caplog.text
+    stopped = event_field_maps(caplog, "source_event.adapter_stopped")
+    assert len(stopped) == 2
+    assert {fields["adapter"] for fields in stopped} == {
+        "mux-spotify-events", "mux-dbus-events",
+    }

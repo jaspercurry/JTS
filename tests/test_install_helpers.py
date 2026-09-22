@@ -143,7 +143,6 @@ def _run_install_helper(
     ("reconcile_aec_state", "usb_mic.env", {
         "JASPER_USB_MIC": "disabled", "JASPER_USB_MIC_LEG": "primary",
     }),
-    ("install_renderers", "airplay_mode.env", {"JASPER_AIRPLAY_FREE_RUNNING": "no"}),
 ])
 @pytest.mark.parametrize("existing", [False, True])
 def test_install_env_seeds_preserve_saved_values(tmp_path, helper, filename, defaults, existing):
@@ -1237,86 +1236,20 @@ def test_active_speaker_tone_artifacts_are_writable_by_web_service():
 
 
 def test_spotify_wizard_owned_values_are_not_seeded_into_jasper_env():
-    """Fresh installs must not write stale empty Spotify overrides."""
+    """Fresh installs must not write stale empty Spotify overrides; an
+    already-seeded box is swept by the retirement table's env rows
+    (test_retired_env_rows_strip_stale_seeds_and_keep_overrides)."""
     env_example = _ENV_EXAMPLE.read_text(encoding="utf-8")
     assert "\nSPOTIFY_CLIENT_ID=" not in env_example
     assert "\nSPOTIFY_REDIRECT_URI=" not in env_example
 
-    install_sh = "\n".join(_installer_shell_texts().values())
-    assert "/^SPOTIFY_CLIENT_ID=/d" in install_sh
-    assert "/^SPOTIFY_OAUTH_MODE=/d" in install_sh
-    assert "/^SPOTIFY_REDIRECT_URI=/d" in install_sh
-
-
-@pytest.mark.parametrize(
-    ("seeded_value", "expected_line"),
-    [
-        ("1073741824", None),  # exact pre-PR frozen-seed default: migrated away
-        ("268435456", "JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=268435456"),
-    ],
-    ids=("stale-default-stripped", "deliberate-override-preserved"),
-)
-def test_migrate_wake_events_cap_seed(
-    tmp_path: Path, seeded_value: str, expected_line: str | None,
-) -> None:
-    """The pre-PR frozen seed's exact stale value migrates away (line
-    removed, `_env_int` falls back to the new code default); any other
-    operator-set value survives untouched."""
-    env_dir = tmp_path / "etc"
-    env_dir.mkdir(parents=True, exist_ok=True)
-    (env_dir / "jasper.env").write_text(
-        "JASPER_HOSTNAME=jts.local\n"
-        f"JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES={seeded_value}\n"
-    )
-
-    proc = _run_install_helper("migrate_wake_events_cap_seed", tmp_path)
-    assert proc.returncode == 0, proc.stderr
-
-    lines = (env_dir / "jasper.env").read_text().splitlines()
-    assert "JASPER_HOSTNAME=jts.local" in lines
-    if expected_line is None:
-        assert not any(
-            line.startswith("JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=")
-            for line in lines
-        )
-    else:
-        assert expected_line in lines
-
 
 def test_mic_device_candidates_is_never_seeded_in_env_example():
     """A seeded value outranks the mic registry on every installed box, so
-    the key ships commented out; the installer's migration behavior is
-    pinned by test_migrate_mic_device_candidates_seed below."""
+    the key ships commented out; an already-seeded box is swept by the
+    retirement table's env rows."""
     env_example = _ENV_EXAMPLE.read_text(encoding="utf-8")
     assert env_example.count("\nJASPER_MIC_DEVICE_CANDIDATES=") == 0
-
-
-@pytest.mark.parametrize(
-    ("seeded_line", "survives"),
-    [
-        ("JASPER_MIC_DEVICE_CANDIDATES=Array", False),
-        ("JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch", False),
-        ("JASPER_MIC_DEVICE_CANDIDATES=UsbMic,Array", True),
-    ],
-    ids=("seed-array", "seed-array-l16k6ch", "operator-list-preserved"),
-)
-def test_migrate_mic_device_candidates_seed(
-    tmp_path: Path, seeded_line: str, survives: bool,
-) -> None:
-    """Both shapes .env.example ever shipped migrate away, so the mic registry
-    is reachable on an installed box; any operator list survives untouched."""
-    env_dir = tmp_path / "etc"
-    env_dir.mkdir(parents=True, exist_ok=True)
-    (env_dir / "jasper.env").write_text(
-        f"JASPER_HOSTNAME=jts.local\n{seeded_line}\n"
-    )
-
-    proc = _run_install_helper("migrate_mic_device_candidates_seed", tmp_path)
-    assert proc.returncode == 0, proc.stderr
-
-    lines = (env_dir / "jasper.env").read_text().splitlines()
-    assert "JASPER_HOSTNAME=jts.local" in lines
-    assert (seeded_line in lines) is survives
 
 
 def test_wifi_tuning_persists_retry_forever_and_power_save_disable():
@@ -1454,20 +1387,23 @@ def test_restart_headphone_monitor_after_deploy_try_restarts(tmp_path):
     ]
 
 
-def test_headphone_monitor_restart_is_wired_into_both_install_tails():
-    """The full-box and streambox install tails must each call the restart
-    helper once, after the DSP reconcile has decided the unit's enablement
+def test_headphone_monitor_restart_is_wired_into_the_shared_install_tail():
+    """The core-graph tail both profiles run must call the restart helper
+    once, after the DSP reconcile has decided the unit's enablement
     (jasper-audio-hardware-reconcile owns enable/disable/start; this only
     ever needs to run try-restart, never install a second restart path)."""
     text = _SYSTEMD_UNITS_LIB.read_text(encoding="utf-8")
+    match = re.search(r"^_start_core_graph_units\(\) \{\n(.*?)^\}$", text, re.M | re.S)
+    assert match, "_start_core_graph_units not found"
+    body = match.group(1)
+    assert body.count("restart_headphone_monitor_after_deploy") == 1
+    assert body.index("restart_core_camilla_after_dsp_reconcile") < body.index(
+        "restart_headphone_monitor_after_deploy"
+    )
     for func in ("install_systemd_units", "start_streambox_runtime_units"):
-        match = re.search(rf"^{func}\(\) \{{\n(.*?)^\}}$", text, re.M | re.S)
-        assert match, f"{func} not found"
-        body = match.group(1)
-        assert body.count("restart_headphone_monitor_after_deploy") == 1
-        assert body.index("restart_core_camilla_after_dsp_reconcile") < body.index(
-            "restart_headphone_monitor_after_deploy"
-        )
+        caller = re.search(rf"^{func}\(\) \{{\n(.*?)^\}}$", text, re.M | re.S)
+        assert caller, f"{func} not found"
+        assert "_start_core_graph_units" in caller.group(1)
 
 
 def _run_tune_nginx_worker_processes(conf: Path) -> None:
@@ -1550,37 +1486,50 @@ def test_install_nginx_site_conf_never_leaves_a_rejected_conf_live(
     tmp_path, nginx_t_rc, prior
 ):
     """A conf `nginx -t` rejects must not survive in sites-enabled, and
-    neither must the snippet it includes. The running nginx keeps the last
+    neither must any snippet it includes. The running nginx keeps the last
     good config in memory, so rejected files left on disk only bite on its
     next Restart=always bounce — taking the whole management surface down
-    with no web recovery path."""
+    with no web recovery path. Every deploy/nginx/ source is covered: the
+    site conf is a shell of `include`s, so a snippet left stale or missing
+    is a broken conf on that same bounce."""
     root = tmp_path / "etc" / "nginx"
     dest = root / "sites-enabled" / "jasper.conf"
-    snippet = root / "snippets" / "jts-proxy-headers.conf"
+    sources = {
+        path.name: path
+        for path in sorted((REPO_ROOT / "deploy" / "nginx").glob("*.conf"))
+    }
+    assert sources, "deploy/nginx/ holds the site conf's snippets"
+    snippets = {name: root / "snippets" / name for name in sources}
     dest.parent.mkdir(parents=True)
     if prior is not None:
         dest.write_text(prior, encoding="utf-8")
-        snippet.parent.mkdir(parents=True)
-        snippet.write_text(_PRIOR_SNIPPET, encoding="utf-8")
+        for path in snippets.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(_PRIOR_SNIPPET, encoding="utf-8")
     src = tmp_path / "site.conf"
     src.write_text(_NEW_CONF, encoding="utf-8")
 
     result = _run_install_nginx_site_conf(tmp_path, root, src, nginx_t_rc)
 
     assert result.returncode == (1 if nginx_t_rc else 0), result.stderr
+    live = {name: path for name, path in snippets.items() if path.exists()}
     if nginx_t_rc:
         assert "event=install.nginx_conf_rejected" in result.stderr
         if prior is None:
             assert not dest.exists()
-            assert not snippet.exists()
+            assert live == {}
         else:
             assert dest.read_text(encoding="utf-8") == prior
-            assert snippet.read_text(encoding="utf-8") == _PRIOR_SNIPPET
+            assert {
+                name: path.read_text(encoding="utf-8") for name, path in live.items()
+            } == dict.fromkeys(snippets, _PRIOR_SNIPPET)
     else:
         assert dest.read_text(encoding="utf-8") == _NEW_CONF
-        assert snippet.read_text(encoding="utf-8") == (
-            REPO_ROOT / "deploy" / "nginx-proxy-headers.conf"
-        ).read_text(encoding="utf-8")
+        assert {
+            name: path.read_text(encoding="utf-8") for name, path in live.items()
+        } == {
+            name: path.read_text(encoding="utf-8") for name, path in sources.items()
+        }
     assert not (root / ".jasper-site-prev").exists()
 
 
@@ -3703,9 +3652,11 @@ def test_retire_leftovers_clears_units_then_files_then_tombstones(tmp_path):
         timeout=15,
         env={
             **os.environ,
+            "ENV_DIR": str(tmp_path / "etc"),
             "STATE_DIR": str(state_dir),
             "SYSTEMD_DIR": str(systemd_dir),
             "CAMILLA_CONF": str(tmp_path / "camilla"),
+            "LOCAL_SBIN_DIR": str(tmp_path / "sbin"),
         },
     )
 
@@ -3747,27 +3698,156 @@ def test_retire_leftovers_clears_units_then_files_then_tombstones(tmp_path):
         )
 
 
-def test_retired_leftovers_table_file_targets_are_scoped():
-    """Static pin: every `file` row's targets live under a managed directory
-    or /etc -- never an arbitrary absolute path -- and both row kinds exist."""
+#: What a `file` row may name. `dir` rows are narrower -- they rm -rf a whole
+#: subtree, so they are confined to the directories install.sh itself owns.
+#: This pin is the only scope check the kind has; retirements.sh applies the
+#: rows without re-validating them.
+_RETIRE_FILE_ROOTS = (
+    "${STATE_DIR}/",
+    "${SYSTEMD_DIR}/",
+    "${CAMILLA_CONF}/",
+    "${LOCAL_SBIN_DIR}/",
+    "/etc/",
+)
+_RETIRE_DIR_ROOTS = (
+    "${STATE_DIR}/",
+    "${LOCAL_SBIN_DIR}/",
+    "/etc/jasper/",
+    "/etc/alsa/conf.d/",
+)
+
+
+def test_retired_leftovers_table_targets_are_scoped():
+    """Static pin: every path a row deletes lives under a managed directory --
+    never an arbitrary absolute path -- every env row edits an ENV_DIR file,
+    and every kind the appliers implement is actually in use."""
     text = (_INSTALL_LIB_DIR / "retirements.sh").read_text(encoding="utf-8")
-    rows = re.findall(r'^\s*"(unit|file)\|([^"]*)"', text, re.MULTILINE)
-    kinds = {kind for kind, _ in rows}
-    assert kinds == {"unit", "file"}
-    file_targets: set[str] = set()
+    rows = re.findall(r'^\s*"(unit|file|dir|env)\|([^"]*)"', text, re.MULTILINE)
+    assert {kind for kind, _ in rows} == {"unit", "file", "dir", "env"}
+    path_targets: set[str] = set()
     for kind, body in rows:
-        if kind != "file":
-            continue
         targets = body.split("|", 1)[0].split()
-        assert targets
+        assert targets, kind
+        if kind == "unit":
+            continue
+        if kind == "env":
+            assert targets[0].startswith("${ENV_DIR}/"), targets
+            assert len(targets) > 1, targets
+            continue
+        roots = _RETIRE_DIR_ROOTS if kind == "dir" else _RETIRE_FILE_ROOTS
         for target in targets:
-            assert target.startswith(
-                ("${STATE_DIR}/", "${SYSTEMD_DIR}/", "${CAMILLA_CONF}/", "/etc/")
-            ), target
-        file_targets.update(targets)
+            assert target.startswith(roots), (kind, target)
+        path_targets.update(targets)
     # #4336: the Bluetooth role store holds the MAC of every device the box
     # ever paired and lost its last writer, reader and mode-healer in #4333.
-    assert "${STATE_DIR}/bt_roles.json" in file_targets
+    assert "${STATE_DIR}/bt_roles.json" in path_targets
+    # The retired dmix/fanin switcher: nothing else in the tree removes its
+    # binary or its config tree.
+    assert {
+        "${LOCAL_SBIN_DIR}/jasper-audio-topology",
+        "/etc/jasper/audio-topology",
+    } <= path_targets
+
+
+_RETIRE_ENV_CASES = [
+    ("JASPER_HOSTNAME=jts.local", True),
+    ("SPOTIFY_CLIENT_ID=abc123", False),
+    ("SPOTIFY_OAUTH_MODE=bounce", False),
+    ("SPOTIFY_REDIRECT_URI=http://jts.local/cb", True),
+    ("SPOTIFY_CACHE_PATH=/var/lib/jasper-intsecrets/.spotify-cache", True),
+    ("JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=tok", False),
+    ("JASPER_RESEARCH_ENABLED=1", False),
+    ("JASPER_RESEARCHER=keep", True),
+    ("JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824", False),
+    ("JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=268435456", True),
+    ("JASPER_MIC_DEVICE_CANDIDATES=Array", False),
+    ("JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch", False),
+    ("JASPER_MIC_DEVICE_CANDIDATES=UsbMic,Array", True),
+]
+
+
+def _run_retire_env_rows(tmp_path: Path, seeded: str | None):
+    """Drive the real table's `env` rows with ENV_DIR confined to tmp_path.
+
+    The table expands ENV_DIR at SOURCE time, so it is exported rather than
+    assigned after the source. Only the env applier runs: the unit and file
+    rows name the host's real paths."""
+    env_dir = tmp_path / "etc"
+    env_dir.mkdir(exist_ok=True)
+    if seeded is not None:
+        (env_dir / "jasper.env").write_text(seeded, encoding="utf-8")
+    env_lib = _INSTALL_LIB_DIR.parent / "jasper-env-file.sh"
+    return subprocess.run(
+        [
+            "bash",
+            "-euc",
+            f". {shlex.quote(str(env_lib))}\n"
+            f". {shlex.quote(str(_INSTALL_LIB_DIR / 'retirements.sh'))}\n"
+            "_retire_apply env _retire_env_lines\n",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={
+            **os.environ,
+            "ENV_DIR": str(env_dir),
+            "STATE_DIR": str(tmp_path / "state"),
+            "SYSTEMD_DIR": str(tmp_path / "systemd"),
+            "CAMILLA_CONF": str(tmp_path / "camilla"),
+            "LOCAL_SBIN_DIR": str(tmp_path / "sbin"),
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("line", "survives"),
+    _RETIRE_ENV_CASES,
+    ids=[line.split("=", 1)[0].lower() + ("-kept" if keep else "-retired")
+         for line, keep in _RETIRE_ENV_CASES],
+)
+def test_retired_env_rows_strip_stale_seeds_and_keep_overrides(
+    tmp_path: Path, line: str, survives: bool,
+) -> None:
+    """jasper.env is a frozen first-install seed, so the retired keys can only
+    leave a box through these rows. A bare key takes every value, an anchored
+    `KEY=VALUE` row takes only the stale seed (a deliberate override survives),
+    and the `KEY*` row takes a whole retired prefix without touching keys that
+    merely start with the same letters."""
+    proc = _run_retire_env_rows(tmp_path, f"JASPER_MARKER=1\n{line}\n")
+    assert proc.returncode == 0, proc.stderr
+    lines = (tmp_path / "etc" / "jasper.env").read_text().splitlines()
+    assert "JASPER_MARKER=1" in lines
+    assert (line in lines) is survives
+
+
+def test_retired_env_rows_are_a_noop_before_the_env_file_exists(tmp_path):
+    """retire_leftovers runs after the step that seeds jasper.env, but a row
+    that fires before it must not fail the install under `set -e`."""
+    proc = _run_retire_env_rows(tmp_path, None)
+    assert proc.returncode == 0, proc.stderr
+    assert not (tmp_path / "etc" / "jasper.env").exists()
+
+
+@pytest.mark.parametrize(
+    ("seeded", "survivors"),
+    [
+        pytest.param(
+            "JASPER_MIC_DEVICE_CANDIDATES=Custom\nJASPER_MIC_DEVICE_CANDIDATES=Array\n",
+            {"JASPER_MIC_DEVICE_CANDIDATES=Custom", "JASPER_MIC_DEVICE_CANDIDATES=Array"},
+            id="anchored_row_leaves_a_twice_stated_key_alone",
+        ),
+        pytest.param(
+            "  JASPER_RESEARCH_FOO=1\nJASPER_RESEARCHER=keep\n",
+            {"JASPER_RESEARCHER=keep"},
+            id="prefix_row_takes_an_indented_key",
+        ),
+    ],
+)
+def test_retired_env_rows_match_what_systemd_reads(tmp_path, seeded, survivors):
+    proc = _run_retire_env_rows(tmp_path, seeded)
+    assert proc.returncode == 0, proc.stderr
+    lines = (tmp_path / "etc" / "jasper.env").read_text().splitlines()
+    assert {line.strip() for line in lines if line.strip()} == survivors
 
 
 def test_retired_leftovers_table_retires_the_renderer_lane_ingress():

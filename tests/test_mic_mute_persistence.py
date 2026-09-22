@@ -113,26 +113,22 @@ def test_unknown_value_falls_back_to_false(tmp_path, caplog):
     assert any("unrecognised" in r.message for r in caplog.records)
 
 
-def test_ignores_other_keys_and_comments(tmp_path):
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        pytest.param(
+            "# saved by jasper-voice\nOTHER_KEY=99\nJASPER_MIC_MUTED=1\n",
+            True,
+            id="ignores_other_keys_and_comments",
+        ),
+        pytest.param('JASPER_MIC_MUTED="1"\n', True, id="quoted_value_is_accepted"),
+        pytest.param("SOMETHING_ELSE=1\n", False, id="no_matching_key_returns_false"),
+    ],
+)
+def test_read_mic_muted_on_raw_file_content(tmp_path, content, expected):
     p = _path(tmp_path)
-    p.write_text(
-        "# saved by jasper-voice\n"
-        "OTHER_KEY=99\n"
-        "JASPER_MIC_MUTED=1\n"
-    )
-    assert read_mic_muted(p) is True
-
-
-def test_quoted_value_is_accepted(tmp_path):
-    p = _path(tmp_path)
-    p.write_text('JASPER_MIC_MUTED="1"\n')
-    assert read_mic_muted(p) is True
-
-
-def test_no_matching_key_returns_false(tmp_path):
-    p = _path(tmp_path)
-    p.write_text("SOMETHING_ELSE=1\n")
-    assert read_mic_muted(p) is False
+    p.write_text(content)
+    assert read_mic_muted(p) is expected
 
 
 def test_write_creates_parent_directory(tmp_path):

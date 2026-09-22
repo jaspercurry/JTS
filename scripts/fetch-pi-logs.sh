@@ -32,14 +32,14 @@ TS="$(date -u +%Y%m%dT%H%M%SZ)"
 echo "Fetching logs from ${PI_USER}@${PI_HOST} (since '$SINCE') → $OUT/" >&2
 
 remote() {
-    ssh -o BatchMode=yes -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}" "$@"
+    ssh "${SSH_BATCH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "$@"
 }
 
 fetch_remote_bash() {
     local stem="$1"
     local ext="$2"
     local out="$OUT/${stem}-${TS}.${ext}"
-    if ssh -o BatchMode=yes -o ConnectTimeout=5 \
+    if ssh "${SSH_BATCH_OPTS[@]}" \
             "${PI_USER}@${PI_HOST}" "bash -s" \
             | redact_jasper_diagnostics > "$out"; then
         local size

@@ -59,6 +59,7 @@ import os
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any, ClassVar, Generic, Protocol, Self, TypeVar
 
 from .atomic_io import atomic_write_text
 
@@ -132,51 +133,54 @@ class Account:
     playlists: dict[str, str] = field(default_factory=dict)
 
 
-@dataclass
-class Registry:
-    accounts: list[Account]
-    default_name: str
-    path: str
+class _NamedRecord(Protocol):
+    name: str
+    __dataclass_fields__: ClassVar[dict[str, Any]]
+
+
+RecordT = TypeVar("RecordT", bound=_NamedRecord)
+
+
+class RecordRegistry(Generic[RecordT]):
+    """Load/save/lookup half of an on-disk registry of per-household-member
+    records keyed by `name`. A subclass owns its record dataclass, its
+    `_record_from_dict` and its own `add_or_update`."""
+
+    # Group read (never world): the index names household members, and every
+    # reader in the compartment's group must load what the wizard wrote.
+    file_mode: ClassVar[int] = 0o640
+    default_path: ClassVar[str]
 
     def __init__(
         self,
-        accounts: list[Account] | None = None,
+        accounts: list[RecordT] | None = None,
         default_name: str = "",
-        path: str = DEFAULT_REGISTRY_PATH,
+        path: str | None = None,
     ) -> None:
-        self.accounts = accounts if accounts is not None else []
+        self.accounts: list[RecordT] = accounts if accounts is not None else []
         self.default_name = default_name
-        self.path = path
+        self.path = path if path is not None else self.default_path
 
     @classmethod
-    def load(cls, path: str = DEFAULT_REGISTRY_PATH) -> "Registry":
+    def _record_from_dict(cls, a: dict) -> RecordT:
+        raise NotImplementedError
+
+    @classmethod
+    def load(cls, path: str | None = None) -> Self:
         """Load from disk, or return an empty registry if the file is
         missing. Empty is a valid state — it means no accounts have been
         configured yet (e.g., fresh install before anyone has run the
         web setup)."""
+        path = path if path is not None else cls.default_path
         try:
             with open(path) as f:
                 data = json.load(f)
         except FileNotFoundError:
             return cls(path=path)
         except (OSError, json.JSONDecodeError) as e:
-            logger.warning("accounts registry %s unreadable (%s); starting empty", path, e)
+            logger.warning("%s %s unreadable (%s); starting empty", cls.__name__, path, e)
             return cls(path=path)
-        accounts = []
-        for a in data.get("accounts", []):
-            raw_playlists = a.get("playlists") or {}
-            # Defensive: only keep entries that are str→str. Tolerant of
-            # hand-edited JSON or older files that don't have this field.
-            playlists = {
-                str(uri): str(name)
-                for uri, name in raw_playlists.items()
-                if isinstance(uri, str) and isinstance(name, str)
-            }
-            accounts.append(Account(
-                name=a["name"],
-                cache_path=a.get("cache_path", ""),
-                playlists=playlists,
-            ))
+        accounts = [cls._record_from_dict(a) for a in data.get("accounts", [])]
         return cls(accounts=accounts, default_name=data.get("default", ""), path=path)
 
     def save(self) -> None:
@@ -185,39 +189,62 @@ class Registry:
             "default": self.default_name,
             "accounts": [asdict(a) for a in self.accounts],
         }
-        atomic_write_text(
-            self.path,
-            json.dumps(payload, indent=2),
-            mode=SPOTIFY_CACHE_FILE_MODE,
-        )
+        atomic_write_text(self.path, json.dumps(payload, indent=2), mode=self.file_mode)
 
-    def get(self, name: str) -> Account | None:
+    def get(self, name: str) -> RecordT | None:
         for a in self.accounts:
             if a.name == name:
                 return a
         return None
 
-    def default(self) -> Account | None:
+    def default(self) -> RecordT | None:
         if self.default_name:
             d = self.get(self.default_name)
             if d is not None:
                 return d
         return self.accounts[0] if self.accounts else None
 
+    def remove(self, name: str) -> bool:
+        before = len(self.accounts)
+        self.accounts = [a for a in self.accounts if a.name != name]
+        if self.default_name == name:
+            self.default_name = self.accounts[0].name if self.accounts else ""
+        return len(self.accounts) < before
+
+
+class Registry(RecordRegistry[Account]):
+    """The Spotify account registry: one OAuth token cache per member."""
+
+    default_path: ClassVar[str] = DEFAULT_REGISTRY_PATH
+
+    @classmethod
+    def _record_from_dict(cls, a: dict) -> Account:
+        raw_playlists = a.get("playlists") or {}
+        # Defensive: only keep entries that are str→str. Tolerant of
+        # hand-edited JSON or older files that don't have this field.
+        playlists = {
+            str(uri): str(name)
+            for uri, name in raw_playlists.items()
+            if isinstance(uri, str) and isinstance(name, str)
+        }
+        return Account(
+            name=a["name"],
+            cache_path=a.get("cache_path", ""),
+            playlists=playlists,
+        )
+
     def add_or_update(self, account: Account, *, make_default: bool = False) -> None:
         existing = self.get(account.name)
-        if existing is not None:
+        if existing is None:
+            account.cache_path = account.cache_path or default_cache_path_for(account.name)
+            self.accounts.append(account)
+        else:
             if account.cache_path:
                 existing.cache_path = account.cache_path
-            # Don't clobber existing playlists with an empty default-factory
-            # dict from a freshly-constructed Account passed in by the
-            # OAuth flow — only overwrite if the caller provided real data.
+            # A re-OAuth hands us a freshly-constructed Account whose
+            # playlists default is {}; only real data replaces the map.
             if account.playlists:
                 existing.playlists = account.playlists
-        else:
-            if not account.cache_path:
-                account.cache_path = default_cache_path_for(account.name)
-            self.accounts.append(account)
         if make_default or not self.default_name:
             self.default_name = account.name
 
@@ -238,13 +265,6 @@ class Registry:
         if a is None:
             return False
         return a.playlists.pop(uri, None) is not None
-
-    def remove(self, name: str) -> bool:
-        before = len(self.accounts)
-        self.accounts = [a for a in self.accounts if a.name != name]
-        if self.default_name == name:
-            self.default_name = self.accounts[0].name if self.accounts else ""
-        return len(self.accounts) < before
 
 
 def default_cache_path_for(name: str) -> str:

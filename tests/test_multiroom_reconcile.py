@@ -43,6 +43,8 @@ from tests.multiroom_reconcile_fixtures import (
     _patch_main_io,
 )
 
+from jasper import systemd_probe
+from jasper.env_load import AIRPLAY_BONDED_EXTRA_DELAY_ENV
 from jasper.audio_hardware import dac as _dac
 from jasper.fanin_coupling import dac_content_lane_marker_armed
 from jasper.multiroom import reconcile as reconcile_mod
@@ -51,15 +53,16 @@ from jasper.multiroom.dac_content_ring import (
     DAC_CONTENT_RING_PCM,
     DAC_CONTENT_RING_PERIOD_FRAMES,
 )
-from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
-from jasper.multiroom.reconcile import (
-    AIRPLAY_BONDED_EXTRA_DELAY_ENV,
+from jasper.multiroom.grouping_env import (
     LANE_REFUSED_ACTIVE_ENDPOINT,
     LANE_REFUSED_FLAT_OUTPUT_DENIED,
     LANE_REFUSED_PERIOD,
+    airplay_grouping_env,
+)
+from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
+from jasper.multiroom.reconcile import (
     RoleDecision,
     _write_args_file,
-    airplay_grouping_env,
     decide_role,
     desired_snapfifo_path,
     main,
@@ -449,9 +452,7 @@ def test_outputd_grouping_env_active_endpoint_clears_dac_content():
     round-trip lane marker is cleared; TTS also stays off outputd because active
     voice rides fan-in upstream of the crossover. A DUMB member still arms the
     lane."""
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_TTS_SOCKET_ENV,
-    )
+    from jasper.tts_routing import OUTPUTD_TTS_SOCKET_ENV
 
     active = bonded_grouping_env(_follower(), active_endpoint=True)
     assert active[DAC_CONTENT_LANE_ENV] == ""  # cleared (no dac_content)
@@ -464,7 +465,7 @@ def test_outputd_grouping_env_active_endpoint_clears_dac_content():
 
 def test_topology_changes_revoke_dac_bypass_without_deleting_bond_intent():
     """Reset and active-layout save both close a bonded passive DAC bypass."""
-    from jasper.multiroom.reconcile import outputd_grouping_env
+    from jasper.multiroom.grouping_env import outputd_grouping_env
     from jasper.multiroom.reconcile_plan import _assemble_args
 
     bonded = _follower()
@@ -568,14 +569,10 @@ def test_outputd_direct_dac_paths_follow_one_topology_predicate(
     ADR-0112's "passive bonded NON-SUB member", implemented. A LEADER is the
     reachable shape: a follower additionally parks voice.
     """
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_TTS_SOCKET_ENV,
-        outputd_grouping_env,
-        output_topology_state,
-        voice_grouping_env,
-    )
+    from jasper.multiroom.grouping_env import outputd_grouping_env, voice_grouping_env
+    from jasper.multiroom.reconcile import output_topology_state
     from jasper.output_topology import save_output_topology
-    from jasper.tts_routing import VOICE_TTS_SOCKET_ENV
+    from jasper.tts_routing import OUTPUTD_TTS_SOCKET_ENV, VOICE_TTS_SOCKET_ENV
 
     topology_path = tmp_path / "output_topology.json"
     save_output_topology(build_topology(), path=topology_path)
@@ -1423,11 +1420,12 @@ def test_plan_changes_units_reflects_live_state(
     from jasper.multiroom.reconcile import _plan_changes_units
 
     def fake_run(argv, **kw):
-        unit = argv[2]
+        # `service_units.read_unit_property`'s reply shape: one Key=value
+        # block per unit, the units last in argv.
         return sp.CompletedProcess(
             argv,
             0,
-            stdout=f"{active_states[unit]}\n",
+            stdout=f"ActiveState={active_states[argv[-1]]}\n",
             stderr="",
         )
 
@@ -2625,6 +2623,9 @@ def test_crossover_teardown_contains_spawn_oserror(monkeypatch, caplog):
 
 
 def test_unit_state_queries_share_exact_systemctl_contract(monkeypatch):
+    """`_systemctl_unit_state` is a thin wrapper: the spawn + classification
+    it delegates to is jasper.systemd_probe.unit_query (shared with
+    jasper.source_intent's `_query_unit_state`)."""
     import subprocess as sp
 
     calls: list[list[str]] = []
@@ -2641,7 +2642,7 @@ def test_unit_state_queries_share_exact_systemctl_contract(monkeypatch):
             stderr="",
         )
 
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(systemd_probe.subprocess, "run", fake_run)
 
     assert (
         reconcile_mod._systemctl_unit_state(
@@ -2778,7 +2779,7 @@ def test_unit_state_query_oserror_is_safe_false_and_observable(
     def fake_run(_argv, **_kw):
         raise OSError("cannot allocate process")
 
-    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(systemd_probe.subprocess, "run", fake_run)
 
     with caplog.at_level("WARNING", logger=reconcile_mod.logger.name):
         assert (
@@ -3004,8 +3005,8 @@ def test_the_period_gate_reads_what_outputd_loads_not_what_policy_intends(
 
     The plan resolves a POLICY period (lab override > jasper.env > DAC floor >
     packaged default, with outputd.env feeding only warnings). outputd resolves
-    a LOADED one: `env_u32` over jasper.env, then outputd.env, then
-    grouping-outputd.env, later wins. Where they disagree the slot gate must
+    a LOADED one: `env_u32_positive_or_bail` over jasper.env, then outputd.env,
+    then grouping-outputd.env, later wins. Where they disagree the slot gate must
     follow the daemon, or it arms a box that bails EX_CONFIG (Case A) or refuses
     one that plays (Case B).
     """
@@ -3106,7 +3107,7 @@ def test_every_dac_profile_arms_the_return_ring_exactly_when_its_period_fits(
     """
 
     from jasper.audio_runtime_plan import resolve_outputd_period_setting
-    from jasper.multiroom.reconcile import outputd_grouping_env
+    from jasper.multiroom.grouping_env import outputd_grouping_env
     from jasper.multiroom.reconcile_plan import _assemble_args
 
     period = int(

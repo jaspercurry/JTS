@@ -51,7 +51,6 @@ def _render(
     target = tmp_path / "shairport-sync.conf"
     statefile = tmp_path / "statefile.yml"
     camilla = tmp_path / "camilla.yml"
-    airplay_env = tmp_path / "airplay_mode.env"
     outputd_env_path = tmp_path / "outputd.env"
     jasper_env_path = tmp_path / "jasper.env"
     speaker_env = tmp_path / "speaker_name.env"
@@ -67,14 +66,12 @@ def _render(
             };
             alsa = {
                 output_device = "__RENDERER_DEVICE__";
-                disable_synchronization = "__DISABLE_SYNCHRONIZATION__";
             };
             """
         ).lstrip()
     )
     camilla.write_text(textwrap.dedent(camilla_yaml).lstrip())
     statefile.write_text(f"config_path: {camilla}\n")
-    airplay_env.write_text("JASPER_AIRPLAY_FREE_RUNNING=no\n")
     jasper_env_path.write_text(jasper_env_content)
     speaker_env.write_text(speaker_name_content)
 
@@ -105,7 +102,6 @@ def _render(
         {
             "JASPER_SHAIRPORT_TEMPLATE": str(template),
             "JASPER_SHAIRPORT_CONF": str(target),
-            "JASPER_AIRPLAY_MODE_ENV": str(airplay_env),
             "JASPER_OUTPUTD_ENV_FILE": str(outputd_env_path),
             "JASPER_ENV_FILE": str(jasper_env_path),
             "JASPER_SPEAKER_NAME_FILE": str(speaker_env),
@@ -228,7 +224,6 @@ def test_airplay_renderer_derives_latency_offset_from_camilla_target(tmp_path: P
     )
 
     assert 'name = "Unit Test";' in rendered
-    assert 'disable_synchronization = "no";' in rendered
     assert 'output_device = "shairport_substream";' in rendered
     assert "audio_backend_latency_offset_in_seconds = -0.162667;" in rendered
     assert "__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__" not in rendered

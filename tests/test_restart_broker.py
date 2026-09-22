@@ -716,23 +716,38 @@ def test_power_verb_is_refused_from_a_non_control_peer(broker, monkeypatch):
     assert calls == []
 
 
-@pytest.mark.parametrize("verb", ["exec", "enable", "enable-now", "disable-now"])
-def test_unknown_verb_rejected_without_running_anything(broker, verb):
+@pytest.mark.parametrize(
+    ("unit", "verb", "expected_error_substring"),
+    [
+        pytest.param(
+            "jasper-voice.service", "exec", "unknown verb", id="unknown_verb"
+        ),
+        pytest.param("jasper-voice.service", "enable", "unknown verb", id="enable_is_gone"),
+        pytest.param(
+            "jasper-voice.service", "enable-now", "unknown verb", id="enable_now_is_gone"
+        ),
+        pytest.param(
+            "jasper-voice.service", "disable-now", "unknown verb", id="disable_now_is_gone"
+        ),
+        pytest.param("sshd.service", "stop", "allowlist", id="unit_not_in_allowlist"),
+        pytest.param(
+            "jasper-audio-hardware-reconcile.service",
+            "restart",
+            "allowlist",
+            id="start_only_unit_rejects_restart",
+        ),
+    ],
+)
+def test_request_rejected_without_running_anything(
+    broker, unit, verb, expected_error_substring
+):
     sock_path, calls, _ = broker
     resp = _request_restart_retrying_transient_failures(
-        "jasper-voice.service", verb=verb, socket_path=sock_path,
+        unit, verb=verb, socket_path=sock_path,
     )
     assert resp["ok"] is False
+    assert expected_error_substring in resp["error"]
     assert calls == []
-
-
-def test_unit_not_in_allowlist_rejected(broker):
-    sock_path, calls, _ = broker
-    resp = _request_restart_retrying_transient_failures(
-        "sshd.service", verb="stop", socket_path=sock_path,
-    )
-    assert resp["ok"] is False
-    assert "allowlist" in resp["error"]
     assert calls == []
 
 
@@ -762,18 +777,6 @@ def test_wifi_scan_repair_helper_allows_start_only(broker):
     assert calls == [
         ["systemctl", "start", "jasper-wifi-scan-repair.service"],
     ]
-
-
-def test_start_only_unit_rejects_restart(broker):
-    sock_path, calls, _ = broker
-    resp = _request_restart_retrying_transient_failures(
-        "jasper-audio-hardware-reconcile.service",
-        verb="restart",
-        socket_path=sock_path,
-    )
-    assert resp["ok"] is False
-    assert "allowlist" in resp["error"]
-    assert calls == []
 
 
 def test_one_bad_unit_blocks_the_whole_request(broker):

@@ -322,6 +322,11 @@ _READERS = {
 
 # `None` means "leave the file missing"; every other value is written as
 # raw bytes so an undecodable file is exercised, not just malformed JSON.
+# Every shape of unreadable snapshot is exercised only via the `shared`
+# reader (`bridge_telemetry.read_bridge_stats`, which delegates to
+# `atomic_io.read_json_mapping`) — that helper's own contract owns those
+# cases now. `doctor` and `wake_corpus` get one case each, to pin that their
+# env-var plumbing still reaches the shared reader.
 _UNREADABLE_CASES = [
     ("missing_file", None),
     ("invalid_utf8", b"\xff\xfe{"),
@@ -330,10 +335,11 @@ _UNREADABLE_CASES = [
 ]
 
 _UNREADABLE_PARAMS = [
-    pytest.param(reader, content, id=f"{reader}-{case_id}")
-    for reader in _READERS
+    pytest.param("shared", content, id=f"shared-{case_id}")
     for case_id, content in _UNREADABLE_CASES
 ] + [
+    pytest.param("doctor", None, id="doctor-missing_file"),
+    pytest.param("wake_corpus", None, id="wake_corpus-missing_file"),
     # Only the wake-corpus reader additionally requires a `counters` dict.
     pytest.param("wake_corpus", b'{"x": 1}', id="wake_corpus-no_counters"),
 ]

@@ -67,6 +67,7 @@ from typing import Any, Callable, Protocol
 
 import fcntl
 
+from jasper.env_file import parse_env_mapping
 from jasper.env_file import remove as env_remove
 from jasper.env_file import upsert as env_upsert
 from jasper.log_event import log_event
@@ -75,7 +76,6 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "CONFIG_FILE_MODE",
-    "SHARED_LOCK_MODE",
     "advisory_file_lock",
     "advisory_file_lock_async",
     "atomic_write_bytes",
@@ -575,17 +575,6 @@ def read_json_mapping(path: str | os.PathLike) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _parse_env_text(text: str) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        out[key.strip()] = value.strip()
-    return out
-
-
 def format_env_text(values: Mapping[str, str], *, owner: str | None = None) -> str:
     """Render ``values`` as systemd ``EnvironmentFile`` text, one line per key.
 
@@ -687,7 +676,7 @@ def _read_env_state_nofollow(
     files, and parse only that verified descriptor.
     """
 
-    return _parse_env_text(
+    return parse_env_mapping(
         read_regular_bytes_nofollow(path, max_bytes=max_bytes).decode("utf-8")
     )
 
@@ -712,7 +701,11 @@ def locked_update_env_file(
     each other's keys. ``lock_mode`` is the lock's own mode; see
     :data:`SHARED_LOCK_MODE`. ``owner``, when given, is forwarded to
     :func:`format_env_text` so a racing writer keeps the same header a
-    :func:`jasper.env_file.write_env_file` caller would get.
+    :func:`jasper.env_file.write_env_file` caller would get. The old file is
+    read with :func:`jasper.env_file.parse_env_mapping`, so the returned
+    mapping carries values systemd would see — a quoted value written by
+    another writer (``deploy/lib/jasper-env-file.sh`` quotes) arrives
+    resolved, not with its quotes.
     """
     fspath = os.fspath(path)
     parent = os.path.dirname(fspath) or "."

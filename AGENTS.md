@@ -84,11 +84,14 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
 - **Duplication:** before writing a helper, constant vocabulary, or module,
   grep for the existing one and extend or consume it. Two implementations of
   one concern in reach: converge them or open an issue — never add a third.
-- **Imports:** hoist function-local imports unless a trailing `# lazy` comment
-  names the reason: a real cycle, import cost, an optional dependency, or a
-  boundary a test pins.
+- **Imports:** hoist function-local imports of first-party modules unless a
+  trailing `# lazy` comment names the reason: a real cycle, import cost, an
+  optional dependency, or a boundary a test pins. `jasper/cli/doctor/` is
+  exempt (per-check imports are its import budget, ADR-0233).
 - **Config:** `JASPER_*` is on-device runtime; `JTS_*` is build/deploy/test.
   No new `JASPER_*` knob unless the owner requested it or hardware varies.
+  A `JASPER_*` variable that only tests set is the accepted test seam; do not
+  replace it with constructor plumbing or lint for it.
   Config ownership: [docs/extensibility.md](docs/extensibility.md).
 - **Evidence first:** for any bug, fetch logs
   (`bash scripts/fetch-pi-logs.sh`, `curl -s http://jts.local:8780/state`)

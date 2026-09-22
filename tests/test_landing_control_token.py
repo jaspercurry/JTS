@@ -23,6 +23,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from . import nginx_site
+
 ROOT = Path(__file__).resolve().parents[1]
 LANDING_HTML = ROOT / "deploy" / "index.html"
 LANDING_JS = ROOT / "deploy" / "assets" / "landing" / "js" / "main.js"
@@ -31,10 +33,7 @@ INSTALL_SH = ROOT / "deploy" / "install.sh"
 LANDING_PY = ROOT / "jasper" / "web" / "landing.py"
 # Both nginx sites serve the same token-baked index.html at `/`
 # (install_management_static_assets runs for the full and streambox profiles).
-NGINX_CONFS = (
-    ROOT / "deploy" / "nginx-jasper.conf",
-    ROOT / "deploy" / "nginx-jasper-streambox.conf",
-)
+NGINX_PROFILES = tuple(nginx_site.PROFILE_CONFS)
 
 # The single placeholder jasper.web.landing substitutes with the live token,
 # and the meta name both sides agree on. A rename on one side without the
@@ -145,10 +144,10 @@ def test_nginx_serves_landing_no_store():
     # Both the full and streambox sites serve the token-bearing index.html at
     # `/`, so each `location = /` block must carry no-store (never cached by a
     # browser or intermediary).
-    for conf_path in NGINX_CONFS:
-        conf = conf_path.read_text()
+    for profile in NGINX_PROFILES:
+        conf = nginx_site.conf_text(profile)
         m = re.search(r"location\s*=\s*/\s*\{(.*?)\}", conf, flags=re.S)
-        assert m, f"{conf_path.name} missing the `location = /` landing block"
+        assert m, f"{profile} conf missing the `location = /` landing block"
         block = m.group(1)
         assert "no-store" in block, \
-            f"{conf_path.name} `location = /` must set Cache-Control no-store"
+            f"{profile} conf `location = /` must set Cache-Control no-store"

@@ -1195,20 +1195,15 @@ def main(argv: list[str] | None = None) -> int:
 
 
 __all__ = [
-    "AnalyzeResult",
     "MicCaptureResult",
     "RouteHealthReport",
     "analyze_matches",
     "capture_mic_detections",
     "diff_route_health",
-    "MIN_MATCH_RATE_DEFAULT",
-    "MIN_TAP_DETECT_RATE_DEFAULT",
     "latency_ms_for_match",
     "main",
-    "read_mic_detections_jsonl",
     "snapshot_route_health",
     "summarize_latencies",
-    "write_mic_detections_jsonl",
     "write_samples_json",
 ]
 

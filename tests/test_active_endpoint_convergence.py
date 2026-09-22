@@ -344,7 +344,7 @@ def test_a_convergence_that_raises_costs_the_box_its_convergence_not_its_reconci
     """THE STEP RUNS AHEAD OF EVERYTHING THE PASS HAS ALWAYS DONE.
 
     A corrupt ``fanin.env`` raises ``UnicodeDecodeError`` out of the very first
-    read — ``_read_snapshot`` catches ``OSError`` only — and this step is now the
+    read — ``read_snapshot`` catches ``OSError`` only — and this step is now the
     first thing the unattended pass does. Unguarded, that would turn "this box
     did not converge" into "this box did not reconcile at all".
     """

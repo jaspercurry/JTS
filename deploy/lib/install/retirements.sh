@@ -4,16 +4,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# One-shot retirements for deploy/install.sh: the units and files earlier
-# releases left on a box that nothing in the tree writes any more. One row per
-# retired thing, applied by retire_leftovers().
+# What earlier releases left behind, for deploy/install.sh: the units, files,
+# directories and env lines nothing in the tree writes any more, one row per
+# thing in the table below, applied by retire_leftovers(). Adoptions of state an
+# older install wrote elsewhere are migrations, and live in state-and-secrets.sh.
 #
 # Row format: "<kind>|<targets>|<what it retires>", targets space-separated.
 #   unit -> disable --now, stop, and reset-failed after the daemon-reload
 #   file -> rm -f
-# The table expands STATE_DIR, SYSTEMD_DIR and CAMILLA_CONF when this file is
-# SOURCED; install.sh sets all three above its source block.
-: "${STATE_DIR:?}" "${SYSTEMD_DIR:?}" "${CAMILLA_CONF:?}"
+#   dir  -> rm -rf
+#   env  -> "<env file> <key>...": KEY unsets that key, KEY=VALUE unsets it only
+#           while the file's current value is exactly VALUE, KEY* unsets every
+#           key the file states with that prefix. Every removal goes through
+#           jasper_env_file_unset (deploy/lib/jasper-env-file.sh), the locked,
+#           atomic owner of that edit.
+# The table expands ENV_DIR, STATE_DIR, SYSTEMD_DIR, CAMILLA_CONF and
+# LOCAL_SBIN_DIR when this file is SOURCED; install.sh sets all five above its
+# source block.
+: "${ENV_DIR:?}" "${STATE_DIR:?}" "${SYSTEMD_DIR:?}" "${CAMILLA_CONF:?}" "${LOCAL_SBIN_DIR:?}"
 JASPER_RETIRED_LEFTOVERS=(
     # The removed endpoint tier served /sources/ from a standalone socket on
     # 8773, the port both profiles now serve from the combined jasper-web
@@ -77,13 +85,43 @@ JASPER_RETIRED_LEFTOVERS=(
     # with nothing left to read or write them.
     # REMOVAL CONDITION: every box has taken one install after this lands.
     "file|${STATE_DIR}/active_speaker_commissioning_run.json ${STATE_DIR}/.active_speaker_commissioning_run.json.lock ${STATE_DIR}/.active_speaker_commissioning_run.json.live-execution.lock ${STATE_DIR}/.active_speaker_commissioning_run.json.live-mutation.json|the retired v1 commissioning run record and its lock/mutation sidecars"
+    # The AirPlay free-running toggle is deleted: shairport is always synced,
+    # so nothing reads or writes the mode file any more. Its presence would
+    # otherwise outlive every reader with a value that no longer means anything.
+    # REMOVAL CONDITION: drops once every box has deployed a release after
+    # 2026-09-17.
+    "file|${STATE_DIR}/airplay_mode.env|the retired AirPlay free-running toggle"
     # capture-entry anchor stash: its writer was deleted with the module (issue #4942 wave 0); drop this row once every box has installed a build past it
     "file|${STATE_DIR}/active_speaker_capture_entry.json|the retired capture-entry anchor stash"
+    # The dmix/fanin topology switcher and the device-name deriver, retired when
+    # fan-in became the only supported renderer path. A stale installed copy is
+    # what lets an operator reintroduce split-brain audio state by hand; the
+    # switcher's config is a tree, so it needs the `dir` kind.
+    # REMOVAL CONDITION: all three rows drop once every box has taken one
+    # install after this lands.
+    "file|${LOCAL_SBIN_DIR}/jasper-audio-topology ${LOCAL_SBIN_DIR}/jasper-derive-device-name|the retired topology switcher and device-name deriver"
+    "dir|/etc/jasper/audio-topology|the retired topology switcher's config tree"
+    # Keys an older .env.example seeded that the wizards now own in their
+    # compartments: every unit loads jasper.env first, so the compartment
+    # already wins — the stale jasper.env copy is a second, dead writer's
+    # residue. JASPER_RESEARCH_* lost every reader when ADR-0291 deleted
+    # background research, and the capture relay it registered against is gone.
+    # REMOVAL CONDITION: every box has taken one install after this lands.
+    "env|${ENV_DIR}/jasper.env SPOTIFY_CLIENT_ID SPOTIFY_OAUTH_MODE JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN JASPER_RESEARCH_*|the wizard-owned Spotify keys, the capture-relay token and the research keys"
+    # jasper.env is a frozen first-install seed (never re-synced), so a box
+    # seeded before these defaults changed keeps the stale value forever: the
+    # 1 GiB wake-events cap the doctor's smaller threshold warns on, and a
+    # candidate list that outranks the mic registry. Anchored on the exact
+    # lines .env.example shipped, so any other value is a deliberate override
+    # and survives.
+    # REMOVAL CONDITION: every box has taken one install after this lands.
+    "env|${ENV_DIR}/jasper.env JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824 JASPER_MIC_DEVICE_CANDIDATES=Array JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch|the stale frozen-seed wake-events cap and mic candidate lists"
 )
 
-# Apply `$2...` (systemctl verb or rm) to every row of kind `$1`. Best-effort
-# throughout: a fresh install carries none of these, and a box that never had
-# one must not fail its deploy over it.
+# Apply `$2...` to every row of kind `$1`. Best-effort throughout: a fresh
+# install carries none of these, and a box that never had one must not fail its
+# deploy over it. Each applier silences its own expected noise rather than this
+# loop silencing all of it.
 _retire_apply() {
     local want="$1" row kind targets
     local -a target_list
@@ -94,17 +132,54 @@ _retire_apply() {
         # read -ra, not a bare ${targets}: word-split the target list without
         # also glob-expanding it against the installer's cwd.
         read -ra target_list <<<"${targets}"
-        "$@" "${target_list[@]}" >/dev/null 2>&1 || true
+        "$@" "${target_list[@]}" || true
+    done
+}
+
+# systemctl is loud about units a box never had.
+_retire_systemctl() {
+    systemctl "$@" >/dev/null 2>&1
+}
+
+# A missing env file is a no-op: retire_leftovers runs after the step that seeds
+# jasper.env, but must not break if that ever stops being true. 0640 is the mode
+# widen_control_secret_env_modes holds jasper.env at, republished here because
+# the unset rewrites the file.
+_retire_env_lines() {
+    local file="$1" key name
+    shift
+    [[ -f "${file}" ]] || return 0
+    for key in "$@"; do
+        case "${key}" in
+            *\*)
+                while read -r name; do
+                    jasper_env_file_unset "${file}" "${name%=}" 0640
+                done < <(grep -o "^[[:space:]]*${key%\*}[A-Za-z0-9_]*=" "${file}" | tr -d ' \t' | sort -u)
+                ;;
+            *=*)
+                # Only a lone stale seed goes: a key stated twice is a hand
+                # edit, and the unset would take the operator's line with it.
+                if [[ "$(grep -c "^[[:space:]]*${key%%=*}=" "${file}")" == 1 \
+                    && "$(jasper_env_file_get "${file}" "${key%%=*}")" == "${key#*=}" ]]; then
+                    jasper_env_file_unset "${file}" "${key%%=*}" 0640
+                fi
+                ;;
+            *)
+                jasper_env_file_unset "${file}" "${key}" 0640
+                ;;
+        esac
     done
 }
 
 retire_leftovers() {
-    _retire_apply unit systemctl disable --now
-    _retire_apply unit systemctl stop
-    _retire_apply file rm -f
+    _retire_apply unit _retire_systemctl disable --now
+    _retire_apply unit _retire_systemctl stop
+    _retire_apply file rm -f --
+    _retire_apply dir rm -rf --
+    _retire_apply env _retire_env_lines
     systemctl daemon-reload >/dev/null 2>&1 || true
     # A tick that raced the upgrade can leave a removed unit as a not-found
     # tombstone; that terminal state clears only once the reload has forgotten
     # the unit file, so reset-failed runs last.
-    _retire_apply unit systemctl reset-failed
+    _retire_apply unit _retire_systemctl reset-failed
 }

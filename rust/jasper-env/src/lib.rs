@@ -4,12 +4,16 @@
 
 //! Shared, policy-light environment parsing for JTS Rust daemons.
 //!
-//! This crate owns only behavior that is identical across consumers: string
-//! reads default only when unset and otherwise preserve the configured value;
-//! scalar parsers default when unset or blank, numeric parse failures name the
-//! key and raw value, and floating-point values must be finite. Domain policy
-//! stays with the daemon (for example, outputd rejects a zero period while
-//! fan-in has separate positive and non-negative dimensions).
+//! This crate owns the parsing shapes both daemons share: string reads default
+//! only when unset and otherwise preserve the configured value; scalar parsers
+//! default when unset or blank, numeric parse failures name the key and raw
+//! value, and floating-point values must be finite.
+//!
+//! A configured `0` on a value a daemon later divides by is a config fault in
+//! both of them: [`env_u32_positive_or_bail`] fails the parse, and the caller
+//! classes that as EX_CONFIG. Vocabulary that is genuinely one daemon's
+//! (fan-in's `enabled`-only feature gate, outputd's boolean accept-set, the
+//! list and optional-string shapes) stays with that daemon.
 
 use std::str::FromStr;
 
@@ -36,6 +40,49 @@ where
             .with_context(|| format!("{name} must be {expected}; got {raw:?}")),
         _ => Ok(default),
     }
+}
+
+/// Parse a `u32`, treating an unset or blank variable as `default`.
+///
+/// A configured `0` parses. Callers that divide by the value take
+/// [`env_u32_positive_or_bail`] instead.
+pub fn env_u32(name: &str, default: u32) -> Result<u32> {
+    env_parse(name, default, "a non-negative integer")
+}
+
+/// Parse a `u64`, treating an unset or blank variable as `default`.
+pub fn env_u64(name: &str, default: u64) -> Result<u64> {
+    env_parse(name, default, "a non-negative integer")
+}
+
+/// Parse an `i64`, treating an unset or blank variable as `default`.
+pub fn env_i64(name: &str, default: i64) -> Result<i64> {
+    env_parse(name, default, "an integer")
+}
+
+/// Read `name`, falling back to `fallback_name` when `name` is unset or blank,
+/// and to `default` when neither is set. The `u32` sibling of
+/// [`env_f32_fallback`], for a key that was renamed and kept its old spelling.
+pub fn env_u32_fallback(name: &str, fallback_name: &str, default: u32) -> Result<u32> {
+    match std::env::var(name) {
+        Ok(s) if !s.trim().is_empty() => env_u32(name, default),
+        _ => env_u32(fallback_name, default),
+    }
+}
+
+/// A strictly-positive dimension whose configured `0` fails the parse — both
+/// daemons' rates and frame counts, which each caller classes as EX_CONFIG.
+///
+/// A parsed `0` is a legal `u32` yet a nonsensical dimension: the per-period
+/// math divides by it, unguarded, and release builds compile out the
+/// `debug_assert!`s. Failing the parse parks the unit on the config fault
+/// instead of dividing by zero.
+pub fn env_u32_positive_or_bail(name: &str, default: u32) -> Result<u32> {
+    let parsed = env_parse(name, default, "a positive integer")?;
+    if parsed == 0 {
+        anyhow::bail!("{} must be > 0", name);
+    }
+    Ok(parsed)
 }
 
 /// Parse a finite `f32`, treating an unset or blank variable as `default`.
@@ -72,19 +119,34 @@ mod tests {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    fn with_env<T>(name: &str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
+    /// Set several variables for one closure. `ENV_LOCK` is a plain (non-
+    /// reentrant) mutex, so this is the only place that takes it: nesting two
+    /// fixtures on one thread would deadlock.
+    fn with_envs<T>(vars: &[(&str, Option<&str>)], f: impl FnOnce() -> T) -> T {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let previous = std::env::var_os(name);
-        match value {
-            Some(value) => std::env::set_var(name, value),
-            None => std::env::remove_var(name),
-        }
+        let restore: Vec<_> = vars
+            .iter()
+            .map(|(name, value)| {
+                let previous = std::env::var_os(name);
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+                (*name, previous)
+            })
+            .collect();
         let result = f();
-        match previous {
-            Some(value) => std::env::set_var(name, value),
-            None => std::env::remove_var(name),
+        for (name, previous) in restore {
+            match previous {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
         }
         result
+    }
+
+    fn with_env<T>(name: &str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        with_envs(&[(name, value)], f)
     }
 
     #[test]
@@ -122,6 +184,55 @@ mod tests {
             assert!(error.contains("JTS_ENVCRATE_TEST_U32"), "{error}");
             assert!(error.contains("oops"), "{error}");
         });
+    }
+
+    #[test]
+    fn a_zero_dimension_fails_the_parse() {
+        for raw in ["0", " 0 ", "00"] {
+            with_env("JTS_ENVCRATE_TEST_DIM", Some(raw), || {
+                assert!(
+                    env_u32_positive_or_bail("JTS_ENVCRATE_TEST_DIM", 256).is_err(),
+                    "raw={raw:?}"
+                );
+            });
+        }
+        for (raw, expected) in [(None, 256_u32), (Some("48000"), 48_000)] {
+            with_env("JTS_ENVCRATE_TEST_DIM", raw, || {
+                assert_eq!(
+                    env_u32_positive_or_bail("JTS_ENVCRATE_TEST_DIM", 256).unwrap(),
+                    expected,
+                    "raw={raw:?}"
+                );
+            });
+        }
+        with_env("JTS_ENVCRATE_TEST_DIM", Some("-1"), || {
+            assert!(env_u32_positive_or_bail("JTS_ENVCRATE_TEST_DIM", 256).is_err());
+        });
+    }
+
+    #[test]
+    fn a_renamed_key_reads_its_fallback_spelling_only_while_unset_or_blank() {
+        for (new_raw, old_raw, expected) in [
+            (None, Some("11"), 11_u32),
+            (Some("  "), Some("11"), 11),
+            (Some("22"), Some("11"), 22),
+            (None, None, 33),
+        ] {
+            with_envs(
+                &[
+                    ("JTS_ENVCRATE_TEST_NEW", new_raw),
+                    ("JTS_ENVCRATE_TEST_OLD", old_raw),
+                ],
+                || {
+                    assert_eq!(
+                        env_u32_fallback("JTS_ENVCRATE_TEST_NEW", "JTS_ENVCRATE_TEST_OLD", 33)
+                            .unwrap(),
+                        expected,
+                        "new_raw={new_raw:?} old_raw={old_raw:?}"
+                    );
+                },
+            );
+        }
     }
 
     #[test]

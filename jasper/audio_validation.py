@@ -23,7 +23,6 @@ import math
 import os
 import re
 import socket
-import subprocess
 import sys
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -59,6 +58,7 @@ from .service_units import (
 )
 from .install_profile import BUILD_MANIFEST_FILE
 from .log_event import log_event
+from .systemd_probe import UNKNOWN as UNKNOWN_STATE, unit_states
 from .output_hardware import published_dac_id
 from .platform.status_socket import (
     OUTPUTD_STATUS_SOCKET,
@@ -94,6 +94,9 @@ CHIP_AEC_CONVERGENCE_COMMAND = "AEC_AECCONVERGED"
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 
 logger = logging.getLogger("jasper.audio_validation")
+
+# Bound on the is-active probe in the validation report.
+_SERVICE_PROBE_TIMEOUT_SEC = 2.0
 
 
 class ValidationArtifactError(ValueError):
@@ -495,23 +498,15 @@ def query_outputd_status(socket_path: Path, timeout: float = 1.0) -> dict[str, A
 
 
 def service_state(unit: str) -> str:
-    try:
-        result = subprocess.run(
-            ["systemctl", "is-active", unit],
-            capture_output=True,
-            text=True,
-            timeout=2.0,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
+    state = unit_states([unit], timeout=_SERVICE_PROBE_TIMEOUT_SEC)[unit]
+    if state == UNKNOWN_STATE:
         log_event(
             logger,
             "audio_validation.service_probe_failed",
             unit=unit,
-            error=str(e),
             level=logging.DEBUG,
         )
-        return "unknown"
-    return result.stdout.strip() or "unknown"
+    return state
 
 
 def read_voice_wake_legs(timeout: float = 1.0) -> set[str] | None:

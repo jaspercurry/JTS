@@ -6,13 +6,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import nginx_site
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_weather_wizard_is_socket_and_nginx_wired():
     socket_unit = (ROOT / "deploy" / "jasper-web.socket").read_text()
-    nginx = (ROOT / "deploy" / "nginx-jasper.conf").read_text()
+    nginx = nginx_site.conf_text("full")
     web_main = (ROOT / "jasper" / "web" / "__main__.py").read_text()
     assert "ListenStream=127.0.0.1:8779" in socket_unit
     assert "location /assistant/weather/" in nginx

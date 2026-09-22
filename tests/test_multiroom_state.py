@@ -644,17 +644,22 @@ def test_enabled_invalid_does_not_probe(tmp_path):
     assert probed == []  # an invalid bond starts nothing -> nothing to probe
 
 
-def test_real_reader_is_failsoft_without_systemctl(monkeypatch):
-    # The real systemctl reader must never raise — a wedged/absent systemd
-    # resolves every unit to "unknown", keeping /state alive.
+def test_real_reader_bounds_its_probe_and_stays_failsoft(monkeypatch):
+    # /state must survive a wedged systemd: the reader carries the aggregator's
+    # own bound and resolves every unit to "unknown" rather than raising.
+    from jasper import systemd_probe
     from jasper.multiroom import state as state_mod
 
-    def boom(*a, **k):
+    seen: list[float] = []
+
+    def boom(argv, **kwargs):
+        seen.append(kwargs["timeout"])
         raise FileNotFoundError("systemctl")
 
-    monkeypatch.setattr(state_mod.subprocess, "run", boom)
+    monkeypatch.setattr(systemd_probe.subprocess, "run", boom)
     out = state_mod.read_unit_active_states([SNAPSERVER, SNAPCLIENT])
     assert out == {SNAPSERVER: "unknown", SNAPCLIENT: "unknown"}
+    assert seen == [state_mod._PROBE_TIMEOUT_SEC]
 
 
 # ---------- GET /grouping wire contract (producer/consumer can't drift) ----

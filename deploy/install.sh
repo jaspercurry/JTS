@@ -51,7 +51,7 @@ source "${REPO_DIR}/deploy/lib/jasper-sed-inplace.sh"
 source "${REPO_DIR}/deploy/lib/jasper-env-file.sh"
 source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
 source "${REPO_DIR}/deploy/lib/jasper-alsa-card.sh"
-source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"
+source "${REPO_DIR}/deploy/lib/install/state-and-secrets.sh"
 source "${REPO_DIR}/deploy/lib/install/retirements.sh"
 source "${REPO_DIR}/deploy/lib/install/service-users.sh"
 source "${REPO_DIR}/deploy/lib/install/memory-resilience.sh"
@@ -632,7 +632,7 @@ install_camilladsp() {
     #
     # The active_speaker* paths below are the same capture/sweep/tone trees
     # /sound/ and the measurement daemon share; this list must stay in sync with
-    # heal_shared_state_modes's allowlist (env-migrations.sh), which re-heals
+    # heal_shared_state_modes's allowlist (state-and-secrets.sh), which re-heals
     # the same seven paths on every deploy for boxes that pre-date this line.
     install -d -m 2770 -g jasper \
         /var/lib/jasper/correction \
@@ -1273,27 +1273,38 @@ tune_nginx_worker_processes() {
 }
 
 install_nginx_site_conf() {
-    # <site conf source> <nginx config root>. A conf in sites-enabled is on
-    # disk at once and the next nginx restart loads it (Restart=always, see
-    # nginx.service.d/jts-recovery.conf), so what `nginx -t` rejects is put
-    # back — site conf and its snippet — from a fixed-name snapshot dir
-    # outside sites-enabled, which nginx.conf includes unfiltered. Drop this
-    # guard once the conf ships from a package that tests before enabling.
-    local src="${1}" root="${2}" prev="${2}/.jasper-site-prev" rel=""
-    local site="sites-enabled/jasper.conf" snip="snippets/jts-proxy-headers.conf"
+    # <site conf source> <nginx config root>. The site conf is a listener
+    # shell; its routes live in deploy/nginx/ and go to ${root}/snippets/,
+    # which it includes by absolute path, so both profiles share one body.
+    # A conf in sites-enabled is on disk at once and the next nginx restart
+    # loads it (Restart=always, see nginx.service.d/jts-recovery.conf), so
+    # what `nginx -t` rejects is put back — site conf and every snippet —
+    # from a fixed-name snapshot dir outside sites-enabled, which nginx.conf
+    # includes unfiltered. Snippet basenames are unique, so the flat snapshot
+    # is unambiguous. Drop this guard once the conf ships from a package that
+    # tests before enabling.
+    local src="${1}" root="${2}" prev="${2}/.jasper-site-prev" rel="" snip=""
+    local site="sites-enabled/jasper.conf"
+    local -a snips=("${REPO_DIR}"/deploy/nginx/*.conf)
+    local -a rels=("${site}")
+    for snip in "${snips[@]}"; do
+        rels+=("snippets/${snip##*/}")
+    done
     rm -rf "${prev}"
     install -d -m 0755 "${root}/snippets" "${prev}"
-    for rel in "${site}" "${snip}"; do
+    for rel in "${rels[@]}"; do
         [[ -f "${root}/${rel}" ]] || continue
         cp -a "${root}/${rel}" "${prev}/"
     done
-    install -m 0644 "${REPO_DIR}/deploy/nginx-proxy-headers.conf" "${root}/${snip}"
+    for snip in "${snips[@]}"; do
+        install -m 0644 "${snip}" "${root}/snippets/${snip##*/}"
+    done
     install -m 0644 "${src}" "${root}/${site}"
     # nginx-light's enabled `default` site clashes with our default_server.
     rm -f "${root}/sites-enabled/default"
     if ! nginx -t; then
         echo "  ERROR: event=install.nginx_conf_rejected src=${src}" >&2
-        for rel in "${site}" "${snip}"; do
+        for rel in "${rels[@]}"; do
             rm -f "${root}/${rel}"
             [[ -f "${prev}/${rel##*/}" ]] || continue
             cp -a "${prev}/${rel##*/}" "${root}/${rel}"
@@ -1482,7 +1493,7 @@ widen_jasper_web_writable_dirs() {
         # /var/lib/jasper (a group member can pre-create the name as a symlink
         # onto a root file), so it moved to heal_shared_state_modes, which pins
         # each inode with O_NOFOLLOW+fstat before touching it. See
-        # deploy/lib/install/env-migrations.sh.
+        # deploy/lib/install/state-and-secrets.sh.
         echo "  Widened /etc/bluetooth + /var/lib/camilladsp/configs to root:jasper 2775 (jasper-web writes)"
     fi
 }

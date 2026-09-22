@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import nginx_site
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,7 +24,7 @@ def _location_block(nginx: str, location: str) -> str:
 
 def test_sound_wizard_is_socket_nginx_and_web_wired():
     socket_unit = (ROOT / "deploy" / "jasper-web.socket").read_text()
-    nginx = (ROOT / "deploy" / "nginx-jasper.conf").read_text()
+    nginx = nginx_site.conf_text("full")
     web_main = (ROOT / "jasper" / "web" / "__main__.py").read_text()
     landing = (ROOT / "deploy" / "index.html").read_text()
     service = (ROOT / "deploy" / "jasper-web.service").read_text()

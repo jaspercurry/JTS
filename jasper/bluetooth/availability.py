@@ -110,7 +110,6 @@ def probe_bluetooth_availability(
 
 
 __all__ = [
-    "BLUETOOTH_ADAPTER_PATH",
     "BLUETOOTH_CONTROL_PLANE_UNIT",
     "BluetoothAvailability",
     "bluetooth_unavailable_reason",

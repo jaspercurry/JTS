@@ -420,7 +420,7 @@ def test_offset_write_gate_matches_observability_gate(cfg):
     ever diverge, /state would claim a fit for an offset that is not armed (or
     hide one that is). Bind both to is_active_leader and pin it here."""
     from jasper.multiroom.config import is_active_leader
-    from jasper.multiroom.reconcile import airplay_grouping_env
+    from jasper.multiroom.grouping_env import airplay_grouping_env
 
     armed = bool(airplay_grouping_env(cfg))
     snap = al.bonded_airplay_latency_snapshot(

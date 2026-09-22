@@ -32,7 +32,12 @@ from typing import Mapping, Sequence
 
 from jasper.shell_env import render_shell_assignments as _render_shell_assignments
 
-from .alignment import PER_UNIT_IDENTITY_FIELDS
+# The identity fields that name THIS physical box rather than its hardware
+# class.  K is a property of the class, so a box whose only divergence is here
+# is running a proof measured on a sibling of itself — worth saying out loud,
+# not worth refusing (ADR-0101).  Lives here rather than in alignment.py so
+# this udev-path judge does not import alignment's audio_measurement.ramp use.
+PER_UNIT_IDENTITY_FIELDS = frozenset({"xvf_serial", "output_hardware_key"})
 
 STATUS_READY = "ready"
 STATUS_DISCLOSED_STALE = "disclosed_stale"

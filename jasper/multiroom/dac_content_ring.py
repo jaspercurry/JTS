@@ -66,6 +66,13 @@ DAC_CONTENT_RING_CONF_D = "/etc/alsa/conf.d/63-jts-ring-dac-content.conf"
 #: that tests mere PRESENCE would call ``=0`` armed.
 DAC_CONTENT_LANE_ENV = "JASPER_OUTPUTD_DAC_CONTENT_LANE"
 
+#: The channel this box drops to from the bond's shared stereo (outputd's
+#: ``ChannelPick``) and its pair-balance trim in dB. Both are written as EMPTY
+#: strings whenever the lane is not armed, so a stale file can never leave the
+#: lane half-configured; outputd reads empty as unset.
+OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
+OUTPUTD_DAC_CONTENT_TRIM_ENV = "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB"
+
 #: The wire, spelled in the conf.d block rather than inherited from the ioplug's
 #: compiled defaults. Both ends already pin it independently: snapclient decodes
 #: to the snapserver-pinned ``sampleformat=48000:16:2``

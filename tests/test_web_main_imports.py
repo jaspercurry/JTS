@@ -40,6 +40,7 @@ from pathlib import Path
 
 import pytest
 
+from . import nginx_site
 
 _REPO = Path(__file__).resolve().parent.parent
 _MAIN_PATH = _REPO / "jasper" / "web" / "__main__.py"
@@ -112,7 +113,7 @@ _ASSISTANT_PATHS = frozenset({
 })
 _WAKE_PATHS = frozenset({"/wake", "/wake-corpus"})
 _EVERY_TIER_PATHS = frozenset({
-    "/spotify", "/airplay", "/sources", "/wifi", "/speaker", "/sound", "/rooms",
+    "/spotify", "/sources", "/wifi", "/speaker", "/sound", "/rooms",
 })
 
 
@@ -198,7 +199,7 @@ def test_streambox_socket_validator_and_nginx_name_one_port_set():
     assert forbidden_ports == wake_ports
     assert not (listen_ports & forbidden_ports)
 
-    nginx_text = (_REPO / "deploy" / "nginx-jasper-streambox.conf").read_text()
+    nginx_text = nginx_site.conf_text("streambox")
     nginx_ports = {
         int(m.group(1))
         for m in re.finditer(r"proxy_pass http://127\.0\.0\.1:(\d+)", nginx_text)

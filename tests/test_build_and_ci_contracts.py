@@ -227,9 +227,10 @@ def test_ci_syncs_full_runtime_from_committed_uv_lock() -> None:
 
     assert "astral-sh/setup-uv@" in setup_action
     assert 'version: "0.12.9"' in setup_action
-    assert sync in workflow
-    assert openwakeword in workflow
-    assert workflow.index(sync) < workflow.index(openwakeword)
+    assert sync in setup_action
+    assert openwakeword in setup_action
+    assert setup_action.index(sync) < setup_action.index(openwakeword)
+    assert workflow.count('install-full: "true"') == 2
     assert ".venv/bin/ruff check ." in workflow
     assert "run: scripts/test-merge" in workflow
     # The lane must run the interpreter from the `.venv` this sync populates,

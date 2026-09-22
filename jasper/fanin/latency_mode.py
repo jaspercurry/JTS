@@ -16,7 +16,6 @@ from jasper.paths import resolve_state_path
 
 STATE_ENV_KEY = "JASPER_USB_LATENCY_MODE"
 DEFAULT_MODE = "low"
-VALID_MODES = ("low", "medium", "high")
 DEFAULT_STATE_PATH = "/var/lib/jasper/usb_latency.env"
 
 
@@ -32,11 +31,20 @@ class LatencyPreset:
         return round(self.floor_frames * 1000 / SAMPLE_RATE, 1)
 
 
+#: The household-facing modes, each one settling of the fan-in resampler's
+#: held target. ``floor_frames`` is written verbatim to
+#: ``JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES``, so the numbers are
+#: fan-in's, not this layer's: Low is config.rs's hardware-validated
+#: DEFAULT_CUSHION_DECAY_FLOOR_FRAMES and High is its acquisition ceiling
+#: (decay off, so the value is inert and only names what the lane settles at).
+#: tests/test_fanin_coupling_auto.py pins both against config.rs.
 PRESETS = {
     "low": LatencyPreset("low", "Low", 576, True),
     "medium": LatencyPreset("medium", "Medium", 1024, True),
     "high": LatencyPreset("high", "High", 2560, False),
 }
+
+VALID_MODES = tuple(PRESETS)
 
 LatencyPhase = Literal[
     "unavailable", "idle", "starting", "checking", "clock_adjusting",
@@ -385,15 +393,10 @@ __all__ = [
     "DEFAULT_MODE",
     "DEFAULT_STATE_PATH",
     "LatencyApplyError",
-    "LatencyPreset",
-    "LatencyRuntime",
     "PRESETS",
     "STATE_ENV_KEY",
-    "VALID_MODES",
-    "applied_mode_from_resampler",
     "apply_requested_mode",
     "classify_runtime",
-    "effective_mode_from_buffer",
     "normalize_mode",
     "options",
     "preset_for",

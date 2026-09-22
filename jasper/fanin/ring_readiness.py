@@ -63,10 +63,9 @@ RingGate = Callable[[], tuple[bool, str]]
 
 
 @dataclass(frozen=True)
-class _EnvSnapshot:
+class EnvSnapshot:
     path: Path
     text: str
-    existed: bool
 
 
 @dataclass(frozen=True)
@@ -79,12 +78,12 @@ class FaninRingSlotsResolution:
     error: str = ""
 
 
-def _read_snapshot(path: str | Path) -> _EnvSnapshot:
+def read_snapshot(path: str | Path) -> EnvSnapshot:
     env_path = Path(path)
     try:
-        return _EnvSnapshot(env_path, env_path.read_text(encoding="utf-8"), True)
+        return EnvSnapshot(env_path, env_path.read_text(encoding="utf-8"))
     except OSError:
-        return _EnvSnapshot(env_path, "", False)
+        return EnvSnapshot(env_path, "")
 
 
 # outputd's own declarations, from the reconciler-owned outputd.env. The FORMAT
@@ -258,7 +257,7 @@ def _effective_env_value(
     raw = env_value(later, key)
     if raw is not None:
         return raw, later_path
-    return read_value(_read_snapshot(BASE_ENV_PATH).text, key), BASE_ENV_PATH
+    return read_value(read_snapshot(BASE_ENV_PATH).text, key), BASE_ENV_PATH
 
 
 def resolve_effective_fanin_wire_format(fanin_text: str) -> tuple[str, str]:
@@ -531,9 +530,9 @@ def ring_edge_width_ready(
     the snapshots it has already written. Each source is read ONCE per call.
     """
     if fanin_text is None:
-        fanin_text = _read_snapshot(FANIN_ENV_PATH).text
+        fanin_text = read_snapshot(FANIN_ENV_PATH).text
     if outputd_text is None:
-        outputd_text = _read_snapshot(OUTPUTD_ENV_PATH).text
+        outputd_text = read_snapshot(OUTPUTD_ENV_PATH).text
     if graph is None:
         graph = read_loaded_camilla_graph()
 

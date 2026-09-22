@@ -1248,28 +1248,31 @@ def test_index_renders_research_prompt_and_import_form():
     assert 'id="pricing-prompt"' in page
 
 
-def test_pricing_import_parses_wrapped_json():
-    models, _as_of, err = voice_setup._apply_pricing_paste(
-        '{"models": {"gpt-realtime-2": {"text_output_per_million_usd": 30}}}'
-    )
+@pytest.mark.parametrize(
+    ("pasted", "expected_models"),
+    [
+        pytest.param(
+            '{"models": {"gpt-realtime-2": {"text_output_per_million_usd": 30}}}',
+            {"gpt-realtime-2": {"text_output_per_million_usd": 30.0}},
+            id="parses_wrapped_json",
+        ),
+        pytest.param(
+            '```json\n{"models": {"gpt-realtime-2": '
+            '{"audio_input_per_million_usd": 31}}}\n```',
+            {"gpt-realtime-2": {"audio_input_per_million_usd": 31.0}},
+            id="strips_code_fence",
+        ),
+        pytest.param(
+            '{"gpt-realtime-mini": {"audio_output_per_million_usd": 19}}',
+            {"gpt-realtime-mini": {"audio_output_per_million_usd": 19.0}},
+            id="accepts_bare_model_map",
+        ),
+    ],
+)
+def test_pricing_import_parses_various_input_shapes(pasted, expected_models):
+    models, _as_of, err = voice_setup._apply_pricing_paste(pasted)
     assert err is None
-    assert models == {"gpt-realtime-2": {"text_output_per_million_usd": 30.0}}
-
-
-def test_pricing_import_strips_code_fence():
-    models, _as_of, err = voice_setup._apply_pricing_paste(
-        '```json\n{"models": {"gpt-realtime-2": {"audio_input_per_million_usd": 31}}}\n```'
-    )
-    assert err is None
-    assert models == {"gpt-realtime-2": {"audio_input_per_million_usd": 31.0}}
-
-
-def test_pricing_import_accepts_bare_model_map():
-    models, _as_of, err = voice_setup._apply_pricing_paste(
-        '{"gpt-realtime-mini": {"audio_output_per_million_usd": 19}}'
-    )
-    assert err is None
-    assert models == {"gpt-realtime-mini": {"audio_output_per_million_usd": 19.0}}
+    assert models == expected_models
 
 
 def test_pricing_import_rejects_garbage_and_empty():

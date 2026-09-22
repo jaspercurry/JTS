@@ -5,7 +5,7 @@
 //! Configuration for the outputd daemon.
 
 use anyhow::{Context, Result};
-use jasper_env::{env_f32, env_parse, env_str};
+use jasper_env::{env_f32, env_i64, env_str, env_u32_positive_or_bail, env_u64};
 use jasper_tts_protocol::loudness::AssistantLoudnessConfig;
 
 use crate::dac_content::ChannelPick;
@@ -275,7 +275,7 @@ impl Config {
                 )
             }
         };
-        let sample_rate = env_u32("JASPER_OUTPUTD_SAMPLE_RATE", SAMPLE_RATE)?;
+        let sample_rate = env_u32_positive_or_bail("JASPER_OUTPUTD_SAMPLE_RATE", SAMPLE_RATE)?;
         if sample_rate != SAMPLE_RATE {
             anyhow::bail!(
                 "JASPER_OUTPUTD_SAMPLE_RATE={} is unsupported; outputd core is fixed at {} Hz",
@@ -298,8 +298,9 @@ impl Config {
                 )
             }
         };
-        let period_frames = env_u32("JASPER_OUTPUTD_PERIOD_FRAMES", DEFAULT_PERIOD_FRAMES)?;
-        let dac_buffer_frames = env_u32(
+        let period_frames =
+            env_u32_positive_or_bail("JASPER_OUTPUTD_PERIOD_FRAMES", DEFAULT_PERIOD_FRAMES)?;
+        let dac_buffer_frames = env_u32_positive_or_bail(
             "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
             DEFAULT_DAC_BUFFER_FRAMES,
         )?;
@@ -342,15 +343,15 @@ impl Config {
                 )
             }
         };
-        let chip_ref_buffer_frames = env_u32(
+        let chip_ref_buffer_frames = env_u32_positive_or_bail(
             "JASPER_OUTPUTD_CHIP_REF_BUFFER_FRAMES",
             DEFAULT_CHIP_REF_BUFFER_FRAMES,
         )?;
-        let chip_ref_sample_rate = env_u32(
+        let chip_ref_sample_rate = env_u32_positive_or_bail(
             "JASPER_OUTPUTD_CHIP_REF_SAMPLE_RATE",
             DEFAULT_CHIP_REF_SAMPLE_RATE,
         )?;
-        let chip_ref_period_frames = env_u32(
+        let chip_ref_period_frames = env_u32_positive_or_bail(
             "JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES",
             DEFAULT_CHIP_REF_PERIOD_FRAMES,
         )?;
@@ -822,14 +823,6 @@ fn env_optional(name: &str) -> Option<String> {
     }
 }
 
-fn env_u32(name: &str, default: u32) -> Result<u32> {
-    let parsed = env_parse(name, default, "a positive integer")?;
-    if parsed == 0 {
-        anyhow::bail!("{} must be > 0", name);
-    }
-    Ok(parsed)
-}
-
 /// Parse an optional channel-width env var, validated to `[lo, hi]` when set.
 /// `None` (unset) lets the caller fall back to the per-shape default.
 fn env_optional_u16(name: &str, lo: u16, hi: u16) -> Result<Option<u16>> {
@@ -845,20 +838,6 @@ fn env_optional_u16(name: &str, lo: u16, hi: u16) -> Result<Option<u16>> {
             Ok(Some(parsed))
         }
         _ => Ok(None),
-    }
-}
-
-fn env_u64(name: &str, default: u64) -> Result<u64> {
-    env_parse(name, default, "a non-negative integer")
-}
-
-fn env_i64(name: &str, default: i64) -> Result<i64> {
-    match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => s
-            .trim()
-            .parse::<i64>()
-            .with_context(|| format!("{} must be an integer; got {:?}", name, s)),
-        _ => Ok(default),
     }
 }
 

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .atomic_io import atomic_write_text
+from .env_file import parse_env_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -66,25 +67,11 @@ def read_tool_state(path: str | os.PathLike = DEFAULT_PATH) -> ToolState:
             "tool_state: read %s failed (%s) — treating as none disabled", p, e,
         )
         return ToolState()
-    tools = frozenset()
-    packs = frozenset()
-    setup_packs = frozenset()
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        if key == _TOOLS_KEY:
-            tools = _parse_csv(value)
-        elif key == _PACKS_KEY:
-            packs = _parse_csv(value)
-        elif key == _SETUP_PACKS_KEY:
-            setup_packs = _parse_csv(value)
+    values = parse_env_mapping(text)
     return ToolState(
-        disabled_tools=tools,
-        disabled_packs=packs,
-        setup_enabled_packs=setup_packs,
+        disabled_tools=_parse_csv(values.get(_TOOLS_KEY, "")),
+        disabled_packs=_parse_csv(values.get(_PACKS_KEY, "")),
+        setup_enabled_packs=_parse_csv(values.get(_SETUP_PACKS_KEY, "")),
     )
 
 

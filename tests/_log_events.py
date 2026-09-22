@@ -25,6 +25,7 @@ __all__ = [
     "event_fields_in",
     "event_records",
     "event_records_in",
+    "leaked_lines",
     "parse_event",
     "stderr_event",
     "stderr_events",
@@ -167,3 +168,9 @@ def event_field_maps(
         if all(parsed[1].get(key) == value for key, value in where.items()):
             maps.append(parsed[1])
     return maps
+
+
+def leaked_lines(caplog: pytest.LogCaptureFixture, needle: str) -> list[str]:
+    """Every captured log line carrying *needle*, tracebacks and ``exc_info``
+    text included — the surface a secret-leak pin needs; empty when clean."""
+    return [line for line in caplog.text.splitlines() if needle in line]

@@ -111,23 +111,11 @@ jobs:
           fetch-depth: 0
 
       - uses: ./.github/actions/setup-python-uv
-
-      - name: System deps for sounddevice (portaudio)
-        # Several registered doc-contract tests import jasper packages that
-        # pull in sounddevice. Paid once here (~11s) so the bundle can import
-        # anything the merge lane can, rather than curating a second
-        # dependency subset that would drift.
-        #
-        # Bounded against apt-mirror hangs (#2727); the helper owns the retry
-        # budget its 6 minutes must cover.
-        timeout-minutes: 6
-        run: scripts/ci-apt-install.sh portaudio19-dev
-
-      - name: Install JTS from committed uv lock
-        run: uv sync --locked --extra full --extra dev --group openwakeword-onnx
-
-      - name: Install openwakeword without its tflite-runtime dep
-        run: uv pip install --python .venv/bin/python --no-deps openwakeword==0.6.0
+        # Registered doc-contract tests import jasper packages that pull in
+        # sounddevice, so the docs lane installs what the merge lane can
+        # import rather than curating a second dependency subset.
+        with:
+          install-full: "true"
 
       - name: Cheap syntax, policy, and provenance validation
         run: |
@@ -153,27 +141,11 @@ jobs:
           .venv/bin/pytest -q --tb=short "${docs_tests[@]}"
 
   shell:
-    # Static gate for the highest-blast-radius code in the repo: the
-    # installer and the deploy/operator scripts mutate a live speaker
-    # as root, yet had no syntax/lint check before this job. Two layers:
-    #   - `bash -n`: parse-only syntax check; zero false positives.
-    #   - `shellcheck --severity=warning`: real-breakage classes
-    #     (unparseable constructs, non-constant source) plus the
-    #     warning tier — SC2155 declare-and-assign masking exit codes
-    #     is a genuine hazard in these `set -e` scripts, and SC2034
-    #     unused-var catches flags that parse but silently do nothing.
-    # The 8 warning-level findings present when the error-only gate
-    # landed (3×SC2034, 2×SC2155, 2×SC1090, 1×SC2010) were fixed
-    # file-by-file before this tightened to warning. Extending the
-    # selection to the whole deploy tree (2026-07)
-    # surfaced 1×SC2164 in the usbsink gadget teardown script (a
-    # failed cd would have run relative-path rm/rmdir as root from
-    # the wrong CWD on a teardown-race path); the composite-gadget
-    # rewrite (#1164) independently shipped the same cd guard, so
-    # the widened gate landed with zero outstanding findings.
-    # Info/style severities (~35 findings, several intentional ssh
-    # client-side expansion patterns) remain ungated; tightening
-    # further is a separate triage. Do not loosen below warning.
+    # The installer and operator scripts mutate a live speaker as root.
+    # `bash -n` is parse-only; `shellcheck --severity=warning` adds the
+    # tier where SC2155 (declare-and-assign masking exit codes) and SC2034
+    # (unused vars) live. Do not loosen below warning; info/style are a
+    # separate triage.
     needs: classify
     if: ${{ needs.classify.outputs.lane == 'full' }}
     runs-on: ubuntu-latest
@@ -276,9 +248,8 @@ jobs:
     needs: [classify, python-policy]
     if: ${{ needs.classify.outputs.lane == 'full' }}
     runs-on: ubuntu-latest
-    # The full lane ran 27m43s for 25,774 tests on 2026-09-04 and three
-    # sibling runs were cancelled at the old 30-minute limit; headroom until
-    # the suite's late-run descriptor exhaustion is fixed.
+    # Headroom over the ~28-minute full run until the suite's late-run
+    # descriptor exhaustion is fixed (#5288).
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -295,27 +266,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: ./.github/actions/setup-python-uv
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: System deps for sounddevice (portaudio)
-        # Bounded against apt-mirror hangs (#2727).
-        timeout-minutes: 6
-        run: scripts/ci-apt-install.sh portaudio19-dev
-
       - name: Supply-chain provenance check
         run: python3 scripts/check-provenance.py
 
-      - name: Install JTS from committed uv lock
-        run: uv sync --locked --extra full --extra dev --group openwakeword-onnx
-
-      - name: Install openwakeword without its tflite-runtime dep
-        # openwakeword 0.6.0 hard-requires tflite-runtime, which has no
-        # Python 3.13 wheel. We use ONNX models exclusively, so tflite is
-        # never imported at runtime. This stays after uv sync because sync
-        # is exact by default and would otherwise remove the package.
-        run: uv pip install --python .venv/bin/python --no-deps openwakeword==0.6.0
+      - uses: ./.github/actions/setup-python-uv
+        with:
+          python-version: ${{ matrix.python-version }}
+          install-full: "true"
 
       - name: Lint (ruff)
         if: matrix.python-version == '3.13'

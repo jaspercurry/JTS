@@ -44,8 +44,7 @@ def _write_token(token: str) -> None:
 
     tmp + chmod + os.replace so a reader never sees a half-written file
     and the secret is never briefly world-readable. The directory is
-    created if missing (matches the wizard-file pattern in
-    jasper/cli/airplay_mode.py)."""
+    created if missing."""
     path = control_token.TOKEN_FILE
     # Publish 0640 with the token directory's group (normally jasper). A root-run
     # rotation in /var/lib/jasper would otherwise create root:root 0640, which the
