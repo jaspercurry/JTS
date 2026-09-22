@@ -161,9 +161,9 @@ def prepare_plan_captures(
             AngleStop(0, REGIME_PER_DRIVER),
             replace(design_axis_spec(request), program_phase=PHASE_CHECK),
         ))
-    base_stop = next((stop for stop in request.stops if candidate_identity(stop.candidate_id) == BASE_CANDIDATE), None)
+    base_stop = next((stop for stop in request.stops if candidate_identity(stop.candidate_id) == BASE_CANDIDATE and stop.purpose == PURPOSE_SPEAKER), None)
     # The speaker flow needs an entry baseline; other rounds use their first take as the level reference.
-    if base_stop is not None and base_stop.purpose == PURPOSE_SPEAKER:
+    if base_stop is not None:
         base_request = replace(request, stops=(replace(base_stop, angle_deg=0, elevation_deg=0,
             kind=POSE_KIND_BEARING, distance_m=None, seat_offset_m=None,
             headline="", detail="", regime=REGIME_SUMMED, branch_pair=BRANCH_PAIR_DRIVERS),),
