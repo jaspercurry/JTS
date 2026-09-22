@@ -86,7 +86,7 @@ def _parked_graph_transport() -> dict[str, Any] | None:
         active_graph_is_parked,
         parked_muted_exits,
     )
-    from ..audio_runtime_plan import DEFAULT_CAMILLA_STATEFILE_PATH
+    from ..audio_runtime_settings import DEFAULT_CAMILLA_STATEFILE_PATH  # lazy: source patch boundary pinned by test_audio_health_route_claim
     from ..output_topology import OutputTopologyError, load_output_topology_strict
 
     config_path = read_camilla_statefile_config_path(DEFAULT_CAMILLA_STATEFILE_PATH)
@@ -130,10 +130,10 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
     mixes these contradictions with USB low-latency route-policy errors, and a
     policy error is not a reason to tell a household its speaker is parked.
     """
-    from ..audio_runtime_plan import (
+    from ..audio_runtime_plan import output_endpoint_evidence_from_statefiles  # lazy: import cost, keeps route assembly off control startup
+    from ..audio_runtime_settings import (  # lazy: source patch boundary pinned by test_audio_health_route_claim
         DEFAULT_CAMILLA2_STATEFILE_PATH,
         DEFAULT_CAMILLA_STATEFILE_PATH,
-        output_endpoint_evidence_from_statefiles,
     )
     from ..output_topology import load_output_topology
 

@@ -96,10 +96,10 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
 
     evidence.seed("camilla_config", (str(statefile), str(config)))
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
+        "jasper.audio_runtime_settings.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
     )
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_CAMILLA2_STATEFILE_PATH", str(absent)
+        "jasper.audio_runtime_settings.DEFAULT_CAMILLA2_STATEFILE_PATH", str(absent)
     )
     # The bridge has to be STATED to make the graph above a split: an absent
     # key is the ring, and the ring agrees with the ring graph. The STATUS
@@ -1447,7 +1447,7 @@ def _arrange(
     crossover = _write_pair(tmp_path, "crossover", crossover_playback_device)
     evidence.seed("camilla_config", (str(primary), None))
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_CAMILLA2_STATEFILE_PATH", str(crossover)
+        "jasper.audio_runtime_settings.DEFAULT_CAMILLA2_STATEFILE_PATH", str(crossover)
     )
 
 

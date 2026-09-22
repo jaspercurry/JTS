@@ -17,7 +17,7 @@ SHIPPED_RING_CONF_D = (
     Path(__file__).resolve().parents[1] / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
 )
 
-from jasper.audio_runtime_plan import RuntimeEnvAction
+from jasper.audio_runtime_settings import RuntimeEnvAction
 from jasper.env_file import read_value
 from jasper.fanin.coupling_reconcile import (
     _LEGACY_FANIN_COUPLING_ENV,

@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
+from jasper import audio_runtime_settings as audio_settings
 from jasper import audio_runtime_plan
 from jasper.audio_hardware.usb_port_role import UsbPortRoleState
 from jasper.cli.doctor import _evidence, _shared, usbsink
@@ -408,8 +409,8 @@ def test_check_usbsink_active_libcomposite_verdicts(
 def _low_latency_plan():
     return audio_runtime_plan.build_audio_runtime_plan(
         base_env={
-            audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
-                audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
+            audio_settings.AUDIO_ROUTE_PROFILE_KEY: (
+                audio_settings.ROUTE_USB_LOW_LATENCY_48K
             )
         },
         route_mode="solo",

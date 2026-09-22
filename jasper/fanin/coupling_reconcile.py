@@ -45,7 +45,7 @@ from jasper.atomic_io import (
     flock_held,
     locked_upsert_env_file,
 )
-from jasper.audio_runtime_plan import RuntimeEnvAction
+from jasper.audio_runtime_settings import RuntimeEnvAction
 from jasper.output_topology_runtime import GROUPING_RECONCILE_UNIT
 from jasper.env_file import env_value, read_value, remove, upsert
 from jasper.fanin.coupling_auto import (

@@ -501,6 +501,7 @@ id = "audio-latency-lean-lane"
 safety = "boot-risk"
 code = [
   "jasper/audio_runtime_plan.py",
+  "jasper/audio_runtime_settings.py",
   "jasper/transport_coherence.py",
   "jasper/mux.py",
   "jasper/camilla_config_contract.py",

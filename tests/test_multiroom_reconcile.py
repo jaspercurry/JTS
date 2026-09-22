@@ -26,6 +26,7 @@ import os
 
 import pytest
 
+from jasper.audio_runtime_settings import resolve_outputd_period_setting
 from jasper.ring_assets import (
     RING_ACTIVE_CONTENT_FILE,
     RING_WRITER_LOCK_SUFFIX,
@@ -3141,7 +3142,6 @@ def test_every_dac_profile_arms_the_return_ring_exactly_when_its_period_fits(
     does not.
     """
 
-    from jasper.audio_runtime_plan import resolve_outputd_period_setting
     from jasper.multiroom.grouping_env import outputd_grouping_env
     from jasper.multiroom.reconcile_plan import _assemble_args
 

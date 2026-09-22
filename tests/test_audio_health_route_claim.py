@@ -226,10 +226,10 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
     # devices=<populated>, endpoint_recognized=False — a different shape from
     # the degraded devices=None read, and the one this branch must handle.
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
+        "jasper.audio_runtime_settings.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
     )
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_CAMILLA2_STATEFILE_PATH", str(statefile)
+        "jasper.audio_runtime_settings.DEFAULT_CAMILLA2_STATEFILE_PATH", str(statefile)
     )
     evidence = audio_runtime_plan.output_endpoint_evidence_from_statefiles(
         str(statefile), str(statefile)
@@ -282,10 +282,10 @@ def test_unconfigured_parked_graph_names_the_layout_action(monkeypatch, tmp_path
     statefile = tmp_path / "outputd-statefile.yml"
     statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
+        "jasper.audio_runtime_settings.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
     )
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_CAMILLA2_STATEFILE_PATH", str(statefile)
+        "jasper.audio_runtime_settings.DEFAULT_CAMILLA2_STATEFILE_PATH", str(statefile)
     )
     topology_path = tmp_path / "output_topology.json"
     save_output_topology(topology, path=topology_path)
@@ -316,10 +316,10 @@ def test_corrupt_layout_is_not_relabelled_as_unconfigured_silence(
     statefile = tmp_path / "outputd-statefile.yml"
     statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
+        "jasper.audio_runtime_settings.DEFAULT_CAMILLA_STATEFILE_PATH", str(statefile)
     )
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_CAMILLA2_STATEFILE_PATH", str(statefile)
+        "jasper.audio_runtime_settings.DEFAULT_CAMILLA2_STATEFILE_PATH", str(statefile)
     )
     topology_path = tmp_path / "output_topology.json"
     topology_path.write_text("{not json", encoding="utf-8")
