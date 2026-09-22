@@ -97,8 +97,8 @@ def test_grid_continues_after_a_refused_variant_without_writing_it(tmp_path, cap
     answer = _preview(tmp_path, capsys, {"rear_calibration": section}, pair_round(tmp_path), (
         "--vary", f"{path}=3,{MAX_CHAIN_BOOST_DB + 1},4", "--out-dir", str(directory)))
     rows = answer["variants"]
-    assert len(rows) == 3 and sum(row.get("ok") is False for row in rows) == 1
-    assert (rows[1]["out"], rows[1]["ok"], rows[1]["code"]) == (None, False, "rear_calibration_invalid")
+    assert len(rows) == 3 and sum("reason" in row for row in rows) == 1
+    assert (rows[1]["out"], rows[1]["reason"]) == (None, "rear_calibration_invalid")
     assert rows[1]["values"] == {path: MAX_CHAIN_BOOST_DB + 1}
     assert {path.name for path in directory.iterdir()} == {
         f"variant-{index:02d}{suffix}" for index in (1, 3) for suffix in (".json", ".preview.json")}

@@ -390,15 +390,15 @@ This is the hand loop of record for a cardioid box. Keep the cabinet at its wall
    `jasper-round run --program rear --poses rear/pair_mark --wait`.
 2. Write the rear seed and preview variants from that pair round:
    `jasper-crossover-prescriber judge --preview <seed-doc> --round <pair-round> --vary '<path>=<value>,<value>' --out-dir <variants-dir>`.
-   Compose the seed, selected variants and a copy with `rear_muted: true`:
-   `jasper-crossover-prescriber compose <doc> --base saved --round <pair-round>`.
+   Compose the seed, selected variants and a copy with `rear_muted: true` (each document's `base` is `saved`):
+   `jasper-crossover-prescriber compose <doc> --round <pair-round>`.
 3. Compare them at the seats:
    `jasper-round trial <seed-fp> --candidates base,<seed>,<v1>,<v2>,<muted> --wait`.
    These placeholders are composed fingerprints. Read the figures below and choose.
 4. Join the chosen candidate to `packet["sets"]` by `candidate_id`, then to
    `packet["room"]` by `set_id`; it holds a room document per candidate set.
-   Write the room fit from that set and keep the chosen rear stage as its base:
-   `jasper-crossover-prescriber compose <room-doc> --base <chosen-fp> --round <seat-round> --set <chosen-set-id>`.
+   Write the room fit from that set with the chosen rear stage as its `base` (`<chosen-fp>`):
+   `jasper-crossover-prescriber compose <room-doc> --round <seat-round> --set <chosen-set-id>`.
 5. Measure the composed document: `jasper-round trial <document-fp> --wait`.
    If its packet supports adoption, run `jasper-round apply <document-fp>`.
 

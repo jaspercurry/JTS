@@ -777,7 +777,7 @@ It makes no model calls and needs no network.
 ```sh
 jasper-crossover-prescriber contract --round <round-dir>
 jasper-crossover-prescriber judge prescription.json --round <round-dir>
-jasper-crossover-prescriber compose prescription.json --base <fp|saved> --round <round-dir>
+jasper-crossover-prescriber compose prescription.json --round <round-dir>
 jasper-crossover-prescriber status <round-dir>
 ```
 

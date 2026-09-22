@@ -28,8 +28,8 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, contract_programs, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
-    PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document, preview_prescription_document,
-    parse_vary_axis, preview_kind, read_prescription_document, saved_base, vary_document,
+    REASON_EVIDENCE_UNREADABLE, PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document,
+    preview_prescription_document, parse_vary_axis, preview_kind, read_prescription_document, saved_base, vary_document,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.crossover_v2.rear_preview import summary_rows
@@ -47,7 +47,6 @@ from jasper.identity.reader import CROSSOVER_PAGE_PATH, SPEAKER_SETUP_PAGE_PATH,
 
 PROG = "jasper-crossover-prescriber"
 AUTHORITY_TIER = "advisory (judge, contract and status read; compose banks a candidate)"
-REASON_UNREADABLE = "evidence_unreadable"
 REASON_UNWRITABLE = "output_unwritable"
 
 
@@ -58,7 +57,7 @@ def _cmd_rear_calibration(args: argparse.Namespace) -> int:
                 raise ValueError("--sample-rate is required; use the installed DSP rate")
             return answered(read_rear_calibration(diagnostic_seed(args.sample_rate)))
         document = read_rear_calibration(json.loads(read_source_bytes(args.document)), sample_rate=args.sample_rate)
-        answer = {"ok": True, "calibration": document, "adopted": False,
+        answer = {"calibration": document, "adopted": False,
                   "requires_electrical_fitting": document["case"] == "acoustic_targets"}
         routing = (args.channels, args.front, args.rear, args.tweeter)
         if any(value is not None for value in routing):
@@ -113,10 +112,8 @@ def _preview_document(args: argparse.Namespace, document: Mapping[str, Any]) -> 
     except RoundSetRefused as exc:
         section = "driver" if "driver" in document["sections"] else "blend" if kind == "emitted_graph" else kind
         raise PrescriptionDocumentRefused(exc.reason, section, str(exc), evidence=exc.detail) from exc
-    result = preview_prescription_document(document, round_dir=Path(args.round) if args.round else None,
-                                           base=base, evidence=evidence, capture_id=capture_id)
-    result.pop("ok")
-    return result
+    return preview_prescription_document(document, round_dir=Path(args.round) if args.round else None,
+                                         base=base, evidence=evidence, capture_id=capture_id)
 
 
 def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) -> int:
@@ -128,7 +125,7 @@ def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) ->
         try:
             result = _preview_document(args, variant)
         except PrescriptionDocumentRefused as exc:
-            rows.append({"out": None, "values": values, "ok": False, "code": exc.code, "error": exc.error})
+            rows.append({"out": None, "values": values, "reason": exc.code, "error": exc.error})
             continue
         path = directory / f"variant-{index:02d}.json"
         try:
@@ -146,6 +143,13 @@ def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) ->
                      "variants": rows, "adopted": False, "banked": False})
 
 
+def _document_failure(refusal: PrescriptionDocumentRefused, exit_code: int | None = None) -> int:
+    if exit_code is None:
+        exit_code = {REASON_EVIDENCE_UNREADABLE: EXIT_UNREADABLE, REASON_UNWRITABLE: EXIT_WRITE_FAILED}.get(refusal.code, EXIT_REFUSED)
+    return failed(exit_code, refusal.code, refusal.failure_detail(), code=refusal.code,
+                  next_action=refusal_copy_for(refusal.code)[1])
+
+
 def _cmd_document(args: argparse.Namespace) -> int:
     try:
         try:
@@ -160,35 +164,24 @@ def _cmd_document(args: argparse.Namespace) -> int:
         evidence = _document_evidence(args, document)
         candidate = judge_prescription_document(document, base=base, evidence=evidence,
                                                  base_profile=base_profile)
+        answer = {"candidate_fingerprint": candidate.fingerprint, "resolution": candidate.analysis["resolution"],
+                  "measurement_status": "unmeasured", "adopted": False}
+        if args.command == "judge":
+            answer["sections"] = candidate.analysis["evidence"]["prescriptions"]
+        else:
+            try:
+                answer["out"] = str(publish_authored_candidate(candidate, root=root).path)
+            except (OSError, BundleError) as exc:
+                raise PrescriptionDocumentRefused(REASON_UNWRITABLE, None, str(exc)) from exc
     except PrescriptionDocumentRefused as exc:
-        return failed(EXIT_UNREADABLE if exc.code == REASON_UNREADABLE else EXIT_REFUSED, exc.code,
-                      {"section": exc.section, "error": exc.error, "evidence": exc.evidence},
-                      code=exc.code, next_action=refusal_copy_for(exc.code)[1])
+        return _document_failure(exc)
     except RoundSetRefused as exc:
-        return failed(EXIT_REFUSED, exc.reason, {"section": "room", "error": str(exc), "evidence": exc.detail},
-                      code=exc.reason, next_action=refusal_copy_for(exc.reason)[1])
+        return _document_failure(PrescriptionDocumentRefused(exc.reason, "room", str(exc), evidence=exc.detail))
     except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
-        return failed(EXIT_REFUSED, exc.code, {"section": None, "error": exc.detail, "evidence": {}},
-                      code=exc.code, next_action=refusal_copy_for(exc.code)[1])
+        return _document_failure(PrescriptionDocumentRefused(exc.code, None, exc.detail))
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
-        code = getattr(exc, "code", REASON_UNREADABLE)
-        return failed(EXIT_UNREADABLE, code, {"section": None, "error": str(exc), "evidence": {}},
-                      code=code, next_action=refusal_copy_for(code)[1])
-    answer = {"section": None, "next_action": None, "candidate_fingerprint": candidate.fingerprint,
-              "resolution": candidate.analysis["resolution"], "measurement_status": "unmeasured", "adopted": False}
-    if args.base is not None and args.base != document["base"]:
-        answer["base_override_ignored"] = {"requested": args.base, "base": document["base"]}
-    if args.command == "judge":
-        answer["sections"] = candidate.analysis["evidence"]["prescriptions"]
-    else:
-        try:
-            published = publish_authored_candidate(candidate, root=root)
-        except (CandidateBankRefusal, OSError, BundleError) as exc:
-            code = exc.code if isinstance(exc, CandidateBankRefusal) else REASON_UNWRITABLE
-            return failed(EXIT_REFUSED if isinstance(exc, CandidateBankRefusal) else EXIT_WRITE_FAILED, code,
-                          {"section": None, "error": str(exc), "evidence": {}},
-                          code=code, next_action=refusal_copy_for(code)[1])
-        answer["out"] = str(published.path)
+        refusal = PrescriptionDocumentRefused(getattr(exc, "code", REASON_EVIDENCE_UNREADABLE), None, str(exc))
+        return _document_failure(refusal, EXIT_UNREADABLE)
     return answered(answer)
 
 
@@ -238,7 +231,7 @@ def _cmd_contract(args: argparse.Namespace) -> int:
     except RoundSetRefused as exc:
         return failed(EXIT_REFUSED, exc.reason, exc.detail)
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
-        code = getattr(exc, "code", REASON_UNREADABLE)
+        code = getattr(exc, "code", REASON_EVIDENCE_UNREADABLE)
         return failed(EXIT_UNREADABLE, code, str(exc))
     if args.out:
         try:
@@ -673,10 +666,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("document", metavar="DOC")
         command.add_argument("--round", dest="round", metavar="DIR")
         add_set_argument(command, take=verb == "judge")
-        if verb == "compose":
-            command.add_argument("--base", metavar="FINGERPRINT|saved", help="compatibility hint; document.base selects the base")
-        else:
-            command.set_defaults(base=None)
+        if verb == "judge":
             command.add_argument("--preview", action="store_true", help="predict driver/blend with --round <branch diagnostic round>, room with --round <room round>, or rear_calibration with --round <pair round>; banks nothing")
             command.add_argument("--vary", action="append", metavar="AXIS", help="PATH[,PATH...]=VALUE[,VALUE...] axis; repeat for a Cartesian grid")
             command.add_argument("--out-dir", metavar="DIR", help="write grid documents and full previews")

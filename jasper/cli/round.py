@@ -273,7 +273,8 @@ def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
         CandidateBankRefusal, publish_authored_candidate,
     )
     from jasper.active_speaker.crossover_v2.prescription_document import (  # lazy: reset-only prescription stack imports NumPy
-        PrescriptionDocumentRefused, judge_prescription_document, reset_prescription_document, saved_base,
+        REASON_EVIDENCE_UNREADABLE, PrescriptionDocumentRefused, judge_prescription_document,
+        reset_prescription_document, saved_base,
     )
     from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for  # lazy: refusal copy imports NumPy
     from jasper.audio_measurement.bundles import BundleError  # lazy: reset-only bank writer
@@ -288,9 +289,8 @@ def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
         candidate = judge_prescription_document(document, base=base, base_profile=applied)
         published = publish_authored_candidate(candidate)
     except PrescriptionDocumentRefused as exc:
-        return failed(EXIT_UNREADABLE if exc.code == "evidence_unreadable" else EXIT_REFUSED, exc.code,
-                      {"section": exc.section, "error": exc.error, "evidence": exc.evidence},
-                      code=exc.code, next_action=refusal_copy_for(exc.code)[1])
+        return failed(EXIT_UNREADABLE if exc.code == REASON_EVIDENCE_UNREADABLE else EXIT_REFUSED, exc.code,
+                      exc.failure_detail(), code=exc.code, next_action=refusal_copy_for(exc.code)[1])
     except (CandidateBankRefusal, BundleError, OSError, TypeError, ValueError) as exc:
         return failed(EXIT_UNREADABLE, "reset_compose_failed", str(exc))
     result = apply_by_fingerprint(client, published.fingerprint)

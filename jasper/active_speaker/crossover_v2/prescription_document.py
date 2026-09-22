@@ -14,7 +14,7 @@ from itertools import product
 from pathlib import Path
 from typing import Any
 
-from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, publish_authored_candidate
+from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal
 from jasper.active_speaker.alignment_evidence import commissioning_alignment, round_alignment
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
@@ -52,11 +52,18 @@ _SECTION_PROGRAMS = {section.name: row.purpose for row in PROGRAM_DOCUMENT_ORDER
 _JUDGE_ORDER = tuple(section.name for section in sorted(PRESCRIPTION_SECTIONS, key=lambda section: section.judge_order))
 
 
+REASON_EVIDENCE_UNREADABLE = "evidence_unreadable"
+
+
 class PrescriptionDocumentRefused(ValueError):
     def __init__(self, code: str, section: str | None, error: str, *, evidence: Mapping[str, Any] | None = None):
         super().__init__(error)
         self.code, self.section, self.error = code, section, error
         self.evidence = dict(evidence or {})
+
+    def failure_detail(self) -> dict[str, Any]:
+        """The CLI failure document's ``detail`` (ADR-0237)."""
+        return {"section": self.section, "error": self.error, "evidence": self.evidence}
 
     def to_dict(self) -> dict[str, Any]:
         _, action = refusal_copy_for(self.code)
@@ -274,14 +281,14 @@ def preview_prescription_document(
     try:
         if kind == "rear_calibration":
             if round_dir is None:
-                raise PrescriptionDocumentRefused("evidence_unreadable", kind, "a rear preview needs --round <pair round>")
+                raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, kind, "a rear preview needs --round <pair round>")
             preview_function = preview_rear_section
             inputs = round_inputs(round_dir)
             payload = sections[kind]
             kwargs = {"inputs": inputs, "manifest": read_run_manifest(inputs)}
         else:
             if kind == "emitted_graph" and (round_dir is None or capture_id is None):
-                raise PrescriptionDocumentRefused("evidence_unreadable", "driver" if "driver" in sections else "blend",
+                raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, "driver" if "driver" in sections else "blend",
                                                   "a driver/blend preview needs --round <diagnostic round>")
             assert base is not None and evidence is not None
             if kind == "room":
@@ -307,8 +314,8 @@ def preview_prescription_document(
     except PrescriptionDocumentRefused:
         raise
     except (KeyError, TypeError, ValueError) as exc:
-        raise PrescriptionDocumentRefused("evidence_unreadable", kind, str(exc)) from exc
-    return {"ok": True, "section": kind, "sections": sorted(sections), "preview": preview, "adopted": False, "banked": False}
+        raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, kind, str(exc)) from exc
+    return {"section": kind, "sections": sorted(sections), "preview": preview, "adopted": False, "banked": False}
 
 
 def _refused_section(code: str) -> str | None:
@@ -340,15 +347,16 @@ def reset_prescription_document(
             "sections": sections, "rationale": "Reset the applied tuning layers."}
 
 
-def rear_cleared_candidate() -> str:
-    """Bank the applied tune without its rear stage for raw pair capture (issue #5330)."""
-    return publish_authored_candidate(bank_section(
-        "rear_calibration", None, rationale="Measure both woofers with no rear stage.",
-    )).fingerprint
+def rear_cleared_candidate() -> MeasuredCrossoverCandidate:
+    """The applied tune without its rear stage, for raw pair capture (issue #5330).
+
+    Composed, not banked: the caller publishes it.
+    """
+    return bank_section("rear_calibration", None, rationale="Measure both woofers with no rear stage.")
 
 
 def bank_section(name: str, section: Any, *, rationale: str) -> MeasuredCrossoverCandidate:
-    """Judge ONE authored section on the applied baseline, as ``--base saved`` does.
+    """Judge ONE authored section on the applied baseline, as a ``base: saved`` document does.
 
     The candidate is composed and returned, never banked and never applied.
     """

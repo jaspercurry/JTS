@@ -1147,7 +1147,7 @@ def _active_speaker_rear_calibration_validate_payload(raw: dict[str, Any]) -> di
 
 def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[str, Any]:
     """Bank a candidate carrying a pasted rear-calibration document on the applied
-    baseline, through the same ``--base saved`` composer
+    baseline, through the same ``base: saved`` composer
     ``jasper-crossover-prescriber compose`` uses; never applies it."""
 
     from jasper.active_speaker.baseline_profile import rear_calibration_issues  # lazy: graph compilation imports NumPy
@@ -1173,7 +1173,7 @@ def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[s
     except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
         return PrescriptionDocumentRefused(exc.code, None, exc.detail).to_dict()
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
-        # Mirrors jasper-crossover-prescriber's --base saved block: a corrupt or
+        # Mirrors jasper-crossover-prescriber's ``base: saved`` read: a corrupt or
         # unreadable on-disk topology/applied-profile file fails closed as a
         # typed refusal instead of an unhandled exception reaching the client.
         return PrescriptionDocumentRefused("evidence_unreadable", None, str(exc)).to_dict()

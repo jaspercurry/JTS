@@ -12,7 +12,7 @@ from jasper.active_speaker.angle_capture import (
     WALK_CANDIDATE_NOT_MEASURABLE, WALK_LEVEL_POLICY_INVALID,
     default_run_level, request_for_program,
 )
-from jasper.active_speaker.candidate_bank import CandidateBankRefusal
+from jasper.active_speaker.candidate_bank import CandidateBankRefusal, publish_authored_candidate
 from jasper.active_speaker.crossover_v2.prescription_document import rear_cleared_candidate
 from jasper.active_speaker.measurement_programs import (
     PURPOSE_REAR, REGIME_BRANCHES, run_program,
@@ -67,7 +67,7 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
         raise ValueError("candidates must name a fingerprint or base")
     if not candidates and (program.purpose, program.regime) == (PURPOSE_REAR, REGIME_BRANCHES):
         try:
-            candidates = (rear_cleared_candidate(),)
+            candidates = (publish_authored_candidate(rear_cleared_candidate()).fingerprint,)
         except (CandidateBankRefusal, BundleError) as exc:
             raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, str(exc)) from exc
     operator_level = args.level_db is not None

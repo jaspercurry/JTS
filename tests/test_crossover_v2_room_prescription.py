@@ -418,8 +418,6 @@ def test_document_room_section_uses_selected_median_and_keeps_basis(tmp_path, ca
         "sections": {"room": _document(sha256=room_median_sha256(median))},
     }))
     args = [verb, str(document), "--round", str(round_dir), "--set", set_id, "--root", str(root)]
-    if verb == "compose":
-        args += ["--base", base.fingerprint]
     assert cli.main(args) == 0
     answer = json.loads(capsys.readouterr().out)
     assert answer["resolution"]["room"] == "document"
