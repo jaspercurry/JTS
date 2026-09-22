@@ -689,9 +689,10 @@ def test_a_non_bearing_take_has_figures_without_becoming_the_on_axis_reference(
     assert entry["comparison"]["band_dip_hz"] is None
     for candidate in entry["candidates"]:
         row, = (row for key, row in candidate["positions"].items() if key.startswith(f"{pose_kind}_"))
+        bearing = next(row for key, row in candidate["positions"].items() if key.startswith("az"))
         assert row["reason"] == ""
         assert isinstance(row["ripple_db"], float)
-        assert isinstance(row["dip"], dict)
+        assert (row["ripple_db"], row["dip"]) == (bearing["ripple_db"], bearing["dip"])
         assert row["upper_bands"] == []
         assert row["trough_fill_db"] is None
         assert row["trough_fill_reason"] == rear_views.REASON_NON_BEARING

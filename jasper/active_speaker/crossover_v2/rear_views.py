@@ -281,7 +281,7 @@ def rear_document(
         if not group:
             continue
         grid, mean_db = _mean_curve_db(group)
-        zeros[key] = (grid, reference_curve_db(grid, mean_db) if key in bearing else mean_db)
+        zeros[key] = (grid, reference_curve_db(grid, mean_db))
         if muted:
             reference_late[key] = [take.late_energy for take in group if take.late_energy]
             reference_curve[key] = mean_db

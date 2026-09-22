@@ -37,7 +37,7 @@ Judge the result at the seat.
 |---|---|
 | Wall hole (SBIR: speaker-boundary interference response) depth at the seat | `rear_evidence` owns `dip.depth_db` at bearings and seats. The room program publishes no wall-hole depth. |
 | Trough fill | `rear_preview` owns `trough_fill_db`; preview only. |
-| Roughness / ripple | `rear_evidence` owns `ripple_db`, against each pose's frozen rear-muted reference. Roughness against each curve's own trend is a different number, not yet a product figure. |
+| Roughness / ripple | `rear_evidence` owns `ripple_db`, against the rear-muted reference's one-octave trend. Roughness against each curve's own trend is a different number, not yet a product figure. |
 | Early-arriving share | `rear_evidence` owns the late-energy figures: 90–250 Hz, early 0–10 ms versus late 10–40 ms. Rear program only. |
 | Cross-seat spread | `room_views` publishes `median.spread_db`. |
 | Repeat spread | Per program; a shared, comparable repeat spread is not yet a product figure. |
