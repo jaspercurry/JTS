@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -1205,7 +1206,20 @@ def test_correction_latency_gate_blocks_unmeasured_or_high_delay_fir():
     assert measured_small.minimum_phase_or_iir is False
 
 
-def test_correction_latency_gate_reads_active_fir_metadata(tmp_path):
+@pytest.mark.parametrize(
+    "config_kind",
+    [
+        "fir",
+        "missing",
+        pytest.param(
+            "unreadable",
+            marks=pytest.mark.skipif(
+                os.geteuid() == 0, reason="root bypasses the mode bits this asserts"
+            ),
+        ),
+    ],
+)
+def test_correction_latency_gate_reads_active_fir_metadata(tmp_path, config_kind):
     fir_dir = tmp_path / "fir"
     fir_dir.mkdir()
     (fir_dir / "linear.json").write_text(json.dumps({
@@ -1214,19 +1228,28 @@ def test_correction_latency_gate_reads_active_fir_metadata(tmp_path):
     }))
     config = tmp_path / "correction.yml"
     config.write_text(
-        "filters:\n"
-        "  room_fir:\n"
-        "    type: Conv\n"
-        "    parameters:\n"
-        "      filename: fir/linear.wav\n",
+        "filters:\n  room_fir:\n    type: Conv\n"
+        "    parameters:\n      filename: fir/linear.wav\n",
         encoding="utf-8",
     )
-
-    verdict = correction_latency_eligibility_for_config(str(config))
+    try:
+        if config_kind == "missing":
+            config.unlink()
+        elif config_kind == "unreadable":
+            config.chmod(0)
+        verdict = correction_latency_eligibility_for_config(str(config))
+    finally:
+        if config_kind == "unreadable":
+            config.chmod(0o644)
 
     assert verdict.eligible is False
-    assert verdict.measured_group_delay_frames == 1024
-    assert verdict.blocking_reason == "fir_group_delay_exceeds_low_latency_budget"
+    assert verdict.minimum_phase_or_iir is False
+    assert verdict.measured_group_delay_frames == (1024 if config_kind == "fir" else None)
+    assert verdict.blocking_reason == (
+        "fir_group_delay_exceeds_low_latency_budget"
+        if config_kind == "fir"
+        else "fir_group_delay_unmeasured"
+    )
 
 
 def test_low_latency_route_plan_errors_on_high_latency_fir(tmp_path):
