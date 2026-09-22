@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.active_speaker import commission_wiring, staging, tone_plan
+from jasper.active_speaker import commission_wiring, preset_binding, tone_plan
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, SafetyEnvelope
 from jasper.active_speaker.seat_level_reference import (
@@ -154,7 +154,7 @@ def test_preview_compiled_preset_rides_the_ruled_stop() -> None:
         standard_design_draft(topology)
     )
 
-    preset, issues, _gates = staging.compile_preset_from_crossover_preview(
+    preset, issues, _gates = preset_binding.compile_preset_from_crossover_preview(
         topology, preview
     )
 
@@ -165,7 +165,7 @@ def test_preview_compiled_preset_rides_the_ruled_stop() -> None:
 
 def test_passive_sub_preset_rides_the_ruled_stop() -> None:
     """The sibling compile site (passive mains + local sub) rides it too."""
-    preset, issues, _gates = staging.build_passive_mains_preset(
+    preset, issues, _gates = preset_binding.build_passive_mains_preset(
         _passive_1way_sub_topology_fc(120.0)
     )
 

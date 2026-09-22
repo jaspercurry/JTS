@@ -4526,7 +4526,7 @@ def _seed_baseline_apply_environment(monkeypatch, tmp_path):
     """Seed the declaration and evidence used by the real apply loaders."""
     monkeypatch.setattr(v2state, "_state_path_override", tmp_path / "v2_state.json")
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda status: object())
-    from jasper.active_speaker import compile_preset_from_crossover_preview
+    from jasper.active_speaker.preset_binding import compile_preset_from_crossover_preview
     from jasper.output_topology import save_output_topology
 
     from tests.test_active_speaker_baseline_profile import _draft, _dual_apple_topology
@@ -4677,7 +4677,7 @@ def _seed_alternative_apply(
         json.dumps(draft), encoding="utf-8",
     )
     preview = ensure_crossover_preview_ready()
-    from jasper.active_speaker import compile_preset_from_crossover_preview
+    from jasper.active_speaker.preset_binding import compile_preset_from_crossover_preview
 
     configured_preset, issues, _ = compile_preset_from_crossover_preview(
         topology, preview,
@@ -4822,7 +4822,7 @@ def test_a_persisted_fc_selection_no_longer_decides_what_sound_is_told(
     declares, so the honest answer is "write nothing", and a fully-formed
     contrary record must not change it.
     """
-    from jasper.active_speaker import compile_preset_from_crossover_preview
+    from jasper.active_speaker.preset_binding import compile_preset_from_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.output_topology import load_output_topology
 
@@ -5758,7 +5758,7 @@ def test_start_over_while_applied_keeps_the_way_back_pointers(
 def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     monkeypatch, tmp_path,
 ):
-    from jasper.active_speaker import compile_preset_from_crossover_preview
+    from jasper.active_speaker.preset_binding import compile_preset_from_crossover_preview
     from jasper.web import correction_crossover_flow as reset_flow
 
     topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
@@ -6385,7 +6385,7 @@ def test_start_over_carries_the_sequence_epoch(applied, epoch, receipt, expected
 
 
 def test_restore_uses_the_saved_sound_inverse_and_the_previous_trial(monkeypatch, tmp_path):
-    from jasper.active_speaker import compile_preset_from_crossover_preview
+    from jasper.active_speaker.preset_binding import compile_preset_from_crossover_preview
     from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.output_topology import load_output_topology

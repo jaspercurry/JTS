@@ -105,7 +105,7 @@ def _passive_mains_preset(topology: Any) -> Any:
 
     Never the bundled 2-way JSON, which names drivers this box does not have.
     """
-    from jasper.active_speaker.staging import build_passive_mains_preset
+    from jasper.active_speaker.preset_binding import build_passive_mains_preset
 
     compiled, raw_issues, _gates = build_passive_mains_preset(topology)
     if compiled is not None:
@@ -162,7 +162,7 @@ def resolve_commission_preset(
     if _is_passive_mains(topology):
         return _passive_mains_preset(topology)
     if crossover_preview is not None:
-        from jasper.active_speaker.staging import compile_preset_from_crossover_preview
+        from jasper.active_speaker.preset_binding import compile_preset_from_crossover_preview
 
         compiled, raw_issues, _gates = compile_preset_from_crossover_preview(
             topology,

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.active_speaker import commission_wiring
-from jasper.active_speaker import staging
+from jasper.active_speaker import preset_binding
 from jasper.active_speaker import tone_plan
 
 
@@ -34,7 +34,7 @@ def test_capture_preset_compiles_ready_preview(monkeypatch) -> None:
         lambda: (None, preview),
     )
     monkeypatch.setattr(
-        staging,
+        preset_binding,
         "compile_preset_from_crossover_preview",
         lambda got_topology, got_preview: (
             compiled if (got_topology, got_preview) == (topology, preview) else None,
@@ -53,7 +53,7 @@ def test_capture_preset_reports_first_two_compile_issues(monkeypatch) -> None:
         lambda: (None, {"status": "blocked"}),
     )
     monkeypatch.setattr(
-        staging,
+        preset_binding,
         "compile_preset_from_crossover_preview",
         lambda *_args: (
             None,

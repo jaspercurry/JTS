@@ -67,11 +67,11 @@ def recornered_preset(preset: Any, *, fc_hz: float, order: int | None = None) ->
     """``preset`` with every crossover region moved to ``fc_hz`` (and ``order``).
 
     The region ``id`` spelling is a contract with
-    ``staging.compile_preset_from_crossover_preview``, which recompiles it as
+    ``preset_binding.compile_preset_from_crossover_preview``, which recompiles it as
     ``f"{lower_role}_{upper_role}_{int(round(frequency))}hz"``; any other
     spelling — a pinned order joining the name included — is refused
     ``measured_candidate_preset_mismatch`` at apply. Change this format only
-    together with staging's.
+    together with preset_binding's.
     """
     moved: dict[str, Any] = {"fc_hz": float(fc_hz)}
     if order is not None:

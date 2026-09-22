@@ -976,12 +976,12 @@ def test_the_recornered_region_id_is_spelled_the_way_apply_recompiles_it():
 
     ``baseline_profile.build_baseline_profile`` admits a reviewed candidate
     only when its ``source_preset`` equals — by whole-dataclass ``!=``, ``id``
-    included — the preset ``staging.compile_preset_from_crossover_preview``
+    included — the preset ``preset_binding.compile_preset_from_crossover_preview``
     recompiles from the SAVED declaration, which spells it
     ``f"{lower_role}_{upper_role}_{int(round(frequency))}hz"``. A region left
     named for the old corner, or given a name recompilation can never produce
     (an ``_lr2`` suffix, say), is refused ``measured_candidate_preset_mismatch``
-    forever. Change this format only together with staging's.
+    forever. Change this format only together with preset_binding's.
     """
     import dataclasses
 

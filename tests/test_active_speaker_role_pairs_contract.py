@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from jasper.active_speaker.crossover_preview import CROSSOVER_PREVIEW_KIND
-from jasper.active_speaker.staging import compile_preset_from_crossover_preview
+from jasper.active_speaker.preset_binding import compile_preset_from_crossover_preview
 from jasper.output_topology import ADJACENT_PAIRS_BY_MAIN_MODE
 from tests.active_speaker_fixtures import mono_output_topology
 

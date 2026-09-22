@@ -146,7 +146,7 @@ def declared_protection_floor_hz(
 
     A thin read of the preset-carried value; the floor itself is owned and
     parsed by ``driver_protection.declared_protection_highpass_floor_hz`` at
-    the one point the preset is compiled (``staging._driver_spec_from_preview``).
+    the one point the preset is compiled (``preset_binding._driver_spec_from_preview``).
     """
 
     spec = preset.drivers.get(str(role or "").strip().lower())

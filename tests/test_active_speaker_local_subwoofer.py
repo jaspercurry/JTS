@@ -750,7 +750,7 @@ def test_commissioning_reproof_blocks_malformed_sub_lowpass_while_muted() -> Non
 
 
 def test_local_subwoofer_uses_topology_crossover_fc() -> None:
-    from jasper.active_speaker.staging import _local_subwoofer_from_topology
+    from jasper.active_speaker.preset_binding import _local_subwoofer_from_topology
 
     topology = _passive_1way_sub_topology_fc(120.0)
     sub, issues = _local_subwoofer_from_topology(topology, main_output_count=2)
@@ -762,7 +762,7 @@ def test_local_subwoofer_uses_topology_crossover_fc() -> None:
 
 def test_local_subwoofer_falls_back_to_default_corner() -> None:
     from jasper.active_speaker.profile import DEFAULT_SUB_CROSSOVER_HZ
-    from jasper.active_speaker.staging import _local_subwoofer_from_topology
+    from jasper.active_speaker.preset_binding import _local_subwoofer_from_topology
 
     topology = _passive_1way_sub_topology_fc(None)
     sub, issues = _local_subwoofer_from_topology(topology, main_output_count=2)

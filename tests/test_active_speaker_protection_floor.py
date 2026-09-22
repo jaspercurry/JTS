@@ -79,10 +79,8 @@ from jasper.active_speaker.path_safety import (
     evaluate_path_safety_evidence,
 )
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
-from jasper.active_speaker.staging import (
-    compile_preset_from_crossover_preview,
-    stage_protected_startup_config,
-)
+from jasper.active_speaker.preset_binding import compile_preset_from_crossover_preview
+from jasper.active_speaker.staging import stage_protected_startup_config
 from jasper.active_speaker.test_signal_plan import (
     PROTECTIVE_TWEETER_HP_MULTIPLIER,
     protective_tweeter_highpass_frequency_hz,
