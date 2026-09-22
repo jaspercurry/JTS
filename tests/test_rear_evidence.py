@@ -354,6 +354,26 @@ def test_a_synthetic_pair_recovers_its_gap_level_and_polarity(
         "bands": bands, "gap": gap, "polarity": read}
 
 
+@pytest.mark.parametrize("band_hz,expected_ms,confidence_range,search_ms", [
+    ((40.0, 3000.0), 1.14, (0.4, 0.7), 2.0),
+    (rear_evidence.ARRIVAL_GAP_BAND_HZ, 1.7, (0.4, 1.0), 8.889),
+])
+def test_a_wall_image_shifts_the_gap_in_the_cancellation_band(
+    band_hz, expected_ms, confidence_range, search_ms,
+):
+    front, rear, shift = _pair(1.14)["impulses"]
+    rear += _pulse(FRONT_ARRIVAL_S + 0.00114 + 0.0012, gain=0.9)
+
+    gap = rear_evidence.arrival_gap_ms(
+        [(front, rear, shift)], sample_rate_hz=SAMPLE_RATE_HZ, band_hz=band_hz)
+
+    assert gap["ms"] == pytest.approx(expected_ms, abs=0.03)
+    assert confidence_range[0] < gap["confidence"] < confidence_range[1]
+    assert gap["band_hz"] == list(band_hz)
+    assert gap["search_ms"] == pytest.approx(search_ms, abs=0.001)
+    assert rear_evidence.confident_arrival_gap_s(gap) == pytest.approx(expected_ms / 1e3, abs=3e-5)
+
+
 @pytest.mark.parametrize("error_db", [0.0, 3.0, -2.0])
 def test_the_trust_number_is_the_error_the_played_sum_carries(error_db):
     """``P == F + R`` reads zero; anything else reads exactly its own error."""

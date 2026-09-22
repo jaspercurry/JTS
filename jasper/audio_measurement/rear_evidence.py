@@ -87,15 +87,10 @@ REASON_NO_COMPARISON = "no_candidate_comparison"
 #: :func:`~jasper.audio_measurement.deconv.magnitude_response` applies.
 _MAGNITUDE_FLOOR = 1e-12
 
-#: A woofer is radiating within this much of its own peak level. The gap needs
-#: real BANDWIDTH (a GCC-PHAT main lobe is ~1/bandwidth wide, so a third-octave
-#: span cannot resolve a sub-millisecond gap) and whitening a bin the woofers
-#: never drove piles a peak at zero lag.
+#: A woofer is radiating within this much of its own peak level.
 RADIATING_FLOOR_BELOW_PEAK_DB = 20.0
 
-#: Both woofers sit in one cabinet, so their path difference to the microphone
-#: is bounded by its depth (~0.3 m, ~0.9 ms); past this the peak is not the
-#: pair, and the primitive's own ``at_edge`` says so.
+#: Minimum search half-width; narrow bands need room outside the main lobe.
 ARRIVAL_GAP_SEARCH_MS = 2.0
 
 #: Mean ``angle(R/F)`` with the arrival gap removed, degrees: at or below the
@@ -124,6 +119,8 @@ FIGURE_REGRESSION_SIGN: Mapping[str, float] = {
 UPPER_BANDS_HZ = ((350.0, 700.0), (700.0, 1500.0), (1500.0, 5000.0))
 LEVEL_BANDS_HZ = ((30.0, 60.0), (60.0, 100.0), (90.0, 350.0), (200.0, 300.0), *UPPER_BANDS_HZ)
 LATE_ENERGY_BAND_HZ = (90.0, 250.0)
+#: The gap that predicts cancellation is the gap measured in its band.
+ARRIVAL_GAP_BAND_HZ = (90.0, 315.0)
 LATE_ENERGY_CHANGE_KEYS = (("early_late_change_db", "early_late_db"),
                            ("band_energy_change_db", "energy_db"), ("arrival_shift_ms", "centroid_ms"))
 # Early/late windows of the cardioid-or-fill figure; see ADR-0325.
@@ -452,9 +449,8 @@ def shared_radiating_band_hz(
 ) -> list[float] | None:
     """The span inside ``band_hz`` where BOTH woofers radiate: lowest to
     highest bin at which each one's 1/6-octave level is within
-    :data:`RADIATING_FLOOR_BELOW_PEAK_DB` of its own in-band peak. MEASURED, so
-    nothing reads a crossover corner or a driver table, and it is what
-    :func:`arrival_gap_ms` correlates over. ``None`` under two such bins."""
+    :data:`RADIATING_FLOOR_BELOW_PEAK_DB` of its own in-band peak.
+    ``None`` under two such bins."""
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     inside = _band(freqs, band_hz)
     if inside.size < 2:
@@ -477,12 +473,9 @@ def arrival_gap_ms(
 
     Each repeat is ``(front impulse, rear impulse, rear-minus-front clock
     shift in samples)``. The two solo segments of ONE pair take share a
-    recording clock and a deconvolution pre-guard, so their direct arrivals sit
-    the physical gap apart; the shift divides the schedule's own drift out
-    exactly as the crossover aligner does. Band-limited GCC-PHAT
-    (:func:`~jasper.audio_measurement.alignment.gcc_phat`), never peak-picking:
-    the rear's own wall image lands about 1.2 ms after its direct sound — the
-    size of the gap itself — and a peak-picker takes whichever is taller.
+    recording clock and a deconvolution pre-guard; the shift removes the
+    schedule's drift. Band-limited GCC-PHAT includes the rear's wall image
+    where it overlaps the direct sound in the cancellation band.
 
     The median over repeats with the WORST repeat's ``confidence`` and
     ``at_edge``, plus their peak-to-peak spread in µs. A repeat whose impulses
@@ -491,17 +484,20 @@ def arrival_gap_ms(
     ``None`` with a reason when none of them could be.
     """
     band = None if band_hz is None else (float(band_hz[0]), float(band_hz[1]))
+    # Four main-lobe widths across the window leave secondary peaks unmasked.
+    search_ms = (max(ARRIVAL_GAP_SEARCH_MS, 2e3 / (band[1] - band[0]))
+                 if band and band[0] < band[1] else None)
     rows = []
     for front, rear, shift in repeats:
         ahead = np.asarray(front, dtype=np.float64)
         behind = np.asarray(rear, dtype=np.float64)
-        if (band is None or band[0] >= band[1] or ahead.size < 2
+        if (band is None or search_ms is None or ahead.size < 2
                 or ahead.size != behind.size or finite_float(shift) is None
                 or not (np.all(np.isfinite(ahead)) and np.all(np.isfinite(behind)))):
             continue
         lag, _sign, confidence, at_edge = gcc_phat(
             behind, ahead, sample_rate=sample_rate_hz, band_hz=band, upsample=GCC_UPSAMPLE,
-            max_lag_samples=ARRIVAL_GAP_SEARCH_MS * 1e-3 * sample_rate_hz,
+            max_lag_samples=search_ms * 1e-3 * sample_rate_hz,
         )
         rows.append(((lag - float(shift)) / sample_rate_hz * 1e3, confidence, bool(at_edge)))
     gaps = [row[0] for row in rows]
@@ -509,6 +505,7 @@ def arrival_gap_ms(
         "ms": float(np.median(gaps)) if rows else None,
         "confidence": min((row[1] for row in rows), default=None),
         "at_edge": any(row[2] for row in rows) if rows else None,
+        "search_ms": search_ms if rows else None,
         "band_hz": list(band) if rows and band else None, "n_repeats": len(rows),
         "repeat_spread_us": float(np.ptp(gaps)) * 1e3 if len(gaps) > 1 else None,
         "reason": "" if rows else REASON_NO_IMPULSE,

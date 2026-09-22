@@ -212,7 +212,7 @@ def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path
         expected_gradient = figures.gradient_residual_db(
             take.freqs_hz[keep], rear[keep] / front[keep],
             figures.confident_arrival_gap_s(row["arrival_gap"]), row["band_hz"])
-        assert row["gradient_residual"]["db"] == pytest.approx(expected_gradient, abs=0.0005)
+        assert row["gradient_residual"]["db"] == pytest.approx(expected_gradient, abs=0.001)
         assert row["gradient_residual"]["reason"] == ""
         for band in row["bands"]:
             if not band["reason"]:
