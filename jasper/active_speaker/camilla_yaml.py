@@ -3045,7 +3045,7 @@ def _assert_measurement_delays_bound(
 ) -> None:
     """Prove each requested delay actually landed, through the shared proof.
 
-    :func:`~jasper.audio_measurement.delay_graph.prove_static_delay_binding` is
+    :func:`~jasper.active_speaker.delay_graph.prove_static_delay_binding` is
     the tree's one answer to "does this graph carry that delay": the value
     through the same quantizer a later proof would use, the filter in EXACTLY
     ONE pipeline step wired to exactly the role's channels, the 20 ms DSP bound,
@@ -3056,7 +3056,7 @@ def _assert_measurement_delays_bound(
         return
     import yaml as yaml_lib
 
-    from jasper.audio_measurement.delay_graph import prove_static_delay_binding
+    from jasper.active_speaker.delay_graph import prove_static_delay_binding
     from jasper.audio_measurement.null_walk import NullWalkError
 
     parsed = yaml_lib.safe_load(yaml_text)
@@ -3194,7 +3194,7 @@ def emit_active_speaker_program_config(
     * ``inverted_roles`` is level-neutral — see :func:`_emit_role_routed_mixer`.
     * ``measurement_delays_us`` reaches the YAML through a single
       :func:`~jasper.camilla_emit.fmt` pass, the same formatter
-      :func:`~jasper.audio_measurement.delay_graph.quantized_delay_ms` is
+      :func:`~jasper.active_speaker.delay_graph.quantized_delay_ms` is
       implemented as, so a proof recomputing from the same ``delay_us`` agrees
       exactly. Delays ride ahead of the protection sections; a pure delay
       commutes, so the position changes no magnitude.

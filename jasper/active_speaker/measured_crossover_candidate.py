@@ -21,7 +21,7 @@ from jasper.audio_measurement.evidence_identity import (
     EvidenceIdentityError,
     json_fingerprint,
 )
-from jasper.audio_measurement.delay_graph import quantized_delay_ms
+from jasper.active_speaker.delay_graph import quantized_delay_ms
 from jasper.audio_measurement.null_walk import (
     MAX_DSP_DELAY_US,
     DspPredecessor,
@@ -947,7 +947,7 @@ def prove_candidate_config(candidate: MeasuredCrossoverCandidate, yaml_text: str
 
     import yaml as _yaml
 
-    from jasper.audio_measurement.delay_graph import (
+    from jasper.active_speaker.delay_graph import (
         DelayGraphProofError,
         prove_static_delay_binding,
     )
