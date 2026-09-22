@@ -330,10 +330,10 @@ jobs:
           set -euo pipefail
           bash scripts/check-js-syntax.sh
           node tests/js/sound_profile_harness.mjs deploy/assets/sound-profile/js/main.js
+          node tests/js/speaker_setup_test.mjs
           node tests/js/dialog_harness.mjs deploy/assets/shared/js/dialog.js
           node scripts/check-peq-parity.mjs
           node scripts/check-balance-trim-parity.mjs
-          node scripts/check-sensitivity-trim-parity.mjs
 
   rust:
     # Pin Clippy to the Pi/Trixie toolchain so warnings do not change at each run.

@@ -7,7 +7,7 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.refusal_copy import CAPTURE_QUALITY_REFUSAL_CODES, refusal_copy_for
 from jasper.active_speaker.round_copy import PLACE_MICROPHONE, RUN_ENDED, round_lines, coverage_lines, pose_name, round_verdict, take_counts
-from jasper.active_speaker.commissioning_coordinator import round_status
+from jasper.active_speaker.measurement_view import round_status
 
 
 @pytest.mark.parametrize("pending", [False, True])

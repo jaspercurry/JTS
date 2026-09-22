@@ -67,7 +67,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
   <section class="info-card" aria-live="polite">
     <dl class="deflist"><dt>Round</dt><dd id="crossover-round-lines"></dd></dl>
     <div id="crossover-round-choice" hidden>
-      <div class="field"><label for="crossover-round-select">Pose set</label><select id="crossover-round-select"></select></div>
+      <details><summary>Measurement options</summary><div class="field"><label for="crossover-round-select">Measurement plan</label><select id="crossover-round-select"></select></div></details>
       <div id="crossover-round-summary"></div>
       <div id="crossover-round-start" class="form-actions"></div>
     </div>
@@ -158,7 +158,7 @@ def handle_envelope(
     envelope = _build_envelope_logged(status)
     live = status.get("capture") or {}
     if envelope["screen"] in {"awaiting_plan", "finished"} and (not live or live.get("status") in SESSION_ENDED_STATUSES):
-        from jasper.active_speaker.commissioning_coordinator import round_choices  # lazy: planning reads measurement
+        from jasper.active_speaker.measurement_view import round_choices  # lazy: planning reads measurement
 
         envelope["round_choices"] = round_choices(status, selected_program)
     return envelope, HTTPStatus.OK

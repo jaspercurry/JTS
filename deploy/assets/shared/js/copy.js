@@ -8,7 +8,7 @@
 // ~1.5s. Falls back to select() + execCommand where the async Clipboard API
 // is unavailable (plain-HTTP LAN origins).
 
-async function copyText(el) {
+export async function copyText(el) {
   try {
     await navigator.clipboard.writeText(el.value);
     return true;

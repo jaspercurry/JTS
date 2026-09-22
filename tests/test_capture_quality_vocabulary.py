@@ -22,11 +22,7 @@ question by declaring a seventh ``Literal``. That qualifier is the honest
 bound, not modesty: the scan below detects a ``Literal[...]`` declaration, so a
 copy of the same words in another SHAPE — a ``frozenset``, a rank ``dict``, a
 bare ``-> str`` returning them, a hand-mirrored JS array — is invisible to it.
-One such copy is already known and deliberately out of scope
-(``active_speaker.crossover_preview._CONFIDENCE_RANK``, these three words plus
-``unknown``, mirrored by hand in
-``deploy/assets/sound-profile/js/driver-model.js``);
-unifying it is a design call, not a rename. What each test catches:
+What each test catches:
 
 * the alias test — a surface that stops speaking the shared vocabulary;
 * the redeclaration scan — a surface that re-declares it as a ``Literal``

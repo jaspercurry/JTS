@@ -3022,11 +3022,7 @@ def test_bond_card_renders_no_cross_origin_link_via_node():
 
 
 def test_grouping_view_pure_helpers_via_node():
-    """The /rooms bond-card presentation logic (grouping-view.js
-    airplayLipSyncRow) is a dependency-free module unit-tested with node —
-    mirroring active_speaker_ui_test.mjs. Covers the AirPlay-lip-sync row
-    branches (no row off-leader, Synced vs Lagging, ms formatting) that the
-    DOM-assembly in main.js consumes. Skips when node isn't on PATH."""
+    """Exercise the /rooms bond-card helpers with Node."""
     if _NODE is None:
         pytest.skip("node not on PATH")
     proc = subprocess.run(

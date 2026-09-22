@@ -5,15 +5,21 @@ import {CROSSOVER_IDS, crossoverMainModule} from './_dom.mjs';
 
 globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
-const posted = [];
+const posted = [], requested = [];
 const action = {id: 'run_program', label: 'server label', endpoint: '/server/run', body: {plan: {program: 'tournament/full'}}};
 const choice = {id: 'tournament/full', label: 'tournament/full', default: true, lines: ['server summary'], action};
 let env = {capture: null, round_choices: [choice], round_lines: []};
-const {elements, render} = await crossoverMainModule({
+const {elements, render, refresh} = await crossoverMainModule({
   ids: [...CROSSOVER_IDS, ...['lines', 'choice', 'select', 'summary', 'start'].map(id => `crossover-round-${id}`)],
-  extraStubs: {getJSON: async () => env, postJSON: async (endpoint, body) => {posted.push({endpoint, body}); return {};},
+  extraStubs: {window: {location: {search: '?program=rear'}},
+    getJSON: async url => {requested.push(url); return env;}, postJSON: async (endpoint, body) => {posted.push({endpoint, body}); return {};},
     renderCloud: () => {}, redrawCloudChart: () => {}},
+  exportNames: ['render', 'refresh'],
 });
+await refresh();
+assert.equal(new URL(requested[0], 'http://speaker').searchParams.get('program'), 'rear');
+await refresh();
+assert.equal(new URL(requested[1], 'http://speaker').searchParams.get('program'), choice.id);
 render(env);
 assert.equal(elements.get('crossover-round-select').value, choice.id);
 assert.deepEqual(elements.get('crossover-round-summary').children.map(n => n.textContent), choice.lines);

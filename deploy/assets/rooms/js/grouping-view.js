@@ -2,12 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Pure presentation helpers for the /rooms bond card — dependency-free (no
-// DOM, no imports) so node can unit-test the render DECISIONS directly,
-// mirroring deploy/assets/sound-profile/js/active-speaker-ui.js. main.js
-// consumes these and does the (DOM-only, untestable-without-a-browser)
-// assembly via its h() helper. Tested by tests/js/rooms_grouping_view_test.mjs.
-
 export const BALANCE_MIN_DB = -24;
 export const BALANCE_MAX_DB = 24;
 

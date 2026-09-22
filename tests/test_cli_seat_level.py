@@ -384,6 +384,7 @@ def commissioning_box(tmp_path, monkeypatch):
     (tmp_path / "design_draft.json").write_text(json.dumps(draft))
     monkeypatch.setattr("jasper.sound.settings.saved_sound_layers", lambda: ([], 0.0))
     monkeypatch.setattr("jasper.web.sound_active_speaker.mux_socket_command", AsyncMock(return_value={}))
+    monkeypatch.setattr("jasper.web.sound_active_speaker.trigger_reconcile", lambda **kw: {"ok": True})
     return topology, _FakeApplyCam()
 
 

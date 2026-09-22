@@ -78,7 +78,7 @@ export async function crossoverMainModule({
   exportNames = ["render"],
 } = {}) {
   const elements = installFixedDocument(ids, documentOptions);
-  const stubs = { ...extraStubs, ...POSITION_UNITS_STUBS };
+  const stubs = { ...extraStubs, window: { addEventListener() {}, location: { search: '' }, ...extraStubs.window }, ...POSITION_UNITS_STUBS };
   for (const [name, value] of Object.entries(stubs)) {
     globalThis[`__${name}`] = value;
   }
