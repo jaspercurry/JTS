@@ -10,7 +10,7 @@ import logging
 from typing import Any, Awaitable, Callable, Mapping
 
 from jasper.active_speaker import baseline_profile, runtime_contract
-from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
+from jasper.active_speaker.candidate_bank import CandidateBankRefusal, bank_candidate, find_banked_candidate, load_applied_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.commissioning_experiment import commissioning_candidate
 from jasper.active_speaker.candidate_trials import candidate_boost_issue
@@ -45,12 +45,20 @@ async def apply_candidate(
     measurements: Mapping[str, Any] = {}
     async with dsp_writer_lock(baseline_profile.baseline_config_path().parent, source="active_speaker_baseline_apply"):
         try:
-            selected = find_banked_candidate(candidate).candidate if isinstance(candidate, str) else candidate
+            if isinstance(candidate, str):
+                banked = find_banked_candidate(candidate)
+                selected = banked.candidate
+            else:
+                banked, selected = None, candidate
             topology = load_output_topology()
             draft = load_design_draft(topology=topology)
             measurements = load_measurement_state(topology)
             incumbent = baseline_profile.load_applied_baseline_profile_state()
             declaration = load_tuning_declaration(topology, design_draft=draft)
+            if selected is None and incumbent and incumbent.get("candidate_artifact_path"):
+                banked = load_applied_candidate(
+                    (incumbent.get("source") or {}).get("measured_candidate_fingerprint", ""), applied_profile=incumbent)
+                selected = banked.candidate
             if selected is None:
                 selected = (candidate_from_applied_profile(topology, incumbent) if incumbent is not None
                              else commissioning_candidate(topology, draft))
@@ -76,8 +84,9 @@ async def apply_candidate(
                 await baseline_profile._record_apply_outcome_into_bundle(measurements, candidate={"issues": [issue]}, apply_state=None, rollback_target=None)
                 return {"status": "blocked", "issue": issue, "issues": [issue], "apply": None}
             target = baseline_profile.baseline_candidate_config_path(text)
-            prepared = baseline_profile.prepare_applied_baseline_profile(selected, declaration=declaration, design_draft=draft,
-                measurements=measurements, config_path=target, config_sha256=sha)
+            prepared = baseline_profile.prepare_applied_baseline_profile(banked or bank_candidate(selected), declaration=declaration, design_draft=draft,
+                measurements=measurements, config_path=target, config_sha256=sha,
+                saved_timing=(incumbent or {}).get("timing"))
             prepared.update(issues=list(selected.analysis.get("issues") or []),
                             candidate_fingerprint=baseline_profile.baseline_candidate_fingerprint(prepared))
             if from_saved_draft or on_candidate_verified is not None:

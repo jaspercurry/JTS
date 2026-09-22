@@ -363,6 +363,10 @@ class _ActiveGraphCarrier:
         # this is a backstop. The bonded read is fresh (grouping.env).
         self.can_host_eq = is_baseline and not _bonded_active_member()
 
+    @staticmethod
+    def prepare_eq():
+        return _load_active_tune_for_eq()
+
     def reemit(
         self,
         profile,
@@ -373,6 +377,7 @@ class _ActiveGraphCarrier:
         member_kwargs: dict | None = None,
         room_peqs: list | None = None,
         fanin_coupling_capture_kwargs: dict | None = None,
+        tune=None,
     ) -> ReemitResult:
         if not self._is_baseline:
             raise CarrierCannotHostEq(
@@ -392,7 +397,7 @@ class _ActiveGraphCarrier:
                 "unchanged.",
             )
         del fanin_coupling_capture_kwargs, room_peqs
-        result = _compile_active_baseline_with_eq(profile, output_trim_db=output_trim_db)
+        result = _compile_active_baseline_with_eq(profile, output_trim_db=output_trim_db, tune=tune)
         if out_path is not None:
             target = self.destination(result, Path(out_path).parent)
             atomic_write_text(target, result.yaml, mode=CONFIG_FILE_MODE)
@@ -448,33 +453,27 @@ def _bonded_active_member() -> bool:
     return is_active_member(load_config())
 
 
-def _compile_active_baseline_with_eq(profile, *, output_trim_db: float = 0.0) -> ReemitResult:
+def _load_active_tune_for_eq():
+    from jasper.active_speaker.applied_tune import load_applied_tune  # lazy: active graph owner
     from jasper.active_speaker.candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
-    from jasper.active_speaker.baseline_profile import (  # lazy: active graph owner
-        load_applied_baseline_profile_state, prepare_applied_baseline_profile, recomposition_snapshot_for,
-    )
-    from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: active candidate bank
-    from jasper.active_speaker.design_draft import load_design_draft  # lazy: active speaker declaration
-    from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration  # lazy: active graph compilation
-    from jasper.active_speaker.runtime_contract import GRAPH_APPROVED_ACTIVE_RUNTIME, classify_bass_extension_graph  # lazy: active graph proof
+
+    try:
+        return load_applied_tune()
+    except (CandidateBankRefusal, OSError, ValueError) as exc:
+        raise CarrierCannotHostEq("active_baseline_compile_unavailable", f"Could not load the saved speaker tune: {exc}") from exc
+
+
+def _compile_active_baseline_with_eq(profile, *, output_trim_db: float = 0.0, tune=None) -> ReemitResult:
+    from jasper.active_speaker.applied_tune import compile_applied_tune  # lazy: active graph owner
     from jasper.sound.profile import build_sound_filter_slots  # lazy: profile DSP imports NumPy
 
-    applied = load_applied_baseline_profile_state() or {}
+    tune = tune if tune is not None else _load_active_tune_for_eq()
     try:
-        draft = load_design_draft()
-        declaration = load_tuning_declaration(design_draft=draft)
-        candidate = candidate_from_applied_profile(declaration.topology, applied)
-        text = compile_tuning_graph(declaration, candidate=candidate,
+        text, prepared = compile_applied_tune(tune,
             preference_filters=build_sound_filter_slots(profile), output_trim_db=output_trim_db)
-        graph = classify_bass_extension_graph(declaration.topology, evidence_source="desired", graph_text=text,
-            applied_baseline_state={"recomposition_snapshot": recomposition_snapshot_for(
-                candidate, declaration=declaration, design_draft=draft, provenance=applied)})
-        if not graph.allowed or graph.classification != GRAPH_APPROVED_ACTIVE_RUNTIME:
-            raise ValueError(graph.classification)
-        prepared = prepare_applied_baseline_profile(candidate, declaration=declaration, design_draft=draft, measurements={}, provenance=applied)
-        prepared["config"]["sound_layer"] = {"profile": profile.to_dict(), "output_trim_db": output_trim_db}
-    except (CandidateBankRefusal, OSError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         raise CarrierCannotHostEq("active_baseline_compile_unavailable", f"Could not compile the saved speaker tune: {exc}") from exc
+    prepared["config"]["sound_layer"] = {"profile": profile.to_dict(), "output_trim_db": output_trim_db}
     return ReemitResult(text, len(extract_room_peqs_from_config_text(text)), prepared)
 
 

@@ -42,7 +42,7 @@ from .camilla_yaml import (
     _branch_context,
     linearization_headroom_db,
 )
-from .candidate_bank import BankedCandidate, CandidateBankRefusal, find_banked_candidate, publish_authored_candidate
+from .candidate_bank import BankedCandidate, CandidateBankRefusal, bank_candidate, load_applied_candidate
 from .measurement_emit import MeasurementGraphProfile
 from .crossover_contract import (
     measured_level_match_applied,
@@ -335,7 +335,6 @@ def compile_commissioning_profile(
     find_candidate: Callable[[str], BankedCandidate] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Review the applied candidate, or bootstrap from the declared crossover."""
-    from .candidate_parts import candidate_from_applied_profile  # lazy: candidate parts consumes baseline readers
     from .commissioning_experiment import commissioning_candidate  # lazy: candidate parts consumes baseline readers
     from .design_draft import load_design_draft  # lazy: design draft imports baseline readers
     from .measurement import load_measurement_state  # lazy: measurement imports baseline readers
@@ -351,15 +350,21 @@ def compile_commissioning_profile(
         draft = design_draft if design_draft is not None else load_design_draft(topology=topology)
         declaration = load_tuning_declaration(topology, design_draft=draft)
         applied = load_applied_baseline_profile_state()
-        candidate = (candidate_from_applied_profile(topology, applied, find_candidate=find_candidate) if applied is not None
-                     else commissioning_candidate(topology, draft))
+        if applied is not None:
+            fingerprint = (applied.get("source") or {}).get("measured_candidate_fingerprint", "")
+            banked = (find_candidate(fingerprint) if find_candidate is not None
+                      else load_applied_candidate(fingerprint, applied_profile=applied))
+        else:
+            banked = bank_candidate(commissioning_candidate(topology, draft), find_candidate=find_candidate)
+        candidate = banked.candidate
         preference_filters, trim_db = saved_sound_layers()
         text = compile_tuning_graph(declaration, candidate=candidate,
                                     preference_filters=preference_filters, output_trim_db=trim_db)
         target = baseline_candidate_config_path(text)
         profile.update(prepare_applied_baseline_profile(
-            candidate, declaration=declaration, design_draft=draft, measurements=load_measurement_state(topology),
-            config_path=target, config_sha256=config_text_sha256(text), find_candidate=find_candidate, crossover_preview=crossover_preview,
+            banked, declaration=declaration, design_draft=draft, measurements=load_measurement_state(topology),
+            config_path=target, config_sha256=config_text_sha256(text), crossover_preview=crossover_preview,
+            saved_timing=(applied or {}).get("timing"),
         ))
         profile["issues"] = [*(candidate.analysis.get("issues") or []), *rear_calibration_issues(candidate)]
         profile["candidate_fingerprint"] = baseline_candidate_fingerprint(profile)
@@ -885,6 +890,7 @@ def _frozen_applied_profile(
         "status": "applied",
         "applied_at": applied.get("applied_at"),
         "candidate_fingerprint": candidate_fingerprint,
+        "candidate_artifact_path": applied.get("candidate_artifact_path"),
         "source": dict(applied.get("source") or {}),
         "config": dict(applied.get("config") or {}),
         "corrections": dict(applied.get("corrections") or {}),
@@ -1589,13 +1595,14 @@ def _protection_projection(profile: Mapping[str, Any] | None) -> dict[str, Any] 
 
 def _candidate_timing(
     candidate: MeasuredCrossoverCandidate, at: str, provenance: Mapping[str, Any] | None,
+    saved_timing: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
     from jasper.audio_measurement.program_analysis.model import TIMING_AUTHORED  # lazy: analysis loads NumPy
 
     evidence = candidate.analysis
     source = (evidence.get("resolution") or {}).get("alignment")
     if source == "saved":
-        return ((provenance if provenance is not None else load_applied_baseline_profile_state()) or {}).get("timing")
+        return provenance.get("timing") if provenance is not None else dict(saved_timing) if saved_timing else None
     if source in ("cleared", "base"):
         return None
     if source is None and provenance is not None and provenance.get("timing") is not None:
@@ -1651,7 +1658,7 @@ def recomposition_snapshot_for(
 
 
 def prepare_applied_baseline_profile(
-    candidate: MeasuredCrossoverCandidate,
+    banked: BankedCandidate,
     *,
     declaration: MeasurementGraphProfile,
     design_draft: Mapping[str, Any],
@@ -1661,15 +1668,10 @@ def prepare_applied_baseline_profile(
     config_sha256: str | None = None,
     applied_at: str | None = None,
     provenance: Mapping[str, Any] | None = None,
-    find_candidate: Callable[[str], BankedCandidate] | None = None,
+    saved_timing: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Resolve the complete applied record before changing the DSP graph."""
-    try:
-        banked = (find_candidate or find_banked_candidate)(candidate.fingerprint)
-    except CandidateBankRefusal as exc:
-        if exc.code != "not_found":
-            raise
-        banked = publish_authored_candidate(candidate)
+    """Build an apply record from resolved inputs without reading or writing the bank."""
+    candidate = banked.candidate
     protection = _protection_projection(design_draft.get("driver_safety_profile"))
     if crossover_preview is None:
         crossover_preview = build_crossover_preview(design_draft)
@@ -1684,7 +1686,7 @@ def prepare_applied_baseline_profile(
     from .crossover_v2.planning import alignment_to_candidate_fields  # lazy: planning loads NumPy
 
     at = applied_at or _utc_now()
-    timing = _candidate_timing(candidate, at, provenance)
+    timing = _candidate_timing(candidate, at, provenance, saved_timing)
     projected = candidate
     if timing is not None:
         fields = alignment_to_candidate_fields({**timing, "alignment_status": "ok"},

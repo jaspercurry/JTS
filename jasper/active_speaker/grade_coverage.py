@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .bundles import sessions_dir
-from .candidate_bank import CandidateBankRefusal, _candidate_roots, status_banked_candidate
+from .candidate_bank import CandidateBankRefusal, _candidate_roots, load_applied_candidate
 from .commissioning_evidence_store import EVIDENCE_ROOT
 from .run_manifest import RUN_MANIFEST_FILENAME
 
@@ -25,7 +25,7 @@ def _manifest_path(state: Mapping[str, Any]) -> Path | None:
     # run still owns the promise after that re-arm (#2098).
     if fingerprint:
         try:
-            banked = status_banked_candidate(fingerprint)
+            banked = load_applied_candidate(fingerprint)
             return banked.path.with_name(RUN_MANIFEST_FILENAME)
         except CandidateBankRefusal:
             pass

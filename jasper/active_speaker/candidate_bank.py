@@ -2,15 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Find a previously-minted candidate in the on-box bundle store, by fingerprint.
+"""Read exact candidate references, discover candidates, or publish authored tunes.
 
-Owns the fingerprint SCAN glob; a second reader should import it from here, not restate
-it. Integrity is the candidate model's alone
-(:meth:`MeasuredCrossoverCandidate.from_mapping`) -- this module adds only bounds and
-identity resolution, no second hasher. Lookup is keyed on bundle id *and* minting capture
-session id together, both carried on :class:`BankedCandidate`. Kept out of
-``crossover_v2/`` to avoid that package's numpy-pulling ``__init__``; lazy-imports the
-candidate model instead.
+Candidate integrity belongs to MeasuredCrossoverCandidate.from_mapping.
 """
 
 from __future__ import annotations
@@ -22,7 +16,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from jasper.log_event import log_event
 
@@ -113,10 +107,10 @@ def _candidate_roots(root: Path) -> tuple[Path, ...]:
     return (root, root.parent / paired) if paired else (root,)
 
 
-def status_banked_candidate(
+def load_applied_candidate(
     fingerprint: str, *, applied_profile: Mapping[str, Any] | None = None,
 ) -> BankedCandidate:
-    """Open the applied record's exact artifact; status never discovers or migrates."""
+    """Read and verify the selected artifact without discovery or migration."""
     from .baseline_profile import load_applied_baseline_profile_state  # lazy: baseline recording imports the bank
 
     applied = applied_profile if applied_profile is not None else load_applied_baseline_profile_state() or {}
@@ -153,6 +147,18 @@ def _verified_candidates(paths: list[Path]) -> list[BankedCandidate]:
             )
         )
     return found
+
+
+def bank_candidate(
+    candidate: Any, *, find_candidate: Callable[[str], BankedCandidate] | None = None,
+) -> BankedCandidate:
+    """Resolve or publish a candidate before preparing an apply record."""
+    try:
+        return (find_candidate or find_banked_candidate)(candidate.fingerprint)
+    except CandidateBankRefusal as exc:
+        if exc.code != "not_found":
+            raise
+        return publish_authored_candidate(candidate)
 
 
 def publish_authored_candidate(candidate: Any, *, root: Path | None = None) -> BankedCandidate:

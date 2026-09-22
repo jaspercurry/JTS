@@ -255,7 +255,6 @@ async def load_profile_config(
         sound_config_path,
     )
     from jasper.sound.graph_carrier import (
-        CarrierCannotHostEq,
         ReemitResult,
         carrier_for_loaded_config,
         eq_block_for_loaded_config,
@@ -280,29 +279,10 @@ async def load_profile_config(
 
     from jasper.active_speaker.baseline_profile import load_composed_graph  # lazy: active graph owner
 
-    if carrier.kind == "active":
-        from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state, prepare_applied_baseline_profile  # lazy: active graph admission
-        from jasper.active_speaker.candidate_bank import CandidateBankRefusal  # lazy: active candidate bank
-        from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: active candidate bank
-        from jasper.active_speaker.design_draft import load_design_draft  # lazy: active speaker declaration
-        from jasper.active_speaker.measurement_emit import load_tuning_declaration  # lazy: active speaker declaration
-        from jasper.active_speaker.playback_route import resolve_active_playback_device  # lazy: active speaker endpoint
-        from jasper.output_topology import load_output_topology_strict  # lazy: active speaker topology
-
-        try:
-            applied = load_applied_baseline_profile_state() or {}
-            topology = load_output_topology_strict()
-            candidate = candidate_from_applied_profile(topology, applied)
-            draft = load_design_draft(topology=topology)
-            playback_device, _ = resolve_active_playback_device(topology)
-            declaration = load_tuning_declaration(topology, design_draft=draft, playback_device=playback_device)
-            prepared = prepare_applied_baseline_profile(candidate, declaration=declaration,
-                design_draft=draft, measurements={}, provenance=applied)
-        except (CandidateBankRefusal, OSError, ValueError) as exc:
-            raise CarrierCannotHostEq("active_baseline_compile_unavailable", f"Could not prepare the saved speaker tune: {exc}") from exc
-
     async with dsp_writer_lock(config_path, source=source):
         active = carrier.kind == "active"
+        tune = carrier.prepare_eq() if active else None
+        prepared: dict[str, Any] = {}
         out_path = sound_audition_config_path(config_path) if audition else sound_config_path(config_path)
         coupling_capture_kwargs = capture_kwargs_for_coupling()
 
@@ -319,6 +299,7 @@ async def load_profile_config(
             rendered = current_carrier.reemit(
                 profile, profile_id=render_id, output_trim_db=output_trim_db,
                 fanin_coupling_capture_kwargs=coupling_capture_kwargs,
+                **({"tune": tune} if current_carrier.kind == "active" else {}),
             )
             if current_carrier.kind != carrier.kind:
                 raise RuntimeError("Loaded graph carrier changed during sound preparation")

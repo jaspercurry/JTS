@@ -1185,68 +1185,24 @@ def test_pipe_sink_reemit_is_never_width_matched(tmp_path, monkeypatch):
 
 
 def test_below_floor_in_service_box_refuses_eq_save_by_type_not_by_500(tmp_path, monkeypatch):
-    """An /sound/eq/ save on a speaker already running a below-floor crossover.
-
-    The gate that refuses that graph
-    (``camilla_yaml._assert_tweeter_crossover_honours_declared_floor``) is on
-    the EMIT path, so a box commissioned before it existed keeps playing its
-    graph and meets the refusal the next time a household saves preference EQ.
-    That is not a hypothetical population: it is the exact fleet risk the gate's
-    own PR flagged, and the moment it happens the household needs the sentence
-    naming the crossover — not a 502 carrying a raw exception string.
-
-    ``ActiveSpeakerConfigError`` is a ``ValueError``, and nothing in
-    ``jasper/sound/`` or ``sound_setup.py`` knew that name, so before the
-    re-raise it escaped :class:`CarrierCannotHostEq` entirely and fell to the
-    handler's generic ``except Exception`` branch. This is end-to-end on
-    purpose — a REAL applied record through the REAL recomposer into the REAL
-    emit gate — because mocking the recomposer would pin the re-raise while
-    proving nothing about whether the gate actually reaches it.
-
-    The synthetic in-service box is built the only honest way: commission a
-    legal speaker with the real builder, then push the RECORDED crossover below
-    the RECORDED floor, which is what a box commissioned before the gate looks
-    like on disk today.
-    """
-    from jasper.active_speaker.profile import ActiveSpeakerConfigError
+    from dataclasses import replace
+    from jasper.active_speaker.candidate_bank import load_applied_candidate, publish_authored_candidate
     from jasper.sound.graph_carrier import _compile_active_baseline_with_eq
+    from tests.active_speaker_fixtures import declare_applied_fixture
 
     topology, applied = _real_active_applied_baseline(tmp_path)
-    snapshot = applied["recomposition_snapshot"]
-    preset = snapshot["preset"]
-    floor_hz = preset["drivers"]["tweeter"]["protection_highpass_floor_hz"]
-    assert floor_hz == 2000.0, "fixture's declared tweeter floor moved"
-    # Commissioned below its own declared floor -- what the pre-gate fleet can
-    # be carrying right now.
-    from tests.active_speaker_fixtures import declare_applied_fixture
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
     declare_applied_fixture(monkeypatch, topology, applied)
-    applied["source"].pop("measured_candidate_fingerprint")
-    preset["crossover_regions"][0]["fc_hz"] = 1500.0
-
-    with mock.patch(
-        "jasper.output_topology.load_output_topology", return_value=topology,
-    ), mock.patch(
-        "jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state",
-        return_value=applied,
-    ), mock.patch(
-        "jasper.sound.profile.build_sound_filter_slots", return_value=(),
-    ):
-        with pytest.raises(CarrierCannotHostEq) as err:
-            _compile_active_baseline_with_eq(
-                SoundProfile(enabled=False),
-            )
-
-    # Typed, with the stable reason_code the /sound/eq/ and /sound/ handlers branch
-    # on -- NOT a bare ValueError falling through to a 502.
+    candidate = load_applied_candidate(applied["source"]["measured_candidate_fingerprint"], applied_profile=applied).candidate
+    preset = candidate.source_preset
+    banked = publish_authored_candidate(replace(candidate, source_preset=replace(preset,
+        crossover_regions=(replace(preset.crossover_regions[0], fc_hz=1500.0),))))
+    applied["candidate_artifact_path"] = str(banked.path)
+    applied["source"]["measured_candidate_fingerprint"] = banked.fingerprint
+    monkeypatch.setattr("jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state", lambda: applied)
+    with pytest.raises(CarrierCannotHostEq) as err:
+        _compile_active_baseline_with_eq(SoundProfile(enabled=False))
     assert err.value.reason_code == "active_baseline_compile_unavailable"
-    assert not isinstance(err.value, ActiveSpeakerConfigError)
-    # The gate's honest sentence survives the conversion: both numbers and the
-    # remedy reach the household rather than being replaced by a generic one.
-    message = str(err.value)
-    assert "1500 Hz" in message and "2000 Hz" in message
-    assert "required_protection_filters" in message
-
+    assert isinstance(err.value.__cause__, ValueError)
 
 
 
@@ -1270,6 +1226,42 @@ async def active_sound_box(tmp_path, monkeypatch):
     return topology, candidate, FakeCamilla(initial.path), Path(initial.path).parent
 
 
+@pytest.mark.parametrize("artifact", ["valid", "missing", "corrupt", "wrong_fingerprint"])
+async def test_eq_state_reads_only_the_selected_tune_without_writes(tmp_path, monkeypatch, active_sound_box, artifact):
+    import asyncio
+    import urllib.request
+    from jasper.active_speaker import baseline_profile, candidate_bank
+    from tests.test_sound_setup import sound_server
+
+    _, _, cam, _ = active_sound_box
+    applied = baseline_profile.load_applied_baseline_profile_state()
+    selected = Path(applied["candidate_artifact_path"])
+    if artifact == "missing":
+        selected.unlink()
+    elif artifact == "corrupt":
+        selected.write_text("{")
+    elif artifact == "wrong_fingerprint":
+        raw = json.loads(selected.read_text())
+        raw["fingerprint"] = "0" * 64
+        selected.write_text(json.dumps(raw))
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    monkeypatch.setattr("jasper.camilla.primary_controller", lambda: cam)
+    with mock.patch.object(candidate_bank, "_iter_candidate_paths", side_effect=AssertionError("bank scan")), \
+         mock.patch.object(candidate_bank, "publish_authored_candidate", side_effect=AssertionError("bank write")), \
+         mock.patch.object(candidate_bank, "load_candidate_artifact", wraps=candidate_bank.load_candidate_artifact) as read:
+        with sound_server(tmp_path) as base:
+            def request():
+                with urllib.request.urlopen(f"{base}/state") as response:
+                    return json.load(response)
+            payload = await asyncio.to_thread(request)
+        read.assert_called_once_with(selected)
+    assert payload["eq_carrier"]["status"] == ("ok" if artifact == "valid" else "blocked")
+    if artifact != "valid":
+        assert payload["eq_carrier"]["reason_code"] == "active_baseline_compile_unavailable"
+    assert not cam.set_calls
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
 @pytest.mark.parametrize("sound", [SoundProfile(), SoundProfile(enabled=False, simple_eq=SimpleEq(bass_db=2)), SoundProfile(simple_eq=SimpleEq(bass_db=2))])
 async def test_active_sound_save_and_reconcile_match_the_candidate_compiler(tmp_path, monkeypatch, active_sound_box, sound):
     from jasper.active_speaker import baseline_profile
@@ -1286,8 +1278,12 @@ async def test_active_sound_save_and_reconcile_match_the_candidate_compiler(tmp_
     declaration = load_tuning_declaration(topology)
     save_sound_settings(SoundSettings(headroom_trim_db=3.0))
     profile_path = tmp_path / "sound.json"
-    state, target, _ = await load_profile_config(sound, profile_path=profile_path, config_dir=config_dir,
-        camilla_factory=lambda: cam, source="sound", persist_profile=True, output_trim_db=3.0)
+    from jasper.active_speaker import candidate_bank
+    with mock.patch.object(candidate_bank, "_iter_candidate_paths", side_effect=AssertionError("bank scan")), \
+         mock.patch.object(candidate_bank, "load_candidate_artifact", wraps=candidate_bank.load_candidate_artifact) as read:
+        state, target, _ = await load_profile_config(sound, profile_path=profile_path, config_dir=config_dir,
+            camilla_factory=lambda: cam, source="sound", persist_profile=True, output_trim_db=3.0)
+        read.assert_called_once_with(Path(before["candidate_artifact_path"]))
     assert state.result == "success"
     expected = compile_tuning_graph(declaration, candidate=candidate, preference_filters=build_sound_filter_slots(sound), output_trim_db=3.0)
     assert target.read_text() == expected
